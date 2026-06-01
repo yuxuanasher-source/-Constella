@@ -1,4 +1,19 @@
-import { Badge } from "@/components/ui/badge";
+import OpsReferenceApp from "@/components/reference-ui/ops-reference";
+
+const routeByModule: Record<string, string> = {
+  m0: "org",
+  m1: "projects",
+  m2: "streamers",
+  m3: "streamers",
+  m4: "tasks",
+  m5: "reports",
+  m6: "settle",
+  m7: "audit",
+  m8: "export",
+  m9: "audit",
+  m10: "warroom",
+  m11: "warroom",
+};
 
 export default async function StubPage({
   params,
@@ -7,14 +22,5 @@ export default async function StubPage({
 }) {
   const { module } = await params;
 
-  return (
-    <section className="mx-auto max-w-5xl rounded-lg border border-[var(--line)] bg-white p-8">
-      <Badge tone="blue">{module.toUpperCase()}</Badge>
-      <h1 className="mt-4 text-2xl font-semibold">模块外壳已就绪</h1>
-      <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--ink-500)]">
-        本期只搭 P0 地基与项目发布纵切片，此模块保留导航、权限和布局入口，等待
-        P1+ 按开发计划展开。
-      </p>
-    </section>
-  );
+  return <OpsReferenceApp initialRoute={routeByModule[module] ?? "warroom"} />;
 }

@@ -1,0 +1,5281 @@
+﻿"use client";
+/* eslint-disable */
+import React from "react";
+
+// ===== src\ui.jsx =====
+// ——— Reusable UI atoms ——————————————————————————————————————
+
+// Status badge — color via tone prop
+function Badge({
+  tone = "neutral",
+  children,
+  dot = false,
+  soft = true,
+  style,
+}) {
+  const tones = {
+    neutral: ["#EEF2F7", "#475569", "#94A3B8"],
+    blue: ["#EEF3FF", "#1842A6", "#3B6BE6"],
+    green: ["#E6F6EE", "#0E8A4D", "#22B86C"],
+    amber: ["#FFF3DC", "#A86A00", "#E5A33A"],
+    red: ["#FDECEC", "#C0303A", "#E66670"],
+    violet: ["#EFEBFF", "#5B4BD1", "#8C7DEB"],
+    teal: ["#DEF3F0", "#0E7C77", "#3CB1AB"],
+    ink: ["#E2E8F0", "#1E2A47", "#475569"],
+  };
+  const [bg, fg, dotC] = tones[tone] || tones.neutral;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "2px 8px",
+        borderRadius: 999,
+        background: soft ? bg : "transparent",
+        color: fg,
+        fontSize: 12,
+        lineHeight: "18px",
+        fontWeight: 500,
+        whiteSpace: "nowrap",
+        border: soft ? "none" : `1px solid ${dotC}`,
+        ...style,
+      }}
+    >
+      {dot && (
+        <span
+          style={{ width: 6, height: 6, borderRadius: 999, background: dotC }}
+        />
+      )}
+      {children}
+    </span>
+  );
+}
+
+// Solid Status pill with vertical line accent — for table status columns
+function StatusPill({ tone = "neutral", children }) {
+  const tones = {
+    neutral: ["#64748B"],
+    blue: ["#1E50C8"],
+    green: ["#0E8A4D"],
+    amber: ["#C58A1A"],
+    red: ["#C0303A"],
+    violet: ["#5B4BD1"],
+    teal: ["#0E7C77"],
+  };
+  const [c] = tones[tone] || tones.neutral;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        fontSize: 13,
+        color: "var(--ink-700)",
+      }}
+    >
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: 999,
+          background: c,
+          boxShadow: `0 0 0 3px ${c}22`,
+        }}
+      />
+      {children}
+    </span>
+  );
+}
+
+function Button({
+  kind = "default",
+  size = "md",
+  children,
+  icon,
+  onClick,
+  disabled,
+  style,
+  type = "button",
+}) {
+  const sizes = {
+    sm: { h: 26, px: 10, fs: 12, gap: 4 },
+    md: { h: 32, px: 12, fs: 13, gap: 6 },
+    lg: { h: 38, px: 16, fs: 14, gap: 8 },
+  };
+  const s = sizes[size];
+  const kinds = {
+    primary: {
+      bg: "var(--blue-600)",
+      color: "#fff",
+      border: "1px solid var(--blue-600)",
+      hover: "var(--blue-700)",
+    },
+    default: {
+      bg: "#fff",
+      color: "var(--ink-700)",
+      border: "1px solid var(--line-strong)",
+      hover: "#F4F6FB",
+    },
+    ghost: {
+      bg: "transparent",
+      color: "var(--ink-500)",
+      border: "1px solid transparent",
+      hover: "#EEF2F7",
+    },
+    danger: {
+      bg: "#fff",
+      color: "var(--danger-600)",
+      border: "1px solid #F3C4C9",
+      hover: "#FDECEC",
+    },
+    link: {
+      bg: "transparent",
+      color: "var(--blue-600)",
+      border: "none",
+      hover: "transparent",
+    },
+  };
+  const k = kinds[kind];
+  const [hover, setHover] = React.useState(false);
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        height: s.h,
+        padding: `0 ${s.px}px`,
+        fontSize: s.fs,
+        background: hover && !disabled ? k.hover : k.bg,
+        color: k.color,
+        border: k.border,
+        borderRadius: 6,
+        cursor: disabled ? "not-allowed" : "pointer",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: s.gap,
+        fontWeight: 500,
+        opacity: disabled ? 0.55 : 1,
+        transition: "background 100ms ease",
+        whiteSpace: "nowrap",
+        ...style,
+      }}
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+// Card — base container
+function Card({ children, title, extra, padded = true, style, bodyStyle }) {
+  return (
+    <div
+      style={{
+        background: "#fff",
+        border: "1px solid var(--line)",
+        borderRadius: 10,
+        boxShadow: "var(--shadow-card)",
+        display: "flex",
+        flexDirection: "column",
+        ...style,
+      }}
+    >
+      {(title || extra) && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "12px 16px",
+            borderBottom: "1px solid var(--line)",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: "var(--ink-900)",
+              letterSpacing: "-0.005em",
+            }}
+          >
+            {title}
+          </div>
+          {extra}
+        </div>
+      )}
+      <div style={{ padding: padded ? 16 : 0, flex: 1, ...bodyStyle }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// Sectional header inside a page (between cards)
+function SectionTitle({ children, hint, extra }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "baseline",
+        justifyContent: "space-between",
+        margin: "4px 0 12px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink-900)" }}>
+          {children}
+        </div>
+        {hint && (
+          <div style={{ fontSize: 12, color: "var(--ink-400)" }}>{hint}</div>
+        )}
+      </div>
+      {extra}
+    </div>
+  );
+}
+
+// Key-value row used in detail panes
+function KV({ label, children, w = 96 }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 12,
+        padding: "6px 0",
+        fontSize: 13,
+      }}
+    >
+      <div style={{ width: w, color: "var(--ink-400)", flexShrink: 0 }}>
+        {label}
+      </div>
+      <div style={{ color: "var(--ink-700)", flex: 1 }}>{children}</div>
+    </div>
+  );
+}
+
+// Avatar — initials disc
+function Avatar({ name, size = 28, tone }) {
+  const palette = [
+    "#1E50C8",
+    "#5B4BD1",
+    "#0E7C77",
+    "#A86A00",
+    "#C0303A",
+    "#0E8A4D",
+  ];
+  const code = (name || "?").split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+  const bg = tone || palette[code % palette.length];
+  const initials = (name || "?").slice(0, 1);
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: size,
+        height: size,
+        borderRadius: 999,
+        background: `${bg}18`,
+        color: bg,
+        fontSize: size * 0.42,
+        fontWeight: 600,
+        flexShrink: 0,
+      }}
+    >
+      {initials}
+    </span>
+  );
+}
+
+// Tabular: header + body. Pass columns + rows as React-friendly arrays.
+function DataTable({
+  columns,
+  rows,
+  dense = false,
+  onRowClick,
+  activeRowId,
+  emptyText = "暂无数据",
+}) {
+  return (
+    <div style={{ width: "100%", overflow: "auto" }}>
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "separate",
+          borderSpacing: 0,
+          fontSize: 13,
+          color: "var(--ink-700)",
+        }}
+      >
+        <thead>
+          <tr>
+            {columns.map((c, i) => (
+              <th
+                key={i}
+                style={{
+                  position: "sticky",
+                  top: 0,
+                  zIndex: 1,
+                  background: "var(--bg-soft)",
+                  textAlign: c.align || "left",
+                  fontWeight: 500,
+                  fontSize: 12,
+                  color: "var(--ink-400)",
+                  padding: dense ? "8px 12px" : "10px 14px",
+                  borderBottom: "1px solid var(--line)",
+                  width: c.width,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {c.title}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 && (
+            <tr>
+              <td
+                colSpan={columns.length}
+                style={{
+                  padding: 48,
+                  textAlign: "center",
+                  color: "var(--ink-400)",
+                }}
+              >
+                {emptyText}
+              </td>
+            </tr>
+          )}
+          {rows.map((r, i) => (
+            <tr
+              key={r.id ?? i}
+              onClick={onRowClick ? () => onRowClick(r) : undefined}
+              style={{
+                background:
+                  activeRowId === r.id ? "var(--blue-50)" : "transparent",
+                cursor: onRowClick ? "pointer" : "default",
+              }}
+              onMouseEnter={(e) => {
+                if (onRowClick && activeRowId !== r.id)
+                  e.currentTarget.style.background = "#F7F9FD";
+              }}
+              onMouseLeave={(e) => {
+                if (onRowClick && activeRowId !== r.id)
+                  e.currentTarget.style.background = "transparent";
+              }}
+            >
+              {columns.map((c, j) => (
+                <td
+                  key={j}
+                  style={{
+                    padding: dense ? "8px 12px" : "12px 14px",
+                    textAlign: c.align || "left",
+                    borderBottom: "1px solid var(--line)",
+                    verticalAlign: c.valign || "middle",
+                    whiteSpace: c.wrap ? "normal" : "nowrap",
+                    color: c.muted ? "var(--ink-400)" : "var(--ink-700)",
+                  }}
+                >
+                  {c.render ? c.render(r, i) : r[c.key]}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Metric block — large number with label + delta
+function Metric({
+  label,
+  value,
+  unit,
+  delta,
+  deltaTone = "green",
+  hint,
+  accent,
+}) {
+  return (
+    <div
+      style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}
+    >
+      <div
+        style={{
+          fontSize: 12,
+          color: "var(--ink-400)",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+        }}
+      >
+        {accent}
+        {label}
+      </div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        <span
+          className="num"
+          style={{
+            fontSize: 24,
+            fontWeight: 600,
+            color: "var(--ink-900)",
+            letterSpacing: "-0.02em",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {value}
+        </span>
+        {unit && (
+          <span
+            style={{
+              fontSize: 12,
+              color: "var(--ink-400)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {unit}
+          </span>
+        )}
+      </div>
+      {(delta || hint) && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexWrap: "wrap",
+            rowGap: 2,
+          }}
+        >
+          {delta && (
+            <span
+              className="num"
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                whiteSpace: "nowrap",
+                color:
+                  deltaTone === "green"
+                    ? "var(--ok-600)"
+                    : deltaTone === "red"
+                      ? "var(--danger-600)"
+                      : "var(--ink-400)",
+              }}
+            >
+              {delta}
+            </span>
+          )}
+          {hint && (
+            <span
+              style={{
+                fontSize: 12,
+                color: "var(--ink-400)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {hint}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Search input
+function SearchInput({ placeholder = "搜索…", value, onChange, width = 280 }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        height: 32,
+        padding: "0 10px",
+        width,
+        border: "1px solid var(--line-strong)",
+        borderRadius: 6,
+        background: "#fff",
+      }}
+    >
+      <Icon.Search size={14} stroke="var(--ink-400)" />
+      <input
+        value={value || ""}
+        onChange={(e) => onChange?.(e.target.value)}
+        placeholder={placeholder}
+        style={{
+          flex: 1,
+          border: "none",
+          outline: "none",
+          background: "transparent",
+          fontSize: 13,
+          color: "var(--ink-700)",
+        }}
+      />
+    </div>
+  );
+}
+
+// Tab control — pill underline style
+function Tabs({ items, value, onChange, size = "md" }) {
+  const fs = size === "lg" ? 14 : 13;
+  return (
+    <div
+      style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--line)" }}
+    >
+      {items.map((it) => {
+        const active = it.key === value;
+        return (
+          <button
+            key={it.key}
+            onClick={() => onChange?.(it.key)}
+            style={{
+              padding: "10px 14px",
+              background: "transparent",
+              border: "none",
+              borderBottom: active
+                ? "2px solid var(--blue-600)"
+                : "2px solid transparent",
+              marginBottom: -1,
+              cursor: "pointer",
+              color: active ? "var(--blue-700)" : "var(--ink-500)",
+              fontWeight: active ? 600 : 500,
+              fontSize: fs,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            {it.label}
+            {it.count != null && (
+              <span
+                style={{
+                  background: active ? "var(--blue-50)" : "var(--ink-50)",
+                  color: active ? "var(--blue-700)" : "var(--ink-400)",
+                  borderRadius: 999,
+                  padding: "0 6px",
+                  fontSize: 11,
+                  fontWeight: 500,
+                  minWidth: 18,
+                  textAlign: "center",
+                }}
+              >
+                {it.count}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Mini bar — used inline (e.g. scoring or distribution)
+function MiniBar({ value, max = 100, tone = "blue", width = 80 }) {
+  const tones = {
+    blue: "var(--blue-600)",
+    green: "var(--ok-600)",
+    amber: "#C58A1A",
+    red: "var(--danger-600)",
+  };
+  return (
+    <div
+      style={{
+        width,
+        height: 6,
+        background: "var(--ink-50)",
+        borderRadius: 999,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          width: `${Math.min(100, (value / max) * 100)}%`,
+          height: "100%",
+          background: tones[tone] || tones.blue,
+        }}
+      />
+    </div>
+  );
+}
+
+// Risk dot — single colored circle
+function RiskDot({ level }) {
+  const map = {
+    low: ["var(--ok-600)", "低"],
+    medium: ["#C58A1A", "中"],
+    high: ["var(--danger-600)", "高"],
+    none: ["var(--ink-200)", "无"],
+  };
+  const [c, t] = map[level] || map.none;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        fontSize: 12,
+      }}
+    >
+      <span style={{ width: 8, height: 8, borderRadius: 999, background: c }} />
+      {t}
+    </span>
+  );
+}
+
+// ===== src\icons.jsx =====
+// Inline stroke-icons — 16/18/20 sizing. All paths from scratch (simple geometry).
+const ic = (props, paths) => {
+  const {
+    size = 16,
+    stroke = "currentColor",
+    sw = 1.6,
+    fill = "none",
+    ...rest
+  } = props || {};
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill={fill}
+      stroke={stroke}
+      strokeWidth={sw}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...rest}
+    >
+      {paths}
+    </svg>
+  );
+};
+
+const Icon = {
+  Dashboard: (p) =>
+    ic(
+      p,
+      <>
+        <rect x="3" y="3" width="7" height="9" rx="1.5" />
+        <rect x="14" y="3" width="7" height="5" rx="1.5" />
+        <rect x="14" y="12" width="7" height="9" rx="1.5" />
+        <rect x="3" y="16" width="7" height="5" rx="1.5" />
+      </>,
+    ),
+  Project: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      </>,
+    ),
+  Streamer: (p) =>
+    ic(
+      p,
+      <>
+        <circle cx="12" cy="8" r="3.5" />
+        <path d="M4.5 20c1.2-3.5 4.2-5.5 7.5-5.5s6.3 2 7.5 5.5" />
+      </>,
+    ),
+  Audit: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M6 3.5h9l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-11.5A1.5 1.5 0 0 1 4.5 20V5a1.5 1.5 0 0 1 1.5-1.5Z" />
+        <path d="M14.5 3.5v4.5H19" />
+        <path d="M8 12.5h8M8 16h6" />
+      </>,
+    ),
+  Tasks: (p) =>
+    ic(
+      p,
+      <>
+        <rect x="3.5" y="4.5" width="17" height="16" rx="2" />
+        <path d="M3.5 9h17" />
+        <path d="M8 4.5v3M16 4.5v3" />
+        <path d="M7.5 13.5l2 2 4-4" />
+      </>,
+    ),
+  Reports: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M4 19V5a1.5 1.5 0 0 1 1.5-1.5H15l5 5V19a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19Z" />
+        <path d="M14.5 3.5v5H20" />
+        <path d="M8 12h6M8 16h8" />
+      </>,
+    ),
+  Money: (p) =>
+    ic(
+      p,
+      <>
+        <rect x="3" y="6" width="18" height="13" rx="2" />
+        <circle cx="12" cy="12.5" r="2.5" />
+        <path d="M6 9.5V9M18 16v.5" />
+      </>,
+    ),
+  Export: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M12 4v11" />
+        <path d="m7.5 8.5 4.5-4.5 4.5 4.5" />
+        <path d="M4.5 17v1.5A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5V17" />
+      </>,
+    ),
+  Bell: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15z" />
+        <path d="M10 20a2 2 0 0 0 4 0" />
+      </>,
+    ),
+  Search: (p) =>
+    ic(
+      p,
+      <>
+        <circle cx="11" cy="11" r="6.5" />
+        <path d="m20 20-3.5-3.5" />
+      </>,
+    ),
+  ChevDown: (p) => ic(p, <path d="m6 9 6 6 6-6" />),
+  ChevRight: (p) => ic(p, <path d="m9 6 6 6-6 6" />),
+  ChevLeft: (p) => ic(p, <path d="m15 6-6 6 6 6" />),
+  Plus: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M12 5v14M5 12h14" />
+      </>,
+    ),
+  More: (p) =>
+    ic(
+      p,
+      <>
+        <circle cx="6" cy="12" r="1.2" />
+        <circle cx="12" cy="12" r="1.2" />
+        <circle cx="18" cy="12" r="1.2" />
+      </>,
+    ),
+  Filter: (p) => ic(p, <path d="M4 5h16l-6 8v6l-4-2v-4z" />),
+  Settings: (p) =>
+    ic(
+      p,
+      <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 14.5 21 15.2l-1 2-1.7-.4a7.5 7.5 0 0 1-1.5.9l-.3 1.8h-2.4l-.3-1.8a7.5 7.5 0 0 1-1.5-.9l-1.7.4-1-2 1.6-.7a7.5 7.5 0 0 1 0-1.8L4.6 12 5.6 10l1.7.4a7.5 7.5 0 0 1 1.5-.9l.3-1.8h2.4l.3 1.8a7.5 7.5 0 0 1 1.5.9l1.7-.4 1 2-1.6.7a7.5 7.5 0 0 1 0 1.8z" />
+      </>,
+    ),
+  Sparkles: (p) =>
+    ic(
+      p,
+      <>
+        <path d="m12 4 1.6 4.4L18 10l-4.4 1.6L12 16l-1.6-4.4L6 10l4.4-1.6z" />
+        <path d="m19 16 .8 1.7L21.5 18l-1.7.3L19 20l-.3-1.7L17 18l1.7-.3z" />
+      </>,
+    ),
+  Calendar: (p) =>
+    ic(
+      p,
+      <>
+        <rect x="3.5" y="5" width="17" height="15.5" rx="2" />
+        <path d="M3.5 10h17M8 3.5v3.5M16 3.5v3.5" />
+      </>,
+    ),
+  Check: (p) => ic(p, <path d="m5 12 4.5 4.5L19 7" />),
+  X: (p) => ic(p, <path d="m6 6 12 12M18 6 6 18" />),
+  Eye: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+        <circle cx="12" cy="12" r="3" />
+      </>,
+    ),
+  Play: (p) => ic(p, <path d="M7 5.5v13l11-6.5z" />),
+  Pause: (p) =>
+    ic(
+      p,
+      <>
+        <rect x="7" y="5" width="3.5" height="14" rx="1" />
+        <rect x="13.5" y="5" width="3.5" height="14" rx="1" />
+      </>,
+    ),
+  Upload: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M12 16V5" />
+        <path d="m7.5 9.5 4.5-4.5 4.5 4.5" />
+        <path d="M4.5 17v1.5A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5V17" />
+      </>,
+    ),
+  Warn: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M12 3.5 21 19H3z" />
+        <path d="M12 10v4M12 17v.01" />
+      </>,
+    ),
+  Lock: (p) =>
+    ic(
+      p,
+      <>
+        <rect x="5" y="11" width="14" height="9" rx="1.5" />
+        <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+      </>,
+    ),
+  Unlock: (p) =>
+    ic(
+      p,
+      <>
+        <rect x="5" y="11" width="14" height="9" rx="1.5" />
+        <path d="M8 11V8a4 4 0 0 1 7.7-1.4" />
+      </>,
+    ),
+  Trend: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M4 16.5 9 11l3.5 3.5L20 6.5" />
+        <path d="M15 6.5h5v5" />
+      </>,
+    ),
+  Game: (p) =>
+    ic(
+      p,
+      <>
+        <rect x="2.5" y="7" width="19" height="10" rx="4" />
+        <path d="M7 11v2M5.5 12h3M14 12h.01M16.5 13.5h.01M16.5 10.5h.01M18 12h.01" />
+      </>,
+    ),
+  Logo: (p) =>
+    ic(
+      { ...p, sw: 0, fill: "currentColor" },
+      <>
+        <path
+          d="M4 6.5c0-1.2.9-2 2-2h8c4.5 0 7.5 3 7.5 7.5S18.5 19.5 14 19.5H6c-1.2 0-2-.8-2-2z"
+          opacity=".18"
+        />
+        <path d="M8 9.5h4a3 3 0 1 1 0 6H8z" />
+      </>,
+    ),
+  History: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M3.5 12a8.5 8.5 0 1 0 2.5-6" />
+        <path d="M3.5 4v4h4" />
+        <path d="M12 8v4l3 2" />
+      </>,
+    ),
+  Pencil: (p) =>
+    ic(
+      p,
+      <>
+        <path d="m4 20 1-4L16 5l3 3L8 19z" />
+        <path d="m13 8 3 3" />
+      </>,
+    ),
+};
+
+// ===== src-streamer\data.jsx =====
+// Streamer-side mock data ———————————————————————————————
+
+// Logged-in streamer (NIKO · S-004)
+const ME = {
+  id: "S-004",
+  alias: "NIKO",
+  real: "倪可",
+  gender: "女",
+  level: "L4 · 稳定档",
+  signedAt: "2025-11-12",
+  org: "星河直播",
+  platforms: [
+    {
+      id: "douyin_niko_live",
+      platform: "抖音",
+      followers: 14600,
+      primary: true,
+    },
+    { id: "bili_niko", platform: "B 站", followers: 8200, primary: false },
+  ],
+};
+
+// Streamer's tasks — for today + upcoming + recent
+const MY_TASKS = [
+  {
+    id: "T-1034",
+    date: "今天",
+    dateStr: "05-27 周三",
+    project: "P-2406",
+    projectName: "原神 4.7 · 周三常规",
+    vendor: "米哈游",
+    start: "19:00",
+    end: "23:30",
+    durationPlan: 4.5,
+    status: "pending_live", // 待开播
+    needStartStop: true,
+    needScreening: true,
+    note: "今晚以新角色「凯薇娜」为主，互动 2 次刷礼物挑战。",
+    settleHint: "底薪 6000 + CPT 80/h",
+  },
+  {
+    id: "T-1041",
+    date: "明天",
+    dateStr: "05-28 周四",
+    project: "P-2412",
+    projectName: "元梦之星 · 候选试播",
+    vendor: "腾讯游戏",
+    start: "19:00",
+    end: "23:00",
+    durationPlan: 4.0,
+    status: "trial", // 试播任务
+    needStartStop: false,
+    needScreening: true,
+    note: "候选阶段试播，请提交 60 分钟以上的录屏。",
+    settleHint: "试播 · 不计入正式结算",
+  },
+  {
+    id: "T-1048",
+    date: "本周六",
+    dateStr: "05-30 周六",
+    project: "P-2406",
+    projectName: "原神 4.7 · 黄金档",
+    vendor: "米哈游",
+    start: "19:00",
+    end: "24:00",
+    durationPlan: 5.0,
+    status: "pending_live",
+    needStartStop: true,
+    needScreening: true,
+    note: "黄金档，建议互动节奏密集；下播前务必截图直播后台数据页。",
+    settleHint: "底薪 6000 + CPT 80/h",
+  },
+
+  // Yesterday's task — pending report upload
+  {
+    id: "T-1028",
+    date: "昨天",
+    dateStr: "05-26 周二",
+    project: "P-2406",
+    projectName: "原神 4.7 · 周二常规",
+    vendor: "米哈游",
+    start: "19:30",
+    end: "23:30",
+    durationPlan: 4.0,
+    status: "pending_report", // 已下播，待你上传截图
+    needStartStop: true,
+    needScreening: true,
+    note: "",
+    settleHint: "底薪 6000 + CPT 80/h",
+  },
+  // Done report (审核中)
+  {
+    id: "T-1024",
+    date: "前天",
+    dateStr: "05-25 周一",
+    project: "P-2406",
+    projectName: "原神 4.7 · 沉浸玩法",
+    vendor: "米哈游",
+    start: "19:30",
+    end: "23:30",
+    durationPlan: 4.0,
+    status: "pending_review", // 报数待审核
+    note: "运营审核中，预计 24 小时内出结果",
+    settleHint: "底薪 6000 + CPT 80/h",
+    reportedDuration: 4.0,
+    reportedAudience: 11240,
+  },
+];
+
+const STATUS_MAP = {
+  pending_live: { tone: "neutral", label: "待开播" },
+  live: { tone: "blue", label: "直播中" },
+  pending_report: { tone: "amber", label: "待上传截图" },
+  pending_review: { tone: "violet", label: "审核中" },
+  approved: { tone: "green", label: "审核通过" },
+  rejected: { tone: "red", label: "审核驳回" },
+  trial: { tone: "teal", label: "试播任务" },
+  completed: { tone: "green", label: "已完成" },
+};
+
+const MY_NOTIFICATIONS = [
+  {
+    type: "review",
+    title: "5/25 报数已审核通过",
+    detail: "已计入本周结算池",
+    time: "17 分钟前",
+    unread: true,
+  },
+  {
+    type: "task",
+    title: "收到「元梦之星」试播邀约",
+    detail: "请于 24 小时内提交试播录屏",
+    time: "2 小时前",
+    unread: true,
+  },
+  {
+    type: "system",
+    title: "5/24 报数需补充截图",
+    detail: "截图缺少时长字段，请重传",
+    time: "昨日",
+    unread: false,
+  },
+];
+
+// Earnings — only my own
+const MY_EARNINGS = {
+  currentMonth: {
+    month: "2026-05",
+    earned: 9080,
+    pending: 4620,
+    finalized: false,
+    hours: 38.5,
+  },
+  lastMonth: {
+    month: "2026-04",
+    earned: 14820,
+    hours: 62.0,
+    base: 6000,
+    variable: 8820,
+  },
+  history: [
+    { month: "2026-04", earned: 14820 },
+    { month: "2026-03", earned: 13560 },
+    { month: "2026-02", earned: 11100 },
+    { month: "2026-01", earned: 12480 },
+    { month: "2025-12", earned: 10300 },
+    { month: "2026-05", earned: 9080 },
+  ],
+};
+
+// Screening videos
+const MY_VIDEOS = [
+  {
+    id: "V-2042",
+    title: "元梦之星 · 试播录屏",
+    forProject: "P-2412",
+    uploaded: "2 小时前",
+    status: "pending_review",
+    duration: "01:12:08",
+  },
+  {
+    id: "V-1991",
+    title: "原神 4.6 · 历史录屏",
+    forProject: "历史录屏",
+    uploaded: "4 天前",
+    status: "approved",
+    duration: "00:48:21",
+  },
+  {
+    id: "V-1844",
+    title: "王者荣耀 · 历史录屏",
+    forProject: "历史录屏",
+    uploaded: "上月",
+    status: "approved",
+    duration: "00:32:05",
+  },
+  {
+    id: "V-1788",
+    title: "永劫无间 · 项目录屏",
+    forProject: "P-2398",
+    uploaded: "2 个月前",
+    status: "expired",
+    duration: "00:55:14",
+  },
+];
+
+const VIDEO_STATUS = {
+  pending_review: { tone: "violet", label: "审核中" },
+  approved: { tone: "green", label: "通过" },
+  rejected: { tone: "red", label: "驳回" },
+  need_supply: { tone: "amber", label: "需补充" },
+  expired: { tone: "neutral", label: "已失效" },
+};
+
+// AI diagnosis conversation history
+const AI_THREAD = [
+  {
+    role: "ai",
+    text: "想看你今晚黄金档的什么数据？我能基于过去 14 天的任务、报数和录屏帮你判断卡点。",
+    time: "19:08",
+  },
+  { role: "me", text: "我感觉昨天进房少，互动也不太行。", time: "19:09" },
+  {
+    role: "ai",
+    text: "从你 5/26 报数和录屏看，开播前 30 分钟的进房峰值 312，对比 5/22 黄金档的 540 下降 42%。\n初步判断属于「进房少 + 留不住」复合卡点。",
+    time: "19:09",
+    insight: {
+      type: "进房少 + 留不住",
+      evidence: [
+        ["5/26 开播 30 min 峰值", "312", "人"],
+        ["5/22 同档对比", "540", "人"],
+        ["你 5/26 平均停留", "2.8", "分钟"],
+        ["项目均值停留", "4.6", "分钟"],
+      ],
+    },
+  },
+  {
+    role: "ai",
+    text: "主要原因 ↓",
+    bullets: [
+      "上一档脚本以「萌妹剧情」开场，未承接 4.7 「凯薇娜」热点关键词",
+      "前 5 分钟无明确互动钩子，新进房观众无停留理由",
+      "B 站直播间标题里 4.7 关键词缺失，平台分发权重下降",
+    ],
+    time: "19:10",
+  },
+  {
+    role: "ai",
+    text: "今晚试试这些 ↓",
+    suggestions: [
+      "换开场：先用「凯薇娜核心机制 3 分钟速通」直接吸进房",
+      "5 分钟内加一个互动钩子：让观众猜底命，礼物刷出对应名字才公布",
+      '直播间标题加 "凯薇娜｜4.7 新角色" 关键词，B 站封面也同步换',
+      "中段加一段「玩家提问 Q&A」，缓解留存下滑",
+    ],
+    time: "19:10",
+  },
+];
+
+// ===== src-streamer-pc\chrome.jsx =====
+// ——— Streamer Desktop · Chrome (sidebar + topbar) ———
+
+const NAV = [
+  { key: "dashboard", label: "工作台", icon: "Dashboard" },
+  { key: "tasks", label: "我的任务", icon: "Tasks", count: 2 },
+  { key: "videos", label: "录屏库", icon: "Reports" },
+  { divider: true },
+  { key: "ai", label: "AI 卡点诊断", icon: "Sparkles", accent: true },
+  { divider: true },
+  { key: "earnings", label: "结算账单", icon: "Money" },
+  { key: "profile", label: "个人资料 & 平台", icon: "Streamer" },
+];
+
+function Sidebar({ route, onNav }) {
+  return (
+    <aside
+      style={{
+        width: 224,
+        flexShrink: 0,
+        background: "#fff",
+        borderRight: "1px solid var(--line)",
+        display: "flex",
+        flexDirection: "column",
+        height: "100vh",
+        position: "sticky",
+        top: 0,
+      }}
+    >
+      {/* Brand */}
+      <div
+        style={{
+          height: 56,
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "0 18px",
+          borderBottom: "1px solid var(--line)",
+        }}
+      >
+        <div
+          style={{
+            width: 26,
+            height: 26,
+            borderRadius: 7,
+            background: "linear-gradient(135deg, #1E50C8 0%, #3B6BE6 100%)",
+            color: "#fff",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontWeight: 700,
+            fontSize: 13,
+            letterSpacing: "-0.04em",
+            boxShadow: "0 2px 6px rgba(30,80,200,0.35)",
+          }}
+        >
+          JY
+        </div>
+        <div
+          style={{ display: "flex", flexDirection: "column", lineHeight: 1.15 }}
+        >
+          <span
+            style={{
+              fontWeight: 700,
+              fontSize: 14,
+              color: "var(--ink-900)",
+              letterSpacing: "-0.005em",
+            }}
+          >
+            主播工作台
+          </span>
+          <span
+            style={{
+              fontSize: 10.5,
+              color: "var(--ink-400)",
+              letterSpacing: "0.04em",
+            }}
+          >
+            STREAMER · v1.0
+          </span>
+        </div>
+      </div>
+
+      {/* Quick "me" tile */}
+      <div style={{ padding: "12px 12px 8px" }}>
+        <div
+          style={{
+            padding: "10px 12px",
+            borderRadius: 10,
+            background:
+              "linear-gradient(135deg, var(--blue-700), var(--blue-500))",
+            color: "#fff",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            boxShadow: "0 4px 14px rgba(30,80,200,0.28)",
+          }}
+        >
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 999,
+              background: "rgba(255,255,255,0.2)",
+              border: "1.5px solid rgba(255,255,255,0.35)",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontWeight: 700,
+              fontSize: 14,
+              flexShrink: 0,
+            }}
+          >
+            {ME.alias.slice(0, 1)}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                letterSpacing: "-0.005em",
+              }}
+            >
+              {ME.alias}
+            </div>
+            <div
+              style={{
+                fontSize: 10.5,
+                color: "rgba(255,255,255,0.78)",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {ME.level}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Nav */}
+      <nav style={{ padding: "4px 8px", flex: 1, overflowY: "auto" }}>
+        {NAV.map((it, i) => {
+          if (it.divider)
+            return (
+              <div
+                key={"d" + i}
+                style={{
+                  height: 1,
+                  margin: "10px 12px",
+                  background: "var(--line)",
+                }}
+              />
+            );
+          const active = it.key === route;
+          const IconComp = Icon[it.icon];
+          return (
+            <button
+              key={it.key}
+              onClick={() => onNav(it.key)}
+              style={{
+                width: "100%",
+                padding: "0 10px",
+                height: 36,
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                background: active ? "var(--blue-50)" : "transparent",
+                border: "none",
+                borderRadius: 6,
+                cursor: "pointer",
+                color: active ? "var(--blue-700)" : "var(--ink-500)",
+                fontWeight: active ? 600 : 500,
+                fontSize: 13,
+                position: "relative",
+                marginBottom: 2,
+              }}
+              onMouseEnter={(e) => {
+                if (!active) e.currentTarget.style.background = "var(--ink-50)";
+              }}
+              onMouseLeave={(e) => {
+                if (!active) e.currentTarget.style.background = "transparent";
+              }}
+            >
+              {active && (
+                <span
+                  style={{
+                    position: "absolute",
+                    left: -8,
+                    top: 8,
+                    bottom: 8,
+                    width: 3,
+                    borderRadius: 999,
+                    background: "var(--blue-600)",
+                  }}
+                />
+              )}
+              <IconComp
+                size={16}
+                stroke={active ? "var(--blue-700)" : "var(--ink-400)"}
+              />
+              <span style={{ flex: 1, textAlign: "left" }}>{it.label}</span>
+              {it.count != null && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: "0 6px",
+                    height: 16,
+                    background: active ? "var(--blue-600)" : "#E1E7F0",
+                    color: active ? "#fff" : "var(--ink-500)",
+                    borderRadius: 999,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    minWidth: 16,
+                  }}
+                >
+                  {it.count}
+                </span>
+              )}
+              {it.accent && !active && (
+                <span
+                  style={{
+                    fontSize: 10,
+                    padding: "0 5px",
+                    height: 16,
+                    lineHeight: "16px",
+                    background: "linear-gradient(135deg, #EFEBFF, #DCE6FF)",
+                    color: "var(--violet-600)",
+                    borderRadius: 4,
+                    fontWeight: 600,
+                  }}
+                >
+                  AI
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* Bottom: status pill */}
+      <div style={{ padding: 12, borderTop: "1px solid var(--line)" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 10px",
+            background: "var(--bg-soft)",
+            borderRadius: 8,
+          }}
+        >
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 999,
+              background: "var(--ok-600)",
+              boxShadow: "0 0 0 3px rgba(14,138,77,0.22)",
+            }}
+          />
+          <div style={{ flex: 1, fontSize: 11.5, color: "var(--ink-500)" }}>
+            合作中 · 签约 6 个月
+          </div>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function TopBar({ title, subtitle, actions }) {
+  return (
+    <div
+      style={{
+        height: 56,
+        flexShrink: 0,
+        background: "#fff",
+        borderBottom: "1px solid var(--line)",
+        display: "flex",
+        alignItems: "center",
+        padding: "0 24px",
+        position: "sticky",
+        top: 0,
+        zIndex: 10,
+        gap: 16,
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            fontSize: 15,
+            fontWeight: 600,
+            color: "var(--ink-900)",
+            letterSpacing: "-0.005em",
+          }}
+        >
+          {title}
+        </div>
+        {subtitle && (
+          <div style={{ fontSize: 11.5, color: "var(--ink-400)" }}>
+            {subtitle}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <SearchInput placeholder="搜索任务 / 录屏 / 项目…" width={280} />
+      </div>
+
+      {actions}
+
+      {/* Notification */}
+      <button
+        style={{
+          position: "relative",
+          width: 34,
+          height: 34,
+          borderRadius: 8,
+          border: "1px solid var(--line)",
+          background: "#fff",
+          cursor: "pointer",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "var(--ink-500)",
+        }}
+      >
+        <Icon.Bell size={16} />
+        <span
+          style={{
+            position: "absolute",
+            top: 5,
+            right: 5,
+            minWidth: 14,
+            height: 14,
+            borderRadius: 999,
+            background: "var(--danger-600)",
+            color: "#fff",
+            fontSize: 10,
+            fontWeight: 600,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "0 3px",
+            border: "1.5px solid #fff",
+          }}
+        >
+          2
+        </span>
+      </button>
+
+      {/* Avatar dropdown */}
+      <button
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          height: 34,
+          padding: "0 12px 0 4px",
+          background: "#fff",
+          border: "1px solid var(--line)",
+          borderRadius: 999,
+          cursor: "pointer",
+        }}
+      >
+        <Avatar name={ME.alias} size={26} />
+        <span
+          style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-700)" }}
+        >
+          {ME.alias}
+        </span>
+        <Icon.ChevDown size={12} stroke="var(--ink-400)" />
+      </button>
+    </div>
+  );
+}
+
+// Page header used inside content area
+function PageHero({ title, subtitle, status, actions, dense = false }) {
+  return (
+    <div
+      style={{
+        padding: dense ? "16px 24px 12px" : "20px 24px 16px",
+        background: "#fff",
+        borderBottom: "1px solid var(--line)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 24,
+        }}
+      >
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <h1
+              style={{
+                margin: 0,
+                fontSize: 20,
+                fontWeight: 600,
+                color: "var(--ink-900)",
+                letterSpacing: "-0.01em",
+              }}
+            >
+              {title}
+            </h1>
+            {status}
+          </div>
+          {subtitle && (
+            <div
+              style={{ marginTop: 4, fontSize: 13, color: "var(--ink-400)" }}
+            >
+              {subtitle}
+            </div>
+          )}
+        </div>
+        {actions && <div style={{ display: "flex", gap: 8 }}>{actions}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ===== src-streamer-pc\screen-dashboard.jsx =====
+// ——— Screen: 工作台 ——————————————————————
+
+function ScreenDashboard({ go }) {
+  const today = MY_TASKS.filter((t) => t.date === "今天");
+  const pendingReport = MY_TASKS.filter((t) => t.status === "pending_report");
+  const upcoming = MY_TASKS.filter((t) => ["明天", "本周六"].includes(t.date));
+  const reviewing = MY_TASKS.filter((t) => t.status === "pending_review");
+
+  const dayLabel = "周三 · 5 月 27 日";
+
+  return (
+    <>
+      <PageHero
+        title={<>你好，{ME.alias} 👋</>}
+        subtitle={
+          <>
+            {dayLabel} · 今天还有{" "}
+            <b className="num" style={{ color: "var(--ink-900)" }}>
+              {today.length}
+            </b>{" "}
+            场直播 · 本周已完成{" "}
+            <b className="num" style={{ color: "var(--ink-900)" }}>
+              {MY_EARNINGS.currentMonth.hours.toFixed(1)}
+            </b>
+            h
+          </>
+        }
+        actions={
+          <>
+            <Button kind="default" icon={<Icon.History size={14} />}>
+              历史复盘
+            </Button>
+            <Button
+              kind="primary"
+              icon={<Icon.Sparkles size={14} stroke="#fff" />}
+              onClick={() => go("ai")}
+            >
+              开播前诊断
+            </Button>
+          </>
+        }
+      />
+
+      <div
+        style={{
+          padding: 24,
+          display: "flex",
+          flexDirection: "column",
+          gap: 20,
+        }}
+      >
+        {/* Top metric strip — 4 columns */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1.4fr 1fr 1fr 1fr",
+            gap: 16,
+          }}
+        >
+          <EarningsCard go={go} />
+          <Card>
+            <Metric
+              label="本月已直播"
+              value={MY_EARNINGS.currentMonth.hours.toFixed(1)}
+              unit="h"
+              delta="+11.2h"
+              hint="较上月同期"
+            />
+          </Card>
+          <Card>
+            <Metric
+              label="录屏通过率"
+              value="95"
+              unit="%"
+              delta="+2 pt"
+              hint="近 30 天"
+            />
+          </Card>
+          <Card>
+            <Metric
+              label="本周参与项目"
+              value="3"
+              unit="个"
+              hint="原神 4.7 · 元梦试播 · 历史"
+            />
+          </Card>
+        </div>
+
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 20 }}
+        >
+          {/* Left: today + actions */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {/* Action: pending report */}
+            {pendingReport.length > 0 && (
+              <Card
+                style={{
+                  borderColor: "#F5DDA8",
+                  background:
+                    "linear-gradient(135deg, #FFFBF0 0%, #FFFFFF 50%)",
+                }}
+              >
+                <div
+                  style={{ display: "flex", alignItems: "flex-start", gap: 14 }}
+                >
+                  <div
+                    style={{
+                      width: 40,
+                      height: 40,
+                      borderRadius: 10,
+                      background: "var(--warn-600)",
+                      color: "#fff",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Icon.Upload size={18} stroke="#fff" sw={1.8} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 8 }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 600,
+                          color: "var(--ink-900)",
+                        }}
+                      >
+                        {pendingReport.length} 个任务待上传下播截图
+                      </span>
+                      <Badge tone="amber" dot>
+                        请尽快
+                      </Badge>
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "var(--ink-500)",
+                        marginTop: 4,
+                      }}
+                    >
+                      建议下播 24h 内完成上传 · 超时会进入异常列表并影响本周结算
+                    </div>
+                  </div>
+                  <Button
+                    kind="primary"
+                    onClick={() => go("tasks", pendingReport[0].id)}
+                  >
+                    立即上传 →
+                  </Button>
+                </div>
+              </Card>
+            )}
+
+            {/* Today */}
+            <div>
+              <SectionTitle
+                hint={today.length > 0 ? `${today.length} 场直播` : "没有安排"}
+              >
+                今天 · 即将直播
+              </SectionTitle>
+              {today.length === 0 ? (
+                <EmptyCard
+                  title="今天没有排班"
+                  hint="可以利用空闲时间上传历史录屏，扩展你的可接项目品类。"
+                />
+              ) : (
+                today.map((t) => (
+                  <DesktopTaskCard
+                    key={t.id}
+                    task={t}
+                    onClick={() => go("tasks", t.id)}
+                    primary
+                  />
+                ))
+              )}
+            </div>
+
+            {/* Upcoming */}
+            <div>
+              <SectionTitle
+                extra={
+                  <Button size="sm" kind="link" onClick={() => go("tasks")}>
+                    查看全部 →
+                  </Button>
+                }
+              >
+                即将开始
+              </SectionTitle>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 12,
+                }}
+              >
+                {upcoming.map((t) => (
+                  <CompactTaskCard
+                    key={t.id}
+                    task={t}
+                    onClick={() => go("tasks", t.id)}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Recent submission */}
+            <div>
+              <SectionTitle>最近提交</SectionTitle>
+              <Card padded={false}>
+                {reviewing.length === 0 ? (
+                  <div
+                    style={{
+                      padding: 24,
+                      color: "var(--ink-400)",
+                      fontSize: 13,
+                      textAlign: "center",
+                    }}
+                  >
+                    近期无审核中报数
+                  </div>
+                ) : (
+                  reviewing.map((t, i, arr) => (
+                    <div
+                      key={t.id}
+                      style={{
+                        padding: "12px 16px",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 12,
+                        borderBottom:
+                          i < arr.length - 1 ? "1px solid var(--line)" : "none",
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 30,
+                          height: 30,
+                          borderRadius: 7,
+                          background: "var(--violet-50)",
+                          color: "var(--violet-600)",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexShrink: 0,
+                        }}
+                      >
+                        <Icon.Eye size={14} stroke="var(--violet-600)" />
+                      </span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontSize: 13.5,
+                            fontWeight: 600,
+                            color: "var(--ink-900)",
+                          }}
+                        >
+                          {t.projectName}
+                        </div>
+                        <div
+                          className="num"
+                          style={{
+                            fontSize: 11,
+                            color: "var(--ink-400)",
+                            marginTop: 2,
+                          }}
+                        >
+                          {t.dateStr} · {t.start}–{t.end} · 已提交 17 分钟前
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div
+                          className="num"
+                          style={{
+                            fontSize: 13,
+                            color: "var(--ink-900)",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {t.reportedDuration?.toFixed(1)} h ·{" "}
+                          {t.reportedAudience?.toLocaleString()} 人
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color: "var(--blue-700)",
+                            fontWeight: 600,
+                          }}
+                        >
+                          预计 ¥
+                          {Math.round(
+                            (t.reportedDuration || 0) * 80,
+                          ).toLocaleString()}
+                        </div>
+                      </div>
+                      <Badge tone="violet" dot>
+                        审核中
+                      </Badge>
+                    </div>
+                  ))
+                )}
+              </Card>
+            </div>
+          </div>
+
+          {/* Right: trend + AI + notifications */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {/* Earnings trend */}
+            <Card title="近 6 个月收入趋势" padded={true}>
+              <Sparkbars data={MY_EARNINGS.history} />
+              <div
+                style={{
+                  marginTop: 10,
+                  paddingTop: 10,
+                  borderTop: "1px dashed var(--line)",
+                  display: "flex",
+                  justifyContent: "space-between",
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                    近 6 月均值
+                  </div>
+                  <div
+                    className="num"
+                    style={{
+                      fontSize: 16,
+                      fontWeight: 600,
+                      color: "var(--ink-900)",
+                    }}
+                  >
+                    ¥11,890
+                  </div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                    本月预估
+                  </div>
+                  <div
+                    className="num"
+                    style={{
+                      fontSize: 16,
+                      fontWeight: 600,
+                      color: "var(--blue-700)",
+                    }}
+                  >
+                    ¥
+                    {(
+                      MY_EARNINGS.currentMonth.earned +
+                      MY_EARNINGS.currentMonth.pending
+                    ).toLocaleString()}
+                  </div>
+                </div>
+              </div>
+            </Card>
+
+            {/* AI advisor teaser */}
+            <Card
+              style={{
+                background: "linear-gradient(135deg, #F8F6FF 0%, #EEF3FF 100%)",
+                borderColor: "#D8D0FA",
+              }}
+            >
+              <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
+                <div
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 10,
+                    background: "linear-gradient(135deg, #5B4BD1, #1E50C8)",
+                    color: "#fff",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <Icon.Sparkles size={16} stroke="#fff" sw={1.8} />
+                </div>
+                <div>
+                  <div
+                    style={{
+                      fontSize: 13.5,
+                      fontWeight: 600,
+                      color: "var(--ink-900)",
+                    }}
+                  >
+                    今晚黄金档建议
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11.5,
+                      color: "var(--violet-600)",
+                      marginTop: 2,
+                      fontWeight: 500,
+                    }}
+                  >
+                    基于近 14 天数据 · 19:08 生成
+                  </div>
+                </div>
+              </div>
+              <div
+                style={{
+                  fontSize: 12.5,
+                  color: "var(--ink-700)",
+                  lineHeight: 1.65,
+                }}
+              >
+                上一档「进房少 + 留不住」复合卡点。建议：
+              </div>
+              <ul
+                style={{
+                  margin: "8px 0 0",
+                  padding: 0,
+                  listStyle: "none",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                }}
+              >
+                {[
+                  "开场切「凯薇娜核心机制 3 分钟速通」",
+                  "5 分钟内安排互动钩子（猜底命 + 礼物公布）",
+                  "直播间标题加 4.7 关键词，封面同步",
+                ].map((t, i) => (
+                  <li
+                    key={i}
+                    style={{
+                      fontSize: 12,
+                      color: "var(--ink-700)",
+                      display: "flex",
+                      gap: 8,
+                    }}
+                  >
+                    <Icon.Check size={11} stroke="var(--violet-600)" sw={2.2} />
+                    {t}
+                  </li>
+                ))}
+              </ul>
+              <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                <Button size="sm" kind="default" onClick={() => go("ai")}>
+                  继续追问
+                </Button>
+                <Button size="sm" kind="ghost">
+                  保存为脚本
+                </Button>
+              </div>
+            </Card>
+
+            {/* Notifications */}
+            <Card
+              title="通知"
+              extra={
+                <Button size="sm" kind="link">
+                  全部
+                </Button>
+              }
+              padded={false}
+            >
+              {MY_NOTIFICATIONS.map((n, i) => (
+                <div
+                  key={i}
+                  style={{
+                    padding: "12px 16px",
+                    display: "flex",
+                    gap: 10,
+                    borderBottom:
+                      i < MY_NOTIFICATIONS.length - 1
+                        ? "1px solid var(--line)"
+                        : "none",
+                    background: n.unread
+                      ? "rgba(238,243,255,0.5)"
+                      : "transparent",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 999,
+                      background: n.unread ? "var(--blue-600)" : "transparent",
+                      marginTop: 6,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <div style={{ flex: 1 }}>
+                    <div
+                      style={{
+                        fontSize: 12.5,
+                        fontWeight: n.unread ? 600 : 500,
+                        color: "var(--ink-900)",
+                      }}
+                    >
+                      {n.title}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11.5,
+                        color: "var(--ink-500)",
+                        marginTop: 2,
+                      }}
+                    >
+                      {n.detail}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 10.5,
+                        color: "var(--ink-400)",
+                        marginTop: 2,
+                      }}
+                    >
+                      {n.time}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </Card>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// Big earnings card on dashboard
+function EarningsCard({ go }) {
+  const e = MY_EARNINGS.currentMonth;
+  const pct = Math.min(100, (e.hours / 60) * 100);
+  return (
+    <div
+      style={{
+        background:
+          "linear-gradient(135deg, var(--blue-700) 0%, var(--blue-500) 100%)",
+        borderRadius: 10,
+        padding: 16,
+        color: "#fff",
+        position: "relative",
+        overflow: "hidden",
+        boxShadow: "0 4px 16px rgba(30,80,200,0.16)",
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          top: -40,
+          right: -40,
+          width: 160,
+          height: 160,
+          background:
+            "radial-gradient(circle, rgba(255,255,255,0.16) 0%, transparent 70%)",
+        }}
+      />
+      <div style={{ position: "relative" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.78)" }}>
+            本月已结算
+          </span>
+          <button
+            onClick={() => go("earnings")}
+            style={{
+              height: 24,
+              padding: "0 10px",
+              borderRadius: 999,
+              border: "none",
+              background: "rgba(255,255,255,0.18)",
+              color: "#fff",
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 3,
+            }}
+          >
+            明细 <Icon.ChevRight size={11} stroke="#fff" sw={2} />
+          </button>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "baseline",
+            gap: 4,
+            marginTop: 6,
+          }}
+        >
+          <span style={{ fontSize: 13, color: "rgba(255,255,255,0.85)" }}>
+            ¥
+          </span>
+          <span
+            className="num"
+            style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.02em" }}
+          >
+            {e.earned.toLocaleString()}
+          </span>
+          <span
+            style={{
+              fontSize: 11,
+              color: "rgba(255,255,255,0.75)",
+              marginLeft: 8,
+            }}
+          >
+            + 待审{" "}
+            <span className="num" style={{ color: "#FFD166", fontWeight: 600 }}>
+              ¥{e.pending.toLocaleString()}
+            </span>
+          </span>
+        </div>
+        <div
+          style={{
+            marginTop: 12,
+            height: 5,
+            background: "rgba(255,255,255,0.2)",
+            borderRadius: 999,
+          }}
+        >
+          <div
+            style={{
+              width: pct + "%",
+              height: "100%",
+              background: "#FFD166",
+              borderRadius: 999,
+            }}
+          />
+        </div>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            marginTop: 6,
+            fontSize: 10.5,
+            color: "rgba(255,255,255,0.7)",
+          }}
+        >
+          <span>
+            已直播 <span className="num">{e.hours.toFixed(1)}</span> h
+          </span>
+          <span>本月目标 60 h</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Task card (full)
+function DesktopTaskCard({ task, onClick, primary, compact }) {
+  const st = STATUS_MAP[task.status] || STATUS_MAP.pending_live;
+  const tones = {
+    blue: "var(--blue-600)",
+    violet: "var(--violet-600)",
+    amber: "var(--warn-600)",
+    green: "var(--ok-600)",
+    red: "var(--danger-600)",
+    teal: "var(--teal-600)",
+    neutral: "var(--ink-300)",
+  };
+  return (
+    <Card
+      style={{
+        borderColor: primary ? "var(--blue-200)" : "var(--line)",
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      {primary && (
+        <span
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 3,
+            background: tones[st.tone],
+          }}
+        />
+      )}
+
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
+        <div
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: 12,
+            flexShrink: 0,
+            background: "var(--blue-50)",
+            color: "var(--blue-700)",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Icon.Game size={24} stroke="var(--blue-700)" />
+        </div>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 4,
+              flexWrap: "wrap",
+            }}
+          >
+            <span
+              className="num"
+              style={{
+                fontSize: 12,
+                color: "var(--ink-400)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {task.dateStr}
+            </span>
+            <span
+              style={{
+                width: 2,
+                height: 2,
+                borderRadius: 999,
+                background: "var(--ink-200)",
+              }}
+            />
+            <span
+              className="num"
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--ink-900)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {task.start}–{task.end}
+            </span>
+            <span
+              className="num"
+              style={{
+                fontSize: 11,
+                color: "var(--ink-400)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              · {task.durationPlan}h
+            </span>
+            <span style={{ flex: 1 }} />
+            <Badge tone={st.tone} dot>
+              {st.label}
+            </Badge>
+          </div>
+          <div
+            style={{
+              fontSize: 16,
+              fontWeight: 600,
+              color: "var(--ink-900)",
+              letterSpacing: "-0.005em",
+            }}
+          >
+            {task.projectName}
+          </div>
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--ink-400)",
+              marginTop: 4,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <Icon.Game size={12} stroke="var(--ink-400)" />
+            {task.vendor} · <span className="mono">{task.id}</span>
+          </div>
+
+          {!compact && task.note && (
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--ink-500)",
+                marginTop: 12,
+                padding: "10px 12px",
+                background: "var(--bg-soft)",
+                borderRadius: 8,
+                borderLeft: "3px solid var(--blue-300)",
+              }}
+            >
+              {task.note}
+            </div>
+          )}
+
+          <div
+            style={{
+              marginTop: 12,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <Badge tone="blue">{task.settleHint}</Badge>
+            {task.needScreening && <Badge tone="amber">需录屏</Badge>}
+            {task.needStartStop && <Badge tone="neutral">需点击开播</Badge>}
+            <span style={{ flex: 1 }} />
+            {task.status === "pending_live" && (
+              <Button
+                kind="primary"
+                icon={<Icon.Play size={13} stroke="#fff" />}
+                onClick={onClick}
+              >
+                查看任务
+              </Button>
+            )}
+            {task.status === "pending_report" && (
+              <Button
+                kind="primary"
+                icon={<Icon.Upload size={13} stroke="#fff" />}
+                onClick={onClick}
+              >
+                上传截图
+              </Button>
+            )}
+            {task.status === "pending_review" && (
+              <Button kind="default" onClick={onClick}>
+                查看进度
+              </Button>
+            )}
+            {task.status === "trial" && (
+              <Button
+                kind="default"
+                icon={<Icon.Upload size={13} />}
+                onClick={onClick}
+              >
+                上传录屏
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function CompactTaskCard({ task, onClick }) {
+  const st = STATUS_MAP[task.status] || STATUS_MAP.pending_live;
+  return (
+    <Card onClick={onClick} style={{ cursor: "pointer" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 8,
+            background: "var(--blue-50)",
+            color: "var(--blue-700)",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
+          <Icon.Game size={16} stroke="var(--blue-700)" />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color: "var(--ink-900)",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {task.projectName}
+          </div>
+          <div
+            className="num"
+            style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 2 }}
+          >
+            {task.dateStr} · {task.start}–{task.end}
+          </div>
+        </div>
+      </div>
+      <div
+        style={{
+          marginTop: 10,
+          paddingTop: 10,
+          borderTop: "1px dashed var(--line)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <Badge tone={st.tone} dot>
+          {st.label}
+        </Badge>
+        <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+          {task.durationPlan}h · {task.vendor}
+        </span>
+      </div>
+    </Card>
+  );
+}
+
+function EmptyCard({ title, hint }) {
+  return (
+    <Card>
+      <div style={{ padding: "14px 4px", textAlign: "center" }}>
+        <div
+          style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink-700)" }}
+        >
+          {title}
+        </div>
+        <div style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 4 }}>
+          {hint}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// Bar chart for earnings history
+function Sparkbars({ data }) {
+  const max = Math.max(...data.map((d) => d.earned));
+  return (
+    <div
+      style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 100 }}
+    >
+      {data.map((d, i) => {
+        const h = (d.earned / max) * 100;
+        const isLast = i === data.length - 1;
+        return (
+          <div
+            key={i}
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <div
+              className="num"
+              style={{
+                fontSize: 10,
+                color: "var(--ink-400)",
+                fontWeight: isLast ? 600 : 400,
+              }}
+            >
+              ¥{(d.earned / 1000).toFixed(1)}k
+            </div>
+            <div
+              style={{
+                width: "100%",
+                height: `${h}%`,
+                minHeight: 8,
+                background: isLast
+                  ? "linear-gradient(180deg, var(--blue-600), var(--blue-500))"
+                  : "var(--blue-200)",
+                borderRadius: "4px 4px 0 0",
+              }}
+            />
+            <div
+              className="num"
+              style={{
+                fontSize: 10.5,
+                color: isLast ? "var(--blue-700)" : "var(--ink-400)",
+                fontWeight: isLast ? 600 : 400,
+              }}
+            >
+              {d.month.slice(5)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ===== src-streamer-pc\screen-tasks.jsx =====
+// ——— Screen: 我的任务 ——————————————————————
+
+function ScreenTasks({ go, openTaskId }) {
+  const [filter, setFilter] = React.useState("all");
+  const [activeId, setActiveId] = React.useState(openTaskId || MY_TASKS[0].id);
+  const counts = {
+    all: MY_TASKS.length,
+    pending_live: MY_TASKS.filter((t) => t.status === "pending_live").length,
+    pending_report: MY_TASKS.filter((t) => t.status === "pending_report")
+      .length,
+    pending_review: MY_TASKS.filter((t) => t.status === "pending_review")
+      .length,
+    trial: MY_TASKS.filter((t) => t.status === "trial").length,
+  };
+  const filtered =
+    filter === "all" ? MY_TASKS : MY_TASKS.filter((t) => t.status === filter);
+
+  return (
+    <>
+      <PageHero
+        title="我的任务"
+        subtitle="本周累计 5 个任务 · 18.5 h · 1 个待上传截图"
+        actions={
+          <>
+            <Button kind="default" icon={<Icon.Calendar size={14} />}>
+              查看日历
+            </Button>
+            <Button
+              kind="primary"
+              icon={<Icon.Upload size={14} stroke="#fff" />}
+            >
+              批量上传截图
+            </Button>
+          </>
+        }
+      />
+
+      <div
+        style={{
+          padding: 24,
+          display: "grid",
+          gridTemplateColumns: "1.1fr 1fr",
+          gap: 20,
+          alignItems: "flex-start",
+        }}
+      >
+        <Card padded={false}>
+          <div
+            style={{ padding: "0 12px", borderBottom: "1px solid var(--line)" }}
+          >
+            <Tabs
+              value={filter}
+              onChange={setFilter}
+              items={[
+                { key: "all", label: "全部", count: counts.all },
+                {
+                  key: "pending_live",
+                  label: "待开播",
+                  count: counts.pending_live,
+                },
+                {
+                  key: "pending_report",
+                  label: "待上传",
+                  count: counts.pending_report,
+                },
+                {
+                  key: "pending_review",
+                  label: "审核中",
+                  count: counts.pending_review,
+                },
+                { key: "trial", label: "试播", count: counts.trial },
+              ]}
+            />
+          </div>
+
+          <DataTable
+            activeRowId={activeId}
+            onRowClick={(r) => setActiveId(r.id)}
+            columns={[
+              {
+                title: "任务 / 项目",
+                render: (r) => (
+                  <div>
+                    <div
+                      className="mono"
+                      style={{ fontSize: 11, color: "var(--ink-400)" }}
+                    >
+                      {r.id}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 13.5,
+                        fontWeight: 600,
+                        color: "var(--ink-900)",
+                        marginTop: 2,
+                      }}
+                    >
+                      {r.projectName}
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: "日期",
+                render: (r) => (
+                  <span className="num" style={{ fontSize: 12 }}>
+                    {r.dateStr}
+                  </span>
+                ),
+              },
+              {
+                title: "时间",
+                render: (r) => (
+                  <span
+                    className="num"
+                    style={{ fontSize: 12, color: "var(--ink-500)" }}
+                  >
+                    {r.start}–{r.end}
+                  </span>
+                ),
+              },
+              {
+                title: "时长",
+                align: "right",
+                render: (r) => (
+                  <span className="num" style={{ fontWeight: 600 }}>
+                    {r.durationPlan}h
+                  </span>
+                ),
+              },
+              {
+                title: "状态",
+                render: (r) => (
+                  <Badge tone={STATUS_MAP[r.status].tone} dot>
+                    {STATUS_MAP[r.status].label}
+                  </Badge>
+                ),
+              },
+            ]}
+            rows={filtered}
+          />
+        </Card>
+
+        {/* Detail */}
+        <TaskDetail id={activeId} go={go} />
+      </div>
+    </>
+  );
+}
+
+function TaskDetail({ id, go }) {
+  const t = MY_TASKS.find((x) => x.id === id) || MY_TASKS[0];
+  const st = STATUS_MAP[t.status];
+
+  return (
+    <div
+      style={{
+        position: "sticky",
+        top: 76,
+        display: "flex",
+        flexDirection: "column",
+        gap: 16,
+      }}
+    >
+      <Card padded={false}>
+        {/* Header */}
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: "1px solid var(--line)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 6,
+            }}
+          >
+            <span
+              className="mono"
+              style={{ fontSize: 11, color: "var(--ink-400)" }}
+            >
+              {t.id}
+            </span>
+            <Badge tone={st.tone} dot>
+              {st.label}
+            </Badge>
+          </div>
+          <div
+            style={{
+              fontSize: 18,
+              fontWeight: 700,
+              color: "var(--ink-900)",
+              letterSpacing: "-0.01em",
+            }}
+          >
+            {t.projectName}
+          </div>
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--ink-400)",
+              marginTop: 6,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <Icon.Game size={13} stroke="var(--ink-400)" /> {t.vendor} · 计划{" "}
+            {t.dateStr} {t.start}–{t.end} · {t.durationPlan}h
+          </div>
+        </div>
+
+        {/* CTA */}
+        <div style={{ padding: 20 }}>
+          {t.status === "pending_live" && <PendingLiveCTA task={t} />}
+          {t.status === "pending_report" && <PendingReportCTA task={t} />}
+          {t.status === "pending_review" && <ReviewingCTA task={t} />}
+          {t.status === "trial" && <TrialCTA task={t} />}
+        </div>
+
+        {/* Required */}
+        <div style={{ padding: "0 20px 20px" }}>
+          <KV label="结算规则">
+            <Badge tone="blue">{t.settleHint}</Badge>
+          </KV>
+          <KV label="开播 / 停止">
+            {t.needStartStop ? (
+              <span style={{ color: "var(--ok-600)", fontWeight: 600 }}>
+                需要在 App 内点击
+              </span>
+            ) : (
+              <span style={{ color: "var(--ink-500)" }}>无需</span>
+            )}
+          </KV>
+          <KV label="录屏要求">
+            {t.needScreening ? (
+              <span style={{ color: "var(--ok-600)", fontWeight: 600 }}>
+                本项目强制录屏
+              </span>
+            ) : (
+              <span style={{ color: "var(--ink-500)" }}>不强制</span>
+            )}
+          </KV>
+          {t.note && (
+            <KV label="项目备注">
+              <span style={{ color: "var(--ink-500)" }}>{t.note}</span>
+            </KV>
+          )}
+        </div>
+      </Card>
+
+      {/* Timeline */}
+      <Card title="任务流转">
+        <Timeline
+          events={[
+            { title: "排班创建", time: "5/25 11:02 · 李珩", done: true },
+            {
+              title: "点击开始直播",
+              time: t.status === "pending_live" ? "待你操作" : "5/27 19:58",
+              done: t.status !== "pending_live",
+              current: t.status === "pending_live",
+            },
+            {
+              title: "点击停止 + 上传下播截图",
+              time:
+                t.status === "pending_report"
+                  ? "待你操作"
+                  : t.status === "pending_review"
+                    ? "5/26 22:48"
+                    : "—",
+              done: ["pending_review", "approved", "completed"].includes(
+                t.status,
+              ),
+              current: t.status === "pending_report",
+            },
+            {
+              title: "确认 OCR 结果",
+              time: t.status === "pending_review" ? "5/26 22:50" : "—",
+              done: ["pending_review", "approved"].includes(t.status),
+            },
+            {
+              title: "运营审核",
+              time:
+                t.status === "pending_review"
+                  ? "审核中（24h 内）"
+                  : t.status === "approved"
+                    ? "已通过"
+                    : "—",
+              done: t.status === "approved",
+              current: t.status === "pending_review",
+            },
+          ]}
+        />
+      </Card>
+    </div>
+  );
+}
+
+function PendingLiveCTA({ task }) {
+  return (
+    <div
+      style={{
+        padding: 16,
+        background: "linear-gradient(135deg, #F5F8FF 0%, #EEF3FF 100%)",
+        borderRadius: 10,
+        border: "1px solid var(--blue-200)",
+      }}
+    >
+      <div style={{ fontSize: 12, color: "var(--ink-500)" }}>距开播还有</div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          gap: 4,
+          marginTop: 6,
+        }}
+      >
+        <span
+          className="num"
+          style={{
+            fontSize: 32,
+            fontWeight: 700,
+            color: "var(--blue-700)",
+            letterSpacing: "-0.02em",
+          }}
+        >
+          2
+        </span>
+        <span style={{ fontSize: 13, color: "var(--ink-500)" }}>小时</span>
+        <span
+          className="num"
+          style={{
+            fontSize: 32,
+            fontWeight: 700,
+            color: "var(--blue-700)",
+            letterSpacing: "-0.02em",
+            marginLeft: 6,
+          }}
+        >
+          14
+        </span>
+        <span style={{ fontSize: 13, color: "var(--ink-500)" }}>分钟</span>
+      </div>
+      <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+        <Button
+          kind="primary"
+          icon={<Icon.Play size={14} stroke="#fff" />}
+          style={{ flex: 1 }}
+        >
+          开始直播
+        </Button>
+        <Button kind="default" style={{ flex: 1 }}>
+          修改排班
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function PendingReportCTA({ task }) {
+  return (
+    <div
+      style={{
+        padding: 16,
+        background: "#FFF6E6",
+        borderRadius: 10,
+        border: "1px solid #F5DDA8",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          marginBottom: 10,
+        }}
+      >
+        <span
+          style={{
+            width: 30,
+            height: 30,
+            borderRadius: 8,
+            background: "var(--warn-600)",
+            color: "#fff",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Icon.Upload size={14} stroke="#fff" sw={1.8} />
+        </span>
+        <div>
+          <div
+            style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink-900)" }}
+          >
+            请上传下播截图
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--ink-500)" }}>
+            截图需包含「时长 / 场观」
+          </div>
+        </div>
+      </div>
+      <Button
+        kind="primary"
+        icon={<Icon.Upload size={13} stroke="#fff" />}
+        style={{ width: "100%" }}
+      >
+        从本地选择截图
+      </Button>
+    </div>
+  );
+}
+
+function ReviewingCTA({ task }) {
+  return (
+    <div
+      style={{ padding: 16, background: "var(--bg-soft)", borderRadius: 10 }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 10,
+            background: "var(--violet-50)",
+            color: "var(--violet-600)",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Icon.Eye size={16} stroke="var(--violet-600)" />
+        </span>
+        <div style={{ flex: 1 }}>
+          <div
+            style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink-900)" }}
+          >
+            报数已提交，审核中
+          </div>
+          <div
+            style={{ fontSize: 11.5, color: "var(--ink-500)", marginTop: 2 }}
+          >
+            预计 24 小时内出结果
+          </div>
+        </div>
+      </div>
+      <div
+        style={{
+          marginTop: 12,
+          display: "grid",
+          gridTemplateColumns: "repeat(3, 1fr)",
+          gap: 10,
+        }}
+      >
+        <Metric
+          label="时长"
+          value={task.reportedDuration?.toFixed(1) || "—"}
+          unit="h"
+        />
+        <Metric
+          label="场观"
+          value={task.reportedAudience?.toLocaleString() || "—"}
+        />
+        <Metric
+          label="预计收入"
+          value={`¥${Math.round((task.reportedDuration || 0) * 80).toLocaleString()}`}
+        />
+      </div>
+    </div>
+  );
+}
+
+function TrialCTA({ task }) {
+  return (
+    <div
+      style={{
+        padding: 16,
+        background: "linear-gradient(135deg, #F2FBF8 0%, #FFFFFF 100%)",
+        borderRadius: 10,
+        border: "1px solid #B0E8DC",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 8,
+        }}
+      >
+        <Badge tone="teal" dot>
+          试播任务
+        </Badge>
+        <span style={{ fontSize: 11.5, color: "var(--ink-400)" }}>
+          · 不计入正式结算
+        </span>
+      </div>
+      <div style={{ fontSize: 13, color: "var(--ink-700)", lineHeight: 1.55 }}>
+        厂家邀请你试播。完成后请上传 60
+        分钟以上录屏，运营与厂家二审后将决定是否正式加入项目。
+      </div>
+      <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+        <Button kind="default" style={{ flex: 1 }}>
+          查看项目要求
+        </Button>
+        <Button
+          kind="primary"
+          icon={<Icon.Upload size={13} stroke="#fff" />}
+          style={{ flex: 1 }}
+        >
+          上传录屏
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function Timeline({ events }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      {events.map((e, i) => (
+        <div
+          key={i}
+          style={{
+            display: "flex",
+            gap: 12,
+            paddingBottom: i < events.length - 1 ? 14 : 0,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              flexShrink: 0,
+            }}
+          >
+            <span
+              style={{
+                width: 14,
+                height: 14,
+                borderRadius: 999,
+                background: e.current
+                  ? "var(--blue-600)"
+                  : e.done
+                    ? "var(--ok-600)"
+                    : "var(--ink-100)",
+                border: "2px solid #fff",
+                boxShadow: e.current
+                  ? "0 0 0 3px rgba(30,80,200,0.22)"
+                  : "none",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                marginTop: 2,
+              }}
+            >
+              {e.done && !e.current && <Icon.Check size={9} stroke="#fff" />}
+            </span>
+            {i < events.length - 1 && (
+              <span
+                style={{
+                  flex: 1,
+                  width: 1.5,
+                  background: e.done ? "var(--ok-600)" : "var(--ink-100)",
+                  marginTop: 2,
+                }}
+              />
+            )}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: e.done || e.current ? 600 : 500,
+                color:
+                  e.done || e.current ? "var(--ink-900)" : "var(--ink-400)",
+              }}
+            >
+              {e.title}
+            </div>
+            <div
+              style={{ fontSize: 11.5, color: "var(--ink-400)", marginTop: 2 }}
+            >
+              {e.time}
+              {e.current && (
+                <span
+                  style={{
+                    marginLeft: 6,
+                    color: "var(--blue-700)",
+                    fontWeight: 600,
+                  }}
+                >
+                  · 当前
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ===== src-streamer-pc\screen-videos.jsx =====
+// ——— Screen: 录屏库 ——————————————————————
+
+function ScreenVideos({ go }) {
+  const [tab, setTab] = React.useState("all");
+  const counts = {
+    all: MY_VIDEOS.length,
+    pending_review: MY_VIDEOS.filter((v) => v.status === "pending_review")
+      .length,
+    approved: MY_VIDEOS.filter((v) => v.status === "approved").length,
+    history: MY_VIDEOS.filter((v) => v.forProject === "历史录屏").length,
+  };
+  const filtered =
+    tab === "all"
+      ? MY_VIDEOS
+      : tab === "history"
+        ? MY_VIDEOS.filter((v) => v.forProject === "历史录屏")
+        : MY_VIDEOS.filter((v) => v.status === tab);
+
+  return (
+    <>
+      <PageHero
+        title="录屏库"
+        subtitle="项目报名录屏 + 历史录屏 · 录屏文件存储于私有 bucket"
+        actions={
+          <>
+            <Button kind="default" icon={<Icon.Filter size={14} />}>
+              按品类筛选
+            </Button>
+            <Button
+              kind="primary"
+              icon={<Icon.Upload size={14} stroke="#fff" />}
+            >
+              上传录屏
+            </Button>
+          </>
+        }
+      />
+
+      <div
+        style={{
+          padding: 24,
+          display: "grid",
+          gridTemplateColumns: "1.4fr 1fr",
+          gap: 20,
+          alignItems: "flex-start",
+        }}
+      >
+        <Card padded={false}>
+          <div
+            style={{ padding: "0 12px", borderBottom: "1px solid var(--line)" }}
+          >
+            <Tabs
+              value={tab}
+              onChange={setTab}
+              items={[
+                { key: "all", label: "全部", count: counts.all },
+                {
+                  key: "pending_review",
+                  label: "审核中",
+                  count: counts.pending_review,
+                },
+                { key: "approved", label: "已通过", count: counts.approved },
+                { key: "history", label: "历史录屏", count: counts.history },
+              ]}
+            />
+          </div>
+
+          <div
+            style={{
+              padding: 16,
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 14,
+            }}
+          >
+            {filtered.map((v) => (
+              <VideoCard key={v.id} v={v} />
+            ))}
+            {/* Add a "+ upload" card */}
+            <button
+              style={{
+                minHeight: 200,
+                padding: 0,
+                border: "1.5px dashed var(--line-strong)",
+                background: "#fff",
+                borderRadius: 10,
+                cursor: "pointer",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                color: "var(--ink-400)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = "var(--blue-500)";
+                e.currentTarget.style.background = "var(--blue-50)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = "var(--line-strong)";
+                e.currentTarget.style.background = "#fff";
+              }}
+            >
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 999,
+                  background: "var(--blue-50)",
+                  color: "var(--blue-700)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Icon.Upload size={20} stroke="var(--blue-700)" />
+              </div>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "var(--ink-700)",
+                }}
+              >
+                上传新录屏
+              </div>
+              <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                支持 MP4 / MOV，单个文件 ≤ 1 GB
+              </div>
+            </button>
+          </div>
+        </Card>
+
+        {/* Right panel: guidance + recent project requirements */}
+        <div
+          style={{
+            position: "sticky",
+            top: 76,
+            display: "flex",
+            flexDirection: "column",
+            gap: 16,
+          }}
+        >
+          <Card
+            title="厂家审核口径"
+            extra={
+              <Badge tone="violet" dot>
+                AI 总结
+              </Badge>
+            }
+          >
+            <div
+              style={{ fontSize: 13, color: "var(--ink-700)", lineHeight: 1.7 }}
+            >
+              基于你最近 30 天的项目，运营审核通过率 95%。常见驳回原因：
+            </div>
+            <ul
+              style={{
+                margin: "10px 0 0",
+                padding: 0,
+                listStyle: "none",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              {[
+                ["画质 / 声音问题", "建议先用本地素材自检 1 分钟"],
+                ["录屏长度不足", "项目录屏建议 ≥ 30 分钟，含完整开播闭环"],
+                ["内容不匹配品类", "请按项目要求录制对应游戏内容"],
+                ["含未脱敏个人信息", "隐藏弹幕 ID / 礼物刷屏者昵称"],
+              ].map(([t, d], i) => (
+                <li
+                  key={i}
+                  style={{
+                    fontSize: 12,
+                    color: "var(--ink-700)",
+                    display: "flex",
+                    gap: 8,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 16,
+                      height: 16,
+                      borderRadius: 999,
+                      background: "var(--violet-50)",
+                      color: "var(--violet-600)",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontWeight: 700,
+                      fontSize: 10,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {i + 1}
+                  </span>
+                  <span>
+                    <b style={{ color: "var(--violet-600)" }}>{t}：</b>
+                    {d}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </Card>
+
+          <Card title="存储与隐私">
+            <KV label="存储桶">私有 · 短期签名 URL</KV>
+            <KV label="可见范围">仅你 / 运营 / 厂家审核员</KV>
+            <KV label="录屏失效">通过后 6 个月，可重新提交</KV>
+            <KV label="总占用">3.4 GB / 配额 10 GB</KV>
+            <div
+              style={{
+                marginTop: 10,
+                height: 6,
+                background: "var(--ink-50)",
+                borderRadius: 999,
+              }}
+            >
+              <div
+                style={{
+                  width: "34%",
+                  height: "100%",
+                  background: "var(--blue-600)",
+                  borderRadius: 999,
+                }}
+              />
+            </div>
+          </Card>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function VideoCard({ v }) {
+  const st = VIDEO_STATUS[v.status];
+  return (
+    <div
+      style={{
+        background: "#fff",
+        border: "1px solid var(--line)",
+        borderRadius: 10,
+        overflow: "hidden",
+        boxShadow: "var(--shadow-card)",
+        cursor: "pointer",
+      }}
+    >
+      {/* Thumbnail */}
+      <div
+        style={{
+          aspectRatio: "16 / 9",
+          position: "relative",
+          background: "linear-gradient(135deg, #0E1530 0%, #1842A6 100%)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <div
+          style={{
+            width: 44,
+            height: 44,
+            borderRadius: 999,
+            background: "rgba(255,255,255,0.18)",
+            color: "#fff",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            backdropFilter: "blur(4px)",
+          }}
+        >
+          <Icon.Play size={18} stroke="#fff" sw={2} />
+        </div>
+        <span
+          className="num"
+          style={{
+            position: "absolute",
+            bottom: 8,
+            right: 8,
+            fontSize: 10.5,
+            padding: "2px 6px",
+            borderRadius: 4,
+            background: "rgba(0,0,0,0.55)",
+            color: "#fff",
+            fontWeight: 600,
+          }}
+        >
+          {v.duration}
+        </span>
+        <span style={{ position: "absolute", top: 8, left: 8 }}>
+          <Badge tone={st.tone} dot>
+            {st.label}
+          </Badge>
+        </span>
+      </div>
+
+      {/* Body */}
+      <div style={{ padding: 12 }}>
+        <div
+          style={{
+            fontSize: 13.5,
+            fontWeight: 600,
+            color: "var(--ink-900)",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {v.title}
+        </div>
+        <div
+          className="mono"
+          style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 4 }}
+        >
+          {v.id} · {v.uploaded}
+        </div>
+        <div
+          style={{
+            marginTop: 8,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <Badge tone={v.forProject === "历史录屏" ? "neutral" : "blue"}>
+            {v.forProject}
+          </Badge>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ===== src-streamer-pc\screen-ai.jsx =====
+// ——— Screen: AI 卡点诊断 (Desktop) ———————————————————
+
+function ScreenAI({ go }) {
+  const [thread, setThread] = React.useState(AI_THREAD);
+  const [input, setInput] = React.useState("");
+  const [typing, setTyping] = React.useState(false);
+  const endRef = React.useRef(null);
+
+  React.useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [thread, typing]);
+
+  const send = (text) => {
+    if (!text) return;
+    setThread((prev) => [...prev, { role: "me", text, time: nowHM() }]);
+    setInput("");
+    setTyping(true);
+    setTimeout(() => {
+      setTyping(false);
+      setThread((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          text: "收到。基于你的描述，建议先观察今晚 20:00-20:30 的窗口：开场 5 分钟内的进房峰值 + 留存曲线。如果 5 分钟峰值 < 400，立即切第二档话术（凯薇娜底命解谜）。我会在直播后做对照复盘。",
+          time: nowHM(),
+        },
+      ]);
+    }, 1000);
+  };
+
+  return (
+    <div style={{ display: "flex", height: "calc(100vh - 56px)" }}>
+      {/* History sidebar */}
+      <aside
+        style={{
+          width: 256,
+          background: "#fff",
+          borderRight: "1px solid var(--line)",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <div style={{ padding: 16, borderBottom: "1px solid var(--line)" }}>
+          <Button
+            kind="primary"
+            icon={<Icon.Plus size={14} stroke="#fff" />}
+            style={{ width: "100%" }}
+          >
+            新会话
+          </Button>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "8px 8px" }}>
+          <div
+            style={{
+              padding: "8px 10px",
+              fontSize: 11,
+              color: "var(--ink-400)",
+              fontWeight: 600,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+            }}
+          >
+            今天
+          </div>
+          <HistoryItem
+            title="原神 4.7 黄金档卡点"
+            snippet="进房少 + 留不住复合卡点…"
+            time="19:08"
+            active
+          />
+          <HistoryItem
+            title="脚本：凯薇娜底命解谜"
+            snippet="开场 3 分钟速通版本…"
+            time="14:22"
+          />
+
+          <div
+            style={{
+              padding: "12px 10px 8px",
+              fontSize: 11,
+              color: "var(--ink-400)",
+              fontWeight: 600,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+            }}
+          >
+            近 7 天
+          </div>
+          <HistoryItem
+            title="5/25 互动转化偏低复盘"
+            snippet="弹幕活跃度低于均值 36%…"
+            time="昨日"
+          />
+          <HistoryItem
+            title="元梦之星试播话术建议"
+            snippet="高能 PVP 风格匹配度 89%…"
+            time="昨日"
+          />
+          <HistoryItem
+            title="周末时段选取建议"
+            snippet="周六 19-23 时段建议优先…"
+            time="3 天前"
+          />
+
+          <div
+            style={{
+              padding: "12px 10px 8px",
+              fontSize: 11,
+              color: "var(--ink-400)",
+              fontWeight: 600,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+            }}
+          >
+            更早
+          </div>
+          <HistoryItem
+            title="4 月项目复盘"
+            snippet="KPL 春赛二级解说收益总结…"
+            time="上月"
+          />
+        </div>
+        <div
+          style={{
+            padding: 12,
+            borderTop: "1px solid var(--line)",
+            fontSize: 11,
+            color: "var(--ink-400)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              marginBottom: 4,
+            }}
+          >
+            <Icon.Lock size={11} stroke="var(--ok-600)" />
+            <span style={{ color: "var(--ok-600)", fontWeight: 600 }}>
+              仅你可见
+            </span>
+          </div>
+          AI 仅可访问你自己的任务 / 报数 / 录屏数据，不会泄露给运营或其他主播。
+        </div>
+      </aside>
+
+      {/* Main chat */}
+      <main
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          background: "var(--bg)",
+        }}
+      >
+        {/* Conversation header */}
+        <div
+          style={{
+            padding: "14px 24px",
+            background: "#fff",
+            borderBottom: "1px solid var(--line)",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 10,
+              background: "linear-gradient(135deg, #8C7DEB, #1E50C8)",
+              color: "#fff",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Icon.Sparkles size={16} stroke="#fff" sw={1.8} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div
+              style={{ fontSize: 14, fontWeight: 600, color: "var(--ink-900)" }}
+            >
+              原神 4.7 黄金档卡点
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--ink-400)" }}>
+              基于你近 14 天任务、报数、录屏 · 默认模型：haiku-4-5
+            </div>
+          </div>
+          <Button kind="ghost" size="sm" icon={<Icon.Export size={13} />}>
+            导出会话
+          </Button>
+          <Button kind="default" size="sm">
+            复盘整理为脚本
+          </Button>
+        </div>
+
+        {/* Scrolling thread */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
+          <div
+            style={{
+              maxWidth: 760,
+              margin: "0 auto",
+              display: "flex",
+              flexDirection: "column",
+              gap: 18,
+            }}
+          >
+            {/* Suggested question chips */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {[
+                "昨天的进房为什么下滑",
+                "今晚黄金档怎么开",
+                "帮我写 4.7 凯薇娜的开场话术",
+                "上周礼物提成怎样了",
+              ].map((q, i) => (
+                <button
+                  key={i}
+                  onClick={() => send(q)}
+                  style={{
+                    padding: "6px 12px",
+                    height: 30,
+                    fontSize: 12,
+                    background: "#fff",
+                    border: "1px solid var(--line-strong)",
+                    color: "var(--ink-700)",
+                    borderRadius: 999,
+                    cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = "var(--blue-500)";
+                    e.currentTarget.style.color = "var(--blue-700)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = "var(--line-strong)";
+                    e.currentTarget.style.color = "var(--ink-700)";
+                  }}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+
+            {thread.map((m, i) => (
+              <Message key={i} msg={m} />
+            ))}
+            {typing && <TypingBubble />}
+            <div ref={endRef} />
+          </div>
+        </div>
+
+        {/* Composer */}
+        <div style={{ padding: "12px 24px 20px", background: "var(--bg)" }}>
+          <div
+            style={{
+              maxWidth: 760,
+              margin: "0 auto",
+              display: "flex",
+              alignItems: "flex-end",
+              gap: 10,
+              padding: "8px 8px 8px 16px",
+              background: "#fff",
+              borderRadius: 16,
+              border: "1px solid var(--line)",
+              boxShadow: "0 2px 8px rgba(15,23,42,0.04)",
+            }}
+          >
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="把你的疑问告诉我，比如「为什么昨晚进房少」…"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send(input);
+                }
+              }}
+              style={{
+                flex: 1,
+                border: "none",
+                outline: "none",
+                resize: "none",
+                background: "transparent",
+                minHeight: 26,
+                maxHeight: 120,
+                fontFamily: "inherit",
+                fontSize: 14,
+                color: "var(--ink-900)",
+                padding: "6px 0",
+                lineHeight: 1.5,
+              }}
+              rows={1}
+            />
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <button
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 8,
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  color: "var(--ink-400)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                title="附加任务上下文"
+              >
+                <Icon.Tasks size={15} />
+              </button>
+              <button
+                onClick={() => send(input)}
+                disabled={!input.trim()}
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 8,
+                  border: "none",
+                  background: input.trim()
+                    ? "var(--blue-600)"
+                    : "var(--ink-100)",
+                  color: "#fff",
+                  cursor: input.trim() ? "pointer" : "not-allowed",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Icon.Sparkles size={15} stroke="#fff" sw={2} />
+              </button>
+            </div>
+          </div>
+          <div
+            style={{
+              maxWidth: 760,
+              margin: "6px auto 0",
+              fontSize: 11,
+              color: "var(--ink-400)",
+              textAlign: "center",
+            }}
+          >
+            ⌘ + ↵ 发送 · 此会话只读取你的数据
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function HistoryItem({ title, snippet, time, active }) {
+  return (
+    <button
+      style={{
+        width: "100%",
+        padding: "10px 12px",
+        textAlign: "left",
+        background: active ? "var(--blue-50)" : "transparent",
+        border: "none",
+        borderRadius: 8,
+        cursor: "pointer",
+        marginBottom: 2,
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+      }}
+      onMouseEnter={(e) => {
+        if (!active) e.currentTarget.style.background = "var(--ink-50)";
+      }}
+      onMouseLeave={(e) => {
+        if (!active) e.currentTarget.style.background = "transparent";
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 12.5,
+            fontWeight: 600,
+            color: active ? "var(--blue-700)" : "var(--ink-900)",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            flex: 1,
+          }}
+        >
+          {title}
+        </span>
+        <span
+          style={{
+            fontSize: 10.5,
+            color: active ? "var(--blue-700)" : "var(--ink-400)",
+            flexShrink: 0,
+          }}
+        >
+          {time}
+        </span>
+      </div>
+      <div
+        style={{
+          fontSize: 11.5,
+          color: "var(--ink-400)",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {snippet}
+      </div>
+    </button>
+  );
+}
+
+function Message({ msg }) {
+  const isMe = msg.role === "me";
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 12,
+        flexDirection: isMe ? "row-reverse" : "row",
+        alignItems: "flex-start",
+      }}
+    >
+      {!isMe ? (
+        <div
+          style={{
+            width: 32,
+            height: 32,
+            borderRadius: 10,
+            flexShrink: 0,
+            background: "linear-gradient(135deg, #8C7DEB, #1E50C8)",
+            color: "#fff",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Icon.Sparkles size={14} stroke="#fff" sw={1.8} />
+        </div>
+      ) : (
+        <Avatar name={ME.alias} size={32} />
+      )}
+      <div
+        style={{
+          maxWidth: "76%",
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+          alignItems: isMe ? "flex-end" : "flex-start",
+        }}
+      >
+        <div
+          style={{
+            padding: "12px 16px",
+            background: isMe ? "var(--blue-600)" : "#fff",
+            color: isMe ? "#fff" : "var(--ink-900)",
+            border: isMe ? "none" : "1px solid var(--line)",
+            borderRadius: 14,
+            borderTopRightRadius: isMe ? 4 : 14,
+            borderTopLeftRadius: isMe ? 14 : 4,
+            fontSize: 14,
+            lineHeight: 1.6,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+            boxShadow: isMe ? "none" : "var(--shadow-card)",
+          }}
+        >
+          {msg.text}
+          {msg.bullets && (
+            <ul
+              style={{
+                margin: "10px 0 0",
+                padding: 0,
+                listStyle: "none",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              {msg.bullets.map((b, i) => (
+                <li key={i} style={{ display: "flex", gap: 8, fontSize: 13.5 }}>
+                  <span
+                    style={{
+                      width: 4,
+                      height: 4,
+                      borderRadius: 999,
+                      background: "var(--violet-600)",
+                      marginTop: 8,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span>{b}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {msg.insight && <InsightCard insight={msg.insight} />}
+        {msg.suggestions && <SuggestionsCard items={msg.suggestions} />}
+
+        <div style={{ fontSize: 10.5, color: "var(--ink-300)" }}>
+          {msg.time}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InsightCard({ insight }) {
+  return (
+    <div
+      style={{
+        padding: 16,
+        background: "linear-gradient(135deg, #F8F6FF 0%, #EEF3FF 100%)",
+        border: "1px solid #D8D0FA",
+        borderRadius: 12,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          marginBottom: 12,
+        }}
+      >
+        <Icon.Warn size={14} stroke="var(--violet-600)" />
+        <span
+          style={{ fontSize: 12, fontWeight: 700, color: "var(--violet-600)" }}
+        >
+          卡点判断 · {insight.type}
+        </span>
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, 1fr)",
+          gap: 10,
+        }}
+      >
+        {insight.evidence.map(([k, v, u], i) => (
+          <div
+            key={i}
+            style={{
+              background: "#fff",
+              borderRadius: 8,
+              padding: "10px 12px",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10.5,
+                color: "var(--ink-400)",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {k}
+            </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 3,
+                marginTop: 4,
+              }}
+            >
+              <span
+                className="num"
+                style={{
+                  fontSize: 18,
+                  fontWeight: 700,
+                  color: "var(--ink-900)",
+                  letterSpacing: "-0.01em",
+                }}
+              >
+                {v}
+              </span>
+              <span style={{ fontSize: 10.5, color: "var(--ink-400)" }}>
+                {u}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SuggestionsCard({ items }) {
+  return (
+    <div
+      style={{
+        padding: 16,
+        background: "linear-gradient(135deg, #E6F6EE 0%, #F7FFF9 100%)",
+        border: "1px solid #B8E6CC",
+        borderRadius: 12,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          marginBottom: 12,
+        }}
+      >
+        <Icon.Check size={14} stroke="var(--ok-600)" />
+        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ok-600)" }}>
+          开播实验建议
+        </span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        {items.map((t, i) => (
+          <div
+            key={i}
+            style={{
+              display: "flex",
+              gap: 10,
+              background: "#fff",
+              borderRadius: 8,
+              padding: "10px 12px",
+            }}
+          >
+            <span
+              style={{
+                width: 20,
+                height: 20,
+                borderRadius: 999,
+                background: "var(--ok-50)",
+                color: "var(--ok-600)",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontWeight: 700,
+                fontSize: 11,
+                flexShrink: 0,
+              }}
+            >
+              {i + 1}
+            </span>
+            <span
+              style={{
+                fontSize: 12.5,
+                color: "var(--ink-700)",
+                lineHeight: 1.55,
+              }}
+            >
+              {t}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+        <Button size="sm" kind="default">
+          保存为脚本
+        </Button>
+        <Button size="sm" kind="primary">
+          发我话术稿
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function TypingBubble() {
+  return (
+    <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+      <div
+        style={{
+          width: 32,
+          height: 32,
+          borderRadius: 10,
+          background: "linear-gradient(135deg, #8C7DEB, #1E50C8)",
+          color: "#fff",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Icon.Sparkles size={14} stroke="#fff" sw={1.8} />
+      </div>
+      <div
+        style={{
+          padding: "14px 16px",
+          background: "#fff",
+          border: "1px solid var(--line)",
+          borderRadius: 14,
+          borderTopLeftRadius: 4,
+          display: "flex",
+          gap: 4,
+          alignItems: "center",
+        }}
+      >
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: 999,
+              background: "var(--ink-300)",
+              animation: `aiblink2 1.2s ease-in-out ${i * 0.18}s infinite`,
+            }}
+          />
+        ))}
+        <style>{`@keyframes aiblink2 { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }`}</style>
+      </div>
+    </div>
+  );
+}
+
+function nowHM() {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+// ===== src-streamer-pc\screen-earnings.jsx =====
+// ——— Screen: 结算账单 ——————————————————————
+
+const SETTLEMENT_HISTORY = [
+  {
+    batch: "B-2026-05-S-001",
+    period: "2026-05-01 → 2026-05-15",
+    amount: 9080,
+    status: "locked",
+    date: "5/20 17:14",
+    project: "原神 4.7",
+    breakdown: { base: 6000, hours: 38.5, variable: 3080, adj: 0 },
+  },
+  {
+    batch: "B-2026-04-S-002",
+    period: "2026-04-01 → 2026-04-30",
+    amount: 14820,
+    status: "settled",
+    date: "5/05 09:30",
+    project: "KPL · 原神",
+    breakdown: { base: 6000, hours: 62.0, variable: 8820, adj: 0 },
+  },
+  {
+    batch: "B-2026-03-S-001",
+    period: "2026-03-01 → 2026-03-31",
+    amount: 13560,
+    status: "settled",
+    date: "4/06 11:02",
+    project: "KPL · 春赛",
+    breakdown: { base: 6000, hours: 58.0, variable: 7560, adj: 0 },
+  },
+  {
+    batch: "B-2026-02-S-001",
+    period: "2026-02-01 → 2026-02-28",
+    amount: 11100,
+    status: "settled",
+    date: "3/05 14:28",
+    project: "永劫无间",
+    breakdown: { base: 5000, hours: 52.5, variable: 6300, adj: -200 },
+  },
+  {
+    batch: "B-2026-01-S-001",
+    period: "2026-01-01 → 2026-01-31",
+    amount: 12480,
+    status: "settled",
+    date: "2/05 10:45",
+    project: "原神 / 永劫",
+    breakdown: { base: 5000, hours: 56.0, variable: 7480, adj: 0 },
+  },
+];
+
+const BATCH_DETAIL_TASKS = [
+  {
+    id: "T-1019",
+    date: "05-12",
+    name: "原神 4.7 · 周日场",
+    hours: 5.0,
+    variable: 400,
+  },
+  {
+    id: "T-1022",
+    date: "05-13",
+    name: "原神 4.7 · 沉浸玩法",
+    hours: 4.0,
+    variable: 320,
+  },
+  {
+    id: "T-1023",
+    date: "05-14",
+    name: "原神 4.7 · 剧情向解说",
+    hours: 4.5,
+    variable: 360,
+  },
+  {
+    id: "T-1024",
+    date: "05-25",
+    name: "原神 4.7 · 沉浸玩法",
+    hours: 4.0,
+    variable: 320,
+  },
+  {
+    id: "T-1028",
+    date: "05-08",
+    name: "原神 4.7 · 周二常规",
+    hours: 4.0,
+    variable: 320,
+  },
+  { id: "T-1032", date: "05-09", name: "元梦试播", hours: 3.0, variable: 240 },
+  {
+    id: "T-1033",
+    date: "05-10",
+    name: "原神 4.7 · 周中",
+    hours: 4.5,
+    variable: 360,
+  },
+  {
+    id: "T-1034",
+    date: "05-15",
+    name: "原神 4.7 · 周中常规",
+    hours: 5.0,
+    variable: 400,
+  },
+  { id: "T-1041", date: "05-07", name: "元梦试播", hours: 4.5, variable: 360 },
+];
+
+function ScreenEarnings({ go }) {
+  const [activeBatch, setActiveBatch] = React.useState(
+    SETTLEMENT_HISTORY[0].batch,
+  );
+  const cur =
+    SETTLEMENT_HISTORY.find((b) => b.batch === activeBatch) ||
+    SETTLEMENT_HISTORY[0];
+  const ytd = SETTLEMENT_HISTORY.reduce((s, b) => s + b.amount, 0);
+
+  return (
+    <>
+      <PageHero
+        title="结算账单"
+        subtitle="实际金额以运营在月底锁定批次后为准 · 数据仅展示你自己"
+        actions={
+          <Button kind="default" icon={<Icon.Export size={14} />}>
+            导出 PDF 账单
+          </Button>
+        }
+      />
+
+      <div
+        style={{
+          padding: 24,
+          display: "flex",
+          flexDirection: "column",
+          gap: 20,
+        }}
+      >
+        {/* Top stats */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4, 1fr)",
+            gap: 16,
+          }}
+        >
+          <Card
+            style={{
+              background:
+                "linear-gradient(135deg, var(--blue-700), var(--blue-500))",
+              borderColor: "var(--blue-500)",
+              color: "#fff",
+            }}
+          >
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.78)" }}>
+              本月预估
+            </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 4,
+                marginTop: 6,
+              }}
+            >
+              <span style={{ fontSize: 12 }}>¥</span>
+              <span
+                className="num"
+                style={{
+                  fontSize: 28,
+                  fontWeight: 700,
+                  letterSpacing: "-0.02em",
+                }}
+              >
+                {(
+                  MY_EARNINGS.currentMonth.earned +
+                  MY_EARNINGS.currentMonth.pending
+                ).toLocaleString()}
+              </span>
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                color: "rgba(255,255,255,0.78)",
+                marginTop: 6,
+              }}
+            >
+              已结算 ¥{MY_EARNINGS.currentMonth.earned.toLocaleString()} · 待审
+              ¥{MY_EARNINGS.currentMonth.pending.toLocaleString()}
+            </div>
+          </Card>
+          <Card>
+            <Metric
+              label="2026 年累计"
+              value={`¥${ytd.toLocaleString()}`}
+              hint={`${SETTLEMENT_HISTORY.length} 个批次`}
+            />
+          </Card>
+          <Card>
+            <Metric
+              label="近 6 月均值"
+              value="¥11,890"
+              delta="+8.4%"
+              hint="较去年"
+            />
+          </Card>
+          <Card>
+            <Metric
+              label="本月录屏通过率"
+              value="95"
+              unit="%"
+              hint="近 30 天"
+            />
+          </Card>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1.4fr",
+            gap: 20,
+            alignItems: "flex-start",
+          }}
+        >
+          {/* Batch list */}
+          <Card
+            title="结算批次"
+            extra={<Badge tone="neutral">最近 5 期</Badge>}
+            padded={false}
+          >
+            {SETTLEMENT_HISTORY.map((b, i) => {
+              const active = b.batch === activeBatch;
+              return (
+                <div
+                  key={b.batch}
+                  onClick={() => setActiveBatch(b.batch)}
+                  style={{
+                    padding: "14px 16px",
+                    cursor: "pointer",
+                    borderBottom:
+                      i < SETTLEMENT_HISTORY.length - 1
+                        ? "1px solid var(--line)"
+                        : "none",
+                    background: active ? "var(--blue-50)" : "transparent",
+                    borderLeft: active
+                      ? "3px solid var(--blue-600)"
+                      : "3px solid transparent",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      className="mono"
+                      style={{ fontSize: 11, color: "var(--ink-400)" }}
+                    >
+                      {b.batch}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 13.5,
+                        fontWeight: 600,
+                        color: "var(--ink-900)",
+                        marginTop: 2,
+                      }}
+                    >
+                      {b.project}
+                    </div>
+                    <div
+                      className="num"
+                      style={{
+                        fontSize: 11.5,
+                        color: "var(--ink-400)",
+                        marginTop: 4,
+                      }}
+                    >
+                      {b.period}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div
+                      className="num"
+                      style={{
+                        fontSize: 15,
+                        fontWeight: 700,
+                        color: "var(--ink-900)",
+                      }}
+                    >
+                      ¥{b.amount.toLocaleString()}
+                    </div>
+                    <div style={{ marginTop: 4 }}>
+                      {b.status === "locked" && (
+                        <Badge tone="teal" dot>
+                          已锁定
+                        </Badge>
+                      )}
+                      {b.status === "settled" && (
+                        <Badge tone="green" dot>
+                          已结算
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </Card>
+
+          {/* Batch detail */}
+          <div
+            style={{
+              position: "sticky",
+              top: 76,
+              display: "flex",
+              flexDirection: "column",
+              gap: 16,
+            }}
+          >
+            <Card padded={false}>
+              <div
+                style={{
+                  padding: "16px 20px",
+                  borderBottom: "1px solid var(--line)",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <div>
+                    <div
+                      className="mono"
+                      style={{ fontSize: 11, color: "var(--ink-400)" }}
+                    >
+                      {cur.batch}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 16,
+                        fontWeight: 600,
+                        color: "var(--ink-900)",
+                        marginTop: 4,
+                      }}
+                    >
+                      {cur.project} · 主播应付明细
+                    </div>
+                    <div
+                      className="num"
+                      style={{
+                        fontSize: 12,
+                        color: "var(--ink-400)",
+                        marginTop: 4,
+                      }}
+                    >
+                      {cur.period} · 锁定于 {cur.date}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                      合计应付给你
+                    </div>
+                    <div
+                      className="num"
+                      style={{
+                        fontSize: 26,
+                        fontWeight: 700,
+                        color: "var(--ink-900)",
+                        letterSpacing: "-0.02em",
+                      }}
+                    >
+                      ¥{cur.amount.toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 14,
+                    padding: 12,
+                    background: "var(--bg-soft)",
+                    borderRadius: 8,
+                    display: "grid",
+                    gridTemplateColumns: "repeat(4, 1fr)",
+                    gap: 12,
+                  }}
+                >
+                  <Metric
+                    label="底薪"
+                    value={`¥${cur.breakdown.base.toLocaleString()}`}
+                  />
+                  <Metric
+                    label="有效时长"
+                    value={cur.breakdown.hours.toFixed(1)}
+                    unit="h"
+                  />
+                  <Metric
+                    label="变动 (CPT)"
+                    value={`¥${cur.breakdown.variable.toLocaleString()}`}
+                  />
+                  <Metric
+                    label="调整"
+                    value={
+                      cur.breakdown.adj === 0
+                        ? "—"
+                        : cur.breakdown.adj > 0
+                          ? `+¥${cur.breakdown.adj}`
+                          : `¥${cur.breakdown.adj}`
+                    }
+                  />
+                </div>
+              </div>
+
+              {/* Task-level breakdown */}
+              <div
+                style={{
+                  padding: "12px 20px 4px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: "var(--ink-700)",
+                  }}
+                >
+                  任务明细
+                </div>
+                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                  共 {BATCH_DETAIL_TASKS.length} 个任务
+                </span>
+              </div>
+
+              <DataTable
+                dense
+                columns={[
+                  {
+                    title: "日期",
+                    render: (r) => <span className="num">{r.date}</span>,
+                  },
+                  {
+                    title: "任务",
+                    render: (r) => (
+                      <div>
+                        <div
+                          className="mono"
+                          style={{ fontSize: 11, color: "var(--ink-400)" }}
+                        >
+                          {r.id}
+                        </div>
+                        <div
+                          style={{ fontWeight: 500, color: "var(--ink-900)" }}
+                        >
+                          {r.name}
+                        </div>
+                      </div>
+                    ),
+                  },
+                  {
+                    title: "有效时长",
+                    align: "right",
+                    render: (r) => (
+                      <span className="num" style={{ fontWeight: 600 }}>
+                        {r.hours.toFixed(1)} h
+                      </span>
+                    ),
+                  },
+                  {
+                    title: "本场 CPT",
+                    align: "right",
+                    render: (r) => (
+                      <span className="num">
+                        ¥{r.variable.toLocaleString()}
+                      </span>
+                    ),
+                  },
+                ]}
+                rows={BATCH_DETAIL_TASKS}
+              />
+
+              <div
+                style={{
+                  padding: 12,
+                  borderTop: "1px solid var(--line)",
+                  background: "var(--bg-soft)",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 11.5,
+                    color: "var(--ink-400)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <Icon.Lock size={12} stroke="var(--ink-400)" />
+                  本批次已锁定 · 由运营负责人 李珩 操作
+                </span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Button size="sm" kind="default">
+                    下载 PDF
+                  </Button>
+                  <Button size="sm" kind="default">
+                    申请复核
+                  </Button>
+                </div>
+              </div>
+            </Card>
+
+            {/* Help card */}
+            <Card
+              style={{ background: "var(--bg-soft)", borderStyle: "dashed" }}
+            >
+              <div style={{ display: "flex", gap: 12 }}>
+                <span
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 8,
+                    background: "var(--blue-50)",
+                    color: "var(--blue-700)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <Icon.Eye size={15} stroke="var(--blue-700)" />
+                </span>
+                <div
+                  style={{
+                    flex: 1,
+                    fontSize: 12.5,
+                    color: "var(--ink-700)",
+                    lineHeight: 1.7,
+                  }}
+                >
+                  <b style={{ color: "var(--ink-900)" }}>我看到的金额对吗？</b>
+                  <br />
+                  这里显示的是 MCN 应付给你的金额，按{" "}
+                  <b>主播项目规则 → 主播默认规则 → 项目默认规则</b> 顺序应用。
+                  你无法看到厂家应收、毛利等敏感字段（已脱敏）。对金额有异议可点「申请复核」。
+                </div>
+              </div>
+            </Card>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ===== src-streamer-pc\screen-profile.jsx =====
+// ——— Screen: 个人资料 & 平台 ——————————————————————
+
+function ScreenProfile({ go }) {
+  return (
+    <>
+      <PageHero
+        title="个人资料 & 平台"
+        subtitle="档案信息、平台账号绑定、隐私与权限"
+        actions={<Button kind="primary">编辑资料</Button>}
+      />
+
+      <div
+        style={{
+          padding: 24,
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 20,
+          alignItems: "flex-start",
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          {/* Profile header */}
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+              <div
+                style={{
+                  width: 72,
+                  height: 72,
+                  borderRadius: 999,
+                  background:
+                    "linear-gradient(135deg, var(--blue-600), var(--blue-800))",
+                  color: "#fff",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 26,
+                  fontWeight: 700,
+                  letterSpacing: "-0.02em",
+                  boxShadow: "0 4px 12px rgba(30,80,200,0.28)",
+                }}
+              >
+                {ME.alias.slice(0, 1)}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span
+                    style={{
+                      fontSize: 20,
+                      fontWeight: 700,
+                      color: "var(--ink-900)",
+                      letterSpacing: "-0.01em",
+                    }}
+                  >
+                    {ME.alias}
+                  </span>
+                  <Badge tone="blue" dot>
+                    {ME.level}
+                  </Badge>
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "var(--ink-400)",
+                    marginTop: 4,
+                  }}
+                >
+                  {ME.real} · {ME.gender} ·{" "}
+                  <span className="mono">{ME.id}</span>
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "var(--ink-400)",
+                    marginTop: 2,
+                  }}
+                >
+                  所属：{ME.org} · 签约于 {ME.signedAt}
+                </div>
+              </div>
+            </div>
+
+            <div
+              style={{
+                marginTop: 16,
+                paddingTop: 16,
+                borderTop: "1px solid var(--line)",
+                display: "grid",
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: 16,
+              }}
+            >
+              <Metric label="参与项目" value="11" unit="个" />
+              <Metric label="录屏" value={MY_VIDEOS.length} unit="条" />
+              <Metric label="累计直播" value="412.5" unit="h" />
+            </div>
+          </Card>
+
+          {/* Platform bindings */}
+          <Card
+            title="已绑定平台"
+            extra={
+              <Button size="sm" kind="default" icon={<Icon.Plus size={12} />}>
+                新增
+              </Button>
+            }
+            padded={false}
+          >
+            {ME.platforms.map((p, i) => (
+              <div
+                key={p.id}
+                style={{
+                  padding: "14px 16px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  borderBottom:
+                    i < ME.platforms.length - 1
+                      ? "1px solid var(--line)"
+                      : "none",
+                }}
+              >
+                <div
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 10,
+                    background:
+                      p.platform === "抖音"
+                        ? "#000"
+                        : "linear-gradient(135deg, #FB7299, #00A1D6)",
+                    color: "#fff",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontWeight: 700,
+                    fontSize: 14,
+                    flexShrink: 0,
+                  }}
+                >
+                  {p.platform.slice(0, 1)}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 8 }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 14,
+                        fontWeight: 600,
+                        color: "var(--ink-900)",
+                      }}
+                    >
+                      {p.platform}
+                    </span>
+                    {p.primary && <Badge tone="amber">主账号</Badge>}
+                    <Badge tone="green" dot>
+                      已认证
+                    </Badge>
+                  </div>
+                  <div
+                    className="mono"
+                    style={{
+                      fontSize: 11.5,
+                      color: "var(--ink-400)",
+                      marginTop: 4,
+                    }}
+                  >
+                    {p.id}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11.5,
+                      color: "var(--ink-500)",
+                      marginTop: 4,
+                    }}
+                  >
+                    粉丝{" "}
+                    <span className="num" style={{ fontWeight: 600 }}>
+                      {p.followers.toLocaleString()}
+                    </span>
+                    {" · "} 同步状态：实时
+                  </div>
+                </div>
+                <Button size="sm" kind="default">
+                  管理
+                </Button>
+              </div>
+            ))}
+          </Card>
+
+          {/* Tags */}
+          <Card
+            title="能力标签"
+            extra={
+              <Button size="sm" kind="link">
+                编辑
+              </Button>
+            }
+          >
+            <TagGroup
+              label="擅长游戏品类"
+              tags={["元梦之星", "永劫无间", "原神", "王者荣耀"]}
+              tone="blue"
+            />
+            <TagGroup
+              label="直播风格"
+              tags={["欢快互动", "高能竞技", "剧情解说"]}
+              tone="violet"
+            />
+            <TagGroup
+              label="可播时间"
+              tags={["周中 19-24", "周末 14-24"]}
+              tone="teal"
+            />
+            <TagGroup
+              label="设备"
+              tags={["高刷屏 240Hz", "专业声卡", "4K 摄像"]}
+              tone="neutral"
+            />
+          </Card>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          {/* Default settlement */}
+          <Card
+            title="默认结算规则"
+            extra={<Badge tone="neutral">由运营配置</Badge>}
+          >
+            <KV label="规则">
+              <Badge tone="blue">底薪 6000 + CPT 80/h</Badge>
+            </KV>
+            <KV label="底薪周期">按月结</KV>
+            <KV label="时薪 (CPT)">¥80 / 有效直播小时</KV>
+            <KV label="礼物提成">35% （单独按项目结）</KV>
+            <KV label="结算银行卡">招商银行 · 尾号 **** 8821</KV>
+            <div
+              style={{
+                marginTop: 10,
+                padding: 10,
+                background: "var(--bg-soft)",
+                borderRadius: 8,
+                fontSize: 12,
+                color: "var(--ink-500)",
+                lineHeight: 1.65,
+              }}
+            >
+              单个项目可被覆盖：主播项目规则 → 主播默认规则 →
+              项目默认规则。如需调整，请联系运营负责人。
+            </div>
+          </Card>
+
+          {/* Privacy */}
+          <Card title="我能看到 / 我看不到">
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <PermRow can label="自己的任务、报数、录屏" />
+              <PermRow can label="自己的结算明细金额" />
+              <PermRow can label="AI 卡点诊断（仅你自己数据）" />
+              <div
+                style={{
+                  height: 1,
+                  background: "var(--line)",
+                  margin: "4px 0",
+                }}
+              />
+              <PermRow label="厂家单价 / 厂家应付" reason="敏感财务字段" />
+              <PermRow label="MCN 毛利 / 利润率" reason="组织级数据" />
+              <PermRow label="供应商内部成本" reason="组织级数据" />
+              <PermRow label="其他主播的结算金额" reason="字段级隔离" />
+              <PermRow label="审计日志" reason="管理员可见" />
+            </div>
+            <div
+              style={{
+                marginTop: 14,
+                padding: 12,
+                background: "var(--blue-50)",
+                borderRadius: 8,
+                fontSize: 12,
+                color: "var(--ink-700)",
+                display: "flex",
+                gap: 10,
+              }}
+            >
+              <Icon.Lock size={14} stroke="var(--blue-700)" />
+              <span>
+                <b style={{ color: "var(--blue-700)" }}>字段级脱敏</b>
+                由服务端强制执行，前端隐藏与你无关——即便有
+                bug，你也访问不到隐藏字段。
+              </span>
+            </div>
+          </Card>
+
+          {/* Security */}
+          <Card title="账号与安全" padded={false}>
+            <SecRow
+              icon="Lock"
+              label="登录密码"
+              value="3 个月前修改"
+              action="修改"
+            />
+            <SecRow
+              icon="Settings"
+              label="双因素认证"
+              value="已启用 · 短信"
+              action="管理"
+            />
+            <SecRow
+              icon="Bell"
+              label="通知偏好"
+              value="任务 / 审核 / AI 三类"
+              action="设置"
+            />
+            <SecRow
+              icon="History"
+              label="登录设备"
+              value="2 台设备活跃"
+              action="查看"
+              last
+            />
+          </Card>
+
+          {/* Sign-out */}
+          <div style={{ display: "flex", gap: 8 }}>
+            <Button kind="default" style={{ flex: 1 }}>
+              退出当前组织
+            </Button>
+            <Button kind="danger" style={{ flex: 1 }}>
+              退出登录
+            </Button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function TagGroup({ label, tags, tone }) {
+  return (
+    <div style={{ padding: "8px 0" }}>
+      <div style={{ fontSize: 12, color: "var(--ink-400)", marginBottom: 8 }}>
+        {label}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {tags.map((t) => (
+          <Badge key={t} tone={tone}>
+            {t}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PermRow({ can, label, reason }) {
+  return (
+    <div
+      style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}
+    >
+      <span
+        style={{
+          width: 18,
+          height: 18,
+          borderRadius: 999,
+          background: can ? "var(--ok-50)" : "var(--ink-50)",
+          color: can ? "var(--ok-600)" : "var(--ink-300)",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+        }}
+      >
+        {can ? (
+          <Icon.Check size={11} sw={2.4} />
+        ) : (
+          <Icon.X size={10} sw={2.2} />
+        )}
+      </span>
+      <span
+        style={{ flex: 1, color: can ? "var(--ink-900)" : "var(--ink-500)" }}
+      >
+        {label}
+      </span>
+      {reason && (
+        <span style={{ fontSize: 11, color: "var(--ink-400)" }}>{reason}</span>
+      )}
+    </div>
+  );
+}
+
+function SecRow({ icon, label, value, action, last }) {
+  const IconComp = Icon[icon];
+  return (
+    <div
+      style={{
+        padding: "14px 16px",
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        borderBottom: last ? "none" : "1px solid var(--line)",
+      }}
+    >
+      <span
+        style={{
+          width: 30,
+          height: 30,
+          borderRadius: 8,
+          background: "var(--ink-50)",
+          color: "var(--ink-500)",
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <IconComp size={15} />
+      </span>
+      <div style={{ flex: 1 }}>
+        <div
+          style={{ fontSize: 13.5, fontWeight: 500, color: "var(--ink-900)" }}
+        >
+          {label}
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--ink-400)", marginTop: 2 }}>
+          {value}
+        </div>
+      </div>
+      <Button size="sm" kind="default">
+        {action}
+      </Button>
+    </div>
+  );
+}
+
+// ===== src-streamer-pc\app.jsx =====
+// ——— App entry ————————————————————————
+
+function StreamerDesktopReferenceInner({ initialRoute = "dashboard" }) {
+  const [route, setRoute] = React.useState(initialRoute);
+  const [taskId, setTaskId] = React.useState(null);
+
+  const go = (r, arg) => {
+    if (r === "tasks" && arg) setTaskId(arg);
+    setRoute(r);
+    const content = globalThis.document?.getElementById("content-scroll");
+    if (content) content.scrollTop = 0;
+  };
+
+  const titles = {
+    dashboard: { t: "工作台", s: "今天 · 本周累计 · 待办与 AI 建议" },
+    tasks: { t: "我的任务", s: "直播任务与报数审核状态" },
+    videos: { t: "录屏库", s: "项目报名录屏 + 历史录屏" },
+    ai: { t: "AI 卡点诊断", s: "基于你近 14 天数据 · 仅你可见" },
+    earnings: { t: "结算账单", s: "主播应付明细" },
+    profile: { t: "个人资料 & 平台", s: "档案 · 平台 · 隐私" },
+  };
+  const meta = titles[route] || titles.dashboard;
+
+  return (
+    <div
+      style={{ display: "flex", minHeight: "100vh", background: "var(--bg)" }}
+    >
+      <Sidebar route={route} onNav={go} />
+      <main
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          maxHeight: "100vh",
+        }}
+      >
+        <TopBar title={meta.t} subtitle={meta.s} />
+        <div id="content-scroll" style={{ flex: 1, overflowY: "auto" }}>
+          {route === "dashboard" && <ScreenDashboard go={go} />}
+          {route === "tasks" && <ScreenTasks go={go} openTaskId={taskId} />}
+          {route === "videos" && <ScreenVideos go={go} />}
+          {route === "ai" && <ScreenAI go={go} />}
+          {route === "earnings" && <ScreenEarnings go={go} />}
+          {route === "profile" && <ScreenProfile go={go} />}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+export default function StreamerDesktopReferenceApp({
+  initialRoute = "dashboard",
+}) {
+  return <StreamerDesktopReferenceInner initialRoute={initialRoute} />;
+}

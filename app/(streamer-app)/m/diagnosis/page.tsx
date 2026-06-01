@@ -1,8 +1,9 @@
-export default function DiagnosisPage() {
+import StreamerMobileReferenceApp from "@/components/reference-ui/streamer-mobile-reference";
+
+export default function StreamerDiagnosisPage() {
   return (
-    <section className="rounded-lg border border-[var(--line)] bg-white p-5">
-      <h1 className="text-xl font-semibold">AI 卡点诊断</h1>
-      <p className="mt-3 text-sm text-[var(--ink-500)]">P4 AI 入口占位。</p>
-    </section>
+    <div className="mobile-prototype-stage">
+      <StreamerMobileReferenceApp initialRoute="ai" />
+    </div>
   );
 }
