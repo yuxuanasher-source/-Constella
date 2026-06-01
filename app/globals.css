@@ -1,26 +1,46 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --blue-50: #eef3ff;
+  --blue-100: #dce6ff;
+  --blue-500: #3b6be6;
+  --blue-600: #1e50c8;
+  --blue-700: #1842a6;
+  --blue-800: #142f77;
+  --ink-900: #0b1733;
+  --ink-700: #1e2a47;
+  --ink-500: #475569;
+  --ink-300: #94a3b8;
+  --bg: #f4f6fb;
+  --bg-soft: #fafbfe;
+  --line: #e5eaf3;
+  --white: #ffffff;
+  --ok-600: #0e8a4d;
+  --warn-600: #a86a00;
+  --danger-600: #c0303a;
+  --violet-600: #5b4bd1;
+  --background: var(--bg);
+  --foreground: var(--ink-900);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-sans-app);
+  --font-mono: var(--font-mono-app);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans-app), "PingFang SC", "Microsoft YaHei", Arial,
+    sans-serif;
+  letter-spacing: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }
