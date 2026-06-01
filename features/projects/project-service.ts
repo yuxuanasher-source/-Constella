@@ -13,6 +13,16 @@ export type ProjectRecord = {
   code?: string;
   status: ProjectStatus;
   organization_id?: string;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  open_signup?: boolean;
+  allow_direct_invite?: boolean;
+  force_recording?: boolean;
+  force_system_timing?: boolean;
+  default_settlement_method?: string;
+  default_hourly_rate?: number;
+  default_base_salary?: number;
+  default_settlement_rule?: unknown;
 };
 
 export type ProjectActor = {
@@ -28,6 +38,23 @@ export type CreateProjectDraftInput = {
   supplierId?: string;
 };
 
+export type UpdateProjectBasicsInput = {
+  name?: string;
+  startsAt?: string | null;
+  endsAt?: string | null;
+  openSignup?: boolean;
+  allowDirectInvite?: boolean;
+  forceRecording?: boolean;
+  forceSystemTiming?: boolean;
+};
+
+export type UpdateProjectSettlementRuleInput = {
+  defaultSettlementMethod?: string;
+  defaultHourlyRate?: number;
+  defaultBaseSalary?: number;
+  defaultSettlementRule?: Record<string, unknown>;
+};
+
 export type ProjectRepository = {
   createDraft(input: {
     organizationId: string;
@@ -38,6 +65,14 @@ export type ProjectRepository = {
   }): Promise<ProjectRecord>;
   getById(projectId: string): Promise<ProjectRecord | null>;
   publish(projectId: string): Promise<ProjectRecord>;
+  updateBasics(
+    projectId: string,
+    input: Partial<ProjectRecord>,
+  ): Promise<ProjectRecord>;
+  updateSettlementRule(
+    projectId: string,
+    input: Partial<ProjectRecord>,
+  ): Promise<ProjectRecord>;
 };
 
 export type ProjectAuditWriter = (input: AuditLogInput) => Promise<void>;
@@ -123,8 +158,140 @@ export async function publishProject({
   return project;
 }
 
+export async function updateProjectBasics({
+  repo,
+  audit,
+  actor,
+  projectId,
+  input,
+}: {
+  repo: ProjectRepository;
+  audit: ProjectAuditWriter;
+  actor: ProjectActor;
+  projectId: string;
+  input: UpdateProjectBasicsInput;
+}): Promise<ProjectRecord> {
+  if (!canCreateProjectDraft(actor.role)) {
+    throw new Error("Current role cannot update project basics");
+  }
+
+  const before = await requireProject(repo, projectId);
+  const patch = mapBasicProjectPatch(input);
+  const changedFields = Object.keys(patch);
+  const project = await repo.updateBasics(projectId, patch);
+
+  await audit({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action: "update",
+    module: "project",
+    objectType: "project",
+    objectId: project.id,
+    objectName: project.name,
+    before,
+    after: project,
+    changedFields,
+    isHighRisk: false,
+  });
+
+  return project;
+}
+
+export async function updateProjectSettlementRule({
+  repo,
+  audit,
+  actor,
+  projectId,
+  input,
+  reason,
+}: {
+  repo: ProjectRepository;
+  audit: ProjectAuditWriter;
+  actor: ProjectActor;
+  projectId: string;
+  input: UpdateProjectSettlementRuleInput;
+  reason: string;
+}): Promise<ProjectRecord> {
+  if (!canPublishProject(actor.role)) {
+    throw new Error("Only owner and ops_manager can update settlement rules");
+  }
+
+  if (!reason.trim()) {
+    throw new Error("Settlement rule changes require a reason");
+  }
+
+  const before = await requireProject(repo, projectId);
+  const patch = mapSettlementProjectPatch(input);
+  const changedFields = Object.keys(patch);
+  const project = await repo.updateSettlementRule(projectId, patch);
+
+  await audit({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action: "update",
+    module: "project",
+    objectType: "project",
+    objectId: project.id,
+    objectName: project.name,
+    before,
+    after: project,
+    changedFields,
+    isHighRisk: true,
+    reason: reason.trim(),
+  });
+
+  return project;
+}
+
 export function createProjectAuditWriter(
   client: Parameters<typeof writeAuditLog>[0],
 ) {
   return (input: AuditLogInput) => writeAuditLog(client, input);
+}
+
+async function requireProject(
+  repo: Pick<ProjectRepository, "getById">,
+  projectId: string,
+): Promise<ProjectRecord> {
+  const project = await repo.getById(projectId);
+  if (!project) {
+    throw new Error("Project not found");
+  }
+
+  return project;
+}
+
+function mapBasicProjectPatch(
+  input: UpdateProjectBasicsInput,
+): Partial<ProjectRecord> {
+  return removeUndefined({
+    name: input.name,
+    starts_at: input.startsAt,
+    ends_at: input.endsAt,
+    open_signup: input.openSignup,
+    allow_direct_invite: input.allowDirectInvite,
+    force_recording: input.forceRecording,
+    force_system_timing: input.forceSystemTiming,
+  });
+}
+
+function mapSettlementProjectPatch(
+  input: UpdateProjectSettlementRuleInput,
+): Partial<ProjectRecord> {
+  return removeUndefined({
+    default_settlement_method: input.defaultSettlementMethod,
+    default_hourly_rate: input.defaultHourlyRate,
+    default_base_salary: input.defaultBaseSalary,
+    default_settlement_rule: input.defaultSettlementRule,
+  });
+}
+
+function removeUndefined<T extends Record<string, unknown>>(input: T): T {
+  return Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== undefined),
+  ) as T;
 }

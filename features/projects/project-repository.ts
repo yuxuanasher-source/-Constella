@@ -8,7 +8,35 @@ type ProjectRow = {
   code: string;
   status: ProjectRecord["status"];
   organization_id: string;
+  starts_at: string | null;
+  ends_at: string | null;
+  open_signup: boolean;
+  allow_direct_invite: boolean;
+  force_recording: boolean;
+  force_system_timing: boolean;
+  default_settlement_method: string;
+  default_hourly_rate: number;
+  default_base_salary: number;
+  default_settlement_rule: unknown;
 };
+
+const projectSelect = `
+  id,
+  name,
+  code,
+  status,
+  organization_id,
+  starts_at,
+  ends_at,
+  open_signup,
+  allow_direct_invite,
+  force_recording,
+  force_system_timing,
+  default_settlement_method,
+  default_hourly_rate,
+  default_base_salary,
+  default_settlement_rule
+`;
 
 export class SupabaseProjectRepository implements ProjectRepository {
   constructor(private readonly client: SupabaseClient) {}
@@ -30,7 +58,7 @@ export class SupabaseProjectRepository implements ProjectRepository {
         supplier_id: input.supplierId,
         status: "draft",
       })
-      .select("id, name, code, status, organization_id")
+      .select(projectSelect)
       .single<ProjectRow>();
 
     if (error) {
@@ -43,7 +71,7 @@ export class SupabaseProjectRepository implements ProjectRepository {
   async getById(projectId: string): Promise<ProjectRecord | null> {
     const { data, error } = await this.client
       .from("projects")
-      .select("id, name, code, status, organization_id")
+      .select(projectSelect)
       .eq("id", projectId)
       .maybeSingle<ProjectRow>();
 
@@ -62,7 +90,43 @@ export class SupabaseProjectRepository implements ProjectRepository {
         published_at: new Date().toISOString(),
       })
       .eq("id", projectId)
-      .select("id, name, code, status, organization_id")
+      .select(projectSelect)
+      .single<ProjectRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return toProjectRecord(data);
+  }
+
+  async updateBasics(
+    projectId: string,
+    input: Partial<ProjectRecord>,
+  ): Promise<ProjectRecord> {
+    const { data, error } = await this.client
+      .from("projects")
+      .update(input)
+      .eq("id", projectId)
+      .select(projectSelect)
+      .single<ProjectRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return toProjectRecord(data);
+  }
+
+  async updateSettlementRule(
+    projectId: string,
+    input: Partial<ProjectRecord>,
+  ): Promise<ProjectRecord> {
+    const { data, error } = await this.client
+      .from("projects")
+      .update(input)
+      .eq("id", projectId)
+      .select(projectSelect)
       .single<ProjectRow>();
 
     if (error) {
@@ -80,5 +144,15 @@ function toProjectRecord(row: ProjectRow): ProjectRecord {
     code: row.code,
     status: row.status,
     organization_id: row.organization_id,
+    starts_at: row.starts_at,
+    ends_at: row.ends_at,
+    open_signup: row.open_signup,
+    allow_direct_invite: row.allow_direct_invite,
+    force_recording: row.force_recording,
+    force_system_timing: row.force_system_timing,
+    default_settlement_method: row.default_settlement_method,
+    default_hourly_rate: row.default_hourly_rate,
+    default_base_salary: row.default_base_salary,
+    default_settlement_rule: row.default_settlement_rule,
   };
 }

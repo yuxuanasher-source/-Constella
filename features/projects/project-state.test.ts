@@ -12,4 +12,18 @@ describe("assertProjectTransition", () => {
       "Illegal project status transition: draft -> settling",
     );
   });
+
+  it("allows recruiting projects to become active", () => {
+    expect(() => assertProjectTransition("recruiting", "active")).not.toThrow();
+  });
+
+  it("rejects active projects entering settlement directly", () => {
+    expect(() => assertProjectTransition("active", "settling")).toThrow(
+      "Illegal project status transition: active -> settling",
+    );
+  });
+
+  it("allows ended projects to enter settlement", () => {
+    expect(() => assertProjectTransition("ended", "settling")).not.toThrow();
+  });
 });
