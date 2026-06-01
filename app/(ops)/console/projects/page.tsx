@@ -7,7 +7,10 @@ import {
   publishProjectAction,
 } from "@/features/projects/project-actions";
 import { listProjects } from "@/features/projects/project-queries";
-import { canCreateProjectDraft, canPublishProject } from "@/lib/rbac/permissions";
+import {
+  canCreateProjectDraft,
+  canPublishProject,
+} from "@/lib/rbac/permissions";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
@@ -33,7 +36,8 @@ export default async function ProjectsPage() {
     <div className="mx-auto max-w-7xl space-y-6">
       {!supabase ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-[var(--warn-600)]">
-          Supabase 环境变量未配置，页面可预览；登录、RLS 与写操作需要本地 Supabase。
+          Supabase 环境变量未配置，页面可预览；登录、RLS 与写操作需要本地
+          Supabase。
         </div>
       ) : null}
 
@@ -45,8 +49,8 @@ export default async function ProjectsPage() {
           </div>
           <h1 className="mt-2 text-2xl font-semibold">项目创建与发布</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ink-500)]">
-            草稿创建对 owner / ops_manager / operator_business 开放，发布仅 owner /
-            ops_manager 可执行。服务端仍会校验角色、RLS 和状态机。
+            草稿创建对 owner / ops_manager / operator_business 开放，发布仅
+            owner / ops_manager 可执行。服务端仍会校验角色、RLS 和状态机。
           </p>
         </div>
 
@@ -54,12 +58,15 @@ export default async function ProjectsPage() {
           <Metric label="项目数" value={projects.length} />
           <Metric
             label="草稿"
-            value={projects.filter((project) => project.status === "draft").length}
+            value={
+              projects.filter((project) => project.status === "draft").length
+            }
           />
           <Metric
             label="招募中"
             value={
-              projects.filter((project) => project.status === "recruiting").length
+              projects.filter((project) => project.status === "recruiting")
+                .length
             }
           />
         </div>
@@ -131,7 +138,11 @@ export default async function ProjectsPage() {
                   </Badge>
                   {project.status === "draft" ? (
                     <form action={publishProjectAction}>
-                      <input type="hidden" name="projectId" value={project.id} />
+                      <input
+                        type="hidden"
+                        name="projectId"
+                        value={project.id}
+                      />
                       <Button
                         type="submit"
                         size="sm"
@@ -142,7 +153,9 @@ export default async function ProjectsPage() {
                       </Button>
                     </form>
                   ) : (
-                    <span className="text-xs text-[var(--ink-300)]">已流转</span>
+                    <span className="text-xs text-[var(--ink-300)]">
+                      已流转
+                    </span>
                   )}
                 </div>
               ))

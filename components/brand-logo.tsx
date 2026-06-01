@@ -5,7 +5,9 @@ export function BrandLogo() {
         JY
       </div>
       <div>
-        <div className="text-sm font-semibold text-[var(--ink-900)]">经营舱</div>
+        <div className="text-sm font-semibold text-[var(--ink-900)]">
+          经营舱
+        </div>
         <div className="text-xs text-[var(--ink-300)]">MCN Ops Suite</div>
       </div>
     </div>

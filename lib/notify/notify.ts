@@ -10,7 +10,9 @@ export type NotificationType =
 
 type NotificationInsertClient = {
   from(table: "notifications"): {
-    insert(payload: Record<string, unknown>): PromiseLike<{ error: Error | null }>;
+    insert(
+      payload: Record<string, unknown>,
+    ): PromiseLike<{ error: Error | null }>;
   };
 };
 

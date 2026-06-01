@@ -15,7 +15,9 @@ export type AuditAction =
 
 type AuditInsertClient = {
   from(table: "audit_logs"): {
-    insert(payload: Record<string, unknown>): PromiseLike<{ error: Error | null }>;
+    insert(
+      payload: Record<string, unknown>,
+    ): PromiseLike<{ error: Error | null }>;
   };
 };
 

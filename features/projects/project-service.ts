@@ -1,5 +1,8 @@
 import { writeAuditLog, type AuditLogInput } from "@/lib/audit/audit";
-import { canCreateProjectDraft, canPublishProject } from "@/lib/rbac/permissions";
+import {
+  canCreateProjectDraft,
+  canPublishProject,
+} from "@/lib/rbac/permissions";
 import type { AppRole } from "@/lib/rbac/roles";
 
 import { assertProjectTransition, type ProjectStatus } from "./project-state";
@@ -120,6 +123,8 @@ export async function publishProject({
   return project;
 }
 
-export function createProjectAuditWriter(client: Parameters<typeof writeAuditLog>[0]) {
+export function createProjectAuditWriter(
+  client: Parameters<typeof writeAuditLog>[0],
+) {
   return (input: AuditLogInput) => writeAuditLog(client, input);
 }

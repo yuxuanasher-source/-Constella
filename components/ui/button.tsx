@@ -13,7 +13,8 @@ const variants = {
   primary: "bg-[var(--blue-600)] text-white hover:bg-[var(--blue-700)]",
   secondary:
     "border border-[var(--line)] bg-white text-[var(--ink-700)] hover:bg-[var(--bg-soft)]",
-  ghost: "text-[var(--ink-500)] hover:bg-[var(--blue-50)] hover:text-[var(--blue-700)]",
+  ghost:
+    "text-[var(--ink-500)] hover:bg-[var(--blue-50)] hover:text-[var(--blue-700)]",
   danger: "bg-[var(--danger-600)] text-white hover:brightness-95",
 };
 

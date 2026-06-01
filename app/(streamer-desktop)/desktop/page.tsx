@@ -27,7 +27,8 @@ export default function StreamerDesktopPage() {
             <span className="text-sm font-medium">安全应付视图</span>
           </div>
           <p className="mt-3 text-sm leading-6 text-[var(--ink-500)]">
-            主播端未来只读取 `streamer_payable_items_safe`，不暴露厂家应收、毛利和成本。
+            主播端未来只读取
+            `streamer_payable_items_safe`，不暴露厂家应收、毛利和成本。
           </p>
         </div>
       </section>

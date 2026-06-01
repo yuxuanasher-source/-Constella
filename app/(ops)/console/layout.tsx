@@ -13,7 +13,11 @@ export default async function ConsoleLayout({
   const unreadCount = await unreadNotificationCount(supabase);
 
   return (
-    <OpsShell context={context} unreadCount={unreadCount} activeHref="/console/projects">
+    <OpsShell
+      context={context}
+      unreadCount={unreadCount}
+      activeHref="/console/projects"
+    >
       {children}
     </OpsShell>
   );
