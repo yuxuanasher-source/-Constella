@@ -1,36 +1,93 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 经营舱
 
-## Getting Started
+游戏直播 MCN / 直播工作室项目经营系统。当前版本是 P0 工程骨架，加一条「项目草稿创建 -> 发布」纵切片，用来验证多租户、RBAC、RLS、审计、通知、状态机和三端外壳。
 
-First, run the development server:
+## 快速开始
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
+cp .env.example .env.local
+pnpm supabase:start
+pnpm supabase:migrate
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+访问：
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- 经营 Web：`http://localhost:3000/console/projects`
+- 主播 App 外壳：`http://localhost:3000/m/tasks`
+- 主播桌面外壳：`http://localhost:3000/desktop`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+本地 seed 账号密码均为 `Password123!`：
 
-## Learn More
+```text
+owner@jy-demo.local
+ops@jy-demo.local
+operator@jy-demo.local
+finance@jy-demo.local
+streamer@jy-demo.local
+```
 
-To learn more about Next.js, take a look at the following resources:
+## 常用命令
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+pnpm dev
+pnpm lint
+pnpm type-check
+pnpm test
+pnpm build
+pnpm supabase:migrate
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+`pnpm supabase:migrate` 当前映射到 `supabase db reset`，会按迁移重建本地库并重复执行 `supabase/seed.sql`。
 
-## Deploy on Vercel
+## 目录约定
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```text
+app/                         Next.js App Router
+app/(ops)/console/           经营 Web 端
+app/(streamer-app)/m/        主播 App 移动端外壳
+app/(streamer-desktop)/      主播桌面端外壳
+components/ui/               shadcn 风格基础组件
+components/layouts/          三端布局
+features/projects/           项目纵切片：状态机、服务、查询、server actions
+lib/auth/                    会话与组织/角色解析
+lib/rbac/                    角色权限与前端门控
+lib/audit/                   统一审计写服务
+lib/notify/                  站内通知底座
+lib/db/                      Supabase client 与数据库契约测试
+supabase/migrations/         数据库迁移，包含枚举、RLS、函数、视图
+supabase/seed.sql            可重复 seed 数据
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 架构边界
+
+- 多租户：业务表均包含 `organization_id`，迁移中统一开启 RLS。
+- 权限三层：数据库 RLS、服务端 RBAC、前端按钮/菜单门控。
+- 字段级脱敏：主播端使用 `streamer_payable_items_safe` 安全视图，不返回厂家应收、毛利和成本。
+- 审计：`lib/audit` 是统一写入口，`audit_logs` 有 append-only trigger，高风险操作要求原因。
+- 通知：`lib/notify` 写 `notifications`，经营 Web 顶部铃铛读取未读数。
+- 证据模型：`live_reports` 保留 `system_duration` / `screenshot_duration` / `claimed_duration` 三轨，`settlement_duration`、`time_source`、`evidence_level` 写入后由 trigger 冻结。
+- 结算边界：P0 只立表；后续 P2 引擎只计算 CPT / 底薪，CPA / CPS / 礼物仅承载。
+
+## 当前纵切片
+
+经营 Web 的 `/console/projects` 已接入：
+
+```text
+创建项目草稿 -> RBAC 校验 -> RLS 写入 -> 审计 create
+发布项目 -> owner/ops_manager 校验 -> draft -> recruiting 状态机 -> 审计 publish -> 通知 owner
+```
+
+`operator_business` 可以创建草稿，但发布按钮会被前端禁用；服务端仍会拒绝发布。
+
+## P1 下一步
+
+按 `经营舱-开发计划.md` 进入 P1 履约证据闭环：
+
+```text
+M1 项目完善 -> M2 主播池 -> M3 选播准入 -> M4 排班+系统计时
+-> M5 报数+证据分级 -> 审核通过进可结算池
+```
+
+优先从 `features/projects/` 扩展 M1，再新增 `features/streamers/`、`features/applications/`、`features/live-tasks/`、`features/live-reports/`。
