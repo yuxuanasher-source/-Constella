@@ -5,8 +5,8 @@
 - [x] Auto review shadow mode evaluates pending live reports with eight-gate decisions.
 - [ ] Auto review active pass is gated by active rule version and does not run by default.
 - [x] Pricing calculator returns receivable, payable, supplier cost, gross margin, margin rate, break-even, suggested minimum quote, and risk notes.
-- [ ] Streamer matching engine returns score, reasons, risk notes, reference projects, and suggested settlement method.
-- [ ] Supplier quality score handles completion, screening pass, margin contribution, anomalies, and blacklist penalties.
+- [x] Streamer matching engine returns score, reasons, risk notes, reference projects, and suggested settlement method.
+- [x] Supplier quality score handles completion, screening pass, margin contribution, anomalies, and blacklist penalties.
 - [ ] Project review report summarizes delivery, finance, best/worst streamers, supplier performance, and next-round recommendations.
 - [ ] AI safety layer uses registered read-only tools, writes audit for every query, and never exposes organization finance data to streamers.
 
