@@ -11,6 +11,15 @@ const p2Migration = readFileSync(
   ),
   "utf8",
 );
+const streamerSafeViewMigration = readFileSync(
+  join(
+    process.cwd(),
+    "supabase",
+    "migrations",
+    "20260602154500_fix_streamer_payable_safe_view.sql",
+  ),
+  "utf8",
+);
 
 describe("P2 settlement schema contract", () => {
   it("indexes the approved unsettled report pool", () => {
@@ -30,5 +39,20 @@ describe("P2 settlement schema contract", () => {
       'create policy "owner ops can manage settlement items"',
     );
     expect(p2Migration).not.toContain("'finance'");
+  });
+
+  it("keeps the streamer payable view non-empty without exposing batch table reads", () => {
+    expect(streamerSafeViewMigration).toContain(
+      "public.streamer_payable_items_safe",
+    );
+    expect(streamerSafeViewMigration).toContain(
+      "with (security_invoker = false)",
+    );
+    expect(streamerSafeViewMigration).toContain(
+      "sbi.streamer_id = public.current_streamer_id(sbi.organization_id)",
+    );
+    expect(streamerSafeViewMigration).toContain(
+      "where sb.batch_type = 'payable'",
+    );
   });
 });

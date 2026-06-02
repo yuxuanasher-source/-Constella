@@ -36,6 +36,7 @@
 - [x] API route contracts return 403 for settlement service permission denials.
 - [x] API route contracts pin M6 create-batch, manual item, lock, and reopen payloads used by the reference UI.
 - [x] DTO contracts keep M6 settlement responses camelCase and block sensitive finance field leakage.
+- [x] HTTP integration smoke covers M6 pool/batch/detail reads, streamer payable-safe reads, and finance mutation denial with seed data.
 - [x] Golden-path regression covers submit report -> approve -> settlement pool -> payable batch -> streamer-safe bill with `pnpm test:golden`.
 - [x] M6 frontend smoke covers the create-batch button, POST payload, batch list update, and settlement-pool removal with `pnpm test:ui-smoke`.
 - [x] Schema contract covers the settlement pool index and finance read-only RLS write boundary.
