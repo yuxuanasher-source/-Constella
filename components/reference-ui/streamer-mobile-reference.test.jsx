@@ -11,10 +11,26 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
 
   it("starts, stops, and submits a live report from the streamer task flow", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1780000000000);
+    const taskState = {
+      status: "pending_live",
+      systemDuration: 0,
+    };
+    const refreshedTask = () => ({
+      id: "live-task-ui-smoke-1",
+      title: "Golden Project · 主播一号",
+      status: taskState.status,
+      projectName: "Golden Project",
+      plannedStartAt: "2026-06-02T11:00:00.000Z",
+      plannedEndAt: "2026-06-02T13:00:00.000Z",
+      plannedDuration: 120,
+      systemDuration: taskState.systemDuration,
+    });
 
     const fetchMock = vi.fn(async (url) => {
       const requestUrl = String(url);
       if (requestUrl.endsWith("/start")) {
+        taskState.status = "live";
+        taskState.systemDuration = 0;
         return {
           ok: true,
           json: async () => ({
@@ -27,6 +43,8 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
         };
       }
       if (requestUrl.endsWith("/stop")) {
+        taskState.status = "pending_report";
+        taskState.systemDuration = 120;
         return {
           ok: true,
           json: async () => ({
@@ -39,6 +57,8 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
         };
       }
       if (requestUrl.endsWith("/reports")) {
+        taskState.status = "report_pending_review";
+        taskState.systemDuration = 240;
         return {
           ok: true,
           json: async () => ({
@@ -49,6 +69,14 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
               timeSource: "screenshot",
               evidenceLevel: "yellow",
             },
+          }),
+        };
+      }
+      if (requestUrl === "/api/streamer/live-tasks") {
+        return {
+          ok: true,
+          json: async () => ({
+            tasks: [refreshedTask()],
           }),
         };
       }
@@ -86,7 +114,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "准时点击「开始直播」" }),
     );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       "/api/live-tasks/live-task-ui-smoke-1/start",
@@ -96,19 +124,29 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
         body: JSON.stringify({}),
       }),
     );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/streamer/live-tasks",
+      undefined,
+    );
 
     fireEvent.click(
       await screen.findByRole("button", { name: "结束直播 + 上传截图" }),
     );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
     expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
+      3,
       "/api/live-tasks/live-task-ui-smoke-1/stop",
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/api/streamer/live-tasks",
+      undefined,
     );
 
     fireEvent.click(
@@ -117,9 +155,9 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "确认无误，提交审核" }),
     );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
     expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
+      5,
       "/api/live-tasks/live-task-ui-smoke-1/reports",
       expect.objectContaining({
         method: "POST",
@@ -133,6 +171,11 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
           viewers: 11240,
         }),
       }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      "/api/streamer/live-tasks",
+      undefined,
     );
 
     expect(await screen.findByText("报数已提交审核")).toBeInTheDocument();

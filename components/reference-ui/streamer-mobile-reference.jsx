@@ -2,6 +2,8 @@
 /* eslint-disable */
 import React from "react";
 
+import { toStreamerReferenceTask } from "@/features/live-operations/live-ui-adapters";
+
 // ===== src\icons.jsx =====
 // Inline stroke-icons — 16/18/20 sizing. All paths from scratch (simple geometry).
 const ic = (props, paths) => {
@@ -4186,68 +4188,69 @@ function StreamerMobileReferenceInner({
   }, [liveEarnings]);
 
   const visibleTasks = Array.isArray(tasks) ? tasks : MY_TASKS;
-  const updateTask = React.useCallback((id, patch) => {
-    setTasks((current) => {
-      const base = Array.isArray(current) ? current : MY_TASKS;
-      return base.map((task) =>
-        task.id === id ? { ...task, ...patch } : task,
-      );
-    });
-  }, []);
+  const actions = React.useMemo(() => {
+    const readJson = async (response, fallbackMessage) => {
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error || fallbackMessage);
+      }
+      return body;
+    };
 
-  const actions = React.useMemo(
-    () => ({
+    const fetchJson = async (url, fallbackMessage, init) => {
+      const response = await fetch(url, init);
+      return readJson(response, fallbackMessage);
+    };
+
+    const refreshTasks = async () => {
+      const body = await fetchJson(
+        "/api/streamer/live-tasks",
+        "refresh streamer tasks failed",
+      );
+      if (Array.isArray(body.tasks)) {
+        setTasks(body.tasks.map((task) => toStreamerReferenceTask(task)));
+      }
+    };
+
+    return {
       startTask: async (id) => {
-        const response = await fetch(`/api/live-tasks/${id}/start`, {
+        await fetchJson(`/api/live-tasks/${id}/start`, "start task failed", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
         });
-        if (!response.ok) throw new Error("start task failed");
-        const payload = await response.json();
-        updateTask(id, {
-          status: "live",
-          systemDuration: payload.task?.systemDuration ?? 0,
-        });
+        await refreshTasks();
       },
       stopTask: async (id) => {
-        const response = await fetch(`/api/live-tasks/${id}/stop`, {
+        await fetchJson(`/api/live-tasks/${id}/stop`, "stop task failed", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
         });
-        if (!response.ok) throw new Error("stop task failed");
-        const payload = await response.json();
-        updateTask(id, {
-          status: "pending_report",
-          systemDuration: payload.task?.systemDuration ?? 0,
-        });
+        await refreshTasks();
       },
       submitReport: async (id, input) => {
         const durationHours = Number(input.durationHours || 0);
         const audience = Number(input.audience || 0);
-        const response = await fetch(`/api/live-tasks/${id}/reports`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            screenshotStoragePath: `demo/reports/${id}/manual-submit.png`,
-            screenshotFileHash: `manual-${id}-${Date.now()}`,
-            screenshotDuration: Math.round(durationHours * 60),
-            claimedDuration: Math.round(durationHours * 60),
-            viewers: audience,
-          }),
-        });
-        if (!response.ok) throw new Error("submit report failed");
-        updateTask(id, {
-          status: "pending_review",
-          reportedDuration: durationHours,
-          reportedAudience: audience,
-          note: "运营审核中，预计 24 小时内出结果",
-        });
+        await fetchJson(
+          `/api/live-tasks/${id}/reports`,
+          "submit report failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              screenshotStoragePath: `demo/reports/${id}/manual-submit.png`,
+              screenshotFileHash: `manual-${id}-${Date.now()}`,
+              screenshotDuration: Math.round(durationHours * 60),
+              claimedDuration: Math.round(durationHours * 60),
+              viewers: audience,
+            }),
+          },
+        );
+        await refreshTasks();
       },
-    }),
-    [updateTask],
-  );
+    };
+  }, []);
 
   const go = (r, arg) => {
     if (r === "task") {
