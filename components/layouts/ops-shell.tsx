@@ -10,23 +10,9 @@ import {
 import { signOutAction } from "@/app/(auth)/login/actions";
 import { BrandLogo } from "@/components/brand-logo";
 import { Button } from "@/components/ui/button";
+import { OPS_MODULE_ROUTES } from "@/features/ui-route-contracts/module-route-map";
 import type { AuthContext } from "@/lib/auth/context";
 import { cn } from "@/lib/utils";
-
-const moduleNav = [
-  ["M0", "账号与权限", "/console/stubs/m0"],
-  ["M1", "项目管理", "/console/projects"],
-  ["M2", "主播池", "/console/stubs/m2"],
-  ["M3", "选播准入", "/console/stubs/m3"],
-  ["M4", "排班任务", "/console/stubs/m4"],
-  ["M5", "报数审核", "/console/stubs/m5"],
-  ["M6", "结算中心", "/console/stubs/m6"],
-  ["M7", "审计日志", "/console/stubs/m7"],
-  ["M8", "导出中心", "/console/stubs/m8"],
-  ["M9", "通知待办", "/console/stubs/m9"],
-  ["M10", "智能作战台", "/console/stubs/m10"],
-  ["M11", "技术架构", "/console/stubs/m11"],
-] as const;
 
 export function OpsShell({
   children,
@@ -44,20 +30,29 @@ export function OpsShell({
       <aside className="hidden w-64 shrink-0 border-r border-[var(--line)] bg-white px-4 py-5 lg:block">
         <BrandLogo />
         <nav className="mt-8 space-y-1">
-          {moduleNav.map(([code, label, href]) => (
-            <Link
-              key={code}
-              href={href}
-              className={cn(
-                "flex h-9 items-center gap-3 rounded-md px-3 text-sm text-[var(--ink-500)] transition-colors hover:bg-[var(--blue-50)] hover:text-[var(--blue-700)]",
-                activeHref === href &&
-                  "bg-[var(--blue-50)] font-medium text-[var(--blue-700)]",
-              )}
-            >
-              <span className="w-9 font-mono text-xs tabular-nums">{code}</span>
-              <span>{label}</span>
-            </Link>
-          ))}
+          {OPS_MODULE_ROUTES.map(({ module, label, href }) => {
+            const code = module.toUpperCase();
+            const displayLabel = label.startsWith(`${code} `)
+              ? label.slice(code.length + 1)
+              : label;
+
+            return (
+              <Link
+                key={module}
+                href={href}
+                className={cn(
+                  "flex h-9 items-center gap-3 rounded-md px-3 text-sm text-[var(--ink-500)] transition-colors hover:bg-[var(--blue-50)] hover:text-[var(--blue-700)]",
+                  activeHref === href &&
+                    "bg-[var(--blue-50)] font-medium text-[var(--blue-700)]",
+                )}
+              >
+                <span className="w-9 font-mono text-xs tabular-nums">
+                  {code}
+                </span>
+                <span>{displayLabel}</span>
+              </Link>
+            );
+          })}
         </nav>
       </aside>
 

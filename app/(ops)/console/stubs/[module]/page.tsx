@@ -26,24 +26,10 @@ import {
   toOpsReferenceBatchDetailItem,
   toOpsReferenceSettlementPoolItem,
 } from "@/features/settlements/settlement-ui-adapters";
+import { routeForOpsModule } from "@/features/ui-route-contracts/module-route-map";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { isMcnStaff } from "@/lib/rbac/roles";
-
-const routeByModule: Record<string, string> = {
-  m0: "org",
-  m1: "projects",
-  m2: "streamers",
-  m3: "streamers",
-  m4: "tasks",
-  m5: "reports",
-  m6: "settle",
-  m7: "audit",
-  m8: "export",
-  m9: "notifications",
-  m10: "warroom",
-  m11: "warroom",
-};
 
 export default async function StubPage({
   params,
@@ -61,10 +47,11 @@ export default async function StubPage({
     auditEntries,
     notificationItems,
   } = await loadLiveReferenceData(module);
+  const route = routeForOpsModule(module);
 
   return (
     <OpsReferenceApp
-      initialRoute={routeByModule[module] ?? "warroom"}
+      initialRoute={route?.routeKey ?? "warroom"}
       liveTasks={liveTasks}
       liveReports={liveReports}
       liveBatches={liveBatches}
