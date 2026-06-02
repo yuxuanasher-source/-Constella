@@ -4,6 +4,10 @@ import {
   type AuditQueryClient,
 } from "@/features/audit-center/audit-center-queries";
 import {
+  listNotificationCenterItems,
+  type NotificationQueryClient,
+} from "@/features/notifications/notification-center-queries";
+import {
   listOpsLiveReportQueue,
   listOpsLiveTaskQueue,
 } from "@/features/live-operations/live-operations-queries";
@@ -36,7 +40,7 @@ const routeByModule: Record<string, string> = {
   m6: "settle",
   m7: "audit",
   m8: "export",
-  m9: "audit",
+  m9: "notifications",
   m10: "warroom",
   m11: "warroom",
 };
@@ -55,6 +59,7 @@ export default async function StubPage({
     liveSettlementPool,
     settlementScope,
     auditEntries,
+    notificationItems,
   } = await loadLiveReferenceData(module);
 
   return (
@@ -67,6 +72,7 @@ export default async function StubPage({
       liveSettlementPool={liveSettlementPool}
       settlementScope={settlementScope}
       auditEntries={auditEntries}
+      notificationItems={notificationItems}
     />
   );
 }
@@ -115,7 +121,7 @@ async function loadLiveReferenceData(module: string) {
     };
   }
 
-  if (module === "m7" || module === "m9") {
+  if (module === "m7") {
     const auditQueryClient = supabase as unknown as AuditQueryClient;
     const entries = await listAuditCenterEntries(
       auditQueryClient,
@@ -127,6 +133,16 @@ async function loadLiveReferenceData(module: string) {
       { limit: 50 },
     );
     return { auditEntries: entries };
+  }
+
+  if (module === "m9") {
+    const notificationQueryClient = supabase as unknown as NotificationQueryClient;
+    const items = await listNotificationCenterItems(notificationQueryClient, {
+      userId: auth.userId,
+      role: auth.role,
+      organizationId: auth.organizationId,
+    });
+    return { notificationItems: items };
   }
 
   return {};

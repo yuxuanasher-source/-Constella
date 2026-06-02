@@ -662,3 +662,93 @@ describe("OpsReferenceApp audit center smoke", () => {
     expect(screen.queryByText("after_json")).not.toBeInTheDocument();
   });
 });
+
+describe("OpsReferenceApp notification center smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("renders notification todos and handles a notification through the api", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/notifications/notice-ui-1") {
+        return {
+          ok: true,
+          json: async () => ({
+            notification: {
+              id: "notice-ui-1",
+              title: "结算批次重开",
+              status: "handled",
+            },
+          }),
+        };
+      }
+
+      if (String(url) === "/api/notifications") {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: "notice-ui-1",
+                type: "high_risk",
+                status: "handled",
+                title: "结算批次重开",
+                content: "批次被 owner 重开",
+                objectType: "settlement_batch",
+                objectId: "batch-1",
+                isHighRisk: true,
+                createdAt: "2026-06-02T10:00:00.000Z",
+              },
+            ],
+            unreadCount: 0,
+          }),
+        };
+      }
+
+      return {
+        ok: false,
+        json: async () => ({ error: "unexpected request" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="notifications"
+        notificationItems={[
+          {
+            id: "notice-ui-1",
+            type: "high_risk",
+            status: "unread",
+            title: "结算批次重开",
+            content: "批次被 owner 重开",
+            objectType: "settlement_batch",
+            objectId: "batch-1",
+            isHighRisk: true,
+            createdAt: "2026-06-02T10:00:00.000Z",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("通知待办").length).toBeGreaterThan(0);
+    expect(screen.getByText("结算批次重开")).toBeInTheDocument();
+    expect(screen.getByText("批次被 owner 重开")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/notifications/notice-ui-1",
+        expect.objectContaining({
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "handled" }),
+        }),
+      );
+    });
+    expect(fetchMock).toHaveBeenCalledWith("/api/notifications", undefined);
+    expect((await screen.findAllByText("已处理")).length).toBeGreaterThan(0);
+  });
+});

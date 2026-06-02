@@ -1115,6 +1115,7 @@ const OpsLiveDataContext = React.createContext({
   settlementPool: null,
   settlementScope: null,
   auditEntries: null,
+  notificationItems: null,
   actions: {},
 });
 
@@ -1151,6 +1152,11 @@ function useOpsSettlementScope() {
 function useOpsAuditEntries() {
   const { auditEntries } = React.useContext(OpsLiveDataContext);
   return Array.isArray(auditEntries) ? auditEntries : [];
+}
+
+function useOpsNotifications() {
+  const { notificationItems } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(notificationItems) ? notificationItems : [];
 }
 
 function useOpsLiveActions() {
@@ -10532,6 +10538,270 @@ function AuditEntryDetail({ entry }) {
   );
 }
 
+function ScreenNotifications() {
+  const notifications = useOpsNotifications();
+  const actions = useOpsLiveActions();
+  const [filter, setFilter] = React.useState("all");
+  const [busyId, setBusyId] = React.useState(null);
+
+  const filtered = React.useMemo(() => {
+    if (filter === "open") {
+      return notifications.filter(
+        (item) => item.status === "unread" || item.status === "read",
+      );
+    }
+    if (filter === "highRisk") {
+      return notifications.filter((item) => item.isHighRisk);
+    }
+    if (filter === "handled") {
+      return notifications.filter((item) => item.status === "handled");
+    }
+    return notifications;
+  }, [filter, notifications]);
+
+  const unreadCount = notifications.filter(
+    (item) => item.status === "unread",
+  ).length;
+  const openCount = notifications.filter(
+    (item) => item.status === "unread" || item.status === "read",
+  ).length;
+  const highRiskCount = notifications.filter((item) => item.isHighRisk).length;
+
+  const updateStatus = async (item, action) => {
+    if (!actions.updateNotificationStatus || busyId) return;
+    setBusyId(item.id);
+    try {
+      await actions.updateNotificationStatus(item.id, action);
+    } catch (error) {
+      globalThis.alert?.(
+        error instanceof Error ? error.message : "更新通知状态失败",
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        title="通知待办"
+        subtitle="站内提醒、待办状态与高风险动作通知统一在这里处理"
+        actions={
+          <Button
+            kind="primary"
+            icon={<Icon.Bell size={14} stroke="#fff" />}
+            onClick={actions.refreshNotifications}
+            disabled={!actions.refreshNotifications}
+          >
+            刷新通知
+          </Button>
+        }
+      />
+
+      <div
+        style={{
+          padding: 20,
+          display: "flex",
+          flexDirection: "column",
+          gap: 20,
+        }}
+      >
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4, 1fr)",
+            gap: 16,
+          }}
+        >
+          <Card>
+            <Metric
+              label="通知总数"
+              value={String(notifications.length)}
+              unit="条"
+              hint="仅展示当前用户或角色可见范围"
+            />
+          </Card>
+          <Card>
+            <Metric
+              label="未读"
+              value={String(unreadCount)}
+              unit="条"
+              delta={unreadCount > 0 ? "需要查看" : "已清空"}
+              deltaTone={unreadCount > 0 ? "amber" : "green"}
+            />
+          </Card>
+          <Card>
+            <Metric
+              label="待处理"
+              value={String(openCount)}
+              unit="条"
+              hint="未读与已读未处理"
+            />
+          </Card>
+          <Card>
+            <Metric
+              label="高风险"
+              value={String(highRiskCount)}
+              unit="条"
+              delta={highRiskCount > 0 ? "需复核" : "无风险提醒"}
+              deltaTone={highRiskCount > 0 ? "red" : "green"}
+            />
+          </Card>
+        </div>
+
+        <Card padded={false}>
+          <div
+            style={{
+              padding: "0 12px",
+              borderBottom: "1px solid var(--line)",
+            }}
+          >
+            <Tabs
+              value={filter}
+              onChange={setFilter}
+              items={[
+                { key: "all", label: "全部", count: notifications.length },
+                { key: "open", label: "待办", count: openCount },
+                { key: "highRisk", label: "高风险", count: highRiskCount },
+                {
+                  key: "handled",
+                  label: "已处理",
+                  count: notifications.filter(
+                    (item) => item.status === "handled",
+                  ).length,
+                },
+              ]}
+            />
+          </div>
+          <DataTable
+            emptyText="暂无可见通知"
+            columns={[
+              {
+                title: "通知",
+                render: (item) => (
+                  <div>
+                    <div
+                      style={{
+                        fontSize: 12.5,
+                        fontWeight: 700,
+                        color: "var(--ink-900)",
+                      }}
+                    >
+                      {item.title}
+                    </div>
+                    <div
+                      style={{
+                        marginTop: 4,
+                        fontSize: 11.5,
+                        color: "var(--ink-500)",
+                        maxWidth: 320,
+                        whiteSpace: "normal",
+                      }}
+                    >
+                      {item.content}
+                    </div>
+                    <div
+                      className="mono"
+                      style={{
+                        marginTop: 5,
+                        fontSize: 10.5,
+                        color: "var(--ink-400)",
+                      }}
+                    >
+                      {item.id} · {formatOpsMinute(item.createdAt)}
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: "类型",
+                render: (item) => (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <Badge tone={notificationTypeTone(item.type)}>
+                      {notificationTypeLabel(item.type)}
+                    </Badge>
+                    {item.isHighRisk && (
+                      <Badge tone="red" dot>
+                        高风险
+                      </Badge>
+                    )}
+                  </div>
+                ),
+              },
+              {
+                title: "对象",
+                render: (item) => (
+                  <div>
+                    <div
+                      className="mono"
+                      style={{ fontSize: 11.5, color: "var(--ink-700)" }}
+                    >
+                      {item.objectType || "system"}
+                    </div>
+                    <div
+                      className="mono"
+                      style={{ fontSize: 10.5, color: "var(--ink-400)" }}
+                    >
+                      {item.objectId || "—"}
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: "状态",
+                render: (item) => (
+                  <Badge tone={notificationStatusTone(item.status)} dot>
+                    {notificationStatusLabel(item.status)}
+                  </Badge>
+                ),
+              },
+              {
+                title: "操作",
+                width: 210,
+                render: (item) => (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {item.status === "unread" && (
+                      <Button
+                        size="sm"
+                        kind="default"
+                        onClick={() => updateStatus(item, "read")}
+                        disabled={busyId === item.id}
+                      >
+                        标记已读
+                      </Button>
+                    )}
+                    {item.status !== "handled" && (
+                      <Button
+                        size="sm"
+                        kind="primary"
+                        onClick={() => updateStatus(item, "handled")}
+                        disabled={busyId === item.id}
+                      >
+                        标记已处理
+                      </Button>
+                    )}
+                    {item.status !== "ignored" && (
+                      <Button
+                        size="sm"
+                        kind="ghost"
+                        onClick={() => updateStatus(item, "ignored")}
+                        disabled={busyId === item.id}
+                      >
+                        忽略
+                      </Button>
+                    )}
+                  </div>
+                ),
+              },
+            ]}
+            rows={filtered}
+          />
+        </Card>
+      </div>
+    </>
+  );
+}
+
 function auditChangedFields(entry) {
   return Array.isArray(entry.changedFields) && entry.changedFields.length > 0
     ? entry.changedFields.join(", ")
@@ -10572,6 +10842,44 @@ function auditRoleLabel(role) {
   return labels[role] || role || "系统";
 }
 
+function notificationTypeLabel(type) {
+  const labels = {
+    task: "任务",
+    review: "审核",
+    anomaly: "异常",
+    settlement: "结算",
+    system: "系统",
+    high_risk: "高风险",
+  };
+  return labels[type] || type || "通知";
+}
+
+function notificationTypeTone(type) {
+  if (type === "high_risk") return "red";
+  if (type === "settlement") return "violet";
+  if (type === "anomaly") return "amber";
+  if (type === "review") return "blue";
+  if (type === "task") return "green";
+  return "neutral";
+}
+
+function notificationStatusLabel(status) {
+  const labels = {
+    unread: "未读",
+    read: "已读",
+    handled: "已处理",
+    ignored: "已忽略",
+  };
+  return labels[status] || status || "未知";
+}
+
+function notificationStatusTone(status) {
+  if (status === "unread") return "blue";
+  if (status === "handled") return "green";
+  if (status === "ignored") return "neutral";
+  return "amber";
+}
+
 // ===== src\app.jsx =====
 // ——— App entry ————————————————————————————————
 
@@ -10584,6 +10892,7 @@ function OpsReferenceInner({
   liveSettlementPool,
   settlementScope,
   auditEntries,
+  notificationItems,
 }) {
   // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
@@ -10600,6 +10909,9 @@ function OpsReferenceInner({
   );
   const [auditEntriesState, setAuditEntriesState] = React.useState(
     auditEntries ?? null,
+  );
+  const [notificationItemsState, setNotificationItemsState] = React.useState(
+    notificationItems ?? null,
   );
 
   React.useEffect(() => {
@@ -10625,6 +10937,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setAuditEntriesState(auditEntries ?? null);
   }, [auditEntries]);
+
+  React.useEffect(() => {
+    setNotificationItemsState(notificationItems ?? null);
+  }, [notificationItems]);
 
   const actions = React.useMemo(() => {
     const readJson = async (response, fallbackMessage) => {
@@ -10723,6 +11039,16 @@ function OpsReferenceInner({
       );
       if (Array.isArray(body.entries)) {
         setAuditEntriesState(body.entries);
+      }
+    };
+
+    const refreshNotifications = async () => {
+      const body = await fetchJson(
+        "/api/notifications",
+        "refresh notifications failed",
+      );
+      if (Array.isArray(body.items)) {
+        setNotificationItemsState(body.items);
       }
     };
 
@@ -10845,6 +11171,19 @@ function OpsReferenceInner({
         await refreshSettlementBatches();
       },
       refreshAuditEntries,
+      refreshNotifications,
+      updateNotificationStatus: async (id, action) => {
+        await fetchJson(
+          `/api/notifications/${id}`,
+          "update notification failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action }),
+          },
+        );
+        await refreshNotifications();
+      },
     };
   }, [settlementScope]);
 
@@ -10888,6 +11227,8 @@ function OpsReferenceInner({
         return ["运营", "数据导出"];
       case "audit":
         return ["治理", "操作日志"];
+      case "notifications":
+        return ["治理", "通知待办"];
       case "org":
         return ["设置", "组织与权限"];
       default:
@@ -10907,6 +11248,7 @@ function OpsReferenceInner({
         settlementPool: settlementPoolState,
         settlementScope,
         auditEntries: auditEntriesState,
+        notificationItems: notificationItemsState,
         actions,
       }}
     >
@@ -10936,6 +11278,7 @@ function OpsReferenceInner({
             {route === "reports" && <ScreenReports go={go} />}
             {route === "settle" && <ScreenSettlement go={go} />}
             {route === "audit" && <ScreenAudit go={go} />}
+            {route === "notifications" && <ScreenNotifications go={go} />}
             {route === "org" && <ScreenOrg go={go} />}
             {route === "export" && <PlaceholderScreen route={route} go={go} />}
           </div>
@@ -11120,7 +11463,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[] }} props
+ * @param {{ initialRoute?: string; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[] }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -11131,6 +11474,7 @@ export default function OpsReferenceApp({
   liveSettlementPool,
   settlementScope,
   auditEntries,
+  notificationItems,
 }) {
   return (
     <OpsReferenceInner
@@ -11142,6 +11486,7 @@ export default function OpsReferenceApp({
       liveSettlementPool={liveSettlementPool}
       settlementScope={settlementScope}
       auditEntries={auditEntries}
+      notificationItems={notificationItems}
     />
   );
 }
