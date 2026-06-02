@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PATCH as reviewLiveReportPatch } from "./live-reports/[reportId]/review/route";
+import { POST as cancelLiveTaskPost } from "./live-tasks/[taskId]/cancel/route";
 import { POST as startLiveTaskPost } from "./live-tasks/[taskId]/start/route";
 import { POST as settlementBatchPost } from "./settlement-batches/route";
 import { POST as lockSettlementBatchPost } from "./settlement-batches/[batchId]/lock/route";
@@ -12,6 +13,7 @@ import {
   getLiveOperationsRouteContext,
 } from "@/features/live-operations/live-operations-route-utils";
 import {
+  cancelLiveTask,
   reviewLiveReport,
   startLiveTask,
 } from "@/features/live-operations/live-operations-service";
@@ -36,6 +38,7 @@ vi.mock("@/features/live-operations/live-operations-route-utils", async () => {
 });
 
 vi.mock("@/features/live-operations/live-operations-service", () => ({
+  cancelLiveTask: vi.fn(),
   reviewLiveReport: vi.fn(),
   startLiveTask: vi.fn(),
 }));
@@ -135,6 +138,45 @@ describe("api route contracts", () => {
         actor: liveActor,
         taskId: "task-1",
         now: "2026-06-02T10:00:00.000Z",
+      }),
+    );
+  });
+
+  it("maps the M4 cancel-task payload used by the ops UI", async () => {
+    vi.mocked(actorFromContext).mockResolvedValueOnce({
+      userId: "user-ops",
+      name: "Ops Manager",
+      role: "ops_manager",
+      organizationId: "org-1",
+      streamerId: null,
+    });
+    vi.mocked(cancelLiveTask).mockResolvedValueOnce({
+      id: "task-1",
+      status: "cancelled",
+    } as never);
+
+    const response = await cancelLiveTaskPost(
+      jsonRequest("http://localhost/api/live-tasks/task-1/cancel", {
+        reason: "经营端页面取消任务",
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      task: { id: "task-1", status: "cancelled" },
+    });
+    expect(cancelLiveTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: {
+          userId: "user-ops",
+          name: "Ops Manager",
+          role: "ops_manager",
+          organizationId: "org-1",
+          streamerId: null,
+        },
+        taskId: "task-1",
+        reason: "经营端页面取消任务",
       }),
     );
   });

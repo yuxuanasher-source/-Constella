@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  cancelLiveTask,
   createLiveTask,
   reviewLiveReport,
   startLiveTask,
@@ -206,6 +207,52 @@ describe("live operations service", () => {
         systemDuration: 90,
       }),
     );
+  });
+
+  it("lets staff cancel an uncompleted task and writes an audit reason", async () => {
+    const cancelled = await cancelLiveTask({
+      repo,
+      audit,
+      actor,
+      taskId: "task-1",
+      reason: "主播临时请假",
+    });
+
+    expect(cancelled).toMatchObject({ status: "cancelled" });
+    expect(repo.updateLiveTask).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ status: "cancelled" }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        module: "live_task",
+        objectId: "task-1",
+        changedFields: ["status"],
+        reason: "主播临时请假",
+      }),
+    );
+  });
+
+  it("blocks cancelling completed live tasks through the state machine", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "completed",
+    });
+
+    await expect(
+      cancelLiveTask({
+        repo,
+        audit,
+        actor,
+        taskId: "task-1",
+        reason: "误操作",
+      }),
+    ).rejects.toThrow(
+      "Invalid live task status transition: completed -> cancelled",
+    );
+
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
   });
 
   it("requires streamer binding before task operations", async () => {

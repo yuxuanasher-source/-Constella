@@ -328,6 +328,40 @@ export async function stopLiveTask({
   return task;
 }
 
+export async function cancelLiveTask({
+  repo,
+  audit,
+  actor,
+  taskId,
+  reason,
+}: {
+  repo: LiveOperationsRepository;
+  audit: LiveOperationsAuditWriter;
+  actor: LiveOperationsActor;
+  taskId: string;
+  reason?: string;
+}): Promise<LiveTaskRecord> {
+  assertCanManageLiveTasks(actor.role);
+  const before = await requireLiveTask(repo, taskId);
+  assertSameOrganization(actor, before.organizationId);
+  assertLiveTaskTransition(before.status, "cancelled");
+
+  const task = await repo.updateLiveTask(taskId, {
+    status: "cancelled",
+  });
+
+  await auditLiveTaskUpdate({
+    audit,
+    actor,
+    before,
+    after: task,
+    changedFields: ["status"],
+    reason,
+  });
+
+  return task;
+}
+
 export async function submitLiveReport({
   repo,
   audit,
@@ -659,12 +693,14 @@ async function auditLiveTaskUpdate({
   before,
   after,
   changedFields,
+  reason,
 }: {
   audit: LiveOperationsAuditWriter;
   actor: LiveOperationsActor;
   before: LiveTaskRecord;
   after: LiveTaskRecord;
   changedFields: string[];
+  reason?: string;
 }): Promise<void> {
   await audit({
     organizationId: actor.organizationId,
@@ -681,5 +717,6 @@ async function auditLiveTaskUpdate({
     before: before as unknown as Record<string, unknown>,
     after: after as unknown as Record<string, unknown>,
     changedFields,
+    reason,
   });
 }

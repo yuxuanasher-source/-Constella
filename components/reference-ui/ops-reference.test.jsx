@@ -163,6 +163,61 @@ describe("OpsReferenceApp live task smoke", () => {
     expect(await screen.findByText("task-ui-batch-1")).toBeInTheDocument();
     expect(screen.getByText("task-ui-batch-2")).toBeInTheDocument();
   });
+
+  it("cancels an ops live task from the task drawer then refreshes the queue", async () => {
+    const initialTask = {
+      id: "task-ui-cancel",
+      name: "Golden Project · 冷江",
+      status: "pending_live",
+      project: "P-2406",
+      projectName: "Golden Project",
+      streamerId: "S-001",
+      streamerName: "冷江",
+      dayIdx: 2,
+      startHour: 20,
+      endHour: 23.5,
+      type: "project",
+    };
+    const refreshedTask = {
+      ...initialTask,
+      status: "cancelled",
+    };
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/live-tasks") {
+        return {
+          ok: true,
+          json: async () => ({ tasks: [refreshedTask] }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({ task: refreshedTask }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="tasks" liveTasks={[initialTask]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
+    fireEvent.click(screen.getByText("task-ui-cancel"));
+    fireEvent.click(await screen.findByRole("button", { name: "取消任务" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/live-tasks/task-ui-cancel/cancel",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "经营端页面取消任务" }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/live-tasks", undefined);
+
+    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
+    expect(await screen.findByText("已取消")).toBeInTheDocument();
+  });
 });
 
 describe("OpsReferenceApp settlement smoke", () => {

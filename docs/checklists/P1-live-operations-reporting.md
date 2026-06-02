@@ -34,5 +34,5 @@
 - [x] M5 frontend smoke covers report approval payload, local approved state, and settlement-pool insertion with `pnpm test:ui-smoke`.
 - [x] Streamer frontend smoke covers start live -> stop live -> submit report payload and submitted confirmation with `pnpm test:ui-smoke`.
 - [x] Seed data contains one joined project streamer, one report-pending task, one pending report, and one screenshot record.
-- [ ] UI pages are wired to the new APIs.
+- [x] UI pages are wired to the new APIs, including streamer start/stop/report, ops report review, ops task create/batch create, and ops task cancel.
 - [ ] Authenticated browser smoke tests cover task start / stop / report / review.

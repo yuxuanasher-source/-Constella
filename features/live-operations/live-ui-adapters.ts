@@ -117,7 +117,7 @@ export function toOpsReferenceTask(
     projectName: task.projectName,
     name: task.title,
     type: "project",
-    status: toReferenceTaskStatus(task.status),
+    status: toOpsReferenceTaskStatus(task.status),
     systemDuration: task.systemDuration,
   };
 }
@@ -152,6 +152,22 @@ function toReferenceTaskStatus(status: string): StreamerReferenceTaskStatus {
     report_rejected: "rejected",
     cancelled: "rejected",
     abnormal: "rejected",
+  };
+
+  return map[status] ?? "pending_live";
+}
+
+function toOpsReferenceTaskStatus(status: string): string {
+  const map: Record<string, string> = {
+    pending_live: "pending_live",
+    live: "live",
+    pending_report: "pending_report",
+    report_pending_review: "pending_review",
+    report_approved: "approved",
+    completed: "completed",
+    report_rejected: "rejected",
+    cancelled: "cancelled",
+    abnormal: "abnormal",
   };
 
   return map[status] ?? "pending_live";

@@ -6923,6 +6923,15 @@ function ScreenTasks({ go }) {
     });
   };
 
+  const cancelTask = async (task) => {
+    await runTaskAction("cancel", async () => {
+      await actions.cancelLiveTask?.(task.id, {
+        reason: "经营端页面取消任务",
+      });
+      setSelectedTask(null);
+    });
+  };
+
   const createBatchTasks = () =>
     runTaskAction("batch", async () => {
       const projectId = askText("项目 ID", "P-2406");
@@ -7122,6 +7131,8 @@ function ScreenTasks({ go }) {
           task={selectedTask}
           onClose={() => setSelectedTask(null)}
           onCreateTask={createTask}
+          onCancelTask={cancelTask}
+          busyAction={busyAction}
         />
       )}
     </>
@@ -8094,7 +8105,7 @@ function MyTasksView() {
 
 // ——— Task Drawer (right panel) ——————————
 
-function TaskDrawer({ task, onClose, onCreateTask }) {
+function TaskDrawer({ task, onClose, onCreateTask, onCancelTask, busyAction }) {
   if (task._new) {
     return (
       <NewTaskDrawer
@@ -8329,8 +8340,13 @@ function TaskDrawer({ task, onClose, onCreateTask }) {
           gap: 8,
         }}
       >
-        <Button kind="danger" icon={<Icon.X size={14} />}>
-          取消任务
+        <Button
+          kind="danger"
+          icon={<Icon.X size={14} />}
+          onClick={() => onCancelTask?.(task)}
+          disabled={busyAction === "cancel"}
+        >
+          {busyAction === "cancel" ? "取消中…" : "取消任务"}
         </Button>
         <div style={{ flex: 1 }} />
         <Button kind="default">编辑排班</Button>
@@ -10266,6 +10282,19 @@ function OpsReferenceInner({
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(input),
+          },
+        );
+        await refreshOpsTasks();
+        return body;
+      },
+      cancelLiveTask: async (id, input) => {
+        const body = await fetchJson(
+          `/api/live-tasks/${id}/cancel`,
+          "cancel live task failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input ?? {}),
           },
         );
         await refreshOpsTasks();

@@ -65,6 +65,24 @@ describe("live UI adapters", () => {
     });
   });
 
+  it("preserves cancelled task status for the ops schedule UI", () => {
+    const task = toOpsReferenceTask({
+      id: "task-cancelled",
+      title: "Launch Week · Cancelled Streamer",
+      status: "cancelled",
+      projectId: "project-1",
+      projectName: "Launch Week",
+      streamerId: "streamer-1",
+      streamerName: "Streamer One",
+      plannedStartAt: "2026-06-02T11:00:00.000Z",
+      plannedEndAt: "2026-06-02T13:30:00.000Z",
+      plannedDuration: 150,
+      systemDuration: 0,
+    });
+
+    expect(task.status).toBe("cancelled");
+  });
+
   it("maps ops report queue DTOs without settlement amounts", () => {
     const report = toOpsReferenceReport({
       id: "report-1",
