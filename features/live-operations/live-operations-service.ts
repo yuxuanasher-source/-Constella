@@ -463,6 +463,7 @@ export async function reviewLiveReport({
 }): Promise<LiveReportRecord> {
   assertCanReviewReports(actor.role);
   const before = await requireLiveReport(repo, reportId);
+  assertSameOrganization(actor, before.organizationId);
   if (
     !["pending_review", "pending_adjudication", "need_more"].includes(
       before.status,
@@ -473,6 +474,7 @@ export async function reviewLiveReport({
 
   const nextStatus = mapReviewDecision(input.decision);
   const taskBefore = await requireLiveTask(repo, before.liveTaskId);
+  assertSameOrganization(actor, taskBefore.organizationId);
   const report = await repo.updateLiveReport(reportId, {
     status: nextStatus,
     includeInTaskResult: input.includeInTaskResult ?? true,
@@ -568,6 +570,8 @@ function assertCanOperateTask(
   actor: LiveOperationsActor,
   task: LiveTaskRecord,
 ): void {
+  assertSameOrganization(actor, task.organizationId);
+
   if (isMcnStaff(actor.role)) {
     return;
   }
@@ -576,8 +580,21 @@ function assertCanOperateTask(
     throw new Error("Current role cannot operate live tasks");
   }
 
-  if (actor.streamerId && actor.streamerId !== task.streamerId) {
+  if (!actor.streamerId) {
+    throw new Error("Current streamer is not bound to a streamer profile");
+  }
+
+  if (actor.streamerId !== task.streamerId) {
     throw new Error("Streamers can only operate their own live tasks");
+  }
+}
+
+function assertSameOrganization(
+  actor: LiveOperationsActor,
+  organizationId: string,
+): void {
+  if (actor.organizationId !== organizationId) {
+    throw new Error("Cross-organization access is not allowed");
   }
 }
 

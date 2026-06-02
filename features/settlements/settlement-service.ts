@@ -151,12 +151,16 @@ export async function listSettlementPool({
 
   assertPeriod(periodStart, periodEnd);
 
-  return repo.listSettlementPoolReports({
+  const reports = await repo.listSettlementPoolReports({
     organizationId: actor.organizationId,
     projectId,
     periodStart,
     periodEnd,
   });
+
+  return reports.filter(
+    (report) => report.organizationId === actor.organizationId,
+  );
 }
 
 export async function generateSettlementBatch({
@@ -183,12 +187,14 @@ export async function generateSettlementBatch({
   assertCanManageSettlement(actor.role);
   assertPeriod(input.periodStart, input.periodEnd);
 
-  const reports = await repo.listSettlementPoolReports({
-    organizationId: actor.organizationId,
-    projectId: input.projectId,
-    periodStart: input.periodStart,
-    periodEnd: input.periodEnd,
-  });
+  const reports = (
+    await repo.listSettlementPoolReports({
+      organizationId: actor.organizationId,
+      projectId: input.projectId,
+      periodStart: input.periodStart,
+      periodEnd: input.periodEnd,
+    })
+  ).filter((report) => report.organizationId === actor.organizationId);
   const eligibleReports = reports.filter(
     (report) =>
       report.status === "approved" &&

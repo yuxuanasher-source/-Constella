@@ -21,6 +21,7 @@ const streamerActor = {
   name: "Streamer",
   role: "streamer" as const,
   organizationId: "org-1",
+  streamerId: "streamer-1",
 };
 
 const task = {
@@ -207,6 +208,53 @@ describe("live operations service", () => {
     );
   });
 
+  it("requires streamer binding before task operations", async () => {
+    await expect(
+      startLiveTask({
+        repo,
+        audit,
+        actor: { ...streamerActor, streamerId: null },
+        taskId: "task-1",
+        now: "2026-06-02T10:00:00.000Z",
+      }),
+    ).rejects.toThrow("Current streamer is not bound to a streamer profile");
+
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
+  });
+
+  it("blocks streamers from operating another streamer's task", async () => {
+    await expect(
+      startLiveTask({
+        repo,
+        audit,
+        actor: { ...streamerActor, streamerId: "streamer-2" },
+        taskId: "task-1",
+        now: "2026-06-02T10:00:00.000Z",
+      }),
+    ).rejects.toThrow("Streamers can only operate their own live tasks");
+
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
+  });
+
+  it("blocks cross-organization task operations even if the repository returns a row", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      organizationId: "org-2",
+    });
+
+    await expect(
+      startLiveTask({
+        repo,
+        audit,
+        actor: streamerActor,
+        taskId: "task-1",
+        now: "2026-06-02T10:00:00.000Z",
+      }),
+    ).rejects.toThrow("Cross-organization access is not allowed");
+
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
+  });
+
   it("submits a report from a task and freezes evidence snapshot", async () => {
     vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
       ...task,
@@ -275,5 +323,46 @@ describe("live operations service", () => {
       expect.objectContaining({ action: "approve", module: "live_report" }),
     );
     expect("createSettlementBatchItem" in repo).toBe(false);
+  });
+
+  it("blocks cross-organization report reviews even if the repository returns a row", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      id: "report-2",
+      organizationId: "org-2",
+      liveTaskId: "task-2",
+      projectId: "project-2",
+      streamerId: "streamer-2",
+      status: "pending_review",
+      systemDuration: 120,
+      screenshotDuration: 120,
+      claimedDuration: 120,
+      settlementDuration: 120,
+      timeSource: "system",
+      evidenceLevel: "green",
+      divergencePct: 0,
+      viewers: 800,
+      includeInTaskResult: true,
+      enterSettlementPool: true,
+      riskFlags: [],
+    });
+
+    await expect(
+      reviewLiveReport({
+        repo,
+        audit,
+        notify,
+        actor,
+        reportId: "report-2",
+        input: {
+          decision: "approve",
+          includeInTaskResult: true,
+          enterSettlementPool: true,
+          reviewNotes: "ok",
+        },
+      }),
+    ).rejects.toThrow("Cross-organization access is not allowed");
+
+    expect(repo.updateLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportChangeLog).not.toHaveBeenCalled();
   });
 });

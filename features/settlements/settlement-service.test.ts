@@ -146,6 +146,26 @@ describe("settlement service", () => {
     );
   });
 
+  it("filters cross-organization reports returned by the repository", async () => {
+    vi.mocked(repo.listSettlementPoolReports).mockResolvedValueOnce([
+      {
+        ...report,
+        id: "report-cross-org",
+        organizationId: "org-2",
+      },
+    ]);
+
+    await expect(
+      listSettlementPool({
+        repo,
+        actor,
+        projectId: "project-1",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      }),
+    ).resolves.toEqual([]);
+  });
+
   it("generates a payable batch from the pool and marks reports as settled", async () => {
     const result = await generateSettlementBatch({
       repo,
@@ -226,6 +246,34 @@ describe("settlement service", () => {
         },
       }),
     ).rejects.toThrow("No unsettled approved reports found");
+  });
+
+  it("does not generate batches from cross-organization reports returned by the repository", async () => {
+    vi.mocked(repo.listSettlementPoolReports).mockResolvedValueOnce([
+      {
+        ...report,
+        id: "report-cross-org",
+        organizationId: "org-2",
+      },
+    ]);
+
+    await expect(
+      generateSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor,
+        input: {
+          projectId: "project-1",
+          batchType: "payable",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+        },
+      }),
+    ).rejects.toThrow("No unsettled approved reports found");
+
+    expect(repo.createSettlementBatch).not.toHaveBeenCalled();
+    expect(repo.createSettlementBatchItem).not.toHaveBeenCalled();
   });
 
   it("allows operator business to generate but blocks finance from mutating batches", async () => {
