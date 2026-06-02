@@ -1,6 +1,7 @@
 import type {
   OpsSettlementBatchDetailItem,
   OpsSettlementBatchListItem,
+  OpsSettlementPoolItem,
 } from "./settlement-queries";
 
 export type OpsReferenceBatch = {
@@ -28,6 +29,17 @@ export type OpsReferenceBatchDetailItem = {
   variable: number;
   adjust: number;
   total: number;
+};
+
+export type OpsReferenceSettlementPoolItem = {
+  id: string;
+  streamer: string;
+  project: string;
+  hours: number;
+  evidence: string;
+  rule: string;
+  expected: number;
+  approvedAt: string;
 };
 
 export function toOpsReferenceBatch(
@@ -67,6 +79,23 @@ export function toOpsReferenceBatchDetailItem(
     variable: item.systemAmount + item.manualAmount,
     adjust: item.adjustmentAmount,
     total: item.totalAmount,
+  };
+}
+
+export function toOpsReferenceSettlementPoolItem(
+  item: OpsSettlementPoolItem,
+): OpsReferenceSettlementPoolItem {
+  return {
+    id: item.id,
+    streamer: item.streamerName,
+    project: item.projectName,
+    hours: Math.round(((item.settlementDuration ?? 0) / 60) * 10) / 10,
+    evidence: `${item.evidenceLevel ?? "unknown"} 路 ${
+      item.timeSource ?? "unknown"
+    }`,
+    rule: item.settlementMethod,
+    expected: item.expectedAmount,
+    approvedAt: formatShanghaiMinute(item.approvedAt),
   };
 }
 

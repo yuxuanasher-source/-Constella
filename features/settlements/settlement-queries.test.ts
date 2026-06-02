@@ -8,6 +8,7 @@ import {
 import {
   toOpsReferenceBatch,
   toOpsReferenceBatchDetailItem,
+  toOpsReferenceSettlementPoolItem,
 } from "./settlement-ui-adapters";
 
 describe("settlement DTO mappers", () => {
@@ -135,6 +136,36 @@ describe("settlement DTO mappers", () => {
       variable: 300,
       adjust: 20,
       total: 320,
+    });
+  });
+
+  it("maps settlement pool rows into reference pool rows without computed settlement side effects", () => {
+    const poolItem = toOpsSettlementPoolItem({
+      id: "report-2",
+      created_at: "2026-06-02T12:30:00.000Z",
+      settlement_duration: 90,
+      time_source: "system",
+      evidence_level: "green",
+      projects: { name: "Launch Week" },
+      streamers: { display_name: "Streamer Two" },
+      project_streamers: [
+        {
+          settlement_method: "cpt",
+          hourly_rate: 100,
+          base_salary: 0,
+        },
+      ],
+    });
+
+    expect(toOpsReferenceSettlementPoolItem(poolItem)).toEqual({
+      id: "report-2",
+      streamer: "Streamer Two",
+      project: "Launch Week",
+      hours: 1.5,
+      evidence: "green 路 system",
+      rule: "cpt",
+      expected: 150,
+      approvedAt: "2026-06-02 20:30",
     });
   });
 });

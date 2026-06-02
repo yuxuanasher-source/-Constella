@@ -1110,6 +1110,7 @@ const OpsLiveDataContext = React.createContext({
   reports: null,
   batches: null,
   batchDetails: null,
+  settlementPool: null,
   settlementScope: null,
   actions: {},
 });
@@ -1132,6 +1133,11 @@ function useOpsSettlementBatches() {
 function useOpsSettlementBatchDetails() {
   const { batchDetails } = React.useContext(OpsLiveDataContext);
   return batchDetails && typeof batchDetails === "object" ? batchDetails : {};
+}
+
+function useOpsSettlementPool() {
+  const { settlementPool } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(settlementPool) ? settlementPool : [];
 }
 
 function useOpsSettlementScope() {
@@ -5803,6 +5809,7 @@ function askText(label, defaultValue = "") {
 function ScreenSettlement({ go }) {
   const batches = useOpsSettlementBatches();
   const batchDetails = useOpsSettlementBatchDetails();
+  const settlementPool = useOpsSettlementPool();
   const settlementScope = useOpsSettlementScope();
   const actions = useOpsLiveActions();
   const [type, setType] = React.useState("all");
@@ -5821,6 +5828,10 @@ function ScreenSettlement({ go }) {
     type === "all" ? batches : batches.filter((b) => b.type === type);
   const activeBatch =
     batches.find((batch) => batch.id === activeId) || batches[0] || null;
+  const poolCount =
+    settlementPool.length > 0
+      ? settlementPool.length
+      : (settlementScope?.poolCount ?? 0);
 
   const runSettlementAction = async (actionName, fn) => {
     if (busyAction) return;
@@ -5958,7 +5969,7 @@ function ScreenSettlement({ go }) {
           <Card>
             <Metric
               label="可结算池 · 报数条数"
-              value={String(settlementScope?.poolCount ?? 42)}
+              value={String(poolCount)}
               unit="条"
               hint="审核通过 · 待入批次"
             />
@@ -5982,6 +5993,11 @@ function ScreenSettlement({ go }) {
             <Metric label="本月预估毛利" value="¥73,200" delta="34.2% 毛利率" />
           </Card>
         </div>
+
+        <SettlementPoolPreview
+          rows={settlementPool}
+          settlementScope={settlementScope}
+        />
 
         <div
           style={{
@@ -6108,6 +6124,126 @@ function ScreenSettlement({ go }) {
       </div>
     </>
   );
+}
+
+function SettlementPoolPreview({ rows, settlementScope }) {
+  return (
+    <Card padded={false}>
+      <div
+        style={{
+          padding: "12px 16px",
+          borderBottom: "1px solid var(--line)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+        }}
+      >
+        <div>
+          <div
+            style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-700)" }}
+          >
+            可结算池预览
+          </div>
+          <div
+            className="mono"
+            style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 3 }}
+          >
+            {settlementScope
+              ? `${settlementScope.periodStart} → ${settlementScope.periodEnd}`
+              : "等待审核通过报数进入池子"}
+          </div>
+        </div>
+        <Badge tone={rows.length > 0 ? "green" : "neutral"} dot>
+          {rows.length > 0 ? `${rows.length} 条待入批次` : "暂无待入批次"}
+        </Badge>
+      </div>
+      <DataTable
+        dense
+        emptyText="暂无审核通过且未入批次的报数"
+        columns={[
+          {
+            title: "报数",
+            render: (r) => (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Avatar name={r.streamer} size={26} />
+                <div>
+                  <div
+                    style={{
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      color: "var(--ink-900)",
+                    }}
+                  >
+                    {r.streamer}
+                  </div>
+                  <div
+                    className="mono"
+                    style={{ fontSize: 10.5, color: "var(--ink-400)" }}
+                  >
+                    {r.id}
+                  </div>
+                </div>
+              </div>
+            ),
+          },
+          {
+            title: "项目",
+            render: (r) => <span style={{ fontSize: 12 }}>{r.project}</span>,
+          },
+          {
+            title: "有效时长",
+            align: "right",
+            render: (r) => <span className="num">{r.hours.toFixed(1)} h</span>,
+          },
+          {
+            title: "证据",
+            render: (r) => (
+              <Badge tone={settlementEvidenceTone(r.evidence)}>
+                {r.evidence}
+              </Badge>
+            ),
+          },
+          {
+            title: "规则",
+            render: (r) => <Badge tone="blue">{r.rule}</Badge>,
+          },
+          {
+            title: "预计金额",
+            align: "right",
+            render: (r) => (
+              <span
+                className="num"
+                style={{ fontWeight: 700, color: "var(--ink-900)" }}
+              >
+                ¥{r.expected.toLocaleString()}
+              </span>
+            ),
+          },
+          {
+            title: "审核时间",
+            align: "right",
+            render: (r) => (
+              <span
+                className="mono"
+                style={{ fontSize: 11, color: "var(--ink-400)" }}
+              >
+                {r.approvedAt}
+              </span>
+            ),
+          },
+        ]}
+        rows={rows}
+      />
+    </Card>
+  );
+}
+
+function settlementEvidenceTone(value) {
+  if (String(value).startsWith("green")) return "green";
+  if (String(value).startsWith("yellow")) return "amber";
+  if (String(value).startsWith("red")) return "red";
+  return "neutral";
 }
 
 function BatchDetail({
@@ -9652,6 +9788,7 @@ function OpsReferenceInner({
   liveReports,
   liveBatches,
   liveBatchDetails,
+  liveSettlementPool,
   settlementScope,
 }) {
   // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'export' | 'audit' | 'org'
@@ -9663,6 +9800,9 @@ function OpsReferenceInner({
   const [batchesState, setBatchesState] = React.useState(liveBatches ?? null);
   const [batchDetailsState, setBatchDetailsState] = React.useState(
     liveBatchDetails ?? null,
+  );
+  const [settlementPoolState, setSettlementPoolState] = React.useState(
+    liveSettlementPool ?? null,
   );
 
   React.useEffect(() => {
@@ -9680,6 +9820,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setBatchDetailsState(liveBatchDetails ?? null);
   }, [liveBatchDetails]);
+
+  React.useEffect(() => {
+    setSettlementPoolState(liveSettlementPool ?? null);
+  }, [liveSettlementPool]);
 
   const actions = React.useMemo(
     () => ({
@@ -9821,6 +9965,7 @@ function OpsReferenceInner({
         reports: reportsState,
         batches: batchesState,
         batchDetails: batchDetailsState,
+        settlementPool: settlementPoolState,
         settlementScope,
         actions,
       }}
@@ -10036,7 +10181,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; settlementScope?: any }} props
+ * @param {{ initialRoute?: string; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -10044,6 +10189,7 @@ export default function OpsReferenceApp({
   liveReports,
   liveBatches,
   liveBatchDetails,
+  liveSettlementPool,
   settlementScope,
 }) {
   return (
@@ -10053,6 +10199,7 @@ export default function OpsReferenceApp({
       liveReports={liveReports}
       liveBatches={liveBatches}
       liveBatchDetails={liveBatchDetails}
+      liveSettlementPool={liveSettlementPool}
       settlementScope={settlementScope}
     />
   );

@@ -11,10 +11,12 @@ import {
   getOpsSettlementDefaultScope,
   listOpsSettlementBatches,
   listOpsSettlementBatchDetails,
+  listOpsSettlementPool,
 } from "@/features/settlements/settlement-queries";
 import {
   toOpsReferenceBatch,
   toOpsReferenceBatchDetailItem,
+  toOpsReferenceSettlementPoolItem,
 } from "@/features/settlements/settlement-ui-adapters";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
@@ -46,6 +48,7 @@ export default async function StubPage({
     liveReports,
     liveBatches,
     liveBatchDetails,
+    liveSettlementPool,
     settlementScope,
   } = await loadLiveReferenceData(module);
 
@@ -56,6 +59,7 @@ export default async function StubPage({
       liveReports={liveReports}
       liveBatches={liveBatches}
       liveBatchDetails={liveBatchDetails}
+      liveSettlementPool={liveSettlementPool}
       settlementScope={settlementScope}
     />
   );
@@ -87,6 +91,9 @@ async function loadLiveReferenceData(module: string) {
       listOpsSettlementBatchDetails(supabase),
       getOpsSettlementDefaultScope(supabase),
     ]);
+    const settlementPool = settlementScope
+      ? await listOpsSettlementPool(supabase, settlementScope)
+      : [];
     return {
       liveBatches: batches.map((batch) => toOpsReferenceBatch(batch)),
       liveBatchDetails: Object.fromEntries(
@@ -94,6 +101,9 @@ async function loadLiveReferenceData(module: string) {
           batchId,
           items.map((item) => toOpsReferenceBatchDetailItem(item)),
         ]),
+      ),
+      liveSettlementPool: settlementPool.map((item) =>
+        toOpsReferenceSettlementPoolItem(item),
       ),
       settlementScope,
     };

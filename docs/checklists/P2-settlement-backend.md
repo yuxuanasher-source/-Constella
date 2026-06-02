@@ -16,6 +16,7 @@
 - [x] M6 console stub can receive real settlement batch DTOs without changing the reference UI layout.
 - [x] M6 console actions call the settlement create, manual item, lock, and reopen APIs.
 - [x] M6 batch detail can render real `settlement_batch_items` rows.
+- [x] M6 settlement pool preview renders approved, unsettled reports from the backend scope.
 
 ## API Surface
 
