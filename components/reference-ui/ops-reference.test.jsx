@@ -47,6 +47,48 @@ describe("OpsReferenceApp project smoke", () => {
   });
 });
 
+describe("OpsReferenceApp streamer smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("renders backend streamer cards when streamer data is provided", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        streamerCards={[
+          {
+            id: "s-db-1",
+            alias: "数据库主播",
+            real: "鹿鸣",
+            gender: "女",
+            source: "签约",
+            supplier: "未绑定",
+            games: ["二游"],
+            platforms: ["抖音"],
+            style: "高能整活",
+            cooperation: "active",
+            risk: "medium",
+            defaultRule: "CPT",
+            matchScore: 80,
+            metrics: {
+              screenPass: 80,
+              projectFinish: 80,
+              roi: 1.08,
+              grossContrib: 0,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("数据库主播").length).toBeGreaterThan(0);
+    expect(screen.getByText("s-db-1 · 鹿鸣")).toBeInTheDocument();
+    expect(screen.getAllByText("风险 medium").length).toBeGreaterThan(0);
+  });
+});
+
 describe("OpsReferenceApp live task smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();

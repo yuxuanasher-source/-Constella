@@ -26,6 +26,8 @@ import {
   toOpsReferenceBatchDetailItem,
   toOpsReferenceSettlementPoolItem,
 } from "@/features/settlements/settlement-ui-adapters";
+import { listStreamerPool } from "@/features/streamers/streamer-queries";
+import { toStreamerCardDtos } from "@/features/streamers/streamer-ui-dto";
 import { routeForOpsModule } from "@/features/ui-route-contracts/module-route-map";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
@@ -44,6 +46,7 @@ export default async function StubPage({
     liveBatchDetails,
     liveSettlementPool,
     settlementScope,
+    streamerCards,
     auditEntries,
     notificationItems,
   } = await loadLiveReferenceData(module);
@@ -58,6 +61,7 @@ export default async function StubPage({
       liveBatchDetails={liveBatchDetails}
       liveSettlementPool={liveSettlementPool}
       settlementScope={settlementScope}
+      streamerCards={streamerCards}
       auditEntries={auditEntries}
       notificationItems={notificationItems}
     />
@@ -70,6 +74,11 @@ async function loadLiveReferenceData(module: string) {
 
   if (!supabase || !auth || !isMcnStaff(auth.role)) {
     return {};
+  }
+
+  if (module === "m2") {
+    const streamers = await listStreamerPool(supabase);
+    return { streamerCards: toStreamerCardDtos(streamers) };
   }
 
   if (module === "m4") {

@@ -1109,6 +1109,7 @@ const REPORT_STATUS = {
 
 const OpsLiveDataContext = React.createContext({
   projects: null,
+  streamers: null,
   tasks: null,
   reports: null,
   batches: null,
@@ -1123,6 +1124,11 @@ const OpsLiveDataContext = React.createContext({
 function useOpsProjects() {
   const { projects } = React.useContext(OpsLiveDataContext);
   return Array.isArray(projects) ? projects : PROJECTS;
+}
+
+function useOpsStreamers() {
+  const { streamers } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(streamers) ? streamers : STREAMERS;
 }
 
 function useOpsTasks() {
@@ -4603,9 +4609,15 @@ function diffDays(a, b) {
 // ——— Screen: 主播资源池 ————————————————————————————
 
 function ScreenStreamers({ go, initialActiveId }) {
+  const streamers = useOpsStreamers();
   const [active, setActive] = React.useState(
-    initialActiveId || STREAMERS[3].id,
+    initialActiveId || streamers[3]?.id || streamers[0]?.id,
   ); // NIKO
+  React.useEffect(() => {
+    if (!streamers.some((item) => item.id === active)) {
+      setActive(streamers[0]?.id ?? null);
+    }
+  }, [active, streamers]);
 
   return (
     <>
@@ -4662,7 +4674,7 @@ function ScreenStreamers({ go, initialActiveId }) {
               风险
             </Button>
             <div style={{ flex: 1 }} />
-            <Badge tone="blue">{STREAMERS.length} 位主播</Badge>
+            <Badge tone="blue">{streamers.length} 位主播</Badge>
           </div>
 
           <DataTable
@@ -4790,19 +4802,19 @@ function ScreenStreamers({ go, initialActiveId }) {
               },
               { title: "风险", render: (r) => <RiskDot level={r.risk} /> },
             ]}
-            rows={STREAMERS}
+            rows={streamers}
           />
         </Card>
 
         {/* Detail panel */}
-        <StreamerPanel id={active} />
+        <StreamerPanel id={active} streamers={streamers} />
       </div>
     </>
   );
 }
 
-function StreamerPanel({ id }) {
-  const s = STREAMERS.find((x) => x.id === id);
+function StreamerPanel({ id, streamers = STREAMERS }) {
+  const s = streamers.find((x) => x.id === id);
   if (!s) return null;
 
   return (
@@ -11096,6 +11108,7 @@ function OpsReferenceInner({
   auditEntries,
   notificationItems,
   projectCards,
+  streamerCards,
 }) {
   // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
@@ -11117,6 +11130,9 @@ function OpsReferenceInner({
     notificationItems ?? null,
   );
   const [projectsState, setProjectsState] = React.useState(projectCards ?? null);
+  const [streamersState, setStreamersState] = React.useState(
+    streamerCards ?? null,
+  );
 
   React.useEffect(() => {
     setTasksState(liveTasks ?? null);
@@ -11149,6 +11165,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setProjectsState(projectCards ?? null);
   }, [projectCards]);
+
+  React.useEffect(() => {
+    setStreamersState(streamerCards ?? null);
+  }, [streamerCards]);
 
   const actions = React.useMemo(() => {
     const readJson = async (response, fallbackMessage) => {
@@ -11267,6 +11287,16 @@ function OpsReferenceInner({
       }
     };
 
+    const refreshStreamers = async () => {
+      const body = await fetchJson(
+        "/api/streamers",
+        "refresh streamers failed",
+      );
+      if (Array.isArray(body.streamers)) {
+        setStreamersState(body.streamers);
+      }
+    };
+
     return {
       createProjectDraft: async (input) => {
         const body = await fetchJson("/api/projects", "create project failed", {
@@ -11284,6 +11314,32 @@ function OpsReferenceInner({
           { method: "POST" },
         );
         await refreshProjects();
+        return body;
+      },
+      createStreamerProfile: async (input) => {
+        const body = await fetchJson(
+          "/api/streamers",
+          "create streamer failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshStreamers();
+        return body;
+      },
+      updateStreamerRisk: async (id, input) => {
+        const body = await fetchJson(
+          `/api/streamers/${id}/risk`,
+          "update streamer risk failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshStreamers();
         return body;
       },
       createLiveTask: async (input) => {
@@ -11487,6 +11543,7 @@ function OpsReferenceInner({
     <OpsLiveDataContext.Provider
       value={{
         projects: projectsState,
+        streamers: streamersState,
         tasks: tasksState,
         reports: reportsState,
         batches: batchesState,
@@ -11709,7 +11766,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[] }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[] }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -11722,6 +11779,7 @@ export default function OpsReferenceApp({
   auditEntries,
   notificationItems,
   projectCards,
+  streamerCards,
 }) {
   return (
     <OpsReferenceInner
@@ -11735,6 +11793,7 @@ export default function OpsReferenceApp({
       auditEntries={auditEntries}
       notificationItems={notificationItems}
       projectCards={projectCards}
+      streamerCards={streamerCards}
     />
   );
 }
