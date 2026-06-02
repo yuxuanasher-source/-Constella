@@ -1109,6 +1109,8 @@ const OpsLiveDataContext = React.createContext({
   tasks: null,
   reports: null,
   batches: null,
+  batchDetails: null,
+  settlementScope: null,
   actions: {},
 });
 
@@ -1125,6 +1127,16 @@ function useOpsReports() {
 function useOpsSettlementBatches() {
   const { batches } = React.useContext(OpsLiveDataContext);
   return Array.isArray(batches) && batches.length > 0 ? batches : BATCHES;
+}
+
+function useOpsSettlementBatchDetails() {
+  const { batchDetails } = React.useContext(OpsLiveDataContext);
+  return batchDetails && typeof batchDetails === "object" ? batchDetails : {};
+}
+
+function useOpsSettlementScope() {
+  const { settlementScope } = React.useContext(OpsLiveDataContext);
+  return settlementScope || null;
 }
 
 function useOpsLiveActions() {
@@ -5780,12 +5792,21 @@ function ShotMetric({ label, value }) {
   );
 }
 
+function askText(label, defaultValue = "") {
+  const value = globalThis.prompt?.(label, defaultValue);
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 // ===== src\screen-settlement.jsx =====
 // ——— Screen: 结算中心 ————————————————————————————
 
 function ScreenSettlement({ go }) {
   const batches = useOpsSettlementBatches();
+  const batchDetails = useOpsSettlementBatchDetails();
+  const settlementScope = useOpsSettlementScope();
+  const actions = useOpsLiveActions();
   const [type, setType] = React.useState("all");
+  const [busyAction, setBusyAction] = React.useState(null);
   const [activeId, setActiveId] = React.useState(
     batches[0]?.id || "B-2026-05-S-001",
   );
@@ -5798,6 +5819,95 @@ function ScreenSettlement({ go }) {
 
   const filtered =
     type === "all" ? batches : batches.filter((b) => b.type === type);
+  const activeBatch =
+    batches.find((batch) => batch.id === activeId) || batches[0] || null;
+
+  const runSettlementAction = async (actionName, fn) => {
+    if (busyAction) return;
+    setBusyAction(actionName);
+    try {
+      const shouldReload = await fn();
+      if (shouldReload !== false) {
+        globalThis.location?.reload();
+      }
+    } catch (error) {
+      globalThis.alert?.(
+        error instanceof Error ? error.message : "结算操作失败",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const createBatch = () =>
+    runSettlementAction("create", async () => {
+      const projectId = askText(
+        "项目 ID",
+        settlementScope?.projectId || activeBatch?.projectId || "",
+      );
+      const periodStart = askText(
+        "周期开始 YYYY-MM-DD",
+        settlementScope?.periodStart || "",
+      );
+      const periodEnd = askText(
+        "周期结束 YYYY-MM-DD",
+        settlementScope?.periodEnd || "",
+      );
+      const batchTypeInput = askText(
+        "批次类型：payable 主播应付 / receivable 厂家应收",
+        "payable",
+      );
+      if (!projectId || !periodStart || !periodEnd || !batchTypeInput)
+        return false;
+
+      const batchType =
+        batchTypeInput.includes("receivable") || batchTypeInput.includes("应收")
+          ? "receivable"
+          : "payable";
+      await actions.createSettlementBatch?.({
+        projectId,
+        periodStart,
+        periodEnd,
+        batchType,
+      });
+      return true;
+    });
+
+  const addManualItem = () =>
+    runSettlementAction("manual", async () => {
+      if (!activeBatch) return false;
+      const itemType = askText("承载类型：cpa / cps / gift / manual", "cpa");
+      const amount = askText("人工金额", "300");
+      const evidenceLevel = askText("证据等级：yellow / red", "red");
+      const reason = askText("原因", "人工录入 CPA/CPS/礼物金额");
+      if (!itemType || !amount || !evidenceLevel || !reason) return false;
+      await actions.addManualSettlementItem?.(activeBatch.id, {
+        itemType,
+        manualAmount: Number(amount),
+        evidenceLevel: evidenceLevel === "yellow" ? "yellow" : "red",
+        reason,
+        projectId: activeBatch.projectId,
+      });
+      return true;
+    });
+
+  const lockBatch = () =>
+    runSettlementAction("lock", async () => {
+      if (!activeBatch) return false;
+      const reason = askText("锁定原因", "财务核对无误");
+      if (!reason) return false;
+      await actions.lockSettlementBatch?.(activeBatch.id, { reason });
+      return true;
+    });
+
+  const reopenBatch = () =>
+    runSettlementAction("reopen", async () => {
+      if (!activeBatch) return false;
+      const reason = askText("重开原因", "需要修正结算金额");
+      if (!reason) return false;
+      await actions.reopenSettlementBatch?.(activeBatch.id, { reason });
+      return true;
+    });
 
   return (
     <>
@@ -5806,13 +5916,23 @@ function ScreenSettlement({ go }) {
         subtitle="厂家应收与主播应付分别开批次 · 锁定批次只允许负责人重新打开 · 全程审计"
         actions={
           <>
-            <Button kind="default" icon={<Icon.Upload size={14} />}>
-              导入 CPA / CPS 数据
+            <Button
+              kind="default"
+              icon={<Icon.Upload size={14} />}
+              onClick={addManualItem}
+              disabled={!!busyAction}
+            >
+              {busyAction === "manual" ? "处理中…" : "导入 CPA / CPS 数据"}
             </Button>
             <Button kind="default" icon={<Icon.Export size={14} />}>
               批次导出
             </Button>
-            <Button kind="primary" icon={<Icon.Plus size={14} stroke="#fff" />}>
+            <Button
+              kind="primary"
+              icon={<Icon.Plus size={14} stroke="#fff" />}
+              onClick={createBatch}
+              disabled={!!busyAction}
+            >
               新建结算批次
             </Button>
           </>
@@ -5838,7 +5958,7 @@ function ScreenSettlement({ go }) {
           <Card>
             <Metric
               label="可结算池 · 报数条数"
-              value="42"
+              value={String(settlementScope?.poolCount ?? 42)}
               unit="条"
               hint="审核通过 · 待入批次"
             />
@@ -5975,33 +6095,54 @@ function ScreenSettlement({ go }) {
           </Card>
 
           {/* Batch detail */}
-          <BatchDetail id={activeId} batches={batches} />
+          <BatchDetail
+            id={activeId}
+            batches={batches}
+            batchDetails={batchDetails}
+            onAddManualItem={addManualItem}
+            onLockBatch={lockBatch}
+            onReopenBatch={reopenBatch}
+            busyAction={busyAction}
+          />
         </div>
       </div>
     </>
   );
 }
 
-function BatchDetail({ id, batches = BATCHES }) {
+function BatchDetail({
+  id,
+  batches = BATCHES,
+  batchDetails = {},
+  onAddManualItem,
+  onLockBatch,
+  onReopenBatch,
+  busyAction,
+}) {
   const b = batches.find((x) => x.id === id) || batches[0] || BATCHES[1];
   const isPayable = b.type === "streamer_payable";
   const isLocked = b.status === "locked";
   const isReferenceBatch = BATCHES.some((x) => x.id === b.id);
-  const detailRows = isReferenceBatch
-    ? BATCH_DETAIL_ITEMS
-    : [
-        {
-          streamer: "批次汇总",
-          id: String(b.id).slice(0, 8),
-          rule: isPayable ? "主播应付汇总" : "厂家应收汇总",
-          hours: 0,
-          qty: "API 批次",
-          base: 0,
-          variable: b.amount,
-          adjust: 0,
-          total: b.amount,
-        },
-      ];
+  const apiDetailRows = Array.isArray(batchDetails[b.id])
+    ? batchDetails[b.id]
+    : null;
+  const detailRows = apiDetailRows?.length
+    ? apiDetailRows
+    : isReferenceBatch
+      ? BATCH_DETAIL_ITEMS
+      : [
+          {
+            streamer: "批次汇总",
+            id: String(b.id).slice(0, 8),
+            rule: isPayable ? "主播应付汇总" : "厂家应收汇总",
+            hours: 0,
+            qty: "API 批次",
+            base: 0,
+            variable: b.amount,
+            adjust: 0,
+            total: b.amount,
+          },
+        ];
 
   const total = detailRows.reduce((s, x) => s + x.total, 0);
   const baseSum = detailRows.reduce((s, x) => s + x.base, 0);
@@ -6301,22 +6442,34 @@ function BatchDetail({ id, batches = BATCHES }) {
               <Button kind="default" icon={<Icon.Export size={14} />}>
                 导出 PDF
               </Button>
-              <Button kind="danger" icon={<Icon.Unlock size={14} />}>
-                重新打开
+              <Button
+                kind="danger"
+                icon={<Icon.Unlock size={14} />}
+                onClick={onReopenBatch}
+                disabled={!!busyAction}
+              >
+                {busyAction === "reopen" ? "处理中…" : "重新打开"}
               </Button>
             </>
           ) : (
             <>
               <Button kind="ghost">取消</Button>
-              <Button kind="default" icon={<Icon.Plus size={14} />}>
-                添加人工调整
+              <Button
+                kind="default"
+                icon={<Icon.Plus size={14} />}
+                onClick={onAddManualItem}
+                disabled={!!busyAction}
+              >
+                {busyAction === "manual" ? "处理中…" : "添加人工调整"}
               </Button>
               <Button kind="default">保存为草稿</Button>
               <Button
                 kind="primary"
                 icon={<Icon.Lock size={14} stroke="#fff" />}
+                onClick={onLockBatch}
+                disabled={!!busyAction}
               >
-                确认并锁定
+                {busyAction === "lock" ? "处理中…" : "确认并锁定"}
               </Button>
             </>
           )}
@@ -9498,6 +9651,8 @@ function OpsReferenceInner({
   liveTasks,
   liveReports,
   liveBatches,
+  liveBatchDetails,
+  settlementScope,
 }) {
   // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
@@ -9506,6 +9661,9 @@ function OpsReferenceInner({
   const [tasksState, setTasksState] = React.useState(liveTasks ?? null);
   const [reportsState, setReportsState] = React.useState(liveReports ?? null);
   const [batchesState, setBatchesState] = React.useState(liveBatches ?? null);
+  const [batchDetailsState, setBatchDetailsState] = React.useState(
+    liveBatchDetails ?? null,
+  );
 
   React.useEffect(() => {
     setTasksState(liveTasks ?? null);
@@ -9518,6 +9676,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setBatchesState(liveBatches ?? null);
   }, [liveBatches]);
+
+  React.useEffect(() => {
+    setBatchDetailsState(liveBatchDetails ?? null);
+  }, [liveBatchDetails]);
 
   const actions = React.useMemo(
     () => ({
@@ -9545,6 +9707,59 @@ function OpsReferenceInner({
             report.id === id ? { ...report, status } : report,
           );
         });
+      },
+      createSettlementBatch: async (input) => {
+        const response = await fetch("/api/settlement-batches", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.error || "create settlement batch failed");
+        }
+      },
+      addManualSettlementItem: async (batchId, input) => {
+        const response = await fetch(
+          `/api/settlement-batches/${batchId}/manual-items`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.error || "add manual settlement item failed");
+        }
+      },
+      lockSettlementBatch: async (batchId, input) => {
+        const response = await fetch(
+          `/api/settlement-batches/${batchId}/lock`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.error || "lock settlement batch failed");
+        }
+      },
+      reopenSettlementBatch: async (batchId, input) => {
+        const response = await fetch(
+          `/api/settlement-batches/${batchId}/reopen`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.error || "reopen settlement batch failed");
+        }
       },
     }),
     [],
@@ -9605,6 +9820,8 @@ function OpsReferenceInner({
         tasks: tasksState,
         reports: reportsState,
         batches: batchesState,
+        batchDetails: batchDetailsState,
+        settlementScope,
         actions,
       }}
     >
@@ -9819,13 +10036,15 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[] }} props
+ * @param {{ initialRoute?: string; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; settlementScope?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
   liveTasks,
   liveReports,
   liveBatches,
+  liveBatchDetails,
+  settlementScope,
 }) {
   return (
     <OpsReferenceInner
@@ -9833,6 +10052,8 @@ export default function OpsReferenceApp({
       liveTasks={liveTasks}
       liveReports={liveReports}
       liveBatches={liveBatches}
+      liveBatchDetails={liveBatchDetails}
+      settlementScope={settlementScope}
     />
   );
 }

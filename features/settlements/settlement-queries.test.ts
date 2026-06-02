@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  toOpsSettlementBatchDetailItem,
   toOpsSettlementBatchListItem,
   toOpsSettlementPoolItem,
 } from "./settlement-queries";
-import { toOpsReferenceBatch } from "./settlement-ui-adapters";
+import {
+  toOpsReferenceBatch,
+  toOpsReferenceBatchDetailItem,
+} from "./settlement-ui-adapters";
 
 describe("settlement DTO mappers", () => {
   it("maps settlement pool rows with frozen evidence and rule preview", () => {
@@ -51,6 +55,7 @@ describe("settlement DTO mappers", () => {
       evidence_summary: { green: 1 },
       updated_at: "2026-06-02T12:10:00.000Z",
       created_by: "user-owner",
+      project_id: "project-1",
       projects: { name: "Launch Week" },
       settlement_batch_items: [{ id: "item-1" }],
     });
@@ -58,6 +63,7 @@ describe("settlement DTO mappers", () => {
     expect(item.totalAmount).toBe(175);
     expect(toOpsReferenceBatch(item)).toEqual({
       id: "batch-1",
+      projectId: "project-1",
       type: "streamer_payable",
       name: "Launch Week · 主播应付",
       project: "Launch Week",
@@ -68,6 +74,67 @@ describe("settlement DTO mappers", () => {
       status: "generated",
       updated: "2026-06-02 20:10",
       creator: "user-owner",
+    });
+  });
+
+  it("maps batch detail rows into reference detail rows", () => {
+    const liveReportItem = toOpsSettlementBatchDetailItem({
+      id: "item-1",
+      settlement_batch_id: "batch-1",
+      item_type: "live_report",
+      computed_amount: 160,
+      manual_amount: 0,
+      adjustment_amount: 0,
+      evidence_level: "green",
+      evidence_snapshot: {
+        settlementDuration: 120,
+        timeSource: "system",
+      },
+      streamers: { display_name: "Streamer One" },
+    });
+    const manualItem = toOpsSettlementBatchDetailItem({
+      id: "item-2",
+      settlement_batch_id: "batch-1",
+      item_type: "cpa",
+      computed_amount: 0,
+      manual_amount: 300,
+      adjustment_amount: 20,
+      evidence_level: "red",
+      evidence_snapshot: {
+        source: "manual",
+        reason: "Imported CPA claim",
+      },
+      streamers: null,
+    });
+
+    expect(liveReportItem).toMatchObject({
+      batchId: "batch-1",
+      streamerName: "Streamer One",
+      settlementDuration: 120,
+      systemAmount: 160,
+      manualAmount: 0,
+    });
+    expect(toOpsReferenceBatchDetailItem(liveReportItem)).toEqual({
+      streamer: "Streamer One",
+      id: "item-1",
+      rule: "系统核验 CPT/底薪",
+      hours: 2,
+      qty: "green · system",
+      base: 0,
+      variable: 160,
+      adjust: 0,
+      total: 160,
+    });
+    expect(toOpsReferenceBatchDetailItem(manualItem)).toEqual({
+      streamer: "人工承载",
+      id: "item-2",
+      rule: "CPA 人工承载",
+      hours: 0,
+      qty: "red · manual",
+      base: 0,
+      variable: 300,
+      adjust: 20,
+      total: 320,
     });
   });
 });

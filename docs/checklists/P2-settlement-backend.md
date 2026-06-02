@@ -14,6 +14,8 @@
 - [x] Reopen is restricted to `owner` in the service layer.
 - [x] Finance remains read-only for settlement writes in the P2 RLS migration.
 - [x] M6 console stub can receive real settlement batch DTOs without changing the reference UI layout.
+- [x] M6 console actions call the settlement create, manual item, lock, and reopen APIs.
+- [x] M6 batch detail can render real `settlement_batch_items` rows.
 
 ## API Surface
 
@@ -29,5 +31,6 @@
 - [x] Unit tests cover engine boundaries, service permissions, duplicate-pool behavior, manual carrying rows, and DTO mapping.
 - [x] Schema contract covers the settlement pool index and finance read-only RLS write boundary.
 - [x] Seed data includes one unsettled approved report and one generated payable batch.
+- [x] Local page smoke confirms `/console/stubs/m6` responds.
 - [ ] Browser smoke test creates a fresh batch from the pool through the UI.
 - [ ] Export, invoicing, payment, and full gross-margin reports are intentionally out of this slice.

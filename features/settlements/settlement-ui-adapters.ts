@@ -1,7 +1,11 @@
-import type { OpsSettlementBatchListItem } from "./settlement-queries";
+import type {
+  OpsSettlementBatchDetailItem,
+  OpsSettlementBatchListItem,
+} from "./settlement-queries";
 
 export type OpsReferenceBatch = {
   id: string;
+  projectId: string;
   type: "vendor_receivable" | "streamer_payable";
   name: string;
   project: string;
@@ -14,6 +18,18 @@ export type OpsReferenceBatch = {
   creator: string;
 };
 
+export type OpsReferenceBatchDetailItem = {
+  streamer: string;
+  id: string;
+  rule: string;
+  hours: number;
+  qty: string;
+  base: number;
+  variable: number;
+  adjust: number;
+  total: number;
+};
+
 export function toOpsReferenceBatch(
   batch: OpsSettlementBatchListItem,
 ): OpsReferenceBatch {
@@ -21,6 +37,7 @@ export function toOpsReferenceBatch(
 
   return {
     id: batch.id,
+    projectId: batch.projectId,
     type: isPayable ? "streamer_payable" : "vendor_receivable",
     name: `${batch.projectName} · ${isPayable ? "主播应付" : "厂家应收"}`,
     project: batch.projectName,
@@ -31,6 +48,25 @@ export function toOpsReferenceBatch(
     status: toReferenceStatus(batch.status),
     updated: formatShanghaiMinute(batch.updatedAt),
     creator: batch.createdBy ?? "system",
+  };
+}
+
+export function toOpsReferenceBatchDetailItem(
+  item: OpsSettlementBatchDetailItem,
+): OpsReferenceBatchDetailItem {
+  const isManual = item.itemType !== "live_report";
+  return {
+    streamer: item.streamerName,
+    id: item.id,
+    rule: isManual
+      ? `${item.itemType.toUpperCase()} 人工承载`
+      : "系统核验 CPT/底薪",
+    hours: Math.round((item.settlementDuration / 60) * 10) / 10,
+    qty: `${item.evidenceLevel ?? "unknown"} · ${item.timeSource}`,
+    base: 0,
+    variable: item.systemAmount + item.manualAmount,
+    adjust: item.adjustmentAmount,
+    total: item.totalAmount,
   };
 }
 
