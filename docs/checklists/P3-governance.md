@@ -16,8 +16,8 @@
 
 ## Security Boundaries
 
-- [ ] New business tables include `organization_id` and RLS.
-- [ ] Every write action uses the shared audit writer.
+- [x] No new business tables were added in P3 v1; existing writes rely on RLS-backed tables.
+- [x] Every write action uses the shared audit writer.
 - [x] Audit logs remain append-only with no update/delete API.
 - [x] Delivery/export DTOs are server-side filtered and never rely on frontend hiding.
 - [x] Sensitive fields such as cost, margin, vendor receivable, and internal risk notes are not exposed to streamer/vendor-facing outputs.
@@ -28,6 +28,7 @@
 - [x] `pnpm type-check`
 - [x] `pnpm test`
 - [x] `pnpm build`
+- [x] `pnpm test:p3-governance`
 - [ ] `pnpm supabase:migrate` (no migration in this audit-center slice)
 - [x] `pnpm test:api-integration-smoke`
 - [x] P1 and P2 golden paths still pass.

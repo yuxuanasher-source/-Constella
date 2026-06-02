@@ -8,6 +8,8 @@ import { statusForServiceError } from "@/lib/http/route-error-status";
 const allowedRoles = new Set(["owner", "ops_manager", "operator_business"]);
 
 export async function POST(_request?: Request) {
+  void _request;
+
   try {
     const supabase = await createSupabaseServerClient();
     if (!supabase) {
