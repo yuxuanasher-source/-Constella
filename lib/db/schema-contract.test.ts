@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -11,6 +11,11 @@ const migration = readFileSync(
   ),
   "utf8",
 );
+const migrationsDir = join(process.cwd(), "supabase", "migrations");
+const allMigrations = readdirSync(migrationsDir)
+  .filter((file) => file.endsWith(".sql"))
+  .map((file) => readFileSync(join(migrationsDir, file), "utf8"))
+  .join("\n");
 
 describe("P0 database contract", () => {
   it("declares the required foundation and reference tables", () => {
@@ -63,5 +68,12 @@ describe("P0 database contract", () => {
     expect(migration).toContain("audit_logs are append-only");
     expect(migration).toContain("public.streamer_payable_items_safe");
     expect(migration).toContain("where sb.batch_type = 'payable'");
+  });
+
+  it("allows staff review flows to append report change logs through RLS", () => {
+    expect(allMigrations).toContain("report_change_logs_staff_insert");
+    expect(allMigrations).toContain("on public.report_change_logs");
+    expect(allMigrations).toContain("for insert");
+    expect(allMigrations).toContain("public.can_access_project(lr.project_id)");
   });
 });

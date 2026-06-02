@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createServerClient } from "@supabase/ssr";
 
 const projectId = "99999999-9999-9999-9999-999999999999";
+const streamerId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 const seededBatchId = "95959595-9595-4959-9595-959595959595";
 const password = "Password123!";
 
@@ -35,6 +36,110 @@ await check("ops can read the M5 report queue over HTTP", async () => {
   assertPublicDtoShape(body.reports, "reports");
   assertNotContains(JSON.stringify(body.reports), /amount/i, "reports");
 });
+
+await check(
+  "P1 authenticated flow creates task, captures timing, submits report, and approves into settlement pool",
+  async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const plannedStartAt = "2026-06-02T12:00:00.000Z";
+    const plannedEndAt = "2026-06-02T14:00:00.000Z";
+    const taskBody = await requestJson("/api/live-tasks", {
+      cookie: opsCookie,
+      method: "POST",
+      expectedStatus: 201,
+      body: {
+        projectId,
+        streamerId,
+        title: `API Smoke P1 Golden Task ${suffix}`,
+        plannedStartAt,
+        plannedEndAt,
+        plannedDuration: 120,
+        note: "api integration smoke",
+      },
+    });
+    assertObject(taskBody.task, "created live task");
+    assertEqual(taskBody.task.status, "pending_live", "created task status");
+
+    const taskId = taskBody.task.id;
+    const startBody = await requestJson(`/api/live-tasks/${taskId}/start`, {
+      cookie: streamerCookie,
+      method: "POST",
+      body: { now: plannedStartAt },
+    });
+    assertEqual(startBody.task.status, "live", "started task status");
+
+    const stopBody = await requestJson(`/api/live-tasks/${taskId}/stop`, {
+      cookie: streamerCookie,
+      method: "POST",
+      body: { now: plannedEndAt },
+    });
+    assertEqual(stopBody.task.status, "pending_report", "stopped task status");
+    assertEqual(stopBody.task.systemDuration, 120, "system duration");
+
+    const reportBody = await requestJson(`/api/live-tasks/${taskId}/reports`, {
+      cookie: streamerCookie,
+      method: "POST",
+      expectedStatus: 201,
+      body: {
+        screenshotStoragePath: `api-smoke/${taskId}/end-screen.png`,
+        screenshotFileHash: `api-smoke-${taskId}-${suffix}`,
+        screenshotDuration: 119,
+        claimedDuration: 119,
+        viewers: 1200,
+      },
+    });
+    assertObject(reportBody.report, "submitted report");
+    assertEqual(
+      reportBody.report.status,
+      "pending_review",
+      "submitted report status",
+    );
+    assertEqual(
+      reportBody.report.timeSource,
+      "system",
+      "submitted report time source",
+    );
+    assertEqual(
+      reportBody.report.evidenceLevel,
+      "green",
+      "submitted report evidence level",
+    );
+
+    const reportId = reportBody.report.id;
+    const reviewBody = await requestJson(
+      `/api/live-reports/${reportId}/review`,
+      {
+        cookie: opsCookie,
+        method: "PATCH",
+        body: {
+          decision: "approve",
+          includeInTaskResult: true,
+          enterSettlementPool: true,
+          reviewNotes: "api integration smoke approval",
+        },
+      },
+    );
+    assertEqual(reviewBody.report.status, "approved", "approved report status");
+    assertEqual(
+      reviewBody.report.enterSettlementPool,
+      true,
+      "approved report settlement-pool flag",
+    );
+
+    const poolBody = await requestJson(
+      `/api/settlement-pool?projectId=${projectId}&periodStart=2026-01-01&periodEnd=2026-12-31`,
+      { cookie: opsCookie },
+    );
+    assertArray(poolBody.reports, "P1 settlement pool reports");
+    const poolReport = poolBody.reports.find((item) => item.id === reportId);
+    assertObject(poolReport, "approved report in settlement pool");
+    assertEqual(
+      poolReport.evidenceLevel,
+      "green",
+      "approved report pool evidence",
+    );
+  },
+);
 
 await check("ops can read the M6 settlement pool over HTTP", async () => {
   const body = await requestJson(

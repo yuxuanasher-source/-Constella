@@ -35,4 +35,5 @@
 - [x] Streamer frontend smoke covers start live -> stop live -> submit report payload and submitted confirmation with `pnpm test:ui-smoke`.
 - [x] Seed data contains one joined project streamer, one report-pending task, one pending report, and one screenshot record.
 - [x] UI pages are wired to the new APIs, including streamer start/stop/report, ops report review, ops task create/batch create, and ops task cancel.
-- [ ] Authenticated browser smoke tests cover task start / stop / report / review.
+- [x] Authenticated HTTP smoke covers task create / start / stop / report / review / settlement-pool handoff.
+- [ ] Browser-level authenticated click smoke remains pending because the current session does not expose a usable in-app browser control tool.
