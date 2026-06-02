@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { evaluateAutoReviewShadow } from "./auto-review-service";
+import {
+  evaluateAutoReviewActive,
+  evaluateAutoReviewShadow,
+} from "./auto-review-service";
 
 const report = {
   id: "report-1",
@@ -24,6 +27,11 @@ const rule = {
   maxDurationDeviationPct: 10,
   maxDurationDeviationMinutes: 15,
   dailyHardLimitMinutes: 480,
+};
+
+const activeRule = {
+  ...rule,
+  mode: "active" as const,
 };
 
 function createClient() {
@@ -69,6 +77,80 @@ describe("evaluateAutoReviewShadow", () => {
         object_type: "live_report",
         object_id: "report-1",
         changed_fields: ["shadow_decision"],
+      }),
+    ]);
+  });
+});
+
+describe("evaluateAutoReviewActive", () => {
+  it("refuses active approval unless the rule version is explicitly active", async () => {
+    const { client } = createClient();
+    const approveReport = vi.fn();
+
+    await expect(
+      evaluateAutoReviewActive({
+        client,
+        actor: {
+          userId: "user-ops",
+          name: "Ops Manager",
+          role: "ops_manager",
+          organizationId: "org-1",
+        },
+        report,
+        rule,
+        approveReport,
+      }),
+    ).rejects.toThrow("Active auto review requires active rule version");
+    expect(approveReport).not.toHaveBeenCalled();
+  });
+
+  it("approves only by entering the settlement pool and does not calculate money", async () => {
+    const { client, auditInserts } = createClient();
+    const approveReport = vi.fn(async (_input: unknown) => ({
+      id: "report-1",
+      status: "approved",
+      enterSettlementPool: true,
+    }));
+
+    const result = await evaluateAutoReviewActive({
+      client,
+      actor: {
+        userId: "user-ops",
+        name: "Ops Manager",
+        role: "ops_manager",
+        organizationId: "org-1",
+      },
+      report,
+      rule: activeRule,
+      approveReport,
+    });
+
+    expect(result).toMatchObject({
+      decision: "auto_pass_candidate",
+      mode: "active",
+      applied: true,
+    });
+    expect(approveReport).toHaveBeenCalledWith({
+      actor: expect.objectContaining({ role: "ops_manager" }),
+      reportId: "report-1",
+      input: {
+        decision: "approve",
+        includeInTaskResult: true,
+        enterSettlementPool: true,
+        reviewNotes: "Auto review passed by rule rule-1",
+        reason: "auto_review:rule-1",
+      },
+    });
+    expect(JSON.stringify(approveReport.mock.calls[0][0])).not.toContain(
+      "computedAmount",
+    );
+    expect(JSON.stringify(approveReport.mock.calls[0][0])).not.toContain(
+      "manualAmount",
+    );
+    expect(auditInserts).toEqual([
+      expect.objectContaining({
+        module: "auto_review",
+        changed_fields: ["active_decision"],
       }),
     ]);
   });
