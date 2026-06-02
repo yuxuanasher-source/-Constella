@@ -317,7 +317,7 @@ export function toOpsSettlementBatchListItem(
     manualAmount: Number(row.manual_amount),
     adjustmentAmount: Number(row.adjustment_amount),
     totalAmount,
-    evidenceSummary: row.evidence_summary,
+    evidenceSummary: camelizeRecord(row.evidence_summary),
     itemCount: row.settlement_batch_items?.length ?? 0,
     createdBy: row.created_by,
     updatedAt: row.updated_at,
@@ -419,4 +419,31 @@ function stringFromSnapshot(
 ): string {
   const value = snapshot[key];
   return typeof value === "string" ? value : "";
+}
+
+function camelizeRecord(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, nestedValue]) => [
+      camelizeKey(key),
+      camelizeValue(nestedValue),
+    ]),
+  );
+}
+
+function camelizeValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(camelizeValue);
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  return camelizeRecord(value as Record<string, unknown>);
+}
+
+function camelizeKey(key: string): string {
+  return key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
 }
