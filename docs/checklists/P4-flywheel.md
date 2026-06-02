@@ -4,7 +4,7 @@
 
 - [x] Auto review shadow mode evaluates pending live reports with eight-gate decisions.
 - [ ] Auto review active pass is gated by active rule version and does not run by default.
-- [ ] Pricing calculator returns receivable, payable, supplier cost, gross margin, margin rate, break-even, suggested minimum quote, and risk notes.
+- [x] Pricing calculator returns receivable, payable, supplier cost, gross margin, margin rate, break-even, suggested minimum quote, and risk notes.
 - [ ] Streamer matching engine returns score, reasons, risk notes, reference projects, and suggested settlement method.
 - [ ] Supplier quality score handles completion, screening pass, margin contribution, anomalies, and blacklist penalties.
 - [ ] Project review report summarizes delivery, finance, best/worst streamers, supplier performance, and next-round recommendations.
@@ -20,7 +20,7 @@
 
 - [ ] Auto review writes audit for shadow and active evaluations.
 - [ ] Auto review active approval must not calculate money; it only enters the settlement pool exactly like manual approval.
-- [ ] Pricing and review calculations avoid floating-point money storage assumptions and expose cents/decimal-safe outputs.
+- [x] Pricing and review calculations avoid floating-point money storage assumptions and expose cents/decimal-safe outputs.
 - [ ] AI tools inherit actor role and scope; no arbitrary SQL or direct DB access is exposed.
 - [ ] Streamer-facing AI DTOs do not include receivable, gross margin, cost, supplier cost, or internal risk notes.
 
