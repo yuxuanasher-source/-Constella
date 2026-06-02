@@ -1127,7 +1127,7 @@ function useOpsReports() {
 
 function useOpsSettlementBatches() {
   const { batches } = React.useContext(OpsLiveDataContext);
-  return Array.isArray(batches) && batches.length > 0 ? batches : BATCHES;
+  return Array.isArray(batches) ? batches : BATCHES;
 }
 
 function useOpsSettlementBatchDetails() {
@@ -5803,6 +5803,93 @@ function askText(label, defaultValue = "") {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function formatOpsMinute(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value || "刚刚";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Shanghai",
+  }).formatToParts(date);
+  const byType = Object.fromEntries(
+    parts.map((part) => [part.type, part.value]),
+  );
+  return `${byType.year}-${byType.month}-${byType.day} ${byType.hour}:${byType.minute}`;
+}
+
+function numberFromSnapshot(snapshot, key) {
+  const value = snapshot && typeof snapshot === "object" ? snapshot[key] : null;
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function textFromSnapshot(snapshot, key, fallback = "unknown") {
+  const value = snapshot && typeof snapshot === "object" ? snapshot[key] : null;
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function toReferenceBatchFromApi(batch, items, context = {}) {
+  const isPayable = batch.batchType === "payable";
+  const projectName =
+    context.pool?.find((row) => row.project)?.project ||
+    context.activeBatch?.project ||
+    batch.projectId ||
+    "项目";
+  const amount =
+    Number(batch.computedAmount ?? 0) +
+    Number(batch.manualAmount ?? 0) +
+    Number(batch.adjustmentAmount ?? 0);
+
+  return {
+    id: batch.id,
+    projectId: batch.projectId,
+    type: isPayable ? "streamer_payable" : "vendor_receivable",
+    name: `${projectName} · ${isPayable ? "主播应付" : "厂家应收"}`,
+    project: projectName,
+    vendor: isPayable ? "—" : projectName,
+    period: `${batch.periodStart} → ${batch.periodEnd}`,
+    items: Array.isArray(items) ? items.length : 0,
+    amount,
+    status: batch.status || "generated",
+    updated: formatOpsMinute(batch.updatedAt || batch.createdAt),
+    creator: batch.createdBy || "system",
+  };
+}
+
+function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {
+  const snapshot = item.evidenceSnapshot || {};
+  const settlementDuration = numberFromSnapshot(snapshot, "settlementDuration");
+  const settlementMethod = textFromSnapshot(
+    snapshot,
+    "settlementMethod",
+    item.itemType,
+  );
+  const timeSource = textFromSnapshot(snapshot, "timeSource");
+  const sourceReport = pool.find((row) => row.id === item.liveReportId);
+  const total =
+    Number(item.computedAmount ?? 0) +
+    Number(item.manualAmount ?? 0) +
+    Number(item.adjustmentAmount ?? 0);
+
+  return {
+    streamer: sourceReport?.streamer || item.streamerId || `主播 ${index + 1}`,
+    id: item.id,
+    rule:
+      item.itemType === "live_report"
+        ? `${settlementMethod} · 系统结算`
+        : `${String(item.itemType).toUpperCase()} · 人工承载`,
+    hours: Math.round((settlementDuration / 60) * 10) / 10,
+    qty: `${item.evidenceLevel ?? "unknown"} · ${timeSource}`,
+    base: 0,
+    variable: Number(item.computedAmount ?? 0) + Number(item.manualAmount ?? 0),
+    adjust: Number(item.adjustmentAmount ?? 0),
+    total,
+  };
+}
+
 // ===== src\screen-settlement.jsx =====
 // ——— Screen: 结算中心 ————————————————————————————
 
@@ -5881,7 +5968,7 @@ function ScreenSettlement({ go }) {
         periodEnd,
         batchType,
       });
-      return true;
+      return false;
     });
 
   const addManualItem = () =>
@@ -9862,6 +9949,44 @@ function OpsReferenceInner({
           const body = await response.json().catch(() => ({}));
           throw new Error(body.error || "create settlement batch failed");
         }
+        const body = await response.json().catch(() => ({}));
+        const sourcePool = Array.isArray(settlementPoolState)
+          ? settlementPoolState
+          : [];
+        const createdItems = Array.isArray(body.items) ? body.items : [];
+        if (body.batch) {
+          const createdBatch = toReferenceBatchFromApi(
+            body.batch,
+            createdItems,
+            { pool: sourcePool },
+          );
+          const createdDetails = createdItems.map((item, index) =>
+            toReferenceBatchDetailFromApi(item, sourcePool, index),
+          );
+          const consumedReportIds = new Set(
+            createdItems
+              .map((item) => item.liveReportId)
+              .filter((id) => typeof id === "string" && id),
+          );
+
+          setBatchesState((current) => {
+            const base = Array.isArray(current) ? current : [];
+            return [
+              createdBatch,
+              ...base.filter((batch) => batch.id !== createdBatch.id),
+            ];
+          });
+          setBatchDetailsState((current) => ({
+            ...(current && typeof current === "object" ? current : {}),
+            [createdBatch.id]: createdDetails,
+          }));
+          setSettlementPoolState((current) =>
+            Array.isArray(current)
+              ? current.filter((row) => !consumedReportIds.has(row.id))
+              : current,
+          );
+        }
+        return body;
       },
       addManualSettlementItem: async (batchId, input) => {
         const response = await fetch(
@@ -9906,7 +10031,7 @@ function OpsReferenceInner({
         }
       },
     }),
-    [],
+    [settlementPoolState],
   );
 
   const go = (r, arg) => {
