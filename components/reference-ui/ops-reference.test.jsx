@@ -3,6 +3,50 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp from "./ops-reference";
 
+describe("OpsReferenceApp project smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("renders backend project cards when project data is provided", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={[
+          {
+            id: "p-db-1",
+            code: "PDB-001",
+            name: "数据库项目一号",
+            vendor: "未填写",
+            product: "数据库项目一号",
+            status: "draft",
+            pricing: "CPT",
+            leadOps: "未分配",
+            streamers: { active: 0, candidate: 0, pendingReview: 0 },
+            metrics: {
+              plannedHours: 0,
+              doneHours: 0,
+              audience: 0,
+              reportedPending: 0,
+              anomalies: 0,
+              receivable: 0,
+              payable: 0,
+              gross: 0,
+              margin: 0,
+            },
+            risk: "low",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("数据库项目一号").length).toBeGreaterThan(0);
+    expect(screen.getByText("p-db-1 · PDB-001")).toBeInTheDocument();
+    expect(screen.getAllByText("草稿").length).toBeGreaterThan(0);
+  });
+});
+
 describe("OpsReferenceApp live task smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();

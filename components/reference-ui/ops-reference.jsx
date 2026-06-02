@@ -1108,6 +1108,7 @@ const REPORT_STATUS = {
 };
 
 const OpsLiveDataContext = React.createContext({
+  projects: null,
   tasks: null,
   reports: null,
   batches: null,
@@ -1118,6 +1119,11 @@ const OpsLiveDataContext = React.createContext({
   notificationItems: null,
   actions: {},
 });
+
+function useOpsProjects() {
+  const { projects } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(projects) ? projects : PROJECTS;
+}
 
 function useOpsTasks() {
   const { tasks } = React.useContext(OpsLiveDataContext);
@@ -3667,17 +3673,26 @@ function ScreenProjects({ go, projectId }) {
 }
 
 function ProjectList({ go }) {
+  const projects = useOpsProjects();
+  const actions = useOpsLiveActions();
   const [status, setStatus] = React.useState("all");
+  const handleCreateProject = async () => {
+    const name = globalThis.prompt?.("项目名称", "新项目草稿");
+    if (!name) return;
+    const code = globalThis.prompt?.("项目编号", `P-${Date.now()}`);
+    if (!code) return;
+    await actions.createProjectDraft?.({ name, code });
+  };
   const counts = {
-    all: PROJECTS.length,
-    active: PROJECTS.filter((p) => p.status === "active").length,
-    recruiting: PROJECTS.filter((p) => p.status === "recruiting").length,
-    settling: PROJECTS.filter((p) => p.status === "settling").length,
-    paused: PROJECTS.filter((p) => p.status === "paused").length,
-    ended: PROJECTS.filter((p) => p.status === "ended").length,
+    all: projects.length,
+    active: projects.filter((p) => p.status === "active").length,
+    recruiting: projects.filter((p) => p.status === "recruiting").length,
+    settling: projects.filter((p) => p.status === "settling").length,
+    paused: projects.filter((p) => p.status === "paused").length,
+    ended: projects.filter((p) => p.status === "ended").length,
   };
   const filtered =
-    status === "all" ? PROJECTS : PROJECTS.filter((p) => p.status === status);
+    status === "all" ? projects : projects.filter((p) => p.status === status);
 
   return (
     <>
@@ -3689,7 +3704,11 @@ function ProjectList({ go }) {
             <Button kind="default" icon={<Icon.Export size={14} />}>
               导出项目表
             </Button>
-            <Button kind="primary" icon={<Icon.Plus size={14} stroke="#fff" />}>
+            <Button
+              kind="primary"
+              icon={<Icon.Plus size={14} stroke="#fff" />}
+              onClick={handleCreateProject}
+            >
               新建项目
             </Button>
           </>
@@ -3917,7 +3936,9 @@ function ProjectList({ go }) {
 // ——— Project detail ———————————————————————
 
 function ProjectDetail({ id, go }) {
-  const p = PROJECTS.find((x) => x.id === id) || PROJECTS[0];
+  const projects = useOpsProjects();
+  const actions = useOpsLiveActions();
+  const p = projects.find((x) => x.id === id) || projects[0] || PROJECTS[0];
   const [tab, setTab] = React.useState("overview");
   const status = PROJECT_STATUS[p.status];
   const donePct =
@@ -3960,6 +3981,18 @@ function ProjectDetail({ id, go }) {
             <Button kind="default" icon={<Icon.Settings size={14} />}>
               项目设置
             </Button>
+            {p.status === "draft" && (
+              <Button
+                kind="default"
+                icon={<Icon.Play size={14} />}
+                onClick={async () => {
+                  await actions.publishProject?.(p.id);
+                  go("projects");
+                }}
+              >
+                发布招募
+              </Button>
+            )}
             <Button kind="primary" icon={<Icon.Plus size={14} stroke="#fff" />}>
               新建排班
             </Button>
@@ -11062,6 +11095,7 @@ function OpsReferenceInner({
   settlementScope,
   auditEntries,
   notificationItems,
+  projectCards,
 }) {
   // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
@@ -11082,6 +11116,7 @@ function OpsReferenceInner({
   const [notificationItemsState, setNotificationItemsState] = React.useState(
     notificationItems ?? null,
   );
+  const [projectsState, setProjectsState] = React.useState(projectCards ?? null);
 
   React.useEffect(() => {
     setTasksState(liveTasks ?? null);
@@ -11110,6 +11145,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setNotificationItemsState(notificationItems ?? null);
   }, [notificationItems]);
+
+  React.useEffect(() => {
+    setProjectsState(projectCards ?? null);
+  }, [projectCards]);
 
   const actions = React.useMemo(() => {
     const readJson = async (response, fallbackMessage) => {
@@ -11221,7 +11260,32 @@ function OpsReferenceInner({
       }
     };
 
+    const refreshProjects = async () => {
+      const body = await fetchJson("/api/projects", "refresh projects failed");
+      if (Array.isArray(body.projects)) {
+        setProjectsState(body.projects);
+      }
+    };
+
     return {
+      createProjectDraft: async (input) => {
+        const body = await fetchJson("/api/projects", "create project failed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        });
+        await refreshProjects();
+        return body;
+      },
+      publishProject: async (id) => {
+        const body = await fetchJson(
+          `/api/projects/${id}/publish`,
+          "publish project failed",
+          { method: "POST" },
+        );
+        await refreshProjects();
+        return body;
+      },
       createLiveTask: async (input) => {
         const body = await fetchJson(
           "/api/live-tasks",
@@ -11422,6 +11486,7 @@ function OpsReferenceInner({
   return (
     <OpsLiveDataContext.Provider
       value={{
+        projects: projectsState,
         tasks: tasksState,
         reports: reportsState,
         batches: batchesState,
@@ -11644,7 +11709,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[] }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[] }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -11656,6 +11721,7 @@ export default function OpsReferenceApp({
   settlementScope,
   auditEntries,
   notificationItems,
+  projectCards,
 }) {
   return (
     <OpsReferenceInner
@@ -11668,6 +11734,7 @@ export default function OpsReferenceApp({
       settlementScope={settlementScope}
       auditEntries={auditEntries}
       notificationItems={notificationItems}
+      projectCards={projectCards}
     />
   );
 }
