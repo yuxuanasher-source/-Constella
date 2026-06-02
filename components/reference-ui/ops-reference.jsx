@@ -5831,17 +5831,39 @@ function textFromSnapshot(snapshot, key, fallback = "unknown") {
   return typeof value === "string" && value.trim() ? value : fallback;
 }
 
+function toReferenceReportFromApi(report) {
+  return {
+    id: report.id,
+    date: String(report.submittedAt || "").slice(0, 10),
+    streamer: report.streamerName || "Unknown streamer",
+    streamerId: report.streamerName || "Unknown streamer",
+    project: report.projectName || "Unknown project",
+    taskId: report.taskTitle || "Unknown task",
+    duration: Math.round(((report.settlementDuration ?? 0) / 60) * 10) / 10,
+    audience: report.viewers ?? 0,
+    status:
+      report.status === "need_more"
+        ? "need_supply"
+        : report.status || "pending_review",
+    screens: 1,
+    source: report.timeSource === "claimed" ? "manual" : "OCR",
+    note: `${report.timeSource ?? "unknown"} · ${report.evidenceLevel ?? "unknown"}`,
+  };
+}
+
 function toReferenceBatchFromApi(batch, items, context = {}) {
   const isPayable = batch.batchType === "payable";
   const projectName =
+    batch.projectName ||
     context.pool?.find((row) => row.project)?.project ||
     context.activeBatch?.project ||
     batch.projectId ||
     "项目";
   const amount =
+    Number(batch.totalAmount ?? 0) ||
     Number(batch.computedAmount ?? 0) +
-    Number(batch.manualAmount ?? 0) +
-    Number(batch.adjustmentAmount ?? 0);
+      Number(batch.manualAmount ?? 0) +
+      Number(batch.adjustmentAmount ?? 0);
 
   return {
     id: batch.id,
@@ -5851,9 +5873,17 @@ function toReferenceBatchFromApi(batch, items, context = {}) {
     project: projectName,
     vendor: isPayable ? "—" : projectName,
     period: `${batch.periodStart} → ${batch.periodEnd}`,
-    items: Array.isArray(items) ? items.length : 0,
+    items:
+      typeof batch.itemCount === "number"
+        ? batch.itemCount
+        : Array.isArray(items)
+          ? items.length
+          : 0,
     amount,
-    status: batch.status || "generated",
+    status:
+      batch.status === "pending"
+        ? "pending_confirm"
+        : batch.status || "generated",
     updated: formatOpsMinute(batch.updatedAt || batch.createdAt),
     creator: batch.createdBy || "system",
   };
@@ -5861,21 +5891,31 @@ function toReferenceBatchFromApi(batch, items, context = {}) {
 
 function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {
   const snapshot = item.evidenceSnapshot || {};
-  const settlementDuration = numberFromSnapshot(snapshot, "settlementDuration");
+  const settlementDuration =
+    typeof item.settlementDuration === "number"
+      ? item.settlementDuration
+      : numberFromSnapshot(snapshot, "settlementDuration");
   const settlementMethod = textFromSnapshot(
     snapshot,
     "settlementMethod",
     item.itemType,
   );
-  const timeSource = textFromSnapshot(snapshot, "timeSource");
+  const timeSource =
+    item.timeSource || textFromSnapshot(snapshot, "timeSource");
   const sourceReport = pool.find((row) => row.id === item.liveReportId);
+  const computedAmount = Number(item.systemAmount ?? item.computedAmount ?? 0);
+  const manualAmount = Number(item.manualAmount ?? 0);
+  const adjustmentAmount = Number(item.adjustmentAmount ?? 0);
   const total =
-    Number(item.computedAmount ?? 0) +
-    Number(item.manualAmount ?? 0) +
-    Number(item.adjustmentAmount ?? 0);
+    Number(item.totalAmount ?? 0) ||
+    computedAmount + manualAmount + adjustmentAmount;
 
   return {
-    streamer: sourceReport?.streamer || item.streamerId || `主播 ${index + 1}`,
+    streamer:
+      item.streamerName ||
+      sourceReport?.streamer ||
+      item.streamerId ||
+      `主播 ${index + 1}`,
     id: item.id,
     rule:
       item.itemType === "live_report"
@@ -5884,9 +5924,22 @@ function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {
     hours: Math.round((settlementDuration / 60) * 10) / 10,
     qty: `${item.evidenceLevel ?? "unknown"} · ${timeSource}`,
     base: 0,
-    variable: Number(item.computedAmount ?? 0) + Number(item.manualAmount ?? 0),
-    adjust: Number(item.adjustmentAmount ?? 0),
+    variable: computedAmount + manualAmount,
+    adjust: adjustmentAmount,
     total,
+  };
+}
+
+function toReferenceSettlementPoolFromApi(item) {
+  return {
+    id: item.id,
+    streamer: item.streamerName || "Unknown streamer",
+    project: item.projectName || "Unknown project",
+    hours: Math.round(((item.settlementDuration ?? 0) / 60) * 10) / 10,
+    evidence: `${item.evidenceLevel ?? "unknown"} · ${item.timeSource ?? "unknown"}`,
+    rule: item.settlementMethod || "manual",
+    expected: Number(item.expectedAmount ?? 0),
+    approvedAt: formatOpsMinute(item.approvedAt),
   };
 }
 
@@ -6007,7 +6060,7 @@ function ScreenSettlement({ go }) {
         reason,
         projectId: activeBatch.projectId,
       });
-      return true;
+      return false;
     });
 
   const lockBatch = () =>
@@ -6016,7 +6069,7 @@ function ScreenSettlement({ go }) {
       const reason = askText("锁定原因", "财务核对无误");
       if (!reason) return false;
       await actions.lockSettlementBatch?.(activeBatch.id, { reason });
-      return true;
+      return false;
     });
 
   const reopenBatch = () =>
@@ -6025,7 +6078,7 @@ function ScreenSettlement({ go }) {
       const reason = askText("重开原因", "需要修正结算金额");
       if (!reason) return false;
       await actions.reopenSettlementBatch?.(activeBatch.id, { reason });
-      return true;
+      return false;
     });
 
   return (
@@ -9933,149 +9986,167 @@ function OpsReferenceInner({
     setSettlementPoolState(liveSettlementPool ?? null);
   }, [liveSettlementPool]);
 
-  const actions = React.useMemo(
-    () => ({
+  const actions = React.useMemo(() => {
+    const readJson = async (response, fallbackMessage) => {
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error || fallbackMessage);
+      }
+      return body;
+    };
+
+    const fetchJson = async (url, fallbackMessage, init) => {
+      const response = await fetch(url, init);
+      return readJson(response, fallbackMessage);
+    };
+
+    const settlementPoolUrl = (scope) => {
+      if (!scope?.projectId || !scope?.periodStart || !scope?.periodEnd) {
+        return null;
+      }
+      const params = new URLSearchParams({
+        projectId: scope.projectId,
+        periodStart: scope.periodStart,
+        periodEnd: scope.periodEnd,
+      });
+      return `/api/settlement-pool?${params.toString()}`;
+    };
+
+    const refreshReports = async () => {
+      const body = await fetchJson(
+        "/api/live-reports",
+        "refresh reports failed",
+      );
+      if (Array.isArray(body.reports)) {
+        setReportsState(body.reports.map(toReferenceReportFromApi));
+      }
+    };
+
+    const refreshSettlementPool = async (scope = settlementScope) => {
+      const url = settlementPoolUrl(scope);
+      if (!url) return;
+      const body = await fetchJson(url, "refresh settlement pool failed");
+      if (Array.isArray(body.reports)) {
+        setSettlementPoolState(
+          body.reports.map(toReferenceSettlementPoolFromApi),
+        );
+      }
+    };
+
+    const refreshSettlementBatches = async () => {
+      const body = await fetchJson(
+        "/api/settlement-batches",
+        "refresh settlement batches failed",
+      );
+      if (Array.isArray(body.batches)) {
+        setBatchesState(
+          body.batches.map((batch) => toReferenceBatchFromApi(batch, [])),
+        );
+      }
+    };
+
+    const refreshSettlementBatchDetail = async (batchId) => {
+      const body = await fetchJson(
+        `/api/settlement-batches/${batchId}`,
+        "refresh settlement batch failed",
+      );
+      const items = Array.isArray(body.items) ? body.items : [];
+      if (body.batch) {
+        const batch = toReferenceBatchFromApi(body.batch, items);
+        setBatchesState((current) => {
+          const base = Array.isArray(current) ? current : [];
+          return [batch, ...base.filter((item) => item.id !== batch.id)];
+        });
+      }
+      setBatchDetailsState((current) => ({
+        ...(current && typeof current === "object" ? current : {}),
+        [batchId]: items.map((item, index) =>
+          toReferenceBatchDetailFromApi(item, [], index),
+        ),
+      }));
+    };
+
+    return {
       reviewReport: async (id, decision) => {
-        const response = await fetch(`/api/live-reports/${id}/review`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            decision,
-            includeInTaskResult: true,
-            enterSettlementPool: true,
-            reviewNotes: "经营端页面审核",
-          }),
-        });
-        if (!response.ok) throw new Error("review report failed");
-        const body = await response.json().catch(() => ({}));
-        const status =
-          decision === "approve"
-            ? "approved"
-            : decision === "need_more"
-              ? "need_supply"
-              : "rejected";
-        const sourceReports = Array.isArray(reportsState)
-          ? reportsState
-          : REPORTS;
-        const sourceReport = sourceReports.find((report) => report.id === id);
-        setReportsState((current) => {
-          const base = Array.isArray(current) ? current : REPORTS;
-          return base.map((report) =>
-            report.id === id ? { ...report, status } : report,
-          );
-        });
-        if (
-          decision === "approve" &&
-          body.report &&
-          body.report.enterSettlementPool !== false
-        ) {
-          const poolItem = toSettlementPoolFromReviewedReport(
-            body.report,
-            sourceReport,
-          );
-          setSettlementPoolState((current) => {
-            const base = Array.isArray(current) ? current : [];
-            return [
-              poolItem,
-              ...base.filter((item) => item.id !== poolItem.id),
-            ];
-          });
-        }
+        await fetchJson(
+          `/api/live-reports/${id}/review`,
+          "review report failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              decision,
+              includeInTaskResult: true,
+              enterSettlementPool: true,
+              reviewNotes: "经营端页面审核",
+            }),
+          },
+        );
+        await refreshReports();
+        await refreshSettlementPool();
       },
       createSettlementBatch: async (input) => {
-        const response = await fetch("/api/settlement-batches", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(input),
+        const body = await fetchJson(
+          "/api/settlement-batches",
+          "create settlement batch failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshSettlementBatches();
+        if (body.batch?.id) {
+          await refreshSettlementBatchDetail(body.batch.id);
+        }
+        await refreshSettlementPool({
+          projectId: input.projectId,
+          periodStart: input.periodStart,
+          periodEnd: input.periodEnd,
         });
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}));
-          throw new Error(body.error || "create settlement batch failed");
-        }
-        const body = await response.json().catch(() => ({}));
-        const sourcePool = Array.isArray(settlementPoolState)
-          ? settlementPoolState
-          : [];
-        const createdItems = Array.isArray(body.items) ? body.items : [];
-        if (body.batch) {
-          const createdBatch = toReferenceBatchFromApi(
-            body.batch,
-            createdItems,
-            { pool: sourcePool },
-          );
-          const createdDetails = createdItems.map((item, index) =>
-            toReferenceBatchDetailFromApi(item, sourcePool, index),
-          );
-          const consumedReportIds = new Set(
-            createdItems
-              .map((item) => item.liveReportId)
-              .filter((id) => typeof id === "string" && id),
-          );
-
-          setBatchesState((current) => {
-            const base = Array.isArray(current) ? current : [];
-            return [
-              createdBatch,
-              ...base.filter((batch) => batch.id !== createdBatch.id),
-            ];
-          });
-          setBatchDetailsState((current) => ({
-            ...(current && typeof current === "object" ? current : {}),
-            [createdBatch.id]: createdDetails,
-          }));
-          setSettlementPoolState((current) =>
-            Array.isArray(current)
-              ? current.filter((row) => !consumedReportIds.has(row.id))
-              : current,
-          );
-        }
         return body;
       },
       addManualSettlementItem: async (batchId, input) => {
-        const response = await fetch(
+        await fetchJson(
           `/api/settlement-batches/${batchId}/manual-items`,
+          "add manual settlement item failed",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(input),
           },
         );
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}));
-          throw new Error(body.error || "add manual settlement item failed");
-        }
+        await refreshSettlementBatchDetail(batchId);
+        await refreshSettlementBatches();
       },
       lockSettlementBatch: async (batchId, input) => {
-        const response = await fetch(
+        await fetchJson(
           `/api/settlement-batches/${batchId}/lock`,
+          "lock settlement batch failed",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(input),
           },
         );
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}));
-          throw new Error(body.error || "lock settlement batch failed");
-        }
+        await refreshSettlementBatchDetail(batchId);
+        await refreshSettlementBatches();
       },
       reopenSettlementBatch: async (batchId, input) => {
-        const response = await fetch(
+        await fetchJson(
           `/api/settlement-batches/${batchId}/reopen`,
+          "reopen settlement batch failed",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(input),
           },
         );
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}));
-          throw new Error(body.error || "reopen settlement batch failed");
-        }
+        await refreshSettlementBatchDetail(batchId);
+        await refreshSettlementBatches();
       },
-    }),
-    [reportsState, settlementPoolState],
-  );
+    };
+  }, [settlementScope]);
 
   const go = (r, arg) => {
     if (r === "project") {
