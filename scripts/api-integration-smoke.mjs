@@ -22,9 +22,11 @@ const appUrl = env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 const supabaseUrl = requireEnv("NEXT_PUBLIC_SUPABASE_URL");
 const supabaseAnonKey = requireEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
 
+const ownerCookie = await signIn("owner@jy-demo.local");
 const opsCookie = await signIn("ops@jy-demo.local");
 const financeCookie = await signIn("finance@jy-demo.local");
 const streamerCookie = await signIn("streamer@jy-demo.local");
+const p1Flow = {};
 
 await check("ops can read the M5 report queue over HTTP", async () => {
   const body = await requestJson("/api/live-reports", {
@@ -106,6 +108,7 @@ await check(
     );
 
     const reportId = reportBody.report.id;
+    p1Flow.reportId = reportId;
     const reviewBody = await requestJson(
       `/api/live-reports/${reportId}/review`,
       {
@@ -170,6 +173,102 @@ await check(
     assertArray(detailBody.items, "settlement batch detail items");
     assertNonEmpty(detailBody.items, "settlement batch detail items");
     assertPublicDtoShape(detailBody, "settlement batch detail");
+  },
+);
+
+await check(
+  "P2 authenticated flow generates batch, adds manual carry amount, locks, and owner reopens",
+  async () => {
+    if (!p1Flow.reportId) {
+      throw new Error("P1 flow report id is required for P2 flow smoke");
+    }
+
+    const batchBody = await requestJson("/api/settlement-batches", {
+      cookie: opsCookie,
+      method: "POST",
+      expectedStatus: 201,
+      body: {
+        projectId,
+        batchType: "payable",
+        periodStart: "2026-01-01",
+        periodEnd: "2026-12-31",
+      },
+    });
+    assertObject(batchBody.batch, "generated settlement batch");
+    assertArray(batchBody.items, "generated settlement items");
+    assertNonEmpty(batchBody.items, "generated settlement items");
+    assertEqual(batchBody.batch.status, "generated", "generated batch status");
+    assertPositiveNumber(
+      batchBody.batch.computedAmount,
+      "generated batch computed amount",
+    );
+
+    const generatedReportItem = batchBody.items.find(
+      (item) => item.liveReportId === p1Flow.reportId,
+    );
+    assertObject(generatedReportItem, "P1 report settlement item");
+    assertEqual(
+      generatedReportItem.itemType,
+      "live_report",
+      "P1 report settlement item type",
+    );
+
+    const batchId = batchBody.batch.id;
+    const manualBody = await requestJson(
+      `/api/settlement-batches/${batchId}/manual-items`,
+      {
+        cookie: opsCookie,
+        method: "POST",
+        expectedStatus: 201,
+        body: {
+          itemType: "gift",
+          projectId,
+          streamerId,
+          manualAmount: 88,
+          evidenceLevel: "red",
+          reason: "api integration smoke manual carry",
+          note: "CPA/CPS/gift values are manually carried, not computed",
+        },
+      },
+    );
+    assertObject(manualBody.item, "manual settlement item");
+    assertEqual(manualBody.item.itemType, "gift", "manual item type");
+    assertEqual(
+      manualBody.item.computedAmount,
+      0,
+      "manual item computed amount",
+    );
+    assertEqual(manualBody.item.manualAmount, 88, "manual item carried amount");
+
+    const lockedBody = await requestJson(
+      `/api/settlement-batches/${batchId}/lock`,
+      {
+        cookie: opsCookie,
+        method: "POST",
+        body: { reason: "api integration smoke lock" },
+      },
+    );
+    assertEqual(lockedBody.batch.status, "locked", "locked batch status");
+    assertEqual(
+      lockedBody.batch.lockReason,
+      "api integration smoke lock",
+      "locked batch reason",
+    );
+
+    const reopenedBody = await requestJson(
+      `/api/settlement-batches/${batchId}/reopen`,
+      {
+        cookie: ownerCookie,
+        method: "POST",
+        body: { reason: "api integration smoke reopen" },
+      },
+    );
+    assertEqual(reopenedBody.batch.status, "reopened", "reopened batch status");
+    assertEqual(
+      reopenedBody.batch.reopenReason,
+      "api integration smoke reopen",
+      "reopened batch reason",
+    );
   },
 );
 
@@ -330,6 +429,12 @@ function assertNonEmpty(value, label) {
 function assertEqual(actual, expected, label) {
   if (actual !== expected) {
     throw new Error(`${label} expected ${expected}, got ${actual}`);
+  }
+}
+
+function assertPositiveNumber(value, label) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} must be a positive number, got ${value}`);
   }
 }
 

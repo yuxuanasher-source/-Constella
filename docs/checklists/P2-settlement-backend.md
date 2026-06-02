@@ -42,5 +42,6 @@
 - [x] Schema contract covers the settlement pool index and finance read-only RLS write boundary.
 - [x] Seed data includes one unsettled approved report and one generated payable batch.
 - [x] Local page smoke confirms `/console/stubs/m6` responds.
+- [x] Authenticated HTTP smoke creates a fresh payable batch from the pool, adds manual gift carry amount, locks it, and reopens it as owner.
 - [ ] Browser smoke test creates a fresh batch from the pool through the UI.
-- [ ] Export, invoicing, payment, and full gross-margin reports are intentionally out of this slice.
+- [x] Export, invoicing, payment, and full gross-margin reports are intentionally out of this slice.
