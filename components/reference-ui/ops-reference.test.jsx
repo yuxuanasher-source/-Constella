@@ -752,3 +752,55 @@ describe("OpsReferenceApp notification center smoke", () => {
     expect((await screen.findAllByText("已处理")).length).toBeGreaterThan(0);
   });
 });
+
+describe("OpsReferenceApp export center smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("submits a governed export request and renders the returned filename", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/exports") {
+        return {
+          ok: true,
+          json: async () => ({
+            export: {
+              kind: "audit_logs",
+              filename: "audit_logs-2026-06-02.csv",
+              content: "模块,动作\nsettlement,lock",
+              fieldCount: 2,
+              rowCount: 1,
+            },
+          }),
+        };
+      }
+
+      return {
+        ok: false,
+        json: async () => ({ error: "unexpected request" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="export" />);
+
+    expect(screen.getAllByText("数据导出中心").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "生成导出" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/exports",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: "audit_logs",
+            rows: [{ module: "settlement", action: "lock" }],
+          }),
+        }),
+      );
+    });
+    expect(await screen.findByText("audit_logs-2026-06-02.csv")).toBeInTheDocument();
+  });
+});

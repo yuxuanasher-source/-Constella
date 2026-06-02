@@ -10802,6 +10802,148 @@ function ScreenNotifications() {
   );
 }
 
+function ScreenExport() {
+  const actions = useOpsLiveActions();
+  const [kind, setKind] = React.useState("audit_logs");
+  const [busy, setBusy] = React.useState(false);
+  const [result, setResult] = React.useState(null);
+
+  const exportKinds = [
+    { key: "audit_logs", label: "审计日志" },
+    { key: "vendor_delivery", label: "厂家交付包" },
+    { key: "settlement_batch", label: "结算批次" },
+    { key: "report_details", label: "报数明细" },
+  ];
+
+  const submit = async () => {
+    if (!actions.createGovernedExport || busy) return;
+    setBusy(true);
+    try {
+      const exportResult = await actions.createGovernedExport({
+        kind,
+        rows: sampleExportRows(kind),
+      });
+      setResult(exportResult);
+    } catch (error) {
+      globalThis.alert?.(
+        error instanceof Error ? error.message : "生成导出失败",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        title="数据导出中心"
+        subtitle="按角色字段白名单生成导出预览，导出动作统一写入审计日志"
+        actions={
+          <Button
+            kind="primary"
+            icon={<Icon.Export size={14} stroke="#fff" />}
+            onClick={submit}
+            disabled={busy}
+          >
+            {busy ? "生成中…" : "生成导出"}
+          </Button>
+        }
+      />
+      <div
+        style={{
+          padding: 20,
+          display: "grid",
+          gridTemplateColumns: "0.9fr 1.2fr",
+          gap: 20,
+          alignItems: "flex-start",
+        }}
+      >
+        <Card title="导出类型" padded={false}>
+          <div style={{ padding: 12 }}>
+            <Tabs
+              value={kind}
+              onChange={setKind}
+              items={exportKinds.map((item) => ({
+                key: item.key,
+                label: item.label,
+              }))}
+            />
+          </div>
+          <div style={{ padding: "0 16px 16px" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <SectionTitle>治理规则</SectionTitle>
+              {[
+                { label: "字段控制", val: "服务端白名单", tone: "blue" },
+                { label: "敏感字段", val: "角色过滤", tone: "green" },
+                { label: "导出审计", val: "自动留痕", tone: "amber" },
+              ].map((item) => (
+                <div
+                  key={item.label}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "10px 12px",
+                    border: "1px solid var(--line)",
+                    borderRadius: 8,
+                    background: "var(--bg-soft)",
+                  }}
+                >
+                  <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                    {item.label}
+                  </span>
+                  <Badge tone={item.tone}>{item.val}</Badge>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+
+        <Card title="导出预览" padded={true}>
+          {result ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div
+                className="mono"
+                style={{
+                  fontSize: 13,
+                  fontWeight: 700,
+                  color: "var(--ink-900)",
+                }}
+              >
+                {result.filename}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Badge tone="blue">{result.kind}</Badge>
+                <Badge tone="green">{result.rowCount} 行</Badge>
+                <Badge tone="violet">{result.fieldCount} 字段</Badge>
+              </div>
+              <pre
+                className="mono"
+                style={{
+                  margin: 0,
+                  padding: 12,
+                  borderRadius: 8,
+                  background: "var(--bg-soft)",
+                  border: "1px solid var(--line)",
+                  fontSize: 11.5,
+                  color: "var(--ink-700)",
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {result.content}
+              </pre>
+            </div>
+          ) : (
+            <div style={{ color: "var(--ink-500)", fontSize: 13 }}>
+              选择导出类型后点击生成导出，系统会按角色字段白名单返回预览。
+            </div>
+          )}
+        </Card>
+      </div>
+    </>
+  );
+}
+
 function auditChangedFields(entry) {
   return Array.isArray(entry.changedFields) && entry.changedFields.length > 0
     ? entry.changedFields.join(", ")
@@ -10878,6 +11020,33 @@ function notificationStatusTone(status) {
   if (status === "handled") return "green";
   if (status === "ignored") return "neutral";
   return "amber";
+}
+
+function sampleExportRows(kind) {
+  if (kind === "audit_logs") {
+    return [{ module: "settlement", action: "lock" }];
+  }
+  if (kind === "vendor_delivery") {
+    return [
+      {
+        projectName: "王者荣耀暑期冲榜",
+        streamerName: "阿洛",
+        settlementDuration: 120,
+        evidenceLevel: "system",
+        grossMarginCents: 3000,
+      },
+    ];
+  }
+  if (kind === "settlement_batch") {
+    return [{ batchName: "6月应付批次", payableAmountCents: 120000 }];
+  }
+  return [
+    {
+      streamerName: "阿洛",
+      settlementDuration: 120,
+      evidenceLevel: "system",
+    },
+  ];
 }
 
 // ===== src\app.jsx =====
@@ -11184,6 +11353,18 @@ function OpsReferenceInner({
         );
         await refreshNotifications();
       },
+      createGovernedExport: async (input) => {
+        const body = await fetchJson(
+          "/api/exports",
+          "create export failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        return body.export;
+      },
     };
   }, [settlementScope]);
 
@@ -11280,7 +11461,7 @@ function OpsReferenceInner({
             {route === "audit" && <ScreenAudit go={go} />}
             {route === "notifications" && <ScreenNotifications go={go} />}
             {route === "org" && <ScreenOrg go={go} />}
-            {route === "export" && <PlaceholderScreen route={route} go={go} />}
+            {route === "export" && <ScreenExport go={go} />}
           </div>
         </main>
       </div>

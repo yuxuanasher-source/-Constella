@@ -3,7 +3,7 @@
 ## Scope In
 
 - [x] Audit center lists filterable audit logs with role-scoped visibility.
-- [ ] Export center uses field whitelists, sensitivity flags, async placeholders, and export audit logs.
+- [x] Export center uses field whitelists, sensitivity flags, async placeholders, and export audit logs.
 - [x] Notification center supports unread / read / handled / ignored transitions and my todos.
 - [x] Deterministic anomaly scanner covers not started, not reported, overdue report, missing screenshot, and live over 48h.
 - [ ] Delivery package DTOs remove price, margin, cost, and internal risk notes.
@@ -19,7 +19,7 @@
 - [ ] New business tables include `organization_id` and RLS.
 - [ ] Every write action uses the shared audit writer.
 - [x] Audit logs remain append-only with no update/delete API.
-- [ ] Delivery/export DTOs are server-side filtered and never rely on frontend hiding.
+- [x] Delivery/export DTOs are server-side filtered and never rely on frontend hiding.
 - [ ] Sensitive fields such as cost, margin, vendor receivable, and internal risk notes are not exposed to streamer/vendor-facing outputs.
 
 ## Verification
