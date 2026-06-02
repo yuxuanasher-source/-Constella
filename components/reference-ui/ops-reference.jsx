@@ -1108,6 +1108,7 @@ const REPORT_STATUS = {
 const OpsLiveDataContext = React.createContext({
   tasks: null,
   reports: null,
+  batches: null,
   actions: {},
 });
 
@@ -1119,6 +1120,11 @@ function useOpsTasks() {
 function useOpsReports() {
   const { reports } = React.useContext(OpsLiveDataContext);
   return Array.isArray(reports) ? reports : REPORTS;
+}
+
+function useOpsSettlementBatches() {
+  const { batches } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(batches) && batches.length > 0 ? batches : BATCHES;
 }
 
 function useOpsLiveActions() {
@@ -5778,11 +5784,20 @@ function ShotMetric({ label, value }) {
 // ——— Screen: 结算中心 ————————————————————————————
 
 function ScreenSettlement({ go }) {
+  const batches = useOpsSettlementBatches();
   const [type, setType] = React.useState("all");
-  const [activeId, setActiveId] = React.useState("B-2026-05-S-001");
+  const [activeId, setActiveId] = React.useState(
+    batches[0]?.id || "B-2026-05-S-001",
+  );
+
+  React.useEffect(() => {
+    if (!batches.some((b) => b.id === activeId)) {
+      setActiveId(batches[0]?.id || "B-2026-05-S-001");
+    }
+  }, [activeId, batches]);
 
   const filtered =
-    type === "all" ? BATCHES : BATCHES.filter((b) => b.type === type);
+    type === "all" ? batches : batches.filter((b) => b.type === type);
 
   return (
     <>
@@ -5867,17 +5882,17 @@ function ScreenSettlement({ go }) {
                 value={type}
                 onChange={setType}
                 items={[
-                  { key: "all", label: "全部", count: BATCHES.length },
+                  { key: "all", label: "全部", count: batches.length },
                   {
                     key: "vendor_receivable",
                     label: "厂家应收",
-                    count: BATCHES.filter((b) => b.type === "vendor_receivable")
+                    count: batches.filter((b) => b.type === "vendor_receivable")
                       .length,
                   },
                   {
                     key: "streamer_payable",
                     label: "主播应付",
-                    count: BATCHES.filter((b) => b.type === "streamer_payable")
+                    count: batches.filter((b) => b.type === "streamer_payable")
                       .length,
                   },
                 ]}
@@ -5960,22 +5975,38 @@ function ScreenSettlement({ go }) {
           </Card>
 
           {/* Batch detail */}
-          <BatchDetail id={activeId} />
+          <BatchDetail id={activeId} batches={batches} />
         </div>
       </div>
     </>
   );
 }
 
-function BatchDetail({ id }) {
-  const b = BATCHES.find((x) => x.id === id) || BATCHES[1];
+function BatchDetail({ id, batches = BATCHES }) {
+  const b = batches.find((x) => x.id === id) || batches[0] || BATCHES[1];
   const isPayable = b.type === "streamer_payable";
   const isLocked = b.status === "locked";
+  const isReferenceBatch = BATCHES.some((x) => x.id === b.id);
+  const detailRows = isReferenceBatch
+    ? BATCH_DETAIL_ITEMS
+    : [
+        {
+          streamer: "批次汇总",
+          id: String(b.id).slice(0, 8),
+          rule: isPayable ? "主播应付汇总" : "厂家应收汇总",
+          hours: 0,
+          qty: "API 批次",
+          base: 0,
+          variable: b.amount,
+          adjust: 0,
+          total: b.amount,
+        },
+      ];
 
-  const total = BATCH_DETAIL_ITEMS.reduce((s, x) => s + x.total, 0);
-  const baseSum = BATCH_DETAIL_ITEMS.reduce((s, x) => s + x.base, 0);
-  const varSum = BATCH_DETAIL_ITEMS.reduce((s, x) => s + x.variable, 0);
-  const adjSum = BATCH_DETAIL_ITEMS.reduce((s, x) => s + x.adjust, 0);
+  const total = detailRows.reduce((s, x) => s + x.total, 0);
+  const baseSum = detailRows.reduce((s, x) => s + x.base, 0);
+  const varSum = detailRows.reduce((s, x) => s + x.variable, 0);
+  const adjSum = detailRows.reduce((s, x) => s + x.adjust, 0);
 
   return (
     <div
@@ -6233,7 +6264,7 @@ function BatchDetail({ id }) {
               ),
             },
           ]}
-          rows={BATCH_DETAIL_ITEMS}
+          rows={detailRows}
         />
 
         {/* Footer: actions */}
@@ -9466,6 +9497,7 @@ function OpsReferenceInner({
   initialRoute = "warroom",
   liveTasks,
   liveReports,
+  liveBatches,
 }) {
   // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
@@ -9473,6 +9505,7 @@ function OpsReferenceInner({
   const [streamerId, setStreamerId] = React.useState(null);
   const [tasksState, setTasksState] = React.useState(liveTasks ?? null);
   const [reportsState, setReportsState] = React.useState(liveReports ?? null);
+  const [batchesState, setBatchesState] = React.useState(liveBatches ?? null);
 
   React.useEffect(() => {
     setTasksState(liveTasks ?? null);
@@ -9481,6 +9514,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setReportsState(liveReports ?? null);
   }, [liveReports]);
+
+  React.useEffect(() => {
+    setBatchesState(liveBatches ?? null);
+  }, [liveBatches]);
 
   const actions = React.useMemo(
     () => ({
@@ -9564,7 +9601,12 @@ function OpsReferenceInner({
 
   return (
     <OpsLiveDataContext.Provider
-      value={{ tasks: tasksState, reports: reportsState, actions }}
+      value={{
+        tasks: tasksState,
+        reports: reportsState,
+        batches: batchesState,
+        actions,
+      }}
     >
       <div
         style={{ display: "flex", minHeight: "100vh", background: "var(--bg)" }}
@@ -9777,18 +9819,20 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; liveTasks?: any[]; liveReports?: any[] }} props
+ * @param {{ initialRoute?: string; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[] }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
   liveTasks,
   liveReports,
+  liveBatches,
 }) {
   return (
     <OpsReferenceInner
       initialRoute={initialRoute}
       liveTasks={liveTasks}
       liveReports={liveReports}
+      liveBatches={liveBatches}
     />
   );
 }

@@ -7,6 +7,8 @@ import {
   toOpsReferenceReport,
   toOpsReferenceTask,
 } from "@/features/live-operations/live-ui-adapters";
+import { listOpsSettlementBatches } from "@/features/settlements/settlement-queries";
+import { toOpsReferenceBatch } from "@/features/settlements/settlement-ui-adapters";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { isMcnStaff } from "@/lib/rbac/roles";
@@ -32,13 +34,15 @@ export default async function StubPage({
   params: Promise<{ module: string }>;
 }) {
   const { module } = await params;
-  const { liveTasks, liveReports } = await loadLiveReferenceData(module);
+  const { liveTasks, liveReports, liveBatches } =
+    await loadLiveReferenceData(module);
 
   return (
     <OpsReferenceApp
       initialRoute={routeByModule[module] ?? "warroom"}
       liveTasks={liveTasks}
       liveReports={liveReports}
+      liveBatches={liveBatches}
     />
   );
 }
@@ -61,6 +65,11 @@ async function loadLiveReferenceData(module: string) {
     return {
       liveReports: reports.map((report) => toOpsReferenceReport(report)),
     };
+  }
+
+  if (module === "m6") {
+    const batches = await listOpsSettlementBatches(supabase);
+    return { liveBatches: batches.map((batch) => toOpsReferenceBatch(batch)) };
   }
 
   return {};

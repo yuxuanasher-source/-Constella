@@ -597,6 +597,222 @@ set live_report_id = excluded.live_report_id,
     storage_path = excluded.storage_path,
     metadata = excluded.metadata;
 
+insert into public.live_tasks (
+  id,
+  organization_id,
+  project_id,
+  streamer_id,
+  title,
+  task_type,
+  status,
+  planned_start_at,
+  planned_end_at,
+  planned_duration,
+  requires_timing,
+  system_started_at,
+  system_stopped_at,
+  system_duration,
+  created_by,
+  note
+) values
+(
+  '91919191-9191-4919-9191-919191919191',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '99999999-9999-9999-9999-999999999999',
+  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  'New Game Launch Week · Settlement Pool Demo',
+  'project',
+  'completed',
+  now() - interval '12 hours',
+  now() - interval '10 hours',
+  120,
+  true,
+  now() - interval '12 hours',
+  now() - interval '10 hours',
+  120,
+  '33333333-3333-3333-3333-333333333333',
+  'Approved report waiting in settlement pool'
+),
+(
+  '93939393-9393-4939-9393-939393939393',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '99999999-9999-9999-9999-999999999999',
+  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  'New Game Launch Week · Settlement Batch Demo',
+  'project',
+  'completed',
+  now() - interval '8 hours',
+  now() - interval '6 hours',
+  120,
+  true,
+  now() - interval '8 hours',
+  now() - interval '6 hours',
+  120,
+  '33333333-3333-3333-3333-333333333333',
+  'Approved report already consumed by demo settlement batch'
+)
+on conflict (id) do update
+set status = excluded.status,
+    planned_start_at = excluded.planned_start_at,
+    planned_end_at = excluded.planned_end_at,
+    planned_duration = excluded.planned_duration,
+    system_started_at = excluded.system_started_at,
+    system_stopped_at = excluded.system_stopped_at,
+    system_duration = excluded.system_duration,
+    note = excluded.note,
+    updated_at = now();
+
+insert into public.live_reports (
+  id,
+  organization_id,
+  live_task_id,
+  project_id,
+  streamer_id,
+  status,
+  system_duration,
+  screenshot_duration,
+  claimed_duration,
+  settlement_duration,
+  time_source,
+  evidence_level,
+  divergence_pct,
+  viewers,
+  include_in_task_result,
+  enter_settlement_pool,
+  risk_flags,
+  created_by
+) values
+(
+  '92929292-9292-4929-9292-929292929292',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '91919191-9191-4919-9191-919191919191',
+  '99999999-9999-9999-9999-999999999999',
+  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  'approved',
+  120,
+  121,
+  121,
+  120,
+  'system',
+  'green',
+  0.0083,
+  1040,
+  true,
+  true,
+  '{}',
+  '55555555-5555-5555-5555-555555555555'
+),
+(
+  '94949494-9494-4949-9494-949494949494',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '93939393-9393-4939-9393-939393939393',
+  '99999999-9999-9999-9999-999999999999',
+  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  'approved',
+  120,
+  119,
+  119,
+  120,
+  'system',
+  'green',
+  0.0083,
+  988,
+  true,
+  true,
+  '{}',
+  '55555555-5555-5555-5555-555555555555'
+)
+on conflict (id) do update
+set status = excluded.status,
+    system_duration = excluded.system_duration,
+    screenshot_duration = excluded.screenshot_duration,
+    claimed_duration = excluded.claimed_duration,
+    settlement_duration = excluded.settlement_duration,
+    time_source = excluded.time_source,
+    evidence_level = excluded.evidence_level,
+    divergence_pct = excluded.divergence_pct,
+    viewers = excluded.viewers,
+    include_in_task_result = excluded.include_in_task_result,
+    enter_settlement_pool = excluded.enter_settlement_pool,
+    risk_flags = excluded.risk_flags,
+    updated_at = now();
+
+insert into public.settlement_batches (
+  id,
+  organization_id,
+  project_id,
+  batch_type,
+  status,
+  period_start,
+  period_end,
+  computed_amount,
+  manual_amount,
+  adjustment_amount,
+  evidence_summary,
+  created_by
+) values (
+  '95959595-9595-4959-9595-959595959595',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '99999999-9999-9999-9999-999999999999',
+  'payable',
+  'generated',
+  current_date - 7,
+  current_date,
+  160,
+  0,
+  0,
+  '{"green":1,"yellow":0,"red":0,"unknown":0}',
+  '11111111-1111-1111-1111-111111111111'
+)
+on conflict (id) do update
+set status = excluded.status,
+    period_start = excluded.period_start,
+    period_end = excluded.period_end,
+    computed_amount = excluded.computed_amount,
+    manual_amount = excluded.manual_amount,
+    adjustment_amount = excluded.adjustment_amount,
+    evidence_summary = excluded.evidence_summary,
+    updated_at = now();
+
+insert into public.settlement_batch_items (
+  id,
+  organization_id,
+  settlement_batch_id,
+  project_id,
+  streamer_id,
+  live_report_id,
+  item_type,
+  computed_amount,
+  manual_amount,
+  adjustment_amount,
+  evidence_level,
+  evidence_snapshot
+) values (
+  '96969696-9696-4969-9696-969696969696',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '95959595-9595-4959-9595-959595959595',
+  '99999999-9999-9999-9999-999999999999',
+  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  '94949494-9494-4949-9494-949494949494',
+  'live_report',
+  160,
+  0,
+  0,
+  'green',
+  '{"source":"seed","liveReportId":"94949494-9494-4949-9494-949494949494","settlementDuration":120,"timeSource":"system","evidenceLevel":"green"}'
+)
+on conflict (id) do update
+set computed_amount = excluded.computed_amount,
+    manual_amount = excluded.manual_amount,
+    adjustment_amount = excluded.adjustment_amount,
+    evidence_level = excluded.evidence_level,
+    evidence_snapshot = excluded.evidence_snapshot;
+
+update public.live_reports
+set settled_batch_item_id = '96969696-9696-4969-9696-969696969696',
+    updated_at = now()
+where id = '94949494-9494-4949-9494-949494949494';
+
 insert into public.auto_review_rules (
   organization_id,
   version,
