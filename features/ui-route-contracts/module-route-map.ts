@@ -16,6 +16,7 @@ export type OpsRouteKey =
   | "org"
   | "projects"
   | "streamers"
+  | "admission"
   | "tasks"
   | "reports"
   | "settle"
@@ -59,7 +60,7 @@ export const OPS_MODULE_ROUTES: OpsModuleRoute[] = [
     module: "m3",
     label: "M3 选播准入",
     href: "/console/stubs/m3",
-    routeKey: "streamers",
+    routeKey: "admission",
     status: "partial",
   },
   {

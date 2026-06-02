@@ -89,6 +89,48 @@ describe("OpsReferenceApp streamer smoke", () => {
   });
 });
 
+describe("OpsReferenceApp admission smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("renders application queue cards for M3 admission review", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[
+          {
+            id: "app-ui-1",
+            status: "pending_recording_review",
+            source: "open_signup",
+            submittedAt: "2026-06-02T10:00:00.000Z",
+            project: { id: "project-1", code: "P2412", name: "元梦之星" },
+            streamer: {
+              id: "streamer-1",
+              displayName: "小鹿",
+              cooperationStatus: "active",
+              riskLevel: "low",
+            },
+            latestRecording: {
+              id: "recording-ui-1",
+              version: 1,
+              status: "pending_review",
+              durationSeconds: 3660,
+              createdAt: "2026-06-02T10:00:00.000Z",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("选播准入").length).toBeGreaterThan(0);
+    expect(screen.getByText("app-ui-1")).toBeInTheDocument();
+    expect(screen.getByText("元梦之星")).toBeInTheDocument();
+    expect(screen.getByText("小鹿")).toBeInTheDocument();
+  });
+});
+
 describe("OpsReferenceApp live task smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();

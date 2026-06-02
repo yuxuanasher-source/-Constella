@@ -1,4 +1,5 @@
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
+import { listOpsApplicationQueue } from "@/features/applications/application-queries";
 import {
   listAuditCenterEntries,
   type AuditQueryClient,
@@ -47,6 +48,7 @@ export default async function StubPage({
     liveSettlementPool,
     settlementScope,
     streamerCards,
+    applicationQueue,
     auditEntries,
     notificationItems,
   } = await loadLiveReferenceData(module);
@@ -62,6 +64,7 @@ export default async function StubPage({
       liveSettlementPool={liveSettlementPool}
       settlementScope={settlementScope}
       streamerCards={streamerCards}
+      applicationQueue={applicationQueue}
       auditEntries={auditEntries}
       notificationItems={notificationItems}
     />
@@ -79,6 +82,11 @@ async function loadLiveReferenceData(module: string) {
   if (module === "m2") {
     const streamers = await listStreamerPool(supabase);
     return { streamerCards: toStreamerCardDtos(streamers) };
+  }
+
+  if (module === "m3") {
+    const applications = await listOpsApplicationQueue(supabase);
+    return { applicationQueue: applications };
   }
 
   if (module === "m4") {

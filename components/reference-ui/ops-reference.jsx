@@ -1110,6 +1110,7 @@ const REPORT_STATUS = {
 const OpsLiveDataContext = React.createContext({
   projects: null,
   streamers: null,
+  applications: null,
   tasks: null,
   reports: null,
   batches: null,
@@ -1129,6 +1130,11 @@ function useOpsProjects() {
 function useOpsStreamers() {
   const { streamers } = React.useContext(OpsLiveDataContext);
   return Array.isArray(streamers) ? streamers : STREAMERS;
+}
+
+function useOpsApplications() {
+  const { applications } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(applications) ? applications : [];
 }
 
 function useOpsTasks() {
@@ -2084,6 +2090,7 @@ const NAV = [
   { divider: true },
   { key: "projects", label: "项目管理", icon: "Project" },
   { key: "streamers", label: "主播资源池", icon: "Streamer" },
+  { key: "admission", label: "选播准入", icon: "Eye" },
   { key: "tasks", label: "排班与任务", icon: "Tasks", count: 3 },
   { key: "reports", label: "报数审核", icon: "Reports", count: 7 },
   { key: "settle", label: "结算中心", icon: "Money" },
@@ -5854,6 +5861,139 @@ function ShotMetric({ label, value }) {
         {value}
       </div>
     </div>
+  );
+}
+
+function ScreenAdmission() {
+  const applications = useOpsApplications();
+  const actions = useOpsLiveActions();
+  const review = async (applicationId, decision) => {
+    await actions.reviewApplicationRecording?.(applicationId, {
+      decision,
+      note: "经营端选播准入审核",
+    });
+  };
+
+  return (
+    <>
+      <PageHeader
+        title="选播准入"
+        subtitle="主播报名 → 试播录屏 → 运营审核 → 二次确认加入项目"
+      />
+      <div style={{ padding: 20 }}>
+        <Card padded={false}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "12px 16px",
+              borderBottom: "1px solid var(--line)",
+            }}
+          >
+            <SearchInput placeholder="项目 / 主播 / 报名编号" width={260} />
+            <Badge tone="blue">{applications.length} 条准入记录</Badge>
+          </div>
+          <DataTable
+            rows={applications}
+            columns={[
+              {
+                title: "报名编号",
+                render: (r) => (
+                  <span className="mono" style={{ fontSize: 12 }}>
+                    {r.id}
+                  </span>
+                ),
+              },
+              {
+                title: "项目",
+                render: (r) => (
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{r.project?.name}</div>
+                    <div
+                      className="mono"
+                      style={{ fontSize: 11, color: "var(--ink-400)" }}
+                    >
+                      {r.project?.code}
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: "主播",
+                render: (r) => (
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 8 }}
+                  >
+                    <Avatar name={r.streamer?.displayName} size={24} />
+                    <span>{r.streamer?.displayName}</span>
+                  </div>
+                ),
+              },
+              {
+                title: "录屏",
+                render: (r) => (
+                  <div>
+                    <Badge tone={r.latestRecording ? "violet" : "amber"}>
+                      {r.latestRecording ? r.latestRecording.status : "待上传"}
+                    </Badge>
+                    <div
+                      className="mono"
+                      style={{
+                        fontSize: 11,
+                        color: "var(--ink-400)",
+                        marginTop: 4,
+                      }}
+                    >
+                      {r.latestRecording?.id ?? "暂无录屏"}
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: "状态",
+                render: (r) => <Badge tone="neutral">{r.status}</Badge>,
+              },
+              {
+                title: "操作",
+                render: (r) => (
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <Button
+                      size="sm"
+                      kind="default"
+                      onClick={() => review(r.id, "needs_changes")}
+                    >
+                      需补充
+                    </Button>
+                    <Button
+                      size="sm"
+                      kind="default"
+                      onClick={() => review(r.id, "rejected")}
+                    >
+                      驳回
+                    </Button>
+                    <Button
+                      size="sm"
+                      kind="primary"
+                      onClick={() => review(r.id, "approved")}
+                    >
+                      通过
+                    </Button>
+                    <Button
+                      size="sm"
+                      kind="default"
+                      onClick={() => actions.confirmApplicationJoin?.(r.id)}
+                    >
+                      二次确认
+                    </Button>
+                  </div>
+                ),
+              },
+            ]}
+          />
+        </Card>
+      </div>
+    </>
   );
 }
 
@@ -11109,6 +11249,7 @@ function OpsReferenceInner({
   notificationItems,
   projectCards,
   streamerCards,
+  applicationQueue,
 }) {
   // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
@@ -11132,6 +11273,9 @@ function OpsReferenceInner({
   const [projectsState, setProjectsState] = React.useState(projectCards ?? null);
   const [streamersState, setStreamersState] = React.useState(
     streamerCards ?? null,
+  );
+  const [applicationsState, setApplicationsState] = React.useState(
+    applicationQueue ?? null,
   );
 
   React.useEffect(() => {
@@ -11169,6 +11313,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setStreamersState(streamerCards ?? null);
   }, [streamerCards]);
+
+  React.useEffect(() => {
+    setApplicationsState(applicationQueue ?? null);
+  }, [applicationQueue]);
 
   const actions = React.useMemo(() => {
     const readJson = async (response, fallbackMessage) => {
@@ -11297,6 +11445,16 @@ function OpsReferenceInner({
       }
     };
 
+    const refreshApplications = async () => {
+      const body = await fetchJson(
+        "/api/applications",
+        "refresh applications failed",
+      );
+      if (Array.isArray(body.applications)) {
+        setApplicationsState(body.applications);
+      }
+    };
+
     return {
       createProjectDraft: async (input) => {
         const body = await fetchJson("/api/projects", "create project failed", {
@@ -11340,6 +11498,28 @@ function OpsReferenceInner({
           },
         );
         await refreshStreamers();
+        return body;
+      },
+      reviewApplicationRecording: async (id, input) => {
+        const body = await fetchJson(
+          `/api/applications/${id}/review`,
+          "review application recording failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshApplications();
+        return body;
+      },
+      confirmApplicationJoin: async (id) => {
+        const body = await fetchJson(
+          `/api/applications/${id}/confirm-join`,
+          "confirm application join failed",
+          { method: "POST" },
+        );
+        await refreshApplications();
         return body;
       },
       createLiveTask: async (input) => {
@@ -11518,6 +11698,8 @@ function OpsReferenceInner({
         ];
       case "streamers":
         return ["资源", "主播资源池"];
+      case "admission":
+        return ["项目", "选播准入"];
       case "tasks":
         return ["执行", "排班与任务"];
       case "reports":
@@ -11544,6 +11726,7 @@ function OpsReferenceInner({
       value={{
         projects: projectsState,
         streamers: streamersState,
+        applications: applicationsState,
         tasks: tasksState,
         reports: reportsState,
         batches: batchesState,
@@ -11577,6 +11760,7 @@ function OpsReferenceInner({
             {route === "streamers" && (
               <ScreenStreamers go={go} initialActiveId={streamerId} />
             )}
+            {route === "admission" && <ScreenAdmission go={go} />}
             {route === "tasks" && <ScreenTasks go={go} />}
             {route === "reports" && <ScreenReports go={go} />}
             {route === "settle" && <ScreenSettlement go={go} />}
@@ -11766,7 +11950,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[] }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[] }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -11780,6 +11964,7 @@ export default function OpsReferenceApp({
   notificationItems,
   projectCards,
   streamerCards,
+  applicationQueue,
 }) {
   return (
     <OpsReferenceInner
@@ -11794,6 +11979,7 @@ export default function OpsReferenceApp({
       notificationItems={notificationItems}
       projectCards={projectCards}
       streamerCards={streamerCards}
+      applicationQueue={applicationQueue}
     />
   );
 }

@@ -4042,7 +4042,23 @@ function RangeRow({ label, value, tone }) {
 }
 
 // ——— Videos tab ———
-function VideosTab() {
+function VideosTab({ applicationCards }) {
+  const videos = Array.isArray(applicationCards)
+    ? applicationCards.map(toVideoFromApplication)
+    : MY_VIDEOS;
+  const actions = useStreamerLiveActions();
+  const fileInputRef = React.useRef(null);
+  const targetApplication = Array.isArray(applicationCards)
+    ? applicationCards.find((item) => !item.latestRecording) ??
+      applicationCards[0]
+    : null;
+  const uploadRecording = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file || !targetApplication) return;
+    await actions.submitRecordingUpload?.(targetApplication.id, file);
+    event.target.value = "";
+  };
+
   return (
     <>
       <MSection
@@ -4052,12 +4068,21 @@ function VideosTab() {
             size="sm"
             kind="primary"
             icon={<Icon.Upload size={13} stroke="#fff" />}
+            onClick={() => fileInputRef.current?.click()}
           >
             上传
           </MButton>
         }
       >
-        {MY_VIDEOS.map((v, i) => {
+        <input
+          ref={fileInputRef}
+          aria-label="录屏文件"
+          type="file"
+          accept="video/*"
+          style={{ display: "none" }}
+          onChange={uploadRecording}
+        />
+        {videos.map((v, i) => {
           const st = VIDEO_STATUS[v.status];
           return (
             <div
@@ -4172,12 +4197,16 @@ function StreamerMobileReferenceInner({
   initialRoute = "home",
   liveTasks,
   liveEarnings,
+  applicationCards,
 }) {
   // route: 'home' | 'task' | 'report' | 'ai' | 'me' | 'videos'
   const [route, setRoute] = React.useState(initialRoute);
   const [taskId, setTaskId] = React.useState(null);
   const [tasks, setTasks] = React.useState(liveTasks ?? null);
   const [earnings, setEarnings] = React.useState(liveEarnings ?? null);
+  const [applications, setApplications] = React.useState(
+    applicationCards ?? null,
+  );
 
   React.useEffect(() => {
     setTasks(liveTasks ?? null);
@@ -4186,6 +4215,10 @@ function StreamerMobileReferenceInner({
   React.useEffect(() => {
     setEarnings(liveEarnings ?? null);
   }, [liveEarnings]);
+
+  React.useEffect(() => {
+    setApplications(applicationCards ?? null);
+  }, [applicationCards]);
 
   const visibleTasks = Array.isArray(tasks) ? tasks : MY_TASKS;
   const actions = React.useMemo(() => {
@@ -4209,6 +4242,16 @@ function StreamerMobileReferenceInner({
       );
       if (Array.isArray(body.tasks)) {
         setTasks(body.tasks.map((task) => toStreamerReferenceTask(task)));
+      }
+    };
+
+    const refreshApplications = async () => {
+      const body = await fetchJson(
+        "/api/streamer/applications",
+        "refresh streamer applications failed",
+      );
+      if (Array.isArray(body.applications)) {
+        setApplications(body.applications);
       }
     };
 
@@ -4249,6 +4292,42 @@ function StreamerMobileReferenceInner({
         );
         await refreshTasks();
       },
+      submitRecordingUpload: async (applicationId, file) => {
+        const signed = await fetchJson(
+          "/api/uploads/signed",
+          "create signed upload failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              category: "recordings",
+              ownerId: applicationId,
+              fileName: file.name,
+            }),
+          },
+        );
+        const uploadResponse = await fetch(signed.signedUrl, {
+          method: "PUT",
+          body: file,
+        });
+        if (!uploadResponse.ok) {
+          throw new Error("upload recording failed");
+        }
+        await fetchJson(
+          `/api/applications/${applicationId}/videos`,
+          "submit recording failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              storagePath: signed.path,
+              durationSeconds: null,
+              fileHash: `manual-${applicationId}-${file.name}-${file.size}`,
+            }),
+          },
+        );
+        await refreshApplications();
+      },
     };
   }, []);
 
@@ -4288,14 +4367,15 @@ function StreamerMobileReferenceInner({
         {route === "report" && <StreamerReport go={go} taskId={taskId} />}
         {route === "ai" && <StreamerAI go={go} />}
         {route === "me" && <StreamerMe go={go} />}
-        {route === "videos" && <VideosOnlyPage go={go} />}
+        {route === "videos" && (
+          <VideosOnlyPage go={go} applicationCards={applications} />
+        )}
 
         <MTabBar
           value={navKey}
           onChange={(k) => {
             if (k === "videos") {
-              // Land directly on me tab with videos sub-tab open via state? Simplest: route 'me' and prime
-              go("me");
+              go("videos");
             } else {
               go(k);
             }
@@ -4307,23 +4387,61 @@ function StreamerMobileReferenceInner({
 }
 
 // Small placeholder for 录屏 tab when accessed independently
-function VideosOnlyPage({ go }) {
-  return <StreamerMe go={go} />;
+function VideosOnlyPage({ applicationCards }) {
+  return (
+    <div style={{ paddingBottom: 96 }}>
+      <MAppBar title="我的录屏" subtitle="项目报名录屏 / 历史录屏" dark={false} />
+      <VideosTab applicationCards={applicationCards} />
+    </div>
+  );
+}
+
+function toVideoFromApplication(application) {
+  const recording = application.latestRecording;
+  return {
+    id: recording?.id ?? application.id,
+    title: `${application.project?.name ?? "未命名项目"} · 试播录屏`,
+    forProject: application.project?.code ?? application.project?.id ?? "项目",
+    uploaded: recording?.createdAt?.slice(0, 10) ?? "待上传",
+    status: recording
+      ? videoStatusFromRecording(recording.status)
+      : "need_supply",
+    duration: formatVideoDuration(recording?.durationSeconds ?? 0),
+  };
+}
+
+function videoStatusFromRecording(status) {
+  if (status === "approved") return "approved";
+  if (status === "rejected") return "rejected";
+  if (status === "needs_changes") return "need_supply";
+  return "pending_review";
+}
+
+function formatVideoDuration(seconds) {
+  const safeSeconds = Math.max(Number(seconds) || 0, 0);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const rest = safeSeconds % 60;
+  return [hours, minutes, rest]
+    .map((part) => String(part).padStart(2, "0"))
+    .join(":");
 }
 
 /**
- * @param {{ initialRoute?: string; liveTasks?: any[]; liveEarnings?: any }} props
+ * @param {{ initialRoute?: string; liveTasks?: any[]; liveEarnings?: any; applicationCards?: any[] }} props
  */
 export default function StreamerMobileReferenceApp({
   initialRoute = "home",
   liveTasks,
   liveEarnings,
+  applicationCards,
 }) {
   return (
     <StreamerMobileReferenceInner
       initialRoute={initialRoute}
       liveTasks={liveTasks}
       liveEarnings={liveEarnings}
+      applicationCards={applicationCards}
     />
   );
 }

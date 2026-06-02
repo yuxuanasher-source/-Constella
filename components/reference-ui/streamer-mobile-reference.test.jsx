@@ -181,3 +181,136 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
     expect(await screen.findByText("报数已提交审核")).toBeInTheDocument();
   });
 });
+
+describe("StreamerMobileReferenceApp recording smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("renders streamer application recordings on the standalone videos route", () => {
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="videos"
+        applicationCards={[
+          {
+            id: "app-ui-1",
+            status: "pending_recording",
+            project: {
+              id: "project-1",
+              code: "P2412",
+              name: "元梦之星 6 月赛事直播",
+              forceRecording: true,
+            },
+            latestRecording: {
+              id: "recording-ui-1",
+              version: 1,
+              status: "pending_review",
+              durationSeconds: 3660,
+              createdAt: "2026-06-02T10:00:00.000Z",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("元梦之星 6 月赛事直播 · 试播录屏")).toBeInTheDocument();
+    expect(screen.getByText("recording-ui-1 · P2412")).toBeInTheDocument();
+    expect(screen.getByText("01:01:00")).toBeInTheDocument();
+  });
+
+  it("uploads a recording through signed private upload and submits it to the application", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/uploads/signed") {
+        return {
+          ok: true,
+          json: async () => ({
+            path: "org-1/recordings/app-ui-1/demo.mp4",
+            signedUrl: "https://upload.local/demo.mp4",
+          }),
+        };
+      }
+      if (String(url) === "https://upload.local/demo.mp4") {
+        return { ok: true, json: async () => ({}) };
+      }
+      if (String(url) === "/api/applications/app-ui-1/videos") {
+        return {
+          ok: true,
+          json: async () => ({ recording: { id: "recording-ui-created" } }),
+        };
+      }
+      if (String(url) === "/api/streamer/applications") {
+        return {
+          ok: true,
+          json: async () => ({ applications: [] }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="videos"
+        applicationCards={[
+          {
+            id: "app-ui-1",
+            status: "pending_recording",
+            project: {
+              id: "project-1",
+              code: "P2412",
+              name: "元梦之星 6 月赛事直播",
+              forceRecording: true,
+            },
+            latestRecording: null,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "上传" }));
+    fireEvent.change(screen.getByLabelText("录屏文件"), {
+      target: {
+        files: [new File(["demo"], "demo.mp4", { type: "video/mp4" })],
+      },
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/uploads/signed",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      category: "recordings",
+      ownerId: "app-ui-1",
+      fileName: "demo.mp4",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://upload.local/demo.mp4",
+      expect.objectContaining({ method: "PUT" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/applications/app-ui-1/videos",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+      storagePath: "org-1/recordings/app-ui-1/demo.mp4",
+      durationSeconds: null,
+      fileHash: "manual-app-ui-1-demo.mp4-4",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/api/streamer/applications",
+      undefined,
+    );
+  });
+});
