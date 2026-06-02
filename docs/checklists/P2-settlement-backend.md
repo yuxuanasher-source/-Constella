@@ -17,6 +17,7 @@
 - [x] M6 console actions call the settlement create, manual item, lock, and reopen APIs.
 - [x] M6 batch detail can render real `settlement_batch_items` rows.
 - [x] M6 settlement pool preview renders approved, unsettled reports from the backend scope.
+- [x] Streamer mobile settlement reads only `streamer_payable_items_safe` DTOs and does not expose receivable, gross margin, or cost fields.
 
 ## API Surface
 
@@ -26,6 +27,7 @@
 - [x] `POST /api/settlement-batches/:batchId/manual-items`
 - [x] `POST /api/settlement-batches/:batchId/lock`
 - [x] `POST /api/settlement-batches/:batchId/reopen`
+- [x] `GET /api/streamer/settlements`
 
 ## Verification
 

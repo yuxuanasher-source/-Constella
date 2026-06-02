@@ -819,12 +819,18 @@ const STATUS_MAP = {
 
 const StreamerLiveDataContext = React.createContext({
   tasks: null,
+  earnings: null,
   actions: {},
 });
 
 function useStreamerTasks() {
   const { tasks } = React.useContext(StreamerLiveDataContext);
   return Array.isArray(tasks) ? tasks : MY_TASKS;
+}
+
+function useStreamerEarnings() {
+  const { earnings } = React.useContext(StreamerLiveDataContext);
+  return earnings && typeof earnings === "object" ? earnings : MY_EARNINGS;
 }
 
 function useStreamerLiveActions() {
@@ -976,6 +982,7 @@ const AI_THREAD = [
 
 function StreamerHome({ go }) {
   const tasks = useStreamerTasks();
+  const earnings = useStreamerEarnings();
   const today = tasks.filter((t) => t.date === "今天");
   const pendingReport = tasks.filter((t) => t.status === "pending_report");
   const upcoming = tasks.filter((t) => ["明天", "本周六"].includes(t.date));
@@ -1081,10 +1088,10 @@ function StreamerHome({ go }) {
                 letterSpacing: "-0.02em",
               }}
             >
-              {MY_EARNINGS.currentMonth.hours.toFixed(1)}
+              {earnings.currentMonth.hours.toFixed(1)}
             </span>
             <span style={{ fontSize: 12, color: "rgba(255,255,255,0.75)" }}>
-              h · 已结算 ¥{MY_EARNINGS.currentMonth.earned.toLocaleString()}
+              h · 已结算 ¥{earnings.currentMonth.earned.toLocaleString()}
             </span>
           </div>
         </div>
@@ -3243,6 +3250,7 @@ function nowHM() {
 
 function StreamerMe({ go }) {
   const [tab, setTab] = React.useState("overview");
+  const earnings = useStreamerEarnings();
   return (
     <div style={{ paddingBottom: 96 }}>
       <MHero
@@ -3372,7 +3380,7 @@ function StreamerMe({ go }) {
                     letterSpacing: "-0.02em",
                   }}
                 >
-                  {MY_EARNINGS.currentMonth.earned.toLocaleString()}
+                  {earnings.currentMonth.earned.toLocaleString()}
                 </span>
               </div>
               <div
@@ -3387,7 +3395,7 @@ function StreamerMe({ go }) {
                   className="num"
                   style={{ color: "#FFD166", fontWeight: 600 }}
                 >
-                  ¥{MY_EARNINGS.currentMonth.pending.toLocaleString()}
+                  ¥{earnings.currentMonth.pending.toLocaleString()}
                 </span>
               </div>
             </div>
@@ -3422,7 +3430,10 @@ function StreamerMe({ go }) {
           >
             <div
               style={{
-                width: `${(MY_EARNINGS.currentMonth.hours / 60) * 100}%`,
+                width: `${Math.min(
+                  (earnings.currentMonth.hours / 60) * 100,
+                  100,
+                )}%`,
                 height: "100%",
                 background: "#FFD166",
                 borderRadius: 999,
@@ -3441,7 +3452,7 @@ function StreamerMe({ go }) {
             <span>
               已直播{" "}
               <span className="num">
-                {MY_EARNINGS.currentMonth.hours.toFixed(1)}
+                {earnings.currentMonth.hours.toFixed(1)}
               </span>{" "}
               h
             </span>
@@ -3487,8 +3498,8 @@ function StreamerMe({ go }) {
         ))}
       </div>
 
-      {tab === "overview" && <OverviewTab go={go} />}
-      {tab === "earnings" && <EarningsTab />}
+      {tab === "overview" && <OverviewTab go={go} earnings={earnings} />}
+      {tab === "earnings" && <EarningsTab earnings={earnings} />}
       {tab === "videos" && <VideosTab />}
     </div>
   );
@@ -3507,7 +3518,7 @@ const iconBtnGlassMe = {
   justifyContent: "center",
 };
 
-function OverviewTab({ go }) {
+function OverviewTab({ go, earnings }) {
   return (
     <>
       <MSection title="本月业绩">
@@ -3521,7 +3532,7 @@ function OverviewTab({ go }) {
           >
             <MStat
               label="已直播"
-              value={MY_EARNINGS.currentMonth.hours.toFixed(1)}
+              value={earnings.currentMonth.hours.toFixed(1)}
               unit="h"
             />
             <MStat label="录屏通过" value="95" unit="%" color="var(--ok-600)" />
@@ -3535,7 +3546,7 @@ function OverviewTab({ go }) {
           >
             近 6 个月收入趋势
           </div>
-          <Sparkbars data={MY_EARNINGS.history} />
+          <Sparkbars data={earnings.history} />
         </MCard>
       </MSection>
 
@@ -3625,7 +3636,9 @@ function OverviewTab({ go }) {
             icon="Money"
             tone="teal"
             title="结算账单"
-            detail={`本月预估 ¥${(MY_EARNINGS.currentMonth.earned + MY_EARNINGS.currentMonth.pending).toLocaleString()}`}
+            detail={`本月预估 ¥${(
+              earnings.currentMonth.earned + earnings.currentMonth.pending
+            ).toLocaleString()}`}
             onClick={() => {}}
             last
           />
@@ -3717,14 +3730,15 @@ function ToolRow({ icon, tone, title, detail, onClick, last }) {
 }
 
 function Sparkbars({ data }) {
-  const max = Math.max(...data.map((d) => d.earned));
+  const rows = data.length ? data : [{ month: "暂无", earned: 0 }];
+  const max = Math.max(1, ...rows.map((d) => d.earned));
   return (
     <div
       style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 60 }}
     >
-      {data.map((d, i) => {
+      {rows.map((d, i) => {
         const h = (d.earned / max) * 100;
-        const isLast = i === data.length - 1;
+        const isLast = i === rows.length - 1;
         return (
           <div
             key={i}
@@ -3763,7 +3777,23 @@ function Sparkbars({ data }) {
 }
 
 // ——— Earnings tab ———
-function EarningsTab() {
+function EarningsTab({ earnings }) {
+  const currentItems = (earnings.items || []).filter(
+    (item) => item.month === earnings.currentMonth.month,
+  );
+  const systemAmount = currentItems.reduce(
+    (total, item) => total + (item.computedAmount || 0),
+    0,
+  );
+  const manualAmount = currentItems.reduce(
+    (total, item) => total + (item.manualAmount || 0),
+    0,
+  );
+  const adjustmentAmount = currentItems.reduce(
+    (total, item) => total + (item.adjustmentAmount || 0),
+    0,
+  );
+
   return (
     <>
       <MSection title="本月预估">
@@ -3787,8 +3817,7 @@ function EarningsTab() {
               }}
             >
               {(
-                MY_EARNINGS.currentMonth.earned +
-                MY_EARNINGS.currentMonth.pending
+                earnings.currentMonth.earned + earnings.currentMonth.pending
               ).toLocaleString()}
             </span>
             <MBadge tone="amber">未锁定</MBadge>
@@ -3798,12 +3827,12 @@ function EarningsTab() {
           >
             <RangeRow
               label="已审核计入"
-              value={`¥${MY_EARNINGS.currentMonth.earned.toLocaleString()}`}
+              value={`¥${earnings.currentMonth.earned.toLocaleString()}`}
               tone="green"
             />
             <RangeRow
               label="审核中"
-              value={`¥${MY_EARNINGS.currentMonth.pending.toLocaleString()}`}
+              value={`¥${earnings.currentMonth.pending.toLocaleString()}`}
               tone="amber"
             />
           </div>
@@ -3823,12 +3852,12 @@ function EarningsTab() {
                 padding: "4px 0",
               }}
             >
-              <span>底薪</span>
+              <span>系统计算</span>
               <span
                 className="num"
                 style={{ fontWeight: 600, color: "var(--ink-900)" }}
               >
-                ¥6,000
+                ¥{systemAmount.toLocaleString()}
               </span>
             </div>
             <div
@@ -3840,12 +3869,14 @@ function EarningsTab() {
                 padding: "4px 0",
               }}
             >
-              <span>CPT 时长结算 · 38.5h × ¥80</span>
+              <span>
+                有效时长 · {earnings.currentMonth.hours.toFixed(1)}h · 安全视图
+              </span>
               <span
                 className="num"
                 style={{ fontWeight: 600, color: "var(--ink-900)" }}
               >
-                ¥3,080
+                ¥{systemAmount.toLocaleString()}
               </span>
             </div>
             <div
@@ -3857,9 +3888,12 @@ function EarningsTab() {
                 padding: "4px 0",
               }}
             >
-              <span>礼物提成 · 待结算周期</span>
-              <span className="num" style={{ color: "var(--ink-400)" }}>
-                下月发放
+              <span>CPA / CPS / 礼物 · 人工承载</span>
+              <span
+                className="num"
+                style={{ fontWeight: 600, color: "var(--ink-900)" }}
+              >
+                ¥{manualAmount.toLocaleString()}
               </span>
             </div>
             <div
@@ -3872,8 +3906,18 @@ function EarningsTab() {
               }}
             >
               <span>人工调整</span>
-              <span className="num" style={{ color: "var(--ink-400)" }}>
-                —
+              <span
+                className="num"
+                style={{
+                  color:
+                    adjustmentAmount < 0
+                      ? "var(--danger-600)"
+                      : "var(--ink-900)",
+                  fontWeight: 600,
+                }}
+              >
+                {adjustmentAmount >= 0 ? "+¥" : "-¥"}
+                {Math.abs(adjustmentAmount).toLocaleString()}
               </span>
             </div>
           </div>
@@ -3894,7 +3938,7 @@ function EarningsTab() {
 
       <MSection title="历史月度">
         <MCard padded={false}>
-          {MY_EARNINGS.history.slice(0, 5).map((m, i, arr) => (
+          {earnings.history.slice(0, 5).map((m, i, arr) => (
             <div
               key={m.month}
               style={{
@@ -4122,15 +4166,24 @@ function VideosTab() {
 // ===== src-streamer\app.jsx =====
 // ——— Streamer app entry ————————————————————————
 
-function StreamerMobileReferenceInner({ initialRoute = "home", liveTasks }) {
+function StreamerMobileReferenceInner({
+  initialRoute = "home",
+  liveTasks,
+  liveEarnings,
+}) {
   // route: 'home' | 'task' | 'report' | 'ai' | 'me' | 'videos'
   const [route, setRoute] = React.useState(initialRoute);
   const [taskId, setTaskId] = React.useState(null);
   const [tasks, setTasks] = React.useState(liveTasks ?? null);
+  const [earnings, setEarnings] = React.useState(liveEarnings ?? null);
 
   React.useEffect(() => {
     setTasks(liveTasks ?? null);
   }, [liveTasks]);
+
+  React.useEffect(() => {
+    setEarnings(liveEarnings ?? null);
+  }, [liveEarnings]);
 
   const visibleTasks = Array.isArray(tasks) ? tasks : MY_TASKS;
   const updateTask = React.useCallback((id, patch) => {
@@ -4223,7 +4276,9 @@ function StreamerMobileReferenceInner({ initialRoute = "home", liveTasks }) {
         : route;
 
   return (
-    <StreamerLiveDataContext.Provider value={{ tasks: visibleTasks, actions }}>
+    <StreamerLiveDataContext.Provider
+      value={{ tasks: visibleTasks, earnings, actions }}
+    >
       <div className="phone">
         {route === "home" && <StreamerHome go={go} />}
         {route === "task" && <StreamerTask go={go} taskId={taskId} />}
@@ -4254,16 +4309,18 @@ function VideosOnlyPage({ go }) {
 }
 
 /**
- * @param {{ initialRoute?: string; liveTasks?: any[] }} props
+ * @param {{ initialRoute?: string; liveTasks?: any[]; liveEarnings?: any }} props
  */
 export default function StreamerMobileReferenceApp({
   initialRoute = "home",
   liveTasks,
+  liveEarnings,
 }) {
   return (
     <StreamerMobileReferenceInner
       initialRoute={initialRoute}
       liveTasks={liveTasks}
+      liveEarnings={liveEarnings}
     />
   );
 }
