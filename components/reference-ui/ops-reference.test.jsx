@@ -3,6 +3,168 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp from "./ops-reference";
 
+describe("OpsReferenceApp live task smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("creates an ops live task then refreshes the M4 task queue", async () => {
+    const refreshedTask = {
+      id: "task-ui-created",
+      title: "Golden Project · 冷江",
+      status: "pending_live",
+      projectId: "P-2406",
+      projectName: "Golden Project",
+      streamerId: "S-001",
+      streamerName: "冷江",
+      plannedStartAt: "2026-05-27T12:00:00.000Z",
+      plannedEndAt: "2026-05-27T15:30:00.000Z",
+      plannedDuration: 210,
+      systemDuration: 0,
+    };
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/live-tasks") {
+        return {
+          ok: true,
+          json: async () => ({ tasks: [refreshedTask] }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({ task: refreshedTask }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="tasks" liveTasks={[]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "新建任务" }));
+    fireEvent.click(await screen.findByRole("button", { name: "创建任务" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/live-tasks",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      projectId: "P-2406",
+      streamerId: "S-001",
+      title: "原神 · 4.7 版本品宣专项 · 冷江",
+      plannedStartAt: "2026-05-27T12:00:00.000Z",
+      plannedEndAt: "2026-05-27T15:30:00.000Z",
+      plannedDuration: 210,
+      note: "经营端页面创建任务",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/live-tasks", undefined);
+
+    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
+    expect(await screen.findByText("task-ui-created")).toBeInTheDocument();
+  });
+
+  it("creates a batch live schedule then refreshes the M4 task queue", async () => {
+    const promptValues = [
+      "P-2406",
+      "S-001,S-002",
+      "2026-05-27",
+      "20:00",
+      "23:30",
+    ];
+    vi.stubGlobal(
+      "prompt",
+      vi.fn(() => promptValues.shift() ?? null),
+    );
+    const refreshedTasks = [
+      {
+        id: "task-ui-batch-1",
+        title: "原神 · 4.7 版本品宣专项 · 冷江",
+        status: "pending_live",
+        projectId: "P-2406",
+        projectName: "原神 · 4.7 版本品宣专项",
+        streamerId: "S-001",
+        streamerName: "冷江",
+        plannedStartAt: "2026-05-27T12:00:00.000Z",
+        plannedEndAt: "2026-05-27T15:30:00.000Z",
+        plannedDuration: 210,
+        systemDuration: 0,
+      },
+      {
+        id: "task-ui-batch-2",
+        title: "原神 · 4.7 版本品宣专项 · 小Mei",
+        status: "pending_live",
+        projectId: "P-2406",
+        projectName: "原神 · 4.7 版本品宣专项",
+        streamerId: "S-002",
+        streamerName: "小Mei",
+        plannedStartAt: "2026-05-27T12:00:00.000Z",
+        plannedEndAt: "2026-05-27T15:30:00.000Z",
+        plannedDuration: 210,
+        systemDuration: 0,
+      },
+    ];
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/live-tasks") {
+        return {
+          ok: true,
+          json: async () => ({ tasks: refreshedTasks }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({ tasks: refreshedTasks }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="tasks" liveTasks={[]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "批量排班" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/live-tasks/batch",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      tasks: [
+        {
+          projectId: "P-2406",
+          streamerId: "S-001",
+          title: "原神 · 4.7 版本品宣专项 · 冷江",
+          plannedStartAt: "2026-05-27T12:00:00.000Z",
+          plannedEndAt: "2026-05-27T15:30:00.000Z",
+          plannedDuration: 210,
+          note: "经营端批量排班创建",
+        },
+        {
+          projectId: "P-2406",
+          streamerId: "S-002",
+          title: "原神 · 4.7 版本品宣专项 · 小Mei",
+          plannedStartAt: "2026-05-27T12:00:00.000Z",
+          plannedEndAt: "2026-05-27T15:30:00.000Z",
+          plannedDuration: 210,
+          note: "经营端批量排班创建",
+        },
+      ],
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/live-tasks", undefined);
+
+    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*2/ }));
+    expect(await screen.findByText("task-ui-batch-1")).toBeInTheDocument();
+    expect(screen.getByText("task-ui-batch-2")).toBeInTheDocument();
+  });
+});
+
 describe("OpsReferenceApp settlement smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();

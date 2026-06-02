@@ -2,6 +2,8 @@
 /* eslint-disable */
 import React from "react";
 
+import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
+
 // ===== src\ui.jsx =====
 // ——— Reusable UI atoms ——————————————————————————————————————
 
@@ -6872,9 +6874,11 @@ function BatchDetail({
 
 function ScreenTasks({ go }) {
   const tasks = useOpsTasks();
+  const actions = useOpsLiveActions();
   const [view, setView] = React.useState("board");
   const [project, setProject] = React.useState("all");
   const [selectedTask, setSelectedTask] = React.useState(null);
+  const [busyAction, setBusyAction] = React.useState(null);
 
   const liveCount = tasks.filter((t) => t.status === "live").length;
   const pendingReportCount = tasks.filter(
@@ -6890,6 +6894,71 @@ function ScreenTasks({ go }) {
     (t) => t.dayIdx === SCHEDULE_WEEK.todayIdx,
   ).length;
 
+  const runTaskAction = async (actionName, fn) => {
+    if (busyAction) return;
+    setBusyAction(actionName);
+    try {
+      await fn();
+    } catch (error) {
+      globalThis.alert?.(
+        error instanceof Error ? error.message : "任务操作失败",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const openNewTask = () => {
+    setSelectedTask({
+      _new: true,
+      dayIdx: SCHEDULE_WEEK.todayIdx,
+      streamerId: STREAMERS[0].id,
+    });
+  };
+
+  const createTask = async (input) => {
+    await runTaskAction("create", async () => {
+      await actions.createLiveTask?.(input);
+      setSelectedTask(null);
+    });
+  };
+
+  const createBatchTasks = () =>
+    runTaskAction("batch", async () => {
+      const projectId = askText("项目 ID", "P-2406");
+      const streamerIds = askText("主播 ID，逗号分隔", "S-001,S-002");
+      const dateKey = askText("排班日期 YYYY-MM-DD", "2026-05-27");
+      const startTime = askText("开始时间 HH:mm", "20:00");
+      const endTime = askText("结束时间 HH:mm", "23:30");
+      if (!projectId || !streamerIds || !dateKey || !startTime || !endTime) {
+        return;
+      }
+
+      const project = projectById(projectId);
+      const plannedStartAt = scheduleTimeToIso(dateKey, startTime);
+      const plannedEndAt = scheduleTimeToIso(dateKey, endTime);
+      const plannedDuration = scheduleMinutes(plannedStartAt, plannedEndAt);
+      const tasks = streamerIds
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean)
+        .map((streamerId) => {
+          const streamer = streamerById(streamerId);
+          return {
+            projectId: project.id,
+            streamerId: streamer.id,
+            title: `${project.name} · ${streamer.alias}`,
+            plannedStartAt,
+            plannedEndAt,
+            plannedDuration,
+            note: "经营端批量排班创建",
+          };
+        });
+
+      if (tasks.length === 0) return;
+      await actions.createLiveTasks?.({ tasks });
+    });
+
   return (
     <>
       <PageHeader
@@ -6900,11 +6969,21 @@ function ScreenTasks({ go }) {
             <Button kind="default" icon={<Icon.Upload size={14} />}>
               从 Excel 导入
             </Button>
-            <Button kind="default" icon={<Icon.Calendar size={14} />}>
-              批量排班
+            <Button
+              kind="default"
+              icon={<Icon.Calendar size={14} />}
+              onClick={createBatchTasks}
+              disabled={!!busyAction}
+            >
+              {busyAction === "batch" ? "排班中…" : "批量排班"}
             </Button>
-            <Button kind="primary" icon={<Icon.Plus size={14} stroke="#fff" />}>
-              新建任务
+            <Button
+              kind="primary"
+              icon={<Icon.Plus size={14} stroke="#fff" />}
+              onClick={openNewTask}
+              disabled={!!busyAction}
+            >
+              {busyAction === "create" ? "创建中…" : "新建任务"}
             </Button>
           </>
         }
@@ -7039,7 +7118,11 @@ function ScreenTasks({ go }) {
       </div>
 
       {selectedTask && (
-        <TaskDrawer task={selectedTask} onClose={() => setSelectedTask(null)} />
+        <TaskDrawer
+          task={selectedTask}
+          onClose={() => setSelectedTask(null)}
+          onCreateTask={createTask}
+        />
       )}
     </>
   );
@@ -7622,6 +7705,64 @@ function formatHour(h) {
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
+function scheduleTimeToIso(dateKey, timeValue) {
+  const [hour = 0, minute = 0] = String(timeValue)
+    .split(":")
+    .map((part) => Number(part));
+  const timestamp =
+    Date.parse(`${dateKey}T00:00:00.000+08:00`) + (hour * 60 + minute) * 60_000;
+  return new Date(timestamp).toISOString();
+}
+
+function dayScheduleTimeToIso(dayIdx, hourValue) {
+  const timestamp =
+    Date.parse(`${SCHEDULE_WEEK.start}T00:00:00.000+08:00`) +
+    dayIdx * 24 * 60 * 60_000 +
+    Math.round(hourValue * 60) * 60_000;
+  return new Date(timestamp).toISOString();
+}
+
+function scheduleMinutes(startIso, endIso) {
+  return Math.max(
+    0,
+    Math.round(
+      (new Date(endIso).getTime() - new Date(startIso).getTime()) / 60_000,
+    ),
+  );
+}
+
+function projectById(projectId) {
+  return PROJECTS.find((item) => item.id === projectId) || PROJECTS[0];
+}
+
+function streamerById(streamerId) {
+  return STREAMERS.find((item) => item.id === streamerId) || STREAMERS[0];
+}
+
+function opsLiveTaskInput({
+  projectId = "P-2406",
+  streamerId = "S-001",
+  dayIdx = SCHEDULE_WEEK.todayIdx,
+  startHour = 20,
+  endHour = 23.5,
+  note = "经营端页面创建任务",
+}) {
+  const project = projectById(projectId);
+  const streamer = streamerById(streamerId);
+  const plannedStartAt = dayScheduleTimeToIso(dayIdx, startHour);
+  const plannedEndAt = dayScheduleTimeToIso(dayIdx, endHour);
+
+  return {
+    projectId: project.id,
+    streamerId: streamer.id,
+    title: `${project.name} · ${streamer.alias}`,
+    plannedStartAt,
+    plannedEndAt,
+    plannedDuration: scheduleMinutes(plannedStartAt, plannedEndAt),
+    note,
+  };
+}
+
 function Legend({ dot, label }) {
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
@@ -7953,8 +8094,16 @@ function MyTasksView() {
 
 // ——— Task Drawer (right panel) ——————————
 
-function TaskDrawer({ task, onClose }) {
-  if (task._new) return <NewTaskDrawer task={task} onClose={onClose} />;
+function TaskDrawer({ task, onClose, onCreateTask }) {
+  if (task._new) {
+    return (
+      <NewTaskDrawer
+        task={task}
+        onClose={onClose}
+        onCreateTask={onCreateTask}
+      />
+    );
+  }
 
   const s = STREAMERS.find((x) => x.id === task.streamerId);
   const p = PROJECTS.find((x) => x.id === task.project);
@@ -8191,8 +8340,25 @@ function TaskDrawer({ task, onClose }) {
   );
 }
 
-function NewTaskDrawer({ task, onClose }) {
+function NewTaskDrawer({ task, onClose, onCreateTask }) {
   const s = STREAMERS.find((x) => x.id === task.streamerId);
+  const [busy, setBusy] = React.useState(false);
+  const handleCreate = async () => {
+    if (!onCreateTask) return;
+    setBusy(true);
+    try {
+      await onCreateTask(
+        opsLiveTaskInput({
+          streamerId: task.streamerId,
+          dayIdx: task.dayIdx,
+          note: "经营端页面创建任务",
+        }),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <Drawer onClose={onClose} title="新建任务">
       <div
@@ -8278,7 +8444,9 @@ function NewTaskDrawer({ task, onClose }) {
           取消
         </Button>
         <Button kind="default">保存草稿</Button>
-        <Button kind="primary">创建任务</Button>
+        <Button kind="primary" onClick={handleCreate} disabled={busy}>
+          {busy ? "创建中…" : "创建任务"}
+        </Button>
       </div>
     </Drawer>
   );
@@ -10000,6 +10168,16 @@ function OpsReferenceInner({
       return readJson(response, fallbackMessage);
     };
 
+    const refreshOpsTasks = async () => {
+      const body = await fetchJson(
+        "/api/live-tasks",
+        "refresh live tasks failed",
+      );
+      if (Array.isArray(body.tasks)) {
+        setTasksState(body.tasks.map((task) => toOpsReferenceTask(task)));
+      }
+    };
+
     const settlementPoolUrl = (scope) => {
       if (!scope?.projectId || !scope?.periodStart || !scope?.periodEnd) {
         return null;
@@ -10067,6 +10245,32 @@ function OpsReferenceInner({
     };
 
     return {
+      createLiveTask: async (input) => {
+        const body = await fetchJson(
+          "/api/live-tasks",
+          "create live task failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshOpsTasks();
+        return body;
+      },
+      createLiveTasks: async (input) => {
+        const body = await fetchJson(
+          "/api/live-tasks/batch",
+          "create live tasks failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshOpsTasks();
+        return body;
+      },
       reviewReport: async (id, decision) => {
         await fetchJson(
           `/api/live-reports/${id}/review`,
