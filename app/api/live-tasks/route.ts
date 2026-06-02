@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { listOpsLiveTaskQueue } from "@/features/live-operations/live-operations-queries";
 import {
   actorFromContext,
   getLiveOperationsRouteContext,
@@ -8,8 +9,24 @@ import {
   optionalString,
   readJsonBody,
   requiredString,
+  RouteError,
 } from "@/features/live-operations/live-operations-route-utils";
 import { createLiveTask } from "@/features/live-operations/live-operations-service";
+import { isMcnStaff } from "@/lib/rbac/roles";
+
+export async function GET() {
+  try {
+    const context = await getLiveOperationsRouteContext();
+    if (!isMcnStaff(context.auth.role)) {
+      throw new RouteError("Only MCN staff can view live tasks", 403);
+    }
+
+    const tasks = await listOpsLiveTaskQueue(context.supabase);
+    return NextResponse.json({ tasks });
+  } catch (error) {
+    return jsonError(error);
+  }
+}
 
 export async function POST(request: Request) {
   try {

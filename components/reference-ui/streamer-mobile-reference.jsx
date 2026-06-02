@@ -817,6 +817,21 @@ const STATUS_MAP = {
   completed: { tone: "green", label: "已完成" },
 };
 
+const StreamerLiveDataContext = React.createContext({
+  tasks: null,
+  actions: {},
+});
+
+function useStreamerTasks() {
+  const { tasks } = React.useContext(StreamerLiveDataContext);
+  return Array.isArray(tasks) ? tasks : MY_TASKS;
+}
+
+function useStreamerLiveActions() {
+  const { actions } = React.useContext(StreamerLiveDataContext);
+  return actions || {};
+}
+
 const MY_NOTIFICATIONS = [
   {
     type: "review",
@@ -960,10 +975,11 @@ const AI_THREAD = [
 // ——— Streamer Home (我的任务) ——————————————————————
 
 function StreamerHome({ go }) {
-  const today = MY_TASKS.filter((t) => t.date === "今天");
-  const pendingReport = MY_TASKS.filter((t) => t.status === "pending_report");
-  const upcoming = MY_TASKS.filter((t) => ["明天", "本周六"].includes(t.date));
-  const reviewing = MY_TASKS.filter((t) => t.status === "pending_review");
+  const tasks = useStreamerTasks();
+  const today = tasks.filter((t) => t.date === "今天");
+  const pendingReport = tasks.filter((t) => t.status === "pending_report");
+  const upcoming = tasks.filter((t) => ["明天", "本周六"].includes(t.date));
+  const reviewing = tasks.filter((t) => t.status === "pending_review");
 
   const unreadCount = MY_NOTIFICATIONS.filter((n) => n.unread).length;
 
@@ -1441,7 +1457,9 @@ function TaskCard({
 // ——— Streamer: Task Detail ——————————————————————
 
 function StreamerTask({ taskId, go }) {
-  const t = MY_TASKS.find((x) => x.id === taskId) || MY_TASKS[0];
+  const tasks = useStreamerTasks();
+  const actions = useStreamerLiveActions();
+  const t = tasks.find((x) => x.id === taskId) || tasks[0] || MY_TASKS[0];
   const st = STATUS_MAP[t.status];
   const isLive = t.status === "live";
   const isPendingLive = t.status === "pending_live";
@@ -1527,8 +1545,10 @@ function StreamerTask({ taskId, go }) {
 
       {/* CTA area */}
       <div style={{ padding: "16px 16px 0" }}>
-        {isPendingLive && <PendingLiveCTA task={t} go={go} />}
-        {isLive && <LiveCTA task={t} go={go} />}
+        {isPendingLive && (
+          <PendingLiveCTA task={t} go={go} onStart={actions.startTask} />
+        )}
+        {isLive && <LiveCTA task={t} go={go} onStop={actions.stopTask} />}
         {isPendingReport && <PendingReportCTA task={t} go={go} />}
         {t.status === "pending_review" && <ReviewingCTA task={t} go={go} />}
         {t.status === "trial" && <TrialCTA task={t} go={go} />}
@@ -1653,7 +1673,18 @@ function StreamerTask({ taskId, go }) {
 }
 
 // CTA: 待开播
-function PendingLiveCTA({ task, go }) {
+function PendingLiveCTA({ task, go, onStart }) {
+  const [busy, setBusy] = React.useState(false);
+  const handleStart = async () => {
+    if (!onStart) return;
+    setBusy(true);
+    try {
+      await onStart(task.id);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <MCard
       style={{
@@ -1698,8 +1729,10 @@ function PendingLiveCTA({ task, go }) {
           kind="primary"
           full
           icon={<Icon.Play size={16} stroke="#fff" />}
+          disabled={busy}
+          onClick={handleStart}
         >
-          准时点击「开始直播」
+          {busy ? "正在开始…" : "准时点击「开始直播」"}
         </MButton>
       </div>
       <div
@@ -1716,7 +1749,18 @@ function PendingLiveCTA({ task, go }) {
   );
 }
 
-function LiveCTA({ task }) {
+function LiveCTA({ task, onStop }) {
+  const [busy, setBusy] = React.useState(false);
+  const handleStop = async () => {
+    if (!onStop) return;
+    setBusy(true);
+    try {
+      await onStop(task.id);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <MCard
       style={{
@@ -1761,8 +1805,10 @@ function LiveCTA({ task }) {
           kind="danger"
           style={{ flex: 2 }}
           icon={<Icon.Pause size={16} stroke="var(--danger-600)" />}
+          disabled={busy}
+          onClick={handleStop}
         >
-          结束直播 + 上传截图
+          {busy ? "正在结束…" : "结束直播 + 上传截图"}
         </MButton>
       </div>
     </MCard>
@@ -2064,11 +2110,14 @@ function Timeline({ events }) {
 // ——— Streamer: Report Confirm (OCR) ——————————————————
 
 function StreamerReport({ taskId, go }) {
-  const t = MY_TASKS.find((x) => x.id === taskId) || MY_TASKS[0];
+  const tasks = useStreamerTasks();
+  const actions = useStreamerLiveActions();
+  const t = tasks.find((x) => x.id === taskId) || tasks[0] || MY_TASKS[0];
   const [duration, setDuration] = React.useState("4.0");
   const [audience, setAudience] = React.useState("11240");
   const [note, setNote] = React.useState("");
   const [submitted, setSubmitted] = React.useState(false);
+  const [submitting, setSubmitting] = React.useState(false);
 
   // OCR-recognized values (slightly off, to show diff highlight)
   const ocrDuration = "4.3";
@@ -2277,9 +2326,22 @@ function StreamerReport({ taskId, go }) {
           kind="primary"
           size="lg"
           style={{ flex: 2 }}
-          onClick={() => setSubmitted(true)}
+          disabled={submitting}
+          onClick={async () => {
+            setSubmitting(true);
+            try {
+              await actions.submitReport?.(t.id, {
+                durationHours: duration,
+                audience,
+                note,
+              });
+              setSubmitted(true);
+            } finally {
+              setSubmitting(false);
+            }
+          }}
         >
-          确认无误，提交审核
+          {submitting ? "正在提交…" : "确认无误，提交审核"}
         </MButton>
       </div>
     </div>
@@ -4060,20 +4122,89 @@ function VideosTab() {
 // ===== src-streamer\app.jsx =====
 // ——— Streamer app entry ————————————————————————
 
-function StreamerMobileReferenceInner({ initialRoute = "home" }) {
+function StreamerMobileReferenceInner({ initialRoute = "home", liveTasks }) {
   // route: 'home' | 'task' | 'report' | 'ai' | 'me' | 'videos'
   const [route, setRoute] = React.useState(initialRoute);
   const [taskId, setTaskId] = React.useState(null);
+  const [tasks, setTasks] = React.useState(liveTasks ?? null);
+
+  React.useEffect(() => {
+    setTasks(liveTasks ?? null);
+  }, [liveTasks]);
+
+  const visibleTasks = Array.isArray(tasks) ? tasks : MY_TASKS;
+  const updateTask = React.useCallback((id, patch) => {
+    setTasks((current) => {
+      const base = Array.isArray(current) ? current : MY_TASKS;
+      return base.map((task) =>
+        task.id === id ? { ...task, ...patch } : task,
+      );
+    });
+  }, []);
+
+  const actions = React.useMemo(
+    () => ({
+      startTask: async (id) => {
+        const response = await fetch(`/api/live-tasks/${id}/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (!response.ok) throw new Error("start task failed");
+        const payload = await response.json();
+        updateTask(id, {
+          status: "live",
+          systemDuration: payload.task?.systemDuration ?? 0,
+        });
+      },
+      stopTask: async (id) => {
+        const response = await fetch(`/api/live-tasks/${id}/stop`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (!response.ok) throw new Error("stop task failed");
+        const payload = await response.json();
+        updateTask(id, {
+          status: "pending_report",
+          systemDuration: payload.task?.systemDuration ?? 0,
+        });
+      },
+      submitReport: async (id, input) => {
+        const durationHours = Number(input.durationHours || 0);
+        const audience = Number(input.audience || 0);
+        const response = await fetch(`/api/live-tasks/${id}/reports`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            screenshotStoragePath: `demo/reports/${id}/manual-submit.png`,
+            screenshotFileHash: `manual-${id}-${Date.now()}`,
+            screenshotDuration: Math.round(durationHours * 60),
+            claimedDuration: Math.round(durationHours * 60),
+            viewers: audience,
+          }),
+        });
+        if (!response.ok) throw new Error("submit report failed");
+        updateTask(id, {
+          status: "pending_review",
+          reportedDuration: durationHours,
+          reportedAudience: audience,
+          note: "运营审核中，预计 24 小时内出结果",
+        });
+      },
+    }),
+    [updateTask],
+  );
 
   const go = (r, arg) => {
     if (r === "task") {
       setRoute("task");
-      setTaskId(arg || MY_TASKS[0].id);
+      setTaskId(arg || visibleTasks[0]?.id || MY_TASKS[0].id);
     } else if (r === "report") {
       setRoute("report");
       setTaskId(
         arg ||
-          MY_TASKS.find((t) => t.status === "pending_report")?.id ||
+          visibleTasks.find((t) => t.status === "pending_report")?.id ||
           MY_TASKS[0].id,
       );
     } else setRoute(r);
@@ -4092,26 +4223,28 @@ function StreamerMobileReferenceInner({ initialRoute = "home" }) {
         : route;
 
   return (
-    <div className="phone">
-      {route === "home" && <StreamerHome go={go} />}
-      {route === "task" && <StreamerTask go={go} taskId={taskId} />}
-      {route === "report" && <StreamerReport go={go} taskId={taskId} />}
-      {route === "ai" && <StreamerAI go={go} />}
-      {route === "me" && <StreamerMe go={go} />}
-      {route === "videos" && <VideosOnlyPage go={go} />}
+    <StreamerLiveDataContext.Provider value={{ tasks: visibleTasks, actions }}>
+      <div className="phone">
+        {route === "home" && <StreamerHome go={go} />}
+        {route === "task" && <StreamerTask go={go} taskId={taskId} />}
+        {route === "report" && <StreamerReport go={go} taskId={taskId} />}
+        {route === "ai" && <StreamerAI go={go} />}
+        {route === "me" && <StreamerMe go={go} />}
+        {route === "videos" && <VideosOnlyPage go={go} />}
 
-      <MTabBar
-        value={navKey}
-        onChange={(k) => {
-          if (k === "videos") {
-            // Land directly on me tab with videos sub-tab open via state? Simplest: route 'me' and prime
-            go("me");
-          } else {
-            go(k);
-          }
-        }}
-      />
-    </div>
+        <MTabBar
+          value={navKey}
+          onChange={(k) => {
+            if (k === "videos") {
+              // Land directly on me tab with videos sub-tab open via state? Simplest: route 'me' and prime
+              go("me");
+            } else {
+              go(k);
+            }
+          }}
+        />
+      </div>
+    </StreamerLiveDataContext.Provider>
   );
 }
 
@@ -4120,6 +4253,17 @@ function VideosOnlyPage({ go }) {
   return <StreamerMe go={go} />;
 }
 
-export default function StreamerMobileReferenceApp({ initialRoute = "home" }) {
-  return <StreamerMobileReferenceInner initialRoute={initialRoute} />;
+/**
+ * @param {{ initialRoute?: string; liveTasks?: any[] }} props
+ */
+export default function StreamerMobileReferenceApp({
+  initialRoute = "home",
+  liveTasks,
+}) {
+  return (
+    <StreamerMobileReferenceInner
+      initialRoute={initialRoute}
+      liveTasks={liveTasks}
+    />
+  );
 }

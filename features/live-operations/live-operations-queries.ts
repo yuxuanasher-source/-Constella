@@ -28,6 +28,20 @@ export type OpsLiveReportQueueItem = {
   submittedAt: string;
 };
 
+export type OpsLiveTaskQueueItem = {
+  id: string;
+  title: string;
+  status: LiveTaskStatus;
+  projectId: string | null;
+  projectName: string;
+  streamerId: string;
+  streamerName: string;
+  plannedStartAt: string | null;
+  plannedEndAt: string | null;
+  plannedDuration: number | null;
+  systemDuration: number;
+};
+
 type StreamerTaskRow = {
   id: string;
   title: string;
@@ -48,6 +62,20 @@ type OpsLiveReportRow = {
   viewers: number | null;
   created_at: string;
   live_tasks: { title: string } | { title: string }[] | null;
+  projects: { name: string } | { name: string }[] | null;
+  streamers: { display_name: string } | { display_name: string }[] | null;
+};
+
+type OpsLiveTaskRow = {
+  id: string;
+  title: string;
+  status: LiveTaskStatus;
+  project_id: string | null;
+  streamer_id: string;
+  planned_start_at: string | null;
+  planned_end_at: string | null;
+  planned_duration: number | null;
+  system_duration: number;
   projects: { name: string } | { name: string }[] | null;
   streamers: { display_name: string } | { display_name: string }[] | null;
 };
@@ -91,6 +119,24 @@ export async function listOpsLiveReportQueue(
   return (data ?? []).map(toOpsLiveReportQueueItem);
 }
 
+export async function listOpsLiveTaskQueue(
+  client: SupabaseClient,
+): Promise<OpsLiveTaskQueueItem[]> {
+  const { data, error } = await client
+    .from("live_tasks")
+    .select(
+      "id, title, status, project_id, streamer_id, planned_start_at, planned_end_at, planned_duration, system_duration, projects(name), streamers(display_name)",
+    )
+    .order("planned_start_at", { ascending: true })
+    .returns<OpsLiveTaskRow[]>();
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? []).map(toOpsLiveTaskQueueItem);
+}
+
 export function toStreamerTaskCard(row: StreamerTaskRow): StreamerTaskCard {
   const project = first(row.projects);
 
@@ -124,6 +170,27 @@ export function toOpsLiveReportQueueItem(
     evidenceLevel: row.evidence_level,
     viewers: row.viewers,
     submittedAt: row.created_at,
+  };
+}
+
+export function toOpsLiveTaskQueueItem(
+  row: OpsLiveTaskRow,
+): OpsLiveTaskQueueItem {
+  const project = first(row.projects);
+  const streamer = first(row.streamers);
+
+  return {
+    id: row.id,
+    title: row.title,
+    status: row.status,
+    projectId: row.project_id,
+    projectName: project?.name ?? "Unknown project",
+    streamerId: row.streamer_id,
+    streamerName: streamer?.display_name ?? "Unknown streamer",
+    plannedStartAt: row.planned_start_at,
+    plannedEndAt: row.planned_end_at,
+    plannedDuration: row.planned_duration,
+    systemDuration: row.system_duration,
   };
 }
 

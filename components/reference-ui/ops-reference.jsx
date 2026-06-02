@@ -1105,6 +1105,27 @@ const REPORT_STATUS = {
   rejected: { tone: "red", label: "审核驳回" },
 };
 
+const OpsLiveDataContext = React.createContext({
+  tasks: null,
+  reports: null,
+  actions: {},
+});
+
+function useOpsTasks() {
+  const { tasks } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(tasks) ? tasks : TASKS;
+}
+
+function useOpsReports() {
+  const { reports } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(reports) ? reports : REPORTS;
+}
+
+function useOpsLiveActions() {
+  const { actions } = React.useContext(OpsLiveDataContext);
+  return actions || {};
+}
+
 // Settlement batches ———————————————————————————————————
 const BATCHES = [
   {
@@ -5113,18 +5134,28 @@ function Sparkline({ data, w = 280, h = 40 }) {
 // ——— Screen: 报数审核 ————————————————————————————
 
 function ScreenReports({ go }) {
+  const reports = useOpsReports();
   const [filter, setFilter] = React.useState("pending_review");
   const [activeId, setActiveId] = React.useState("R-08831");
 
+  React.useEffect(() => {
+    if (
+      reports.length > 0 &&
+      !reports.some((report) => report.id === activeId)
+    ) {
+      setActiveId(reports[0].id);
+    }
+  }, [activeId, reports]);
+
   const counts = {
-    all: REPORTS.length,
-    pending_review: REPORTS.filter((r) => r.status === "pending_review").length,
-    need_supply: REPORTS.filter((r) => r.status === "need_supply").length,
-    approved: REPORTS.filter((r) => r.status === "approved").length,
-    rejected: REPORTS.filter((r) => r.status === "rejected").length,
+    all: reports.length,
+    pending_review: reports.filter((r) => r.status === "pending_review").length,
+    need_supply: reports.filter((r) => r.status === "need_supply").length,
+    approved: reports.filter((r) => r.status === "approved").length,
+    rejected: reports.filter((r) => r.status === "rejected").length,
   };
   const filtered =
-    filter === "all" ? REPORTS : REPORTS.filter((r) => r.status === filter);
+    filter === "all" ? reports : reports.filter((r) => r.status === filter);
 
   return (
     <>
@@ -5308,16 +5339,29 @@ function ScreenReports({ go }) {
         </Card>
 
         {/* Detail */}
-        <ReportDetail id={activeId} />
+        <ReportDetail id={activeId} reports={reports} />
       </div>
     </>
   );
 }
 
-function ReportDetail({ id }) {
-  const r = REPORTS.find((x) => x.id === id) || REPORTS[0];
+function ReportDetail({ id, reports }) {
+  const actions = useOpsLiveActions();
+  const [busyDecision, setBusyDecision] = React.useState(null);
+  const r = reports.find((x) => x.id === id) || reports[0] || REPORTS[0];
   const s = STREAMERS.find((s) => s.alias === r.streamer);
   const p = PROJECTS.find((p) => p.id === r.project);
+  const projectName = p?.name || r.project;
+
+  const review = async (decision) => {
+    if (!actions.reviewReport) return;
+    setBusyDecision(decision);
+    try {
+      await actions.reviewReport(r.id, decision);
+    } finally {
+      setBusyDecision(null);
+    }
+  };
 
   // Mock OCR-vs-manual side-by-side
   const ocrFields = [
@@ -5377,7 +5421,7 @@ function ReportDetail({ id }) {
                 marginTop: 2,
               }}
             >
-              {r.streamer} · {p?.name || r.project}
+              {r.streamer} · {projectName}
             </div>
           </div>
           <Badge tone={REPORT_STATUS[r.status].tone} dot>
@@ -5551,10 +5595,21 @@ function ReportDetail({ id }) {
             gap: 8,
           }}
         >
-          <Button kind="danger" icon={<Icon.X size={14} />}>
-            驳回
+          <Button
+            kind="danger"
+            icon={<Icon.X size={14} />}
+            disabled={Boolean(busyDecision)}
+            onClick={() => review("reject")}
+          >
+            {busyDecision === "reject" ? "处理中…" : "驳回"}
           </Button>
-          <Button kind="default">需补充截图</Button>
+          <Button
+            kind="default"
+            disabled={Boolean(busyDecision)}
+            onClick={() => review("need_more")}
+          >
+            {busyDecision === "need_more" ? "处理中…" : "需补充截图"}
+          </Button>
           <div style={{ flex: 1 }} />
           <label
             style={{
@@ -5572,8 +5627,13 @@ function ReportDetail({ id }) {
             />{" "}
             计入任务结果
           </label>
-          <Button kind="primary" icon={<Icon.Check size={14} stroke="#fff" />}>
-            审核通过
+          <Button
+            kind="primary"
+            icon={<Icon.Check size={14} stroke="#fff" />}
+            disabled={Boolean(busyDecision)}
+            onClick={() => review("approve")}
+          >
+            {busyDecision === "approve" ? "处理中…" : "审核通过"}
           </Button>
         </div>
       </Card>
@@ -6330,21 +6390,22 @@ function BatchDetail({ id }) {
 // ——— Screen: 排班与任务 ————————————————————————
 
 function ScreenTasks({ go }) {
+  const tasks = useOpsTasks();
   const [view, setView] = React.useState("board");
   const [project, setProject] = React.useState("all");
   const [selectedTask, setSelectedTask] = React.useState(null);
 
-  const liveCount = TASKS.filter((t) => t.status === "live").length;
-  const pendingReportCount = TASKS.filter(
+  const liveCount = tasks.filter((t) => t.status === "live").length;
+  const pendingReportCount = tasks.filter(
     (t) => t.status === "pending_report",
   ).length;
-  const pendingReviewCount = TASKS.filter(
+  const pendingReviewCount = tasks.filter(
     (t) => t.status === "pending_review",
   ).length;
-  const anomalyCount = TASKS.filter(
+  const anomalyCount = tasks.filter(
     (t) => t.status === "abnormal" || t.anomaly,
   ).length;
-  const todayCount = TASKS.filter(
+  const todayCount = tasks.filter(
     (t) => t.dayIdx === SCHEDULE_WEEK.todayIdx,
   ).length;
 
@@ -6439,7 +6500,7 @@ function ScreenTasks({ go }) {
           <Card>
             <Metric
               label="本周已排"
-              value={TASKS.length}
+              value={tasks.length}
               unit="个"
               hint="共 8 位主播"
             />
@@ -6463,7 +6524,7 @@ function ScreenTasks({ go }) {
               onChange={setView}
               items={[
                 { key: "board", label: "项目排班看板" },
-                { key: "list", label: "任务列表", count: TASKS.length },
+                { key: "list", label: "任务列表", count: tasks.length },
                 { key: "anomaly", label: "异常任务", count: anomalyCount },
                 { key: "mine", label: "我的任务" },
               ]}
@@ -6484,9 +6545,13 @@ function ScreenTasks({ go }) {
               <ScheduleBoard project={project} onSelectTask={setSelectedTask} />
             )}
             {view === "list" && (
-              <TaskList project={project} onSelectTask={setSelectedTask} />
+              <TaskList
+                project={project}
+                tasks={tasks}
+                onSelectTask={setSelectedTask}
+              />
             )}
-            {view === "anomaly" && <AnomalyList />}
+            {view === "anomaly" && <AnomalyList tasks={tasks} />}
             {view === "mine" && <MyTasksView />}
           </div>
         </Card>
@@ -6531,6 +6596,7 @@ function ProjectFilter({ value, onChange }) {
 // ——— Schedule Board (week / streamer grid) ————————
 
 function ScheduleBoard({ project, onSelectTask }) {
+  const tasks = useOpsTasks();
   const [unit, setUnit] = React.useState("day"); // 'day' | 'hour'
 
   // Filter tasks
@@ -6544,9 +6610,15 @@ function ScheduleBoard({ project, onSelectTask }) {
     "S-006",
     "S-008",
   ];
-  const streamers = visibleStreamers.map((id) =>
-    STREAMERS.find((s) => s.id === id),
-  );
+  const liveStreamerIds = tasks
+    .map((task) => task.streamerId)
+    .filter((id) => !visibleStreamers.includes(id));
+  const streamers = [...visibleStreamers, ...liveStreamerIds].map((id) => {
+    const fromMock = STREAMERS.find((s) => s.id === id);
+    if (fromMock) return fromMock;
+    const task = tasks.find((item) => item.streamerId === id);
+    return { id, alias: task?.streamerName || id };
+  });
 
   const dayWidth = "minmax(140px, 1fr)";
   const HOUR_START = 12; // visible window: 12:00 - 24:00 (used in hour view)
@@ -6697,7 +6769,7 @@ function ScheduleBoard({ project, onSelectTask }) {
 
       {/* Rows */}
       {streamers.map((s, ri) => {
-        const sTasks = TASKS.filter(
+        const sTasks = tasks.filter(
           (t) =>
             t.streamerId === s.id &&
             (!allowedProject || t.project === allowedProject),
@@ -6986,7 +7058,9 @@ function HourTaskBar({ task, hourStart, hourEnd, onClick }) {
   const projectName =
     PROJECTS.find((p) => p.id === task.project)
       ?.name?.split("·")[0]
-      ?.trim() || task.project;
+      ?.trim() ||
+    task.projectName ||
+    task.project;
 
   return (
     <button
@@ -7091,8 +7165,8 @@ const iconBtn = {
 
 // ——— Task List ——————————————————————
 
-function TaskList({ project, onSelectTask }) {
-  const rows = TASKS.filter((t) => project === "all" || t.project === project);
+function TaskList({ project, tasks, onSelectTask }) {
+  const rows = tasks.filter((t) => project === "all" || t.project === project);
   return (
     <DataTable
       onRowClick={onSelectTask}
@@ -7137,8 +7211,8 @@ function TaskList({ project, onSelectTask }) {
             const s = STREAMERS.find((x) => x.id === r.streamerId);
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Avatar name={s?.alias} size={24} />
-                <span>{s?.alias}</span>
+                <Avatar name={s?.alias || r.streamerName} size={24} />
+                <span>{s?.alias || r.streamerName || r.streamerId}</span>
               </div>
             );
           },
@@ -7211,12 +7285,15 @@ function TaskList({ project, onSelectTask }) {
 
 // ——— Anomaly List ———————————————————
 
-function AnomalyList() {
-  const anomalies = TASKS.filter((t) => t.anomaly).map((t) => ({
-    ...t,
-    streamer: STREAMERS.find((s) => s.id === t.streamerId)?.alias,
-    typeKey: t.anomaly,
-  }));
+function AnomalyList({ tasks }) {
+  const anomalies = tasks
+    .filter((t) => t.anomaly)
+    .map((t) => ({
+      ...t,
+      streamer:
+        STREAMERS.find((s) => s.id === t.streamerId)?.alias || t.streamerName,
+      typeKey: t.anomaly,
+    }));
 
   // Group by type
   const groups = {};
@@ -7400,6 +7477,8 @@ function TaskDrawer({ task, onClose }) {
 
   const s = STREAMERS.find((x) => x.id === task.streamerId);
   const p = PROJECTS.find((x) => x.id === task.project);
+  const streamerName = s?.alias || task.streamerName || task.streamerId;
+  const projectName = p?.name || task.projectName || task.project;
   const statusKey = task.anomaly ? "abnormal" : task.status;
   const st = TASK_STATUS[statusKey];
 
@@ -7440,7 +7519,7 @@ function TaskDrawer({ task, onClose }) {
             {task.name}
           </div>
           <div style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 4 }}>
-            {p?.name} · {p?.vendor}
+            {projectName} · {p?.vendor || "经营舱"}
           </div>
         </div>
 
@@ -7489,26 +7568,27 @@ function TaskDrawer({ task, onClose }) {
               marginBottom: 10,
             }}
           >
-            <Avatar name={s?.alias} size={36} />
+            <Avatar name={streamerName} size={36} />
             <div>
               <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
-                {s?.alias}
+                {streamerName}
               </div>
               <div
                 className="mono"
                 style={{ fontSize: 11, color: "var(--ink-400)" }}
               >
-                {s?.id} · {s?.platforms?.join(" / ")}
+                {s?.id || task.streamerId} ·{" "}
+                {s?.platforms?.join(" / ") || "直播账号"}
               </div>
             </div>
             <div style={{ flex: 1 }} />
-            <Badge tone="blue">{s?.defaultRule}</Badge>
+            <Badge tone="blue">{s?.defaultRule || "CPT · 审核后入池"}</Badge>
           </div>
           <KV label="是否需要点击开播 / 停止">
-            {p?.needStartStop ? "是 · 主播需在 App 内操作" : "否"}
+            {(p?.needStartStop ?? true) ? "是 · 主播需在 App 内操作" : "否"}
           </KV>
           <KV label="录屏要求">
-            {p?.needScreening ? "本项目强制录屏" : "不强制"}
+            {(p?.needScreening ?? true) ? "本项目强制录屏" : "不强制"}
           </KV>
         </div>
 
@@ -7525,13 +7605,13 @@ function TaskDrawer({ task, onClose }) {
               },
               {
                 time: "05-27 19:58",
-                who: s?.alias,
+                who: streamerName,
                 action: "点击开始直播",
                 done: statusKey !== "pending_live",
               },
               {
                 time: statusKey === "live" ? "进行中…" : "05-27 22:48",
-                who: s?.alias,
+                who: streamerName,
                 action: "点击停止 + 上传下播截图",
                 done: [
                   "pending_report",
@@ -7543,7 +7623,7 @@ function TaskDrawer({ task, onClose }) {
               },
               {
                 time: "—",
-                who: s?.alias,
+                who: streamerName,
                 action: "主播确认 OCR 结果",
                 done: ["pending_review", "completed", "approved"].includes(
                   statusKey,
@@ -9382,11 +9462,56 @@ function PolicyCard({ title, icon, items, accent }) {
 // ===== src\app.jsx =====
 // ——— App entry ————————————————————————————————
 
-function OpsReferenceInner({ initialRoute = "warroom" }) {
+function OpsReferenceInner({
+  initialRoute = "warroom",
+  liveTasks,
+  liveReports,
+}) {
   // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
+  const [tasksState, setTasksState] = React.useState(liveTasks ?? null);
+  const [reportsState, setReportsState] = React.useState(liveReports ?? null);
+
+  React.useEffect(() => {
+    setTasksState(liveTasks ?? null);
+  }, [liveTasks]);
+
+  React.useEffect(() => {
+    setReportsState(liveReports ?? null);
+  }, [liveReports]);
+
+  const actions = React.useMemo(
+    () => ({
+      reviewReport: async (id, decision) => {
+        const response = await fetch(`/api/live-reports/${id}/review`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            decision,
+            includeInTaskResult: true,
+            enterSettlementPool: true,
+            reviewNotes: "经营端页面审核",
+          }),
+        });
+        if (!response.ok) throw new Error("review report failed");
+        const status =
+          decision === "approve"
+            ? "approved"
+            : decision === "need_more"
+              ? "need_supply"
+              : "rejected";
+        setReportsState((current) => {
+          const base = Array.isArray(current) ? current : REPORTS;
+          return base.map((report) =>
+            report.id === id ? { ...report, status } : report,
+          );
+        });
+      },
+    }),
+    [],
+  );
 
   const go = (r, arg) => {
     if (r === "project") {
@@ -9438,38 +9563,42 @@ function OpsReferenceInner({ initialRoute = "warroom" }) {
   const navKey = route === "project" ? "projects" : route;
 
   return (
-    <div
-      style={{ display: "flex", minHeight: "100vh", background: "var(--bg)" }}
+    <OpsLiveDataContext.Provider
+      value={{ tasks: tasksState, reports: reportsState, actions }}
     >
-      <Sidebar route={navKey} onNav={go} />
-      <main
-        style={{
-          flex: 1,
-          minWidth: 0,
-          display: "flex",
-          flexDirection: "column",
-          maxHeight: "100vh",
-        }}
+      <div
+        style={{ display: "flex", minHeight: "100vh", background: "var(--bg)" }}
       >
-        <TopBar breadcrumbs={crumbs} />
-        <div id="content-scroll" style={{ flex: 1, overflowY: "auto" }}>
-          {route === "warroom" && <ScreenWarRoom go={go} />}
-          {(route === "projects" || route === "project") && (
-            <ScreenProjects go={go} projectId={projectId} />
-          )}
-          {route === "streamers" && (
-            <ScreenStreamers go={go} initialActiveId={streamerId} />
-          )}
-          {route === "tasks" && <ScreenTasks go={go} />}
-          {route === "reports" && <ScreenReports go={go} />}
-          {route === "settle" && <ScreenSettlement go={go} />}
-          {route === "org" && <ScreenOrg go={go} />}
-          {(route === "export" || route === "audit") && (
-            <PlaceholderScreen route={route} go={go} />
-          )}
-        </div>
-      </main>
-    </div>
+        <Sidebar route={navKey} onNav={go} />
+        <main
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
+            maxHeight: "100vh",
+          }}
+        >
+          <TopBar breadcrumbs={crumbs} />
+          <div id="content-scroll" style={{ flex: 1, overflowY: "auto" }}>
+            {route === "warroom" && <ScreenWarRoom go={go} />}
+            {(route === "projects" || route === "project") && (
+              <ScreenProjects go={go} projectId={projectId} />
+            )}
+            {route === "streamers" && (
+              <ScreenStreamers go={go} initialActiveId={streamerId} />
+            )}
+            {route === "tasks" && <ScreenTasks go={go} />}
+            {route === "reports" && <ScreenReports go={go} />}
+            {route === "settle" && <ScreenSettlement go={go} />}
+            {route === "org" && <ScreenOrg go={go} />}
+            {(route === "export" || route === "audit") && (
+              <PlaceholderScreen route={route} go={go} />
+            )}
+          </div>
+        </main>
+      </div>
+    </OpsLiveDataContext.Provider>
   );
 }
 
@@ -9647,6 +9776,19 @@ function modulePreview(route) {
 
 // Mount
 
-export default function OpsReferenceApp({ initialRoute = "warroom" }) {
-  return <OpsReferenceInner initialRoute={initialRoute} />;
+/**
+ * @param {{ initialRoute?: string; liveTasks?: any[]; liveReports?: any[] }} props
+ */
+export default function OpsReferenceApp({
+  initialRoute = "warroom",
+  liveTasks,
+  liveReports,
+}) {
+  return (
+    <OpsReferenceInner
+      initialRoute={initialRoute}
+      liveTasks={liveTasks}
+      liveReports={liveReports}
+    />
+  );
 }
