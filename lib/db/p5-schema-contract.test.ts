@@ -28,8 +28,10 @@ describe("P5 billing schema contract", () => {
       "usage_addons",
       "feature_addons",
     ]) {
-      expect(migration).toContain(
-        `organization_id uuid not null references public.organizations(id)`,
+      expect(migration).toMatch(
+        new RegExp(
+          `create table public\\.${table} \\([\\s\\S]*?organization_id uuid not null references public\\.organizations\\(id\\)`,
+        ),
       );
     }
   });

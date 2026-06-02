@@ -11,9 +11,9 @@
 
 ## Scope Out
 
-- [ ] Real payment provider integration remains out of P5 v1 placeholder.
-- [ ] Invoice issuing and tax workflows remain out of P5 v1.
-- [ ] Enterprise SSO/private deployment is documented as extension-ready, not fully integrated.
+- [x] Real payment provider integration remains out of P5 v1 placeholder.
+- [x] Invoice issuing and tax workflows remain out of P5 v1.
+- [x] Enterprise SSO/private deployment is documented as extension-ready, not fully integrated.
 
 ## Security Boundaries
 
@@ -24,10 +24,10 @@
 
 ## Verification
 
-- [ ] `pnpm test:p5-commercialization`
-- [ ] `pnpm test:p4-flywheel`
-- [ ] `pnpm test:p3-governance`
-- [ ] `pnpm test:golden`
-- [ ] `pnpm lint`
-- [ ] `pnpm type-check`
-- [ ] `pnpm build`
+- [x] `pnpm test:p5-commercialization`
+- [x] `pnpm test:p4-flywheel`
+- [x] `pnpm test:p3-governance`
+- [x] `pnpm test:golden`
+- [x] `pnpm lint`
+- [x] `pnpm type-check`
+- [x] `pnpm build`
