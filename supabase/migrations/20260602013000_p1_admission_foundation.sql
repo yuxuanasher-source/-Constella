@@ -185,19 +185,19 @@ alter table public.recording_submissions enable row level security;
 create policy streamer_accounts_staff_access
 on public.streamer_accounts
 for all
-using (public.is_org_member(organization_id) and public.is_mcn_staff())
-with check (public.is_org_member(organization_id) and public.is_mcn_staff());
+using (public.is_org_member(organization_id) and public.is_mcn_staff(organization_id))
+with check (public.is_org_member(organization_id) and public.is_mcn_staff(organization_id));
 
 create policy streamer_accounts_streamer_read_own
 on public.streamer_accounts
 for select
-using (streamer_id = public.current_streamer_id());
+using (streamer_id = public.current_streamer_id(organization_id));
 
 create policy streamer_suppliers_staff_access
 on public.streamer_suppliers
 for all
-using (public.is_org_member(organization_id) and public.is_mcn_staff())
-with check (public.is_org_member(organization_id) and public.is_mcn_staff());
+using (public.is_org_member(organization_id) and public.is_mcn_staff(organization_id))
+with check (public.is_org_member(organization_id) and public.is_mcn_staff(organization_id));
 
 create policy project_streamers_staff_project_access
 on public.project_streamers
@@ -208,7 +208,7 @@ with check (public.is_org_member(organization_id) and public.can_access_project(
 create policy project_streamers_streamer_read_own
 on public.project_streamers
 for select
-using (streamer_id = public.current_streamer_id());
+using (streamer_id = public.current_streamer_id(organization_id));
 
 create policy project_applications_staff_project_access
 on public.project_applications
@@ -219,13 +219,13 @@ with check (public.is_org_member(organization_id) and public.can_access_project(
 create policy project_applications_streamer_read_own
 on public.project_applications
 for select
-using (streamer_id = public.current_streamer_id());
+using (streamer_id = public.current_streamer_id(organization_id));
 
 create policy project_applications_streamer_insert_own
 on public.project_applications
 for insert
 with check (
-  streamer_id = public.current_streamer_id()
+  streamer_id = public.current_streamer_id(organization_id)
   and source = 'signup'
 );
 
@@ -238,9 +238,9 @@ with check (public.is_org_member(organization_id) and public.can_access_project(
 create policy recording_submissions_streamer_read_own
 on public.recording_submissions
 for select
-using (streamer_id = public.current_streamer_id());
+using (streamer_id = public.current_streamer_id(organization_id));
 
 create policy recording_submissions_streamer_insert_own
 on public.recording_submissions
 for insert
-with check (streamer_id = public.current_streamer_id());
+with check (streamer_id = public.current_streamer_id(organization_id));

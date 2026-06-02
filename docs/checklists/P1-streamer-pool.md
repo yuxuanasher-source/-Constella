@@ -27,5 +27,5 @@
 - [x] `pnpm type-check`
 - [x] `pnpm test`
 - [x] `pnpm build`
-- [ ] `pnpm supabase db reset` blocked locally by Docker Desktop startup failure.
+- [x] `pnpm supabase db reset` passed locally with `DOCKER_CONTEXT=default`.
 - [ ] Golden path smoke test after主播池 UI 接入真实服务。

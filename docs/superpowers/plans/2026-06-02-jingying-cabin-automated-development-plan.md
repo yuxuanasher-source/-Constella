@@ -736,6 +736,7 @@ No AI tool bypasses RBAC or directly executes SQL.
 No P(n+1) feature shipped inside P(n) without explicit product approval.
 ```
 
-## Current Known Blocker
+## Local Supabase Notes
 
-`pnpm supabase db reset` requires Docker Desktop. On the current machine Docker Desktop is not starting, so database migrations are written and contract-tested but still need a live Supabase local reset once Docker is available.
+`pnpm supabase db reset` passes locally when run with `DOCKER_CONTEXT=default`.
+The Supabase analytics port is configured as `54330` because `54327` is occupied by Clash Verge (`verge-mihomo.exe`) on this machine.

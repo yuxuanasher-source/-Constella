@@ -44,8 +44,11 @@ describe("P1 admission schema contract", () => {
   });
 
   it("keeps single-streamer visibility and org isolation in policies", () => {
-    expect(p1Migration).toContain("public.current_streamer_id()");
+    expect(p1Migration).toContain(
+      "public.current_streamer_id(organization_id)",
+    );
     expect(p1Migration).toContain("public.is_org_member(organization_id)");
+    expect(p1Migration).toContain("public.is_mcn_staff(organization_id)");
     expect(p1Migration).toContain("public.can_access_project(project_id)");
   });
 });
