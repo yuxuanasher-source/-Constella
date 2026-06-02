@@ -1,5 +1,9 @@
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
 import {
+  listAuditCenterEntries,
+  type AuditQueryClient,
+} from "@/features/audit-center/audit-center-queries";
+import {
   listOpsLiveReportQueue,
   listOpsLiveTaskQueue,
 } from "@/features/live-operations/live-operations-queries";
@@ -50,6 +54,7 @@ export default async function StubPage({
     liveBatchDetails,
     liveSettlementPool,
     settlementScope,
+    auditEntries,
   } = await loadLiveReferenceData(module);
 
   return (
@@ -61,6 +66,7 @@ export default async function StubPage({
       liveBatchDetails={liveBatchDetails}
       liveSettlementPool={liveSettlementPool}
       settlementScope={settlementScope}
+      auditEntries={auditEntries}
     />
   );
 }
@@ -107,6 +113,20 @@ async function loadLiveReferenceData(module: string) {
       ),
       settlementScope,
     };
+  }
+
+  if (module === "m7" || module === "m9") {
+    const auditQueryClient = supabase as unknown as AuditQueryClient;
+    const entries = await listAuditCenterEntries(
+      auditQueryClient,
+      {
+        userId: auth.userId,
+        role: auth.role,
+        organizationId: auth.organizationId,
+      },
+      { limit: 50 },
+    );
+    return { auditEntries: entries };
   }
 
   return {};

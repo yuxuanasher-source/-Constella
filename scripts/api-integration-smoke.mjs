@@ -27,6 +27,7 @@ const opsCookie = await signIn("ops@jy-demo.local");
 const financeCookie = await signIn("finance@jy-demo.local");
 const streamerCookie = await signIn("streamer@jy-demo.local");
 const p1Flow = {};
+const p2Flow = {};
 
 await check("ops can read the M5 report queue over HTTP", async () => {
   const body = await requestJson("/api/live-reports", {
@@ -214,6 +215,7 @@ await check(
     );
 
     const batchId = batchBody.batch.id;
+    p2Flow.batchId = batchId;
     const manualBody = await requestJson(
       `/api/settlement-batches/${batchId}/manual-items`,
       {
@@ -269,6 +271,49 @@ await check(
       "api integration smoke reopen",
       "reopened batch reason",
     );
+  },
+);
+
+await check(
+  "P3 audit center returns role-scoped high-risk settlement logs over HTTP",
+  async () => {
+    if (!p2Flow.batchId) {
+      throw new Error("P2 flow batch id is required for P3 audit smoke");
+    }
+
+    const body = await requestJson(
+      "/api/audit-logs?module=settlement&highRiskOnly=1&limit=20",
+      { cookie: ownerCookie },
+    );
+
+    assertArray(body.entries, "audit entries");
+    assertNonEmpty(body.entries, "audit entries");
+    assertPublicDtoShape(body.entries, "audit entries");
+    assertNotContains(
+      JSON.stringify(collectObjectKeys(body.entries)),
+      /before_json|after_json|organization_id/i,
+      "audit entries",
+    );
+
+    const batchEntries = body.entries.filter(
+      (entry) => entry.objectId === p2Flow.batchId,
+    );
+    assertNonEmpty(batchEntries, "P2 batch audit entries");
+    assertObject(
+      batchEntries.find((entry) => entry.action === "lock"),
+      "P2 batch lock audit entry",
+    );
+    assertObject(
+      batchEntries.find((entry) => entry.action === "reopen"),
+      "P2 batch reopen audit entry",
+    );
+    for (const entry of batchEntries) {
+      assertEqual(entry.module, "settlement", "audit entry module");
+      assertEqual(entry.isHighRisk, true, "audit entry high risk flag");
+      if (!entry.reason) {
+        throw new Error(`${entry.id} must include a high-risk reason`);
+      }
+    }
   },
 );
 

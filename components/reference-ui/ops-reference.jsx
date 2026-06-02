@@ -1114,6 +1114,7 @@ const OpsLiveDataContext = React.createContext({
   batchDetails: null,
   settlementPool: null,
   settlementScope: null,
+  auditEntries: null,
   actions: {},
 });
 
@@ -1145,6 +1146,11 @@ function useOpsSettlementPool() {
 function useOpsSettlementScope() {
   const { settlementScope } = React.useContext(OpsLiveDataContext);
   return settlementScope || null;
+}
+
+function useOpsAuditEntries() {
+  const { auditEntries } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(auditEntries) ? auditEntries : [];
 }
 
 function useOpsLiveActions() {
@@ -10124,6 +10130,448 @@ function PolicyCard({ title, icon, items, accent }) {
   );
 }
 
+function ScreenAudit() {
+  const entries = useOpsAuditEntries();
+  const actions = useOpsLiveActions();
+  const [filter, setFilter] = React.useState("all");
+  const [busy, setBusy] = React.useState(false);
+  const [activeId, setActiveId] = React.useState(entries[0]?.id || null);
+
+  React.useEffect(() => {
+    if (!entries.some((entry) => entry.id === activeId)) {
+      setActiveId(entries[0]?.id || null);
+    }
+  }, [activeId, entries]);
+
+  const filtered = React.useMemo(() => {
+    if (filter === "highRisk") {
+      return entries.filter((entry) => entry.isHighRisk);
+    }
+    if (filter === "settlement") {
+      return entries.filter((entry) => entry.module === "settlement");
+    }
+    if (filter === "failure") {
+      return entries.filter((entry) => entry.result === "failure");
+    }
+    return entries;
+  }, [entries, filter]);
+
+  const activeEntry =
+    entries.find((entry) => entry.id === activeId) || filtered[0] || null;
+  const highRiskCount = entries.filter((entry) => entry.isHighRisk).length;
+  const failureCount = entries.filter(
+    (entry) => entry.result === "failure",
+  ).length;
+  const moduleCount = new Set(entries.map((entry) => entry.module)).size;
+
+  const refresh = async () => {
+    if (!actions.refreshAuditEntries || busy) return;
+    setBusy(true);
+    try {
+      await actions.refreshAuditEntries();
+    } catch (error) {
+      globalThis.alert?.(
+        error instanceof Error ? error.message : "刷新审计日志失败",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        title="操作日志 & 审计"
+        subtitle="差异日志、角色可见范围、高风险原因与导出留痕统一进入审计中心"
+        actions={
+          <>
+            <Button
+              kind="default"
+              icon={<Icon.Filter size={14} />}
+              onClick={() => setFilter("highRisk")}
+            >
+              高风险
+            </Button>
+            <Button
+              kind="primary"
+              icon={<Icon.Audit size={14} stroke="#fff" />}
+              onClick={refresh}
+              disabled={busy || !actions.refreshAuditEntries}
+            >
+              {busy ? "刷新中…" : "刷新日志"}
+            </Button>
+          </>
+        }
+      />
+
+      <div
+        style={{
+          padding: 20,
+          display: "flex",
+          flexDirection: "column",
+          gap: 20,
+        }}
+      >
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4, 1fr)",
+            gap: 16,
+          }}
+        >
+          <Card>
+            <Metric
+              label="审计日志"
+              value={String(entries.length)}
+              unit="条"
+              hint="仅展示当前角色可见范围"
+            />
+          </Card>
+          <Card>
+            <Metric
+              label="高风险操作"
+              value={String(highRiskCount)}
+              unit="条"
+              delta={highRiskCount > 0 ? "需复核原因" : "无待复核"}
+              deltaTone={highRiskCount > 0 ? "amber" : "green"}
+            />
+          </Card>
+          <Card>
+            <Metric
+              label="失败操作"
+              value={String(failureCount)}
+              unit="条"
+              hint="失败原因只显示错误摘要"
+            />
+          </Card>
+          <Card style={{ borderColor: "var(--blue-200)" }}>
+            <Metric
+              label="覆盖模块"
+              value={String(moduleCount)}
+              unit="个"
+              hint="权限过滤在服务端完成"
+            />
+          </Card>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1.55fr 0.8fr",
+            gap: 20,
+            alignItems: "flex-start",
+          }}
+        >
+          <Card padded={false}>
+            <div
+              style={{
+                padding: "0 12px",
+                borderBottom: "1px solid var(--line)",
+              }}
+            >
+              <Tabs
+                value={filter}
+                onChange={setFilter}
+                items={[
+                  { key: "all", label: "全部", count: entries.length },
+                  {
+                    key: "highRisk",
+                    label: "高风险",
+                    count: highRiskCount,
+                  },
+                  {
+                    key: "settlement",
+                    label: "结算",
+                    count: entries.filter(
+                      (entry) => entry.module === "settlement",
+                    ).length,
+                  },
+                  { key: "failure", label: "失败", count: failureCount },
+                ]}
+              />
+            </div>
+            <DataTable
+              activeRowId={activeEntry?.id}
+              onRowClick={(entry) => setActiveId(entry.id)}
+              emptyText="暂无可见审计日志"
+              columns={[
+                {
+                  title: "日志",
+                  width: 170,
+                  render: (entry) => (
+                    <div>
+                      <div
+                        className="mono"
+                        style={{ fontSize: 11, color: "var(--ink-400)" }}
+                      >
+                        {entry.id}
+                      </div>
+                      <div
+                        className="mono"
+                        style={{
+                          fontSize: 11,
+                          color: "var(--ink-400)",
+                          marginTop: 3,
+                        }}
+                      >
+                        {formatOpsMinute(entry.createdAt)}
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "操作人",
+                  render: (entry) => (
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 9 }}
+                    >
+                      <Avatar
+                        name={entry.actorName || entry.actorRole || "系统"}
+                      />
+                      <div>
+                        <div
+                          style={{
+                            fontSize: 12.5,
+                            fontWeight: 600,
+                            color: "var(--ink-900)",
+                          }}
+                        >
+                          {entry.actorName || "系统"}
+                        </div>
+                        <div
+                          className="mono"
+                          style={{ fontSize: 10.5, color: "var(--ink-400)" }}
+                        >
+                          {auditRoleLabel(entry.actorRole)}
+                        </div>
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "模块 / 动作",
+                  render: (entry) => (
+                    <div>
+                      <div
+                        className="mono"
+                        style={{ fontSize: 12, color: "var(--ink-900)" }}
+                      >
+                        {entry.module} / {entry.action}
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 4,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                        }}
+                      >
+                        <Badge tone={auditModuleTone(entry.module)}>
+                          {auditModuleLabel(entry.module)}
+                        </Badge>
+                        <Badge
+                          tone={entry.result === "failure" ? "red" : "green"}
+                          dot
+                        >
+                          {entry.result === "failure" ? "失败" : "成功"}
+                        </Badge>
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "对象",
+                  render: (entry) => (
+                    <div>
+                      <div style={{ fontSize: 12.5, color: "var(--ink-700)" }}>
+                        {entry.objectName || entry.objectType}
+                      </div>
+                      <div
+                        className="mono"
+                        style={{
+                          fontSize: 10.5,
+                          color: "var(--ink-400)",
+                          marginTop: 3,
+                        }}
+                      >
+                        {entry.objectId || "—"}
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "变更字段",
+                  width: 150,
+                  render: (entry) => (
+                    <span
+                      className="mono"
+                      style={{ fontSize: 11.5, color: "var(--ink-500)" }}
+                    >
+                      {auditChangedFields(entry)}
+                    </span>
+                  ),
+                },
+                {
+                  title: "风险",
+                  render: (entry) =>
+                    entry.isHighRisk ? (
+                      <Badge tone="red" dot>
+                        高风险
+                      </Badge>
+                    ) : (
+                      <Badge tone="neutral">普通</Badge>
+                    ),
+                },
+                {
+                  title: "原因",
+                  wrap: true,
+                  render: (entry) => (
+                    <span
+                      style={{
+                        display: "inline-block",
+                        maxWidth: 220,
+                        color: entry.reason
+                          ? "var(--ink-700)"
+                          : "var(--ink-400)",
+                        fontSize: 12,
+                        whiteSpace: "normal",
+                      }}
+                    >
+                      {entry.reason || entry.errorMessage || "—"}
+                    </span>
+                  ),
+                },
+              ]}
+              rows={filtered}
+            />
+          </Card>
+
+          <AuditEntryDetail entry={activeEntry} />
+        </div>
+      </div>
+    </>
+  );
+}
+
+function AuditEntryDetail({ entry }) {
+  if (!entry) {
+    return (
+      <Card title="日志详情">
+        <div
+          style={{ padding: 32, textAlign: "center", color: "var(--ink-400)" }}
+        >
+          暂无日志详情
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card
+      title="日志详情"
+      extra={
+        entry.isHighRisk ? (
+          <Badge tone="red" dot>
+            高风险
+          </Badge>
+        ) : (
+          <Badge tone="green" dot>
+            已记录
+          </Badge>
+        )
+      }
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <KV label="日志 ID">
+          <span className="mono">{entry.id}</span>
+        </KV>
+        <KV label="发生时间">
+          <span className="mono">{formatOpsMinute(entry.createdAt)}</span>
+        </KV>
+        <KV label="操作人">
+          {entry.actorName || "系统"} · {auditRoleLabel(entry.actorRole)}
+        </KV>
+        <KV label="模块动作">
+          <span className="mono">
+            {entry.module} / {entry.action}
+          </span>
+        </KV>
+        <KV label="对象">
+          {entry.objectType} ·{" "}
+          <span className="mono">{entry.objectId || "—"}</span>
+        </KV>
+        <KV label="项目">
+          <span className="mono">{entry.projectId || "—"}</span>
+        </KV>
+        <KV label="变更字段">
+          <span className="mono">{auditChangedFields(entry)}</span>
+        </KV>
+        <KV label="结果">
+          <Badge tone={entry.result === "failure" ? "red" : "green"} dot>
+            {entry.result === "failure" ? "失败" : "成功"}
+          </Badge>
+        </KV>
+        <KV label="原因">
+          <span
+            style={{
+              color: entry.reason ? "var(--ink-700)" : "var(--ink-400)",
+            }}
+          >
+            {entry.reason || "—"}
+          </span>
+        </KV>
+        {entry.errorMessage && (
+          <KV label="错误摘要">
+            <span style={{ color: "var(--danger-600)" }}>
+              {entry.errorMessage}
+            </span>
+          </KV>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function auditChangedFields(entry) {
+  return Array.isArray(entry.changedFields) && entry.changedFields.length > 0
+    ? entry.changedFields.join(", ")
+    : "—";
+}
+
+function auditModuleLabel(module) {
+  const labels = {
+    auth: "鉴权",
+    project: "项目",
+    application: "选播",
+    live: "履约",
+    settlement: "结算",
+    finance: "财务",
+    audit: "审计",
+    export: "导出",
+  };
+  return labels[module] || module || "未知";
+}
+
+function auditModuleTone(module) {
+  if (module === "settlement" || module === "finance") return "violet";
+  if (module === "auth" || module === "audit") return "ink";
+  if (module === "live") return "teal";
+  if (module === "project" || module === "application") return "blue";
+  if (module === "export") return "amber";
+  return "neutral";
+}
+
+function auditRoleLabel(role) {
+  const labels = {
+    owner: "负责人",
+    ops_manager: "运营负责人",
+    operator_business: "次级运营",
+    finance: "财务",
+    streamer: "主播",
+  };
+  return labels[role] || role || "系统";
+}
+
 // ===== src\app.jsx =====
 // ——— App entry ————————————————————————————————
 
@@ -10135,6 +10583,7 @@ function OpsReferenceInner({
   liveBatchDetails,
   liveSettlementPool,
   settlementScope,
+  auditEntries,
 }) {
   // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
@@ -10148,6 +10597,9 @@ function OpsReferenceInner({
   );
   const [settlementPoolState, setSettlementPoolState] = React.useState(
     liveSettlementPool ?? null,
+  );
+  const [auditEntriesState, setAuditEntriesState] = React.useState(
+    auditEntries ?? null,
   );
 
   React.useEffect(() => {
@@ -10169,6 +10621,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setSettlementPoolState(liveSettlementPool ?? null);
   }, [liveSettlementPool]);
+
+  React.useEffect(() => {
+    setAuditEntriesState(auditEntries ?? null);
+  }, [auditEntries]);
 
   const actions = React.useMemo(() => {
     const readJson = async (response, fallbackMessage) => {
@@ -10258,6 +10714,16 @@ function OpsReferenceInner({
           toReferenceBatchDetailFromApi(item, [], index),
         ),
       }));
+    };
+
+    const refreshAuditEntries = async () => {
+      const body = await fetchJson(
+        "/api/audit-logs?limit=50",
+        "refresh audit logs failed",
+      );
+      if (Array.isArray(body.entries)) {
+        setAuditEntriesState(body.entries);
+      }
     };
 
     return {
@@ -10378,6 +10844,7 @@ function OpsReferenceInner({
         await refreshSettlementBatchDetail(batchId);
         await refreshSettlementBatches();
       },
+      refreshAuditEntries,
     };
   }, [settlementScope]);
 
@@ -10439,6 +10906,7 @@ function OpsReferenceInner({
         batchDetails: batchDetailsState,
         settlementPool: settlementPoolState,
         settlementScope,
+        auditEntries: auditEntriesState,
         actions,
       }}
     >
@@ -10467,10 +10935,9 @@ function OpsReferenceInner({
             {route === "tasks" && <ScreenTasks go={go} />}
             {route === "reports" && <ScreenReports go={go} />}
             {route === "settle" && <ScreenSettlement go={go} />}
+            {route === "audit" && <ScreenAudit go={go} />}
             {route === "org" && <ScreenOrg go={go} />}
-            {(route === "export" || route === "audit") && (
-              <PlaceholderScreen route={route} go={go} />
-            )}
+            {route === "export" && <PlaceholderScreen route={route} go={go} />}
           </div>
         </main>
       </div>
@@ -10653,7 +11120,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any }} props
+ * @param {{ initialRoute?: string; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[] }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -10663,6 +11130,7 @@ export default function OpsReferenceApp({
   liveBatchDetails,
   liveSettlementPool,
   settlementScope,
+  auditEntries,
 }) {
   return (
     <OpsReferenceInner
@@ -10673,6 +11141,7 @@ export default function OpsReferenceApp({
       liveBatchDetails={liveBatchDetails}
       liveSettlementPool={liveSettlementPool}
       settlementScope={settlementScope}
+      auditEntries={auditEntries}
     />
   );
 }

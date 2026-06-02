@@ -621,3 +621,44 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(reloadMock).not.toHaveBeenCalled();
   });
 });
+
+describe("OpsReferenceApp audit center smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("renders safe audit DTOs with high-risk reasons and changed field names", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="audit"
+        auditEntries={[
+          {
+            id: "audit-ui-1",
+            module: "settlement",
+            action: "lock",
+            objectType: "settlement_batch",
+            objectId: "batch-ui-risk",
+            projectId: "project-1",
+            actorUserId: "user-owner",
+            actorName: "负责人",
+            actorRole: "owner",
+            changedFields: ["status", "locked_at"],
+            isHighRisk: true,
+            reason: "财务核对无误后锁定",
+            createdAt: "2026-06-02T12:40:00.000Z",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("audit-ui-1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("settlement / lock").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("batch-ui-risk").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("财务核对无误后锁定").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("status, locked_at").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("高风险").length).toBeGreaterThan(0);
+    expect(screen.queryByText("before_json")).not.toBeInTheDocument();
+    expect(screen.queryByText("after_json")).not.toBeInTheDocument();
+  });
+});
