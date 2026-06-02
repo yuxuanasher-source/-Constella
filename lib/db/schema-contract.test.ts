@@ -76,4 +76,10 @@ describe("P0 database contract", () => {
     expect(allMigrations).toContain("for insert");
     expect(allMigrations).toContain("public.can_access_project(lr.project_id)");
   });
+
+  it("allows business operators to read project drafts they created", () => {
+    expect(allMigrations).toContain("function public.can_access_project");
+    expect(allMigrations).toContain("project creators can read own projects");
+    expect(allMigrations).toContain("created_by = auth.uid()");
+  });
 });
