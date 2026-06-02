@@ -391,6 +391,52 @@ insert into public.project_assignments (organization_id, project_id, user_id) va
   )
 on conflict (project_id, user_id) do nothing;
 
+insert into public.project_applications (
+  id,
+  organization_id,
+  project_id,
+  streamer_id,
+  source,
+  status
+) values (
+  '12121212-1212-1212-1212-121212121212',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '99999999-9999-9999-9999-999999999999',
+  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  'signup',
+  'recording_reviewing'
+)
+on conflict (project_id, streamer_id, source) do update
+set status = excluded.status,
+    updated_at = now();
+
+insert into public.recording_submissions (
+  id,
+  organization_id,
+  application_id,
+  project_id,
+  streamer_id,
+  version,
+  external_url,
+  duration_seconds,
+  status
+) values (
+  '34343434-3434-3434-3434-343434343434',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '12121212-1212-1212-1212-121212121212',
+  '99999999-9999-9999-9999-999999999999',
+  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  1,
+  'https://example.com/demo-screening.mp4',
+  3600,
+  'submitted'
+)
+on conflict (application_id, version) do update
+set external_url = excluded.external_url,
+    duration_seconds = excluded.duration_seconds,
+    status = excluded.status,
+    updated_at = now();
+
 insert into public.auto_review_rules (
   organization_id,
   version,
