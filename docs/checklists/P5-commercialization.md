@@ -4,9 +4,9 @@
 
 - [x] Billing schema includes plans, subscriptions, usage events, monthly counters, usage add-ons, and feature add-ons.
 - [x] Billing business tables carry `organization_id`, RLS, and org-scoped policies.
-- [ ] Feature gates support free/basic/pro/enterprise plans plus feature add-ons.
+- [x] Feature gates support free/basic/pro/enterprise plans plus feature add-ons.
 - [ ] Usage metering supports active streamers, seats, OCR, AI, storage, exports, monthly reset keys, soft overage, and add-on credits.
-- [ ] Past-due subscriptions downgrade write actions to read-only without deleting settlement or audit data.
+- [x] Past-due subscriptions downgrade write actions to read-only without deleting settlement or audit data.
 - [ ] Billing APIs expose safe usage/entitlement status for authenticated MCN staff.
 
 ## Scope Out
@@ -19,8 +19,8 @@
 
 - [ ] Billing write operations use audit logs.
 - [ ] Streamers cannot read organization billing economics or subscription status.
-- [ ] Past-due guard blocks writes but allows read-only access.
-- [ ] Settlement and audit records are never deleted or hidden by downgrade.
+- [x] Past-due guard blocks writes but allows read-only access.
+- [x] Settlement and audit records are never deleted or hidden by downgrade.
 
 ## Verification
 
