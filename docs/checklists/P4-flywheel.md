@@ -14,7 +14,7 @@
 
 - [x] Real external AI provider calls remain out of P4 v1; use deterministic placeholder responses.
 - [x] Automatic review active rollout remains off until shadow consistency data is accepted.
-- [ ] SaaS package gates, metering, and billing stay in P5.
+- [x] SaaS package gates, metering, and billing stay in P5.
 
 ## Security Boundaries
 
@@ -26,9 +26,9 @@
 
 ## Verification
 
-- [ ] `pnpm test:p4-flywheel`
-- [ ] `pnpm test:p3-governance`
-- [ ] `pnpm test:golden`
-- [ ] `pnpm lint`
-- [ ] `pnpm type-check`
-- [ ] `pnpm build`
+- [x] `pnpm test:p4-flywheel`
+- [x] `pnpm test:p3-governance`
+- [x] `pnpm test:golden`
+- [x] `pnpm lint`
+- [x] `pnpm type-check`
+- [x] `pnpm build`

@@ -106,11 +106,14 @@ describe("evaluateAutoReviewActive", () => {
 
   it("approves only by entering the settlement pool and does not calculate money", async () => {
     const { client, auditInserts } = createClient();
-    const approveReport = vi.fn(async (_input: unknown) => ({
-      id: "report-1",
-      status: "approved",
-      enterSettlementPool: true,
-    }));
+    const approveReport = vi.fn(async (input: unknown) => {
+      void input;
+      return {
+        id: "report-1",
+        status: "approved",
+        enterSettlementPool: true,
+      };
+    });
 
     const result = await evaluateAutoReviewActive({
       client,
