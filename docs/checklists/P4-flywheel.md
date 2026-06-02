@@ -8,11 +8,11 @@
 - [x] Streamer matching engine returns score, reasons, risk notes, reference projects, and suggested settlement method.
 - [x] Supplier quality score handles completion, screening pass, margin contribution, anomalies, and blacklist penalties.
 - [x] Project review report summarizes delivery, finance, best/worst streamers, supplier performance, and next-round recommendations.
-- [ ] AI safety layer uses registered read-only tools, writes audit for every query, and never exposes organization finance data to streamers.
+- [x] AI safety layer uses registered read-only tools, writes audit for every query, and never exposes organization finance data to streamers.
 
 ## Scope Out
 
-- [ ] Real external AI provider calls remain out of P4 v1; use deterministic placeholder responses.
+- [x] Real external AI provider calls remain out of P4 v1; use deterministic placeholder responses.
 - [ ] Automatic review active rollout remains off until shadow consistency data is accepted.
 - [ ] SaaS package gates, metering, and billing stay in P5.
 
@@ -21,8 +21,8 @@
 - [ ] Auto review writes audit for shadow and active evaluations.
 - [ ] Auto review active approval must not calculate money; it only enters the settlement pool exactly like manual approval.
 - [x] Pricing and review calculations avoid floating-point money storage assumptions and expose cents/decimal-safe outputs.
-- [ ] AI tools inherit actor role and scope; no arbitrary SQL or direct DB access is exposed.
-- [ ] Streamer-facing AI DTOs do not include receivable, gross margin, cost, supplier cost, or internal risk notes.
+- [x] AI tools inherit actor role and scope; no arbitrary SQL or direct DB access is exposed.
+- [x] Streamer-facing AI DTOs do not include receivable, gross margin, cost, supplier cost, or internal risk notes.
 
 ## Verification
 

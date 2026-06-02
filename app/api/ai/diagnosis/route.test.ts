@@ -1,0 +1,75 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { POST } from "./route";
+
+import { getAuthContext } from "@/lib/auth/context";
+import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+
+vi.mock("@/lib/auth/context", () => ({
+  getAuthContext: vi.fn(),
+}));
+
+vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseServerClient: vi.fn(),
+}));
+
+const auth = {
+  userId: "user-streamer",
+  email: "streamer@jy-demo.local",
+  name: "主播 Ava",
+  organizationId: "org-1",
+  organizationName: "Demo Org",
+  role: "streamer" as const,
+};
+
+function createClient() {
+  return {
+    from: vi.fn(() => ({
+      insert: vi.fn(async () => ({ error: null })),
+    })),
+  };
+}
+
+describe("AI diagnosis route", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(
+      createClient() as never,
+    );
+    vi.mocked(getAuthContext).mockResolvedValue(auth);
+  });
+
+  it("returns streamer-safe diagnosis placeholder", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/ai/diagnosis", {
+        method: "POST",
+        body: JSON.stringify({
+          task: { title: "晚高峰冲榜", game: "moba" },
+          report: {
+            totalViews: 300,
+            grossMarginCents: 50000,
+          },
+          feedback: ["互动断层"],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result.output.scriptSuggestions.length).toBeGreaterThan(0);
+    expect(JSON.stringify(body)).not.toContain("grossMarginCents");
+  });
+
+  it("requires authentication", async () => {
+    vi.mocked(getAuthContext).mockResolvedValue(null);
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/diagnosis", {
+        method: "POST",
+        body: JSON.stringify({}),
+      }),
+    );
+
+    expect(response.status).toBe(401);
+  });
+});
