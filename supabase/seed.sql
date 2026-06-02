@@ -402,7 +402,7 @@ insert into public.project_applications (
   '12121212-1212-1212-1212-121212121212',
   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
   '99999999-9999-9999-9999-999999999999',
-  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  'dddddddd-dddd-dddd-dddd-dddddddddddd',
   'signup',
   'recording_reviewing'
 )
@@ -425,7 +425,7 @@ insert into public.recording_submissions (
   'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
   '12121212-1212-1212-1212-121212121212',
   '99999999-9999-9999-9999-999999999999',
-  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  'dddddddd-dddd-dddd-dddd-dddddddddddd',
   1,
   'https://example.com/demo-screening.mp4',
   3600,
@@ -436,6 +436,166 @@ set external_url = excluded.external_url,
     duration_seconds = excluded.duration_seconds,
     status = excluded.status,
     updated_at = now();
+
+insert into public.project_streamers (
+  id,
+  organization_id,
+  project_id,
+  streamer_id,
+  status,
+  joined_at,
+  settlement_method,
+  hourly_rate,
+  base_salary,
+  settlement_rule,
+  created_by
+) values (
+  '56565656-5656-5656-5656-565656565656',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '99999999-9999-9999-9999-999999999999',
+  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  'joined',
+  now() - interval '2 days',
+  'cpt',
+  80,
+  0,
+  '{"method":"cpt","hourly_rate":80,"min_minutes":60,"prorate_by_minute":true}',
+  '22222222-2222-2222-2222-222222222222'
+)
+on conflict (project_id, streamer_id) do update
+set status = excluded.status,
+    joined_at = excluded.joined_at,
+    settlement_method = excluded.settlement_method,
+    hourly_rate = excluded.hourly_rate,
+    base_salary = excluded.base_salary,
+    settlement_rule = excluded.settlement_rule,
+    updated_at = now();
+
+insert into public.live_tasks (
+  id,
+  organization_id,
+  project_id,
+  streamer_id,
+  title,
+  task_type,
+  status,
+  planned_start_at,
+  planned_end_at,
+  planned_duration,
+  requires_timing,
+  system_started_at,
+  system_stopped_at,
+  system_duration,
+  created_by,
+  note
+) values (
+  '78787878-7878-7878-7878-787878787878',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '99999999-9999-9999-9999-999999999999',
+  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  'New Game Launch Week · Streamer One',
+  'project',
+  'report_pending_review',
+  now() - interval '1 day 3 hours',
+  now() - interval '1 day 1 hour',
+  120,
+  true,
+  now() - interval '1 day 3 hours',
+  now() - interval '1 day 1 hour 5 minutes',
+  115,
+  '33333333-3333-3333-3333-333333333333',
+  'Demo task with pending report review'
+)
+on conflict (id) do update
+set status = excluded.status,
+    planned_start_at = excluded.planned_start_at,
+    planned_end_at = excluded.planned_end_at,
+    planned_duration = excluded.planned_duration,
+    system_started_at = excluded.system_started_at,
+    system_stopped_at = excluded.system_stopped_at,
+    system_duration = excluded.system_duration,
+    note = excluded.note,
+    updated_at = now();
+
+insert into public.live_reports (
+  id,
+  organization_id,
+  live_task_id,
+  project_id,
+  streamer_id,
+  status,
+  system_duration,
+  screenshot_duration,
+  claimed_duration,
+  settlement_duration,
+  time_source,
+  evidence_level,
+  divergence_pct,
+  viewers,
+  include_in_task_result,
+  enter_settlement_pool,
+  risk_flags,
+  created_by
+) values (
+  '89898989-8989-8989-8989-898989898989',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '78787878-7878-7878-7878-787878787878',
+  '99999999-9999-9999-9999-999999999999',
+  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  'pending_review',
+  115,
+  118,
+  118,
+  115,
+  'system',
+  'green',
+  0.0261,
+  952,
+  true,
+  true,
+  '{}',
+  '55555555-5555-5555-5555-555555555555'
+)
+on conflict (id) do update
+set status = excluded.status,
+    system_duration = excluded.system_duration,
+    screenshot_duration = excluded.screenshot_duration,
+    claimed_duration = excluded.claimed_duration,
+    settlement_duration = excluded.settlement_duration,
+    time_source = excluded.time_source,
+    evidence_level = excluded.evidence_level,
+    divergence_pct = excluded.divergence_pct,
+    viewers = excluded.viewers,
+    include_in_task_result = excluded.include_in_task_result,
+    enter_settlement_pool = excluded.enter_settlement_pool,
+    risk_flags = excluded.risk_flags,
+    updated_at = now();
+
+insert into public.report_screenshots (
+  id,
+  organization_id,
+  live_report_id,
+  project_id,
+  streamer_id,
+  storage_path,
+  file_hash,
+  uploaded_by,
+  metadata
+) values (
+  '90909090-9090-9090-9090-909090909090',
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  '89898989-8989-8989-8989-898989898989',
+  '99999999-9999-9999-9999-999999999999',
+  'cccccccc-cccc-cccc-cccc-cccccccccccc',
+  'demo/reports/78787878/end-screen.png',
+  'demo-report-hash-78787878',
+  '55555555-5555-5555-5555-555555555555',
+  '{"source":"seed","screenshot_duration":118,"viewers":952}'
+)
+on conflict (organization_id, file_hash) do update
+set live_report_id = excluded.live_report_id,
+    storage_path = excluded.storage_path,
+    metadata = excluded.metadata;
 
 insert into public.auto_review_rules (
   organization_id,
