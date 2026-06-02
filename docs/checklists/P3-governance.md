@@ -4,8 +4,8 @@
 
 - [x] Audit center lists filterable audit logs with role-scoped visibility.
 - [ ] Export center uses field whitelists, sensitivity flags, async placeholders, and export audit logs.
-- [ ] Notification center supports unread / read / handled / ignored transitions and my todos.
-- [ ] Deterministic anomaly scanner covers not started, not reported, overdue report, missing screenshot, and live over 48h.
+- [x] Notification center supports unread / read / handled / ignored transitions and my todos.
+- [x] Deterministic anomaly scanner covers not started, not reported, overdue report, missing screenshot, and live over 48h.
 - [ ] Delivery package DTOs remove price, margin, cost, and internal risk notes.
 
 ## Scope Out
