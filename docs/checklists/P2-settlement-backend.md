@@ -33,6 +33,7 @@
 
 - [x] Unit tests cover engine boundaries, service permissions, duplicate-pool behavior, manual carrying rows, and DTO mapping.
 - [x] Service permission regressions filter cross-organization pool rows and block cross-organization batch generation.
+- [x] API route contracts return 403 for settlement service permission denials.
 - [x] Golden-path regression covers submit report -> approve -> settlement pool -> payable batch -> streamer-safe bill with `pnpm test:golden`.
 - [x] M6 frontend smoke covers the create-batch button, POST payload, batch list update, and settlement-pool removal with `pnpm test:ui-smoke`.
 - [x] Schema contract covers the settlement pool index and finance read-only RLS write boundary.

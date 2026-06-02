@@ -10,6 +10,7 @@
     "lint": "eslint",
     "type-check": "tsc --noEmit",
     "test": "vitest run",
+    "test:api-contracts": "vitest run app/api/api-route-contracts.test.ts",
     "test:golden": "vitest run features/regression/settlement-golden-path.test.ts",
     "test:permissions": "vitest run features/live-operations/live-operations-service.test.ts features/settlements/settlement-service.test.ts",
     "test:ui-smoke": "vitest run components/reference-ui/ops-reference.test.jsx components/reference-ui/streamer-mobile-reference.test.jsx",

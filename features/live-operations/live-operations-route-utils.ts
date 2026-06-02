@@ -4,6 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthContext, type AuthContext } from "@/lib/auth/context";
 import { writeAuditLog } from "@/lib/audit/audit";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import { statusForServiceError } from "@/lib/http/route-error-status";
 import { sendNotification } from "@/lib/notify/notify";
 
 import {
@@ -106,7 +107,10 @@ export function jsonError(error: unknown) {
   }
 
   if (error instanceof Error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+    return NextResponse.json(
+      { error: error.message },
+      { status: statusForServiceError(error) },
+    );
   }
 
   return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
