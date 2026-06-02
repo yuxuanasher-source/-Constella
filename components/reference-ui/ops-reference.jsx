@@ -5890,6 +5890,27 @@ function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {
   };
 }
 
+function toSettlementPoolFromReviewedReport(report, sourceReport) {
+  const settlementDuration = Number(
+    report.settlementDuration ?? (sourceReport?.duration ?? 0) * 60,
+  );
+  const evidenceLevel = report.evidenceLevel ?? "unknown";
+  const timeSource = report.timeSource ?? "unknown";
+
+  return {
+    id: report.id || sourceReport?.id,
+    streamer: sourceReport?.streamer || report.streamerId || "主播",
+    project: sourceReport?.project || report.projectId || "项目",
+    hours: Math.round((settlementDuration / 60) * 10) / 10,
+    evidence: `${evidenceLevel} · ${timeSource}`,
+    rule: "cpt",
+    expected: Math.round((settlementDuration / 60) * 80),
+    approvedAt: formatOpsMinute(
+      report.reviewedAt || report.updatedAt || new Date().toISOString(),
+    ),
+  };
+}
+
 // ===== src\screen-settlement.jsx =====
 // ——— Screen: 结算中心 ————————————————————————————
 
@@ -9926,18 +9947,40 @@ function OpsReferenceInner({
           }),
         });
         if (!response.ok) throw new Error("review report failed");
+        const body = await response.json().catch(() => ({}));
         const status =
           decision === "approve"
             ? "approved"
             : decision === "need_more"
               ? "need_supply"
               : "rejected";
+        const sourceReports = Array.isArray(reportsState)
+          ? reportsState
+          : REPORTS;
+        const sourceReport = sourceReports.find((report) => report.id === id);
         setReportsState((current) => {
           const base = Array.isArray(current) ? current : REPORTS;
           return base.map((report) =>
             report.id === id ? { ...report, status } : report,
           );
         });
+        if (
+          decision === "approve" &&
+          body.report &&
+          body.report.enterSettlementPool !== false
+        ) {
+          const poolItem = toSettlementPoolFromReviewedReport(
+            body.report,
+            sourceReport,
+          );
+          setSettlementPoolState((current) => {
+            const base = Array.isArray(current) ? current : [];
+            return [
+              poolItem,
+              ...base.filter((item) => item.id !== poolItem.id),
+            ];
+          });
+        }
       },
       createSettlementBatch: async (input) => {
         const response = await fetch("/api/settlement-batches", {
@@ -10031,7 +10074,7 @@ function OpsReferenceInner({
         }
       },
     }),
-    [settlementPoolState],
+    [reportsState, settlementPoolState],
   );
 
   const go = (r, arg) => {
