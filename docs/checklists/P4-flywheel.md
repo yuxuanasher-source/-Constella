@@ -7,7 +7,7 @@
 - [x] Pricing calculator returns receivable, payable, supplier cost, gross margin, margin rate, break-even, suggested minimum quote, and risk notes.
 - [x] Streamer matching engine returns score, reasons, risk notes, reference projects, and suggested settlement method.
 - [x] Supplier quality score handles completion, screening pass, margin contribution, anomalies, and blacklist penalties.
-- [ ] Project review report summarizes delivery, finance, best/worst streamers, supplier performance, and next-round recommendations.
+- [x] Project review report summarizes delivery, finance, best/worst streamers, supplier performance, and next-round recommendations.
 - [ ] AI safety layer uses registered read-only tools, writes audit for every query, and never exposes organization finance data to streamers.
 
 ## Scope Out
