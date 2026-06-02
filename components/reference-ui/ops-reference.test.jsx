@@ -45,6 +45,85 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.getByText("p-db-1 · PDB-001")).toBeInTheDocument();
     expect(screen.getAllByText("草稿").length).toBeGreaterThan(0);
   });
+
+  it("opens a visible draft form when creating a project", () => {
+    vi.stubGlobal("prompt", undefined);
+
+    render(<OpsReferenceApp initialRoute="projects" projectCards={[]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "新建项目" }));
+
+    expect(screen.getByLabelText("项目名称")).toBeInTheDocument();
+    expect(screen.getByLabelText("项目编号")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "创建草稿" })).toBeInTheDocument();
+  });
+
+  it("creates a project draft through the backend project API", async () => {
+    const refreshedProject = {
+      id: "project-created",
+      code: "P-NEW",
+      name: "新建草稿项目",
+      vendor: "未填写",
+      product: "新建草稿项目",
+      status: "draft",
+      pricing: "CPT",
+      leadOps: "未分配",
+      streamers: { active: 0, candidate: 0, pendingReview: 0 },
+      metrics: {
+        plannedHours: 0,
+        doneHours: 0,
+        audience: 0,
+        reportedPending: 0,
+        anomalies: 0,
+        receivable: 0,
+        payable: 0,
+        gross: 0,
+        margin: 0,
+      },
+      risk: "low",
+    };
+    const fetchMock = vi.fn(async (url, init) => {
+      if (String(url) === "/api/projects" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ project: { id: "project-created" } }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({ projects: [refreshedProject] }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="projects" projectCards={[]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "新建项目" }));
+    fireEvent.change(screen.getByLabelText("项目名称"), {
+      target: { value: "新建草稿项目" },
+    });
+    fireEvent.change(screen.getByLabelText("项目编号"), {
+      target: { value: "P-NEW" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建草稿" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/projects",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      name: "新建草稿项目",
+      code: "P-NEW",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/projects", undefined);
+    expect((await screen.findAllByText("新建草稿项目")).length).toBeGreaterThan(0);
+  });
 });
 
 describe("OpsReferenceApp streamer smoke", () => {

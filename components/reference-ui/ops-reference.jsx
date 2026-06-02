@@ -3689,12 +3689,52 @@ function ProjectList({ go }) {
   const projects = useOpsProjects();
   const actions = useOpsLiveActions();
   const [status, setStatus] = React.useState("all");
-  const handleCreateProject = async () => {
-    const name = globalThis.prompt?.("项目名称", "新项目草稿");
-    if (!name) return;
-    const code = globalThis.prompt?.("项目编号", `P-${Date.now()}`);
-    if (!code) return;
-    await actions.createProjectDraft?.({ name, code });
+  const [draftOpen, setDraftOpen] = React.useState(false);
+  const [draftName, setDraftName] = React.useState("");
+  const [draftCode, setDraftCode] = React.useState("");
+  const [draftError, setDraftError] = React.useState("");
+  const [draftSubmitting, setDraftSubmitting] = React.useState(false);
+  const draftInputStyle = {
+    width: "100%",
+    height: 32,
+    border: "1px solid var(--line-strong)",
+    borderRadius: 6,
+    background: "#fff",
+    color: "var(--ink-700)",
+    fontSize: 13,
+    outline: "none",
+    padding: "0 10px",
+  };
+  const openDraftForm = () => {
+    setDraftOpen(true);
+    setDraftError("");
+    setDraftName((value) => value || "新项目草稿");
+    setDraftCode((value) => value || `P-${Date.now()}`);
+  };
+  const closeDraftForm = () => {
+    setDraftOpen(false);
+    setDraftError("");
+  };
+  const submitProjectDraft = async (event) => {
+    event.preventDefault();
+    const name = draftName.trim();
+    const code = draftCode.trim();
+    if (!name || !code) {
+      setDraftError("请填写项目名称和项目编号");
+      return;
+    }
+    setDraftSubmitting(true);
+    setDraftError("");
+    try {
+      await actions.createProjectDraft?.({ name, code });
+      setDraftOpen(false);
+      setDraftName("");
+      setDraftCode("");
+    } catch (error) {
+      setDraftError(error?.message || "创建项目失败，请稍后重试");
+    } finally {
+      setDraftSubmitting(false);
+    }
   };
   const counts = {
     all: projects.length,
@@ -3720,7 +3760,7 @@ function ProjectList({ go }) {
             <Button
               kind="primary"
               icon={<Icon.Plus size={14} stroke="#fff" />}
-              onClick={handleCreateProject}
+              onClick={openDraftForm}
             >
               新建项目
             </Button>
@@ -3787,6 +3827,96 @@ function ProjectList({ go }) {
               个项目
             </span>
           </div>
+
+          {draftOpen ? (
+            <form
+              onSubmit={submitProjectDraft}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(180px, 1.2fr) minmax(160px, 0.8fr) auto",
+                alignItems: "end",
+                gap: 12,
+                padding: "12px 16px",
+                borderBottom: "1px solid var(--line)",
+                background: "var(--bg-soft)",
+              }}
+            >
+              <label
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                  fontWeight: 600,
+                }}
+              >
+                项目名称
+                <input
+                  value={draftName}
+                  onChange={(event) => setDraftName(event.target.value)}
+                  placeholder="例如：原神 4.7 版本品宣"
+                  style={draftInputStyle}
+                />
+              </label>
+              <label
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                  fontWeight: 600,
+                }}
+              >
+                项目编号
+                <input
+                  value={draftCode}
+                  onChange={(event) => setDraftCode(event.target.value)}
+                  placeholder="例如：P-2406"
+                  style={draftInputStyle}
+                />
+              </label>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "flex-end",
+                  gap: 8,
+                }}
+              >
+                <Button
+                  kind="default"
+                  type="button"
+                  onClick={closeDraftForm}
+                  disabled={draftSubmitting}
+                >
+                  取消
+                </Button>
+                <Button
+                  kind="primary"
+                  type="submit"
+                  disabled={draftSubmitting}
+                  icon={<Icon.Plus size={14} stroke="#fff" />}
+                >
+                  {draftSubmitting ? "创建中" : "创建草稿"}
+                </Button>
+              </div>
+              {draftError ? (
+                <div
+                  aria-live="polite"
+                  style={{
+                    gridColumn: "1 / -1",
+                    color: "var(--danger-600)",
+                    fontSize: 12,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {draftError}
+                </div>
+              ) : null}
+            </form>
+          ) : null}
 
           <DataTable
             columns={[
