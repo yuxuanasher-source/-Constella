@@ -297,6 +297,7 @@ describe("OpsReferenceApp live task smoke", () => {
   });
 
   it("creates an ops live task then refreshes the M4 task queue", async () => {
+    const todayKey = new Date().toISOString().slice(0, 10);
     const refreshedTask = {
       id: "task-ui-created",
       title: "Golden Project · 冷江",
@@ -305,8 +306,8 @@ describe("OpsReferenceApp live task smoke", () => {
       projectName: "Golden Project",
       streamerId: "S-001",
       streamerName: "冷江",
-      plannedStartAt: "2026-05-27T12:00:00.000Z",
-      plannedEndAt: "2026-05-27T15:30:00.000Z",
+      plannedStartAt: `${todayKey}T12:00:00.000Z`,
+      plannedEndAt: `${todayKey}T15:30:00.000Z`,
       plannedDuration: 210,
       systemDuration: 0,
     };
@@ -350,8 +351,8 @@ describe("OpsReferenceApp live task smoke", () => {
       projectId: "project-live",
       streamerId: "streamer-one",
       title: "Fixture Project · Streamer One",
-      plannedStartAt: "2026-05-27T12:00:00.000Z",
-      plannedEndAt: "2026-05-27T15:30:00.000Z",
+      plannedStartAt: `${todayKey}T12:00:00.000Z`,
+      plannedEndAt: `${todayKey}T15:30:00.000Z`,
       plannedDuration: 210,
       note: "经营端页面创建任务",
     });
@@ -1259,5 +1260,102 @@ describe("OpsReferenceApp war room smoke", () => {
     );
     expect(await screen.findByText("11,250.00 元")).toBeInTheDocument();
     expect(screen.getByText("margin_below_target")).toBeInTheDocument();
+  });
+});
+
+describe("OpsReferenceApp billing smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("renders M11 billing status and refreshes it through the billing API", async () => {
+    const initialBilling = {
+      subscriptionStatus: "past_due",
+      mode: "read_only",
+      plan: { tier: "pro", code: "pro", name: "专业版" },
+      entitlements: {
+        project_management: true,
+        settlement: true,
+        export_center: true,
+        war_room: true,
+        auto_review_shadow: true,
+        auto_review_active: false,
+        ai_diagnosis: true,
+        vendor_portal: false,
+        private_deployment: false,
+      },
+      usage: [
+        {
+          metric: "export",
+          usedQuantity: 130,
+          includedQuantity: 100,
+          addonQuantity: 20,
+          allowanceQuantity: 120,
+          remainingQuantity: 0,
+          overageQuantity: 10,
+          billableOverageQuantity: 10,
+          softOverage: true,
+          shouldHardBlock: false,
+        },
+      ],
+    };
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/billing/status") {
+        return {
+          ok: true,
+          json: async () => ({
+            billing: {
+              ...initialBilling,
+              subscriptionStatus: "active",
+              mode: "active",
+              plan: { tier: "enterprise", code: "enterprise", name: "企业版" },
+              usage: [
+                {
+                  metric: "ai",
+                  usedQuantity: 30,
+                  includedQuantity: 100,
+                  addonQuantity: 20,
+                  allowanceQuantity: 120,
+                  remainingQuantity: 90,
+                  overageQuantity: 0,
+                  billableOverageQuantity: 0,
+                  softOverage: true,
+                  shouldHardBlock: false,
+                },
+              ],
+            },
+          }),
+        };
+      }
+
+      return {
+        ok: false,
+        json: async () => ({ error: "unexpected request" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp initialRoute="billing" billingStatus={initialBilling} />,
+    );
+
+    expect(screen.getAllByText("商业化与套餐").length).toBeGreaterThan(0);
+    expect(screen.getByText("专业版")).toBeInTheDocument();
+    expect(screen.getByText("只读模式")).toBeInTheDocument();
+    expect(screen.getAllByText("导出中心").length).toBeGreaterThan(0);
+    expect(screen.getByText("10")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新账务状态" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/billing/status",
+        expect.objectContaining({ method: "GET" }),
+      ),
+    );
+    expect(await screen.findByText("企业版")).toBeInTheDocument();
+    expect(screen.getAllByText("活跃").length).toBeGreaterThan(0);
+    expect(screen.getByText("AI 调用")).toBeInTheDocument();
   });
 });

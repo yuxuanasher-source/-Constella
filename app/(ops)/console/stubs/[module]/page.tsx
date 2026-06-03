@@ -4,6 +4,7 @@ import {
   listAuditCenterEntries,
   type AuditQueryClient,
 } from "@/features/audit-center/audit-center-queries";
+import { getBillingStatus } from "@/features/billing/billing-status";
 import {
   listNotificationCenterItems,
   type NotificationQueryClient,
@@ -51,6 +52,7 @@ export default async function StubPage({
     applicationQueue,
     auditEntries,
     notificationItems,
+    billingStatus,
   } = await loadLiveReferenceData(module);
   const route = routeForOpsModule(module);
 
@@ -67,6 +69,7 @@ export default async function StubPage({
       applicationQueue={applicationQueue}
       auditEntries={auditEntries}
       notificationItems={notificationItems}
+      billingStatus={billingStatus}
     />
   );
 }
@@ -147,6 +150,14 @@ async function loadLiveReferenceData(module: string) {
       organizationId: auth.organizationId,
     });
     return { notificationItems: items };
+  }
+
+  if (module === "m11") {
+    const billingStatus = await getBillingStatus({
+      client: supabase,
+      organizationId: auth.organizationId,
+    });
+    return { billingStatus };
   }
 
   return {};

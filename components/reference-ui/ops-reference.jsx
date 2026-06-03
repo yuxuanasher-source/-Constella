@@ -827,21 +827,45 @@ const AUDIT_LOG_RECENT = [];
 
 // ——— Tasks / Schedule —————————————————————————————
 
-// Week range: 2026-05-25 (Mon) ~ 2026-05-31 (Sun). "today" = 2026-05-27 Wed.
-const SCHEDULE_WEEK = {
-  start: "2026-05-25",
-  end: "2026-05-31",
-  todayIdx: 2, // Wed
-  days: [
-    { label: "周一", date: "05-25" },
-    { label: "周二", date: "05-26" },
-    { label: "周三", date: "05-27", today: true },
-    { label: "周四", date: "05-28" },
-    { label: "周五", date: "05-29" },
-    { label: "周六", date: "05-30" },
-    { label: "周日", date: "05-31" },
-  ],
-};
+const SCHEDULE_WEEK = createScheduleWeek();
+
+function createScheduleWeek(today = new Date()) {
+  const start = new Date(today);
+  const day = today.getDay();
+  const todayIdx = day === 0 ? 6 : day - 1;
+  start.setDate(today.getDate() - todayIdx);
+  const labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+  const days = labels.map((label, index) => {
+    const current = new Date(start);
+    current.setDate(start.getDate() + index);
+    return {
+      label,
+      date: formatScheduleDate(current),
+      today: index === todayIdx,
+    };
+  });
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return {
+    start: formatDateKey(start),
+    end: formatDateKey(end),
+    todayIdx,
+    days,
+  };
+}
+
+function formatDateKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
+    2,
+    "0",
+  )}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function formatScheduleDate(date) {
+  return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")}`;
+}
 
 // Tasks: each row = one streamer, with tasks placed by day.
 // startHour / endHour are 0-24. status: 'completed' | 'live' | 'pending_report' | 'pending_review' | 'pending_live' | 'abnormal' | 'cancelled'
@@ -1138,6 +1162,7 @@ const NAV = [
   { key: "tasks", label: "排班与任务", icon: "Tasks", count: 3 },
   { key: "reports", label: "报数审核", icon: "Reports", count: 7 },
   { key: "settle", label: "结算中心", icon: "Money" },
+  { key: "billing", label: "商业化与套餐", icon: "Money" },
   { divider: true },
   { key: "export", label: "数据导出", icon: "Export" },
   { key: "audit", label: "操作日志", icon: "Audit" },
@@ -2886,7 +2911,9 @@ function buildWarRoomPricingInput({
 }
 
 function buildWarRoomMatchingInput(streamers = STREAMERS) {
-  const streamerRows = streamers.length ? streamers : WAR_ROOM_FALLBACK_STREAMERS;
+  const streamerRows = streamers.length
+    ? streamers
+    : WAR_ROOM_FALLBACK_STREAMERS;
   const supplierRows = SUPPLIER_SCORES.length
     ? SUPPLIER_SCORES
     : WAR_ROOM_FALLBACK_SUPPLIERS;
@@ -2907,8 +2934,7 @@ function buildWarRoomMatchingInput(streamers = STREAMERS) {
       completionRateBps: (streamer.metrics?.projectFinish ?? 80) * 100,
       screeningPassRateBps: (streamer.metrics?.screenPass ?? 80) * 100,
       roiBps: Math.round((streamer.metrics?.roi ?? 1) * 10000),
-      grossMarginContributionCents:
-        (streamer.metrics?.grossContrib ?? 0) * 100,
+      grossMarginContributionCents: (streamer.metrics?.grossContrib ?? 0) * 100,
       riskTags:
         streamer.risk === "low"
           ? []
@@ -2939,7 +2965,9 @@ function buildWarRoomMatchingInput(streamers = STREAMERS) {
 
 function buildWarRoomReviewInput(projects = PROJECTS, streamers = STREAMERS) {
   const project = projects[0] ?? WAR_ROOM_FALLBACK_PROJECT;
-  const streamerRows = streamers.length ? streamers : WAR_ROOM_FALLBACK_STREAMERS;
+  const streamerRows = streamers.length
+    ? streamers
+    : WAR_ROOM_FALLBACK_STREAMERS;
 
   return {
     project: {
@@ -2964,8 +2992,7 @@ function buildWarRoomReviewInput(projects = PROJECTS, streamers = STREAMERS) {
       totalViews: 40000 + index * 12000,
       completionRateBps: (streamer.metrics?.projectFinish ?? 80) * 100,
       roiBps: Math.round((streamer.metrics?.roi ?? 1) * 10000),
-      grossMarginContributionCents:
-        (streamer.metrics?.grossContrib ?? 0) * 100,
+      grossMarginContributionCents: (streamer.metrics?.grossContrib ?? 0) * 100,
       anomalyCount: streamer.risk === "low" ? 0 : 1,
       disputeCount: streamer.risk === "high" ? 1 : 0,
     })),
@@ -6649,7 +6676,7 @@ function ScreenTasks({ go }) {
         "主播 ID，逗号分隔",
         streamers.map((streamer) => streamer.id).join(","),
       );
-      const dateKey = askText("排班日期 YYYY-MM-DD", "2026-05-27");
+      const dateKey = askText("排班日期 YYYY-MM-DD", formatDateKey(new Date()));
       const startTime = askText("开始时间 HH:mm", "20:00");
       const endTime = askText("结束时间 HH:mm", "23:30");
       if (!projectId || !streamerIds || !dateKey || !startTime || !endTime) {
@@ -6736,7 +6763,7 @@ function ScreenTasks({ go }) {
               label="今日任务"
               value={todayCount}
               unit="个"
-              hint="周三 05-27"
+              hint={SCHEDULE_WEEK.days[SCHEDULE_WEEK.todayIdx]?.date ?? "本周"}
             />
           </Card>
           <Card>
@@ -7983,19 +8010,19 @@ function TaskDrawer({
           <Timeline
             events={[
               {
-                time: "05-25 11:02",
+                time: "已创建",
                 who: "系统",
                 action: "排班创建",
                 done: true,
               },
               {
-                time: "05-27 19:58",
+                time: statusKey === "pending_live" ? "待开播" : "已开播",
                 who: streamerName,
                 action: "点击开始直播",
                 done: statusKey !== "pending_live",
               },
               {
-                time: statusKey === "live" ? "进行中…" : "05-27 22:48",
+                time: statusKey === "live" ? "进行中…" : "已结束",
                 who: streamerName,
                 action: "点击停止 + 上传下播截图",
                 done: [
@@ -8791,8 +8818,8 @@ function ScreenOrg({ go }) {
               <div
                 style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 4 }}
               >
-                <span className="mono">org_galaxy_001</span> · 杭州市余杭区 ·
-                MCN 经营舱 v1.2 · 创建于 2025-08-12
+                <span className="mono">{ORG.id || "组织编号待配置"}</span> ·{" "}
+                {ORG.name || "组织名称待配置"} · MCN 经营舱
               </div>
             </div>
             <Button kind="default" icon={<Icon.Settings size={14} />}>
@@ -10665,6 +10692,257 @@ function notificationStatusTone(status) {
   return "amber";
 }
 
+function ScreenBilling({ billingStatus, onRefresh }) {
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const usageRows = billingStatus?.usage ?? [];
+  const entitlementRows = Object.entries(billingStatus?.entitlements ?? {}).map(
+    ([key, enabled]) => ({
+      key,
+      label: BILLING_FEATURE_LABELS[key] ?? key,
+      enabled,
+    }),
+  );
+
+  const refresh = async () => {
+    if (!onRefresh || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onRefresh();
+    } catch (refreshError) {
+      setError(
+        refreshError instanceof Error
+          ? refreshError.message
+          : "刷新账务状态失败",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        title="商业化与套餐"
+        subtitle="组织套餐、功能权益与用量状态统一由账务服务返回"
+        actions={
+          <Button kind="primary" onClick={refresh} disabled={busy}>
+            {busy ? "刷新中…" : "刷新账务状态"}
+          </Button>
+        }
+      />
+
+      <div
+        style={{
+          padding: 20,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        {!billingStatus ? (
+          <Card>
+            <EmptyHint
+              title="暂无账务状态"
+              hint="点击刷新后从账务服务读取当前组织的套餐、权益和用量。"
+              actionLabel="刷新账务状态"
+              onAction={refresh}
+            />
+          </Card>
+        ) : (
+          <>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+                gap: 12,
+              }}
+            >
+              <Card>
+                <Metric
+                  label="当前套餐"
+                  value={billingPlanName(billingStatus.plan)}
+                  hint={billingStatus.plan.code}
+                />
+              </Card>
+              <Card>
+                <Metric
+                  label="订阅状态"
+                  value={billingStatusLabel(billingStatus.subscriptionStatus)}
+                  hint={billingStatus.subscriptionStatus}
+                />
+              </Card>
+              <Card>
+                <Metric
+                  label="账务模式"
+                  value={billingModeLabel(billingStatus.mode)}
+                  hint={
+                    billingStatus.mode === "read_only"
+                      ? "写入动作会被套餐闸口拦截"
+                      : "写入动作按权益放行"
+                  }
+                />
+              </Card>
+              <Card>
+                <Metric
+                  label="已开权益"
+                  value={String(
+                    entitlementRows.filter((row) => row.enabled).length,
+                  )}
+                  unit="项"
+                  hint={`${entitlementRows.length} 项可配置能力`}
+                />
+              </Card>
+            </div>
+
+            {billingStatus.mode === "read_only" && (
+              <Card>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    color: "var(--danger-700)",
+                    fontSize: 13,
+                    fontWeight: 600,
+                  }}
+                >
+                  <Icon.Warn size={16} stroke="var(--danger-600)" />
+                  只读模式：逾期、只读或取消状态下，写入型经营动作会由账务闸口拦截。
+                </div>
+              </Card>
+            )}
+
+            <Card title="功能权益" padded={false}>
+              <DataTable
+                columns={[
+                  {
+                    title: "能力",
+                    render: (row) => (
+                      <div>
+                        <div
+                          style={{ fontWeight: 600, color: "var(--ink-900)" }}
+                        >
+                          {row.label}
+                        </div>
+                        <div
+                          className="mono"
+                          style={{ fontSize: 11, color: "var(--ink-400)" }}
+                        >
+                          {row.key}
+                        </div>
+                      </div>
+                    ),
+                  },
+                  {
+                    title: "状态",
+                    render: (row) => (
+                      <Badge tone={row.enabled ? "green" : "neutral"} dot>
+                        {row.enabled ? "已开通" : "未开通"}
+                      </Badge>
+                    ),
+                  },
+                ]}
+                rows={entitlementRows}
+              />
+            </Card>
+
+            <Card title="本月用量" padded={false}>
+              <DataTable
+                columns={[
+                  {
+                    title: "指标",
+                    render: (row) => (
+                      <div>
+                        <div
+                          style={{ fontWeight: 600, color: "var(--ink-900)" }}
+                        >
+                          {BILLING_METRIC_LABELS[row.metric] ?? row.metric}
+                        </div>
+                        <div
+                          className="mono"
+                          style={{ fontSize: 11, color: "var(--ink-400)" }}
+                        >
+                          {row.metric}
+                        </div>
+                      </div>
+                    ),
+                  },
+                  { title: "已用", render: (row) => row.usedQuantity },
+                  { title: "套餐内", render: (row) => row.includedQuantity },
+                  { title: "加购", render: (row) => row.addonQuantity },
+                  { title: "剩余", render: (row) => row.remainingQuantity },
+                  {
+                    title: "超额",
+                    render: (row) => (
+                      <Badge tone={row.overageQuantity > 0 ? "amber" : "green"}>
+                        {row.overageQuantity}
+                      </Badge>
+                    ),
+                  },
+                ]}
+                rows={usageRows}
+              />
+            </Card>
+          </>
+        )}
+
+        {error && (
+          <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+            {error}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+const BILLING_FEATURE_LABELS = {
+  project_management: "项目管理",
+  settlement: "结算中心",
+  export_center: "导出中心",
+  war_room: "智能作战台",
+  auto_review_shadow: "自动审核影子模式",
+  auto_review_active: "自动审核正式模式",
+  ai_diagnosis: "AI 诊断",
+  vendor_portal: "厂家门户",
+  private_deployment: "私有化部署",
+};
+
+const BILLING_METRIC_LABELS = {
+  active_streamer: "活跃主播",
+  seat: "席位",
+  ocr: "OCR 识别",
+  ai: "AI 调用",
+  storage_mb: "存储 MB",
+  export: "导出中心",
+};
+
+function billingPlanName(plan) {
+  const labels = {
+    free: "免费版",
+    pro: "专业版",
+    enterprise: "企业版",
+  };
+  return labels[plan?.code] ?? plan?.name ?? "未配置套餐";
+}
+
+function billingStatusLabel(status) {
+  const labels = {
+    trialing: "试用中",
+    active: "活跃",
+    past_due: "逾期",
+    readonly: "只读",
+    cancelled: "已取消",
+  };
+  return labels[status] ?? status ?? "未知";
+}
+
+function billingModeLabel(mode) {
+  return mode === "read_only" ? "只读模式" : "活跃";
+}
+
 function sampleExportRows(kind) {
   if (kind === "audit_logs") {
     return [{ module: "settlement", action: "lock" }];
@@ -10705,11 +10983,12 @@ function OpsReferenceInner({
   settlementScope,
   auditEntries,
   notificationItems,
+  billingStatus,
   projectCards,
   streamerCards,
   applicationQueue,
 }) {
-  // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'export' | 'audit' | 'org'
+  // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'billing' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
@@ -10727,6 +11006,9 @@ function OpsReferenceInner({
   );
   const [notificationItemsState, setNotificationItemsState] = React.useState(
     notificationItems ?? null,
+  );
+  const [billingStatusState, setBillingStatusState] = React.useState(
+    billingStatus ?? null,
   );
   const [projectsState, setProjectsState] = React.useState(
     projectCards ?? null,
@@ -10765,6 +11047,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setNotificationItemsState(notificationItems ?? null);
   }, [notificationItems]);
+
+  React.useEffect(() => {
+    setBillingStatusState(billingStatus ?? null);
+  }, [billingStatus]);
 
   React.useEffect(() => {
     setProjectsState(projectCards ?? null);
@@ -10886,6 +11172,20 @@ function OpsReferenceInner({
       if (Array.isArray(body.items)) {
         setNotificationItemsState(body.items);
       }
+    };
+
+    const refreshBillingStatus = async () => {
+      const body = await fetchJson(
+        "/api/billing/status",
+        "refresh billing failed",
+        {
+          method: "GET",
+        },
+      );
+      if (body.billing) {
+        setBillingStatusState(body.billing);
+      }
+      return body.billing;
     };
 
     const refreshProjects = async () => {
@@ -11101,6 +11401,7 @@ function OpsReferenceInner({
       },
       refreshAuditEntries,
       refreshNotifications,
+      refreshBillingStatus,
       updateNotificationStatus: async (id, action) => {
         await fetchJson(
           `/api/notifications/${id}`,
@@ -11162,6 +11463,8 @@ function OpsReferenceInner({
         return ["执行", "报数审核"];
       case "settle":
         return ["财务", "结算中心"];
+      case "billing":
+        return ["财务", "商业化与套餐"];
       case "export":
         return ["运营", "数据导出"];
       case "audit":
@@ -11220,6 +11523,12 @@ function OpsReferenceInner({
             {route === "tasks" && <ScreenTasks go={go} />}
             {route === "reports" && <ScreenReports go={go} />}
             {route === "settle" && <ScreenSettlement go={go} />}
+            {route === "billing" && (
+              <ScreenBilling
+                billingStatus={billingStatusState}
+                onRefresh={actions.refreshBillingStatus}
+              />
+            )}
             {route === "audit" && <ScreenAudit go={go} />}
             {route === "notifications" && <ScreenNotifications go={go} />}
             {route === "org" && <ScreenOrg go={go} />}
@@ -11406,7 +11715,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[] }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; billingStatus?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -11418,6 +11727,7 @@ export default function OpsReferenceApp({
   settlementScope,
   auditEntries,
   notificationItems,
+  billingStatus,
   projectCards,
   streamerCards,
   applicationQueue,
@@ -11433,6 +11743,7 @@ export default function OpsReferenceApp({
       settlementScope={settlementScope}
       auditEntries={auditEntries}
       notificationItems={notificationItems}
+      billingStatus={billingStatus}
       projectCards={projectCards}
       streamerCards={streamerCards}
       applicationQueue={applicationQueue}
