@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:api-contracts": "vitest run app/api/api-route-contracts.test.ts",
     "test:api-integration-smoke": "node scripts/api-integration-smoke.mjs",
+    "test:manual-acceptance-smoke": "node scripts/manual-acceptance-smoke.mjs",
     "test:dto-contracts": "vitest run features/dto-contracts/api-dto-contract.test.ts",
     "test:golden": "vitest run features/regression/settlement-golden-path.test.ts",
     "test:p3-governance": "vitest run features/audit-center features/notifications features/anomalies features/exports features/delivery-packages features/regression/governance-golden-path.test.ts",

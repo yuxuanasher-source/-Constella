@@ -85,6 +85,57 @@ describe("OpsReferenceApp project smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  it("does not show sidebar or notification badges when live queues are empty", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={[]}
+        liveTasks={[]}
+        liveReports={[]}
+        notificationItems={[]}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /排班与任务/ }),
+    ).not.toHaveTextContent("3");
+    expect(
+      screen.getByRole("button", { name: /报数审核/ }),
+    ).not.toHaveTextContent("7");
+    expect(screen.getByLabelText("通知")).not.toHaveTextContent(/\d/);
+  });
+
+  it("shows sidebar and notification badges from live queue data", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={[]}
+        liveTasks={[
+          { id: "task-live", status: "live" },
+          { id: "task-report", status: "pending_report" },
+          { id: "task-done", status: "completed" },
+        ]}
+        liveReports={[
+          { id: "report-review", status: "pending_review" },
+          { id: "report-supply", status: "need_supply" },
+          { id: "report-approved", status: "approved" },
+        ]}
+        notificationItems={[
+          { id: "notice-unread", status: "unread" },
+          { id: "notice-read", status: "read" },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /排班与任务/ }),
+    ).toHaveTextContent("2");
+    expect(screen.getByRole("button", { name: /报数审核/ })).toHaveTextContent(
+      "2",
+    );
+    expect(screen.getByLabelText("通知，1 条未读")).toHaveTextContent("1");
+  });
+
   it("renders backend project cards when project data is provided", () => {
     render(
       <OpsReferenceApp

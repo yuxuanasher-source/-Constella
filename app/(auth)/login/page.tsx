@@ -25,7 +25,7 @@ export default async function LoginPage({
             登录经营舱
           </h1>
           <p className="mt-2 text-sm leading-6 text-[var(--ink-500)]">
-            使用 seed 账号进入不同角色视角。演示密码均为 Password123!
+            请输入已开通的账号和密码进入系统。
           </p>
         </div>
 
@@ -43,7 +43,6 @@ export default async function LoginPage({
             <input
               name="email"
               type="email"
-              defaultValue="owner@jy-demo.local"
               className="mt-2 h-10 w-full rounded-md border border-[var(--line)] px-3 text-sm outline-none focus:border-[var(--blue-500)]"
               required
             />
@@ -53,7 +52,6 @@ export default async function LoginPage({
             <input
               name="password"
               type="password"
-              defaultValue="Password123!"
               className="mt-2 h-10 w-full rounded-md border border-[var(--line)] px-3 text-sm outline-none focus:border-[var(--blue-500)]"
               required
             />
@@ -62,14 +60,6 @@ export default async function LoginPage({
             登录
           </Button>
         </form>
-
-        <div className="mt-6 grid gap-2 text-xs text-[var(--ink-500)]">
-          <span>owner@jy-demo.local</span>
-          <span>ops@jy-demo.local</span>
-          <span>operator@jy-demo.local</span>
-          <span>finance@jy-demo.local</span>
-          <span>streamer@jy-demo.local</span>
-        </div>
       </section>
     </main>
   );

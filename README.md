@@ -18,15 +18,7 @@ pnpm dev
 - 主播 App 外壳：`http://localhost:3000/m/tasks`
 - 主播桌面外壳：`http://localhost:3000/desktop`
 
-本地 seed 账号密码均为 `Password123!`：
-
-```text
-owner@jy-demo.local
-ops@jy-demo.local
-operator@jy-demo.local
-finance@jy-demo.local
-streamer@jy-demo.local
-```
+本地库不再随源码写入演示账号或业务样例数据。请通过 Supabase Auth / 后台流程创建真实测试账号。
 
 ## 常用命令
 
@@ -39,7 +31,7 @@ pnpm build
 pnpm supabase:migrate
 ```
 
-`pnpm supabase:migrate` 当前映射到 `supabase db reset`，会按迁移重建本地库并重复执行 `supabase/seed.sql`。
+`pnpm supabase:migrate` 当前映射到 `supabase db reset`，会按迁移重建本地库；`supabase/seed.sql` 保持为空，避免演示数据进入项目源码。
 
 ## 目录约定
 
@@ -57,7 +49,7 @@ lib/audit/                   统一审计写服务
 lib/notify/                  站内通知底座
 lib/db/                      Supabase client 与数据库契约测试
 supabase/migrations/         数据库迁移，包含枚举、RLS、函数、视图
-supabase/seed.sql            可重复 seed 数据
+supabase/seed.sql            空 seed，占位用于本地自定义数据
 ```
 
 ## 架构边界

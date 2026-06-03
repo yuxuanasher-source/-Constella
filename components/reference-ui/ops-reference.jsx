@@ -1159,8 +1159,8 @@ const NAV = [
   { key: "projects", label: "项目管理", icon: "Project" },
   { key: "streamers", label: "主播资源池", icon: "Streamer" },
   { key: "admission", label: "选播准入", icon: "Eye" },
-  { key: "tasks", label: "排班与任务", icon: "Tasks", count: 3 },
-  { key: "reports", label: "报数审核", icon: "Reports", count: 7 },
+  { key: "tasks", label: "排班与任务", icon: "Tasks" },
+  { key: "reports", label: "报数审核", icon: "Reports" },
   { key: "settle", label: "结算中心", icon: "Money" },
   { key: "billing", label: "商业化与套餐", icon: "Money" },
   { divider: true },
@@ -1169,7 +1169,7 @@ const NAV = [
   { key: "org", label: "组织与权限", icon: "Settings" },
 ];
 
-function Sidebar({ route, onNav }) {
+function Sidebar({ route, onNav, navCounts = {} }) {
   return (
     <aside
       style={{
@@ -1305,6 +1305,7 @@ function Sidebar({ route, onNav }) {
           }
           const active = it.key === route;
           const IconComp = Icon[it.icon];
+          const count = navCounts[it.key] ?? 0;
           return (
             <button
               key={it.key}
@@ -1351,7 +1352,7 @@ function Sidebar({ route, onNav }) {
                 stroke={active ? "var(--blue-700)" : "var(--ink-400)"}
               />
               <span style={{ flex: 1, textAlign: "left" }}>{it.label}</span>
-              {it.count != null && (
+              {count > 0 && (
                 <span
                   style={{
                     fontSize: 11,
@@ -1366,7 +1367,7 @@ function Sidebar({ route, onNav }) {
                     minWidth: 16,
                   }}
                 >
-                  {it.count}
+                  {formatBadgeCount(count)}
                 </span>
               )}
               {it.accent && !active && (
@@ -1432,7 +1433,8 @@ function Sidebar({ route, onNav }) {
   );
 }
 
-function TopBar({ breadcrumbs = [], extra }) {
+function TopBar({ breadcrumbs = [], notificationCount = 0, extra }) {
+  const hasUnreadNotifications = notificationCount > 0;
   return (
     <div
       style={{
@@ -1479,6 +1481,9 @@ function TopBar({ breadcrumbs = [], extra }) {
 
       {/* Notification bell */}
       <button
+        aria-label={
+          hasUnreadNotifications ? `通知，${notificationCount} 条未读` : "通知"
+        }
         style={{
           position: "relative",
           width: 34,
@@ -1495,32 +1500,55 @@ function TopBar({ breadcrumbs = [], extra }) {
         }}
       >
         <Icon.Bell size={16} />
-        <span
-          style={{
-            position: "absolute",
-            top: 5,
-            right: 5,
-            minWidth: 14,
-            height: 14,
-            borderRadius: 999,
-            background: "var(--danger-600)",
-            color: "#fff",
-            fontSize: 10,
-            fontWeight: 600,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "0 3px",
-            border: "1.5px solid #fff",
-          }}
-        >
-          5
-        </span>
+        {hasUnreadNotifications && (
+          <span
+            style={{
+              position: "absolute",
+              top: 5,
+              right: 5,
+              minWidth: 14,
+              height: 14,
+              borderRadius: 999,
+              background: "var(--danger-600)",
+              color: "#fff",
+              fontSize: 10,
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "0 3px",
+              border: "1.5px solid #fff",
+            }}
+          >
+            {formatBadgeCount(notificationCount)}
+          </span>
+        )}
       </button>
 
       {extra}
     </div>
   );
+}
+
+function formatBadgeCount(count) {
+  return count > 99 ? "99+" : count;
+}
+
+function countActionableTasks(tasks) {
+  return tasks.filter((task) => {
+    if (task?.anomaly) return true;
+    return ["live", "pending_report", "pending_review"].includes(task?.status);
+  }).length;
+}
+
+function countActionableReports(reports) {
+  return reports.filter((report) =>
+    ["pending_review", "need_supply"].includes(report?.status),
+  ).length;
+}
+
+function countUnreadNotifications(notificationItems) {
+  return notificationItems.filter((item) => item?.status === "unread").length;
 }
 
 // Generic page header (under top bar) — title + subtitle + actions
@@ -1575,6 +1603,37 @@ function PageHeader({ title, subtitle, status, actions }) {
 
 function ScreenWarRoom({ go }) {
   const [tab, setTab] = React.useState("overview");
+  const projects = useOpsProjects();
+  const tasks = useOpsTasks();
+  const reports = useOpsReports();
+  const activeProjects = projects.filter((project) =>
+    ["active", "recruiting", "settling"].includes(project.status),
+  );
+  const highRiskProjects = projects.filter(
+    (project) => project.risk === "high",
+  );
+  const totalDoneHours = projects.reduce(
+    (sum, project) => sum + (project.metrics?.doneHours ?? 0),
+    0,
+  );
+  const totalReceivable = projects.reduce(
+    (sum, project) => sum + (project.metrics?.receivable ?? 0),
+    0,
+  );
+  const totalGross = projects.reduce(
+    (sum, project) => sum + (project.metrics?.gross ?? 0),
+    0,
+  );
+  const grossMargin =
+    totalReceivable > 0 ? (totalGross / totalReceivable) * 100 : 0;
+  const pendingReportCount = countActionableReports(reports);
+  const anomalyCount =
+    tasks.filter((task) => task?.anomaly).length +
+    projects.reduce(
+      (sum, project) => sum + (project.metrics?.anomalies ?? 0),
+      0,
+    );
+  const pendingActionCount = pendingReportCount + anomalyCount;
 
   return (
     <>
@@ -1640,46 +1699,48 @@ function ScreenWarRoom({ go }) {
             />
             <Metric
               label="进行中项目"
-              value="4"
+              value={String(activeProjects.length)}
               unit="个"
-              delta="本周 +1"
-              hint="3 个达标、1 个高风险"
+              hint={
+                highRiskProjects.length > 0
+                  ? `${highRiskProjects.length} 个高风险`
+                  : "暂无高风险项目"
+              }
             />
           </Card>
           <Card>
             <Metric
               label="本周直播时长"
-              value="386.5"
+              value={totalDoneHours.toFixed(1)}
               unit="h"
-              delta="+18.4%"
-              hint="较上周"
+              hint="按当前项目数据汇总"
             />
           </Card>
           <Card>
             <Metric
               label="本周厂家应收"
-              value="¥126,400"
-              delta="+¥21,200"
-              hint="较上周"
+              value={`¥${totalReceivable.toLocaleString("zh-CN")}`}
+              hint="按当前项目数据汇总"
             />
           </Card>
           <Card>
             <Metric
               label="预估毛利率"
-              value="32.6"
+              value={grossMargin.toFixed(1)}
               unit="%"
-              delta="-1.4 pt"
-              deltaTone="red"
-              hint="较上月"
+              hint={totalReceivable > 0 ? "毛利率" : "暂无应收数据"}
             />
           </Card>
           <Card>
             <Metric
               label="待处理事项"
-              value="11"
+              value={String(pendingActionCount)}
               unit="项"
-              delta=""
-              hint="审核 7 · 异常 4"
+              hint={
+                pendingActionCount > 0
+                  ? `审核 ${pendingReportCount} · 异常 ${anomalyCount}`
+                  : "暂无待处理事项"
+              }
               accent={
                 <span
                   style={{
@@ -1704,7 +1765,7 @@ function ScreenWarRoom({ go }) {
               onChange={setTab}
               items={[
                 { key: "overview", label: "执行总览" },
-                { key: "matching", label: "主播匹配引擎", count: 4 },
+                { key: "matching", label: "主播匹配引擎" },
                 { key: "supplier", label: "供应商质量" },
                 { key: "pricing", label: "报价 & 测算" },
               ]}
@@ -11479,6 +11540,15 @@ function OpsReferenceInner({
   })();
 
   const navKey = route === "project" ? "projects" : route;
+  const navCounts = {
+    tasks: countActionableTasks(Array.isArray(tasksState) ? tasksState : TASKS),
+    reports: countActionableReports(
+      Array.isArray(reportsState) ? reportsState : REPORTS,
+    ),
+  };
+  const unreadNotificationCount = countUnreadNotifications(
+    Array.isArray(notificationItemsState) ? notificationItemsState : [],
+  );
 
   return (
     <OpsLiveDataContext.Provider
@@ -11500,7 +11570,7 @@ function OpsReferenceInner({
       <div
         style={{ display: "flex", minHeight: "100vh", background: "var(--bg)" }}
       >
-        <Sidebar route={navKey} onNav={go} />
+        <Sidebar route={navKey} onNav={go} navCounts={navCounts} />
         <main
           style={{
             flex: 1,
@@ -11510,7 +11580,10 @@ function OpsReferenceInner({
             maxHeight: "100vh",
           }}
         >
-          <TopBar breadcrumbs={crumbs} />
+          <TopBar
+            breadcrumbs={crumbs}
+            notificationCount={unreadNotificationCount}
+          />
           <div id="content-scroll" style={{ flex: 1, overflowY: "auto" }}>
             {route === "warroom" && <ScreenWarRoom go={go} />}
             {(route === "projects" || route === "project") && (
