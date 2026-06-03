@@ -1602,7 +1602,10 @@ function PageHeader({ title, subtitle, status, actions }) {
 // ——— Screen: 智能项目作战台 ————————————————————————————
 
 function ScreenWarRoom({ go }) {
+  const actions = useOpsLiveActions();
   const [tab, setTab] = React.useState("overview");
+  const [warRoomMessage, setWarRoomMessage] = React.useState("");
+  const [warRoomExporting, setWarRoomExporting] = React.useState(false);
   const projects = useOpsProjects();
   const tasks = useOpsTasks();
   const reports = useOpsReports();
@@ -1634,6 +1637,32 @@ function ScreenWarRoom({ go }) {
       0,
     );
   const pendingActionCount = pendingReportCount + anomalyCount;
+  const exportDailyBrief = async () => {
+    if (warRoomExporting) return;
+    setWarRoomMessage("");
+    setWarRoomExporting(true);
+    try {
+      const result = await actions.createGovernedExport?.({
+        kind: "project_execution",
+        rows: activeProjects.map((project) => ({
+          projectName: project.name,
+          status: project.status,
+          operatorName: project.leadOps || project.ownerName || "未分配",
+        })),
+      });
+      setWarRoomMessage(
+        result?.filename
+          ? `当日简报导出已生成：${result.filename}`
+          : "当日简报导出已生成",
+      );
+    } catch (error) {
+      setWarRoomMessage(
+        error instanceof Error ? error.message : "当日简报导出失败",
+      );
+    } finally {
+      setWarRoomExporting(false);
+    }
+  };
 
   return (
     <>
@@ -1660,10 +1689,19 @@ function ScreenWarRoom({ go }) {
         }
         actions={
           <>
-            <Button kind="default" icon={<Icon.Export size={14} />}>
-              导出当日简报
+            <Button
+              kind="default"
+              icon={<Icon.Export size={14} />}
+              onClick={exportDailyBrief}
+              disabled={warRoomExporting}
+            >
+              {warRoomExporting ? "导出中…" : "导出当日简报"}
             </Button>
-            <Button kind="primary" icon={<Icon.Plus size={14} stroke="#fff" />}>
+            <Button
+              kind="primary"
+              icon={<Icon.Plus size={14} stroke="#fff" />}
+              onClick={() => setTab("pricing")}
+            >
               立项 / 报价测算
             </Button>
           </>
@@ -1754,6 +1792,14 @@ function ScreenWarRoom({ go }) {
             />
           </Card>
         </div>
+        {warRoomMessage ? (
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--ink-500)" }}
+          >
+            {warRoomMessage}
+          </div>
+        ) : null}
 
         {/* Tabs */}
         <Card padded={false}>
@@ -1774,7 +1820,7 @@ function ScreenWarRoom({ go }) {
 
           <div style={{ padding: 20 }}>
             {tab === "overview" && <Overview go={go} />}
-            {tab === "matching" && <Matching />}
+            {tab === "matching" && <Matching go={go} />}
             {tab === "supplier" && <Supplier />}
             {tab === "pricing" && <Pricing />}
           </div>
@@ -2072,7 +2118,7 @@ function Overview({ go }) {
         <div>
           <SectionTitle
             extra={
-              <Button size="sm" kind="link">
+              <Button size="sm" kind="link" onClick={() => go("tasks")}>
                 查看全部 →
               </Button>
             }
@@ -2160,7 +2206,7 @@ function Overview({ go }) {
                       {a.time}
                     </div>
                   </div>
-                  <Button size="sm" kind="default">
+                  <Button size="sm" kind="default" onClick={() => go("tasks")}>
                     处理
                   </Button>
                 </div>
@@ -2217,12 +2263,13 @@ function Overview({ go }) {
 }
 
 // ——— Matching tab ————————————————————————
-function Matching() {
+function Matching({ go }) {
   const streamers = useOpsStreamers();
   const [matchRows, setMatchRows] = React.useState(null);
   const [supplierRows, setSupplierRows] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [actionMessage, setActionMessage] = React.useState("");
   const rows = matchRows ?? DEFAULT_MATCHING_ROWS;
 
   const runMatching = async () => {
@@ -2230,6 +2277,7 @@ function Matching() {
 
     setBusy(true);
     setError("");
+    setActionMessage("");
     try {
       const body = await postWarRoomJson(
         "/api/war-room/matching",
@@ -2266,7 +2314,11 @@ function Matching() {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <Button kind="default" icon={<Icon.Filter size={14} />}>
+          <Button
+            kind="default"
+            icon={<Icon.Filter size={14} />}
+            onClick={() => setActionMessage("匹配筛选后台暂未接入。")}
+          >
             筛选
           </Button>
           <Button
@@ -2288,6 +2340,18 @@ function Matching() {
           }}
         >
           {error}
+        </div>
+      ) : null}
+      {actionMessage ? (
+        <div
+          aria-live="polite"
+          style={{
+            marginBottom: 12,
+            fontSize: 12,
+            color: "var(--ink-500)",
+          }}
+        >
+          {actionMessage}
         </div>
       ) : null}
 
@@ -2449,10 +2513,20 @@ function Matching() {
                 </div>
                 <Badge tone="blue">{defaultRule}</Badge>
                 <span style={{ flex: 1 }} />
-                <Button size="sm" kind="ghost">
+                <Button
+                  size="sm"
+                  kind="ghost"
+                  onClick={() => go("streamers", r.id)}
+                >
                   查看画像
                 </Button>
-                <Button size="sm" kind="primary">
+                <Button
+                  size="sm"
+                  kind="primary"
+                  onClick={() =>
+                    setActionMessage(`${r.name} 的项目邀约后台暂未接入。`)
+                  }
+                >
                   发起邀约
                 </Button>
               </div>
@@ -2671,6 +2745,7 @@ function Pricing() {
   const [pricingResult, setPricingResult] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [draftMessage, setDraftMessage] = React.useState("");
 
   const vendorRevenue = Math.round(
     streamers * hours * hourly * 1.3 + ((conversion * cpsRate) / 100) * 1.6,
@@ -2689,6 +2764,7 @@ function Pricing() {
 
     setBusy(true);
     setError("");
+    setDraftMessage("");
     try {
       const body = await postWarRoomJson(
         "/api/war-room/pricing",
@@ -2710,6 +2786,10 @@ function Pricing() {
     } finally {
       setBusy(false);
     }
+  };
+  const saveDraft = () => {
+    setError("");
+    setDraftMessage("报价草稿后台暂未接入，当前测算参数已保留在本页。");
   };
 
   return (
@@ -2918,9 +2998,23 @@ function Pricing() {
             {error}
           </div>
         ) : null}
+        {draftMessage ? (
+          <div
+            aria-live="polite"
+            style={{
+              marginTop: 10,
+              fontSize: 12,
+              color: "var(--ink-500)",
+            }}
+          >
+            {draftMessage}
+          </div>
+        ) : null}
 
         <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
-          <Button kind="default">保存为草稿</Button>
+          <Button kind="default" onClick={saveDraft}>
+            保存为草稿
+          </Button>
           <Button kind="primary" onClick={runPricing} disabled={busy}>
             {busy ? "测算中…" : "生成立项申请"}
           </Button>
@@ -3273,7 +3367,13 @@ function ProjectList({ go }) {
       scheduleFilter === "all" ||
       (scheduleFilter === "scheduled" && hasProjectSchedule(p)) ||
       (scheduleFilter === "unscheduled" && !hasProjectSchedule(p));
-    return matchesStatus && matchesSearch && matchesVendor && matchesOwner && matchesSchedule;
+    return (
+      matchesStatus &&
+      matchesSearch &&
+      matchesVendor &&
+      matchesOwner &&
+      matchesSchedule
+    );
   });
 
   return (
@@ -5324,7 +5424,7 @@ function ScreenStreamers({ go, initialActiveId }) {
         </Card>
 
         {/* Detail panel */}
-        <StreamerPanel id={active} streamers={visibleStreamers} />
+        <StreamerPanel id={active} streamers={visibleStreamers} go={go} />
       </div>
     </>
   );
@@ -5387,7 +5487,7 @@ function StreamerInlineFilter({ label, value, onChange, options }) {
   );
 }
 
-function StreamerPanel({ id, streamers = STREAMERS }) {
+function StreamerPanel({ id, streamers = STREAMERS, go }) {
   const actions = useOpsLiveActions();
   const projects = useOpsProjects();
   const s = streamers.find((x) => x.id === id);
@@ -5698,7 +5798,7 @@ function StreamerPanel({ id, streamers = STREAMERS }) {
       <Card
         title="参与项目"
         extra={
-          <Button size="sm" kind="link">
+          <Button size="sm" kind="link" onClick={() => go?.("projects")}>
             查看全部
           </Button>
         }
@@ -7247,8 +7347,7 @@ function ScreenSettlement({ go }) {
             onSubmit={createBatch}
             style={{
               display: "grid",
-              gridTemplateColumns:
-                "minmax(180px, 1fr) 150px 150px 160px auto",
+              gridTemplateColumns: "minmax(180px, 1fr) 150px 150px 160px auto",
               alignItems: "end",
               gap: 10,
               padding: 14,
@@ -7301,8 +7400,7 @@ function ScreenSettlement({ go }) {
             onSubmit={addManualItem}
             style={{
               display: "grid",
-              gridTemplateColumns:
-                "140px 140px 140px minmax(220px, 1fr) auto",
+              gridTemplateColumns: "140px 140px 140px minmax(220px, 1fr) auto",
               alignItems: "end",
               gap: 10,
               padding: 14,
@@ -7617,6 +7715,7 @@ function BatchDetail({
   onReopenBatch,
   busyAction,
 }) {
+  const [detailMessage, setDetailMessage] = React.useState("");
   const b = batches.find((x) => x.id === id) || batches[0] || BATCHES[1];
   if (!b) {
     return (
@@ -7665,6 +7764,9 @@ function BatchDetail({
   const baseSum = detailRows.reduce((s, x) => s + x.base, 0);
   const varSum = detailRows.reduce((s, x) => s + x.variable, 0);
   const adjSum = detailRows.reduce((s, x) => s + x.adjust, 0);
+  const showPendingDetail = (message) => {
+    setDetailMessage(message);
+  };
 
   return (
     <div
@@ -7924,6 +8026,18 @@ function BatchDetail({
           ]}
           rows={detailRows}
         />
+        {detailMessage ? (
+          <div
+            aria-live="polite"
+            style={{
+              padding: "10px 12px 0",
+              fontSize: 12,
+              color: "var(--ink-500)",
+            }}
+          >
+            {detailMessage}
+          </div>
+        ) : null}
 
         {/* Footer: actions */}
         <div
@@ -7953,10 +8067,22 @@ function BatchDetail({
           <div style={{ flex: 1 }} />
           {isLocked ? (
             <>
-              <Button kind="ghost" icon={<Icon.History size={14} />}>
+              <Button
+                kind="ghost"
+                icon={<Icon.History size={14} />}
+                onClick={() =>
+                  showPendingDetail(
+                    "批次审计明细后台暂未接入，请查看下方审计轨迹。",
+                  )
+                }
+              >
                 查看审计
               </Button>
-              <Button kind="default" icon={<Icon.Export size={14} />}>
+              <Button
+                kind="default"
+                icon={<Icon.Export size={14} />}
+                onClick={() => showPendingDetail("批次 PDF 导出后台暂未接入。")}
+              >
                 导出 PDF
               </Button>
               <Button
@@ -7970,7 +8096,14 @@ function BatchDetail({
             </>
           ) : (
             <>
-              <Button kind="ghost">取消</Button>
+              <Button
+                kind="ghost"
+                onClick={() =>
+                  showPendingDetail("批次编辑已取消，未提交后台变更。")
+                }
+              >
+                取消
+              </Button>
               <Button
                 kind="default"
                 icon={<Icon.Plus size={14} />}
@@ -7979,7 +8112,12 @@ function BatchDetail({
               >
                 {busyAction === "manual" ? "处理中…" : "添加人工调整"}
               </Button>
-              <Button kind="default">保存为草稿</Button>
+              <Button
+                kind="default"
+                onClick={() => showPendingDetail("批次草稿保存后台暂未接入。")}
+              >
+                保存为草稿
+              </Button>
               <Button
                 kind="primary"
                 icon={<Icon.Lock size={14} stroke="#fff" />}
@@ -8049,6 +8187,8 @@ function ScreenTasks({ go }) {
   const filteredTasks = tasks.filter((task) =>
     taskMatchesTaskFilters(task, taskFilters, projects),
   );
+  const selectedProject =
+    project === "all" ? null : projects.find((item) => item.id === project);
 
   React.useEffect(() => {
     setBatchDraft((draft) => ({
@@ -8058,6 +8198,13 @@ function ScreenTasks({ go }) {
         draft.streamerIds || streamers.map((streamer) => streamer.id).join(","),
     }));
   }, [projects, streamers]);
+
+  React.useEffect(() => {
+    if (project === "all") return;
+    setBatchDraft((draft) =>
+      draft.projectId === project ? draft : { ...draft, projectId: project },
+    );
+  }, [project]);
 
   const runTaskAction = async (actionName, fn) => {
     if (busyAction) return;
@@ -8074,7 +8221,15 @@ function ScreenTasks({ go }) {
   };
 
   const openNewTask = () => {
-    if (!projects[0] || !streamers[0]) {
+    const defaultProject =
+      project === "all"
+        ? projects[0]
+        : projects.find((item) => item.id === project);
+    const defaultStreamer =
+      streamerFilter === "all"
+        ? streamers[0]
+        : streamers.find((item) => item.id === streamerFilter);
+    if (!defaultProject || !defaultStreamer) {
       globalThis.alert?.("请先创建项目和主播档案。");
       return;
     }
@@ -8082,14 +8237,18 @@ function ScreenTasks({ go }) {
     setSelectedTask({
       _new: true,
       dayIdx: SCHEDULE_WEEK.todayIdx,
-      projectId: projects[0].id,
-      streamerId: streamers[0].id,
+      projectId: defaultProject.id,
+      streamerId: defaultStreamer.id,
     });
   };
 
   const createTask = async (input) => {
     await runTaskAction("create", async () => {
       await actions.createLiveTask?.(input);
+      const taskProject = projects.find((item) => item.id === input.projectId);
+      setTaskMessage(
+        `已创建任务并绑定项目：${taskProject?.name || input.projectId}`,
+      );
       setSelectedTask(null);
     });
   };
@@ -8151,6 +8310,9 @@ function ScreenTasks({ go }) {
 
       setTaskMessage("");
       await actions.createLiveTasks?.({ tasks: batchTasks });
+      setTaskMessage(
+        `已为 ${project.name} 创建 ${batchTasks.length} 个排班任务`,
+      );
       setBatchOpen(false);
     });
   };
@@ -8265,10 +8427,20 @@ function ScreenTasks({ go }) {
               label="本周已排"
               value={tasks.length}
               unit="个"
-              hint="共 8 位主播"
+              hint={`共 ${streamers.length} 位主播`}
             />
           </Card>
         </div>
+
+        <TaskProjectMappingStrip
+          project={selectedProject}
+          projects={projects}
+          tasks={filteredTasks}
+          totalTasks={tasks.length}
+          onOpenProject={
+            selectedProject ? () => go("project", selectedProject.id) : null
+          }
+        />
 
         {taskMessage ? (
           <div
@@ -8413,10 +8585,18 @@ function ScreenTasks({ go }) {
             {view === "list" && (
               <TaskList
                 tasks={filteredTasks}
+                projects={projects}
+                streamers={streamers}
                 onSelectTask={setSelectedTask}
               />
             )}
-            {view === "anomaly" && <AnomalyList tasks={filteredTasks} />}
+            {view === "anomaly" && (
+              <AnomalyList
+                tasks={filteredTasks}
+                projects={projects}
+                streamers={streamers}
+              />
+            )}
             {view === "mine" && <MyTasksView />}
           </div>
         </Card>
@@ -8505,6 +8685,87 @@ function TaskInlineFilter({ label, value, onChange, options }) {
   );
 }
 
+function TaskProjectMappingStrip({
+  project,
+  projects = [],
+  tasks = [],
+  totalTasks = 0,
+  onOpenProject,
+}) {
+  const anomalyCount = tasks.filter(
+    (task) => task.anomaly || task.status === "abnormal",
+  ).length;
+  const pendingCount = tasks.filter((task) =>
+    ["pending_live", "live", "pending_report", "pending_review"].includes(
+      task.status,
+    ),
+  ).length;
+
+  if (!project) {
+    return (
+      <div
+        style={{
+          padding: "10px 12px",
+          border: "1px solid var(--line)",
+          borderRadius: 8,
+          background: "var(--bg-soft)",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          fontSize: 12,
+          color: "var(--ink-600)",
+        }}
+      >
+        <Icon.Project size={15} stroke="var(--blue-600)" />
+        <span>
+          全部项目映射 · {projects.length} 个项目 · {totalTasks} 个任务
+        </span>
+        <span style={{ color: "var(--ink-400)" }}>
+          选择项目后，新建任务和批量排班会自动绑定该项目。
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        padding: "10px 12px",
+        border: "1px solid var(--line)",
+        borderRadius: 8,
+        background: "var(--bg-soft)",
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        fontSize: 12,
+        color: "var(--ink-600)",
+      }}
+    >
+      <Icon.Project size={15} stroke="var(--blue-600)" />
+      <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+        {project.name}
+      </span>
+      <span className="mono" style={{ color: "var(--ink-400)" }}>
+        {project.code || project.id}
+      </span>
+      <span>负责人：{project.leadOps || "未分配"}</span>
+      <span>
+        周期：{project.start || "未配置"} → {project.end || "未配置"}
+      </span>
+      <span>
+        当前筛选 {tasks.length} 个任务 · {pendingCount} 个待执行 ·{" "}
+        {anomalyCount} 个异常
+      </span>
+      <div style={{ flex: 1 }} />
+      {onOpenProject ? (
+        <Button size="sm" kind="default" onClick={onOpenProject}>
+          查看当前项目
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 function taskMatchesTaskFilters(task, filters, projects = []) {
   const project = projects.find((item) => item.id === filters.project);
   const projectKeys = [
@@ -8523,12 +8784,41 @@ function taskMatchesTaskFilters(task, filters, projects = []) {
     taskProjectKeys.some((key) => projectKeys.includes(key));
   const matchesStreamer =
     filters.streamer === "all" ||
-    [task.streamerId, task.streamerName].filter(Boolean).includes(
-      filters.streamer,
-    );
+    [task.streamerId, task.streamerName]
+      .filter(Boolean)
+      .includes(filters.streamer);
   const statusKey = task.anomaly ? "abnormal" : task.status;
-  const matchesStatus = filters.status === "all" || statusKey === filters.status;
+  const matchesStatus =
+    filters.status === "all" || statusKey === filters.status;
   return matchesProject && matchesStreamer && matchesStatus;
+}
+
+function resolveTaskProject(task, projects = []) {
+  const taskProjectKeys = [
+    task?.projectId,
+    task?.project,
+    task?.projectName,
+  ].filter(Boolean);
+  return (
+    projects.find((project) =>
+      [project.id, project.code, project.name].some((key) =>
+        taskProjectKeys.includes(key),
+      ),
+    ) || null
+  );
+}
+
+function resolveTaskStreamer(task, streamers = []) {
+  const taskStreamerKeys = [task?.streamerId, task?.streamerName].filter(
+    Boolean,
+  );
+  return (
+    streamers.find((streamer) =>
+      [streamer.id, streamer.alias, streamer.real].some((key) =>
+        taskStreamerKeys.includes(key),
+      ),
+    ) || null
+  );
 }
 
 // ——— Schedule Board (week / streamer grid) ————————
@@ -8538,6 +8828,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
   const projects = useOpsProjects();
   const knownStreamers = useOpsStreamers();
   const [unit, setUnit] = React.useState("day"); // 'day' | 'hour'
+  const [toolbarMessage, setToolbarMessage] = React.useState("");
 
   // Filter tasks
   const visibleTasks = tasks.filter((task) =>
@@ -8583,16 +8874,28 @@ function ScheduleBoard({ filters, onSelectTask }) {
           background: "var(--bg-soft)",
         }}
       >
-        <button style={iconBtn}>
+        <button
+          type="button"
+          style={iconBtn}
+          onClick={() => setToolbarMessage("上一周排班后台暂未接入。")}
+        >
           <Icon.ChevLeft size={14} />
         </button>
         <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}>
           本周排班
         </div>
-        <button style={iconBtn}>
+        <button
+          type="button"
+          style={iconBtn}
+          onClick={() => setToolbarMessage("下一周排班后台暂未接入。")}
+        >
           <Icon.ChevRight size={14} />
         </button>
-        <Button size="sm" kind="default">
+        <Button
+          size="sm"
+          kind="default"
+          onClick={() => setToolbarMessage("已定位到本周排班。")}
+        >
           今天
         </Button>
 
@@ -8650,6 +8953,18 @@ function ScheduleBoard({ filters, onSelectTask }) {
           <Legend dot="var(--ink-200)" label="待开播" />
         </div>
       </div>
+      {toolbarMessage ? (
+        <div
+          aria-live="polite"
+          style={{
+            padding: "8px 16px 0",
+            fontSize: 12,
+            color: "var(--ink-500)",
+          }}
+        >
+          {toolbarMessage}
+        </div>
+      ) : null}
 
       {/* Day header */}
       <div
@@ -8810,12 +9125,14 @@ function ScheduleBoard({ filters, onSelectTask }) {
                         <DayTaskBlock
                           key={t.id}
                           task={t}
+                          projects={projects}
                           onClick={() => onSelectTask(t)}
                         />
                       ) : (
                         <HourTaskBar
                           key={t.id}
                           task={t}
+                          projects={projects}
                           hourStart={HOUR_START}
                           hourEnd={HOUR_END}
                           onClick={() => onSelectTask(t)}
@@ -8831,7 +9148,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
                             streamerId: s.id,
                             projectId:
                               filters.project === "all"
-                                ? undefined
+                                ? projects[0]?.id
                                 : filters.project,
                           })
                         }
@@ -8872,7 +9189,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
 }
 
 // Day-unit block — full width within its day cell
-function DayTaskBlock({ task, onClick }) {
+function DayTaskBlock({ task, projects = [], onClick }) {
   const statusKey = task.anomaly ? "abnormal" : task.status;
   const st = TASK_STATUS[statusKey] || TASK_STATUS.pending_live;
   const tones = {
@@ -8901,7 +9218,9 @@ function DayTaskBlock({ task, onClick }) {
   };
   const c = tones[st.tone] || tones.neutral;
   const projectShort =
-    PROJECTS.find((p) => p.id === task.project)?.product || task.project;
+    resolveTaskProject(task, projects)?.product ||
+    task.projectName ||
+    task.project;
   const niceName = task.name.replace(/^.+·\s*/, "");
 
   return (
@@ -8965,12 +9284,24 @@ function DayTaskBlock({ task, onClick }) {
       >
         {niceName}
       </div>
+      <div
+        style={{
+          fontSize: 10.5,
+          color: "var(--ink-400)",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          lineHeight: 1.25,
+        }}
+      >
+        {projectShort}
+      </div>
     </button>
   );
 }
 
 // Hour-unit bar — positioned within the 12-24h window
-function HourTaskBar({ task, hourStart, hourEnd, onClick }) {
+function HourTaskBar({ task, projects = [], hourStart, hourEnd, onClick }) {
   const span = hourEnd - hourStart;
   const leftPct = Math.max(0, ((task.startHour - hourStart) / span) * 100);
   const widthPct = Math.min(
@@ -9006,9 +9337,7 @@ function HourTaskBar({ task, hourStart, hourEnd, onClick }) {
   };
   const c = tones[st.tone] || tones.neutral;
   const projectName =
-    PROJECTS.find((p) => p.id === task.project)
-      ?.name?.split("·")[0]
-      ?.trim() ||
+    resolveTaskProject(task, projects)?.name?.split("·")[0]?.trim() ||
     task.projectName ||
     task.project;
 
@@ -9066,7 +9395,7 @@ function HourTaskBar({ task, hourStart, hourEnd, onClick }) {
             textOverflow: "ellipsis",
           }}
         >
-          {task.name.replace(/^.+·\s*/, "")}
+          {projectName} · {task.name.replace(/^.+·\s*/, "")}
         </span>
         <span
           style={{
@@ -9089,6 +9418,20 @@ function formatHour(h) {
   const hh = Math.floor(h);
   const mm = Math.round((h - hh) * 60);
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+function decimalHourToTime(value) {
+  return formatHour(value);
+}
+
+function timeValueToDecimalHour(value, fallback) {
+  const [hour, minute] = String(value)
+    .split(":")
+    .map((part) => Number(part));
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return fallback;
+  }
+  return hour + minute / 60;
 }
 
 function scheduleTimeToIso(dateKey, timeValue) {
@@ -9180,7 +9523,7 @@ const iconBtn = {
 
 // ——— Task List ——————————————————————
 
-function TaskList({ tasks, onSelectTask }) {
+function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
   const rows = tasks;
   return (
     <DataTable
@@ -9199,31 +9542,36 @@ function TaskList({ tasks, onSelectTask }) {
         },
         {
           title: "任务名 / 项目",
-          render: (r) => (
-            <div>
-              <div style={{ fontWeight: 500, color: "var(--ink-900)" }}>
-                {r.name}
+          render: (r) => {
+            const project = resolveTaskProject(r, projects);
+            const projectName = project?.name || r.projectName || r.project;
+            const projectCode = project?.code || r.projectId || r.project;
+            return (
+              <div>
+                <div style={{ fontWeight: 500, color: "var(--ink-900)" }}>
+                  {r.name}
+                </div>
+                <div
+                  className="mono"
+                  style={{ fontSize: 11, color: "var(--ink-400)" }}
+                >
+                  {projectName} · {projectCode} ·{" "}
+                  {r.type === "project"
+                    ? "项目任务"
+                    : r.type === "trial"
+                      ? "试播任务"
+                      : r.type === "training"
+                        ? "训练任务"
+                        : "临时任务"}
+                </div>
               </div>
-              <div
-                className="mono"
-                style={{ fontSize: 11, color: "var(--ink-400)" }}
-              >
-                {r.project} ·{" "}
-                {r.type === "project"
-                  ? "项目任务"
-                  : r.type === "trial"
-                    ? "试播任务"
-                    : r.type === "training"
-                      ? "训练任务"
-                      : "临时任务"}
-              </div>
-            </div>
-          ),
+            );
+          },
         },
         {
           title: "主播",
           render: (r) => {
-            const s = STREAMERS.find((x) => x.id === r.streamerId);
+            const s = resolveTaskStreamer(r, streamers);
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <Avatar name={s?.alias || r.streamerName} size={24} />
@@ -9277,8 +9625,10 @@ function TaskList({ tasks, onSelectTask }) {
         },
         {
           title: "",
-          render: () => (
+          render: (r) => (
             <button
+              type="button"
+              onClick={() => onSelectTask(r)}
               style={{
                 width: 24,
                 height: 24,
@@ -9300,15 +9650,20 @@ function TaskList({ tasks, onSelectTask }) {
 
 // ——— Anomaly List ———————————————————
 
-function AnomalyList({ tasks }) {
+function AnomalyList({ tasks, projects = [], streamers = [] }) {
+  const [actionMessage, setActionMessage] = React.useState("");
   const anomalies = tasks
     .filter((t) => t.anomaly)
-    .map((t) => ({
-      ...t,
-      streamer:
-        STREAMERS.find((s) => s.id === t.streamerId)?.alias || t.streamerName,
-      typeKey: t.anomaly,
-    }));
+    .map((t) => {
+      const project = resolveTaskProject(t, projects);
+      const streamer = resolveTaskStreamer(t, streamers);
+      return {
+        ...t,
+        projectDisplay: project?.name || t.projectName || t.project,
+        streamer: streamer?.alias || t.streamerName,
+        typeKey: t.anomaly,
+      };
+    });
 
   // Group by type
   const groups = {};
@@ -9340,13 +9695,29 @@ function AnomalyList({ tasks }) {
           </b>{" "}
           项异常 · 系统每小时自动扫描，扫描结果同步推送项目运营。
         </div>
-        <Button size="sm" kind="default">
+        <Button
+          size="sm"
+          kind="default"
+          onClick={() => setActionMessage("异常扫描历史后台暂未接入。")}
+        >
           扫描历史
         </Button>
-        <Button size="sm" kind="primary">
+        <Button
+          size="sm"
+          kind="primary"
+          onClick={() => setActionMessage("异常批量分派后台暂未接入。")}
+        >
           批量分派处理
         </Button>
       </div>
+      {actionMessage ? (
+        <div
+          aria-live="polite"
+          style={{ fontSize: 12, color: "var(--ink-500)" }}
+        >
+          {actionMessage}
+        </div>
+      ) : null}
 
       {Object.entries(groups).map(([type, items]) => (
         <div key={type}>
@@ -9396,7 +9767,7 @@ function AnomalyList({ tasks }) {
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {a.id} · {a.project}
+                      {a.id} · {a.projectDisplay}
                     </span>
                   </div>
                   <div
@@ -9422,13 +9793,33 @@ function AnomalyList({ tasks }) {
                     检测于 {((Math.random() * 8) | 0) + 1}h 前
                   </span>
                   <div style={{ display: "flex", gap: 6 }}>
-                    <Button size="sm" kind="ghost">
+                    <Button
+                      size="sm"
+                      kind="ghost"
+                      onClick={() =>
+                        setActionMessage(
+                          `${a.streamer} 的联系通道后台暂未接入。`,
+                        )
+                      }
+                    >
                       联系主播
                     </Button>
-                    <Button size="sm" kind="default">
+                    <Button
+                      size="sm"
+                      kind="default"
+                      onClick={() =>
+                        setActionMessage(`已定位异常任务：${a.id}`)
+                      }
+                    >
                       查看任务
                     </Button>
-                    <Button size="sm" kind="primary">
+                    <Button
+                      size="sm"
+                      kind="primary"
+                      onClick={() =>
+                        setActionMessage("异常处理状态后台暂未接入。")
+                      }
+                    >
                       标记处理
                     </Button>
                   </div>
@@ -9445,6 +9836,7 @@ function AnomalyList({ tasks }) {
 // ——— My Tasks (streamer view) —————————————
 
 function MyTasksView() {
+  const [previewMessage, setPreviewMessage] = React.useState("");
   return (
     <div style={{ padding: 32, textAlign: "center" }}>
       <div
@@ -9477,9 +9869,21 @@ function MyTasksView() {
           切换到主播账号后可看到任务卡片列表（含开始 /
           停止按钮、上传截图入口、报数审核结果）。当前是负责人视角。
         </div>
-        <Button kind="default" style={{ marginTop: 16 }}>
+        <Button
+          kind="default"
+          style={{ marginTop: 16 }}
+          onClick={() => setPreviewMessage("主播端账号切换预览后台暂未接入。")}
+        >
           预览主播端 →
         </Button>
+        {previewMessage ? (
+          <div
+            aria-live="polite"
+            style={{ marginTop: 10, fontSize: 12, color: "var(--ink-500)" }}
+          >
+            {previewMessage}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -9510,8 +9914,8 @@ function TaskDrawer({
     );
   }
 
-  const s = STREAMERS.find((x) => x.id === task.streamerId);
-  const p = PROJECTS.find((x) => x.id === task.project);
+  const s = resolveTaskStreamer(task, streamers);
+  const p = resolveTaskProject(task, projects);
   const streamerName = s?.alias || task.streamerName || task.streamerId;
   const projectName = p?.name || task.projectName || task.project;
   const statusKey = task.anomaly ? "abnormal" : task.status;
@@ -9624,6 +10028,13 @@ function TaskDrawer({
           </KV>
           <KV label="录屏要求">
             {(p?.needScreening ?? true) ? "本项目强制录屏" : "不强制"}
+          </KV>
+          <KV label="项目编号">
+            <span className="mono">{p?.code || task.projectId || "—"}</span>
+          </KV>
+          <KV label="项目负责人">{p?.leadOps || "未分配"}</KV>
+          <KV label="项目周期">
+            {p?.start || "未配置"} → {p?.end || "未配置"}
           </KV>
         </div>
 
@@ -9764,6 +10175,13 @@ function TaskDrawer({
         >
           编辑排班
         </Button>
+        <Button
+          kind="default"
+          onClick={() => p?.id && go?.("project", p.id)}
+          disabled={!p?.id}
+        >
+          查看项目
+        </Button>
         <Button kind="primary" onClick={() => go?.("reports")}>
           查看报数
         </Button>
@@ -9779,20 +10197,46 @@ function NewTaskDrawer({
   onClose,
   onCreateTask,
 }) {
-  const s = streamers.find((x) => x.id === task.streamerId);
-  const p = projects.find((x) => x.id === task.projectId) || projects[0];
+  const [selectedProjectId, setSelectedProjectId] = React.useState(
+    task.projectId || projects[0]?.id || "",
+  );
+  const [selectedStreamerId, setSelectedStreamerId] = React.useState(
+    task.streamerId || streamers[0]?.id || "",
+  );
+  const [startTime, setStartTime] = React.useState(
+    decimalHourToTime(task.startHour ?? 20),
+  );
+  const [endTime, setEndTime] = React.useState(
+    decimalHourToTime(task.endHour ?? 23.5),
+  );
+  const [note, setNote] = React.useState("");
+  const s = streamers.find((x) => x.id === selectedStreamerId);
+  const p = projects.find((x) => x.id === selectedProjectId) || projects[0];
   const projectName = p?.name || task.projectName || task.project || "";
   const [busy, setBusy] = React.useState(false);
+  const [draftMessage, setDraftMessage] = React.useState("");
   const handleCreate = async () => {
-    if (!onCreateTask || !p || !s) return;
+    if (!onCreateTask || !p || !s) {
+      setDraftMessage("请先选择项目和主播。");
+      return;
+    }
+    const startHour = timeValueToDecimalHour(startTime, 20);
+    const endHour = timeValueToDecimalHour(endTime, 23.5);
+    if (endHour <= startHour) {
+      setDraftMessage("计划结束时间必须晚于开播时间。");
+      return;
+    }
     setBusy(true);
+    setDraftMessage("");
     try {
       await onCreateTask(
         opsLiveTaskInput({
           projectId: p.id,
-          streamerId: task.streamerId,
+          streamerId: s.id,
           dayIdx: task.dayIdx,
-          note: "经营端页面创建任务",
+          startHour,
+          endHour,
+          note: note.trim() || "经营端页面创建任务",
           projects,
           streamers,
         }),
@@ -9812,52 +10256,83 @@ function NewTaskDrawer({
           gap: 14,
         }}
       >
-        <FormField label="主播">
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "8px 10px",
-              border: "1px solid var(--line-strong)",
-              borderRadius: 6,
-            }}
+        <TaskFormLabel label="所属项目">
+          <select
+            value={p?.id || ""}
+            onChange={(event) => setSelectedProjectId(event.target.value)}
+            style={taskInputStyle}
           >
-            <Avatar name={s?.alias} size={24} />
-            <span style={{ fontWeight: 600 }}>{s?.alias || "未选择主播"}</span>
-            <span
-              className="mono"
-              style={{ fontSize: 11, color: "var(--ink-400)" }}
-            >
-              {s?.id || "N/A"}
-            </span>
-          </div>
-        </FormField>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </TaskFormLabel>
+        <TaskFormLabel label="主播">
+          <select
+            value={s?.id || ""}
+            onChange={(event) => setSelectedStreamerId(event.target.value)}
+            style={taskInputStyle}
+          >
+            {streamers.map((streamer) => (
+              <option key={streamer.id} value={streamer.id}>
+                {streamer.alias}
+              </option>
+            ))}
+          </select>
+        </TaskFormLabel>
         <FormField label="任务类型">
           <SegmentedControl
             options={["项目任务", "试播任务", "训练任务", "临时任务"]}
             value="项目任务"
           />
         </FormField>
-        <FormField label="所属项目">
-          <FauxSelect value={projectName || "未选择项目"} />
-        </FormField>
+        <div
+          style={{
+            padding: "8px 10px",
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            background: "var(--bg-soft)",
+            fontSize: 12,
+            color: "var(--ink-600)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
+          <span>
+            项目映射：{projectName || "未选择项目"} · {p?.code || p?.id || "—"}
+          </span>
+          <span>
+            负责人：{p?.leadOps || "未分配"} · 周期：{p?.start || "未配置"} →{" "}
+            {p?.end || "未配置"}
+          </span>
+        </div>
         <div
           style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
         >
-          <FormField label="计划开播">
-            <FauxSelect
-              value={`${SCHEDULE_WEEK.days[task.dayIdx].date} 20:00`}
+          <TaskFormLabel label="计划开播">
+            <input
+              type="time"
+              value={startTime}
+              onChange={(event) => setStartTime(event.target.value)}
+              style={taskInputStyle}
             />
-          </FormField>
-          <FormField label="计划结束">
-            <FauxSelect
-              value={`${SCHEDULE_WEEK.days[task.dayIdx].date} 23:30`}
+          </TaskFormLabel>
+          <TaskFormLabel label="计划结束">
+            <input
+              type="time"
+              value={endTime}
+              onChange={(event) => setEndTime(event.target.value)}
+              style={taskInputStyle}
             />
-          </FormField>
+          </TaskFormLabel>
         </div>
-        <FormField label="任务说明（可选）">
+        <TaskFormLabel label="任务说明（可选）">
           <textarea
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
             placeholder="特殊要求、口径备注等"
             style={{
               width: "100%",
@@ -9871,7 +10346,15 @@ function NewTaskDrawer({
               resize: "vertical",
             }}
           />
-        </FormField>
+        </TaskFormLabel>
+        {draftMessage ? (
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--ink-500)" }}
+          >
+            {draftMessage}
+          </div>
+        ) : null}
       </div>
       <div
         style={{
@@ -9886,7 +10369,12 @@ function NewTaskDrawer({
         <Button kind="default" onClick={onClose}>
           取消
         </Button>
-        <Button kind="default">保存草稿</Button>
+        <Button
+          kind="default"
+          onClick={() => setDraftMessage("任务草稿保存后台暂未接入。")}
+        >
+          保存草稿
+        </Button>
         <Button kind="primary" onClick={handleCreate} disabled={busy}>
           {busy ? "创建中…" : "创建任务"}
         </Button>
@@ -9934,29 +10422,6 @@ function SegmentedControl({ options, value }) {
           {o}
         </button>
       ))}
-    </div>
-  );
-}
-
-function FauxSelect({ value }) {
-  return (
-    <div
-      style={{
-        height: 32,
-        padding: "0 10px",
-        border: "1px solid var(--line-strong)",
-        borderRadius: 6,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        fontSize: 13,
-        color: "var(--ink-900)",
-        background: "#fff",
-        cursor: "pointer",
-      }}
-    >
-      <span>{value}</span>
-      <Icon.ChevDown size={14} stroke="var(--ink-400)" />
     </div>
   );
 }
@@ -10393,6 +10858,10 @@ const SENSITIVE_FIELDS = [
 
 function ScreenOrg({ go }) {
   const [tab, setTab] = React.useState("overview");
+  const [orgMessage, setOrgMessage] = React.useState("");
+  const showOrgPending = (message) => {
+    setOrgMessage(message);
+  };
 
   return (
     <>
@@ -10401,10 +10870,18 @@ function ScreenOrg({ go }) {
         subtitle="多组织数据隔离 · 字段级脱敏 · AI 查询继承用户权限"
         actions={
           <>
-            <Button kind="default" icon={<Icon.History size={14} />}>
+            <Button
+              kind="default"
+              icon={<Icon.History size={14} />}
+              onClick={() => go("audit")}
+            >
               权限变更日志
             </Button>
-            <Button kind="primary" icon={<Icon.Plus size={14} stroke="#fff" />}>
+            <Button
+              kind="primary"
+              icon={<Icon.Plus size={14} stroke="#fff" />}
+              onClick={() => showOrgPending("邀请成员后台暂未接入。")}
+            >
               邀请成员
             </Button>
           </>
@@ -10419,6 +10896,14 @@ function ScreenOrg({ go }) {
           gap: 16,
         }}
       >
+        {orgMessage ? (
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--ink-500)" }}
+          >
+            {orgMessage}
+          </div>
+        ) : null}
         {/* Org info card */}
         <Card padded={true}>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
@@ -10467,7 +10952,11 @@ function ScreenOrg({ go }) {
                 {ORG.name || "组织名称待配置"} · MCN 经营舱
               </div>
             </div>
-            <Button kind="default" icon={<Icon.Settings size={14} />}>
+            <Button
+              kind="default"
+              icon={<Icon.Settings size={14} />}
+              onClick={() => showOrgPending("组织设置后台暂未接入。")}
+            >
               组织设置
             </Button>
           </div>
@@ -10516,7 +11005,9 @@ function ScreenOrg({ go }) {
           </div>
           <div style={{ padding: 20 }}>
             {tab === "overview" && <RoleOverview />}
-            {tab === "members" && <MemberList />}
+            {tab === "members" && (
+              <MemberList onPendingAction={showOrgPending} />
+            )}
             {tab === "matrix" && <PermMatrix />}
             {tab === "sensitive" && <SensitiveFields />}
             {tab === "security" && <SecurityPolicy />}
@@ -10636,14 +11127,14 @@ function RoleOverview() {
         gap: 14,
       }}
     >
-      {roleCards.map((r) => (
-        <RoleCard key={r.key} {...r} count={counts[r.code] || 0} />
+      {roleCards.map(({ key, ...role }) => (
+        <RoleCard key={key} {...role} count={counts[role.code] || 0} />
       ))}
     </div>
   );
 }
 
-function RoleCard({ key, title, code, tone, desc, perms, count }) {
+function RoleCard({ title, code, tone, desc, perms, count }) {
   const toneMap = {
     red: { bar: "var(--danger-600)", fg: "var(--danger-600)" },
     blue: { bar: "var(--blue-600)", fg: "var(--blue-700)" },
@@ -10759,10 +11250,11 @@ function RoleCard({ key, title, code, tone, desc, perms, count }) {
 
 // ——— Members table ———————————————————————
 
-function MemberList() {
+function MemberList({ onPendingAction }) {
   const [filter, setFilter] = React.useState("all");
   const rows =
     filter === "all" ? MEMBERS : MEMBERS.filter((m) => m.role === filter);
+  const notify = (message) => onPendingAction?.(message);
 
   return (
     <div>
@@ -10776,17 +11268,33 @@ function MemberList() {
       >
         <SearchInput placeholder="姓名 / 邮箱 / 手机" width={240} />
         <RoleFilter value={filter} onChange={setFilter} />
-        <Button kind="default" icon={<Icon.Filter size={13} />}>
+        <Button
+          kind="default"
+          icon={<Icon.Filter size={13} />}
+          onClick={() => notify("部门筛选后台暂未接入。")}
+        >
           部门
         </Button>
-        <Button kind="default" icon={<Icon.Filter size={13} />}>
+        <Button
+          kind="default"
+          icon={<Icon.Filter size={13} />}
+          onClick={() => notify("成员状态筛选后台暂未接入。")}
+        >
           状态
         </Button>
         <div style={{ flex: 1 }} />
-        <Button kind="default" icon={<Icon.Export size={13} />}>
+        <Button
+          kind="default"
+          icon={<Icon.Export size={13} />}
+          onClick={() => notify("成员表导出后台暂未接入。")}
+        >
           导出成员表
         </Button>
-        <Button kind="primary" icon={<Icon.Plus size={13} stroke="#fff" />}>
+        <Button
+          kind="primary"
+          icon={<Icon.Plus size={13} stroke="#fff" />}
+          onClick={() => notify("邀请成员后台暂未接入。")}
+        >
           邀请成员
         </Button>
       </div>
@@ -10889,10 +11397,18 @@ function MemberList() {
               align: "right",
               render: (m) => (
                 <div style={{ display: "inline-flex", gap: 6 }}>
-                  <Button size="sm" kind="default">
+                  <Button
+                    size="sm"
+                    kind="default"
+                    onClick={() => notify(`${m.name} 的角色编辑后台暂未接入。`)}
+                  >
                     编辑角色
                   </Button>
                   <button
+                    type="button"
+                    onClick={() =>
+                      notify(`${m.name} 的更多成员操作后台暂未接入。`)
+                    }
                     style={{
                       width: 26,
                       height: 26,
@@ -10927,9 +11443,8 @@ function RoleFilter({ value, onChange }) {
     { key: "operator_business", label: "次级运营" },
     { key: "finance", label: "财务" },
   ];
-  const cur = opts.find((o) => o.key === value);
   return (
-    <div
+    <label
       style={{
         height: 32,
         padding: "0 10px",
@@ -10941,14 +11456,30 @@ function RoleFilter({ value, onChange }) {
         background: "#fff",
         fontSize: 12,
         color: "var(--ink-700)",
-        cursor: "pointer",
       }}
     >
       <Icon.Streamer size={13} stroke="var(--ink-500)" />
       <span style={{ color: "var(--ink-400)" }}>角色：</span>
-      <span style={{ fontWeight: 600 }}>{cur?.label}</span>
-      <Icon.ChevDown size={12} stroke="var(--ink-400)" />
-    </div>
+      <select
+        value={value}
+        aria-label="角色筛选"
+        onChange={(event) => onChange(event.target.value)}
+        style={{
+          border: "none",
+          outline: "none",
+          background: "transparent",
+          fontSize: 12,
+          fontWeight: 600,
+          color: "var(--ink-700)",
+        }}
+      >
+        {opts.map((option) => (
+          <option key={option.key} value={option.key}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -13209,6 +13740,7 @@ function OpsReferenceInner({
 }
 
 function PlaceholderScreen({ route, go }) {
+  const [placeholderMessage, setPlaceholderMessage] = React.useState("");
   const map = {
     tasks: {
       title: "排班与任务",
@@ -13326,8 +13858,27 @@ function PlaceholderScreen({ route, go }) {
               <Button kind="default" onClick={() => go("warroom")}>
                 返回作战台
               </Button>
-              <Button kind="primary">查看产品设计 →</Button>
+              <Button
+                kind="primary"
+                onClick={() =>
+                  setPlaceholderMessage("产品设计详情页暂未接入。")
+                }
+              >
+                查看产品设计 →
+              </Button>
             </div>
+            {placeholderMessage ? (
+              <div
+                aria-live="polite"
+                style={{
+                  marginTop: 12,
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                }}
+              >
+                {placeholderMessage}
+              </div>
+            ) : null}
           </div>
         </Card>
       </div>

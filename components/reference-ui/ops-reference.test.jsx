@@ -1067,6 +1067,78 @@ describe("OpsReferenceApp live task smoke", () => {
     expect(await screen.findByText("task-ui-created")).toBeInTheDocument();
   });
 
+  it("creates tasks against the selected project and links the task drawer back to project detail", async () => {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const mappedProjectCards = [
+      ...taskProjectCards,
+      {
+        ...taskProjectCards[0],
+        id: "project-mapped",
+        code: "PM-002",
+        name: "Mapped Project",
+        vendor: "Mapped Vendor",
+        product: "mapped campaign",
+        leadOps: "Mapped Ops",
+      },
+    ];
+    const refreshedTask = {
+      id: "task-project-mapped",
+      title: "Mapped Project · Streamer One",
+      status: "pending_live",
+      projectId: "project-mapped",
+      projectName: "Mapped Project",
+      streamerId: "streamer-one",
+      streamerName: "Streamer One",
+      plannedStartAt: `${todayKey}T12:00:00.000Z`,
+      plannedEndAt: `${todayKey}T15:30:00.000Z`,
+      plannedDuration: 210,
+      systemDuration: 0,
+    };
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/live-tasks") {
+        return {
+          ok: true,
+          json: async () => ({ tasks: [refreshedTask] }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({ task: refreshedTask }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[]}
+        projectCards={mappedProjectCards}
+        streamerCards={taskStreamerCards}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("项目筛选"), {
+      target: { value: "project-mapped" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "新建任务" }));
+    fireEvent.click(await screen.findByRole("button", { name: "创建任务" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      projectId: "project-mapped",
+      streamerId: "streamer-one",
+      title: "Mapped Project · Streamer One",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
+    fireEvent.click(await screen.findByText("task-project-mapped"));
+    fireEvent.click(await screen.findByRole("button", { name: "查看项目" }));
+
+    expect(await screen.findByText("Mapped Project")).toBeInTheDocument();
+    expect(screen.getByText(/PM-002/)).toBeInTheDocument();
+  });
+
   it("creates a batch live schedule then refreshes the M4 task queue", async () => {
     const promptMock = vi.fn();
     vi.stubGlobal("prompt", promptMock);
@@ -1229,6 +1301,44 @@ describe("OpsReferenceApp live task smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "从 Excel 导入" }));
     expect(screen.getByText("Excel 导入后台暂未接入")).toBeInTheDocument();
+  });
+
+  it("marks anomaly actions and new task draft saves as explicit pending states", async () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[
+          {
+            id: "task-anomaly-one",
+            name: "Fixture Project · Streamer One",
+            status: "pending_report",
+            project: "project-live",
+            projectId: "project-live",
+            projectName: "Fixture Project",
+            streamerId: "streamer-one",
+            streamerName: "Streamer One",
+            dayIdx: 1,
+            startHour: 20,
+            endHour: 22,
+            type: "project",
+            anomaly: "late_report",
+          },
+        ]}
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /异常任务\s*1/ }));
+    fireEvent.click(screen.getByRole("button", { name: "扫描历史" }));
+    expect(screen.getByText("异常扫描历史后台暂未接入。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "标记处理" }));
+    expect(screen.getByText("异常处理状态后台暂未接入。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "新建任务" }));
+    fireEvent.click(await screen.findByRole("button", { name: "保存草稿" }));
+    expect(screen.getByText("任务草稿保存后台暂未接入。")).toBeInTheDocument();
   });
 
   it("cancels an ops live task from the task drawer then refreshes the queue", async () => {
@@ -1928,6 +2038,68 @@ describe("OpsReferenceApp war room smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  it("exports the daily brief and opens pricing from the header", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/exports") {
+        return {
+          ok: true,
+          json: async () => ({
+            export: {
+              kind: "project_execution",
+              filename: "project_execution-daily.csv",
+              rows: [],
+              fieldLabels: {},
+            },
+          }),
+        };
+      }
+
+      return {
+        ok: false,
+        json: async () => ({ error: "unexpected request" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "导出当日简报" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/exports",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: "project_execution",
+            rows: [
+              {
+                projectName: "Fixture Project",
+                status: "active",
+                operatorName: "Ops",
+              },
+            ],
+          }),
+        }),
+      );
+    });
+    expect(
+      await screen.findByText(/project_execution-daily\.csv/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "立项 / 报价测算" }));
+    expect(
+      screen.getByRole("button", { name: "生成立项申请" }),
+    ).toBeInTheDocument();
+  });
+
   it("binds pricing, matching, and review buttons to war-room APIs", async () => {
     const fetchMock = vi.fn(async (url) => {
       if (String(url) === "/api/war-room/pricing") {
@@ -2170,5 +2342,26 @@ describe("OpsReferenceApp billing smoke", () => {
     expect(await screen.findByText("企业版")).toBeInTheDocument();
     expect(screen.getAllByText("活跃").length).toBeGreaterThan(0);
     expect(screen.getByText("AI 调用")).toBeInTheDocument();
+  });
+});
+
+describe("OpsReferenceApp org smoke", () => {
+  it("filters members through a real role selector and marks org-only actions pending", () => {
+    render(<OpsReferenceApp initialRoute="org" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /成员管理/ }));
+    fireEvent.change(screen.getByLabelText("角色筛选"), {
+      target: { value: "finance" },
+    });
+    expect(screen.getByLabelText("角色筛选")).toHaveValue("finance");
+
+    fireEvent.click(screen.getByRole("button", { name: "部门" }));
+    expect(screen.getByText("部门筛选后台暂未接入。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "导出成员表" }));
+    expect(screen.getByText("成员表导出后台暂未接入。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "权限变更日志" }));
+    expect(screen.getAllByText("操作日志 & 审计").length).toBeGreaterThan(0);
   });
 });
