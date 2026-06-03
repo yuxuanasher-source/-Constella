@@ -7,6 +7,25 @@ export type StreamerCooperationStatus =
   | "active"
   | "paused"
   | "ended";
+export const STREAMER_SOURCE_TYPES = [
+  "self_incubated",
+  "signed",
+  "external",
+  "supplier_recommended",
+  "account_managed",
+] as const;
+export type StreamerSourceType = (typeof STREAMER_SOURCE_TYPES)[number];
+export const STREAMER_SETTLEMENT_METHODS = [
+  "cpt",
+  "cpa",
+  "cps",
+  "gift",
+  "base_salary",
+  "base_salary_cpt",
+  "manual",
+] as const;
+export type StreamerSettlementMethod =
+  (typeof STREAMER_SETTLEMENT_METHODS)[number];
 
 export type StreamerRecord = {
   id: string;
@@ -28,6 +47,27 @@ export type StreamerActor = {
 export type CreateStreamerProfileInput = {
   displayName: string;
   userId?: string | null;
+  realName?: string | null;
+  gender?: string | null;
+  sourceType?: StreamerSourceType;
+  categories?: string[];
+  platforms?: string[];
+  styles?: string[];
+  defaultSettlementMethod?: StreamerSettlementMethod;
+};
+
+export type CreateStreamerProfileRepositoryInput = {
+  organizationId: string;
+  actorUserId: string;
+  displayName: string;
+  userId?: string | null;
+  realName?: string | null;
+  gender?: string | null;
+  sourceType?: StreamerSourceType;
+  categories?: string[];
+  platforms?: string[];
+  styles?: string[];
+  defaultSettlementMethod?: StreamerSettlementMethod;
 };
 
 export type UpdateStreamerRiskInput = {
@@ -37,12 +77,9 @@ export type UpdateStreamerRiskInput = {
 };
 
 export type StreamerRepository = {
-  createProfile(input: {
-    organizationId: string;
-    actorUserId: string;
-    displayName: string;
-    userId?: string | null;
-  }): Promise<StreamerRecord>;
+  createProfile(
+    input: CreateStreamerProfileRepositoryInput,
+  ): Promise<StreamerRecord>;
   getById(streamerId: string): Promise<StreamerRecord | null>;
   updateRisk(
     streamerId: string,
@@ -73,12 +110,37 @@ export async function createStreamerProfile({
   actor: StreamerActor;
   input: CreateStreamerProfileInput;
 }): Promise<StreamerRecord> {
-  const streamer = await repo.createProfile({
+  const normalizedInput = normalizeCreateStreamerInput(input);
+  const createInput: CreateStreamerProfileRepositoryInput = {
     organizationId: actor.organizationId,
     actorUserId: actor.userId,
-    displayName: input.displayName,
-    userId: input.userId ?? null,
-  });
+    displayName: normalizedInput.displayName,
+    userId: normalizedInput.userId ?? null,
+  };
+  if (normalizedInput.realName !== undefined) {
+    createInput.realName = normalizedInput.realName;
+  }
+  if (normalizedInput.gender !== undefined) {
+    createInput.gender = normalizedInput.gender;
+  }
+  if (normalizedInput.sourceType !== undefined) {
+    createInput.sourceType = normalizedInput.sourceType;
+  }
+  if (normalizedInput.categories !== undefined) {
+    createInput.categories = normalizedInput.categories;
+  }
+  if (normalizedInput.platforms !== undefined) {
+    createInput.platforms = normalizedInput.platforms;
+  }
+  if (normalizedInput.styles !== undefined) {
+    createInput.styles = normalizedInput.styles;
+  }
+  if (normalizedInput.defaultSettlementMethod !== undefined) {
+    createInput.defaultSettlementMethod =
+      normalizedInput.defaultSettlementMethod;
+  }
+
+  const streamer = await repo.createProfile(createInput);
 
   await audit({
     organizationId: actor.organizationId,
@@ -91,10 +153,62 @@ export async function createStreamerProfile({
     objectId: streamer.id,
     objectName: streamer.displayName,
     after: streamer,
-    changedFields: ["display_name", "user_id"],
+    changedFields: getCreateStreamerChangedFields(normalizedInput),
   });
 
   return streamer;
+}
+
+function normalizeCreateStreamerInput(
+  input: CreateStreamerProfileInput,
+): Required<Pick<CreateStreamerProfileInput, "displayName">> &
+  Omit<CreateStreamerProfileInput, "displayName"> {
+  const displayName = input.displayName.trim();
+  if (!displayName) {
+    throw new Error("displayName is required");
+  }
+
+  return {
+    displayName,
+    userId: normalizeOptionalText(input.userId),
+    realName: normalizeOptionalText(input.realName),
+    gender: normalizeOptionalText(input.gender),
+    sourceType: input.sourceType,
+    categories: normalizeTextList(input.categories),
+    platforms: normalizeTextList(input.platforms),
+    styles: normalizeTextList(input.styles),
+    defaultSettlementMethod: input.defaultSettlementMethod,
+  };
+}
+
+function getCreateStreamerChangedFields(
+  input: ReturnType<typeof normalizeCreateStreamerInput>,
+) {
+  const fields = ["display_name", "user_id"];
+  if (input.realName !== undefined) fields.push("real_name");
+  if (input.gender !== undefined) fields.push("gender");
+  if (input.sourceType !== undefined) fields.push("source_type");
+  if (input.categories !== undefined) fields.push("categories");
+  if (input.platforms !== undefined) fields.push("platforms");
+  if (input.styles !== undefined) fields.push("styles");
+  if (input.defaultSettlementMethod !== undefined) {
+    fields.push("default_settlement_method");
+  }
+  return fields;
+}
+
+function normalizeOptionalText(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+function normalizeTextList(values: string[] | undefined) {
+  if (!values) {
+    return undefined;
+  }
+
+  const normalized = values.map((value) => value.trim()).filter(Boolean);
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 export async function updateStreamerRisk({

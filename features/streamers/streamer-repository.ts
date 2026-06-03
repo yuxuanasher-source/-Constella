@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type {
+  CreateStreamerProfileRepositoryInput,
   StreamerRecord,
   StreamerRepository,
   StreamerRiskLevel,
@@ -20,20 +21,40 @@ const streamerSelect =
 export class SupabaseStreamerRepository implements StreamerRepository {
   constructor(private readonly client: SupabaseClient) {}
 
-  async createProfile(input: {
-    organizationId: string;
-    actorUserId: string;
-    displayName: string;
-    userId?: string | null;
-  }): Promise<StreamerRecord> {
+  async createProfile(
+    input: CreateStreamerProfileRepositoryInput,
+  ): Promise<StreamerRecord> {
+    const insertPayload: Record<string, unknown> = {
+      organization_id: input.organizationId,
+      created_by: input.actorUserId,
+      display_name: input.displayName,
+      user_id: input.userId ?? null,
+    };
+    if (input.realName !== undefined) {
+      insertPayload.real_name = input.realName;
+    }
+    if (input.gender !== undefined) {
+      insertPayload.gender = input.gender;
+    }
+    if (input.sourceType !== undefined) {
+      insertPayload.source_type = input.sourceType;
+    }
+    if (input.categories !== undefined) {
+      insertPayload.categories = input.categories;
+    }
+    if (input.platforms !== undefined) {
+      insertPayload.platforms = input.platforms;
+    }
+    if (input.styles !== undefined) {
+      insertPayload.styles = input.styles;
+    }
+    if (input.defaultSettlementMethod !== undefined) {
+      insertPayload.default_settlement_method = input.defaultSettlementMethod;
+    }
+
     const { data, error } = await this.client
       .from("streamers")
-      .insert({
-        organization_id: input.organizationId,
-        created_by: input.actorUserId,
-        display_name: input.displayName,
-        user_id: input.userId ?? null,
-      })
+      .insert(insertPayload)
       .select(streamerSelect)
       .single<StreamerRow>();
 

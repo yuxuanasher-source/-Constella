@@ -97,7 +97,19 @@ describe("streamer api routes", () => {
     } as never);
 
     const { POST } = await import("./route");
-    const response = await POST(jsonRequest({ displayName: "小鹿" }));
+    const response = await POST(
+      jsonRequest({
+        displayName: " 小鹿 ",
+        realName: " 鹿鸣 ",
+        gender: "女",
+        sourceType: "signed",
+        categories: ["二游", "卡牌", ""],
+        platforms: "抖音, 小红书",
+        styles: "高能整活,陪伴",
+        defaultSettlementMethod: "cps",
+        userId: " streamer-user ",
+      }),
+    );
 
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toEqual({
@@ -107,7 +119,17 @@ describe("streamer api routes", () => {
       expect.objectContaining({
         audit: expect.any(Function),
         actor: auth,
-        input: { displayName: "小鹿", userId: undefined },
+        input: {
+          displayName: "小鹿",
+          realName: "鹿鸣",
+          gender: "女",
+          sourceType: "signed",
+          categories: ["二游", "卡牌"],
+          platforms: ["抖音", "小红书"],
+          styles: ["高能整活", "陪伴"],
+          defaultSettlementMethod: "cps",
+          userId: "streamer-user",
+        },
       }),
     );
   });
@@ -122,11 +144,14 @@ describe("streamer api routes", () => {
 
     const { PATCH } = await import("./[streamerId]/risk/route");
     const response = await PATCH(
-      jsonRequest({
-        riskLevel: "high",
-        riskReason: "连续报数异常",
-        reason: "负责人复核调整",
-      }, "PATCH"),
+      jsonRequest(
+        {
+          riskLevel: "high",
+          riskReason: "连续报数异常",
+          reason: "负责人复核调整",
+        },
+        "PATCH",
+      ),
       { params: Promise.resolve({ streamerId: "s1" }) },
     );
 

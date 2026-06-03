@@ -297,6 +297,400 @@ describe("OpsReferenceApp streamer smoke", () => {
     expect(screen.getByText("s-db-1 · 鹿鸣")).toBeInTheDocument();
     expect(screen.getAllByText("风险 medium").length).toBeGreaterThan(0);
   });
+
+  it("creates a streamer profile through the backend API and refreshes the pool", async () => {
+    const refreshedStreamer = {
+      id: "streamer-created",
+      alias: "小鹿",
+      real: "鹿鸣",
+      gender: "女",
+      source: "签约",
+      supplier: "未绑定",
+      games: ["二游", "卡牌"],
+      platforms: ["抖音"],
+      style: "高能整活",
+      cooperation: "not_started",
+      risk: "low",
+      metrics: {
+        screenPass: 65,
+        projectFinish: 65,
+        roi: 1,
+        grossContrib: 0,
+      },
+      matchScore: 65,
+      defaultRule: "CPS",
+      completedProjects: 0,
+    };
+    const fetchMock = vi.fn(async (url, init) => {
+      if (String(url) === "/api/streamers" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ streamer: { id: "streamer-created" } }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({ streamers: [refreshedStreamer] }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="streamers" streamerCards={[]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "新增主播档案" }));
+    fireEvent.change(screen.getByLabelText("主播昵称"), {
+      target: { value: "小鹿" },
+    });
+    fireEvent.change(screen.getByLabelText("真实姓名"), {
+      target: { value: "鹿鸣" },
+    });
+    fireEvent.change(screen.getByLabelText("来源"), {
+      target: { value: "signed" },
+    });
+    fireEvent.change(screen.getByLabelText("擅长品类"), {
+      target: { value: "二游, 卡牌" },
+    });
+    fireEvent.change(screen.getByLabelText("平台"), {
+      target: { value: "抖音" },
+    });
+    fireEvent.change(screen.getByLabelText("直播风格"), {
+      target: { value: "高能整活" },
+    });
+    fireEvent.change(screen.getByLabelText("默认结算"), {
+      target: { value: "cps" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建档案" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/streamers",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      displayName: "小鹿",
+      realName: "鹿鸣",
+      gender: "",
+      sourceType: "signed",
+      categories: ["二游", "卡牌"],
+      platforms: ["抖音"],
+      styles: ["高能整活"],
+      defaultSettlementMethod: "cps",
+      userId: "",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/streamers", undefined);
+    expect(
+      await screen.findByText("streamer-created · 鹿鸣"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("小鹿").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("CPS").length).toBeGreaterThan(0);
+  });
+
+  it("filters streamer rows by search and risk", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        streamerCards={[
+          {
+            id: "s-filter-low",
+            alias: "小鹿",
+            real: "鹿鸣",
+            gender: "女",
+            source: "签约",
+            supplier: "未绑定",
+            games: ["二游"],
+            platforms: ["抖音"],
+            style: "高能整活",
+            cooperation: "active",
+            risk: "low",
+            defaultRule: "CPT",
+            matchScore: 80,
+            metrics: {
+              screenPass: 80,
+              projectFinish: 80,
+              roi: 1.08,
+              grossContrib: 0,
+            },
+          },
+          {
+            id: "s-filter-high",
+            alias: "北风",
+            real: "周北",
+            gender: "男",
+            source: "外部",
+            supplier: "未绑定",
+            games: ["SLG"],
+            platforms: ["快手"],
+            style: "稳态讲解",
+            cooperation: "paused",
+            risk: "high",
+            defaultRule: "CPT",
+            matchScore: 66,
+            metrics: {
+              screenPass: 66,
+              projectFinish: 66,
+              roi: 0.9,
+              grossContrib: 0,
+            },
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("主播名 / 真名 / 平台账号"), {
+      target: { value: "北风" },
+    });
+    expect(screen.getAllByText("北风").length).toBeGreaterThan(0);
+    expect(screen.queryByText("s-filter-low · 鹿鸣")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("风险筛选"), {
+      target: { value: "low" },
+    });
+    expect(screen.getByText("暂无匹配主播")).toBeInTheDocument();
+  });
+
+  it("updates streamer risk and refreshes the pool", async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      if (
+        String(url) === "/api/streamers/streamer-risk/risk" &&
+        init?.method === "PATCH"
+      ) {
+        return { ok: true, json: async () => ({ streamer: {} }) };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          streamers: [
+            {
+              id: "streamer-risk",
+              alias: "小鹿",
+              real: "鹿鸣",
+              gender: "女",
+              source: "签约",
+              supplier: "未绑定",
+              games: ["二游"],
+              platforms: ["抖音"],
+              style: "高能整活",
+              cooperation: "active",
+              risk: "high",
+              defaultRule: "CPT",
+              matchScore: 80,
+              metrics: {
+                screenPass: 80,
+                projectFinish: 80,
+                roi: 1.08,
+                grossContrib: 0,
+              },
+            },
+          ],
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        streamerCards={[
+          {
+            id: "streamer-risk",
+            alias: "小鹿",
+            real: "鹿鸣",
+            gender: "女",
+            source: "签约",
+            supplier: "未绑定",
+            games: ["二游"],
+            platforms: ["抖音"],
+            style: "高能整活",
+            cooperation: "active",
+            risk: "low",
+            defaultRule: "CPT",
+            matchScore: 80,
+            metrics: {
+              screenPass: 80,
+              projectFinish: 80,
+              roi: 1.08,
+              grossContrib: 0,
+            },
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "设置风险" }));
+    fireEvent.change(screen.getByLabelText("风险等级"), {
+      target: { value: "high" },
+    });
+    fireEvent.change(screen.getByLabelText("风险原因"), {
+      target: { value: "连续两次异常报数" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "更新风险" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/streamers/streamer-risk/risk",
+      expect.objectContaining({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      riskLevel: "high",
+      riskReason: "连续两次异常报数",
+      reason: "连续两次异常报数",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/streamers", undefined);
+    expect(screen.getAllByText("风险 high").length).toBeGreaterThan(0);
+  });
+
+  it("invites streamer to a selected project", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ application: { id: "app-invite" } }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        projectCards={[
+          {
+            id: "project-invite",
+            code: "P-INV",
+            name: "邀约项目",
+            vendor: "厂商",
+            product: "产品",
+            status: "recruiting",
+            pricing: "CPT",
+            leadOps: "Ops",
+            bizOwner: "Biz",
+            start: "2026-06-01",
+            end: "2026-06-30",
+            streamers: { active: 0, candidate: 0, pendingReview: 0 },
+            metrics: {
+              plannedHours: 0,
+              doneHours: 0,
+              audience: 0,
+              reportedPending: 0,
+              anomalies: 0,
+              receivable: 0,
+              payable: 0,
+              gross: 0,
+              margin: 0,
+            },
+            risk: "low",
+          },
+        ]}
+        streamerCards={[
+          {
+            id: "streamer-invite",
+            alias: "小鹿",
+            real: "鹿鸣",
+            gender: "女",
+            source: "签约",
+            supplier: "未绑定",
+            games: ["二游"],
+            platforms: ["抖音"],
+            style: "高能整活",
+            cooperation: "active",
+            risk: "low",
+            defaultRule: "CPT",
+            matchScore: 80,
+            metrics: {
+              screenPass: 80,
+              projectFinish: 80,
+              roi: 1.08,
+              grossContrib: 0,
+            },
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "邀请加入项目" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认邀约" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-invite/invitations",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ streamerId: "streamer-invite" }),
+      }),
+    );
+    expect(screen.getByText("已发起邀约")).toBeInTheDocument();
+  });
+
+  it("exports streamer pool through governed export", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        export: {
+          id: "export-streamers",
+          rowCount: 1,
+          expiresAt: "2026-06-04",
+        },
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        streamerCards={[
+          {
+            id: "streamer-export",
+            alias: "小鹿",
+            real: "鹿鸣",
+            gender: "女",
+            source: "签约",
+            supplier: "未绑定",
+            games: ["二游"],
+            platforms: ["抖音"],
+            style: "高能整活",
+            cooperation: "active",
+            risk: "low",
+            defaultRule: "CPT",
+            matchScore: 80,
+            metrics: {
+              screenPass: 80,
+              projectFinish: 80,
+              roi: 1.08,
+              grossContrib: 0,
+            },
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "导出主播表" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/exports",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      kind: "project_execution",
+      rows: [
+        {
+          projectName: "主播资源池",
+          status: "active",
+          operatorName: "小鹿",
+        },
+      ],
+    });
+    expect(screen.getByText("导出已生成")).toBeInTheDocument();
+  });
 });
 
 describe("OpsReferenceApp admission smoke", () => {

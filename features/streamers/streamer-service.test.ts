@@ -56,6 +56,68 @@ describe("streamer service", () => {
     );
   });
 
+  it("creates full streamer profiles and audits the written fields", async () => {
+    const repo = {
+      createProfile: vi.fn().mockResolvedValue({
+        id: "S-2",
+        displayName: "小鹿",
+        userId: "streamer-user",
+        riskLevel: "low",
+        cooperationStatus: "not_started",
+      }),
+      getById: vi.fn(),
+      updateRisk: vi.fn(),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await createStreamerProfile({
+      repo,
+      audit,
+      actor,
+      input: {
+        displayName: " 小鹿 ",
+        realName: " 鹿鸣 ",
+        gender: "女",
+        sourceType: "signed",
+        categories: ["二游", "卡牌", ""],
+        platforms: ["抖音"],
+        styles: ["高能整活"],
+        defaultSettlementMethod: "cps",
+        userId: "streamer-user",
+      },
+    });
+
+    expect(repo.createProfile).toHaveBeenCalledWith({
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId,
+      displayName: "小鹿",
+      realName: "鹿鸣",
+      gender: "女",
+      sourceType: "signed",
+      categories: ["二游", "卡牌"],
+      platforms: ["抖音"],
+      styles: ["高能整活"],
+      defaultSettlementMethod: "cps",
+      userId: "streamer-user",
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "create",
+        changedFields: [
+          "display_name",
+          "user_id",
+          "real_name",
+          "gender",
+          "source_type",
+          "categories",
+          "platforms",
+          "styles",
+          "default_settlement_method",
+        ],
+      }),
+    );
+  });
+
   it("rejects risk edits from operator_business", async () => {
     const repo = {
       createProfile: vi.fn(),

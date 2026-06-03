@@ -4317,19 +4317,168 @@ function diffDays(a, b) {
   return Math.round((new Date(b) - new Date(a)) / 86400000);
 }
 
+function splitDraftList(value) {
+  return value
+    .split(/[,\n，]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 // ===== src\screen-streamers.jsx =====
 // ——— Screen: 主播资源池 ————————————————————————————
 
 function ScreenStreamers({ go, initialActiveId }) {
   const streamers = useOpsStreamers();
+  const actions = useOpsLiveActions();
+  const emptyDraft = {
+    displayName: "",
+    realName: "",
+    gender: "",
+    sourceType: "external",
+    categories: "",
+    platforms: "",
+    styles: "",
+    defaultSettlementMethod: "cpt",
+    userId: "",
+  };
   const [active, setActive] = React.useState(
     initialActiveId || streamers[3]?.id || streamers[0]?.id,
   );
-  React.useEffect(() => {
-    if (!streamers.some((item) => item.id === active)) {
-      setActive(streamers[0]?.id ?? null);
+  const [draftOpen, setDraftOpen] = React.useState(false);
+  const [draft, setDraft] = React.useState(emptyDraft);
+  const [draftError, setDraftError] = React.useState("");
+  const [draftSubmitting, setDraftSubmitting] = React.useState(false);
+  const [search, setSearch] = React.useState("");
+  const [categoryFilter, setCategoryFilter] = React.useState("all");
+  const [sourceFilter, setSourceFilter] = React.useState("all");
+  const [cooperationFilter, setCooperationFilter] = React.useState("all");
+  const [riskFilter, setRiskFilter] = React.useState("all");
+  const [importMessage, setImportMessage] = React.useState("");
+  const [exportMessage, setExportMessage] = React.useState("");
+  const [exportSubmitting, setExportSubmitting] = React.useState(false);
+  const draftFieldStyle = {
+    width: "100%",
+    height: 32,
+    border: "1px solid var(--line-strong)",
+    borderRadius: 6,
+    background: "#fff",
+    color: "var(--ink-700)",
+    fontSize: 13,
+    outline: "none",
+    padding: "0 10px",
+  };
+  const draftLabelStyle = {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    fontSize: 12,
+    color: "var(--ink-500)",
+    fontWeight: 600,
+    minWidth: 0,
+  };
+  const updateDraft = (field) => (event) => {
+    setDraft((value) => ({ ...value, [field]: event.target.value }));
+  };
+  const openDraftForm = () => {
+    setDraftOpen(true);
+    setDraftError("");
+  };
+  const closeDraftForm = () => {
+    setDraftOpen(false);
+    setDraftError("");
+  };
+  const submitStreamerDraft = async (event) => {
+    event.preventDefault();
+    const displayName = draft.displayName.trim();
+    if (!displayName) {
+      setDraftError("请填写主播昵称");
+      return;
     }
-  }, [active, streamers]);
+
+    setDraftSubmitting(true);
+    setDraftError("");
+    try {
+      const body = await actions.createStreamerProfile?.({
+        displayName,
+        realName: draft.realName.trim(),
+        gender: draft.gender,
+        sourceType: draft.sourceType,
+        categories: splitDraftList(draft.categories),
+        platforms: splitDraftList(draft.platforms),
+        styles: splitDraftList(draft.styles),
+        defaultSettlementMethod: draft.defaultSettlementMethod,
+        userId: draft.userId.trim(),
+      });
+      setDraftOpen(false);
+      setDraft(emptyDraft);
+      if (body?.streamer?.id) {
+        setActive(body.streamer.id);
+      }
+    } catch (error) {
+      setDraftError(error?.message || "创建主播档案失败，请稍后重试");
+    } finally {
+      setDraftSubmitting(false);
+    }
+  };
+  const query = search.trim().toLowerCase();
+  const visibleStreamers = streamers.filter((streamer) => {
+    const matchesSearch =
+      !query ||
+      [
+        streamer.alias,
+        streamer.real,
+        streamer.id,
+        streamer.source,
+        streamer.supplier,
+        streamer.style,
+        ...streamer.games,
+        ...streamer.platforms,
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+    const matchesCategory =
+      categoryFilter === "all" || streamer.games.includes(categoryFilter);
+    const matchesSource =
+      sourceFilter === "all" || streamer.source === sourceFilter;
+    const matchesCooperation =
+      cooperationFilter === "all" || streamer.cooperation === cooperationFilter;
+    const matchesRisk = riskFilter === "all" || streamer.risk === riskFilter;
+    return (
+      matchesSearch &&
+      matchesCategory &&
+      matchesSource &&
+      matchesCooperation &&
+      matchesRisk
+    );
+  });
+  React.useEffect(() => {
+    if (!visibleStreamers.some((item) => item.id === active)) {
+      const nextActive = visibleStreamers[0]?.id ?? null;
+      if (nextActive !== active) {
+        setActive(nextActive);
+      }
+    }
+  }, [active, visibleStreamers]);
+  const exportStreamerPool = async () => {
+    setExportSubmitting(true);
+    setExportMessage("");
+    try {
+      await actions.createGovernedExport?.({
+        kind: "project_execution",
+        rows: visibleStreamers.map((streamer) => ({
+          projectName: "主播资源池",
+          status: streamer.cooperation === "paused" ? "paused" : "active",
+          operatorName: streamer.alias,
+        })),
+      });
+      setExportMessage("导出已生成");
+    } catch (error) {
+      setExportMessage(error?.message || "导出失败，请稍后重试");
+    } finally {
+      setExportSubmitting(false);
+    }
+  };
 
   return (
     <>
@@ -4338,13 +4487,26 @@ function ScreenStreamers({ go, initialActiveId }) {
         subtitle="不是通讯录 · 用于回答：能不能接？适合接什么？历史表现如何？值不值得继续合作？"
         actions={
           <>
-            <Button kind="default" icon={<Icon.Export size={14} />}>
+            <Button
+              kind="default"
+              icon={<Icon.Export size={14} />}
+              onClick={exportStreamerPool}
+              disabled={exportSubmitting}
+            >
               导出主播表
             </Button>
-            <Button kind="default" icon={<Icon.Upload size={14} />}>
+            <Button
+              kind="default"
+              icon={<Icon.Upload size={14} />}
+              onClick={() => setImportMessage("批量导入后端尚未接入")}
+            >
               批量导入
             </Button>
-            <Button kind="primary" icon={<Icon.Plus size={14} stroke="#fff" />}>
+            <Button
+              kind="primary"
+              icon={<Icon.Plus size={14} stroke="#fff" />}
+              onClick={openDraftForm}
+            >
               新增主播档案
             </Button>
           </>
@@ -4372,22 +4534,236 @@ function ScreenStreamers({ go, initialActiveId }) {
               borderBottom: "1px solid var(--line)",
             }}
           >
-            <SearchInput placeholder="主播名 / 真名 / 平台账号" width={240} />
-            <Button kind="default" icon={<Icon.Filter size={14} />}>
-              游戏品类
-            </Button>
-            <Button kind="default" icon={<Icon.Filter size={14} />}>
-              来源
-            </Button>
-            <Button kind="default" icon={<Icon.Filter size={14} />}>
-              合作状态
-            </Button>
-            <Button kind="default" icon={<Icon.Filter size={14} />}>
-              风险
-            </Button>
+            <SearchInput
+              placeholder="主播名 / 真名 / 平台账号"
+              value={search}
+              onChange={setSearch}
+              width={240}
+            />
+            <StreamerInlineFilter
+              label="品类筛选"
+              value={categoryFilter}
+              onChange={setCategoryFilter}
+              options={uniqueStreamerListOptions(streamers, "games")}
+            />
+            <StreamerInlineFilter
+              label="来源筛选"
+              value={sourceFilter}
+              onChange={setSourceFilter}
+              options={uniqueStreamerValueOptions(streamers, "source")}
+            />
+            <StreamerInlineFilter
+              label="合作状态筛选"
+              value={cooperationFilter}
+              onChange={setCooperationFilter}
+              options={uniqueStreamerValueOptions(streamers, "cooperation")}
+            />
+            <select
+              aria-label="风险筛选"
+              value={riskFilter}
+              onChange={(event) => setRiskFilter(event.target.value)}
+              style={{
+                height: 32,
+                border: "1px solid var(--line-strong)",
+                borderRadius: 6,
+                background: "#fff",
+                color: "var(--ink-700)",
+                fontSize: 13,
+                padding: "0 10px",
+                outline: "none",
+              }}
+            >
+              <option value="all">全部风险</option>
+              <option value="low">低风险</option>
+              <option value="medium">中风险</option>
+              <option value="high">高风险</option>
+              <option value="blacklisted">黑名单</option>
+            </select>
             <div style={{ flex: 1 }} />
-            <Badge tone="blue">{streamers.length} 位主播</Badge>
+            <Badge tone="blue">{visibleStreamers.length} 位主播</Badge>
           </div>
+          {exportMessage ? (
+            <div
+              aria-live="polite"
+              style={{
+                padding: "8px 16px",
+                borderBottom: "1px solid var(--line)",
+                background: "var(--blue-50)",
+                color: "var(--blue-700)",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+            >
+              {exportMessage}
+            </div>
+          ) : null}
+          {importMessage ? (
+            <div
+              aria-live="polite"
+              style={{
+                padding: "8px 16px",
+                borderBottom: "1px solid var(--line)",
+                background: "var(--warn-50)",
+                color: "var(--warn-600)",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+            >
+              {importMessage}
+            </div>
+          ) : null}
+
+          {draftOpen ? (
+            <form
+              onSubmit={submitStreamerDraft}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                alignItems: "end",
+                gap: 12,
+                padding: "12px 16px",
+                borderBottom: "1px solid var(--line)",
+                background: "var(--bg-soft)",
+              }}
+            >
+              <label style={draftLabelStyle}>
+                主播昵称
+                <input
+                  value={draft.displayName}
+                  onChange={updateDraft("displayName")}
+                  placeholder="例如：小鹿"
+                  style={draftFieldStyle}
+                />
+              </label>
+              <label style={draftLabelStyle}>
+                真实姓名
+                <input
+                  value={draft.realName}
+                  onChange={updateDraft("realName")}
+                  placeholder="可选"
+                  style={draftFieldStyle}
+                />
+              </label>
+              <label style={draftLabelStyle}>
+                性别
+                <select
+                  value={draft.gender}
+                  onChange={updateDraft("gender")}
+                  style={draftFieldStyle}
+                >
+                  <option value="">未填写</option>
+                  <option value="女">女</option>
+                  <option value="男">男</option>
+                  <option value="其他">其他</option>
+                </select>
+              </label>
+              <label style={draftLabelStyle}>
+                来源
+                <select
+                  value={draft.sourceType}
+                  onChange={updateDraft("sourceType")}
+                  style={draftFieldStyle}
+                >
+                  <option value="external">外部</option>
+                  <option value="signed">签约</option>
+                  <option value="self_incubated">自孵化</option>
+                  <option value="supplier_recommended">供应商</option>
+                  <option value="account_managed">代运营</option>
+                </select>
+              </label>
+              <label style={draftLabelStyle}>
+                擅长品类
+                <input
+                  value={draft.categories}
+                  onChange={updateDraft("categories")}
+                  placeholder="二游, 卡牌"
+                  style={draftFieldStyle}
+                />
+              </label>
+              <label style={draftLabelStyle}>
+                平台
+                <input
+                  value={draft.platforms}
+                  onChange={updateDraft("platforms")}
+                  placeholder="抖音, 快手"
+                  style={draftFieldStyle}
+                />
+              </label>
+              <label style={draftLabelStyle}>
+                直播风格
+                <input
+                  value={draft.styles}
+                  onChange={updateDraft("styles")}
+                  placeholder="高能整活, 陪伴"
+                  style={draftFieldStyle}
+                />
+              </label>
+              <label style={draftLabelStyle}>
+                默认结算
+                <select
+                  value={draft.defaultSettlementMethod}
+                  onChange={updateDraft("defaultSettlementMethod")}
+                  style={draftFieldStyle}
+                >
+                  <option value="cpt">CPT</option>
+                  <option value="cpa">CPA</option>
+                  <option value="cps">CPS</option>
+                  <option value="gift">礼物流水</option>
+                  <option value="base_salary">保底</option>
+                  <option value="base_salary_cpt">保底 + CPT</option>
+                  <option value="manual">手动结算</option>
+                </select>
+              </label>
+              <label style={draftLabelStyle}>
+                用户 ID
+                <input
+                  value={draft.userId}
+                  onChange={updateDraft("userId")}
+                  placeholder="可选绑定登录用户"
+                  style={draftFieldStyle}
+                />
+              </label>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "flex-end",
+                  gap: 8,
+                  minWidth: 160,
+                }}
+              >
+                <Button
+                  kind="default"
+                  type="button"
+                  onClick={closeDraftForm}
+                  disabled={draftSubmitting}
+                >
+                  取消
+                </Button>
+                <Button
+                  kind="primary"
+                  type="submit"
+                  disabled={draftSubmitting}
+                  icon={<Icon.Plus size={14} stroke="#fff" />}
+                >
+                  {draftSubmitting ? "创建中" : "创建档案"}
+                </Button>
+              </div>
+              {draftError ? (
+                <div
+                  aria-live="polite"
+                  style={{
+                    gridColumn: "1 / -1",
+                    color: "var(--danger-600)",
+                    fontSize: 12,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {draftError}
+                </div>
+              ) : null}
+            </form>
+          ) : null}
 
           <DataTable
             activeRowId={active}
@@ -4514,20 +4890,197 @@ function ScreenStreamers({ go, initialActiveId }) {
               },
               { title: "风险", render: (r) => <RiskDot level={r.risk} /> },
             ]}
-            rows={streamers}
+            rows={visibleStreamers}
+            emptyText="暂无匹配主播"
           />
         </Card>
 
         {/* Detail panel */}
-        <StreamerPanel id={active} streamers={streamers} />
+        <StreamerPanel id={active} streamers={visibleStreamers} />
       </div>
     </>
   );
 }
 
+function uniqueStreamerListOptions(streamers, key) {
+  return Array.from(
+    new Set(
+      streamers.flatMap((streamer) => streamer[key] || []).filter(Boolean),
+    ),
+  );
+}
+
+function uniqueStreamerValueOptions(streamers, key) {
+  return Array.from(
+    new Set(streamers.map((streamer) => streamer[key]).filter(Boolean)),
+  );
+}
+
+function StreamerInlineFilter({ label, value, onChange, options }) {
+  return (
+    <div
+      style={{
+        height: 32,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "0 9px",
+        border: "1px solid var(--line-strong)",
+        borderRadius: 6,
+        background: "#fff",
+        color: "var(--ink-500)",
+        fontSize: 12,
+        whiteSpace: "nowrap",
+      }}
+    >
+      <Icon.Filter size={13} />
+      <span>{label}</span>
+      <select
+        aria-label={label}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        style={{
+          border: "none",
+          outline: "none",
+          background: "transparent",
+          color: "var(--ink-700)",
+          fontSize: 12,
+          maxWidth: 96,
+        }}
+      >
+        <option value="all">全部</option>
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 function StreamerPanel({ id, streamers = STREAMERS }) {
+  const actions = useOpsLiveActions();
+  const projects = useOpsProjects();
   const s = streamers.find((x) => x.id === id);
-  if (!s) return null;
+  const [riskOpen, setRiskOpen] = React.useState(false);
+  const [riskLevel, setRiskLevel] = React.useState("low");
+  const [riskReason, setRiskReason] = React.useState("");
+  const [riskError, setRiskError] = React.useState("");
+  const [riskSubmitting, setRiskSubmitting] = React.useState(false);
+  const [inviteOpen, setInviteOpen] = React.useState(false);
+  const [inviteProjectId, setInviteProjectId] = React.useState("");
+  const [inviteMessage, setInviteMessage] = React.useState("");
+  const [inviteError, setInviteError] = React.useState("");
+  const [inviteSubmitting, setInviteSubmitting] = React.useState(false);
+  React.useEffect(() => {
+    if (!s) return;
+    setRiskLevel(s.risk || "low");
+    setRiskReason("");
+    setRiskError("");
+    setRiskOpen(false);
+    setInviteOpen(false);
+    setInviteError("");
+    setInviteMessage("");
+  }, [s?.id, s?.risk]);
+  React.useEffect(() => {
+    if (!inviteProjectId && projects[0]?.id) {
+      setInviteProjectId(projects[0].id);
+    }
+  }, [inviteProjectId, projects]);
+  if (!s) {
+    return (
+      <div
+        style={{
+          position: "sticky",
+          top: 76,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        <Card>
+          <EmptyHint
+            title="未选中主播"
+            hint="调整搜索或筛选条件后再查看主播档案。"
+          />
+        </Card>
+      </div>
+    );
+  }
+  const panelFieldStyle = {
+    width: "100%",
+    minHeight: 32,
+    border: "1px solid var(--line-strong)",
+    borderRadius: 6,
+    background: "#fff",
+    color: "var(--ink-700)",
+    fontSize: 13,
+    outline: "none",
+    padding: "0 10px",
+  };
+  const panelLabelStyle = {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    fontSize: 12,
+    color: "var(--ink-500)",
+    fontWeight: 600,
+  };
+  const openRiskForm = () => {
+    setRiskOpen(true);
+    setRiskError("");
+  };
+  const submitRiskUpdate = async (event) => {
+    event.preventDefault();
+    const reason = riskReason.trim();
+    if (!reason) {
+      setRiskError("请填写风险原因");
+      return;
+    }
+
+    setRiskSubmitting(true);
+    setRiskError("");
+    try {
+      await actions.updateStreamerRisk?.(s.id, {
+        riskLevel,
+        riskReason: reason,
+        reason,
+      });
+      setRiskOpen(false);
+      setRiskReason("");
+    } catch (error) {
+      setRiskError(error?.message || "风险更新失败，请稍后重试");
+    } finally {
+      setRiskSubmitting(false);
+    }
+  };
+  const openInviteForm = () => {
+    setInviteOpen(true);
+    setInviteError("");
+    setInviteMessage("");
+    setInviteProjectId((value) => value || projects[0]?.id || "");
+  };
+  const submitInvitation = async (event) => {
+    event.preventDefault();
+    const projectId = inviteProjectId || projects[0]?.id;
+    if (!projectId) {
+      setInviteError("请先选择项目");
+      return;
+    }
+
+    setInviteSubmitting(true);
+    setInviteError("");
+    try {
+      await actions.inviteStreamerToProject?.(projectId, s.id);
+      setInviteOpen(false);
+      setInviteMessage("已发起邀约");
+    } catch (error) {
+      setInviteError(error?.message || "邀约失败，请稍后重试");
+    } finally {
+      setInviteSubmitting(false);
+    }
+  };
 
   return (
     <div
@@ -4729,11 +5282,143 @@ function StreamerPanel({ id, streamers = STREAMERS }) {
         />
       </Card>
 
+      {riskOpen ? (
+        <Card title="设置风险" padded={true}>
+          <form
+            onSubmit={submitRiskUpdate}
+            style={{ display: "flex", flexDirection: "column", gap: 10 }}
+          >
+            <label style={panelLabelStyle}>
+              风险等级
+              <select
+                value={riskLevel}
+                onChange={(event) => setRiskLevel(event.target.value)}
+                style={panelFieldStyle}
+              >
+                <option value="low">低风险</option>
+                <option value="medium">中风险</option>
+                <option value="high">高风险</option>
+                <option value="blacklisted">黑名单</option>
+              </select>
+            </label>
+            <label style={panelLabelStyle}>
+              风险原因
+              <textarea
+                value={riskReason}
+                onChange={(event) => setRiskReason(event.target.value)}
+                rows={3}
+                placeholder="例如：连续两次异常报数"
+                style={{ ...panelFieldStyle, padding: 10, lineHeight: 1.5 }}
+              />
+            </label>
+            {riskError ? (
+              <div
+                aria-live="polite"
+                style={{
+                  color: "var(--danger-600)",
+                  fontSize: 12,
+                  lineHeight: 1.4,
+                }}
+              >
+                {riskError}
+              </div>
+            ) : null}
+            <div
+              style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}
+            >
+              <Button
+                kind="default"
+                type="button"
+                disabled={riskSubmitting}
+                onClick={() => setRiskOpen(false)}
+              >
+                取消
+              </Button>
+              <Button kind="primary" type="submit" disabled={riskSubmitting}>
+                {riskSubmitting ? "更新中" : "更新风险"}
+              </Button>
+            </div>
+          </form>
+        </Card>
+      ) : null}
+
+      {inviteOpen ? (
+        <Card title="邀请加入项目" padded={true}>
+          <form
+            onSubmit={submitInvitation}
+            style={{ display: "flex", flexDirection: "column", gap: 10 }}
+          >
+            <label style={panelLabelStyle}>
+              邀约项目
+              <select
+                value={inviteProjectId}
+                onChange={(event) => setInviteProjectId(event.target.value)}
+                style={panelFieldStyle}
+              >
+                {projects.length === 0 ? (
+                  <option value="">暂无可邀约项目</option>
+                ) : (
+                  projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+            {inviteError ? (
+              <div
+                aria-live="polite"
+                style={{
+                  color: "var(--danger-600)",
+                  fontSize: 12,
+                  lineHeight: 1.4,
+                }}
+              >
+                {inviteError}
+              </div>
+            ) : null}
+            <div
+              style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}
+            >
+              <Button
+                kind="default"
+                type="button"
+                disabled={inviteSubmitting}
+                onClick={() => setInviteOpen(false)}
+              >
+                取消
+              </Button>
+              <Button kind="primary" type="submit" disabled={inviteSubmitting}>
+                {inviteSubmitting ? "邀约中" : "确认邀约"}
+              </Button>
+            </div>
+          </form>
+        </Card>
+      ) : null}
+
+      {inviteMessage ? (
+        <div
+          aria-live="polite"
+          style={{
+            padding: "10px 12px",
+            border: "1px solid #B7E6CE",
+            borderRadius: 8,
+            background: "#ECFDF3",
+            color: "var(--ok-600)",
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          {inviteMessage}
+        </div>
+      ) : null}
+
       <div style={{ display: "flex", gap: 8 }}>
-        <Button kind="default" style={{ flex: 1 }}>
+        <Button kind="default" style={{ flex: 1 }} onClick={openRiskForm}>
           设置风险
         </Button>
-        <Button kind="primary" style={{ flex: 1 }}>
+        <Button kind="primary" style={{ flex: 1 }} onClick={openInviteForm}>
           邀请加入项目
         </Button>
       </div>
@@ -11320,6 +12005,17 @@ function OpsReferenceInner({
         );
         await refreshStreamers();
         return body;
+      },
+      inviteStreamerToProject: async (projectId, streamerId) => {
+        return fetchJson(
+          `/api/projects/${projectId}/invitations`,
+          "invite streamer failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ streamerId }),
+          },
+        );
       },
       reviewApplicationRecording: async (id, input) => {
         const body = await fetchJson(

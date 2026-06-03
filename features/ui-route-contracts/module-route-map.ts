@@ -54,7 +54,7 @@ export const OPS_MODULE_ROUTES: OpsModuleRoute[] = [
     label: "M2 主播池",
     href: "/console/stubs/m2",
     routeKey: "streamers",
-    status: "stub",
+    status: "partial",
   },
   {
     module: "m3",
