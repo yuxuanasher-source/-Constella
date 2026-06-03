@@ -888,114 +888,22 @@ const Icon = {
 };
 
 // ===== src-streamer\data.jsx =====
-// Streamer-side mock data ———————————————————————————————
+// Streamer-side empty production defaults ———————————————————————————————
 
-// Logged-in streamer (NIKO · S-004)
+// Logged-in streamer profile fallback.
 const ME = {
-  id: "S-004",
-  alias: "NIKO",
-  real: "倪可",
-  gender: "女",
-  level: "L4 · 稳定档",
-  signedAt: "2025-11-12",
-  org: "星河直播",
-  platforms: [
-    {
-      id: "douyin_niko_live",
-      platform: "抖音",
-      followers: 14600,
-      primary: true,
-    },
-    { id: "bili_niko", platform: "B 站", followers: 8200, primary: false },
-  ],
+  id: "",
+  alias: "未登录",
+  real: "",
+  gender: "",
+  level: "未配置档案",
+  signedAt: "",
+  org: "未配置组织",
+  platforms: [],
 };
 
 // Streamer's tasks — for today + upcoming + recent
-const MY_TASKS = [
-  {
-    id: "T-1034",
-    date: "今天",
-    dateStr: "05-27 周三",
-    project: "P-2406",
-    projectName: "原神 4.7 · 周三常规",
-    vendor: "米哈游",
-    start: "19:00",
-    end: "23:30",
-    durationPlan: 4.5,
-    status: "pending_live", // 待开播
-    needStartStop: true,
-    needScreening: true,
-    note: "今晚以新角色「凯薇娜」为主，互动 2 次刷礼物挑战。",
-    settleHint: "底薪 6000 + CPT 80/h",
-  },
-  {
-    id: "T-1041",
-    date: "明天",
-    dateStr: "05-28 周四",
-    project: "P-2412",
-    projectName: "元梦之星 · 候选试播",
-    vendor: "腾讯游戏",
-    start: "19:00",
-    end: "23:00",
-    durationPlan: 4.0,
-    status: "trial", // 试播任务
-    needStartStop: false,
-    needScreening: true,
-    note: "候选阶段试播，请提交 60 分钟以上的录屏。",
-    settleHint: "试播 · 不计入正式结算",
-  },
-  {
-    id: "T-1048",
-    date: "本周六",
-    dateStr: "05-30 周六",
-    project: "P-2406",
-    projectName: "原神 4.7 · 黄金档",
-    vendor: "米哈游",
-    start: "19:00",
-    end: "24:00",
-    durationPlan: 5.0,
-    status: "pending_live",
-    needStartStop: true,
-    needScreening: true,
-    note: "黄金档，建议互动节奏密集；下播前务必截图直播后台数据页。",
-    settleHint: "底薪 6000 + CPT 80/h",
-  },
-
-  // Yesterday's task — pending report upload
-  {
-    id: "T-1028",
-    date: "昨天",
-    dateStr: "05-26 周二",
-    project: "P-2406",
-    projectName: "原神 4.7 · 周二常规",
-    vendor: "米哈游",
-    start: "19:30",
-    end: "23:30",
-    durationPlan: 4.0,
-    status: "pending_report", // 已下播，待你上传截图
-    needStartStop: true,
-    needScreening: true,
-    note: "",
-    settleHint: "底薪 6000 + CPT 80/h",
-  },
-  // Done report (审核中)
-  {
-    id: "T-1024",
-    date: "前天",
-    dateStr: "05-25 周一",
-    project: "P-2406",
-    projectName: "原神 4.7 · 沉浸玩法",
-    vendor: "米哈游",
-    start: "19:30",
-    end: "23:30",
-    durationPlan: 4.0,
-    status: "pending_review", // 报数待审核
-    note: "运营审核中，预计 24 小时内出结果",
-    settleHint: "底薪 6000 + CPT 80/h",
-    reportedDuration: 4.0,
-    reportedAudience: 11240,
-  },
-];
+const MY_TASKS = [];
 
 const STATUS_MAP = {
   pending_live: { tone: "neutral", label: "待开播" },
@@ -1008,91 +916,29 @@ const STATUS_MAP = {
   completed: { tone: "green", label: "已完成" },
 };
 
-const MY_NOTIFICATIONS = [
-  {
-    type: "review",
-    title: "5/25 报数已审核通过",
-    detail: "已计入本周结算池",
-    time: "17 分钟前",
-    unread: true,
-  },
-  {
-    type: "task",
-    title: "收到「元梦之星」试播邀约",
-    detail: "请于 24 小时内提交试播录屏",
-    time: "2 小时前",
-    unread: true,
-  },
-  {
-    type: "system",
-    title: "5/24 报数需补充截图",
-    detail: "截图缺少时长字段，请重传",
-    time: "昨日",
-    unread: false,
-  },
-];
+const MY_NOTIFICATIONS = [];
 
 // Earnings — only my own
 const MY_EARNINGS = {
   currentMonth: {
-    month: "2026-05",
-    earned: 9080,
-    pending: 4620,
+    month: "",
+    earned: 0,
+    pending: 0,
     finalized: false,
-    hours: 38.5,
+    hours: 0,
   },
   lastMonth: {
-    month: "2026-04",
-    earned: 14820,
-    hours: 62.0,
-    base: 6000,
-    variable: 8820,
+    month: "",
+    earned: 0,
+    hours: 0,
+    base: 0,
+    variable: 0,
   },
-  history: [
-    { month: "2026-04", earned: 14820 },
-    { month: "2026-03", earned: 13560 },
-    { month: "2026-02", earned: 11100 },
-    { month: "2026-01", earned: 12480 },
-    { month: "2025-12", earned: 10300 },
-    { month: "2026-05", earned: 9080 },
-  ],
+  history: [],
 };
 
 // Screening videos
-const MY_VIDEOS = [
-  {
-    id: "V-2042",
-    title: "元梦之星 · 试播录屏",
-    forProject: "P-2412",
-    uploaded: "2 小时前",
-    status: "pending_review",
-    duration: "01:12:08",
-  },
-  {
-    id: "V-1991",
-    title: "原神 4.6 · 历史录屏",
-    forProject: "历史录屏",
-    uploaded: "4 天前",
-    status: "approved",
-    duration: "00:48:21",
-  },
-  {
-    id: "V-1844",
-    title: "王者荣耀 · 历史录屏",
-    forProject: "历史录屏",
-    uploaded: "上月",
-    status: "approved",
-    duration: "00:32:05",
-  },
-  {
-    id: "V-1788",
-    title: "永劫无间 · 项目录屏",
-    forProject: "P-2398",
-    uploaded: "2 个月前",
-    status: "expired",
-    duration: "00:55:14",
-  },
-];
+const MY_VIDEOS = [];
 
 const VIDEO_STATUS = {
   pending_review: { tone: "violet", label: "审核中" },
@@ -1103,49 +949,7 @@ const VIDEO_STATUS = {
 };
 
 // AI diagnosis conversation history
-const AI_THREAD = [
-  {
-    role: "ai",
-    text: "想看你今晚黄金档的什么数据？我能基于过去 14 天的任务、报数和录屏帮你判断卡点。",
-    time: "19:08",
-  },
-  { role: "me", text: "我感觉昨天进房少，互动也不太行。", time: "19:09" },
-  {
-    role: "ai",
-    text: "从你 5/26 报数和录屏看，开播前 30 分钟的进房峰值 312，对比 5/22 黄金档的 540 下降 42%。\n初步判断属于「进房少 + 留不住」复合卡点。",
-    time: "19:09",
-    insight: {
-      type: "进房少 + 留不住",
-      evidence: [
-        ["5/26 开播 30 min 峰值", "312", "人"],
-        ["5/22 同档对比", "540", "人"],
-        ["你 5/26 平均停留", "2.8", "分钟"],
-        ["项目均值停留", "4.6", "分钟"],
-      ],
-    },
-  },
-  {
-    role: "ai",
-    text: "主要原因 ↓",
-    bullets: [
-      "上一档脚本以「萌妹剧情」开场，未承接 4.7 「凯薇娜」热点关键词",
-      "前 5 分钟无明确互动钩子，新进房观众无停留理由",
-      "B 站直播间标题里 4.7 关键词缺失，平台分发权重下降",
-    ],
-    time: "19:10",
-  },
-  {
-    role: "ai",
-    text: "今晚试试这些 ↓",
-    suggestions: [
-      "换开场：先用「凯薇娜核心机制 3 分钟速通」直接吸进房",
-      "5 分钟内加一个互动钩子：让观众猜底命，礼物刷出对应名字才公布",
-      '直播间标题加 "凯薇娜｜4.7 新角色" 关键词，B 站封面也同步换',
-      "中段加一段「玩家提问 Q&A」，缓解留存下滑",
-    ],
-    time: "19:10",
-  },
-];
+const AI_THREAD = [];
 
 // ===== src-streamer-pc\chrome.jsx =====
 // ——— Streamer Desktop · Chrome (sidebar + topbar) ———
@@ -1575,11 +1379,15 @@ function PageHero({ title, subtitle, status, actions, dense = false }) {
 // ===== src-streamer-pc\screen-dashboard.jsx =====
 // ——— Screen: 工作台 ——————————————————————
 
-function ScreenDashboard({ go }) {
-  const today = MY_TASKS.filter((t) => t.date === "今天");
-  const pendingReport = MY_TASKS.filter((t) => t.status === "pending_report");
-  const upcoming = MY_TASKS.filter((t) => ["明天", "本周六"].includes(t.date));
-  const reviewing = MY_TASKS.filter((t) => t.status === "pending_review");
+function ScreenDashboard({ go, tasks = MY_TASKS, earnings = MY_EARNINGS }) {
+  const today = tasks.filter((t) =>
+    ["pending_live", "live", "pending_report"].includes(t.status),
+  );
+  const pendingReport = tasks.filter((t) => t.status === "pending_report");
+  const upcoming = tasks
+    .filter((t) => !["pending_live", "live", "pending_report"].includes(t.status))
+    .slice(0, 4);
+  const reviewing = tasks.filter((t) => t.status === "pending_review");
 
   const dayLabel = "周三 · 5 月 27 日";
 
@@ -1595,7 +1403,7 @@ function ScreenDashboard({ go }) {
             </b>{" "}
             场直播 · 本周已完成{" "}
             <b className="num" style={{ color: "var(--ink-900)" }}>
-              {MY_EARNINGS.currentMonth.hours.toFixed(1)}
+              {earnings.currentMonth.hours.toFixed(1)}
             </b>
             h
           </>
@@ -1632,31 +1440,24 @@ function ScreenDashboard({ go }) {
             gap: 16,
           }}
         >
-          <EarningsCard go={go} />
+          <EarningsCard go={go} earnings={earnings} />
           <Card>
             <Metric
               label="本月已直播"
-              value={MY_EARNINGS.currentMonth.hours.toFixed(1)}
+              value={earnings.currentMonth.hours.toFixed(1)}
               unit="h"
-              delta="+11.2h"
-              hint="较上月同期"
+              hint="等待真实任务数据"
             />
           </Card>
           <Card>
-            <Metric
-              label="录屏通过率"
-              value="95"
-              unit="%"
-              delta="+2 pt"
-              hint="近 30 天"
-            />
+            <Metric label="录屏通过率" value="0" unit="%" hint="暂无审核记录" />
           </Card>
           <Card>
             <Metric
               label="本周参与项目"
-              value="3"
+              value={tasks.length}
               unit="个"
-              hint="原神 4.7 · 元梦试播 · 历史"
+              hint="按真实任务统计"
             />
           </Card>
         </div>
@@ -1885,7 +1686,7 @@ function ScreenDashboard({ go }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             {/* Earnings trend */}
             <Card title="近 6 个月收入趋势" padded={true}>
-              <Sparkbars data={MY_EARNINGS.history} />
+              <Sparkbars data={earnings.history} />
               <div
                 style={{
                   marginTop: 10,
@@ -1963,7 +1764,7 @@ function ScreenDashboard({ go }) {
                       color: "var(--ink-900)",
                     }}
                   >
-                    今晚黄金档建议
+                    开播前建议
                   </div>
                   <div
                     style={{
@@ -1997,9 +1798,9 @@ function ScreenDashboard({ go }) {
                 }}
               >
                 {[
-                  "开场切「凯薇娜核心机制 3 分钟速通」",
-                  "5 分钟内安排互动钩子（猜底命 + 礼物公布）",
-                  "直播间标题加 4.7 关键词，封面同步",
+                  "开场先明确本场主题和互动目标",
+                  "5 分钟内安排一个低门槛互动钩子",
+                  "直播间标题和封面同步本场重点",
                 ].map((t, i) => (
                   <li
                     key={i}
@@ -2101,8 +1902,8 @@ function ScreenDashboard({ go }) {
 }
 
 // Big earnings card on dashboard
-function EarningsCard({ go }) {
-  const e = MY_EARNINGS.currentMonth;
+function EarningsCard({ go, earnings = MY_EARNINGS }) {
+  const e = earnings.currentMonth;
   const pct = Math.min(100, (e.hours / 60) * 100);
   return (
     <div
@@ -2501,7 +2302,17 @@ function EmptyCard({ title, hint }) {
 
 // Bar chart for earnings history
 function Sparkbars({ data }) {
-  const max = Math.max(...data.map((d) => d.earned));
+  if (!data.length) {
+    return (
+      <div style={{ height: 100, display: "grid", placeItems: "center" }}>
+        <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+          暂无收入数据
+        </span>
+      </div>
+    );
+  }
+
+  const max = Math.max(1, ...data.map((d) => d.earned));
   return (
     <div
       style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 100 }}
@@ -2561,20 +2372,27 @@ function Sparkbars({ data }) {
 // ===== src-streamer-pc\screen-tasks.jsx =====
 // ——— Screen: 我的任务 ——————————————————————
 
-function ScreenTasks({ go, openTaskId }) {
+function ScreenTasks({ go, openTaskId, tasks = MY_TASKS, actions = {} }) {
   const [filter, setFilter] = React.useState("all");
-  const [activeId, setActiveId] = React.useState(openTaskId || MY_TASKS[0].id);
+  const [activeId, setActiveId] = React.useState(
+    openTaskId || tasks[0]?.id || null,
+  );
+
+  React.useEffect(() => {
+    if (!tasks.some((task) => task.id === activeId)) {
+      setActiveId(openTaskId || tasks[0]?.id || null);
+    }
+  }, [activeId, openTaskId, tasks]);
+
   const counts = {
-    all: MY_TASKS.length,
-    pending_live: MY_TASKS.filter((t) => t.status === "pending_live").length,
-    pending_report: MY_TASKS.filter((t) => t.status === "pending_report")
-      .length,
-    pending_review: MY_TASKS.filter((t) => t.status === "pending_review")
-      .length,
-    trial: MY_TASKS.filter((t) => t.status === "trial").length,
+    all: tasks.length,
+    pending_live: tasks.filter((t) => t.status === "pending_live").length,
+    pending_report: tasks.filter((t) => t.status === "pending_report").length,
+    pending_review: tasks.filter((t) => t.status === "pending_review").length,
+    trial: tasks.filter((t) => t.status === "trial").length,
   };
   const filtered =
-    filter === "all" ? MY_TASKS : MY_TASKS.filter((t) => t.status === filter);
+    filter === "all" ? tasks : tasks.filter((t) => t.status === filter);
 
   return (
     <>
@@ -2703,14 +2521,33 @@ function ScreenTasks({ go, openTaskId }) {
         </Card>
 
         {/* Detail */}
-        <TaskDetail id={activeId} go={go} />
+        <TaskDetail id={activeId} go={go} tasks={tasks} actions={actions} />
       </div>
     </>
   );
 }
 
-function TaskDetail({ id, go }) {
-  const t = MY_TASKS.find((x) => x.id === id) || MY_TASKS[0];
+function TaskDetail({ id, go, tasks = MY_TASKS, actions = {} }) {
+  const t = tasks.find((x) => x.id === id) || tasks[0];
+  if (!t) {
+    return (
+      <div
+        style={{
+          position: "sticky",
+          top: 76,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        <EmptyCard
+          title="暂无任务数据"
+          hint="后端返回直播任务后会显示任务详情。"
+        />
+      </div>
+    );
+  }
+
   const st = STATUS_MAP[t.status];
 
   return (
@@ -2776,7 +2613,9 @@ function TaskDetail({ id, go }) {
 
         {/* CTA */}
         <div style={{ padding: 20 }}>
-          {t.status === "pending_live" && <PendingLiveCTA task={t} />}
+          {t.status === "pending_live" && (
+            <PendingLiveCTA task={t} onStart={actions.startTask} />
+          )}
           {t.status === "pending_report" && <PendingReportCTA task={t} />}
           {t.status === "pending_review" && <ReviewingCTA task={t} />}
           {t.status === "trial" && <TrialCTA task={t} />}
@@ -2817,7 +2656,7 @@ function TaskDetail({ id, go }) {
       <Card title="任务流转">
         <Timeline
           events={[
-            { title: "排班创建", time: "5/25 11:02 · 李珩", done: true },
+            { title: "排班创建", time: "系统生成", done: true },
             {
               title: "点击开始直播",
               time: t.status === "pending_live" ? "待你操作" : "5/27 19:58",
@@ -2860,7 +2699,18 @@ function TaskDetail({ id, go }) {
   );
 }
 
-function PendingLiveCTA({ task }) {
+function PendingLiveCTA({ task, onStart }) {
+  const [busy, setBusy] = React.useState(false);
+  const start = async () => {
+    if (!onStart || busy) return;
+    setBusy(true);
+    try {
+      await onStart(task.id);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div
       style={{
@@ -2909,9 +2759,11 @@ function PendingLiveCTA({ task }) {
         <Button
           kind="primary"
           icon={<Icon.Play size={14} stroke="#fff" />}
+          onClick={start}
+          disabled={busy}
           style={{ flex: 1 }}
         >
-          开始直播
+          {busy ? "启动中…" : "开始直播"}
         </Button>
         <Button kind="default" style={{ flex: 1 }}>
           修改排班
@@ -3526,7 +3378,7 @@ function ScreenAI({ go }) {
         ...prev,
         {
           role: "ai",
-          text: "收到。基于你的描述，建议先观察今晚 20:00-20:30 的窗口：开场 5 分钟内的进房峰值 + 留存曲线。如果 5 分钟峰值 < 400，立即切第二档话术（凯薇娜底命解谜）。我会在直播后做对照复盘。",
+          text: "收到。基于你的描述，建议先观察开播后 30 分钟：进房峰值、停留曲线和互动密度。如果任一指标明显低于近期均值，就切换备用话术。我会在直播后做对照复盘。",
           time: nowHM(),
         },
       ]);
@@ -3568,13 +3420,13 @@ function ScreenAI({ go }) {
             今天
           </div>
           <HistoryItem
-            title="原神 4.7 黄金档卡点"
+            title="开播表现复盘"
             snippet="进房少 + 留不住复合卡点…"
             time="19:08"
             active
           />
           <HistoryItem
-            title="脚本：凯薇娜底命解谜"
+            title="脚本：开场互动话术"
             snippet="开场 3 分钟速通版本…"
             time="14:22"
           />
@@ -3597,7 +3449,7 @@ function ScreenAI({ go }) {
             time="昨日"
           />
           <HistoryItem
-            title="元梦之星试播话术建议"
+            title="试播话术建议"
             snippet="高能 PVP 风格匹配度 89%…"
             time="昨日"
           />
@@ -3621,7 +3473,7 @@ function ScreenAI({ go }) {
           </div>
           <HistoryItem
             title="4 月项目复盘"
-            snippet="KPL 春赛二级解说收益总结…"
+            snippet="历史项目收益总结…"
             time="上月"
           />
         </div>
@@ -3689,7 +3541,7 @@ function ScreenAI({ go }) {
             <div
               style={{ fontSize: 14, fontWeight: 600, color: "var(--ink-900)" }}
             >
-              原神 4.7 黄金档卡点
+              开播表现复盘
             </div>
             <div style={{ fontSize: 11.5, color: "var(--ink-400)" }}>
               基于你近 14 天任务、报数、录屏 · 默认模型：haiku-4-5
@@ -3718,8 +3570,8 @@ function ScreenAI({ go }) {
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {[
                 "昨天的进房为什么下滑",
-                "今晚黄金档怎么开",
-                "帮我写 4.7 凯薇娜的开场话术",
+                "今晚怎么开播",
+                "帮我写开场话术",
                 "上周礼物提成怎样了",
               ].map((q, i) => (
                 <button
@@ -4235,107 +4087,9 @@ function nowHM() {
 // ===== src-streamer-pc\screen-earnings.jsx =====
 // ——— Screen: 结算账单 ——————————————————————
 
-const SETTLEMENT_HISTORY = [
-  {
-    batch: "B-2026-05-S-001",
-    period: "2026-05-01 → 2026-05-15",
-    amount: 9080,
-    status: "locked",
-    date: "5/20 17:14",
-    project: "原神 4.7",
-    breakdown: { base: 6000, hours: 38.5, variable: 3080, adj: 0 },
-  },
-  {
-    batch: "B-2026-04-S-002",
-    period: "2026-04-01 → 2026-04-30",
-    amount: 14820,
-    status: "settled",
-    date: "5/05 09:30",
-    project: "KPL · 原神",
-    breakdown: { base: 6000, hours: 62.0, variable: 8820, adj: 0 },
-  },
-  {
-    batch: "B-2026-03-S-001",
-    period: "2026-03-01 → 2026-03-31",
-    amount: 13560,
-    status: "settled",
-    date: "4/06 11:02",
-    project: "KPL · 春赛",
-    breakdown: { base: 6000, hours: 58.0, variable: 7560, adj: 0 },
-  },
-  {
-    batch: "B-2026-02-S-001",
-    period: "2026-02-01 → 2026-02-28",
-    amount: 11100,
-    status: "settled",
-    date: "3/05 14:28",
-    project: "永劫无间",
-    breakdown: { base: 5000, hours: 52.5, variable: 6300, adj: -200 },
-  },
-  {
-    batch: "B-2026-01-S-001",
-    period: "2026-01-01 → 2026-01-31",
-    amount: 12480,
-    status: "settled",
-    date: "2/05 10:45",
-    project: "原神 / 永劫",
-    breakdown: { base: 5000, hours: 56.0, variable: 7480, adj: 0 },
-  },
-];
+const SETTLEMENT_HISTORY = [];
 
-const BATCH_DETAIL_TASKS = [
-  {
-    id: "T-1019",
-    date: "05-12",
-    name: "原神 4.7 · 周日场",
-    hours: 5.0,
-    variable: 400,
-  },
-  {
-    id: "T-1022",
-    date: "05-13",
-    name: "原神 4.7 · 沉浸玩法",
-    hours: 4.0,
-    variable: 320,
-  },
-  {
-    id: "T-1023",
-    date: "05-14",
-    name: "原神 4.7 · 剧情向解说",
-    hours: 4.5,
-    variable: 360,
-  },
-  {
-    id: "T-1024",
-    date: "05-25",
-    name: "原神 4.7 · 沉浸玩法",
-    hours: 4.0,
-    variable: 320,
-  },
-  {
-    id: "T-1028",
-    date: "05-08",
-    name: "原神 4.7 · 周二常规",
-    hours: 4.0,
-    variable: 320,
-  },
-  { id: "T-1032", date: "05-09", name: "元梦试播", hours: 3.0, variable: 240 },
-  {
-    id: "T-1033",
-    date: "05-10",
-    name: "原神 4.7 · 周中",
-    hours: 4.5,
-    variable: 360,
-  },
-  {
-    id: "T-1034",
-    date: "05-15",
-    name: "原神 4.7 · 周中常规",
-    hours: 5.0,
-    variable: 400,
-  },
-  { id: "T-1041", date: "05-07", name: "元梦试播", hours: 4.5, variable: 360 },
-];
+const BATCH_DETAIL_TASKS = [];
 
 function ScreenEarnings({ go }) {
   const [activeBatch, setActiveBatch] = React.useState(
@@ -4734,7 +4488,7 @@ function ScreenEarnings({ go }) {
                   }}
                 >
                   <Icon.Lock size={12} stroke="var(--ink-400)" />
-                  本批次已锁定 · 由运营负责人 李珩 操作
+                  本批次已锁定 · 由运营负责人确认
                 </span>
                 <div style={{ display: "flex", gap: 8 }}>
                   <Button size="sm" kind="default">
@@ -4990,11 +4744,7 @@ function ScreenProfile({ go }) {
               </Button>
             }
           >
-            <TagGroup
-              label="擅长游戏品类"
-              tags={["元梦之星", "永劫无间", "原神", "王者荣耀"]}
-              tone="blue"
-            />
+            <TagGroup label="擅长游戏品类" tags={["品类待配置"]} tone="blue" />
             <TagGroup
               label="直播风格"
               tags={["欢快互动", "高能竞技", "剧情解说"]}
@@ -5222,12 +4972,99 @@ function SecRow({ icon, label, value, action, last }) {
   );
 }
 
+function toDesktopReferenceTask(task) {
+  const plannedStart = task.plannedStartAt ? new Date(task.plannedStartAt) : null;
+  const plannedEnd = task.plannedEndAt ? new Date(task.plannedEndAt) : null;
+  const plannedMinutes =
+    Number(task.plannedDuration) ||
+    (plannedStart && plannedEnd
+      ? Math.max(0, (plannedEnd.getTime() - plannedStart.getTime()) / 60000)
+      : 0);
+
+  return {
+    id: task.id,
+    projectName: task.projectName || task.title || "未命名任务",
+    vendor: task.vendor || "项目方",
+    dateStr: plannedStart ? formatDesktopDate(plannedStart) : "待排期",
+    start: plannedStart ? formatDesktopTime(plannedStart) : "--:--",
+    end: plannedEnd ? formatDesktopTime(plannedEnd) : "--:--",
+    durationPlan: plannedMinutes ? plannedMinutes / 60 : 0,
+    status: task.status || "pending_live",
+    needStartStop: task.needStartStop ?? true,
+    needScreening: task.needScreening ?? true,
+    settleHint: task.settleHint || "按项目规则",
+    note: task.note || "",
+    reportedDuration: task.settlementDuration
+      ? task.settlementDuration / 60
+      : undefined,
+    reportedAudience: task.viewers,
+  };
+}
+
+function formatDesktopDate(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
+    2,
+    "0",
+  )}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function formatDesktopTime(date) {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(
+    date.getMinutes(),
+  ).padStart(2, "0")}`;
+}
+
 // ===== src-streamer-pc\app.jsx =====
 // ——— App entry ————————————————————————
 
-function StreamerDesktopReferenceInner({ initialRoute = "dashboard" }) {
+function StreamerDesktopReferenceInner({
+  initialRoute = "dashboard",
+  liveTasks,
+}) {
   const [route, setRoute] = React.useState(initialRoute);
   const [taskId, setTaskId] = React.useState(null);
+  const [tasks, setTasks] = React.useState(liveTasks ?? null);
+
+  React.useEffect(() => {
+    setTasks(liveTasks ?? null);
+  }, [liveTasks]);
+
+  const visibleTasks = Array.isArray(tasks) ? tasks : MY_TASKS;
+  const actions = React.useMemo(() => {
+    const readJson = async (response, fallbackMessage) => {
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error || fallbackMessage);
+      }
+      return body;
+    };
+
+    const fetchJson = async (url, fallbackMessage, init) => {
+      const response = await fetch(url, init);
+      return readJson(response, fallbackMessage);
+    };
+
+    const refreshTasks = async () => {
+      const body = await fetchJson(
+        "/api/streamer/live-tasks",
+        "refresh streamer tasks failed",
+      );
+      if (Array.isArray(body.tasks)) {
+        setTasks(body.tasks.map((task) => toDesktopReferenceTask(task)));
+      }
+    };
+
+    return {
+      startTask: async (id) => {
+        await fetchJson(`/api/live-tasks/${id}/start`, "start task failed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        await refreshTasks();
+      },
+    };
+  }, []);
 
   const go = (r, arg) => {
     if (r === "tasks" && arg) setTaskId(arg);
@@ -5262,8 +5099,17 @@ function StreamerDesktopReferenceInner({ initialRoute = "dashboard" }) {
       >
         <TopBar title={meta.t} subtitle={meta.s} />
         <div id="content-scroll" style={{ flex: 1, overflowY: "auto" }}>
-          {route === "dashboard" && <ScreenDashboard go={go} />}
-          {route === "tasks" && <ScreenTasks go={go} openTaskId={taskId} />}
+          {route === "dashboard" && (
+            <ScreenDashboard go={go} tasks={visibleTasks} />
+          )}
+          {route === "tasks" && (
+            <ScreenTasks
+              go={go}
+              openTaskId={taskId}
+              tasks={visibleTasks}
+              actions={actions}
+            />
+          )}
           {route === "videos" && <ScreenVideos go={go} />}
           {route === "ai" && <ScreenAI go={go} />}
           {route === "earnings" && <ScreenEarnings go={go} />}
@@ -5276,6 +5122,12 @@ function StreamerDesktopReferenceInner({ initialRoute = "dashboard" }) {
 
 export default function StreamerDesktopReferenceApp({
   initialRoute = "dashboard",
+  liveTasks,
 }) {
-  return <StreamerDesktopReferenceInner initialRoute={initialRoute} />;
+  return (
+    <StreamerDesktopReferenceInner
+      initialRoute={initialRoute}
+      liveTasks={liveTasks}
+    />
+  );
 }
