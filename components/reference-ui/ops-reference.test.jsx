@@ -1293,6 +1293,56 @@ describe("OpsReferenceApp settlement smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  it("exports filtered report details through governed export", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ export: { id: "export-reports" } }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="reports"
+        liveReports={[
+          {
+            id: "report-export-one",
+            date: "2026-06-02",
+            streamer: "Streamer Export",
+            project: "Project Export",
+            taskId: "task-export-one",
+            duration: 2,
+            audience: 900,
+            status: "pending_review",
+            screens: 1,
+            source: "OCR",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "导出报数明细" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/exports",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      kind: "report_details",
+      rows: [
+        {
+          streamerName: "Streamer Export",
+          settlementDuration: 2,
+          evidenceLevel: "OCR · pending_review",
+        },
+      ],
+    });
+    expect(screen.getByText("报数明细导出已生成")).toBeInTheDocument();
+  });
+
   it("approves a pending report then refreshes M5 and M6 data from the API", async () => {
     const fetchMock = vi.fn(async (url) => {
       if (
@@ -1409,11 +1459,8 @@ describe("OpsReferenceApp settlement smoke", () => {
   });
 
   it("creates a payable settlement batch then refreshes M6 list, detail, and pool data", async () => {
-    const promptValues = ["project-1", "2026-06-01", "2026-06-30", "payable"];
-    vi.stubGlobal(
-      "prompt",
-      vi.fn(() => promptValues.shift() ?? null),
-    );
+    const promptMock = vi.fn();
+    vi.stubGlobal("prompt", promptMock);
 
     const apiBatch = {
       id: "batch-ui-smoke-1",
@@ -1518,8 +1565,10 @@ describe("OpsReferenceApp settlement smoke", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "新建结算批次" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认新建批次" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(promptMock).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/settlement-batches",
       expect.objectContaining({
@@ -1552,11 +1601,8 @@ describe("OpsReferenceApp settlement smoke", () => {
   });
 
   it("adds a manual settlement item then refreshes the active batch instead of reloading", async () => {
-    const promptValues = ["cpa", "300", "red", "人工录入 CPA/CPS/礼物金额"];
-    vi.stubGlobal(
-      "prompt",
-      vi.fn(() => promptValues.shift() ?? null),
-    );
+    const promptMock = vi.fn();
+    vi.stubGlobal("prompt", promptMock);
     const reloadMock = vi.fn();
     vi.stubGlobal("location", { reload: reloadMock });
 
@@ -1660,8 +1706,10 @@ describe("OpsReferenceApp settlement smoke", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "导入 CPA / CPS 数据" }),
     );
+    fireEvent.click(screen.getByRole("button", { name: "确认导入人工金额" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(promptMock).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/settlement-batches/batch-ui-smoke-manual/manual-items",
       expect.objectContaining({

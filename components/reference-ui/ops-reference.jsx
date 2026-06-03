@@ -5976,8 +5976,11 @@ function Sparkline({ data, w = 280, h = 40 }) {
 
 function ScreenReports({ go }) {
   const reports = useOpsReports();
+  const actions = useOpsLiveActions();
   const [filter, setFilter] = React.useState("pending_review");
   const [activeId, setActiveId] = React.useState(reports[0]?.id ?? null);
+  const [exportMessage, setExportMessage] = React.useState("");
+  const [exportSubmitting, setExportSubmitting] = React.useState(false);
 
   React.useEffect(() => {
     if (
@@ -5997,6 +6000,25 @@ function ScreenReports({ go }) {
   };
   const filtered =
     filter === "all" ? reports : reports.filter((r) => r.status === filter);
+  const exportReportDetails = async () => {
+    setExportSubmitting(true);
+    setExportMessage("");
+    try {
+      await actions.createGovernedExport?.({
+        kind: "report_details",
+        rows: filtered.map((report) => ({
+          streamerName: report.streamer,
+          settlementDuration: report.duration,
+          evidenceLevel: `${report.source} · ${report.status}`,
+        })),
+      });
+      setExportMessage("报数明细导出已生成");
+    } catch (error) {
+      setExportMessage(error?.message || "报数明细导出失败，请稍后重试");
+    } finally {
+      setExportSubmitting(false);
+    }
+  };
 
   return (
     <>
@@ -6005,12 +6027,18 @@ function ScreenReports({ go }) {
         subtitle="一条任务可能对应多条报数。审核通过的报数将进入可结算池，但不自动生成结算。"
         actions={
           <>
-            <Button kind="default" icon={<Icon.Export size={14} />}>
-              导出报数明细
+            <Button
+              kind="default"
+              icon={<Icon.Export size={14} />}
+              onClick={exportReportDetails}
+              disabled={exportSubmitting}
+            >
+              {exportSubmitting ? "导出中" : "导出报数明细"}
             </Button>
             <Button
               kind="primary"
               icon={<Icon.Check size={14} stroke="#fff" />}
+              onClick={() => setExportMessage("批量审核后台暂未接入")}
             >
               批量审核通过
             </Button>
@@ -6027,6 +6055,24 @@ function ScreenReports({ go }) {
           alignItems: "flex-start",
         }}
       >
+        {exportMessage ? (
+          <div
+            aria-live="polite"
+            style={{
+              gridColumn: "1 / -1",
+              padding: "10px 12px",
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              color: exportMessage.includes("失败")
+                ? "var(--danger-600)"
+                : "var(--ink-700)",
+              fontSize: 12,
+            }}
+          >
+            {exportMessage}
+          </div>
+        ) : null}
         <Card padded={false}>
           <div
             style={{ padding: "0 12px", borderBottom: "1px solid var(--line)" }}
@@ -6947,6 +6993,21 @@ function ScreenSettlement({ go }) {
   const [type, setType] = React.useState("all");
   const [busyAction, setBusyAction] = React.useState(null);
   const [activeId, setActiveId] = React.useState(batches[0]?.id ?? null);
+  const [batchFormOpen, setBatchFormOpen] = React.useState(false);
+  const [manualFormOpen, setManualFormOpen] = React.useState(false);
+  const [settlementMessage, setSettlementMessage] = React.useState("");
+  const [batchDraft, setBatchDraft] = React.useState({
+    projectId: settlementScope?.projectId || "",
+    periodStart: settlementScope?.periodStart || "",
+    periodEnd: settlementScope?.periodEnd || "",
+    batchType: "payable",
+  });
+  const [manualDraft, setManualDraft] = React.useState({
+    itemType: "cpa",
+    manualAmount: "300",
+    evidenceLevel: "red",
+    reason: "人工录入 CPA/CPS/礼物金额",
+  });
 
   React.useEffect(() => {
     if (!batches.some((b) => b.id === activeId)) {
@@ -6980,73 +7041,101 @@ function ScreenSettlement({ go }) {
     }
   };
 
-  const createBatch = () =>
-    runSettlementAction("create", async () => {
-      const projectId = askText(
-        "项目 ID",
-        settlementScope?.projectId || activeBatch?.projectId || "",
-      );
-      const periodStart = askText(
-        "周期开始 YYYY-MM-DD",
-        settlementScope?.periodStart || "",
-      );
-      const periodEnd = askText(
-        "周期结束 YYYY-MM-DD",
-        settlementScope?.periodEnd || "",
-      );
-      const batchTypeInput = askText(
-        "批次类型：payable 主播应付 / receivable 厂家应收",
-        "payable",
-      );
-      if (!projectId || !periodStart || !periodEnd || !batchTypeInput)
-        return false;
+  React.useEffect(() => {
+    setBatchDraft((draft) => ({
+      ...draft,
+      projectId:
+        draft.projectId ||
+        settlementScope?.projectId ||
+        activeBatch?.projectId ||
+        "",
+      periodStart: draft.periodStart || settlementScope?.periodStart || "",
+      periodEnd: draft.periodEnd || settlementScope?.periodEnd || "",
+    }));
+  }, [activeBatch, settlementScope]);
 
-      const batchType =
-        batchTypeInput.includes("receivable") || batchTypeInput.includes("应收")
-          ? "receivable"
-          : "payable";
+  const updateBatchDraft = (field) => (event) => {
+    setBatchDraft((draft) => ({ ...draft, [field]: event.target.value }));
+  };
+  const updateManualDraft = (field) => (event) => {
+    setManualDraft((draft) => ({ ...draft, [field]: event.target.value }));
+  };
+
+  const createBatch = (event) => {
+    event?.preventDefault?.();
+    return runSettlementAction("create", async () => {
+      const { projectId, periodStart, periodEnd, batchType } = batchDraft;
+      if (!projectId || !periodStart || !periodEnd || !batchType) {
+        setSettlementMessage("请填写完整结算批次信息");
+        return false;
+      }
+
       await actions.createSettlementBatch?.({
         projectId,
         periodStart,
         periodEnd,
         batchType,
       });
+      setBatchFormOpen(false);
+      setSettlementMessage("");
       return false;
     });
+  };
 
-  const addManualItem = () =>
-    runSettlementAction("manual", async () => {
+  const addManualItem = (event) => {
+    event?.preventDefault?.();
+    return runSettlementAction("manual", async () => {
       if (!activeBatch) return false;
-      const itemType = askText("承载类型：cpa / cps / gift / manual", "cpa");
-      const amount = askText("人工金额", "300");
-      const evidenceLevel = askText("证据等级：yellow / red", "red");
-      const reason = askText("原因", "人工录入 CPA/CPS/礼物金额");
-      if (!itemType || !amount || !evidenceLevel || !reason) return false;
+      const manualAmount = Number(manualDraft.manualAmount);
+      if (!manualDraft.itemType || !manualAmount || !manualDraft.reason) {
+        setSettlementMessage("请填写完整人工调整信息");
+        return false;
+      }
+
       await actions.addManualSettlementItem?.(activeBatch.id, {
-        itemType,
-        manualAmount: Number(amount),
-        evidenceLevel: evidenceLevel === "yellow" ? "yellow" : "red",
-        reason,
+        itemType: manualDraft.itemType,
+        manualAmount,
+        evidenceLevel:
+          manualDraft.evidenceLevel === "yellow" ? "yellow" : "red",
+        reason: manualDraft.reason,
         projectId: activeBatch.projectId,
       });
+      setManualFormOpen(false);
+      setSettlementMessage("");
       return false;
     });
+  };
 
   const lockBatch = () =>
     runSettlementAction("lock", async () => {
       if (!activeBatch) return false;
-      const reason = askText("锁定原因", "财务核对无误");
-      if (!reason) return false;
-      await actions.lockSettlementBatch?.(activeBatch.id, { reason });
+      await actions.lockSettlementBatch?.(activeBatch.id, {
+        reason: "财务核对无误",
+      });
       return false;
     });
 
   const reopenBatch = () =>
     runSettlementAction("reopen", async () => {
       if (!activeBatch) return false;
-      const reason = askText("重开原因", "需要修正结算金额");
-      if (!reason) return false;
-      await actions.reopenSettlementBatch?.(activeBatch.id, { reason });
+      await actions.reopenSettlementBatch?.(activeBatch.id, {
+        reason: "需要修正结算金额",
+      });
+      return false;
+    });
+  const exportBatches = () =>
+    runSettlementAction("export", async () => {
+      await actions.createGovernedExport?.({
+        kind: "settlement_batch",
+        rows: filtered.map((batch) => ({
+          batchName: batch.name,
+          payableAmountCents:
+            batch.type === "streamer_payable" ? batch.amount * 100 : 0,
+          vendorReceivableCents:
+            batch.type === "vendor_receivable" ? batch.amount * 100 : 0,
+        })),
+      });
+      setSettlementMessage("结算批次导出已生成");
       return false;
     });
 
@@ -7060,18 +7149,29 @@ function ScreenSettlement({ go }) {
             <Button
               kind="default"
               icon={<Icon.Upload size={14} />}
-              onClick={addManualItem}
+              onClick={() => {
+                setManualFormOpen((value) => !value);
+                setSettlementMessage("");
+              }}
               disabled={!!busyAction}
             >
               {busyAction === "manual" ? "处理中…" : "导入 CPA / CPS 数据"}
             </Button>
-            <Button kind="default" icon={<Icon.Export size={14} />}>
-              批次导出
+            <Button
+              kind="default"
+              icon={<Icon.Export size={14} />}
+              onClick={exportBatches}
+              disabled={!!busyAction}
+            >
+              {busyAction === "export" ? "导出中…" : "批次导出"}
             </Button>
             <Button
               kind="primary"
               icon={<Icon.Plus size={14} stroke="#fff" />}
-              onClick={createBatch}
+              onClick={() => {
+                setBatchFormOpen((value) => !value);
+                setSettlementMessage("");
+              }}
               disabled={!!busyAction}
             >
               新建结算批次
@@ -7123,6 +7223,135 @@ function ScreenSettlement({ go }) {
             <Metric label="本月预估毛利" value="¥73,200" delta="34.2% 毛利率" />
           </Card>
         </div>
+
+        {settlementMessage ? (
+          <div
+            aria-live="polite"
+            style={{
+              padding: "10px 12px",
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              color: settlementMessage.includes("失败")
+                ? "var(--danger-600)"
+                : "var(--ink-700)",
+              fontSize: 12,
+            }}
+          >
+            {settlementMessage}
+          </div>
+        ) : null}
+
+        {batchFormOpen ? (
+          <form
+            onSubmit={createBatch}
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                "minmax(180px, 1fr) 150px 150px 160px auto",
+              alignItems: "end",
+              gap: 10,
+              padding: 14,
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+            }}
+          >
+            <TaskFormLabel label="结算项目 ID">
+              <input
+                value={batchDraft.projectId}
+                onChange={updateBatchDraft("projectId")}
+                style={taskInputStyle}
+              />
+            </TaskFormLabel>
+            <TaskFormLabel label="周期开始">
+              <input
+                type="date"
+                value={batchDraft.periodStart}
+                onChange={updateBatchDraft("periodStart")}
+                style={taskInputStyle}
+              />
+            </TaskFormLabel>
+            <TaskFormLabel label="周期结束">
+              <input
+                type="date"
+                value={batchDraft.periodEnd}
+                onChange={updateBatchDraft("periodEnd")}
+                style={taskInputStyle}
+              />
+            </TaskFormLabel>
+            <TaskFormLabel label="批次类型">
+              <select
+                value={batchDraft.batchType}
+                onChange={updateBatchDraft("batchType")}
+                style={taskInputStyle}
+              >
+                <option value="payable">主播应付</option>
+                <option value="receivable">厂家应收</option>
+              </select>
+            </TaskFormLabel>
+            <Button kind="primary" type="submit" disabled={!!busyAction}>
+              确认新建批次
+            </Button>
+          </form>
+        ) : null}
+
+        {manualFormOpen ? (
+          <form
+            onSubmit={addManualItem}
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                "140px 140px 140px minmax(220px, 1fr) auto",
+              alignItems: "end",
+              gap: 10,
+              padding: 14,
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+            }}
+          >
+            <TaskFormLabel label="人工项目类型">
+              <select
+                value={manualDraft.itemType}
+                onChange={updateManualDraft("itemType")}
+                style={taskInputStyle}
+              >
+                <option value="cpa">CPA</option>
+                <option value="cps">CPS</option>
+                <option value="gift">礼物</option>
+                <option value="manual">手工</option>
+              </select>
+            </TaskFormLabel>
+            <TaskFormLabel label="人工金额">
+              <input
+                value={manualDraft.manualAmount}
+                onChange={updateManualDraft("manualAmount")}
+                style={taskInputStyle}
+              />
+            </TaskFormLabel>
+            <TaskFormLabel label="证据等级">
+              <select
+                value={manualDraft.evidenceLevel}
+                onChange={updateManualDraft("evidenceLevel")}
+                style={taskInputStyle}
+              >
+                <option value="red">red</option>
+                <option value="yellow">yellow</option>
+              </select>
+            </TaskFormLabel>
+            <TaskFormLabel label="人工原因">
+              <input
+                value={manualDraft.reason}
+                onChange={updateManualDraft("reason")}
+                style={taskInputStyle}
+              />
+            </TaskFormLabel>
+            <Button kind="primary" type="submit" disabled={!!busyAction}>
+              确认导入人工金额
+            </Button>
+          </form>
+        ) : null}
 
         <SettlementPoolPreview
           rows={settlementPool}
@@ -7245,7 +7474,10 @@ function ScreenSettlement({ go }) {
             id={activeId}
             batches={batches}
             batchDetails={batchDetails}
-            onAddManualItem={addManualItem}
+            onAddManualItem={() => {
+              setManualFormOpen(true);
+              setSettlementMessage("");
+            }}
             onLockBatch={lockBatch}
             onReopenBatch={reopenBatch}
             busyAction={busyAction}
