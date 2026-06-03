@@ -164,7 +164,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           screenshotStoragePath:
-            "demo/reports/live-task-ui-smoke-1/manual-submit.png",
+            "reports/live-task-ui-smoke-1/manual-submit.png",
           screenshotFileHash: "manual-live-task-ui-smoke-1-1780000000000",
           screenshotDuration: 240,
           claimedDuration: 240,
@@ -214,7 +214,9 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
       />,
     );
 
-    expect(screen.getByText("元梦之星 6 月赛事直播 · 试播录屏")).toBeInTheDocument();
+    expect(
+      screen.getByText("元梦之星 6 月赛事直播 · 试播录屏"),
+    ).toBeInTheDocument();
     expect(screen.getByText("recording-ui-1 · P2412")).toBeInTheDocument();
     expect(screen.getByText("01:01:00")).toBeInTheDocument();
   });
@@ -312,5 +314,67 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
       "/api/streamer/applications",
       undefined,
     );
+  });
+});
+
+describe("StreamerMobileReferenceApp profile actions smoke", () => {
+  it("turns profile tool rows into real navigation or visible panels", async () => {
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="me"
+        liveEarnings={{
+          currentMonth: {
+            month: "2026-06",
+            earned: 1200,
+            pending: 300,
+            finalized: false,
+            hours: 12,
+          },
+          lastMonth: {
+            month: "2026-05",
+            earned: 900,
+            hours: 10,
+            base: 0,
+            variable: 0,
+          },
+          history: [{ month: "2026-06", earned: 1200 }],
+          items: [],
+        }}
+        applicationCards={[
+          {
+            id: "app-ui-profile",
+            status: "pending_recording",
+            project: {
+              id: "project-1",
+              code: "P2412",
+              name: "元梦之星 6 月赛事直播",
+              forceRecording: true,
+            },
+            latestRecording: null,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("我的录屏库"));
+    expect((await screen.findAllByText("我的录屏")).length).toBeGreaterThan(0);
+    expect(screen.getByText("元梦之星 6 月赛事直播 · 试播录屏")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("我的"));
+    fireEvent.click(screen.getByText("结算账单"));
+    expect(screen.getByText("本月预估")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("概览"));
+    fireEvent.click(screen.getByText("账号与平台绑定"));
+    expect(screen.getByText("平台绑定明细")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("隐私与权限"));
+    expect(screen.getByText("隐私字段范围")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("操作记录"));
+    expect(screen.getByText("近期操作记录")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("打开设置"));
+    expect(screen.getByText("设置项")).toBeInTheDocument();
   });
 });

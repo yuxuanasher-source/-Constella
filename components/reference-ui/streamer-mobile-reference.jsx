@@ -578,7 +578,7 @@ function MTabBar({ value, onChange }) {
     { key: "home", label: "任务", icon: "Tasks" },
     { key: "videos", label: "录屏", icon: "Reports" },
     { key: "ai", label: "诊断", icon: "Sparkles", accent: true },
-    { key: "me", label: "我", icon: "Streamer" },
+    { key: "me", label: "我的", icon: "Streamer" },
   ];
   return (
     <div
@@ -699,114 +699,22 @@ function MHero({ children, style }) {
 }
 
 // ===== src-streamer\data.jsx =====
-// Streamer-side mock data ———————————————————————————————
+// Streamer-side empty production defaults ———————————————————————————————
 
-// Logged-in streamer (NIKO · S-004)
+// Logged-in streamer profile fallback.
 const ME = {
-  id: "S-004",
-  alias: "NIKO",
-  real: "倪可",
-  gender: "女",
-  level: "L4 · 稳定档",
-  signedAt: "2025-11-12",
-  org: "星河直播",
-  platforms: [
-    {
-      id: "douyin_niko_live",
-      platform: "抖音",
-      followers: 14600,
-      primary: true,
-    },
-    { id: "bili_niko", platform: "B 站", followers: 8200, primary: false },
-  ],
+  id: "",
+  alias: "未登录",
+  real: "",
+  gender: "",
+  level: "未配置档案",
+  signedAt: "",
+  org: "未配置组织",
+  platforms: [],
 };
 
 // Streamer's tasks — for today + upcoming + recent
-const MY_TASKS = [
-  {
-    id: "T-1034",
-    date: "今天",
-    dateStr: "05-27 周三",
-    project: "P-2406",
-    projectName: "原神 4.7 · 周三常规",
-    vendor: "米哈游",
-    start: "19:00",
-    end: "23:30",
-    durationPlan: 4.5,
-    status: "pending_live", // 待开播
-    needStartStop: true,
-    needScreening: true,
-    note: "今晚以新角色「凯薇娜」为主，互动 2 次刷礼物挑战。",
-    settleHint: "底薪 6000 + CPT 80/h",
-  },
-  {
-    id: "T-1041",
-    date: "明天",
-    dateStr: "05-28 周四",
-    project: "P-2412",
-    projectName: "元梦之星 · 候选试播",
-    vendor: "腾讯游戏",
-    start: "19:00",
-    end: "23:00",
-    durationPlan: 4.0,
-    status: "trial", // 试播任务
-    needStartStop: false,
-    needScreening: true,
-    note: "候选阶段试播，请提交 60 分钟以上的录屏。",
-    settleHint: "试播 · 不计入正式结算",
-  },
-  {
-    id: "T-1048",
-    date: "本周六",
-    dateStr: "05-30 周六",
-    project: "P-2406",
-    projectName: "原神 4.7 · 黄金档",
-    vendor: "米哈游",
-    start: "19:00",
-    end: "24:00",
-    durationPlan: 5.0,
-    status: "pending_live",
-    needStartStop: true,
-    needScreening: true,
-    note: "黄金档，建议互动节奏密集；下播前务必截图直播后台数据页。",
-    settleHint: "底薪 6000 + CPT 80/h",
-  },
-
-  // Yesterday's task — pending report upload
-  {
-    id: "T-1028",
-    date: "昨天",
-    dateStr: "05-26 周二",
-    project: "P-2406",
-    projectName: "原神 4.7 · 周二常规",
-    vendor: "米哈游",
-    start: "19:30",
-    end: "23:30",
-    durationPlan: 4.0,
-    status: "pending_report", // 已下播，待你上传截图
-    needStartStop: true,
-    needScreening: true,
-    note: "",
-    settleHint: "底薪 6000 + CPT 80/h",
-  },
-  // Done report (审核中)
-  {
-    id: "T-1024",
-    date: "前天",
-    dateStr: "05-25 周一",
-    project: "P-2406",
-    projectName: "原神 4.7 · 沉浸玩法",
-    vendor: "米哈游",
-    start: "19:30",
-    end: "23:30",
-    durationPlan: 4.0,
-    status: "pending_review", // 报数待审核
-    note: "运营审核中，预计 24 小时内出结果",
-    settleHint: "底薪 6000 + CPT 80/h",
-    reportedDuration: 4.0,
-    reportedAudience: 11240,
-  },
-];
+const MY_TASKS = [];
 
 const STATUS_MAP = {
   pending_live: { tone: "neutral", label: "待开播" },
@@ -840,91 +748,29 @@ function useStreamerLiveActions() {
   return actions || {};
 }
 
-const MY_NOTIFICATIONS = [
-  {
-    type: "review",
-    title: "5/25 报数已审核通过",
-    detail: "已计入本周结算池",
-    time: "17 分钟前",
-    unread: true,
-  },
-  {
-    type: "task",
-    title: "收到「元梦之星」试播邀约",
-    detail: "请于 24 小时内提交试播录屏",
-    time: "2 小时前",
-    unread: true,
-  },
-  {
-    type: "system",
-    title: "5/24 报数需补充截图",
-    detail: "截图缺少时长字段，请重传",
-    time: "昨日",
-    unread: false,
-  },
-];
+const MY_NOTIFICATIONS = [];
 
 // Earnings — only my own
 const MY_EARNINGS = {
   currentMonth: {
-    month: "2026-05",
-    earned: 9080,
-    pending: 4620,
+    month: "",
+    earned: 0,
+    pending: 0,
     finalized: false,
-    hours: 38.5,
+    hours: 0,
   },
   lastMonth: {
-    month: "2026-04",
-    earned: 14820,
-    hours: 62.0,
-    base: 6000,
-    variable: 8820,
+    month: "",
+    earned: 0,
+    hours: 0,
+    base: 0,
+    variable: 0,
   },
-  history: [
-    { month: "2026-04", earned: 14820 },
-    { month: "2026-03", earned: 13560 },
-    { month: "2026-02", earned: 11100 },
-    { month: "2026-01", earned: 12480 },
-    { month: "2025-12", earned: 10300 },
-    { month: "2026-05", earned: 9080 },
-  ],
+  history: [],
 };
 
 // Screening videos
-const MY_VIDEOS = [
-  {
-    id: "V-2042",
-    title: "元梦之星 · 试播录屏",
-    forProject: "P-2412",
-    uploaded: "2 小时前",
-    status: "pending_review",
-    duration: "01:12:08",
-  },
-  {
-    id: "V-1991",
-    title: "原神 4.6 · 历史录屏",
-    forProject: "历史录屏",
-    uploaded: "4 天前",
-    status: "approved",
-    duration: "00:48:21",
-  },
-  {
-    id: "V-1844",
-    title: "王者荣耀 · 历史录屏",
-    forProject: "历史录屏",
-    uploaded: "上月",
-    status: "approved",
-    duration: "00:32:05",
-  },
-  {
-    id: "V-1788",
-    title: "永劫无间 · 项目录屏",
-    forProject: "P-2398",
-    uploaded: "2 个月前",
-    status: "expired",
-    duration: "00:55:14",
-  },
-];
+const MY_VIDEOS = [];
 
 const VIDEO_STATUS = {
   pending_review: { tone: "violet", label: "审核中" },
@@ -935,49 +781,7 @@ const VIDEO_STATUS = {
 };
 
 // AI diagnosis conversation history
-const AI_THREAD = [
-  {
-    role: "ai",
-    text: "想看你今晚黄金档的什么数据？我能基于过去 14 天的任务、报数和录屏帮你判断卡点。",
-    time: "19:08",
-  },
-  { role: "me", text: "我感觉昨天进房少，互动也不太行。", time: "19:09" },
-  {
-    role: "ai",
-    text: "从你 5/26 报数和录屏看，开播前 30 分钟的进房峰值 312，对比 5/22 黄金档的 540 下降 42%。\n初步判断属于「进房少 + 留不住」复合卡点。",
-    time: "19:09",
-    insight: {
-      type: "进房少 + 留不住",
-      evidence: [
-        ["5/26 开播 30 min 峰值", "312", "人"],
-        ["5/22 同档对比", "540", "人"],
-        ["你 5/26 平均停留", "2.8", "分钟"],
-        ["项目均值停留", "4.6", "分钟"],
-      ],
-    },
-  },
-  {
-    role: "ai",
-    text: "主要原因 ↓",
-    bullets: [
-      "上一档脚本以「萌妹剧情」开场，未承接 4.7 「凯薇娜」热点关键词",
-      "前 5 分钟无明确互动钩子，新进房观众无停留理由",
-      "B 站直播间标题里 4.7 关键词缺失，平台分发权重下降",
-    ],
-    time: "19:10",
-  },
-  {
-    role: "ai",
-    text: "今晚试试这些 ↓",
-    suggestions: [
-      "换开场：先用「凯薇娜核心机制 3 分钟速通」直接吸进房",
-      "5 分钟内加一个互动钩子：让观众猜底命，礼物刷出对应名字才公布",
-      '直播间标题加 "凯薇娜｜4.7 新角色" 关键词，B 站封面也同步换',
-      "中段加一段「玩家提问 Q&A」，缓解留存下滑",
-    ],
-    time: "19:10",
-  },
-];
+const AI_THREAD = [];
 
 // ===== src-streamer\screen-home.jsx =====
 // ——— Streamer Home (我的任务) ——————————————————————
@@ -1469,6 +1273,26 @@ function StreamerTask({ taskId, go }) {
   const tasks = useStreamerTasks();
   const actions = useStreamerLiveActions();
   const t = tasks.find((x) => x.id === taskId) || tasks[0] || MY_TASKS[0];
+  if (!t) {
+    return (
+      <div style={{ paddingBottom: 100, background: "var(--bg)" }}>
+        <MAppBar onBack={() => go("home")} title="任务详情" dark={false} />
+        <div style={{ padding: 20 }}>
+          <MCard>
+            <div style={{ fontWeight: 700, color: "var(--ink-900)" }}>
+              暂无任务数据
+            </div>
+            <div
+              style={{ marginTop: 6, fontSize: 12, color: "var(--ink-400)" }}
+            >
+              后端返回直播任务后会显示在这里。
+            </div>
+          </MCard>
+        </div>
+      </div>
+    );
+  }
+
   const st = STATUS_MAP[t.status];
   const isLive = t.status === "live";
   const isPendingLive = t.status === "pending_live";
@@ -1636,7 +1460,7 @@ function StreamerTask({ taskId, go }) {
           <div style={{ padding: 16 }}>
             <Timeline
               events={[
-                { title: "排班创建", time: "5/25 11:02 · 李珩", done: true },
+                { title: "排班创建", time: "系统生成", done: true },
                 {
                   title: "点击开始直播",
                   time: t.status === "pending_live" ? "待你操作" : "5/27 19:58",
@@ -2135,6 +1959,26 @@ function StreamerReport({ taskId, go }) {
   const durChanged = duration !== ocrDuration;
   const audChanged = audience !== ocrAudience;
 
+  if (!t) {
+    return (
+      <div style={{ paddingBottom: 100 }}>
+        <MAppBar onBack={() => go("home")} title="确认报数" dark={false} />
+        <div style={{ padding: 20 }}>
+          <MCard>
+            <div style={{ fontWeight: 700, color: "var(--ink-900)" }}>
+              暂无可报数任务
+            </div>
+            <div
+              style={{ marginTop: 6, fontSize: 12, color: "var(--ink-400)" }}
+            >
+              待上传报数的任务会在后端返回后显示。
+            </div>
+          </MCard>
+        </div>
+      </div>
+    );
+  }
+
   if (submitted) {
     return (
       <ReportSubmitted
@@ -2193,7 +2037,7 @@ function StreamerReport({ taskId, go }) {
               请核对下方字段。如有差异请直接修改，系统会同时保留 OCR 原值。
             </div>
 
-            <DataField label="直播日期" value="2026-05-27" static />
+            <DataField label="直播日期" value={t.dateStr || t.date} static />
             <DataField
               label="直播时长"
               value={duration}
@@ -2517,7 +2361,7 @@ function ScreenshotPreview() {
             </span>
             <span>抖音 · 直播后台 · 数据概览</span>
             <span style={{ flex: 1 }} />
-            <span style={{ fontSize: 10, color: "#7C8AB0" }}>2026-05-27</span>
+            <span style={{ fontSize: 10, color: "#7C8AB0" }}>直播日期</span>
           </div>
           <div style={{ fontSize: 13, fontWeight: 600 }}>本场直播已结束</div>
           <div
@@ -2532,7 +2376,7 @@ function ScreenshotPreview() {
             <ShotStat label="平均同时" value="356" />
           </div>
           <div style={{ marginTop: "auto", fontSize: 10, color: "#7C8AB0" }}>
-            NIKO · 截图 22:48:21 · SHA-256
+            主播端截图 · SHA-256
           </div>
         </div>
       </div>
@@ -2674,7 +2518,7 @@ function ReportSubmitted({ task, duration, audience, go }) {
               style={{ fontSize: 11, color: "var(--ink-400)" }}
               className="num"
             >
-              R-08831
+              待生成审核单号
             </span>
             <MBadge tone="violet" dot>
               待审核
@@ -2766,7 +2610,7 @@ function StreamerAI({ go }) {
         ...prev,
         {
           role: "ai",
-          text: "收到。基于你刚才说的，建议先观察今晚 20:00-20:30 这个窗口：开场 5 分钟内的进房峰值 + 留存曲线。如果 5 分钟峰值 < 400，就立刻切第二档话术（凯薇娜底命解谜），我也会在你直播后帮你做个对照复盘。",
+          text: "收到。基于你刚才说的，建议先观察开播后 30 分钟：进房峰值、停留曲线和互动密度。如果任一指标明显低于近期均值，就及时切换备用话术，我会在直播后帮你做对照复盘。",
           time: nowHM(),
         },
       ]);
@@ -2835,8 +2679,8 @@ function StreamerAI({ go }) {
         >
           {[
             "昨天的进房为什么下滑",
-            "今晚黄金档怎么开",
-            "帮我写 4.7 凯薇娜的开场话术",
+            "今晚怎么开播",
+            "帮我写开场话术",
             "上周礼物提成怎样了",
           ].map((q, i) => (
             <button
@@ -3252,6 +3096,7 @@ function nowHM() {
 
 function StreamerMe({ go }) {
   const [tab, setTab] = React.useState("overview");
+  const [settingsPanel, setSettingsPanel] = React.useState(null);
   const earnings = useStreamerEarnings();
   return (
     <div style={{ paddingBottom: 96 }}>
@@ -3336,7 +3181,14 @@ function StreamerMe({ go }) {
               ))}
             </div>
           </div>
-          <button style={iconBtnGlassMe}>
+          <button
+            aria-label="打开设置"
+            onClick={() => {
+              setTab("overview");
+              setSettingsPanel("settings");
+            }}
+            style={iconBtnGlassMe}
+          >
             <Icon.Settings size={16} stroke="#fff" sw={1.8} />
           </button>
         </div>
@@ -3500,7 +3352,15 @@ function StreamerMe({ go }) {
         ))}
       </div>
 
-      {tab === "overview" && <OverviewTab go={go} earnings={earnings} />}
+      {tab === "overview" && (
+        <OverviewTab
+          go={go}
+          earnings={earnings}
+          setTab={setTab}
+          settingsPanel={settingsPanel}
+          setSettingsPanel={setSettingsPanel}
+        />
+      )}
       {tab === "earnings" && <EarningsTab earnings={earnings} />}
       {tab === "videos" && <VideosTab />}
     </div>
@@ -3520,7 +3380,13 @@ const iconBtnGlassMe = {
   justifyContent: "center",
 };
 
-function OverviewTab({ go, earnings }) {
+function OverviewTab({
+  go,
+  earnings,
+  setTab,
+  settingsPanel,
+  setSettingsPanel,
+}) {
   return (
     <>
       <MSection title="本月业绩">
@@ -3632,7 +3498,7 @@ function OverviewTab({ go, earnings }) {
             tone="blue"
             title="我的录屏库"
             detail={`${MY_VIDEOS.length} 条 · ${MY_VIDEOS.filter((v) => v.status === "approved").length} 条已通过`}
-            onClick={() => {}}
+            onClick={() => go("videos")}
           />
           <ToolRow
             icon="Money"
@@ -3641,7 +3507,7 @@ function OverviewTab({ go, earnings }) {
             detail={`本月预估 ¥${(
               earnings.currentMonth.earned + earnings.currentMonth.pending
             ).toLocaleString()}`}
-            onClick={() => {}}
+            onClick={() => setTab("earnings")}
             last
           />
         </MCard>
@@ -3654,25 +3520,27 @@ function OverviewTab({ go, earnings }) {
             tone="neutral"
             title="账号与平台绑定"
             detail={`已绑定 ${ME.platforms.length} 个平台`}
-            onClick={() => {}}
+            onClick={() => setSettingsPanel("platforms")}
           />
           <ToolRow
             icon="Lock"
             tone="neutral"
             title="隐私与权限"
             detail="我能看到的字段范围"
-            onClick={() => {}}
+            onClick={() => setSettingsPanel("privacy")}
           />
           <ToolRow
             icon="History"
             tone="neutral"
             title="操作记录"
             detail="我对自己资料的修改日志"
-            onClick={() => {}}
+            onClick={() => setSettingsPanel("history")}
             last
           />
         </MCard>
       </MSection>
+
+      {settingsPanel && <ProfileSettingsPanel kind={settingsPanel} />}
     </>
   );
 }
@@ -3688,15 +3556,23 @@ function ToolRow({ icon, tone, title, detail, onClick, last }) {
   };
   const [bg, fg] = toneMap[tone] || toneMap.neutral;
   return (
-    <div
+    <button
+      type="button"
       onClick={onClick}
       style={{
+        width: "100%",
         display: "flex",
         alignItems: "center",
         gap: 12,
         padding: "14px 16px",
         borderBottom: last ? "none" : "1px solid var(--line)",
+        borderTop: "none",
+        borderLeft: "none",
+        borderRight: "none",
+        background: "#fff",
         cursor: "pointer",
+        textAlign: "left",
+        fontFamily: "inherit",
       }}
     >
       <div
@@ -3727,8 +3603,94 @@ function ToolRow({ icon, tone, title, detail, onClick, last }) {
         )}
       </div>
       <Icon.ChevRight size={16} stroke="var(--ink-300)" />
-    </div>
+    </button>
   );
+}
+
+function ProfileSettingsPanel({ kind }) {
+  const panel = profileSettingsPanel(kind);
+
+  return (
+    <MSection title={panel.title}>
+      <MCard>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {panel.rows.map((row) => (
+            <div
+              key={row.label}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                paddingBottom: 10,
+                borderBottom: "1px solid var(--line)",
+              }}
+            >
+              <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                {row.label}
+              </span>
+              <span
+                style={{
+                  fontSize: 12,
+                  color: "var(--ink-700)",
+                  fontWeight: 600,
+                  textAlign: "right",
+                }}
+              >
+                {row.value}
+              </span>
+            </div>
+          ))}
+        </div>
+      </MCard>
+    </MSection>
+  );
+}
+
+function profileSettingsPanel(kind) {
+  if (kind === "platforms") {
+    return {
+      title: "平台绑定明细",
+      rows: ME.platforms.length
+        ? ME.platforms.map((platform) => ({
+            label: platform.platform,
+            value: platform.primary
+              ? "主账号"
+              : `${(platform.followers / 1000).toFixed(1)}k 粉丝`,
+          }))
+        : [{ label: "平台账号", value: "暂无已绑定平台" }],
+    };
+  }
+
+  if (kind === "privacy") {
+    return {
+      title: "隐私字段范围",
+      rows: [
+        { label: "可见收益", value: "仅本人结算账单" },
+        { label: "不可见字段", value: "厂家价格、MCN 毛利、其他主播结算" },
+        { label: "AI 诊断", value: "继承主播本人权限" },
+      ],
+    };
+  }
+
+  if (kind === "history") {
+    return {
+      title: "近期操作记录",
+      rows: [
+        { label: "资料修改", value: "暂无记录" },
+        { label: "录屏上传", value: "由报名录屏链路记录" },
+        { label: "任务报数", value: "由任务履约链路记录" },
+      ],
+    };
+  }
+
+  return {
+    title: "设置项",
+    rows: [
+      { label: "通知提醒", value: "跟随任务和审核状态" },
+      { label: "账号绑定", value: `${ME.platforms.length} 个平台` },
+      { label: "隐私权限", value: "按主播角色自动限制字段" },
+    ],
+  };
 }
 
 function Sparkbars({ data }) {
@@ -4049,8 +4011,8 @@ function VideosTab({ applicationCards }) {
   const actions = useStreamerLiveActions();
   const fileInputRef = React.useRef(null);
   const targetApplication = Array.isArray(applicationCards)
-    ? applicationCards.find((item) => !item.latestRecording) ??
-      applicationCards[0]
+    ? (applicationCards.find((item) => !item.latestRecording) ??
+      applicationCards[0])
     : null;
   const uploadRecording = async (event) => {
     const file = event.target.files?.[0];
@@ -4282,7 +4244,7 @@ function StreamerMobileReferenceInner({
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              screenshotStoragePath: `demo/reports/${id}/manual-submit.png`,
+              screenshotStoragePath: `reports/${id}/manual-submit.png`,
               screenshotFileHash: `manual-${id}-${Date.now()}`,
               screenshotDuration: Math.round(durationHours * 60),
               claimedDuration: Math.round(durationHours * 60),
@@ -4334,13 +4296,13 @@ function StreamerMobileReferenceInner({
   const go = (r, arg) => {
     if (r === "task") {
       setRoute("task");
-      setTaskId(arg || visibleTasks[0]?.id || MY_TASKS[0].id);
+      setTaskId(arg || visibleTasks[0]?.id || null);
     } else if (r === "report") {
       setRoute("report");
       setTaskId(
         arg ||
           visibleTasks.find((t) => t.status === "pending_report")?.id ||
-          MY_TASKS[0].id,
+          null,
       );
     } else setRoute(r);
     // Scroll to top on nav
@@ -4390,7 +4352,11 @@ function StreamerMobileReferenceInner({
 function VideosOnlyPage({ applicationCards }) {
   return (
     <div style={{ paddingBottom: 96 }}>
-      <MAppBar title="我的录屏" subtitle="项目报名录屏 / 历史录屏" dark={false} />
+      <MAppBar
+        title="我的录屏"
+        subtitle="项目报名录屏 / 历史录屏"
+        dark={false}
+      />
       <VideosTab applicationCards={applicationCards} />
     </div>
   );
@@ -4400,7 +4366,7 @@ function toVideoFromApplication(application) {
   const recording = application.latestRecording;
   return {
     id: recording?.id ?? application.id,
-    title: `${application.project?.name ?? "未命名项目"} · 试播录屏`,
+    title: `${application.project?.name ?? "项目报名"} · 试播录屏`,
     forProject: application.project?.code ?? application.project?.id ?? "项目",
     uploaded: recording?.createdAt?.slice(0, 10) ?? "待上传",
     status: recording
