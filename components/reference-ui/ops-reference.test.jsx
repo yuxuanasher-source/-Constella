@@ -79,6 +79,61 @@ const taskStreamerCards = [
   },
 ];
 
+const projectManagementCards = [
+  {
+    id: "project-alpha",
+    code: "PA-001",
+    name: "Alpha Launch",
+    vendor: "Vendor A",
+    product: "RPG",
+    status: "active",
+    pricing: "CPT",
+    leadOps: "Ops A",
+    bizOwner: "Biz A",
+    start: "2026-06-01",
+    end: "2026-06-30",
+    streamers: { active: 2, candidate: 1, pendingReview: 1 },
+    metrics: {
+      plannedHours: 120,
+      doneHours: 80,
+      audience: 180000,
+      reportedPending: 1,
+      anomalies: 0,
+      receivable: 24000,
+      payable: 15000,
+      gross: 9000,
+      margin: 37.5,
+    },
+    risk: "low",
+  },
+  {
+    id: "project-beta",
+    code: "PB-002",
+    name: "Beta Growth",
+    vendor: "Vendor B",
+    product: "Card",
+    status: "recruiting",
+    pricing: "CPM",
+    leadOps: "Ops B",
+    bizOwner: "Biz B",
+    start: "",
+    end: "",
+    streamers: { active: 0, candidate: 3, pendingReview: 0 },
+    metrics: {
+      plannedHours: 60,
+      doneHours: 0,
+      audience: 0,
+      reportedPending: 0,
+      anomalies: 0,
+      receivable: 0,
+      payable: 0,
+      gross: 0,
+      margin: 0,
+    },
+    risk: "medium",
+  },
+];
+
 describe("OpsReferenceApp project smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -254,6 +309,211 @@ describe("OpsReferenceApp project smoke", () => {
     expect((await screen.findAllByText("新建草稿项目")).length).toBeGreaterThan(
       0,
     );
+  });
+
+  it("invites a streamer from the project roster tab", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ application: { id: "application-invite" } }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="project"
+        projectCards={[
+          {
+            id: "project-detail",
+            code: "P-DETAIL",
+            name: "详情项目",
+            vendor: "厂商",
+            product: "产品",
+            status: "recruiting",
+            pricing: "CPT",
+            leadOps: "Ops",
+            bizOwner: "Biz",
+            start: "2026-06-01",
+            end: "2026-06-30",
+            streamers: { active: 0, candidate: 0, pendingReview: 0 },
+            metrics: {
+              plannedHours: 0,
+              doneHours: 0,
+              audience: 0,
+              reportedPending: 0,
+              anomalies: 0,
+              receivable: 0,
+              payable: 0,
+              gross: 0,
+              margin: 0,
+            },
+            risk: "low",
+          },
+        ]}
+        streamerCards={taskStreamerCards}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("详情项目"));
+    fireEvent.click(screen.getByRole("button", { name: /主播阵容/ }));
+    fireEvent.click(screen.getByRole("button", { name: "邀请主播" }));
+    fireEvent.change(screen.getByLabelText("选择主播"), {
+      target: { value: "streamer-one" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认邀请" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-detail/invitations",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ streamerId: "streamer-one" }),
+      }),
+    );
+    expect(screen.getByText("已邀请 Streamer One")).toBeInTheDocument();
+    expect(screen.getByText("streamer-one · Streamer One")).toBeInTheDocument();
+    expect(screen.getAllByText("邀约中").length).toBeGreaterThan(0);
+  });
+  it("filters project rows by search, vendor, owner, and schedule state", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={projectManagementCards}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("项目名 / 编号 / 厂商"), {
+      target: { value: "Beta" },
+    });
+    expect(screen.getByText("Beta Growth")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha Launch")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("项目名 / 编号 / 厂商"), {
+      target: { value: "" },
+    });
+    fireEvent.change(screen.getByLabelText("厂商筛选"), {
+      target: { value: "Vendor A" },
+    });
+    expect(screen.getByText("Alpha Launch")).toBeInTheDocument();
+    expect(screen.queryByText("Beta Growth")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("厂商筛选"), {
+      target: { value: "all" },
+    });
+    fireEvent.change(screen.getByLabelText("负责人筛选"), {
+      target: { value: "Ops B" },
+    });
+    expect(screen.getByText("Beta Growth")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha Launch")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("负责人筛选"), {
+      target: { value: "all" },
+    });
+    fireEvent.change(screen.getByLabelText("时间范围筛选"), {
+      target: { value: "scheduled" },
+    });
+    expect(screen.getByText("Alpha Launch")).toBeInTheDocument();
+    expect(screen.queryByText("Beta Growth")).not.toBeInTheDocument();
+  });
+
+  it("exports the filtered project table through the governed export API", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ export: { id: "export-projects" } }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={projectManagementCards}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("项目名 / 编号 / 厂商"), {
+      target: { value: "Alpha" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "导出项目表" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/exports",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      kind: "project_execution",
+      rows: [
+        {
+          projectName: "Alpha Launch",
+          status: "active",
+          operatorName: "Ops A",
+        },
+      ],
+    });
+    expect(await screen.findByText(/项目表导出已生成/)).toBeInTheDocument();
+  });
+
+  it("exports a vendor delivery package from project detail", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ export: { id: "export-delivery" } }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={[projectManagementCards[0]]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Alpha Launch"));
+    fireEvent.click(screen.getByRole("button", { name: "厂家交付包" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      kind: "vendor_delivery",
+      rows: [
+        {
+          projectName: "Alpha Launch",
+          streamerName: "2 位已入选主播",
+          settlementDuration: 80,
+          evidenceLevel: "待审录屏 1 条",
+        },
+      ],
+    });
+    expect(await screen.findByText(/厂家交付包已生成/)).toBeInTheDocument();
+  });
+
+  it("routes new schedule to the task module and marks project settings pending", () => {
+    const { unmount } = render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={[projectManagementCards[0]]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Alpha Launch"));
+    fireEvent.click(screen.getByRole("button", { name: "新建排班" }));
+    expect(
+      screen.getByText(
+        "项目维度排班看板 + 任务表格 · 任务完成依据为报数审核通过",
+      ),
+    ).toBeInTheDocument();
+
+    unmount();
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={[projectManagementCards[0]]}
+      />,
+    );
+    fireEvent.click(screen.getByText("Alpha Launch"));
+    fireEvent.click(screen.getByRole("button", { name: "项目设置" }));
+    expect(screen.getByText("项目设置后台暂未接入")).toBeInTheDocument();
   });
 });
 

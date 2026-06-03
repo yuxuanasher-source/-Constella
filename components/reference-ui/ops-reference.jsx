@@ -3177,11 +3177,17 @@ function ProjectList({ go }) {
   const projects = useOpsProjects();
   const actions = useOpsLiveActions();
   const [status, setStatus] = React.useState("all");
+  const [query, setQuery] = React.useState("");
+  const [vendorFilter, setVendorFilter] = React.useState("all");
+  const [ownerFilter, setOwnerFilter] = React.useState("all");
+  const [scheduleFilter, setScheduleFilter] = React.useState("all");
   const [draftOpen, setDraftOpen] = React.useState(false);
   const [draftName, setDraftName] = React.useState("");
   const [draftCode, setDraftCode] = React.useState("");
   const [draftError, setDraftError] = React.useState("");
   const [draftSubmitting, setDraftSubmitting] = React.useState(false);
+  const [exportMessage, setExportMessage] = React.useState("");
+  const [exportSubmitting, setExportSubmitting] = React.useState(false);
   const draftInputStyle = {
     width: "100%",
     height: 32,
@@ -3224,6 +3230,25 @@ function ProjectList({ go }) {
       setDraftSubmitting(false);
     }
   };
+  const exportProjectList = async () => {
+    setExportSubmitting(true);
+    setExportMessage("");
+    try {
+      await actions.createGovernedExport?.({
+        kind: "project_execution",
+        rows: filtered.map((project) => ({
+          projectName: project.name,
+          status: project.status,
+          operatorName: project.leadOps,
+        })),
+      });
+      setExportMessage("项目表导出已生成");
+    } catch (error) {
+      setExportMessage(error?.message || "项目表导出失败，请稍后重试");
+    } finally {
+      setExportSubmitting(false);
+    }
+  };
   const counts = {
     all: projects.length,
     active: projects.filter((p) => p.status === "active").length,
@@ -3232,8 +3257,24 @@ function ProjectList({ go }) {
     paused: projects.filter((p) => p.status === "paused").length,
     ended: projects.filter((p) => p.status === "ended").length,
   };
-  const filtered =
-    status === "all" ? projects : projects.filter((p) => p.status === status);
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = projects.filter((p) => {
+    const matchesStatus = status === "all" || p.status === status;
+    const matchesSearch =
+      !normalizedQuery ||
+      [p.name, p.code, p.id, p.vendor, p.product, p.leadOps, p.bizOwner]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedQuery);
+    const matchesVendor = vendorFilter === "all" || p.vendor === vendorFilter;
+    const matchesOwner = ownerFilter === "all" || p.leadOps === ownerFilter;
+    const matchesSchedule =
+      scheduleFilter === "all" ||
+      (scheduleFilter === "scheduled" && hasProjectSchedule(p)) ||
+      (scheduleFilter === "unscheduled" && !hasProjectSchedule(p));
+    return matchesStatus && matchesSearch && matchesVendor && matchesOwner && matchesSchedule;
+  });
 
   return (
     <>
@@ -3242,8 +3283,13 @@ function ProjectList({ go }) {
         subtitle="厂商 → 产品 → 项目；同时管理报名、录屏、排班、报数与结算"
         actions={
           <>
-            <Button kind="default" icon={<Icon.Export size={14} />}>
-              导出项目表
+            <Button
+              kind="default"
+              icon={<Icon.Export size={14} />}
+              onClick={exportProjectList}
+              disabled={exportSubmitting}
+            >
+              {exportSubmitting ? "导出中" : "导出项目表"}
             </Button>
             <Button
               kind="primary"
@@ -3296,16 +3342,33 @@ function ProjectList({ go }) {
               borderBottom: "1px solid var(--line)",
             }}
           >
-            <SearchInput placeholder="项目名 / 编号 / 厂商" width={260} />
-            <Button kind="default" size="md" icon={<Icon.Filter size={14} />}>
-              厂商
-            </Button>
-            <Button kind="default" size="md" icon={<Icon.Filter size={14} />}>
-              负责人
-            </Button>
-            <Button kind="default" size="md" icon={<Icon.Calendar size={14} />}>
-              时间范围
-            </Button>
+            <SearchInput
+              placeholder="项目名 / 编号 / 厂商"
+              value={query}
+              onChange={setQuery}
+              width={260}
+            />
+            <ProjectInlineFilter
+              label="厂商筛选"
+              value={vendorFilter}
+              onChange={setVendorFilter}
+              options={uniqueProjectOptions(projects, "vendor")}
+            />
+            <ProjectInlineFilter
+              label="负责人筛选"
+              value={ownerFilter}
+              onChange={setOwnerFilter}
+              options={uniqueProjectOptions(projects, "leadOps")}
+            />
+            <ProjectInlineFilter
+              label="时间范围筛选"
+              value={scheduleFilter}
+              onChange={setScheduleFilter}
+              options={[
+                { value: "scheduled", label: "已配置周期" },
+                { value: "unscheduled", label: "未配置周期" },
+              ]}
+            />
             <div style={{ flex: 1 }} />
             <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
               共{" "}
@@ -3315,6 +3378,21 @@ function ProjectList({ go }) {
               个项目
             </span>
           </div>
+          {exportMessage ? (
+            <div
+              aria-live="polite"
+              style={{
+                padding: "8px 16px",
+                borderBottom: "1px solid var(--line)",
+                color: exportMessage.includes("失败")
+                  ? "var(--danger-600)"
+                  : "var(--green-700)",
+                fontSize: 12,
+              }}
+            >
+              {exportMessage}
+            </div>
+          ) : null}
 
           {draftOpen ? (
             <form
@@ -3565,6 +3643,44 @@ function ProjectList({ go }) {
   );
 }
 
+function uniqueProjectOptions(projects, key) {
+  return Array.from(
+    new Set(projects.map((project) => project[key]).filter(Boolean)),
+  ).map((value) => ({ value, label: value }));
+}
+
+function hasProjectSchedule(project) {
+  return Boolean(project?.start && project?.end);
+}
+
+function ProjectInlineFilter({ label, value, onChange, options }) {
+  return (
+    <select
+      aria-label={label}
+      value={value}
+      onChange={(event) => onChange?.(event.target.value)}
+      style={{
+        height: 32,
+        minWidth: 116,
+        border: "1px solid var(--line-strong)",
+        borderRadius: 6,
+        background: "#fff",
+        color: "var(--ink-700)",
+        fontSize: 13,
+        outline: "none",
+        padding: "0 28px 0 10px",
+      }}
+    >
+      <option value="all">{label}</option>
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 // ——— Project detail ———————————————————————
 
 function ProjectDetail({ id, go }) {
@@ -3572,6 +3688,8 @@ function ProjectDetail({ id, go }) {
   const actions = useOpsLiveActions();
   const p = projects.find((x) => x.id === id) || projects[0] || PROJECTS[0];
   const [tab, setTab] = React.useState("overview");
+  const [detailMessage, setDetailMessage] = React.useState("");
+  const [detailSubmitting, setDetailSubmitting] = React.useState("");
   if (!p) {
     return (
       <>
@@ -3603,6 +3721,28 @@ function ProjectDetail({ id, go }) {
   const status = PROJECT_STATUS[p.status] || PROJECT_STATUS.draft;
   const donePct =
     Math.round((p.metrics.doneHours / p.metrics.plannedHours) * 100) || 0;
+  const exportVendorDelivery = async () => {
+    setDetailSubmitting("delivery");
+    setDetailMessage("");
+    try {
+      await actions.createGovernedExport?.({
+        kind: "vendor_delivery",
+        rows: [
+          {
+            projectName: p.name,
+            streamerName: `${p.streamers.active} 位已入选主播`,
+            settlementDuration: p.metrics.doneHours,
+            evidenceLevel: `待审录屏 ${p.streamers.pendingReview} 条`,
+          },
+        ],
+      });
+      setDetailMessage("厂家交付包已生成");
+    } catch (error) {
+      setDetailMessage(error?.message || "厂家交付包导出失败，请稍后重试");
+    } finally {
+      setDetailSubmitting("");
+    }
+  };
 
   return (
     <>
@@ -3635,10 +3775,19 @@ function ProjectDetail({ id, go }) {
             >
               返回列表
             </Button>
-            <Button kind="default" icon={<Icon.Export size={14} />}>
-              厂家交付包
+            <Button
+              kind="default"
+              icon={<Icon.Export size={14} />}
+              onClick={exportVendorDelivery}
+              disabled={detailSubmitting === "delivery"}
+            >
+              {detailSubmitting === "delivery" ? "生成中" : "厂家交付包"}
             </Button>
-            <Button kind="default" icon={<Icon.Settings size={14} />}>
+            <Button
+              kind="default"
+              icon={<Icon.Settings size={14} />}
+              onClick={() => setDetailMessage("项目设置后台暂未接入")}
+            >
               项目设置
             </Button>
             {p.status === "draft" && (
@@ -3653,7 +3802,11 @@ function ProjectDetail({ id, go }) {
                 发布招募
               </Button>
             )}
-            <Button kind="primary" icon={<Icon.Plus size={14} stroke="#fff" />}>
+            <Button
+              kind="primary"
+              icon={<Icon.Plus size={14} stroke="#fff" />}
+              onClick={() => go("tasks")}
+            >
               新建排班
             </Button>
           </>
@@ -3668,6 +3821,23 @@ function ProjectDetail({ id, go }) {
           gap: 20,
         }}
       >
+        {detailMessage ? (
+          <div
+            aria-live="polite"
+            style={{
+              padding: "10px 12px",
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              color: detailMessage.includes("失败")
+                ? "var(--danger-600)"
+                : "var(--ink-700)",
+              fontSize: 12,
+            }}
+          >
+            {detailMessage}
+          </div>
+        ) : null}
         {/* Top metric strip (owner view) */}
         <div
           style={{
@@ -4014,113 +4184,371 @@ function ReminderItem({ tone, title, content }) {
 }
 
 function ProjectRoster({ p, go }) {
-  const roster = STREAMERS.slice(0, p.streamers.active);
+  const streamers = useOpsStreamers();
+  const applications = useOpsApplications();
+  const actions = useOpsLiveActions();
+  const [inviteOpen, setInviteOpen] = React.useState(false);
+  const [selectedStreamerId, setSelectedStreamerId] = React.useState("");
+  const [inviteSubmitting, setInviteSubmitting] = React.useState(false);
+  const [inviteError, setInviteError] = React.useState("");
+  const [inviteMessage, setInviteMessage] = React.useState("");
+  const [localInvites, setLocalInvites] = React.useState([]);
+  const applicationRoster = applications
+    .filter((application) => applicationBelongsToProject(application, p))
+    .map((application) =>
+      applicationToRosterRow(application, streamers, "application"),
+    )
+    .filter(Boolean);
+  const roster = mergeRosterRows(applicationRoster, localInvites);
+  const availableStreamers = streamers.filter(
+    (streamer) => !roster.some((row) => row.id === streamer.id),
+  );
+
+  React.useEffect(() => {
+    if (!selectedStreamerId && availableStreamers[0]?.id) {
+      setSelectedStreamerId(availableStreamers[0].id);
+    }
+    if (
+      selectedStreamerId &&
+      !availableStreamers.some((streamer) => streamer.id === selectedStreamerId)
+    ) {
+      setSelectedStreamerId(availableStreamers[0]?.id ?? "");
+    }
+  }, [availableStreamers, selectedStreamerId]);
+
+  const selectedStreamer = availableStreamers.find(
+    (streamer) => streamer.id === selectedStreamerId,
+  );
+  const submitInvitation = async (event) => {
+    event.preventDefault();
+    if (!selectedStreamer) {
+      setInviteError("暂无可邀请主播");
+      return;
+    }
+
+    setInviteSubmitting(true);
+    setInviteError("");
+    try {
+      await actions.inviteStreamerToProject?.(p.id, selectedStreamer.id);
+      const row = {
+        ...selectedStreamer,
+        projectStatus: "邀约中",
+        rosterSource: "local",
+      };
+      setLocalInvites((rows) => mergeRosterRows(rows, [row]));
+      setInviteMessage(`已邀请 ${selectedStreamer.alias}`);
+      setInviteOpen(false);
+    } catch (error) {
+      setInviteError(error?.message || "邀请主播失败，请稍后重试");
+    } finally {
+      setInviteSubmitting(false);
+    }
+  };
+
   return (
-    <DataTable
-      columns={[
-        {
-          title: "主播",
-          render: (r) => (
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <Avatar name={r.alias} />
-              <div>
-                <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
-                  {r.alias}
-                </div>
-                <div
-                  className="mono"
-                  style={{ fontSize: 11, color: "var(--ink-400)" }}
-                >
-                  {r.id} · {r.real}
-                </div>
-              </div>
-            </div>
-          ),
-        },
-        {
-          title: "来源 / 供应商",
-          render: (r) => (
-            <div>
-              <div>{r.source}</div>
-              <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
-                {r.supplier}
-              </div>
-            </div>
-          ),
-        },
-        {
-          title: "本项目结算规则",
-          render: (r) => <Badge tone="blue">{r.defaultRule}</Badge>,
-        },
-        {
-          title: "本周时长",
-          align: "right",
-          render: (r) => (
-            <span className="num">{(8 + Math.random() * 16).toFixed(1)} h</span>
-          ),
-        },
-        {
-          title: "匹配分",
-          render: (r) => (
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span className="num" style={{ fontWeight: 600 }}>
-                {r.matchScore}
-              </span>
-              <MiniBar
-                value={r.matchScore}
-                tone={r.matchScore >= 85 ? "green" : "blue"}
-                width={60}
-              />
-            </div>
-          ),
-        },
-        { title: "风险", render: (r) => <RiskDot level={r.risk} /> },
-        {
-          title: "操作",
-          align: "right",
-          render: (r) => (
-            <div
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+        }}
+      >
+        <div>
+          <div
+            style={{ fontSize: 14, fontWeight: 600, color: "var(--ink-900)" }}
+          >
+            项目主播阵容
+          </div>
+          <div style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 3 }}>
+            已加入与已邀约主播统一在这里管理。
+          </div>
+        </div>
+        <Button
+          kind="primary"
+          icon={<Icon.Plus size={14} stroke="#fff" />}
+          onClick={() => {
+            setInviteOpen(true);
+            setInviteError("");
+            setInviteMessage("");
+          }}
+        >
+          邀请主播
+        </Button>
+      </div>
+
+      {inviteOpen ? (
+        <form
+          onSubmit={submitInvitation}
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(220px, 1fr) auto",
+            alignItems: "end",
+            gap: 12,
+            padding: 12,
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            background: "var(--bg-soft)",
+          }}
+        >
+          <label
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              fontSize: 12,
+              color: "var(--ink-500)",
+              fontWeight: 600,
+            }}
+          >
+            选择主播
+            <select
+              value={selectedStreamerId}
+              onChange={(event) => setSelectedStreamerId(event.target.value)}
               style={{
-                display: "inline-flex",
-                gap: 6,
-                justifyContent: "flex-end",
+                height: 32,
+                border: "1px solid var(--line-strong)",
+                borderRadius: 6,
+                background: "#fff",
+                color: "var(--ink-700)",
+                fontSize: 13,
+                outline: "none",
+                padding: "0 10px",
               }}
             >
-              <Button
-                size="sm"
-                kind="default"
-                icon={<Icon.Streamer size={12} />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  go && go("streamers", r.id);
-                }}
-              >
-                查看主页
-              </Button>
-              <button
-                onClick={(e) => e.stopPropagation()}
-                style={{
-                  width: 26,
-                  height: 26,
-                  border: "1px solid var(--line-strong)",
-                  background: "#fff",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  color: "var(--ink-400)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <Icon.More size={14} />
-              </button>
+              {availableStreamers.length ? (
+                availableStreamers.map((streamer) => (
+                  <option key={streamer.id} value={streamer.id}>
+                    {streamer.alias} · {streamer.defaultRule}
+                  </option>
+                ))
+              ) : (
+                <option value="">暂无可邀请主播</option>
+              )}
+            </select>
+          </label>
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <Button
+              kind="default"
+              type="button"
+              disabled={inviteSubmitting}
+              onClick={() => setInviteOpen(false)}
+            >
+              取消
+            </Button>
+            <Button kind="primary" type="submit" disabled={inviteSubmitting}>
+              {inviteSubmitting ? "邀请中" : "确认邀请"}
+            </Button>
+          </div>
+          {inviteError ? (
+            <div
+              aria-live="polite"
+              style={{
+                gridColumn: "1 / -1",
+                color: "var(--danger-600)",
+                fontSize: 12,
+              }}
+            >
+              {inviteError}
             </div>
-          ),
-        },
-      ]}
-      rows={roster}
-    />
+          ) : null}
+        </form>
+      ) : null}
+
+      {inviteMessage ? (
+        <div
+          aria-live="polite"
+          style={{
+            padding: "8px 12px",
+            border: "1px solid #B7E6CE",
+            borderRadius: 8,
+            background: "#ECFDF3",
+            color: "var(--ok-600)",
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          {inviteMessage}
+        </div>
+      ) : null}
+
+      <DataTable
+        columns={[
+          {
+            title: "主播",
+            render: (r) => (
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Avatar name={r.alias} />
+                <div>
+                  <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                    {r.alias}
+                  </div>
+                  <div
+                    className="mono"
+                    style={{ fontSize: 11, color: "var(--ink-400)" }}
+                  >
+                    {r.id} · {r.real}
+                  </div>
+                </div>
+              </div>
+            ),
+          },
+          {
+            title: "来源 / 供应商",
+            render: (r) => (
+              <div>
+                <div>{r.source}</div>
+                <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                  {r.supplier}
+                </div>
+              </div>
+            ),
+          },
+          {
+            title: "本项目状态",
+            render: (r) => (
+              <Badge tone={r.projectStatusTone}>{r.projectStatus}</Badge>
+            ),
+          },
+          {
+            title: "本项目结算规则",
+            render: (r) => <Badge tone="blue">{r.defaultRule}</Badge>,
+          },
+          {
+            title: "本周时长",
+            align: "right",
+            render: (r) => (
+              <span className="num">
+                {r.projectStatus === "已加入"
+                  ? `${r.weeklyHours ?? 0} h`
+                  : "待排班"}
+              </span>
+            ),
+          },
+          {
+            title: "匹配分",
+            render: (r) => (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="num" style={{ fontWeight: 600 }}>
+                  {r.matchScore}
+                </span>
+                <MiniBar
+                  value={r.matchScore}
+                  tone={r.matchScore >= 85 ? "green" : "blue"}
+                  width={60}
+                />
+              </div>
+            ),
+          },
+          { title: "风险", render: (r) => <RiskDot level={r.risk} /> },
+          {
+            title: "操作",
+            align: "right",
+            render: (r) => (
+              <div
+                style={{
+                  display: "inline-flex",
+                  gap: 6,
+                  justifyContent: "flex-end",
+                }}
+              >
+                <Button
+                  size="sm"
+                  kind="default"
+                  icon={<Icon.Streamer size={12} />}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    go && go("streamers", r.id);
+                  }}
+                >
+                  查看主页
+                </Button>
+                <button
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    width: 26,
+                    height: 26,
+                    border: "1px solid var(--line-strong)",
+                    background: "#fff",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    color: "var(--ink-400)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Icon.More size={14} />
+                </button>
+              </div>
+            ),
+          },
+        ]}
+        rows={roster}
+        emptyText="暂无项目主播"
+      />
+    </div>
   );
+}
+
+function applicationBelongsToProject(application, project) {
+  const applicationProject = application.project || {};
+  const applicationKeys = [
+    application.projectId,
+    application.project_id,
+    applicationProject.id,
+    applicationProject.code,
+    applicationProject.name,
+  ].filter(Boolean);
+  const projectKeys = [project.id, project.code, project.name].filter(Boolean);
+  return applicationKeys.some((key) => projectKeys.includes(key));
+}
+
+function applicationToRosterRow(application, streamers, rosterSource) {
+  const streamer = application.streamer || {};
+  const streamerId =
+    application.streamerId || application.streamer_id || streamer.id;
+  if (!streamerId) return null;
+  const card = streamers.find((item) => item.id === streamerId);
+  const projectStatus = applicationRosterStatus(application.status);
+  return {
+    id: streamerId,
+    alias: card?.alias || streamer.displayName || streamer.name || streamerId,
+    real: card?.real || streamer.realName || streamer.displayName || "未填写",
+    source: card?.source || "项目邀约",
+    supplier: card?.supplier || "未绑定",
+    defaultRule: card?.defaultRule || "CPT",
+    matchScore: card?.matchScore ?? 65,
+    risk: card?.risk || streamer.riskLevel || "low",
+    projectStatus: projectStatus.label,
+    projectStatusTone: projectStatus.tone,
+    weeklyHours: 0,
+    rosterSource,
+  };
+}
+
+function mergeRosterRows(...groups) {
+  const rows = [];
+  groups.flat().forEach((row) => {
+    if (row && !rows.some((item) => item.id === row.id)) {
+      rows.push(row);
+    }
+  });
+  return rows;
+}
+
+function applicationRosterStatus(status) {
+  const map = {
+    invited: { label: "邀约中", tone: "blue" },
+    recording_submitted: { label: "录屏待审", tone: "amber" },
+    pending_recording_review: { label: "录屏待审", tone: "amber" },
+    recording_approved: { label: "待确认加入", tone: "violet" },
+    joined: { label: "已加入", tone: "green" },
+    rejected: { label: "已拒绝", tone: "red" },
+    rejected_join: { label: "已拒绝", tone: "red" },
+  };
+  return map[status] || { label: "邀约中", tone: "blue" };
 }
 
 function GanttPreview({ tasks = [] }) {
