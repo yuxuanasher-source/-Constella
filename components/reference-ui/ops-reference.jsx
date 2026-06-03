@@ -7782,8 +7782,19 @@ function ScreenTasks({ go }) {
   const actions = useOpsLiveActions();
   const [view, setView] = React.useState("board");
   const [project, setProject] = React.useState("all");
+  const [streamerFilter, setStreamerFilter] = React.useState("all");
+  const [statusFilter, setStatusFilter] = React.useState("all");
   const [selectedTask, setSelectedTask] = React.useState(null);
   const [busyAction, setBusyAction] = React.useState(null);
+  const [batchOpen, setBatchOpen] = React.useState(false);
+  const [batchDraft, setBatchDraft] = React.useState({
+    projectId: "",
+    streamerIds: "",
+    dateKey: formatDateKey(new Date()),
+    startTime: "20:00",
+    endTime: "23:30",
+  });
+  const [taskMessage, setTaskMessage] = React.useState("");
 
   const liveCount = tasks.filter((t) => t.status === "live").length;
   const pendingReportCount = tasks.filter(
@@ -7798,6 +7809,23 @@ function ScreenTasks({ go }) {
   const todayCount = tasks.filter(
     (t) => t.dayIdx === SCHEDULE_WEEK.todayIdx,
   ).length;
+  const taskFilters = {
+    project,
+    streamer: streamerFilter,
+    status: statusFilter,
+  };
+  const filteredTasks = tasks.filter((task) =>
+    taskMatchesTaskFilters(task, taskFilters, projects),
+  );
+
+  React.useEffect(() => {
+    setBatchDraft((draft) => ({
+      ...draft,
+      projectId: draft.projectId || projects[0]?.id || "",
+      streamerIds:
+        draft.streamerIds || streamers.map((streamer) => streamer.id).join(","),
+    }));
+  }, [projects, streamers]);
 
   const runTaskAction = async (actionName, fn) => {
     if (busyAction) return;
@@ -7843,27 +7871,29 @@ function ScreenTasks({ go }) {
     });
   };
 
-  const createBatchTasks = () =>
-    runTaskAction("batch", async () => {
-      const projectId = askText("项目 ID", projects[0]?.id || "");
-      const streamerIds = askText(
-        "主播 ID，逗号分隔",
-        streamers.map((streamer) => streamer.id).join(","),
-      );
-      const dateKey = askText("排班日期 YYYY-MM-DD", formatDateKey(new Date()));
-      const startTime = askText("开始时间 HH:mm", "20:00");
-      const endTime = askText("结束时间 HH:mm", "23:30");
-      if (!projectId || !streamerIds || !dateKey || !startTime || !endTime) {
+  const updateBatchDraft = (field) => (event) => {
+    setBatchDraft((draft) => ({ ...draft, [field]: event.target.value }));
+  };
+
+  const submitBatchTasks = (event) => {
+    event.preventDefault();
+    return runTaskAction("batch", async () => {
+      const project = projectById(batchDraft.projectId, projects);
+      if (!project) {
+        setTaskMessage("请先选择项目");
         return;
       }
 
-      const project = projectById(projectId, projects);
-      if (!project) return;
-
-      const plannedStartAt = scheduleTimeToIso(dateKey, startTime);
-      const plannedEndAt = scheduleTimeToIso(dateKey, endTime);
+      const plannedStartAt = scheduleTimeToIso(
+        batchDraft.dateKey,
+        batchDraft.startTime,
+      );
+      const plannedEndAt = scheduleTimeToIso(
+        batchDraft.dateKey,
+        batchDraft.endTime,
+      );
       const plannedDuration = scheduleMinutes(plannedStartAt, plannedEndAt);
-      const tasks = streamerIds
+      const batchTasks = batchDraft.streamerIds
         .split(",")
         .map((id) => id.trim())
         .filter(Boolean)
@@ -7882,9 +7912,16 @@ function ScreenTasks({ go }) {
         })
         .filter(Boolean);
 
-      if (tasks.length === 0) return;
-      await actions.createLiveTasks?.({ tasks });
+      if (batchTasks.length === 0) {
+        setTaskMessage("请至少选择一个有效主播");
+        return;
+      }
+
+      setTaskMessage("");
+      await actions.createLiveTasks?.({ tasks: batchTasks });
+      setBatchOpen(false);
     });
+  };
 
   return (
     <>
@@ -7893,13 +7930,20 @@ function ScreenTasks({ go }) {
         subtitle="项目维度排班看板 + 任务表格 · 任务完成依据为报数审核通过"
         actions={
           <>
-            <Button kind="default" icon={<Icon.Upload size={14} />}>
+            <Button
+              kind="default"
+              icon={<Icon.Upload size={14} />}
+              onClick={() => setTaskMessage("Excel 导入后台暂未接入")}
+            >
               从 Excel 导入
             </Button>
             <Button
               kind="default"
               icon={<Icon.Calendar size={14} />}
-              onClick={createBatchTasks}
+              onClick={() => {
+                setBatchOpen((value) => !value);
+                setTaskMessage("");
+              }}
               disabled={!!busyAction}
             >
               {busyAction === "batch" ? "排班中…" : "批量排班"}
@@ -7994,6 +8038,90 @@ function ScreenTasks({ go }) {
           </Card>
         </div>
 
+        {taskMessage ? (
+          <div
+            aria-live="polite"
+            style={{
+              padding: "10px 12px",
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              color: taskMessage.includes("失败")
+                ? "var(--danger-600)"
+                : "var(--ink-700)",
+              fontSize: 12,
+            }}
+          >
+            {taskMessage}
+          </div>
+        ) : null}
+
+        {batchOpen ? (
+          <form
+            onSubmit={submitBatchTasks}
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                "minmax(160px, 0.9fr) minmax(220px, 1.2fr) 150px 120px 120px auto",
+              alignItems: "end",
+              gap: 10,
+              padding: 14,
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+            }}
+          >
+            <TaskFormLabel label="批量排班项目">
+              <select
+                value={batchDraft.projectId}
+                onChange={updateBatchDraft("projectId")}
+                style={taskInputStyle}
+              >
+                {projects.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+            </TaskFormLabel>
+            <TaskFormLabel label="批量排班主播">
+              <input
+                value={batchDraft.streamerIds}
+                onChange={updateBatchDraft("streamerIds")}
+                placeholder="streamer-one,streamer-two"
+                style={taskInputStyle}
+              />
+            </TaskFormLabel>
+            <TaskFormLabel label="排班日期">
+              <input
+                type="date"
+                value={batchDraft.dateKey}
+                onChange={updateBatchDraft("dateKey")}
+                style={taskInputStyle}
+              />
+            </TaskFormLabel>
+            <TaskFormLabel label="开始时间">
+              <input
+                type="time"
+                value={batchDraft.startTime}
+                onChange={updateBatchDraft("startTime")}
+                style={taskInputStyle}
+              />
+            </TaskFormLabel>
+            <TaskFormLabel label="结束时间">
+              <input
+                type="time"
+                value={batchDraft.endTime}
+                onChange={updateBatchDraft("endTime")}
+                style={taskInputStyle}
+              />
+            </TaskFormLabel>
+            <Button kind="primary" type="submit" disabled={!!busyAction}>
+              确认批量排班
+            </Button>
+          </form>
+        ) : null}
+
         <Card padded={false}>
           {/* View toggle + filters */}
           <div
@@ -8017,28 +8145,46 @@ function ScreenTasks({ go }) {
               ]}
             />
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <ProjectFilter value={project} onChange={setProject} />
-              <Button size="sm" kind="default" icon={<Icon.Filter size={13} />}>
-                主播
-              </Button>
-              <Button size="sm" kind="default" icon={<Icon.Filter size={13} />}>
-                状态
-              </Button>
+              <ProjectFilter
+                value={project}
+                onChange={setProject}
+                projects={projects}
+              />
+              <TaskInlineFilter
+                label="主播筛选"
+                value={streamerFilter}
+                onChange={setStreamerFilter}
+                options={streamers.map((streamer) => ({
+                  value: streamer.id,
+                  label: streamer.alias,
+                }))}
+              />
+              <TaskInlineFilter
+                label="状态筛选"
+                value={statusFilter}
+                onChange={setStatusFilter}
+                options={Object.entries(TASK_STATUS).map(([value, item]) => ({
+                  value,
+                  label: item.label,
+                }))}
+              />
             </div>
           </div>
 
           <div>
             {view === "board" && (
-              <ScheduleBoard project={project} onSelectTask={setSelectedTask} />
-            )}
-            {view === "list" && (
-              <TaskList
-                project={project}
-                tasks={tasks}
+              <ScheduleBoard
+                filters={taskFilters}
                 onSelectTask={setSelectedTask}
               />
             )}
-            {view === "anomaly" && <AnomalyList tasks={tasks} />}
+            {view === "list" && (
+              <TaskList
+                tasks={filteredTasks}
+                onSelectTask={setSelectedTask}
+              />
+            )}
+            {view === "anomaly" && <AnomalyList tasks={filteredTasks} />}
             {view === "mine" && <MyTasksView />}
           </div>
         </Card>
@@ -8053,52 +8199,117 @@ function ScreenTasks({ go }) {
           onCreateTask={createTask}
           onCancelTask={cancelTask}
           busyAction={busyAction}
+          go={go}
         />
       )}
     </>
   );
 }
 
-function ProjectFilter({ value, onChange }) {
+const taskInputStyle = {
+  width: "100%",
+  height: 32,
+  border: "1px solid var(--line-strong)",
+  borderRadius: 6,
+  background: "#fff",
+  color: "var(--ink-700)",
+  fontSize: 13,
+  outline: "none",
+  padding: "0 10px",
+};
+
+function TaskFormLabel({ label, children }) {
   return (
-    <div
+    <label
       style={{
-        height: 28,
-        display: "inline-flex",
-        alignItems: "center",
+        display: "flex",
+        flexDirection: "column",
         gap: 6,
-        padding: "0 10px 0 6px",
-        border: "1px solid var(--line-strong)",
-        borderRadius: 6,
-        background: "#fff",
         fontSize: 12,
-        color: "var(--ink-700)",
-        cursor: "pointer",
+        color: "var(--ink-500)",
+        fontWeight: 600,
+        minWidth: 0,
       }}
     >
-      <Icon.Project size={13} stroke="var(--ink-500)" />
-      <span style={{ color: "var(--ink-400)" }}>项目：</span>
-      <span style={{ fontWeight: 600 }}>
-        {value === "all"
-          ? "全部项目"
-          : PROJECTS.find((p) => p.id === value)?.name || value}
-      </span>
-      <Icon.ChevDown size={12} stroke="var(--ink-400)" />
-    </div>
+      {label}
+      {children}
+    </label>
   );
+}
+
+function ProjectFilter({ value, onChange, projects = [] }) {
+  return (
+    <select
+      aria-label="项目筛选"
+      value={value}
+      onChange={(event) => onChange?.(event.target.value)}
+      style={{ ...taskInputStyle, width: 150, height: 28, fontSize: 12 }}
+    >
+      <option value="all">全部项目</option>
+      {projects.map((project) => (
+        <option key={project.id} value={project.id}>
+          {project.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function TaskInlineFilter({ label, value, onChange, options }) {
+  return (
+    <select
+      aria-label={label}
+      value={value}
+      onChange={(event) => onChange?.(event.target.value)}
+      style={{ ...taskInputStyle, width: 122, height: 28, fontSize: 12 }}
+    >
+      <option value="all">{label}</option>
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function taskMatchesTaskFilters(task, filters, projects = []) {
+  const project = projects.find((item) => item.id === filters.project);
+  const projectKeys = [
+    filters.project,
+    project?.id,
+    project?.code,
+    project?.name,
+  ].filter(Boolean);
+  const taskProjectKeys = [
+    task.project,
+    task.projectId,
+    task.projectName,
+  ].filter(Boolean);
+  const matchesProject =
+    filters.project === "all" ||
+    taskProjectKeys.some((key) => projectKeys.includes(key));
+  const matchesStreamer =
+    filters.streamer === "all" ||
+    [task.streamerId, task.streamerName].filter(Boolean).includes(
+      filters.streamer,
+    );
+  const statusKey = task.anomaly ? "abnormal" : task.status;
+  const matchesStatus = filters.status === "all" || statusKey === filters.status;
+  return matchesProject && matchesStreamer && matchesStatus;
 }
 
 // ——— Schedule Board (week / streamer grid) ————————
 
-function ScheduleBoard({ project, onSelectTask }) {
+function ScheduleBoard({ filters, onSelectTask }) {
   const tasks = useOpsTasks();
+  const projects = useOpsProjects();
   const knownStreamers = useOpsStreamers();
   const [unit, setUnit] = React.useState("day"); // 'day' | 'hour'
 
   // Filter tasks
-  const allowedProject = project === "all" ? null : project;
-  const visibleTasks = tasks.filter(
-    (task) => !allowedProject || task.project === allowedProject,
+  const visibleTasks = tasks.filter((task) =>
+    taskMatchesTaskFilters(task, filters, projects),
   );
   const streamerIds = Array.from(
     new Set(
@@ -8275,7 +8486,7 @@ function ScheduleBoard({ project, onSelectTask }) {
         const sTasks = tasks.filter(
           (t) =>
             t.streamerId === s.id &&
-            (!allowedProject || t.project === allowedProject),
+            taskMatchesTaskFilters(t, filters, projects),
         );
         return (
           <div
@@ -8386,6 +8597,10 @@ function ScheduleBoard({ project, onSelectTask }) {
                             _new: true,
                             dayIdx: di,
                             streamerId: s.id,
+                            projectId:
+                              filters.project === "all"
+                                ? undefined
+                                : filters.project,
                           })
                         }
                         style={{
@@ -8733,8 +8948,8 @@ const iconBtn = {
 
 // ——— Task List ——————————————————————
 
-function TaskList({ project, tasks, onSelectTask }) {
-  const rows = tasks.filter((t) => project === "all" || t.project === project);
+function TaskList({ tasks, onSelectTask }) {
+  const rows = tasks;
   return (
     <DataTable
       onRowClick={onSelectTask}
@@ -9048,7 +9263,9 @@ function TaskDrawer({
   onCreateTask,
   onCancelTask,
   busyAction,
+  go,
 }) {
+  const [drawerMessage, setDrawerMessage] = React.useState("");
   if (task._new) {
     return (
       <NewTaskDrawer
@@ -9274,6 +9491,21 @@ function TaskDrawer({
             </div>
           </div>
         )}
+        {drawerMessage ? (
+          <div
+            aria-live="polite"
+            style={{
+              padding: "10px 12px",
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              color: "var(--ink-700)",
+              fontSize: 12,
+            }}
+          >
+            {drawerMessage}
+          </div>
+        ) : null}
       </div>
 
       <div
@@ -9294,8 +9526,15 @@ function TaskDrawer({
           {busyAction === "cancel" ? "取消中…" : "取消任务"}
         </Button>
         <div style={{ flex: 1 }} />
-        <Button kind="default">编辑排班</Button>
-        <Button kind="primary">查看报数</Button>
+        <Button
+          kind="default"
+          onClick={() => setDrawerMessage("编辑排班后台暂未接入")}
+        >
+          编辑排班
+        </Button>
+        <Button kind="primary" onClick={() => go?.("reports")}>
+          查看报数
+        </Button>
       </div>
     </Drawer>
   );

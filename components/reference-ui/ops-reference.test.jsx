@@ -1068,17 +1068,8 @@ describe("OpsReferenceApp live task smoke", () => {
   });
 
   it("creates a batch live schedule then refreshes the M4 task queue", async () => {
-    const promptValues = [
-      "project-live",
-      "streamer-one,streamer-two",
-      "2026-05-27",
-      "20:00",
-      "23:30",
-    ];
-    vi.stubGlobal(
-      "prompt",
-      vi.fn(() => promptValues.shift() ?? null),
-    );
+    const promptMock = vi.fn();
+    vi.stubGlobal("prompt", promptMock);
     const refreshedTasks = [
       {
         id: "task-ui-batch-1",
@@ -1132,8 +1123,16 @@ describe("OpsReferenceApp live task smoke", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "批量排班" }));
+    fireEvent.change(await screen.findByLabelText("排班日期"), {
+      target: { value: "2026-05-27" },
+    });
+    fireEvent.change(screen.getByLabelText("批量排班主播"), {
+      target: { value: "streamer-one,streamer-two" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认批量排班" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(promptMock).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       "/api/live-tasks/batch",
@@ -1169,6 +1168,67 @@ describe("OpsReferenceApp live task smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: /任务列表\s*2/ }));
     expect(await screen.findByText("task-ui-batch-1")).toBeInTheDocument();
     expect(screen.getByText("task-ui-batch-2")).toBeInTheDocument();
+  });
+
+  it("filters the task table by streamer and status and marks Excel import pending", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[
+          {
+            id: "task-filter-one",
+            name: "Fixture Project · Streamer One",
+            status: "pending_live",
+            project: "project-live",
+            projectId: "project-live",
+            projectName: "Fixture Project",
+            streamerId: "streamer-one",
+            streamerName: "Streamer One",
+            dayIdx: 1,
+            startHour: 20,
+            endHour: 22,
+            type: "project",
+          },
+          {
+            id: "task-filter-two",
+            name: "Fixture Project · Streamer Two",
+            status: "pending_report",
+            project: "project-live",
+            projectId: "project-live",
+            projectName: "Fixture Project",
+            streamerId: "streamer-two",
+            streamerName: "Streamer Two",
+            dayIdx: 2,
+            startHour: 21,
+            endHour: 23,
+            type: "project",
+          },
+        ]}
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*2/ }));
+    fireEvent.change(screen.getByLabelText("主播筛选"), {
+      target: { value: "streamer-two" },
+    });
+    expect(screen.getByText("task-filter-two")).toBeInTheDocument();
+    expect(screen.queryByText("task-filter-one")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("状态筛选"), {
+      target: { value: "pending_live" },
+    });
+    expect(screen.getByText("暂无数据")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("主播筛选"), {
+      target: { value: "all" },
+    });
+    expect(screen.getByText("task-filter-one")).toBeInTheDocument();
+    expect(screen.queryByText("task-filter-two")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "从 Excel 导入" }));
+    expect(screen.getByText("Excel 导入后台暂未接入")).toBeInTheDocument();
   });
 
   it("cancels an ops live task from the task drawer then refreshes the queue", async () => {
@@ -1223,7 +1283,7 @@ describe("OpsReferenceApp live task smoke", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/live-tasks", undefined);
 
     fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
-    expect(await screen.findByText("已取消")).toBeInTheDocument();
+    expect((await screen.findAllByText("已取消")).length).toBeGreaterThan(0);
   });
 });
 
