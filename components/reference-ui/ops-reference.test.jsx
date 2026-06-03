@@ -3,6 +3,82 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp from "./ops-reference";
 
+const taskProjectCards = [
+  {
+    id: "project-live",
+    code: "PL-001",
+    name: "Fixture Project",
+    vendor: "Fixture Vendor",
+    product: "rpg campaign",
+    status: "active",
+    pricing: "CPT",
+    leadOps: "Ops",
+    bizOwner: "Biz",
+    start: "2026-05-20",
+    end: "2026-06-10",
+    streamers: { active: 2, candidate: 0, pendingReview: 0 },
+    metrics: {
+      plannedHours: 100,
+      doneHours: 40,
+      audience: 1000,
+      reportedPending: 0,
+      anomalies: 0,
+      receivable: 12000,
+      payable: 7000,
+      gross: 5000,
+      margin: 41.7,
+    },
+    risk: "low",
+  },
+];
+
+const taskStreamerCards = [
+  {
+    id: "streamer-one",
+    alias: "Streamer One",
+    real: "Streamer One",
+    gender: "",
+    source: "",
+    supplier: "",
+    games: ["rpg"],
+    platforms: ["douyin"],
+    style: "story",
+    cooperation: "active",
+    risk: "low",
+    metrics: {
+      screenPass: 90,
+      projectFinish: 95,
+      roi: 1.2,
+      grossContrib: 1000,
+    },
+    matchScore: 90,
+    defaultRule: "CPT",
+    completedProjects: 3,
+  },
+  {
+    id: "streamer-two",
+    alias: "Streamer Two",
+    real: "Streamer Two",
+    gender: "",
+    source: "",
+    supplier: "",
+    games: ["rpg"],
+    platforms: ["douyin"],
+    style: "story",
+    cooperation: "active",
+    risk: "low",
+    metrics: {
+      screenPass: 88,
+      projectFinish: 91,
+      roi: 1.1,
+      grossContrib: 900,
+    },
+    matchScore: 88,
+    defaultRule: "CPT",
+    completedProjects: 2,
+  },
+];
+
 describe("OpsReferenceApp project smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -55,7 +131,9 @@ describe("OpsReferenceApp project smoke", () => {
 
     expect(screen.getByLabelText("项目名称")).toBeInTheDocument();
     expect(screen.getByLabelText("项目编号")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "创建草稿" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "创建草稿" }),
+    ).toBeInTheDocument();
   });
 
   it("creates a project draft through the backend project API", async () => {
@@ -122,7 +200,9 @@ describe("OpsReferenceApp project smoke", () => {
       code: "P-NEW",
     });
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/projects", undefined);
-    expect((await screen.findAllByText("新建草稿项目")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("新建草稿项目")).length).toBeGreaterThan(
+      0,
+    );
   });
 });
 
@@ -245,7 +325,14 @@ describe("OpsReferenceApp live task smoke", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<OpsReferenceApp initialRoute="tasks" liveTasks={[]} />);
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[]}
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "新建任务" }));
     fireEvent.click(await screen.findByRole("button", { name: "创建任务" }));
@@ -260,9 +347,9 @@ describe("OpsReferenceApp live task smoke", () => {
       }),
     );
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      projectId: "P-2406",
-      streamerId: "S-001",
-      title: "原神 · 4.7 版本品宣专项 · 冷江",
+      projectId: "project-live",
+      streamerId: "streamer-one",
+      title: "Fixture Project · Streamer One",
       plannedStartAt: "2026-05-27T12:00:00.000Z",
       plannedEndAt: "2026-05-27T15:30:00.000Z",
       plannedDuration: 210,
@@ -276,8 +363,8 @@ describe("OpsReferenceApp live task smoke", () => {
 
   it("creates a batch live schedule then refreshes the M4 task queue", async () => {
     const promptValues = [
-      "P-2406",
-      "S-001,S-002",
+      "project-live",
+      "streamer-one,streamer-two",
       "2026-05-27",
       "20:00",
       "23:30",
@@ -329,7 +416,14 @@ describe("OpsReferenceApp live task smoke", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<OpsReferenceApp initialRoute="tasks" liveTasks={[]} />);
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[]}
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "批量排班" }));
 
@@ -345,18 +439,18 @@ describe("OpsReferenceApp live task smoke", () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       tasks: [
         {
-          projectId: "P-2406",
-          streamerId: "S-001",
-          title: "原神 · 4.7 版本品宣专项 · 冷江",
+          projectId: "project-live",
+          streamerId: "streamer-one",
+          title: "Fixture Project · Streamer One",
           plannedStartAt: "2026-05-27T12:00:00.000Z",
           plannedEndAt: "2026-05-27T15:30:00.000Z",
           plannedDuration: 210,
           note: "经营端批量排班创建",
         },
         {
-          projectId: "P-2406",
-          streamerId: "S-002",
-          title: "原神 · 4.7 版本品宣专项 · 小Mei",
+          projectId: "project-live",
+          streamerId: "streamer-two",
+          title: "Fixture Project · Streamer Two",
           plannedStartAt: "2026-05-27T12:00:00.000Z",
           plannedEndAt: "2026-05-27T15:30:00.000Z",
           plannedDuration: 210,
@@ -1008,6 +1102,162 @@ describe("OpsReferenceApp export center smoke", () => {
         }),
       );
     });
-    expect(await screen.findByText("audit_logs-2026-06-02.csv")).toBeInTheDocument();
+    expect(
+      await screen.findByText("audit_logs-2026-06-02.csv"),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("OpsReferenceApp war room smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("binds pricing, matching, and review buttons to war-room APIs", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/war-room/pricing") {
+        return {
+          ok: true,
+          json: async () => ({
+            pricing: {
+              estimatedDurationMinutes: 6000,
+              expectedReceivableCents: 1200000,
+              streamerPayableCents: 700000,
+              supplierCostCents: 200000,
+              platformFeeCents: 0,
+              carriedManualRevenueCents: 0,
+              manualRevenueEvidenceLevel: "red",
+              grossMarginCents: 300000,
+              marginRateBps: 2500,
+              breakEvenQuoteCents: 900000,
+              breakEvenVendorHourlyRateCents: 9000,
+              suggestedMinimumQuoteCents: 1125000,
+              suggestedMinimumVendorHourlyRateCents: 11250,
+              recommendedSettlementMethod: "cpt",
+              riskNotes: ["margin_below_target"],
+            },
+          }),
+        };
+      }
+
+      if (String(url) === "/api/war-room/matching") {
+        return {
+          ok: true,
+          json: async () => ({
+            matches: [
+              {
+                streamerId: "streamer-api-1",
+                streamerName: "接口主播",
+                score: 97,
+                reasons: ["category_match"],
+                riskNotes: [],
+                referenceProjects: [],
+                suggestedSettlementMethod: "base_salary_cpt",
+              },
+            ],
+            suppliers: [
+              {
+                supplierId: "supplier-api-1",
+                supplierName: "接口供应商",
+                score: 89,
+                grade: "A",
+                reasons: ["high_screening_pass_rate"],
+                riskNotes: [],
+              },
+            ],
+          }),
+        };
+      }
+
+      if (String(url) === "/api/war-room/project-review") {
+        return {
+          ok: true,
+          json: async () => ({
+            report: {
+              projectId: "project-1",
+              projectName: "王者荣耀春节档",
+              category: "moba",
+              platform: "douyin",
+              periodStart: "2026-02-01",
+              periodEnd: "2026-02-07",
+              streamerCount: 2,
+              totalDurationMinutes: 1800,
+              totalViews: 170000,
+              effectiveManualRevenueCents: 80000,
+              receivableCents: 1200000,
+              payableCents: 600000,
+              supplierCostCents: 100000,
+              grossMarginCents: 500000,
+              marginRateBps: 4167,
+              bestStreamer: {
+                streamerId: "streamer-a",
+                name: "Ava",
+                score: 92,
+              },
+              worstStreamer: {
+                streamerId: "streamer-b",
+                name: "Bo",
+                score: 48,
+              },
+              supplierPerformance: [],
+              evidenceSummary: { green: 8, yellow: 1, red: 0, unknown: 0 },
+              anomalyCount: 2,
+              disputeCount: 1,
+              shouldContinue: true,
+              nextSuggestedQuoteCents: 1320000,
+              nextRoundRecommendations: ["retain_best_streamers"],
+              riskNotes: [],
+            },
+          }),
+        };
+      }
+
+      return {
+        ok: false,
+        json: async () => ({ error: "unexpected request" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看完整复盘" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/war-room/project-review",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(await screen.findByText("复盘结论：继续投入")).toBeInTheDocument();
+    expect(screen.getByText("13,200.00 元")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /主播匹配引擎/ }));
+    fireEvent.click(screen.getByRole("button", { name: "导出厂家候选包" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/war-room/matching",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(await screen.findByText("接口主播")).toBeInTheDocument();
+    expect(screen.getByText("接口供应商")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "报价 & 测算" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成立项申请" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/war-room/pricing",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(await screen.findByText("11,250.00 元")).toBeInTheDocument();
+    expect(screen.getByText("margin_below_target")).toBeInTheDocument();
   });
 });

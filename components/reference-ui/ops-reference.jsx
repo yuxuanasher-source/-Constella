@@ -3,6 +3,12 @@
 import React from "react";
 
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
+import {
+  toPricingResultDto,
+  toProjectReviewDto,
+  toStreamerMatchDtos,
+  toSupplierQualityDtos,
+} from "@/features/war-room/war-room-ui-dto";
 
 // ===== src\ui.jsx =====
 // ——— Reusable UI atoms ——————————————————————————————————————
@@ -632,9 +638,9 @@ function RiskDot({ level }) {
   );
 }
 // ===== src\data.jsx =====
-// ——— Mock data ——————————————————————————————————————————————
+// ——— empty production defaults ——————————————————————————————————————————————
 
-const ORG = { id: "org_01", name: "星河直播" };
+const ORG = { id: "", name: "未配置组织" };
 
 const ROLES = {
   owner: "负责人",
@@ -645,166 +651,15 @@ const ROLES = {
 };
 
 const CURRENT_USER = {
-  id: "u_01",
-  name: "陈一鸣",
+  id: "",
+  name: "未登录用户",
   role: "owner",
-  org: ORG.id,
-  dept: "总经办",
+  org: "",
+  dept: "",
 };
 
 // Projects ———————————————————————————————————
-const PROJECTS = [
-  {
-    id: "P-2406",
-    name: "原神 · 4.7 版本品宣专项",
-    code: "GS-0407",
-    vendor: "米哈游",
-    product: "原神 4.7",
-    agent: "智星互动",
-    supplier: "云途直播 / 自有",
-    status: "active",
-    leadOps: "李珩",
-    bizOwner: "周筱筱",
-    start: "2026-04-22",
-    end: "2026-06-30",
-    pricing: "CPT + CPS",
-    needScreening: true,
-    needStartStop: true,
-    streamers: { active: 14, candidate: 6, pendingReview: 4 },
-    metrics: {
-      plannedHours: 720,
-      doneHours: 412.5,
-      audience: 1284600,
-      reportedPending: 7,
-      anomalies: 2,
-      receivable: 286400,
-      payable: 196800,
-      gross: 89600,
-      margin: 31.3,
-    },
-    risk: "medium",
-  },
-  {
-    id: "P-2412",
-    name: "元梦之星 · 6 月赛事直播",
-    code: "YM-0612",
-    vendor: "腾讯游戏",
-    product: "元梦之星",
-    agent: "—",
-    supplier: "飞鸟传媒",
-    status: "recruiting",
-    leadOps: "李珩",
-    bizOwner: "吴桐",
-    start: "2026-06-08",
-    end: "2026-07-10",
-    pricing: "CPT + 礼物提成",
-    needScreening: true,
-    needStartStop: false,
-    streamers: { active: 0, candidate: 12, pendingReview: 9 },
-    metrics: {
-      plannedHours: 480,
-      doneHours: 0,
-      audience: 0,
-      reportedPending: 0,
-      anomalies: 0,
-      receivable: 0,
-      payable: 0,
-      gross: 0,
-      margin: 0,
-    },
-    risk: "low",
-  },
-  {
-    id: "P-2405",
-    name: "王者荣耀 · KPL 春赛二级解说",
-    code: "WZ-S26",
-    vendor: "腾讯游戏",
-    product: "王者荣耀",
-    agent: "智星互动",
-    supplier: "自有",
-    status: "settling",
-    leadOps: "苏婉",
-    bizOwner: "何琳",
-    start: "2026-03-01",
-    end: "2026-05-15",
-    pricing: "CPT 底薪",
-    needScreening: false,
-    needStartStop: true,
-    streamers: { active: 8, candidate: 0, pendingReview: 0 },
-    metrics: {
-      plannedHours: 1240,
-      doneHours: 1276,
-      audience: 3120400,
-      reportedPending: 0,
-      anomalies: 0,
-      receivable: 480000,
-      payable: 312600,
-      gross: 167400,
-      margin: 34.9,
-    },
-    risk: "low",
-  },
-  {
-    id: "P-2403",
-    name: "崩坏：星穹铁道 · 角色定向种草",
-    code: "HSR-0226",
-    vendor: "米哈游",
-    product: "崩坏：星穹铁道",
-    agent: "智星互动",
-    supplier: "云途直播",
-    status: "paused",
-    leadOps: "苏婉",
-    bizOwner: "周筱筱",
-    start: "2026-02-26",
-    end: "2026-05-30",
-    pricing: "CPA",
-    needScreening: true,
-    needStartStop: true,
-    streamers: { active: 6, candidate: 2, pendingReview: 1 },
-    metrics: {
-      plannedHours: 360,
-      doneHours: 198,
-      audience: 562000,
-      reportedPending: 3,
-      anomalies: 4,
-      receivable: 84000,
-      payable: 67200,
-      gross: 16800,
-      margin: 20.0,
-    },
-    risk: "high",
-  },
-  {
-    id: "P-2398",
-    name: "永劫无间 · 5 周年限时",
-    code: "NRK-05Y",
-    vendor: "网易雷火",
-    product: "永劫无间",
-    agent: "—",
-    supplier: "自有 / 飞鸟传媒",
-    status: "ended",
-    leadOps: "李珩",
-    bizOwner: "何琳",
-    start: "2026-01-15",
-    end: "2026-02-28",
-    pricing: "CPS",
-    needScreening: true,
-    needStartStop: true,
-    streamers: { active: 10, candidate: 0, pendingReview: 0 },
-    metrics: {
-      plannedHours: 540,
-      doneHours: 528,
-      audience: 1820000,
-      reportedPending: 0,
-      anomalies: 0,
-      receivable: 264000,
-      payable: 168000,
-      gross: 96000,
-      margin: 36.4,
-    },
-    risk: "low",
-  },
-];
+const PROJECTS = [];
 
 const PROJECT_STATUS = {
   draft: { tone: "neutral", label: "草稿" },
@@ -818,286 +673,10 @@ const PROJECT_STATUS = {
 };
 
 // Streamers ———————————————————————————————————
-const STREAMERS = [
-  {
-    id: "S-001",
-    alias: "冷江",
-    real: "江泽宇",
-    gender: "男",
-    source: "自孵化",
-    supplier: "自有",
-    games: ["原神", "崩坏：星穹铁道"],
-    platforms: ["B站", "抖音"],
-    style: "剧情解说",
-    cooperation: "active",
-    risk: "low",
-    metrics: {
-      screenPass: 92,
-      projectFinish: 95,
-      roi: 1.42,
-      grossContrib: 28400,
-    },
-    matchScore: 92,
-    defaultRule: "CPT 60/h",
-    completedProjects: 11,
-  },
-  {
-    id: "S-002",
-    alias: "小Mei",
-    real: "梅子涵",
-    gender: "女",
-    source: "签约",
-    supplier: "自有",
-    games: ["王者荣耀", "元梦之星"],
-    platforms: ["抖音"],
-    style: "高能竞技",
-    cooperation: "active",
-    risk: "low",
-    metrics: {
-      screenPass: 88,
-      projectFinish: 92,
-      roi: 1.36,
-      grossContrib: 31200,
-    },
-    matchScore: 89,
-    defaultRule: "CPT 75/h + 礼物 30%",
-    completedProjects: 8,
-  },
-  {
-    id: "S-003",
-    alias: "阿七",
-    real: "齐景明",
-    gender: "男",
-    source: "供应商推荐",
-    supplier: "云途直播",
-    games: ["原神", "永劫无间", "王者荣耀"],
-    platforms: ["抖音", "快手"],
-    style: "陪玩 / 情感",
-    cooperation: "active",
-    risk: "medium",
-    metrics: {
-      screenPass: 78,
-      projectFinish: 80,
-      roi: 1.18,
-      grossContrib: 18600,
-    },
-    matchScore: 76,
-    defaultRule: "CPT 50/h",
-    completedProjects: 6,
-  },
-  {
-    id: "S-004",
-    alias: "NIKO",
-    real: "倪可",
-    gender: "女",
-    source: "签约",
-    supplier: "自有",
-    games: ["元梦之星", "永劫无间"],
-    platforms: ["B站", "虎牙"],
-    style: "欢快互动",
-    cooperation: "active",
-    risk: "low",
-    metrics: {
-      screenPass: 95,
-      projectFinish: 98,
-      roi: 1.55,
-      grossContrib: 42100,
-    },
-    matchScore: 96,
-    defaultRule: "底薪 6000 + CPT",
-    completedProjects: 14,
-  },
-  {
-    id: "S-005",
-    alias: "咕咕",
-    real: "顾远",
-    gender: "男",
-    source: "外部合作",
-    supplier: "飞鸟传媒",
-    games: ["崩坏：星穹铁道"],
-    platforms: ["B站"],
-    style: "攻略向",
-    cooperation: "active",
-    risk: "low",
-    metrics: {
-      screenPass: 84,
-      projectFinish: 88,
-      roi: 1.24,
-      grossContrib: 21000,
-    },
-    matchScore: 81,
-    defaultRule: "CPA 12/单",
-    completedProjects: 5,
-  },
-  {
-    id: "S-006",
-    alias: "青羽",
-    real: "林青羽",
-    gender: "女",
-    source: "签约",
-    supplier: "自有",
-    games: ["原神", "元梦之星", "王者荣耀"],
-    platforms: ["抖音", "B站"],
-    style: "声控 / 美图",
-    cooperation: "active",
-    risk: "low",
-    metrics: {
-      screenPass: 90,
-      projectFinish: 93,
-      roi: 1.48,
-      grossContrib: 36500,
-    },
-    matchScore: 93,
-    defaultRule: "CPT 80/h + 礼物 35%",
-    completedProjects: 10,
-  },
-  {
-    id: "S-007",
-    alias: "雷酱",
-    real: "雷夕",
-    gender: "女",
-    source: "供应商推荐",
-    supplier: "云途直播",
-    games: ["王者荣耀"],
-    platforms: ["抖音"],
-    style: "高能竞技",
-    cooperation: "paused",
-    risk: "medium",
-    metrics: {
-      screenPass: 70,
-      projectFinish: 72,
-      roi: 0.96,
-      grossContrib: 5200,
-    },
-    matchScore: 64,
-    defaultRule: "CPT 45/h",
-    completedProjects: 3,
-  },
-  {
-    id: "S-008",
-    alias: "糖豆",
-    real: "陶蓁",
-    gender: "女",
-    source: "外部合作",
-    supplier: "飞鸟传媒",
-    games: ["崩坏：星穹铁道", "原神"],
-    platforms: ["B站"],
-    style: "剧情解说",
-    cooperation: "active",
-    risk: "low",
-    metrics: {
-      screenPass: 86,
-      projectFinish: 90,
-      roi: 1.28,
-      grossContrib: 24300,
-    },
-    matchScore: 84,
-    defaultRule: "CPS 22%",
-    completedProjects: 7,
-  },
-];
+const STREAMERS = [];
 
 // Reports ———————————————————————————————————
-const REPORTS = [
-  {
-    id: "R-08831",
-    date: "2026-05-26",
-    streamer: "NIKO",
-    streamerId: "S-004",
-    project: "P-2406",
-    taskId: "T-1024",
-    duration: 4.2,
-    audience: 11200,
-    status: "pending_review",
-    screens: 1,
-    source: "OCR",
-    note: "凌晨开播，互动峰值在前一小时",
-  },
-  {
-    id: "R-08830",
-    date: "2026-05-26",
-    streamer: "冷江",
-    streamerId: "S-001",
-    project: "P-2406",
-    taskId: "T-1023",
-    duration: 3.5,
-    audience: 9420,
-    status: "pending_review",
-    screens: 1,
-    source: "OCR",
-    note: "",
-  },
-  {
-    id: "R-08829",
-    date: "2026-05-26",
-    streamer: "青羽",
-    streamerId: "S-006",
-    project: "P-2406",
-    taskId: "T-1022",
-    duration: 4.0,
-    audience: 8600,
-    status: "need_supply",
-    screens: 1,
-    source: "manual",
-    note: "截图缺时长字段，已退回主播",
-  },
-  {
-    id: "R-08828",
-    date: "2026-05-26",
-    streamer: "阿七",
-    streamerId: "S-003",
-    project: "P-2403",
-    taskId: "T-1018",
-    duration: 2.1,
-    audience: 4200,
-    status: "pending_review",
-    screens: 2,
-    source: "OCR",
-    note: "同一任务多条截图，需要选择计入项",
-  },
-  {
-    id: "R-08827",
-    date: "2026-05-25",
-    streamer: "小Mei",
-    streamerId: "S-002",
-    project: "P-2406",
-    taskId: "T-1019",
-    duration: 4.5,
-    audience: 13800,
-    status: "approved",
-    screens: 1,
-    source: "OCR",
-    note: "已通过",
-  },
-  {
-    id: "R-08826",
-    date: "2026-05-25",
-    streamer: "糖豆",
-    streamerId: "S-008",
-    project: "P-2403",
-    taskId: "T-1015",
-    duration: 3.0,
-    audience: 5600,
-    status: "rejected",
-    screens: 1,
-    source: "OCR",
-    note: "截图疑似重复，已驳回",
-  },
-  {
-    id: "R-08825",
-    date: "2026-05-25",
-    streamer: "咕咕",
-    streamerId: "S-005",
-    project: "P-2403",
-    taskId: "T-1014",
-    duration: 3.8,
-    audience: 6800,
-    status: "pending_review",
-    screens: 1,
-    source: "OCR",
-    note: "",
-  },
-];
+const REPORTS = [];
 
 const REPORT_STATUS = {
   pending_streamer: { tone: "neutral", label: "待主播确认" },
@@ -1183,73 +762,7 @@ function useOpsLiveActions() {
 }
 
 // Settlement batches ———————————————————————————————————
-const BATCHES = [
-  {
-    id: "B-2026-05-V-001",
-    type: "vendor_receivable",
-    name: "米哈游 · 5月 应收 (原神 4.7)",
-    project: "P-2406",
-    vendor: "米哈游",
-    period: "2026-05-01 → 2026-05-31",
-    items: 14,
-    amount: 286400,
-    status: "pending_confirm",
-    updated: "2026-05-26 14:02",
-    creator: "李珩",
-  },
-  {
-    id: "B-2026-05-S-001",
-    type: "streamer_payable",
-    name: "原神 4.7 · 主播应付 (5月上)",
-    project: "P-2406",
-    vendor: "—",
-    period: "2026-05-01 → 2026-05-15",
-    items: 12,
-    amount: 92400,
-    status: "locked",
-    updated: "2026-05-20 17:14",
-    creator: "李珩",
-  },
-  {
-    id: "B-2026-04-S-002",
-    type: "streamer_payable",
-    name: "王者荣耀 KPL · 主播应付 (4月)",
-    project: "P-2405",
-    vendor: "—",
-    period: "2026-04-01 → 2026-04-30",
-    items: 8,
-    amount: 156400,
-    status: "locked",
-    updated: "2026-05-08 10:30",
-    creator: "苏婉",
-  },
-  {
-    id: "B-2026-04-V-003",
-    type: "vendor_receivable",
-    name: "腾讯游戏 · 4月应收 (KPL)",
-    project: "P-2405",
-    vendor: "腾讯游戏",
-    period: "2026-04-01 → 2026-04-30",
-    items: 8,
-    amount: 240000,
-    status: "confirmed",
-    updated: "2026-05-06 16:48",
-    creator: "苏婉",
-  },
-  {
-    id: "B-2026-04-S-001",
-    type: "streamer_payable",
-    name: "崩铁种草 · 主播应付 (4月)",
-    project: "P-2403",
-    vendor: "—",
-    period: "2026-04-01 → 2026-04-30",
-    items: 6,
-    amount: 38600,
-    status: "draft",
-    updated: "2026-05-04 19:22",
-    creator: "李珩",
-  },
-];
+const BATCHES = [];
 
 const BATCH_STATUS = {
   draft: { tone: "neutral", label: "草稿" },
@@ -1260,214 +773,57 @@ const BATCH_STATUS = {
   reopened: { tone: "violet", label: "已重开" },
 };
 
-const BATCH_DETAIL_ITEMS = [
-  // 主播应付 - B-2026-05-S-001
-  {
-    streamer: "NIKO",
-    id: "S-004",
-    rule: "底薪 6000 + CPT 80/h",
-    hours: 38.5,
-    qty: "—",
-    base: 6000,
-    variable: 3080,
-    adjust: 0,
-    total: 9080,
-  },
-  {
-    streamer: "青羽",
-    id: "S-006",
-    rule: "CPT 80/h + 礼物 35%",
-    hours: 34.0,
-    qty: "礼物 3.2k",
-    base: 0,
-    variable: 3840,
-    adjust: 200,
-    total: 4040,
-  },
-  {
-    streamer: "冷江",
-    id: "S-001",
-    rule: "CPT 60/h",
-    hours: 32.5,
-    qty: "—",
-    base: 0,
-    variable: 1950,
-    adjust: 0,
-    total: 1950,
-  },
-  {
-    streamer: "小Mei",
-    id: "S-002",
-    rule: "CPT 75/h + 礼物 30%",
-    hours: 30.0,
-    qty: "礼物 4.1k",
-    base: 0,
-    variable: 3480,
-    adjust: 0,
-    total: 3480,
-  },
-  {
-    streamer: "阿七",
-    id: "S-003",
-    rule: "CPT 50/h",
-    hours: 24.5,
-    qty: "—",
-    base: 0,
-    variable: 1225,
-    adjust: -100,
-    total: 1125,
-  },
-  {
-    streamer: "糖豆",
-    id: "S-008",
-    rule: "CPS 22%",
-    hours: 22.0,
-    qty: "CPS 28.4k",
-    base: 0,
-    variable: 6248,
-    adjust: 0,
-    total: 6248,
-  },
-];
+const BATCH_DETAIL_ITEMS = [];
 
 // Recommended streamers (war room)
-const RECOS_FOR_P2412 = [
-  {
-    id: "S-004",
-    alias: "NIKO",
-    score: 96,
-    reasons: ["同品类完成率 98%", "近期 ROI 1.55"],
-    risks: [],
-  },
-  {
-    id: "S-002",
-    alias: "小Mei",
-    score: 91,
-    reasons: ["竞技品类多项达标", "礼物提成转化好"],
-    risks: [],
-  },
-  {
-    id: "S-006",
-    alias: "青羽",
-    score: 88,
-    reasons: ["元梦之星历史 ROI 1.42"],
-    risks: ["档期已部分占用"],
-  },
-  {
-    id: "S-007",
-    alias: "雷酱",
-    score: 62,
-    reasons: ["品类匹配"],
-    risks: ["上周报数 2 次逾期", "审核驳回率 14%"],
-  },
-];
+const DEFAULT_MATCHING_ROWS = [];
 
 // Supplier scores (war room)
-const SUPPLIER_SCORES = [
-  {
-    id: "V-1",
-    name: "云途直播",
-    score: 84,
-    streamers: 18,
-    finishRate: 92,
-    anomalyRate: 6,
-    grossContrib: 184000,
-    trend: "+4",
+const SUPPLIER_SCORES = [];
+
+const WAR_ROOM_FALLBACK_PROJECT = {
+  id: "project-war-room-fallback",
+  name: "项目待配置",
+  start: "",
+  end: "",
+  metrics: {
+    receivable: 0,
+    payable: 0,
   },
+};
+
+const WAR_ROOM_FALLBACK_STREAMERS = [
   {
-    id: "V-2",
-    name: "飞鸟传媒",
-    score: 79,
-    streamers: 12,
-    finishRate: 88,
-    anomalyRate: 9,
-    grossContrib: 124200,
-    trend: "+1",
-  },
-  {
-    id: "V-3",
-    name: "自有",
-    score: 91,
-    streamers: 22,
-    finishRate: 96,
-    anomalyRate: 3,
-    grossContrib: 296000,
-    trend: "+2",
-  },
-  {
-    id: "V-4",
-    name: "智星互动",
-    score: 67,
-    streamers: 9,
-    finishRate: 80,
-    anomalyRate: 14,
-    grossContrib: 42600,
-    trend: "-3",
+    id: "streamer-war-room-fallback",
+    alias: "主播待配置",
+    games: [],
+    platforms: [],
+    style: "待配置",
+    risk: "low",
+    metrics: {
+      projectFinish: 0,
+      screenPass: 0,
+      roi: 0,
+      grossContrib: 0,
+    },
+    completedProjects: 0,
   },
 ];
 
-const ANOMALIES = [
+const WAR_ROOM_FALLBACK_SUPPLIERS = [
   {
-    id: "A1",
-    type: "未停止 / 未报数",
-    streamer: "阿七",
-    project: "P-2403",
-    detail: "直播中已超 51h 未上传截图",
-    level: "high",
-    time: "2 小时前",
-  },
-  {
-    id: "A2",
-    type: "报数逾期",
-    streamer: "咕咕",
-    project: "P-2403",
-    detail: "5/24 任务超过上传期限 12h",
-    level: "medium",
-    time: "今晨 03:12",
-  },
-  {
-    id: "A3",
-    type: "审核驳回",
-    streamer: "糖豆",
-    project: "P-2403",
-    detail: "截图疑似重复，已退回",
-    level: "medium",
-    time: "昨日 22:40",
-  },
-  {
-    id: "A4",
-    type: "时长不足",
-    streamer: "青羽",
-    project: "P-2406",
-    detail: "5/25 计划 4h 实际 3.1h",
-    level: "low",
-    time: "昨日 19:08",
+    id: "supplier-war-room-fallback",
+    name: "供应商待配置",
+    score: 0,
+    finishRate: 0,
+    anomalyRate: 0,
+    grossContrib: 0,
   },
 ];
 
-const AUDIT_LOG_RECENT = [
-  {
-    who: "李珩 · 运营负责人",
-    action: "锁定结算批次",
-    target: "B-2026-05-S-001",
-    risk: true,
-    time: "2 分钟前",
-  },
-  {
-    who: "苏婉 · 次级运营",
-    action: "审核通过报数",
-    target: "R-08827",
-    risk: false,
-    time: "17 分钟前",
-  },
-  {
-    who: "陈一鸣 · 负责人",
-    action: "修改结算规则",
-    target: "S-006 · P-2406",
-    risk: true,
-    time: "1 小时前",
-  },
-];
+const ANOMALIES = [];
+
+const AUDIT_LOG_RECENT = [];
 
 // ——— Tasks / Schedule —————————————————————————————
 
@@ -1491,319 +847,7 @@ const SCHEDULE_WEEK = {
 // startHour / endHour are 0-24. status: 'completed' | 'live' | 'pending_report' | 'pending_review' | 'pending_live' | 'abnormal' | 'cancelled'
 // project: project id
 // type: 'project' | 'trial' | 'training' | 'temp'
-const TASKS = [
-  // 冷江 S-001
-  {
-    id: "T-1019",
-    streamerId: "S-001",
-    dayIdx: 0,
-    startHour: 20,
-    endHour: 23.5,
-    project: "P-2406",
-    name: "原神 4.7 · 新角色专场",
-    type: "project",
-    status: "completed",
-  },
-  {
-    id: "T-1023",
-    streamerId: "S-001",
-    dayIdx: 1,
-    startHour: 20,
-    endHour: 23.5,
-    project: "P-2406",
-    name: "原神 4.7 · 剧情向解说",
-    type: "project",
-    status: "pending_review",
-  },
-  {
-    id: "T-1031",
-    streamerId: "S-001",
-    dayIdx: 2,
-    startHour: 20,
-    endHour: 23.5,
-    project: "P-2406",
-    name: "原神 4.7 · 周中场",
-    type: "project",
-    status: "live",
-  },
-  {
-    id: "T-1043",
-    streamerId: "S-001",
-    dayIdx: 4,
-    startHour: 19,
-    endHour: 23,
-    project: "P-2406",
-    name: "原神 4.7 · 周五黄金档",
-    type: "project",
-    status: "pending_live",
-  },
-  {
-    id: "T-1051",
-    streamerId: "S-001",
-    dayIdx: 5,
-    startHour: 14,
-    endHour: 18,
-    project: "P-2406",
-    name: "原神 4.7 · 周末特别场",
-    type: "project",
-    status: "pending_live",
-  },
-
-  // 小Mei S-002
-  {
-    id: "T-1020",
-    streamerId: "S-002",
-    dayIdx: 0,
-    startHour: 19,
-    endHour: 23.5,
-    project: "P-2406",
-    name: "原神 4.7 · KOL 联动",
-    type: "project",
-    status: "completed",
-  },
-  {
-    id: "T-1024",
-    streamerId: "S-002",
-    dayIdx: 1,
-    startHour: 19,
-    endHour: 23.5,
-    project: "P-2406",
-    name: "原神 4.7 · 高能 PVP",
-    type: "project",
-    status: "pending_review",
-  },
-  {
-    id: "T-1032",
-    streamerId: "S-002",
-    dayIdx: 3,
-    startHour: 20,
-    endHour: 23,
-    project: "P-2406",
-    name: "元梦试播 · 试播",
-    type: "trial",
-  },
-  {
-    id: "T-1044",
-    streamerId: "S-002",
-    dayIdx: 5,
-    startHour: 20,
-    endHour: 23.5,
-    project: "P-2406",
-    name: "原神 4.7 · 周末场",
-    type: "project",
-    status: "pending_live",
-  },
-
-  // 阿七 S-003
-  {
-    id: "T-1018",
-    streamerId: "S-003",
-    dayIdx: 0,
-    startHour: 21,
-    endHour: 23.5,
-    project: "P-2403",
-    name: "崩铁种草 · 角色解说",
-    type: "project",
-    status: "pending_review",
-  },
-  {
-    id: "T-1029",
-    streamerId: "S-003",
-    dayIdx: 1,
-    startHour: 20,
-    endHour: 22.5,
-    project: "P-2403",
-    name: "崩铁种草 · 速通向",
-    type: "project",
-    status: "abnormal",
-  },
-  {
-    id: "T-1037",
-    streamerId: "S-003",
-    dayIdx: 2,
-    startHour: 20,
-    endHour: 23,
-    project: "P-2403",
-    name: "崩铁种草 · 中段拉新",
-    type: "project",
-    status: "live",
-    anomaly: "unstopped",
-  },
-
-  // NIKO S-004
-  {
-    id: "T-1022",
-    streamerId: "S-004",
-    dayIdx: 0,
-    startHour: 19.5,
-    endHour: 23.5,
-    project: "P-2406",
-    name: "原神 4.7 · 沉浸玩法",
-    type: "project",
-    status: "completed",
-  },
-  {
-    id: "T-1028",
-    streamerId: "S-004",
-    dayIdx: 1,
-    startHour: 19.5,
-    endHour: 23.5,
-    project: "P-2406",
-    name: "原神 4.7 · 周二常规",
-    type: "project",
-    status: "pending_report",
-  },
-  {
-    id: "T-1034",
-    streamerId: "S-004",
-    dayIdx: 2,
-    startHour: 19,
-    endHour: 23.5,
-    project: "P-2406",
-    name: "原神 4.7 · 周三常规",
-    type: "project",
-    status: "pending_live",
-  },
-  {
-    id: "T-1041",
-    streamerId: "S-004",
-    dayIdx: 3,
-    startHour: 19,
-    endHour: 23,
-    project: "P-2412",
-    name: "元梦之星 · 候选试播",
-    type: "trial",
-  },
-  {
-    id: "T-1048",
-    streamerId: "S-004",
-    dayIdx: 5,
-    startHour: 19,
-    endHour: 24,
-    project: "P-2406",
-    name: "原神 4.7 · 黄金档",
-    type: "project",
-    status: "pending_live",
-  },
-
-  // 咕咕 S-005
-  {
-    id: "T-1014",
-    streamerId: "S-005",
-    dayIdx: 0,
-    startHour: 21,
-    endHour: 24,
-    project: "P-2403",
-    name: "崩铁种草 · 攻略向",
-    type: "project",
-    status: "pending_review",
-  },
-  {
-    id: "T-1030",
-    streamerId: "S-005",
-    dayIdx: 1,
-    startHour: 14,
-    endHour: 17,
-    project: "P-2403",
-    name: "崩铁种草 · 日间场",
-    type: "project",
-    status: "abnormal",
-    anomaly: "late_report",
-  },
-  {
-    id: "T-1038",
-    streamerId: "S-005",
-    dayIdx: 2,
-    startHour: 20,
-    endHour: 23,
-    project: "P-2403",
-    name: "崩铁种草 · 周中",
-    type: "project",
-    status: "pending_live",
-  },
-
-  // 青羽 S-006
-  {
-    id: "T-1021",
-    streamerId: "S-006",
-    dayIdx: 0,
-    startHour: 20,
-    endHour: 24,
-    project: "P-2406",
-    name: "原神 4.7 · 声控向",
-    type: "project",
-    status: "completed",
-  },
-  {
-    id: "T-1027",
-    streamerId: "S-006",
-    dayIdx: 1,
-    startHour: 19,
-    endHour: 22,
-    project: "P-2406",
-    name: "原神 4.7 · 短场",
-    type: "project",
-    status: "abnormal",
-    anomaly: "short",
-  },
-  {
-    id: "T-1033",
-    streamerId: "S-006",
-    dayIdx: 2,
-    startHour: 20,
-    endHour: 23,
-    project: "P-2406",
-    name: "原神 4.7 · 周中场",
-    type: "project",
-    status: "pending_live",
-  },
-  {
-    id: "T-1045",
-    streamerId: "S-006",
-    dayIdx: 4,
-    startHour: 20,
-    endHour: 24,
-    project: "P-2406",
-    name: "原神 4.7 · 周五黄金",
-    type: "project",
-    status: "pending_live",
-  },
-
-  // 糖豆 S-008
-  {
-    id: "T-1015",
-    streamerId: "S-008",
-    dayIdx: 0,
-    startHour: 19,
-    endHour: 22,
-    project: "P-2403",
-    name: "崩铁种草 · 剧情解读",
-    type: "project",
-    status: "pending_review",
-  },
-  {
-    id: "T-1036",
-    streamerId: "S-008",
-    dayIdx: 2,
-    startHour: 19,
-    endHour: 22,
-    project: "P-2403",
-    name: "崩铁种草 · 周中",
-    type: "project",
-    status: "pending_live",
-  },
-  {
-    id: "T-1049",
-    streamerId: "S-008",
-    dayIdx: 5,
-    startHour: 14,
-    endHour: 17,
-    project: "P-2403",
-    name: "崩铁种草 · 日间",
-    type: "project",
-    status: "pending_live",
-  },
-];
+const TASKS = [];
 
 const TASK_STATUS = {
   pending_live: { tone: "neutral", label: "待开播" },
@@ -2208,7 +1252,7 @@ function Sidebar({ route, onNav }) {
               lineHeight: 1.1,
             }}
           >
-            星河直播
+            未配置组织
           </div>
           <div
             style={{ fontSize: 10.5, color: "var(--ink-400)", lineHeight: 1.2 }}
@@ -2656,6 +1700,38 @@ function ScreenWarRoom({ go }) {
 
 // ——— Overview tab ————————————————————————
 function Overview({ go }) {
+  const projects = useOpsProjects();
+  const streamers = useOpsStreamers();
+  const [reviewResult, setReviewResult] = React.useState(null);
+  const [reviewBusy, setReviewBusy] = React.useState(false);
+  const [reviewError, setReviewError] = React.useState("");
+
+  const runProjectReview = async () => {
+    if (reviewBusy) return;
+
+    setReviewBusy(true);
+    setReviewError("");
+    try {
+      const reviewInput = buildWarRoomReviewInput(projects, streamers);
+      if (!reviewInput) {
+        setReviewError("暂无可评估的项目数据。");
+        return;
+      }
+      const body = await postWarRoomJson(
+        "/api/war-room/project-review",
+        reviewInput,
+        "project review failed",
+      );
+      setReviewResult(toProjectReviewDto(body.report));
+    } catch (error) {
+      setReviewError(
+        error instanceof Error ? error.message : "project review failed",
+      );
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 20 }}>
       {/* Left: active projects + AI insights */}
@@ -2783,7 +1859,7 @@ function Overview({ go }) {
                 },
                 { title: "风险", render: (r) => <RiskDot level={r.risk} /> },
               ]}
-              rows={PROJECTS.filter((p) =>
+              rows={projects.filter((p) =>
                 ["active", "settling", "paused", "recruiting"].includes(
                   p.status,
                 ),
@@ -2838,59 +1914,18 @@ function Overview({ go }) {
                   基于近 14 天数据
                 </span>
               </div>
-              <ul
-                style={{
-                  margin: 0,
-                  padding: 0,
-                  listStyle: "none",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 8,
-                }}
-              >
-                {[
-                  [
-                    "原神 4.7 项目",
-                    "本周转化下滑 8.2%。建议把高 CPS 转化的 NIKO、青羽 排进周末黄金档。",
-                  ],
-                  [
-                    "崩铁种草",
-                    "近 4 个任务出现「报数逾期 / 截图重复」异常，建议复核「阿七」、「糖豆」资格。",
-                  ],
-                  [
-                    "元梦之星 6 月赛事",
-                    "候选主播匹配度均值 84，已超过启动阈值；建议本周内完成厂家二审。",
-                  ],
-                ].map(([k, v], i) => (
-                  <li
-                    key={i}
-                    style={{
-                      fontSize: 13,
-                      color: "var(--ink-700)",
-                      display: "flex",
-                      gap: 8,
-                    }}
-                  >
-                    <span
-                      style={{
-                        width: 4,
-                        height: 4,
-                        borderRadius: 999,
-                        background: "var(--violet-600)",
-                        marginTop: 8,
-                        flexShrink: 0,
-                      }}
-                    />
-                    <span>
-                      <b style={{ color: "var(--violet-600)" }}>{k}：</b>
-                      {v}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <EmptyHint
+                title="暂无经营简报"
+                hint="接入真实项目复盘结果后会展示可执行建议。"
+              />
               <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-                <Button size="sm" kind="default">
-                  查看完整复盘
+                <Button
+                  size="sm"
+                  kind="default"
+                  onClick={runProjectReview}
+                  disabled={reviewBusy}
+                >
+                  {reviewBusy ? "生成中…" : "查看完整复盘"}
                 </Button>
                 <Button
                   size="sm"
@@ -2900,6 +1935,47 @@ function Overview({ go }) {
                   历史简报
                 </Button>
               </div>
+              {reviewError ? (
+                <div
+                  style={{
+                    marginTop: 10,
+                    fontSize: 12,
+                    color: "var(--danger-600)",
+                  }}
+                >
+                  {reviewError}
+                </div>
+              ) : null}
+              {reviewResult ? (
+                <div
+                  style={{
+                    marginTop: 12,
+                    padding: 12,
+                    borderRadius: 8,
+                    background: "#fff",
+                    border: "1px solid #D8D0FA",
+                    fontSize: 12.5,
+                    color: "var(--ink-700)",
+                    lineHeight: 1.6,
+                  }}
+                >
+                  <div style={{ fontWeight: 700, color: "var(--violet-600)" }}>
+                    复盘结论：{reviewResult.conclusionLabel}
+                  </div>
+                  <div>
+                    下轮建议报价{" "}
+                    <span className="num">
+                      {reviewResult.nextSuggestedQuoteLabel}
+                    </span>
+                    ，毛利率{" "}
+                    <span className="num">{reviewResult.marginRateLabel}</span>
+                  </div>
+                  <div>
+                    最佳主播 {reviewResult.bestStreamerLabel} · 待替换{" "}
+                    {reviewResult.worstStreamerLabel}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         </Card>
@@ -3056,6 +2132,33 @@ function Overview({ go }) {
 
 // ——— Matching tab ————————————————————————
 function Matching() {
+  const streamers = useOpsStreamers();
+  const [matchRows, setMatchRows] = React.useState(null);
+  const [supplierRows, setSupplierRows] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const rows = matchRows ?? DEFAULT_MATCHING_ROWS;
+
+  const runMatching = async () => {
+    if (busy) return;
+
+    setBusy(true);
+    setError("");
+    try {
+      const body = await postWarRoomJson(
+        "/api/war-room/matching",
+        buildWarRoomMatchingInput(streamers),
+        "matching failed",
+      );
+      setMatchRows(toStreamerMatchDtos(body.matches ?? []));
+      setSupplierRows(toSupplierQualityDtos(body.suppliers ?? []));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "matching failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div>
       <div
@@ -3070,7 +2173,7 @@ function Matching() {
           <div
             style={{ fontSize: 14, fontWeight: 600, color: "var(--ink-900)" }}
           >
-            为 P-2412 · 元梦之星 6 月赛事 推荐主播
+            为当前项目推荐主播
           </div>
           <div style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 2 }}>
             基于品类匹配、历史完成率、录屏通过率、ROI、风险扣分综合评分
@@ -3080,11 +2183,27 @@ function Matching() {
           <Button kind="default" icon={<Icon.Filter size={14} />}>
             筛选
           </Button>
-          <Button kind="primary" icon={<Icon.Export size={14} stroke="#fff" />}>
-            导出厂家候选包
+          <Button
+            kind="primary"
+            icon={<Icon.Export size={14} stroke="#fff" />}
+            onClick={runMatching}
+            disabled={busy}
+          >
+            {busy ? "匹配中…" : "导出厂家候选包"}
           </Button>
         </div>
       </div>
+      {error ? (
+        <div
+          style={{
+            marginBottom: 12,
+            fontSize: 12,
+            color: "var(--danger-600)",
+          }}
+        >
+          {error}
+        </div>
+      ) : null}
 
       <div
         style={{
@@ -3093,8 +2212,14 @@ function Matching() {
           gap: 16,
         }}
       >
-        {RECOS_FOR_P2412.map((r) => {
+        {rows.map((r) => {
           const s = STREAMERS.find((s) => s.id === r.id);
+          const source = s?.source ?? "API 推荐";
+          const games = s?.games ?? ["接口结果"];
+          const platforms = s?.platforms ?? ["API"];
+          const style = s?.style ?? "综合评分";
+          const defaultRule =
+            r.suggestedSettlementMethodLabel ?? s?.defaultRule ?? "CPT";
           const tone =
             r.score >= 85 ? "green" : r.score >= 70 ? "blue" : "amber";
           return (
@@ -3118,19 +2243,19 @@ function Matching() {
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {s.id}
+                      {s?.id ?? r.id}
                     </span>
                     <span style={{ flex: 1 }} />
                     <Badge
                       tone={
-                        s.source === "签约"
+                        source === "签约"
                           ? "blue"
-                          : s.source === "自孵化"
+                          : source === "自孵化"
                             ? "teal"
                             : "neutral"
                       }
                     >
-                      {s.source}
+                      {source}
                     </Badge>
                   </div>
                   <div
@@ -3140,7 +2265,7 @@ function Matching() {
                       marginTop: 2,
                     }}
                   >
-                    {s.games.join(" / ")} · {s.platforms.join(" ")} · {s.style}
+                    {games.join(" / ")} · {platforms.join(" ")} · {style}
                   </div>
 
                   <div
@@ -3236,7 +2361,7 @@ function Matching() {
                 <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
                   建议结算 ：
                 </div>
-                <Badge tone="blue">{s.defaultRule}</Badge>
+                <Badge tone="blue">{defaultRule}</Badge>
                 <span style={{ flex: 1 }} />
                 <Button size="sm" kind="ghost">
                   查看画像
@@ -3249,6 +2374,58 @@ function Matching() {
           );
         })}
       </div>
+      {supplierRows?.length ? (
+        <div style={{ marginTop: 16 }}>
+          <SectionTitle hint="来自本次匹配 API">供应商同步评分</SectionTitle>
+          <Card padded={false}>
+            <DataTable
+              columns={[
+                {
+                  title: "供应商",
+                  render: (r) => (
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 10 }}
+                    >
+                      <Avatar name={r.name} size={30} />
+                      <div>
+                        <div
+                          style={{ fontWeight: 600, color: "var(--ink-900)" }}
+                        >
+                          {r.name}
+                        </div>
+                        <div
+                          className="mono"
+                          style={{ fontSize: 11, color: "var(--ink-400)" }}
+                        >
+                          {r.id}
+                        </div>
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "评分",
+                  render: (r) => (
+                    <span className="num" style={{ fontWeight: 700 }}>
+                      {r.score}
+                    </span>
+                  ),
+                },
+                {
+                  title: "等级",
+                  render: (r) => <Badge tone="green">{r.grade}</Badge>,
+                },
+                {
+                  title: "原因",
+                  wrap: true,
+                  render: (r) => r.reasons.join(" / ") || "—",
+                },
+              ]}
+              rows={supplierRows}
+            />
+          </Card>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3405,6 +2582,9 @@ function Pricing() {
   const [hourly, setHourly] = React.useState(75);
   const [conversion, setConversion] = React.useState(12000);
   const [cpsRate, setCpsRate] = React.useState(8);
+  const [pricingResult, setPricingResult] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
 
   const vendorRevenue = Math.round(
     streamers * hours * hourly * 1.3 + ((conversion * cpsRate) / 100) * 1.6,
@@ -3417,6 +2597,34 @@ function Pricing() {
     vendorRevenue > 0 ? ((gross / vendorRevenue) * 100).toFixed(1) : "0.0";
 
   const fmt = (n) => `¥${n.toLocaleString()}`;
+
+  const runPricing = async () => {
+    if (busy) return;
+
+    setBusy(true);
+    setError("");
+    try {
+      const body = await postWarRoomJson(
+        "/api/war-room/pricing",
+        buildWarRoomPricingInput({
+          model,
+          streamers,
+          hours,
+          hourly,
+          conversion,
+          cpsRate,
+          vendorRevenue,
+          supplierCost,
+        }),
+        "pricing failed",
+      );
+      setPricingResult(toPricingResultDto(body.pricing));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "pricing failed");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
@@ -3515,22 +2723,31 @@ function Pricing() {
         >
           <ResultCell
             label="厂家应收"
-            value={fmt(vendorRevenue)}
+            value={pricingResult?.expectedReceivableLabel ?? fmt(vendorRevenue)}
             tone="blue"
             emphasize
           />
           <ResultCell
             label="预计毛利"
-            value={fmt(gross)}
+            value={pricingResult?.grossMarginLabel ?? fmt(gross)}
             tone={gross > 0 ? "green" : "red"}
             emphasize
           />
-          <ResultCell label="主播应付" value={fmt(streamerCost)} />
-          <ResultCell label="供应商成本" value={fmt(supplierCost)} />
-          <ResultCell label="平台扣点" value={fmt(platform)} />
+          <ResultCell
+            label="主播应付"
+            value={pricingResult?.streamerPayableLabel ?? fmt(streamerCost)}
+          />
+          <ResultCell
+            label="供应商成本"
+            value={pricingResult?.supplierCostLabel ?? fmt(supplierCost)}
+          />
+          <ResultCell
+            label="平台扣点"
+            value={pricingResult?.platformFeeLabel ?? fmt(platform)}
+          />
           <ResultCell
             label="毛利率"
-            value={`${marginPct}%`}
+            value={pricingResult?.marginRateLabel ?? `${marginPct}%`}
             tone={parseFloat(marginPct) > 25 ? "green" : "amber"}
           />
         </div>
@@ -3569,24 +2786,207 @@ function Pricing() {
               lineHeight: 1.6,
             }}
           >
-            按当前输入，<b>盈亏平衡点</b>约为单主播{" "}
-            <span className="num">
-              {Math.ceil(streamerCost / streamers / hourly)}
-            </span>{" "}
-            h / 月。 如希望毛利率 ≥ 30%，建议将 CPT 单价降至{" "}
-            <span className="num">¥{Math.round(hourly * 0.93)}</span>， 或将 CPS
-            分成提高至 <span className="num">{Math.min(30, cpsRate + 2)}%</span>
-            。 历史同类项目平均毛利率 <b className="num">31.6%</b>。
+            {pricingResult ? (
+              <>
+                API 测算完成，<b>建议最低报价</b>{" "}
+                <span className="num">
+                  {pricingResult.suggestedMinimumQuoteLabel}
+                </span>
+                ，盈亏平衡报价{" "}
+                <span className="num">{pricingResult.breakEvenQuoteLabel}</span>
+                ，建议结算方式 {pricingResult.recommendedSettlementMethodLabel}
+                。
+                {pricingResult.riskNotes.length ? (
+                  <div style={{ marginTop: 6 }}>
+                    {pricingResult.riskNotes.map((note) => (
+                      <Badge key={note} tone="amber" style={{ marginRight: 6 }}>
+                        {note}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <>
+                按当前输入，<b>盈亏平衡点</b>约为单主播{" "}
+                <span className="num">
+                  {Math.ceil(streamerCost / streamers / hourly)}
+                </span>{" "}
+                h / 月。 如希望毛利率 ≥ 30%，建议将 CPT 单价降至{" "}
+                <span className="num">¥{Math.round(hourly * 0.93)}</span>， 或将
+                CPS 分成提高至{" "}
+                <span className="num">{Math.min(30, cpsRate + 2)}%</span>。
+                历史同类项目平均毛利率 <b className="num">31.6%</b>。
+              </>
+            )}
           </div>
         </div>
+        {error ? (
+          <div
+            style={{
+              marginTop: 10,
+              fontSize: 12,
+              color: "var(--danger-600)",
+            }}
+          >
+            {error}
+          </div>
+        ) : null}
 
         <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
           <Button kind="default">保存为草稿</Button>
-          <Button kind="primary">生成立项申请</Button>
+          <Button kind="primary" onClick={runPricing} disabled={busy}>
+            {busy ? "测算中…" : "生成立项申请"}
+          </Button>
         </div>
       </Card>
     </div>
   );
+}
+
+async function postWarRoomJson(url, body, fallbackMessage) {
+  const response = await globalThis.fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || fallbackMessage);
+  }
+  return payload;
+}
+
+function buildWarRoomPricingInput({
+  model,
+  streamers,
+  hours,
+  hourly,
+  conversion,
+  cpsRate,
+  vendorRevenue,
+  supplierCost,
+}) {
+  const fixedBudgetModels = new Set(["cpt-cps", "cpa", "gift"]);
+  return {
+    vendorSettlementMethod: fixedBudgetModels.has(model)
+      ? "fixed_budget"
+      : "cpt",
+    streamerCount: streamers,
+    estimatedMinutesPerStreamer: hours * 60,
+    vendorBudgetCents: vendorRevenue * 100,
+    vendorHourlyRateCents: Math.round(hourly * 130),
+    streamerHourlyCostCents: hourly * 100,
+    supplierCostCents: supplierCost * 100,
+    expectedManualRevenueCents: conversion * cpsRate,
+    platformFeeBps: 500,
+    manualAdjustmentCents: 0,
+    targetMarginBps: 3000,
+  };
+}
+
+function buildWarRoomMatchingInput(streamers = STREAMERS) {
+  const streamerRows = streamers.length ? streamers : WAR_ROOM_FALLBACK_STREAMERS;
+  const supplierRows = SUPPLIER_SCORES.length
+    ? SUPPLIER_SCORES
+    : WAR_ROOM_FALLBACK_SUPPLIERS;
+
+  return {
+    project: {
+      category: "moba",
+      platform: "douyin",
+      preferredStyles: ["高互动", "欢快互动", "高能竞技"],
+      requiredMinutes: 900,
+    },
+    candidates: streamerRows.map((streamer) => ({
+      id: streamer.id ?? "streamer-war-room-fallback",
+      name: streamer.alias ?? streamer.name ?? "主播待配置",
+      categories: (streamer.games ?? ["moba"]).map(toWarRoomCategory),
+      platforms: (streamer.platforms ?? ["抖音"]).map(toWarRoomPlatform),
+      styles: [streamer.style ?? "高互动"],
+      completionRateBps: (streamer.metrics?.projectFinish ?? 80) * 100,
+      screeningPassRateBps: (streamer.metrics?.screenPass ?? 80) * 100,
+      roiBps: Math.round((streamer.metrics?.roi ?? 1) * 10000),
+      grossMarginContributionCents:
+        (streamer.metrics?.grossContrib ?? 0) * 100,
+      riskTags:
+        streamer.risk === "low"
+          ? []
+          : streamer.risk === "medium"
+            ? ["recent_anomaly"]
+            : ["dispute"],
+      availableMinutes: Math.max(300, (streamer.completedProjects ?? 1) * 120),
+      referenceProjects: [
+        {
+          id: `${streamer.id}-ref`,
+          name: `${streamer.alias ?? streamer.name ?? "主播待配置"} 历史项目`,
+          result: `完成率 ${streamer.metrics?.projectFinish ?? 80}%`,
+        },
+      ],
+    })),
+    suppliers: supplierRows.map((supplier) => ({
+      id: supplier.id ?? "supplier-war-room-fallback",
+      name: supplier.name ?? "未命名供应商",
+      screeningPassRateBps: Math.min(10000, (supplier.finishRate ?? 80) * 100),
+      completionRateBps: Math.min(10000, (supplier.finishRate ?? 80) * 100),
+      marginContributionCents: (supplier.grossContrib ?? 0) * 100,
+      anomalyRateBps: (supplier.anomalyRate ?? 0) * 100,
+      blacklistRateBps: 0,
+      isBlacklisted: supplier.score < 60,
+    })),
+  };
+}
+
+function buildWarRoomReviewInput(projects = PROJECTS, streamers = STREAMERS) {
+  const project = projects[0] ?? WAR_ROOM_FALLBACK_PROJECT;
+  const streamerRows = streamers.length ? streamers : WAR_ROOM_FALLBACK_STREAMERS;
+
+  return {
+    project: {
+      id: project.id,
+      name: project.name,
+      category: "moba",
+      platform: "douyin",
+      periodStart: project.start,
+      periodEnd: project.end,
+    },
+    finance: {
+      receivableCents: (project.metrics?.receivable ?? 12000) * 100,
+      payableCents: (project.metrics?.payable ?? 6000) * 100,
+      supplierCostCents: 100000,
+      adjustmentCents: 0,
+      manualRevenueCents: 0,
+    },
+    streamers: streamerRows.slice(0, 4).map((streamer, index) => ({
+      id: streamer.id ?? `streamer-war-room-${index}`,
+      name: streamer.alias ?? streamer.name ?? "主播待配置",
+      durationMinutes: 600 + index * 120,
+      totalViews: 40000 + index * 12000,
+      completionRateBps: (streamer.metrics?.projectFinish ?? 80) * 100,
+      roiBps: Math.round((streamer.metrics?.roi ?? 1) * 10000),
+      grossMarginContributionCents:
+        (streamer.metrics?.grossContrib ?? 0) * 100,
+      anomalyCount: streamer.risk === "low" ? 0 : 1,
+      disputeCount: streamer.risk === "high" ? 1 : 0,
+    })),
+    suppliers: buildWarRoomMatchingInput(streamers).suppliers,
+    evidenceSummary: { green: 8, yellow: 1, red: 0, unknown: 0 },
+    targetMarginBps: 3000,
+  };
+}
+
+function toWarRoomCategory(game) {
+  if (game.includes("moba") || game.includes("party")) return "moba";
+  if (game.includes("rpg") || game.includes("story")) return "rpg";
+  if (game.includes("action")) return "action";
+  return "other";
+}
+
+function toWarRoomPlatform(platform) {
+  if (platform.includes("抖音")) return "douyin";
+  if (platform.includes("快手")) return "kuaishou";
+  if (platform.includes("B站")) return "bilibili";
+  return platform.toLowerCase();
 }
 
 function Field({ label, children }) {
@@ -3833,7 +3233,8 @@ function ProjectList({ go }) {
               onSubmit={submitProjectDraft}
               style={{
                 display: "grid",
-                gridTemplateColumns: "minmax(180px, 1.2fr) minmax(160px, 0.8fr) auto",
+                gridTemplateColumns:
+                  "minmax(180px, 1.2fr) minmax(160px, 0.8fr) auto",
                 alignItems: "end",
                 gap: 12,
                 padding: "12px 16px",
@@ -3855,7 +3256,7 @@ function ProjectList({ go }) {
                 <input
                   value={draftName}
                   onChange={(event) => setDraftName(event.target.value)}
-                  placeholder="例如：原神 4.7 版本品宣"
+                  placeholder="例如：品牌直播专项"
                   style={draftInputStyle}
                 />
               </label>
@@ -3873,7 +3274,7 @@ function ProjectList({ go }) {
                 <input
                   value={draftCode}
                   onChange={(event) => setDraftCode(event.target.value)}
-                  placeholder="例如：P-2406"
+                  placeholder="例如：项目编号"
                   style={draftInputStyle}
                 />
               </label>
@@ -4083,7 +3484,35 @@ function ProjectDetail({ id, go }) {
   const actions = useOpsLiveActions();
   const p = projects.find((x) => x.id === id) || projects[0] || PROJECTS[0];
   const [tab, setTab] = React.useState("overview");
-  const status = PROJECT_STATUS[p.status];
+  if (!p) {
+    return (
+      <>
+        <PageHeader
+          title="项目详情"
+          subtitle="暂无可展示的项目数据"
+          actions={
+            <Button
+              kind="ghost"
+              icon={<Icon.ChevLeft size={14} />}
+              onClick={() => go("projects")}
+            >
+              返回列表
+            </Button>
+          }
+        />
+        <div style={{ padding: 20 }}>
+          <EmptyHint
+            title="暂无项目数据"
+            hint="请先创建项目或接入后端项目数据。"
+            actionLabel="返回项目列表"
+            onAction={() => go("projects")}
+          />
+        </div>
+      </>
+    );
+  }
+
+  const status = PROJECT_STATUS[p.status] || PROJECT_STATUS.draft;
   const donePct =
     Math.round((p.metrics.doneHours / p.metrics.plannedHours) * 100) || 0;
 
@@ -4188,14 +3617,14 @@ function ProjectDetail({ id, go }) {
             <Metric
               label="预计厂家应收"
               value={`¥${(p.metrics.receivable / 10000).toFixed(1)}万`}
-              hint="本批次未确认"
+              hint="按当前项目数据汇总"
             />
           </Card>
           <Card>
             <Metric
               label="主播应付"
               value={`¥${(p.metrics.payable / 10000).toFixed(1)}万`}
-              hint="已锁定 B-001"
+              hint="按当前项目数据汇总"
             />
           </Card>
           <Card style={{ borderColor: "var(--blue-200)" }}>
@@ -4282,6 +3711,13 @@ function tabRoute(k) {
 
 // Project overview content
 function ProjectOverview({ p }) {
+  const tasks = useOpsTasks();
+  const projectTasks = tasks.filter((task) => taskBelongsToProject(task, p));
+  const reminders = projectReminders(p, projectTasks);
+  const insights = projectReviewInsights(p, projectTasks);
+  const projectDescription =
+    p.description || p.note || p.brief || "暂无项目说明";
+
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 20 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -4317,8 +3753,7 @@ function ProjectOverview({ p }) {
               </KV>
               <KV label="项目说明" w={120}>
                 <span style={{ color: "var(--ink-500)" }}>
-                  厂家关注角色相关内容的高质感呈现；不接受重复梗图与画质过低截图，CPS
-                  转化按米哈游官方对账数据为准。
+                  {projectDescription}
                 </span>
               </KV>
             </div>
@@ -4330,74 +3765,128 @@ function ProjectOverview({ p }) {
           extra={<Badge tone="neutral">未来 7 天</Badge>}
           padded={true}
         >
-          <GanttPreview />
+          <GanttPreview tasks={projectTasks} />
         </Card>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <Card title="本周提醒" padded={true}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <ReminderItem
-              tone="red"
-              title="高风险操作"
-              content="李珩 5 分钟前锁定主播应付批次 B-2026-05-S-001，请在 24h 内确认无误。"
+        <Card title="项目提醒" padded={true}>
+          {reminders.length ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {reminders.map((reminder) => (
+                <ReminderItem key={reminder.title} {...reminder} />
+              ))}
+            </div>
+          ) : (
+            <EmptyHint
+              title="暂无项目提醒"
+              hint="真实异常、待审核报数或候选录屏会在这里汇总。"
             />
-            <ReminderItem
-              tone="amber"
-              title="录屏待审"
-              content="4 位候选主播的项目报名录屏已超过 18h 未审核。"
-            />
-            <ReminderItem
-              tone="blue"
-              title="报数待审"
-              content="7 条本周报数处于待审核，其中 2 条 OCR 与手动值偏差较大。"
-            />
-          </div>
+          )}
         </Card>
 
         <Card
-          title="近期 AI 复盘要点"
+          title="项目复盘要点"
           extra={
             <Badge tone="violet" dot>
-              每周一更新
+              按真实数据生成
             </Badge>
           }
           padded={true}
         >
-          <ul
-            style={{
-              margin: 0,
-              padding: 0,
-              listStyle: "none",
-              display: "flex",
-              flexDirection: "column",
-              gap: 10,
-            }}
-          >
-            {[
-              [
-                "品类匹配偏差",
-                "原神剧情向流量近 2 周下滑 11%，建议下一档期增配「攻略 / 速通」主播。",
-              ],
-              [
-                "礼物提成转化",
-                "NIKO 与青羽两人贡献 64% 礼物流水，但占总主播 14%，建议优先排班加码。",
-              ],
-              [
-                "CPS 数据缺口",
-                "近 7 天仍有 2 个任务缺少 CPS 数据导入，可能影响下批次结算金额。",
-              ],
-            ].map(([t, d], i) => (
-              <li key={i} style={{ fontSize: 12.5, color: "var(--ink-700)" }}>
-                <b style={{ color: "var(--violet-600)" }}>· {t}：</b>
-                {d}
-              </li>
-            ))}
-          </ul>
+          {insights.length ? (
+            <ul
+              style={{
+                margin: 0,
+                padding: 0,
+                listStyle: "none",
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+              }}
+            >
+              {insights.map(([title, detail]) => (
+                <li
+                  key={title}
+                  style={{ fontSize: 12.5, color: "var(--ink-700)" }}
+                >
+                  <b style={{ color: "var(--violet-600)" }}>· {title}：</b>
+                  {detail}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyHint
+              title="暂无复盘要点"
+              hint="需要真实任务、报数或结算数据后才会生成项目复盘。"
+            />
+          )}
         </Card>
       </div>
     </div>
   );
+}
+
+function taskBelongsToProject(task, project) {
+  const taskKeys = [task.project, task.projectId, task.projectName].filter(
+    Boolean,
+  );
+  const projectKeys = [project.id, project.code, project.name].filter(Boolean);
+  return taskKeys.some((key) => projectKeys.includes(key));
+}
+
+function projectReminders(project, tasks) {
+  const pendingReportCount = tasks.filter(
+    (task) => task.status === "pending_report",
+  ).length;
+
+  return [
+    project.metrics.anomalies > 0 && {
+      tone: "red",
+      title: "异常待处理",
+      content: `${project.metrics.anomalies} 条异常需要复核。`,
+    },
+    project.streamers.pendingReview > 0 && {
+      tone: "amber",
+      title: "录屏待审",
+      content: `${project.streamers.pendingReview} 条候选录屏等待审核。`,
+    },
+    project.metrics.reportedPending > 0 && {
+      tone: "blue",
+      title: "报数待审",
+      content: `${project.metrics.reportedPending} 条报数等待审核。`,
+    },
+    pendingReportCount > 0 && {
+      tone: "amber",
+      title: "待上传报数",
+      content: `${pendingReportCount} 个任务等待主播提交报数。`,
+    },
+  ].filter(Boolean);
+}
+
+function projectReviewInsights(project, tasks) {
+  const completedTasks = tasks.filter((task) =>
+    ["completed", "approved"].includes(task.status),
+  ).length;
+  if (
+    !completedTasks &&
+    !project.metrics.doneHours &&
+    !project.metrics.audience
+  ) {
+    return [];
+  }
+
+  return [
+    project.metrics.doneHours > 0 && [
+      "履约进度",
+      `累计直播 ${project.metrics.doneHours.toFixed(1)} 小时。`,
+    ],
+    project.metrics.audience > 0 && [
+      "场观表现",
+      `累计场观 ${project.metrics.audience.toLocaleString("zh-CN")}。`,
+    ],
+    completedTasks > 0 && ["任务完成", `${completedTasks} 个任务已完成。`],
+  ].filter(Boolean);
 }
 
 function ReminderItem({ tone, title, content }) {
@@ -4546,41 +4035,8 @@ function ProjectRoster({ p, go }) {
   );
 }
 
-function GanttPreview() {
-  const rows = [
-    {
-      name: "NIKO",
-      bars: [
-        [1, 3, "live"],
-        [4, 4, "plan"],
-        [5, 2, "plan"],
-      ],
-    },
-    {
-      name: "冷江",
-      bars: [
-        [1, 2, "live"],
-        [3, 3, "plan"],
-        [6, 2, "plan"],
-      ],
-    },
-    {
-      name: "青羽",
-      bars: [
-        [2, 2, "live"],
-        [4, 3, "plan"],
-      ],
-    },
-    {
-      name: "小Mei",
-      bars: [
-        [1, 1, "late"],
-        [3, 4, "plan"],
-        [6, 2, "plan"],
-      ],
-    },
-    { name: "阿七", bars: [[2, 5, "plan"]] },
-  ];
+function GanttPreview({ tasks = [] }) {
+  const rows = taskGanttRows(tasks);
   const days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
   const dayColor = (k) =>
     k === "live"
@@ -4588,6 +4044,15 @@ function GanttPreview() {
       : k === "late"
         ? "var(--danger-600)"
         : "var(--blue-200)";
+
+  if (!rows.length) {
+    return (
+      <EmptyHint
+        title="暂无执行节奏"
+        hint="创建排班或任务后会展示未来 7 天安排。"
+      />
+    );
+  }
 
   return (
     <div>
@@ -4694,6 +4159,28 @@ function GanttPreview() {
   );
 }
 
+function taskGanttRows(tasks) {
+  const grouped = new Map();
+  tasks.forEach((task) => {
+    const key = task.streamerId || task.streamerName || "unassigned";
+    const current = grouped.get(key) || {
+      name: task.streamerName || task.streamerId || "未配置主播",
+      bars: [],
+    };
+    current.bars.push([
+      Math.max(1, Math.min(7, (task.dayIdx ?? 0) + 1)),
+      Math.max(1, Math.min(7, Math.ceil((task.endHour - task.startHour) / 4))),
+      task.status === "live"
+        ? "live"
+        : task.status === "abnormal"
+          ? "late"
+          : "plan",
+    ]);
+    grouped.set(key, current);
+  });
+  return Array.from(grouped.values()).slice(0, 5);
+}
+
 function EmptyHint({ title, hint, actionLabel, onAction }) {
   return (
     <div style={{ padding: "40px 16px", textAlign: "center" }}>
@@ -4749,7 +4236,7 @@ function ScreenStreamers({ go, initialActiveId }) {
   const streamers = useOpsStreamers();
   const [active, setActive] = React.useState(
     initialActiveId || streamers[3]?.id || streamers[0]?.id,
-  ); // NIKO
+  );
   React.useEffect(() => {
     if (!streamers.some((item) => item.id === active)) {
       setActive(streamers[0]?.id ?? null);
@@ -5148,77 +4635,10 @@ function StreamerPanel({ id, streamers = STREAMERS }) {
         }
         padded={false}
       >
-        <div>
-          {[
-            {
-              id: "P-2406",
-              name: "原神 4.7 品宣",
-              status: "active",
-              hours: 32.5,
-              contrib: 8400,
-            },
-            {
-              id: "P-2405",
-              name: "KPL 春赛二级解说",
-              status: "settling",
-              hours: 102,
-              contrib: 18600,
-            },
-            {
-              id: "P-2398",
-              name: "永劫无间 5 周年",
-              status: "ended",
-              hours: 54,
-              contrib: 9200,
-            },
-          ].map((pr, i) => (
-            <div
-              key={pr.id}
-              style={{
-                padding: "10px 16px",
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                borderBottom: i < 2 ? "1px solid var(--line)" : "none",
-              }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div
-                  style={{
-                    fontSize: 12.5,
-                    fontWeight: 600,
-                    color: "var(--ink-900)",
-                  }}
-                >
-                  {pr.name}
-                </div>
-                <div
-                  className="mono"
-                  style={{ fontSize: 11, color: "var(--ink-400)" }}
-                >
-                  {pr.id}
-                </div>
-              </div>
-              <Badge tone={PROJECT_STATUS[pr.status].tone}>
-                {PROJECT_STATUS[pr.status].label}
-              </Badge>
-              <div style={{ textAlign: "right" }}>
-                <div
-                  className="num"
-                  style={{ fontSize: 12, color: "var(--ink-900)" }}
-                >
-                  ¥{pr.contrib.toLocaleString()}
-                </div>
-                <div
-                  className="num"
-                  style={{ fontSize: 11, color: "var(--ink-400)" }}
-                >
-                  {pr.hours} h
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+        <EmptyHint
+          title="暂无参与项目"
+          hint="接入真实主播履约记录后会展示项目贡献。"
+        />
       </Card>
 
       <div style={{ display: "flex", gap: 8 }}>
@@ -5356,7 +4776,7 @@ function Sparkline({ data, w = 280, h = 40 }) {
 function ScreenReports({ go }) {
   const reports = useOpsReports();
   const [filter, setFilter] = React.useState("pending_review");
-  const [activeId, setActiveId] = React.useState("R-08831");
+  const [activeId, setActiveId] = React.useState(reports[0]?.id ?? null);
 
   React.useEffect(() => {
     if (
@@ -5569,6 +4989,27 @@ function ReportDetail({ id, reports }) {
   const actions = useOpsLiveActions();
   const [busyDecision, setBusyDecision] = React.useState(null);
   const r = reports.find((x) => x.id === id) || reports[0] || REPORTS[0];
+  if (!r) {
+    return (
+      <div
+        style={{
+          position: "sticky",
+          top: 76,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        <Card>
+          <EmptyHint
+            title="暂无报数数据"
+            hint="报数审核记录会在后端返回后展示。"
+          />
+        </Card>
+      </div>
+    );
+  }
+
   const s = STREAMERS.find((s) => s.alias === r.streamer);
   const p = PROJECTS.find((p) => p.id === r.project);
   const projectName = p?.name || r.project;
@@ -5583,7 +5024,7 @@ function ReportDetail({ id, reports }) {
     }
   };
 
-  // Mock OCR-vs-manual side-by-side
+  // OCR-vs-manual side-by-side
   const ocrFields = [
     { label: "直播日期", ocr: r.date, manual: r.date, diff: false },
     {
@@ -5600,8 +5041,8 @@ function ReportDetail({ id, reports }) {
     },
     {
       label: "直播账号",
-      ocr: "douyin_niko_live",
-      manual: "douyin_niko_live",
+      ocr: "live_account",
+      manual: "live_account",
       diff: false,
     },
   ];
@@ -6304,13 +5745,11 @@ function ScreenSettlement({ go }) {
   const actions = useOpsLiveActions();
   const [type, setType] = React.useState("all");
   const [busyAction, setBusyAction] = React.useState(null);
-  const [activeId, setActiveId] = React.useState(
-    batches[0]?.id || "B-2026-05-S-001",
-  );
+  const [activeId, setActiveId] = React.useState(batches[0]?.id ?? null);
 
   React.useEffect(() => {
     if (!batches.some((b) => b.id === activeId)) {
-      setActiveId(batches[0]?.id || "B-2026-05-S-001");
+      setActiveId(batches[0]?.id ?? null);
     }
   }, [activeId, batches]);
 
@@ -6746,8 +6185,27 @@ function BatchDetail({
   busyAction,
 }) {
   const b = batches.find((x) => x.id === id) || batches[0] || BATCHES[1];
+  if (!b) {
+    return (
+      <div
+        style={{
+          position: "sticky",
+          top: 76,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        <Card>
+          <EmptyHint title="暂无结算批次" hint="结算批次会在后端返回后展示。" />
+        </Card>
+      </div>
+    );
+  }
+
   const isPayable = b.type === "streamer_payable";
   const isLocked = b.status === "locked";
+  const batchStatus = BATCH_STATUS[b.status] || BATCH_STATUS.pending_confirm;
   const isReferenceBatch = BATCHES.some((x) => x.id === b.id);
   const apiDetailRows = Array.isArray(batchDetails[b.id])
     ? batchDetails[b.id]
@@ -6822,8 +6280,8 @@ function BatchDetail({
                 <Badge tone={isPayable ? "teal" : "blue"}>
                   {isPayable ? "主播应付" : "厂家应收"}
                 </Badge>
-                <Badge tone={BATCH_STATUS[b.status].tone} dot>
-                  {BATCH_STATUS[b.status].label}
+                <Badge tone={batchStatus.tone} dot>
+                  {batchStatus.label}
                 </Badge>
                 {isLocked && (
                   <Badge tone="ink" soft={true}>
@@ -7104,93 +6562,10 @@ function BatchDetail({
 
       {/* Audit timeline */}
       <Card title="批次审计轨迹" padded={true}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {[
-            {
-              time: "05-26 14:02",
-              who: "李珩",
-              text: "生成批次明细，应用主播默认结算规则",
-              risk: false,
-            },
-            {
-              time: "05-26 14:08",
-              who: "陈一鸣",
-              text: "修改青羽调整项 +200（原因：礼物校对差额）",
-              risk: true,
-            },
-            {
-              time: "05-26 14:11",
-              who: "李珩",
-              text: "确认批次并锁定",
-              risk: true,
-            },
-          ].map((it, i, arr) => (
-            <div key={i} style={{ display: "flex", gap: 12 }}>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                }}
-              >
-                <span
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: 999,
-                    background: it.risk
-                      ? "var(--danger-600)"
-                      : "var(--blue-600)",
-                    marginTop: 4,
-                  }}
-                />
-                {i < arr.length - 1 && (
-                  <span
-                    style={{
-                      flex: 1,
-                      width: 1,
-                      background: "var(--line)",
-                      marginTop: 4,
-                    }}
-                  />
-                )}
-              </div>
-              <div
-                style={{ flex: 1, paddingBottom: i < arr.length - 1 ? 6 : 0 }}
-              >
-                <div
-                  style={{ display: "flex", alignItems: "baseline", gap: 8 }}
-                >
-                  <span
-                    className="mono"
-                    style={{ fontSize: 11, color: "var(--ink-400)" }}
-                  >
-                    {it.time}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 12.5,
-                      fontWeight: 600,
-                      color: "var(--ink-900)",
-                    }}
-                  >
-                    {it.who}
-                  </span>
-                  {it.risk && <Badge tone="red">高风险</Badge>}
-                </div>
-                <div
-                  style={{
-                    fontSize: 12.5,
-                    color: "var(--ink-500)",
-                    marginTop: 2,
-                  }}
-                >
-                  {it.text}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+        <EmptyHint
+          title="暂无审计轨迹"
+          hint="批次操作日志会在后端返回后展示。"
+        />
       </Card>
     </div>
   );
@@ -7201,6 +6576,8 @@ function BatchDetail({
 
 function ScreenTasks({ go }) {
   const tasks = useOpsTasks();
+  const projects = useOpsProjects();
+  const streamers = useOpsStreamers();
   const actions = useOpsLiveActions();
   const [view, setView] = React.useState("board");
   const [project, setProject] = React.useState("all");
@@ -7236,10 +6613,16 @@ function ScreenTasks({ go }) {
   };
 
   const openNewTask = () => {
+    if (!projects[0] || !streamers[0]) {
+      globalThis.alert?.("请先创建项目和主播档案。");
+      return;
+    }
+
     setSelectedTask({
       _new: true,
       dayIdx: SCHEDULE_WEEK.todayIdx,
-      streamerId: STREAMERS[0].id,
+      projectId: projects[0].id,
+      streamerId: streamers[0].id,
     });
   };
 
@@ -7261,8 +6644,11 @@ function ScreenTasks({ go }) {
 
   const createBatchTasks = () =>
     runTaskAction("batch", async () => {
-      const projectId = askText("项目 ID", "P-2406");
-      const streamerIds = askText("主播 ID，逗号分隔", "S-001,S-002");
+      const projectId = askText("项目 ID", projects[0]?.id || "");
+      const streamerIds = askText(
+        "主播 ID，逗号分隔",
+        streamers.map((streamer) => streamer.id).join(","),
+      );
       const dateKey = askText("排班日期 YYYY-MM-DD", "2026-05-27");
       const startTime = askText("开始时间 HH:mm", "20:00");
       const endTime = askText("结束时间 HH:mm", "23:30");
@@ -7270,7 +6656,9 @@ function ScreenTasks({ go }) {
         return;
       }
 
-      const project = projectById(projectId);
+      const project = projectById(projectId, projects);
+      if (!project) return;
+
       const plannedStartAt = scheduleTimeToIso(dateKey, startTime);
       const plannedEndAt = scheduleTimeToIso(dateKey, endTime);
       const plannedDuration = scheduleMinutes(plannedStartAt, plannedEndAt);
@@ -7279,7 +6667,8 @@ function ScreenTasks({ go }) {
         .map((id) => id.trim())
         .filter(Boolean)
         .map((streamerId) => {
-          const streamer = streamerById(streamerId);
+          const streamer = streamerById(streamerId, streamers);
+          if (!streamer) return null;
           return {
             projectId: project.id,
             streamerId: streamer.id,
@@ -7289,7 +6678,8 @@ function ScreenTasks({ go }) {
             plannedDuration,
             note: "经营端批量排班创建",
           };
-        });
+        })
+        .filter(Boolean);
 
       if (tasks.length === 0) return;
       await actions.createLiveTasks?.({ tasks });
@@ -7456,6 +6846,8 @@ function ScreenTasks({ go }) {
       {selectedTask && (
         <TaskDrawer
           task={selectedTask}
+          projects={projects}
+          streamers={streamers}
           onClose={() => setSelectedTask(null)}
           onCreateTask={createTask}
           onCancelTask={cancelTask}
@@ -7499,32 +6891,40 @@ function ProjectFilter({ value, onChange }) {
 
 function ScheduleBoard({ project, onSelectTask }) {
   const tasks = useOpsTasks();
+  const knownStreamers = useOpsStreamers();
   const [unit, setUnit] = React.useState("day"); // 'day' | 'hour'
 
   // Filter tasks
   const allowedProject = project === "all" ? null : project;
-  const visibleStreamers = [
-    "S-001",
-    "S-002",
-    "S-003",
-    "S-004",
-    "S-005",
-    "S-006",
-    "S-008",
-  ];
-  const liveStreamerIds = tasks
-    .map((task) => task.streamerId)
-    .filter((id) => !visibleStreamers.includes(id));
-  const streamers = [...visibleStreamers, ...liveStreamerIds].map((id) => {
-    const fromMock = STREAMERS.find((s) => s.id === id);
-    if (fromMock) return fromMock;
-    const task = tasks.find((item) => item.streamerId === id);
+  const visibleTasks = tasks.filter(
+    (task) => !allowedProject || task.project === allowedProject,
+  );
+  const streamerIds = Array.from(
+    new Set(
+      visibleTasks
+        .map((task) => task.streamerId || task.streamerName)
+        .filter(Boolean),
+    ),
+  );
+  const streamers = streamerIds.map((id) => {
+    const fromKnown = knownStreamers.find((streamer) => streamer.id === id);
+    if (fromKnown) return fromKnown;
+    const task = visibleTasks.find(
+      (item) => item.streamerId === id || item.streamerName === id,
+    );
     return { id, alias: task?.streamerName || id };
   });
-
   const dayWidth = "minmax(140px, 1fr)";
   const HOUR_START = 12; // visible window: 12:00 - 24:00 (used in hour view)
   const HOUR_END = 24;
+
+  if (!visibleTasks.length) {
+    return (
+      <div style={{ padding: 16 }}>
+        <EmptyHint title="暂无排班数据" hint="创建排班或任务后会展示周视图。" />
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -7543,7 +6943,7 @@ function ScheduleBoard({ project, onSelectTask }) {
           <Icon.ChevLeft size={14} />
         </button>
         <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}>
-          2026 · 5 月 · 第 22 周
+          本周排班
         </div>
         <button style={iconBtn}>
           <Icon.ChevRight size={14} />
@@ -8069,24 +7469,31 @@ function scheduleMinutes(startIso, endIso) {
   );
 }
 
-function projectById(projectId) {
-  return PROJECTS.find((item) => item.id === projectId) || PROJECTS[0];
+function projectById(projectId, projects = PROJECTS) {
+  return projects.find((item) => item.id === projectId) || projects[0] || null;
 }
 
-function streamerById(streamerId) {
-  return STREAMERS.find((item) => item.id === streamerId) || STREAMERS[0];
+function streamerById(streamerId, streamers = STREAMERS) {
+  return (
+    streamers.find((item) => item.id === streamerId) || streamers[0] || null
+  );
 }
 
 function opsLiveTaskInput({
-  projectId = "P-2406",
-  streamerId = "S-001",
+  projectId = "",
+  streamerId = "",
   dayIdx = SCHEDULE_WEEK.todayIdx,
   startHour = 20,
   endHour = 23.5,
   note = "经营端页面创建任务",
+  projects = PROJECTS,
+  streamers = STREAMERS,
 }) {
-  const project = projectById(projectId);
-  const streamer = streamerById(streamerId);
+  const project = projectById(projectId, projects);
+  const streamer = streamerById(streamerId, streamers);
+  if (!project || !streamer) {
+    throw new Error("请先创建项目和主播档案。");
+  }
   const plannedStartAt = dayScheduleTimeToIso(dayIdx, startHour);
   const plannedEndAt = dayScheduleTimeToIso(dayIdx, endHour);
 
@@ -8432,11 +7839,21 @@ function MyTasksView() {
 
 // ——— Task Drawer (right panel) ——————————
 
-function TaskDrawer({ task, onClose, onCreateTask, onCancelTask, busyAction }) {
+function TaskDrawer({
+  task,
+  projects,
+  streamers,
+  onClose,
+  onCreateTask,
+  onCancelTask,
+  busyAction,
+}) {
   if (task._new) {
     return (
       <NewTaskDrawer
         task={task}
+        projects={projects}
+        streamers={streamers}
         onClose={onClose}
         onCreateTask={onCreateTask}
       />
@@ -8567,7 +7984,7 @@ function TaskDrawer({ task, onClose, onCreateTask, onCancelTask, busyAction }) {
             events={[
               {
                 time: "05-25 11:02",
-                who: "李珩",
+                who: "系统",
                 action: "排班创建",
                 done: true,
               },
@@ -8599,7 +8016,7 @@ function TaskDrawer({ task, onClose, onCreateTask, onCancelTask, busyAction }) {
               },
               {
                 time: "—",
-                who: "苏婉 · 次级运营",
+                who: "运营审核",
                 action: "报数审核",
                 done: ["completed", "approved"].includes(statusKey),
               },
@@ -8683,18 +8100,29 @@ function TaskDrawer({ task, onClose, onCreateTask, onCancelTask, busyAction }) {
   );
 }
 
-function NewTaskDrawer({ task, onClose, onCreateTask }) {
-  const s = STREAMERS.find((x) => x.id === task.streamerId);
+function NewTaskDrawer({
+  task,
+  projects = [],
+  streamers = [],
+  onClose,
+  onCreateTask,
+}) {
+  const s = streamers.find((x) => x.id === task.streamerId);
+  const p = projects.find((x) => x.id === task.projectId) || projects[0];
+  const projectName = p?.name || task.projectName || task.project || "";
   const [busy, setBusy] = React.useState(false);
   const handleCreate = async () => {
-    if (!onCreateTask) return;
+    if (!onCreateTask || !p || !s) return;
     setBusy(true);
     try {
       await onCreateTask(
         opsLiveTaskInput({
+          projectId: p.id,
           streamerId: task.streamerId,
           dayIdx: task.dayIdx,
           note: "经营端页面创建任务",
+          projects,
+          streamers,
         }),
       );
     } finally {
@@ -8724,12 +8152,12 @@ function NewTaskDrawer({ task, onClose, onCreateTask }) {
             }}
           >
             <Avatar name={s?.alias} size={24} />
-            <span style={{ fontWeight: 600 }}>{s?.alias}</span>
+            <span style={{ fontWeight: 600 }}>{s?.alias || "未选择主播"}</span>
             <span
               className="mono"
               style={{ fontSize: 11, color: "var(--ink-400)" }}
             >
-              {s?.id}
+              {s?.id || "N/A"}
             </span>
           </div>
         </FormField>
@@ -8740,7 +8168,7 @@ function NewTaskDrawer({ task, onClose, onCreateTask }) {
           />
         </FormField>
         <FormField label="所属项目">
-          <FauxSelect value="P-2406 · 原神 4.7 版本品宣专项" />
+          <FauxSelect value={projectName || "未选择项目"} />
         </FormField>
         <div
           style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
@@ -9023,107 +8451,7 @@ function Drawer({ children, onClose, title }) {
 // ===== src\screen-org.jsx =====
 // ——— Screen: 组织与权限 ————————————————————————
 
-const MEMBERS = [
-  {
-    id: "u_01",
-    name: "陈一鸣",
-    role: "owner",
-    dept: "总经办",
-    email: "chen@galaxy-mcn.com",
-    phone: "138****2901",
-    mfa: true,
-    status: "active",
-    lastSeen: "刚刚",
-    joined: "2025-08-12",
-  },
-  {
-    id: "u_02",
-    name: "李珩",
-    role: "ops_manager",
-    dept: "直播运营组",
-    email: "li.heng@galaxy-mcn.com",
-    phone: "139****1108",
-    mfa: true,
-    status: "active",
-    lastSeen: "2 分钟前",
-    joined: "2025-09-04",
-  },
-  {
-    id: "u_03",
-    name: "苏婉",
-    role: "ops_manager",
-    dept: "直播运营组",
-    email: "su.wan@galaxy-mcn.com",
-    phone: "136****8842",
-    mfa: true,
-    status: "active",
-    lastSeen: "14 分钟前",
-    joined: "2025-09-20",
-  },
-  {
-    id: "u_04",
-    name: "周筱筱",
-    role: "operator_business",
-    dept: "商务组",
-    email: "zhou.xx@galaxy-mcn.com",
-    phone: "155****3320",
-    mfa: false,
-    status: "active",
-    lastSeen: "1 小时前",
-    joined: "2025-11-02",
-    projects: 4,
-  },
-  {
-    id: "u_05",
-    name: "吴桐",
-    role: "operator_business",
-    dept: "商务组",
-    email: "wu.tong@galaxy-mcn.com",
-    phone: "177****9012",
-    mfa: true,
-    status: "active",
-    lastSeen: "3 小时前",
-    joined: "2025-12-15",
-    projects: 2,
-  },
-  {
-    id: "u_06",
-    name: "何琳",
-    role: "operator_business",
-    dept: "商务组",
-    email: "he.lin@galaxy-mcn.com",
-    phone: "186****4521",
-    mfa: false,
-    status: "active",
-    lastSeen: "昨日",
-    joined: "2026-01-08",
-    projects: 3,
-  },
-  {
-    id: "u_07",
-    name: "范泽",
-    role: "finance",
-    dept: "财务",
-    email: "fan.ze@galaxy-mcn.com",
-    phone: "189****7733",
-    mfa: true,
-    status: "active",
-    lastSeen: "5 小时前",
-    joined: "2025-09-30",
-  },
-  {
-    id: "u_08",
-    name: "韩冬",
-    role: "finance",
-    dept: "财务",
-    email: "han.dong@galaxy-mcn.com",
-    phone: "180****0099",
-    mfa: true,
-    status: "inactive",
-    lastSeen: "6 天前",
-    joined: "2025-10-15",
-  },
-];
+const MEMBERS = [];
 
 const PERM_MATRIX = [
   {
@@ -9451,7 +8779,7 @@ function ScreenOrg({ go }) {
                     color: "var(--ink-900)",
                   }}
                 >
-                  星河直播
+                  未配置组织
                 </h2>
                 <Badge tone="blue" dot>
                   专业版
@@ -11344,11 +10672,11 @@ function sampleExportRows(kind) {
   if (kind === "vendor_delivery") {
     return [
       {
-        projectName: "王者荣耀暑期冲榜",
-        streamerName: "阿洛",
-        settlementDuration: 120,
+        projectName: "项目名称",
+        streamerName: "主播名称",
+        settlementDuration: 0,
         evidenceLevel: "system",
-        grossMarginCents: 3000,
+        grossMarginCents: 0,
       },
     ];
   }
@@ -11400,7 +10728,9 @@ function OpsReferenceInner({
   const [notificationItemsState, setNotificationItemsState] = React.useState(
     notificationItems ?? null,
   );
-  const [projectsState, setProjectsState] = React.useState(projectCards ?? null);
+  const [projectsState, setProjectsState] = React.useState(
+    projectCards ?? null,
+  );
   const [streamersState, setStreamersState] = React.useState(
     streamerCards ?? null,
   );
@@ -11784,15 +11114,11 @@ function OpsReferenceInner({
         await refreshNotifications();
       },
       createGovernedExport: async (input) => {
-        const body = await fetchJson(
-          "/api/exports",
-          "create export failed",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(input),
-          },
-        );
+        const body = await fetchJson("/api/exports", "create export failed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        });
         return body.export;
       },
     };
@@ -11801,7 +11127,7 @@ function OpsReferenceInner({
   const go = (r, arg) => {
     if (r === "project") {
       setRoute("project");
-      setProjectId(arg || "P-2406");
+      setProjectId(arg || null);
     } else if (r === "streamers") {
       setRoute("streamers");
       if (arg) setStreamerId(arg);
