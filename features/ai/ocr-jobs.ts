@@ -161,6 +161,39 @@ export async function getOcrJob({
   return data ? toOcrJobRecord(data) : null;
 }
 
+export async function listOcrJobs({
+  client,
+  organizationId,
+}: {
+  client: {
+    from(table: "background_jobs"): {
+      select(columns: string): {
+        eq(column: string, value: string): {
+          order(
+            column: string,
+            options: { ascending: boolean },
+          ): PromiseLike<{ data: OcrJobRow[] | null; error: Error | null }>;
+        };
+      };
+    };
+  };
+  organizationId: string;
+}): Promise<OcrJobRecord[]> {
+  const { data, error } = await client
+    .from("background_jobs")
+    .select("*")
+    .eq("organization_id", organizationId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? [])
+    .filter((job) => (job.job_type ?? job.jobType) === "ocr.extract_live_report")
+    .map(toOcrJobRecord);
+}
+
 export async function retryOcrJob({
   client,
   actor,
