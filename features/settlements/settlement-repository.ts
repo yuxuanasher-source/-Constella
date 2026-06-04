@@ -26,6 +26,14 @@ type SettlementPoolReportRow = {
   created_at: string;
 };
 
+type SettlementBatchItemStateRow = {
+  live_report_id: string | null;
+  settlement_batches:
+    | { batch_type: SettlementBatchType }
+    | Array<{ batch_type: SettlementBatchType }>
+    | null;
+};
+
 type SettlementRuleRow = {
   project_id: string;
   streamer_id: string;
@@ -133,6 +141,7 @@ export class SupabaseSettlementRepository implements SettlementRepository {
   async listSettlementPoolReports(input: {
     organizationId: string;
     projectId: string;
+    batchType: SettlementBatchType;
     periodStart: string;
     periodEnd: string;
   }): Promise<SettlementPoolReport[]> {
@@ -143,7 +152,6 @@ export class SupabaseSettlementRepository implements SettlementRepository {
       .eq("project_id", input.projectId)
       .eq("status", "approved")
       .eq("enter_settlement_pool", true)
-      .is("settled_batch_item_id", null)
       .gte("created_at", `${input.periodStart}T00:00:00.000Z`)
       .lte("created_at", `${input.periodEnd}T23:59:59.999Z`)
       .order("created_at", { ascending: true })
@@ -153,7 +161,15 @@ export class SupabaseSettlementRepository implements SettlementRepository {
       throw error;
     }
 
-    return (data ?? []).map(toSettlementPoolReport);
+    const rows = data ?? [];
+    const reportIds = rows.map((row) => row.id);
+    const settledReportIds = reportIds.length
+      ? await this.listSettledReportIdsForBatchType(reportIds, input.batchType)
+      : new Set<string>();
+
+    return rows
+      .filter((row) => !settledReportIds.has(row.id))
+      .map((row) => toSettlementPoolReport(row, []));
   }
 
   async getSettlementRules(input: {
@@ -266,6 +282,7 @@ export class SupabaseSettlementRepository implements SettlementRepository {
   async markReportSettled(input: {
     reportId: string;
     settlementBatchItemId: string;
+    batchType: SettlementBatchType;
   }): Promise<void> {
     const { error } = await this.client
       .from("live_reports")
@@ -276,6 +293,29 @@ export class SupabaseSettlementRepository implements SettlementRepository {
     if (error) {
       throw error;
     }
+  }
+
+  private async listSettledReportIdsForBatchType(
+    reportIds: string[],
+    batchType: SettlementBatchType,
+  ): Promise<Set<string>> {
+    const { data, error } = await this.client
+      .from("settlement_batch_items")
+      .select("live_report_id, settlement_batches!inner(batch_type)")
+      .in("live_report_id", reportIds)
+      .eq("settlement_batches.batch_type", batchType)
+      .returns<SettlementBatchItemStateRow[]>();
+
+    if (error) {
+      throw error;
+    }
+
+    return new Set(
+      (data ?? [])
+        .filter((row) => hasBatchType(row.settlement_batches, batchType))
+        .map((row) => row.live_report_id)
+        .filter((id): id is string => Boolean(id)),
+    );
   }
 
   async getSettlementBatchById(
@@ -315,6 +355,7 @@ export class SupabaseSettlementRepository implements SettlementRepository {
 
 function toSettlementPoolReport(
   row: SettlementPoolReportRow,
+  settledBatchTypes: SettlementBatchType[] = [],
 ): SettlementPoolReport {
   return {
     id: row.id,
@@ -327,8 +368,25 @@ function toSettlementPoolReport(
     timeSource: row.time_source,
     evidenceLevel: row.evidence_level,
     settledBatchItemId: row.settled_batch_item_id,
+    settledBatchTypes,
     createdAt: row.created_at,
   };
+}
+
+function hasBatchType(
+  relation:
+    | { batch_type: SettlementBatchType }
+    | Array<{ batch_type: SettlementBatchType }>
+    | null,
+  batchType: SettlementBatchType,
+): boolean {
+  if (!relation) {
+    return false;
+  }
+
+  return Array.isArray(relation)
+    ? relation.some((item) => item.batch_type === batchType)
+    : relation.batch_type === batchType;
 }
 
 function toSettlementRuleRecord(row: SettlementRuleRow): SettlementRuleRecord {

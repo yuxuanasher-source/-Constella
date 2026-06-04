@@ -748,6 +748,11 @@ function useStreamerLiveActions() {
   return actions || {};
 }
 
+function useStreamerRecordings() {
+  const { recordings } = React.useContext(StreamerLiveDataContext);
+  return Array.isArray(recordings) ? recordings : [];
+}
+
 const MY_NOTIFICATIONS = [];
 
 // Earnings — only my own
@@ -771,14 +776,6 @@ const MY_EARNINGS = {
 
 // Screening videos
 const MY_VIDEOS = [];
-
-const VIDEO_STATUS = {
-  pending_review: { tone: "violet", label: "审核中" },
-  approved: { tone: "green", label: "通过" },
-  rejected: { tone: "red", label: "驳回" },
-  need_supply: { tone: "amber", label: "需补充" },
-  expired: { tone: "neutral", label: "已失效" },
-};
 
 // AI diagnosis conversation history
 const AI_THREAD = [];
@@ -3387,6 +3384,11 @@ function OverviewTab({
   settingsPanel,
   setSettingsPanel,
 }) {
+  const recordings = useStreamerRecordings();
+  const approvedRecordingCount = recordings.filter(
+    (recording) => recording.status === "approved",
+  ).length;
+
   return (
     <>
       <MSection title="本月业绩">
@@ -3497,7 +3499,7 @@ function OverviewTab({
             icon="Reports"
             tone="blue"
             title="我的录屏库"
-            detail={`${MY_VIDEOS.length} 条 · ${MY_VIDEOS.filter((v) => v.status === "approved").length} 条已通过`}
+            detail={`${recordings.length} 条 · ${approvedRecordingCount} 条已通过`}
             onClick={() => go("videos")}
           />
           <ToolRow
@@ -4004,152 +4006,288 @@ function RangeRow({ label, value, tone }) {
 }
 
 // ——— Videos tab ———
-function VideosTab({ applicationCards }) {
-  const videos = Array.isArray(applicationCards)
-    ? applicationCards.map(toVideoFromApplication)
-    : MY_VIDEOS;
+function VideosTab({ recordings }) {
+  const recordingRows = Array.isArray(recordings) ? recordings : MY_VIDEOS;
   const actions = useStreamerLiveActions();
-  const fileInputRef = React.useRef(null);
-  const targetApplication = Array.isArray(applicationCards)
-    ? (applicationCards.find((item) => !item.latestRecording) ??
-      applicationCards[0])
-    : null;
-  const uploadRecording = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file || !targetApplication) return;
-    await actions.submitRecordingUpload?.(targetApplication.id, file);
-    event.target.value = "";
+  const [form, setForm] = React.useState(() => ({
+    product: "",
+    category: "",
+    link: "",
+    month: currentMonthLabel(),
+  }));
+  const [submitting, setSubmitting] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  const updateForm = (key, value) => {
+    setError("");
+    setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const submitRecordingLink = async (event) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+    try {
+      await actions.submitRecordingLink?.(form);
+      setForm({
+        product: "",
+        category: "",
+        link: "",
+        month: currentMonthLabel(),
+      });
+    } catch (submitError) {
+      setError(recordingLinkErrorMessage(submitError));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
     <>
-      <MSection
-        title="我的录屏"
-        action={
-          <MButton
-            size="sm"
-            kind="primary"
-            icon={<Icon.Upload size={13} stroke="#fff" />}
-            onClick={() => fileInputRef.current?.click()}
+      <MSection title="提交录屏链接">
+        <MCard>
+          <form
+            onSubmit={submitRecordingLink}
+            style={{ display: "grid", gap: 10 }}
           >
-            上传
-          </MButton>
-        }
-      >
-        <input
-          ref={fileInputRef}
-          aria-label="录屏文件"
-          type="file"
-          accept="video/*"
-          style={{ display: "none" }}
-          onChange={uploadRecording}
-        />
-        {videos.map((v, i) => {
-          const st = VIDEO_STATUS[v.status];
-          return (
-            <div
-              key={v.id}
+            <MobileRecordingField
+              label="产品"
+              value={form.product}
+              placeholder="例如：Game Alpha"
+              onChange={(value) => updateForm("product", value)}
+            />
+            <MobileRecordingField
+              label="品类"
+              value={form.category}
+              placeholder="ARPG / SLG / 赛事"
+              onChange={(value) => updateForm("category", value)}
+            />
+            <MobileRecordingField
+              label="链接"
+              value={form.link}
+              placeholder="https://..."
+              onChange={(value) => updateForm("link", value)}
+            />
+            <MobileRecordingField
+              label="月份"
+              value={form.month}
+              placeholder="2026-06"
+              onChange={(value) => updateForm("month", value)}
+            />
+            <button
+              type="submit"
+              disabled={submitting}
               style={{
-                background: "#fff",
-                border: "1px solid var(--line)",
-                borderRadius: 12,
-                padding: 12,
-                marginBottom: 10,
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                cursor: "pointer",
+                height: 44,
+                borderRadius: 10,
+                border: "none",
+                background: "var(--blue-600)",
+                color: "#fff",
+                fontSize: 14,
+                fontWeight: 700,
+                opacity: submitting ? 0.58 : 1,
               }}
             >
-              <div
-                style={{
-                  width: 64,
-                  height: 64,
-                  borderRadius: 10,
-                  position: "relative",
-                  background:
-                    "linear-gradient(135deg, #0E1530 0%, #1842A6 100%)",
-                  flexShrink: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <Icon.Play size={20} stroke="#fff" sw={1.8} />
-                <span
-                  className="num"
-                  style={{
-                    position: "absolute",
-                    bottom: 4,
-                    right: 4,
-                    fontSize: 9.5,
-                    padding: "1px 5px",
-                    borderRadius: 3,
-                    background: "rgba(0,0,0,0.5)",
-                    color: "#fff",
-                  }}
-                >
-                  {v.duration}
-                </span>
+              {submitting ? "提交中" : "提交录屏链接"}
+            </button>
+            {error ? (
+              <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                {error}
               </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div
-                  style={{
-                    fontSize: 13.5,
-                    fontWeight: 600,
-                    color: "var(--ink-900)",
-                  }}
-                >
-                  {v.title}
-                </div>
-                <div
-                  className="mono"
-                  style={{
-                    fontSize: 11,
-                    color: "var(--ink-400)",
-                    marginTop: 3,
-                  }}
-                >
-                  {v.id} · {v.forProject}
-                </div>
-                <div
-                  style={{
-                    marginTop: 6,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                  }}
-                >
-                  <MBadge tone={st.tone} dot>
-                    {st.label}
-                  </MBadge>
-                  <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
-                    · {v.uploaded}
-                  </span>
-                </div>
-              </div>
-              <Icon.ChevRight size={16} stroke="var(--ink-300)" />
-            </div>
-          );
-        })}
+            ) : null}
+          </form>
+        </MCard>
       </MSection>
 
-      <MSection title="录屏说明">
-        <MCard style={{ background: "var(--bg-soft)", borderStyle: "dashed" }}>
-          <div
-            style={{ fontSize: 12.5, color: "var(--ink-500)", lineHeight: 1.7 }}
+      <MSection
+        title="我的录屏"
+        action={<MBadge tone="blue">{recordingRows.length} 条</MBadge>}
+      >
+        {recordingRows.length === 0 ? (
+          <MCard
+            style={{ background: "var(--bg-soft)", borderStyle: "dashed" }}
           >
-            · 录屏库分为「项目报名录屏」与「历史录屏」两类
-            <br />
-            · 历史录屏经审核通过后可被多个项目复用
-            <br />
-            · 录屏文件存储于私有 bucket，仅你和运营可访问
-            <br />· 厂家审核结束后系统自动生成短期签名链接
-          </div>
-        </MCard>
+            <div style={{ fontSize: 13, color: "var(--ink-500)" }}>
+              暂无录屏链接，提交 URL 后会进入审核列表。
+            </div>
+          </MCard>
+        ) : (
+          recordingRows.map((recording) => (
+            <RecordingLinkCard key={recording.id} recording={recording} />
+          ))
+        )}
       </MSection>
     </>
   );
+}
+
+function MobileRecordingField({ label, value, placeholder, onChange }) {
+  return (
+    <label style={{ display: "grid", gap: 6 }}>
+      <span style={{ fontSize: 12, color: "var(--ink-500)", fontWeight: 600 }}>
+        {label}
+      </span>
+      <input
+        aria-label={label}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+        style={{
+          height: 40,
+          border: "1px solid var(--line-strong)",
+          borderRadius: 10,
+          padding: "0 12px",
+          fontSize: 13,
+          outline: "none",
+          color: "var(--ink-900)",
+          background: "#fff",
+        }}
+      />
+    </label>
+  );
+}
+
+function RecordingLinkCard({ recording }) {
+  return (
+    <MCard style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <div
+          style={{
+            width: 40,
+            height: 40,
+            borderRadius: 10,
+            background: "var(--blue-50)",
+            color: "var(--blue-700)",
+            display: "grid",
+            placeItems: "center",
+            flexShrink: 0,
+          }}
+        >
+          <Icon.Reports size={18} stroke="var(--blue-700)" />
+        </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              justifyContent: "space-between",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 14,
+                fontWeight: 700,
+                color: "var(--ink-900)",
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {recording.product}
+            </div>
+            <MBadge tone={recordingStatusTone(recording.status)} dot>
+              {recording.statusLabel}
+            </MBadge>
+          </div>
+          <div
+            style={{
+              marginTop: 6,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              flexWrap: "wrap",
+              fontSize: 11,
+              color: "var(--ink-400)",
+            }}
+          >
+            <span>{recording.category}</span>
+            <span className="mono">{recording.month}</span>
+          </div>
+          <a
+            href={recording.link}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              display: "block",
+              marginTop: 8,
+              color: "var(--blue-700)",
+              fontSize: 12,
+              textDecoration: "none",
+              wordBreak: "break-all",
+              lineHeight: 1.45,
+            }}
+          >
+            {recording.link}
+          </a>
+        </div>
+      </div>
+    </MCard>
+  );
+}
+
+function normalizeStreamerRecordings(items) {
+  if (!Array.isArray(items)) {
+    return null;
+  }
+
+  return items.map((item) => ({
+    id: item.id ?? item.link,
+    product: item.product || "未配置产品",
+    category: item.category || "未配置品类",
+    link: item.link || item.recordingUrl || "",
+    month: item.month || item.recordingMonth || currentMonthLabel(),
+    status: item.status || "submitted",
+    statusLabel: item.statusLabel || item.status || "待审核",
+    submittedAt: item.submittedAt || item.submitted_at || "",
+  }));
+}
+
+function recordingStatusTone(status) {
+  return (
+    {
+      submitted: "amber",
+      reviewing: "violet",
+      approved: "green",
+      rejected: "red",
+      needs_changes: "amber",
+    }[status] ?? "neutral"
+  );
+}
+
+function recordingLinkErrorMessage(error) {
+  const message = error?.message || "";
+  if (message.includes("Only streamers")) {
+    return "请先登录主播账号后再提交录屏链接。";
+  }
+  if (message.includes("not bound to a streamer")) {
+    return "当前账号还未绑定主播档案，请先完成主播档案配置。";
+  }
+  if (message.includes("product is required")) {
+    return "请填写产品。";
+  }
+  if (message.includes("category is required")) {
+    return "请填写品类。";
+  }
+  if (message.includes("link is required")) {
+    return "请填写录屏链接。";
+  }
+  if (message.includes("http(s) URL")) {
+    return "录屏链接必须是可访问的 http(s) URL。";
+  }
+  if (message.includes("month is required")) {
+    return "请填写月份。";
+  }
+  if (message.includes("YYYY-MM")) {
+    return "月份格式需为 YYYY-MM。";
+  }
+  return message || "录屏链接提交失败，请稍后重试。";
+}
+
+function currentMonthLabel() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
 // ===== src-streamer\app.jsx =====
@@ -4159,15 +4297,15 @@ function StreamerMobileReferenceInner({
   initialRoute = "home",
   liveTasks,
   liveEarnings,
-  applicationCards,
+  recordings,
 }) {
   // route: 'home' | 'task' | 'report' | 'ai' | 'me' | 'videos'
   const [route, setRoute] = React.useState(initialRoute);
   const [taskId, setTaskId] = React.useState(null);
   const [tasks, setTasks] = React.useState(liveTasks ?? null);
   const [earnings, setEarnings] = React.useState(liveEarnings ?? null);
-  const [applications, setApplications] = React.useState(
-    applicationCards ?? null,
+  const [recordingRows, setRecordingRows] = React.useState(() =>
+    normalizeStreamerRecordings(recordings),
   );
 
   React.useEffect(() => {
@@ -4179,10 +4317,9 @@ function StreamerMobileReferenceInner({
   }, [liveEarnings]);
 
   React.useEffect(() => {
-    setApplications(applicationCards ?? null);
-  }, [applicationCards]);
+    setRecordingRows(normalizeStreamerRecordings(recordings));
+  }, [recordings]);
 
-  const visibleTasks = Array.isArray(tasks) ? tasks : MY_TASKS;
   const actions = React.useMemo(() => {
     const readJson = async (response, fallbackMessage) => {
       const body = await response.json().catch(() => ({}));
@@ -4207,17 +4344,35 @@ function StreamerMobileReferenceInner({
       }
     };
 
-    const refreshApplications = async () => {
+    const refreshRecordings = async () => {
       const body = await fetchJson(
-        "/api/streamer/applications",
-        "refresh streamer applications failed",
+        "/api/streamer/recordings",
+        "refresh streamer recordings failed",
       );
-      if (Array.isArray(body.applications)) {
-        setApplications(body.applications);
+      if (Array.isArray(body.recordings)) {
+        setRecordingRows(normalizeStreamerRecordings(body.recordings));
       }
     };
 
     return {
+      refreshRecordings,
+      submitRecordingLink: async (form) => {
+        const body = await fetchJson(
+          "/api/streamer/recordings",
+          "submit recording link failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(form),
+          },
+        );
+        if (body.recording) {
+          setRecordingRows((current) => [
+            normalizeStreamerRecordings([body.recording])[0],
+            ...(Array.isArray(current) ? current : []),
+          ]);
+        }
+      },
       startTask: async (id) => {
         await fetchJson(`/api/live-tasks/${id}/start`, "start task failed", {
           method: "POST",
@@ -4254,44 +4409,17 @@ function StreamerMobileReferenceInner({
         );
         await refreshTasks();
       },
-      submitRecordingUpload: async (applicationId, file) => {
-        const signed = await fetchJson(
-          "/api/uploads/signed",
-          "create signed upload failed",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              category: "recordings",
-              ownerId: applicationId,
-              fileName: file.name,
-            }),
-          },
-        );
-        const uploadResponse = await fetch(signed.signedUrl, {
-          method: "PUT",
-          body: file,
-        });
-        if (!uploadResponse.ok) {
-          throw new Error("upload recording failed");
-        }
-        await fetchJson(
-          `/api/applications/${applicationId}/videos`,
-          "submit recording failed",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              storagePath: signed.path,
-              durationSeconds: null,
-              fileHash: `manual-${applicationId}-${file.name}-${file.size}`,
-            }),
-          },
-        );
-        await refreshApplications();
-      },
     };
   }, []);
+
+  React.useEffect(() => {
+    if (route === "videos" && recordingRows === null) {
+      actions.refreshRecordings?.();
+    }
+  }, [route, recordingRows, actions]);
+
+  const visibleTasks = Array.isArray(tasks) ? tasks : MY_TASKS;
+  const visibleRecordings = Array.isArray(recordingRows) ? recordingRows : [];
 
   const go = (r, arg) => {
     if (r === "task") {
@@ -4321,7 +4449,12 @@ function StreamerMobileReferenceInner({
 
   return (
     <StreamerLiveDataContext.Provider
-      value={{ tasks: visibleTasks, earnings, actions }}
+      value={{
+        tasks: visibleTasks,
+        earnings,
+        recordings: visibleRecordings,
+        actions,
+      }}
     >
       <div className="phone">
         {route === "home" && <StreamerHome go={go} />}
@@ -4330,7 +4463,7 @@ function StreamerMobileReferenceInner({
         {route === "ai" && <StreamerAI go={go} />}
         {route === "me" && <StreamerMe go={go} />}
         {route === "videos" && (
-          <VideosOnlyPage go={go} applicationCards={applications} />
+          <VideosOnlyPage go={go} recordings={visibleRecordings} />
         )}
 
         <MTabBar
@@ -4349,65 +4482,34 @@ function StreamerMobileReferenceInner({
 }
 
 // Small placeholder for 录屏 tab when accessed independently
-function VideosOnlyPage({ applicationCards }) {
+function VideosOnlyPage({ recordings }) {
   return (
     <div style={{ paddingBottom: 96 }}>
       <MAppBar
         title="我的录屏"
-        subtitle="项目报名录屏 / 历史录屏"
+        subtitle="录屏 URL / 月份 / 审核状态"
         dark={false}
       />
-      <VideosTab applicationCards={applicationCards} />
+      <VideosTab recordings={recordings} />
     </div>
   );
 }
 
-function toVideoFromApplication(application) {
-  const recording = application.latestRecording;
-  return {
-    id: recording?.id ?? application.id,
-    title: `${application.project?.name ?? "项目报名"} · 试播录屏`,
-    forProject: application.project?.code ?? application.project?.id ?? "项目",
-    uploaded: recording?.createdAt?.slice(0, 10) ?? "待上传",
-    status: recording
-      ? videoStatusFromRecording(recording.status)
-      : "need_supply",
-    duration: formatVideoDuration(recording?.durationSeconds ?? 0),
-  };
-}
-
-function videoStatusFromRecording(status) {
-  if (status === "approved") return "approved";
-  if (status === "rejected") return "rejected";
-  if (status === "needs_changes") return "need_supply";
-  return "pending_review";
-}
-
-function formatVideoDuration(seconds) {
-  const safeSeconds = Math.max(Number(seconds) || 0, 0);
-  const hours = Math.floor(safeSeconds / 3600);
-  const minutes = Math.floor((safeSeconds % 3600) / 60);
-  const rest = safeSeconds % 60;
-  return [hours, minutes, rest]
-    .map((part) => String(part).padStart(2, "0"))
-    .join(":");
-}
-
 /**
- * @param {{ initialRoute?: string; liveTasks?: any[]; liveEarnings?: any; applicationCards?: any[] }} props
+ * @param {{ initialRoute?: string; liveTasks?: any[]; liveEarnings?: any; recordings?: any[] }} props
  */
 export default function StreamerMobileReferenceApp({
   initialRoute = "home",
   liveTasks,
   liveEarnings,
-  applicationCards,
+  recordings,
 }) {
   return (
     <StreamerMobileReferenceInner
       initialRoute={initialRoute}
       liveTasks={liveTasks}
       liveEarnings={liveEarnings}
-      applicationCards={applicationCards}
+      recordings={recordings}
     />
   );
 }

@@ -1,6 +1,7 @@
 const permissionErrorPatterns = [
   /^Current role cannot /,
   /^Only MCN staff can /,
+  /^Only owner can /,
   /^Only owner and ops_manager can /,
   /^Only owners can /,
   /^Only streamers can /,

@@ -82,4 +82,16 @@ describe("P0 database contract", () => {
     expect(allMigrations).toContain("project creators can read own projects");
     expect(allMigrations).toContain("created_by = auth.uid()");
   });
+
+  it("declares the public MCN onboarding request intake table", () => {
+    expect(allMigrations).toContain(
+      "create table public.mcn_onboarding_requests",
+    );
+    expect(allMigrations).toContain(
+      "alter table public.mcn_onboarding_requests enable row level security",
+    );
+    expect(allMigrations).toContain(
+      'create policy "public can submit mcn onboarding requests"',
+    );
+  });
 });

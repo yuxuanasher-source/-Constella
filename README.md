@@ -20,6 +20,8 @@ pnpm dev
 
 本地库不再随源码写入演示账号或业务样例数据。请通过 Supabase Auth / 后台流程创建真实测试账号。
 
+`scripts/api-integration-smoke.mjs` 和 `scripts/manual-acceptance-smoke.mjs` 不读取源码 seed。运行前请在 `.env.local` 填写 `SMOKE_PROJECT_ID`、`SMOKE_STREAMER_ID`、`SMOKE_OWNER_EMAIL`、`SMOKE_OPS_EMAIL`、`SMOKE_FINANCE_EMAIL`、`SMOKE_STREAMER_EMAIL`、`SMOKE_USER_PASSWORD`，这些值应来自你在本地库中通过真实流程创建的验收数据。
+
 ## 常用命令
 
 ```bash

@@ -6,6 +6,7 @@ import {
   createProjectDraft,
   createProjectAuditWriter,
   publishProject,
+  updateProjectBasics,
 } from "@/features/projects/project-service";
 import { listProjects } from "@/features/projects/project-queries";
 
@@ -30,6 +31,7 @@ vi.mock("@/features/projects/project-service", async () => {
     createProjectAuditWriter: vi.fn(),
     createProjectDraft: vi.fn(),
     publishProject: vi.fn(),
+    updateProjectBasics: vi.fn(),
   };
 });
 
@@ -66,6 +68,11 @@ describe("project api routes", () => {
         name: "鸣潮暑期招募",
         status: "draft",
         sensitivity: "normal",
+        starts_at: "2026-06-03",
+        ends_at: "2026-06-20",
+        open_signup: true,
+        allow_direct_invite: true,
+        force_recording: true,
         force_system_timing: true,
         default_hourly_rate: 4500,
         published_at: null,
@@ -138,6 +145,66 @@ describe("project api routes", () => {
         audit,
         actor: auth,
         projectId: "p1",
+      }),
+    );
+  });
+
+  it("PATCH /api/projects/[projectId] updates project status through the audited service", async () => {
+    vi.mocked(updateProjectBasics).mockResolvedValue({
+      id: "p1",
+      name: "鸣潮暑期招募",
+      code: "P2412",
+      status: "paused",
+      organization_id: "org-1",
+    } as never);
+
+    const { PATCH } = await import("./[projectId]/route");
+    const response = await PATCH(
+      jsonRequest(
+        {
+          name: "鸣潮暑期招募",
+          status: "paused",
+          startsAt: "2026-06-03",
+          endsAt: "2026-06-20",
+          openSignup: true,
+          allowDirectInvite: true,
+          forceRecording: true,
+          forceSystemTiming: true,
+          vendorName: "厂商 A",
+          productName: "产品 A",
+          agentName: "代理商 A",
+          supplierName: "供应商 A",
+          description: "项目说明 A",
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ projectId: "p1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      project: expect.objectContaining({ id: "p1", status: "paused" }),
+    });
+    expect(updateProjectBasics).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audit,
+        actor: auth,
+        projectId: "p1",
+        input: expect.objectContaining({
+          name: "鸣潮暑期招募",
+          status: "paused",
+          startsAt: "2026-06-03",
+          endsAt: "2026-06-20",
+          openSignup: true,
+          allowDirectInvite: true,
+          forceRecording: true,
+          forceSystemTiming: true,
+          vendorName: "厂商 A",
+          productName: "产品 A",
+          agentName: "代理商 A",
+          supplierName: "供应商 A",
+          description: "项目说明 A",
+        }),
       }),
     );
   });

@@ -2,6 +2,7 @@
 /* eslint-disable */
 import React from "react";
 
+import { getAllowedProjectStatusTransitions } from "@/features/projects/project-state";
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
 import {
   toPricingResultDto,
@@ -642,6 +643,91 @@ function RiskDot({ level }) {
 
 const ORG = { id: "", name: "未配置组织" };
 
+const ORGANIZATION_FEATURE_OPTIONS = [
+  {
+    key: "aiWarRoom",
+    label: "AI 智能作战台",
+    hint: "经营看板、复盘摘要、风险提醒与项目推荐能力。",
+  },
+  {
+    key: "dataExport",
+    label: "数据导出",
+    hint: "导出项目、主播、报数、结算与审计明细。",
+  },
+  {
+    key: "streamerDesktop",
+    label: "主播工作台",
+    hint: "主播任务、录屏、报数与结算确认入口。",
+  },
+  {
+    key: "vendorPortal",
+    label: "厂家门户",
+    hint: "向厂家开放候选主播、执行进度与交付包。",
+  },
+  {
+    key: "autoReview",
+    label: "自动审核正式模式",
+    hint: "OCR 与规则命中后自动推进报数审核流转。",
+  },
+];
+
+const DEFAULT_ORGANIZATION_SETTINGS = {
+  id: ORG.id,
+  name: ORG.name || "未配置组织",
+  memberLimit: null,
+  plan: "",
+  verified: false,
+  features: {
+    aiWarRoom: true,
+    dataExport: true,
+    streamerDesktop: true,
+    vendorPortal: false,
+    autoReview: false,
+  },
+};
+
+function normalizeOrganizationSettings(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const rawLimit = Number(source.memberLimit ?? source.memberCount);
+  const memberLimit =
+    Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : null;
+  const features =
+    source.features && typeof source.features === "object"
+      ? source.features
+      : source.enabledFeatures && typeof source.enabledFeatures === "object"
+        ? source.enabledFeatures
+        : {};
+
+  return {
+    ...DEFAULT_ORGANIZATION_SETTINGS,
+    ...source,
+    name:
+      typeof source.name === "string" && source.name.trim()
+        ? source.name.trim()
+        : DEFAULT_ORGANIZATION_SETTINGS.name,
+    memberLimit,
+    plan:
+      typeof source.plan === "string" && source.plan.trim()
+        ? source.plan.trim()
+        : DEFAULT_ORGANIZATION_SETTINGS.plan,
+    verified:
+      typeof source.verified === "boolean"
+        ? source.verified
+        : DEFAULT_ORGANIZATION_SETTINGS.verified,
+    features: {
+      ...DEFAULT_ORGANIZATION_SETTINGS.features,
+      ...features,
+    },
+  };
+}
+
+function countEnabledOrganizationFeatures(settings) {
+  const normalized = normalizeOrganizationSettings(settings);
+  return ORGANIZATION_FEATURE_OPTIONS.filter(
+    (feature) => normalized.features[feature.key],
+  ).length;
+}
+
 const ROLES = {
   owner: "负责人",
   ops_manager: "运营负责人",
@@ -672,6 +758,10 @@ const PROJECT_STATUS = {
   archived: { tone: "neutral", label: "已归档" },
 };
 
+const PROJECT_STATUS_OPTIONS = Object.entries(PROJECT_STATUS).map(
+  ([value, meta]) => ({ value, label: meta.label }),
+);
+
 // Streamers ———————————————————————————————————
 const STREAMERS = [];
 
@@ -698,6 +788,10 @@ const OpsLiveDataContext = React.createContext({
   settlementScope: null,
   auditEntries: null,
   notificationItems: null,
+  organizationMembers: null,
+  organizationMemberPermissions: null,
+  organizationSettings: DEFAULT_ORGANIZATION_SETTINGS,
+  billingStatus: null,
   actions: {},
 });
 
@@ -754,6 +848,32 @@ function useOpsAuditEntries() {
 function useOpsNotifications() {
   const { notificationItems } = React.useContext(OpsLiveDataContext);
   return Array.isArray(notificationItems) ? notificationItems : [];
+}
+
+function useOpsOrganizationMembers() {
+  const { organizationMembers } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(organizationMembers) ? organizationMembers : MEMBERS;
+}
+
+function useOpsOrganizationMemberPermissions() {
+  const { organizationMemberPermissions } =
+    React.useContext(OpsLiveDataContext);
+  return organizationMemberPermissions &&
+    typeof organizationMemberPermissions === "object"
+    ? organizationMemberPermissions
+    : null;
+}
+
+function useOpsOrganizationSettings() {
+  const { organizationSettings } = React.useContext(OpsLiveDataContext);
+  return normalizeOrganizationSettings(organizationSettings);
+}
+
+function useOpsBillingStatus() {
+  const { billingStatus } = React.useContext(OpsLiveDataContext);
+  return billingStatus && typeof billingStatus === "object"
+    ? billingStatus
+    : null;
 }
 
 function useOpsLiveActions() {
@@ -830,14 +950,16 @@ const AUDIT_LOG_RECENT = [];
 const SCHEDULE_WEEK = createScheduleWeek();
 
 function createScheduleWeek(today = new Date()) {
-  const start = new Date(today);
-  const day = today.getDay();
+  const start = new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
+  );
+  const day = today.getUTCDay();
   const todayIdx = day === 0 ? 6 : day - 1;
-  start.setDate(today.getDate() - todayIdx);
+  start.setUTCDate(start.getUTCDate() - todayIdx);
   const labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
   const days = labels.map((label, index) => {
     const current = new Date(start);
-    current.setDate(start.getDate() + index);
+    current.setUTCDate(start.getUTCDate() + index);
     return {
       label,
       date: formatScheduleDate(current),
@@ -845,7 +967,7 @@ function createScheduleWeek(today = new Date()) {
     };
   });
   const end = new Date(start);
-  end.setDate(start.getDate() + 6);
+  end.setUTCDate(start.getUTCDate() + 6);
   return {
     start: formatDateKey(start),
     end: formatDateKey(end),
@@ -855,15 +977,15 @@ function createScheduleWeek(today = new Date()) {
 }
 
 function formatDateKey(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
     2,
     "0",
-  )}-${String(date.getDate()).padStart(2, "0")}`;
+  )}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
 
 function formatScheduleDate(date) {
-  return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-    date.getDate(),
+  return `${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    date.getUTCDate(),
   ).padStart(2, "0")}`;
 }
 
@@ -1169,7 +1291,26 @@ const NAV = [
   { key: "org", label: "组织与权限", icon: "Settings" },
 ];
 
-function Sidebar({ route, onNav, navCounts = {} }) {
+function Sidebar({
+  route,
+  onNav,
+  navCounts = {},
+  organizationSettings,
+  organizationMembers,
+  onOpenOrganizationSettings,
+}) {
+  const orgSettings = normalizeOrganizationSettings(organizationSettings);
+  const enabledFeatureCount = countEnabledOrganizationFeatures(orgSettings);
+  const memberCount = Array.isArray(organizationMembers)
+    ? organizationMembers.length
+    : null;
+  const switcherMemberText =
+    memberCount != null
+      ? `当前组织 · ${memberCount} 名成员`
+      : orgSettings.memberLimit != null
+        ? `当前组织 · 配额 ${orgSettings.memberLimit}`
+        : "当前组织 · 设置与权限";
+
   return (
     <aside
       style={{
@@ -1240,6 +1381,8 @@ function Sidebar({ route, onNav, navCounts = {} }) {
 
       {/* Org switcher */}
       <button
+        type="button"
+        onClick={onOpenOrganizationSettings}
         style={{
           margin: "12px 12px 8px",
           padding: "8px 10px",
@@ -1277,12 +1420,17 @@ function Sidebar({ route, onNav, navCounts = {} }) {
               lineHeight: 1.1,
             }}
           >
-            未配置组织
+            {orgSettings.name}
           </div>
           <div
             style={{ fontSize: 10.5, color: "var(--ink-400)", lineHeight: 1.2 }}
           >
-            当前组织 · 32 名成员
+            {switcherMemberText}
+          </div>
+          <div
+            style={{ fontSize: 10.5, color: "var(--blue-600)", lineHeight: 1.2 }}
+          >
+            已启用 {enabledFeatureCount} 项功能
           </div>
         </div>
         <Icon.ChevDown size={14} stroke="var(--ink-400)" />
@@ -3615,7 +3763,7 @@ function ProjectList({ go }) {
                         className="mono"
                         style={{ fontSize: 11, color: "var(--ink-400)" }}
                       >
-                        {r.id} · {r.code}
+                        {r.code || "未设置编号"}
                       </div>
                     </div>
                   </div>
@@ -3790,6 +3938,19 @@ function ProjectDetail({ id, go }) {
   const [tab, setTab] = React.useState("overview");
   const [detailMessage, setDetailMessage] = React.useState("");
   const [detailSubmitting, setDetailSubmitting] = React.useState("");
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [settingsDraft, setSettingsDraft] = React.useState(() =>
+    projectSettingsInitialDraft(p),
+  );
+  const [settingsError, setSettingsError] = React.useState("");
+  const [settingsSubmitting, setSettingsSubmitting] = React.useState(false);
+
+  React.useEffect(() => {
+    setSettingsDraft(projectSettingsInitialDraft(p));
+    setSettingsOpen(false);
+    setSettingsError("");
+  }, [p]);
+
   if (!p) {
     return (
       <>
@@ -3843,6 +4004,61 @@ function ProjectDetail({ id, go }) {
       setDetailSubmitting("");
     }
   };
+  const openProjectSettings = () => {
+    setSettingsDraft(projectSettingsInitialDraft(p));
+    setSettingsError("");
+    setDetailMessage("");
+    setSettingsOpen(true);
+  };
+  const handleSettingsChange = (field, value) => {
+    setSettingsDraft((current) => ({ ...current, [field]: value }));
+  };
+  const handleProjectSettingsSubmit = async (event) => {
+    event.preventDefault();
+    const name = settingsDraft.name.trim();
+    if (!name) {
+      setSettingsError("项目名称不能为空");
+      return;
+    }
+    if (
+      settingsDraft.startsAt &&
+      settingsDraft.endsAt &&
+      settingsDraft.endsAt < settingsDraft.startsAt
+    ) {
+      setSettingsError("结束日期不能早于开始日期");
+      return;
+    }
+
+    setSettingsSubmitting(true);
+    setSettingsError("");
+    setDetailMessage("");
+    try {
+      if (!actions.updateProjectBasics) {
+        throw new Error("项目设置接口不可用");
+      }
+      await actions.updateProjectBasics(p.id, {
+        name,
+        vendorName: settingsDraft.vendorName.trim(),
+        productName: settingsDraft.productName.trim(),
+        agentName: settingsDraft.agentName.trim(),
+        supplierName: settingsDraft.supplierName.trim(),
+        description: settingsDraft.description.trim(),
+        status: settingsDraft.status,
+        startsAt: settingsDraft.startsAt || null,
+        endsAt: settingsDraft.endsAt || null,
+        openSignup: settingsDraft.openSignup,
+        allowDirectInvite: settingsDraft.allowDirectInvite,
+        forceRecording: settingsDraft.forceRecording,
+        forceSystemTiming: settingsDraft.forceSystemTiming,
+      });
+      setDetailMessage("项目设置已更新");
+      setSettingsOpen(false);
+    } catch (error) {
+      setSettingsError(error?.message || "项目设置更新失败，请稍后重试");
+    } finally {
+      setSettingsSubmitting(false);
+    }
+  };
 
   return (
     <>
@@ -3886,7 +4102,7 @@ function ProjectDetail({ id, go }) {
             <Button
               kind="default"
               icon={<Icon.Settings size={14} />}
-              onClick={() => setDetailMessage("项目设置后台暂未接入")}
+              onClick={openProjectSettings}
             >
               项目设置
             </Button>
@@ -3937,6 +4153,21 @@ function ProjectDetail({ id, go }) {
           >
             {detailMessage}
           </div>
+        ) : null}
+        {settingsOpen ? (
+          <ProjectSettingsPanel
+            draft={settingsDraft}
+            baseStatus={p.status}
+            error={settingsError}
+            submitting={settingsSubmitting}
+            onChange={handleSettingsChange}
+            onSubmit={handleProjectSettingsSubmit}
+            onCancel={() => {
+              setSettingsOpen(false);
+              setSettingsError("");
+              setSettingsDraft(projectSettingsInitialDraft(p));
+            }}
+          />
         ) : null}
         {/* Top metric strip (owner view) */}
         <div
@@ -4044,6 +4275,597 @@ function ProjectDetail({ id, go }) {
   );
 }
 
+function normalizeProjectSettingDate(value) {
+  return value ? String(value).slice(0, 10) : "";
+}
+
+function projectSettingsInitialDraft(project) {
+  return {
+    name: project?.name || "",
+    vendorName: normalizeProjectTextDraft(project?.vendor, ["未填写"]),
+    productName: normalizeProjectTextDraft(project?.product, ["未填写"]),
+    agentName: normalizeProjectTextDraft(project?.agent, ["—", "未填写"]),
+    supplierName: normalizeProjectTextDraft(project?.supplier, [
+      "未填写",
+      "未绑定",
+    ]),
+    description: normalizeProjectTextDraft(
+      project?.description || project?.note || project?.brief,
+      ["暂无项目说明"],
+    ),
+    status: project?.status || "draft",
+    startsAt: normalizeProjectSettingDate(project?.start || project?.startsAt),
+    endsAt: normalizeProjectSettingDate(project?.end || project?.endsAt),
+    openSignup: project?.openSignup ?? true,
+    allowDirectInvite: project?.allowDirectInvite ?? true,
+    forceRecording: project?.forceRecording ?? project?.needScreening ?? true,
+    forceSystemTiming:
+      project?.forceSystemTiming ?? project?.needStartStop ?? true,
+  };
+}
+
+function normalizeProjectTextDraft(value, placeholders = []) {
+  if (!value || placeholders.includes(value)) return "";
+  return String(value);
+}
+
+const projectSettingsInputStyle = {
+  height: 34,
+  border: "1px solid var(--line-strong)",
+  borderRadius: 6,
+  padding: "0 10px",
+  fontSize: 13,
+  color: "var(--ink-900)",
+  background: "#fff",
+  outline: "none",
+};
+
+const projectStatusPickerTones = {
+  neutral: ["#EEF2F7", "#475569", "#94A3B8"],
+  blue: ["#EEF3FF", "#1842A6", "#3B6BE6"],
+  green: ["#E6F6EE", "#0E8A4D", "#22B86C"],
+  amber: ["#FFF3DC", "#A86A00", "#E5A33A"],
+  red: ["#FDECEC", "#C0303A", "#E66670"],
+  violet: ["#EFEBFF", "#5B4BD1", "#8C7DEB"],
+  teal: ["#DEF3F0", "#0E7C77", "#3CB1AB"],
+  ink: ["#E2E8F0", "#1E2A47", "#475569"],
+};
+
+function projectStatusPickerColors(statusValue) {
+  const tone = PROJECT_STATUS[statusValue]?.tone || "neutral";
+  const [bg, fg, dot] =
+    projectStatusPickerTones[tone] || projectStatusPickerTones.neutral;
+  return { bg, fg, dot };
+}
+
+function ProjectSettingsField({ label, children }) {
+  return (
+    <label
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        fontSize: 12,
+        color: "var(--ink-500)",
+      }}
+    >
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function projectStatusOptionsForTransition(fromStatus, currentValue) {
+  const baseStatus = PROJECT_STATUS[fromStatus] ? fromStatus : currentValue;
+  const nextStatuses = PROJECT_STATUS[baseStatus]
+    ? getAllowedProjectStatusTransitions(baseStatus)
+    : [];
+  const visibleValues = new Set([baseStatus, currentValue, ...nextStatuses]);
+  return PROJECT_STATUS_OPTIONS.filter((option) => visibleValues.has(option.value));
+}
+
+function projectStatusNextLabels(fromStatus) {
+  if (!PROJECT_STATUS[fromStatus]) return "暂无可流转状态";
+  const nextOptions = getAllowedProjectStatusTransitions(fromStatus)
+    .map((status) => PROJECT_STATUS[status]?.label)
+    .filter(Boolean);
+  return nextOptions.length > 0 ? nextOptions.join("、") : "暂无可流转状态";
+}
+
+function ProjectSettingsStatusPicker({ value, fromStatus, onChange }) {
+  const [open, setOpen] = React.useState(false);
+  const statusOptions = projectStatusOptionsForTransition(fromStatus, value);
+  const current =
+    statusOptions.find((option) => option.value === value) ||
+    PROJECT_STATUS_OPTIONS.find((option) => option.value === value) ||
+    statusOptions[0] ||
+    PROJECT_STATUS_OPTIONS[0];
+  const currentColors = projectStatusPickerColors(current.value);
+  const listboxId = "project-settings-status-options";
+
+  const selectOption = (option) => {
+    onChange(option.value);
+    setOpen(false);
+  };
+
+  return (
+    <div
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setOpen(false);
+        }
+      }}
+      style={{ position: "relative" }}
+    >
+      <button
+        type="button"
+        role="combobox"
+        aria-label="项目状态"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-controls={listboxId}
+        onClick={() => setOpen((next) => !next)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            setOpen(false);
+          }
+          if (event.key === "ArrowDown" || event.key === "Enter") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+        style={{
+          ...projectSettingsInputStyle,
+          width: "100%",
+          padding: "0 10px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          borderColor: open ? "var(--blue-300)" : "var(--line-strong)",
+          background: "linear-gradient(180deg, #fff 0%, #F8FAFF 100%)",
+          boxShadow: open
+            ? "0 0 0 3px rgba(37, 99, 235, 0.12), inset 0 1px 0 rgba(255,255,255,0.8)"
+            : "inset 0 1px 0 rgba(255,255,255,0.8)",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          textAlign: "left",
+        }}
+      >
+        <span
+          style={{
+            minWidth: 0,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+            color: "var(--ink-900)",
+            fontWeight: 600,
+          }}
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 999,
+              background: currentColors.dot,
+              boxShadow: `0 0 0 4px ${currentColors.bg}`,
+              flex: "0 0 auto",
+            }}
+          />
+          <span
+            style={{
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {current.label}
+          </span>
+        </span>
+        <Icon.ChevDown
+          aria-hidden="true"
+          size={14}
+          stroke={open ? "var(--blue-700)" : "var(--ink-400)"}
+        />
+      </button>
+      {open && (
+        <div
+          id={listboxId}
+          role="listbox"
+          aria-label="项目状态选项"
+          style={{
+            position: "absolute",
+            zIndex: 40,
+            top: 40,
+            left: 0,
+            right: 0,
+            padding: 6,
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            background: "#fff",
+            boxShadow:
+              "0 16px 32px rgba(15, 23, 42, 0.14), 0 4px 10px rgba(15, 23, 42, 0.08)",
+          }}
+        >
+          {statusOptions.map((option) => {
+            const colors = projectStatusPickerColors(option.value);
+            const selected = option.value === current.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => selectOption(option)}
+                style={{
+                  width: "100%",
+                  height: 32,
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "0 8px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  background: selected ? "var(--blue-50)" : "transparent",
+                  color: selected ? "var(--blue-700)" : "var(--ink-700)",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: selected ? 700 : 600,
+                  fontFamily: "inherit",
+                  textAlign: "left",
+                }}
+              >
+                <span
+                  style={{
+                    minWidth: 0,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 999,
+                      background: colors.dot,
+                      boxShadow: `0 0 0 4px ${colors.bg}`,
+                      flex: "0 0 auto",
+                    }}
+                  />
+                  <span>{option.label}</span>
+                </span>
+                {selected && (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      color: "var(--blue-700)",
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    已选
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectSettingsDateField({ label, value, onChange }) {
+  const inputRef = React.useRef(null);
+  const [focused, setFocused] = React.useState(false);
+  const openPicker = () => {
+    const input = inputRef.current;
+    if (!input) return;
+    if (typeof input.showPicker === "function") {
+      input.showPicker();
+      return;
+    }
+    input.focus();
+  };
+
+  return (
+    <ProjectSettingsField label={label}>
+      <div
+        onClick={openPicker}
+        style={{
+          ...projectSettingsInputStyle,
+          borderColor: focused ? "var(--blue-300)" : "var(--line-strong)",
+          padding: 0,
+          display: "flex",
+          alignItems: "center",
+          position: "relative",
+          cursor: "pointer",
+          background: "linear-gradient(180deg, #fff 0%, #F8FAFF 100%)",
+          boxShadow: focused
+            ? "0 0 0 3px rgba(37, 99, 235, 0.12), inset 0 1px 0 rgba(255,255,255,0.8)"
+            : "inset 0 1px 0 rgba(255,255,255,0.8)",
+        }}
+      >
+        <input
+          className="project-settings-date-input"
+          ref={inputRef}
+          type="date"
+          value={value}
+          onClick={(event) => {
+            event.stopPropagation();
+            openPicker();
+          }}
+          onChange={(event) => onChange(event.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          style={{
+            width: "100%",
+            height: "100%",
+            border: "none",
+            background: "transparent",
+            outline: "none",
+            color: "var(--ink-900)",
+            fontSize: 13,
+            padding: "0 34px 0 10px",
+            cursor: "pointer",
+            fontFamily: "inherit",
+          }}
+        />
+        <span
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            right: 10,
+            top: "50%",
+            transform: "translateY(-50%)",
+            width: 18,
+            height: 18,
+            borderRadius: 5,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "var(--blue-50)",
+            color: "var(--blue-700)",
+            pointerEvents: "none",
+          }}
+        >
+          <Icon.Calendar size={13} stroke="var(--blue-700)" />
+        </span>
+      </div>
+    </ProjectSettingsField>
+  );
+}
+
+function ProjectSettingsPanel({
+  draft,
+  baseStatus,
+  error,
+  submitting,
+  onChange,
+  onSubmit,
+  onCancel,
+}) {
+  return (
+    <Card
+      title="项目设置"
+      extra={
+        <Badge tone="blue" dot>
+          后端实时保存
+        </Badge>
+      }
+      padded={true}
+    >
+      <form
+        onSubmit={onSubmit}
+        style={{ display: "flex", flexDirection: "column", gap: 14 }}
+      >
+        <style>
+          {`
+            .project-settings-date-input::-webkit-calendar-picker-indicator {
+              opacity: 0;
+              cursor: pointer;
+            }
+          `}
+        </style>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(120px, 0.5fr) minmax(180px, 1fr)",
+            gap: 12,
+            alignItems: "center",
+            padding: 12,
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            background: "var(--blue-50)",
+          }}
+        >
+          <div>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 700,
+                color: "var(--ink-900)",
+              }}
+            >
+              状态设置
+            </div>
+            <div
+              style={{ marginTop: 2, fontSize: 12, color: "var(--ink-500)" }}
+            >
+              状态保存后同步刷新项目列表与详情
+            </div>
+          </div>
+          <ProjectSettingsField label="项目状态">
+            <ProjectSettingsStatusPicker
+              value={draft.status}
+              fromStatus={baseStatus}
+              onChange={(value) => onChange("status", value)}
+            />
+            <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+              当前可流转：{projectStatusNextLabels(baseStatus)}
+            </span>
+          </ProjectSettingsField>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+            gap: 12,
+            alignItems: "end",
+          }}
+        >
+          <ProjectSettingsField label="项目名称">
+            <input
+              value={draft.name}
+              onChange={(event) => onChange("name", event.target.value)}
+              style={projectSettingsInputStyle}
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsField label="厂商">
+            <input
+              value={draft.vendorName}
+              onChange={(event) => onChange("vendorName", event.target.value)}
+              placeholder="未填写"
+              style={projectSettingsInputStyle}
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsField label="产品">
+            <input
+              value={draft.productName}
+              onChange={(event) => onChange("productName", event.target.value)}
+              placeholder="默认使用项目名称"
+              style={projectSettingsInputStyle}
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsField label="代理商">
+            <input
+              value={draft.agentName}
+              onChange={(event) => onChange("agentName", event.target.value)}
+              placeholder="未填写"
+              style={projectSettingsInputStyle}
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsField label="供应商">
+            <input
+              value={draft.supplierName}
+              onChange={(event) => onChange("supplierName", event.target.value)}
+              placeholder="未填写"
+              style={projectSettingsInputStyle}
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsDateField
+            label="开始日期"
+            value={draft.startsAt}
+            onChange={(value) => onChange("startsAt", value)}
+          />
+          <ProjectSettingsDateField
+            label="结束日期"
+            value={draft.endsAt}
+            onChange={(value) => onChange("endsAt", value)}
+          />
+          <div style={{ gridColumn: "1 / -1" }}>
+            <ProjectSettingsField label="项目说明">
+              <textarea
+                value={draft.description}
+                onChange={(event) =>
+                  onChange("description", event.target.value)
+                }
+                placeholder="补充厂家关注角色、素材要求、转化口径等项目说明"
+                style={{
+                  ...projectSettingsInputStyle,
+                  width: "100%",
+                  minHeight: 68,
+                  padding: "8px 10px",
+                  resize: "vertical",
+                  lineHeight: 1.5,
+                  fontFamily: "inherit",
+                }}
+              />
+            </ProjectSettingsField>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+            gap: 10,
+          }}
+        >
+          <ProjectSettingsCheck
+            label="开放报名"
+            checked={draft.openSignup}
+            onChange={(checked) => onChange("openSignup", checked)}
+          />
+          <ProjectSettingsCheck
+            label="允许定向邀约"
+            checked={draft.allowDirectInvite}
+            onChange={(checked) => onChange("allowDirectInvite", checked)}
+          />
+          <ProjectSettingsCheck
+            label="强制录屏"
+            checked={draft.forceRecording}
+            onChange={(checked) => onChange("forceRecording", checked)}
+          />
+          <ProjectSettingsCheck
+            label="主播需点击开播/停止"
+            checked={draft.forceSystemTiming}
+            onChange={(checked) => onChange("forceSystemTiming", checked)}
+          />
+        </div>
+
+        {error ? (
+          <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+            {error}
+          </div>
+        ) : null}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <Button kind="ghost" onClick={onCancel} disabled={submitting}>
+            取消
+          </Button>
+          <Button kind="primary" type="submit" disabled={submitting}>
+            {submitting ? "保存中" : "保存设置"}
+          </Button>
+        </div>
+      </form>
+    </Card>
+  );
+}
+
+function ProjectSettingsCheck({ label, checked, onChange }) {
+  return (
+    <label
+      style={{
+        height: 34,
+        border: "1px solid var(--line)",
+        borderRadius: 6,
+        padding: "0 10px",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        fontSize: 13,
+        color: "var(--ink-700)",
+        background: checked ? "var(--blue-50)" : "#fff",
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      {label}
+    </label>
+  );
+}
+
 function tabLabel(k) {
   return (
     {
@@ -4090,7 +4912,7 @@ function ProjectOverview({ p }) {
             <div>
               <KV label="项目编号">
                 <span className="mono">
-                  {p.id} · {p.code}
+                  {p.code || "未设置编号"}
                 </span>
               </KV>
               <KV label="厂商">{p.vendor}</KV>
@@ -5555,6 +6377,7 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
     color: "var(--ink-500)",
     fontWeight: 600,
   };
+  const streamerProjects = Array.isArray(s.projects) ? s.projects : [];
   const openRiskForm = () => {
     setRiskOpen(true);
     setRiskError("");
@@ -5774,7 +6597,7 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
           />
           <RingMetric
             label="毛利贡献"
-            value={`¥${(s.metrics.grossContrib / 1000).toFixed(1)}k`}
+            value={formatStreamerMoneyK(s.metrics.grossContrib)}
             raw
           />
         </div>
@@ -5791,7 +6614,13 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
           >
             近 6 周匹配分趋势
           </div>
-          <Sparkline data={[78, 81, 83, 86, 90, s.matchScore]} />
+          <Sparkline
+            data={
+              Array.isArray(s.matchTrend) && s.matchTrend.length > 1
+                ? s.matchTrend
+                : Array(6).fill(s.matchScore)
+            }
+          />
         </div>
       </Card>
 
@@ -5804,10 +6633,69 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
         }
         padded={false}
       >
-        <EmptyHint
-          title="暂无参与项目"
-          hint="接入真实主播履约记录后会展示项目贡献。"
-        />
+        {streamerProjects.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {streamerProjects.slice(0, 5).map((project, index) => (
+              <div
+                key={project.id || project.name}
+                style={{
+                  padding: "12px 14px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  borderBottom:
+                    index < Math.min(streamerProjects.length, 5) - 1
+                      ? "1px solid var(--line)"
+                      : "none",
+                }}
+              >
+                <span
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 7,
+                    background: "var(--blue-50)",
+                    color: "var(--blue-700)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Icon.Project size={15} stroke="var(--blue-700)" />
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--ink-900)",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {project.name}
+                  </div>
+                  <div
+                    className="mono"
+                    style={{ fontSize: 11, color: "var(--ink-400)" }}
+                  >
+                    {formatStreamerHours(project.settlementHours)} ·{" "}
+                    {formatStreamerMoney(project.grossContrib)}
+                  </div>
+                </div>
+                <Badge tone={project.status === "joined" ? "green" : "blue"}>
+                  {project.status === "joined" ? "已加入" : project.status}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyHint
+            title="暂无参与项目"
+            hint="后端返回项目履约记录后会展示项目贡献。"
+          />
+        )}
       </Card>
 
       {riskOpen ? (
@@ -5952,6 +6840,18 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
       </div>
     </div>
   );
+}
+
+function formatStreamerMoneyK(value) {
+  return `¥${(Math.round((Number(value) || 0) / 100) / 10).toFixed(1)}k`;
+}
+
+function formatStreamerMoney(value) {
+  return `¥${(Number(value) || 0).toFixed(1)}`;
+}
+
+function formatStreamerHours(value) {
+  return `${(Number(value) || 0).toFixed(1)} h`;
 }
 
 function RingMetric({
@@ -8746,7 +9646,7 @@ function TaskProjectMappingStrip({
         {project.name}
       </span>
       <span className="mono" style={{ color: "var(--ink-400)" }}>
-        {project.code || project.id}
+        {project.code || "未设置编号"}
       </span>
       <span>负责人：{project.leadOps || "未分配"}</span>
       <span>
@@ -9545,7 +10445,7 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
           render: (r) => {
             const project = resolveTaskProject(r, projects);
             const projectName = project?.name || r.projectName || r.project;
-            const projectCode = project?.code || r.projectId || r.project;
+            const projectCode = project?.code || r.project || "未设置编号";
             return (
               <div>
                 <div style={{ fontWeight: 500, color: "var(--ink-900)" }}>
@@ -10030,7 +10930,7 @@ function TaskDrawer({
             {(p?.needScreening ?? true) ? "本项目强制录屏" : "不强制"}
           </KV>
           <KV label="项目编号">
-            <span className="mono">{p?.code || task.projectId || "—"}</span>
+            <span className="mono">{p?.code || "未设置编号"}</span>
           </KV>
           <KV label="项目负责人">{p?.leadOps || "未分配"}</KV>
           <KV label="项目周期">
@@ -10302,7 +11202,7 @@ function NewTaskDrawer({
           }}
         >
           <span>
-            项目映射：{projectName || "未选择项目"} · {p?.code || p?.id || "—"}
+            项目映射：{projectName || "未选择项目"} · {p?.code || "未设置编号"}
           </span>
           <span>
             负责人：{p?.leadOps || "未分配"} · 周期：{p?.start || "未配置"} →{" "}
@@ -10537,6 +11437,8 @@ function Timeline({ events }) {
 function Drawer({ children, onClose, title }) {
   return (
     <div
+      role="dialog"
+      aria-label={typeof title === "string" ? title : undefined}
       style={{
         position: "fixed",
         top: 0,
@@ -10856,11 +11758,123 @@ const SENSITIVE_FIELDS = [
   },
 ];
 
-function ScreenOrg({ go }) {
+function ScreenOrg({ go, onOpenOrganizationSettings }) {
   const [tab, setTab] = React.useState("overview");
   const [orgMessage, setOrgMessage] = React.useState("");
+  const [memberDrawerOpen, setMemberDrawerOpen] = React.useState(false);
+  const [editingMember, setEditingMember] = React.useState(null);
+  const [statusMember, setStatusMember] = React.useState(null);
+  const members = useOpsOrganizationMembers();
+  const memberPermissions = useOpsOrganizationMemberPermissions();
+  const orgSettings = useOpsOrganizationSettings();
+  const projects = useOpsProjects();
+  const streamers = useOpsStreamers();
+  const billingStatus = useOpsBillingStatus();
+  const actions = useOpsLiveActions();
+  const {
+    organizationMembers,
+    projects: projectData,
+    streamers: streamerData,
+    billingStatus: billingStatusData,
+  } = React.useContext(OpsLiveDataContext);
   const showOrgPending = (message) => {
     setOrgMessage(message);
+  };
+  const canViewMembers = memberPermissions?.canViewMembers !== false;
+  const creatableRoles = Array.isArray(memberPermissions?.creatableRoles)
+    ? memberPermissions.creatableRoles
+    : null;
+  const canCreateMembers =
+    memberPermissions?.canCreateMembers === false
+      ? false
+      : creatableRoles == null
+        ? true
+        : creatableRoles.length > 0;
+  const openMemberDrawer = () => {
+    if (!canCreateMembers) {
+      setOrgMessage("当前角色无权创建组织成员。");
+      return;
+    }
+    setMemberDrawerOpen(true);
+  };
+
+  React.useEffect(() => {
+    if (organizationMembers == null && actions.refreshOrganizationMembers) {
+      actions
+        .refreshOrganizationMembers()
+        .catch((error) =>
+          setOrgMessage(formatOrganizationMemberError(error)),
+        );
+    }
+  }, [actions, organizationMembers]);
+
+  React.useEffect(() => {
+    if (projectData == null && actions.refreshProjects) {
+      actions.refreshProjects().catch(() => {});
+    }
+    if (streamerData == null && actions.refreshStreamers) {
+      actions.refreshStreamers().catch(() => {});
+    }
+    if (billingStatusData == null && actions.refreshBillingStatus) {
+      actions.refreshBillingStatus().catch(() => {});
+    }
+  }, [actions, billingStatusData, projectData, streamerData]);
+
+  const organizationStats = buildOrganizationOverviewStats({
+    members,
+    canViewMembers,
+    memberLimit: orgSettings.memberLimit,
+    projects,
+    projectsLoaded: Array.isArray(projectData),
+    streamers,
+    streamersLoaded: Array.isArray(streamerData),
+    billingStatus,
+  });
+  const orgPlanName = billingStatus
+    ? billingPlanName(billingStatus.plan)
+    : orgSettings.plan;
+
+  const handleCreateMember = async (input) => {
+    if (!actions.createOrganizationMember) {
+      setOrgMessage("成员管理接口暂未配置。");
+      return;
+    }
+    const result = await actions.createOrganizationMember(input);
+    setOrgMessage(
+      input.mode === "subaccount"
+        ? "子账号已创建并加入当前组织。"
+        : "成员邀请已发送，并已写入当前组织成员列表。",
+    );
+    if (input.mode !== "subaccount") {
+      setMemberDrawerOpen(false);
+    }
+    return result;
+  };
+
+  const handleUpdateRole = async (memberId, input) => {
+    if (!actions.updateOrganizationMemberRole) {
+      setOrgMessage("角色设置接口暂未配置。");
+      return;
+    }
+    const result = await actions.updateOrganizationMemberRole(memberId, input);
+    setOrgMessage("成员角色已更新，权限变更已进入审计日志。");
+    setEditingMember(null);
+    return result;
+  };
+
+  const handleUpdateStatus = async (memberId, input) => {
+    if (!actions.updateOrganizationMemberStatus) {
+      setOrgMessage("成员状态接口暂未配置。");
+      return;
+    }
+    const result = await actions.updateOrganizationMemberStatus(memberId, input);
+    setOrgMessage(
+      input.status === "suspended"
+        ? "成员已停用，权限变更已进入审计日志。"
+        : "成员已恢复，权限变更已进入审计日志。",
+    );
+    setStatusMember(null);
+    return result;
   };
 
   return (
@@ -10877,13 +11891,15 @@ function ScreenOrg({ go }) {
             >
               权限变更日志
             </Button>
-            <Button
-              kind="primary"
-              icon={<Icon.Plus size={14} stroke="#fff" />}
-              onClick={() => showOrgPending("邀请成员后台暂未接入。")}
-            >
-              邀请成员
-            </Button>
+            {canCreateMembers ? (
+              <Button
+                kind="primary"
+                icon={<Icon.Plus size={14} stroke="#fff" />}
+                onClick={openMemberDrawer}
+              >
+                邀请成员
+              </Button>
+            ) : null}
           </>
         }
       />
@@ -10936,26 +11952,32 @@ function ScreenOrg({ go }) {
                     color: "var(--ink-900)",
                   }}
                 >
-                  未配置组织
+                  {orgSettings.name}
                 </h2>
-                <Badge tone="blue" dot>
-                  专业版
-                </Badge>
-                <Badge tone="green" dot>
-                  已认证
-                </Badge>
+                {orgPlanName ? (
+                  <Badge tone="blue" dot>
+                    {orgPlanName}
+                  </Badge>
+                ) : null}
+                {orgSettings.verified ? (
+                  <Badge tone="green" dot>
+                    已认证
+                  </Badge>
+                ) : null}
               </div>
               <div
                 style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 4 }}
               >
-                <span className="mono">{ORG.id || "组织编号待配置"}</span> ·{" "}
-                {ORG.name || "组织名称待配置"} · MCN 经营舱
+                <span className="mono">
+                  {orgSettings.id || "组织编号待配置"}
+                </span>{" "}
+                · {orgSettings.name} · MCN 经营舱
               </div>
             </div>
             <Button
               kind="default"
               icon={<Icon.Settings size={14} />}
-              onClick={() => showOrgPending("组织设置后台暂未接入。")}
+              onClick={onOpenOrganizationSettings}
             >
               组织设置
             </Button>
@@ -10971,14 +11993,30 @@ function ScreenOrg({ go }) {
               gap: 24,
             }}
           >
-            <StatCell label="活跃成员" value="32" detail="本月 +3" />
-            <StatCell label="主播档案" value="187" detail="48 位签约" />
-            <StatCell label="进行中项目" value="4" detail="2 个高优先级" />
-            <StatCell label="存储用量" value="84.2 GB" detail="配额 500 GB" />
+            <StatCell
+              label="活跃成员"
+              value={organizationStats.members.value}
+              detail={organizationStats.members.detail}
+            />
+            <StatCell
+              label="主播档案"
+              value={organizationStats.streamers.value}
+              detail={organizationStats.streamers.detail}
+            />
+            <StatCell
+              label="进行中项目"
+              value={organizationStats.projects.value}
+              detail={organizationStats.projects.detail}
+            />
+            <StatCell
+              label="存储用量"
+              value={organizationStats.storage.value}
+              detail={organizationStats.storage.detail}
+            />
             <StatCell
               label="API 调用 (本月)"
-              value="14.6k"
-              detail="OCR · AI · 导出"
+              value={organizationStats.api.value}
+              detail={organizationStats.api.detail}
             />
           </div>
         </Card>
@@ -10992,7 +12030,7 @@ function ScreenOrg({ go }) {
               onChange={setTab}
               items={[
                 { key: "overview", label: "角色总览" },
-                { key: "members", label: "成员管理", count: MEMBERS.length },
+                { key: "members", label: "成员管理", count: members.length },
                 { key: "matrix", label: "权限矩阵" },
                 {
                   key: "sensitive",
@@ -11004,9 +12042,16 @@ function ScreenOrg({ go }) {
             />
           </div>
           <div style={{ padding: 20 }}>
-            {tab === "overview" && <RoleOverview />}
+            {tab === "overview" && <RoleOverview members={members} />}
             {tab === "members" && (
-              <MemberList onPendingAction={showOrgPending} />
+              <MemberList
+                members={members}
+                creatableRoles={creatableRoles}
+                onPendingAction={showOrgPending}
+                onInvite={openMemberDrawer}
+                onEditRole={(member) => setEditingMember(member)}
+                onChangeStatus={(member) => setStatusMember(member)}
+              />
             )}
             {tab === "matrix" && <PermMatrix />}
             {tab === "sensitive" && <SensitiveFields />}
@@ -11014,6 +12059,27 @@ function ScreenOrg({ go }) {
           </div>
         </Card>
       </div>
+      {memberDrawerOpen ? (
+        <OrganizationMemberDrawer
+          creatableRoles={creatableRoles}
+          onClose={() => setMemberDrawerOpen(false)}
+          onSubmit={handleCreateMember}
+        />
+      ) : null}
+      {editingMember ? (
+        <RoleEditDrawer
+          member={editingMember}
+          onClose={() => setEditingMember(null)}
+          onSubmit={handleUpdateRole}
+        />
+      ) : null}
+      {statusMember ? (
+        <StatusEditDrawer
+          member={statusMember}
+          onClose={() => setStatusMember(null)}
+          onSubmit={handleUpdateStatus}
+        />
+      ) : null}
     </>
   );
 }
@@ -11043,11 +12109,107 @@ function StatCell({ label, value, detail }) {
   );
 }
 
+function buildOrganizationOverviewStats({
+  members,
+  canViewMembers,
+  memberLimit,
+  projects,
+  projectsLoaded,
+  streamers,
+  streamersLoaded,
+  billingStatus,
+}) {
+  const activeMembers = members.filter((member) => member.status === "active");
+  const invitedMembers = members.filter((member) => member.status === "invited");
+  const activeProjects = projects.filter((project) =>
+    ["active", "recruiting", "pending_start", "settling"].includes(
+      project.status,
+    ),
+  );
+  const cooperatingStreamers = streamers.filter((streamer) =>
+    ["active", "signed", "cooperating"].includes(streamer.cooperation),
+  );
+  const storageUsage = usageByMetric(billingStatus, "storage_mb");
+  const apiUsage = ["ocr", "ai", "export"].reduce(
+    (sum, metric) => sum + (usageByMetric(billingStatus, metric)?.usedQuantity ?? 0),
+    0,
+  );
+
+  return {
+    members: canViewMembers
+      ? {
+          value: String(activeMembers.length),
+          detail: [
+            memberLimit != null ? `配额 ${memberLimit}` : null,
+            `邀请中 ${invitedMembers.length}`,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        }
+      : {
+          value: "暂无权限",
+          detail: "当前角色不可查看成员明细",
+        },
+    streamers: streamersLoaded
+      ? {
+          value: String(streamers.length),
+          detail: `${cooperatingStreamers.length} 位合作中`,
+        }
+      : {
+          value: "暂无数据",
+          detail: "等待主播资源池同步",
+        },
+    projects: projectsLoaded
+      ? {
+          value: String(activeProjects.length),
+          detail: `共 ${projects.length} 个项目`,
+        }
+      : {
+          value: "暂无数据",
+          detail: "等待项目列表同步",
+        },
+    storage: billingStatus
+      ? {
+          value: formatStorageUsage(storageUsage?.usedQuantity ?? 0),
+          detail:
+            storageUsage?.allowanceQuantity > 0
+              ? `配额 ${formatStorageUsage(storageUsage.allowanceQuantity)}`
+              : "按本月用量表汇总",
+        }
+      : {
+          value: "暂无数据",
+          detail: "等待账务用量同步",
+        },
+    api: billingStatus
+      ? {
+          value: apiUsage.toLocaleString("zh-CN"),
+          detail: "OCR · AI · 导出",
+        }
+      : {
+          value: "暂无数据",
+          detail: "等待账务用量同步",
+        },
+  };
+}
+
+function usageByMetric(billingStatus, metric) {
+  return billingStatus?.usage?.find((item) => item.metric === metric) ?? null;
+}
+
+function formatStorageUsage(value) {
+  const mb = Math.max(0, Number(value) || 0);
+  if (mb >= 1024) {
+    return `${(mb / 1024).toFixed(1)} GB`;
+  }
+
+  return `${Math.trunc(mb)} MB`;
+}
+
 // ——— Role Overview ————————————————————————
 
-function RoleOverview() {
+function RoleOverview({ members = MEMBERS }) {
   const counts = {};
-  MEMBERS.forEach((m) => {
+  members.forEach((m) => {
     counts[m.role] = (counts[m.role] || 0) + 1;
   });
 
@@ -11250,11 +12412,20 @@ function RoleCard({ title, code, tone, desc, perms, count }) {
 
 // ——— Members table ———————————————————————
 
-function MemberList({ onPendingAction }) {
+function MemberList({
+  members = MEMBERS,
+  creatableRoles,
+  onPendingAction,
+  onInvite,
+  onEditRole,
+  onChangeStatus,
+}) {
   const [filter, setFilter] = React.useState("all");
   const rows =
-    filter === "all" ? MEMBERS : MEMBERS.filter((m) => m.role === filter);
+    filter === "all" ? members : members.filter((m) => m.role === filter);
   const notify = (message) => onPendingAction?.(message);
+  const canCreateMembers =
+    !Array.isArray(creatableRoles) || creatableRoles.length > 0;
 
   return (
     <div>
@@ -11290,13 +12461,17 @@ function MemberList({ onPendingAction }) {
         >
           导出成员表
         </Button>
-        <Button
-          kind="primary"
-          icon={<Icon.Plus size={13} stroke="#fff" />}
-          onClick={() => notify("邀请成员后台暂未接入。")}
-        >
-          邀请成员
-        </Button>
+        {canCreateMembers ? (
+          <Button
+            kind="primary"
+            icon={<Icon.Plus size={13} stroke="#fff" />}
+            onClick={onInvite}
+          >
+            邀请成员
+          </Button>
+        ) : (
+          <Badge tone="neutral">当前角色无创建权限</Badge>
+        )}
       </div>
 
       <Card padded={false}>
@@ -11316,15 +12491,18 @@ function MemberList({ onPendingAction }) {
                       >
                         {m.name}
                       </span>
-                      {m.status === "inactive" && (
+                      {m.status === "suspended" && (
                         <Badge tone="neutral">已停用</Badge>
+                      )}
+                      {m.status === "invited" && (
+                        <Badge tone="amber">邀请中</Badge>
                       )}
                     </div>
                     <div
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {m.id} · {m.email}
+                      {memberIdentityText(m)}
                     </div>
                   </div>
                 </div>
@@ -11335,7 +12513,7 @@ function MemberList({ onPendingAction }) {
               title: "部门",
               render: (m) => (
                 <span style={{ fontSize: 12, color: "var(--ink-700)" }}>
-                  {m.dept}
+                  {m.dept || "未分组"}
                 </span>
               ),
             },
@@ -11353,7 +12531,7 @@ function MemberList({ onPendingAction }) {
               title: "手机",
               render: (m) => (
                 <span className="mono" style={{ fontSize: 12 }}>
-                  {m.phone}
+                  {m.phone || "—"}
                 </span>
               ),
             },
@@ -11377,7 +12555,7 @@ function MemberList({ onPendingAction }) {
                   className="num"
                   style={{ fontSize: 12, color: "var(--ink-500)" }}
                 >
-                  {m.lastSeen}
+                  {m.lastSeen || "—"}
                 </span>
               ),
             },
@@ -11388,7 +12566,7 @@ function MemberList({ onPendingAction }) {
                   className="num"
                   style={{ fontSize: 12, color: "var(--ink-400)" }}
                 >
-                  {m.joined}
+                  {m.joined || formatMemberDate(m.createdAt)}
                 </span>
               ),
             },
@@ -11400,30 +12578,17 @@ function MemberList({ onPendingAction }) {
                   <Button
                     size="sm"
                     kind="default"
-                    onClick={() => notify(`${m.name} 的角色编辑后台暂未接入。`)}
+                    onClick={() => onEditRole?.(m)}
                   >
                     编辑角色
                   </Button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      notify(`${m.name} 的更多成员操作后台暂未接入。`)
-                    }
-                    style={{
-                      width: 26,
-                      height: 26,
-                      border: "1px solid var(--line-strong)",
-                      background: "#fff",
-                      borderRadius: 6,
-                      cursor: "pointer",
-                      color: "var(--ink-400)",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                    }}
+                  <Button
+                    size="sm"
+                    kind={m.status === "suspended" ? "default" : "danger"}
+                    onClick={() => onChangeStatus?.(m)}
                   >
-                    <Icon.More size={14} />
-                  </button>
+                    {m.status === "suspended" ? "恢复成员" : "停用成员"}
+                  </Button>
                 </div>
               ),
             },
@@ -11433,6 +12598,638 @@ function MemberList({ onPendingAction }) {
       </Card>
     </div>
   );
+}
+
+function memberIdentityText(member) {
+  const email = typeof member?.email === "string" ? member.email.trim() : "";
+  const phone = typeof member?.phone === "string" ? member.phone.trim() : "";
+  const loginAccount =
+    typeof member?.loginAccount === "string" ? member.loginAccount.trim() : "";
+  const localAccount = accountFromLocalSubaccountEmail(email);
+  const account = loginAccount || localAccount;
+
+  if (account && (localAccount || member?.requiresOnboarding)) {
+    return `默认账号 ${account} · 首次登录待激活`;
+  }
+
+  const contacts = [];
+  if (email) contacts.push(`邮箱 ${email}`);
+  if (phone) contacts.push(`手机 ${phone}`);
+
+  return contacts.length ? contacts.join(" · ") : "暂无联系方式";
+}
+
+function accountFromLocalSubaccountEmail(email) {
+  const normalized = email.trim().toLowerCase();
+  const suffix = "@subaccount.local";
+  if (!normalized.endsWith(suffix)) {
+    return "";
+  }
+
+  return email.slice(0, email.length - suffix.length);
+}
+
+const ORG_MEMBER_ROLE_OPTIONS = [
+  { key: "ops_manager", label: "运营负责人" },
+  { key: "operator_business", label: "次级运营 / 商务" },
+  { key: "finance", label: "财务" },
+  { key: "streamer", label: "主播" },
+  { key: "owner", label: "负责人" },
+];
+
+function organizationMemberRoleOptionsFor(creatableRoles) {
+  if (!Array.isArray(creatableRoles)) {
+    return ORG_MEMBER_ROLE_OPTIONS;
+  }
+
+  const allowed = new Set(creatableRoles);
+  return ORG_MEMBER_ROLE_OPTIONS.filter((option) => allowed.has(option.key));
+}
+
+function formatOrganizationMemberError(error) {
+  const message = error?.message || "成员操作失败。";
+  if (/Current role cannot create (.+) accounts/i.test(message)) {
+    return "当前角色无权创建该类型账号，请切换负责人或运营账号后重试。";
+  }
+
+  return message;
+}
+
+function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
+  const normalized = normalizeOrganizationSettings(settings);
+  const [name, setName] = React.useState(normalized.name);
+  const [memberLimit, setMemberLimit] = React.useState(
+    normalized.memberLimit == null ? "" : String(normalized.memberLimit),
+  );
+  const [features, setFeatures] = React.useState(normalized.features);
+  const [message, setMessage] = React.useState("");
+  const enabledCount = countEnabledOrganizationFeatures({ features });
+
+  const toggleFeature = (key) => {
+    setFeatures((current) => ({ ...current, [key]: !current[key] }));
+  };
+
+  const submit = () => {
+    const nextName = name.trim();
+    const nextMemberLimit = Number(memberLimit);
+    if (!nextName) {
+      setMessage("组织名称不能为空。");
+      return;
+    }
+    if (!Number.isFinite(nextMemberLimit) || nextMemberLimit <= 0) {
+      setMessage("成员规模需要大于 0。");
+      return;
+    }
+    setMessage("");
+    onSubmit?.({
+      name: nextName,
+      memberLimit: nextMemberLimit,
+      features,
+    });
+  };
+
+  return (
+    <Drawer title="组织功能设置" onClose={onClose}>
+      <div
+        style={{
+          padding: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+      >
+        <div
+          style={{
+            padding: 12,
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            background: "var(--blue-50)",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <span
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              background: "var(--blue-600)",
+              color: "#fff",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontWeight: 700,
+              fontSize: 13,
+            }}
+          >
+            星
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--ink-900)",
+              }}
+            >
+              {normalized.plan || "套餐以账务后台为准"}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 2 }}>
+              {enabledCount} / {ORGANIZATION_FEATURE_OPTIONS.length} 项功能已启用
+            </div>
+          </div>
+          {normalized.verified ? (
+            <Badge tone="green" dot>
+              已认证
+            </Badge>
+          ) : null}
+        </div>
+
+        <OrgMemberField label="组织名称">
+          <input
+            aria-label="组织名称"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="请输入组织名称"
+            style={orgMemberInputStyle}
+          />
+        </OrgMemberField>
+
+        <OrgMemberField label="成员规模">
+          <input
+            aria-label="成员规模"
+            type="number"
+            min="1"
+            value={memberLimit}
+            onChange={(event) => setMemberLimit(event.target.value)}
+            placeholder="按组织合同配置"
+            style={orgMemberInputStyle}
+          />
+        </OrgMemberField>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 12, color: "var(--ink-500)", fontWeight: 500 }}>
+            功能开关
+          </div>
+          {ORGANIZATION_FEATURE_OPTIONS.map((feature) => {
+            const checked = Boolean(features[feature.key]);
+            return (
+              <label
+                key={feature.key}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  padding: 12,
+                  border: "1px solid var(--line)",
+                  borderRadius: 8,
+                  background: checked ? "var(--blue-50)" : "#fff",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  aria-label={feature.label}
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleFeature(feature.key)}
+                  style={{ marginTop: 2, accentColor: "var(--blue-600)" }}
+                />
+                <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--ink-900)",
+                    }}
+                  >
+                    {feature.label}
+                  </span>
+                  <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                    {feature.hint}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+
+        {message ? (
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--danger-600)" }}
+          >
+            {message}
+          </div>
+        ) : null}
+      </div>
+      <div
+        style={{
+          padding: 12,
+          borderTop: "1px solid var(--line)",
+          background: "var(--bg-soft)",
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 8,
+        }}
+      >
+        <Button kind="default" onClick={onClose}>
+          取消
+        </Button>
+        <Button kind="primary" onClick={submit}>
+          保存功能设置
+        </Button>
+      </div>
+    </Drawer>
+  );
+}
+
+function OrganizationMemberDrawer({ creatableRoles, onClose, onSubmit }) {
+  const [mode, setMode] = React.useState("invite");
+  const [email, setEmail] = React.useState("");
+  const [name, setName] = React.useState("");
+  const roleOptions = organizationMemberRoleOptionsFor(creatableRoles);
+  const [role, setRole] = React.useState(
+    roleOptions[0]?.key || "operator_business",
+  );
+  const [busy, setBusy] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+  const [generatedCredentials, setGeneratedCredentials] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!roleOptions.some((option) => option.key === role)) {
+      setRole(roleOptions[0]?.key || "streamer");
+    }
+  }, [role, roleOptions]);
+
+  React.useEffect(() => {
+    setMessage("");
+    setGeneratedCredentials(null);
+  }, [mode]);
+
+  const submit = async () => {
+    setBusy(true);
+    setMessage("");
+    if (roleOptions.length === 0) {
+      setMessage("当前角色无权创建组织成员。");
+      setBusy(false);
+      return;
+    }
+
+    try {
+      const result = await onSubmit?.({
+        mode,
+        ...(mode === "invite" ? { email } : {}),
+        name,
+        role,
+      });
+      if (result?.credentials) {
+        setGeneratedCredentials(result.credentials);
+      }
+    } catch (error) {
+      setMessage(formatOrganizationMemberError(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Drawer
+      title={mode === "subaccount" ? "创建子账号" : "邀请成员"}
+      onClose={onClose}
+    >
+      <div
+        style={{
+          padding: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <Button
+            kind={mode === "invite" ? "primary" : "default"}
+            onClick={() => setMode("invite")}
+          >
+            邀请成员
+          </Button>
+          <Button
+            kind={mode === "subaccount" ? "primary" : "default"}
+            onClick={() => setMode("subaccount")}
+          >
+            创建子账号
+          </Button>
+        </div>
+
+        {mode === "invite" ? (
+          <OrgMemberField label="成员邮箱">
+            <input
+              aria-label="成员邮箱"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="name@example.com"
+              style={orgMemberInputStyle}
+            />
+          </OrgMemberField>
+        ) : (
+          <div
+            style={{
+              padding: 12,
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--blue-50)",
+              fontSize: 12,
+              color: "var(--ink-500)",
+              lineHeight: 1.6,
+            }}
+          >
+            系统将生成默认账号和 8 位默认密码。首次登录需补充邮箱、电话并设置新密码。
+          </div>
+        )}
+        <OrgMemberField label="成员姓名">
+          <input
+            aria-label="成员姓名"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="成员真实姓名"
+            style={orgMemberInputStyle}
+          />
+        </OrgMemberField>
+        <OrgMemberField label="成员角色">
+          <select
+            aria-label="成员角色"
+            value={role}
+            onChange={(event) => setRole(event.target.value)}
+            style={orgMemberInputStyle}
+          >
+            {roleOptions.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </OrgMemberField>
+        {generatedCredentials ? (
+          <div
+            style={{
+              padding: 12,
+              border: "1px solid var(--line-strong)",
+              borderRadius: 8,
+              background: "#fff",
+              display: "grid",
+              gridTemplateColumns: "1fr",
+              gap: 8,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
+              首次登录凭据，仅展示本次创建结果
+            </div>
+            <div className="mono" style={{ fontSize: 13, color: "var(--ink-900)" }}>
+              默认账号：{generatedCredentials.account}
+            </div>
+            <div className="mono" style={{ fontSize: 13, color: "var(--ink-900)" }}>
+              默认密码：{generatedCredentials.password}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              用户首次登录后必须填写邮箱、电话和新密码，后续可用邮箱或电话 + 密码登录。
+            </div>
+          </div>
+        ) : null}
+        {message ? (
+          <div aria-live="polite" style={{ fontSize: 12, color: "var(--danger-600)" }}>
+            {message}
+          </div>
+        ) : null}
+      </div>
+      <div
+        style={{
+          padding: 12,
+          borderTop: "1px solid var(--line)",
+          background: "var(--bg-soft)",
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 8,
+        }}
+      >
+        <Button kind="default" onClick={onClose}>
+          {generatedCredentials ? "关闭" : "取消"}
+        </Button>
+        <Button
+          kind="primary"
+          onClick={submit}
+          disabled={busy || generatedCredentials || roleOptions.length === 0}
+        >
+          {busy ? "提交中…" : mode === "subaccount" ? "确认创建" : "发送邀请"}
+        </Button>
+      </div>
+    </Drawer>
+  );
+}
+
+function RoleEditDrawer({ member, onClose, onSubmit }) {
+  const [role, setRole] = React.useState(member.role);
+  const [reason, setReason] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+
+  const submit = async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      await onSubmit?.(member.id, { role, reason });
+    } catch (error) {
+      setMessage(error?.message || "角色保存失败。");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Drawer title={`编辑角色 · ${member.name}`} onClose={onClose}>
+      <div
+        style={{
+          padding: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+      >
+        <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
+          {memberIdentityText(member)}
+        </div>
+        <OrgMemberField label="新角色">
+          <select
+            aria-label="新角色"
+            value={role}
+            onChange={(event) => setRole(event.target.value)}
+            style={orgMemberInputStyle}
+          >
+            {ORG_MEMBER_ROLE_OPTIONS.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </OrgMemberField>
+        <OrgMemberField label="变更原因">
+          <textarea
+            aria-label="变更原因"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="记录角色变更原因，写入权限审计日志"
+            style={{ ...orgMemberInputStyle, minHeight: 84, resize: "vertical" }}
+          />
+        </OrgMemberField>
+        {message ? (
+          <div aria-live="polite" style={{ fontSize: 12, color: "var(--danger-600)" }}>
+            {message}
+          </div>
+        ) : null}
+      </div>
+      <div
+        style={{
+          padding: 12,
+          borderTop: "1px solid var(--line)",
+          background: "var(--bg-soft)",
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 8,
+        }}
+      >
+        <Button kind="default" onClick={onClose}>
+          取消
+        </Button>
+        <Button kind="primary" onClick={submit} disabled={busy}>
+          {busy ? "保存中…" : "保存角色"}
+        </Button>
+      </div>
+    </Drawer>
+  );
+}
+
+function StatusEditDrawer({ member, onClose, onSubmit }) {
+  const nextStatus = member.status === "suspended" ? "active" : "suspended";
+  const isSuspending = nextStatus === "suspended";
+  const [reason, setReason] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+
+  const submit = async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      await onSubmit?.(member.id, { status: nextStatus, reason });
+    } catch (error) {
+      setMessage(error?.message || "成员状态保存失败。");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Drawer
+      title={`${isSuspending ? "停用成员" : "恢复成员"} · ${member.name}`}
+      onClose={onClose}
+    >
+      <div
+        style={{
+          padding: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+      >
+        <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
+          {memberIdentityText(member)}
+        </div>
+        <div
+          style={{
+            padding: 12,
+            borderRadius: 8,
+            border: "1px solid var(--line)",
+            background: isSuspending ? "#FDECEC" : "var(--ok-50)",
+            color: isSuspending ? "var(--danger-600)" : "var(--ok-600)",
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          {isSuspending
+            ? "停用后该成员无法继续访问当前组织数据。"
+            : "恢复后该成员将按当前角色重新获得组织访问权限。"}
+        </div>
+        <OrgMemberField label="状态变更原因">
+          <textarea
+            aria-label="状态变更原因"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="记录停用或恢复原因，写入权限审计日志"
+            style={{ ...orgMemberInputStyle, minHeight: 84, resize: "vertical" }}
+          />
+        </OrgMemberField>
+        {message ? (
+          <div aria-live="polite" style={{ fontSize: 12, color: "var(--danger-600)" }}>
+            {message}
+          </div>
+        ) : null}
+      </div>
+      <div
+        style={{
+          padding: 12,
+          borderTop: "1px solid var(--line)",
+          background: "var(--bg-soft)",
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 8,
+        }}
+      >
+        <Button kind="default" onClick={onClose}>
+          取消
+        </Button>
+        <Button
+          kind={isSuspending ? "danger" : "primary"}
+          onClick={submit}
+          disabled={busy}
+        >
+          {busy ? "保存中…" : isSuspending ? "确认停用" : "确认恢复"}
+        </Button>
+      </div>
+    </Drawer>
+  );
+}
+
+function OrgMemberField({ label, children }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <span style={{ fontSize: 12, color: "var(--ink-500)", fontWeight: 500 }}>
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+const orgMemberInputStyle = {
+  width: "100%",
+  height: 34,
+  padding: "0 10px",
+  border: "1px solid var(--line-strong)",
+  borderRadius: 6,
+  fontSize: 13,
+  color: "var(--ink-700)",
+  background: "#fff",
+  fontFamily: "inherit",
+};
+
+function formatMemberDate(value) {
+  if (!value) {
+    return "—";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return formatDateKey(date);
 }
 
 function RoleFilter({ value, onChange }) {
@@ -12667,7 +14464,7 @@ function ScreenExport() {
     try {
       const exportResult = await actions.createGovernedExport({
         kind,
-        rows: sampleExportRows(kind),
+        rows: [],
       });
       setResult(exportResult);
     } catch (error) {
@@ -13119,33 +14916,6 @@ function billingModeLabel(mode) {
   return mode === "read_only" ? "只读模式" : "活跃";
 }
 
-function sampleExportRows(kind) {
-  if (kind === "audit_logs") {
-    return [{ module: "settlement", action: "lock" }];
-  }
-  if (kind === "vendor_delivery") {
-    return [
-      {
-        projectName: "项目名称",
-        streamerName: "主播名称",
-        settlementDuration: 0,
-        evidenceLevel: "system",
-        grossMarginCents: 0,
-      },
-    ];
-  }
-  if (kind === "settlement_batch") {
-    return [{ batchName: "6月应付批次", payableAmountCents: 120000 }];
-  }
-  return [
-    {
-      streamerName: "阿洛",
-      settlementDuration: 120,
-      evidenceLevel: "system",
-    },
-  ];
-}
-
 // ===== src\app.jsx =====
 // ——— App entry ————————————————————————————————
 
@@ -13159,6 +14929,9 @@ function OpsReferenceInner({
   settlementScope,
   auditEntries,
   notificationItems,
+  organizationMembers,
+  organizationMemberPermissions,
+  organizationSettings,
   billingStatus,
   projectCards,
   streamerCards,
@@ -13183,6 +14956,16 @@ function OpsReferenceInner({
   const [notificationItemsState, setNotificationItemsState] = React.useState(
     notificationItems ?? null,
   );
+  const [organizationMembersState, setOrganizationMembersState] =
+    React.useState(organizationMembers ?? null);
+  const [
+    organizationMemberPermissionsState,
+    setOrganizationMemberPermissionsState,
+  ] = React.useState(organizationMemberPermissions ?? null);
+  const [organizationSettingsState, setOrganizationSettingsState] =
+    React.useState(() => normalizeOrganizationSettings(organizationSettings));
+  const [organizationSettingsOpen, setOrganizationSettingsOpen] =
+    React.useState(false);
   const [billingStatusState, setBillingStatusState] = React.useState(
     billingStatus ?? null,
   );
@@ -13223,6 +15006,18 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setNotificationItemsState(notificationItems ?? null);
   }, [notificationItems]);
+
+  React.useEffect(() => {
+    setOrganizationMembersState(organizationMembers ?? null);
+  }, [organizationMembers]);
+
+  React.useEffect(() => {
+    setOrganizationMemberPermissionsState(organizationMemberPermissions ?? null);
+  }, [organizationMemberPermissions]);
+
+  React.useEffect(() => {
+    setOrganizationSettingsState(normalizeOrganizationSettings(organizationSettings));
+  }, [organizationSettings]);
 
   React.useEffect(() => {
     setBillingStatusState(billingStatus ?? null);
@@ -13273,6 +15068,9 @@ function OpsReferenceInner({
         periodStart: scope.periodStart,
         periodEnd: scope.periodEnd,
       });
+      if (scope.batchType && scope.batchType !== "payable") {
+        params.set("batchType", scope.batchType);
+      }
       return `/api/settlement-pool?${params.toString()}`;
     };
 
@@ -13350,6 +15148,29 @@ function OpsReferenceInner({
       }
     };
 
+    const refreshOrganizationMembers = async () => {
+      const body = await fetchJson(
+        "/api/organization/members",
+        "refresh organization members failed",
+      );
+      if (Array.isArray(body.members)) {
+        setOrganizationMembersState(body.members);
+      }
+      if (body.permissions && typeof body.permissions === "object") {
+        setOrganizationMemberPermissionsState(body.permissions);
+      }
+      if (body.organization && typeof body.organization === "object") {
+        setOrganizationSettingsState((current) =>
+          normalizeOrganizationSettings({
+            ...normalizeOrganizationSettings(current),
+            id: body.organization.id,
+            name: body.organization.name,
+          }),
+        );
+      }
+      return body.members;
+    };
+
     const refreshBillingStatus = async () => {
       const body = await fetchJson(
         "/api/billing/status",
@@ -13406,6 +15227,19 @@ function OpsReferenceInner({
           `/api/projects/${id}/publish`,
           "publish project failed",
           { method: "POST" },
+        );
+        await refreshProjects();
+        return body;
+      },
+      updateProjectBasics: async (id, input) => {
+        const body = await fetchJson(
+          `/api/projects/${id}`,
+          "update project failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
         );
         await refreshProjects();
         return body;
@@ -13509,6 +15343,7 @@ function OpsReferenceInner({
         return body;
       },
       reviewReport: async (id, decision) => {
+        const approved = decision === "approve";
         await fetchJson(
           `/api/live-reports/${id}/review`,
           "review report failed",
@@ -13517,8 +15352,8 @@ function OpsReferenceInner({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               decision,
-              includeInTaskResult: true,
-              enterSettlementPool: true,
+              includeInTaskResult: approved,
+              enterSettlementPool: approved,
               reviewNotes: "经营端页面审核",
             }),
           },
@@ -13544,6 +15379,7 @@ function OpsReferenceInner({
           projectId: input.projectId,
           periodStart: input.periodStart,
           periodEnd: input.periodEnd,
+          batchType: input.batchType,
         });
         return body;
       },
@@ -13588,6 +15424,65 @@ function OpsReferenceInner({
       },
       refreshAuditEntries,
       refreshNotifications,
+      refreshOrganizationMembers,
+      createOrganizationMember: async (input) => {
+        const body = await fetchJson(
+          "/api/organization/members",
+          "create organization member failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        if (body.member && input.mode !== "subaccount") {
+          setOrganizationMembersState((current) => [
+            body.member,
+            ...(Array.isArray(current)
+              ? current.filter((item) => item.id !== body.member.id)
+              : []),
+          ]);
+        }
+        if (body.permissions && typeof body.permissions === "object") {
+          setOrganizationMemberPermissionsState(body.permissions);
+        }
+        if (body.organization && typeof body.organization === "object") {
+          setOrganizationSettingsState((current) =>
+            normalizeOrganizationSettings({
+              ...normalizeOrganizationSettings(current),
+              id: body.organization.id,
+              name: body.organization.name,
+            }),
+          );
+        }
+        return body;
+      },
+      updateOrganizationMemberRole: async (memberId, input) => {
+        const body = await fetchJson(
+          `/api/organization/members/${memberId}`,
+          "update organization member role failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshOrganizationMembers();
+        return body.member;
+      },
+      updateOrganizationMemberStatus: async (memberId, input) => {
+        const body = await fetchJson(
+          `/api/organization/members/${memberId}`,
+          "update organization member status failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshOrganizationMembers();
+        return body.member;
+      },
       refreshBillingStatus,
       updateNotificationStatus: async (id, action) => {
         await fetchJson(
@@ -13676,6 +15571,20 @@ function OpsReferenceInner({
     Array.isArray(notificationItemsState) ? notificationItemsState : [],
   );
 
+  const saveOrganizationSettings = (input) => {
+    setOrganizationSettingsState((current) =>
+      normalizeOrganizationSettings({
+        ...normalizeOrganizationSettings(current),
+        ...input,
+        features: {
+          ...normalizeOrganizationSettings(current).features,
+          ...(input?.features ?? {}),
+        },
+      }),
+    );
+    setOrganizationSettingsOpen(false);
+  };
+
   return (
     <OpsLiveDataContext.Provider
       value={{
@@ -13690,13 +15599,24 @@ function OpsReferenceInner({
         settlementScope,
         auditEntries: auditEntriesState,
         notificationItems: notificationItemsState,
+        organizationMembers: organizationMembersState,
+        organizationMemberPermissions: organizationMemberPermissionsState,
+        organizationSettings: organizationSettingsState,
+        billingStatus: billingStatusState,
         actions,
       }}
     >
       <div
         style={{ display: "flex", minHeight: "100vh", background: "var(--bg)" }}
       >
-        <Sidebar route={navKey} onNav={go} navCounts={navCounts} />
+        <Sidebar
+          route={navKey}
+          onNav={go}
+          navCounts={navCounts}
+          organizationSettings={organizationSettingsState}
+          organizationMembers={organizationMembersState}
+          onOpenOrganizationSettings={() => setOrganizationSettingsOpen(true)}
+        />
         <main
           style={{
             flex: 1,
@@ -13730,10 +15650,24 @@ function OpsReferenceInner({
             )}
             {route === "audit" && <ScreenAudit go={go} />}
             {route === "notifications" && <ScreenNotifications go={go} />}
-            {route === "org" && <ScreenOrg go={go} />}
+            {route === "org" && (
+              <ScreenOrg
+                go={go}
+                onOpenOrganizationSettings={() =>
+                  setOrganizationSettingsOpen(true)
+                }
+              />
+            )}
             {route === "export" && <ScreenExport go={go} />}
           </div>
         </main>
+        {organizationSettingsOpen ? (
+          <OrganizationSettingsDrawer
+            settings={organizationSettingsState}
+            onClose={() => setOrganizationSettingsOpen(false)}
+            onSubmit={saveOrganizationSettings}
+          />
+        ) : null}
       </div>
     </OpsLiveDataContext.Provider>
   );
@@ -13934,7 +15868,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; billingStatus?: any }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -13946,6 +15880,9 @@ export default function OpsReferenceApp({
   settlementScope,
   auditEntries,
   notificationItems,
+  organizationMembers,
+  organizationMemberPermissions,
+  organizationSettings,
   billingStatus,
   projectCards,
   streamerCards,
@@ -13962,6 +15899,9 @@ export default function OpsReferenceApp({
       settlementScope={settlementScope}
       auditEntries={auditEntries}
       notificationItems={notificationItems}
+      organizationMembers={organizationMembers}
+      organizationMemberPermissions={organizationMemberPermissions}
+      organizationSettings={organizationSettings}
       billingStatus={billingStatus}
       projectCards={projectCards}
       streamerCards={streamerCards}

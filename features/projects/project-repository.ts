@@ -14,6 +14,11 @@ type ProjectRow = {
   allow_direct_invite: boolean;
   force_recording: boolean;
   force_system_timing: boolean;
+  vendor_name: string | null;
+  product_name: string | null;
+  agent_name: string | null;
+  supplier_name: string | null;
+  description: string | null;
   default_settlement_method: string;
   default_hourly_rate: number;
   default_base_salary: number;
@@ -32,6 +37,11 @@ const projectSelect = `
   allow_direct_invite,
   force_recording,
   force_system_timing,
+  vendor_name,
+  product_name,
+  agent_name,
+  supplier_name,
+  description,
   default_settlement_method,
   default_hourly_rate,
   default_base_salary,
@@ -150,6 +160,11 @@ function toProjectRecord(row: ProjectRow): ProjectRecord {
     allow_direct_invite: row.allow_direct_invite,
     force_recording: row.force_recording,
     force_system_timing: row.force_system_timing,
+    vendor_name: row.vendor_name,
+    product_name: row.product_name,
+    agent_name: row.agent_name,
+    supplier_name: row.supplier_name,
+    description: row.description,
     default_settlement_method: row.default_settlement_method,
     default_hourly_rate: row.default_hourly_rate,
     default_base_salary: row.default_base_salary,

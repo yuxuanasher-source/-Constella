@@ -509,10 +509,11 @@ export async function reviewLiveReport({
   const nextStatus = mapReviewDecision(input.decision);
   const taskBefore = await requireLiveTask(repo, before.liveTaskId);
   assertSameOrganization(actor, taskBefore.organizationId);
+  const approved = input.decision === "approve";
   const report = await repo.updateLiveReport(reportId, {
     status: nextStatus,
-    includeInTaskResult: input.includeInTaskResult ?? true,
-    enterSettlementPool: input.enterSettlementPool ?? true,
+    includeInTaskResult: approved ? (input.includeInTaskResult ?? true) : false,
+    enterSettlementPool: approved ? (input.enterSettlementPool ?? true) : false,
     reviewedBy: actor.userId,
     reviewedAt: new Date().toISOString(),
     reviewNotes: input.reviewNotes,

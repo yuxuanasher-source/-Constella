@@ -4,10 +4,6 @@ import { fileURLToPath } from "node:url";
 
 import { createServerClient } from "@supabase/ssr";
 
-const projectId = "99999999-9999-9999-9999-999999999999";
-const streamerId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
-const seededBatchId = "95959595-9595-4959-9595-959595959595";
-const password = "Password123!";
 const manualDocPath = "docs/manual-acceptance-test-cases.md";
 
 const forbiddenDtoKeyPatterns = [
@@ -133,7 +129,12 @@ const caseHandlers = {
     assertNoForbiddenText(JSON.stringify(collectObjectKeys(body.reports)), "M5 keys");
   },
 
-  "p1-evidence-golden-path": async ({ cookies, requestJson, flow }) => {
+  "p1-evidence-golden-path": async ({
+    cookies,
+    requestJson,
+    flow,
+    smokeConfig,
+  }) => {
     const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const plannedStartAt = "2026-06-02T12:00:00.000Z";
     const plannedEndAt = "2026-06-02T14:00:00.000Z";
@@ -142,8 +143,8 @@ const caseHandlers = {
       method: "POST",
       expectedStatus: 201,
       body: {
-        projectId,
-        streamerId,
+        projectId: smokeConfig.projectId,
+        streamerId: smokeConfig.streamerId,
         title: `Manual Acceptance P1 Golden Task ${suffix}`,
         plannedStartAt,
         plannedEndAt,
@@ -222,7 +223,7 @@ const caseHandlers = {
     );
 
     const poolBody = await requestJson(
-      `/api/settlement-pool?projectId=${projectId}&periodStart=2026-01-01&periodEnd=2026-12-31`,
+      `/api/settlement-pool?projectId=${smokeConfig.projectId}&periodStart=2026-01-01&periodEnd=2026-12-31`,
       { cookie: cookies.ops },
     );
     assertArray(poolBody.reports, "P1 settlement pool reports");
@@ -235,7 +236,12 @@ const caseHandlers = {
     );
   },
 
-  "p2-settlement-golden-path": async ({ cookies, requestJson, flow }) => {
+  "p2-settlement-golden-path": async ({
+    cookies,
+    requestJson,
+    flow,
+    smokeConfig,
+  }) => {
     if (!flow.reportId) {
       throw new Error("P1 flow report id is required for P2 flow smoke");
     }
@@ -245,7 +251,7 @@ const caseHandlers = {
       method: "POST",
       expectedStatus: 201,
       body: {
-        projectId,
+        projectId: smokeConfig.projectId,
         batchType: "payable",
         periodStart: "2026-01-01",
         periodEnd: "2026-12-31",
@@ -280,8 +286,8 @@ const caseHandlers = {
         expectedStatus: 201,
         body: {
           itemType: "gift",
-          projectId,
-          streamerId,
+          projectId: smokeConfig.projectId,
+          streamerId: smokeConfig.streamerId,
           manualAmount: 88,
           evidenceLevel: "red",
           reason: "manual acceptance smoke manual carry",
@@ -329,13 +335,17 @@ const caseHandlers = {
     );
   },
 
-  "direct-access-guards": async ({ cookies, requestJson }) => {
+  "direct-access-guards": async ({ cookies, requestJson, flow, smokeConfig }) => {
+    if (!flow.batchId) {
+      throw new Error("P2 flow batch id is required for direct access smoke");
+    }
+
     const financeMutation = await requestJson("/api/settlement-batches", {
       cookie: cookies.finance,
       method: "POST",
       expectedStatus: 403,
       body: {
-        projectId,
+        projectId: smokeConfig.projectId,
         batchType: "payable",
         periodStart: "2026-01-01",
         periodEnd: "2026-12-31",
@@ -348,7 +358,7 @@ const caseHandlers = {
     );
 
     const streamerBatchRead = await requestJson(
-      `/api/settlement-batches/${seededBatchId}`,
+      `/api/settlement-batches/${flow.batchId}`,
       {
         cookie: cookies.streamer,
         expectedStatus: 403,
@@ -695,28 +705,33 @@ export async function runManualAcceptanceSmoke() {
   const appUrl = env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
   const supabaseUrl = requireEnv(env, "NEXT_PUBLIC_SUPABASE_URL");
   const supabaseAnonKey = requireEnv(env, "NEXT_PUBLIC_SUPABASE_ANON_KEY");
+  const smokeConfig = loadSmokeConfig(env);
   const requestJson = createRequestJson(appUrl);
 
   const cookies = {
     owner: await signIn({
-      email: "owner@jy-demo.local",
+      email: smokeConfig.userEmails.owner,
       supabaseUrl,
       supabaseAnonKey,
+      password: smokeConfig.userPassword,
     }),
     ops: await signIn({
-      email: "ops@jy-demo.local",
+      email: smokeConfig.userEmails.ops,
       supabaseUrl,
       supabaseAnonKey,
+      password: smokeConfig.userPassword,
     }),
     finance: await signIn({
-      email: "finance@jy-demo.local",
+      email: smokeConfig.userEmails.finance,
       supabaseUrl,
       supabaseAnonKey,
+      password: smokeConfig.userPassword,
     }),
     streamer: await signIn({
-      email: "streamer@jy-demo.local",
+      email: smokeConfig.userEmails.streamer,
       supabaseUrl,
       supabaseAnonKey,
+      password: smokeConfig.userPassword,
     }),
   };
   const flow = {};
@@ -725,6 +740,7 @@ export async function runManualAcceptanceSmoke() {
     flow,
     manualCaseIds,
     requestJson,
+    smokeConfig,
   };
 
   for (const testCase of AUTOMATED_CASES) {
@@ -738,7 +754,7 @@ export async function runManualAcceptanceSmoke() {
   console.log("manual acceptance smoke passed");
 }
 
-async function signIn({ email, supabaseUrl, supabaseAnonKey }) {
+async function signIn({ email, supabaseUrl, supabaseAnonKey, password }) {
   const jar = new Map();
   const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
     cookies: {
@@ -839,6 +855,20 @@ function requireEnv(env, key) {
   return value;
 }
 
+function loadSmokeConfig(env) {
+  return {
+    projectId: requireEnv(env, "SMOKE_PROJECT_ID"),
+    streamerId: requireEnv(env, "SMOKE_STREAMER_ID"),
+    userPassword: requireEnv(env, "SMOKE_USER_PASSWORD"),
+    userEmails: {
+      owner: requireEnv(env, "SMOKE_OWNER_EMAIL"),
+      ops: requireEnv(env, "SMOKE_OPS_EMAIL"),
+      finance: requireEnv(env, "SMOKE_FINANCE_EMAIL"),
+      streamer: requireEnv(env, "SMOKE_STREAMER_EMAIL"),
+    },
+  };
+}
+
 export function extractManualCaseIds(markdown) {
   return new Set(
     Array.from(
@@ -905,9 +935,7 @@ export function assertNoForbiddenKeys(value, label) {
 }
 
 export function selectMutableNotification(items) {
-  const notification = items.find(
-    (item) => item.objectType === "organization" || item.title === "Demo data loaded",
-  );
+  const notification = items.find((item) => item.objectType === "organization");
 
   if (!notification) {
     throw new Error(

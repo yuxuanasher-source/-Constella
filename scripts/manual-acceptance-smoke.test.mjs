@@ -91,7 +91,7 @@ describe("manual acceptance smoke notification selection", () => {
       },
       {
         id: "user-notification",
-        title: "Demo data loaded",
+        title: "Workspace settings changed",
         objectType: "organization",
       },
     ]);

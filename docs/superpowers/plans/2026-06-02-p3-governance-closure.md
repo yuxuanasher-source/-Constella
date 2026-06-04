@@ -860,8 +860,8 @@ describe("vendor delivery package dto", () => {
   it("does not expose internal finance fields", () => {
     const dto = toVendorDeliveryPackage({
       project_id: "project-1",
-      project_name: "王者荣耀暑期冲榜",
-      streamer_name: "阿洛",
+      project_name: "Project Launch Window",
+      streamer_name: "Streamer A",
       settlement_duration_minutes: 120,
       evidence_level: "system",
       cost_cents: 10000,
@@ -978,8 +978,8 @@ describe("P3 governance golden path", () => {
     );
     const deliveryPackage = toVendorDeliveryPackage({
       project_id: "project-1",
-      project_name: "王者荣耀暑期冲榜",
-      streamer_name: "阿洛",
+      project_name: "Project Launch Window",
+      streamer_name: "Streamer A",
       settlement_duration_minutes: 120,
       evidence_level: "system",
       cost_cents: 10000,

@@ -19,6 +19,11 @@ export type ProjectRecord = {
   allow_direct_invite?: boolean;
   force_recording?: boolean;
   force_system_timing?: boolean;
+  vendor_name?: string | null;
+  product_name?: string | null;
+  agent_name?: string | null;
+  supplier_name?: string | null;
+  description?: string | null;
   default_settlement_method?: string;
   default_hourly_rate?: number;
   default_base_salary?: number;
@@ -40,12 +45,18 @@ export type CreateProjectDraftInput = {
 
 export type UpdateProjectBasicsInput = {
   name?: string;
+  status?: ProjectStatus;
   startsAt?: string | null;
   endsAt?: string | null;
   openSignup?: boolean;
   allowDirectInvite?: boolean;
   forceRecording?: boolean;
   forceSystemTiming?: boolean;
+  vendorName?: string;
+  productName?: string;
+  agentName?: string;
+  supplierName?: string;
+  description?: string;
 };
 
 export type UpdateProjectSettlementRuleInput = {
@@ -176,6 +187,9 @@ export async function updateProjectBasics({
   }
 
   const before = await requireProject(repo, projectId);
+  if (input.status) {
+    assertProjectTransition(before.status, input.status);
+  }
   const patch = mapBasicProjectPatch(input);
   const changedFields = Object.keys(patch);
   const project = await repo.updateBasics(projectId, patch);
@@ -270,12 +284,18 @@ function mapBasicProjectPatch(
 ): Partial<ProjectRecord> {
   return removeUndefined({
     name: input.name,
+    status: input.status,
     starts_at: input.startsAt,
     ends_at: input.endsAt,
     open_signup: input.openSignup,
     allow_direct_invite: input.allowDirectInvite,
     force_recording: input.forceRecording,
     force_system_timing: input.forceSystemTiming,
+    vendor_name: input.vendorName,
+    product_name: input.productName,
+    agent_name: input.agentName,
+    supplier_name: input.supplierName,
+    description: input.description,
   });
 }
 

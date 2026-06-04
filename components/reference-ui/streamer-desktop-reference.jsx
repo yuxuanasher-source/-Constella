@@ -902,6 +902,36 @@ const ME = {
   platforms: [],
 };
 
+const EMPTY_PROFILE = {
+  ...ME,
+  stats: {
+    projectCount: 0,
+    recordingCount: 0,
+    totalLiveHours: 0,
+  },
+  tags: {
+    categories: ["未配置品类"],
+    styles: ["未配置风格"],
+    skills: ["未配置技能"],
+    availability: ["未配置时间"],
+    equipment: ["未配置设备"],
+  },
+  settlement: {
+    rule: "未配置",
+    cycle: "按项目规则",
+    baseSalary: "未配置",
+    cpt: "未配置",
+    giftShare: "按项目规则配置",
+    bank: "未向前端暴露",
+  },
+  security: {
+    password: "由账号系统管理",
+    mfa: "按账号设置",
+    notifications: "任务 / 审核 / AI",
+    devices: "当前会话",
+  },
+};
+
 // Streamer's tasks — for today + upcoming + recent
 const MY_TASKS = [];
 
@@ -939,6 +969,7 @@ const MY_EARNINGS = {
 
 // Screening videos
 const MY_VIDEOS = [];
+const MY_RECORDINGS = [];
 
 const VIDEO_STATUS = {
   pending_review: { tone: "violet", label: "审核中" },
@@ -965,7 +996,7 @@ const NAV = [
   { key: "profile", label: "个人资料 & 平台", icon: "Streamer" },
 ];
 
-function Sidebar({ route, onNav }) {
+function Sidebar({ route, onNav, taskBadgeCount = 0, profile = EMPTY_PROFILE }) {
   return (
     <aside
       style={{
@@ -1064,7 +1095,7 @@ function Sidebar({ route, onNav }) {
               flexShrink: 0,
             }}
           >
-            {ME.alias.slice(0, 1)}
+            {profile.alias.slice(0, 1)}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div
@@ -1074,7 +1105,7 @@ function Sidebar({ route, onNav }) {
                 letterSpacing: "-0.005em",
               }}
             >
-              {ME.alias}
+              {profile.alias}
             </div>
             <div
               style={{
@@ -1085,7 +1116,7 @@ function Sidebar({ route, onNav }) {
                 textOverflow: "ellipsis",
               }}
             >
-              {ME.level}
+              {profile.level}
             </div>
           </div>
         </div>
@@ -1107,6 +1138,7 @@ function Sidebar({ route, onNav }) {
             );
           const active = it.key === route;
           const IconComp = Icon[it.icon];
+          const count = it.key === "tasks" ? taskBadgeCount : it.count;
           return (
             <button
               key={it.key}
@@ -1153,7 +1185,7 @@ function Sidebar({ route, onNav }) {
                 stroke={active ? "var(--blue-700)" : "var(--ink-400)"}
               />
               <span style={{ flex: 1, textAlign: "left" }}>{it.label}</span>
-              {it.count != null && (
+              {count != null && count > 0 && (
                 <span
                   style={{
                     fontSize: 11,
@@ -1168,7 +1200,7 @@ function Sidebar({ route, onNav }) {
                     minWidth: 16,
                   }}
                 >
-                  {it.count}
+                  {count}
                 </span>
               )}
               {it.accent && !active && (
@@ -1209,12 +1241,16 @@ function Sidebar({ route, onNav }) {
               width: 8,
               height: 8,
               borderRadius: 999,
-              background: "var(--ok-600)",
-              boxShadow: "0 0 0 3px rgba(14,138,77,0.22)",
+              background: isProfileActive(profile)
+                ? "var(--ok-600)"
+                : "var(--ink-300)",
+              boxShadow: isProfileActive(profile)
+                ? "0 0 0 3px rgba(14,138,77,0.22)"
+                : "none",
             }}
           />
           <div style={{ flex: 1, fontSize: 11.5, color: "var(--ink-500)" }}>
-            合作中 · 签约 6 个月
+            {formatProfileContractSummary(profile)}
           </div>
         </div>
       </div>
@@ -1222,7 +1258,15 @@ function Sidebar({ route, onNav }) {
   );
 }
 
-function TopBar({ title, subtitle, actions }) {
+function TopBar({
+  title,
+  subtitle,
+  actions,
+  unreadNotificationCount = 0,
+  profile = EMPTY_PROFILE,
+}) {
+  const notificationLabel = `通知 ${unreadNotificationCount} 条未读`;
+
   return (
     <div
       style={{
@@ -1265,6 +1309,8 @@ function TopBar({ title, subtitle, actions }) {
 
       {/* Notification */}
       <button
+        aria-label={notificationLabel}
+        title={notificationLabel}
         style={{
           position: "relative",
           width: 34,
@@ -1280,27 +1326,29 @@ function TopBar({ title, subtitle, actions }) {
         }}
       >
         <Icon.Bell size={16} />
-        <span
-          style={{
-            position: "absolute",
-            top: 5,
-            right: 5,
-            minWidth: 14,
-            height: 14,
-            borderRadius: 999,
-            background: "var(--danger-600)",
-            color: "#fff",
-            fontSize: 10,
-            fontWeight: 600,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "0 3px",
-            border: "1.5px solid #fff",
-          }}
-        >
-          2
-        </span>
+        {unreadNotificationCount > 0 && (
+          <span
+            style={{
+              position: "absolute",
+              top: 5,
+              right: 5,
+              minWidth: 14,
+              height: 14,
+              borderRadius: 999,
+              background: "var(--danger-600)",
+              color: "#fff",
+              fontSize: 10,
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "0 3px",
+              border: "1.5px solid #fff",
+            }}
+          >
+            {unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}
+          </span>
+        )}
       </button>
 
       {/* Avatar dropdown */}
@@ -1317,11 +1365,11 @@ function TopBar({ title, subtitle, actions }) {
           cursor: "pointer",
         }}
       >
-        <Avatar name={ME.alias} size={26} />
+        <Avatar name={profile.alias} size={26} />
         <span
           style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-700)" }}
         >
-          {ME.alias}
+          {profile.alias}
         </span>
         <Icon.ChevDown size={12} stroke="var(--ink-400)" />
       </button>
@@ -1379,7 +1427,150 @@ function PageHero({ title, subtitle, status, actions, dense = false }) {
 // ===== src-streamer-pc\screen-dashboard.jsx =====
 // ——— Screen: 工作台 ——————————————————————
 
-function ScreenDashboard({ go, tasks = MY_TASKS, earnings = MY_EARNINGS }) {
+function normalizeStreamerNotifications(items) {
+  if (!Array.isArray(items)) {
+    return null;
+  }
+
+  return items.map((item) => ({
+    id: item.id ?? item.title,
+    title: item.title || "通知",
+    detail: item.detail || item.content || "",
+    time: item.time || formatNotificationTime(item.createdAt),
+    unread: item.unread ?? item.status === "unread",
+    status: item.status || (item.unread ? "unread" : "read"),
+    isHighRisk: item.isHighRisk ?? false,
+  }));
+}
+
+function normalizeStreamerProfile(profile) {
+  if (!profile || typeof profile !== "object") {
+    return null;
+  }
+
+  return {
+    ...EMPTY_PROFILE,
+    ...profile,
+    stats: {
+      ...EMPTY_PROFILE.stats,
+      ...(profile.stats || {}),
+    },
+    platforms: Array.isArray(profile.platforms) ? profile.platforms : [],
+    tags: {
+      ...EMPTY_PROFILE.tags,
+      ...(profile.tags || {}),
+    },
+    settlement: {
+      ...EMPTY_PROFILE.settlement,
+      ...(profile.settlement || {}),
+    },
+    security: {
+      ...EMPTY_PROFILE.security,
+      ...(profile.security || {}),
+    },
+  };
+}
+
+function normalizeStreamerRecordings(items) {
+  if (!Array.isArray(items)) {
+    return null;
+  }
+
+  return items.map((item) => ({
+    id: item.id ?? item.link,
+    product: item.product || "未配置产品",
+    category: item.category || "未配置品类",
+    link: item.link || item.recordingUrl || "",
+    month: item.month || item.recordingMonth || currentMonthLabel(),
+    status: item.status || "submitted",
+    statusLabel: item.statusLabel || item.status || "待审核",
+    submittedAt: item.submittedAt || item.submitted_at || "",
+  }));
+}
+
+function isProfileActive(profile = EMPTY_PROFILE) {
+  return Boolean(profile.id) && ["合作中", "已签约"].includes(profile.level);
+}
+
+function formatProfileContractSummary(profile = EMPTY_PROFILE) {
+  if (!profile.id) {
+    return "未绑定主播档案";
+  }
+
+  const level = profile.level || "未配置档案";
+  const signedAt = parseProfileDate(profile.signedAt);
+  if (!signedAt) {
+    return `${level} · 签约时间未配置`;
+  }
+
+  return `${level} · ${formatTenure(signedAt, new Date())}`;
+}
+
+function parseProfileDate(value) {
+  if (!value || value === "未配置") {
+    return null;
+  }
+
+  const date = new Date(`${String(value).slice(0, 10)}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatTenure(start, end) {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const days = Math.max(0, Math.floor((end.getTime() - start.getTime()) / dayMs));
+  let months =
+    (end.getFullYear() - start.getFullYear()) * 12 +
+    end.getMonth() -
+    start.getMonth();
+  if (end.getDate() < start.getDate()) {
+    months -= 1;
+  }
+  months = Math.max(0, months);
+
+  if (months >= 12) {
+    const years = Math.floor(months / 12);
+    const rest = months % 12;
+    return rest > 0
+      ? `签约 ${years} 年 ${rest} 个月`
+      : `签约 ${years} 年`;
+  }
+  if (months > 0) {
+    return `签约 ${months} 个月`;
+  }
+  if (days > 0) {
+    return `签约 ${days} 天`;
+  }
+  return "今日签约";
+}
+
+function countUnreadNotifications(notifications = MY_NOTIFICATIONS) {
+  return notifications.filter((item) => item.unread || item.status === "unread")
+    .length;
+}
+
+function formatNotificationTime(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    return "刚刚";
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Shanghai",
+  }).format(date);
+}
+
+function ScreenDashboard({
+  go,
+  tasks = MY_TASKS,
+  earnings = MY_EARNINGS,
+  notifications = MY_NOTIFICATIONS,
+  profile = EMPTY_PROFILE,
+}) {
   const today = tasks.filter((t) =>
     ["pending_live", "live", "pending_report"].includes(t.status),
   );
@@ -1388,13 +1579,14 @@ function ScreenDashboard({ go, tasks = MY_TASKS, earnings = MY_EARNINGS }) {
     .filter((t) => !["pending_live", "live", "pending_report"].includes(t.status))
     .slice(0, 4);
   const reviewing = tasks.filter((t) => t.status === "pending_review");
+  const visibleNotifications = notifications.slice(0, 4);
 
   const dayLabel = "周三 · 5 月 27 日";
 
   return (
     <>
       <PageHero
-        title={<>你好，{ME.alias} 👋</>}
+        title={<>你好，{profile.alias}</>}
         subtitle={
           <>
             {dayLabel} · 今天还有{" "}
@@ -1836,63 +2028,89 @@ function ScreenDashboard({ go, tasks = MY_TASKS, earnings = MY_EARNINGS }) {
               }
               padded={false}
             >
-              {MY_NOTIFICATIONS.map((n, i) => (
-                <div
-                  key={i}
-                  style={{
-                    padding: "12px 16px",
-                    display: "flex",
-                    gap: 10,
-                    borderBottom:
-                      i < MY_NOTIFICATIONS.length - 1
-                        ? "1px solid var(--line)"
-                        : "none",
-                    background: n.unread
-                      ? "rgba(238,243,255,0.5)"
-                      : "transparent",
-                  }}
-                >
-                  <span
+              {visibleNotifications.length === 0 ? (
+                <div style={{ padding: "18px 16px" }}>
+                  <div
                     style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: 999,
-                      background: n.unread ? "var(--blue-600)" : "transparent",
-                      marginTop: 6,
-                      flexShrink: 0,
+                      textAlign: "center",
+                      color: "var(--ink-400)",
+                      fontSize: 12,
+                      lineHeight: 1.8,
                     }}
-                  />
-                  <div style={{ flex: 1 }}>
+                  >
                     <div
                       style={{
-                        fontSize: 12.5,
-                        fontWeight: n.unread ? 600 : 500,
-                        color: "var(--ink-900)",
+                        color: "var(--ink-700)",
+                        fontWeight: 600,
+                        marginBottom: 2,
                       }}
                     >
-                      {n.title}
+                      暂无通知
                     </div>
-                    <div
-                      style={{
-                        fontSize: 11.5,
-                        color: "var(--ink-500)",
-                        marginTop: 2,
-                      }}
-                    >
-                      {n.detail}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 10.5,
-                        color: "var(--ink-400)",
-                        marginTop: 2,
-                      }}
-                    >
-                      {n.time}
-                    </div>
+                    <div>任务、报数和结算状态有变化时会在这里提醒。</div>
                   </div>
                 </div>
-              ))}
+              ) : (
+                visibleNotifications.map((n, i) => (
+                  <div
+                    key={n.id ?? i}
+                    style={{
+                      padding: "12px 16px",
+                      display: "flex",
+                      gap: 10,
+                      borderBottom:
+                        i < visibleNotifications.length - 1
+                          ? "1px solid var(--line)"
+                          : "none",
+                      background: n.unread
+                        ? "rgba(238,243,255,0.5)"
+                        : "transparent",
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 999,
+                        background: n.unread
+                          ? "var(--blue-600)"
+                          : "transparent",
+                        marginTop: 6,
+                        flexShrink: 0,
+                      }}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <div
+                        style={{
+                          fontSize: 12.5,
+                          fontWeight: n.unread ? 600 : 500,
+                          color: "var(--ink-900)",
+                        }}
+                      >
+                        {n.title}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11.5,
+                          color: "var(--ink-500)",
+                          marginTop: 2,
+                        }}
+                      >
+                        {n.detail}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 10.5,
+                          color: "var(--ink-400)",
+                          marginTop: 2,
+                        }}
+                      >
+                        {n.time}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
             </Card>
           </div>
         </div>
@@ -2372,6 +2590,52 @@ function Sparkbars({ data }) {
 // ===== src-streamer-pc\screen-tasks.jsx =====
 // ——— Screen: 我的任务 ——————————————————————
 
+function summarizeStreamerTasks(tasks = MY_TASKS) {
+  const taskCount = tasks.length;
+  const pendingReportCount = tasks.filter(
+    (task) => task.status === "pending_report",
+  ).length;
+  const plannedHours =
+    Math.round(
+      tasks.reduce((sum, task) => sum + getTaskDurationHours(task), 0) * 10,
+    ) / 10;
+
+  return {
+    taskCount,
+    pendingReportCount,
+    hoursLabel: formatSummaryHours(plannedHours),
+  };
+}
+
+function getTaskDurationHours(task) {
+  const directHours = Number(task.durationPlan);
+  if (Number.isFinite(directHours) && directHours > 0) {
+    return directHours;
+  }
+
+  const plannedMinutes = Number(task.plannedDuration);
+  if (Number.isFinite(plannedMinutes) && plannedMinutes > 0) {
+    return plannedMinutes / 60;
+  }
+
+  const start = task.plannedStartAt ? new Date(task.plannedStartAt) : null;
+  const end = task.plannedEndAt ? new Date(task.plannedEndAt) : null;
+  if (
+    start &&
+    end &&
+    !Number.isNaN(start.getTime()) &&
+    !Number.isNaN(end.getTime())
+  ) {
+    return Math.max(0, (end.getTime() - start.getTime()) / 3_600_000);
+  }
+
+  return 0;
+}
+
+function formatSummaryHours(hours) {
+  return Number.isInteger(hours) ? String(hours) : hours.toFixed(1);
+}
+
 function ScreenTasks({ go, openTaskId, tasks = MY_TASKS, actions = {} }) {
   const [filter, setFilter] = React.useState("all");
   const [activeId, setActiveId] = React.useState(
@@ -2393,12 +2657,13 @@ function ScreenTasks({ go, openTaskId, tasks = MY_TASKS, actions = {} }) {
   };
   const filtered =
     filter === "all" ? tasks : tasks.filter((t) => t.status === filter);
+  const summary = summarizeStreamerTasks(tasks);
 
   return (
     <>
       <PageHero
         title="我的任务"
-        subtitle="本周累计 5 个任务 · 18.5 h · 1 个待上传截图"
+        subtitle={`本周累计 ${summary.taskCount} 个任务 · ${summary.hoursLabel} h · ${summary.pendingReportCount} 个待上传截图`}
         actions={
           <>
             <Button kind="default" icon={<Icon.Calendar size={14} />}>
@@ -3021,37 +3286,63 @@ function Timeline({ events }) {
 // ===== src-streamer-pc\screen-videos.jsx =====
 // ——— Screen: 录屏库 ——————————————————————
 
-function ScreenVideos({ go }) {
+function ScreenVideos({ recordings = MY_RECORDINGS, actions = {} }) {
   const [tab, setTab] = React.useState("all");
+  const [form, setForm] = React.useState(() => ({
+    product: "",
+    category: "",
+    link: "",
+    month: currentMonthLabel(),
+  }));
+  const [submitting, setSubmitting] = React.useState(false);
+  const [error, setError] = React.useState("");
   const counts = {
-    all: MY_VIDEOS.length,
-    pending_review: MY_VIDEOS.filter((v) => v.status === "pending_review")
-      .length,
-    approved: MY_VIDEOS.filter((v) => v.status === "approved").length,
-    history: MY_VIDEOS.filter((v) => v.forProject === "历史录屏").length,
+    all: recordings.length,
+    submitted: recordings.filter((item) => item.status === "submitted").length,
+    reviewing: recordings.filter((item) => item.status === "reviewing").length,
+    approved: recordings.filter((item) => item.status === "approved").length,
   };
   const filtered =
     tab === "all"
-      ? MY_VIDEOS
-      : tab === "history"
-        ? MY_VIDEOS.filter((v) => v.forProject === "历史录屏")
-        : MY_VIDEOS.filter((v) => v.status === tab);
+      ? recordings
+      : recordings.filter((item) => item.status === tab);
+
+  const updateForm = (key, value) => {
+    setError("");
+    setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+    try {
+      await actions.submitRecordingLink?.(form);
+      setForm({
+        product: "",
+        category: "",
+        link: "",
+        month: currentMonthLabel(),
+      });
+    } catch (submitError) {
+      setError(recordingLinkErrorMessage(submitError));
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <>
       <PageHero
         title="录屏库"
-        subtitle="项目报名录屏 + 历史录屏 · 录屏文件存储于私有 bucket"
+        subtitle="提交录屏链接 URL · 按产品、品类、月份与审核状态留档"
         actions={
           <>
             <Button kind="default" icon={<Icon.Filter size={14} />}>
               按品类筛选
             </Button>
-            <Button
-              kind="primary"
-              icon={<Icon.Upload size={14} stroke="#fff" />}
-            >
-              上传录屏
+            <Button kind="primary" icon={<Icon.Export size={14} stroke="#fff" />}>
+              提交链接
             </Button>
           </>
         }
@@ -3061,7 +3352,7 @@ function ScreenVideos({ go }) {
         style={{
           padding: 24,
           display: "grid",
-          gridTemplateColumns: "1.4fr 1fr",
+          gridTemplateColumns: "1.45fr 0.95fr",
           gap: 20,
           alignItems: "flex-start",
         }}
@@ -3076,79 +3367,78 @@ function ScreenVideos({ go }) {
               items={[
                 { key: "all", label: "全部", count: counts.all },
                 {
-                  key: "pending_review",
+                  key: "submitted",
+                  label: "待审核",
+                  count: counts.submitted,
+                },
+                {
+                  key: "reviewing",
                   label: "审核中",
-                  count: counts.pending_review,
+                  count: counts.reviewing,
                 },
                 { key: "approved", label: "已通过", count: counts.approved },
-                { key: "history", label: "历史录屏", count: counts.history },
               ]}
             />
           </div>
 
-          <div
-            style={{
-              padding: 16,
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 14,
-            }}
-          >
-            {filtered.map((v) => (
-              <VideoCard key={v.id} v={v} />
-            ))}
-            {/* Add a "+ upload" card */}
-            <button
-              style={{
-                minHeight: 200,
-                padding: 0,
-                border: "1.5px dashed var(--line-strong)",
-                background: "#fff",
-                borderRadius: 10,
-                cursor: "pointer",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                color: "var(--ink-400)",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = "var(--blue-500)";
-                e.currentTarget.style.background = "var(--blue-50)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = "var(--line-strong)";
-                e.currentTarget.style.background = "#fff";
-              }}
-            >
-              <div
-                style={{
-                  width: 44,
-                  height: 44,
-                  borderRadius: 999,
-                  background: "var(--blue-50)",
-                  color: "var(--blue-700)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <Icon.Upload size={20} stroke="var(--blue-700)" />
-              </div>
-              <div
-                style={{
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: "var(--ink-700)",
-                }}
-              >
-                上传新录屏
-              </div>
-              <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
-                支持 MP4 / MOV，单个文件 ≤ 1 GB
-              </div>
-            </button>
+          <div style={{ padding: 16 }}>
+            <RecordingLinkForm
+              form={form}
+              error={error}
+              submitting={submitting}
+              onChange={updateForm}
+              onSubmit={submit}
+            />
+            <div style={{ marginTop: 16 }}>
+              <DataTable
+                columns={[
+                  { title: "产品", key: "product", width: "20%" },
+                  {
+                    title: "品类",
+                    key: "category",
+                    width: "14%",
+                    render: (row) => <Badge tone="blue">{row.category}</Badge>,
+                  },
+                  {
+                    title: "链接",
+                    key: "link",
+                    wrap: true,
+                    render: (row) => (
+                      <a
+                        href={row.link}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{
+                          color: "var(--blue-700)",
+                          textDecoration: "none",
+                          wordBreak: "break-all",
+                        }}
+                      >
+                        {row.link}
+                      </a>
+                    ),
+                  },
+                  {
+                    title: "月份",
+                    key: "month",
+                    width: 96,
+                    render: (row) => <span className="mono">{row.month}</span>,
+                  },
+                  {
+                    title: "审核状态",
+                    key: "statusLabel",
+                    width: 112,
+                    render: (row) => (
+                      <Badge tone={recordingStatusTone(row.status)} dot>
+                        {row.statusLabel}
+                      </Badge>
+                    ),
+                  },
+                ]}
+                rows={filtered}
+                emptyText="暂无录屏链接，提交 URL 后会进入审核表格。"
+              />
+            </div>
           </div>
         </Card>
 
@@ -3163,7 +3453,7 @@ function ScreenVideos({ go }) {
           }}
         >
           <Card
-            title="厂家审核口径"
+            title="录屏链接审核口径"
             extra={
               <Badge tone="violet" dot>
                 AI 总结
@@ -3173,7 +3463,7 @@ function ScreenVideos({ go }) {
             <div
               style={{ fontSize: 13, color: "var(--ink-700)", lineHeight: 1.7 }}
             >
-              基于你最近 30 天的项目，运营审核通过率 95%。常见驳回原因：
+              审核只读取你提交的 URL 与表格字段。常见驳回原因：
             </div>
             <ul
               style={{
@@ -3186,10 +3476,10 @@ function ScreenVideos({ go }) {
               }}
             >
               {[
-                ["画质 / 声音问题", "建议先用本地素材自检 1 分钟"],
-                ["录屏长度不足", "项目录屏建议 ≥ 30 分钟，含完整开播闭环"],
-                ["内容不匹配品类", "请按项目要求录制对应游戏内容"],
-                ["含未脱敏个人信息", "隐藏弹幕 ID / 礼物刷屏者昵称"],
+                ["链接不可访问", "请确认 URL 可打开且无需私有登录"],
+                ["产品不清晰", "产品名需与项目或游戏名称一致"],
+                ["品类不匹配", "请按实际录屏内容填写品类"],
+                ["月份错误", "按录屏归档月份填写 YYYY-MM"],
               ].map(([t, d], i) => (
                 <li
                   key={i}
@@ -3226,33 +3516,151 @@ function ScreenVideos({ go }) {
             </ul>
           </Card>
 
-          <Card title="存储与隐私">
-            <KV label="存储桶">私有 · 短期签名 URL</KV>
-            <KV label="可见范围">仅你 / 运营 / 厂家审核员</KV>
-            <KV label="录屏失效">通过后 6 个月，可重新提交</KV>
-            <KV label="总占用">3.4 GB / 配额 10 GB</KV>
+          <Card title="表格字段">
+            <KV label="产品">录屏对应产品或游戏</KV>
+            <KV label="品类">录屏内容所属品类</KV>
+            <KV label="链接">http(s) 录屏 URL</KV>
+            <KV label="月份">YYYY-MM 归档月份</KV>
+            <KV label="审核状态">待审核 / 审核中 / 已通过 / 已驳回</KV>
             <div
               style={{
                 marginTop: 10,
-                height: 6,
-                background: "var(--ink-50)",
-                borderRadius: 999,
+                padding: 10,
+                borderRadius: 8,
+                background: "var(--blue-50)",
+                color: "var(--ink-700)",
+                fontSize: 12,
+                lineHeight: 1.65,
               }}
             >
-              <div
-                style={{
-                  width: "34%",
-                  height: "100%",
-                  background: "var(--blue-600)",
-                  borderRadius: 999,
-                }}
-              />
+              这里只保存 URL 与审核元数据，不再上传 MP4/MOV 文件到前端 bucket。
             </div>
           </Card>
         </div>
       </div>
     </>
   );
+}
+
+function RecordingLinkForm({ form, error, submitting, onChange, onSubmit }) {
+  return (
+    <form
+      onSubmit={onSubmit}
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 120px 1.5fr 120px auto",
+        gap: 10,
+        alignItems: "end",
+      }}
+    >
+      <FieldInput
+        label="产品"
+        value={form.product}
+        placeholder="例如：Game Alpha"
+        onChange={(value) => onChange("product", value)}
+      />
+      <FieldInput
+        label="品类"
+        value={form.category}
+        placeholder="ARPG"
+        onChange={(value) => onChange("category", value)}
+      />
+      <FieldInput
+        label="链接"
+        value={form.link}
+        placeholder="https://..."
+        onChange={(value) => onChange("link", value)}
+      />
+      <FieldInput
+        label="月份"
+        value={form.month}
+        placeholder="2026-06"
+        onChange={(value) => onChange("month", value)}
+      />
+      <Button kind="primary" type="submit" disabled={submitting}>
+        {submitting ? "提交中" : "提交录屏链接"}
+      </Button>
+      {error && (
+        <div
+          style={{
+            gridColumn: "1 / -1",
+            color: "var(--danger-600)",
+            fontSize: 12,
+          }}
+        >
+          {error}
+        </div>
+      )}
+    </form>
+  );
+}
+
+function FieldInput({ label, value, placeholder, onChange }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <span style={{ fontSize: 12, color: "var(--ink-400)" }}>{label}</span>
+      <input
+        aria-label={label}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+        style={{
+          height: 32,
+          border: "1px solid var(--line-strong)",
+          borderRadius: 8,
+          padding: "0 10px",
+          fontSize: 13,
+          outline: "none",
+          color: "var(--ink-900)",
+          background: "#fff",
+        }}
+      />
+    </label>
+  );
+}
+
+function recordingStatusTone(status) {
+  return {
+    submitted: "amber",
+    reviewing: "violet",
+    approved: "green",
+    rejected: "red",
+    needs_changes: "amber",
+  }[status] ?? "neutral";
+}
+
+function recordingLinkErrorMessage(error) {
+  const message = error?.message || "";
+  if (message.includes("Only streamers")) {
+    return "请先登录主播账号后再提交录屏链接。";
+  }
+  if (message.includes("not bound to a streamer")) {
+    return "当前账号还未绑定主播档案，请先完成主播档案配置。";
+  }
+  if (message.includes("Product is required")) {
+    return "请填写产品。";
+  }
+  if (message.includes("Category is required")) {
+    return "请填写品类。";
+  }
+  if (message.includes("Recording link is required")) {
+    return "请填写录屏链接。";
+  }
+  if (message.includes("valid http")) {
+    return "录屏链接必须是可访问的 http(s) URL。";
+  }
+  if (message.includes("Month is required")) {
+    return "请填写月份。";
+  }
+  if (message.includes("YYYY-MM")) {
+    return "月份格式需为 YYYY-MM。";
+  }
+  return message || "录屏链接提交失败，请稍后重试。";
+}
+
+function currentMonthLabel() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function VideoCard({ v }) {
@@ -3357,7 +3765,7 @@ function VideoCard({ v }) {
 // ===== src-streamer-pc\screen-ai.jsx =====
 // ——— Screen: AI 卡点诊断 (Desktop) ———————————————————
 
-function ScreenAI({ go }) {
+function ScreenAI({ go, profile = EMPTY_PROFILE }) {
   const [thread, setThread] = React.useState(AI_THREAD);
   const [input, setInput] = React.useState("");
   const [typing, setTyping] = React.useState(false);
@@ -3602,7 +4010,7 @@ function ScreenAI({ go }) {
             </div>
 
             {thread.map((m, i) => (
-              <Message key={i} msg={m} />
+              <Message key={i} msg={m} profile={profile} />
             ))}
             {typing && <TypingBubble />}
             <div ref={endRef} />
@@ -3777,7 +4185,7 @@ function HistoryItem({ title, snippet, time, active }) {
   );
 }
 
-function Message({ msg }) {
+function Message({ msg, profile = EMPTY_PROFILE }) {
   const isMe = msg.role === "me";
   return (
     <div
@@ -3805,7 +4213,7 @@ function Message({ msg }) {
           <Icon.Sparkles size={14} stroke="#fff" sw={1.8} />
         </div>
       ) : (
-        <Avatar name={ME.alias} size={32} />
+        <Avatar name={profile.alias} size={32} />
       )}
       <div
         style={{
@@ -4093,12 +4501,35 @@ const BATCH_DETAIL_TASKS = [];
 
 function ScreenEarnings({ go }) {
   const [activeBatch, setActiveBatch] = React.useState(
-    SETTLEMENT_HISTORY[0].batch,
+    SETTLEMENT_HISTORY[0]?.batch ?? null,
   );
   const cur =
     SETTLEMENT_HISTORY.find((b) => b.batch === activeBatch) ||
-    SETTLEMENT_HISTORY[0];
+    SETTLEMENT_HISTORY[0] ||
+    null;
   const ytd = SETTLEMENT_HISTORY.reduce((s, b) => s + b.amount, 0);
+
+  if (!cur) {
+    return (
+      <>
+        <PageHero
+          title="结算账单"
+          subtitle="实际金额以运营在月底锁定批次后为准 · 数据仅展示你自己"
+          actions={
+            <Button kind="default" icon={<Icon.Export size={14} />}>
+              导出 PDF 账单
+            </Button>
+          }
+        />
+        <div style={{ padding: 24 }}>
+          <EmptyCard
+            title="暂无结算批次"
+            hint="运营锁定应付批次后，你可以在这里查看金额、明细和复核入口。"
+          />
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -4547,13 +4978,17 @@ function ScreenEarnings({ go }) {
 // ===== src-streamer-pc\screen-profile.jsx =====
 // ——— Screen: 个人资料 & 平台 ——————————————————————
 
-function ScreenProfile({ go }) {
+function ScreenProfile({ go, profile = EMPTY_PROFILE }) {
+  const profilePlatforms = Array.isArray(profile.platforms)
+    ? profile.platforms
+    : [];
+
   return (
     <>
       <PageHero
         title="个人资料 & 平台"
         subtitle="档案信息、平台账号绑定、隐私与权限"
-        actions={<Button kind="primary">编辑资料</Button>}
+        actions={<Button kind="primary">联系运营更新</Button>}
       />
 
       <div
@@ -4586,7 +5021,7 @@ function ScreenProfile({ go }) {
                   boxShadow: "0 4px 12px rgba(30,80,200,0.28)",
                 }}
               >
-                {ME.alias.slice(0, 1)}
+                {profile.alias.slice(0, 1)}
               </div>
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -4598,10 +5033,10 @@ function ScreenProfile({ go }) {
                       letterSpacing: "-0.01em",
                     }}
                   >
-                    {ME.alias}
+                    {profile.alias}
                   </span>
                   <Badge tone="blue" dot>
-                    {ME.level}
+                    {profile.level}
                   </Badge>
                 </div>
                 <div
@@ -4611,8 +5046,8 @@ function ScreenProfile({ go }) {
                     marginTop: 4,
                   }}
                 >
-                  {ME.real} · {ME.gender} ·{" "}
-                  <span className="mono">{ME.id}</span>
+                  {profile.real} · {profile.gender} ·{" "}
+                  <span className="mono">{profile.id || "未绑定"}</span>
                 </div>
                 <div
                   style={{
@@ -4621,7 +5056,7 @@ function ScreenProfile({ go }) {
                     marginTop: 2,
                   }}
                 >
-                  所属：{ME.org} · 签约于 {ME.signedAt}
+                  所属：{profile.org} · 签约于 {profile.signedAt}
                 </div>
               </div>
             </div>
@@ -4636,9 +5071,21 @@ function ScreenProfile({ go }) {
                 gap: 16,
               }}
             >
-              <Metric label="参与项目" value="11" unit="个" />
-              <Metric label="录屏" value={MY_VIDEOS.length} unit="条" />
-              <Metric label="累计直播" value="412.5" unit="h" />
+              <Metric
+                label="参与项目"
+                value={profile.stats.projectCount}
+                unit="个"
+              />
+              <Metric
+                label="录屏"
+                value={profile.stats.recordingCount}
+                unit="条"
+              />
+              <Metric
+                label="累计直播"
+                value={profile.stats.totalLiveHours}
+                unit="h"
+              />
             </div>
           </Card>
 
@@ -4647,12 +5094,24 @@ function ScreenProfile({ go }) {
             title="已绑定平台"
             extra={
               <Button size="sm" kind="default" icon={<Icon.Plus size={12} />}>
-                新增
+                联系运营新增
               </Button>
             }
             padded={false}
           >
-            {ME.platforms.map((p, i) => (
+            {profilePlatforms.length === 0 && (
+              <div
+                style={{
+                  padding: "20px 16px",
+                  textAlign: "center",
+                  fontSize: 12.5,
+                  color: "var(--ink-400)",
+                }}
+              >
+                暂无已绑定平台。平台账号由运营审核后绑定。
+              </div>
+            )}
+            {profilePlatforms.map((p, i) => (
               <div
                 key={p.id}
                 style={{
@@ -4661,7 +5120,7 @@ function ScreenProfile({ go }) {
                   alignItems: "center",
                   gap: 12,
                   borderBottom:
-                    i < ME.platforms.length - 1
+                    i < profilePlatforms.length - 1
                       ? "1px solid var(--line)"
                       : "none",
                 }}
@@ -4700,8 +5159,8 @@ function ScreenProfile({ go }) {
                       {p.platform}
                     </span>
                     {p.primary && <Badge tone="amber">主账号</Badge>}
-                    <Badge tone="green" dot>
-                      已认证
+                    <Badge tone={p.verified ? "green" : "neutral"} dot>
+                      {p.verified ? "已认证" : "待认证"}
                     </Badge>
                   </div>
                   <div
@@ -4712,7 +5171,7 @@ function ScreenProfile({ go }) {
                       marginTop: 4,
                     }}
                   >
-                    {p.id}
+                    {p.account}
                   </div>
                   <div
                     style={{
@@ -4725,11 +5184,11 @@ function ScreenProfile({ go }) {
                     <span className="num" style={{ fontWeight: 600 }}>
                       {p.followers.toLocaleString()}
                     </span>
-                    {" · "} 同步状态：实时
+                    {" · "} 同步状态：来自平台账号表
                   </div>
                 </div>
                 <Button size="sm" kind="default">
-                  管理
+                  查看
                 </Button>
               </div>
             ))}
@@ -4740,24 +5199,29 @@ function ScreenProfile({ go }) {
             title="能力标签"
             extra={
               <Button size="sm" kind="link">
-                编辑
+                运营配置
               </Button>
             }
           >
-            <TagGroup label="擅长游戏品类" tags={["品类待配置"]} tone="blue" />
             <TagGroup
-              label="直播风格"
-              tags={["欢快互动", "高能竞技", "剧情解说"]}
-              tone="violet"
+              label="擅长游戏品类"
+              tags={profile.tags.categories}
+              tone="blue"
             />
             <TagGroup
+              label="直播风格"
+              tags={profile.tags.styles}
+              tone="violet"
+            />
+            <TagGroup label="技能标签" tags={profile.tags.skills} tone="amber" />
+            <TagGroup
               label="可播时间"
-              tags={["周中 19-24", "周末 14-24"]}
+              tags={profile.tags.availability}
               tone="teal"
             />
             <TagGroup
               label="设备"
-              tags={["高刷屏 240Hz", "专业声卡", "4K 摄像"]}
+              tags={profile.tags.equipment}
               tone="neutral"
             />
           </Card>
@@ -4770,12 +5234,13 @@ function ScreenProfile({ go }) {
             extra={<Badge tone="neutral">由运营配置</Badge>}
           >
             <KV label="规则">
-              <Badge tone="blue">底薪 6000 + CPT 80/h</Badge>
+              <Badge tone="blue">{profile.settlement.rule}</Badge>
             </KV>
-            <KV label="底薪周期">按月结</KV>
-            <KV label="时薪 (CPT)">¥80 / 有效直播小时</KV>
-            <KV label="礼物提成">35% （单独按项目结）</KV>
-            <KV label="结算银行卡">招商银行 · 尾号 **** 8821</KV>
+            <KV label="底薪周期">{profile.settlement.cycle}</KV>
+            <KV label="底薪">{profile.settlement.baseSalary}</KV>
+            <KV label="时薪 (CPT)">{profile.settlement.cpt}</KV>
+            <KV label="礼物提成">{profile.settlement.giftShare}</KV>
+            <KV label="结算银行卡">{profile.settlement.bank}</KV>
             <div
               style={{
                 marginTop: 10,
@@ -4837,25 +5302,25 @@ function ScreenProfile({ go }) {
             <SecRow
               icon="Lock"
               label="登录密码"
-              value="3 个月前修改"
-              action="修改"
+              value={profile.security.password}
+              action="账号系统"
             />
             <SecRow
               icon="Settings"
               label="双因素认证"
-              value="已启用 · 短信"
-              action="管理"
+              value={profile.security.mfa}
+              action="账号系统"
             />
             <SecRow
               icon="Bell"
               label="通知偏好"
-              value="任务 / 审核 / AI 三类"
+              value={profile.security.notifications}
               action="设置"
             />
             <SecRow
               icon="History"
               label="登录设备"
-              value="2 台设备活跃"
+              value={profile.security.devices}
               action="查看"
               last
             />
@@ -4972,6 +5437,26 @@ function SecRow({ icon, label, value, action, last }) {
   );
 }
 
+function normalizeDesktopReferenceTasks(tasks) {
+  if (!Array.isArray(tasks)) {
+    return null;
+  }
+
+  return tasks.map((task) => normalizeDesktopReferenceTask(task));
+}
+
+function normalizeDesktopReferenceTask(task) {
+  if ("plannedStartAt" in task || "plannedDuration" in task) {
+    return toDesktopReferenceTask(task);
+  }
+
+  return {
+    ...task,
+    durationPlan: getTaskDurationHours(task),
+    status: task.status || "pending_live",
+  };
+}
+
 function toDesktopReferenceTask(task) {
   const plannedStart = task.plannedStartAt ? new Date(task.plannedStartAt) : null;
   const plannedEnd = task.plannedEndAt ? new Date(task.plannedEndAt) : null;
@@ -5020,16 +5505,49 @@ function formatDesktopTime(date) {
 function StreamerDesktopReferenceInner({
   initialRoute = "dashboard",
   liveTasks,
+  notificationItems,
+  profile,
+  recordings,
 }) {
   const [route, setRoute] = React.useState(initialRoute);
   const [taskId, setTaskId] = React.useState(null);
-  const [tasks, setTasks] = React.useState(liveTasks ?? null);
+  const [tasks, setTasks] = React.useState(() =>
+    normalizeDesktopReferenceTasks(liveTasks),
+  );
+  const [notifications, setNotifications] = React.useState(() =>
+    normalizeStreamerNotifications(notificationItems),
+  );
+  const [profileState, setProfileState] = React.useState(() =>
+    normalizeStreamerProfile(profile),
+  );
+  const [recordingRows, setRecordingRows] = React.useState(() =>
+    normalizeStreamerRecordings(recordings),
+  );
 
   React.useEffect(() => {
-    setTasks(liveTasks ?? null);
+    setTasks(normalizeDesktopReferenceTasks(liveTasks));
   }, [liveTasks]);
 
+  React.useEffect(() => {
+    setNotifications(normalizeStreamerNotifications(notificationItems));
+  }, [notificationItems]);
+
+  React.useEffect(() => {
+    setProfileState(normalizeStreamerProfile(profile));
+  }, [profile]);
+
+  React.useEffect(() => {
+    setRecordingRows(normalizeStreamerRecordings(recordings));
+  }, [recordings]);
+
   const visibleTasks = Array.isArray(tasks) ? tasks : MY_TASKS;
+  const visibleNotifications = Array.isArray(notifications)
+    ? notifications
+    : MY_NOTIFICATIONS;
+  const visibleProfile = profileState || EMPTY_PROFILE;
+  const visibleRecordings = Array.isArray(recordingRows)
+    ? recordingRows
+    : MY_RECORDINGS;
   const actions = React.useMemo(() => {
     const readJson = async (response, fallbackMessage) => {
       const body = await response.json().catch(() => ({}));
@@ -5050,11 +5568,62 @@ function StreamerDesktopReferenceInner({
         "refresh streamer tasks failed",
       );
       if (Array.isArray(body.tasks)) {
-        setTasks(body.tasks.map((task) => toDesktopReferenceTask(task)));
+        setTasks(normalizeDesktopReferenceTasks(body.tasks));
+      }
+    };
+
+    const refreshNotifications = async () => {
+      const body = await fetchJson(
+        "/api/notifications",
+        "refresh notifications failed",
+      );
+      if (Array.isArray(body.items)) {
+        setNotifications(normalizeStreamerNotifications(body.items));
+      }
+    };
+
+    const refreshProfile = async () => {
+      const body = await fetchJson(
+        "/api/streamer/profile",
+        "refresh streamer profile failed",
+      );
+      if (body.profile) {
+        setProfileState(normalizeStreamerProfile(body.profile));
+      }
+    };
+
+    const refreshRecordings = async () => {
+      const body = await fetchJson(
+        "/api/streamer/recordings",
+        "refresh streamer recordings failed",
+      );
+      if (Array.isArray(body.recordings)) {
+        setRecordingRows(normalizeStreamerRecordings(body.recordings));
       }
     };
 
     return {
+      refreshTasks,
+      refreshNotifications,
+      refreshProfile,
+      refreshRecordings,
+      submitRecordingLink: async (form) => {
+        const body = await fetchJson(
+          "/api/streamer/recordings",
+          "submit recording link failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(form),
+          },
+        );
+        if (body.recording) {
+          setRecordingRows((current) => [
+            normalizeStreamerRecordings([body.recording])[0],
+            ...(Array.isArray(current) ? current : []),
+          ]);
+        }
+      },
       startTask: async (id) => {
         await fetchJson(`/api/live-tasks/${id}/start`, "start task failed", {
           method: "POST",
@@ -5065,6 +5634,74 @@ function StreamerDesktopReferenceInner({
       },
     };
   }, []);
+
+  React.useEffect(() => {
+    if (!Array.isArray(liveTasks)) {
+      return undefined;
+    }
+
+    actions.refreshTasks?.().catch((error) => {
+      console.warn("refresh streamer tasks failed", error);
+    });
+    const timer = window.setInterval(() => {
+      actions.refreshTasks?.().catch((error) => {
+        console.warn("refresh streamer tasks failed", error);
+      });
+    }, 30_000);
+
+    return () => window.clearInterval(timer);
+  }, [actions, liveTasks]);
+
+  React.useEffect(() => {
+    if (!Array.isArray(notificationItems)) {
+      return undefined;
+    }
+
+    actions.refreshNotifications?.().catch((error) => {
+      console.warn("refresh notifications failed", error);
+    });
+    const timer = window.setInterval(() => {
+      actions.refreshNotifications?.().catch((error) => {
+        console.warn("refresh notifications failed", error);
+      });
+    }, 30_000);
+
+    return () => window.clearInterval(timer);
+  }, [actions, notificationItems]);
+
+  React.useEffect(() => {
+    if (!profile) {
+      return undefined;
+    }
+
+    actions.refreshProfile?.().catch((error) => {
+      console.warn("refresh streamer profile failed", error);
+    });
+    const timer = window.setInterval(() => {
+      actions.refreshProfile?.().catch((error) => {
+        console.warn("refresh streamer profile failed", error);
+      });
+    }, 30_000);
+
+    return () => window.clearInterval(timer);
+  }, [actions, profile]);
+
+  React.useEffect(() => {
+    if (!Array.isArray(recordings)) {
+      return undefined;
+    }
+
+    actions.refreshRecordings?.().catch((error) => {
+      console.warn("refresh streamer recordings failed", error);
+    });
+    const timer = window.setInterval(() => {
+      actions.refreshRecordings?.().catch((error) => {
+        console.warn("refresh streamer recordings failed", error);
+      });
+    }, 30_000);
+
+    return () => window.clearInterval(timer);
+  }, [actions, recordings]);
 
   const go = (r, arg) => {
     if (r === "tasks" && arg) setTaskId(arg);
@@ -5087,7 +5724,14 @@ function StreamerDesktopReferenceInner({
     <div
       style={{ display: "flex", minHeight: "100vh", background: "var(--bg)" }}
     >
-      <Sidebar route={route} onNav={go} />
+      <Sidebar
+        route={route}
+        onNav={go}
+        profile={visibleProfile}
+        taskBadgeCount={
+          visibleTasks.filter((task) => task.status === "pending_report").length
+        }
+      />
       <main
         style={{
           flex: 1,
@@ -5097,10 +5741,22 @@ function StreamerDesktopReferenceInner({
           maxHeight: "100vh",
         }}
       >
-        <TopBar title={meta.t} subtitle={meta.s} />
+        <TopBar
+          title={meta.t}
+          subtitle={meta.s}
+          unreadNotificationCount={countUnreadNotifications(
+            visibleNotifications,
+          )}
+          profile={visibleProfile}
+        />
         <div id="content-scroll" style={{ flex: 1, overflowY: "auto" }}>
           {route === "dashboard" && (
-            <ScreenDashboard go={go} tasks={visibleTasks} />
+            <ScreenDashboard
+              go={go}
+              tasks={visibleTasks}
+              notifications={visibleNotifications}
+              profile={visibleProfile}
+            />
           )}
           {route === "tasks" && (
             <ScreenTasks
@@ -5110,10 +5766,14 @@ function StreamerDesktopReferenceInner({
               actions={actions}
             />
           )}
-          {route === "videos" && <ScreenVideos go={go} />}
-          {route === "ai" && <ScreenAI go={go} />}
+          {route === "videos" && (
+            <ScreenVideos recordings={visibleRecordings} actions={actions} />
+          )}
+          {route === "ai" && <ScreenAI go={go} profile={visibleProfile} />}
           {route === "earnings" && <ScreenEarnings go={go} />}
-          {route === "profile" && <ScreenProfile go={go} />}
+          {route === "profile" && (
+            <ScreenProfile go={go} profile={visibleProfile} />
+          )}
         </div>
       </main>
     </div>
@@ -5123,11 +5783,17 @@ function StreamerDesktopReferenceInner({
 export default function StreamerDesktopReferenceApp({
   initialRoute = "dashboard",
   liveTasks,
+  notificationItems,
+  profile,
+  recordings,
 }) {
   return (
     <StreamerDesktopReferenceInner
       initialRoute={initialRoute}
       liveTasks={liveTasks}
+      notificationItems={notificationItems}
+      profile={profile}
+      recordings={recordings}
     />
   );
 }

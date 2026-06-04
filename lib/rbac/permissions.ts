@@ -17,3 +17,50 @@ export function canSeeFinancialFields(
 ): boolean {
   return role === "owner" || role === "finance";
 }
+
+export function canViewOrganizationMembers(
+  role: AppRole | null | undefined,
+): boolean {
+  return role === "owner" || role === "ops_manager";
+}
+
+export function getCreatableOrganizationMemberRoles(
+  role: AppRole | null | undefined,
+): AppRole[] {
+  if (role === "owner") {
+    return [
+      "owner",
+      "ops_manager",
+      "operator_business",
+      "finance",
+      "streamer",
+    ];
+  }
+
+  if (role === "ops_manager") {
+    return ["ops_manager", "operator_business", "streamer"];
+  }
+
+  if (role === "operator_business") {
+    return ["streamer"];
+  }
+
+  return [];
+}
+
+export function canCreateOrganizationMemberRole(
+  creatorRole: AppRole | null | undefined,
+  targetRole: AppRole | null | undefined,
+): boolean {
+  if (!targetRole) {
+    return false;
+  }
+
+  return getCreatableOrganizationMemberRoles(creatorRole).includes(targetRole);
+}
+
+export function canManageOrganizationMembers(
+  role: AppRole | null | undefined,
+): boolean {
+  return role === "owner";
+}

@@ -196,6 +196,7 @@ describe("settlement service", () => {
     expect(repo.markReportSettled).toHaveBeenCalledWith({
       reportId: "report-1",
       settlementBatchItemId: "item-1",
+      batchType: "payable",
     });
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -226,6 +227,44 @@ describe("settlement service", () => {
     });
     expect(repo.getProjectSettlementRule).toHaveBeenCalledWith({
       projectId: "project-1",
+    });
+    expect(repo.createSettlementBatchItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        itemType: "live_report_receivable",
+      }),
+    );
+    expect(repo.markReportSettled).toHaveBeenCalledWith({
+      reportId: "report-1",
+      settlementBatchItemId: "item-1",
+      batchType: "receivable",
+    });
+  });
+
+  it("keeps receivable and payable settlement eligibility separate", async () => {
+    vi.mocked(repo.listSettlementPoolReports).mockResolvedValueOnce([
+      {
+        ...report,
+        settledBatchItemId: "payable-item-1",
+        settledBatchTypes: ["payable"],
+      },
+    ]);
+
+    await expect(
+      generateSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor,
+        input: {
+          projectId: "project-1",
+          batchType: "receivable",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+        },
+      }),
+    ).resolves.toMatchObject({
+      batch: expect.objectContaining({ batchType: "receivable" }),
+      items: [expect.objectContaining({ itemType: "live_report_receivable" })],
     });
   });
 
@@ -274,6 +313,27 @@ describe("settlement service", () => {
 
     expect(repo.createSettlementBatch).not.toHaveBeenCalled();
     expect(repo.createSettlementBatchItem).not.toHaveBeenCalled();
+  });
+
+  it("passes the target batch type when loading settlement pool reports", async () => {
+    await generateSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        batchType: "receivable",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      },
+    });
+
+    expect(repo.listSettlementPoolReports).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchType: "receivable",
+      }),
+    );
   });
 
   it("allows operator business to generate but blocks finance from mutating batches", async () => {

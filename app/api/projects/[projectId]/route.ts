@@ -22,12 +22,18 @@ export async function PATCH(
 
     const body = (await request.json().catch(() => ({}))) as {
       name?: string;
+      status?: Parameters<typeof updateProjectBasics>[0]["input"]["status"];
       startsAt?: string | null;
       endsAt?: string | null;
       openSignup?: boolean;
       allowDirectInvite?: boolean;
       forceRecording?: boolean;
       forceSystemTiming?: boolean;
+      vendorName?: string | null;
+      productName?: string | null;
+      agentName?: string | null;
+      supplierName?: string | null;
+      description?: string | null;
     };
     const { projectId } = await params;
     const project = await updateProjectBasics({
@@ -37,12 +43,18 @@ export async function PATCH(
       projectId,
       input: {
         name: body.name?.trim() || undefined,
+        status: body.status,
         startsAt: body.startsAt,
         endsAt: body.endsAt,
         openSignup: body.openSignup,
         allowDirectInvite: body.allowDirectInvite,
         forceRecording: body.forceRecording,
         forceSystemTiming: body.forceSystemTiming,
+        vendorName: normalizeProjectText(body.vendorName),
+        productName: normalizeProjectText(body.productName),
+        agentName: normalizeProjectText(body.agentName),
+        supplierName: normalizeProjectText(body.supplierName),
+        description: normalizeProjectText(body.description),
       },
     });
 
@@ -57,4 +69,11 @@ export async function PATCH(
 
     return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
   }
+}
+
+function normalizeProjectText(value: string | null | undefined) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  return value.trim();
 }

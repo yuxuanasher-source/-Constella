@@ -372,6 +372,87 @@ describe("live operations service", () => {
     expect("createSettlementBatchItem" in repo).toBe(false);
   });
 
+  it("keeps rejected and needs-more reports out of task results and settlement", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "report_pending_review",
+    });
+
+    const rejected = await reviewLiveReport({
+      repo,
+      audit,
+      notify,
+      actor,
+      reportId: "report-1",
+      input: {
+        decision: "reject",
+        includeInTaskResult: true,
+        enterSettlementPool: true,
+        reviewNotes: "bad evidence",
+      },
+    });
+
+    expect(rejected).toMatchObject({
+      status: "rejected",
+      includeInTaskResult: false,
+      enterSettlementPool: false,
+    });
+    expect(repo.updateLiveReport).toHaveBeenCalledWith(
+      "report-1",
+      expect.objectContaining({
+        includeInTaskResult: false,
+        enterSettlementPool: false,
+      }),
+    );
+
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      id: "report-2",
+      organizationId: "org-1",
+      liveTaskId: "task-1",
+      projectId: "project-1",
+      streamerId: "streamer-1",
+      status: "pending_review",
+      systemDuration: 120,
+      screenshotDuration: 120,
+      claimedDuration: 120,
+      settlementDuration: 120,
+      timeSource: "system",
+      evidenceLevel: "green",
+      divergencePct: 0,
+      viewers: 800,
+      includeInTaskResult: true,
+      enterSettlementPool: true,
+      riskFlags: [],
+    });
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "report_pending_review",
+    });
+
+    await reviewLiveReport({
+      repo,
+      audit,
+      notify,
+      actor,
+      reportId: "report-2",
+      input: {
+        decision: "need_more",
+        includeInTaskResult: true,
+        enterSettlementPool: true,
+        reviewNotes: "need another screenshot",
+      },
+    });
+
+    expect(repo.updateLiveReport).toHaveBeenLastCalledWith(
+      "report-2",
+      expect.objectContaining({
+        status: "need_more",
+        includeInTaskResult: false,
+        enterSettlementPool: false,
+      }),
+    );
+  });
+
   it("blocks cross-organization report reviews even if the repository returns a row", async () => {
     vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
       id: "report-2",

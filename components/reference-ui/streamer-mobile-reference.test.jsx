@@ -188,63 +188,90 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders streamer application recordings on the standalone videos route", () => {
+  it("does not render recording instructions on the mobile recording library", () => {
+    render(
+      <StreamerMobileReferenceApp initialRoute="videos" recordings={[]} />,
+    );
+
+    expect(screen.queryByText("录屏说明")).not.toBeInTheDocument();
+  });
+
+  it("renders recording links with the same URL table logic as desktop", () => {
     render(
       <StreamerMobileReferenceApp
         initialRoute="videos"
-        applicationCards={[
+        recordings={[
           {
-            id: "app-ui-1",
-            status: "pending_recording",
-            project: {
-              id: "project-1",
-              code: "P2412",
-              name: "元梦之星 6 月赛事直播",
-              forceRecording: true,
-            },
-            latestRecording: {
-              id: "recording-ui-1",
-              version: 1,
-              status: "pending_review",
-              durationSeconds: 3660,
-              createdAt: "2026-06-02T10:00:00.000Z",
-            },
+            id: "recording-link-mobile-1",
+            product: "Game Alpha",
+            category: "ARPG",
+            link: "https://videos.example.com/mobile-alpha",
+            month: "2026-06",
+            status: "submitted",
+            statusLabel: "待审核",
+            submittedAt: "2026-06-03T10:00:00.000Z",
           },
         ]}
       />,
     );
 
+    expect(screen.getByText("Game Alpha")).toBeInTheDocument();
+    expect(screen.getByText("ARPG")).toBeInTheDocument();
     expect(
-      screen.getByText("元梦之星 6 月赛事直播 · 试播录屏"),
+      screen.getByText("https://videos.example.com/mobile-alpha"),
     ).toBeInTheDocument();
-    expect(screen.getByText("recording-ui-1 · P2412")).toBeInTheDocument();
-    expect(screen.getByText("01:01:00")).toBeInTheDocument();
+    expect(screen.getByText("2026-06")).toBeInTheDocument();
+    expect(screen.getByText("待审核")).toBeInTheDocument();
+    expect(screen.queryByLabelText("录屏文件")).not.toBeInTheDocument();
   });
 
-  it("uploads a recording through signed private upload and submits it to the application", async () => {
-    const fetchMock = vi.fn(async (url) => {
-      if (String(url) === "/api/uploads/signed") {
+  it("renders streamer recording links on the standalone videos route", () => {
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="videos"
+        recordings={[
+          {
+            id: "recording-link-ui-1",
+            product: "元梦之星 6 月赛事直播",
+            category: "赛事",
+            link: "https://videos.example.com/yuanmeng-june",
+            month: "2026-06",
+            status: "reviewing",
+            statusLabel: "审核中",
+            submittedAt: "2026-06-02T10:00:00.000Z",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("元梦之星 6 月赛事直播")).toBeInTheDocument();
+    expect(screen.getByText("赛事")).toBeInTheDocument();
+    expect(
+      screen.getByText("https://videos.example.com/yuanmeng-june"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("审核中")).toBeInTheDocument();
+  });
+
+  it("submits a recording URL row and appends it to the mobile library", async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      if (
+        String(url) === "/api/streamer/recordings" &&
+        init?.method === "POST"
+      ) {
         return {
           ok: true,
           json: async () => ({
-            path: "org-1/recordings/app-ui-1/demo.mp4",
-            signedUrl: "https://upload.local/demo.mp4",
+            recording: {
+              id: "recording-link-created",
+              product: "Game Beta",
+              category: "SLG",
+              link: "https://videos.example.com/game-beta",
+              month: "2026-06",
+              status: "submitted",
+              statusLabel: "待审核",
+              submittedAt: "2026-06-03T11:00:00.000Z",
+            },
           }),
-        };
-      }
-      if (String(url) === "https://upload.local/demo.mp4") {
-        return { ok: true, json: async () => ({}) };
-      }
-      if (String(url) === "/api/applications/app-ui-1/videos") {
-        return {
-          ok: true,
-          json: async () => ({ recording: { id: "recording-ui-created" } }),
-        };
-      }
-      if (String(url) === "/api/streamer/applications") {
-        return {
-          ok: true,
-          json: async () => ({ applications: [] }),
         };
       }
       return { ok: false, json: async () => ({ error: "unexpected request" }) };
@@ -252,68 +279,43 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(
-      <StreamerMobileReferenceApp
-        initialRoute="videos"
-        applicationCards={[
-          {
-            id: "app-ui-1",
-            status: "pending_recording",
-            project: {
-              id: "project-1",
-              code: "P2412",
-              name: "元梦之星 6 月赛事直播",
-              forceRecording: true,
-            },
-            latestRecording: null,
-          },
-        ]}
-      />,
+      <StreamerMobileReferenceApp initialRoute="videos" recordings={[]} />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "上传" }));
-    fireEvent.change(screen.getByLabelText("录屏文件"), {
-      target: {
-        files: [new File(["demo"], "demo.mp4", { type: "video/mp4" })],
-      },
+    fireEvent.change(screen.getByLabelText("产品"), {
+      target: { value: "Game Beta" },
     });
+    fireEvent.change(screen.getByLabelText("品类"), {
+      target: { value: "SLG" },
+    });
+    fireEvent.change(screen.getByLabelText("链接"), {
+      target: { value: "https://videos.example.com/game-beta" },
+    });
+    fireEvent.change(screen.getByLabelText("月份"), {
+      target: { value: "2026-06" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提交录屏链接" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    await waitFor(() => {
+      expect(screen.getByText("Game Beta")).toBeInTheDocument();
+      expect(
+        screen.getByText("https://videos.example.com/game-beta"),
+      ).toBeInTheDocument();
+    });
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "/api/uploads/signed",
+      "/api/streamer/recordings",
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json" },
       }),
     );
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      category: "recordings",
-      ownerId: "app-ui-1",
-      fileName: "demo.mp4",
+      product: "Game Beta",
+      category: "SLG",
+      link: "https://videos.example.com/game-beta",
+      month: "2026-06",
     });
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "https://upload.local/demo.mp4",
-      expect.objectContaining({ method: "PUT" }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      "/api/applications/app-ui-1/videos",
-      expect.objectContaining({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
-      storagePath: "org-1/recordings/app-ui-1/demo.mp4",
-      durationSeconds: null,
-      fileHash: "manual-app-ui-1-demo.mp4-4",
-    });
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      4,
-      "/api/streamer/applications",
-      undefined,
-    );
   });
 });
 
@@ -340,17 +342,16 @@ describe("StreamerMobileReferenceApp profile actions smoke", () => {
           history: [{ month: "2026-06", earned: 1200 }],
           items: [],
         }}
-        applicationCards={[
+        recordings={[
           {
-            id: "app-ui-profile",
-            status: "pending_recording",
-            project: {
-              id: "project-1",
-              code: "P2412",
-              name: "元梦之星 6 月赛事直播",
-              forceRecording: true,
-            },
-            latestRecording: null,
+            id: "recording-link-profile",
+            product: "元梦之星 6 月赛事直播",
+            category: "赛事",
+            link: "https://videos.example.com/profile-yuanmeng",
+            month: "2026-06",
+            status: "submitted",
+            statusLabel: "待审核",
+            submittedAt: "2026-06-03T10:00:00.000Z",
           },
         ]}
       />,
@@ -358,7 +359,10 @@ describe("StreamerMobileReferenceApp profile actions smoke", () => {
 
     fireEvent.click(screen.getByText("我的录屏库"));
     expect((await screen.findAllByText("我的录屏")).length).toBeGreaterThan(0);
-    expect(screen.getByText("元梦之星 6 月赛事直播 · 试播录屏")).toBeInTheDocument();
+    expect(screen.getByText("元梦之星 6 月赛事直播")).toBeInTheDocument();
+    expect(
+      screen.getByText("https://videos.example.com/profile-yuanmeng"),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("我的"));
     fireEvent.click(screen.getByText("结算账单"));

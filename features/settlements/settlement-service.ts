@@ -38,6 +38,7 @@ export type SettlementPoolReport = {
   timeSource: "system" | "screenshot" | "claimed" | null;
   evidenceLevel: "green" | "yellow" | "red" | null;
   settledBatchItemId: string | null;
+  settledBatchTypes?: SettlementBatchType[];
   createdAt: string;
 };
 
@@ -90,6 +91,7 @@ export type SettlementRepository = {
   listSettlementPoolReports(input: {
     organizationId: string;
     projectId: string;
+    batchType: SettlementBatchType;
     periodStart: string;
     periodEnd: string;
   }): Promise<SettlementPoolReport[]>;
@@ -118,6 +120,7 @@ export type SettlementRepository = {
   markReportSettled(input: {
     reportId: string;
     settlementBatchItemId: string;
+    batchType: SettlementBatchType;
   }): Promise<void>;
   getSettlementBatchById(
     batchId: string,
@@ -136,12 +139,14 @@ export async function listSettlementPool({
   repo,
   actor,
   projectId,
+  batchType = "payable",
   periodStart,
   periodEnd,
 }: {
   repo: Pick<SettlementRepository, "listSettlementPoolReports">;
   actor: SettlementActor;
   projectId: string;
+  batchType?: SettlementBatchType;
   periodStart: string;
   periodEnd: string;
 }): Promise<SettlementPoolReport[]> {
@@ -154,12 +159,15 @@ export async function listSettlementPool({
   const reports = await repo.listSettlementPoolReports({
     organizationId: actor.organizationId,
     projectId,
+    batchType,
     periodStart,
     periodEnd,
   });
 
   return reports.filter(
-    (report) => report.organizationId === actor.organizationId,
+    (report) =>
+      report.organizationId === actor.organizationId &&
+      !report.settledBatchTypes?.includes(batchType),
   );
 }
 
@@ -191,6 +199,7 @@ export async function generateSettlementBatch({
     await repo.listSettlementPoolReports({
       organizationId: actor.organizationId,
       projectId: input.projectId,
+      batchType: input.batchType,
       periodStart: input.periodStart,
       periodEnd: input.periodEnd,
     })
@@ -198,7 +207,7 @@ export async function generateSettlementBatch({
   const eligibleReports = reports.filter(
     (report) =>
       report.status === "approved" &&
-      !report.settledBatchItemId &&
+      !report.settledBatchTypes?.includes(input.batchType) &&
       report.settlementDuration !== null,
   );
   if (eligibleReports.length === 0) {
@@ -263,7 +272,7 @@ export async function generateSettlementBatch({
       projectId: report.projectId,
       streamerId: report.streamerId,
       liveReportId: report.id,
-      itemType: "live_report",
+      itemType: liveReportItemType(input.batchType),
       computedAmount: item.computedAmount,
       manualAmount: item.manualAmount,
       adjustmentAmount: item.adjustmentAmount,
@@ -273,6 +282,7 @@ export async function generateSettlementBatch({
     await repo.markReportSettled({
       reportId: report.id,
       settlementBatchItemId: createdItem.id,
+      batchType: input.batchType,
     });
     items.push(createdItem);
   }
@@ -565,6 +575,10 @@ function fallbackRule(): SettlementRule & {
   settlementMethod: SettlementMethod;
 } {
   return { settlementMethod: "manual", hourlyRate: 0, baseSalary: 0 };
+}
+
+function liveReportItemType(batchType: SettlementBatchType): string {
+  return `live_report_${batchType}`;
 }
 
 function totalItems(items: SettlementCalculatedItem[]) {

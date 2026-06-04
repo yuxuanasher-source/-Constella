@@ -26,7 +26,7 @@ const registeredTools: Record<string, AiToolDefinition> = {
     canRun: isMcnStaff,
     run(input) {
       const report = objectValue(input.report);
-      const projectName = stringValue(report.projectName, "未命名项目");
+      const projectName = stringValue(report.projectName, "项目信息缺失");
       const shouldContinue = Boolean(report.shouldContinue);
       const marginRateBps = numberValue(report.marginRateBps);
       return {

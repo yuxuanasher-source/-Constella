@@ -140,6 +140,29 @@ describe("OpsReferenceApp project smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  it("opens organization feature settings from the sidebar and syncs the switcher display", () => {
+    render(<OpsReferenceApp initialRoute="warroom" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+
+    expect(
+      screen.getByRole("dialog", { name: "组织功能设置" }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("组织名称"), {
+      target: { value: "未来经营组" },
+    });
+    fireEvent.change(screen.getByLabelText("成员规模"), {
+      target: { value: "48" },
+    });
+    fireEvent.click(screen.getByLabelText("厂家门户"));
+    fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
+
+    const orgSwitcher = screen.getByText("未来经营组").closest("button");
+    expect(orgSwitcher).toHaveTextContent("当前组织 · 配额 48");
+    expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
+  });
+
   it("does not show sidebar or notification badges when live queues are empty", () => {
     render(
       <OpsReferenceApp
@@ -224,8 +247,48 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     expect(screen.getAllByText("数据库项目一号").length).toBeGreaterThan(0);
-    expect(screen.getByText("p-db-1 · PDB-001")).toBeInTheDocument();
+    expect(screen.getByText("PDB-001")).toBeInTheDocument();
+    expect(screen.queryByText(/p-db-1/)).not.toBeInTheDocument();
     expect(screen.getAllByText("草稿").length).toBeGreaterThan(0);
+  });
+
+  it("keeps internal project ids out of project detail metadata", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="project"
+        projectCards={[
+          {
+            id: "internal-project-id",
+            code: "P-DETAIL",
+            name: "详情项目",
+            vendor: "厂商",
+            product: "产品",
+            status: "recruiting",
+            pricing: "CPT",
+            leadOps: "Ops",
+            bizOwner: "Biz",
+            start: "2026-06-01",
+            end: "2026-06-30",
+            streamers: { active: 0, candidate: 0, pendingReview: 0 },
+            metrics: {
+              plannedHours: 0,
+              doneHours: 0,
+              audience: 0,
+              reportedPending: 0,
+              anomalies: 0,
+              receivable: 0,
+              payable: 0,
+              gross: 0,
+              margin: 0,
+            },
+            risk: "low",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("P-DETAIL").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/internal-project-id/)).not.toBeInTheDocument();
   });
 
   it("opens a visible draft form when creating a project", () => {
@@ -488,7 +551,7 @@ describe("OpsReferenceApp project smoke", () => {
     expect(await screen.findByText(/厂家交付包已生成/)).toBeInTheDocument();
   });
 
-  it("routes new schedule to the task module and marks project settings pending", () => {
+  it("routes new schedule to the task module", () => {
     const { unmount } = render(
       <OpsReferenceApp
         initialRoute="projects"
@@ -505,6 +568,43 @@ describe("OpsReferenceApp project smoke", () => {
     ).toBeInTheDocument();
 
     unmount();
+  });
+
+  it("updates project settings through the project API and refreshes detail data", async () => {
+    const refreshedProject = {
+      ...projectManagementCards[0],
+      name: "Alpha Launch Updated",
+      vendor: "Vendor Prime",
+      product: "RPG Pro",
+      agent: "Agency One",
+      supplier: "Supplier One",
+      description: "Project profile is now configurable.",
+      status: "paused",
+      start: "2026-06-05",
+      end: "2026-06-30",
+      needScreening: false,
+      needStartStop: false,
+    };
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/projects/project-alpha") {
+        return {
+          ok: true,
+          json: async () => ({ project: { id: "project-alpha" } }),
+        };
+      }
+      if (String(url) === "/api/projects") {
+        return {
+          ok: true,
+          json: async () => ({ projects: [refreshedProject] }),
+        };
+      }
+      return {
+        ok: false,
+        json: async () => ({ error: `unexpected request ${url}` }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
     render(
       <OpsReferenceApp
         initialRoute="projects"
@@ -513,7 +613,108 @@ describe("OpsReferenceApp project smoke", () => {
     );
     fireEvent.click(screen.getByText("Alpha Launch"));
     fireEvent.click(screen.getByRole("button", { name: "项目设置" }));
-    expect(screen.getByText("项目设置后台暂未接入")).toBeInTheDocument();
+
+    expect(screen.getByText("状态设置")).toBeInTheDocument();
+    const originalShowPicker = HTMLInputElement.prototype.showPicker;
+    const showPicker = vi.fn();
+    Object.defineProperty(HTMLInputElement.prototype, "showPicker", {
+      configurable: true,
+      value: showPicker,
+    });
+    fireEvent.click(screen.getByLabelText("开始日期"));
+    expect(showPicker).toHaveBeenCalledTimes(1);
+    if (originalShowPicker) {
+      Object.defineProperty(HTMLInputElement.prototype, "showPicker", {
+        configurable: true,
+        value: originalShowPicker,
+      });
+    } else {
+      delete HTMLInputElement.prototype.showPicker;
+    }
+    fireEvent.change(screen.getByLabelText("项目名称"), {
+      target: { value: "Alpha Launch Updated" },
+    });
+    fireEvent.change(screen.getByLabelText("厂商"), {
+      target: { value: "Vendor Prime" },
+    });
+    fireEvent.change(screen.getByLabelText("产品"), {
+      target: { value: "RPG Pro" },
+    });
+    fireEvent.change(screen.getByLabelText("代理商"), {
+      target: { value: "Agency One" },
+    });
+    fireEvent.change(screen.getByLabelText("供应商"), {
+      target: { value: "Supplier One" },
+    });
+    fireEvent.change(screen.getByLabelText("项目说明"), {
+      target: { value: "Project profile is now configurable." },
+    });
+    fireEvent.click(screen.getByRole("combobox", { name: "项目状态" }));
+    expect(screen.getByRole("listbox", { name: "项目状态选项" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: "已暂停" }));
+    fireEvent.change(screen.getByLabelText("开始日期"), {
+      target: { value: "2026-06-05" },
+    });
+    fireEvent.click(screen.getByLabelText("强制录屏"));
+    fireEvent.click(screen.getByLabelText("主播需点击开播/停止"));
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/projects/project-alpha");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      name: "Alpha Launch Updated",
+      vendorName: "Vendor Prime",
+      productName: "RPG Pro",
+      agentName: "Agency One",
+      supplierName: "Supplier One",
+      description: "Project profile is now configurable.",
+      status: "paused",
+      startsAt: "2026-06-05",
+      endsAt: "2026-06-30",
+      openSignup: true,
+      allowDirectInvite: true,
+      forceRecording: false,
+      forceSystemTiming: false,
+    });
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/projects");
+    expect(await screen.findByText("项目设置已更新")).toBeInTheDocument();
+    expect(screen.getByText("Alpha Launch Updated")).toBeInTheDocument();
+    expect(screen.getByText("Vendor Prime")).toBeInTheDocument();
+    expect(screen.getByText("Supplier One")).toBeInTheDocument();
+    expect(
+      screen.getByText("Project profile is now configurable."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("项目设置后台暂未接入")).not.toBeInTheDocument();
+  });
+
+  it("hides illegal project status targets from settings", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={[projectManagementCards[0]]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Alpha Launch"));
+    fireEvent.click(screen.getByRole("button", { name: "项目设置" }));
+    fireEvent.click(screen.getByRole("combobox", { name: "项目状态" }));
+
+    expect(screen.getByRole("option", { name: "进行中" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "已暂停" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "已结束" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: "结算中" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("option", { name: "已结束" }));
+    fireEvent.click(screen.getByRole("combobox", { name: "项目状态" }));
+    expect(
+      screen.queryByRole("option", { name: "结算中" }),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -680,7 +881,7 @@ describe("OpsReferenceApp streamer smoke", () => {
             id: "s-filter-high",
             alias: "北风",
             real: "周北",
-            gender: "男",
+            gender: "女",
             source: "外部",
             supplier: "未绑定",
             games: ["SLG"],
@@ -711,6 +912,54 @@ describe("OpsReferenceApp streamer smoke", () => {
       target: { value: "low" },
     });
     expect(screen.getByText("暂无匹配主播")).toBeInTheDocument();
+  });
+
+  it("renders streamer performance and project contributions from backend data", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        streamerCards={[
+          {
+            id: "streamer-live-metrics",
+            alias: "Live Metrics Streamer",
+            real: "Metrics Real",
+            gender: "未填写",
+            source: "外部",
+            supplier: "未绑定",
+            games: ["MMO"],
+            platforms: ["Video"],
+            style: "Traffic Push",
+            cooperation: "active",
+            risk: "low",
+            defaultRule: "CPT",
+            matchScore: 76,
+            metrics: {
+              screenPass: 50,
+              projectFinish: 100,
+              roi: 0.9,
+              grossContrib: 150,
+            },
+            projects: [
+              {
+                id: "project-live",
+                code: "PL",
+                name: "Live Project",
+                status: "joined",
+                settlementHours: 3,
+                grossContrib: 150,
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("50%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("100%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("0.90").length).toBeGreaterThan(0);
+    expect(screen.getByText("¥0.2k")).toBeInTheDocument();
+    expect(screen.getByText("Live Project")).toBeInTheDocument();
+    expect(screen.getByText("3.0 h · ¥150.0")).toBeInTheDocument();
   });
 
   it("updates streamer risk and refreshes the pool", async () => {
@@ -2021,7 +2270,7 @@ describe("OpsReferenceApp export center smoke", () => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             kind: "audit_logs",
-            rows: [{ module: "settlement", action: "lock" }],
+            rows: [],
           }),
         }),
       );
@@ -2246,7 +2495,9 @@ describe("OpsReferenceApp war room smoke", () => {
     expect(await screen.findByText("11,250.00 元")).toBeInTheDocument();
     expect(screen.getByText("margin_below_target")).toBeInTheDocument();
   });
+
 });
+
 
 describe("OpsReferenceApp billing smoke", () => {
   afterEach(() => {

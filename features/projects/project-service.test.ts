@@ -99,6 +99,130 @@ describe("project service", () => {
     );
   });
 
+  it("updates project status through the existing transition guard", async () => {
+    const before = {
+      id: "99999999-9999-9999-9999-999999999999",
+      name: "项目",
+      code: "OLD",
+      status: "active" as const,
+    };
+    const after = { ...before, status: "paused" as const };
+    const repo = {
+      createDraft: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      publish: vi.fn(),
+      updateBasics: vi.fn().mockResolvedValue(after),
+      updateSettlementRule: vi.fn(),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await updateProjectBasics({
+      repo,
+      audit,
+      actor,
+      projectId: before.id,
+      input: { status: "paused" },
+    });
+
+    expect(repo.updateBasics).toHaveBeenCalledWith(before.id, {
+      status: "paused",
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        changedFields: ["status"],
+      }),
+    );
+  });
+
+  it("updates project profile fields from settings", async () => {
+    const before = {
+      id: "99999999-9999-9999-9999-999999999999",
+      name: "项目",
+      code: "OLD",
+      status: "draft" as const,
+    };
+    const after = {
+      ...before,
+      vendor_name: "厂商 A",
+      product_name: "产品 A",
+      agent_name: "代理商 A",
+      supplier_name: "供应商 A",
+      description: "项目说明 A",
+    };
+    const repo = {
+      createDraft: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      publish: vi.fn(),
+      updateBasics: vi.fn().mockResolvedValue(after),
+      updateSettlementRule: vi.fn(),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await updateProjectBasics({
+      repo,
+      audit,
+      actor,
+      projectId: before.id,
+      input: {
+        vendorName: "厂商 A",
+        productName: "产品 A",
+        agentName: "代理商 A",
+        supplierName: "供应商 A",
+        description: "项目说明 A",
+      },
+    });
+
+    expect(repo.updateBasics).toHaveBeenCalledWith(before.id, {
+      vendor_name: "厂商 A",
+      product_name: "产品 A",
+      agent_name: "代理商 A",
+      supplier_name: "供应商 A",
+      description: "项目说明 A",
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        changedFields: [
+          "vendor_name",
+          "product_name",
+          "agent_name",
+          "supplier_name",
+          "description",
+        ],
+      }),
+    );
+  });
+
+  it("rejects illegal project status transitions from settings", async () => {
+    const before = {
+      id: "99999999-9999-9999-9999-999999999999",
+      name: "项目",
+      code: "OLD",
+      status: "active" as const,
+    };
+    const repo = {
+      createDraft: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      publish: vi.fn(),
+      updateBasics: vi.fn(),
+      updateSettlementRule: vi.fn(),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      updateProjectBasics({
+        repo,
+        audit,
+        actor,
+        projectId: before.id,
+        input: { status: "settling" },
+      }),
+    ).rejects.toThrow("Illegal project status transition: active -> settling");
+    expect(repo.updateBasics).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
   it("requires a reason when settlement fields change", async () => {
     const repo = {
       createDraft: vi.fn(),

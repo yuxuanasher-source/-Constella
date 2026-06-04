@@ -38,7 +38,7 @@
 - `components/reference-ui/ops-reference.jsx`: M10 buttons "导出当日简报", "立项 / 报价测算", "查看完整复盘", "历史简报", "处理", "导出厂家候选包", "查看画像", "发起邀约", "保存为草稿", "生成立项申请" are not connected to the existing war-room APIs.
 - `components/reference-ui/ops-reference.jsx`: M11 route has no visible screen at all because `route === "billing"` is never rendered.
 - `components/reference-ui/streamer-mobile-reference.jsx`: "AI 卡点诊断" navigates locally, but diagnosis still does not call the backend diagnosis API.
-- `components/reference-ui/streamer-mobile-reference.jsx`: Task report screenshot submission uses `demo/reports/.../manual-submit.png` instead of signed private upload.
+- `components/reference-ui/streamer-mobile-reference.jsx`: Task report screenshot submission should keep using signed private upload and must not fall back to hard-coded local paths.
 - `components/reference-ui/streamer-desktop-reference.jsx`: `/desktop` uses static tasks, videos, profile, and earnings; task/report/upload buttons are not business actions.
 
 ### Medium Priority

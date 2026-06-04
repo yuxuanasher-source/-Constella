@@ -22,6 +22,12 @@ const allowedTransitions: Record<ProjectStatus, ProjectStatus[]> = {
   archived: [],
 };
 
+export function getAllowedProjectStatusTransitions(
+  from: ProjectStatus,
+): ProjectStatus[] {
+  return [...allowedTransitions[from]];
+}
+
 export function assertProjectTransition(
   from: ProjectStatus,
   to: ProjectStatus,

@@ -119,7 +119,12 @@ type SettlementScopeSeedRow = {
 
 export async function listOpsSettlementPool(
   client: SupabaseClient,
-  input: { projectId: string; periodStart: string; periodEnd: string },
+  input: {
+    projectId: string;
+    batchType?: SettlementBatchType;
+    periodStart: string;
+    periodEnd: string;
+  },
 ): Promise<OpsSettlementPoolItem[]> {
   const { data, error } = await client
     .from("live_reports")
@@ -129,7 +134,6 @@ export async function listOpsSettlementPool(
     .eq("project_id", input.projectId)
     .eq("status", "approved")
     .eq("enter_settlement_pool", true)
-    .is("settled_batch_item_id", null)
     .gte("created_at", `${input.periodStart}T00:00:00.000Z`)
     .lte("created_at", `${input.periodEnd}T23:59:59.999Z`)
     .order("created_at", { ascending: true })
@@ -139,8 +143,16 @@ export async function listOpsSettlementPool(
     throw error;
   }
 
+  const batchType = input.batchType ?? "payable";
+  const reportIds = (data ?? []).map((row) => row.id);
+  const settledReportIds = reportIds.length
+    ? await listSettledReportIdsForBatchType(client, reportIds, batchType)
+    : new Set<string>();
+  const unsettledRows = (data ?? []).filter(
+    (row) => !settledReportIds.has(row.id),
+  );
   const streamerIds = Array.from(
-    new Set((data ?? []).map((row) => row.streamer_id)),
+    new Set(unsettledRows.map((row) => row.streamer_id)),
   );
   const rules = streamerIds.length
     ? await listProjectStreamerRules(client, input.projectId, streamerIds)
@@ -149,7 +161,7 @@ export async function listOpsSettlementPool(
     rules.map((rule) => [rule.streamer_id, rule] as const),
   );
 
-  return (data ?? []).map((row) =>
+  return unsettledRows.map((row) =>
     toOpsSettlementPoolItem({
       ...row,
       project_streamers: [
@@ -378,23 +390,62 @@ async function listProjectStreamerRules(
 
 async function countSettlementPoolReports(
   client: SupabaseClient,
-  input: { projectId: string; periodStart: string; periodEnd: string },
+  input: {
+    projectId: string;
+    batchType?: SettlementBatchType;
+    periodStart: string;
+    periodEnd: string;
+  },
 ): Promise<number> {
-  const { count, error } = await client
-    .from("live_reports")
-    .select("id", { count: "exact", head: true })
-    .eq("project_id", input.projectId)
-    .eq("status", "approved")
-    .eq("enter_settlement_pool", true)
-    .is("settled_batch_item_id", null)
-    .gte("created_at", `${input.periodStart}T00:00:00.000Z`)
-    .lte("created_at", `${input.periodEnd}T23:59:59.999Z`);
+  return (await listOpsSettlementPool(client, input)).length;
+}
+
+async function listSettledReportIdsForBatchType(
+  client: SupabaseClient,
+  reportIds: string[],
+  batchType: SettlementBatchType,
+): Promise<Set<string>> {
+  const { data, error } = await client
+    .from("settlement_batch_items")
+    .select("live_report_id, settlement_batches!inner(batch_type)")
+    .in("live_report_id", reportIds)
+    .eq("settlement_batches.batch_type", batchType)
+    .returns<
+      Array<{
+        live_report_id: string | null;
+        settlement_batches:
+          | { batch_type: SettlementBatchType }
+          | Array<{ batch_type: SettlementBatchType }>
+          | null;
+      }>
+    >();
 
   if (error) {
     throw error;
   }
 
-  return count ?? 0;
+  return new Set(
+    (data ?? [])
+      .filter((row) => hasBatchType(row.settlement_batches, batchType))
+      .map((row) => row.live_report_id)
+      .filter((id): id is string => Boolean(id)),
+  );
+}
+
+function hasBatchType(
+  relation:
+    | { batch_type: SettlementBatchType }
+    | Array<{ batch_type: SettlementBatchType }>
+    | null,
+  batchType: SettlementBatchType,
+): boolean {
+  if (!relation) {
+    return false;
+  }
+
+  return Array.isArray(relation)
+    ? relation.some((item) => item.batch_type === batchType)
+    : relation.batch_type === batchType;
 }
 
 function dateKey(date: Date): string {
