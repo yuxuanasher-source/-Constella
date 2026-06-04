@@ -32,6 +32,7 @@ yarn-error.log*
 .next-dev*.log
 .reference-server.log
 .qa-screenshots/
+.worktrees/
 
 # env files (can opt-in for committing if needed)
 .env*
