@@ -127,7 +127,7 @@ describe("OCR jobs", () => {
       jobId: "job-1",
       provider: {
         runGeneralBasicOcr: vi.fn(async () => ({
-          status: "succeeded",
+          status: "succeeded" as const,
           textLines: ["直播时长 80分钟", "观看人数 320"],
           confidence: 96,
           requestId: "request-1",
@@ -185,7 +185,7 @@ describe("OCR jobs", () => {
       jobId: "job-2",
       provider: {
         runGeneralBasicOcr: vi.fn(async () => ({
-          status: "succeeded",
+          status: "succeeded" as const,
           textLines: ["时长 20分钟"],
           confidence: 55,
           requestId: "request-2",
@@ -204,7 +204,10 @@ describe("OCR jobs", () => {
         }),
       }),
     ]);
-    expect(updates.ocr_results[0].payload.error_message).toContain(
+    const ocrUpdate = updates.ocr_results[0] as {
+      payload: { error_message?: unknown };
+    };
+    expect(String(ocrUpdate.payload.error_message)).toContain(
       "low_provider_confidence",
     );
   });
@@ -243,7 +246,7 @@ function toJobRecord(payload: Record<string, unknown>): OcrJobRecord {
   return {
     id: String(payload.id),
     organizationId: String(payload.organization_id),
-    jobType: String(payload.job_type),
+    jobType: String(payload.job_type) as OcrJobRecord["jobType"],
     status: payload.status as OcrJobRecord["status"],
     attempt: Number(payload.attempt ?? 0),
     aiInvocationId:

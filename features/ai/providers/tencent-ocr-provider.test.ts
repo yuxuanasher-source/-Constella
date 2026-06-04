@@ -97,9 +97,10 @@ realSmoke("real Tencent OCR env-gated smoke", async () => {
   const provider = createTencentOcrProvider({
     ...readTencentOcrConfigFromEnv(process.env),
   });
+  const imageBase64 = process.env.TENCENT_OCR_SMOKE_IMAGE_BASE64 ?? "";
 
   const result = await provider.runGeneralBasicOcr({
-    imageBase64: process.env.TENCENT_OCR_SMOKE_IMAGE_BASE64,
+    imageBase64,
   });
 
   expect(["succeeded", "failed", "degraded"]).toContain(result.status);

@@ -61,7 +61,7 @@ describe("validateAgentOutput", () => {
           requiresHumanApproval: false,
         },
       ],
-    });
+    } as unknown as AgentOutput);
 
     expect(result.valid).toBe(false);
     expect(result.errors).toContain(

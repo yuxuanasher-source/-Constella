@@ -6,7 +6,7 @@ import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
-export async function GET() {
+export async function GET(_request?: Request) {
   try {
     const authResult = await requireMcnStaff();
     if (authResult.response) {
@@ -14,7 +14,7 @@ export async function GET() {
     }
 
     const jobs = await listOcrJobs({
-      client: authResult.supabase,
+      client: authResult.supabase as never,
       organizationId: authResult.auth.organizationId,
     });
 
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
 
     const body = (await request.json()) as Record<string, unknown>;
     const job = await createOcrJob({
-      client: authResult.supabase,
+      client: authResult.supabase as never,
       actor: authResult.auth,
       input: {
         liveReportId: requiredString(body.liveReportId, "liveReportId"),

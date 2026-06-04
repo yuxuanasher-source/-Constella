@@ -139,9 +139,9 @@ export function createTencentOcrProvider({
 
 function toTencentPayload(input: TencentOcrInput): Record<string, string> {
   if ("imageBase64" in input) {
-    return { ImageBase64: input.imageBase64 };
+    return { ImageBase64: input.imageBase64 ?? "" };
   }
-  return { ImageUrl: input.imageUrl };
+  return { ImageUrl: input.imageUrl ?? "" };
 }
 
 function signTencentRequest({
