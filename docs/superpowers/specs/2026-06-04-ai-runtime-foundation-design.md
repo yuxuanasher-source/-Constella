@@ -62,7 +62,7 @@ pnpm build
 ## Non-Goals
 
 - 不在本阶段启用完整 Agent Orchestrator。
-- 不在本阶段要求真实 OpenAI、腾讯混元或腾讯 OCR 凭据可用。
+- 不在 CI 或无密钥环境要求真实 OpenAI、腾讯混元或腾讯 OCR 凭据可用；真实接入使用 env-gated 测试验证。
 - 不在本阶段把自动审核从 shadow 推到 active。
 - 不在本阶段启用主动洞察定时扫描。
 - 不写入真实外部服务密钥，不把 provider secret 放进仓库。
@@ -79,7 +79,7 @@ pnpm build
 5. 成功时写结构化结果和 usage event；失败时写错误摘要和 degraded reason。
 6. 对外返回明确状态：`succeeded`、`failed`、`degraded`、`queued`。
 
-后续真实 provider 只实现 provider contract，不改业务服务。OpenAI 可以成为工具调用和结构化输出主链路，混元可以成为中文生成、备用路由或 shadow 对照；这属于下一阶段接入，不影响本阶段 contract。
+真实 provider 只实现 provider contract，不改业务服务。OpenAI 作为工具调用和结构化输出主链路，腾讯混元作为中文生成、备用路由和 shadow 对照，腾讯云 OCR 作为截图识别 provider；无密钥时由 deterministic/mock provider 覆盖 CI，不阻断主线。
 
 ## Public Interfaces
 
@@ -241,14 +241,25 @@ Gateway 不暴露 provider SDK 原始对象给业务层。业务层只处理结�
 
 ## Test Plan
 
-测试按 contract、服务、API、回归四层推进。
+测试按 unit、contract、integration、regression、acceptance、rollout 六层推进。
+
+### Unit Tests
+
+- OCR 模板解析：覆盖时长、场观、异常格式、空结果、低置信和字段冲突。
+- 八闸门自动审核：覆盖 policy、证据、风险、异常、time source、主播信任、项目敏感度、guardrails。
+- 工具 RBAC/masking：覆盖 MCN staff、finance、streamer 的授权和敏感字段剥离。
+- Provider 失败重试：覆盖 primary 失败、fallback 成功、全部失败、timeout 和 degraded reason。
+- 结构化输出 schema 校验：覆盖合法 JSON、缺字段、错类型、额外危险动作和 schema validation failure。
+- 数字 grounding 护栏：覆盖所有数字必须来自 tool facts，未引用数字不能进入 findings/recommendations。
 
 ### Contract Tests
 
 - `lib/db/schema-contract.test.ts`：覆盖新表、RLS、索引和关键约束。
+- API route contracts：覆盖新增或升级的 `/api/ai/*` 与 `/api/ocr/jobs` 请求/响应形状。
 - `features/ai/ai-tool-contract.test.ts`：验证所有注册工具都有 name、description、inputSchema、scopes、masking、readOnly true 和 handler。
-- `features/ai/ai-provider-contract.test.ts`：验证 provider 不能被业务绕过，`runAiGateway` 才能创建 invocation。
+- `features/ai/ai-provider-contract.test.ts`：验证 Provider capability matrix，provider 不能被业务绕过，`runAiGateway` 才能创建 invocation。
 - `features/ai/agent-output-contract.test.ts`：验证 facts 有 sourceTool/sourceId，findings 有证据引用，recommendations 必须 `requiresHumanApproval: true`。
+- 账单 contract：验证 `ai`、`ocr` usage metric 被 invocation/OCR job 写入并可汇总。
 
 ### Service Tests
 
@@ -257,6 +268,13 @@ Gateway 不暴露 provider SDK 原始对象给业务层。业务层只处理结�
 - `features/ai/llm-gateway.test.ts`：覆盖 deterministic provider、primary/shadow route、fallback、schema validation、degraded 状态和成本估算。
 - `features/ai/ocr-jobs.test.ts`：覆盖 OCR job 创建、重试、成功、失败、低置信人工确认。
 - 现有 `features/ai/ai-tool-layer.test.ts`：从 `mode: "placeholder"` 过渡为包含 invocation id 的结果，同时保持原有安全断言。
+
+### Integration Tests
+
+- 真实 OCR 调用使用 env-gated 测试；只有 `TENCENT_SECRET_ID`、`TENCENT_SECRET_KEY`、`TENCENT_OCR_REGION` 存在时运行。
+- 真实 LLM 调用使用 env-gated smoke；只有 `OPENAI_API_KEY` 或 `HUNYUAN_API_KEY` 存在时运行。
+- 无密钥时只跑 mock/deterministic provider，不阻断 CI。
+- 真实调用测试必须断言 invocation、usage、raw response retention 和 degraded/failure audit。
 
 ### API Tests
 
@@ -269,6 +287,22 @@ Gateway 不暴露 provider SDK 原始对象给业务层。业务层只处理结�
 - `pnpm test:p4-flywheel`：确保自动审核、战情室和 AI 安全层不回退。
 - `pnpm test:p5-commercialization`：确保 `ocr`、`ai` usage metric 仍可计量。
 - `pnpm test:golden`：确保 P1/P2 主链路不因 OCR job 化中断。
+- 新增 `pnpm test:ai-system`：聚合 AI runtime、Provider、OCR job、Agent output、API contract 和 env-gated smoke。
+
+### Acceptance Tests
+
+- AG-1 黄金用例事实正确率必须达到 100%。
+- 数字引用必须达到 100%，每个数字都能追溯到 `sourceTool` 和 `sourceId`。
+- 系统外因素必须进入 `caveats`，不能伪装成已证实事实。
+- 工具全只读，所有 `AiTool` 均为 `readOnly: true`。
+- 越权查询 0 泄露，主播端和低权限角色不能看到应收、毛利、成本、供应商成本或内部风险备注。
+
+### Rollout Tests
+
+- 自动审核 active 必须先满足 shadow FAR 门槛。
+- 抽检错误率必须低于门槛，且抽检样本和 overturn 记录可审计。
+- Kill Switch 必须验收通过，能够一键关闭 active 自动审核并回到 shadow/manual。
+- 未满足 rollout 门槛时，自动审核只允许 shadow，不开放 active。
 
 实现完成后运行：
 
@@ -280,6 +314,14 @@ pnpm build
 ```
 
 如果本机 Docker/Supabase 可用，再运行 `pnpm supabase:migrate` 验证迁移。若环境不可用，记录具体阻塞，不把未运行说成通过。
+
+## Assumptions
+
+- 计划覆盖完整 AI 总纲，但执行按阶段门禁交付，不把 AI-3 沉淀型能力提前当 v1 卖点。
+- 用户选择直接真接入和多供应商并行，所以计划默认同时接 OpenAI、腾讯混元和腾讯云 OCR。
+- 当前 dirty worktree 是用户已有工作，执行阶段不得回滚；第一步只验证并确认基线。
+- 无外部密钥的本地和 CI 环境必须可用 deterministic/mock provider 完成测试。
+- 真实 provider adapter 不允许被业务代码直接调用，所有调用必须经过 `runAiGateway` 和 invocation ledger。
 
 ## Acceptance
 
