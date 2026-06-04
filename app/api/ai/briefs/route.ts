@@ -4,6 +4,10 @@ import {
   runCastingAdviceAgent,
   type CastingAdviceInput,
 } from "@/features/ai/casting-advice-agent";
+import {
+  runPricingTradeoffAgent,
+  type PricingTradeoffInput,
+} from "@/features/ai/pricing-tradeoff-agent";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
@@ -28,12 +32,17 @@ export async function POST(request: Request) {
       );
     }
 
-    const input = (await request.json()) as CastingAdviceInput;
-    const result = runCastingAdviceAgent({
-      project: input.project,
-      candidates: Array.isArray(input.candidates) ? input.candidates : [],
-      maxRecommendations: input.maxRecommendations,
-    });
+    const input = (await request.json()) as AiBriefRequestBody;
+    const result =
+      input.kind === "pricing"
+        ? runPricingTradeoffAgent(input as PricingTradeoffInput)
+        : runCastingAdviceAgent({
+            project: (input as CastingAdviceInput).project,
+            candidates: Array.isArray((input as CastingAdviceInput).candidates)
+              ? (input as CastingAdviceInput).candidates
+              : [],
+            maxRecommendations: (input as CastingAdviceInput).maxRecommendations,
+          });
 
     return NextResponse.json(result);
   } catch (error) {
@@ -47,3 +56,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
   }
 }
+
+type AiBriefRequestBody = (CastingAdviceInput | PricingTradeoffInput) & {
+  kind?: "casting" | "pricing";
+};
