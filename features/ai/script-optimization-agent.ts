@@ -130,7 +130,7 @@ function buildScriptDraftContent(input: RequiredScriptOptimizationInput): string
     `Audience action: Ask viewers to respond to the key product question.`,
     `Rhythm adjustment: ${feedbackLine}`,
     `Replay check: ${replayLine}`,
-    "Review note: Keep this draft unpublished until a human approves it.",
+    "Review note: Keep this draft pending until a human approves it.",
   ].join("\n");
 }
 
