@@ -21,6 +21,10 @@ export function validateAgentOutput(output: AgentOutput): AgentOutputValidation 
   });
 
   output.findings.forEach((finding, index) => {
+    if (containsNumericClaim(finding.summary)) {
+      errors.push(`findings[${index}] must not include unsourced numeric claims`);
+    }
+
     if (!finding.evidence.length) {
       errors.push(`findings[${index}] must include at least one evidence reference`);
       return;
@@ -36,12 +40,25 @@ export function validateAgentOutput(output: AgentOutput): AgentOutputValidation 
   });
 
   output.caveats.forEach((caveat, index) => {
+    if (containsNumericClaim(caveat.summary)) {
+      errors.push(`caveats[${index}] must not include unsourced numeric claims`);
+    }
+
     if (caveat.unverifiedExternalFactor !== true) {
       errors.push(`caveats[${index}] must mark unverified external factors`);
     }
   });
 
   output.recommendations.forEach((recommendation, index) => {
+    if (
+      containsNumericClaim(recommendation.proposal) ||
+      containsNumericClaim(recommendation.expectedImpact)
+    ) {
+      errors.push(
+        `recommendations[${index}] must not include unsourced numeric claims`,
+      );
+    }
+
     if (recommendation.requiresHumanApproval !== true) {
       errors.push(`recommendations[${index}] must require human approval`);
     }
@@ -60,4 +77,8 @@ export function validateAgentOutput(output: AgentOutput): AgentOutputValidation 
 
 function sourceKey(sourceTool: string, sourceId: string): string {
   return `${sourceTool}:${sourceId}`;
+}
+
+function containsNumericClaim(value: string | undefined): boolean {
+  return /\d/.test(value ?? "");
 }
