@@ -96,14 +96,17 @@ describe("createOpenAiProvider", () => {
       readOnly: true,
       handler,
     };
+    let requestBody: Record<string, unknown> | undefined;
     const fetchMock = vi.fn(
-      async () =>
-        new Response(
+      async (_input: string, init?: RequestInit) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(
           JSON.stringify({
             output_text: "tool planned",
             usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
           }),
-        ),
+        );
+      },
     );
     const provider = createOpenAiProvider({
       apiKey: "secret",
@@ -117,8 +120,7 @@ describe("createOpenAiProvider", () => {
       tools: [tool],
     });
 
-    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-    expect(body.tools).toEqual([
+    expect(requestBody?.tools).toEqual([
       expect.objectContaining({
         type: "function",
         name: "project_review_summary",

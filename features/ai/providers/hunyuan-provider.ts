@@ -4,7 +4,6 @@ import type {
   AiProviderResult,
   AiStructuredInput,
   AiTextInput,
-  AiToolRunInput,
   AiUsage,
   AiUsageEstimateInput,
 } from "../contracts";

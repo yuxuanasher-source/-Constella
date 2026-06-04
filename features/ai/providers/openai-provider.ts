@@ -135,7 +135,7 @@ async function runOpenAiRequest({
 
     return succeeded({
       text,
-      structuredOutput: tools?.length ? parseJsonObject(text).value : undefined,
+      structuredOutput: undefined,
       toolCalls: extractOpenAiToolCalls(raw),
       usage,
       latencyMs,
