@@ -81,6 +81,100 @@ pnpm build
 
 后续真实 provider 只实现 provider contract，不改业务服务。OpenAI 可以成为工具调用和结构化输出主链路，混元可以成为中文生成、备用路由或 shadow 对照；这属于下一阶段接入，不影响本阶段 contract。
 
+## Public Interfaces
+
+### AI Tool
+
+新增 `AiTool<I, O>`，替换现有 placeholder 工具注册格式。所有工具必须是只读工具，不能接收 raw SQL，不能绕过 DTO 或 RLS/RBAC 边界。
+
+```typescript
+export type AiTool<I, O> = {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  scopes: Array<"mcn_staff" | "streamer" | "owner" | "ops_manager" | "finance">;
+  masking: {
+    input?: string[];
+    output?: string[];
+    streamerForbiddenKeys?: string[];
+  };
+  readOnly: true;
+  handler(input: I, ctx: AiToolContext): Promise<O> | O;
+};
+```
+
+`AiToolContext` 必须携带 actor、organization、invocation id、tool invocation writer 和安全 DTO helpers。现有 `project_review_summary`、`streamer_diagnosis` 迁移到这个接口，行为保持兼容，但结果必须带 invocation id。
+
+### AI Provider
+
+新增 `AiProvider`，Provider 不能被业务代码直接调用，只能经 `runAiGateway` 进入。Provider 实现只负责模型调用、结构化输出、工具调用协议适配和成本估算。
+
+```typescript
+export type AiProvider = {
+  name: "openai" | "hunyuan" | "deterministic";
+  capabilities: Array<"text" | "structured" | "tools" | "shadow">;
+  runText(input: AiTextInput): Promise<AiProviderResult>;
+  runStructured(input: AiStructuredInput): Promise<AiProviderResult>;
+  runWithTools(input: AiToolRunInput): Promise<AiProviderResult>;
+  estimateCost(input: AiUsageEstimateInput): AiCostEstimate;
+};
+```
+
+`runAiGateway` 负责 provider 选择、primary/shadow 路由、fallback、schema validation、invocation ledger、usage metering 和 degraded 状态，不把 provider raw SDK 对象返回给业务层。
+
+### Agent Output
+
+新增统一 Agent 输出契约，先作为类型和测试 contract 落地，后续 Orchestrator 复用。
+
+```typescript
+export type AgentOutput = {
+  facts: Array<{
+    statement: string;
+    sourceTool: string;
+    sourceId: string;
+  }>;
+  findings: Array<{
+    summary: string;
+    evidence: Array<{ sourceTool: string; sourceId: string }>;
+  }>;
+  caveats: Array<{
+    summary: string;
+    unverifiedExternalFactor: boolean;
+  }>;
+  recommendations: Array<{
+    proposal: string;
+    expectedImpact?: string;
+    requiresHumanApproval: true;
+  }>;
+};
+```
+
+约束：所有数字必须进入 `facts` 并带 source；`findings` 必须引用 facts 或工具输出；`caveats` 标记未证实外部因素；`recommendations` 只提案，不直接执行业务动作。
+
+### API Routes
+
+保留现有 `/api/war-room/*` 规则端点，不把规则能力强行改成 LLM 链路。新增或升级以下 AI/OCR API：
+
+- `/api/ai/diagnosis`：主播卡点诊断，复用安全工具层和诊断结果表。
+- `/api/ai/scripts`：脚本调优，写 `ai_script_versions`。
+- `/api/ai/briefs`：经营简报/主动洞察草稿，第一阶段只支持显式触发。
+- `/api/ai/project-reviews`：AI 项目复盘，写 `project_reviews`。
+- `/api/ai/copilot`：M10 Copilot 入口，第一阶段只跑 deterministic/provider contract。
+- `/api/ocr/jobs`：创建、查询、重试 OCR job。
+
+### Configuration
+
+环境变量默认读取以下键；未配置时必须返回 degraded 或 unavailable，不得伪造成功：
+
+- `OPENAI_API_KEY`
+- `HUNYUAN_API_KEY`
+- `HUNYUAN_BASE_URL`
+- `TENCENT_SECRET_ID`
+- `TENCENT_SECRET_KEY`
+- `TENCENT_OCR_REGION`
+- `AI_PRIMARY_PROVIDER`
+- `AI_SHADOW_PROVIDER`
+
 ## OCR Flow
 
 截图上传仍落在现有 `report_screenshots`。创建截图后，服务端创建一条 `background_jobs`：
@@ -145,16 +239,36 @@ Gateway 不暴露 provider SDK 原始对象给业务层。业务层只处理结�
 
 降级结果可以展示给经营端，但不能伪装成真实 AI 结论。
 
-## Testing
+## Test Plan
 
-新增或扩展测试：
+测试按 contract、服务、API、回归四层推进。
+
+### Contract Tests
 
 - `lib/db/schema-contract.test.ts`：覆盖新表、RLS、索引和关键约束。
+- `features/ai/ai-tool-contract.test.ts`：验证所有注册工具都有 name、description、inputSchema、scopes、masking、readOnly true 和 handler。
+- `features/ai/ai-provider-contract.test.ts`：验证 provider 不能被业务绕过，`runAiGateway` 才能创建 invocation。
+- `features/ai/agent-output-contract.test.ts`：验证 facts 有 sourceTool/sourceId，findings 有证据引用，recommendations 必须 `requiresHumanApproval: true`。
+
+### Service Tests
+
 - `features/ai/invocation-ledger.test.ts`：覆盖成功、失败、降级、usage metering 和审计。
 - `features/ai/tool-ledger.test.ts`：覆盖工具明细、授权失败和敏感字段边界。
-- `features/ai/llm-gateway.test.ts`：覆盖 deterministic provider、fallback、schema validation、degraded 状态。
+- `features/ai/llm-gateway.test.ts`：覆盖 deterministic provider、primary/shadow route、fallback、schema validation、degraded 状态和成本估算。
 - `features/ai/ocr-jobs.test.ts`：覆盖 OCR job 创建、重试、成功、失败、低置信人工确认。
 - 现有 `features/ai/ai-tool-layer.test.ts`：从 `mode: "placeholder"` 过渡为包含 invocation id 的结果，同时保持原有安全断言。
+
+### API Tests
+
+- `app/api/ai/diagnosis/route.test.ts`：保持现有诊断 API 兼容，新增 invocation id 和 degraded 响应断言。
+- 新增 `/api/ai/scripts`、`/api/ai/briefs`、`/api/ai/project-reviews`、`/api/ai/copilot`、`/api/ocr/jobs` route tests，覆盖未登录、无权限、provider 未配置、成功和失败。
+- `/api/war-room/*` 既有 route tests 继续保留，确认规则端点不依赖 LLM provider。
+
+### Regression Tests
+
+- `pnpm test:p4-flywheel`：确保自动审核、战情室和 AI 安全层不回退。
+- `pnpm test:p5-commercialization`：确保 `ocr`、`ai` usage metric 仍可计量。
+- `pnpm test:golden`：确保 P1/P2 主链路不因 OCR job 化中断。
 
 实现完成后运行：
 
@@ -177,4 +291,3 @@ pnpm build
 - LLM gateway 可以用 deterministic provider 跑通结构化输出和 fallback 测试。
 - 真实 provider 接入只需要新增 provider adapter 和配置，不需要改业务调用方。
 - 自动审核、战情室、计费的既有 P4/P5 测试不因本阶段改造回退。
-
