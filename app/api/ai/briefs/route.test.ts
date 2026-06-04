@@ -72,6 +72,44 @@ describe("AI briefs route", () => {
     expect(client.from).not.toHaveBeenCalled();
   });
 
+  it("returns pricing tradeoff advice for MCN staff without database writes", async () => {
+    const client = createReadOnlyClient();
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(client as never);
+    vi.mocked(getAuthContext).mockResolvedValue(auth);
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/briefs", {
+        method: "POST",
+        body: JSON.stringify(createPricingRequestBody()),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    expect(body).toMatchObject({
+      pricing: {
+        expectedReceivableCents: 1200000,
+        grossMarginCents: 300000,
+        marginRateBps: 2500,
+      },
+      tradeoffAdvice: {
+        decision: "approve_review",
+        riskLevel: "low",
+      },
+      validation: { valid: true, errors: [] },
+    });
+    expect(body.agentOutput.facts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceTool: "pricing_tradeoff",
+          sourceId: "pricing_tradeoff:marginRateBps",
+        }),
+      ]),
+    );
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
   it("blocks streamers from internal casting advice", async () => {
     const client = createReadOnlyClient();
     vi.mocked(createSupabaseServerClient).mockResolvedValue(client as never);
@@ -139,5 +177,20 @@ function createRequestBody() {
         ],
       },
     ],
+  };
+}
+
+function createPricingRequestBody() {
+  return {
+    kind: "pricing",
+    vendorSettlementMethod: "cpt",
+    streamerCount: 5,
+    estimatedMinutesPerStreamer: 1200,
+    vendorHourlyRateCents: 12000,
+    streamerHourlyCostCents: 7000,
+    supplierCostCents: 200000,
+    platformFeeBps: 0,
+    manualAdjustmentCents: 0,
+    targetMarginBps: 2000,
   };
 }
