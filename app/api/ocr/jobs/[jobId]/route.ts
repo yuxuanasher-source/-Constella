@@ -18,7 +18,7 @@ export async function GET(_request: Request, context: RouteContext) {
     }
 
     const { jobId } = await context.params;
-    const job = await getOcrJob({ client: authResult.supabase, jobId });
+    const job = await getOcrJob({ client: authResult.supabase as never, jobId });
     if (!job || job.organizationId !== authResult.auth.organizationId) {
       return NextResponse.json({ error: "OCR job not found" }, { status: 404 });
     }
@@ -43,7 +43,7 @@ export async function POST(request: Request, context: RouteContext) {
 
     const { jobId } = await context.params;
     const job = await retryOcrJob({
-      client: authResult.supabase,
+      client: authResult.supabase as never,
       actor: authResult.auth,
       jobId,
     });
