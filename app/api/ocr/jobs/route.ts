@@ -6,7 +6,7 @@ import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
-export async function GET(_request?: Request) {
+export async function GET() {
   try {
     const authResult = await requireMcnStaff();
     if (authResult.response) {
