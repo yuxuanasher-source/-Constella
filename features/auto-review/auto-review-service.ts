@@ -7,6 +7,7 @@ import {
   type AutoReviewResult,
   type AutoReviewRule,
 } from "./auto-review-engine";
+import type { AutoReviewRolloutGateResult } from "./auto-review-rollout-gates";
 
 type AutoReviewClient = {
   from(table: "audit_logs"): unknown;
@@ -71,15 +72,23 @@ export async function evaluateAutoReviewActive({
   report,
   rule,
   approveReport,
+  rolloutGate,
 }: {
   client: AutoReviewClient;
   actor: AutoReviewActor;
   report: AutoReviewReportSnapshot;
   rule: AutoReviewRule;
   approveReport: ApproveReportForAutoReview;
+  rolloutGate?: AutoReviewRolloutGateResult;
 }): Promise<AutoReviewResult & { applied: boolean }> {
   if (rule.mode !== "active") {
     throw new Error("Active auto review requires active rule version");
+  }
+  if (
+    rolloutGate &&
+    (rolloutGate.allowed !== true || rolloutGate.effectiveMode !== "active")
+  ) {
+    throw new Error("Active auto review blocked by rollout gate");
   }
 
   const result = evaluateAutoReview(report, rule);
