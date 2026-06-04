@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { runAiToolQuery } from "@/features/ai/ai-tool-layer";
+import { runStreamerDiagnosisAgent } from "@/features/ai/streamer-diagnosis-agent";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
@@ -18,14 +18,17 @@ export async function POST(request: Request) {
     }
 
     const body = (await request.json()) as Record<string, unknown>;
-    const result = await runAiToolQuery({
+    const result = await runStreamerDiagnosisAgent({
       client: supabase,
       actor: auth,
-      toolName: "streamer_diagnosis",
       input: body,
     });
 
-    return NextResponse.json({ result });
+    return NextResponse.json({
+      result: result.result,
+      agentOutput: result.agentOutput,
+      validation: result.validation,
+    });
   } catch (error) {
     if (error instanceof Error) {
       return NextResponse.json(
