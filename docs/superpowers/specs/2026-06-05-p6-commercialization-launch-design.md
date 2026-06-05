@@ -12,9 +12,11 @@ P6 的目标不是把所有财税自动化一次做完，而是让客户可以�
 - 支付方式：聚合支付服务商，统一支持微信支付和支付宝。
 - 计费模型：基础套餐 + 用量包。
 - 定价策略：业务价值型。
+  - 入门版：299 元 / 月。
   - 基础版：599 元 / 月。
   - 专业版：1999 元 / 月。
-  - 企业版：5999 元 / 月起。
+  - 经营版：5999 元 / 月。
+  - 企业版：12999 元 / 月起。
   - 年付：9 折或赠 2 个月，第一版以 9 折实现，赠月作为销售配置项预留。
 - 免费试用：14 天专业版试用，无需绑定支付方式。
 - 发票：支付后自助申请，后台人工开票。
@@ -24,7 +26,7 @@ P6 的目标不是把所有财税自动化一次做完，而是让客户可以�
 
 仓库已有 P5 v1 底座：
 
-- `features/billing/billing-gates.ts`：free/basic/pro/enterprise 权益门控与 read-only 判断。
+- `features/billing/billing-gates.ts`：free/basic/pro/enterprise 权益门控与 read-only 判断；P6 v2.1 需要新增 starter/business 或等价计划键。
 - `features/billing/usage-metering.ts`：活跃主播、席位、OCR、AI、存储、导出等用量计量。
 - `features/billing/billing-status.ts`：安全账单状态输出。
 - `app/api/billing/status/route.ts`：经营侧安全读取账单状态。
@@ -63,22 +65,28 @@ P6 在此基础上新增正式商业化上线能力。P5 的既有回归必须�
 
 | Plan | Price | Target Customer | Included |
 | --- | --- | --- | --- |
-| Free | 0 元 / 月 | 体验、很小团队 | 基础项目管理，有限项目和主播额度，不含结算、AI、导出中心 |
-| Basic | 599 元 / 月 | 小型工作室 | 项目、主播、排班、基础结算，少量导出额度 |
-| Pro | 1999 元 / 月 | 成长型 MCN | 完整结算、导出、作战台、AI 诊断、自动审核 shadow |
-| Enterprise | 5999 元 / 月起 | 成熟机构 | 高额度、供应商协作、active 自动审核门禁、专属支持预留 |
+| Trial | 0 元 / 14 天 | 试用评估 | 专业版功能体验，低额度、严格限流，不绑定支付方式 |
+| Starter | 299 元 / 月 | 极小团队 | 5 个活跃主播席位、基础报数、基础结算、少量后台 AI/OCR |
+| Basic | 599 元 / 月 | 小型工作室 | 20 个活跃主播席位、项目、主播、排班、基础结算 |
+| Pro | 1999 元 / 月 | 成长型 MCN | 100 个活跃主播席位、完整结算、导出、作战台、AI 洞察、自动审核 shadow |
+| Business | 5999 元 / 月 | 中型机构 | 300 个活跃主播席位、多团队、财务看板、供应商协作、自动审核小流量 |
+| Enterprise | 12999 元 / 月起 | 成熟机构 | 500 个活跃主播席位、API、审计、企业配置、自动审核生产化、专属支持 |
 
 ### Included Quotas
 
-| Metric | Free | Basic | Pro | Enterprise |
-| --- | ---: | ---: | ---: | ---: |
-| Seats | 2 | 5 | 20 | 100 |
-| Active streamers / month | 5 | 30 | 150 | 1000 |
-| Projects / month | 3 | 30 | 200 | 2000 |
-| AI calls / month | 0 | 100 | 2000 | 20000 |
-| OCR jobs / month | 0 | 300 | 5000 | 50000 |
-| Exports / month | 0 | 20 | 500 | 5000 |
-| Storage | 1 GB | 20 GB | 200 GB | 2 TB |
+| Metric | Trial | Starter | Basic | Pro | Business | Enterprise |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Staff seats | 3 | 2 | 5 | 20 | 50 | 100 |
+| Active streamer seats / month | 20 | 5 | 20 | 100 | 300 | 500 |
+| Projects / month | 10 | 5 | 20 | 100 | 300 | 800 |
+| Back-office AI calls / month | 50 | 50 | 100 | 1000 | 4000 | 10000 |
+| Back-office OCR jobs / month | 20 | 120 | 480 | 2400 | 7200 | 12000 |
+| Exports / month | 10 | 20 | 100 | 1000 | 5000 | 15000 |
+| Storage | 5 GB | 5 GB | 20 GB | 120 GB | 320 GB | 800 GB |
+
+OCR 月额度按 `active streamer seats * 30 days * 80%` 计算。AI 用量保持 v2 方案不变。存储额度按 v2 方案降低 60% 后取整。
+
+主播端基础功能随套餐开放。主播端 OCR 和主播端 AI 诊断不消耗套餐内 back-office AI/OCR 额度，必须通过独立用量包计费。
 
 Enterprise 的具体额度可以由销售配置覆盖，但必须落入结构化 add-on / quota override，不允许只写在备注里。
 
@@ -86,9 +94,14 @@ Enterprise 的具体额度可以由销售配置覆盖，但必须落入结构化
 
 | Add-on | Unit | First Price |
 | --- | --- | ---: |
-| Active streamer pack | 50 active streamers / month | 299 元 |
-| AI pack | 1000 AI calls | 199 元 |
-| OCR pack | 5000 OCR jobs | 299 元 |
+| Active streamer pack S | 20 active streamer seats / month | 199 元 |
+| Active streamer pack L | 100 active streamer seats / month | 799 元 |
+| Streamer AI pack S | 1000 streamer AI calls | 199 元 |
+| Streamer AI pack L | 5000 streamer AI calls | 899 元 |
+| Streamer OCR pack S | 1000 streamer OCR jobs | 399 元 |
+| Streamer OCR pack L | 5000 streamer OCR jobs | 1999 元 |
+| Back-office AI pack | 1000 back-office AI calls | 199 元 |
+| Back-office OCR pack | 1000 back-office OCR jobs | 399 元 |
 | Export pack | 500 exports | 99 元 |
 | Storage pack | 100 GB / month | 99 元 |
 
@@ -408,7 +421,7 @@ Sections:
 
 - Current plan card: plan, renewal date, status, trial/grace countdown.
 - Usage panel: active streamers, seats, AI, OCR, exports, storage.
-- Plan comparison: Free / Basic / Pro / Enterprise.
+- Plan comparison: Trial / Starter / Basic / Pro / Business / Enterprise.
 - Add-on packs: AI, OCR, exports, storage, active streamers.
 - Payment orders: pending and paid orders.
 - Invoice requests: request invoice and track status.
