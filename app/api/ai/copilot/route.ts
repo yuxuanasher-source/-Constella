@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 
-import { runStreamerDiagnosisAgent } from "@/features/ai/streamer-diagnosis-agent";
+import {
+  runM10CopilotAgent,
+  type M10CopilotInput,
+} from "@/features/ai/m10-copilot-agent";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
+import { isMcnStaff } from "@/lib/rbac/roles";
 
 export async function POST(request: Request) {
   try {
@@ -17,18 +21,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = (await request.json()) as Record<string, unknown>;
-    const result = await runStreamerDiagnosisAgent({
-      client: supabase,
-      actor: auth,
-      input: body,
-    });
+    if (!isMcnStaff(auth.role)) {
+      return NextResponse.json(
+        { error: "Only MCN staff can run M10 copilot" },
+        { status: 403 },
+      );
+    }
 
-    return NextResponse.json({
-      result: result.result,
-      agentOutput: result.agentOutput,
-      validation: result.validation,
-    });
+    const input = (await request.json()) as M10CopilotInput;
+    const result = runM10CopilotAgent(input);
+
+    return NextResponse.json(result);
   } catch (error) {
     if (error instanceof Error) {
       return NextResponse.json(

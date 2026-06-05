@@ -57,6 +57,8 @@ describe("AI diagnosis route", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.result.output.scriptSuggestions.length).toBeGreaterThan(0);
+    expect(body.agentOutput.facts.length).toBeGreaterThan(0);
+    expect(body.validation).toEqual({ valid: true, errors: [] });
     expect(JSON.stringify(body)).not.toContain("grossMarginCents");
   });
 

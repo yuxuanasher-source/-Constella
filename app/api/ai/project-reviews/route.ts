@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 
-import { runStreamerDiagnosisAgent } from "@/features/ai/streamer-diagnosis-agent";
+import { runBusinessAnalysisAgent } from "@/features/ai/business-analysis-agent";
+import type { ProjectReviewInput } from "@/features/war-room/project-review-report";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
+import { isMcnStaff } from "@/lib/rbac/roles";
 
 export async function POST(request: Request) {
   try {
@@ -17,16 +19,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = (await request.json()) as Record<string, unknown>;
-    const result = await runStreamerDiagnosisAgent({
-      client: supabase,
-      actor: auth,
-      input: body,
-    });
+    if (!isMcnStaff(auth.role)) {
+      return NextResponse.json(
+        { error: "Only MCN staff can run AI project reviews" },
+        { status: 403 },
+      );
+    }
+
+    const input = (await request.json()) as ProjectReviewInput;
+    const result = runBusinessAnalysisAgent(input);
 
     return NextResponse.json({
-      result: result.result,
-      agentOutput: result.agentOutput,
+      report: result.report,
+      agentOutput: result.output,
       validation: result.validation,
     });
   } catch (error) {
