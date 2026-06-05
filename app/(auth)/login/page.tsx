@@ -171,7 +171,6 @@ export function BrandStoryPanel() {
               <div className="text-xs text-white/66">报数与结算工作台</div>
             </div>
           </div>
-
         </div>
 
         <div className="max-w-[650px]">
@@ -187,8 +186,8 @@ export function BrandStoryPanel() {
             全流程在线化
           </h2>
           <p className="mt-7 max-w-[560px] text-base leading-8 text-white/78">
-            项目分配、主播报数、截图凭证、审核流程、自动结算、财务审计与主播
-            ROI 分析都接入同一套权限与审计链路。
+            项目分配、主播报数、截图凭证、审核流程、自动结算、财务审计与主播 ROI
+            分析都接入同一套权限与审计链路。
           </p>
         </div>
 
@@ -273,7 +272,10 @@ function PasswordLoginForm({
           </Link>
         </div>
 
-        <Button type="submit" className="h-11 w-full shadow-[var(--shadow-fab)]">
+        <Button
+          type="submit"
+          className="h-11 w-full shadow-[var(--shadow-fab)]"
+        >
           登录工作台
         </Button>
       </form>
@@ -301,7 +303,10 @@ function PasswordLoginForm({
 
       <p className="mt-6 text-center text-xs text-[var(--ink-500)]">
         首次访问？
-        <Link href="/login?mode=apply" className="font-medium text-[var(--blue-600)]">
+        <Link
+          href="/login?mode=apply"
+          className="font-medium text-[var(--blue-600)]"
+        >
           申请开通 MCN 账号
         </Link>
       </p>
@@ -322,7 +327,8 @@ function ActivateSubaccountForm({
       <input type="hidden" name="next" value={next} />
       <input type="hidden" name="entryPoint" value="desktop" />
       <div className="rounded-md border border-blue-100 bg-[var(--blue-50)] p-3 text-sm leading-6 text-[var(--blue-700)]">
-        首次登录需要绑定邮箱、电话并设置新密码。完成后，后续可使用邮箱或电话 + 密码登录。
+        首次登录需要绑定邮箱、电话并设置新密码。完成后，后续可使用邮箱或电话 +
+        密码登录。
       </div>
       <TextField
         icon={<Mail className="h-4 w-4" />}
@@ -482,7 +488,8 @@ function HelpPanel() {
           登录支持
         </div>
         <p className="mt-2 text-sm leading-6 text-[var(--ink-500)]">
-          账号由 MCN 机构管理员开通。忘记密码可发送重置邮件；第三方登录需要管理员先配置对应
+          账号由 MCN
+          机构管理员开通。忘记密码可发送重置邮件；第三方登录需要管理员先配置对应
           SSO 或 OAuth Provider。
         </p>
       </div>
@@ -492,7 +499,8 @@ function HelpPanel() {
           业务入口
         </div>
         <p className="mt-2 text-sm leading-6 text-[var(--ink-500)]">
-          MCN 运营登录后进入项目与审核工作台；主播登录后进入移动端任务、录屏和结算入口。
+          MCN
+          运营登录后进入项目与审核工作台；主播登录后进入移动端任务、录屏和结算入口。
         </p>
       </div>
       <ModeBackLink roleIntent="mcn" />

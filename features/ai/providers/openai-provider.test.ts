@@ -67,7 +67,7 @@ describe("createOpenAiProvider", () => {
         async () =>
           new Response(
             JSON.stringify({
-              output_text: "{\"summary\":\"ok\"}",
+              output_text: '{"summary":"ok"}',
               usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
             }),
           ),
@@ -97,17 +97,15 @@ describe("createOpenAiProvider", () => {
       handler,
     };
     let requestBody: Record<string, unknown> | undefined;
-    const fetchMock = vi.fn(
-      async (_input: string, init?: RequestInit) => {
-        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        return new Response(
-          JSON.stringify({
-            output_text: "tool planned",
-            usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
-          }),
-        );
-      },
-    );
+    const fetchMock = vi.fn(async (_input: string, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          output_text: "tool planned",
+          usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+        }),
+      );
+    });
     const provider = createOpenAiProvider({
       apiKey: "secret",
       fetch: fetchMock,

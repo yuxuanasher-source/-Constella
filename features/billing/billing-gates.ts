@@ -118,7 +118,9 @@ export function evaluateBillingGate({
 }
 
 export function isReadOnlyStatus(status: SubscriptionStatus): boolean {
-  return status === "past_due" || status === "readonly" || status === "cancelled";
+  return (
+    status === "past_due" || status === "readonly" || status === "cancelled"
+  );
 }
 
 function isBillingFeatureKey(value: string): value is BillingFeatureKey {

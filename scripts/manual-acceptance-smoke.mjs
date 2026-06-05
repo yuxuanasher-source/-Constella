@@ -126,7 +126,10 @@ const caseHandlers = {
     assertNonEmpty(body.reports, "reports");
     assertNoForbiddenKeys(body.reports, "M5 report queue");
     assertNoForbiddenText(JSON.stringify(body.reports), "M5 report queue");
-    assertNoForbiddenText(JSON.stringify(collectObjectKeys(body.reports)), "M5 keys");
+    assertNoForbiddenText(
+      JSON.stringify(collectObjectKeys(body.reports)),
+      "M5 keys",
+    );
   },
 
   "p1-evidence-golden-path": async ({
@@ -335,7 +338,12 @@ const caseHandlers = {
     );
   },
 
-  "direct-access-guards": async ({ cookies, requestJson, flow, smokeConfig }) => {
+  "direct-access-guards": async ({
+    cookies,
+    requestJson,
+    flow,
+    smokeConfig,
+  }) => {
     if (!flow.batchId) {
       throw new Error("P2 flow batch id is required for direct access smoke");
     }
@@ -473,18 +481,22 @@ const caseHandlers = {
     const highRiskRoleNotification = body.items.find(
       (item) => item.isHighRisk || item.title.includes("Settlement batch"),
     );
-    assertObject(
-      highRiskRoleNotification,
-      "owner high-risk role notification",
-    );
+    assertObject(highRiskRoleNotification, "owner high-risk role notification");
 
     const notification = selectMutableNotification(body.items);
-    const readBody = await requestJson(`/api/notifications/${notification.id}`, {
-      cookie: cookies.owner,
-      method: "PATCH",
-      body: { action: "read" },
-    });
-    assertEqual(readBody.notification.status, "read", "notification read status");
+    const readBody = await requestJson(
+      `/api/notifications/${notification.id}`,
+      {
+        cookie: cookies.owner,
+        method: "PATCH",
+        body: { action: "read" },
+      },
+    );
+    assertEqual(
+      readBody.notification.status,
+      "read",
+      "notification read status",
+    );
 
     const handledBody = await requestJson(
       `/api/notifications/${notification.id}`,
@@ -577,15 +589,8 @@ const caseHandlers = {
       1200000,
       "expected receivable",
     );
-    assertEqual(
-      body.pricing.streamerPayableCents,
-      700000,
-      "streamer payable",
-    );
-    assertPositiveNumber(
-      body.pricing.grossMarginCents,
-      "pricing gross margin",
-    );
+    assertEqual(body.pricing.streamerPayableCents, 700000, "streamer payable");
+    assertPositiveNumber(body.pricing.grossMarginCents, "pricing gross margin");
 
     const streamerDenied = await requestJson("/api/war-room/pricing", {
       cookie: cookies.streamer,
@@ -693,7 +698,10 @@ const caseHandlers = {
       "AI script suggestions",
     );
     assertNoForbiddenText(JSON.stringify(body.result), "AI diagnosis result");
-    assertNoForbiddenKeys(body.result.output.sourceSnapshot, "AI source snapshot");
+    assertNoForbiddenKeys(
+      body.result.output.sourceSnapshot,
+      "AI source snapshot",
+    );
   },
 };
 

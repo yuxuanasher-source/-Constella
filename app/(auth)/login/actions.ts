@@ -60,9 +60,7 @@ export async function signInAction(formData: FormData) {
 
   const onboarding = await getCurrentProfileOnboardingState(supabase);
   if (onboarding?.requires_onboarding) {
-    redirect(
-      `${loginBasePath}?mode=activate&next=${encodeURIComponent(next)}`,
-    );
+    redirect(`${loginBasePath}?mode=activate&next=${encodeURIComponent(next)}`);
   }
 
   await persistLoginPreference({
@@ -141,12 +139,15 @@ export async function activateSubaccountAction(formData: FormData) {
     );
   }
 
-  const { error: profileError } = await admin.from("profiles").update({
-    email: validation.value.email,
-    phone: validation.value.phone,
-    login_account: null,
-    requires_onboarding: false,
-  }).eq("id", user.id);
+  const { error: profileError } = await admin
+    .from("profiles")
+    .update({
+      email: validation.value.email,
+      phone: validation.value.phone,
+      login_account: null,
+      requires_onboarding: false,
+    })
+    .eq("id", user.id);
 
   if (profileError) {
     redirect(

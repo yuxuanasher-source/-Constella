@@ -24,7 +24,9 @@ export type UsageStatus = {
 
 type BillingUsageClient = {
   from(table: "usage_events" | "audit_logs"): {
-    insert(payload: Record<string, unknown>): PromiseLike<{ error: Error | null }>;
+    insert(
+      payload: Record<string, unknown>,
+    ): PromiseLike<{ error: Error | null }>;
   };
 };
 

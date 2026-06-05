@@ -66,7 +66,9 @@ export function createTencentOcrProvider({
   now?: () => Date;
 }): TencentOcrProvider {
   return {
-    async runGeneralBasicOcr(input: TencentOcrInput): Promise<TencentOcrResult> {
+    async runGeneralBasicOcr(
+      input: TencentOcrInput,
+    ): Promise<TencentOcrResult> {
       if (!secretId || !secretKey || !region) {
         return {
           status: "degraded",
@@ -102,7 +104,8 @@ export function createTencentOcrProvider({
             textLines: [],
             confidence: 0,
             rawResponse,
-            errorSummary: parsed.errorSummary ?? `Tencent OCR HTTP ${response.status}`,
+            errorSummary:
+              parsed.errorSummary ?? `Tencent OCR HTTP ${response.status}`,
           };
         }
 
@@ -130,7 +133,9 @@ export function createTencentOcrProvider({
           textLines: [],
           confidence: 0,
           errorSummary:
-            error instanceof Error ? error.message : "Tencent OCR request failed",
+            error instanceof Error
+              ? error.message
+              : "Tencent OCR request failed",
         };
       }
     },

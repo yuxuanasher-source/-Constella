@@ -13,6 +13,7 @@
 ### Task 1: Pure Audit Row Mapper
 
 **Files:**
+
 - Create: `features/auto-review/auto-review-rollout-metrics-repository.test.ts`
 - Create: `features/auto-review/auto-review-rollout-metrics-repository.ts`
 
@@ -317,6 +318,7 @@ Expected: PASS.
 ### Task 2: Read-Only Repository Query
 
 **Files:**
+
 - Modify: `features/auto-review/auto-review-rollout-metrics-repository.test.ts`
 - Modify: `features/auto-review/auto-review-rollout-metrics-repository.ts`
 
@@ -337,7 +339,10 @@ it("queries scoped successful live-report audit rows with a safe limit", async (
   });
 
   expect(calls).toContainEqual(["eq", ["organization_id", "org-1"]]);
-  expect(calls).toContainEqual(["in", ["module", ["auto_review", "live_report"]]]);
+  expect(calls).toContainEqual([
+    "in",
+    ["module", ["auto_review", "live_report"]],
+  ]);
   expect(calls).toContainEqual(["eq", ["object_type", "live_report"]]);
   expect(calls).toContainEqual(["eq", ["result", "success"]]);
   expect(calls).toContainEqual(["order", ["created_at", { ascending: false }]]);
@@ -383,6 +388,7 @@ Expected: PASS.
 ### Task 3: Regression And Push
 
 **Files:**
+
 - Create: `features/auto-review/auto-review-rollout-metrics-repository.ts`
 - Create: `features/auto-review/auto-review-rollout-metrics-repository.test.ts`
 

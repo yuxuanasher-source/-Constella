@@ -17,7 +17,9 @@ describe("streamer mobile login page", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "主播移动端登录" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "主播移动端登录" }),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText("主播账号")).toHaveValue("anchor@example.cn");
     expect(screen.getByLabelText("密码")).toBeInTheDocument();
     expect(screen.queryByText("我是 MCN 运营")).not.toBeInTheDocument();
@@ -25,12 +27,14 @@ describe("streamer mobile login page", () => {
       "href",
       "/login?role=streamer",
     );
-    expect(
-      container.querySelector('input[name="roleIntent"]'),
-    ).toHaveAttribute("value", "streamer");
-    expect(
-      container.querySelector('input[name="entryPoint"]'),
-    ).toHaveAttribute("value", "mobile");
+    expect(container.querySelector('input[name="roleIntent"]')).toHaveAttribute(
+      "value",
+      "streamer",
+    );
+    expect(container.querySelector('input[name="entryPoint"]')).toHaveAttribute(
+      "value",
+      "mobile",
+    );
     expect(container.querySelector('input[name="next"]')).toHaveAttribute(
       "value",
       "",

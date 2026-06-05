@@ -42,14 +42,10 @@ export async function runAiGateway({
           providerResult.structuredOutput,
         );
         if (!validation.valid) {
-          return {
-            ...providerResult,
-            providerName: provider.name,
-            fallbackUsed: index > 0,
-            status: "failed",
-            degradedReason: "schema_validation_failed",
-            errorSummary: validation.errorSummary,
-          };
+          failures.push(
+            `${provider.name} schema validation failed: ${validation.errorSummary}`,
+          );
+          continue;
         }
       }
 
@@ -139,7 +135,10 @@ function validateStructuredOutput(
     const result = maybeSafeParse.safeParse(output);
     return result.success
       ? { valid: true }
-      : { valid: false, errorSummary: "Structured output did not match schema" };
+      : {
+          valid: false,
+          errorSummary: "Structured output did not match schema",
+        };
   }
 
   if (typeof maybeSafeParse.parse === "function") {
@@ -147,7 +146,10 @@ function validateStructuredOutput(
       maybeSafeParse.parse(output);
       return { valid: true };
     } catch {
-      return { valid: false, errorSummary: "Structured output did not match schema" };
+      return {
+        valid: false,
+        errorSummary: "Structured output did not match schema",
+      };
     }
   }
 

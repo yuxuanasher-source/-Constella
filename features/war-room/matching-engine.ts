@@ -140,7 +140,9 @@ function scoreStreamer(
     score += 15;
     reasons.push("platform_match");
   }
-  if (project.preferredStyles.some((style) => candidate.styles.includes(style))) {
+  if (
+    project.preferredStyles.some((style) => candidate.styles.includes(style))
+  ) {
     score += 10;
     reasons.push("style_match");
   }
@@ -149,7 +151,9 @@ function scoreStreamer(
   const passRate = safeBps(candidate.screeningPassRateBps);
   score += Math.round((completionRate / 10000) * 20);
   score += Math.round((passRate / 10000) * 15);
-  score += Math.round((Math.min(20000, safeBps(candidate.roiBps)) / 20000) * 10);
+  score += Math.round(
+    (Math.min(20000, safeBps(candidate.roiBps)) / 20000) * 10,
+  );
 
   if (completionRate >= 8500) {
     reasons.push("high_completion_rate");

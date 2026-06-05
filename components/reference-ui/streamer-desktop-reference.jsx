@@ -996,7 +996,12 @@ const NAV = [
   { key: "profile", label: "个人资料 & 平台", icon: "Streamer" },
 ];
 
-function Sidebar({ route, onNav, taskBadgeCount = 0, profile = EMPTY_PROFILE }) {
+function Sidebar({
+  route,
+  onNav,
+  taskBadgeCount = 0,
+  profile = EMPTY_PROFILE,
+}) {
   return (
     <aside
       style={{
@@ -1517,7 +1522,10 @@ function parseProfileDate(value) {
 
 function formatTenure(start, end) {
   const dayMs = 24 * 60 * 60 * 1000;
-  const days = Math.max(0, Math.floor((end.getTime() - start.getTime()) / dayMs));
+  const days = Math.max(
+    0,
+    Math.floor((end.getTime() - start.getTime()) / dayMs),
+  );
   let months =
     (end.getFullYear() - start.getFullYear()) * 12 +
     end.getMonth() -
@@ -1530,9 +1538,7 @@ function formatTenure(start, end) {
   if (months >= 12) {
     const years = Math.floor(months / 12);
     const rest = months % 12;
-    return rest > 0
-      ? `签约 ${years} 年 ${rest} 个月`
-      : `签约 ${years} 年`;
+    return rest > 0 ? `签约 ${years} 年 ${rest} 个月` : `签约 ${years} 年`;
   }
   if (months > 0) {
     return `签约 ${months} 个月`;
@@ -1576,7 +1582,9 @@ function ScreenDashboard({
   );
   const pendingReport = tasks.filter((t) => t.status === "pending_report");
   const upcoming = tasks
-    .filter((t) => !["pending_live", "live", "pending_report"].includes(t.status))
+    .filter(
+      (t) => !["pending_live", "live", "pending_report"].includes(t.status),
+    )
     .slice(0, 4);
   const reviewing = tasks.filter((t) => t.status === "pending_review");
   const visibleNotifications = notifications.slice(0, 4);
@@ -3341,7 +3349,10 @@ function ScreenVideos({ recordings = MY_RECORDINGS, actions = {} }) {
             <Button kind="default" icon={<Icon.Filter size={14} />}>
               按品类筛选
             </Button>
-            <Button kind="primary" icon={<Icon.Export size={14} stroke="#fff" />}>
+            <Button
+              kind="primary"
+              icon={<Icon.Export size={14} stroke="#fff" />}
+            >
               提交链接
             </Button>
           </>
@@ -3620,13 +3631,15 @@ function FieldInput({ label, value, placeholder, onChange }) {
 }
 
 function recordingStatusTone(status) {
-  return {
-    submitted: "amber",
-    reviewing: "violet",
-    approved: "green",
-    rejected: "red",
-    needs_changes: "amber",
-  }[status] ?? "neutral";
+  return (
+    {
+      submitted: "amber",
+      reviewing: "violet",
+      approved: "green",
+      rejected: "red",
+      needs_changes: "amber",
+    }[status] ?? "neutral"
+  );
 }
 
 function recordingLinkErrorMessage(error) {
@@ -5213,7 +5226,11 @@ function ScreenProfile({ go, profile = EMPTY_PROFILE }) {
               tags={profile.tags.styles}
               tone="violet"
             />
-            <TagGroup label="技能标签" tags={profile.tags.skills} tone="amber" />
+            <TagGroup
+              label="技能标签"
+              tags={profile.tags.skills}
+              tone="amber"
+            />
             <TagGroup
               label="可播时间"
               tags={profile.tags.availability}
@@ -5458,7 +5475,9 @@ function normalizeDesktopReferenceTask(task) {
 }
 
 function toDesktopReferenceTask(task) {
-  const plannedStart = task.plannedStartAt ? new Date(task.plannedStartAt) : null;
+  const plannedStart = task.plannedStartAt
+    ? new Date(task.plannedStartAt)
+    : null;
   const plannedEnd = task.plannedEndAt ? new Date(task.plannedEndAt) : null;
   const plannedMinutes =
     Number(task.plannedDuration) ||

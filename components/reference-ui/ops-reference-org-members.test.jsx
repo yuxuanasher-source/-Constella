@@ -41,7 +41,9 @@ describe("OpsReferenceApp organization member actions", () => {
       screen.getByText(/\u5f53\u524d\u7ec4\u7ec7 \u00b7 1 \u540d\u6210\u5458/),
     ).toBeInTheDocument();
     expect(
-      screen.queryByText(/\u5f53\u524d\u7ec4\u7ec7 \u00b7 32 \u540d\u6210\u5458/),
+      screen.queryByText(
+        /\u5f53\u524d\u7ec4\u7ec7 \u00b7 32 \u540d\u6210\u5458/,
+      ),
     ).not.toBeInTheDocument();
   });
 
@@ -95,7 +97,9 @@ describe("OpsReferenceApp organization member actions", () => {
     );
 
     expect(
-      screen.getByText(/\u5f53\u524d\u89d2\u8272\u65e0\u521b\u5efa\u6743\u9650/),
+      screen.getByText(
+        /\u5f53\u524d\u89d2\u8272\u65e0\u521b\u5efa\u6743\u9650/,
+      ),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", {
@@ -288,8 +292,7 @@ describe("OpsReferenceApp organization member actions", () => {
     );
     const createCall = fetchMock.mock.calls.find(
       ([url, init]) =>
-        String(url) === "/api/organization/members" &&
-        init?.method === "POST",
+        String(url) === "/api/organization/members" && init?.method === "POST",
     );
     expect(createCall?.[1].body).not.toContain("temporaryPassword");
     expect(await screen.findByText(/jy-sub-001/)).toBeInTheDocument();

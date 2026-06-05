@@ -63,26 +63,26 @@ P6 在此基础上新增正式商业化上线能力。P5 的既有回归必须�
 
 ### Plan Matrix
 
-| Plan | Price | Target Customer | Included |
-| --- | --- | --- | --- |
-| Trial | 0 元 / 14 天 | 试用评估 | 专业版功能体验，低额度、严格限流，不绑定支付方式 |
-| Starter | 299 元 / 月 | 极小团队 | 5 个活跃主播席位、基础报数、基础结算、少量后台 AI/OCR |
-| Basic | 599 元 / 月 | 小型工作室 | 20 个活跃主播席位、项目、主播、排班、基础结算 |
-| Pro | 1999 元 / 月 | 成长型 MCN | 100 个活跃主播席位、完整结算、导出、作战台、AI 洞察、自动审核 shadow |
-| Business | 5999 元 / 月 | 中型机构 | 300 个活跃主播席位、多团队、财务看板、供应商协作、自动审核小流量 |
-| Enterprise | 12999 元 / 月起 | 成熟机构 | 500 个活跃主播席位、API、审计、企业配置、自动审核生产化、专属支持 |
+| Plan       | Price           | Target Customer | Included                                                             |
+| ---------- | --------------- | --------------- | -------------------------------------------------------------------- |
+| Trial      | 0 元 / 14 天    | 试用评估        | 专业版功能体验，低额度、严格限流，不绑定支付方式                     |
+| Starter    | 299 元 / 月     | 极小团队        | 5 个活跃主播席位、基础报数、基础结算、少量后台 AI/OCR                |
+| Basic      | 599 元 / 月     | 小型工作室      | 20 个活跃主播席位、项目、主播、排班、基础结算                        |
+| Pro        | 1999 元 / 月    | 成长型 MCN      | 100 个活跃主播席位、完整结算、导出、作战台、AI 洞察、自动审核 shadow |
+| Business   | 5999 元 / 月    | 中型机构        | 300 个活跃主播席位、多团队、财务看板、供应商协作、自动审核小流量     |
+| Enterprise | 12999 元 / 月起 | 成熟机构        | 500 个活跃主播席位、API、审计、企业配置、自动审核生产化、专属支持    |
 
 ### Included Quotas
 
-| Metric | Trial | Starter | Basic | Pro | Business | Enterprise |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Staff seats | 3 | 2 | 5 | 20 | 50 | 100 |
-| Active streamer seats / month | 20 | 5 | 20 | 100 | 300 | 500 |
-| Projects / month | 10 | 5 | 20 | 100 | 300 | 800 |
-| Back-office AI calls / month | 50 | 50 | 100 | 1000 | 4000 | 10000 |
-| Back-office OCR jobs / month | 20 | 120 | 480 | 2400 | 7200 | 12000 |
-| Exports / month | 10 | 20 | 100 | 1000 | 5000 | 15000 |
-| Storage | 5 GB | 5 GB | 20 GB | 120 GB | 320 GB | 800 GB |
+| Metric                        | Trial | Starter | Basic |    Pro | Business | Enterprise |
+| ----------------------------- | ----: | ------: | ----: | -----: | -------: | ---------: |
+| Staff seats                   |     3 |       2 |     5 |     20 |       50 |        100 |
+| Active streamer seats / month |    20 |       5 |    20 |    100 |      300 |        500 |
+| Projects / month              |    10 |       5 |    20 |    100 |      300 |        800 |
+| Back-office AI calls / month  |    50 |      50 |   100 |   1000 |     4000 |      10000 |
+| Back-office OCR jobs / month  |    20 |     120 |   480 |   2400 |     7200 |      12000 |
+| Exports / month               |    10 |      20 |   100 |   1000 |     5000 |      15000 |
+| Storage                       |  5 GB |    5 GB | 20 GB | 120 GB |   320 GB |     800 GB |
 
 OCR 月额度按 `active streamer seats * 30 days * 80%` 计算。AI 用量保持 v2 方案不变。存储额度按 v2 方案降低 60% 后取整。
 
@@ -92,18 +92,18 @@ Enterprise 的具体额度可以由销售配置覆盖，但必须落入结构化
 
 ### Add-On Packs
 
-| Add-on | Unit | First Price |
-| --- | --- | ---: |
-| Active streamer pack S | 20 active streamer seats / month | 199 元 |
-| Active streamer pack L | 100 active streamer seats / month | 799 元 |
-| Streamer AI pack S | 1000 streamer AI calls | 199 元 |
-| Streamer AI pack L | 5000 streamer AI calls | 899 元 |
-| Streamer OCR pack S | 1000 streamer OCR jobs | 399 元 |
-| Streamer OCR pack L | 5000 streamer OCR jobs | 1999 元 |
-| Back-office AI pack | 1000 back-office AI calls | 199 元 |
-| Back-office OCR pack | 1000 back-office OCR jobs | 399 元 |
-| Export pack | 500 exports | 99 元 |
-| Storage pack | 100 GB / month | 99 元 |
+| Add-on                 | Unit                              | First Price |
+| ---------------------- | --------------------------------- | ----------: |
+| Active streamer pack S | 20 active streamer seats / month  |      199 元 |
+| Active streamer pack L | 100 active streamer seats / month |      799 元 |
+| Streamer AI pack S     | 1000 streamer AI calls            |      199 元 |
+| Streamer AI pack L     | 5000 streamer AI calls            |      899 元 |
+| Streamer OCR pack S    | 1000 streamer OCR jobs            |      399 元 |
+| Streamer OCR pack L    | 5000 streamer OCR jobs            |     1999 元 |
+| Back-office AI pack    | 1000 back-office AI calls         |      199 元 |
+| Back-office OCR pack   | 1000 back-office OCR jobs         |      399 元 |
+| Export pack            | 500 exports                       |       99 元 |
+| Storage pack           | 100 GB / month                    |       99 元 |
 
 Add-on 在当月生效，默认月底失效。企业客户可购买 recurring add-on，按订阅周期续费。
 
@@ -154,7 +154,9 @@ export type PaymentProviderAdapter = {
   verifyWebhook(input: VerifyWebhookInput): Promise<VerifiedPaymentEvent>;
   queryPayment(input: QueryPaymentInput): Promise<PaymentQueryResult>;
   createRefundRequest(input: CreateRefundInput): Promise<RefundRequestResult>;
-  parseReconciliationFile(input: ReconciliationInput): Promise<ReconciliationResult>;
+  parseReconciliationFile(
+    input: ReconciliationInput,
+  ): Promise<ReconciliationResult>;
 };
 ```
 

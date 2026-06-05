@@ -143,13 +143,16 @@ async function runOpenAiRequest({
     });
   } catch (error) {
     return failed({
-      errorSummary: error instanceof Error ? error.message : "OpenAI request failed",
+      errorSummary:
+        error instanceof Error ? error.message : "OpenAI request failed",
       latencyMs: Date.now() - startedAt,
     });
   }
 }
 
-function toResponsesInput(messages: AiMessage[]): Array<Record<string, string>> {
+function toResponsesInput(
+  messages: AiMessage[],
+): Array<Record<string, string>> {
   return messages.map((message) => ({
     role: message.role === "tool" ? "user" : message.role,
     content: message.content,
@@ -222,7 +225,8 @@ function mapOpenAiUsage(usage: unknown): AiUsage {
   return {
     promptTokens,
     completionTokens,
-    totalTokens: nonnegativeInt(usage.total_tokens) || promptTokens + completionTokens,
+    totalTokens:
+      nonnegativeInt(usage.total_tokens) || promptTokens + completionTokens,
   };
 }
 
@@ -230,7 +234,9 @@ function normalizeSchemaObject(schema: unknown): Record<string, unknown> {
   return isRecord(schema) ? schema : { type: "object", properties: {} };
 }
 
-function parseJsonObject(text: string): { ok: true; value: unknown } | { ok: false; errorSummary: string } {
+function parseJsonObject(
+  text: string,
+): { ok: true; value: unknown } | { ok: false; errorSummary: string } {
   try {
     return { ok: true, value: JSON.parse(text) };
   } catch {
@@ -238,7 +244,9 @@ function parseJsonObject(text: string): { ok: true; value: unknown } | { ok: fal
   }
 }
 
-function sanitizeRawResponse(raw: Record<string, unknown>): Record<string, unknown> {
+function sanitizeRawResponse(
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
   const { error, output, output_text, usage, id, model } = raw;
   return { error, output, output_text, usage, id, model };
 }
@@ -320,7 +328,8 @@ function emptyUsage(): AiUsage {
 }
 
 function estimateCostCents(input: AiUsageEstimateInput): number {
-  const tokens = nonnegativeInt(input.promptTokens) + nonnegativeInt(input.completionTokens);
+  const tokens =
+    nonnegativeInt(input.promptTokens) + nonnegativeInt(input.completionTokens);
   return tokens > 0 ? Math.max(1, Math.ceil(tokens / 1000)) : 0;
 }
 

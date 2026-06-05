@@ -63,7 +63,8 @@ export function buildAutoReviewRolloutMetrics(input: {
 
   const comparedAuditSamples = input.auditSamples.filter(
     (sample) =>
-      sample.expectedDecision !== "unknown" && sample.actualDecision !== "unknown",
+      sample.expectedDecision !== "unknown" &&
+      sample.actualDecision !== "unknown",
   );
   const auditErrorCount = comparedAuditSamples.filter(
     (sample) => sample.expectedDecision !== sample.actualDecision,

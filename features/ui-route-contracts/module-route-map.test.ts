@@ -21,9 +21,9 @@ describe("OPS_MODULE_ROUTES", () => {
     expect(OPS_MODULE_ROUTES.map((item) => item.label)).toContain(
       "M11 商业化与套餐",
     );
-    expect(
-      OPS_MODULE_ROUTES.every((item) => item.label.includes("�")),
-    ).toBe(false);
+    expect(OPS_MODULE_ROUTES.every((item) => item.label.includes("�"))).toBe(
+      false,
+    );
   });
 
   it("routes M11 to billing instead of warroom", () => {

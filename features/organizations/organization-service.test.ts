@@ -218,7 +218,9 @@ describe("organization service", () => {
     const authAdmin = {
       inviteUserByEmail: vi.fn(),
       createUser: vi.fn().mockResolvedValue({
-        data: { user: { id: "user-sub", email: "jy-ops-001@subaccount.local" } },
+        data: {
+          user: { id: "user-sub", email: "jy-ops-001@subaccount.local" },
+        },
         error: null,
       }),
     };
@@ -336,9 +338,7 @@ describe("organization service", () => {
           role: "operator_business",
         },
       }),
-    ).rejects.toThrow(
-      "Current role cannot create operator_business accounts",
-    );
+    ).rejects.toThrow("Current role cannot create operator_business accounts");
   });
 
   it("rejects member creation from finance", async () => {

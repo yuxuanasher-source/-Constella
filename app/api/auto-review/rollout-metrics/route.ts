@@ -119,7 +119,10 @@ function parseBoolean(value: string | null, fallback: boolean): boolean {
   return value === "true";
 }
 
-function parseIntegerWithDefault(value: string | null, fallback: number): number {
+function parseIntegerWithDefault(
+  value: string | null,
+  fallback: number,
+): number {
   if (!value) {
     return fallback;
   }

@@ -13,6 +13,7 @@
 ### Task 1: Login Workflow Helpers
 
 **Files:**
+
 - Create: `app/(auth)/login/login-workflows.ts`
 - Test: `app/(auth)/login/login-workflows.test.ts`
 
@@ -37,6 +38,7 @@ Expected: all workflow tests pass.
 ### Task 2: Server Actions
 
 **Files:**
+
 - Modify: `app/(auth)/login/actions.ts`
 
 - [x] **Step 1: Extend email/password login**
@@ -50,6 +52,7 @@ Add `requestPasswordResetAction`, `requestPhoneOtpAction`, `verifyPhoneOtpAction
 ### Task 3: Visual Login Page
 
 **Files:**
+
 - Replace: `app/(auth)/login/page.tsx`
 
 - [x] **Step 1: Render split-screen layout**
@@ -63,6 +66,7 @@ Render password login, reset, phone OTP, MCN application, and help modes from qu
 ### Task 4: Onboarding Database
 
 **Files:**
+
 - Create: `supabase/migrations/20260603152500_mcn_onboarding_requests.sql`
 
 - [x] **Step 1: Add onboarding request table**
@@ -72,6 +76,7 @@ Create insert-only public onboarding request storage with status, review fields,
 ### Task 5: Verification
 
 **Files:**
+
 - Check: login workflow tests, type checker, no-demo-data regression, browser screenshot.
 
 - [ ] **Step 1: Run focused workflow tests**

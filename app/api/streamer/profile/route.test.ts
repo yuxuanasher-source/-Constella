@@ -31,7 +31,8 @@ vi.mock("@/features/live-operations/live-operations-route-utils", () => {
           : error instanceof Error
             ? 500
             : 500;
-      const message = error instanceof Error ? error.message : "Unexpected error";
+      const message =
+        error instanceof Error ? error.message : "Unexpected error";
       return Response.json({ error: message }, { status });
     },
   };

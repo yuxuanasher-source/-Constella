@@ -5,7 +5,9 @@ export type AgentOutputValidation = {
   errors: string[];
 };
 
-export function validateAgentOutput(output: AgentOutput): AgentOutputValidation {
+export function validateAgentOutput(
+  output: AgentOutput,
+): AgentOutputValidation {
   const errors: string[] = [];
   const factSources = new Set(
     output.facts.map((fact) => sourceKey(fact.sourceTool, fact.sourceId)),
@@ -22,26 +24,38 @@ export function validateAgentOutput(output: AgentOutput): AgentOutputValidation 
 
   output.findings.forEach((finding, index) => {
     if (containsNumericClaim(finding.summary)) {
-      errors.push(`findings[${index}] must not include unsourced numeric claims`);
+      errors.push(
+        `findings[${index}] must not include unsourced numeric claims`,
+      );
     }
 
     if (!finding.evidence.length) {
-      errors.push(`findings[${index}] must include at least one evidence reference`);
+      errors.push(
+        `findings[${index}] must include at least one evidence reference`,
+      );
       return;
     }
 
     for (const evidence of finding.evidence) {
       if (!evidence.sourceTool.trim() || !evidence.sourceId.trim()) {
-        errors.push(`findings[${index}] evidence must include sourceTool and sourceId`);
-      } else if (!factSources.has(sourceKey(evidence.sourceTool, evidence.sourceId))) {
-        errors.push(`findings[${index}] evidence must reference an existing fact`);
+        errors.push(
+          `findings[${index}] evidence must include sourceTool and sourceId`,
+        );
+      } else if (
+        !factSources.has(sourceKey(evidence.sourceTool, evidence.sourceId))
+      ) {
+        errors.push(
+          `findings[${index}] evidence must reference an existing fact`,
+        );
       }
     }
   });
 
   output.caveats.forEach((caveat, index) => {
     if (containsNumericClaim(caveat.summary)) {
-      errors.push(`caveats[${index}] must not include unsourced numeric claims`);
+      errors.push(
+        `caveats[${index}] must not include unsourced numeric claims`,
+      );
     }
 
     if (caveat.unverifiedExternalFactor !== true) {
@@ -63,9 +77,14 @@ export function validateAgentOutput(output: AgentOutput): AgentOutputValidation 
       errors.push(`recommendations[${index}] must require human approval`);
     }
 
-    const rawRecommendation = recommendation as unknown as Record<string, unknown>;
+    const rawRecommendation = recommendation as unknown as Record<
+      string,
+      unknown
+    >;
     if ("action" in rawRecommendation || "execute" in rawRecommendation) {
-      errors.push(`recommendations[${index}] must not contain executable actions`);
+      errors.push(
+        `recommendations[${index}] must not contain executable actions`,
+      );
     }
   });
 

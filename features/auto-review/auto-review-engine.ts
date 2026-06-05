@@ -107,7 +107,9 @@ function isWithinPlannedDurationGuardrail(
     return true;
   }
 
-  const deviation = Math.abs(report.settlementDuration - report.plannedDuration);
+  const deviation = Math.abs(
+    report.settlementDuration - report.plannedDuration,
+  );
   const pctLimit = Math.round(
     report.plannedDuration * (rule.maxDurationDeviationPct / 100),
   );

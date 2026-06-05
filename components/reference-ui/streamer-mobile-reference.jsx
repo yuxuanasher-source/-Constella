@@ -2600,7 +2600,10 @@ function StreamerAI({ go }) {
   const send = async (text) => {
     const question = String(text || "").trim();
     if (!question) return;
-    setThread((prev) => [...prev, { role: "me", text: question, time: nowHM() }]);
+    setThread((prev) => [
+      ...prev,
+      { role: "me", text: question, time: nowHM() },
+    ]);
     setInput("");
     setTyping(true);
     try {

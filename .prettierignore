@@ -1,5 +1,7 @@
 .next
 node_modules
+outputs
+.worktrees
 pnpm-lock.yaml
 supabase/.branches
 supabase/.temp

@@ -13,6 +13,7 @@
 ### Task 1: Script Optimization Agent
 
 **Files:**
+
 - Create: `features/ai/script-optimization-agent.test.ts`
 - Create: `features/ai/script-optimization-agent.ts`
 
@@ -32,12 +33,14 @@ const result = runScriptOptimizationAgent({
 
 expect(result.scriptVersionDraft.status).toBe("draft");
 expect(result.validation).toEqual({ valid: true, errors: [] });
-expect(result.agentOutput.facts).toEqual(expect.arrayContaining([
-  expect.objectContaining({
-    statement: "Feedback item count is 1",
-    sourceTool: "script_optimization",
-  })
-]));
+expect(result.agentOutput.facts).toEqual(
+  expect.arrayContaining([
+    expect.objectContaining({
+      statement: "Feedback item count is 1",
+      sourceTool: "script_optimization",
+    }),
+  ]),
+);
 expect(JSON.stringify(result.agentOutput.recommendations)).not.toMatch(/\d/);
 ```
 
@@ -70,6 +73,7 @@ git commit -m "feat: add AG2 script optimization agent"
 ### Task 2: Scripts API Route
 
 **Files:**
+
 - Create: `app/api/ai/scripts/route.test.ts`
 - Create: `app/api/ai/scripts/route.ts`
 
@@ -113,6 +117,7 @@ git commit -m "feat: expose script optimization API"
 ### Task 3: Regression Gate And Push
 
 **Files:**
+
 - No production files unless verification finds a scoped defect.
 
 - [ ] **Step 1: Run AI system tests**

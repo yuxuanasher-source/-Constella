@@ -76,7 +76,9 @@ export function runM10CopilotAgent(
   }
 
   if (rawInput.intent === "casting_advice") {
-    const routedResult = runCastingAdviceAgent(rawInput.payload as CastingAdviceInput);
+    const routedResult = runCastingAdviceAgent(
+      rawInput.payload as CastingAdviceInput,
+    );
 
     return {
       intent: "casting_advice",

@@ -70,7 +70,7 @@ describe("runAiGateway", () => {
     });
   });
 
-  it("rejects structured output that does not match the schema", async () => {
+  it("returns all provider failed when structured output does not match the schema", async () => {
     const result = await runAiGateway({
       providers: [
         createDeterministicProvider({
@@ -88,7 +88,59 @@ describe("runAiGateway", () => {
 
     expect(result).toMatchObject({
       status: "failed",
-      degradedReason: "schema_validation_failed",
+      providerName: "deterministic",
+      degradedReason: "all_providers_failed",
+    });
+    expect(result.errorSummary).toContain("schema validation failed");
+  });
+
+  it("falls back when the primary structured provider returns schema-invalid output", async () => {
+    const schemaInvalidProvider: AiProvider = {
+      name: "openai",
+      capabilities: ["structured"],
+      async runText() {
+        throw new Error("not used");
+      },
+      async runStructured() {
+        return {
+          status: "succeeded",
+          structuredOutput: { summary: 123 },
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          latencyMs: 10,
+          costCents: 0,
+        };
+      },
+      async runWithTools() {
+        throw new Error("not used");
+      },
+      estimateCost() {
+        return { costCents: 0 };
+      },
+    };
+
+    const result = await runAiGateway({
+      providers: [
+        schemaInvalidProvider,
+        createDeterministicProvider({
+          structuredOutput: { summary: "fallback summary" },
+        }),
+      ],
+      primaryProvider: "openai",
+      request: {
+        kind: "structured",
+        promptKey: "ops.brief",
+        promptVersion: 1,
+        messages: [{ role: "user", content: "summarize" }],
+        responseSchema: z.object({ summary: z.string() }),
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "succeeded",
+      providerName: "deterministic",
+      fallbackUsed: true,
+      degradedReason: "primary_failed",
+      structuredOutput: { summary: "fallback summary" },
     });
   });
 

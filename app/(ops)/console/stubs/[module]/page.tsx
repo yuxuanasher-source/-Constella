@@ -143,7 +143,8 @@ async function loadLiveReferenceData(module: string) {
   }
 
   if (module === "m9") {
-    const notificationQueryClient = supabase as unknown as NotificationQueryClient;
+    const notificationQueryClient =
+      supabase as unknown as NotificationQueryClient;
     const items = await listNotificationCenterItems(notificationQueryClient, {
       userId: auth.userId,
       role: auth.role,

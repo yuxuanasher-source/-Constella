@@ -75,7 +75,9 @@ describe("validateAgentOutput", () => {
       findings: [
         {
           summary: "Margin is 4167 bps and should be protected",
-          evidence: [{ sourceTool: "project_review_summary", sourceId: "tool-1" }],
+          evidence: [
+            { sourceTool: "project_review_summary", sourceId: "tool-1" },
+          ],
         },
       ],
     });

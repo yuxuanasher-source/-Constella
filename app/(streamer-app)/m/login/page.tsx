@@ -191,7 +191,10 @@ function MobilePasswordForm({
           </Link>
         </div>
 
-        <Button type="submit" className="h-12 w-full rounded-lg text-sm shadow-[var(--shadow-fab)]">
+        <Button
+          type="submit"
+          className="h-12 w-full rounded-lg text-sm shadow-[var(--shadow-fab)]"
+        >
           登录移动工作台
         </Button>
       </form>
@@ -216,7 +219,10 @@ function MobilePasswordForm({
       </div>
 
       <p className="mt-5 text-center text-xs text-[var(--ink-500)]">
-        <Link href={mobileLoginHref("reset", next)} className="font-semibold text-[var(--blue-600)]">
+        <Link
+          href={mobileLoginHref("reset", next)}
+          className="font-semibold text-[var(--blue-600)]"
+        >
           忘记密码
         </Link>
       </p>

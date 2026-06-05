@@ -89,11 +89,13 @@ export type CreateOrganizationMemberInput = {
   temporaryPassword?: string;
 };
 
-type NormalizedCreateOrganizationMemberInput =
-  Omit<CreateOrganizationMemberInput, "email"> & {
-    email: string;
-    defaultAccount?: string;
-  };
+type NormalizedCreateOrganizationMemberInput = Omit<
+  CreateOrganizationMemberInput,
+  "email"
+> & {
+  email: string;
+  defaultAccount?: string;
+};
 
 export type CreateOrganizationMemberResult = {
   member: OrganizationMemberRecord;
@@ -362,9 +364,12 @@ function normalizeCreateInput(
 
   const temporaryPassword =
     mode === "subaccount"
-      ? (input.temporaryPassword?.trim() || generated.defaultPassword?.trim())
+      ? input.temporaryPassword?.trim() || generated.defaultPassword?.trim()
       : input.temporaryPassword?.trim();
-  if (mode === "subaccount" && (!temporaryPassword || temporaryPassword.length < 8)) {
+  if (
+    mode === "subaccount" &&
+    (!temporaryPassword || temporaryPassword.length < 8)
+  ) {
     throw new Error("temporaryPassword must be at least 8 characters");
   }
 
@@ -397,9 +402,7 @@ function isHistoricalDemoMember(member: OrganizationMemberRecord): boolean {
     return true;
   }
 
-  return /^([0-9a-f])\1{7}-\1{4}-\1{4}-\1{4}-\1{12}$/i.test(
-    member.userId,
-  );
+  return /^([0-9a-f])\1{7}-\1{4}-\1{4}-\1{4}-\1{12}$/i.test(member.userId);
 }
 
 async function inviteAuthUser(

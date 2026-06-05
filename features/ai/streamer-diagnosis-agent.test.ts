@@ -73,7 +73,8 @@ describe("runStreamerDiagnosisAgent", () => {
     expect(result.agentOutput.findings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          summary: "Interaction pattern needs attention before the next live session",
+          summary:
+            "Interaction pattern needs attention before the next live session",
           evidence: [
             {
               sourceTool: "streamer_diagnosis",
@@ -88,8 +89,12 @@ describe("runStreamerDiagnosisAgent", () => {
       ]),
     );
     expectNoNumbersOutsideFacts(result.agentOutput);
-    expect(JSON.stringify(result.agentOutput)).not.toContain("grossMarginCents");
-    expect(JSON.stringify(result.agentOutput)).not.toContain("supplierCostCents");
+    expect(JSON.stringify(result.agentOutput)).not.toContain(
+      "grossMarginCents",
+    );
+    expect(JSON.stringify(result.agentOutput)).not.toContain(
+      "supplierCostCents",
+    );
   });
 
   it("builds content-rhythm output with human-approved recommendations only", async () => {
@@ -112,14 +117,16 @@ describe("runStreamerDiagnosisAgent", () => {
     expect(result.agentOutput.findings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          summary: "Content rhythm needs attention before the next live session",
+          summary:
+            "Content rhythm needs attention before the next live session",
         }),
       ]),
     );
     expect(result.agentOutput.recommendations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          proposal: "Refine opening hook and interaction rhythm before the next session",
+          proposal:
+            "Refine opening hook and interaction rhythm before the next session",
           requiresHumanApproval: true,
         }),
       ]),

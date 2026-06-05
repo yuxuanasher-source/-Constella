@@ -41,7 +41,9 @@ describe("anomaly scan route", () => {
   });
 
   it("allows MCN operators to manually trigger an anomaly scan", async () => {
-    const response = await POST(new Request("http://localhost/api/anomalies/scan"));
+    const response = await POST(
+      new Request("http://localhost/api/anomalies/scan"),
+    );
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
@@ -59,7 +61,9 @@ describe("anomaly scan route", () => {
       role: "finance",
     });
 
-    const response = await POST(new Request("http://localhost/api/anomalies/scan"));
+    const response = await POST(
+      new Request("http://localhost/api/anomalies/scan"),
+    );
 
     expect(response.status).toBe(403);
     expect(scanLiveOperationAnomalies).not.toHaveBeenCalled();

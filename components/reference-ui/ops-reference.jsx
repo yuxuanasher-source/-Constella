@@ -787,6 +787,7 @@ const OpsLiveDataContext = React.createContext({
   settlementPool: null,
   settlementScope: null,
   auditEntries: null,
+  ocrJobs: null,
   notificationItems: null,
   organizationMembers: null,
   organizationMemberPermissions: null,
@@ -843,6 +844,11 @@ function useOpsSettlementScope() {
 function useOpsAuditEntries() {
   const { auditEntries } = React.useContext(OpsLiveDataContext);
   return Array.isArray(auditEntries) ? auditEntries : [];
+}
+
+function useOpsOcrJobs() {
+  const { ocrJobs } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(ocrJobs) ? ocrJobs : [];
 }
 
 function useOpsNotifications() {
@@ -1428,7 +1434,11 @@ function Sidebar({
             {switcherMemberText}
           </div>
           <div
-            style={{ fontSize: 10.5, color: "var(--blue-600)", lineHeight: 1.2 }}
+            style={{
+              fontSize: 10.5,
+              color: "var(--blue-600)",
+              lineHeight: 1.2,
+            }}
           >
             已启用 {enabledFeatureCount} 项功能
           </div>
@@ -1752,11 +1762,13 @@ function PageHeader({ title, subtitle, status, actions }) {
 function ScreenWarRoom({ go }) {
   const actions = useOpsLiveActions();
   const [tab, setTab] = React.useState("overview");
+  const [ocrOpen, setOcrOpen] = React.useState(false);
   const [warRoomMessage, setWarRoomMessage] = React.useState("");
   const [warRoomExporting, setWarRoomExporting] = React.useState(false);
   const projects = useOpsProjects();
   const tasks = useOpsTasks();
   const reports = useOpsReports();
+  const ocrJobs = useOpsOcrJobs();
   const activeProjects = projects.filter((project) =>
     ["active", "recruiting", "settling"].includes(project.status),
   );
@@ -1811,6 +1823,17 @@ function ScreenWarRoom({ go }) {
       setWarRoomExporting(false);
     }
   };
+  const openOcrPanel = async () => {
+    setWarRoomMessage("");
+    setOcrOpen(true);
+    try {
+      await actions.refreshOcrJobs?.();
+    } catch (error) {
+      setWarRoomMessage(
+        error instanceof Error ? error.message : "OCR 作业刷新失败",
+      );
+    }
+  };
 
   return (
     <>
@@ -1837,6 +1860,9 @@ function ScreenWarRoom({ go }) {
         }
         actions={
           <>
+            <Button kind="default" onClick={openOcrPanel}>
+              OCR 作业
+            </Button>
             <Button
               kind="default"
               icon={<Icon.Export size={14} />}
@@ -1949,6 +1975,17 @@ function ScreenWarRoom({ go }) {
           </div>
         ) : null}
 
+        {ocrOpen ? (
+          <OcrOperationsPanel
+            jobs={ocrJobs}
+            onRefresh={actions.refreshOcrJobs}
+            onRunNext={actions.runNextOcrJob}
+            onRetry={actions.retryOcrJob}
+            onMarkNeedsReview={actions.markOcrJobNeedsReview}
+            onConfirm={actions.confirmOcrJob}
+          />
+        ) : null}
+
         {/* Tabs */}
         <Card padded={false}>
           <div
@@ -1975,6 +2012,301 @@ function ScreenWarRoom({ go }) {
         </Card>
       </div>
     </>
+  );
+}
+
+function OcrOperationsPanel({
+  jobs = [],
+  onRefresh,
+  onRunNext,
+  onRetry,
+  onMarkNeedsReview,
+  onConfirm,
+}) {
+  const [busy, setBusy] = React.useState("");
+  const [message, setMessage] = React.useState("");
+  const [statusFilter, setStatusFilter] = React.useState("all");
+  const [manualResults, setManualResults] = React.useState({});
+  const runAction = async (key, action) => {
+    if (busy) return;
+    setBusy(key);
+    setMessage("");
+    try {
+      await action?.();
+      setMessage("OCR 作业已更新");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "OCR 作业操作失败");
+    } finally {
+      setBusy("");
+    }
+  };
+  const updateManualResult = (jobId, field, value) => {
+    setManualResults((current) => ({
+      ...current,
+      [jobId]: {
+        ...(current[jobId] ?? {}),
+        [field]: value,
+      },
+    }));
+  };
+  const manualResultFor = (jobId) => {
+    const value = manualResults[jobId] ?? {};
+    return {
+      duration: Number(value.duration || 0),
+      viewers: Number(value.viewers || 0),
+    };
+  };
+
+  return (
+    <Card
+      title="OCR 作业"
+      extra={
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button
+            kind="default"
+            onClick={() => runAction("refresh", onRefresh)}
+            disabled={Boolean(busy)}
+          >
+            刷新 OCR 作业
+          </Button>
+          <Button
+            kind="primary"
+            onClick={() => runAction("run", () => onRunNext?.())}
+            disabled={Boolean(busy)}
+          >
+            运行下一条 OCR
+          </Button>
+        </div>
+      }
+    >
+      {message ? (
+        <div
+          style={{ fontSize: 12, color: "var(--ink-500)", marginBottom: 10 }}
+        >
+          {message}
+        </div>
+      ) : null}
+      <div
+        style={{
+          display: "flex",
+          gap: 6,
+          flexWrap: "wrap",
+          marginBottom: 10,
+        }}
+      >
+        {OCR_STATUS_FILTERS.map((item) => (
+          <Button
+            key={item.value}
+            kind={statusFilter === item.value ? "primary" : "default"}
+            size="sm"
+            onClick={() => {
+              setStatusFilter(item.value);
+              runAction(`filter-${item.value}`, () => onRefresh?.(item.value));
+            }}
+            disabled={Boolean(busy)}
+          >
+            {item.label}
+          </Button>
+        ))}
+      </div>
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "collapse",
+          fontSize: 12,
+          color: "var(--ink-700)",
+        }}
+      >
+        <thead>
+          <tr>
+            {[
+              "Job",
+              "Status",
+              "Attempts",
+              "Error",
+              "Report",
+              "Updated",
+              "Actions",
+            ].map((heading) => (
+              <th
+                key={heading}
+                style={{
+                  textAlign: "left",
+                  padding: "8px 6px",
+                  borderBottom: "1px solid var(--line)",
+                  color: "var(--ink-400)",
+                  fontWeight: 500,
+                }}
+              >
+                {heading}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {jobs.length ? (
+            jobs.map((job) => (
+              <tr key={job.id}>
+                <td style={ocrCellStyle}>{job.id}</td>
+                <td style={ocrCellStyle}>
+                  <Badge tone={ocrStatusTone(job.status)}>{job.status}</Badge>
+                </td>
+                <td style={ocrCellStyle}>
+                  {job.attempt ?? 0}/{job.maxAttempts ?? 3}
+                </td>
+                <td style={ocrCellStyle}>
+                  <div>{job.errorCode || "无"}</div>
+                  {job.errorMessage ? (
+                    <div style={{ color: "var(--ink-400)", marginTop: 2 }}>
+                      {job.errorMessage}
+                    </div>
+                  ) : null}
+                </td>
+                <td style={ocrCellStyle}>{job.liveReportId || "未关联"}</td>
+                <td style={ocrCellStyle}>
+                  {job.updatedAt || job.createdAt || job.nextRunAt || "未记录"}
+                </td>
+                <td style={ocrCellStyle}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <label
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        fontSize: 12,
+                        color: "var(--ink-400)",
+                      }}
+                    >
+                      时长
+                      <input
+                        aria-label={`修正时长 ${job.id}`}
+                        type="number"
+                        min="0"
+                        value={manualResults[job.id]?.duration ?? ""}
+                        onChange={(event) =>
+                          updateManualResult(
+                            job.id,
+                            "duration",
+                            event.target.value,
+                          )
+                        }
+                        style={ocrNumberInputStyle}
+                      />
+                    </label>
+                    <label
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        fontSize: 12,
+                        color: "var(--ink-400)",
+                      }}
+                    >
+                      人数
+                      <input
+                        aria-label={`修正观看人数 ${job.id}`}
+                        type="number"
+                        min="0"
+                        value={manualResults[job.id]?.viewers ?? ""}
+                        onChange={(event) =>
+                          updateManualResult(
+                            job.id,
+                            "viewers",
+                            event.target.value,
+                          )
+                        }
+                        style={ocrNumberInputStyle}
+                      />
+                    </label>
+                    <Button
+                      kind="default"
+                      onClick={() =>
+                        runAction(`retry-${job.id}`, () => onRetry?.(job.id))
+                      }
+                      disabled={Boolean(busy)}
+                    >
+                      手动重试
+                    </Button>
+                    <Button
+                      kind="default"
+                      onClick={() =>
+                        runAction(`review-${job.id}`, () =>
+                          onMarkNeedsReview?.(job.id),
+                        )
+                      }
+                      disabled={Boolean(busy)}
+                    >
+                      标记需复核
+                    </Button>
+                    <Button
+                      kind="default"
+                      onClick={() =>
+                        runAction(`confirm-${job.id}`, () =>
+                          onConfirm?.(job.id, manualResultFor(job.id)),
+                        )
+                      }
+                      disabled={Boolean(busy)}
+                    >
+                      人工确认
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ))
+          ) : (
+            <tr>
+              <td
+                colSpan={7}
+                style={{ ...ocrCellStyle, color: "var(--ink-400)" }}
+              >
+                暂无 OCR 作业
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
+
+const ocrCellStyle = {
+  padding: "9px 6px",
+  borderBottom: "1px solid var(--line)",
+  verticalAlign: "top",
+};
+
+const ocrNumberInputStyle = {
+  width: 64,
+  height: 26,
+  border: "1px solid var(--line-strong)",
+  borderRadius: 6,
+  padding: "0 6px",
+  fontSize: 12,
+  color: "var(--ink-700)",
+};
+
+const OCR_STATUS_FILTERS = [
+  { value: "all", label: "全部" },
+  { value: "failed", label: "失败" },
+  { value: "needs_review", label: "需复核" },
+  { value: "queued", label: "排队中" },
+  { value: "running", label: "处理中" },
+  { value: "succeeded", label: "成功" },
+];
+
+function ocrStatusTone(status) {
+  return (
+    {
+      queued: "blue",
+      pending: "blue",
+      running: "violet",
+      processing: "violet",
+      succeeded: "green",
+      failed: "red",
+      needs_confirmation: "amber",
+      needs_review: "amber",
+      cancelled: "neutral",
+    }[status] ?? "neutral"
   );
 }
 
@@ -4361,7 +4693,9 @@ function projectStatusOptionsForTransition(fromStatus, currentValue) {
     ? getAllowedProjectStatusTransitions(baseStatus)
     : [];
   const visibleValues = new Set([baseStatus, currentValue, ...nextStatuses]);
-  return PROJECT_STATUS_OPTIONS.filter((option) => visibleValues.has(option.value));
+  return PROJECT_STATUS_OPTIONS.filter((option) =>
+    visibleValues.has(option.value),
+  );
 }
 
 function projectStatusNextLabels(fromStatus) {
@@ -4911,9 +5245,7 @@ function ProjectOverview({ p }) {
           >
             <div>
               <KV label="项目编号">
-                <span className="mono">
-                  {p.code || "未设置编号"}
-                </span>
+                <span className="mono">{p.code || "未设置编号"}</span>
               </KV>
               <KV label="厂商">{p.vendor}</KV>
               <KV label="产品">{p.product}</KV>
@@ -11802,9 +12134,7 @@ function ScreenOrg({ go, onOpenOrganizationSettings }) {
     if (organizationMembers == null && actions.refreshOrganizationMembers) {
       actions
         .refreshOrganizationMembers()
-        .catch((error) =>
-          setOrgMessage(formatOrganizationMemberError(error)),
-        );
+        .catch((error) => setOrgMessage(formatOrganizationMemberError(error)));
     }
   }, [actions, organizationMembers]);
 
@@ -11867,7 +12197,10 @@ function ScreenOrg({ go, onOpenOrganizationSettings }) {
       setOrgMessage("成员状态接口暂未配置。");
       return;
     }
-    const result = await actions.updateOrganizationMemberStatus(memberId, input);
+    const result = await actions.updateOrganizationMemberStatus(
+      memberId,
+      input,
+    );
     setOrgMessage(
       input.status === "suspended"
         ? "成员已停用，权限变更已进入审计日志。"
@@ -12120,7 +12453,9 @@ function buildOrganizationOverviewStats({
   billingStatus,
 }) {
   const activeMembers = members.filter((member) => member.status === "active");
-  const invitedMembers = members.filter((member) => member.status === "invited");
+  const invitedMembers = members.filter(
+    (member) => member.status === "invited",
+  );
   const activeProjects = projects.filter((project) =>
     ["active", "recruiting", "pending_start", "settling"].includes(
       project.status,
@@ -12131,7 +12466,8 @@ function buildOrganizationOverviewStats({
   );
   const storageUsage = usageByMetric(billingStatus, "storage_mb");
   const apiUsage = ["ocr", "ai", "export"].reduce(
-    (sum, metric) => sum + (usageByMetric(billingStatus, metric)?.usedQuantity ?? 0),
+    (sum, metric) =>
+      sum + (usageByMetric(billingStatus, metric)?.usedQuantity ?? 0),
     0,
   );
 
@@ -12735,8 +13071,11 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
             >
               {normalized.plan || "套餐以账务后台为准"}
             </div>
-            <div style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 2 }}>
-              {enabledCount} / {ORGANIZATION_FEATURE_OPTIONS.length} 项功能已启用
+            <div
+              style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 2 }}
+            >
+              {enabledCount} / {ORGANIZATION_FEATURE_OPTIONS.length}{" "}
+              项功能已启用
             </div>
           </div>
           {normalized.verified ? (
@@ -12769,7 +13108,9 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
         </OrgMemberField>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ fontSize: 12, color: "var(--ink-500)", fontWeight: 500 }}>
+          <div
+            style={{ fontSize: 12, color: "var(--ink-500)", fontWeight: 500 }}
+          >
             功能开关
           </div>
           {ORGANIZATION_FEATURE_OPTIONS.map((feature) => {
@@ -12794,7 +13135,9 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
                   onChange={() => toggleFeature(feature.key)}
                   style={{ marginTop: 2, accentColor: "var(--blue-600)" }}
                 />
-                <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <span
+                  style={{ display: "flex", flexDirection: "column", gap: 4 }}
+                >
                   <span
                     style={{
                       fontSize: 13,
@@ -12905,7 +13248,9 @@ function OrganizationMemberDrawer({ creatableRoles, onClose, onSubmit }) {
           gap: 14,
         }}
       >
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}
+        >
           <Button
             kind={mode === "invite" ? "primary" : "default"}
             onClick={() => setMode("invite")}
@@ -12942,7 +13287,8 @@ function OrganizationMemberDrawer({ creatableRoles, onClose, onSubmit }) {
               lineHeight: 1.6,
             }}
           >
-            系统将生成默认账号和 8 位默认密码。首次登录需补充邮箱、电话并设置新密码。
+            系统将生成默认账号和 8
+            位默认密码。首次登录需补充邮箱、电话并设置新密码。
           </div>
         )}
         <OrgMemberField label="成员姓名">
@@ -12983,19 +13329,29 @@ function OrganizationMemberDrawer({ creatableRoles, onClose, onSubmit }) {
             <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
               首次登录凭据，仅展示本次创建结果
             </div>
-            <div className="mono" style={{ fontSize: 13, color: "var(--ink-900)" }}>
+            <div
+              className="mono"
+              style={{ fontSize: 13, color: "var(--ink-900)" }}
+            >
               默认账号：{generatedCredentials.account}
             </div>
-            <div className="mono" style={{ fontSize: 13, color: "var(--ink-900)" }}>
+            <div
+              className="mono"
+              style={{ fontSize: 13, color: "var(--ink-900)" }}
+            >
               默认密码：{generatedCredentials.password}
             </div>
             <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
-              用户首次登录后必须填写邮箱、电话和新密码，后续可用邮箱或电话 + 密码登录。
+              用户首次登录后必须填写邮箱、电话和新密码，后续可用邮箱或电话 +
+              密码登录。
             </div>
           </div>
         ) : null}
         {message ? (
-          <div aria-live="polite" style={{ fontSize: 12, color: "var(--danger-600)" }}>
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--danger-600)" }}
+          >
             {message}
           </div>
         ) : null}
@@ -13076,11 +13432,18 @@ function RoleEditDrawer({ member, onClose, onSubmit }) {
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             placeholder="记录角色变更原因，写入权限审计日志"
-            style={{ ...orgMemberInputStyle, minHeight: 84, resize: "vertical" }}
+            style={{
+              ...orgMemberInputStyle,
+              minHeight: 84,
+              resize: "vertical",
+            }}
           />
         </OrgMemberField>
         {message ? (
-          <div aria-live="polite" style={{ fontSize: 12, color: "var(--danger-600)" }}>
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--danger-600)" }}
+          >
             {message}
           </div>
         ) : null}
@@ -13162,11 +13525,18 @@ function StatusEditDrawer({ member, onClose, onSubmit }) {
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             placeholder="记录停用或恢复原因，写入权限审计日志"
-            style={{ ...orgMemberInputStyle, minHeight: 84, resize: "vertical" }}
+            style={{
+              ...orgMemberInputStyle,
+              minHeight: 84,
+              resize: "vertical",
+            }}
           />
         </OrgMemberField>
         {message ? (
-          <div aria-live="polite" style={{ fontSize: 12, color: "var(--danger-600)" }}>
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--danger-600)" }}
+          >
             {message}
           </div>
         ) : null}
@@ -14929,6 +15299,7 @@ function OpsReferenceInner({
   settlementScope,
   auditEntries,
   notificationItems,
+  ocrJobs,
   organizationMembers,
   organizationMemberPermissions,
   organizationSettings,
@@ -14953,6 +15324,7 @@ function OpsReferenceInner({
   const [auditEntriesState, setAuditEntriesState] = React.useState(
     auditEntries ?? null,
   );
+  const [ocrJobsState, setOcrJobsState] = React.useState(ocrJobs ?? null);
   const [notificationItemsState, setNotificationItemsState] = React.useState(
     notificationItems ?? null,
   );
@@ -15004,6 +15376,10 @@ function OpsReferenceInner({
   }, [auditEntries]);
 
   React.useEffect(() => {
+    setOcrJobsState(ocrJobs ?? null);
+  }, [ocrJobs]);
+
+  React.useEffect(() => {
     setNotificationItemsState(notificationItems ?? null);
   }, [notificationItems]);
 
@@ -15012,11 +15388,15 @@ function OpsReferenceInner({
   }, [organizationMembers]);
 
   React.useEffect(() => {
-    setOrganizationMemberPermissionsState(organizationMemberPermissions ?? null);
+    setOrganizationMemberPermissionsState(
+      organizationMemberPermissions ?? null,
+    );
   }, [organizationMemberPermissions]);
 
   React.useEffect(() => {
-    setOrganizationSettingsState(normalizeOrganizationSettings(organizationSettings));
+    setOrganizationSettingsState(
+      normalizeOrganizationSettings(organizationSettings),
+    );
   }, [organizationSettings]);
 
   React.useEffect(() => {
@@ -15136,6 +15516,85 @@ function OpsReferenceInner({
       if (Array.isArray(body.entries)) {
         setAuditEntriesState(body.entries);
       }
+    };
+
+    const upsertOcrJob = (job) => {
+      if (!job) return;
+      setOcrJobsState((current) => [
+        job,
+        ...(Array.isArray(current)
+          ? current.filter((item) => item.id !== job.id)
+          : []),
+      ]);
+    };
+
+    const refreshOcrJobs = async (status) => {
+      const query =
+        status && status !== "all"
+          ? `?status=${encodeURIComponent(status)}`
+          : "";
+      const body = await fetchJson(
+        `/api/ocr/jobs${query}`,
+        "refresh OCR jobs failed",
+      );
+      if (Array.isArray(body.jobs)) {
+        setOcrJobsState(body.jobs);
+      }
+      return body.jobs;
+    };
+
+    const runNextOcrJob = async () => {
+      const body = await fetchJson("/api/ocr/jobs/run", "run OCR job failed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 1 }),
+      });
+      if (Array.isArray(body.jobs)) {
+        body.jobs.forEach(upsertOcrJob);
+      }
+      return body.jobs;
+    };
+
+    const retryOcrJob = async (id) => {
+      const body = await fetchJson(
+        `/api/ocr/jobs/${id}`,
+        "retry OCR job failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "retry" }),
+        },
+      );
+      upsertOcrJob(body.job);
+      return body.job;
+    };
+
+    const markOcrJobNeedsReview = async (id) => {
+      const body = await fetchJson(
+        `/api/ocr/jobs/${id}`,
+        "mark OCR job failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "needs_review" }),
+        },
+      );
+      upsertOcrJob(body.job);
+      return body.job;
+    };
+
+    const confirmOcrJob = async (id, manualResult) => {
+      const body = await fetchJson(
+        `/api/ocr/jobs/${id}`,
+        "confirm OCR job failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "confirm", manualResult }),
+        },
+      );
+      upsertOcrJob(body.job);
+      return body.job;
     };
 
     const refreshNotifications = async () => {
@@ -15423,6 +15882,11 @@ function OpsReferenceInner({
         await refreshSettlementBatches();
       },
       refreshAuditEntries,
+      refreshOcrJobs,
+      runNextOcrJob,
+      retryOcrJob,
+      markOcrJobNeedsReview,
+      confirmOcrJob,
       refreshNotifications,
       refreshOrganizationMembers,
       createOrganizationMember: async (input) => {
@@ -15598,6 +16062,7 @@ function OpsReferenceInner({
         settlementPool: settlementPoolState,
         settlementScope,
         auditEntries: auditEntriesState,
+        ocrJobs: ocrJobsState,
         notificationItems: notificationItemsState,
         organizationMembers: organizationMembersState,
         organizationMemberPermissions: organizationMemberPermissionsState,

@@ -41,7 +41,8 @@ export async function POST(request: Request) {
             candidates: Array.isArray((input as CastingAdviceInput).candidates)
               ? (input as CastingAdviceInput).candidates
               : [],
-            maxRecommendations: (input as CastingAdviceInput).maxRecommendations,
+            maxRecommendations: (input as CastingAdviceInput)
+              .maxRecommendations,
           });
 
     return NextResponse.json(result);

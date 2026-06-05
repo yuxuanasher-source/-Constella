@@ -11,7 +11,9 @@ import { isMcnStaff } from "@/lib/rbac/roles";
 
 type ScriptVersionClient = {
   from(table: "ai_script_versions"): {
-    insert(payload: Record<string, unknown>): PromiseLike<{ error: Error | null }>;
+    insert(
+      payload: Record<string, unknown>,
+    ): PromiseLike<{ error: Error | null }>;
   };
 };
 

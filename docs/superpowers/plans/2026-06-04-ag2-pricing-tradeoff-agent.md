@@ -13,6 +13,7 @@
 ### Task 1: Pricing Agent RED Test
 
 **Files:**
+
 - Create: `features/ai/pricing-tradeoff-agent.test.ts`
 
 - [ ] **Step 1: Write the failing Agent test**
@@ -34,6 +35,7 @@ Expected: FAIL because `./pricing-tradeoff-agent` does not exist.
 ### Task 2: Pricing Agent GREEN
 
 **Files:**
+
 - Create: `features/ai/pricing-tradeoff-agent.ts`
 
 - [ ] **Step 1: Implement exported types and function**
@@ -68,6 +70,7 @@ Expected: PASS.
 ### Task 3: Briefs Route Dispatch RED Test
 
 **Files:**
+
 - Modify: `app/api/ai/briefs/route.test.ts`
 
 - [ ] **Step 1: Add route tests**
@@ -88,6 +91,7 @@ Expected: FAIL because the route ignores `kind: "pricing"` and still treats the 
 ### Task 4: Briefs Route Dispatch GREEN
 
 **Files:**
+
 - Modify: `app/api/ai/briefs/route.ts`
 
 - [ ] **Step 1: Implement dispatch**
@@ -103,6 +107,7 @@ Expected: PASS.
 ### Task 5: Regression Verification
 
 **Files:**
+
 - No edits.
 
 - [ ] **Step 1: Run focused tests**
@@ -133,6 +138,7 @@ Expected: all pass. Run `pnpm type-check` after `pnpm build` if parallel executi
 ### Task 6: Commit And Push
 
 **Files:**
+
 - All AG-2 pricing tradeoff files.
 
 - [ ] **Step 1: Commit implementation**

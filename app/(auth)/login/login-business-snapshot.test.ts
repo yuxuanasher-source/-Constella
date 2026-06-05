@@ -225,7 +225,10 @@ describe("login business snapshot", () => {
         isLive: true,
       },
     });
-    expect(calls).toContainEqual({ method: "from", args: ["settlement_batches"] });
+    expect(calls).toContainEqual({
+      method: "from",
+      args: ["settlement_batches"],
+    });
     expect(calls).toContainEqual({
       method: "select",
       args: [

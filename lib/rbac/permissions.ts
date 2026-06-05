@@ -24,17 +24,17 @@ export function canViewOrganizationMembers(
   return role === "owner" || role === "ops_manager";
 }
 
+export function canManageOcrJobs(role: AppRole | null | undefined): boolean {
+  return (
+    role === "owner" || role === "ops_manager" || role === "operator_business"
+  );
+}
+
 export function getCreatableOrganizationMemberRoles(
   role: AppRole | null | undefined,
 ): AppRole[] {
   if (role === "owner") {
-    return [
-      "owner",
-      "ops_manager",
-      "operator_business",
-      "finance",
-      "streamer",
-    ];
+    return ["owner", "ops_manager", "operator_business", "finance", "streamer"];
   }
 
   if (role === "ops_manager") {

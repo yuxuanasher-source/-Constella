@@ -266,10 +266,9 @@ await check(
       "generated settlement batch list row",
     );
 
-    const detailBody = await requestJson(
-      `/api/settlement-batches/${batchId}`,
-      { cookie: opsCookie },
-    );
+    const detailBody = await requestJson(`/api/settlement-batches/${batchId}`, {
+      cookie: opsCookie,
+    });
     assertObject(detailBody.batch, "settlement batch detail");
     assertArray(detailBody.items, "settlement batch detail items");
     assertNonEmpty(detailBody.items, "settlement batch detail items");

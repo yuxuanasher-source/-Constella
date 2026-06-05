@@ -69,9 +69,7 @@ function extractDuration(lines: string[]): number | null {
 
     const hourMatch = compact.match(/(\d+(?:\.\d+)?)(?:小时|时|h)/i);
     const minuteMatch = compact.match(/(\d+)(?:分钟|分|min|m)/i);
-    const hours = hourMatch?.[1]
-      ? Math.trunc(Number(hourMatch[1]) * 60)
-      : 0;
+    const hours = hourMatch?.[1] ? Math.trunc(Number(hourMatch[1]) * 60) : 0;
     const minutes = minuteMatch?.[1] ? Number(minuteMatch[1]) : 0;
     const duration = hours + minutes;
     if (duration > 0) {

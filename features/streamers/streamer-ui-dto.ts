@@ -151,7 +151,8 @@ export function toStreamerDesktopProfileDto(
       recordingCount: row.recording_submissions?.length ?? 0,
       totalLiveHours: roundHours(
         (row.live_reports ?? []).reduce(
-          (sum, report) => sum + minutesToHours(report.settlement_duration ?? 0),
+          (sum, report) =>
+            sum + minutesToHours(report.settlement_duration ?? 0),
           0,
         ),
       ),
@@ -170,7 +171,8 @@ export function toStreamerDesktopProfileDto(
     settlement: {
       rule: settlementRuleLabel(settlementMethod, baseSalary, cpt),
       cycle: baseSalary > 0 ? "按月结" : "按项目规则",
-      baseSalary: baseSalary > 0 ? `¥${formatNumber(baseSalary)} / 月` : "未配置",
+      baseSalary:
+        baseSalary > 0 ? `¥${formatNumber(baseSalary)} / 月` : "未配置",
       cpt: cpt > 0 ? `¥${formatNumber(cpt)} / 有效直播小时` : "未配置",
       giftShare: "按项目规则配置",
       bank: "未向前端暴露",
@@ -244,11 +246,7 @@ function extractStringValues(value: unknown): string[] {
   return [];
 }
 
-function settlementRuleLabel(
-  method: string,
-  baseSalary: number,
-  cpt: number,
-) {
+function settlementRuleLabel(method: string, baseSalary: number, cpt: number) {
   const baseText = baseSalary > 0 ? `底薪 ${formatNumber(baseSalary)}` : "";
   const cptText = cpt > 0 ? `CPT ${formatNumber(cpt)}/h` : "";
 

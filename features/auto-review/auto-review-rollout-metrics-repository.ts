@@ -32,9 +32,7 @@ type AutoReviewRolloutMetricQueryBuilder = {
     column: string,
     options: { ascending: boolean },
   ): AutoReviewRolloutMetricQueryBuilder;
-  limit(
-    count: number,
-  ): PromiseLike<{
+  limit(count: number): PromiseLike<{
     data: AutoReviewRolloutMetricAuditRow[] | null;
     error: Error | null;
   }>;

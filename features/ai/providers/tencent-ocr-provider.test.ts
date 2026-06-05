@@ -87,11 +87,12 @@ describe("createTencentOcrProvider", () => {
   });
 });
 
-const realSmoke = process.env.TENCENT_SECRET_ID &&
+const realSmoke =
+  process.env.TENCENT_SECRET_ID &&
   process.env.TENCENT_SECRET_KEY &&
   process.env.TENCENT_OCR_SMOKE_IMAGE_BASE64
-  ? it
-  : it.skip;
+    ? it
+    : it.skip;
 
 realSmoke("real Tencent OCR env-gated smoke", async () => {
   const provider = createTencentOcrProvider({

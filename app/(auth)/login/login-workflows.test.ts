@@ -13,9 +13,9 @@ import {
 
 describe("login workflows", () => {
   it("routes authenticated MCN staff and streamers to their real workspaces", () => {
-    expect(resolvePostLoginPath({ role: "owner", roleIntent: "streamer" })).toBe(
-      "/console/projects",
-    );
+    expect(
+      resolvePostLoginPath({ role: "owner", roleIntent: "streamer" }),
+    ).toBe("/console/projects");
     expect(
       resolvePostLoginPath({ role: "operator_business", roleIntent: "mcn" }),
     ).toBe("/console/projects");

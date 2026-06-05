@@ -13,6 +13,7 @@
 ### Task 1: Streamer Diagnosis Agent
 
 **Files:**
+
 - Create: `features/ai/streamer-diagnosis-agent.test.ts`
 - Create: `features/ai/streamer-diagnosis-agent.ts`
 
@@ -29,20 +30,22 @@ const result = await runStreamerDiagnosisAgent({
       settlementDuration: 80,
       totalViews: 300,
       evidenceLevel: "yellow",
-      grossMarginCents: 50000
+      grossMarginCents: 50000,
     },
-    feedback: ["weak interaction"]
-  }
+    feedback: ["weak interaction"],
+  },
 });
 
 expect(result.result.toolName).toBe("streamer_diagnosis");
 expect(result.validation).toEqual({ valid: true, errors: [] });
-expect(result.agentOutput.facts).toEqual(expect.arrayContaining([
-  expect.objectContaining({
-    statement: "Total views are 300",
-    sourceTool: "streamer_diagnosis"
-  })
-]));
+expect(result.agentOutput.facts).toEqual(
+  expect.arrayContaining([
+    expect.objectContaining({
+      statement: "Total views are 300",
+      sourceTool: "streamer_diagnosis",
+    }),
+  ]),
+);
 expect(JSON.stringify(result.agentOutput)).not.toContain("grossMarginCents");
 ```
 
@@ -77,6 +80,7 @@ git commit -m "feat: add AG2 streamer diagnosis agent"
 ### Task 2: Diagnosis Route Compatibility
 
 **Files:**
+
 - Modify: `app/api/ai/diagnosis/route.test.ts`
 - Modify: `app/api/ai/diagnosis/route.ts`
 
@@ -123,6 +127,7 @@ git commit -m "feat: return AgentOutput from diagnosis API"
 ### Task 3: Regression Gate And Push
 
 **Files:**
+
 - No production files unless verification finds a scoped defect.
 
 - [ ] **Step 1: Run AI system tests**

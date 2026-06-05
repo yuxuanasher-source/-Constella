@@ -13,6 +13,7 @@
 ### Task 1: Numeric Grounding Guard
 
 **Files:**
+
 - Modify: `features/ai/agent-output-contract.test.ts`
 - Modify: `features/ai/agent-output-contract.ts`
 
@@ -27,7 +28,9 @@ it("rejects numeric claims in findings because numbers belong in sourced facts",
     findings: [
       {
         summary: "Margin is 4167 bps and should be protected",
-        evidence: [{ sourceTool: "project_review_summary", sourceId: "tool-1" }],
+        evidence: [
+          { sourceTool: "project_review_summary", sourceId: "tool-1" },
+        ],
       },
     ],
   });
@@ -80,18 +83,21 @@ git commit -m "feat: enforce numeric grounding in Agent outputs"
 ### Task 2: Business Analysis Agent Golden Cases
 
 **Files:**
+
 - Create: `features/ai/business-analysis-agent.test.ts`
 - Create: `features/ai/business-analysis-agent.ts`
 
 - [ ] **Step 1: Write failing tests**
 
 Create S1-S4 golden tests:
+
 - S1 profitable project recommends continuing.
 - S2 low margin recommends pricing review or pause.
 - S3 zero receivable stays finite and records caveats.
 - S4 anomalies and disputes recommend risk replacement.
 
 Each test must assert:
+
 - `validation.valid === true`
 - every fact has `sourceTool/sourceId`
 - findings cite existing facts
@@ -122,12 +128,14 @@ git commit -m "feat: add AG1 business analysis agent"
 ### Task 3: Project Review Agent API
 
 **Files:**
+
 - Create: `app/api/ai/project-reviews/route.test.ts`
 - Create: `app/api/ai/project-reviews/route.ts`
 
 - [ ] **Step 1: Write failing tests**
 
 Add route tests proving:
+
 - authenticated MCN staff receives `{ report, agentOutput, validation }`
 - streamers are blocked from internal economics
 - unauthenticated users receive 401
@@ -156,6 +164,7 @@ git commit -m "feat: expose AG1 project review API"
 ### Task 4: Regression Gate
 
 **Files:**
+
 - No production files unless verification finds a scoped defect.
 
 - [ ] **Step 1: Run AI system tests**

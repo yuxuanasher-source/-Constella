@@ -49,7 +49,9 @@ export function resolveAiProviderRouting(env: AiProviderEnv = process.env): {
   };
 }
 
-function parseProviderName(value: string | undefined): AiProviderName | undefined {
+function parseProviderName(
+  value: string | undefined,
+): AiProviderName | undefined {
   if (value === "openai" || value === "hunyuan" || value === "deterministic") {
     return value;
   }

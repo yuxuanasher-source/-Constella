@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  evaluateBillingGate,
-  resolvePlanEntitlements,
-} from "./billing-gates";
+import { evaluateBillingGate, resolvePlanEntitlements } from "./billing-gates";
 
 describe("resolvePlanEntitlements", () => {
   it("combines plan features with feature add-ons", () => {

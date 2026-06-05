@@ -41,8 +41,14 @@ export type LoginSnapshotClient = {
     select(
       columns: "batch_type, period_start, computed_amount, manual_amount, adjustment_amount",
     ): {
-      neq(column: "status", value: "voided"): {
-        gte(column: "period_start", value: string): {
+      neq(
+        column: "status",
+        value: "voided",
+      ): {
+        gte(
+          column: "period_start",
+          value: string,
+        ): {
           lt(
             column: "period_start",
             value: string,
@@ -60,7 +66,10 @@ type BusinessSnapshotOptions = {
   now?: Date;
 };
 
-const pendingReportStatuses = ["pending_review", "pending_adjudication"] as const;
+const pendingReportStatuses = [
+  "pending_review",
+  "pending_adjudication",
+] as const;
 
 export async function getLoginBusinessSnapshot(
   client: LoginSnapshotClient | null,
@@ -252,7 +261,8 @@ function formatTrend(currentAmount: number, previousAmount: number) {
     return "新增";
   }
 
-  const pct = ((currentAmount - previousAmount) / Math.abs(previousAmount)) * 100;
+  const pct =
+    ((currentAmount - previousAmount) / Math.abs(previousAmount)) * 100;
   const rounded = Math.abs(pct).toFixed(1);
   if (pct > 0) {
     return `↑${rounded}%`;

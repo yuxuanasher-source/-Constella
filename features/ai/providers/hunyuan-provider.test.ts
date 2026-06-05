@@ -76,8 +76,12 @@ describe("createHunyuanProvider", () => {
         async () =>
           new Response(
             JSON.stringify({
-              choices: [{ message: { content: "{\"summary\":\"ok\"}" } }],
-              usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+              choices: [{ message: { content: '{"summary":"ok"}' } }],
+              usage: {
+                prompt_tokens: 1,
+                completion_tokens: 2,
+                total_tokens: 3,
+              },
             }),
           ),
       ),

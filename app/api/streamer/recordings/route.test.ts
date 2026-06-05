@@ -33,7 +33,8 @@ vi.mock("@/features/live-operations/live-operations-route-utils", () => {
           : error instanceof Error
             ? 400
             : 500;
-      const message = error instanceof Error ? error.message : "Unexpected error";
+      const message =
+        error instanceof Error ? error.message : "Unexpected error";
       return Response.json({ error: message }, { status });
     },
     readJsonBody: async (request: Request) =>
@@ -103,10 +104,10 @@ describe("streamer recordings route", () => {
         }),
       ],
     });
-    expect(listStreamerRecordingLinks).toHaveBeenCalledWith(
-      context.supabase,
-      { organizationId: "org-1", streamerId: "streamer-1" },
-    );
+    expect(listStreamerRecordingLinks).toHaveBeenCalledWith(context.supabase, {
+      organizationId: "org-1",
+      streamerId: "streamer-1",
+    });
   });
 
   it("creates a recording URL row for the current streamer", async () => {
@@ -130,18 +131,15 @@ describe("streamer recordings route", () => {
         link: "https://videos.example.com/game-beta",
       }),
     });
-    expect(createStreamerRecordingLink).toHaveBeenCalledWith(
-      context.supabase,
-      {
-        organizationId: "org-1",
-        streamerId: "streamer-1",
-        submittedBy: "user-streamer",
-        product: "Game Beta",
-        category: "SLG",
-        link: "https://videos.example.com/game-beta",
-        month: "2026-06",
-      },
-    );
+    expect(createStreamerRecordingLink).toHaveBeenCalledWith(context.supabase, {
+      organizationId: "org-1",
+      streamerId: "streamer-1",
+      submittedBy: "user-streamer",
+      product: "Game Beta",
+      category: "SLG",
+      link: "https://videos.example.com/game-beta",
+      month: "2026-06",
+    });
   });
 
   it("rejects non-streamer users", async () => {

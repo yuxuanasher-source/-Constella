@@ -48,9 +48,7 @@ describe("calculateUsageStatus", () => {
 
 describe("getUsagePeriodMonth", () => {
   it("normalizes usage periods to the first day of the month", () => {
-    expect(getUsagePeriodMonth("2026-06-23T18:30:00.000Z")).toBe(
-      "2026-06-01",
-    );
+    expect(getUsagePeriodMonth("2026-06-23T18:30:00.000Z")).toBe("2026-06-01");
   });
 });
 

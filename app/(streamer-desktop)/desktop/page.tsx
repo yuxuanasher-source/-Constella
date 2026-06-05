@@ -12,12 +12,14 @@ import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
 export default async function StreamerDesktopPage() {
-  const [liveTasks, notificationItems, profile, recordings] = await Promise.all([
-    loadStreamerTasks(),
-    loadStreamerNotifications(),
-    loadStreamerProfile(),
-    loadStreamerRecordings(),
-  ]);
+  const [liveTasks, notificationItems, profile, recordings] = await Promise.all(
+    [
+      loadStreamerTasks(),
+      loadStreamerNotifications(),
+      loadStreamerProfile(),
+      loadStreamerRecordings(),
+    ],
+  );
 
   return (
     <StreamerDesktopReferenceApp

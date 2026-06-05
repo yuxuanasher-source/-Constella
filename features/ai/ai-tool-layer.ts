@@ -1,9 +1,6 @@
 import { writeAuditLog } from "@/lib/audit/audit";
 
-import {
-  createAiInvocationId,
-  recordAiInvocation,
-} from "./invocation-ledger";
+import { createAiInvocationId, recordAiInvocation } from "./invocation-ledger";
 import { recordAiToolInvocation } from "./tool-ledger";
 import {
   scopeAllowsRole,
@@ -14,9 +11,15 @@ import {
 
 type AiClient = {
   from(
-    table: "audit_logs" | "ai_invocations" | "ai_tool_invocations" | "usage_events",
+    table:
+      | "audit_logs"
+      | "ai_invocations"
+      | "ai_tool_invocations"
+      | "usage_events",
   ): {
-    insert(payload: Record<string, unknown>): PromiseLike<{ error: Error | null }>;
+    insert(
+      payload: Record<string, unknown>,
+    ): PromiseLike<{ error: Error | null }>;
   };
 };
 
@@ -45,7 +48,8 @@ const streamerForbiddenKeys = [
 const registeredTools: Record<string, RegisteredAiTool> = {
   project_review_summary: {
     name: "project_review_summary",
-    description: "Summarizes a project review report into a safe recommendation.",
+    description:
+      "Summarizes a project review report into a safe recommendation.",
     inputSchema: { type: "object", required: ["report"] },
     scopes: ["mcn_staff"],
     masking: { input: ["report"], output: [], streamerForbiddenKeys },
@@ -64,14 +68,17 @@ const registeredTools: Record<string, RegisteredAiTool> = {
           projectName,
           marginRateBps,
           shouldContinue,
-          recommendation: shouldContinue ? "continue_project" : "raise_quote_or_pause",
+          recommendation: shouldContinue
+            ? "continue_project"
+            : "raise_quote_or_pause",
         },
       };
     },
   },
   streamer_diagnosis: {
     name: "streamer_diagnosis",
-    description: "Creates a read-only streamer-safe diagnosis from visible task data.",
+    description:
+      "Creates a read-only streamer-safe diagnosis from visible task data.",
     inputSchema: { type: "object" },
     scopes: ["streamer", "mcn_staff"],
     masking: { input: [], output: [], streamerForbiddenKeys },
@@ -85,7 +92,8 @@ const registeredTools: Record<string, RegisteredAiTool> = {
         ? input.feedback.map(String)
         : [];
       const diagnosisType = feedback.some(
-        (item) => item.includes("互动") || item.toLowerCase().includes("interaction"),
+        (item) =>
+          item.includes("互动") || item.toLowerCase().includes("interaction"),
       )
         ? "traffic_drop"
         : "content_rhythm";
@@ -287,7 +295,10 @@ function summarizeForActor(
   ) as Record<string, unknown>;
 }
 
-function stripForbiddenFields(value: unknown, forbiddenKeys: string[]): unknown {
+function stripForbiddenFields(
+  value: unknown,
+  forbiddenKeys: string[],
+): unknown {
   const forbidden = new Set(forbiddenKeys);
 
   if (Array.isArray(value)) {

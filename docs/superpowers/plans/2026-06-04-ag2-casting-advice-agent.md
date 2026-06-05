@@ -13,6 +13,7 @@
 ### Task 1: Agent RED Test
 
 **Files:**
+
 - Create: `features/ai/casting-advice-agent.test.ts`
 
 - [ ] **Step 1: Write the failing Agent test**
@@ -74,6 +75,7 @@ Expected: FAIL because `./casting-advice-agent` does not exist.
 ### Task 2: Agent GREEN
 
 **Files:**
+
 - Create: `features/ai/casting-advice-agent.ts`
 - Modify: `features/ai/casting-advice-agent.test.ts`
 
@@ -108,6 +110,7 @@ Expected: PASS.
 ### Task 3: Briefs Route RED Test
 
 **Files:**
+
 - Create: `app/api/ai/briefs/route.test.ts`
 
 - [ ] **Step 1: Write route tests**
@@ -123,6 +126,7 @@ Expected: FAIL because the route does not exist.
 ### Task 4: Briefs Route GREEN
 
 **Files:**
+
 - Create: `app/api/ai/briefs/route.ts`
 
 - [ ] **Step 1: Implement `POST /api/ai/briefs`**
@@ -138,6 +142,7 @@ Expected: PASS.
 ### Task 5: Regression Verification
 
 **Files:**
+
 - No edits.
 
 - [ ] **Step 1: Run focused tests**
@@ -168,6 +173,7 @@ Expected: all pass. The known Next.js worktree root warning is acceptable if bui
 ### Task 6: Commit And Push
 
 **Files:**
+
 - All new AG-2 casting advice files.
 
 - [ ] **Step 1: Commit docs and implementation**

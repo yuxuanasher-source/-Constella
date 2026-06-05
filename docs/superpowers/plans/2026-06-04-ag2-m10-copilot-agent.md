@@ -13,6 +13,7 @@
 ### Task 1: Copilot Agent RED Test
 
 **Files:**
+
 - Create: `features/ai/m10-copilot-agent.test.ts`
 
 - [ ] **Step 1: Write the failing Agent test**
@@ -35,6 +36,7 @@ Expected: FAIL because `./m10-copilot-agent` does not exist.
 ### Task 2: Copilot Agent GREEN
 
 **Files:**
+
 - Create: `features/ai/m10-copilot-agent.ts`
 
 - [ ] **Step 1: Implement exported types and `runM10CopilotAgent`**
@@ -67,6 +69,7 @@ Expected: PASS.
 ### Task 3: Copilot Route RED Test
 
 **Files:**
+
 - Create: `app/api/ai/copilot/route.test.ts`
 
 - [ ] **Step 1: Write route tests**
@@ -87,6 +90,7 @@ Expected: FAIL because the route does not exist.
 ### Task 4: Copilot Route GREEN
 
 **Files:**
+
 - Create: `app/api/ai/copilot/route.ts`
 
 - [ ] **Step 1: Implement route**
@@ -102,6 +106,7 @@ Expected: PASS.
 ### Task 5: Regression Verification
 
 **Files:**
+
 - No edits.
 
 - [ ] **Step 1: Run focused tests**
@@ -132,6 +137,7 @@ Expected: all pass. Run `pnpm type-check` after `pnpm build` if generated `.next
 ### Task 6: Commit And Push
 
 **Files:**
+
 - All AG-2 M10 Copilot files.
 
 - [ ] **Step 1: Commit implementation**

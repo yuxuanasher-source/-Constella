@@ -13,6 +13,7 @@
 ### Task 1: Metrics Snapshot Builder
 
 **Files:**
+
 - Create: `features/auto-review/auto-review-rollout-metrics.test.ts`
 - Create: `features/auto-review/auto-review-rollout-metrics.ts`
 
@@ -47,8 +48,16 @@ describe("buildAutoReviewRolloutMetrics", () => {
         },
       ],
       auditSamples: [
-        { sampleId: "audit-1", expectedDecision: "approve", actualDecision: "approve" },
-        { sampleId: "audit-2", expectedDecision: "approve", actualDecision: "reject" },
+        {
+          sampleId: "audit-1",
+          expectedDecision: "approve",
+          actualDecision: "approve",
+        },
+        {
+          sampleId: "audit-2",
+          expectedDecision: "approve",
+          actualDecision: "reject",
+        },
       ],
     });
 
@@ -195,7 +204,8 @@ export function buildAutoReviewRolloutMetrics(input: {
 
   const comparedAuditSamples = input.auditSamples.filter(
     (sample) =>
-      sample.expectedDecision !== "unknown" && sample.actualDecision !== "unknown",
+      sample.expectedDecision !== "unknown" &&
+      sample.actualDecision !== "unknown",
   );
   const auditErrorCount = comparedAuditSamples.filter(
     (sample) => sample.expectedDecision !== sample.actualDecision,
@@ -242,6 +252,7 @@ Expected: PASS.
 ### Task 2: Gate Integration Proof
 
 **Files:**
+
 - Modify: `features/auto-review/auto-review-rollout-metrics.test.ts`
 
 - [ ] **Step 1: Write the failing integration proof**
@@ -262,7 +273,11 @@ it("feeds the rollout gate with measured metrics", () => {
       },
     ],
     auditSamples: [
-      { sampleId: "audit-1", expectedDecision: "approve", actualDecision: "approve" },
+      {
+        sampleId: "audit-1",
+        expectedDecision: "approve",
+        actualDecision: "approve",
+      },
     ],
   });
 
@@ -301,6 +316,7 @@ Expected: PASS.
 ### Task 3: Regression And Commit
 
 **Files:**
+
 - Create: `features/auto-review/auto-review-rollout-metrics.ts`
 - Create: `features/auto-review/auto-review-rollout-metrics.test.ts`
 

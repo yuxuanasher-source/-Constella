@@ -155,7 +155,9 @@ describe("login server actions", () => {
           roleIntent: "mcn",
         }),
       ),
-    ).rejects.toThrow("NEXT_REDIRECT:/login?mode=activate&role=mcn&error=activation");
+    ).rejects.toThrow(
+      "NEXT_REDIRECT:/login?mode=activate&role=mcn&error=activation",
+    );
 
     expect(updateUserById).not.toHaveBeenCalled();
     expect(signOut).not.toHaveBeenCalled();

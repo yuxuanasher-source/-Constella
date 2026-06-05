@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { validateAgentOutput } from "./agent-output-contract";
-import {
-  runM10CopilotAgent,
-  type M10CopilotInput,
-} from "./m10-copilot-agent";
+import { runM10CopilotAgent, type M10CopilotInput } from "./m10-copilot-agent";
 import type { AgentOutput } from "./contracts";
 
 describe("runM10CopilotAgent", () => {

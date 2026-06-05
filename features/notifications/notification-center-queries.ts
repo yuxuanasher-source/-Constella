@@ -46,10 +46,11 @@ export type NotificationQueryClient = {
 type NotificationQueryBuilder = {
   eq(column: string, value: unknown): NotificationQueryBuilder;
   or(filter: string): NotificationQueryBuilder;
-  order(column: string, options: { ascending: boolean }): NotificationQueryBuilder;
-  limit(
-    count: number,
-  ): PromiseLike<{
+  order(
+    column: string,
+    options: { ascending: boolean },
+  ): NotificationQueryBuilder;
+  limit(count: number): PromiseLike<{
     data: unknown[] | null;
     error: { message: string } | null;
   }>;

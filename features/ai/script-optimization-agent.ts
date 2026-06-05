@@ -120,10 +120,15 @@ function collectScriptFacts(
   ];
 }
 
-function buildScriptDraftContent(input: RequiredScriptOptimizationInput): string {
-  const baseScript = input.currentScript.trim() || "Start with a clear promise.";
-  const feedbackLine = input.feedback[0]?.trim() || "Make the opening easier to follow.";
-  const replayLine = input.replayNotes[0]?.trim() || "Review the replay before publishing.";
+function buildScriptDraftContent(
+  input: RequiredScriptOptimizationInput,
+): string {
+  const baseScript =
+    input.currentScript.trim() || "Start with a clear promise.";
+  const feedbackLine =
+    input.feedback[0]?.trim() || "Make the opening easier to follow.";
+  const replayLine =
+    input.replayNotes[0]?.trim() || "Review the replay before publishing.";
 
   return [
     `Opening hook: ${baseScript}`,

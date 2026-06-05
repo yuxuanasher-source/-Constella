@@ -20,7 +20,7 @@ vi.mock("@/features/organizations/organization-service", () => ({
 vi.mock("@/features/organizations/organization-repository", () => ({
   SupabaseOrganizationMemberRepository: vi.fn(function () {
     return {
-    repo: "organization-members",
+      repo: "organization-members",
     };
   }),
 }));

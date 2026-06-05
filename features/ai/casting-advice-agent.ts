@@ -111,7 +111,9 @@ function buildAgentOutput(
   const firstRisky = matches.find((match) => match.riskNotes.length > 0);
   const firstShortage = matches.find((match) => {
     const candidate = candidateById.get(match.streamerId);
-    return candidate ? candidate.availableMinutes < input.project.requiredMinutes : false;
+    return candidate
+      ? candidate.availableMinutes < input.project.requiredMinutes
+      : false;
   });
 
   return {
@@ -233,7 +235,8 @@ function buildRecommendations(
     return [
       {
         proposal: "Collect candidate snapshots before invitation review",
-        expectedImpact: "Avoid making allocation decisions from incomplete casting context",
+        expectedImpact:
+          "Avoid making allocation decisions from incomplete casting context",
         requiresHumanApproval: true,
       },
     ];

@@ -176,7 +176,10 @@ describe("toStreamerDesktopProfileDto", () => {
         ],
         recording_submissions: [
           { status: "approved", submitted_at: "2026-06-01T08:00:00.000Z" },
-          { status: "pending_review", submitted_at: "2026-06-02T08:00:00.000Z" },
+          {
+            status: "pending_review",
+            submitted_at: "2026-06-02T08:00:00.000Z",
+          },
         ],
         live_reports: [
           {

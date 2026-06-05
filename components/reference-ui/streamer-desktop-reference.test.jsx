@@ -422,14 +422,19 @@ describe("StreamerDesktopReferenceApp recording library", () => {
     expect(screen.getAllByText("审核状态").length).toBeGreaterThan(0);
     expect(screen.getByText("Game Alpha")).toBeInTheDocument();
     expect(screen.getByText("ARPG")).toBeInTheDocument();
-    expect(screen.getByText("https://videos.example.com/game-alpha")).toBeInTheDocument();
+    expect(
+      screen.getByText("https://videos.example.com/game-alpha"),
+    ).toBeInTheDocument();
     expect(screen.getByText("2026-06")).toBeInTheDocument();
     expect(screen.queryByText("支持 MP4 / MOV")).not.toBeInTheDocument();
   });
 
   it("submits a recording URL row and appends it to the table", async () => {
     const fetchMock = vi.fn(async (url, init) => {
-      if (String(url) === "/api/streamer/recordings" && init?.method === "POST") {
+      if (
+        String(url) === "/api/streamer/recordings" &&
+        init?.method === "POST"
+      ) {
         return {
           ok: true,
           json: async () => ({
@@ -475,7 +480,9 @@ describe("StreamerDesktopReferenceApp recording library", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Game Beta")).toBeInTheDocument();
-      expect(screen.getByText("https://videos.example.com/game-beta")).toBeInTheDocument();
+      expect(
+        screen.getByText("https://videos.example.com/game-beta"),
+      ).toBeInTheDocument();
     });
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/streamer/recordings",

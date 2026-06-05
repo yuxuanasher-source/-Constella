@@ -13,6 +13,7 @@
 ### Task 1: Rollout Gate RED Test
 
 **Files:**
+
 - Create: `features/auto-review/auto-review-rollout-gates.test.ts`
 
 - [ ] **Step 1: Write failing gate tests**
@@ -36,6 +37,7 @@ Expected: FAIL because `./auto-review-rollout-gates` does not exist.
 ### Task 2: Rollout Gate GREEN
 
 **Files:**
+
 - Create: `features/auto-review/auto-review-rollout-gates.ts`
 
 - [ ] **Step 1: Implement exported types and evaluator**
@@ -69,6 +71,7 @@ Expected: PASS.
 ### Task 3: Active Service Gate RED Test
 
 **Files:**
+
 - Modify: `features/auto-review/auto-review-service.test.ts`
 
 - [ ] **Step 1: Add service tests**
@@ -88,6 +91,7 @@ Expected: FAIL because `evaluateAutoReviewActive` does not accept or enforce `ro
 ### Task 4: Active Service Gate GREEN
 
 **Files:**
+
 - Modify: `features/auto-review/auto-review-service.ts`
 
 - [ ] **Step 1: Add optional `rolloutGate` parameter**
@@ -103,6 +107,7 @@ Expected: PASS.
 ### Task 5: Regression Verification
 
 **Files:**
+
 - No edits.
 
 - [ ] **Step 1: Run focused tests**
@@ -133,6 +138,7 @@ Expected: all pass. Build may show the existing Next worktree root warning.
 ### Task 6: Commit And Push
 
 **Files:**
+
 - All AI-3 auto-review gate files.
 
 - [ ] **Step 1: Commit implementation**

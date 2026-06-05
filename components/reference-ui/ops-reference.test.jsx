@@ -650,7 +650,9 @@ describe("OpsReferenceApp project smoke", () => {
       target: { value: "Project profile is now configurable." },
     });
     fireEvent.click(screen.getByRole("combobox", { name: "项目状态" }));
-    expect(screen.getByRole("listbox", { name: "项目状态选项" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("listbox", { name: "项目状态选项" }),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("option", { name: "已暂停" }));
     fireEvent.change(screen.getByLabelText("开始日期"), {
       target: { value: "2026-06-05" },
@@ -715,6 +717,231 @@ describe("OpsReferenceApp project smoke", () => {
     expect(
       screen.queryByRole("option", { name: "结算中" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("OpsReferenceApp OCR operations smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("lists OCR jobs, retries, runs, and confirms without exposing raw provider data", async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      const requestUrl = String(url);
+      if (requestUrl.startsWith("/api/ocr/jobs") && init === undefined) {
+        if (requestUrl === "/api/ocr/jobs?status=failed") {
+          return {
+            ok: true,
+            json: async () => ({
+              jobs: [
+                {
+                  id: "ocr-job-1",
+                  status: "failed",
+                  attempt: 2,
+                  maxAttempts: 3,
+                  liveReportId: "report-1",
+                  errorCode: "provider_failed",
+                  errorMessage: "Tencent OCR HTTP 500",
+                },
+              ],
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            jobs: [
+              {
+                id: "ocr-job-1",
+                status: "failed",
+                attempt: 2,
+                maxAttempts: 3,
+                aiInvocationId: "invocation-1",
+                liveReportId: "report-1",
+                screenshotId: "screenshot-1",
+                errorCode: "provider_failed",
+                errorMessage: "Tencent OCR HTTP 500",
+                createdAt: "2026-06-05T01:00:00.000Z",
+                updatedAt: "2026-06-05T01:10:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+
+      if (
+        requestUrl === "/api/ocr/jobs/ocr-job-1" &&
+        init?.method === "POST" &&
+        JSON.parse(init.body).action === "retry"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            job: {
+              id: "ocr-job-1",
+              status: "queued",
+              attempt: 2,
+              maxAttempts: 3,
+              liveReportId: "report-1",
+              errorCode: "provider_failed",
+              errorMessage: "Tencent OCR HTTP 500",
+            },
+          }),
+        };
+      }
+
+      if (requestUrl === "/api/ocr/jobs/run" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            jobs: [
+              {
+                id: "ocr-job-1",
+                status: "needs_confirmation",
+                attempt: 3,
+                maxAttempts: 3,
+                liveReportId: "report-1",
+                errorCode: "low_confidence",
+                errorMessage: "low_provider_confidence",
+              },
+            ],
+          }),
+        };
+      }
+
+      if (
+        requestUrl === "/api/ocr/jobs/ocr-job-1" &&
+        init?.method === "POST" &&
+        JSON.parse(init.body).action === "needs_review"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            job: {
+              id: "ocr-job-1",
+              status: "needs_review",
+              attempt: 2,
+              maxAttempts: 3,
+              liveReportId: "report-1",
+              errorCode: "needs_review",
+              errorMessage: "manual_review_requested",
+            },
+          }),
+        };
+      }
+
+      if (
+        requestUrl === "/api/ocr/jobs/ocr-job-1" &&
+        init?.method === "POST" &&
+        JSON.parse(init.body).action === "confirm"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            job: {
+              id: "ocr-job-1",
+              status: "succeeded",
+              attempt: 3,
+              maxAttempts: 3,
+              liveReportId: "report-1",
+              reviewedBy: "user-ops",
+              reviewedAt: "2026-06-05T02:30:00.000Z",
+            },
+          }),
+        };
+      }
+
+      return {
+        ok: false,
+        json: async () => ({ error: `unexpected request ${requestUrl}` }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="warroom" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "OCR 作业" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/ocr/jobs", undefined),
+    );
+    expect(screen.getByText("ocr-job-1")).toBeInTheDocument();
+    expect(screen.getByText("provider_failed")).toBeInTheDocument();
+    expect(screen.getByText("2/3")).toBeInTheDocument();
+    expect(screen.queryByText("rawResponse")).not.toBeInTheDocument();
+    expect(screen.queryByText("secret-image")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "失败" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/ocr/jobs?status=failed",
+        undefined,
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "手动重试" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/ocr/jobs/ocr-job-1",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "retry" }),
+        }),
+      ),
+    );
+    expect(await screen.findByText("queued")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "运行下一条 OCR" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/ocr/jobs/run",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ limit: 1 }),
+        }),
+      ),
+    );
+    expect(await screen.findByText("needs_confirmation")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "标记需复核" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/ocr/jobs/ocr-job-1",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "needs_review" }),
+        }),
+      ),
+    );
+    expect((await screen.findAllByText("needs_review")).length).toBeGreaterThan(
+      0,
+    );
+
+    fireEvent.change(screen.getByLabelText("修正时长 ocr-job-1"), {
+      target: { value: "80" },
+    });
+    fireEvent.change(screen.getByLabelText("修正观看人数 ocr-job-1"), {
+      target: { value: "320" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "人工确认" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/ocr/jobs/ocr-job-1",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "confirm",
+            manualResult: { duration: 80, viewers: 320 },
+          }),
+        }),
+      ),
+    );
+    expect(await screen.findByText("succeeded")).toBeInTheDocument();
   });
 });
 
@@ -2495,9 +2722,7 @@ describe("OpsReferenceApp war room smoke", () => {
     expect(await screen.findByText("11,250.00 元")).toBeInTheDocument();
     expect(screen.getByText("margin_below_target")).toBeInTheDocument();
   });
-
 });
-
 
 describe("OpsReferenceApp billing smoke", () => {
   afterEach(() => {

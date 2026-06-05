@@ -77,7 +77,9 @@ describe("AI scripts route", () => {
         created_by: "user-ops",
       }),
     ]);
-    expect(JSON.stringify(inserts.ai_script_versions)).not.toContain("published");
+    expect(JSON.stringify(inserts.ai_script_versions)).not.toContain(
+      "published",
+    );
   });
 
   it("blocks streamers from creating script version drafts", async () => {

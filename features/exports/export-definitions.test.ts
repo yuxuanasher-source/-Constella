@@ -4,7 +4,10 @@ import { getAllowedExportFields } from "./export-definitions";
 
 describe("export definitions", () => {
   it("keeps vendor delivery package free of cost and margin fields", () => {
-    const fields = getAllowedExportFields("vendor_delivery", "operator_business");
+    const fields = getAllowedExportFields(
+      "vendor_delivery",
+      "operator_business",
+    );
 
     expect(fields.map((field) => field.key)).not.toContain("grossMarginCents");
     expect(fields.map((field) => field.key)).not.toContain("costCents");
@@ -14,7 +17,10 @@ describe("export definitions", () => {
   });
 
   it("blocks finance-sensitive fields from operator exports", () => {
-    const fields = getAllowedExportFields("settlement_batch", "operator_business");
+    const fields = getAllowedExportFields(
+      "settlement_batch",
+      "operator_business",
+    );
 
     expect(fields.map((field) => field.sensitivity)).not.toContain(
       "finance_sensitive",

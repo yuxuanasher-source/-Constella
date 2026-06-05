@@ -33,8 +33,14 @@ describe("runBusinessAnalysisAgent", () => {
         expect.objectContaining({
           summary: "Project economics support continuing the next round",
           evidence: [
-            { sourceTool: "project_review_summary", sourceId: "project-s1:marginRateBps" },
-            { sourceTool: "project_review_summary", sourceId: "project-s1:shouldContinue" },
+            {
+              sourceTool: "project_review_summary",
+              sourceId: "project-s1:marginRateBps",
+            },
+            {
+              sourceTool: "project_review_summary",
+              sourceId: "project-s1:shouldContinue",
+            },
           ],
         }),
       ]),
@@ -42,7 +48,8 @@ describe("runBusinessAnalysisAgent", () => {
     expect(result.output.recommendations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          proposal: "Continue the project with the current operating guardrails",
+          proposal:
+            "Continue the project with the current operating guardrails",
           requiresHumanApproval: true,
         }),
       ]),
@@ -186,28 +193,26 @@ function createInput(
       periodStart: "2026-02-01",
       periodEnd: "2026-02-07",
     },
-    finance:
-      overrides.finance ?? {
-        receivableCents: 1200000,
-        payableCents: 600000,
-        supplierCostCents: 100000,
-        adjustmentCents: 0,
-        manualRevenueCents: 80000,
+    finance: overrides.finance ?? {
+      receivableCents: 1200000,
+      payableCents: 600000,
+      supplierCostCents: 100000,
+      adjustmentCents: 0,
+      manualRevenueCents: 80000,
+    },
+    streamers: overrides.streamers ?? [
+      {
+        id: "streamer-a",
+        name: "Ava",
+        durationMinutes: 1200,
+        totalViews: 120000,
+        completionRateBps: 9500,
+        roiBps: 14000,
+        grossMarginContributionCents: 320000,
+        anomalyCount: 0,
+        disputeCount: 0,
       },
-    streamers:
-      overrides.streamers ?? [
-        {
-          id: "streamer-a",
-          name: "Ava",
-          durationMinutes: 1200,
-          totalViews: 120000,
-          completionRateBps: 9500,
-          roiBps: 14000,
-          grossMarginContributionCents: 320000,
-          anomalyCount: 0,
-          disputeCount: 0,
-        },
-      ],
+    ],
     suppliers: [],
     evidenceSummary: overrides.evidenceSummary ?? {
       green: 8,

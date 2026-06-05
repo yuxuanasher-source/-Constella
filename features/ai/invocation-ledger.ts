@@ -3,11 +3,18 @@ import { randomUUID } from "node:crypto";
 import { writeAuditLog } from "@/lib/audit/audit";
 import { recordUsageEvent } from "@/features/billing/usage-metering";
 
-import type { AiActor, AiInvocationStatus, AiProviderName, AiUsage } from "./contracts";
+import type {
+  AiActor,
+  AiInvocationStatus,
+  AiProviderName,
+  AiUsage,
+} from "./contracts";
 
 type AiInvocationLedgerClient = {
   from(table: "ai_invocations" | "usage_events" | "audit_logs"): {
-    insert(payload: Record<string, unknown>): PromiseLike<{ error: Error | null }>;
+    insert(
+      payload: Record<string, unknown>,
+    ): PromiseLike<{ error: Error | null }>;
   };
 };
 

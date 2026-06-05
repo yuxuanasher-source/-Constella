@@ -14,7 +14,9 @@ describe("parseLiveReportOcrText", () => {
   });
 
   it("supports minute-only duration and comma-separated viewers", () => {
-    expect(parseLiveReportOcrText(["时长：95分钟", "场观 1,280 人"])).toMatchObject({
+    expect(
+      parseLiveReportOcrText(["时长：95分钟", "场观 1,280 人"]),
+    ).toMatchObject({
       status: "trusted",
       extractedDuration: 95,
       extractedViewers: 1280,

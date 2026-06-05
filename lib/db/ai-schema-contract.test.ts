@@ -53,6 +53,36 @@ describe("AI runtime schema contract", () => {
     );
   });
 
+  it("adds production OCR job operation fields without exposing raw secrets", () => {
+    expect(allMigrations).toMatch(
+      /alter table public\.background_jobs[\s\S]*add column if not exists error_code/,
+    );
+    expect(allMigrations).toMatch(
+      /alter table public\.background_jobs[\s\S]*add column if not exists error_message/,
+    );
+    expect(allMigrations).toMatch(
+      /alter table public\.background_jobs[\s\S]*add column if not exists result/,
+    );
+    expect(allMigrations).toMatch(
+      /alter table public\.background_jobs[\s\S]*add column if not exists reviewed_by/,
+    );
+    expect(allMigrations).toMatch(
+      /alter table public\.background_jobs[\s\S]*add column if not exists reviewed_at/,
+    );
+    expect(allMigrations).toContain("pending");
+    expect(allMigrations).toContain("processing");
+    expect(allMigrations).toContain("needs_review");
+  });
+
+  it("adds OCR job claim and project-scoped operation policies", () => {
+    expect(allMigrations).toContain("function public.claim_ocr_jobs");
+    expect(allMigrations).toContain("for update skip locked");
+    expect(allMigrations).toContain("public.can_access_ocr_job");
+    expect(allMigrations).toContain("payload ->> 'livereportid'");
+    expect(allMigrations).toContain("create policy ocr_results_staff_insert");
+    expect(allMigrations).toContain("create policy ocr_results_staff_update");
+  });
+
   it("uses integer-safe AI costs and token counters", () => {
     expect(allMigrations).toContain("prompt_tokens integer not null default 0");
     expect(allMigrations).toContain(

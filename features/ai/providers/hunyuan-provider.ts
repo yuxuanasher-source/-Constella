@@ -137,7 +137,8 @@ async function runHunyuanRequest({
     });
   } catch (error) {
     return failed({
-      errorSummary: error instanceof Error ? error.message : "Hunyuan request failed",
+      errorSummary:
+        error instanceof Error ? error.message : "Hunyuan request failed",
       latencyMs: Date.now() - startedAt,
     });
   }
@@ -166,7 +167,9 @@ function withJsonInstruction<T extends AiStructuredInput>(input: T): T {
 function extractChatText(raw: Record<string, unknown>): string {
   const choices = Array.isArray(raw.choices) ? raw.choices : [];
   const firstChoice = choices.find(isRecord);
-  const message = isRecord(firstChoice?.message) ? firstChoice.message : undefined;
+  const message = isRecord(firstChoice?.message)
+    ? firstChoice.message
+    : undefined;
   return typeof message?.content === "string" ? message.content : "";
 }
 
@@ -180,11 +183,14 @@ function mapHunyuanUsage(usage: unknown): AiUsage {
   return {
     promptTokens,
     completionTokens,
-    totalTokens: nonnegativeInt(usage.total_tokens) || promptTokens + completionTokens,
+    totalTokens:
+      nonnegativeInt(usage.total_tokens) || promptTokens + completionTokens,
   };
 }
 
-function parseJsonObject(text: string): { ok: true; value: unknown } | { ok: false; errorSummary: string } {
+function parseJsonObject(
+  text: string,
+): { ok: true; value: unknown } | { ok: false; errorSummary: string } {
   try {
     return { ok: true, value: JSON.parse(text) };
   } catch {
@@ -192,7 +198,9 @@ function parseJsonObject(text: string): { ok: true; value: unknown } | { ok: fal
   }
 }
 
-function sanitizeRawResponse(raw: Record<string, unknown>): Record<string, unknown> {
+function sanitizeRawResponse(
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
   const { error, choices, usage, id, model } = raw;
   return { error, choices, usage, id, model };
 }
@@ -272,7 +280,8 @@ function emptyUsage(): AiUsage {
 }
 
 function estimateCostCents(input: AiUsageEstimateInput): number {
-  const tokens = nonnegativeInt(input.promptTokens) + nonnegativeInt(input.completionTokens);
+  const tokens =
+    nonnegativeInt(input.promptTokens) + nonnegativeInt(input.completionTokens);
   return tokens > 0 ? Math.max(1, Math.ceil(tokens / 1000)) : 0;
 }
 

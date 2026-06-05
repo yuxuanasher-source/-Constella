@@ -49,6 +49,7 @@
 ### Task 1: Route Contract And Navigation Ownership
 
 **Files:**
+
 - Create: `features/ui-route-contracts/module-route-map.ts`
 - Create: `features/ui-route-contracts/module-route-map.test.ts`
 - Modify: `components/layouts/ops-shell.tsx`
@@ -61,10 +62,7 @@ Create `features/ui-route-contracts/module-route-map.test.ts`:
 ```ts
 import { describe, expect, it } from "vitest";
 
-import {
-  OPS_MODULE_ROUTES,
-  routeForOpsModule,
-} from "./module-route-map";
+import { OPS_MODULE_ROUTES, routeForOpsModule } from "./module-route-map";
 
 describe("OPS_MODULE_ROUTES", () => {
   it("covers all M0-M11 modules with readable Chinese labels", () => {
@@ -82,8 +80,12 @@ describe("OPS_MODULE_ROUTES", () => {
       "m10",
       "m11",
     ]);
-    expect(OPS_MODULE_ROUTES.map((item) => item.label)).toContain("M11 商业化与套餐");
-    expect(OPS_MODULE_ROUTES.every((item) => item.label.includes("�"))).toBe(false);
+    expect(OPS_MODULE_ROUTES.map((item) => item.label)).toContain(
+      "M11 商业化与套餐",
+    );
+    expect(OPS_MODULE_ROUTES.every((item) => item.label.includes("�"))).toBe(
+      false,
+    );
   });
 
   it("routes M11 to billing instead of warroom", () => {
@@ -141,18 +143,90 @@ export type OpsModuleRoute = {
 };
 
 export const OPS_MODULE_ROUTES: OpsModuleRoute[] = [
-  { module: "m0", label: "M0 组织与权限", href: "/console/stubs/m0", routeKey: "org", status: "stub" },
-  { module: "m1", label: "M1 项目管理", href: "/console/projects", routeKey: "projects", status: "partial" },
-  { module: "m2", label: "M2 主播池", href: "/console/stubs/m2", routeKey: "streamers", status: "stub" },
-  { module: "m3", label: "M3 选播准入", href: "/console/stubs/m3", routeKey: "admission", status: "partial" },
-  { module: "m4", label: "M4 排班直播", href: "/console/stubs/m4", routeKey: "schedule", status: "live" },
-  { module: "m5", label: "M5 报数审核", href: "/console/stubs/m5", routeKey: "reports", status: "live" },
-  { module: "m6", label: "M6 结算批次", href: "/console/stubs/m6", routeKey: "settlement", status: "live" },
-  { module: "m7", label: "M7 审计中心", href: "/console/stubs/m7", routeKey: "audit", status: "live" },
-  { module: "m8", label: "M8 导出交付", href: "/console/stubs/m8", routeKey: "exports", status: "live" },
-  { module: "m9", label: "M9 通知待办", href: "/console/stubs/m9", routeKey: "notifications", status: "live" },
-  { module: "m10", label: "M10 作战台", href: "/console/stubs/m10", routeKey: "warroom", status: "partial" },
-  { module: "m11", label: "M11 商业化与套餐", href: "/console/stubs/m11", routeKey: "billing", status: "partial" },
+  {
+    module: "m0",
+    label: "M0 组织与权限",
+    href: "/console/stubs/m0",
+    routeKey: "org",
+    status: "stub",
+  },
+  {
+    module: "m1",
+    label: "M1 项目管理",
+    href: "/console/projects",
+    routeKey: "projects",
+    status: "partial",
+  },
+  {
+    module: "m2",
+    label: "M2 主播池",
+    href: "/console/stubs/m2",
+    routeKey: "streamers",
+    status: "stub",
+  },
+  {
+    module: "m3",
+    label: "M3 选播准入",
+    href: "/console/stubs/m3",
+    routeKey: "admission",
+    status: "partial",
+  },
+  {
+    module: "m4",
+    label: "M4 排班直播",
+    href: "/console/stubs/m4",
+    routeKey: "schedule",
+    status: "live",
+  },
+  {
+    module: "m5",
+    label: "M5 报数审核",
+    href: "/console/stubs/m5",
+    routeKey: "reports",
+    status: "live",
+  },
+  {
+    module: "m6",
+    label: "M6 结算批次",
+    href: "/console/stubs/m6",
+    routeKey: "settlement",
+    status: "live",
+  },
+  {
+    module: "m7",
+    label: "M7 审计中心",
+    href: "/console/stubs/m7",
+    routeKey: "audit",
+    status: "live",
+  },
+  {
+    module: "m8",
+    label: "M8 导出交付",
+    href: "/console/stubs/m8",
+    routeKey: "exports",
+    status: "live",
+  },
+  {
+    module: "m9",
+    label: "M9 通知待办",
+    href: "/console/stubs/m9",
+    routeKey: "notifications",
+    status: "live",
+  },
+  {
+    module: "m10",
+    label: "M10 作战台",
+    href: "/console/stubs/m10",
+    routeKey: "warroom",
+    status: "partial",
+  },
+  {
+    module: "m11",
+    label: "M11 商业化与套餐",
+    href: "/console/stubs/m11",
+    routeKey: "billing",
+    status: "partial",
+  },
 ];
 
 export function routeForOpsModule(module: string) {
@@ -196,6 +270,7 @@ git commit -m "chore: centralize ops module routing"
 ### Task 2: M1 Project Management Real Data And Actions
 
 **Files:**
+
 - Create: `features/projects/project-ui-dto.ts`
 - Create: `features/projects/project-ui-dto.test.ts`
 - Create: `app/api/projects/route.ts`
@@ -285,7 +360,9 @@ export function toProjectCardDto(row: ProjectListItem): ProjectCardDto {
     statusLabel: statusLabels[row.status] ?? row.status,
     hourlyRateLabel: `${(row.default_hourly_rate / 100).toFixed(2)} 元/小时`,
     timingLabel: row.force_system_timing ? "系统计时" : "人工校验",
-    publishedAtLabel: row.published_at ? row.published_at.slice(0, 10) : "未发布",
+    publishedAtLabel: row.published_at
+      ? row.published_at.slice(0, 10)
+      : "未发布",
   };
 }
 
@@ -360,7 +437,10 @@ Create `app/api/projects/route.ts`:
 ```ts
 import { NextResponse } from "next/server";
 
-import { createProjectAuditWriter, createProjectDraft } from "@/features/projects/project-service";
+import {
+  createProjectAuditWriter,
+  createProjectDraft,
+} from "@/features/projects/project-service";
 import { SupabaseProjectRepository } from "@/features/projects/project-repository";
 import { listProjects } from "@/features/projects/project-queries";
 import { toProjectCardDtos } from "@/features/projects/project-ui-dto";
@@ -389,15 +469,26 @@ export async function POST(request: Request) {
     if (!supabase || !auth) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const body = (await request.json()) as { name?: string; code?: string; supplierId?: string };
+    const body = (await request.json()) as {
+      name?: string;
+      code?: string;
+      supplierId?: string;
+    };
     if (!body.name?.trim() || !body.code?.trim()) {
-      return NextResponse.json({ error: "name and code are required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "name and code are required" },
+        { status: 400 },
+      );
     }
     const project = await createProjectDraft({
       repo: new SupabaseProjectRepository(supabase),
       audit: createProjectAuditWriter(supabase),
       actor: auth,
-      input: { name: body.name.trim(), code: body.code.trim(), supplierId: body.supplierId },
+      input: {
+        name: body.name.trim(),
+        code: body.code.trim(),
+        supplierId: body.supplierId,
+      },
     });
     return NextResponse.json({ project }, { status: 201 });
   } catch (error) {
@@ -407,7 +498,10 @@ export async function POST(request: Request) {
 
 function jsonServiceError(error: unknown) {
   if (error instanceof Error) {
-    return NextResponse.json({ error: error.message }, { status: statusForServiceError(error) });
+    return NextResponse.json(
+      { error: error.message },
+      { status: statusForServiceError(error) },
+    );
   }
   return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
 }
@@ -422,7 +516,10 @@ Create `app/api/projects/[projectId]/route.ts` using `updateProjectBasics`. It m
 Modify `app/(ops)/console/projects/page.tsx`:
 
 ```tsx
-import { listProjects, unreadNotificationCount } from "@/features/projects/project-queries";
+import {
+  listProjects,
+  unreadNotificationCount,
+} from "@/features/projects/project-queries";
 import { toProjectCardDtos } from "@/features/projects/project-ui-dto";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
@@ -485,6 +582,7 @@ git commit -m "feat: wire project management to backend"
 ### Task 3: M2 Streamer Pool Real Data And Risk Actions
 
 **Files:**
+
 - Create: `features/streamers/streamer-queries.ts`
 - Create: `features/streamers/streamer-ui-dto.ts`
 - Create: `features/streamers/streamer-ui-dto.test.ts`
@@ -558,7 +656,9 @@ export async function listStreamerPool(
   if (!supabase) return [];
   const { data, error } = await supabase
     .from("streamers")
-    .select("id, display_name, cooperation_status, risk_level, platform, fans_count, created_at")
+    .select(
+      "id, display_name, cooperation_status, risk_level, platform, fans_count, created_at",
+    )
     .order("created_at", { ascending: false });
   if (error) throw error;
   return data ?? [];
@@ -664,6 +764,7 @@ git commit -m "feat: wire streamer pool to backend"
 ### Task 4: M3 Admission And Recording Upload Closure
 
 **Files:**
+
 - Create: `features/storage/private-upload.ts`
 - Create: `features/storage/private-upload.test.ts`
 - Create: `app/api/uploads/signed/route.ts`
@@ -742,7 +843,11 @@ Create `app/api/uploads/signed/route.ts`:
 ```ts
 import { NextResponse } from "next/server";
 
-import { buildPrivateUploadPath, createSignedUploadUrl, type UploadCategory } from "@/features/storage/private-upload";
+import {
+  buildPrivateUploadPath,
+  createSignedUploadUrl,
+  type UploadCategory,
+} from "@/features/storage/private-upload";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
@@ -762,7 +867,10 @@ export async function POST(request: Request) {
       fileName?: string;
     };
     if (!body.category || !body.ownerId || !body.fileName) {
-      return NextResponse.json({ error: "category, ownerId and fileName are required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "category, ownerId and fileName are required" },
+        { status: 400 },
+      );
     }
     const path = buildPrivateUploadPath({
       organizationId: auth.organizationId,
@@ -770,11 +878,23 @@ export async function POST(request: Request) {
       ownerId: body.ownerId,
       fileName: body.fileName,
     });
-    const signed = await createSignedUploadUrl({ client: supabase, bucket, path });
-    return NextResponse.json({ bucket, path, signedUrl: signed.signedUrl, token: signed.token });
+    const signed = await createSignedUploadUrl({
+      client: supabase,
+      bucket,
+      path,
+    });
+    return NextResponse.json({
+      bucket,
+      path,
+      signedUrl: signed.signedUrl,
+      token: signed.token,
+    });
   } catch (error) {
     if (error instanceof Error) {
-      return NextResponse.json({ error: error.message }, { status: statusForServiceError(error) });
+      return NextResponse.json(
+        { error: error.message },
+        { status: statusForServiceError(error) },
+      );
     }
     return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
   }
@@ -788,7 +908,10 @@ Modify `app/(ops)/console/stubs/[module]/page.tsx` so M3 loads `listOpsApplicati
 Modify `app/(streamer-app)/m/recordings/page.tsx` to render:
 
 ```tsx
-<StreamerMobileReferenceApp initialRoute="videos" applicationCards={applicationCards} />
+<StreamerMobileReferenceApp
+  initialRoute="videos"
+  applicationCards={applicationCards}
+/>
 ```
 
 where `applicationCards` comes from `listStreamerApplicationCards(supabase)`.
@@ -802,7 +925,9 @@ await fetch(`/api/applications/${applicationId}/review`, {
   body: JSON.stringify({ decision, reason }),
 });
 
-await fetch(`/api/applications/${applicationId}/confirm-join`, { method: "POST" });
+await fetch(`/api/applications/${applicationId}/confirm-join`, {
+  method: "POST",
+});
 ```
 
 Modify `components/reference-ui/streamer-mobile-reference.jsx` so recording submit calls:
@@ -858,6 +983,7 @@ git commit -m "feat: close admission recording upload flow"
 ### Task 5: M10 War Room API Binding
 
 **Files:**
+
 - Create: `features/war-room/war-room-ui-dto.ts`
 - Create: `features/war-room/war-room-ui-dto.test.ts`
 - Modify: `components/reference-ui/ops-reference.jsx`
@@ -971,6 +1097,7 @@ git commit -m "feat: bind war room UI to flywheel APIs"
 ### Task 6: M11 Billing UI And Global Write Guard
 
 **Files:**
+
 - Create: `features/billing/route-guard.ts`
 - Create: `features/billing/route-guard.test.ts`
 - Modify: `components/reference-ui/ops-reference.jsx`
@@ -1030,7 +1157,9 @@ export type BillingWriteStatus = {
   readOnly: boolean;
 };
 
-export function assertWriteAllowedFromBillingStatus(status: BillingWriteStatus) {
+export function assertWriteAllowedFromBillingStatus(
+  status: BillingWriteStatus,
+) {
   if (status.readOnly || status.paymentStatus === "past_due") {
     throw new Error("Organization is read-only because billing is past due");
   }
@@ -1100,6 +1229,7 @@ git commit -m "feat: enforce billing read-only guard on writes"
 ### Task 7: Streamer Mobile Diagnosis And Evidence Upload Closure
 
 **Files:**
+
 - Modify: `app/(streamer-app)/m/diagnosis/page.tsx`
 - Modify: `app/(streamer-app)/m/tasks/page.tsx`
 - Modify: `components/reference-ui/streamer-mobile-reference.jsx`
@@ -1139,7 +1269,10 @@ Modify `components/reference-ui/streamer-mobile-reference.jsx` so the diagnosis 
 await fetch("/api/ai/diagnosis", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ source: "streamer_mobile", checks: ["network", "recording", "timing"] }),
+  body: JSON.stringify({
+    source: "streamer_mobile",
+    checks: ["network", "recording", "timing"],
+  }),
 });
 ```
 
@@ -1171,6 +1304,7 @@ git commit -m "feat: wire streamer mobile diagnosis and evidence uploads"
 ### Task 8: Streamer Desktop Data Binding
 
 **Files:**
+
 - Create: `features/streamer-desktop/desktop-dashboard-dto.ts`
 - Create: `features/streamer-desktop/desktop-dashboard-dto.test.ts`
 - Modify: `app/(streamer-desktop)/desktop/page.tsx`
@@ -1211,7 +1345,9 @@ export function toDesktopDashboardDto(input: {
   applications: Array<{ id: string; status: string }>;
 }) {
   return {
-    scheduledTaskCount: input.tasks.filter((task) => task.status === "scheduled").length,
+    scheduledTaskCount: input.tasks.filter(
+      (task) => task.status === "scheduled",
+    ).length,
     pendingApplicationCount: input.applications.filter(
       (application) => application.status === "pending_review",
     ).length,
@@ -1248,6 +1384,7 @@ git commit -m "feat: bind streamer desktop shell to live data"
 ### Task 9: QA Gap Golden Path Regression
 
 **Files:**
+
 - Create: `features/qa-gap/qa-gap-golden-path.test.ts`
 - Create: `scripts/qa-gap-api-smoke.mjs`
 - Modify: `package.json`
@@ -1272,7 +1409,12 @@ describe("QA gap closure golden path", () => {
       "war-room:pricing",
       "billing:write-guard",
     ];
-    expect(path).toEqual(expect.arrayContaining(["recording:signed-upload", "billing:write-guard"]));
+    expect(path).toEqual(
+      expect.arrayContaining([
+        "recording:signed-upload",
+        "billing:write-guard",
+      ]),
+    );
   });
 });
 ```
@@ -1334,6 +1476,7 @@ git commit -m "test: add qa gap closure regression"
 ### Task 10: Final QA Report And Browser Acceptance
 
 **Files:**
+
 - Create: `docs/reports/2026-06-02-qa-gap-closure-report.md`
 - Modify: `docs/checklists/qa-gap-closure-checklist.md`
 

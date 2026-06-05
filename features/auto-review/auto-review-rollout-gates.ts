@@ -70,13 +70,17 @@ export function evaluateAutoReviewRolloutGate(
     reasons.push("shadow_far_within_threshold");
   }
 
-  if (safeCount(input.auditSampleCount) < safeCount(input.minimumAuditSampleCount)) {
+  if (
+    safeCount(input.auditSampleCount) < safeCount(input.minimumAuditSampleCount)
+  ) {
     failedGates.push("insufficient_audit_samples");
   } else {
     reasons.push("audit_samples_sufficient");
   }
 
-  if (safeBps(input.auditErrorRateBps) > safeBps(input.maximumAuditErrorRateBps)) {
+  if (
+    safeBps(input.auditErrorRateBps) > safeBps(input.maximumAuditErrorRateBps)
+  ) {
     failedGates.push("audit_error_rate_above_threshold");
   } else {
     reasons.push("audit_error_rate_within_threshold");

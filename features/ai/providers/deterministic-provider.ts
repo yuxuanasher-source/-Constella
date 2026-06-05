@@ -21,33 +21,37 @@ export function createDeterministicProvider(
     capabilities: ["text", "structured", "tools", "shadow"],
     async runText(input: AiTextInput): Promise<AiProviderResult> {
       return succeeded({
-        text: fixtures.text ?? lastMessage(input.messages) ?? "deterministic response",
+        text:
+          fixtures.text ??
+          lastMessage(input.messages) ??
+          "deterministic response",
         rawResponse: { provider: "deterministic" },
       });
     },
     async runStructured(input: AiStructuredInput): Promise<AiProviderResult> {
       return succeeded({
-        structuredOutput:
-          fixtures.structuredOutput ?? {
-            summary: lastMessage(input.messages) ?? "deterministic response",
-          },
+        structuredOutput: fixtures.structuredOutput ?? {
+          summary: lastMessage(input.messages) ?? "deterministic response",
+        },
         rawResponse: { provider: "deterministic" },
       });
     },
     async runWithTools(input: AiToolRunInput): Promise<AiProviderResult> {
       return succeeded({
-        structuredOutput:
-          fixtures.structuredOutput ?? {
-            toolCount: input.tools.length,
-            summary: lastMessage(input.messages) ?? "deterministic tool response",
-          },
+        structuredOutput: fixtures.structuredOutput ?? {
+          toolCount: input.tools.length,
+          summary: lastMessage(input.messages) ?? "deterministic tool response",
+        },
         toolCalls: [],
         rawResponse: { provider: "deterministic" },
       });
     },
     estimateCost(input: AiUsageEstimateInput): AiCostEstimate {
       return {
-        costCents: estimateTokens(input.promptTokens, input.completionTokens) > 0 ? 1 : 0,
+        costCents:
+          estimateTokens(input.promptTokens, input.completionTokens) > 0
+            ? 1
+            : 0,
       };
     },
   };

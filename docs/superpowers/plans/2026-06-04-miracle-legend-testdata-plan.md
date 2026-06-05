@@ -25,6 +25,7 @@
 ### Task 1: Fixture Constants And Local Safety Guard
 
 **Files:**
+
 - Create: `scripts/local-testdata-fixture.mjs`
 - Create: `scripts/local-testdata-fixture.test.mjs`
 
@@ -159,7 +160,9 @@ export function assertLocalTestdataAllowed(env) {
 
   const rawUrl = env.NEXT_PUBLIC_SUPABASE_URL;
   if (!rawUrl) {
-    throw new Error("NEXT_PUBLIC_SUPABASE_URL is required for local testdata commands");
+    throw new Error(
+      "NEXT_PUBLIC_SUPABASE_URL is required for local testdata commands",
+    );
   }
 
   const hostname = new URL(rawUrl).hostname;
@@ -196,6 +199,7 @@ git commit -m "test: add local testdata safety guard"
 ### Task 2: Audit Log Cleanup RPC
 
 **Files:**
+
 - Create: `supabase/migrations/20260604230000_local_testdata_audit_cleanup.sql`
 - Modify: `lib/db/schema-contract.test.ts`
 
@@ -208,15 +212,9 @@ it("restricts local testdata audit cleanup to service-role execution and the dat
   expect(allMigrations).toContain(
     "function public.clear_local_testdata_audit_logs(dataset_code text)",
   );
-  expect(allMigrations).toContain(
-    "dataset_code <> 'local_miracle_legend_v1'",
-  );
-  expect(allMigrations).toContain(
-    "disable trigger audit_logs_append_only",
-  );
-  expect(allMigrations).toContain(
-    "enable trigger audit_logs_append_only",
-  );
+  expect(allMigrations).toContain("dataset_code <> 'local_miracle_legend_v1'");
+  expect(allMigrations).toContain("disable trigger audit_logs_append_only");
+  expect(allMigrations).toContain("enable trigger audit_logs_append_only");
   expect(allMigrations).toContain(
     "revoke all on function public.clear_local_testdata_audit_logs(text) from public",
   );
@@ -313,6 +311,7 @@ git commit -m "feat: add local testdata audit cleanup rpc"
 ### Task 3: Fixture Row Builder And Verification Rules
 
 **Files:**
+
 - Modify: `scripts/local-testdata-fixture.mjs`
 - Modify: `scripts/local-testdata-fixture.test.mjs`
 
@@ -366,7 +365,13 @@ describe("local testdata fixture rows", () => {
         liveTasks: 4,
         liveReports: 2,
         usageMetrics: ["active_streamer", "ai", "storage_mb", "export"],
-        auditModules: ["project", "streamer", "live_operation", "settlement", "instrumentation"],
+        auditModules: [
+          "project",
+          "streamer",
+          "live_operation",
+          "settlement",
+          "instrumentation",
+        ],
       }),
     ).not.toThrow();
 
@@ -459,7 +464,10 @@ export function buildFixtureRows({ usersByKey, organizationId = null }) {
       default_settlement_method: "cpt",
       default_hourly_rate: 80,
       default_base_salary: 0,
-      default_settlement_rule: { dataset: DATASET.organizationCode, category: "miracle" },
+      default_settlement_rule: {
+        dataset: DATASET.organizationCode,
+        category: "miracle",
+      },
       published_at: DATASET.now,
     },
     {
@@ -484,7 +492,10 @@ export function buildFixtureRows({ usersByKey, organizationId = null }) {
       default_settlement_method: "base_salary_cpt",
       default_hourly_rate: 95,
       default_base_salary: 1200,
-      default_settlement_rule: { dataset: DATASET.organizationCode, category: "legend" },
+      default_settlement_rule: {
+        dataset: DATASET.organizationCode,
+        category: "legend",
+      },
       published_at: "2026-06-03T12:00:00.000Z",
     },
   ];
@@ -795,6 +806,7 @@ git commit -m "test: define local miracle legend fixture"
 ### Task 4: Runner Contract With Fake Adapter
 
 **Files:**
+
 - Modify: `scripts/local-testdata-fixture.mjs`
 - Create: `scripts/local-testdata-runner.test.mjs`
 
@@ -805,10 +817,7 @@ Create `scripts/local-testdata-runner.test.mjs`:
 ```javascript
 import { describe, expect, it } from "vitest";
 
-import {
-  DATASET,
-  createTestdataRunner,
-} from "./local-testdata-fixture.mjs";
+import { DATASET, createTestdataRunner } from "./local-testdata-fixture.mjs";
 
 function createFakeAdapter() {
   const calls = [];
@@ -853,7 +862,13 @@ function createFakeAdapter() {
         liveTasks: 4,
         liveReports: 2,
         usageMetrics: ["active_streamer", "ai", "storage_mb", "export"],
-        auditModules: ["project", "streamer", "live_operation", "settlement", "instrumentation"],
+        auditModules: [
+          "project",
+          "streamer",
+          "live_operation",
+          "settlement",
+          "instrumentation",
+        ],
       };
     },
     async summarizeEmptyDataset() {
@@ -885,7 +900,10 @@ describe("local testdata runner", () => {
       "insertFixtureRows",
       "summarizeLoadedDataset",
     ]);
-    expect(adapter.calls[6]).toEqual(["insertFixtureRows", DATASET.organizationCode]);
+    expect(adapter.calls[6]).toEqual([
+      "insertFixtureRows",
+      DATASET.organizationCode,
+    ]);
   });
 
   it("verifies loaded and empty states explicitly", async () => {
@@ -1003,6 +1021,7 @@ git commit -m "test: define local testdata runner contract"
 ### Task 5: CLI Shell And Package Scripts
 
 **Files:**
+
 - Create: `scripts/local-testdata.mjs`
 - Modify: `package.json`
 
@@ -1157,6 +1176,7 @@ git commit -m "chore: add local testdata cli commands"
 ### Task 6: Clear Adapter
 
 **Files:**
+
 - Modify: `scripts/local-testdata.mjs`
 - Modify: `scripts/local-testdata-runner.test.mjs`
 
@@ -1242,14 +1262,22 @@ async function clearRelationalRows(client, organizationId) {
   await clearTable("recording_submissions", "organization_id", organizationId);
   await clearTable("project_applications", "organization_id", organizationId);
   await clearTable("project_streamers", "organization_id", organizationId);
-  await clearTable("streamer_recording_links", "organization_id", organizationId);
+  await clearTable(
+    "streamer_recording_links",
+    "organization_id",
+    organizationId,
+  );
   await clearTable("streamer_accounts", "organization_id", organizationId);
   await clearTable("streamer_suppliers", "organization_id", organizationId);
   await clearTable("usage_events", "organization_id", organizationId);
   await clearTable("usage_monthly_counters", "organization_id", organizationId);
   await clearTable("usage_addons", "organization_id", organizationId);
   await clearTable("feature_addons", "organization_id", organizationId);
-  await clearTable("organization_subscriptions", "organization_id", organizationId);
+  await clearTable(
+    "organization_subscriptions",
+    "organization_id",
+    organizationId,
+  );
   await clearTable("notifications", "organization_id", organizationId);
   await clearTable("project_assignments", "organization_id", organizationId);
   await clearTable("projects", "organization_id", organizationId);
@@ -1340,6 +1368,7 @@ git commit -m "feat: implement local testdata cleanup"
 ### Task 7: Load Adapter
 
 **Files:**
+
 - Modify: `scripts/local-testdata.mjs`
 
 - [ ] **Step 1: Implement auth user creation**
@@ -1347,7 +1376,10 @@ git commit -m "feat: implement local testdata cleanup"
 Add `ensureAuthUsers` inside `createSupabaseAdapter`:
 
 ```javascript
-async function ensureAuthUsers(client, { staffUsers, streamerUsers, password }) {
+async function ensureAuthUsers(
+  client,
+  { staffUsers, streamerUsers, password },
+) {
   const usersByKey = {};
   for (const user of [...staffUsers, ...streamerUsers]) {
     const existing = await findAuthUserByEmail(user.email);
@@ -1413,7 +1445,10 @@ async insertFixtureRows({ rows }) {
 Add `insertFixtureRows` inside `createSupabaseAdapter`:
 
 ```javascript
-async function insertFixtureRows(client, { rows, usersByKey, staffUsers, streamerUsers }) {
+async function insertFixtureRows(
+  client,
+  { rows, usersByKey, staffUsers, streamerUsers },
+) {
   await upsertRows("billing_plans", [rows.billingPlan], "code");
   const { data: plan, error: planError } = await client
     .from("billing_plans")
@@ -1447,23 +1482,37 @@ async function insertFixtureRows(client, { rows, usersByKey, staffUsers, streame
     role: "streamer",
     status: "active",
   }));
-  await upsertRows("organization_members", [...members, ...streamerMembers], "organization_id,user_id");
+  await upsertRows(
+    "organization_members",
+    [...members, ...streamerMembers],
+    "organization_id,user_id",
+  );
 
-  await upsertRows("organization_subscriptions", [{
-    organization_id: rows.organization.id,
-    plan_id: plan.id,
-    status: "active",
-    billing_cycle: "monthly",
-    current_period_start: DATASET.periodStart,
-    current_period_end: DATASET.periodEnd,
-  }], "organization_id");
+  await upsertRows(
+    "organization_subscriptions",
+    [
+      {
+        organization_id: rows.organization.id,
+        plan_id: plan.id,
+        status: "active",
+        billing_cycle: "monthly",
+        current_period_start: DATASET.periodStart,
+        current_period_end: DATASET.periodEnd,
+      },
+    ],
+    "organization_id",
+  );
 
   await upsertRows("suppliers", [rows.supplier], "organization_id,name");
   await upsertRows("projects", rows.projects, "organization_id,code");
   await upsertRows("streamers", rows.streamers, "id");
   await upsertRows("live_tasks", rows.liveTasks, "id");
   await upsertRows("live_reports", rows.liveReports, "id");
-  await upsertRows("usage_events", rows.usageEvents, "organization_id,metric,period_month,source");
+  await upsertRows(
+    "usage_events",
+    rows.usageEvents,
+    "organization_id,metric,period_month,source",
+  );
   await insertRows("audit_logs", rows.auditLogs);
 }
 ```
@@ -1475,9 +1524,7 @@ async function upsertRows(table, rows, onConflict) {
   if (!rows.length) {
     return;
   }
-  const { error } = await client
-    .from(table)
-    .upsert(rows, { onConflict });
+  const { error } = await client.from(table).upsert(rows, { onConflict });
   if (error) {
     throw error;
   }
@@ -1518,6 +1565,7 @@ git commit -m "feat: load local miracle legend testdata"
 ### Task 8: Verification Adapter
 
 **Files:**
+
 - Modify: `scripts/local-testdata.mjs`
 
 - [ ] **Step 1: Implement loaded and empty summaries**
@@ -1539,21 +1587,15 @@ async function summarizeLoadedDataset(client) {
     };
   }
 
-  const [
-    projects,
-    streamers,
-    liveTasks,
-    liveReports,
-    usageEvents,
-    auditLogs,
-  ] = await Promise.all([
-    countRows("projects", "organization_id", organization.id),
-    countRows("streamers", "organization_id", organization.id),
-    countRows("live_tasks", "organization_id", organization.id),
-    countRows("live_reports", "organization_id", organization.id),
-    selectRows("usage_events", "metric", "organization_id", organization.id),
-    selectRows("audit_logs", "module", "organization_id", organization.id),
-  ]);
+  const [projects, streamers, liveTasks, liveReports, usageEvents, auditLogs] =
+    await Promise.all([
+      countRows("projects", "organization_id", organization.id),
+      countRows("streamers", "organization_id", organization.id),
+      countRows("live_tasks", "organization_id", organization.id),
+      countRows("live_reports", "organization_id", organization.id),
+      selectRows("usage_events", "metric", "organization_id", organization.id),
+      selectRows("audit_logs", "module", "organization_id", organization.id),
+    ]);
 
   return {
     organizations: 1,
@@ -1571,8 +1613,12 @@ async function summarizeEmptyDataset(client) {
   const users = await listAllAuthUsers();
   return {
     organizations: organization ? 1 : 0,
-    projects: organization ? await countRows("projects", "organization_id", organization.id) : 0,
-    streamers: organization ? await countRows("streamers", "organization_id", organization.id) : 0,
+    projects: organization
+      ? await countRows("projects", "organization_id", organization.id)
+      : 0,
+    streamers: organization
+      ? await countRows("streamers", "organization_id", organization.id)
+      : 0,
     authUsers: users.filter((user) => isDatasetEmail(user.email)).length,
   };
 }
@@ -1604,7 +1650,9 @@ async function selectRows(table, columns, column, value) {
 }
 
 function uniqueValues(rows, key) {
-  return Array.from(new Set(rows.map((row) => row[key]).filter(Boolean))).sort();
+  return Array.from(
+    new Set(rows.map((row) => row[key]).filter(Boolean)),
+  ).sort();
 }
 ```
 
@@ -1631,6 +1679,7 @@ pnpm testdata:verify -- --expect-empty
 ```
 
 Expected:
+
 - `testdata:load` prints counts with 2 projects, 3 streamers, 4 live tasks, and 2 live reports.
 - `testdata:verify` succeeds after load.
 - `testdata:clear` succeeds.
@@ -1652,6 +1701,7 @@ git commit -m "feat: verify local miracle legend testdata"
 ### Task 9: Final Regression Gates
 
 **Files:**
+
 - Modify only files changed by previous tasks if a gate exposes a defect.
 
 - [ ] **Step 1: Run the focused automated tests**

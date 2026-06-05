@@ -9,7 +9,9 @@ describe("provider registry", () => {
   it("returns deterministic provider only when no real provider is configured", () => {
     const providers = createConfiguredAiProviders({ env: {} });
 
-    expect(providers.map((provider) => provider.name)).toEqual(["deterministic"]);
+    expect(providers.map((provider) => provider.name)).toEqual([
+      "deterministic",
+    ]);
   });
 
   it("orders real providers before deterministic when credentials exist", () => {

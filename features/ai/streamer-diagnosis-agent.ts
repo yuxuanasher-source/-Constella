@@ -1,8 +1,5 @@
 import { validateAgentOutput } from "./agent-output-contract";
-import {
-  runAiToolQuery,
-  type AiToolResult,
-} from "./ai-tool-layer";
+import { runAiToolQuery, type AiToolResult } from "./ai-tool-layer";
 import type { AgentOutput, AiActor } from "./contracts";
 
 type StreamerDiagnosisClient = Parameters<typeof runAiToolQuery>[0]["client"];
@@ -39,7 +36,10 @@ function buildStreamerDiagnosisAgentOutput(result: AiToolResult): AgentOutput {
   const factsByPath = new Map(
     facts.map((fact) => [fact.sourceId.split(":").at(-1), fact]),
   );
-  const diagnosisType = stringValue(result.output.diagnosisType, "content_rhythm");
+  const diagnosisType = stringValue(
+    result.output.diagnosisType,
+    "content_rhythm",
+  );
 
   const rhythmEvidence = compactEvidence([
     factSource(factsByPath, result.invocationId, "report.totalViews"),
@@ -63,7 +63,8 @@ function buildStreamerDiagnosisAgentOutput(result: AiToolResult): AgentOutput {
   );
   if (evidenceLevel && evidenceLevel !== "green") {
     findings.push({
-      summary: "Evidence confidence needs manual review before relying on diagnosis",
+      summary:
+        "Evidence confidence needs manual review before relying on diagnosis",
       evidence: [source(result.invocationId, "report.evidenceLevel")],
     });
   }
@@ -77,18 +78,22 @@ function buildStreamerDiagnosisAgentOutput(result: AiToolResult): AgentOutput {
         unverifiedExternalFactor: true,
       },
       {
-        summary: "Historical baseline was not available in this diagnosis request",
+        summary:
+          "Historical baseline was not available in this diagnosis request",
         unverifiedExternalFactor: true,
       },
     ],
     recommendations: [
       {
-        proposal: "Refine opening hook and interaction rhythm before the next session",
-        expectedImpact: "Improve retention signals while preserving manual review",
+        proposal:
+          "Refine opening hook and interaction rhythm before the next session",
+        expectedImpact:
+          "Improve retention signals while preserving manual review",
         requiresHumanApproval: true,
       },
       {
-        proposal: "Review replay evidence before changing task or settlement records",
+        proposal:
+          "Review replay evidence before changing task or settlement records",
         expectedImpact: "Avoid acting on incomplete operational evidence",
         requiresHumanApproval: true,
       },

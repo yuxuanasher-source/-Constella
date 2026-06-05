@@ -13,6 +13,7 @@
 ### Task 1: Provider Registry Contract
 
 **Files:**
+
 - Create: `features/ai/provider-registry.test.ts`
 - Create: `features/ai/provider-registry.ts`
 - Modify: `.env.example`
@@ -31,7 +32,9 @@ describe("provider registry", () => {
   it("returns deterministic provider only when no real provider is configured", () => {
     const providers = createConfiguredAiProviders({ env: {} });
 
-    expect(providers.map((provider) => provider.name)).toEqual(["deterministic"]);
+    expect(providers.map((provider) => provider.name)).toEqual([
+      "deterministic",
+    ]);
   });
 
   it("orders real providers before deterministic when credentials exist", () => {
@@ -69,11 +72,19 @@ Expected: FAIL because `provider-registry.ts` does not exist.
 - [ ] **Step 3: Implement minimal registry**
 
 ```typescript
-export function createConfiguredAiProviders({ env = process.env }: { env?: Record<string, string | undefined> } = {}): AiProvider[] {
+export function createConfiguredAiProviders({
+  env = process.env,
+}: { env?: Record<string, string | undefined> } = {}): AiProvider[] {
   const providers: AiProvider[] = [];
-  if (env.OPENAI_API_KEY) providers.push(createOpenAiProvider({ apiKey: env.OPENAI_API_KEY }));
+  if (env.OPENAI_API_KEY)
+    providers.push(createOpenAiProvider({ apiKey: env.OPENAI_API_KEY }));
   if (env.HUNYUAN_API_KEY && env.HUNYUAN_BASE_URL) {
-    providers.push(createHunyuanProvider({ apiKey: env.HUNYUAN_API_KEY, baseUrl: env.HUNYUAN_BASE_URL }));
+    providers.push(
+      createHunyuanProvider({
+        apiKey: env.HUNYUAN_API_KEY,
+        baseUrl: env.HUNYUAN_BASE_URL,
+      }),
+    );
   }
   providers.push(createDeterministicProvider());
   return providers;
@@ -97,6 +108,7 @@ git commit -m "feat: add AI provider registry"
 ### Task 2: OpenAI Provider Adapter
 
 **Files:**
+
 - Create: `features/ai/providers/openai-provider.test.ts`
 - Create: `features/ai/providers/openai-provider.ts`
 
@@ -129,17 +141,24 @@ describe("OpenAI provider", () => {
   it("maps Responses API text output into provider result", async () => {
     const provider = createOpenAiProvider({
       apiKey: "secret",
-      fetch: vi.fn(async () => new Response(JSON.stringify({
-        output_text: "brief ready",
-        usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
-      }))),
+      fetch: vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              output_text: "brief ready",
+              usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+            }),
+          ),
+      ),
     });
 
-    await expect(provider.runText({
-      promptKey: "ops.brief",
-      promptVersion: 1,
-      messages: [{ role: "user", content: "summarize" }],
-    })).resolves.toMatchObject({
+    await expect(
+      provider.runText({
+        promptKey: "ops.brief",
+        promptVersion: 1,
+        messages: [{ role: "user", content: "summarize" }],
+      }),
+    ).resolves.toMatchObject({
       status: "succeeded",
       text: "brief ready",
       usage: { promptTokens: 11, completionTokens: 7, totalTokens: 18 },
@@ -149,10 +168,15 @@ describe("OpenAI provider", () => {
   it("parses structured JSON and never returns the API key in rawResponse", async () => {
     const provider = createOpenAiProvider({
       apiKey: "secret",
-      fetch: vi.fn(async () => new Response(JSON.stringify({
-        output_text: "{\"summary\":\"ok\"}",
-        usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
-      }))),
+      fetch: vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              output_text: '{"summary":"ok"}',
+              usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+            }),
+          ),
+      ),
     });
 
     const result = await provider.runStructured({
@@ -192,6 +216,7 @@ git commit -m "feat: add OpenAI provider adapter"
 ### Task 3: Hunyuan Provider Adapter
 
 **Files:**
+
 - Create: `features/ai/providers/hunyuan-provider.test.ts`
 - Create: `features/ai/providers/hunyuan-provider.ts`
 
@@ -205,7 +230,11 @@ import { createHunyuanProvider } from "./hunyuan-provider";
 describe("Hunyuan provider", () => {
   it("returns degraded when key or base URL is missing", async () => {
     const fetchMock = vi.fn();
-    const provider = createHunyuanProvider({ apiKey: "", baseUrl: "", fetch: fetchMock });
+    const provider = createHunyuanProvider({
+      apiKey: "",
+      baseUrl: "",
+      fetch: fetchMock,
+    });
 
     const result = await provider.runText({
       promptKey: "ops.brief",
@@ -224,17 +253,28 @@ describe("Hunyuan provider", () => {
     const provider = createHunyuanProvider({
       apiKey: "secret",
       baseUrl: "https://api.hunyuan.cloud.tencent.com",
-      fetch: vi.fn(async () => new Response(JSON.stringify({
-        choices: [{ message: { content: "brief ready" } }],
-        usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 },
-      }))),
+      fetch: vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: "brief ready" } }],
+              usage: {
+                prompt_tokens: 9,
+                completion_tokens: 4,
+                total_tokens: 13,
+              },
+            }),
+          ),
+      ),
     });
 
-    await expect(provider.runText({
-      promptKey: "ops.brief",
-      promptVersion: 1,
-      messages: [{ role: "user", content: "summarize in Chinese" }],
-    })).resolves.toMatchObject({
+    await expect(
+      provider.runText({
+        promptKey: "ops.brief",
+        promptVersion: 1,
+        messages: [{ role: "user", content: "summarize in Chinese" }],
+      }),
+    ).resolves.toMatchObject({
       status: "succeeded",
       text: "brief ready",
       usage: { promptTokens: 9, completionTokens: 4, totalTokens: 13 },
@@ -267,6 +307,7 @@ git commit -m "feat: add Hunyuan provider adapter"
 ### Task 4: Gateway Config Entry And Smoke Tests
 
 **Files:**
+
 - Modify: `features/ai/llm-gateway.test.ts`
 - Create: `features/ai/providers/provider-smoke.test.ts`
 
@@ -316,6 +357,7 @@ git commit -m "test: add env gated LLM provider smoke tests"
 ### Task 5: Regression Gate And Push
 
 **Files:**
+
 - No production files unless verification finds a scoped defect.
 
 - [ ] **Step 1: Run AI test suite**

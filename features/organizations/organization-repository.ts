@@ -35,9 +35,7 @@ const memberSelect = `
   profiles(email, full_name, phone)
 `;
 
-export class SupabaseOrganizationMemberRepository
-  implements OrganizationMemberRepository
-{
+export class SupabaseOrganizationMemberRepository implements OrganizationMemberRepository {
   constructor(private readonly client: SupabaseClient) {}
 
   async listMembers(

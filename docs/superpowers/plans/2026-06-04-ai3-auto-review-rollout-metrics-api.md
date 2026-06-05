@@ -13,6 +13,7 @@
 ### Task 1: Route Contract
 
 **Files:**
+
 - Create: `app/api/auto-review/rollout-metrics/route.test.ts`
 - Create: `app/api/auto-review/rollout-metrics/route.ts`
 
@@ -29,9 +30,12 @@ import { listAutoReviewRolloutMetricRows } from "@/features/auto-review/auto-rev
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
-vi.mock("@/features/auto-review/auto-review-rollout-metrics-repository", () => ({
-  listAutoReviewRolloutMetricRows: vi.fn(),
-}));
+vi.mock(
+  "@/features/auto-review/auto-review-rollout-metrics-repository",
+  () => ({
+    listAutoReviewRolloutMetricRows: vi.fn(),
+  }),
+);
 
 vi.mock("@/lib/auth/context", () => ({
   getAuthContext: vi.fn(),
@@ -230,6 +234,7 @@ Expected: PASS.
 ### Task 2: Regression And Push
 
 **Files:**
+
 - Create: `app/api/auto-review/rollout-metrics/route.ts`
 - Create: `app/api/auto-review/rollout-metrics/route.test.ts`
 

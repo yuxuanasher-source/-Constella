@@ -32,7 +32,11 @@ function buildAgentOutput(report: ProjectReviewReport): AgentOutput {
       "grossMarginCents",
       `Gross margin is ${report.grossMarginCents} cents`,
     ),
-    fact(report, "shouldContinue", `Should continue is ${report.shouldContinue}`),
+    fact(
+      report,
+      "shouldContinue",
+      `Should continue is ${report.shouldContinue}`,
+    ),
     fact(report, "anomalyCount", `Anomaly count is ${report.anomalyCount}`),
     fact(report, "disputeCount", `Dispute count is ${report.disputeCount}`),
     fact(
@@ -64,7 +68,10 @@ function buildAgentOutput(report: ProjectReviewReport): AgentOutput {
   if (report.anomalyCount > 0 || report.disputeCount > 0) {
     findings.push({
       summary: "Delivery risk needs manual review before scaling",
-      evidence: [source(report, "anomalyCount"), source(report, "disputeCount")],
+      evidence: [
+        source(report, "anomalyCount"),
+        source(report, "disputeCount"),
+      ],
     });
   }
 
@@ -98,7 +105,8 @@ function buildRecommendations(
   recommendations.push(
     report.shouldContinue
       ? {
-          proposal: "Continue the project with the current operating guardrails",
+          proposal:
+            "Continue the project with the current operating guardrails",
           expectedImpact: "Protect margin while preserving delivery continuity",
           requiresHumanApproval: true,
         }

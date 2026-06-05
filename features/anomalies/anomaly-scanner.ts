@@ -86,8 +86,14 @@ async function listTaskRows(
 ): Promise<LiveTaskAnomalyRow[]> {
   const query = client.from("live_tasks") as {
     select(columns: string): {
-      eq(column: string, value: unknown): {
-        order(column: string, options: { ascending: boolean }): {
+      eq(
+        column: string,
+        value: unknown,
+      ): {
+        order(
+          column: string,
+          options: { ascending: boolean },
+        ): {
           limit(count: number): PromiseLike<{
             data: LiveTaskAnomalyRow[] | null;
             error: Error | null;
@@ -135,8 +141,14 @@ async function notificationExists(
 ): Promise<boolean> {
   const query = client.from("notifications") as {
     select(columns: string): {
-      eq(column: string, value: unknown): {
-        eq(column: string, value: unknown): {
+      eq(
+        column: string,
+        value: unknown,
+      ): {
+        eq(
+          column: string,
+          value: unknown,
+        ): {
           maybeSingle(): PromiseLike<{
             data: { id: string } | null;
             error: Error | null;

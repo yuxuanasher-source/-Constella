@@ -32,7 +32,11 @@ export const exportDefinitions: Record<ExportKind, ExportField[]> = {
   ],
   settlement_batch: [
     { key: "batchName", label: "批次", sensitivity: "internal" },
-    { key: "payableAmountCents", label: "应付金额", sensitivity: "finance_sensitive" },
+    {
+      key: "payableAmountCents",
+      label: "应付金额",
+      sensitivity: "finance_sensitive",
+    },
     {
       key: "vendorReceivableCents",
       label: "厂家应收",
