@@ -21,6 +21,14 @@ type ProjectAdmissionRow = {
   default_settlement_rule: Record<string, unknown>;
 };
 
+type PublicProjectForRecordingRow = {
+  id: string;
+  name: string;
+  organization_id: string;
+  status: string;
+  is_public_to_streamers: boolean;
+};
+
 type StreamerAdmissionRow = {
   id: string;
   display_name: string;
@@ -84,6 +92,28 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     return data ? toProjectAdmissionConfig(data) : null;
   }
 
+  async getPublicProjectForRecording(projectId: string) {
+    const { data, error } = await this.client
+      .from("projects")
+      .select("id, name, organization_id, status, is_public_to_streamers")
+      .eq("id", projectId)
+      .maybeSingle<PublicProjectForRecordingRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return data
+      ? {
+          id: data.id,
+          name: data.name,
+          organizationId: data.organization_id,
+          status: data.status,
+          isPublicToStreamers: data.is_public_to_streamers,
+        }
+      : null;
+  }
+
   async getStreamerForAdmission(
     streamerId: string,
   ): Promise<StreamerAdmissionRecord | null> {
@@ -107,6 +137,26 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
       .from("project_applications")
       .select(applicationSelect)
       .eq("id", applicationId)
+      .maybeSingle<ApplicationRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return data ? toApplicationRecord(data) : null;
+  }
+
+  async getApplicationByProjectAndStreamer(
+    projectId: string,
+    streamerId: string,
+  ): Promise<ApplicationRecord | null> {
+    const { data, error } = await this.client
+      .from("project_applications")
+      .select(applicationSelect)
+      .eq("project_id", projectId)
+      .eq("streamer_id", streamerId)
+      .order("submitted_at", { ascending: false })
+      .limit(1)
       .maybeSingle<ApplicationRow>();
 
     if (error) {

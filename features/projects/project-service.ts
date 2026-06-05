@@ -1,5 +1,6 @@
 import { writeAuditLog, type AuditLogInput } from "@/lib/audit/audit";
 import {
+  canAssignProjectOwner,
   canCreateProjectDraft,
   canPublishProject,
 } from "@/lib/rbac/permissions";
@@ -24,6 +25,12 @@ export type ProjectRecord = {
   agent_name?: string | null;
   supplier_name?: string | null;
   description?: string | null;
+  is_public_to_streamers?: boolean;
+  public_summary?: string | null;
+  game_download_url?: string | null;
+  created_by?: string | null;
+  owner_id?: string | null;
+  ops_manager_id?: string | null;
   default_settlement_method?: string;
   default_hourly_rate?: number;
   default_base_salary?: number;
@@ -57,6 +64,10 @@ export type UpdateProjectBasicsInput = {
   agentName?: string;
   supplierName?: string;
   description?: string;
+  isPublicToStreamers?: boolean;
+  publicSummary?: string;
+  gameDownloadUrl?: string | null;
+  ownerId?: string | null;
 };
 
 export type UpdateProjectSettlementRuleInput = {
@@ -70,6 +81,7 @@ export type ProjectRepository = {
   createDraft(input: {
     organizationId: string;
     actorUserId: string;
+    ownerUserId: string;
     name: string;
     code: string;
     supplierId?: string;
@@ -106,6 +118,7 @@ export async function createProjectDraft({
   const project = await repo.createDraft({
     organizationId: actor.organizationId,
     actorUserId: actor.userId,
+    ownerUserId: actor.userId,
     name: input.name,
     code: input.code,
     supplierId: input.supplierId,
@@ -184,6 +197,9 @@ export async function updateProjectBasics({
 }): Promise<ProjectRecord> {
   if (!canCreateProjectDraft(actor.role)) {
     throw new Error("Current role cannot update project basics");
+  }
+  if (input.ownerId !== undefined && !canAssignProjectOwner(actor.role)) {
+    throw new Error("Only owner and ops_manager can assign project owners");
   }
 
   const before = await requireProject(repo, projectId);
@@ -296,6 +312,10 @@ function mapBasicProjectPatch(
     agent_name: input.agentName,
     supplier_name: input.supplierName,
     description: input.description,
+    is_public_to_streamers: input.isPublicToStreamers,
+    public_summary: input.publicSummary,
+    game_download_url: normalizeOptionalHttpUrl(input.gameDownloadUrl),
+    owner_id: input.ownerId,
   });
 }
 
@@ -314,4 +334,32 @@ function removeUndefined<T extends Record<string, unknown>>(input: T): T {
   return Object.fromEntries(
     Object.entries(input).filter(([, value]) => value !== undefined),
   ) as T;
+}
+
+function normalizeOptionalHttpUrl(
+  value: string | null | undefined,
+): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("Game download URL must be an http(s) URL");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("Game download URL must be an http(s) URL");
+  }
+
+  return trimmed;
 }

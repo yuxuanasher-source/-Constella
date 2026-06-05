@@ -34,6 +34,10 @@ export async function PATCH(
       agentName?: string | null;
       supplierName?: string | null;
       description?: string | null;
+      ownerId?: string | null;
+      isPublicToStreamers?: boolean;
+      publicSummary?: string | null;
+      gameDownloadUrl?: string | null;
     };
     const { projectId } = await params;
     const project = await updateProjectBasics({
@@ -55,6 +59,10 @@ export async function PATCH(
         agentName: normalizeProjectText(body.agentName),
         supplierName: normalizeProjectText(body.supplierName),
         description: normalizeProjectText(body.description),
+        ownerId: normalizeProjectId(body.ownerId),
+        isPublicToStreamers: body.isPublicToStreamers,
+        publicSummary: normalizeProjectText(body.publicSummary),
+        gameDownloadUrl: normalizeNullableProjectText(body.gameDownloadUrl),
       },
     });
 
@@ -76,4 +84,24 @@ function normalizeProjectText(value: string | null | undefined) {
     return undefined;
   }
   return value.trim();
+}
+
+function normalizeNullableProjectText(value: string | null | undefined) {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  return value.trim() || null;
+}
+
+function normalizeProjectId(value: string | null | undefined) {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  return value.trim() || null;
 }

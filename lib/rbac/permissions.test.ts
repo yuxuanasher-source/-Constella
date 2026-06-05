@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   canCreateOrganizationMemberRole,
   canCreateProjectDraft,
+  canAssignProjectOwner,
   canManageOrganizationMembers,
   canPublishProject,
   canViewOrganizationMembers,
@@ -18,6 +19,14 @@ describe("project permissions", () => {
   it("allows owner and ops_manager to publish projects", () => {
     expect(canPublishProject("owner")).toBe(true);
     expect(canPublishProject("ops_manager")).toBe(true);
+  });
+
+  it("allows only owner and ops_manager to assign project owners", () => {
+    expect(canAssignProjectOwner("owner")).toBe(true);
+    expect(canAssignProjectOwner("ops_manager")).toBe(true);
+    expect(canAssignProjectOwner("operator_business")).toBe(false);
+    expect(canAssignProjectOwner("finance")).toBe(false);
+    expect(canAssignProjectOwner("streamer")).toBe(false);
   });
 });
 

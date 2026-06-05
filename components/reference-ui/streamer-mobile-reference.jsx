@@ -4,6 +4,15 @@ import React from "react";
 
 import { toStreamerReferenceTask } from "@/features/live-operations/live-ui-adapters";
 
+const UUID_LIKE_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function displayRecordId(value, fallback = "内部记录") {
+  const text = String(value || "").trim();
+  if (!text || UUID_LIKE_ID.test(text)) return fallback;
+  return text;
+}
+
 // ===== src\icons.jsx =====
 // Inline stroke-icons — 16/18/20 sizing. All paths from scratch (simple geometry).
 const ic = (props, paths) => {
@@ -730,6 +739,7 @@ const STATUS_MAP = {
 const StreamerLiveDataContext = React.createContext({
   tasks: null,
   earnings: null,
+  projectAnnouncements: [],
   actions: {},
 });
 
@@ -1199,7 +1209,7 @@ function TaskCard({
         <Icon.Game size={13} stroke="var(--ink-400)" />
         <span style={{ whiteSpace: "nowrap" }}>{task.vendor}</span>
         <span style={{ whiteSpace: "nowrap" }}>
-          · <span className="num">{task.id}</span>
+          · <span className="num">{displayRecordId(task.id, "任务")}</span>
         </span>
       </div>
 
@@ -1346,7 +1356,7 @@ function StreamerTask({ taskId, go }) {
               className="num"
               style={{ fontSize: 11, color: "rgba(255,255,255,0.72)" }}
             >
-              {t.id}
+              {displayRecordId(t.id, "任务")}
             </span>
             <MBadge tone={st.tone} dot>
               {st.label}
@@ -4027,10 +4037,15 @@ function RangeRow({ label, value, tone }) {
 }
 
 // ——— Videos tab ———
-function VideosTab({ recordings }) {
+function VideosTab({ recordings, projectAnnouncements }) {
   const recordingRows = Array.isArray(recordings) ? recordings : MY_VIDEOS;
+  const announcementRows = Array.isArray(projectAnnouncements)
+    ? projectAnnouncements
+    : [];
   const actions = useStreamerLiveActions();
   const [form, setForm] = React.useState(() => ({
+    projectId: "",
+    projectName: "",
     product: "",
     category: "",
     link: "",
@@ -4044,6 +4059,17 @@ function VideosTab({ recordings }) {
     setForm((current) => ({ ...current, [key]: value }));
   };
 
+  const selectProjectForRecording = (project) => {
+    setError("");
+    setForm((current) => ({
+      ...current,
+      projectId: project.id,
+      projectName: project.name,
+      product: project.product || project.name,
+      category: "项目录播",
+    }));
+  };
+
   const submitRecordingLink = async (event) => {
     event.preventDefault();
     setSubmitting(true);
@@ -4051,6 +4077,8 @@ function VideosTab({ recordings }) {
     try {
       await actions.submitRecordingLink?.(form);
       setForm({
+        projectId: "",
+        projectName: "",
         product: "",
         category: "",
         link: "",
@@ -4065,12 +4093,50 @@ function VideosTab({ recordings }) {
 
   return (
     <>
+      <MSection
+        title="项目公告"
+        action={<MBadge tone="blue">{announcementRows.length} 个</MBadge>}
+      >
+        {announcementRows.length === 0 ? (
+          <MCard
+            style={{ background: "var(--bg-soft)", borderStyle: "dashed" }}
+          >
+            <div style={{ fontSize: 13, color: "var(--ink-500)" }}>
+              暂无公开项目公告。
+            </div>
+          </MCard>
+        ) : (
+          announcementRows.map((project) => (
+            <ProjectAnnouncementCard
+              key={project.id}
+              project={project}
+              onSelect={selectProjectForRecording}
+            />
+          ))
+        )}
+      </MSection>
+
       <MSection title="提交录屏链接">
         <MCard>
           <form
             onSubmit={submitRecordingLink}
             style={{ display: "grid", gap: 10 }}
           >
+            {form.projectId ? (
+              <div
+                style={{
+                  border: "1px solid var(--blue-100)",
+                  borderRadius: 8,
+                  padding: "8px 10px",
+                  background: "var(--blue-50)",
+                  color: "var(--blue-800)",
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                投递项目：{form.projectName}
+              </div>
+            ) : null}
             <MobileRecordingField
               label="产品"
               value={form.product}
@@ -4139,6 +4205,101 @@ function VideosTab({ recordings }) {
         )}
       </MSection>
     </>
+  );
+}
+
+function ProjectAnnouncementCard({ project, onSelect }) {
+  return (
+    <MCard style={{ marginBottom: 10 }}>
+      <div style={{ display: "grid", gap: 8 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            gap: 8,
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 14,
+                fontWeight: 800,
+                color: "var(--ink-900)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {project.name}
+            </div>
+            <div
+              style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 2 }}
+            >
+              {project.product || project.code}
+            </div>
+          </div>
+          <MBadge tone={recordingStatusTone(project.latestRecordingStatus)} dot>
+            {project.reviewStatusLabel}
+          </MBadge>
+        </div>
+        {project.publicSummary ? (
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--ink-600)",
+              lineHeight: 1.55,
+            }}
+          >
+            {project.publicSummary}
+          </div>
+        ) : null}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {project.gameDownloadUrl ? (
+            <a
+              href={project.gameDownloadUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                height: 32,
+                borderRadius: 8,
+                padding: "0 10px",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "var(--bg-soft)",
+                color: "var(--blue-700)",
+                fontSize: 12,
+                fontWeight: 700,
+                textDecoration: "none",
+              }}
+            >
+              打开游戏下载
+            </a>
+          ) : null}
+          <button
+            type="button"
+            disabled={!project.canSubmitRecording}
+            onClick={() => onSelect(project)}
+            style={{
+              height: 32,
+              borderRadius: 8,
+              border: "none",
+              padding: "0 10px",
+              background: project.canSubmitRecording
+                ? "var(--blue-600)"
+                : "var(--line-strong)",
+              color: project.canSubmitRecording ? "#fff" : "var(--ink-400)",
+              fontSize: 12,
+              fontWeight: 800,
+              cursor: project.canSubmitRecording ? "pointer" : "not-allowed",
+            }}
+          >
+            投递录播
+          </button>
+        </div>
+      </div>
+    </MCard>
   );
 }
 
@@ -4265,6 +4426,14 @@ function normalizeStreamerRecordings(items) {
   }));
 }
 
+function normalizeProjectAnnouncements(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items;
+}
+
 function formatDiagnosisAnswer(body) {
   const directAnswer = body?.result?.answer || body?.result?.output?.answer;
   if (typeof directAnswer === "string" && directAnswer.trim()) {
@@ -4338,6 +4507,7 @@ function StreamerMobileReferenceInner({
   liveTasks,
   liveEarnings,
   recordings,
+  projectAnnouncements,
 }) {
   // route: 'home' | 'task' | 'report' | 'ai' | 'me' | 'videos'
   const [route, setRoute] = React.useState(initialRoute);
@@ -4346,6 +4516,9 @@ function StreamerMobileReferenceInner({
   const [earnings, setEarnings] = React.useState(liveEarnings ?? null);
   const [recordingRows, setRecordingRows] = React.useState(() =>
     normalizeStreamerRecordings(recordings),
+  );
+  const [announcementRows, setAnnouncementRows] = React.useState(() =>
+    normalizeProjectAnnouncements(projectAnnouncements),
   );
 
   React.useEffect(() => {
@@ -4359,6 +4532,10 @@ function StreamerMobileReferenceInner({
   React.useEffect(() => {
     setRecordingRows(normalizeStreamerRecordings(recordings));
   }, [recordings]);
+
+  React.useEffect(() => {
+    setAnnouncementRows(normalizeProjectAnnouncements(projectAnnouncements));
+  }, [projectAnnouncements]);
 
   const actions = React.useMemo(() => {
     const readJson = async (response, fallbackMessage) => {
@@ -4394,6 +4571,16 @@ function StreamerMobileReferenceInner({
       }
     };
 
+    const refreshProjectAnnouncements = async () => {
+      const body = await fetchJson(
+        "/api/streamer/project-announcements",
+        "refresh project announcements failed",
+      );
+      if (Array.isArray(body.announcements)) {
+        setAnnouncementRows(normalizeProjectAnnouncements(body.announcements));
+      }
+    };
+
     return {
       askDiagnosis: async (question) => {
         const body = await fetchJson(
@@ -4412,16 +4599,29 @@ function StreamerMobileReferenceInner({
         return formatDiagnosisAnswer(body);
       },
       refreshRecordings,
+      refreshProjectAnnouncements,
       submitRecordingLink: async (form) => {
+        const payload = form.projectId
+          ? form
+          : {
+              product: form.product,
+              category: form.category,
+              link: form.link,
+              month: form.month,
+            };
         const body = await fetchJson(
           "/api/streamer/recordings",
           "submit recording link failed",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(form),
+            body: JSON.stringify(payload),
           },
         );
+        if (body.projectRecording) {
+          await refreshProjectAnnouncements();
+          return;
+        }
         if (body.recording) {
           setRecordingRows((current) => [
             normalizeStreamerRecordings([body.recording])[0],
@@ -4485,10 +4685,16 @@ function StreamerMobileReferenceInner({
     if (route === "videos" && recordingRows === null) {
       actions.refreshRecordings?.();
     }
-  }, [route, recordingRows, actions]);
+    if (route === "videos" && announcementRows === null) {
+      actions.refreshProjectAnnouncements?.();
+    }
+  }, [route, recordingRows, announcementRows, actions]);
 
   const visibleTasks = Array.isArray(tasks) ? tasks : MY_TASKS;
   const visibleRecordings = Array.isArray(recordingRows) ? recordingRows : [];
+  const visibleAnnouncements = Array.isArray(announcementRows)
+    ? announcementRows
+    : [];
 
   const go = (r, arg) => {
     if (r === "task") {
@@ -4522,6 +4728,7 @@ function StreamerMobileReferenceInner({
         tasks: visibleTasks,
         earnings,
         recordings: visibleRecordings,
+        projectAnnouncements: visibleAnnouncements,
         actions,
       }}
     >
@@ -4532,7 +4739,11 @@ function StreamerMobileReferenceInner({
         {route === "ai" && <StreamerAI go={go} />}
         {route === "me" && <StreamerMe go={go} />}
         {route === "videos" && (
-          <VideosOnlyPage go={go} recordings={visibleRecordings} />
+          <VideosOnlyPage
+            go={go}
+            recordings={visibleRecordings}
+            projectAnnouncements={visibleAnnouncements}
+          />
         )}
 
         <MTabBar
@@ -4551,27 +4762,31 @@ function StreamerMobileReferenceInner({
 }
 
 // Small placeholder for 录屏 tab when accessed independently
-function VideosOnlyPage({ recordings }) {
+function VideosOnlyPage({ recordings, projectAnnouncements }) {
   return (
     <div style={{ paddingBottom: 96 }}>
       <MAppBar
         title="我的录屏"
-        subtitle="录屏 URL / 月份 / 审核状态"
+        subtitle="项目公告 / 录屏 URL / 审核状态"
         dark={false}
       />
-      <VideosTab recordings={recordings} />
+      <VideosTab
+        recordings={recordings}
+        projectAnnouncements={projectAnnouncements}
+      />
     </div>
   );
 }
 
 /**
- * @param {{ initialRoute?: string; liveTasks?: any[]; liveEarnings?: any; recordings?: any[] }} props
+ * @param {{ initialRoute?: string; liveTasks?: any[]; liveEarnings?: any; recordings?: any[]; projectAnnouncements?: any[] }} props
  */
 export default function StreamerMobileReferenceApp({
   initialRoute = "home",
   liveTasks,
   liveEarnings,
   recordings,
+  projectAnnouncements,
 }) {
   return (
     <StreamerMobileReferenceInner
@@ -4579,6 +4794,7 @@ export default function StreamerMobileReferenceApp({
       liveTasks={liveTasks}
       liveEarnings={liveEarnings}
       recordings={recordings}
+      projectAnnouncements={projectAnnouncements}
     />
   );
 }

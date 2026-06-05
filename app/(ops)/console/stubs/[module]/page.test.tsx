@@ -1,0 +1,109 @@
+import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import OpsReferenceApp from "@/components/reference-ui/ops-reference";
+import { getAuthContext } from "@/lib/auth/context";
+import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+
+import StubPage from "./page";
+
+vi.mock("next/navigation", () => ({
+  redirect: vi.fn((url: string) => {
+    throw new Error(`NEXT_REDIRECT:${url}`);
+  }),
+}));
+
+vi.mock("@/components/reference-ui/ops-reference", () => ({
+  default: vi.fn((props: { currentUser?: { name?: string } }) => (
+    <div data-testid="ops-reference-app">
+      {props.currentUser?.name ?? "missing-user"}
+    </div>
+  )),
+}));
+
+vi.mock("@/features/applications/application-queries", () => ({
+  listOpsApplicationQueue: vi.fn(),
+}));
+
+vi.mock("@/features/audit-center/audit-center-queries", () => ({
+  listAuditCenterEntries: vi.fn(),
+}));
+
+vi.mock("@/features/billing/billing-status", () => ({
+  getBillingStatus: vi.fn(),
+}));
+
+vi.mock("@/features/live-operations/live-operations-queries", () => ({
+  listOpsLiveReportQueue: vi.fn(),
+  listOpsLiveTaskQueue: vi.fn(),
+}));
+
+vi.mock("@/features/settlements/settlement-queries", () => ({
+  getOpsSettlementDefaultScope: vi.fn(),
+  listOpsSettlementBatches: vi.fn(),
+  listOpsSettlementBatchDetails: vi.fn(),
+  listOpsSettlementPool: vi.fn(),
+}));
+
+vi.mock("@/features/streamers/streamer-queries", () => ({
+  listStreamerPool: vi.fn(),
+}));
+
+vi.mock("@/lib/auth/context", () => ({
+  getAuthContext: vi.fn(),
+}));
+
+vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseServerClient: vi.fn(),
+}));
+
+describe("console module stubs route", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("passes the authenticated staff identity into the ops UI", async () => {
+    const supabase = {};
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
+    vi.mocked(getAuthContext).mockResolvedValue({
+      userId: "user-finance",
+      email: "finance@example.test",
+      name: "Finance User",
+      organizationId: "org-1",
+      organizationName: "Demo Org",
+      role: "finance",
+    });
+
+    render(await StubPage({ params: Promise.resolve({ module: "m1" }) }));
+
+    expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
+      "Finance User",
+    );
+    expect(OpsReferenceApp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initialRoute: "projects",
+        currentUser: expect.objectContaining({
+          id: "user-finance",
+          name: "Finance User",
+          role: "finance",
+          dept: "Demo Org",
+        }),
+        organizationSettings: expect.objectContaining({
+          name: "Demo Org",
+        }),
+      }),
+      undefined,
+    );
+  });
+
+  it("redirects unauthenticated visitors to login", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({} as never);
+    vi.mocked(getAuthContext).mockResolvedValue(null);
+
+    await expect(
+      Promise.resolve().then(() =>
+        StubPage({ params: Promise.resolve({ module: "m1" }) }),
+      ),
+    ).rejects.toThrow("NEXT_REDIRECT:/login");
+  });
+});

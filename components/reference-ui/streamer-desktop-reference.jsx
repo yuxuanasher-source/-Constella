@@ -2,6 +2,15 @@
 /* eslint-disable */
 import React from "react";
 
+const UUID_LIKE_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function displayRecordId(value, fallback = "内部记录") {
+  const text = String(value || "").trim();
+  if (!text || UUID_LIKE_ID.test(text)) return fallback;
+  return text;
+}
+
 // ===== src\ui.jsx =====
 // ——— Reusable UI atoms ——————————————————————————————————————
 
@@ -2377,7 +2386,8 @@ function DesktopTaskCard({ task, onClick, primary, compact }) {
             }}
           >
             <Icon.Game size={12} stroke="var(--ink-400)" />
-            {task.vendor} · <span className="mono">{task.id}</span>
+            {task.vendor} ·{" "}
+            <span className="mono">{displayRecordId(task.id, "任务")}</span>
           </div>
 
           {!compact && task.note && (
@@ -2737,7 +2747,7 @@ function ScreenTasks({ go, openTaskId, tasks = MY_TASKS, actions = {} }) {
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {r.id}
+                      {displayRecordId(r.id, "任务")}
                     </div>
                     <div
                       style={{
@@ -2853,7 +2863,7 @@ function TaskDetail({ id, go, tasks = MY_TASKS, actions = {} }) {
               className="mono"
               style={{ fontSize: 11, color: "var(--ink-400)" }}
             >
-              {t.id}
+              {displayRecordId(t.id, "任务")}
             </span>
             <Badge tone={st.tone} dot>
               {st.label}
@@ -3756,7 +3766,7 @@ function VideoCard({ v }) {
           className="mono"
           style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 4 }}
         >
-          {v.id} · {v.uploaded}
+          {displayRecordId(v.id, "录屏")} · {v.uploaded}
         </div>
         <div
           style={{
@@ -4880,7 +4890,7 @@ function ScreenEarnings({ go }) {
                           className="mono"
                           style={{ fontSize: 11, color: "var(--ink-400)" }}
                         >
-                          {r.id}
+                          {displayRecordId(r.id, "结算项")}
                         </div>
                         <div
                           style={{ fontWeight: 500, color: "var(--ink-900)" }}

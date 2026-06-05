@@ -415,6 +415,148 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
       month: "2026-06",
     });
   });
+
+  it("renders public project announcements with download link and review status", () => {
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[
+          {
+            id: "project-1",
+            code: "PUB-1",
+            name: "Public Project",
+            status: "recruiting",
+            vendor: "Vendor A",
+            product: "Game A",
+            description: "Ops description",
+            publicSummary: "Streamer-facing summary",
+            gameDownloadUrl: "https://download.example.com/game-a",
+            openSignup: true,
+            forceRecording: true,
+            applicationId: "application-1",
+            applicationStatus: "recording_reviewing",
+            latestRecordingStatus: "submitted",
+            latestRecordingVersion: 1,
+            decisionReason: null,
+            reviewStatusLabel: "审核中",
+            canSubmitRecording: false,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("项目公告")).toBeInTheDocument();
+    expect(screen.getByText("Public Project")).toBeInTheDocument();
+    expect(screen.getByText("Streamer-facing summary")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "打开游戏下载" })).toHaveAttribute(
+      "href",
+      "https://download.example.com/game-a",
+    );
+    expect(screen.getByText("审核中")).toBeInTheDocument();
+  });
+
+  it("submits a project recording from an announcement card", async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      if (
+        String(url) === "/api/streamer/recordings" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            projectRecording: {
+              applicationId: "application-1",
+              projectId: "project-1",
+              recording: {
+                id: "recording-1",
+                applicationId: "application-1",
+                version: 1,
+                status: "submitted",
+              },
+              reviewStatusLabel: "审核中",
+            },
+          }),
+        };
+      }
+      if (String(url) === "/api/streamer/project-announcements") {
+        return {
+          ok: true,
+          json: async () => ({
+            announcements: [
+              {
+                id: "project-1",
+                code: "PUB-1",
+                name: "Public Project",
+                status: "recruiting",
+                vendor: "Vendor A",
+                product: "Game A",
+                description: "",
+                publicSummary: "Streamer-facing summary",
+                gameDownloadUrl: "https://download.example.com/game-a",
+                openSignup: true,
+                forceRecording: true,
+                applicationId: "application-1",
+                applicationStatus: "recording_reviewing",
+                latestRecordingStatus: "submitted",
+                latestRecordingVersion: 1,
+                decisionReason: null,
+                reviewStatusLabel: "审核中",
+                canSubmitRecording: false,
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[
+          {
+            id: "project-1",
+            code: "PUB-1",
+            name: "Public Project",
+            status: "recruiting",
+            vendor: "Vendor A",
+            product: "Game A",
+            description: "",
+            publicSummary: "Streamer-facing summary",
+            gameDownloadUrl: "https://download.example.com/game-a",
+            openSignup: true,
+            forceRecording: true,
+            applicationId: null,
+            applicationStatus: null,
+            latestRecordingStatus: null,
+            latestRecordingVersion: null,
+            decisionReason: null,
+            reviewStatusLabel: "待投递",
+            canSubmitRecording: true,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "投递录播" }));
+    fireEvent.change(screen.getByLabelText("链接"), {
+      target: { value: "https://videos.example.com/project-1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提交录屏链接" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("审核中")).toBeInTheDocument();
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(
+      expect.objectContaining({
+        projectId: "project-1",
+        link: "https://videos.example.com/project-1",
+      }),
+    );
+  });
 });
 
 describe("StreamerMobileReferenceApp profile actions smoke", () => {

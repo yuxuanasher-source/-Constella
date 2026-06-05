@@ -12,6 +12,12 @@ export function canPublishProject(role: AppRole | null | undefined): boolean {
   return role === "owner" || role === "ops_manager";
 }
 
+export function canAssignProjectOwner(
+  role: AppRole | null | undefined,
+): boolean {
+  return role === "owner" || role === "ops_manager";
+}
+
 export function canSeeFinancialFields(
   role: AppRole | null | undefined,
 ): boolean {

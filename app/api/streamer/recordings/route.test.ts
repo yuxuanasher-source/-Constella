@@ -8,6 +8,7 @@ import {
   createStreamerRecordingLink,
   listStreamerRecordingLinks,
 } from "@/features/recordings/streamer-recording-library";
+import { submitProjectRecording } from "@/features/recordings/project-recording-delivery";
 
 vi.mock("@/features/live-operations/live-operations-repository", () => ({
   getStreamerIdForUser: vi.fn(),
@@ -45,6 +46,10 @@ vi.mock("@/features/live-operations/live-operations-route-utils", () => {
 vi.mock("@/features/recordings/streamer-recording-library", () => ({
   createStreamerRecordingLink: vi.fn(),
   listStreamerRecordingLinks: vi.fn(),
+}));
+
+vi.mock("@/features/recordings/project-recording-delivery", () => ({
+  submitProjectRecording: vi.fn(),
 }));
 
 const context = {
@@ -87,6 +92,17 @@ describe("streamer recordings route", () => {
       status: "submitted",
       statusLabel: "待审核",
       submittedAt: "2026-06-03T11:00:00.000Z",
+    });
+    vi.mocked(submitProjectRecording).mockResolvedValue({
+      applicationId: "application-1",
+      projectId: "project-1",
+      recording: {
+        id: "recording-1",
+        applicationId: "application-1",
+        version: 1,
+        status: "submitted",
+      },
+      reviewStatusLabel: "审核中",
     });
   });
 
@@ -140,6 +156,44 @@ describe("streamer recordings route", () => {
       link: "https://videos.example.com/game-beta",
       month: "2026-06",
     });
+  });
+
+  it("submits project recordings to the application review queue when projectId is present", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/streamer/recordings", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId: "project-1",
+          link: "https://videos.example.com/project-1",
+          durationSeconds: 600,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({
+      projectRecording: expect.objectContaining({
+        applicationId: "application-1",
+        projectId: "project-1",
+        reviewStatusLabel: "审核中",
+      }),
+    });
+    expect(submitProjectRecording).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: expect.objectContaining({
+          userId: "user-streamer",
+          role: "streamer",
+          organizationId: "org-1",
+        }),
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/project-1",
+          durationSeconds: 600,
+        },
+      }),
+    );
+    expect(createStreamerRecordingLink).not.toHaveBeenCalled();
   });
 
   it("rejects non-streamer users", async () => {

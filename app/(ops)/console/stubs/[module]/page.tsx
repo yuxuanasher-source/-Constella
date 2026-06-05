@@ -1,4 +1,6 @@
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
+import type { AuthContext } from "@/lib/auth/context";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { listOpsApplicationQueue } from "@/features/applications/application-queries";
 import {
   listAuditCenterEntries,
@@ -31,9 +33,12 @@ import {
 import { listStreamerPool } from "@/features/streamers/streamer-queries";
 import { toStreamerCardDtos } from "@/features/streamers/streamer-ui-dto";
 import { routeForOpsModule } from "@/features/ui-route-contracts/module-route-map";
-import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-import { isMcnStaff } from "@/lib/rbac/roles";
+
+import {
+  currentUserFromAuth,
+  organizationSettingsFromAuth,
+  requireConsoleStaffAuth,
+} from "../../console-auth";
 
 export default async function StubPage({
   params,
@@ -41,6 +46,7 @@ export default async function StubPage({
   params: Promise<{ module: string }>;
 }) {
   const { module } = await params;
+  const { supabase, auth } = await requireConsoleStaffAuth();
   const {
     liveTasks,
     liveReports,
@@ -53,12 +59,14 @@ export default async function StubPage({
     auditEntries,
     notificationItems,
     billingStatus,
-  } = await loadLiveReferenceData(module);
+  } = await loadLiveReferenceData(module, supabase, auth);
   const route = routeForOpsModule(module);
 
   return (
     <OpsReferenceApp
       initialRoute={route?.routeKey ?? "warroom"}
+      currentUser={currentUserFromAuth(auth)}
+      organizationSettings={organizationSettingsFromAuth(auth)}
       liveTasks={liveTasks}
       liveReports={liveReports}
       liveBatches={liveBatches}
@@ -74,14 +82,11 @@ export default async function StubPage({
   );
 }
 
-async function loadLiveReferenceData(module: string) {
-  const supabase = await createSupabaseServerClient();
-  const auth = await getAuthContext(supabase);
-
-  if (!supabase || !auth || !isMcnStaff(auth.role)) {
-    return {};
-  }
-
+async function loadLiveReferenceData(
+  module: string,
+  supabase: SupabaseClient,
+  auth: AuthContext,
+) {
   if (module === "m2") {
     const streamers = await listStreamerPool(supabase);
     return { streamerCards: toStreamerCardDtos(streamers) };

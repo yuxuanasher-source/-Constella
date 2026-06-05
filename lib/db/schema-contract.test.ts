@@ -83,6 +83,25 @@ describe("P0 database contract", () => {
     expect(allMigrations).toContain("created_by = auth.uid()");
   });
 
+  it("defaults project owners to the project creator", () => {
+    expect(allMigrations).toContain("function public.default_project_owner");
+    expect(allMigrations).toContain(
+      "new.owner_id := coalesce(new.owner_id, new.created_by)",
+    );
+    expect(allMigrations).toContain("update public.projects");
+    expect(allMigrations).toContain("set owner_id = created_by");
+  });
+
+  it("declares public streamer project announcement fields", () => {
+    expect(allMigrations).toContain(
+      "is_public_to_streamers boolean not null default false",
+    );
+    expect(allMigrations).toContain("public_summary text not null default ''");
+    expect(allMigrations).toContain("game_download_url text");
+    expect(allMigrations).toContain("projects_game_download_url_http");
+    expect(allMigrations).toContain("projects_org_public_streamer_idx");
+  });
+
   it("declares the public MCN onboarding request intake table", () => {
     expect(allMigrations).toContain(
       "create table public.mcn_onboarding_requests",

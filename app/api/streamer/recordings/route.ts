@@ -7,6 +7,8 @@ import {
   readJsonBody,
   RouteError,
 } from "@/features/live-operations/live-operations-route-utils";
+import { SupabaseApplicationRepository } from "@/features/applications/application-repository";
+import { submitProjectRecording } from "@/features/recordings/project-recording-delivery";
 import {
   createStreamerRecordingLink,
   listStreamerRecordingLinks,
@@ -30,6 +32,31 @@ export async function POST(request: Request) {
   try {
     const { context, streamerId } = await getStreamerRecordingContext();
     const body = await readJsonBody(request);
+    if (typeof body.projectId === "string" && body.projectId.trim()) {
+      const projectRecording = await submitProjectRecording({
+        repo: new SupabaseApplicationRepository(context.supabase),
+        audit: (input) => context.audit(context.supabase, input),
+        notify: (input) => context.notify(context.supabase, input),
+        actor: {
+          userId: context.auth.userId,
+          name: context.auth.name,
+          role: context.auth.role,
+          organizationId: context.auth.organizationId,
+        },
+        input: {
+          projectId: body.projectId,
+          streamerId,
+          link: body.link,
+          durationSeconds:
+            typeof body.durationSeconds === "number"
+              ? body.durationSeconds
+              : undefined,
+        },
+      });
+
+      return NextResponse.json({ projectRecording }, { status: 201 });
+    }
+
     const recording = await createStreamerRecordingLink(context.supabase, {
       organizationId: context.auth.organizationId,
       streamerId,

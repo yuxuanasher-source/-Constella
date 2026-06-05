@@ -163,6 +163,57 @@ describe("OpsReferenceApp project smoke", () => {
     expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
   });
 
+  it("keeps the organization switcher readable with a long organization name", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        organizationMembers={[]}
+        organizationSettings={{ name: "星耀传媒测试机构" }}
+      />,
+    );
+
+    const orgSwitcher = screen.getByText("星耀传媒测试机构").closest("button");
+    expect(orgSwitcher).toHaveStyle({
+      alignItems: "center",
+      minWidth: "0",
+    });
+
+    const mark = orgSwitcher.querySelector("[data-org-switcher-mark='true']");
+    const content = orgSwitcher.querySelector(
+      "[data-org-switcher-content='true']",
+    );
+    const chevron = orgSwitcher.querySelector(
+      "[data-org-switcher-chevron='true']",
+    );
+
+    expect(mark).toHaveStyle({ flexShrink: "0" });
+    expect(content).toHaveStyle({ minWidth: "0", rowGap: "2px" });
+    expect(screen.getByText("星耀传媒测试机构")).toHaveStyle({
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+    });
+    expect(chevron).toHaveStyle({ flexShrink: "0" });
+  });
+
+  it("renders the authenticated staff user in the sidebar", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        currentUser={{
+          id: "user-ops",
+          name: "Alice Ops",
+          role: "ops_manager",
+          dept: "Demo Org",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Alice Ops")).toBeInTheDocument();
+    expect(screen.getByText("运营负责人 · Demo Org")).toBeInTheDocument();
+    expect(screen.queryByText("未登录用户")).not.toBeInTheDocument();
+  });
+
   it("does not show sidebar or notification badges when live queues are empty", () => {
     render(
       <OpsReferenceApp
@@ -255,10 +306,10 @@ describe("OpsReferenceApp project smoke", () => {
   it("keeps internal project ids out of project detail metadata", () => {
     render(
       <OpsReferenceApp
-        initialRoute="project"
+        initialRoute="projects"
         projectCards={[
           {
-            id: "internal-project-id",
+            id: "5245f59a-1502-460d-a77f-5e8e0b770d2a",
             code: "P-DETAIL",
             name: "详情项目",
             vendor: "厂商",
@@ -287,8 +338,106 @@ describe("OpsReferenceApp project smoke", () => {
       />,
     );
 
+    fireEvent.click(screen.getByText("详情项目"));
+
     expect(screen.getAllByText("P-DETAIL").length).toBeGreaterThan(0);
-    expect(screen.queryByText(/internal-project-id/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/5245f59a-1502-460d-a77f-5e8e0b770d2a/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("masks uuid-like identifiers in operational views", () => {
+    const uuids = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+      "55555555-5555-4555-8555-555555555555",
+      "66666666-6666-4666-8666-666666666666",
+      "77777777-7777-4777-8777-777777777777",
+      "88888888-8888-4888-8888-888888888888",
+    ];
+    const expectNoUuidText = () => {
+      uuids.forEach((uuid) => {
+        expect(screen.queryByText(new RegExp(uuid))).not.toBeInTheDocument();
+      });
+    };
+
+    const reportsView = render(
+      <OpsReferenceApp
+        initialRoute="reports"
+        liveReports={[
+          {
+            id: uuids[0],
+            taskId: uuids[1],
+            date: "2026-06-02",
+            streamer: "主播 A",
+            project: "项目 A",
+            duration: 2,
+            audience: 900,
+            status: "pending_review",
+            screens: 1,
+            source: "OCR",
+          },
+        ]}
+      />,
+    );
+    expectNoUuidText();
+    reportsView.unmount();
+
+    const auditView = render(
+      <OpsReferenceApp
+        initialRoute="audit"
+        auditEntries={[
+          {
+            id: uuids[2],
+            objectId: uuids[3],
+            projectId: uuids[4],
+            createdAt: "2026-06-02T08:00:00.000Z",
+            actorName: "审计员",
+            actorRole: "owner",
+            module: "project",
+            action: "update",
+            objectType: "project",
+            objectName: "项目 A",
+            result: "success",
+            changedFields: ["owner"],
+          },
+        ]}
+      />,
+    );
+    expectNoUuidText();
+    auditView.unmount();
+
+    const notificationView = render(
+      <OpsReferenceApp
+        initialRoute="notifications"
+        notificationItems={[
+          {
+            id: uuids[5],
+            objectId: uuids[6],
+            objectType: "project",
+            type: "task",
+            status: "unread",
+            createdAt: "2026-06-02T08:00:00.000Z",
+            title: "待处理提醒",
+          },
+        ]}
+      />,
+    );
+    expectNoUuidText();
+    notificationView.unmount();
+
+    render(
+      <OpsReferenceApp
+        initialRoute="org"
+        organizationSettings={{
+          id: uuids[7],
+          name: "星耀传媒测试机构",
+        }}
+      />,
+    );
+    expectNoUuidText();
   });
 
   it("opens a visible draft form when creating a project", () => {
@@ -574,6 +723,8 @@ describe("OpsReferenceApp project smoke", () => {
     const refreshedProject = {
       ...projectManagementCards[0],
       name: "Alpha Launch Updated",
+      ownerId: "user-ops-b",
+      leadOps: "Ops B",
       vendor: "Vendor Prime",
       product: "RPG Pro",
       agent: "Agency One",
@@ -584,6 +735,9 @@ describe("OpsReferenceApp project smoke", () => {
       end: "2026-06-30",
       needScreening: false,
       needStartStop: false,
+      isPublicToStreamers: true,
+      publicSummary: "Streamer-facing project summary",
+      gameDownloadUrl: "https://download.example.com/game-a",
     };
     const fetchMock = vi.fn(async (url) => {
       if (String(url) === "/api/projects/project-alpha") {
@@ -608,7 +762,36 @@ describe("OpsReferenceApp project smoke", () => {
     render(
       <OpsReferenceApp
         initialRoute="projects"
-        projectCards={[projectManagementCards[0]]}
+        currentUser={{
+          id: "user-owner",
+          name: "Owner",
+          role: "owner",
+          dept: "Demo Org",
+        }}
+        organizationMembers={[
+          {
+            id: "member-owner",
+            userId: "user-owner",
+            name: "Owner",
+            role: "owner",
+            status: "active",
+          },
+          {
+            id: "member-ops-a",
+            userId: "user-ops-a",
+            name: "Ops A",
+            role: "ops_manager",
+            status: "active",
+          },
+          {
+            id: "member-ops-b",
+            userId: "user-ops-b",
+            name: "Ops B",
+            role: "ops_manager",
+            status: "active",
+          },
+        ]}
+        projectCards={[{ ...projectManagementCards[0], ownerId: "user-ops-a" }]}
       />,
     );
     fireEvent.click(screen.getByText("Alpha Launch"));
@@ -649,6 +832,9 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.change(screen.getByLabelText("项目说明"), {
       target: { value: "Project profile is now configurable." },
     });
+    fireEvent.change(screen.getByLabelText("负责人"), {
+      target: { value: "user-ops-b" },
+    });
     fireEvent.click(screen.getByRole("combobox", { name: "项目状态" }));
     expect(
       screen.getByRole("listbox", { name: "项目状态选项" }),
@@ -659,6 +845,13 @@ describe("OpsReferenceApp project smoke", () => {
     });
     fireEvent.click(screen.getByLabelText("强制录屏"));
     fireEvent.click(screen.getByLabelText("主播需点击开播/停止"));
+    fireEvent.click(screen.getByLabelText("公开给组织内主播"));
+    fireEvent.change(screen.getByLabelText("主播公告概括"), {
+      target: { value: "Streamer-facing project summary" },
+    });
+    fireEvent.change(screen.getByLabelText("游戏下载链接"), {
+      target: { value: "https://download.example.com/game-a" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
@@ -674,6 +867,7 @@ describe("OpsReferenceApp project smoke", () => {
       agentName: "Agency One",
       supplierName: "Supplier One",
       description: "Project profile is now configurable.",
+      ownerId: "user-ops-b",
       status: "paused",
       startsAt: "2026-06-05",
       endsAt: "2026-06-30",
@@ -681,6 +875,9 @@ describe("OpsReferenceApp project smoke", () => {
       allowDirectInvite: true,
       forceRecording: false,
       forceSystemTiming: false,
+      isPublicToStreamers: true,
+      publicSummary: "Streamer-facing project summary",
+      gameDownloadUrl: "https://download.example.com/game-a",
     });
     expect(fetchMock.mock.calls[1][0]).toBe("/api/projects");
     expect(await screen.findByText("项目设置已更新")).toBeInTheDocument();
@@ -689,6 +886,10 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.getByText("Supplier One")).toBeInTheDocument();
     expect(
       screen.getByText("Project profile is now configurable."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("组织内公开")).toBeInTheDocument();
+    expect(
+      screen.getByText("Streamer-facing project summary"),
     ).toBeInTheDocument();
     expect(screen.queryByText("项目设置后台暂未接入")).not.toBeInTheDocument();
   });
@@ -1010,6 +1211,37 @@ describe("OpsReferenceApp streamer smoke", () => {
       completedProjects: 0,
     };
     const fetchMock = vi.fn(async (url, init) => {
+      if (String(url) === "/api/organization/members") {
+        return {
+          ok: true,
+          json: async () => ({
+            members: [
+              {
+                id: "member-streamer-sub",
+                userId: "user-streamer-sub",
+                email: "jy-streamer@subaccount.local",
+                name: "小龙",
+                role: "streamer",
+                status: "active",
+              },
+              {
+                id: "member-ops",
+                userId: "user-ops",
+                email: "ops@example.cn",
+                name: "运营",
+                role: "ops_manager",
+                status: "active",
+              },
+            ],
+            permissions: {
+              canViewMembers: true,
+              canCreateMembers: true,
+              creatableRoles: ["streamer"],
+            },
+          }),
+        };
+      }
+
       if (String(url) === "/api/streamers" && init?.method === "POST") {
         return {
           ok: true,
@@ -1027,6 +1259,21 @@ describe("OpsReferenceApp streamer smoke", () => {
     render(<OpsReferenceApp initialRoute="streamers" streamerCards={[]} />);
 
     fireEvent.click(screen.getByRole("button", { name: "新增主播档案" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/organization/members",
+        undefined,
+      ),
+    );
+    expect(
+      screen.queryByText("仅显示组织内角色为主播的子账号"),
+    ).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("绑定主播子账号"), {
+      target: { value: "小龙" },
+    });
+    fireEvent.click(
+      await screen.findByRole("option", { name: /小龙.*jy-streamer/ }),
+    );
     fireEvent.change(screen.getByLabelText("主播昵称"), {
       target: { value: "小鹿" },
     });
@@ -1050,16 +1297,24 @@ describe("OpsReferenceApp streamer smoke", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "创建档案" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      "/api/streamers",
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url) === "/api/streamers" && init?.method === "POST",
+        ),
+      ).toBe(true),
+    );
+    const streamerPostCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === "/api/streamers" && init?.method === "POST",
+    );
+    expect(streamerPostCall[1]).toEqual(
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json" },
       }),
     );
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+    expect(JSON.parse(streamerPostCall[1].body)).toEqual({
       displayName: "小鹿",
       realName: "鹿鸣",
       gender: "",
@@ -1068,9 +1323,9 @@ describe("OpsReferenceApp streamer smoke", () => {
       platforms: ["抖音"],
       styles: ["高能整活"],
       defaultSettlementMethod: "cps",
-      userId: "",
+      userId: "user-streamer-sub",
     });
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/streamers", undefined);
+    expect(fetchMock).toHaveBeenCalledWith("/api/streamers", undefined);
     expect(
       await screen.findByText("streamer-created · 鹿鸣"),
     ).toBeInTheDocument();
@@ -1612,7 +1867,7 @@ describe("OpsReferenceApp live task smoke", () => {
     fireEvent.click(await screen.findByRole("button", { name: "查看项目" }));
 
     expect(await screen.findByText("Mapped Project")).toBeInTheDocument();
-    expect(screen.getByText(/PM-002/)).toBeInTheDocument();
+    expect(screen.getAllByText(/PM-002/).length).toBeGreaterThan(0);
   });
 
   it("creates a batch live schedule then refreshes the M4 task queue", async () => {

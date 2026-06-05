@@ -736,13 +736,57 @@ const ROLES = {
   streamer: "主播",
 };
 
-const CURRENT_USER = {
+const DEFAULT_CURRENT_USER = {
   id: "",
   name: "未登录用户",
   role: "owner",
   org: "",
   dept: "",
 };
+
+function normalizeCurrentUser(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const role = ROLES[source.role] ? source.role : DEFAULT_CURRENT_USER.role;
+  const name =
+    typeof source.name === "string" && source.name.trim()
+      ? source.name.trim()
+      : DEFAULT_CURRENT_USER.name;
+  const dept = typeof source.dept === "string" ? source.dept.trim() : "";
+  const org = typeof source.org === "string" ? source.org.trim() : "";
+
+  return {
+    ...DEFAULT_CURRENT_USER,
+    ...source,
+    name,
+    role,
+    org,
+    dept,
+  };
+}
+
+function formatCurrentUserMeta(user) {
+  const roleLabel = ROLES[user.role] ?? ROLES[DEFAULT_CURRENT_USER.role];
+  const scope = user.dept || user.org;
+  return scope ? `${roleLabel} · ${scope}` : roleLabel;
+}
+
+const UUID_LIKE_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuidLikeId(value) {
+  return UUID_LIKE_ID.test(String(value || "").trim());
+}
+
+function displayRecordId(value, fallback = "内部记录") {
+  const text = String(value || "").trim();
+  if (!text || isUuidLikeId(text)) return fallback;
+  return text;
+}
+
+function displayProjectCode(project) {
+  const code = String(project?.code || "").trim();
+  return code || "未设置编号";
+}
 
 // Projects ———————————————————————————————————
 const PROJECTS = [];
@@ -793,6 +837,7 @@ const OpsLiveDataContext = React.createContext({
   organizationMemberPermissions: null,
   organizationSettings: DEFAULT_ORGANIZATION_SETTINGS,
   billingStatus: null,
+  currentUser: DEFAULT_CURRENT_USER,
   actions: {},
 });
 
@@ -873,6 +918,11 @@ function useOpsOrganizationMemberPermissions() {
 function useOpsOrganizationSettings() {
   const { organizationSettings } = React.useContext(OpsLiveDataContext);
   return normalizeOrganizationSettings(organizationSettings);
+}
+
+function useOpsCurrentUser() {
+  const { currentUser } = React.useContext(OpsLiveDataContext);
+  return normalizeCurrentUser(currentUser);
 }
 
 function useOpsBillingStatus() {
@@ -1301,10 +1351,12 @@ function Sidebar({
   route,
   onNav,
   navCounts = {},
+  currentUser,
   organizationSettings,
   organizationMembers,
   onOpenOrganizationSettings,
 }) {
+  const displayUser = normalizeCurrentUser(currentUser);
   const orgSettings = normalizeOrganizationSettings(organizationSettings);
   const enabledFeatureCount = countEnabledOrganizationFeatures(orgSettings);
   const memberCount = Array.isArray(organizationMembers)
@@ -1391,45 +1443,68 @@ function Sidebar({
         onClick={onOpenOrganizationSettings}
         style={{
           margin: "12px 12px 8px",
-          padding: "8px 10px",
+          padding: "10px 12px",
+          minWidth: 0,
           background: "var(--bg-soft)",
           border: "1px solid var(--line)",
           borderRadius: 8,
           display: "flex",
           alignItems: "center",
-          gap: 8,
+          gap: 10,
           cursor: "pointer",
         }}
       >
         <span
+          data-org-switcher-mark="true"
           style={{
-            width: 22,
-            height: 22,
-            borderRadius: 5,
+            width: 28,
+            height: 28,
+            flexShrink: 0,
+            borderRadius: 7,
             background: "var(--blue-50)",
             color: "var(--blue-700)",
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
             fontWeight: 700,
-            fontSize: 11,
+            fontSize: 12,
           }}
         >
           星
         </span>
-        <div style={{ flex: 1, textAlign: "left" }}>
+        <div
+          data-org-switcher-content="true"
+          style={{
+            flex: "1 1 auto",
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
+            rowGap: 2,
+            textAlign: "left",
+          }}
+        >
           <div
             style={{
               fontSize: 13,
               fontWeight: 600,
               color: "var(--ink-900)",
-              lineHeight: 1.1,
+              lineHeight: 1.2,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
           >
             {orgSettings.name}
           </div>
           <div
-            style={{ fontSize: 10.5, color: "var(--ink-400)", lineHeight: 1.2 }}
+            style={{
+              fontSize: 10.5,
+              color: "var(--ink-400)",
+              lineHeight: 1.25,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
           >
             {switcherMemberText}
           </div>
@@ -1437,13 +1512,28 @@ function Sidebar({
             style={{
               fontSize: 10.5,
               color: "var(--blue-600)",
-              lineHeight: 1.2,
+              lineHeight: 1.25,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
           >
             已启用 {enabledFeatureCount} 项功能
           </div>
         </div>
-        <Icon.ChevDown size={14} stroke="var(--ink-400)" />
+        <span
+          data-org-switcher-chevron="true"
+          style={{
+            width: 18,
+            height: 18,
+            flexShrink: 0,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Icon.ChevDown size={14} stroke="var(--ink-400)" />
+        </span>
       </button>
 
       {/* Nav */}
@@ -1559,15 +1649,15 @@ function Sidebar({
           gap: 10,
         }}
       >
-        <Avatar name={CURRENT_USER.name} size={32} />
+        <Avatar name={displayUser.name} size={32} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div
             style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}
           >
-            {CURRENT_USER.name}
+            {displayUser.name}
           </div>
           <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
-            {ROLES[CURRENT_USER.role]} · {CURRENT_USER.dept}
+            {formatCurrentUserMeta(displayUser)}
           </div>
         </div>
         <button
@@ -2147,7 +2237,7 @@ function OcrOperationsPanel({
           {jobs.length ? (
             jobs.map((job) => (
               <tr key={job.id}>
-                <td style={ocrCellStyle}>{job.id}</td>
+                <td style={ocrCellStyle}>{displayRecordId(job.id, "OCR 任务")}</td>
                 <td style={ocrCellStyle}>
                   <Badge tone={ocrStatusTone(job.status)}>{job.status}</Badge>
                 </td>
@@ -2162,7 +2252,9 @@ function OcrOperationsPanel({
                     </div>
                   ) : null}
                 </td>
-                <td style={ocrCellStyle}>{job.liveReportId || "未关联"}</td>
+                <td style={ocrCellStyle}>
+                  {displayRecordId(job.liveReportId, "报数记录")}
+                </td>
                 <td style={ocrCellStyle}>
                   {job.updatedAt || job.createdAt || job.nextRunAt || "未记录"}
                 </td>
@@ -2179,7 +2271,7 @@ function OcrOperationsPanel({
                     >
                       时长
                       <input
-                        aria-label={`修正时长 ${job.id}`}
+                        aria-label={`修正时长 ${displayRecordId(job.id, "OCR 任务")}`}
                         type="number"
                         min="0"
                         value={manualResults[job.id]?.duration ?? ""}
@@ -2204,7 +2296,7 @@ function OcrOperationsPanel({
                     >
                       人数
                       <input
-                        aria-label={`修正观看人数 ${job.id}`}
+                        aria-label={`修正观看人数 ${displayRecordId(job.id, "OCR 任务")}`}
                         type="number"
                         min="0"
                         value={manualResults[job.id]?.viewers ?? ""}
@@ -2391,7 +2483,7 @@ function Overview({ go }) {
                           style={{ fontSize: 11, color: "var(--ink-400)" }}
                           className="mono"
                         >
-                          {r.id} · {r.vendor}
+                          {displayRecordId(r.id, "项目")} · {r.vendor}
                         </div>
                       </div>
                     </div>
@@ -2873,7 +2965,7 @@ function Matching({ go }) {
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {s?.id ?? r.id}
+                      {displayRecordId(s?.id ?? r.id, "主播档案")}
                     </span>
                     <span style={{ flex: 1 }} />
                     <Badge
@@ -3037,7 +3129,7 @@ function Matching({ go }) {
                           className="mono"
                           style={{ fontSize: 11, color: "var(--ink-400)" }}
                         >
-                          {r.id}
+                          {displayRecordId(r.id, "供应商")}
                         </div>
                       </div>
                     </div>
@@ -3111,7 +3203,7 @@ function Supplier() {
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {r.id} · 推荐主播 {r.streamers}
+                      {displayRecordId(r.id, "供应商")} · 推荐主播 {r.streamers}
                     </div>
                   </div>
                 </div>
@@ -4266,6 +4358,9 @@ function ProjectInlineFilter({ label, value, onChange, options }) {
 function ProjectDetail({ id, go }) {
   const projects = useOpsProjects();
   const actions = useOpsLiveActions();
+  const members = useOpsOrganizationMembers();
+  const currentUser = useOpsCurrentUser();
+  const { organizationMembers } = React.useContext(OpsLiveDataContext);
   const p = projects.find((x) => x.id === id) || projects[0] || PROJECTS[0];
   const [tab, setTab] = React.useState("overview");
   const [detailMessage, setDetailMessage] = React.useState("");
@@ -4282,6 +4377,16 @@ function ProjectDetail({ id, go }) {
     setSettingsOpen(false);
     setSettingsError("");
   }, [p]);
+
+  React.useEffect(() => {
+    if (
+      settingsOpen &&
+      !Array.isArray(organizationMembers) &&
+      actions.refreshOrganizationMembers
+    ) {
+      actions.refreshOrganizationMembers().catch(() => {});
+    }
+  }, [actions, organizationMembers, settingsOpen]);
 
   if (!p) {
     return (
@@ -4312,6 +4417,8 @@ function ProjectDetail({ id, go }) {
   }
 
   const status = PROJECT_STATUS[p.status] || PROJECT_STATUS.draft;
+  const canAssignOwner = canAssignProjectOwnerInUi(currentUser.role);
+  const ownerOptions = projectOwnerOptions(members, p, currentUser);
   const donePct =
     Math.round((p.metrics.doneHours / p.metrics.plannedHours) * 100) || 0;
   const exportVendorDelivery = async () => {
@@ -4375,6 +4482,7 @@ function ProjectDetail({ id, go }) {
         agentName: settingsDraft.agentName.trim(),
         supplierName: settingsDraft.supplierName.trim(),
         description: settingsDraft.description.trim(),
+        ...(canAssignOwner ? { ownerId: settingsDraft.ownerId || null } : {}),
         status: settingsDraft.status,
         startsAt: settingsDraft.startsAt || null,
         endsAt: settingsDraft.endsAt || null,
@@ -4382,6 +4490,9 @@ function ProjectDetail({ id, go }) {
         allowDirectInvite: settingsDraft.allowDirectInvite,
         forceRecording: settingsDraft.forceRecording,
         forceSystemTiming: settingsDraft.forceSystemTiming,
+        isPublicToStreamers: settingsDraft.isPublicToStreamers,
+        publicSummary: settingsDraft.publicSummary.trim(),
+        gameDownloadUrl: settingsDraft.gameDownloadUrl.trim(),
       });
       setDetailMessage("项目设置已更新");
       setSettingsOpen(false);
@@ -4398,8 +4509,8 @@ function ProjectDetail({ id, go }) {
         title={p.name}
         subtitle={
           <span>
-            <span className="mono">{p.id}</span> · {p.vendor} · {p.product} · 由{" "}
-            {p.leadOps}（运营负责人）/ {p.bizOwner}（商务）共同负责
+            <span className="mono">{displayProjectCode(p)}</span> · {p.vendor} ·{" "}
+            {p.product} · 由 {p.leadOps}（运营负责人）/ {p.bizOwner}（商务）共同负责
           </span>
         }
         status={
@@ -4490,6 +4601,8 @@ function ProjectDetail({ id, go }) {
           <ProjectSettingsPanel
             draft={settingsDraft}
             baseStatus={p.status}
+            ownerOptions={ownerOptions}
+            canAssignOwner={canAssignOwner}
             error={settingsError}
             submitting={settingsSubmitting}
             onChange={handleSettingsChange}
@@ -4626,6 +4739,7 @@ function projectSettingsInitialDraft(project) {
       ["暂无项目说明"],
     ),
     status: project?.status || "draft",
+    ownerId: project?.ownerId || "",
     startsAt: normalizeProjectSettingDate(project?.start || project?.startsAt),
     endsAt: normalizeProjectSettingDate(project?.end || project?.endsAt),
     openSignup: project?.openSignup ?? true,
@@ -4633,12 +4747,60 @@ function projectSettingsInitialDraft(project) {
     forceRecording: project?.forceRecording ?? project?.needScreening ?? true,
     forceSystemTiming:
       project?.forceSystemTiming ?? project?.needStartStop ?? true,
+    isPublicToStreamers: project?.isPublicToStreamers ?? false,
+    publicSummary: normalizeProjectTextDraft(project?.publicSummary),
+    gameDownloadUrl: normalizeProjectTextDraft(project?.gameDownloadUrl),
   };
 }
 
 function normalizeProjectTextDraft(value, placeholders = []) {
   if (!value || placeholders.includes(value)) return "";
   return String(value);
+}
+
+const PROJECT_OWNER_ASSIGNABLE_ROLES = new Set([
+  "owner",
+  "ops_manager",
+  "operator_business",
+]);
+
+function canAssignProjectOwnerInUi(role) {
+  return role === "owner" || role === "ops_manager";
+}
+
+function projectOwnerOptions(members = [], project, currentUser) {
+  const options = [];
+  const seen = new Set();
+  const pushOption = (value, label, role) => {
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    const roleLabel = role && ROLES[role] ? ` · ${ROLES[role]}` : "";
+    options.push({ value, label: `${label || value}${roleLabel}` });
+  };
+
+  if (
+    currentUser?.id &&
+    PROJECT_OWNER_ASSIGNABLE_ROLES.has(currentUser.role)
+  ) {
+    pushOption(currentUser.id, currentUser.name, currentUser.role);
+  }
+
+  members
+    .filter((member) => member?.status !== "suspended")
+    .filter((member) => PROJECT_OWNER_ASSIGNABLE_ROLES.has(member?.role))
+    .forEach((member) => {
+      pushOption(
+        member.userId || member.user_id || member.id,
+        member.name,
+        member.role,
+      );
+    });
+
+  if (project?.ownerId) {
+    pushOption(project.ownerId, project.leadOps || project.ownerName, null);
+  }
+
+  return [{ value: "", label: "未分配" }, ...options];
 }
 
 const projectSettingsInputStyle = {
@@ -4979,6 +5141,8 @@ function ProjectSettingsDateField({ label, value, onChange }) {
 function ProjectSettingsPanel({
   draft,
   baseStatus,
+  ownerOptions = [],
+  canAssignOwner = false,
   error,
   submitting,
   onChange,
@@ -5061,6 +5225,25 @@ function ProjectSettingsPanel({
               onChange={(event) => onChange("name", event.target.value)}
               style={projectSettingsInputStyle}
             />
+          </ProjectSettingsField>
+          <ProjectSettingsField label="负责人">
+            <select
+              value={draft.ownerId || ""}
+              onChange={(event) => onChange("ownerId", event.target.value)}
+              disabled={!canAssignOwner}
+              style={{
+                ...projectSettingsInputStyle,
+                cursor: canAssignOwner ? "pointer" : "not-allowed",
+                color: canAssignOwner ? "var(--ink-900)" : "var(--ink-400)",
+                background: canAssignOwner ? "#fff" : "var(--bg-soft)",
+              }}
+            >
+              {ownerOptions.map((option) => (
+                <option key={option.value || "unassigned"} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </ProjectSettingsField>
           <ProjectSettingsField label="厂商">
             <input
@@ -5153,6 +5336,38 @@ function ProjectSettingsPanel({
             checked={draft.forceSystemTiming}
             onChange={(checked) => onChange("forceSystemTiming", checked)}
           />
+          <ProjectSettingsCheck
+            label="公开给组织内主播"
+            checked={draft.isPublicToStreamers}
+            onChange={(checked) => onChange("isPublicToStreamers", checked)}
+          />
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gap: 12,
+          }}
+        >
+          <ProjectSettingsField label="主播公告概括">
+            <input
+              value={draft.publicSummary}
+              onChange={(event) => onChange("publicSummary", event.target.value)}
+              placeholder="给组织内主播看的项目摘要"
+              style={projectSettingsInputStyle}
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsField label="游戏下载链接">
+            <input
+              value={draft.gameDownloadUrl}
+              onChange={(event) =>
+                onChange("gameDownloadUrl", event.target.value)
+              }
+              placeholder="https://..."
+              style={projectSettingsInputStyle}
+            />
+          </ProjectSettingsField>
         </div>
 
         {error ? (
@@ -5262,6 +5477,19 @@ function ProjectOverview({ p }) {
               <KV label="强制录屏">{p.needScreening ? "是" : "否"}</KV>
               <KV label="主播需点击开播 / 停止">
                 {p.needStartStop ? "是" : "否"}
+              </KV>
+              <KV label="主播可见性">
+                {p.isPublicToStreamers ? "组织内公开" : "未公开"}
+              </KV>
+              <KV label="主播公告概括" w={120}>
+                <span style={{ color: "var(--ink-500)" }}>
+                  {p.publicSummary || "暂无主播公告"}
+                </span>
+              </KV>
+              <KV label="游戏下载链接" w={120}>
+                <span className="mono" style={{ color: "var(--ink-500)" }}>
+                  {p.gameDownloadUrl || "未配置"}
+                </span>
               </KV>
               <KV label="项目说明" w={120}>
                 <span style={{ color: "var(--ink-500)" }}>
@@ -5642,7 +5870,7 @@ function ProjectRoster({ p, go }) {
                     className="mono"
                     style={{ fontSize: 11, color: "var(--ink-400)" }}
                   >
-                    {r.id} · {r.real}
+                    {displayRecordId(r.id, "主播")} · {r.real}
                   </div>
                 </div>
               </div>
@@ -5934,7 +6162,9 @@ function taskGanttRows(tasks) {
   tasks.forEach((task) => {
     const key = task.streamerId || task.streamerName || "unassigned";
     const current = grouped.get(key) || {
-      name: task.streamerName || task.streamerId || "未配置主播",
+      name:
+        task.streamerName ||
+        displayRecordId(task.streamerId, "未配置主播"),
       bars: [],
     };
     current.bars.push([
@@ -6006,12 +6236,57 @@ function splitDraftList(value) {
     .filter(Boolean);
 }
 
+function buildStreamerSubaccountCandidates(members) {
+  if (!Array.isArray(members)) return [];
+
+  return members
+    .filter(
+      (member) =>
+        member?.role === "streamer" &&
+        member?.status !== "suspended" &&
+        typeof member?.userId === "string" &&
+        member.userId.trim(),
+    )
+    .map((member) => {
+      const email = typeof member.email === "string" ? member.email.trim() : "";
+      const name =
+        typeof member.name === "string" && member.name.trim()
+          ? member.name.trim()
+          : email || member.userId;
+      const account = accountFromLocalSubaccountEmail(email);
+      const searchText = [name, email, account, member.userId]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return {
+        userId: member.userId.trim(),
+        name,
+        email,
+        account,
+        status: member.status,
+        searchText,
+      };
+    });
+}
+
+function streamerSubaccountLabel(candidate) {
+  if (!candidate) return "";
+
+  const account = candidate.account
+    ? `默认账号 ${candidate.account}`
+    : candidate.email || candidate.userId;
+
+  return `${candidate.name} · ${account}`;
+}
+
 // ===== src\screen-streamers.jsx =====
 // ——— Screen: 主播资源池 ————————————————————————————
 
 function ScreenStreamers({ go, initialActiveId }) {
   const streamers = useOpsStreamers();
   const actions = useOpsLiveActions();
+  const { organizationMembers } = React.useContext(OpsLiveDataContext);
   const emptyDraft = {
     displayName: "",
     realName: "",
@@ -6030,6 +6305,9 @@ function ScreenStreamers({ go, initialActiveId }) {
   const [draft, setDraft] = React.useState(emptyDraft);
   const [draftError, setDraftError] = React.useState("");
   const [draftSubmitting, setDraftSubmitting] = React.useState(false);
+  const [memberLoading, setMemberLoading] = React.useState(false);
+  const [memberLoadError, setMemberLoadError] = React.useState("");
+  const [userSearch, setUserSearch] = React.useState("");
   const [search, setSearch] = React.useState("");
   const [categoryFilter, setCategoryFilter] = React.useState("all");
   const [sourceFilter, setSourceFilter] = React.useState("all");
@@ -6061,13 +6339,52 @@ function ScreenStreamers({ go, initialActiveId }) {
   const updateDraft = (field) => (event) => {
     setDraft((value) => ({ ...value, [field]: event.target.value }));
   };
+  const streamerSubaccountCandidates = React.useMemo(
+    () => buildStreamerSubaccountCandidates(organizationMembers),
+    [organizationMembers],
+  );
+  const selectedSubaccount = streamerSubaccountCandidates.find(
+    (candidate) => candidate.userId === draft.userId.trim(),
+  );
+  const userQuery = userSearch.trim().toLowerCase();
+  const filteredSubaccountCandidates = userQuery
+    ? streamerSubaccountCandidates
+        .filter((candidate) => candidate.searchText.includes(userQuery))
+        .slice(0, 6)
+    : streamerSubaccountCandidates.slice(0, 6);
+  const refreshStreamerSubaccounts = () => {
+    if (organizationMembers != null || !actions.refreshOrganizationMembers) {
+      return;
+    }
+
+    setMemberLoading(true);
+    setMemberLoadError("");
+    actions
+      .refreshOrganizationMembers()
+      .catch((error) => setMemberLoadError(formatOrganizationMemberError(error)))
+      .finally(() => setMemberLoading(false));
+  };
+  const updateUserSearch = (event) => {
+    const nextValue = event.target.value;
+    setUserSearch(nextValue);
+    setDraft((value) => (value.userId ? { ...value, userId: "" } : value));
+  };
+  const selectStreamerSubaccount = (candidate) => {
+    setDraft((value) => ({ ...value, userId: candidate.userId }));
+    setUserSearch(streamerSubaccountLabel(candidate));
+  };
   const openDraftForm = () => {
     setDraftOpen(true);
     setDraftError("");
+    setMemberLoadError("");
+    setUserSearch(streamerSubaccountLabel(selectedSubaccount));
+    refreshStreamerSubaccounts();
   };
   const closeDraftForm = () => {
     setDraftOpen(false);
     setDraftError("");
+    setMemberLoadError("");
+    setUserSearch("");
   };
   const submitStreamerDraft = async (event) => {
     event.preventDefault();
@@ -6093,6 +6410,7 @@ function ScreenStreamers({ go, initialActiveId }) {
       });
       setDraftOpen(false);
       setDraft(emptyDraft);
+      setUserSearch("");
       if (body?.streamer?.id) {
         setActive(body.streamer.id);
       }
@@ -6396,15 +6714,116 @@ function ScreenStreamers({ go, initialActiveId }) {
                   <option value="manual">手动结算</option>
                 </select>
               </label>
-              <label style={draftLabelStyle}>
-                用户 ID
-                <input
-                  value={draft.userId}
-                  onChange={updateDraft("userId")}
-                  placeholder="可选绑定登录用户"
-                  style={draftFieldStyle}
-                />
-              </label>
+              <div style={{ position: "relative", minWidth: 0 }}>
+                <label style={draftLabelStyle}>
+                  绑定主播子账号
+                  <input
+                    value={userSearch}
+                    onChange={updateUserSearch}
+                    onFocus={refreshStreamerSubaccounts}
+                    placeholder={
+                      memberLoading
+                        ? "正在加载主播子账号"
+                        : "搜索姓名 / 邮箱 / 默认账号"
+                    }
+                    aria-autocomplete="list"
+                    aria-expanded={
+                      Boolean(userSearch.trim()) && !selectedSubaccount
+                    }
+                    style={draftFieldStyle}
+                  />
+                </label>
+                {userSearch.trim() && !selectedSubaccount ? (
+                  <div
+                    role="listbox"
+                    aria-label="主播子账号候选"
+                    style={{
+                      position: "absolute",
+                      zIndex: 20,
+                      top: 56,
+                      left: 0,
+                      right: 0,
+                      overflow: "hidden",
+                      border: "1px solid var(--line-strong)",
+                      borderRadius: 8,
+                      background: "#fff",
+                      boxShadow: "var(--shadow-pop)",
+                    }}
+                  >
+                    {filteredSubaccountCandidates.length > 0 ? (
+                      filteredSubaccountCandidates.map((candidate) => (
+                        <button
+                          key={candidate.userId}
+                          type="button"
+                          role="option"
+                          onClick={() => selectStreamerSubaccount(candidate)}
+                          style={{
+                            width: "100%",
+                            border: 0,
+                            borderBottom: "1px solid var(--line)",
+                            background: "#fff",
+                            padding: "8px 10px",
+                            textAlign: "left",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: "block",
+                              color: "var(--ink-900)",
+                              fontSize: 13,
+                              fontWeight: 700,
+                            }}
+                          >
+                            {candidate.name}
+                          </span>
+                          <span
+                            style={{
+                              display: "block",
+                              marginTop: 2,
+                              color: "var(--ink-400)",
+                              fontSize: 11,
+                              fontWeight: 600,
+                            }}
+                          >
+                            {candidate.account
+                              ? `默认账号 ${candidate.account}`
+                              : candidate.email || candidate.userId}
+                          </span>
+                        </button>
+                      ))
+                    ) : (
+                      <div
+                        style={{
+                          padding: "9px 10px",
+                          color: "var(--ink-400)",
+                          fontSize: 12,
+                          fontWeight: 600,
+                        }}
+                      >
+                        暂无匹配主播子账号
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+                {memberLoadError || selectedSubaccount ? (
+                  <div
+                    aria-live="polite"
+                    style={{
+                      marginTop: 4,
+                      color: memberLoadError
+                        ? "var(--danger-600)"
+                        : "var(--ink-300)",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      lineHeight: 1.3,
+                    }}
+                  >
+                    {memberLoadError ||
+                      `已绑定 ${streamerSubaccountLabel(selectedSubaccount)}`}
+                  </div>
+                ) : null}
+              </div>
               <div
                 style={{
                   display: "flex",
@@ -6477,7 +6896,7 @@ function ScreenStreamers({ go, initialActiveId }) {
                         className="mono"
                         style={{ fontSize: 11, color: "var(--ink-400)" }}
                       >
-                        {r.id} · {r.real}
+                        {displayRecordId(r.id, "主播")} · {r.real}
                       </div>
                     </div>
                   </div>
@@ -6792,7 +7211,8 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
                   {s.alias}
                 </div>
                 <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
-                  {s.real} · {s.gender} · <span className="mono">{s.id}</span>
+                  {s.real} · {s.gender} ·{" "}
+                  <span className="mono">{displayRecordId(s.id, "主播")}</span>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 4 }}>
@@ -7467,13 +7887,13 @@ function ScreenReports({ go }) {
                         fontSize: 12.5,
                       }}
                     >
-                      {r.id}
+                      {displayRecordId(r.id, "报数记录")}
                     </div>
                     <div
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {r.taskId}
+                      {displayRecordId(r.taskId, "任务")}
                     </div>
                   </div>
                 ),
@@ -7651,7 +8071,8 @@ function ReportDetail({ id, reports }) {
               className="mono"
               style={{ fontSize: 11, color: "var(--ink-400)" }}
             >
-              {r.id} · 任务 {r.taskId}
+              {displayRecordId(r.id, "报数记录")} · 任务{" "}
+              {displayRecordId(r.taskId, "任务")}
             </div>
             <div
               style={{
@@ -8051,7 +8472,7 @@ function ScreenAdmission() {
                 title: "报名编号",
                 render: (r) => (
                   <span className="mono" style={{ fontSize: 12 }}>
-                    {r.id}
+                    {displayRecordId(r.id, "报名记录")}
                   </span>
                 ),
               },
@@ -8095,7 +8516,7 @@ function ScreenAdmission() {
                         marginTop: 4,
                       }}
                     >
-                      {r.latestRecording?.id ?? "暂无录屏"}
+                      {displayRecordId(r.latestRecording?.id, "暂无录屏")}
                     </div>
                   </div>
                 ),
@@ -8206,8 +8627,7 @@ function toReferenceBatchFromApi(batch, items, context = {}) {
     batch.projectName ||
     context.pool?.find((row) => row.project)?.project ||
     context.activeBatch?.project ||
-    batch.projectId ||
-    "项目";
+    displayRecordId(batch.projectId, "项目");
   const amount =
     Number(batch.totalAmount ?? 0) ||
     Number(batch.computedAmount ?? 0) +
@@ -8263,8 +8683,7 @@ function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {
     streamer:
       item.streamerName ||
       sourceReport?.streamer ||
-      item.streamerId ||
-      `主播 ${index + 1}`,
+      displayRecordId(item.streamerId, `主播 ${index + 1}`),
     id: item.id,
     rule:
       item.itemType === "live_report"
@@ -8301,8 +8720,8 @@ function toSettlementPoolFromReviewedReport(report, sourceReport) {
 
   return {
     id: report.id || sourceReport?.id,
-    streamer: sourceReport?.streamer || report.streamerId || "主播",
-    project: sourceReport?.project || report.projectId || "项目",
+    streamer: sourceReport?.streamer || displayRecordId(report.streamerId, "主播"),
+    project: sourceReport?.project || displayRecordId(report.projectId, "项目"),
     hours: Math.round((settlementDuration / 60) * 10) / 10,
     evidence: `${evidenceLevel} · ${timeSource}`,
     rule: "cpt",
@@ -8736,7 +9155,7 @@ function ScreenSettlement({ go }) {
                         className="mono"
                         style={{ fontSize: 11, color: "var(--ink-400)" }}
                       >
-                        {r.id}
+                        {displayRecordId(r.id, "结算批次")}
                       </div>
                       <div
                         style={{
@@ -8873,7 +9292,7 @@ function SettlementPoolPreview({ rows, settlementScope }) {
                     className="mono"
                     style={{ fontSize: 10.5, color: "var(--ink-400)" }}
                   >
-                    {r.id}
+                    {displayRecordId(r.id, "结算项")}
                   </div>
                 </div>
               </div>
@@ -9024,7 +9443,7 @@ function BatchDetail({
                 className="mono"
                 style={{ fontSize: 11, color: "var(--ink-400)" }}
               >
-                {b.id}
+                {displayRecordId(b.id, "结算批次")}
               </div>
               <div
                 style={{
@@ -9182,7 +9601,7 @@ function BatchDetail({
                       className="mono"
                       style={{ fontSize: 10.5, color: "var(--ink-400)" }}
                     >
-                      {r.id}
+                      {displayRecordId(r.id, "结算项")}
                     </div>
                   </div>
                 </div>
@@ -9479,7 +9898,9 @@ function ScreenTasks({ go }) {
       await actions.createLiveTask?.(input);
       const taskProject = projects.find((item) => item.id === input.projectId);
       setTaskMessage(
-        `已创建任务并绑定项目：${taskProject?.name || input.projectId}`,
+        `已创建任务并绑定项目：${
+          taskProject?.name || displayRecordId(input.projectId, "项目")
+        }`,
       );
       setSelectedTask(null);
     });
@@ -10768,7 +11189,7 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
               className="mono"
               style={{ fontWeight: 600, color: "var(--ink-900)" }}
             >
-              {r.id}
+              {displayRecordId(r.id, "任务")}
             </span>
           ),
         },
@@ -10807,7 +11228,11 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <Avatar name={s?.alias || r.streamerName} size={24} />
-                <span>{s?.alias || r.streamerName || r.streamerId}</span>
+                <span>
+                  {s?.alias ||
+                    r.streamerName ||
+                    displayRecordId(r.streamerId, "主播")}
+                </span>
               </div>
             );
           },
@@ -10999,7 +11424,7 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {a.id} · {a.projectDisplay}
+                      {displayRecordId(a.id, "异常任务")} · {a.projectDisplay}
                     </span>
                   </div>
                   <div
@@ -11040,7 +11465,9 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
                       size="sm"
                       kind="default"
                       onClick={() =>
-                        setActionMessage(`已定位异常任务：${a.id}`)
+                        setActionMessage(
+                          `已定位异常任务：${displayRecordId(a.id, "任务")}`,
+                        )
                       }
                     >
                       查看任务
@@ -11162,7 +11589,7 @@ function TaskDrawer({
             className="mono"
             style={{ fontSize: 13, color: "var(--ink-400)" }}
           >
-            {task.id}
+            {displayRecordId(task.id, "任务")}
           </span>
           <Badge tone={st.tone} dot>
             {st.label}
@@ -11248,7 +11675,7 @@ function TaskDrawer({
                 className="mono"
                 style={{ fontSize: 11, color: "var(--ink-400)" }}
               >
-                {s?.id || task.streamerId} ·{" "}
+                {displayRecordId(s?.id || task.streamerId, "主播")} ·{" "}
                 {s?.platforms?.join(" / ") || "直播账号"}
               </div>
             </div>
@@ -12302,7 +12729,7 @@ function ScreenOrg({ go, onOpenOrganizationSettings }) {
                 style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 4 }}
               >
                 <span className="mono">
-                  {orgSettings.id || "组织编号待配置"}
+                  {displayRecordId(orgSettings.id, "组织编号待配置")}
                 </span>{" "}
                 · {orgSettings.name} · MCN 经营舱
               </div>
@@ -14323,7 +14750,7 @@ function ScreenAudit() {
                         className="mono"
                         style={{ fontSize: 11, color: "var(--ink-400)" }}
                       >
-                        {entry.id}
+                        {displayRecordId(entry.id, "审计日志")}
                       </div>
                       <div
                         className="mono"
@@ -14413,7 +14840,7 @@ function ScreenAudit() {
                           marginTop: 3,
                         }}
                       >
-                        {entry.objectId || "—"}
+                        {displayRecordId(entry.objectId, "业务对象")}
                       </div>
                     </div>
                   ),
@@ -14502,7 +14929,7 @@ function AuditEntryDetail({ entry }) {
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <KV label="日志 ID">
-          <span className="mono">{entry.id}</span>
+          <span className="mono">{displayRecordId(entry.id, "审计日志")}</span>
         </KV>
         <KV label="发生时间">
           <span className="mono">{formatOpsMinute(entry.createdAt)}</span>
@@ -14517,10 +14944,14 @@ function AuditEntryDetail({ entry }) {
         </KV>
         <KV label="对象">
           {entry.objectType} ·{" "}
-          <span className="mono">{entry.objectId || "—"}</span>
+          <span className="mono">
+            {displayRecordId(entry.objectId, "业务对象")}
+          </span>
         </KV>
         <KV label="项目">
-          <span className="mono">{entry.projectId || "—"}</span>
+          <span className="mono">
+            {displayRecordId(entry.projectId, "项目")}
+          </span>
         </KV>
         <KV label="变更字段">
           <span className="mono">{auditChangedFields(entry)}</span>
@@ -14721,7 +15152,8 @@ function ScreenNotifications() {
                         color: "var(--ink-400)",
                       }}
                     >
-                      {item.id} · {formatOpsMinute(item.createdAt)}
+                      {displayRecordId(item.id, "通知")} ·{" "}
+                      {formatOpsMinute(item.createdAt)}
                     </div>
                   </div>
                 ),
@@ -14755,7 +15187,7 @@ function ScreenNotifications() {
                       className="mono"
                       style={{ fontSize: 10.5, color: "var(--ink-400)" }}
                     >
-                      {item.objectId || "—"}
+                      {displayRecordId(item.objectId, "业务对象")}
                     </div>
                   </div>
                 ),
@@ -15307,6 +15739,7 @@ function OpsReferenceInner({
   projectCards,
   streamerCards,
   applicationQueue,
+  currentUser,
 }) {
   // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'billing' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
@@ -16068,6 +16501,7 @@ function OpsReferenceInner({
         organizationMemberPermissions: organizationMemberPermissionsState,
         organizationSettings: organizationSettingsState,
         billingStatus: billingStatusState,
+        currentUser: normalizeCurrentUser(currentUser),
         actions,
       }}
     >
@@ -16078,6 +16512,7 @@ function OpsReferenceInner({
           route={navKey}
           onNav={go}
           navCounts={navCounts}
+          currentUser={currentUser}
           organizationSettings={organizationSettingsState}
           organizationMembers={organizationMembersState}
           onOpenOrganizationSettings={() => setOrganizationSettingsOpen(true)}
@@ -16333,7 +16768,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; currentUser?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -16352,6 +16787,7 @@ export default function OpsReferenceApp({
   projectCards,
   streamerCards,
   applicationQueue,
+  currentUser,
 }) {
   return (
     <OpsReferenceInner
@@ -16371,6 +16807,7 @@ export default function OpsReferenceApp({
       projectCards={projectCards}
       streamerCards={streamerCards}
       applicationQueue={applicationQueue}
+      currentUser={currentUser}
     />
   );
 }

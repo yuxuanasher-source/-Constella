@@ -37,6 +37,12 @@ describe("project service", () => {
     });
 
     expect(project.status).toBe("draft");
+    expect(repo.createDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorUserId: actor.userId,
+        ownerUserId: actor.userId,
+      }),
+    );
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "create", objectType: "project" }),
     );
@@ -194,6 +200,87 @@ describe("project service", () => {
     );
   });
 
+  it("updates public streamer announcement fields with normal audit", async () => {
+    const before = {
+      id: "99999999-9999-9999-9999-999999999999",
+      name: "Project",
+      code: "PUB",
+      status: "recruiting" as const,
+    };
+    const after = {
+      ...before,
+      is_public_to_streamers: true,
+      public_summary: "Streamer-facing brief",
+      game_download_url: "https://download.example.com/game",
+    };
+    const repo = {
+      createDraft: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      publish: vi.fn(),
+      updateBasics: vi.fn().mockResolvedValue(after),
+      updateSettlementRule: vi.fn(),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await updateProjectBasics({
+      repo,
+      audit,
+      actor,
+      projectId: before.id,
+      input: {
+        isPublicToStreamers: true,
+        publicSummary: "Streamer-facing brief",
+        gameDownloadUrl: "https://download.example.com/game",
+      },
+    });
+
+    expect(repo.updateBasics).toHaveBeenCalledWith(before.id, {
+      is_public_to_streamers: true,
+      public_summary: "Streamer-facing brief",
+      game_download_url: "https://download.example.com/game",
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        changedFields: [
+          "is_public_to_streamers",
+          "public_summary",
+          "game_download_url",
+        ],
+        isHighRisk: false,
+      }),
+    );
+  });
+
+  it("rejects non-http game download URLs", async () => {
+    const before = {
+      id: "99999999-9999-9999-9999-999999999999",
+      name: "Project",
+      code: "PUB",
+      status: "recruiting" as const,
+    };
+    const repo = {
+      createDraft: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      publish: vi.fn(),
+      updateBasics: vi.fn(),
+      updateSettlementRule: vi.fn(),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      updateProjectBasics({
+        repo,
+        audit,
+        actor,
+        projectId: before.id,
+        input: { gameDownloadUrl: "ftp://download.example.com/game" },
+      }),
+    ).rejects.toThrow("Game download URL must be an http(s) URL");
+    expect(repo.updateBasics).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
   it("rejects illegal project status transitions from settings", async () => {
     const before = {
       id: "99999999-9999-9999-9999-999999999999",
@@ -219,6 +306,76 @@ describe("project service", () => {
         input: { status: "settling" },
       }),
     ).rejects.toThrow("Illegal project status transition: active -> settling");
+    expect(repo.updateBasics).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("allows owner and ops_manager to assign the project owner", async () => {
+    const before = {
+      id: "99999999-9999-9999-9999-999999999999",
+      name: "项目",
+      code: "OLD",
+      status: "draft" as const,
+      owner_id: actor.userId,
+    };
+    const after = {
+      ...before,
+      owner_id: "44444444-4444-4444-4444-444444444444",
+    };
+    const repo = {
+      createDraft: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      publish: vi.fn(),
+      updateBasics: vi.fn().mockResolvedValue(after),
+      updateSettlementRule: vi.fn(),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await updateProjectBasics({
+      repo,
+      audit,
+      actor: { ...actor, role: "ops_manager" },
+      projectId: before.id,
+      input: { ownerId: "44444444-4444-4444-4444-444444444444" },
+    });
+
+    expect(repo.updateBasics).toHaveBeenCalledWith(before.id, {
+      owner_id: "44444444-4444-4444-4444-444444444444",
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        changedFields: ["owner_id"],
+      }),
+    );
+  });
+
+  it("rejects project owner assignment from operator_business", async () => {
+    const before = {
+      id: "99999999-9999-9999-9999-999999999999",
+      name: "项目",
+      code: "OLD",
+      status: "draft" as const,
+      owner_id: actor.userId,
+    };
+    const repo = {
+      createDraft: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      publish: vi.fn(),
+      updateBasics: vi.fn(),
+      updateSettlementRule: vi.fn(),
+    };
+    const audit = vi.fn();
+
+    await expect(
+      updateProjectBasics({
+        repo,
+        audit,
+        actor,
+        projectId: before.id,
+        input: { ownerId: "44444444-4444-4444-4444-444444444444" },
+      }),
+    ).rejects.toThrow("Only owner and ops_manager can assign project owners");
     expect(repo.updateBasics).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
   });

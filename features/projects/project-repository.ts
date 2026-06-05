@@ -19,6 +19,12 @@ type ProjectRow = {
   agent_name: string | null;
   supplier_name: string | null;
   description: string | null;
+  is_public_to_streamers: boolean;
+  public_summary: string;
+  game_download_url: string | null;
+  created_by: string | null;
+  owner_id: string | null;
+  ops_manager_id: string | null;
   default_settlement_method: string;
   default_hourly_rate: number;
   default_base_salary: number;
@@ -42,6 +48,12 @@ const projectSelect = `
   agent_name,
   supplier_name,
   description,
+  is_public_to_streamers,
+  public_summary,
+  game_download_url,
+  created_by,
+  owner_id,
+  ops_manager_id,
   default_settlement_method,
   default_hourly_rate,
   default_base_salary,
@@ -54,6 +66,7 @@ export class SupabaseProjectRepository implements ProjectRepository {
   async createDraft(input: {
     organizationId: string;
     actorUserId: string;
+    ownerUserId: string;
     name: string;
     code: string;
     supplierId?: string;
@@ -63,6 +76,7 @@ export class SupabaseProjectRepository implements ProjectRepository {
       .insert({
         organization_id: input.organizationId,
         created_by: input.actorUserId,
+        owner_id: input.ownerUserId,
         name: input.name,
         code: input.code,
         supplier_id: input.supplierId,
@@ -165,6 +179,12 @@ function toProjectRecord(row: ProjectRow): ProjectRecord {
     agent_name: row.agent_name,
     supplier_name: row.supplier_name,
     description: row.description,
+    is_public_to_streamers: row.is_public_to_streamers,
+    public_summary: row.public_summary,
+    game_download_url: row.game_download_url,
+    created_by: row.created_by,
+    owner_id: row.owner_id,
+    ops_manager_id: row.ops_manager_id,
     default_settlement_method: row.default_settlement_method,
     default_hourly_rate: row.default_hourly_rate,
     default_base_salary: row.default_base_salary,

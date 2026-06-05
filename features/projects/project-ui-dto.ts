@@ -28,6 +28,10 @@ export type ProjectCardDto = {
   publishedAtLabel: string;
   pricing: string;
   description: string;
+  isPublicToStreamers: boolean;
+  publicSummary: string;
+  gameDownloadUrl: string | null;
+  ownerId: string | null;
   leadOps: string;
   bizOwner: string;
   start: string;
@@ -73,7 +77,11 @@ export function toProjectCardDto(row: ProjectListItem): ProjectCardDto {
       : "未发布",
     pricing: settlementMethodLabel(row.default_settlement_method),
     description: row.description?.trim() || "",
-    leadOps: "未分配",
+    isPublicToStreamers: row.is_public_to_streamers,
+    publicSummary: row.public_summary?.trim() || "",
+    gameDownloadUrl: row.game_download_url?.trim() || null,
+    ownerId: row.owner_id ?? row.created_by ?? null,
+    leadOps: projectOwnerName(row),
     bizOwner: "未分配",
     start: row.starts_at?.slice(0, 10) ?? row.created_at.slice(0, 10),
     end:
@@ -103,6 +111,25 @@ export function toProjectCardDto(row: ProjectListItem): ProjectCardDto {
 function textOrFallback(value: string | null | undefined, fallback: string) {
   const normalized = value?.trim();
   return normalized || fallback;
+}
+
+function projectOwnerName(row: ProjectListItem) {
+  return (
+    relationName(row.owner) ||
+    relationName(row.creator) ||
+    textOrFallback(undefined, "未分配")
+  );
+}
+
+function relationName(
+  relation:
+    | { full_name: string | null }
+    | { full_name: string | null }[]
+    | null
+    | undefined,
+) {
+  const profile = Array.isArray(relation) ? relation[0] : relation;
+  return profile?.full_name?.trim() || "";
 }
 
 function settlementMethodLabel(value: string | null | undefined) {
