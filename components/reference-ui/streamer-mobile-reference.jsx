@@ -2587,6 +2587,7 @@ function ReportSubmitted({ task, duration, audience, go }) {
 // ——— Streamer: AI 卡点诊断 ——————————————————————
 
 function StreamerAI({ go }) {
+  const actions = useStreamerLiveActions();
   const [thread, setThread] = React.useState(AI_THREAD);
   const [input, setInput] = React.useState("");
   const [typing, setTyping] = React.useState(false);
@@ -2596,22 +2597,39 @@ function StreamerAI({ go }) {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [thread, typing]);
 
-  const send = (text) => {
-    if (!text) return;
-    setThread((prev) => [...prev, { role: "me", text, time: nowHM() }]);
+  const send = async (text) => {
+    const question = String(text || "").trim();
+    if (!question) return;
+    setThread((prev) => [...prev, { role: "me", text: question, time: nowHM() }]);
     setInput("");
     setTyping(true);
-    setTimeout(() => {
-      setTyping(false);
+    try {
+      const answer = await actions.askDiagnosis?.(question);
       setThread((prev) => [
         ...prev,
         {
           role: "ai",
-          text: "收到。基于你刚才说的，建议先观察开播后 30 分钟：进房峰值、停留曲线和互动密度。如果任一指标明显低于近期均值，就及时切换备用话术，我会在直播后帮你做对照复盘。",
+          text:
+            answer ||
+            "诊断已完成，但本次没有返回可展示建议。请补充直播时间、产品和卡点现象后再试。",
           time: nowHM(),
         },
       ]);
-    }, 1100);
+    } catch (error) {
+      setThread((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          text:
+            error instanceof Error
+              ? error.message
+              : "诊断服务暂时不可用，请稍后重试。",
+          time: nowHM(),
+        },
+      ]);
+    } finally {
+      setTyping(false);
+    }
   };
 
   return (
@@ -4244,6 +4262,25 @@ function normalizeStreamerRecordings(items) {
   }));
 }
 
+function formatDiagnosisAnswer(body) {
+  const directAnswer = body?.result?.answer || body?.result?.output?.answer;
+  if (typeof directAnswer === "string" && directAnswer.trim()) {
+    return directAnswer;
+  }
+
+  const summary = body?.agentOutput?.summary;
+  if (typeof summary === "string" && summary.trim()) {
+    return summary;
+  }
+
+  const firstRecommendation = body?.agentOutput?.recommendations?.[0];
+  if (firstRecommendation?.title && firstRecommendation?.rationale) {
+    return `${firstRecommendation.title}：${firstRecommendation.rationale}`;
+  }
+
+  return "";
+}
+
 function recordingStatusTone(status) {
   return (
     {
@@ -4355,6 +4392,22 @@ function StreamerMobileReferenceInner({
     };
 
     return {
+      askDiagnosis: async (question) => {
+        const body = await fetchJson(
+          "/api/ai/diagnosis",
+          "AI diagnosis failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              question,
+              source: "streamer_mobile",
+            }),
+          },
+        );
+
+        return formatDiagnosisAnswer(body);
+      },
       refreshRecordings,
       submitRecordingLink: async (form) => {
         const body = await fetchJson(
@@ -4392,6 +4445,19 @@ function StreamerMobileReferenceInner({
       submitReport: async (id, input) => {
         const durationHours = Number(input.durationHours || 0);
         const audience = Number(input.audience || 0);
+        const signed = await fetchJson(
+          "/api/uploads/signed",
+          "create report screenshot upload failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              category: "report-screenshots",
+              ownerId: id,
+              fileName: "manual-submit.png",
+            }),
+          },
+        );
         await fetchJson(
           `/api/live-tasks/${id}/reports`,
           "submit report failed",
@@ -4399,7 +4465,7 @@ function StreamerMobileReferenceInner({
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              screenshotStoragePath: `reports/${id}/manual-submit.png`,
+              screenshotStoragePath: signed.path,
               screenshotFileHash: `manual-${id}-${Date.now()}`,
               screenshotDuration: Math.round(durationHours * 60),
               claimedDuration: Math.round(durationHours * 60),

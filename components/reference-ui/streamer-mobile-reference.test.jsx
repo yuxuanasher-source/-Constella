@@ -56,6 +56,18 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
           }),
         };
       }
+      if (requestUrl === "/api/uploads/signed") {
+        return {
+          ok: true,
+          json: async () => ({
+            bucket: "evidence-private",
+            path: "org-1/report-screenshots/live-task-ui-smoke-1/manual-submit.png",
+            signedUrl:
+              "https://upload.local/org-1/report-screenshots/live-task-ui-smoke-1/manual-submit.png",
+            token: "token-1",
+          }),
+        };
+      }
       if (requestUrl.endsWith("/reports")) {
         taskState.status = "report_pending_review";
         taskState.systemDuration = 240;
@@ -155,16 +167,29 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "确认无误，提交审核" }),
     );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(7));
     expect(fetchMock).toHaveBeenNthCalledWith(
       5,
+      "/api/uploads/signed",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          category: "report-screenshots",
+          ownerId: "live-task-ui-smoke-1",
+          fileName: "manual-submit.png",
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
       "/api/live-tasks/live-task-ui-smoke-1/reports",
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           screenshotStoragePath:
-            "reports/live-task-ui-smoke-1/manual-submit.png",
+            "org-1/report-screenshots/live-task-ui-smoke-1/manual-submit.png",
           screenshotFileHash: "manual-live-task-ui-smoke-1-1780000000000",
           screenshotDuration: 240,
           claimedDuration: 240,
@@ -173,12 +198,85 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
-      6,
+      7,
       "/api/streamer/live-tasks",
       undefined,
     );
 
     expect(await screen.findByText("报数已提交审核")).toBeInTheDocument();
+  });
+});
+
+describe("StreamerMobileReferenceApp AI diagnosis smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("calls the streamer diagnosis API and renders the agent answer", async () => {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/ai/diagnosis") {
+        return {
+          ok: true,
+          json: async () => ({
+            result: {
+              answer:
+                "Use a shorter opening segment and raise interaction density in the first 10 minutes.",
+            },
+            agentOutput: {
+              summary: "Opening retention is below recent baseline.",
+              recommendations: [
+                {
+                  title: "Raise early interaction",
+                  rationale: "Recent room-entry data is below your baseline.",
+                },
+              ],
+            },
+            validation: { valid: true, errors: [] },
+          }),
+        };
+      }
+
+      return {
+        ok: false,
+        json: async () => ({ error: `unexpected request ${url}` }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<StreamerMobileReferenceApp initialRoute="ai" />);
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Traffic dropped after opening yesterday" },
+    });
+    fireEvent.keyDown(screen.getByRole("textbox"), {
+      key: "Enter",
+      code: "Enter",
+      charCode: 13,
+    });
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/ai/diagnosis",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      question: "Traffic dropped after opening yesterday",
+      source: "streamer_mobile",
+    });
+    expect(
+      await screen.findByText(
+        "Use a shorter opening segment and raise interaction density in the first 10 minutes.",
+      ),
+    ).toBeInTheDocument();
   });
 });
 
