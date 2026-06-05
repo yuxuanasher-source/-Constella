@@ -11,8 +11,16 @@ export async function proxy(request: NextRequest) {
     request.nextUrl.pathname.startsWith(prefix),
   );
 
-  if (!url || !anonKey || !isProtected) {
+  if (!isProtected) {
     return response;
+  }
+
+  if (!url || !anonKey) {
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    loginUrl.searchParams.set("next", request.nextUrl.pathname);
+    loginUrl.searchParams.set("error", "config");
+    return NextResponse.redirect(loginUrl);
   }
 
   const supabase = createServerClient(url, anonKey, {
