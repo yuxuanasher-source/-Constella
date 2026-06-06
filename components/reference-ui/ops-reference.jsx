@@ -5966,6 +5966,8 @@ function ProjectRoster({ p, go }) {
   const streamers = useOpsStreamers();
   const applications = useOpsApplications();
   const actions = useOpsLiveActions();
+  const { streamers: streamerData, applications: applicationData } =
+    React.useContext(OpsLiveDataContext);
   const [inviteOpen, setInviteOpen] = React.useState(false);
   const [selectedStreamerId, setSelectedStreamerId] = React.useState("");
   const [inviteSubmitting, setInviteSubmitting] = React.useState(false);
@@ -5998,6 +6000,19 @@ function ProjectRoster({ p, go }) {
   const selectedStreamer = availableStreamers.find(
     (streamer) => streamer.id === selectedStreamerId,
   );
+
+  React.useEffect(() => {
+    if (streamerData == null && actions.refreshStreamers) {
+      actions.refreshStreamers().catch(() => {});
+    }
+  }, [actions, streamerData]);
+
+  React.useEffect(() => {
+    if (applicationData == null && actions.refreshApplications) {
+      actions.refreshApplications().catch(() => {});
+    }
+  }, [actions, applicationData]);
+
   const submitInvitation = async (event) => {
     event.preventDefault();
     if (!selectedStreamer) {
@@ -10137,6 +10152,8 @@ function ScreenTasks({ go }) {
   const projects = useOpsProjects();
   const streamers = useOpsStreamers();
   const actions = useOpsLiveActions();
+  const { projects: projectData, streamers: streamerData } =
+    React.useContext(OpsLiveDataContext);
   const [view, setView] = React.useState("board");
   const [project, setProject] = React.useState("all");
   const [streamerFilter, setStreamerFilter] = React.useState("all");
@@ -10176,6 +10193,18 @@ function ScreenTasks({ go }) {
   );
   const selectedProject =
     project === "all" ? null : projects.find((item) => item.id === project);
+
+  React.useEffect(() => {
+    if (projectData == null && actions.refreshProjects) {
+      actions.refreshProjects().catch(() => {});
+    }
+  }, [actions, projectData]);
+
+  React.useEffect(() => {
+    if (streamerData == null && actions.refreshStreamers) {
+      actions.refreshStreamers().catch(() => {});
+    }
+  }, [actions, streamerData]);
 
   React.useEffect(() => {
     setBatchDraft((draft) => ({
@@ -16523,7 +16552,9 @@ function OpsReferenceInner({
     };
 
     return {
+      refreshProjects,
       refreshStreamers,
+      refreshApplications,
       createProjectDraft: async (input) => {
         const body = await fetchJson("/api/projects", "create project failed", {
           method: "POST",

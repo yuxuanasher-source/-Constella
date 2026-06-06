@@ -664,6 +664,7 @@ describe("OpsReferenceApp project smoke", () => {
           },
         ]}
         streamerCards={taskStreamerCards}
+        applicationQueue={[]}
       />,
     );
 
@@ -675,14 +676,15 @@ describe("OpsReferenceApp project smoke", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "确认邀请" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/projects/project-detail/invitations",
-      expect.objectContaining({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ streamerId: "streamer-one" }),
-      }),
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-detail/invitations",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ streamerId: "streamer-one" }),
+        }),
+      ),
     );
     expect(screen.getByText("已邀请 Streamer One")).toBeInTheDocument();
     expect(screen.getByText("streamer-one · Streamer One")).toBeInTheDocument();
@@ -767,6 +769,155 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: /主播阵容\s*0/ }));
 
     expect(screen.getByText("streamer-one · Streamer One")).toBeInTheDocument();
+    expect(screen.getAllByText("邀约中").length).toBeGreaterThan(0);
+  });
+
+  it("loads streamer options in project roster without visiting the streamer pool first", async () => {
+    const projectCard = {
+      id: "project-detail",
+      code: "P-DETAIL",
+      name: "详情项目",
+      vendor: "厂商",
+      product: "产品",
+      status: "recruiting",
+      pricing: "CPT",
+      leadOps: "Ops",
+      bizOwner: "Biz",
+      start: "2026-06-01",
+      end: "2026-06-30",
+      streamers: { active: 0, candidate: 0, pendingReview: 0 },
+      metrics: {
+        plannedHours: 0,
+        doneHours: 0,
+        audience: 0,
+        reportedPending: 0,
+        anomalies: 0,
+        receivable: 0,
+        payable: 0,
+        gross: 0,
+        margin: 0,
+      },
+      risk: "low",
+    };
+    const serverStreamer = {
+      ...taskStreamerCards[0],
+      id: "server-streamer",
+      alias: "后端主播",
+      real: "后端主播",
+      defaultRule: "CPT",
+      projects: [],
+    };
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/streamers") {
+        return {
+          ok: true,
+          json: async () => ({ streamers: [serverStreamer] }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({ application: { id: "unused" } }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="project"
+        projectCards={[projectCard]}
+        applicationQueue={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("详情项目"));
+    fireEvent.click(screen.getByRole("button", { name: /主播阵容\s*0/ }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/streamers", undefined),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "邀请主播" }));
+    expect(await screen.findByText("后端主播 · CPT")).toBeInTheDocument();
+  });
+
+  it("restores invited project roster rows from applications after a page refresh", async () => {
+    const projectCard = {
+      id: "project-detail",
+      code: "P-DETAIL",
+      name: "详情项目",
+      vendor: "厂商",
+      product: "产品",
+      status: "recruiting",
+      pricing: "CPT",
+      leadOps: "Ops",
+      bizOwner: "Biz",
+      start: "2026-06-01",
+      end: "2026-06-30",
+      streamers: { active: 0, candidate: 0, pendingReview: 0 },
+      metrics: {
+        plannedHours: 0,
+        doneHours: 0,
+        audience: 0,
+        reportedPending: 0,
+        anomalies: 0,
+        receivable: 0,
+        payable: 0,
+        gross: 0,
+        margin: 0,
+      },
+      risk: "low",
+    };
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/applications") {
+        return {
+          ok: true,
+          json: async () => ({
+            applications: [
+              {
+                id: "application-invite",
+                project: {
+                  id: "project-detail",
+                  code: "P-DETAIL",
+                  name: "详情项目",
+                },
+                streamer: {
+                  id: "server-streamer",
+                  displayName: "后端主播",
+                  cooperationStatus: "active",
+                  riskLevel: "low",
+                },
+                status: "invited",
+              },
+            ],
+          }),
+        };
+      }
+
+      if (String(url) === "/api/streamers") {
+        return {
+          ok: true,
+          json: async () => ({ streamers: [] }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp initialRoute="project" projectCards={[projectCard]} />,
+    );
+
+    fireEvent.click(screen.getByText("详情项目"));
+    fireEvent.click(screen.getByRole("button", { name: /主播阵容\s*0/ }));
+
+    expect(
+      await screen.findByText("server-streamer · 后端主播"),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("邀约中").length).toBeGreaterThan(0);
   });
 
@@ -2418,7 +2569,14 @@ describe("OpsReferenceApp live task smoke", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<OpsReferenceApp initialRoute="tasks" liveTasks={[initialTask]} />);
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[initialTask]}
+        projectCards={[]}
+        streamerCards={[]}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
     fireEvent.click(screen.getByText("task-ui-cancel"));
