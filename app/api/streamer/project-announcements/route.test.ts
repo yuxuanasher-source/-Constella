@@ -66,7 +66,6 @@ describe("streamer project announcements route", () => {
         status: "recruiting",
         vendor: "Vendor A",
         product: "Game A",
-        description: "",
         publicSummary: "Streamer-facing summary",
         gameDownloadUrl: "https://download.example.com/game-a",
         openSignup: true,

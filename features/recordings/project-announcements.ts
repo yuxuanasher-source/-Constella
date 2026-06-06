@@ -12,7 +12,6 @@ export type StreamerProjectAnnouncementProjectRow = {
   status: string;
   vendor_name: string | null;
   product_name: string | null;
-  description: string | null;
   open_signup: boolean;
   force_recording: boolean;
   public_summary: string;
@@ -45,7 +44,6 @@ export type StreamerProjectAnnouncementCard = {
   status: string;
   vendor: string;
   product: string;
-  description: string;
   publicSummary: string;
   gameDownloadUrl: string | null;
   openSignup: boolean;
@@ -60,6 +58,12 @@ export type StreamerProjectAnnouncementCard = {
 };
 
 const hiddenProjectStatuses = new Set(["draft", "ended", "closed", "archived"]);
+const visibleProjectStatuses = [
+  "recruiting",
+  "pending_start",
+  "active",
+  "paused",
+];
 const recordingSubmittableApplicationStatuses = new Set<ApplicationStatus>([
   "submitted",
   "invited",
@@ -76,13 +80,12 @@ export async function listStreamerProjectAnnouncements(
   }
 
   const { data, error } = await supabase
-    .from("projects")
+    .from("streamer_public_project_announcements")
     .select(
-      "id, code, name, status, vendor_name, product_name, description, open_signup, force_recording, public_summary, game_download_url, published_at, created_at",
+      "id, code, name, status, vendor_name, product_name, open_signup, force_recording, public_summary, game_download_url, published_at, created_at",
     )
     .eq("organization_id", input.organizationId)
-    .eq("is_public_to_streamers", true)
-    .not("status", "in", "(draft,ended,closed,archived)")
+    .in("status", visibleProjectStatuses)
     .order("published_at", { ascending: false })
     .order("created_at", { ascending: false });
 
@@ -129,7 +132,6 @@ export function toStreamerProjectAnnouncementCard(
     status: project.status,
     vendor: project.vendor_name?.trim() || "",
     product: project.product_name?.trim() || project.name,
-    description: project.description?.trim() || "",
     publicSummary: project.public_summary?.trim() || "",
     gameDownloadUrl: project.game_download_url?.trim() || null,
     openSignup: project.open_signup,

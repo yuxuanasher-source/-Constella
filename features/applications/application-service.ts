@@ -77,6 +77,11 @@ export type ApplicationRepository = {
     streamerId: string,
   ): Promise<StreamerAdmissionRecord | null>;
   getApplicationById(applicationId: string): Promise<ApplicationRecord | null>;
+  getApplicationByProjectAndStreamer(
+    projectId: string,
+    streamerId: string,
+    source?: ApplicationSource,
+  ): Promise<ApplicationRecord | null>;
   createApplication(input: {
     organizationId: string;
     projectId: string;
@@ -93,6 +98,9 @@ export type ApplicationRepository = {
       decidedAt?: string;
       decisionReason?: string | null;
     },
+  ): Promise<ApplicationRecord>;
+  markApplicationRecordingReviewing(
+    applicationId: string,
   ): Promise<ApplicationRecord>;
   createRecordingSubmission(input: {
     organizationId: string;
@@ -211,6 +219,15 @@ export async function inviteStreamerToProject({
   const streamer = await requireStreamer(repo, input.streamerId);
   assertStreamerCanEnterAdmission(streamer, "invite");
 
+  const existingInvite = await repo.getApplicationByProjectAndStreamer(
+    project.id,
+    streamer.id,
+    "direct_invite",
+  );
+  if (existingInvite) {
+    return existingInvite;
+  }
+
   const application = await repo.createApplication({
     organizationId: actor.organizationId,
     projectId: project.id,
@@ -290,7 +307,7 @@ export async function submitRecording({
     durationSeconds: input.durationSeconds,
   });
 
-  await repo.updateApplicationStatus(application.id, { status: nextStatus });
+  await repo.markApplicationRecordingReviewing(application.id);
   await audit({
     organizationId: actor.organizationId,
     actorUserId: actor.userId,

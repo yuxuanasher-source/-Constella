@@ -688,6 +688,88 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.getByText("streamer-one · Streamer One")).toBeInTheDocument();
     expect(screen.getAllByText("邀约中").length).toBeGreaterThan(0);
   });
+  it("keeps an invited streamer in the roster after leaving project detail", async () => {
+    const projectCard = {
+      id: "project-detail",
+      code: "P-DETAIL",
+      name: "详情项目",
+      vendor: "厂商",
+      product: "产品",
+      status: "recruiting",
+      pricing: "CPT",
+      leadOps: "Ops",
+      bizOwner: "Biz",
+      start: "2026-06-01",
+      end: "2026-06-30",
+      streamers: { active: 0, candidate: 0, pendingReview: 0 },
+      metrics: {
+        plannedHours: 0,
+        doneHours: 0,
+        audience: 0,
+        reportedPending: 0,
+        anomalies: 0,
+        receivable: 0,
+        payable: 0,
+        gross: 0,
+        margin: 0,
+      },
+      risk: "low",
+    };
+    const invitedApplications = [
+      {
+        id: "application-invite",
+        projectId: "project-detail",
+        streamerId: "streamer-one",
+        status: "invited",
+      },
+    ];
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/applications") {
+        return {
+          ok: true,
+          json: async () => ({ applications: invitedApplications }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({ application: invitedApplications[0] }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="project"
+        projectCards={[projectCard]}
+        streamerCards={taskStreamerCards}
+        applicationQueue={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("详情项目"));
+    fireEvent.click(screen.getByRole("button", { name: /主播阵容\s*0/ }));
+    fireEvent.click(screen.getByRole("button", { name: "邀请主播" }));
+    fireEvent.change(screen.getByLabelText("选择主播"), {
+      target: { value: "streamer-one" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认邀请" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/applications",
+      undefined,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
+    fireEvent.click(screen.getByText("详情项目"));
+    fireEvent.click(screen.getByRole("button", { name: /主播阵容\s*0/ }));
+
+    expect(screen.getByText("streamer-one · Streamer One")).toBeInTheDocument();
+    expect(screen.getAllByText("邀约中").length).toBeGreaterThan(0);
+  });
+
   it("filters project rows by search, vendor, owner, and schedule state", () => {
     render(
       <OpsReferenceApp
@@ -951,6 +1033,7 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.change(screen.getByLabelText("主播公告概括"), {
       target: { value: "Streamer-facing project summary" },
     });
+    expect(screen.getByLabelText("主播公告概括").tagName).toBe("TEXTAREA");
     fireEvent.change(screen.getByLabelText("游戏下载链接"), {
       target: { value: "https://download.example.com/game-a" },
     });
@@ -993,6 +1076,9 @@ describe("OpsReferenceApp project smoke", () => {
     expect(
       screen.getByText("Streamer-facing project summary"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "游戏下载已配置" }),
+    ).toHaveAttribute("href", "https://download.example.com/game-a");
     expect(screen.queryByText("项目设置后台暂未接入")).not.toBeInTheDocument();
   });
 
@@ -2025,6 +2111,20 @@ describe("OpsReferenceApp live task smoke", () => {
         leadOps: "Mapped Ops",
       },
     ];
+    const mappedStreamerCards = taskStreamerCards.map((streamer) => ({
+      ...streamer,
+      projects: [
+        ...streamer.projects,
+        {
+          id: "project-mapped",
+          code: "PM-002",
+          name: "Mapped Project",
+          status: "joined",
+          settlementHours: 0,
+          grossContrib: 0,
+        },
+      ],
+    }));
     const refreshedTask = {
       id: "task-project-mapped",
       title: "Mapped Project · Streamer One",
@@ -2058,7 +2158,7 @@ describe("OpsReferenceApp live task smoke", () => {
         initialRoute="tasks"
         liveTasks={[]}
         projectCards={mappedProjectCards}
-        streamerCards={taskStreamerCards}
+        streamerCards={mappedStreamerCards}
       />,
     );
 

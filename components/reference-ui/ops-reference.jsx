@@ -5619,13 +5619,21 @@ function ProjectSettingsPanel({
           }}
         >
           <ProjectSettingsField label="主播公告概括">
-            <input
+            <textarea
               value={draft.publicSummary}
               onChange={(event) =>
                 onChange("publicSummary", event.target.value)
               }
-              placeholder="给组织内主播看的项目摘要"
-              style={projectSettingsInputStyle}
+              placeholder="给组织内主播看的项目概括、录播要求和注意事项"
+              rows={3}
+              style={{
+                ...projectSettingsInputStyle,
+                minHeight: 76,
+                paddingTop: 8,
+                resize: "vertical",
+                lineHeight: 1.45,
+                fontFamily: "inherit",
+              }}
             />
           </ProjectSettingsField>
           <ProjectSettingsField label="游戏下载链接">
@@ -5749,7 +5757,13 @@ function ProjectOverview({ p }) {
                 {p.needStartStop ? "是" : "否"}
               </KV>
               <KV label="主播可见性">
-                {p.isPublicToStreamers ? "组织内公开" : "未公开"}
+                {p.isPublicToStreamers ? (
+                  <Badge tone="green" dot>
+                    组织内公开
+                  </Badge>
+                ) : (
+                  <Badge tone="neutral">未公开</Badge>
+                )}
               </KV>
               <KV label="主播公告概括" w={120}>
                 <span style={{ color: "var(--ink-500)" }}>
@@ -5757,9 +5771,22 @@ function ProjectOverview({ p }) {
                 </span>
               </KV>
               <KV label="游戏下载链接" w={120}>
-                <span className="mono" style={{ color: "var(--ink-500)" }}>
-                  {p.gameDownloadUrl || "未配置"}
-                </span>
+                {p.gameDownloadUrl ? (
+                  <a
+                    href={p.gameDownloadUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{
+                      color: "var(--blue-700)",
+                      fontWeight: 700,
+                      textDecoration: "none",
+                    }}
+                  >
+                    游戏下载已配置
+                  </a>
+                ) : (
+                  <span style={{ color: "var(--ink-500)" }}>未配置</span>
+                )}
               </KV>
               <KV label="项目说明" w={120}>
                 <span style={{ color: "var(--ink-500)" }}>
@@ -12219,7 +12246,8 @@ function NewTaskDrawer({
   const [busy, setBusy] = React.useState(false);
   const [draftMessage, setDraftMessage] = React.useState("");
   React.useEffect(() => {
-    const project = projects.find((x) => x.id === selectedProjectId) || projects[0];
+    const project =
+      projects.find((x) => x.id === selectedProjectId) || projects[0];
     const nextEligibleStreamers = project
       ? joinedStreamersForProject(project.id, streamers)
       : [];
@@ -16554,7 +16582,7 @@ function OpsReferenceInner({
         return body;
       },
       inviteStreamerToProject: async (projectId, streamerId) => {
-        return fetchJson(
+        const body = await fetchJson(
           `/api/projects/${projectId}/invitations`,
           "invite streamer failed",
           {
@@ -16563,6 +16591,8 @@ function OpsReferenceInner({
             body: JSON.stringify({ streamerId }),
           },
         );
+        await refreshApplications();
+        return body;
       },
       reviewApplicationRecording: async (id, input) => {
         const body = await fetchJson(

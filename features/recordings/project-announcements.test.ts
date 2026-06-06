@@ -7,22 +7,23 @@ import {
 
 describe("streamer project announcements", () => {
   it("maps public project rows with current streamer review state", () => {
+    const projectRow = {
+      id: "project-1",
+      code: "PUB-1",
+      name: "Public Project",
+      status: "recruiting",
+      vendor_name: "Vendor A",
+      product_name: "Game A",
+      description: "Ops internal description",
+      open_signup: true,
+      force_recording: true,
+      public_summary: "Streamer-facing summary",
+      game_download_url: "https://download.example.com/game-a",
+      published_at: "2026-06-01T00:00:00.000Z",
+      created_at: "2026-06-01T00:00:00.000Z",
+    };
     const dto = toStreamerProjectAnnouncementCard(
-      {
-        id: "project-1",
-        code: "PUB-1",
-        name: "Public Project",
-        status: "recruiting",
-        vendor_name: "Vendor A",
-        product_name: "Game A",
-        description: "Ops internal description",
-        open_signup: true,
-        force_recording: true,
-        public_summary: "Streamer-facing summary",
-        game_download_url: "https://download.example.com/game-a",
-        published_at: "2026-06-01T00:00:00.000Z",
-        created_at: "2026-06-01T00:00:00.000Z",
-      },
+      projectRow,
       {
         id: "application-1",
         project_id: "project-1",
@@ -47,7 +48,6 @@ describe("streamer project announcements", () => {
       status: "recruiting",
       vendor: "Vendor A",
       product: "Game A",
-      description: "Ops internal description",
       publicSummary: "Streamer-facing summary",
       gameDownloadUrl: "https://download.example.com/game-a",
       openSignup: true,
@@ -60,6 +60,8 @@ describe("streamer project announcements", () => {
       reviewStatusLabel: "审核中",
       canSubmitRecording: false,
     });
+    expect(dto).not.toHaveProperty("description");
+    expect(JSON.stringify(dto)).not.toContain("Ops internal description");
     expect(JSON.stringify(dto)).not.toContain("hourly");
     expect(JSON.stringify(dto)).not.toContain("settlement");
   });

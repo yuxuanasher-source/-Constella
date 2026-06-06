@@ -51,6 +51,15 @@ function baseRepo() {
       version: 1,
       status: "submitted",
     }),
+    markApplicationRecordingReviewing: vi.fn().mockResolvedValue({
+      id: "application-1",
+      organizationId: "org-1",
+      projectId: "project-1",
+      streamerId: "streamer-1",
+      source: "signup",
+      status: "recording_reviewing",
+      decisionReason: null,
+    }),
     updateApplicationStatus: vi.fn().mockResolvedValue({
       id: "application-1",
       organizationId: "org-1",
@@ -100,9 +109,10 @@ describe("submitProjectRecording", () => {
         externalUrl: "https://videos.example.com/public-project",
       }),
     );
-    expect(repo.updateApplicationStatus).toHaveBeenCalledWith("application-1", {
-      status: "recording_reviewing",
-    });
+    expect(repo.markApplicationRecordingReviewing).toHaveBeenCalledWith(
+      "application-1",
+    );
+    expect(repo.updateApplicationStatus).not.toHaveBeenCalled();
     expect(result).toEqual({
       applicationId: "application-1",
       projectId: "project-1",
@@ -167,6 +177,9 @@ describe("submitProjectRecording", () => {
         applicationId: "application-existing",
         version: 3,
       }),
+    );
+    expect(repo.markApplicationRecordingReviewing).toHaveBeenCalledWith(
+      "application-existing",
     );
   });
 

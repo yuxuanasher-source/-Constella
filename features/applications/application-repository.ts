@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type {
+  ApplicationSource,
   ApplicationRecord,
   ApplicationRepository,
   ProjectAdmissionConfig,
@@ -94,7 +95,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
 
   async getPublicProjectForRecording(projectId: string) {
     const { data, error } = await this.client
-      .from("projects")
+      .from("streamer_public_project_announcements")
       .select("id, name, organization_id, status, is_public_to_streamers")
       .eq("id", projectId)
       .maybeSingle<PublicProjectForRecordingRow>();
@@ -149,15 +150,20 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
   async getApplicationByProjectAndStreamer(
     projectId: string,
     streamerId: string,
+    source?: ApplicationSource,
   ): Promise<ApplicationRecord | null> {
-    const { data, error } = await this.client
+    let query = this.client
       .from("project_applications")
       .select(applicationSelect)
       .eq("project_id", projectId)
       .eq("streamer_id", streamerId)
-      .order("submitted_at", { ascending: false })
-      .limit(1)
-      .maybeSingle<ApplicationRow>();
+      .order("submitted_at", { ascending: false });
+
+    if (source) {
+      query = query.eq("source", source);
+    }
+
+    const { data, error } = await query.limit(1).maybeSingle<ApplicationRow>();
 
     if (error) {
       throw error;
@@ -213,6 +219,22 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
       })
       .eq("id", applicationId)
       .select(applicationSelect)
+      .single<ApplicationRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return toApplicationRecord(data);
+  }
+
+  async markApplicationRecordingReviewing(
+    applicationId: string,
+  ): Promise<ApplicationRecord> {
+    const { data, error } = await this.client
+      .rpc("mark_application_recording_reviewing", {
+        target_application_id: applicationId,
+      })
       .single<ApplicationRow>();
 
     if (error) {

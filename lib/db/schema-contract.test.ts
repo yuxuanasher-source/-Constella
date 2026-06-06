@@ -100,6 +100,24 @@ describe("P0 database contract", () => {
     expect(allMigrations).toContain("game_download_url text");
     expect(allMigrations).toContain("projects_game_download_url_http");
     expect(allMigrations).toContain("projects_org_public_streamer_idx");
+    expect(allMigrations).toContain(
+      "create or replace view public.streamer_public_project_announcements",
+    );
+    expect(allMigrations).toContain(
+      "grant select on public.streamer_public_project_announcements to authenticated",
+    );
+    expect(allMigrations).toContain("public.current_streamer_id(organization_id)");
+    expect(allMigrations).toContain(
+      "function public.mark_application_recording_reviewing",
+    );
+    expect(allMigrations).toContain(
+      "revoke all on function public.mark_application_recording_reviewing(uuid)",
+    );
+    expect(allMigrations).toContain("from public");
+    expect(allMigrations).toContain("status = 'recording_reviewing'");
+    expect(allMigrations).not.toContain(
+      'create policy "streamers can read public projects"',
+    );
   });
 
   it("declares the public MCN onboarding request intake table", () => {

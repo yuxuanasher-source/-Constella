@@ -4518,7 +4518,9 @@ function StreamerMobileReferenceInner({
     normalizeStreamerRecordings(recordings),
   );
   const [announcementRows, setAnnouncementRows] = React.useState(() =>
-    normalizeProjectAnnouncements(projectAnnouncements),
+    projectAnnouncements === undefined
+      ? null
+      : normalizeProjectAnnouncements(projectAnnouncements),
   );
 
   React.useEffect(() => {
@@ -4534,7 +4536,11 @@ function StreamerMobileReferenceInner({
   }, [recordings]);
 
   React.useEffect(() => {
-    setAnnouncementRows(normalizeProjectAnnouncements(projectAnnouncements));
+    setAnnouncementRows(
+      projectAnnouncements === undefined
+        ? null
+        : normalizeProjectAnnouncements(projectAnnouncements),
+    );
   }, [projectAnnouncements]);
 
   const actions = React.useMemo(() => {

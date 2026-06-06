@@ -288,7 +288,11 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
 
   it("does not render recording instructions on the mobile recording library", () => {
     render(
-      <StreamerMobileReferenceApp initialRoute="videos" recordings={[]} />,
+      <StreamerMobileReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[]}
+      />,
     );
 
     expect(screen.queryByText("录屏说明")).not.toBeInTheDocument();
@@ -310,6 +314,7 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
             submittedAt: "2026-06-03T10:00:00.000Z",
           },
         ]}
+        projectAnnouncements={[]}
       />,
     );
 
@@ -339,6 +344,7 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
             submittedAt: "2026-06-02T10:00:00.000Z",
           },
         ]}
+        projectAnnouncements={[]}
       />,
     );
 
@@ -377,7 +383,11 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(
-      <StreamerMobileReferenceApp initialRoute="videos" recordings={[]} />,
+      <StreamerMobileReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[]}
+      />,
     );
 
     fireEvent.change(screen.getByLabelText("产品"), {
@@ -429,7 +439,6 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
             status: "recruiting",
             vendor: "Vendor A",
             product: "Game A",
-            description: "Ops description",
             publicSummary: "Streamer-facing summary",
             gameDownloadUrl: "https://download.example.com/game-a",
             openSignup: true,
@@ -454,6 +463,49 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
       "https://download.example.com/game-a",
     );
     expect(screen.getByText("审核中")).toBeInTheDocument();
+  });
+
+  it("refreshes project announcements when entering videos without initial announcement data", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/streamer/project-announcements") {
+        return {
+          ok: true,
+          json: async () => ({
+            announcements: [
+              {
+                id: "project-refresh",
+                code: "PUB-R",
+                name: "Refreshed Project",
+                status: "recruiting",
+                vendor: "Vendor R",
+                product: "Game R",
+                publicSummary: "Fetched project summary",
+                gameDownloadUrl: "https://download.example.com/game-r",
+                openSignup: true,
+                forceRecording: true,
+                applicationId: null,
+                applicationStatus: null,
+                latestRecordingStatus: null,
+                latestRecordingVersion: null,
+                decisionReason: null,
+                reviewStatusLabel: "Pending",
+                canSubmitRecording: true,
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<StreamerMobileReferenceApp initialRoute="videos" recordings={[]} />);
+
+    expect(await screen.findByText("Refreshed Project")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/streamer/project-announcements",
+      undefined,
+    );
   });
 
   it("submits a project recording from an announcement card", async () => {
@@ -491,7 +543,6 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
                 status: "recruiting",
                 vendor: "Vendor A",
                 product: "Game A",
-                description: "",
                 publicSummary: "Streamer-facing summary",
                 gameDownloadUrl: "https://download.example.com/game-a",
                 openSignup: true,
@@ -524,7 +575,6 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
             status: "recruiting",
             vendor: "Vendor A",
             product: "Game A",
-            description: "",
             publicSummary: "Streamer-facing summary",
             gameDownloadUrl: "https://download.example.com/game-a",
             openSignup: true,
@@ -594,6 +644,7 @@ describe("StreamerMobileReferenceApp profile actions smoke", () => {
             submittedAt: "2026-06-03T10:00:00.000Z",
           },
         ]}
+        projectAnnouncements={[]}
       />,
     );
 

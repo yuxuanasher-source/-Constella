@@ -63,6 +63,14 @@ function makeRepo(
       riskLevel: "low",
     }),
     getApplicationById: vi.fn().mockResolvedValue(baseApplication),
+    getApplicationByProjectAndStreamer: vi.fn().mockResolvedValue(null),
+    markApplicationRecordingReviewing: vi.fn().mockImplementation((id) =>
+      Promise.resolve({
+        ...baseApplication,
+        id,
+        status: "recording_reviewing",
+      }),
+    ),
     createApplication: vi.fn().mockResolvedValue(baseApplication),
     updateApplicationStatus: vi.fn().mockImplementation((id, patch) =>
       Promise.resolve({
@@ -146,6 +154,63 @@ describe("application service", () => {
     ).rejects.toThrow("Blacklisted streamers cannot be invited");
   });
 
+  it("reuses an existing invitation for the same project streamer pair", async () => {
+    const existingApplication = {
+      ...baseApplication,
+      id: "app-existing-invite",
+      source: "direct_invite" as const,
+      status: "invited" as const,
+    };
+    const repo = makeRepo({
+      getApplicationByProjectAndStreamer: vi
+        .fn()
+        .mockResolvedValue(existingApplication),
+    });
+    const audit = vi.fn();
+    const notify = vi.fn();
+
+    const application = await inviteStreamerToProject({
+      repo,
+      audit,
+      notify,
+      actor: operatorActor,
+      input: { projectId: "project-1", streamerId: "streamer-1" },
+    });
+
+    expect(application).toEqual(existingApplication);
+    expect(repo.createApplication).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("still blocks reusing an invitation when the streamer is now blacklisted", async () => {
+    const repo = makeRepo({
+      getApplicationByProjectAndStreamer: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        id: "app-existing-invite",
+        source: "direct_invite" as const,
+        status: "invited" as const,
+      }),
+      getStreamerForAdmission: vi.fn().mockResolvedValue({
+        id: "streamer-1",
+        displayName: "Streamer One",
+        userId: streamerActor.userId,
+        riskLevel: "blacklisted",
+      }),
+    });
+
+    await expect(
+      inviteStreamerToProject({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: operatorActor,
+        input: { projectId: "project-1", streamerId: "streamer-1" },
+      }),
+    ).rejects.toThrow("Blacklisted streamers cannot be invited");
+    expect(repo.createApplication).not.toHaveBeenCalled();
+  });
+
   it("submits a new recording version and moves the application to review", async () => {
     const repo = makeRepo({
       getApplicationById: vi.fn().mockResolvedValue({
@@ -171,10 +236,10 @@ describe("application service", () => {
     expect(repo.createRecordingSubmission).toHaveBeenCalledWith(
       expect.objectContaining({ version: 2 }),
     );
-    expect(repo.updateApplicationStatus).toHaveBeenCalledWith(
+    expect(repo.markApplicationRecordingReviewing).toHaveBeenCalledWith(
       "app-1",
-      expect.objectContaining({ status: "recording_reviewing" }),
     );
+    expect(repo.updateApplicationStatus).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ recipientRole: "operator_business" }),
     );
