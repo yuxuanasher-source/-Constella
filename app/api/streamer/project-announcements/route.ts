@@ -12,7 +12,10 @@ export async function GET() {
   try {
     const context = await getLiveOperationsRouteContext();
     if (context.auth.role !== "streamer") {
-      throw new RouteError("Only streamers can access project announcements", 403);
+      throw new RouteError(
+        "Only streamers can access project announcements",
+        403,
+      );
     }
 
     const streamerId = await getStreamerIdForUser(

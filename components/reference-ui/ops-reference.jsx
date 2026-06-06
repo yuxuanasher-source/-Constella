@@ -2237,7 +2237,9 @@ function OcrOperationsPanel({
           {jobs.length ? (
             jobs.map((job) => (
               <tr key={job.id}>
-                <td style={ocrCellStyle}>{displayRecordId(job.id, "OCR 任务")}</td>
+                <td style={ocrCellStyle}>
+                  {displayRecordId(job.id, "OCR 任务")}
+                </td>
                 <td style={ocrCellStyle}>
                   <Badge tone={ocrStatusTone(job.status)}>{job.status}</Badge>
                 </td>
@@ -4510,7 +4512,8 @@ function ProjectDetail({ id, go }) {
         subtitle={
           <span>
             <span className="mono">{displayProjectCode(p)}</span> · {p.vendor} ·{" "}
-            {p.product} · 由 {p.leadOps}（运营负责人）/ {p.bizOwner}（商务）共同负责
+            {p.product} · 由 {p.leadOps}（运营负责人）/ {p.bizOwner}
+            （商务）共同负责
           </span>
         }
         status={
@@ -4778,10 +4781,7 @@ function projectOwnerOptions(members = [], project, currentUser) {
     options.push({ value, label: `${label || value}${roleLabel}` });
   };
 
-  if (
-    currentUser?.id &&
-    PROJECT_OWNER_ASSIGNABLE_ROLES.has(currentUser.role)
-  ) {
+  if (currentUser?.id && PROJECT_OWNER_ASSIGNABLE_ROLES.has(currentUser.role)) {
     pushOption(currentUser.id, currentUser.name, currentUser.role);
   }
 
@@ -5353,7 +5353,9 @@ function ProjectSettingsPanel({
           <ProjectSettingsField label="主播公告概括">
             <input
               value={draft.publicSummary}
-              onChange={(event) => onChange("publicSummary", event.target.value)}
+              onChange={(event) =>
+                onChange("publicSummary", event.target.value)
+              }
               placeholder="给组织内主播看的项目摘要"
               style={projectSettingsInputStyle}
             />
@@ -6162,9 +6164,7 @@ function taskGanttRows(tasks) {
   tasks.forEach((task) => {
     const key = task.streamerId || task.streamerName || "unassigned";
     const current = grouped.get(key) || {
-      name:
-        task.streamerName ||
-        displayRecordId(task.streamerId, "未配置主播"),
+      name: task.streamerName || displayRecordId(task.streamerId, "未配置主播"),
       bars: [],
     };
     current.bars.push([
@@ -6361,7 +6361,9 @@ function ScreenStreamers({ go, initialActiveId }) {
     setMemberLoadError("");
     actions
       .refreshOrganizationMembers()
-      .catch((error) => setMemberLoadError(formatOrganizationMemberError(error)))
+      .catch((error) =>
+        setMemberLoadError(formatOrganizationMemberError(error)),
+      )
       .finally(() => setMemberLoading(false));
   };
   const updateUserSearch = (event) => {
@@ -8720,7 +8722,8 @@ function toSettlementPoolFromReviewedReport(report, sourceReport) {
 
   return {
     id: report.id || sourceReport?.id,
-    streamer: sourceReport?.streamer || displayRecordId(report.streamerId, "主播"),
+    streamer:
+      sourceReport?.streamer || displayRecordId(report.streamerId, "主播"),
     project: sourceReport?.project || displayRecordId(report.projectId, "项目"),
     hours: Math.round((settlementDuration / 60) * 10) / 10,
     evidence: `${evidenceLevel} · ${timeSource}`,

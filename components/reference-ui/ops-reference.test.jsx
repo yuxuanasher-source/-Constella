@@ -1306,7 +1306,8 @@ describe("OpsReferenceApp streamer smoke", () => {
       ).toBe(true),
     );
     const streamerPostCall = fetchMock.mock.calls.find(
-      ([url, init]) => String(url) === "/api/streamers" && init?.method === "POST",
+      ([url, init]) =>
+        String(url) === "/api/streamers" && init?.method === "POST",
     );
     expect(streamerPostCall[1]).toEqual(
       expect.objectContaining({

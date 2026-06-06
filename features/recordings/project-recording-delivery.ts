@@ -33,7 +33,12 @@ export type ProjectRecordingDeliveryResult = {
   reviewStatusLabel: string;
 };
 
-const blockedProjectStatuses = new Set(["draft", "ended", "closed", "archived"]);
+const blockedProjectStatuses = new Set([
+  "draft",
+  "ended",
+  "closed",
+  "archived",
+]);
 
 export async function submitProjectRecording({
   repo,

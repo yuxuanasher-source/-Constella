@@ -108,7 +108,7 @@ export async function listStreamerProjectAnnouncements(
   return projects.map((project) => {
     const application = applicationByProject.get(project.id) ?? null;
     const recording = application
-      ? latestRecordings.get(application.id) ?? null
+      ? (latestRecordings.get(application.id) ?? null)
       : null;
 
     return toStreamerProjectAnnouncementCard(project, application, recording);
@@ -174,8 +174,8 @@ async function listApplicationsForProjects(
     string,
     StreamerProjectAnnouncementApplicationRow
   >();
-  for (const application of
-    (data ?? []) as StreamerProjectAnnouncementApplicationRow[]) {
+  for (const application of (data ??
+    []) as StreamerProjectAnnouncementApplicationRow[]) {
     if (!latestByProject.has(application.project_id)) {
       latestByProject.set(application.project_id, application);
     }
@@ -206,8 +206,8 @@ async function listLatestRecordingsForApplications(
     string,
     StreamerProjectAnnouncementRecordingRow
   >();
-  for (const recording of
-    (data ?? []) as StreamerProjectAnnouncementRecordingRow[]) {
+  for (const recording of (data ??
+    []) as StreamerProjectAnnouncementRecordingRow[]) {
     if (!latestByApplication.has(recording.application_id)) {
       latestByApplication.set(recording.application_id, recording);
     }

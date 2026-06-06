@@ -47,6 +47,7 @@ Current worktree warning: several implementation and test files are already dirt
 ### Task 1: Database Public Project Fields
 
 **Files:**
+
 - Create: `supabase/migrations/20260606103000_project_public_streamer_fields.sql`
 - Modify: `lib/db/schema-contract.test.ts`
 - Test: `lib/db/schema-contract.test.ts`
@@ -120,6 +121,7 @@ git commit -m "feat: add public project announcement fields"
 ### Task 2: Project Settings Service, Repository, API, And Ops DTO
 
 **Files:**
+
 - Modify: `features/projects/project-service.test.ts`
 - Modify: `features/projects/project-service.ts`
 - Modify: `features/projects/project-repository.ts`
@@ -373,7 +375,7 @@ game_download_url: string | null;
 Add them to the `.select(...)` string:
 
 ```ts
-is_public_to_streamers, public_summary, game_download_url
+(is_public_to_streamers, public_summary, game_download_url);
 ```
 
 - [ ] **Step 6: Extend the ops project card DTO**
@@ -447,6 +449,7 @@ git commit -m "feat: expose public project settings"
 ### Task 3: Streamer Public Project Announcements API
 
 **Files:**
+
 - Create: `features/recordings/project-announcements.test.ts`
 - Create: `features/recordings/project-announcements.ts`
 - Create: `app/api/streamer/project-announcements/route.test.ts`
@@ -631,7 +634,8 @@ export async function listStreamerProjectAnnouncements(
     throw projectError;
   }
 
-  const projects = (projectRows ?? []) as StreamerProjectAnnouncementProjectRow[];
+  const projects = (projectRows ??
+    []) as StreamerProjectAnnouncementProjectRow[];
   const projectIds = projects.map((project) => project.id);
   const applications = await listApplicationsForProjects(supabase, {
     organizationId: input.organizationId,
@@ -650,7 +654,7 @@ export async function listStreamerProjectAnnouncements(
   return projects.map((project) => {
     const application = applicationByProject.get(project.id) ?? null;
     const recording = application
-      ? latestRecordings.get(application.id) ?? null
+      ? (latestRecordings.get(application.id) ?? null)
       : null;
     return toStreamerProjectAnnouncementCard(project, application, recording);
   });
@@ -714,8 +718,8 @@ async function listApplicationsForProjects(
     string,
     StreamerProjectAnnouncementApplicationRow
   >();
-  for (const application of
-    (data ?? []) as StreamerProjectAnnouncementApplicationRow[]) {
+  for (const application of (data ??
+    []) as StreamerProjectAnnouncementApplicationRow[]) {
     if (!latestByProject.has(application.project_id)) {
       latestByProject.set(application.project_id, application);
     }
@@ -746,8 +750,8 @@ async function listLatestRecordingsForApplications(
     string,
     StreamerProjectAnnouncementRecordingRow
   >();
-  for (const recording of
-    (data ?? []) as StreamerProjectAnnouncementRecordingRow[]) {
+  for (const recording of (data ??
+    []) as StreamerProjectAnnouncementRecordingRow[]) {
     if (!latestByApplication.has(recording.application_id)) {
       latestByApplication.set(recording.application_id, recording);
     }
@@ -918,7 +922,10 @@ export async function GET() {
   try {
     const context = await getLiveOperationsRouteContext();
     if (context.auth.role !== "streamer") {
-      throw new RouteError("Only streamers can access project announcements", 403);
+      throw new RouteError(
+        "Only streamers can access project announcements",
+        403,
+      );
     }
 
     const streamerId = await getStreamerIdForUser(
@@ -966,6 +973,7 @@ git commit -m "feat: add streamer project announcements"
 ### Task 4: Project Recording Delivery Orchestration
 
 **Files:**
+
 - Create: `features/recordings/project-recording-delivery.test.ts`
 - Create: `features/recordings/project-recording-delivery.ts`
 - Modify: `features/applications/application-repository.ts`
@@ -1259,10 +1267,7 @@ export async function submitProjectRecording({
   }
 
   const application =
-    (await repo.getApplicationByProjectAndStreamer(
-      project.id,
-      streamer.id,
-    )) ??
+    (await repo.getApplicationByProjectAndStreamer(project.id, streamer.id)) ??
     (await repo.createApplication({
       organizationId: actor.organizationId,
       projectId: project.id,
@@ -1404,6 +1409,7 @@ git commit -m "feat: sync project recordings to review queue"
 ### Task 5: Streamer Recording Route Branch
 
 **Files:**
+
 - Modify: `app/api/streamer/recordings/route.test.ts`
 - Modify: `app/api/streamer/recordings/route.ts`
 - Test: streamer recordings route
@@ -1550,6 +1556,7 @@ git commit -m "feat: route project recording submissions"
 ### Task 6: Streamer Mobile Announcement UI
 
 **Files:**
+
 - Modify: `app/(streamer-app)/m/recordings/page.tsx`
 - Modify: `components/reference-ui/streamer-mobile-reference.test.jsx`
 - Modify: `components/reference-ui/streamer-mobile-reference.jsx`
@@ -1606,10 +1613,7 @@ Add a project submit interaction test:
 ```jsx
 it("submits a project recording from an announcement card", async () => {
   const fetchMock = vi.fn(async (url, init) => {
-    if (
-      String(url) === "/api/streamer/recordings" &&
-      init?.method === "POST"
-    ) {
+    if (String(url) === "/api/streamer/recordings" && init?.method === "POST") {
       return {
         ok: true,
         json: async () => ({
@@ -1930,21 +1934,23 @@ Add this section before the submit form:
 Add selected project hint inside the form above the product field:
 
 ```jsx
-{form.projectId ? (
-  <div
-    style={{
-      border: "1px solid var(--blue-100)",
-      borderRadius: 8,
-      padding: "8px 10px",
-      background: "var(--blue-50)",
-      color: "var(--blue-800)",
-      fontSize: 12,
-      fontWeight: 700,
-    }}
-  >
-    投递项目：{form.projectName}
-  </div>
-) : null}
+{
+  form.projectId ? (
+    <div
+      style={{
+        border: "1px solid var(--blue-100)",
+        borderRadius: 8,
+        padding: "8px 10px",
+        background: "var(--blue-50)",
+        color: "var(--blue-800)",
+        fontSize: 12,
+        fontWeight: 700,
+      }}
+    >
+      投递项目：{form.projectName}
+    </div>
+  ) : null;
+}
 ```
 
 Create `ProjectAnnouncementCard` near `RecordingLinkCard`:
@@ -1954,7 +1960,9 @@ function ProjectAnnouncementCard({ project, onSelect }) {
   return (
     <MCard style={{ marginBottom: 10 }}>
       <div style={{ display: "grid", gap: 8 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+        <div
+          style={{ display: "flex", justifyContent: "space-between", gap: 8 }}
+        >
           <div style={{ minWidth: 0 }}>
             <div
               style={{
@@ -1968,7 +1976,9 @@ function ProjectAnnouncementCard({ project, onSelect }) {
             >
               {project.name}
             </div>
-            <div style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 2 }}>
+            <div
+              style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 2 }}
+            >
               {project.product || project.code}
             </div>
           </div>
@@ -1977,7 +1987,9 @@ function ProjectAnnouncementCard({ project, onSelect }) {
           </MBadge>
         </div>
         {project.publicSummary ? (
-          <div style={{ fontSize: 12, color: "var(--ink-600)", lineHeight: 1.55 }}>
+          <div
+            style={{ fontSize: 12, color: "var(--ink-600)", lineHeight: 1.55 }}
+          >
             {project.publicSummary}
           </div>
         ) : null}
@@ -2094,6 +2106,7 @@ git commit -m "feat: show streamer project announcements"
 ### Task 7: Ops Project Settings UI
 
 **Files:**
+
 - Modify: `components/reference-ui/ops-reference.test.jsx`
 - Modify: `components/reference-ui/ops-reference.jsx`
 - Test: ops UI smoke tests
@@ -2124,9 +2137,7 @@ Add UI assertions after save:
 
 ```jsx
 expect(screen.getByText("组织内公开")).toBeInTheDocument();
-expect(
-  screen.getByText("Streamer-facing project summary"),
-).toBeInTheDocument();
+expect(screen.getByText("Streamer-facing project summary")).toBeInTheDocument();
 ```
 
 - [ ] **Step 2: Run the failing ops UI test**
@@ -2221,33 +2232,39 @@ Inside `ProjectSettingsPanel`, add this block after the existing signup/direct-i
 In the project overview summary area, add a compact badge and summary preview:
 
 ```jsx
-{p.isPublicToStreamers ? (
-  <Badge tone="green" dot>
-    组织内公开
-  </Badge>
-) : (
-  <Badge tone="default">未公开</Badge>
-)}
+{
+  p.isPublicToStreamers ? (
+    <Badge tone="green" dot>
+      组织内公开
+    </Badge>
+  ) : (
+    <Badge tone="default">未公开</Badge>
+  );
+}
 ```
 
 Render a preview row:
 
 ```jsx
-{p.publicSummary ? (
-  <div style={{ fontSize: 12, color: "var(--ink-600)", lineHeight: 1.55 }}>
-    {p.publicSummary}
-  </div>
-) : null}
+{
+  p.publicSummary ? (
+    <div style={{ fontSize: 12, color: "var(--ink-600)", lineHeight: 1.55 }}>
+      {p.publicSummary}
+    </div>
+  ) : null;
+}
 ```
 
 If a download link is configured, render:
 
 ```jsx
-{p.gameDownloadUrl ? (
-  <a href={p.gameDownloadUrl} target="_blank" rel="noreferrer">
-    游戏下载已配置
-  </a>
-) : null}
+{
+  p.gameDownloadUrl ? (
+    <a href={p.gameDownloadUrl} target="_blank" rel="noreferrer">
+      游戏下载已配置
+    </a>
+  ) : null;
+}
 ```
 
 - [ ] **Step 6: Run ops UI test**
@@ -2272,6 +2289,7 @@ git commit -m "feat: configure public project announcements"
 ### Task 8: End-To-End Verification And Business Closure
 
 **Files:**
+
 - Modify only files required to fix failures found by verification.
 - Test: focused suites, full type-check, UI smoke.
 
