@@ -6,7 +6,11 @@ import {
   createSupabaseServerClient,
 } from "@/lib/db/supabase-server";
 
-import { activateSubaccountAction, signInAction } from "./actions";
+import {
+  activateSubaccountAction,
+  signInAction,
+  submitMcnApplicationAction,
+} from "./actions";
 
 vi.mock("next/navigation", () => ({
   redirect: vi.fn((url: string) => {
@@ -161,5 +165,229 @@ describe("login server actions", () => {
 
     expect(updateUserById).not.toHaveBeenCalled();
     expect(signOut).not.toHaveBeenCalled();
+  });
+
+  it("normalizes mainland phone numbers for Auth while activating streamer subaccounts", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { getUser, signOut },
+    } as never);
+    const updateUserById = vi.fn(async () => ({ error: null }));
+    const updateProfile = vi.fn(() => ({
+      eq: vi.fn(async () => ({ error: null })),
+    }));
+    const adminFrom = vi.fn(() => ({
+      select: vi.fn((columns: string) => ({
+        eq:
+          columns === "requires_onboarding, login_account"
+            ? vi.fn(() => ({
+                maybeSingle: vi.fn(async () => ({
+                  data: {
+                    requires_onboarding: true,
+                    login_account: "jy-sub-001",
+                  },
+                  error: null,
+                })),
+              }))
+            : vi.fn(() => ({
+                neq: vi.fn(() => ({
+                  maybeSingle: vi.fn(async () => ({
+                    data: null,
+                    error: null,
+                  })),
+                })),
+              })),
+      })),
+      update: updateProfile,
+    }));
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      auth: { admin: { updateUserById } },
+      from: adminFrom,
+    } as never);
+
+    await expect(
+      activateSubaccountAction(
+        form({
+          email: "streamer@example.cn",
+          phone: "13800138000",
+          password: "Secret123",
+          roleIntent: "streamer",
+          entryPoint: "mobile",
+          next: "/m/tasks",
+        }),
+      ),
+    ).rejects.toThrow(
+      "NEXT_REDIRECT:/m/login?role=streamer&activation=completed&next=%2Fm%2Ftasks",
+    );
+
+    expect(updateUserById).toHaveBeenCalledWith("user-1", {
+      email: "streamer@example.cn",
+      phone: "+8613800138000",
+      password: "Secret123",
+      email_confirm: true,
+      phone_confirm: true,
+      user_metadata: {
+        onboarding_required: false,
+      },
+    });
+    expect(updateProfile).toHaveBeenCalledWith({
+      email: "streamer@example.cn",
+      phone: "13800138000",
+      login_account: null,
+      requires_onboarding: false,
+    });
+    expect(signOut).toHaveBeenCalled();
+  });
+
+  it("rejects activation before updating Auth when the phone belongs to another profile", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { getUser, signOut },
+    } as never);
+    const updateUserById = vi.fn(async () => ({ error: null }));
+    const updateProfile = vi.fn(() => ({
+      eq: vi.fn(async () => ({
+        error: {
+          message: "duplicate key value violates unique constraint",
+        },
+      })),
+    }));
+    const adminFrom = vi.fn(() => ({
+      select: vi.fn((columns: string) => ({
+        eq:
+          columns === "requires_onboarding, login_account"
+            ? vi.fn(() => ({
+                maybeSingle: vi.fn(async () => ({
+                  data: {
+                    requires_onboarding: true,
+                    login_account: "jy-sub-001",
+                  },
+                  error: null,
+                })),
+              }))
+            : vi.fn((column: string) => ({
+                neq: vi.fn(() => ({
+                  maybeSingle: vi.fn(async () => ({
+                    data: column === "phone" ? { id: "other-user" } : null,
+                    error: null,
+                  })),
+                })),
+              })),
+      })),
+      update: updateProfile,
+    }));
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      auth: { admin: { updateUserById } },
+      from: adminFrom,
+    } as never);
+
+    await expect(
+      activateSubaccountAction(
+        form({
+          email: "streamer@example.cn",
+          phone: "18083748097",
+          password: "Secret123",
+          roleIntent: "streamer",
+          entryPoint: "mobile",
+        }),
+      ),
+    ).rejects.toThrow(
+      "NEXT_REDIRECT:/m/login?mode=activate&role=streamer&error=activation-phone",
+    );
+
+    expect(updateUserById).not.toHaveBeenCalled();
+    expect(updateProfile).not.toHaveBeenCalled();
+    expect(signOut).not.toHaveBeenCalled();
+  });
+
+  it("self-registers an MCN organization, makes the user owner, and signs them in", async () => {
+    const serverSignIn = vi.fn(async () => ({ error: null }));
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { signInWithPassword: serverSignIn },
+    } as never);
+
+    const createUser = vi.fn(async () => ({
+      data: {
+        user: { id: "user-new", email: "owner@example.cn" },
+      },
+      error: null,
+    }));
+    const insertOrganization = vi.fn(() => ({
+      select: vi.fn(() => ({
+        single: vi.fn(async () => ({
+          data: { id: "org-new", name: "星耀互动" },
+          error: null,
+        })),
+      })),
+    }));
+    const upsertProfile = vi.fn(async () => ({ error: null }));
+    const insertMembership = vi.fn(async () => ({ error: null }));
+    const insertOnboardingRequest = vi.fn(async () => ({ error: null }));
+    const adminFrom = vi.fn((table: string) => {
+      if (table === "organizations") {
+        return { insert: insertOrganization };
+      }
+      if (table === "profiles") {
+        return { upsert: upsertProfile };
+      }
+      if (table === "organization_members") {
+        return { insert: insertMembership };
+      }
+      return { insert: insertOnboardingRequest };
+    });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      auth: { admin: { createUser } },
+      from: adminFrom,
+    } as never);
+
+    await expect(
+      submitMcnApplicationAction(
+        form({
+          companyName: " 星耀互动 ",
+          contactName: " 林经理 ",
+          contactEmail: " OWNER@example.cn ",
+          contactPhone: "13800138000",
+          password: "Secret123",
+          businessScale: "20-50 streamers",
+          note: "需要结算协同",
+        }),
+      ),
+    ).rejects.toThrow("NEXT_REDIRECT:/console/projects");
+
+    expect(createUser).toHaveBeenCalledWith({
+      email: "owner@example.cn",
+      password: "Secret123",
+      email_confirm: true,
+      user_metadata: {
+        full_name: "林经理",
+        organization_role: "owner",
+        onboarding_mode: "mcn_self_registration",
+        organization_name: "星耀互动",
+      },
+    });
+    expect(insertOrganization).toHaveBeenCalledWith({
+      name: "星耀互动",
+      code: expect.stringMatching(/^mcn-[0-9a-f-]+$/),
+    });
+    expect(upsertProfile).toHaveBeenCalledWith(
+      {
+        id: "user-new",
+        email: "owner@example.cn",
+        full_name: "林经理",
+        phone: "13800138000",
+        login_account: null,
+        requires_onboarding: false,
+      },
+      { onConflict: "id" },
+    );
+    expect(insertMembership).toHaveBeenCalledWith({
+      organization_id: "org-new",
+      user_id: "user-new",
+      role: "owner",
+      status: "active",
+    });
+    expect(insertOnboardingRequest).not.toHaveBeenCalled();
+    expect(serverSignIn).toHaveBeenCalledWith({
+      email: "owner@example.cn",
+      password: "Secret123",
+    });
   });
 });

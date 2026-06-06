@@ -25,6 +25,7 @@ pnpm dev
 ## 产品文档
 
 - [产品功能文档](docs/product-function-document.md)：按产品逻辑梳理经营舱的主闭环、状态机、权限、模块、API、数据模型和验收边界。
+- [产品使用教程](docs/product-usage-tutorial.md)：面向最终用户的操作手册，覆盖登录、项目、主播、排班报数、结算导出和常见问题。
 
 ## 常用命令
 

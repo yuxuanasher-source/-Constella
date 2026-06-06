@@ -54,6 +54,16 @@ const taskStreamerCards = [
     matchScore: 90,
     defaultRule: "CPT",
     completedProjects: 3,
+    projects: [
+      {
+        id: "project-live",
+        code: "PL-001",
+        name: "Fixture Project",
+        status: "joined",
+        settlementHours: 0,
+        grossContrib: 0,
+      },
+    ],
   },
   {
     id: "streamer-two",
@@ -76,6 +86,16 @@ const taskStreamerCards = [
     matchScore: 88,
     defaultRule: "CPT",
     completedProjects: 2,
+    projects: [
+      {
+        id: "project-live",
+        code: "PL-001",
+        name: "Fixture Project",
+        status: "joined",
+        settlementHours: 0,
+        grossContrib: 0,
+      },
+    ],
   },
 ];
 
@@ -163,6 +183,30 @@ describe("OpsReferenceApp project smoke", () => {
     expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
   });
 
+  it("uses organization logo settings in the sidebar brand mark", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        organizationSettings={{ name: "未来经营组", logoText: "未" }}
+      />,
+    );
+
+    expect(screen.getByLabelText("组织 LOGO")).toHaveTextContent("未");
+    expect(screen.queryByText("JY")).not.toBeInTheDocument();
+  });
+
+  it("updates the sidebar brand logo from organization settings", () => {
+    render(<OpsReferenceApp initialRoute="warroom" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+    fireEvent.change(screen.getByLabelText("LOGO 字标"), {
+      target: { value: "未" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
+
+    expect(screen.getByLabelText("组织 LOGO")).toHaveTextContent("未");
+  });
+
   it("keeps the organization switcher readable with a long organization name", () => {
     render(
       <OpsReferenceApp
@@ -212,6 +256,64 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.getByText("Alice Ops")).toBeInTheDocument();
     expect(screen.getByText("运营负责人 · Demo Org")).toBeInTheDocument();
     expect(screen.queryByText("未登录用户")).not.toBeInTheDocument();
+  });
+
+  it("opens common account options from the sidebar identity block", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        currentUser={{
+          id: "user-ops",
+          name: "Alice Ops",
+          role: "ops_manager",
+          dept: "Demo Org",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Alice Ops/ }));
+
+    expect(screen.getByRole("menu", { name: "账号菜单" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: "个人资料" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: "账号安全" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: "组织设置" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: "退出登录" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
+    expect(
+      screen.getByRole("dialog", { name: "组织功能设置" }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the profile panel from the account menu without runtime errors", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        currentUser={{
+          id: "user-ops",
+          name: "Alice Ops",
+          role: "ops_manager",
+          dept: "Demo Org",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Alice Ops/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "个人资料" }));
+
+    expect(
+      screen.getByRole("dialog", { name: "个人资料" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("运营负责人")).toBeInTheDocument();
+    expect(screen.getByText("Demo Org")).toBeInTheDocument();
   });
 
   it("does not show sidebar or notification badges when live queues are empty", () => {
@@ -1187,6 +1289,84 @@ describe("OpsReferenceApp streamer smoke", () => {
     expect(screen.getAllByText("风险 medium").length).toBeGreaterThan(0);
   });
 
+  it("refreshes streamer cards on the streamer route when server data is not preloaded", async () => {
+    const fetchedStreamer = {
+      id: "streamer-refreshed",
+      alias: "Fetched Streamer",
+      real: "Fetched Real",
+      gender: "",
+      source: "external",
+      supplier: "",
+      games: ["rpg"],
+      platforms: ["douyin"],
+      style: "story",
+      cooperation: "active",
+      risk: "low",
+      metrics: {
+        screenPass: 92,
+        projectFinish: 88,
+        roi: 1.2,
+        grossContrib: 1200,
+      },
+      matchScore: 90,
+      defaultRule: "CPT",
+    };
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ streamers: [fetchedStreamer] }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="streamers" />);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/streamers", undefined),
+    );
+    expect(
+      (await screen.findAllByText("Fetched Streamer")).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/streamer-refreshed.*Fetched Real/),
+    ).toBeInTheDocument();
+  });
+
+  it("shows an empty operating profile instead of placeholder streamer metrics", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        streamerCards={[
+          {
+            id: "streamer-empty-profile",
+            alias: "Empty Profile",
+            real: "No History",
+            gender: "",
+            source: "external",
+            supplier: "",
+            games: ["rpg"],
+            platforms: ["douyin"],
+            style: "story",
+            cooperation: "not_started",
+            risk: "low",
+            hasPerformanceData: false,
+            metrics: {
+              screenPass: 0,
+              projectFinish: 0,
+              roi: 0,
+              grossContrib: 0,
+            },
+            matchScore: 0,
+            matchTrend: [],
+            defaultRule: "CPT",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("暂无经营画像数据")).toBeInTheDocument();
+    expect(screen.queryByText("录屏通过率")).not.toBeInTheDocument();
+    expect(screen.queryByText("近 6 周匹配分趋势")).not.toBeInTheDocument();
+  });
+
   it("creates a streamer profile through the backend API and refreshes the pool", async () => {
     const refreshedStreamer = {
       id: "streamer-created",
@@ -1797,6 +1977,38 @@ describe("OpsReferenceApp live task smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
     expect(await screen.findByText("task-ui-created")).toBeInTheDocument();
+  });
+
+  it("blocks task creation inline when the selected project has no joined streamers", async () => {
+    const alertMock = vi.fn();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("alert", alertMock);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[]}
+        projectCards={taskProjectCards}
+        streamerCards={[
+          {
+            ...taskStreamerCards[0],
+            projects: [],
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "新建任务" }));
+    fireEvent.click(await screen.findByRole("button", { name: "创建任务" }));
+
+    expect(
+      await screen.findByText(
+        "该项目暂无已加入主播，请先在主播资源池邀请并确认加入后再排班。",
+      ),
+    ).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(alertMock).not.toHaveBeenCalled();
   });
 
   it("creates tasks against the selected project and links the task drawer back to project detail", async () => {

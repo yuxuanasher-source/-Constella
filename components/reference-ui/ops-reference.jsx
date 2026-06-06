@@ -674,6 +674,7 @@ const ORGANIZATION_FEATURE_OPTIONS = [
 const DEFAULT_ORGANIZATION_SETTINGS = {
   id: ORG.id,
   name: ORG.name || "未配置组织",
+  logoText: "JY",
   memberLimit: null,
   plan: "",
   verified: false,
@@ -705,6 +706,10 @@ function normalizeOrganizationSettings(input) {
       typeof source.name === "string" && source.name.trim()
         ? source.name.trim()
         : DEFAULT_ORGANIZATION_SETTINGS.name,
+    logoText:
+      typeof source.logoText === "string" && source.logoText.trim()
+        ? source.logoText.trim().slice(0, 4)
+        : DEFAULT_ORGANIZATION_SETTINGS.logoText,
     memberLimit,
     plan:
       typeof source.plan === "string" && source.plan.trim()
@@ -950,6 +955,9 @@ const BATCH_STATUS = {
 };
 
 const BATCH_DETAIL_ITEMS = [];
+
+const JOINED_STREAMER_REQUIRED_MESSAGE =
+  "该项目暂无已加入主播，请先在主播资源池邀请并确认加入后再排班。";
 
 // Recommended streamers (war room)
 const DEFAULT_MATCHING_ROWS = [];
@@ -1222,6 +1230,15 @@ const Icon = {
         <path d="m19 16 .8 1.7L21.5 18l-1.7.3L19 20l-.3-1.7L17 18l1.7-.3z" />
       </>,
     ),
+  Logout: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M10 6H6.5A1.5 1.5 0 0 0 5 7.5v9A1.5 1.5 0 0 0 6.5 18H10" />
+        <path d="M14 8l4 4-4 4" />
+        <path d="M18 12H9" />
+      </>,
+    ),
   Calendar: (p) =>
     ic(
       p,
@@ -1362,6 +1379,7 @@ function Sidebar({
   const memberCount = Array.isArray(organizationMembers)
     ? organizationMembers.length
     : null;
+  const [accountPanel, setAccountPanel] = React.useState(null);
   const switcherMemberText =
     memberCount != null
       ? `当前组织 · ${memberCount} 名成员`
@@ -1395,6 +1413,7 @@ function Sidebar({
         }}
       >
         <div
+          aria-label="组织 LOGO"
           style={{
             width: 26,
             height: 26,
@@ -1410,7 +1429,7 @@ function Sidebar({
             boxShadow: "0 2px 6px rgba(30,80,200,0.35)",
           }}
         >
-          JY
+          {orgSettings.logoText}
         </div>
         <div
           style={{ display: "flex", flexDirection: "column", lineHeight: 1.15 }}
@@ -1642,42 +1661,291 @@ function Sidebar({
       {/* User */}
       <div
         style={{
+          position: "relative",
           padding: "10px 12px",
           borderTop: "1px solid var(--line)",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
         }}
       >
-        <Avatar name={displayUser.name} size={32} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}
-          >
-            {displayUser.name}
-          </div>
-          <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
-            {formatCurrentUserMeta(displayUser)}
-          </div>
-        </div>
-        <button
-          style={{
-            width: 28,
-            height: 28,
-            border: "none",
-            background: "transparent",
-            borderRadius: 6,
-            cursor: "pointer",
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "var(--ink-400)",
+        <details
+          style={{ position: "relative" }}
+          onClick={(event) => {
+            if (event.target?.closest?.("[data-account-menu-close]")) {
+              event.currentTarget.removeAttribute("open");
+            }
           }}
         >
-          <Icon.Settings size={16} />
-        </button>
+          <summary
+            role="button"
+            aria-haspopup="menu"
+            aria-label={`${displayUser.name} ${formatCurrentUserMeta(displayUser)} 账号菜单`}
+            style={{
+              listStyle: "none",
+              width: "100%",
+              border: "1px solid transparent",
+              background: "transparent",
+              borderRadius: 8,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "8px 6px",
+              textAlign: "left",
+            }}
+          >
+            <Avatar name={displayUser.name} size={32} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {displayUser.name}
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--ink-400)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {formatCurrentUserMeta(displayUser)}
+              </div>
+            </div>
+            <Icon.ChevDown
+              size={14}
+              stroke="var(--ink-400)"
+              style={{
+                transition: "transform 120ms ease",
+              }}
+            />
+          </summary>
+
+          <div
+            role="menu"
+            aria-label="账号菜单"
+            style={{
+              position: "absolute",
+              left: 12,
+              right: 12,
+              bottom: 66,
+              zIndex: 30,
+              padding: 6,
+              borderRadius: 8,
+              border: "1px solid var(--line)",
+              background: "#fff",
+              boxShadow: "0 16px 40px rgba(15,23,42,0.14)",
+            }}
+          >
+            <AccountMenuItem
+              icon={<Icon.Streamer size={14} />}
+              label="个人资料"
+              closeMenu
+              onClick={() => {
+                setAccountPanel("profile");
+              }}
+            />
+            <AccountMenuItem
+              icon={<Icon.Lock size={14} />}
+              label="账号安全"
+              closeMenu
+              onClick={() => {
+                setAccountPanel("security");
+              }}
+            />
+            <AccountMenuItem
+              icon={<Icon.Settings size={14} />}
+              label="组织设置"
+              closeMenu
+              onClick={() => {
+                onOpenOrganizationSettings?.();
+              }}
+            />
+            <div
+              style={{
+                height: 1,
+                background: "var(--line)",
+                margin: "6px 4px",
+              }}
+            />
+            <form action="/api/auth/signout" method="post">
+              <AccountMenuItem
+                icon={<Icon.Logout size={14} stroke="var(--danger-600)" />}
+                label="退出登录"
+                danger
+                submit
+              />
+            </form>
+          </div>
+        </details>
       </div>
+
+      {accountPanel ? (
+        <AccountPanelDialog
+          mode={accountPanel}
+          currentUser={displayUser}
+          onClose={() => setAccountPanel(null)}
+        />
+      ) : null}
     </aside>
+  );
+}
+
+function AccountMenuItem({
+  icon,
+  label,
+  onClick,
+  danger = false,
+  submit = false,
+  closeMenu = false,
+}) {
+  return (
+    <button
+      type={submit ? "submit" : "button"}
+      role="menuitem"
+      data-account-menu-close={closeMenu ? "true" : undefined}
+      onClick={onClick}
+      style={{
+        width: "100%",
+        minHeight: 34,
+        border: "none",
+        borderRadius: 6,
+        background: "transparent",
+        color: danger ? "var(--danger-600)" : "var(--ink-700)",
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        gap: 9,
+        padding: "0 9px",
+        fontSize: 13,
+        fontWeight: 500,
+        textAlign: "left",
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = danger ? "#FDECEC" : "var(--ink-50)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "transparent";
+      }}
+    >
+      <span
+        style={{
+          width: 16,
+          height: 16,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: danger ? "var(--danger-600)" : "var(--ink-400)",
+        }}
+      >
+        {icon}
+      </span>
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function AccountPanelDialog({ mode, currentUser, onClose }) {
+  const title = mode === "security" ? "账号安全" : "个人资料";
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 80,
+        background: "rgba(15,23,42,0.24)",
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          width: 420,
+          maxWidth: "100%",
+          borderRadius: 8,
+          background: "#fff",
+          boxShadow: "0 24px 60px rgba(15,23,42,0.22)",
+          border: "1px solid var(--line)",
+          overflow: "hidden",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div
+          style={{
+            padding: "16px 18px",
+            borderBottom: "1px solid var(--line)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Avatar name={currentUser.name} size={34} />
+            <div>
+              <div
+                style={{
+                  fontSize: 15,
+                  fontWeight: 700,
+                  color: "var(--ink-900)",
+                }}
+              >
+                {title}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                {currentUser.name}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭"
+            onClick={onClose}
+            style={{
+              width: 30,
+              height: 30,
+              border: "1px solid var(--line)",
+              borderRadius: 6,
+              background: "#fff",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Icon.X size={14} />
+          </button>
+        </div>
+        <div style={{ padding: 18, display: "grid", gap: 12 }}>
+          {mode === "security" ? (
+            <>
+              <KV label="登录密码">已启用</KV>
+              <KV label="双因素认证">待接入账号系统</KV>
+              <KV label="登录设备">当前浏览器会话</KV>
+            </>
+          ) : (
+            <>
+              <KV label="姓名">{currentUser.name}</KV>
+              <KV label="角色">
+                {ROLES[currentUser.role] ?? ROLES[DEFAULT_CURRENT_USER.role]}
+              </KV>
+              <KV label="组织">{currentUser.dept || "未配置组织"}</KV>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -6286,7 +6554,8 @@ function streamerSubaccountLabel(candidate) {
 function ScreenStreamers({ go, initialActiveId }) {
   const streamers = useOpsStreamers();
   const actions = useOpsLiveActions();
-  const { organizationMembers } = React.useContext(OpsLiveDataContext);
+  const { organizationMembers, streamers: streamerData } =
+    React.useContext(OpsLiveDataContext);
   const emptyDraft = {
     displayName: "",
     realName: "",
@@ -6375,6 +6644,11 @@ function ScreenStreamers({ go, initialActiveId }) {
     setDraft((value) => ({ ...value, userId: candidate.userId }));
     setUserSearch(streamerSubaccountLabel(candidate));
   };
+  React.useEffect(() => {
+    if (streamerData == null && actions.refreshStreamers) {
+      actions.refreshStreamers().catch(() => {});
+    }
+  }, [actions, streamerData]);
   const openDraftForm = () => {
     setDraftOpen(true);
     setDraftError("");
@@ -6947,45 +7221,55 @@ function ScreenStreamers({ go, initialActiveId }) {
               {
                 title: "完成率",
                 align: "right",
-                render: (r) => (
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      justifyContent: "flex-end",
-                    }}
-                  >
-                    <MiniBar
-                      value={r.metrics.projectFinish}
-                      tone={r.metrics.projectFinish >= 90 ? "green" : "blue"}
-                      width={56}
-                    />
-                    <span className="num" style={{ minWidth: 32 }}>
-                      {r.metrics.projectFinish}%
-                    </span>
-                  </div>
-                ),
+                render: (r) => {
+                  if (!hasStreamerPerformanceData(r)) {
+                    return (
+                      <span style={{ color: "var(--ink-300)" }}>暂无</span>
+                    );
+                  }
+                  return (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        justifyContent: "flex-end",
+                      }}
+                    >
+                      <MiniBar
+                        value={r.metrics.projectFinish}
+                        tone={r.metrics.projectFinish >= 90 ? "green" : "blue"}
+                        width={56}
+                      />
+                      <span className="num" style={{ minWidth: 32 }}>
+                        {r.metrics.projectFinish}%
+                      </span>
+                    </div>
+                  );
+                },
               },
               {
                 title: "ROI",
                 align: "right",
-                render: (r) => (
-                  <span
-                    className="num"
-                    style={{
-                      color:
-                        r.metrics.roi >= 1.3
-                          ? "var(--ok-600)"
-                          : r.metrics.roi >= 1
-                            ? "var(--ink-900)"
-                            : "var(--danger-600)",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {r.metrics.roi.toFixed(2)}
-                  </span>
-                ),
+                render: (r) =>
+                  hasStreamerPerformanceData(r) ? (
+                    <span
+                      className="num"
+                      style={{
+                        color:
+                          r.metrics.roi >= 1.3
+                            ? "var(--ok-600)"
+                            : r.metrics.roi >= 1
+                              ? "var(--ink-900)"
+                              : "var(--danger-600)",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {r.metrics.roi.toFixed(2)}
+                    </span>
+                  ) : (
+                    <span style={{ color: "var(--ink-300)" }}>暂无</span>
+                  ),
               },
               {
                 title: "默认结算",
@@ -7131,6 +7415,7 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
     fontWeight: 600,
   };
   const streamerProjects = Array.isArray(s.projects) ? s.projects : [];
+  const hasPerformanceData = hasStreamerPerformanceData(s);
   const openRiskForm = () => {
     setRiskOpen(true);
     setRiskError("");
@@ -7327,55 +7612,72 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
       </Card>
 
       <Card title="经营画像 · 近 90 天" padded={true}>
-        <div
-          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}
-        >
-          <RingMetric
-            label="录屏通过率"
-            value={s.metrics.screenPass}
-            max={100}
-            suffix="%"
-          />
-          <RingMetric
-            label="项目完成率"
-            value={s.metrics.projectFinish}
-            max={100}
-            suffix="%"
-          />
-          <RingMetric
-            label="ROI"
-            value={s.metrics.roi}
-            max={2}
-            dp={2}
-            highlight
-          />
-          <RingMetric
-            label="毛利贡献"
-            value={formatStreamerMoneyK(s.metrics.grossContrib)}
-            raw
-          />
-        </div>
+        {hasPerformanceData ? (
+          <>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 16,
+              }}
+            >
+              <RingMetric
+                label="录屏通过率"
+                value={s.metrics.screenPass}
+                max={100}
+                suffix="%"
+              />
+              <RingMetric
+                label="项目完成率"
+                value={s.metrics.projectFinish}
+                max={100}
+                suffix="%"
+              />
+              <RingMetric
+                label="ROI"
+                value={s.metrics.roi}
+                max={2}
+                dp={2}
+                highlight
+              />
+              <RingMetric
+                label="毛利贡献"
+                value={formatStreamerMoneyK(s.metrics.grossContrib)}
+                raw
+              />
+            </div>
 
-        <div
-          style={{
-            marginTop: 14,
-            paddingTop: 12,
-            borderTop: "1px dashed var(--line)",
-          }}
-        >
-          <div
-            style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 6 }}
-          >
-            近 6 周匹配分趋势
-          </div>
-          <Sparkline
-            data={
-              Array.isArray(s.matchTrend) && s.matchTrend.length > 1
-                ? s.matchTrend
-                : Array(6).fill(s.matchScore)
-            }
+            <div
+              style={{
+                marginTop: 14,
+                paddingTop: 12,
+                borderTop: "1px dashed var(--line)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--ink-400)",
+                  marginBottom: 6,
+                }}
+              >
+                近 6 周匹配分趋势
+              </div>
+              <Sparkline
+                data={
+                  Array.isArray(s.matchTrend) && s.matchTrend.length > 1
+                    ? s.matchTrend
+                    : Array(6).fill(s.matchScore)
+                }
+              />
+            </div>
+          </>
+        ) : (
+          <EmptyHint
+            title="暂无经营画像数据"
+            hint="完成录屏、排班任务或报数审核后，这里会展示近 90 天真实表现。"
           />
-        </div>
+        )}
       </Card>
 
       <Card
@@ -7598,6 +7900,10 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
 
 function formatStreamerMoneyK(value) {
   return `¥${(Math.round((Number(value) || 0) / 100) / 10).toFixed(1)}k`;
+}
+
+function hasStreamerPerformanceData(streamer) {
+  return streamer?.hasPerformanceData !== false;
 }
 
 function formatStreamerMoney(value) {
@@ -9849,7 +10155,13 @@ function ScreenTasks({ go }) {
       ...draft,
       projectId: draft.projectId || projects[0]?.id || "",
       streamerIds:
-        draft.streamerIds || streamers.map((streamer) => streamer.id).join(","),
+        draft.streamerIds ||
+        joinedStreamersForProject(
+          draft.projectId || projects[0]?.id || "",
+          streamers,
+        )
+          .map((streamer) => streamer.id)
+          .join(","),
     }));
   }, [projects, streamers]);
 
@@ -9866,9 +10178,7 @@ function ScreenTasks({ go }) {
     try {
       await fn();
     } catch (error) {
-      globalThis.alert?.(
-        error instanceof Error ? error.message : "任务操作失败",
-      );
+      setTaskMessage(formatTaskActionError(error));
     } finally {
       setBusyAction(null);
     }
@@ -9879,20 +10189,24 @@ function ScreenTasks({ go }) {
       project === "all"
         ? projects[0]
         : projects.find((item) => item.id === project);
-    const defaultStreamer =
-      streamerFilter === "all"
-        ? streamers[0]
-        : streamers.find((item) => item.id === streamerFilter);
-    if (!defaultProject || !defaultStreamer) {
+    if (!defaultProject) {
       globalThis.alert?.("请先创建项目和主播档案。");
       return;
     }
+    const eligibleStreamers = joinedStreamersForProject(
+      defaultProject.id,
+      streamers,
+    );
+    const defaultStreamer =
+      streamerFilter === "all"
+        ? eligibleStreamers[0]
+        : eligibleStreamers.find((item) => item.id === streamerFilter);
 
     setSelectedTask({
       _new: true,
       dayIdx: SCHEDULE_WEEK.todayIdx,
       projectId: defaultProject.id,
-      streamerId: defaultStreamer.id,
+      streamerId: defaultStreamer?.id || "",
     });
   };
 
@@ -9945,8 +10259,10 @@ function ScreenTasks({ go }) {
         .map((id) => id.trim())
         .filter(Boolean)
         .map((streamerId) => {
-          const streamer = streamerById(streamerId, streamers);
-          if (!streamer) return null;
+          const streamer = streamers.find((item) => item.id === streamerId);
+          if (!streamer || !isStreamerJoinedProject(streamer, project.id)) {
+            return null;
+          }
           return {
             projectId: project.id,
             streamerId: streamer.id,
@@ -9960,7 +10276,7 @@ function ScreenTasks({ go }) {
         .filter(Boolean);
 
       if (batchTasks.length === 0) {
-        setTaskMessage("请至少选择一个有效主播");
+        setTaskMessage(JOINED_STREAMER_REQUIRED_MESSAGE);
         return;
       }
 
@@ -11120,10 +11436,34 @@ function projectById(projectId, projects = PROJECTS) {
   return projects.find((item) => item.id === projectId) || projects[0] || null;
 }
 
+function joinedStreamersForProject(projectId, streamers = STREAMERS) {
+  if (!projectId) return [];
+  return streamers.filter((streamer) =>
+    isStreamerJoinedProject(streamer, projectId),
+  );
+}
+
+function isStreamerJoinedProject(streamer, projectId) {
+  if (!streamer || !projectId || !Array.isArray(streamer.projects)) {
+    return false;
+  }
+  return streamer.projects.some(
+    (project) => project.id === projectId && project.status === "joined",
+  );
+}
+
 function streamerById(streamerId, streamers = STREAMERS) {
   return (
     streamers.find((item) => item.id === streamerId) || streamers[0] || null
   );
+}
+
+function formatTaskActionError(error) {
+  const message = error instanceof Error ? error.message : "任务操作失败";
+  if (message.includes("Only joined project streamers can be scheduled")) {
+    return JOINED_STREAMER_REQUIRED_MESSAGE;
+  }
+  return message;
 }
 
 function opsLiveTaskInput({
@@ -11872,14 +12212,32 @@ function NewTaskDrawer({
     decimalHourToTime(task.endHour ?? 23.5),
   );
   const [note, setNote] = React.useState("");
-  const s = streamers.find((x) => x.id === selectedStreamerId);
   const p = projects.find((x) => x.id === selectedProjectId) || projects[0];
+  const eligibleStreamers = p ? joinedStreamersForProject(p.id, streamers) : [];
+  const s = eligibleStreamers.find((x) => x.id === selectedStreamerId) || null;
   const projectName = p?.name || task.projectName || task.project || "";
   const [busy, setBusy] = React.useState(false);
   const [draftMessage, setDraftMessage] = React.useState("");
+  React.useEffect(() => {
+    const project = projects.find((x) => x.id === selectedProjectId) || projects[0];
+    const nextEligibleStreamers = project
+      ? joinedStreamersForProject(project.id, streamers)
+      : [];
+    if (
+      !nextEligibleStreamers.some(
+        (streamer) => streamer.id === selectedStreamerId,
+      )
+    ) {
+      setSelectedStreamerId(nextEligibleStreamers[0]?.id || "");
+    }
+  }, [projects, selectedProjectId, selectedStreamerId, streamers]);
   const handleCreate = async () => {
-    if (!onCreateTask || !p || !s) {
-      setDraftMessage("请先选择项目和主播。");
+    if (!onCreateTask || !p) {
+      setDraftMessage("请先选择项目。");
+      return;
+    }
+    if (!s) {
+      setDraftMessage("");
       return;
     }
     const startHour = timeValueToDecimalHour(startTime, 20);
@@ -11936,14 +12294,27 @@ function NewTaskDrawer({
             value={s?.id || ""}
             onChange={(event) => setSelectedStreamerId(event.target.value)}
             style={taskInputStyle}
+            disabled={eligibleStreamers.length === 0}
           >
-            {streamers.map((streamer) => (
-              <option key={streamer.id} value={streamer.id}>
-                {streamer.alias}
-              </option>
-            ))}
+            {eligibleStreamers.length > 0 ? (
+              eligibleStreamers.map((streamer) => (
+                <option key={streamer.id} value={streamer.id}>
+                  {streamer.alias}
+                </option>
+              ))
+            ) : (
+              <option value="">暂无已加入主播</option>
+            )}
           </select>
         </TaskFormLabel>
+        {eligibleStreamers.length === 0 ? (
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--danger-600)" }}
+          >
+            {JOINED_STREAMER_REQUIRED_MESSAGE}
+          </div>
+        ) : null}
         <FormField label="任务类型">
           <SegmentedControl
             options={["项目任务", "试播任务", "训练任务", "临时任务"]}
@@ -13424,6 +13795,7 @@ function formatOrganizationMemberError(error) {
 function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
   const normalized = normalizeOrganizationSettings(settings);
   const [name, setName] = React.useState(normalized.name);
+  const [logoText, setLogoText] = React.useState(normalized.logoText);
   const [memberLimit, setMemberLimit] = React.useState(
     normalized.memberLimit == null ? "" : String(normalized.memberLimit),
   );
@@ -13437,18 +13809,22 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
 
   const submit = () => {
     const nextName = name.trim();
-    const nextMemberLimit = Number(memberLimit);
+    const nextMemberLimit = memberLimit.trim() ? Number(memberLimit) : null;
     if (!nextName) {
       setMessage("组织名称不能为空。");
       return;
     }
-    if (!Number.isFinite(nextMemberLimit) || nextMemberLimit <= 0) {
+    if (
+      nextMemberLimit != null &&
+      (!Number.isFinite(nextMemberLimit) || nextMemberLimit <= 0)
+    ) {
       setMessage("成员规模需要大于 0。");
       return;
     }
     setMessage("");
     onSubmit?.({
       name: nextName,
+      logoText: logoText.trim().slice(0, 4) || normalized.logoText,
       memberLimit: nextMemberLimit,
       features,
     });
@@ -13521,6 +13897,17 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder="请输入组织名称"
+            style={orgMemberInputStyle}
+          />
+        </OrgMemberField>
+
+        <OrgMemberField label="LOGO 字标">
+          <input
+            aria-label="LOGO 字标"
+            value={logoText}
+            maxLength={4}
+            onChange={(event) => setLogoText(event.target.value)}
+            placeholder="JY"
             style={orgMemberInputStyle}
           />
         </OrgMemberField>
@@ -16108,6 +16495,7 @@ function OpsReferenceInner({
     };
 
     return {
+      refreshStreamers,
       createProjectDraft: async (input) => {
         const body = await fetchJson("/api/projects", "create project failed", {
           method: "POST",

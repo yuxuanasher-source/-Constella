@@ -33,6 +33,7 @@ export type McnApplicationInput = {
   contactName: string;
   contactEmail: string;
   contactPhone: string;
+  password: string;
   businessScale?: string;
   note?: string;
 };
@@ -149,8 +150,9 @@ export function validateMcnApplicationInput(
   const value = {
     companyName: input.companyName?.trim() ?? "",
     contactName: input.contactName?.trim() ?? "",
-    contactEmail: input.contactEmail?.trim() ?? "",
+    contactEmail: input.contactEmail?.trim().toLowerCase() ?? "",
     contactPhone: input.contactPhone?.trim() ?? "",
+    password: input.password?.trim() ?? "",
     businessScale: input.businessScale?.trim() ?? "",
     note: input.note?.trim() ?? "",
   };
@@ -167,6 +169,9 @@ export function validateMcnApplicationInput(
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.contactEmail)) {
     errors.contactEmail = "请输入有效邮箱";
+  }
+  if (value.password.length < 8) {
+    errors.password = "密码至少 8 位";
   }
 
   if (Object.keys(errors).length > 0) {
@@ -244,6 +249,12 @@ function getNotice(searchParams: Record<string, string | undefined>) {
       message: "申请已提交，我们会在 1 个工作日内联系你完成开通。",
     } satisfies LoginNotice;
   }
+  if (searchParams.registration === "completed") {
+    return {
+      tone: "success",
+      message: "注册成功，请使用邮箱和密码登录。",
+    } satisfies LoginNotice;
+  }
   if (searchParams.otp === "sent") {
     return {
       tone: "success",
@@ -292,10 +303,28 @@ function getNotice(searchParams: Record<string, string | undefined>) {
       message: "账号激活失败，请检查邮箱、电话和密码后重试。",
     } satisfies LoginNotice;
   }
+  if (searchParams.error === "activation-email") {
+    return {
+      tone: "error",
+      message: "该邮箱已被其他账号绑定，请更换邮箱或联系管理员。",
+    } satisfies LoginNotice;
+  }
+  if (searchParams.error === "activation-phone") {
+    return {
+      tone: "error",
+      message: "该电话已被其他账号绑定，请更换电话或联系管理员。",
+    } satisfies LoginNotice;
+  }
+  if (searchParams.error === "validation") {
+    return {
+      tone: "error",
+      message: "注册信息校验失败，请确认邮箱、电话和至少 8 位密码。",
+    } satisfies LoginNotice;
+  }
   if (searchParams.error === "application") {
     return {
       tone: "error",
-      message: "申请提交失败，请检查信息或稍后重试。",
+      message: "注册失败，请检查邮箱是否已注册，或稍后重试。",
     } satisfies LoginNotice;
   }
   return null;

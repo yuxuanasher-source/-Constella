@@ -140,6 +140,35 @@ describe("toStreamerCardDto", () => {
       }),
     ]);
   });
+
+  it("does not fabricate performance metrics when a streamer has no operating history", () => {
+    const dto = toStreamerCardDto({
+      id: "s-empty",
+      display_name: "Empty Streamer",
+      real_name: null,
+      gender: null,
+      source_type: "external",
+      cooperation_status: "not_started",
+      categories: [],
+      platforms: [],
+      styles: [],
+      default_settlement_method: "cpt",
+      risk_level: "low",
+      clean_report_count: 12,
+      created_at: "2026-06-01T00:00:00.000Z",
+    });
+
+    expect(dto.hasPerformanceData).toBe(false);
+    expect(dto.metrics).toEqual({
+      screenPass: 0,
+      projectFinish: 0,
+      roi: 0,
+      grossContrib: 0,
+    });
+    expect(dto.matchScore).toBe(0);
+    expect(dto.matchTrend).toEqual([]);
+    expect(dto.projects).toEqual([]);
+  });
 });
 
 describe("toStreamerDesktopProfileDto", () => {

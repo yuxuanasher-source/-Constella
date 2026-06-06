@@ -1,5 +1,6 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import type { Provider } from "@supabase/supabase-js";
@@ -121,9 +122,19 @@ export async function activateSubaccountAction(formData: FormData) {
     );
   }
 
-  const { error: authError } = await authAdmin.updateUserById(user.id, {
+  const profileConflict = await getActivationProfileConflict(admin, user.id, {
     email: validation.value.email,
     phone: validation.value.phone,
+  });
+  if (profileConflict) {
+    redirect(
+      `${loginBasePath}?mode=activate&role=${roleIntent}&error=${activationConflictError(profileConflict)}`,
+    );
+  }
+
+  const { error: authError } = await authAdmin.updateUserById(user.id, {
+    email: validation.value.email,
+    phone: normalizeAuthPhone(validation.value.phone),
     password: validation.value.password,
     email_confirm: true,
     phone_confirm: true,
@@ -259,33 +270,45 @@ export async function submitMcnApplicationAction(formData: FormData) {
     contactName: String(formData.get("contactName") ?? ""),
     contactEmail: String(formData.get("contactEmail") ?? ""),
     contactPhone: String(formData.get("contactPhone") ?? ""),
+    password: String(formData.get("password") ?? ""),
     businessScale: String(formData.get("businessScale") ?? ""),
     note: String(formData.get("note") ?? ""),
   });
 
   if (!validation.ok) {
-    redirect("/login?mode=apply&error=application");
+    redirect("/login?mode=apply&error=validation");
   }
 
   if (!supabase) {
     redirect("/login?mode=apply&error=config");
   }
 
-  const { error } = await supabase.from("mcn_onboarding_requests").insert({
-    company_name: validation.value.companyName,
-    contact_name: validation.value.contactName,
-    contact_email: validation.value.contactEmail,
-    contact_phone: validation.value.contactPhone,
-    business_scale: validation.value.businessScale || null,
-    note: validation.value.note || null,
-    source: "login_page",
-  });
+  const admin = createSupabaseAdminClient();
+  const authAdmin = admin?.auth.admin;
+  if (!admin || !authAdmin) {
+    redirect("/login?mode=apply&error=config");
+  }
 
-  if (error) {
+  try {
+    await createSelfRegisteredMcnOwner({
+      admin,
+      authAdmin,
+      input: validation.value,
+    });
+  } catch {
     redirect("/login?mode=apply&error=application");
   }
 
-  redirect("/login?application=submitted");
+  const { error: signInError } = await supabase.auth.signInWithPassword({
+    email: validation.value.contactEmail,
+    password: validation.value.password,
+  });
+
+  if (signInError) {
+    redirect("/login?registration=completed");
+  }
+
+  redirect("/console/projects");
 }
 
 export async function signInWithProviderAction(formData: FormData) {
@@ -351,6 +374,167 @@ async function resolvePasswordLoginEmail(identifier: string) {
     .eq("login_account", trimmed.toLowerCase())
     .maybeSingle<{ email: string }>();
   return accountProfile?.email ?? trimmed.toLowerCase();
+}
+
+async function createSelfRegisteredMcnOwner({
+  admin,
+  authAdmin,
+  input,
+}: {
+  admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>;
+  authAdmin: NonNullable<
+    ReturnType<typeof createSupabaseAdminClient>
+  >["auth"]["admin"];
+  input: Extract<
+    ReturnType<typeof validateMcnApplicationInput>,
+    { ok: true }
+  >["value"];
+}) {
+  const { data: authData, error: authError } = await authAdmin.createUser({
+    email: input.contactEmail,
+    password: input.password,
+    email_confirm: true,
+    user_metadata: {
+      full_name: input.contactName,
+      organization_role: "owner",
+      onboarding_mode: "mcn_self_registration",
+      organization_name: input.companyName,
+    },
+  });
+  throwIfSupabaseError(authError, "Auth user creation failed");
+
+  const user = authData.user;
+  if (!user?.id) {
+    throw new Error("Auth user creation returned no user");
+  }
+
+  const ownerEmail = user.email?.trim().toLowerCase() || input.contactEmail;
+  const { data: organization, error: organizationError } = await admin
+    .from("organizations")
+    .insert({
+      name: input.companyName,
+      code: createMcnOrganizationCode(),
+    })
+    .select("id, name")
+    .single<{ id: string; name: string }>();
+  throwIfSupabaseError(organizationError, "Organization creation failed");
+
+  if (!organization?.id) {
+    throw new Error("Organization creation returned no organization");
+  }
+
+  const { error: profileError } = await admin.from("profiles").upsert(
+    {
+      id: user.id,
+      email: ownerEmail,
+      full_name: input.contactName,
+      phone: input.contactPhone,
+      login_account: null,
+      requires_onboarding: false,
+    },
+    { onConflict: "id" },
+  );
+  throwIfSupabaseError(profileError, "Owner profile creation failed");
+
+  const { error: membershipError } = await admin
+    .from("organization_members")
+    .insert({
+      organization_id: organization.id,
+      user_id: user.id,
+      role: "owner",
+      status: "active",
+    });
+  throwIfSupabaseError(membershipError, "Owner membership creation failed");
+}
+
+function createMcnOrganizationCode() {
+  return `mcn-${randomUUID()}`;
+}
+
+function throwIfSupabaseError(
+  error: { message?: string } | null | undefined,
+  fallbackMessage: string,
+) {
+  if (error) {
+    throw new Error(error.message ?? fallbackMessage);
+  }
+}
+
+function normalizeAuthPhone(phone: string) {
+  const compact = phone.trim().replace(/[\s-]/g, "");
+  if (/^1[3-9]\d{9}$/.test(compact)) {
+    return `+86${compact}`;
+  }
+  if (compact.startsWith("+")) {
+    return compact;
+  }
+  return phone.trim();
+}
+
+type ActivationProfileConflict = "email" | "phone" | "unknown";
+
+async function getActivationProfileConflict(
+  admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>,
+  userId: string,
+  input: { email: string; phone: string },
+): Promise<ActivationProfileConflict | null> {
+  const emailConflict = await hasOtherProfileWithValue(
+    admin,
+    userId,
+    "email",
+    input.email,
+  );
+  if (emailConflict === "error") {
+    return "unknown";
+  }
+  if (emailConflict) {
+    return "email";
+  }
+
+  const phoneConflict = await hasOtherProfileWithValue(
+    admin,
+    userId,
+    "phone",
+    input.phone,
+  );
+  if (phoneConflict === "error") {
+    return "unknown";
+  }
+  if (phoneConflict) {
+    return "phone";
+  }
+
+  return null;
+}
+
+async function hasOtherProfileWithValue(
+  admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>,
+  userId: string,
+  column: "email" | "phone",
+  value: string,
+): Promise<boolean | "error"> {
+  const { data, error } = await admin
+    .from("profiles")
+    .select("id")
+    .eq(column, value)
+    .neq("id", userId)
+    .maybeSingle<{ id: string }>();
+
+  if (error) {
+    return "error";
+  }
+
+  return Boolean(data?.id);
+}
+
+function activationConflictError(conflict: ActivationProfileConflict) {
+  if (conflict === "email") {
+    return "activation-email";
+  }
+  if (conflict === "phone") {
+    return "activation-phone";
+  }
+  return "activation";
 }
 
 async function getPendingActivationProfile(

@@ -72,7 +72,7 @@ export default async function LoginPage({
             href="/login?mode=apply"
             className="font-medium text-[var(--blue-600)]"
           >
-            申请开通 MCN 账号
+            注册 MCN 账号
             <ArrowRight className="ml-1 inline h-3.5 w-3.5" />
           </Link>
         </div>
@@ -80,11 +80,11 @@ export default async function LoginPage({
         <div className="mx-auto flex w-full max-w-[430px] flex-1 flex-col justify-center py-12">
           <div>
             <h1 className="text-3xl font-bold tracking-normal text-[var(--ink-900)]">
-              {viewState.mode === "apply" ? "开通经营舱" : "欢迎回来"}
+              {viewState.mode === "apply" ? "注册经营舱" : "欢迎回来"}
             </h1>
             <p className="mt-2 text-sm text-[var(--ink-500)]">
               {viewState.mode === "apply"
-                ? "提交机构信息，平台运营会完成资质确认并开通账号。"
+                ? "创建机构空间并自动获得 owner 权限。"
                 : "登录星耀传媒报数与结算工作台"}
             </p>
           </div>
@@ -450,13 +450,21 @@ function PhoneLoginForm({
   );
 }
 
-function McnApplicationForm() {
+export function McnApplicationForm() {
   return (
     <form action={submitMcnApplicationAction} className="mt-7 space-y-4">
       <TextField label="机构名称" name="companyName" required />
       <TextField label="联系人" name="contactName" required />
       <TextField label="联系邮箱" name="contactEmail" type="email" required />
       <TextField label="联系电话" name="contactPhone" type="tel" required />
+      <TextField
+        label="登录密码"
+        name="password"
+        type="password"
+        autoComplete="new-password"
+        minLength={8}
+        required
+      />
       <TextField
         label="主播规模"
         name="businessScale"
@@ -472,7 +480,7 @@ function McnApplicationForm() {
         />
       </label>
       <Button type="submit" className="h-11 w-full">
-        提交开通申请
+        注册并进入工作台
       </Button>
       <ModeBackLink roleIntent="mcn" />
     </form>

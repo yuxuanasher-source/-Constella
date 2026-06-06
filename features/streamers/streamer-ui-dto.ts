@@ -22,6 +22,7 @@ export type StreamerCardDto = {
   cooperation: string;
   risk: string;
   defaultRule: string;
+  hasPerformanceData: boolean;
   createdAtLabel: string;
   matchScore: number;
   matchTrend: number[];
@@ -108,6 +109,7 @@ export function toStreamerCardDto(
     cooperation: row.cooperation_status,
     risk: row.risk_level,
     defaultRule: row.default_settlement_method.toUpperCase(),
+    hasPerformanceData: liveMetrics.hasPerformanceData,
     createdAtLabel: row.created_at.slice(0, 10),
     matchScore: liveMetrics.matchScore,
     matchTrend: liveMetrics.matchTrend,
@@ -286,24 +288,22 @@ function deriveLivePerformance(
   ).filter((item) => item.status !== "cancelled");
   const projectRows = row.project_streamers ?? [];
 
-  const hasLiveData =
+  const hasPerformanceData =
     recentRecordings.length > 0 ||
     recentReports.length > 0 ||
-    recentTasks.length > 0 ||
-    projectRows.length > 0;
-  if (!hasLiveData) {
+    recentTasks.length > 0;
+  if (!hasPerformanceData) {
     return {
-      matchScore: fallbackScore,
-      matchTrend: Array(6).fill(fallbackScore),
+      hasPerformanceData: false,
+      matchScore: 0,
+      matchTrend: [],
       metrics: {
-        screenPass: fallbackScore,
-        projectFinish: fallbackScore,
-        roi: Number(
-          (1 + Math.max(row.clean_report_count ?? 0, 0) / 100).toFixed(2),
-        ),
+        screenPass: 0,
+        projectFinish: 0,
+        roi: 0,
         grossContrib: 0,
       },
-      projects: [],
+      projects: streamerProjectContributions(projectRows, recentReports),
     };
   }
 
@@ -319,12 +319,12 @@ function deriveLivePerformance(
       : percentage(
           passCount(recentReports, (item) => isPassedRecordingOrReport(item)),
           recentReports.length,
-          fallbackScore,
+          0,
         );
   const projectFinish = percentage(
     passCount(recentTasks, (item) => isFinishedTask(item.status)),
     recentTasks.length,
-    fallbackScore,
+    0,
   );
   const grossContrib = roundMoney(
     recentReports.reduce((sum, report) => sum + reportContribution(report), 0),
@@ -340,7 +340,7 @@ function deriveLivePerformance(
   const roi =
     settlementHours > 0 && viewers > 0
       ? Number((viewers / settlementHours / 1000).toFixed(2))
-      : Number((1 + Math.max(row.clean_report_count ?? 0, 0) / 100).toFixed(2));
+      : 0;
 
   const matchScore = performanceMatchScore({
     screenPass,
@@ -351,6 +351,7 @@ function deriveLivePerformance(
   });
 
   return {
+    hasPerformanceData: true,
     matchScore,
     matchTrend: weeklyMatchTrend(row, now, fallbackScore, matchScore),
     metrics: {

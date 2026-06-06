@@ -109,6 +109,34 @@ describe("login workflows", () => {
     });
   });
 
+  it("shows registration-specific validation errors", () => {
+    expect(
+      buildLoginViewState({
+        searchParams: { mode: "apply", error: "validation" },
+      }),
+    ).toMatchObject({
+      mode: "apply",
+      notice: {
+        tone: "error",
+        message: "注册信息校验失败，请确认邮箱、电话和至少 8 位密码。",
+      },
+    });
+  });
+
+  it("shows activation-specific duplicate field errors", () => {
+    expect(
+      buildLoginViewState({
+        searchParams: { mode: "activate", error: "activation-phone" },
+      }),
+    ).toMatchObject({
+      mode: "activate",
+      notice: {
+        tone: "error",
+        message: "该电话已被其他账号绑定，请更换电话或联系管理员。",
+      },
+    });
+  });
+
   it("reports configured and unavailable third-party auth providers", () => {
     expect(
       getAuthProviderState({
@@ -131,6 +159,7 @@ describe("login workflows", () => {
       contactName: " 林经理 ",
       contactEmail: "ops@example.cn",
       contactPhone: "13800138000",
+      password: "Secret123",
       businessScale: "20-50 streamers",
       note: "需要结算协同",
     });
@@ -142,6 +171,7 @@ describe("login workflows", () => {
         contactName: "林经理",
         contactEmail: "ops@example.cn",
         contactPhone: "13800138000",
+        password: "Secret123",
         businessScale: "20-50 streamers",
         note: "需要结算协同",
       },
@@ -153,6 +183,7 @@ describe("login workflows", () => {
         contactName: "",
         contactEmail: "bad-email",
         contactPhone: "",
+        password: "short",
       }),
     ).toEqual({
       ok: false,
@@ -161,6 +192,7 @@ describe("login workflows", () => {
         contactName: "请输入联系人",
         contactEmail: "请输入有效邮箱",
         contactPhone: "请输入联系电话",
+        password: "密码至少 8 位",
       },
     });
   });
