@@ -3,6 +3,7 @@ import type { NotificationInput } from "@/lib/notify/notify";
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
 
 import {
+  calculateCpsManualAmount,
   calculateSettlementItem,
   summarizeEvidence,
   type SettlementCalculatedItem,
@@ -385,6 +386,7 @@ export async function addManualSettlementItem({
   repo: Pick<
     SettlementRepository,
     | "getSettlementBatchById"
+    | "getSettlementRules"
     | "createSettlementBatchItem"
     | "updateSettlementBatch"
   >;
@@ -396,7 +398,8 @@ export async function addManualSettlementItem({
     itemType: ManualSettlementItemType;
     projectId?: string;
     streamerId?: string | null;
-    manualAmount: number;
+    manualAmount?: number;
+    salesAmount?: number;
     adjustmentAmount?: number;
     evidenceLevel: "yellow" | "red";
     reason: string;
@@ -408,8 +411,13 @@ export async function addManualSettlementItem({
     input.reason,
     "Manual settlement amount changes require a reason",
   );
-  assertManualAmount(input.manualAmount);
   const before = await requireSettlementBatch(repo, batchId);
+  const manualSettlement = await resolveManualSettlementInput({
+    repo,
+    batch: before,
+    input,
+  });
+  assertManualAmount(manualSettlement.manualAmount);
   if (before.status === "locked" || before.status === "voided") {
     throw new Error("Locked or voided settlement batches cannot be edited");
   }
@@ -422,15 +430,10 @@ export async function addManualSettlementItem({
     liveReportId: null,
     itemType: input.itemType,
     computedAmount: 0,
-    manualAmount: input.manualAmount,
+    manualAmount: manualSettlement.manualAmount,
     adjustmentAmount: input.adjustmentAmount ?? 0,
     evidenceLevel: input.evidenceLevel,
-    evidenceSnapshot: {
-      source: "manual",
-      itemType: input.itemType,
-      reason: input.reason,
-      note: input.note,
-    },
+    evidenceSnapshot: manualSettlement.evidenceSnapshot,
   });
   const after = await repo.updateSettlementBatch(batchId, {
     manualAmount: before.manualAmount + item.manualAmount,
@@ -557,6 +560,64 @@ function assertManualAmount(manualAmount: number): void {
   if (!Number.isFinite(manualAmount) || manualAmount < 0) {
     throw new Error("Manual amount must be non-negative");
   }
+}
+
+async function resolveManualSettlementInput({
+  repo,
+  batch,
+  input,
+}: {
+  repo: Pick<SettlementRepository, "getSettlementRules">;
+  batch: SettlementBatchRecord;
+  input: {
+    itemType: ManualSettlementItemType;
+    streamerId?: string | null;
+    manualAmount?: number;
+    salesAmount?: number;
+    reason: string;
+    note?: string;
+  };
+}): Promise<{
+  manualAmount: number;
+  evidenceSnapshot: Record<string, unknown>;
+}> {
+  if (
+    input.itemType === "cps" &&
+    input.manualAmount === undefined &&
+    input.salesAmount !== undefined &&
+    input.streamerId
+  ) {
+    const [rule] = await repo.getSettlementRules({
+      projectId: batch.projectId,
+      streamerIds: [input.streamerId],
+    });
+    const cpsRateBps = rule?.cpsRateBps ?? 0;
+    return {
+      manualAmount: calculateCpsManualAmount({
+        salesAmount: input.salesAmount,
+        cpsRateBps,
+      }),
+      evidenceSnapshot: {
+        source: "manual_cps_import",
+        itemType: input.itemType,
+        reason: input.reason,
+        note: input.note,
+        salesAmount: input.salesAmount,
+        cpsRateBps,
+        settlementRuleSource: "project_streamer_snapshot",
+      },
+    };
+  }
+
+  return {
+    manualAmount: input.manualAmount ?? 0,
+    evidenceSnapshot: {
+      source: "manual",
+      itemType: input.itemType,
+      reason: input.reason,
+      note: input.note,
+    },
+  };
 }
 
 async function requireSettlementBatch(

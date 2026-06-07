@@ -34,6 +34,9 @@ export async function POST(
     if (!evidenceLevels.has(evidenceLevel)) {
       throw new RouteError("evidenceLevel must be yellow or red", 400);
     }
+    if (itemType !== "cps" && body.manualAmount === undefined) {
+      throw new RouteError("manualAmount is required", 400);
+    }
 
     const context = await getSettlementRouteContext();
     const item = await addManualSettlementItem({
@@ -46,7 +49,11 @@ export async function POST(
         itemType: itemType as ManualSettlementItemType,
         projectId: optionalString(body, "projectId"),
         streamerId: optionalString(body, "streamerId"),
-        manualAmount: requiredNumber(body, "manualAmount"),
+        manualAmount:
+          body.manualAmount === undefined
+            ? undefined
+            : requiredNumber(body, "manualAmount"),
+        salesAmount: optionalNumber(body, "salesAmount"),
         adjustmentAmount: optionalNumber(body, "adjustmentAmount"),
         evidenceLevel: evidenceLevel as "yellow" | "red",
         reason: requiredString(body, "reason"),

@@ -23,6 +23,7 @@ export type SettlementRule = {
   settlementMethod: SettlementMethod;
   hourlyRate?: number | null;
   baseSalary?: number | null;
+  cpsRateBps?: number | null;
 };
 
 export type SettlementCalculatedItem = {
@@ -62,6 +63,22 @@ export function calculateSettlementItem({
       evidenceLevel: report.evidenceLevel,
     },
   };
+}
+
+export function calculateCpsManualAmount({
+  salesAmount,
+  cpsRateBps,
+}: {
+  salesAmount: number;
+  cpsRateBps: number;
+}): number {
+  if (!Number.isFinite(salesAmount) || salesAmount < 0) {
+    throw new Error("salesAmount must be non-negative");
+  }
+  if (!Number.isInteger(cpsRateBps) || cpsRateBps < 0 || cpsRateBps > 10000) {
+    throw new Error("cpsRateBps must be between 0 and 10000");
+  }
+  return roundCurrency((salesAmount * cpsRateBps) / 10000);
 }
 
 export function summarizeEvidence(

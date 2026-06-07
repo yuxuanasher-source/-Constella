@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  calculateCpsManualAmount,
   calculateSettlementItem,
   summarizeEvidence,
 } from "./settlement-engine";
@@ -78,6 +79,15 @@ describe("settlement engine", () => {
         manualAmount: 88,
       });
     }
+  });
+
+  it("calculates CPS manual amount from sales amount and basis points", () => {
+    expect(
+      calculateCpsManualAmount({ salesAmount: 12000, cpsRateBps: 1500 }),
+    ).toBe(1800);
+    expect(
+      calculateCpsManualAmount({ salesAmount: 999.99, cpsRateBps: 250 }),
+    ).toBe(25);
   });
 
   it("summarizes evidence levels for batch audit snapshots", () => {

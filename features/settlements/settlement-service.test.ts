@@ -49,6 +49,7 @@ const settlementRule = {
   settlementMethod: "cpt" as const,
   hourlyRate: 80,
   baseSalary: 0,
+  cpsRateBps: 1500,
 };
 
 function createBatch(
@@ -462,5 +463,35 @@ describe("settlement service", () => {
         reason: "Imported CPA claim sheet",
       }),
     );
+  });
+
+  it("calculates CPS manual rows from sales amount and frozen rate", async () => {
+    const item = await addManualSettlementItem({
+      repo,
+      audit,
+      notify,
+      actor: opsActor,
+      batchId: "batch-1",
+      input: {
+        itemType: "cps",
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        salesAmount: 12000,
+        evidenceLevel: "yellow",
+        reason: "Imported CPS sales sheet",
+      },
+    });
+
+    expect(item).toMatchObject({
+      itemType: "cps",
+      manualAmount: 1800,
+      computedAmount: 0,
+      evidenceSnapshot: expect.objectContaining({
+        source: "manual_cps_import",
+        salesAmount: 12000,
+        cpsRateBps: 1500,
+        settlementRuleSource: "project_streamer_snapshot",
+      }),
+    });
   });
 });

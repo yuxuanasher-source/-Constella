@@ -26,6 +26,7 @@ describe("settlement DTO mappers", () => {
           settlement_method: "cpt",
           hourly_rate: 80,
           base_salary: 0,
+          cps_rate_bps: 0,
         },
       ],
     });
@@ -38,6 +39,7 @@ describe("settlement DTO mappers", () => {
       timeSource: "system",
       evidenceLevel: "green",
       settlementMethod: "cpt",
+      cpsRateBps: 0,
       expectedAmount: 160,
       approvedAt: "2026-06-02T12:00:00.000Z",
     });
@@ -153,6 +155,7 @@ describe("settlement DTO mappers", () => {
           settlement_method: "cpt",
           hourly_rate: 100,
           base_salary: 0,
+          cps_rate_bps: 0,
         },
       ],
     });

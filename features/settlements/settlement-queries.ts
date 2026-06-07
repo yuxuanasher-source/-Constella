@@ -14,6 +14,7 @@ export type OpsSettlementPoolItem = {
   timeSource: "system" | "screenshot" | "claimed" | null;
   evidenceLevel: "green" | "yellow" | "red" | null;
   settlementMethod: string;
+  cpsRateBps: number;
   expectedAmount: number;
   approvedAt: string;
 };
@@ -69,6 +70,7 @@ export type SettlementPoolRow = {
     settlement_method: string | null;
     hourly_rate: number | null;
     base_salary: number | null;
+    cps_rate_bps: number | null;
   }> | null;
 };
 
@@ -111,6 +113,7 @@ type ProjectStreamerRuleRow = {
   settlement_method: string | null;
   hourly_rate: number | null;
   base_salary: number | null;
+  cps_rate_bps: number | null;
 };
 
 type SettlementScopeSeedRow = {
@@ -169,6 +172,7 @@ export async function listOpsSettlementPool(
           settlement_method: "manual",
           hourly_rate: 0,
           base_salary: 0,
+          cps_rate_bps: 0,
         },
       ],
     }),
@@ -292,6 +296,7 @@ export function toOpsSettlementPoolItem(
         >[0]["rule"]["settlementMethod"]) ?? "manual",
       hourlyRate: rule?.hourly_rate ?? 0,
       baseSalary: rule?.base_salary ?? 0,
+      cpsRateBps: rule?.cps_rate_bps ?? 0,
     },
   });
 
@@ -303,6 +308,7 @@ export function toOpsSettlementPoolItem(
     timeSource: row.time_source,
     evidenceLevel: row.evidence_level,
     settlementMethod: rule?.settlement_method ?? "manual",
+    cpsRateBps: rule?.cps_rate_bps ?? 0,
     expectedAmount: expected.computedAmount,
     approvedAt: row.created_at,
   };
@@ -376,7 +382,7 @@ async function listProjectStreamerRules(
 ): Promise<ProjectStreamerRuleRow[]> {
   const { data, error } = await client
     .from("project_streamers")
-    .select("streamer_id, settlement_method, hourly_rate, base_salary")
+    .select("streamer_id, settlement_method, hourly_rate, base_salary, cps_rate_bps")
     .eq("project_id", projectId)
     .in("streamer_id", streamerIds)
     .returns<ProjectStreamerRuleRow[]>();

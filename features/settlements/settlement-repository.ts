@@ -40,6 +40,7 @@ type SettlementRuleRow = {
   settlement_method: SettlementMethod | null;
   hourly_rate: number | null;
   base_salary: number | null;
+  cps_rate_bps: number | null;
 };
 
 type ProjectSettlementRuleRow = {
@@ -183,7 +184,7 @@ export class SupabaseSettlementRepository implements SettlementRepository {
     const { data, error } = await this.client
       .from("project_streamers")
       .select(
-        "project_id, streamer_id, settlement_method, hourly_rate, base_salary",
+        "project_id, streamer_id, settlement_method, hourly_rate, base_salary, cps_rate_bps",
       )
       .eq("project_id", input.projectId)
       .in("streamer_id", input.streamerIds)
@@ -396,6 +397,7 @@ function toSettlementRuleRecord(row: SettlementRuleRow): SettlementRuleRecord {
     settlementMethod: row.settlement_method ?? "manual",
     hourlyRate: Number(row.hourly_rate ?? 0),
     baseSalary: Number(row.base_salary ?? 0),
+    cpsRateBps: Number(row.cps_rate_bps ?? 0),
   };
 }
 
