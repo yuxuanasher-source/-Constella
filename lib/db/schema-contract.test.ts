@@ -120,6 +120,25 @@ describe("P0 database contract", () => {
     );
   });
 
+  it("declares streamer default settlement cps snapshot fields", () => {
+    expect(allMigrations).toContain(
+      "default_cps_rate_bps integer not null default 0",
+    );
+    expect(allMigrations).toContain(
+      "streamers_default_cps_rate_bps_range",
+    );
+    expect(allMigrations).toContain("cps_rate_bps integer not null default 0");
+    expect(allMigrations).toContain(
+      "project_streamers_cps_rate_bps_range",
+    );
+    expect(allMigrations).toContain(
+      "default_cps_rate_bps >= 0 and default_cps_rate_bps <= 10000",
+    );
+    expect(allMigrations).toContain(
+      "cps_rate_bps >= 0 and cps_rate_bps <= 10000",
+    );
+  });
+
   it("declares the public MCN onboarding request intake table", () => {
     expect(allMigrations).toContain(
       "create table public.mcn_onboarding_requests",
