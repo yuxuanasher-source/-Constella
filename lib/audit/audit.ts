@@ -11,7 +11,11 @@ export type AuditAction =
   | "login"
   | "logout"
   | "publish"
-  | "void";
+  | "void"
+  | "create_share_board"
+  | "revoke_share_board"
+  | "vendor_review_submit"
+  | "vendor_review_sync";
 
 type AuditInsertClient = {
   from(table: "audit_logs"): {

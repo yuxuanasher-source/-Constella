@@ -3,6 +3,36 @@ import { describe, expect, it } from "vitest";
 import { getAllowedExportFields } from "./export-definitions";
 
 describe("export definitions", () => {
+  it("keeps admission recording exports scoped to public review fields", () => {
+    const fields = getAllowedExportFields(
+      "admission_recordings",
+      "operator_business",
+    );
+
+    expect(fields.map((field) => field.key)).toEqual([
+      "projectCode",
+      "projectName",
+      "vendorProduct",
+      "streamerName",
+      "streamerAccount",
+      "recordingUrl",
+      "recordingVersion",
+      "recordingSubmittedAt",
+      "mcnReviewStatus",
+      "vendorDecision",
+      "vendorRemark",
+    ]);
+    expect(fields.map((field) => field.key)).not.toEqual(
+      expect.arrayContaining([
+        "vendorReceivableCents",
+        "grossMarginCents",
+        "supplierCostCents",
+        "internalRiskNote",
+        "settlementPrice",
+      ]),
+    );
+  });
+
   it("keeps vendor delivery package free of cost and margin fields", () => {
     const fields = getAllowedExportFields(
       "vendor_delivery",

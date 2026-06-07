@@ -5,7 +5,8 @@ export type ExportKind =
   | "report_details"
   | "settlement_batch"
   | "audit_logs"
-  | "vendor_delivery";
+  | "vendor_delivery"
+  | "admission_recordings";
 
 export type ExportField = {
   key: string;
@@ -14,6 +15,35 @@ export type ExportField = {
 };
 
 export const exportDefinitions: Record<ExportKind, ExportField[]> = {
+  admission_recordings: [
+    { key: "projectCode", label: "Project code", sensitivity: "public" },
+    { key: "projectName", label: "Project name", sensitivity: "public" },
+    { key: "vendorProduct", label: "Vendor / product", sensitivity: "public" },
+    { key: "streamerName", label: "Streamer", sensitivity: "public" },
+    {
+      key: "streamerAccount",
+      label: "Streamer account",
+      sensitivity: "public",
+    },
+    { key: "recordingUrl", label: "Recording URL", sensitivity: "public" },
+    {
+      key: "recordingVersion",
+      label: "Recording version",
+      sensitivity: "public",
+    },
+    {
+      key: "recordingSubmittedAt",
+      label: "Recording submitted at",
+      sensitivity: "public",
+    },
+    {
+      key: "mcnReviewStatus",
+      label: "MCN review status",
+      sensitivity: "public",
+    },
+    { key: "vendorDecision", label: "Vendor decision", sensitivity: "public" },
+    { key: "vendorRemark", label: "Vendor remark", sensitivity: "public" },
+  ],
   vendor_delivery: [
     { key: "projectName", label: "项目名称", sensitivity: "public" },
     { key: "streamerName", label: "主播", sensitivity: "public" },
@@ -72,6 +102,7 @@ export function isExportKind(value: unknown): value is ExportKind {
     value === "report_details" ||
     value === "settlement_batch" ||
     value === "audit_logs" ||
-    value === "vendor_delivery"
+    value === "vendor_delivery" ||
+    value === "admission_recordings"
   );
 }

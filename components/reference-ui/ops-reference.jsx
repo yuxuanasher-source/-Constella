@@ -788,6 +788,12 @@ function displayRecordId(value, fallback = "内部记录") {
   return text;
 }
 
+function displayTaskStreamerName(task, fallback = "未配置主播") {
+  const readableName = displayRecordId(task?.streamerName, "");
+  if (readableName) return readableName;
+  return displayRecordId(task?.streamerId, fallback);
+}
+
 function displayProjectCode(project) {
   const code = String(project?.code || "").trim();
   return code || "未设置编号";
@@ -1056,7 +1062,7 @@ function formatScheduleDate(date) {
 // Tasks: each row = one streamer, with tasks placed by day.
 // startHour / endHour are 0-24. status: 'completed' | 'live' | 'pending_report' | 'pending_review' | 'pending_live' | 'abnormal' | 'cancelled'
 // project: project id
-// type: 'project' | 'trial' | 'training' | 'temp'
+// type: 'project' | 'trial' | 'training' | 'temporary'
 const TASKS = [];
 
 const TASK_STATUS = {
@@ -1070,6 +1076,13 @@ const TASK_STATUS = {
   cancelled: { tone: "neutral", label: "已取消" },
   abnormal: { tone: "red", label: "异常" },
 };
+
+const TASK_TYPE_OPTIONS = [
+  { value: "project", label: "项目任务" },
+  { value: "trial", label: "试播任务" },
+  { value: "training", label: "训练任务" },
+  { value: "temporary", label: "临时任务" },
+];
 
 const ANOMALY_TYPES = {
   unstopped: { tone: "red", label: "未停止 / 未报数" },
@@ -2357,6 +2370,7 @@ function ScreenWarRoom({ go }) {
                 { key: "matching", label: "主播匹配引擎" },
                 { key: "supplier", label: "供应商质量" },
                 { key: "pricing", label: "报价 & 测算" },
+                { key: "ai", label: "AI Copilot" },
               ]}
             />
           </div>
@@ -2366,6 +2380,7 @@ function ScreenWarRoom({ go }) {
             {tab === "matching" && <Matching go={go} />}
             {tab === "supplier" && <Supplier />}
             {tab === "pricing" && <Pricing />}
+            {tab === "ai" && <AICopilot />}
           </div>
         </Card>
       </div>
@@ -3107,9 +3122,12 @@ function Overview({ go }) {
 // ——— Matching tab ————————————————————————
 function Matching({ go }) {
   const streamers = useOpsStreamers();
+  const projects = useOpsProjects();
+  const actions = useOpsLiveActions();
   const [matchRows, setMatchRows] = React.useState(null);
   const [supplierRows, setSupplierRows] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
+  const [inviteBusyId, setInviteBusyId] = React.useState("");
   const [error, setError] = React.useState("");
   const [actionMessage, setActionMessage] = React.useState("");
   const rows = matchRows ?? DEFAULT_MATCHING_ROWS;
@@ -3132,6 +3150,25 @@ function Matching({ go }) {
       setError(error instanceof Error ? error.message : "matching failed");
     } finally {
       setBusy(false);
+    }
+  };
+  const inviteMatch = async (row) => {
+    const projectId = projects[0]?.id;
+    if (!projectId) {
+      setActionMessage("请先创建或选择项目后再发起邀约。");
+      return;
+    }
+
+    setInviteBusyId(row.id);
+    setError("");
+    setActionMessage("");
+    try {
+      await actions.inviteStreamerToProject?.(projectId, row.id);
+      setActionMessage("已发起邀约");
+    } catch (error) {
+      setActionMessage(error?.message || "邀约失败，请稍后重试。");
+    } finally {
+      setInviteBusyId("");
     }
   };
 
@@ -3365,11 +3402,10 @@ function Matching({ go }) {
                 <Button
                   size="sm"
                   kind="primary"
-                  onClick={() =>
-                    setActionMessage(`${r.name} 的项目邀约后台暂未接入。`)
-                  }
+                  onClick={() => inviteMatch(r)}
+                  disabled={inviteBusyId === r.id}
                 >
-                  发起邀约
+                  {inviteBusyId === r.id ? "邀约中" : "发起邀约"}
                 </Button>
               </div>
             </Card>
@@ -3430,6 +3466,270 @@ function Matching({ go }) {
       ) : null}
     </div>
   );
+}
+
+function AICopilot() {
+  const projects = useOpsProjects();
+  const streamers = useOpsStreamers();
+  const [busyKey, setBusyKey] = React.useState("");
+  const [message, setMessage] = React.useState("");
+  const [results, setResults] = React.useState({});
+
+  const runAiAction = async (key, url, payload, formatter, fallbackMessage) => {
+    if (busyKey) return;
+    setBusyKey(key);
+    setMessage("");
+    try {
+      const body = await postWarRoomJson(url, payload, fallbackMessage);
+      setResults((current) => ({ ...current, [key]: formatter(body) }));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : fallbackMessage);
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const matchingInput = React.useMemo(
+    () => buildWarRoomMatchingInput(streamers),
+    [streamers],
+  );
+  const reviewInput = React.useMemo(
+    () => buildWarRoomReviewInput(projects, streamers),
+    [projects, streamers],
+  );
+  const scriptInput = React.useMemo(
+    () => buildAiScriptOptimizationInput(projects, streamers),
+    [projects, streamers],
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+          gap: 12,
+        }}
+      >
+        <AiActionPanel
+          title="候选简报"
+          hint="基于匹配快照生成可邀约候选解释"
+          buttonLabel={busyKey === "brief" ? "生成中" : "生成 AI Brief"}
+          disabled={Boolean(busyKey)}
+          onClick={() =>
+            runAiAction(
+              "brief",
+              "/api/ai/briefs",
+              {
+                kind: "casting",
+                project: matchingInput.project,
+                candidates: matchingInput.candidates,
+                maxRecommendations: 3,
+              },
+              formatAiBriefResult,
+              "AI brief failed",
+            )
+          }
+        />
+        <AiActionPanel
+          title="项目复盘"
+          hint="读取经营复盘代理输出"
+          buttonLabel={busyKey === "review" ? "复盘中" : "AI 项目复盘"}
+          disabled={Boolean(busyKey)}
+          onClick={() =>
+            runAiAction(
+              "review",
+              "/api/ai/project-reviews",
+              reviewInput,
+              formatAiProjectReviewResult,
+              "AI project review failed",
+            )
+          }
+        />
+        <AiActionPanel
+          title="Copilot 路由"
+          hint="通过 M10 Copilot 统一调度脚本优化"
+          buttonLabel={busyKey === "copilot" ? "运行中" : "运行 Copilot"}
+          disabled={Boolean(busyKey)}
+          onClick={() =>
+            runAiAction(
+              "copilot",
+              "/api/ai/copilot",
+              {
+                intent: "script_optimization",
+                payload: scriptInput,
+              },
+              formatAiCopilotResult,
+              "AI copilot failed",
+            )
+          }
+        />
+        <AiActionPanel
+          title="脚本草稿"
+          hint="生成待人工复核的话术版本"
+          buttonLabel={busyKey === "script" ? "生成中" : "生成脚本草稿"}
+          disabled={Boolean(busyKey)}
+          onClick={() =>
+            runAiAction(
+              "script",
+              "/api/ai/scripts",
+              scriptInput,
+              formatAiScriptResult,
+              "AI script draft failed",
+            )
+          }
+        />
+      </div>
+
+      {message ? (
+        <div
+          aria-live="polite"
+          style={{ fontSize: 12, color: "var(--danger-600)" }}
+        >
+          {message}
+        </div>
+      ) : null}
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+          gap: 12,
+        }}
+      >
+        {[
+          ["brief", "AI Brief"],
+          ["review", "AI 项目复盘"],
+          ["copilot", "Copilot 摘要"],
+          ["script", "脚本草稿"],
+        ].map(([key, title]) => (
+          <div
+            key={key}
+            style={{
+              minHeight: 86,
+              padding: 14,
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "#fff",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 13,
+                fontWeight: 700,
+                color: "var(--ink-900)",
+              }}
+            >
+              <Icon.Sparkles size={14} stroke="var(--violet-600)" />
+              {title}
+            </div>
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 12.5,
+                color: results[key] ? "var(--ink-700)" : "var(--ink-400)",
+                lineHeight: 1.6,
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {results[key] || "等待生成"}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AiActionPanel({ title, hint, buttonLabel, disabled, onClick }) {
+  return (
+    <div
+      style={{
+        padding: 14,
+        border: "1px solid var(--line)",
+        borderRadius: 8,
+        background: "var(--bg-soft)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+      }}
+    >
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-900)" }}>
+          {title}
+        </div>
+        <div
+          style={{
+            marginTop: 4,
+            fontSize: 12,
+            color: "var(--ink-500)",
+            lineHeight: 1.5,
+          }}
+        >
+          {hint}
+        </div>
+      </div>
+      <Button kind="primary" onClick={onClick} disabled={disabled}>
+        {buttonLabel}
+      </Button>
+    </div>
+  );
+}
+
+function buildAiScriptOptimizationInput(
+  projects = PROJECTS,
+  streamers = STREAMERS,
+) {
+  const project = projects[0] ?? WAR_ROOM_FALLBACK_PROJECT;
+  const streamer = streamers[0] ?? WAR_ROOM_FALLBACK_STREAMERS[0];
+
+  return {
+    scriptKey: "opening-hook",
+    version: 1,
+    currentScript: `${project.name} 开场钩子：先说明福利，再引导观众提问。`,
+    diagnosisType: "content_rhythm",
+    feedback: ["强化前三十秒的互动提问。"],
+    replayNotes: ["复盘最近一场直播，保留高转化话术。"],
+    streamerId: streamer?.id,
+    projectId: project?.id,
+  };
+}
+
+function formatAiBriefResult(body) {
+  const advice = body.candidateAdvice?.[0];
+  if (advice) {
+    return `${advice.streamerName} · ${advice.recommendation}`;
+  }
+  const tradeoff = body.tradeoffAdvice;
+  if (tradeoff) {
+    return `${tradeoff.decision || "pricing"} · ${tradeoff.summary || ""}`;
+  }
+  return "AI Brief 已生成";
+}
+
+function formatAiProjectReviewResult(body) {
+  const report = body.report ?? {};
+  const quote = report.nextSuggestedQuoteCents
+    ? ` · 下轮报价 ${(report.nextSuggestedQuoteCents / 100).toLocaleString("zh-CN")} 元`
+    : "";
+  return `${report.projectName || report.projectId || "项目复盘"} · ${
+    report.shouldContinue ? "建议继续" : "需要复核"
+  }${quote}`;
+}
+
+function formatAiCopilotResult(body) {
+  const summary = body.copilotSummary ?? {};
+  return [summary.title, summary.status, summary.nextStep]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function formatAiScriptResult(body) {
+  const draft = body.scriptVersionDraft ?? {};
+  return draft.content || `${draft.scriptKey || "脚本"} v${draft.version || 1}`;
 }
 
 // ——— Supplier tab ————————————————————————
@@ -3879,6 +4179,15 @@ async function postWarRoomJson(url, body, fallbackMessage) {
   return payload;
 }
 
+async function getOpsJson(url, fallbackMessage) {
+  const response = await globalThis.fetch(url, { method: "GET" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || fallbackMessage);
+  }
+  return payload;
+}
+
 function buildWarRoomPricingInput({
   model,
   streamers,
@@ -3996,6 +4305,42 @@ function buildWarRoomReviewInput(projects = PROJECTS, streamers = STREAMERS) {
     suppliers: buildWarRoomMatchingInput(streamers).suppliers,
     evidenceSummary: { green: 8, yellow: 1, red: 0, unknown: 0 },
     targetMarginBps: 3000,
+  };
+}
+
+function buildAutoReviewReportSnapshot(report) {
+  const settlementDuration =
+    report.systemDuration ??
+    report.plannedDuration ??
+    report.settlementDuration ??
+    Math.round((report.duration ?? 0) * 60);
+
+  return {
+    id: report.id,
+    taskId: report.taskId,
+    status: report.status,
+    evidenceLevel: report.evidenceLevel || evidenceLevelFromReport(report),
+    timeSource: report.timeSource || "manual",
+    settlementDuration,
+    screenshotCount: report.screens ?? report.screenshotCount ?? 0,
+    viewers: report.audience ?? report.viewers ?? 0,
+  };
+}
+
+function evidenceLevelFromReport(report) {
+  const text = `${report.note ?? ""} ${report.source ?? ""}`.toLowerCase();
+  if (text.includes("green")) return "green";
+  if (text.includes("yellow")) return "yellow";
+  if (text.includes("red")) return "red";
+  return "unknown";
+}
+
+function buildAutoReviewRuleSnapshot() {
+  return {
+    mode: "shadow",
+    requireSystemTiming: true,
+    minimumEvidenceLevel: "green",
+    maximumDurationDeltaRateBps: 1000,
   };
 }
 
@@ -4623,14 +4968,25 @@ function ProjectInlineFilter({ label, value, onChange, options }) {
   );
 }
 
+function warnBackgroundRefreshFailure(scope, error) {
+  globalThis.console?.warn?.(`${scope} background refresh failed`, error);
+}
+
 // ——— Project detail ———————————————————————
 
 function ProjectDetail({ id, go }) {
   const projects = useOpsProjects();
+  const streamers = useOpsStreamers();
+  const applications = useOpsApplications();
+  const tasks = useOpsTasks();
   const actions = useOpsLiveActions();
   const members = useOpsOrganizationMembers();
   const currentUser = useOpsCurrentUser();
-  const { organizationMembers } = React.useContext(OpsLiveDataContext);
+  const {
+    organizationMembers,
+    streamers: streamerData,
+    applications: applicationData,
+  } = React.useContext(OpsLiveDataContext);
   const p = projects.find((x) => x.id === id) || projects[0] || PROJECTS[0];
   const [tab, setTab] = React.useState("overview");
   const [detailMessage, setDetailMessage] = React.useState("");
@@ -4654,9 +5010,33 @@ function ProjectDetail({ id, go }) {
       !Array.isArray(organizationMembers) &&
       actions.refreshOrganizationMembers
     ) {
-      actions.refreshOrganizationMembers().catch(() => {});
+      actions
+        .refreshOrganizationMembers()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("project detail", error),
+        );
     }
   }, [actions, organizationMembers, settingsOpen]);
+
+  React.useEffect(() => {
+    if (streamerData == null && actions.refreshStreamers) {
+      actions
+        .refreshStreamers()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("project detail", error),
+        );
+    }
+  }, [actions, streamerData]);
+
+  React.useEffect(() => {
+    if (applicationData == null && actions.refreshApplications) {
+      actions
+        .refreshApplications()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("project detail", error),
+        );
+    }
+  }, [actions, applicationData]);
 
   if (!p) {
     return (
@@ -4691,22 +5071,28 @@ function ProjectDetail({ id, go }) {
   const ownerOptions = projectOwnerOptions(members, p, currentUser);
   const donePct =
     Math.round((p.metrics.doneHours / p.metrics.plannedHours) * 100) || 0;
+  const projectApplicationRoster = mergeRosterRows(
+    projectApplicationRosterRows(p, applications, streamers),
+  );
+  const projectRosterCount = Math.max(
+    (p.streamers?.active ?? 0) + (p.streamers?.candidate ?? 0),
+    projectApplicationRoster.length,
+  );
+  const projectTasks = tasks.filter((task) => taskBelongsToProject(task, p));
   const exportVendorDelivery = async () => {
     setDetailSubmitting("delivery");
     setDetailMessage("");
     try {
-      await actions.createGovernedExport?.({
+      const packageRows = await actions.readVendorDeliveryPackage?.(p.id);
+      const result = await actions.createGovernedExport?.({
         kind: "vendor_delivery",
-        rows: [
-          {
-            projectName: p.name,
-            streamerName: `${p.streamers.active} 位已入选主播`,
-            settlementDuration: p.metrics.doneHours,
-            evidenceLevel: `待审录屏 ${p.streamers.pendingReview} 条`,
-          },
-        ],
+        rows: Array.isArray(packageRows) ? packageRows : [],
       });
-      setDetailMessage("厂家交付包已生成");
+      setDetailMessage(
+        result?.filename
+          ? `厂家交付包已生成：${result.filename}`
+          : "厂家交付包已生成",
+      );
     } catch (error) {
       setDetailMessage(error?.message || "厂家交付包导出失败，请稍后重试");
     } finally {
@@ -4737,7 +5123,6 @@ function ProjectDetail({ id, go }) {
       setSettingsError("结束日期不能早于开始日期");
       return;
     }
-
     setSettingsSubmitting(true);
     setSettingsError("");
     setDetailMessage("");
@@ -4745,6 +5130,10 @@ function ProjectDetail({ id, go }) {
       if (!actions.updateProjectBasics) {
         throw new Error("项目设置接口不可用");
       }
+      const shouldPublishFromSettings = isProjectPublishFromSettings(
+        p.status,
+        settingsDraft.status,
+      );
       await actions.updateProjectBasics(p.id, {
         name,
         vendorName: settingsDraft.vendorName.trim(),
@@ -4753,7 +5142,7 @@ function ProjectDetail({ id, go }) {
         supplierName: settingsDraft.supplierName.trim(),
         description: settingsDraft.description.trim(),
         ...(canAssignOwner ? { ownerId: settingsDraft.ownerId || null } : {}),
-        status: settingsDraft.status,
+        status: shouldPublishFromSettings ? undefined : settingsDraft.status,
         startsAt: settingsDraft.startsAt || null,
         endsAt: settingsDraft.endsAt || null,
         openSignup: settingsDraft.openSignup,
@@ -4764,7 +5153,17 @@ function ProjectDetail({ id, go }) {
         publicSummary: settingsDraft.publicSummary.trim(),
         gameDownloadUrl: settingsDraft.gameDownloadUrl.trim(),
       });
-      setDetailMessage("项目设置已更新");
+      if (shouldPublishFromSettings) {
+        if (!actions.publishProject) {
+          throw new Error("项目发布接口不可用");
+        }
+        await actions.publishProject(p.id);
+      }
+      setDetailMessage(
+        shouldPublishFromSettings
+          ? "项目设置已更新，已发布招募"
+          : "项目设置已更新",
+      );
       setSettingsOpen(false);
     } catch (error) {
       setSettingsError(error?.message || "项目设置更新失败，请稍后重试");
@@ -4954,14 +5353,18 @@ function ProjectDetail({ id, go }) {
                 {
                   key: "roster",
                   label: "主播阵容",
-                  count: p.streamers.active + p.streamers.candidate,
+                  count: projectRosterCount,
                 },
                 {
                   key: "screening",
                   label: "录屏审核",
                   count: p.streamers.pendingReview,
                 },
-                { key: "schedule", label: "排班 & 任务" },
+                {
+                  key: "schedule",
+                  label: "排班 & 任务",
+                  count: projectTasks.length,
+                },
                 {
                   key: "reports",
                   label: "报数",
@@ -4976,7 +5379,15 @@ function ProjectDetail({ id, go }) {
           <div style={{ padding: 20 }}>
             {tab === "overview" && <ProjectOverview p={p} />}
             {tab === "roster" && <ProjectRoster p={p} go={go} />}
-            {tab !== "overview" && tab !== "roster" && (
+            {tab === "schedule" && (
+              <ProjectScheduleTasks
+                p={p}
+                tasks={projectTasks}
+                streamers={streamers}
+                go={go}
+              />
+            )}
+            {tab !== "overview" && tab !== "roster" && tab !== "schedule" && (
               <EmptyHint
                 title={tabLabel(tab) + " · 数据视图"}
                 hint="此标签页与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
@@ -5134,6 +5545,10 @@ function projectStatusNextLabels(fromStatus) {
     .map((status) => PROJECT_STATUS[status]?.label)
     .filter(Boolean);
   return nextOptions.length > 0 ? nextOptions.join("、") : "暂无可流转状态";
+}
+
+function isProjectPublishFromSettings(fromStatus, nextStatus) {
+  return fromStatus === "draft" && nextStatus === "recruiting";
 }
 
 function ProjectSettingsStatusPicker({ value, fromStatus, onChange }) {
@@ -5716,6 +6131,86 @@ function tabRoute(k) {
   );
 }
 
+function ProjectScheduleTasks({ p, tasks = [], streamers = [], go }) {
+  const liveCount = tasks.filter((task) => task.status === "live").length;
+  const waitingCount = tasks.filter((task) =>
+    ["pending_live", "pending_report", "pending_review"].includes(task.status),
+  ).length;
+  const anomalyCount = tasks.filter((task) => task.anomaly).length;
+  const plannedHours = tasks.reduce((total, task) => {
+    const plannedMinutes = Number(task.plannedDuration);
+    if (Number.isFinite(plannedMinutes) && plannedMinutes > 0) {
+      return total + plannedMinutes / 60;
+    }
+    const startHour = Number(task.startHour);
+    const endHour = Number(task.endHour);
+    if (Number.isFinite(startHour) && Number.isFinite(endHour)) {
+      return total + Math.max(0, endHour - startHour);
+    }
+    return total;
+  }, 0);
+  const openTasks = () => go("tasks");
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+          gap: 12,
+        }}
+      >
+        <Card padded={true}>
+          <Metric label="项目任务" value={tasks.length} unit="项" />
+        </Card>
+        <Card padded={true}>
+          <Metric label="待执行 / 待处理" value={waitingCount} unit="项" />
+        </Card>
+        <Card padded={true}>
+          <Metric label="正在直播" value={liveCount} unit="项" />
+        </Card>
+        <Card padded={true}>
+          <Metric
+            label="计划时长"
+            value={plannedHours.toFixed(1)}
+            unit="h"
+            delta={anomalyCount ? `${anomalyCount} 个异常` : "无异常"}
+            deltaTone={anomalyCount ? "red" : "green"}
+          />
+        </Card>
+      </div>
+
+      <Card
+        title="项目排班任务明细"
+        extra={
+          <Button size="sm" kind="default" onClick={openTasks}>
+            前往排班与任务
+          </Button>
+        }
+        padded={false}
+      >
+        {tasks.length ? (
+          <TaskList
+            tasks={tasks}
+            projects={[p]}
+            streamers={streamers}
+            onSelectTask={openTasks}
+          />
+        ) : (
+          <div style={{ padding: 20 }}>
+            <EmptyHint
+              title="暂无项目排班任务"
+              hint="从排班与任务创建或批量排班后，会同步展示在这里。"
+              actionLabel="前往排班与任务"
+              onAction={openTasks}
+            />
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 // Project overview content
 function ProjectOverview({ p }) {
   const tasks = useOpsTasks();
@@ -5973,13 +6468,14 @@ function ProjectRoster({ p, go }) {
   const [inviteSubmitting, setInviteSubmitting] = React.useState(false);
   const [inviteError, setInviteError] = React.useState("");
   const [inviteMessage, setInviteMessage] = React.useState("");
+  const [rosterActionError, setRosterActionError] = React.useState("");
+  const [joiningApplicationId, setJoiningApplicationId] = React.useState("");
   const [localInvites, setLocalInvites] = React.useState([]);
-  const applicationRoster = applications
-    .filter((application) => applicationBelongsToProject(application, p))
-    .map((application) =>
-      applicationToRosterRow(application, streamers, "application"),
-    )
-    .filter(Boolean);
+  const applicationRoster = projectApplicationRosterRows(
+    p,
+    applications,
+    streamers,
+  );
   const roster = mergeRosterRows(applicationRoster, localInvites);
   const availableStreamers = streamers.filter(
     (streamer) => !roster.some((row) => row.id === streamer.id),
@@ -6003,13 +6499,21 @@ function ProjectRoster({ p, go }) {
 
   React.useEffect(() => {
     if (streamerData == null && actions.refreshStreamers) {
-      actions.refreshStreamers().catch(() => {});
+      actions
+        .refreshStreamers()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("project roster", error),
+        );
     }
   }, [actions, streamerData]);
 
   React.useEffect(() => {
     if (applicationData == null && actions.refreshApplications) {
-      actions.refreshApplications().catch(() => {});
+      actions
+        .refreshApplications()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("project roster", error),
+        );
     }
   }, [actions, applicationData]);
 
@@ -6036,6 +6540,21 @@ function ProjectRoster({ p, go }) {
       setInviteError(error?.message || "邀请主播失败，请稍后重试");
     } finally {
       setInviteSubmitting(false);
+    }
+  };
+  const confirmRosterJoin = async (row) => {
+    if (!row.applicationId || !actions.confirmApplicationJoin) return;
+
+    setJoiningApplicationId(row.applicationId);
+    setRosterActionError("");
+    setInviteMessage("");
+    try {
+      await actions.confirmApplicationJoin(row.applicationId);
+      setInviteMessage(`已确认 ${row.alias} 加入项目`);
+    } catch (error) {
+      setRosterActionError(error?.message || "确认加入失败，请稍后重试");
+    } finally {
+      setJoiningApplicationId("");
     }
   };
 
@@ -6167,6 +6686,23 @@ function ProjectRoster({ p, go }) {
         </div>
       ) : null}
 
+      {rosterActionError ? (
+        <div
+          aria-live="polite"
+          style={{
+            padding: "8px 12px",
+            border: "1px solid #FAD1D1",
+            borderRadius: 8,
+            background: "#FEF2F2",
+            color: "var(--danger-600)",
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          {rosterActionError}
+        </div>
+      ) : null}
+
       <DataTable
         columns={[
           {
@@ -6247,6 +6783,22 @@ function ProjectRoster({ p, go }) {
                   justifyContent: "flex-end",
                 }}
               >
+                {isConfirmableRosterApplication(r.applicationStatus) &&
+                r.applicationId ? (
+                  <Button
+                    size="sm"
+                    kind="primary"
+                    disabled={joiningApplicationId === r.applicationId}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      confirmRosterJoin(r);
+                    }}
+                  >
+                    {joiningApplicationId === r.applicationId
+                      ? "确认中"
+                      : "确认加入"}
+                  </Button>
+                ) : null}
                 <Button
                   size="sm"
                   kind="default"
@@ -6286,6 +6838,16 @@ function ProjectRoster({ p, go }) {
   );
 }
 
+function projectApplicationRosterRows(project, applications, streamers) {
+  if (!project) return [];
+  return applications
+    .filter((application) => applicationBelongsToProject(application, project))
+    .map((application) =>
+      applicationToRosterRow(application, streamers, "application"),
+    )
+    .filter(Boolean);
+}
+
 function applicationBelongsToProject(application, project) {
   const applicationProject = application.project || {};
   const applicationKeys = [
@@ -6308,6 +6870,8 @@ function applicationToRosterRow(application, streamers, rosterSource) {
   const projectStatus = applicationRosterStatus(application.status);
   return {
     id: streamerId,
+    applicationId: application.id,
+    applicationStatus: application.status,
     alias: card?.alias || streamer.displayName || streamer.name || streamerId,
     real: card?.real || streamer.realName || streamer.displayName || "未填写",
     source: card?.source || "项目邀约",
@@ -6343,6 +6907,10 @@ function applicationRosterStatus(status) {
     rejected_join: { label: "已拒绝", tone: "red" },
   };
   return map[status] || { label: "邀约中", tone: "blue" };
+}
+
+function isConfirmableRosterApplication(status) {
+  return status === "invited" || status === "recording_approved";
 }
 
 function GanttPreview({ tasks = [] }) {
@@ -6474,7 +7042,7 @@ function taskGanttRows(tasks) {
   tasks.forEach((task) => {
     const key = task.streamerId || task.streamerName || "unassigned";
     const current = grouped.get(key) || {
-      name: task.streamerName || displayRecordId(task.streamerId, "未配置主播"),
+      name: displayTaskStreamerName(task),
       bars: [],
     };
     current.bars.push([
@@ -6546,6 +7114,16 @@ function splitDraftList(value) {
     .filter(Boolean);
 }
 
+function draftNumber(value) {
+  const trimmed = String(value || "").trim();
+  return trimmed ? Number(trimmed) : 0;
+}
+
+function draftPercentToBps(value) {
+  const trimmed = String(value || "").trim();
+  return trimmed ? Math.round(Number(trimmed) * 100) : 0;
+}
+
 function buildStreamerSubaccountCandidates(members) {
   if (!Array.isArray(members)) return [];
 
@@ -6607,6 +7185,9 @@ function ScreenStreamers({ go, initialActiveId }) {
     platforms: "",
     styles: "",
     defaultSettlementMethod: "cpt",
+    defaultHourlyRate: "",
+    defaultBaseSalary: "",
+    defaultCpsRatePercent: "",
     userId: "",
   };
   const [active, setActive] = React.useState(
@@ -6688,7 +7269,11 @@ function ScreenStreamers({ go, initialActiveId }) {
   };
   React.useEffect(() => {
     if (streamerData == null && actions.refreshStreamers) {
-      actions.refreshStreamers().catch(() => {});
+      actions
+        .refreshStreamers()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("organization members", error),
+        );
     }
   }, [actions, streamerData]);
   const openDraftForm = () => {
@@ -6724,6 +7309,9 @@ function ScreenStreamers({ go, initialActiveId }) {
         platforms: splitDraftList(draft.platforms),
         styles: splitDraftList(draft.styles),
         defaultSettlementMethod: draft.defaultSettlementMethod,
+        defaultHourlyRate: draftNumber(draft.defaultHourlyRate),
+        defaultBaseSalary: draftNumber(draft.defaultBaseSalary),
+        defaultCpsRateBps: draftPercentToBps(draft.defaultCpsRatePercent),
         userId: draft.userId.trim(),
       });
       setDraftOpen(false);
@@ -7032,6 +7620,53 @@ function ScreenStreamers({ go, initialActiveId }) {
                   <option value="manual">手动结算</option>
                 </select>
               </label>
+              {["cpt", "base_salary_cpt"].includes(
+                draft.defaultSettlementMethod,
+              ) ? (
+                <label style={draftLabelStyle}>
+                  CPT 小时单价
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={draft.defaultHourlyRate}
+                    onChange={updateDraft("defaultHourlyRate")}
+                    placeholder="80"
+                    style={draftFieldStyle}
+                  />
+                </label>
+              ) : null}
+              {draft.defaultSettlementMethod === "cps" ? (
+                <label style={draftLabelStyle}>
+                  CPS 分成比例
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    value={draft.defaultCpsRatePercent}
+                    onChange={updateDraft("defaultCpsRatePercent")}
+                    placeholder="15"
+                    style={draftFieldStyle}
+                  />
+                </label>
+              ) : null}
+              {["base_salary", "base_salary_cpt"].includes(
+                draft.defaultSettlementMethod,
+              ) ? (
+                <label style={draftLabelStyle}>
+                  底薪
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={draft.defaultBaseSalary}
+                    onChange={updateDraft("defaultBaseSalary")}
+                    placeholder="6000"
+                    style={draftFieldStyle}
+                  />
+                </label>
+              ) : null}
               <div style={{ position: "relative", minWidth: 0 }}>
                 <label style={draftLabelStyle}>
                   绑定主播子账号
@@ -7650,6 +8285,25 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
           <KV label="默认结算">
             <Badge tone="blue">{s.defaultRule}</Badge>
           </KV>
+          {s.settlement ? (
+            <>
+              <KV label="CPT 单价">
+                {s.settlement.cptHourlyRate > 0
+                  ? `¥${s.settlement.cptHourlyRate}/h`
+                  : "未配置"}
+              </KV>
+              <KV label="CPS 分成">
+                {s.settlement.cpsRateBps > 0
+                  ? `${s.settlement.cpsRateBps / 100}%`
+                  : "未配置"}
+              </KV>
+              <KV label="底薪">
+                {s.settlement.baseSalary > 0
+                  ? `¥${s.settlement.baseSalary}`
+                  : "未配置"}
+              </KV>
+            </>
+          ) : null}
         </div>
       </Card>
 
@@ -8083,15 +8737,8 @@ function ScreenReports({ go }) {
   const [activeId, setActiveId] = React.useState(reports[0]?.id ?? null);
   const [exportMessage, setExportMessage] = React.useState("");
   const [exportSubmitting, setExportSubmitting] = React.useState(false);
-
-  React.useEffect(() => {
-    if (
-      reports.length > 0 &&
-      !reports.some((report) => report.id === activeId)
-    ) {
-      setActiveId(reports[0].id);
-    }
-  }, [activeId, reports]);
+  const [batchSubmitting, setBatchSubmitting] = React.useState(false);
+  const [autoReviewSubmitting, setAutoReviewSubmitting] = React.useState("");
 
   const counts = {
     all: reports.length,
@@ -8100,8 +8747,27 @@ function ScreenReports({ go }) {
     approved: reports.filter((r) => r.status === "approved").length,
     rejected: reports.filter((r) => r.status === "rejected").length,
   };
-  const filtered =
-    filter === "all" ? reports : reports.filter((r) => r.status === filter);
+  const filtered = React.useMemo(
+    () =>
+      filter === "all" ? reports : reports.filter((r) => r.status === filter),
+    [filter, reports],
+  );
+
+  React.useEffect(() => {
+    if (filtered.length === 0) {
+      if (activeId !== null) {
+        setActiveId(null);
+      }
+      return;
+    }
+
+    if (!filtered.some((report) => report.id === activeId)) {
+      setActiveId(filtered[0].id);
+    }
+  }, [activeId, filtered]);
+
+  const activeReport =
+    filtered.find((report) => report.id === activeId) || filtered[0] || null;
   const exportReportDetails = async () => {
     setExportSubmitting(true);
     setExportMessage("");
@@ -8121,6 +8787,72 @@ function ScreenReports({ go }) {
       setExportSubmitting(false);
     }
   };
+  const batchApproveReports = async () => {
+    if (batchSubmitting) return;
+    const targetReports = filtered.filter(
+      (report) => report.status === "pending_review",
+    );
+    if (targetReports.length === 0) {
+      setExportMessage("当前筛选下没有可批量通过的待审核报数。");
+      return;
+    }
+
+    setBatchSubmitting(true);
+    setExportMessage("");
+    try {
+      for (const report of targetReports) {
+        await actions.reviewReport?.(report.id, "approve");
+      }
+      setExportMessage(`批量审核已通过 ${targetReports.length} 条`);
+    } catch (error) {
+      setExportMessage(error?.message || "批量审核失败，请稍后重试");
+    } finally {
+      setBatchSubmitting(false);
+    }
+  };
+  const evaluateAutoReview = async () => {
+    if (!activeReport || autoReviewSubmitting) return;
+    setAutoReviewSubmitting("evaluate");
+    setExportMessage("");
+    try {
+      const body = await postWarRoomJson(
+        "/api/auto-review/evaluate",
+        {
+          report: buildAutoReviewReportSnapshot(activeReport),
+          rule: buildAutoReviewRuleSnapshot(),
+        },
+        "auto review evaluation failed",
+      );
+      const result = body.result ?? {};
+      setExportMessage(
+        `自动审核评估完成：${result.decision || "已返回结果"} · ${result.mode || "shadow"}`,
+      );
+    } catch (error) {
+      setExportMessage(error?.message || "自动审核评估失败，请稍后重试");
+    } finally {
+      setAutoReviewSubmitting("");
+    }
+  };
+  const readAutoReviewGate = async () => {
+    if (autoReviewSubmitting) return;
+    setAutoReviewSubmitting("gate");
+    setExportMessage("");
+    try {
+      const body = await getOpsJson(
+        "/api/auto-review/rollout-metrics?targetMode=active&explicitActiveRequest=false",
+        "auto review rollout metrics failed",
+      );
+      const gate = body.result?.gate ?? {};
+      const summary = body.result?.metrics?.summary ?? {};
+      setExportMessage(
+        `审核门槛：${gate.effectiveMode || gate.targetMode || "shadow"} · shadow ${summary.shadowSampleCount ?? 0} · audit ${summary.auditSampleCount ?? 0}`,
+      );
+    } catch (error) {
+      setExportMessage(error?.message || "审核门槛读取失败，请稍后重试");
+    } finally {
+      setAutoReviewSubmitting("");
+    }
+  };
 
   return (
     <>
@@ -8138,11 +8870,28 @@ function ScreenReports({ go }) {
               {exportSubmitting ? "导出中" : "导出报数明细"}
             </Button>
             <Button
+              kind="default"
+              icon={<Icon.Sparkles size={14} />}
+              onClick={evaluateAutoReview}
+              disabled={!activeReport || Boolean(autoReviewSubmitting)}
+            >
+              {autoReviewSubmitting === "evaluate" ? "评估中" : "自动审核评估"}
+            </Button>
+            <Button
+              kind="default"
+              icon={<Icon.Audit size={14} />}
+              onClick={readAutoReviewGate}
+              disabled={Boolean(autoReviewSubmitting)}
+            >
+              {autoReviewSubmitting === "gate" ? "读取中" : "审核门槛"}
+            </Button>
+            <Button
               kind="primary"
               icon={<Icon.Check size={14} stroke="#fff" />}
-              onClick={() => setExportMessage("批量审核后台暂未接入")}
+              onClick={batchApproveReports}
+              disabled={batchSubmitting}
             >
-              批量审核通过
+              {batchSubmitting ? "批量审核中" : "批量审核通过"}
             </Button>
           </>
         }
@@ -8328,7 +9077,7 @@ function ScreenReports({ go }) {
         </Card>
 
         {/* Detail */}
-        <ReportDetail id={activeId} reports={reports} />
+        <ReportDetail id={activeId} reports={filtered} />
       </div>
     </>
   );
@@ -8337,7 +9086,7 @@ function ScreenReports({ go }) {
 function ReportDetail({ id, reports }) {
   const actions = useOpsLiveActions();
   const [busyDecision, setBusyDecision] = React.useState(null);
-  const r = reports.find((x) => x.id === id) || reports[0] || REPORTS[0];
+  const r = reports.find((x) => x.id === id) || reports[0] || null;
   if (!r) {
     return (
       <div
@@ -8362,9 +9111,10 @@ function ReportDetail({ id, reports }) {
   const s = STREAMERS.find((s) => s.alias === r.streamer);
   const p = PROJECTS.find((p) => p.id === r.project);
   const projectName = p?.name || r.project;
+  const isReviewable = r.status === "pending_review";
 
   const review = async (decision) => {
-    if (!actions.reviewReport) return;
+    if (!actions.reviewReport || !isReviewable) return;
     setBusyDecision(decision);
     try {
       await actions.reviewReport(r.id, decision);
@@ -8596,57 +9346,76 @@ function ReportDetail({ id, reports }) {
           </KV>
         </div>
 
-        {/* Action bar */}
-        <div
-          style={{
-            padding: 12,
-            borderTop: "1px solid var(--line)",
-            background: "var(--bg-soft)",
-            display: "flex",
-            gap: 8,
-          }}
-        >
-          <Button
-            kind="danger"
-            icon={<Icon.X size={14} />}
-            disabled={Boolean(busyDecision)}
-            onClick={() => review("reject")}
-          >
-            {busyDecision === "reject" ? "处理中…" : "驳回"}
-          </Button>
-          <Button
-            kind="default"
-            disabled={Boolean(busyDecision)}
-            onClick={() => review("need_more")}
-          >
-            {busyDecision === "need_more" ? "处理中…" : "需补充截图"}
-          </Button>
-          <div style={{ flex: 1 }} />
-          <label
+        {isReviewable ? (
+          <div
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              fontSize: 12,
-              color: "var(--ink-500)",
+              padding: 12,
+              borderTop: "1px solid var(--line)",
+              background: "var(--bg-soft)",
+              display: "flex",
+              gap: 8,
             }}
           >
-            <input
-              type="checkbox"
-              defaultChecked
-              style={{ accentColor: "var(--blue-600)" }}
-            />{" "}
-            计入任务结果
-          </label>
-          <Button
-            kind="primary"
-            icon={<Icon.Check size={14} stroke="#fff" />}
-            disabled={Boolean(busyDecision)}
-            onClick={() => review("approve")}
+            <Button
+              kind="danger"
+              icon={<Icon.X size={14} />}
+              disabled={Boolean(busyDecision)}
+              onClick={() => review("reject")}
+            >
+              {busyDecision === "reject" ? "处理中…" : "驳回"}
+            </Button>
+            <Button
+              kind="default"
+              disabled={Boolean(busyDecision)}
+              onClick={() => review("need_more")}
+            >
+              {busyDecision === "need_more" ? "处理中…" : "需补充截图"}
+            </Button>
+            <div style={{ flex: 1 }} />
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                color: "var(--ink-500)",
+              }}
+            >
+              <input
+                type="checkbox"
+                defaultChecked
+                style={{ accentColor: "var(--blue-600)" }}
+              />{" "}
+              计入任务结果
+            </label>
+            <Button
+              kind="primary"
+              icon={<Icon.Check size={14} stroke="#fff" />}
+              disabled={Boolean(busyDecision)}
+              onClick={() => review("approve")}
+            >
+              {busyDecision === "approve" ? "处理中…" : "审核通过"}
+            </Button>
+          </div>
+        ) : (
+          <div
+            style={{
+              padding: 12,
+              borderTop: "1px solid var(--line)",
+              background: "var(--bg-soft)",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: "var(--ink-500)",
+              fontSize: 12,
+            }}
           >
-            {busyDecision === "approve" ? "处理中…" : "审核通过"}
-          </Button>
-        </div>
+            <Badge tone={REPORT_STATUS[r.status].tone}>
+              {REPORT_STATUS[r.status].label}
+            </Badge>
+            该报数已完成当前审核流转。
+          </div>
+        )}
       </Card>
     </div>
   );
@@ -8788,11 +9557,111 @@ function ShotMetric({ label, value }) {
 function ScreenAdmission() {
   const applications = useOpsApplications();
   const actions = useOpsLiveActions();
+  const [projectBoards, setProjectBoards] = React.useState(null);
+  const [selectedProjectId, setSelectedProjectId] = React.useState("");
+  const [admissionMessage, setAdmissionMessage] = React.useState("");
+  const [busyAction, setBusyAction] = React.useState("");
   const review = async (applicationId, decision) => {
     await actions.reviewApplicationRecording?.(applicationId, {
       decision,
       note: "经营端选播准入审核",
     });
+  };
+  const boards = projectBoards ?? buildAdmissionProjectBoards(applications);
+  const selectedBoard =
+    boards.find((board) => board.project.id === selectedProjectId) ??
+    boards[0] ??
+    null;
+  const selectedApplications = selectedBoard
+    ? applications.filter(
+        (application) =>
+          admissionProjectId(application) === selectedBoard.project.id,
+      )
+    : [];
+
+  React.useEffect(() => {
+    let active = true;
+    if (!actions.refreshAdmissionProjectBoards) {
+      return () => {
+        active = false;
+      };
+    }
+    actions
+      .refreshAdmissionProjectBoards()
+      .then((projects) => {
+        if (!active || !Array.isArray(projects)) return;
+        setProjectBoards(projects);
+        setSelectedProjectId(
+          (current) => current || projects[0]?.project?.id || "",
+        );
+      })
+      .catch((error) =>
+        warnBackgroundRefreshFailure("admission project board", error),
+      );
+    return () => {
+      active = false;
+    };
+  }, [actions]);
+
+  const viewProject = (board) => {
+    setSelectedProjectId(board.project.id);
+    setAdmissionMessage("");
+  };
+
+  const exportAdmissionRecordings = async (board) => {
+    if (!actions.exportAdmissionRecordings) {
+      setAdmissionMessage("录屏表导出后台暂未接入。");
+      return;
+    }
+    setBusyAction(`export:${board.project.id}`);
+    setAdmissionMessage("");
+    try {
+      const result = await actions.exportAdmissionRecordings(board.project.id);
+      setAdmissionMessage(
+        result?.filename
+          ? `录屏表导出已生成：${result.filename}`
+          : "录屏表导出已生成",
+      );
+    } catch (error) {
+      setAdmissionMessage(error?.message || "录屏表导出失败，请稍后重试");
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const createShareBoard = async (board) => {
+    if (!actions.createAdmissionShareBoard) {
+      setAdmissionMessage("分享链接后台暂未接入。");
+      return;
+    }
+    const applicationIds = applications
+      .filter(
+        (application) => admissionProjectId(application) === board.project.id,
+      )
+      .map((application) => application.id)
+      .filter(Boolean);
+    if (applicationIds.length === 0) {
+      setAdmissionMessage("当前项目没有可分享的报名记录。");
+      return;
+    }
+    setBusyAction(`share:${board.project.id}`);
+    setAdmissionMessage("");
+    try {
+      const result = await actions.createAdmissionShareBoard(board.project.id, {
+        title: `${board.project.name || board.project.code || "项目"} 录屏复核`,
+        applicationIds,
+        allowVendorSubmit: true,
+      });
+      setAdmissionMessage(
+        result?.shareUrl
+          ? `分享链接已生成：${result.shareUrl}`
+          : "分享链接已生成",
+      );
+    } catch (error) {
+      setAdmissionMessage(error?.message || "分享链接创建失败，请稍后重试");
+    } finally {
+      setBusyAction("");
+    }
   };
 
   return (
@@ -8802,7 +9671,7 @@ function ScreenAdmission() {
         subtitle="主播报名 → 试播录屏 → 运营审核 → 二次确认加入项目"
       />
       <div style={{ padding: 20 }}>
-        <Card padded={false}>
+        <Card title="项目准入板" padded={false}>
           <div
             style={{
               display: "flex",
@@ -8813,99 +9682,91 @@ function ScreenAdmission() {
             }}
           >
             <SearchInput placeholder="项目 / 主播 / 报名编号" width={260} />
-            <Badge tone="blue">{applications.length} 条准入记录</Badge>
+            <Badge tone="blue">{boards.length} 个项目</Badge>
+            <Badge tone="violet">{applications.length} 条准入记录</Badge>
           </div>
           <DataTable
-            rows={applications}
+            rows={boards}
             columns={[
               {
-                title: "报名编号",
-                render: (r) => (
-                  <span className="mono" style={{ fontSize: 12 }}>
-                    {displayRecordId(r.id, "报名记录")}
-                  </span>
-                ),
-              },
-              {
                 title: "项目",
-                render: (r) => (
+                render: (board) => (
                   <div>
-                    <div style={{ fontWeight: 600 }}>{r.project?.name}</div>
+                    <div style={{ fontWeight: 600 }}>{board.project.name}</div>
                     <div
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {r.project?.code}
+                      {board.project.code || displayRecordId(board.project.id)}
                     </div>
                   </div>
                 ),
               },
               {
-                title: "主播",
-                render: (r) => (
-                  <div
-                    style={{ display: "flex", alignItems: "center", gap: 8 }}
-                  >
-                    <Avatar name={r.streamer?.displayName} size={24} />
-                    <span>{r.streamer?.displayName}</span>
-                  </div>
-                ),
-              },
-              {
-                title: "录屏",
-                render: (r) => (
-                  <div>
-                    <Badge tone={r.latestRecording ? "violet" : "amber"}>
-                      {r.latestRecording ? r.latestRecording.status : "待上传"}
+                title: "MCN 进度",
+                render: (board) => (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <Badge tone="blue">
+                      录屏 {board.counts.recordingCount}/
+                      {board.counts.totalApplications}
                     </Badge>
-                    <div
-                      className="mono"
-                      style={{
-                        fontSize: 11,
-                        color: "var(--ink-400)",
-                        marginTop: 4,
-                      }}
-                    >
-                      {displayRecordId(r.latestRecording?.id, "暂无录屏")}
-                    </div>
+                    <Badge tone="amber">
+                      待审 {board.counts.mcnPendingReview}
+                    </Badge>
+                    <Badge tone="teal">
+                      待确认 {board.counts.pendingFinalConfirm}
+                    </Badge>
                   </div>
                 ),
               },
               {
-                title: "状态",
-                render: (r) => <Badge tone="neutral">{r.status}</Badge>,
+                title: "厂家反馈",
+                render: (board) => (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <Badge tone="teal">
+                      厂家已选 {board.counts.vendorSelected}
+                    </Badge>
+                    <Badge tone="amber">备选 {board.counts.vendorBackup}</Badge>
+                    <Badge tone="red">拒绝 {board.counts.vendorRejected}</Badge>
+                  </div>
+                ),
+              },
+              {
+                title: "分享状态",
+                render: (board) => (
+                  <Badge
+                    tone={board.share.status === "active" ? "green" : "neutral"}
+                  >
+                    {admissionShareStatusLabel(board.share.status)}
+                  </Badge>
+                ),
               },
               {
                 title: "操作",
-                render: (r) => (
+                render: (board) => (
                   <div style={{ display: "flex", gap: 6 }}>
                     <Button
                       size="sm"
                       kind="default"
-                      onClick={() => review(r.id, "needs_changes")}
+                      onClick={() => viewProject(board)}
                     >
-                      需补充
+                      查看录屏
                     </Button>
                     <Button
                       size="sm"
                       kind="default"
-                      onClick={() => review(r.id, "rejected")}
+                      onClick={() => exportAdmissionRecordings(board)}
+                      disabled={busyAction === `export:${board.project.id}`}
                     >
-                      驳回
+                      导出录屏表
                     </Button>
                     <Button
                       size="sm"
                       kind="primary"
-                      onClick={() => review(r.id, "approved")}
+                      onClick={() => createShareBoard(board)}
+                      disabled={busyAction === `share:${board.project.id}`}
                     >
-                      通过
-                    </Button>
-                    <Button
-                      size="sm"
-                      kind="default"
-                      onClick={() => actions.confirmApplicationJoin?.(r.id)}
-                    >
-                      二次确认
+                      创建分享链接
                     </Button>
                   </div>
                 ),
@@ -8913,9 +9774,275 @@ function ScreenAdmission() {
             ]}
           />
         </Card>
+        {admissionMessage ? (
+          <div
+            aria-live="polite"
+            style={{
+              marginTop: 12,
+              fontSize: 12,
+              color: admissionMessage.includes("失败")
+                ? "var(--danger-600)"
+                : "var(--ink-600)",
+            }}
+          >
+            {admissionMessage}
+          </div>
+        ) : null}
+        {selectedBoard ? (
+          <Card
+            title={`${selectedBoard.project.name || "项目"} · 录屏明细`}
+            padded={false}
+            style={{ marginTop: 16 }}
+          >
+            <DataTable
+              rows={selectedApplications}
+              columns={[
+                {
+                  title: "报名编号",
+                  render: (r) => (
+                    <span className="mono" style={{ fontSize: 12 }}>
+                      {displayRecordId(r.id, "报名记录")}
+                    </span>
+                  ),
+                },
+                {
+                  title: "主播",
+                  render: (r) => (
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 8 }}
+                    >
+                      <Avatar name={r.streamer?.displayName} size={24} />
+                      <div>
+                        <div>{r.streamer?.displayName}</div>
+                        <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                          {admissionAccountLabel(r)}
+                        </div>
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "录屏",
+                  render: (r) => (
+                    <div>
+                      <Badge tone={r.latestRecording ? "violet" : "amber"}>
+                        {r.latestRecording
+                          ? r.latestRecording.status
+                          : "待上传"}
+                      </Badge>
+                      <div
+                        className="mono"
+                        style={{
+                          fontSize: 11,
+                          color: "var(--ink-400)",
+                          marginTop: 4,
+                        }}
+                      >
+                        {displayRecordId(r.latestRecording?.id, "暂无录屏")}
+                        {r.latestRecording?.version
+                          ? ` · v${r.latestRecording.version}`
+                          : ""}
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "厂家决策",
+                  render: (r) => (
+                    <div>
+                      <Badge
+                        tone={vendorDecisionTone(r.vendorReview?.decision)}
+                      >
+                        {vendorDecisionLabel(r.vendorReview?.decision)}
+                      </Badge>
+                      {r.vendorReview?.remark ? (
+                        <div
+                          style={{
+                            marginTop: 4,
+                            fontSize: 11,
+                            color: "var(--ink-500)",
+                          }}
+                        >
+                          {r.vendorReview.remark}
+                        </div>
+                      ) : null}
+                    </div>
+                  ),
+                },
+                {
+                  title: "状态",
+                  render: (r) => <Badge tone="neutral">{r.status}</Badge>,
+                },
+                {
+                  title: "操作",
+                  render: (r) => (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <Button
+                        size="sm"
+                        kind="default"
+                        onClick={() => review(r.id, "needs_changes")}
+                      >
+                        需补充
+                      </Button>
+                      <Button
+                        size="sm"
+                        kind="default"
+                        onClick={() => review(r.id, "rejected")}
+                      >
+                        驳回
+                      </Button>
+                      <Button
+                        size="sm"
+                        kind="primary"
+                        onClick={() => review(r.id, "approved")}
+                      >
+                        通过
+                      </Button>
+                      <Button
+                        size="sm"
+                        kind="default"
+                        onClick={() => actions.confirmApplicationJoin?.(r.id)}
+                      >
+                        二次确认
+                      </Button>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          </Card>
+        ) : null}
       </div>
     </>
   );
+}
+
+function buildAdmissionProjectBoards(applications = []) {
+  const boards = new Map();
+  for (const application of applications) {
+    const project = admissionProject(application);
+    const current = boards.get(project.id) ?? {
+      project,
+      counts: {
+        totalApplications: 0,
+        recordingCount: 0,
+        mcnPendingReview: 0,
+        mcnApproved: 0,
+        mcnRejected: 0,
+        needsChanges: 0,
+        vendorPending: 0,
+        vendorSelected: 0,
+        vendorBackup: 0,
+        vendorRejected: 0,
+        vendorNeedsChanges: 0,
+        pendingFinalConfirm: 0,
+      },
+      share: {
+        id: null,
+        status: "unshared",
+        expiresAt: null,
+        lastSubmittedAt: null,
+      },
+      lastActivityAt: application.submittedAt ?? null,
+    };
+    incrementAdmissionCounts(current, application);
+    boards.set(project.id, current);
+  }
+  return [...boards.values()];
+}
+
+function incrementAdmissionCounts(board, application) {
+  const status = application.status;
+  const recordingStatus = application.latestRecording?.status;
+  const decision = application.vendorReview?.decision || "pending";
+  board.counts.totalApplications += 1;
+  if (application.latestRecording) board.counts.recordingCount += 1;
+  if (
+    [
+      "recording_reviewing",
+      "pending_recording_review",
+      "pending_review",
+    ].includes(status) ||
+    ["submitted", "reviewing", "pending_review"].includes(recordingStatus)
+  ) {
+    board.counts.mcnPendingReview += 1;
+  }
+  if (status === "recording_approved" || status === "joined") {
+    board.counts.mcnApproved += 1;
+  }
+  if (status === "recording_rejected" || recordingStatus === "rejected") {
+    board.counts.mcnRejected += 1;
+  }
+  if (status === "recording_required" || recordingStatus === "needs_changes") {
+    board.counts.needsChanges += 1;
+  }
+  if (status === "recording_approved") {
+    board.counts.pendingFinalConfirm += 1;
+  }
+  if (decision === "pending") board.counts.vendorPending += 1;
+  if (decision === "selected") board.counts.vendorSelected += 1;
+  if (decision === "backup") board.counts.vendorBackup += 1;
+  if (decision === "rejected") board.counts.vendorRejected += 1;
+  if (decision === "needs_changes") board.counts.vendorNeedsChanges += 1;
+}
+
+function admissionProject(application) {
+  const project = application.project ?? {};
+  return {
+    id: admissionProjectId(application),
+    code: project.code || application.projectCode || "",
+    name:
+      project.name ||
+      application.projectName ||
+      displayRecordId(admissionProjectId(application), "项目记录"),
+    status: project.status || application.projectStatus || "",
+    vendor: project.vendor || application.vendor || "",
+    product: project.product || application.product || "",
+  };
+}
+
+function admissionProjectId(application) {
+  return application.project?.id || application.projectId || "unknown-project";
+}
+
+function admissionAccountLabel(application) {
+  return (
+    application.streamer?.accountLabel ||
+    application.streamer?.account ||
+    application.streamer?.platformAccount ||
+    "未配置账号"
+  );
+}
+
+function admissionShareStatusLabel(status) {
+  const labels = {
+    unshared: "未分享",
+    active: "已分享",
+    expired: "已过期",
+    revoked: "已撤销",
+  };
+  return labels[status] || status;
+}
+
+function vendorDecisionLabel(decision) {
+  const labels = {
+    pending: "待厂家反馈",
+    selected: "厂家已选",
+    backup: "厂家备选",
+    rejected: "厂家拒绝",
+    needs_changes: "需修改",
+  };
+  return labels[decision || "pending"] || decision;
+}
+
+function vendorDecisionTone(decision) {
+  const tones = {
+    selected: "teal",
+    backup: "amber",
+    rejected: "red",
+    needs_changes: "violet",
+  };
+  return tones[decision] || "neutral";
 }
 
 function askText(label, defaultValue = "") {
@@ -8956,15 +10083,17 @@ function toReferenceReportFromApi(report) {
     id: report.id,
     date: String(report.submittedAt || "").slice(0, 10),
     streamer: report.streamerName || "Unknown streamer",
-    streamerId: report.streamerName || "Unknown streamer",
+    streamerId: report.streamerId || report.streamerName || "Unknown streamer",
     project: report.projectName || "Unknown project",
-    taskId: report.taskTitle || "Unknown task",
+    taskId: report.taskId || report.taskTitle || "Unknown task",
     duration: Math.round(((report.settlementDuration ?? 0) / 60) * 10) / 10,
     audience: report.viewers ?? 0,
     status:
-      report.status === "need_more"
-        ? "need_supply"
-        : report.status || "pending_review",
+      report.status === "pending_adjudication"
+        ? "pending_review"
+        : report.status === "need_more"
+          ? "need_supply"
+          : report.status || "pending_review",
     screens: 1,
     source: report.timeSource === "claimed" ? "manual" : "OCR",
     note: `${report.timeSource ?? "unknown"} · ${report.evidenceLevel ?? "unknown"}`,
@@ -10151,9 +11280,13 @@ function ScreenTasks({ go }) {
   const tasks = useOpsTasks();
   const projects = useOpsProjects();
   const streamers = useOpsStreamers();
+  const applications = useOpsApplications();
   const actions = useOpsLiveActions();
-  const { projects: projectData, streamers: streamerData } =
-    React.useContext(OpsLiveDataContext);
+  const {
+    projects: projectData,
+    streamers: streamerData,
+    applications: applicationData,
+  } = React.useContext(OpsLiveDataContext);
   const [view, setView] = React.useState("board");
   const [project, setProject] = React.useState("all");
   const [streamerFilter, setStreamerFilter] = React.useState("all");
@@ -10196,30 +11329,49 @@ function ScreenTasks({ go }) {
 
   React.useEffect(() => {
     if (projectData == null && actions.refreshProjects) {
-      actions.refreshProjects().catch(() => {});
+      actions
+        .refreshProjects()
+        .catch((error) => warnBackgroundRefreshFailure("tasks", error));
     }
   }, [actions, projectData]);
 
   React.useEffect(() => {
     if (streamerData == null && actions.refreshStreamers) {
-      actions.refreshStreamers().catch(() => {});
+      actions
+        .refreshStreamers()
+        .catch((error) => warnBackgroundRefreshFailure("tasks", error));
     }
   }, [actions, streamerData]);
 
   React.useEffect(() => {
-    setBatchDraft((draft) => ({
-      ...draft,
-      projectId: draft.projectId || projects[0]?.id || "",
-      streamerIds:
+    setBatchDraft((draft) => {
+      const nextProjectId = draft.projectId || projects[0]?.id || "";
+      const nextStreamerIds =
         draft.streamerIds ||
-        joinedStreamersForProject(
-          draft.projectId || projects[0]?.id || "",
-          streamers,
-        )
+        joinedStreamersForProject(nextProjectId, streamers, applications)
           .map((streamer) => streamer.id)
-          .join(","),
-    }));
-  }, [projects, streamers]);
+          .join(",");
+      if (
+        draft.projectId === nextProjectId &&
+        draft.streamerIds === nextStreamerIds
+      ) {
+        return draft;
+      }
+      return {
+        ...draft,
+        projectId: nextProjectId,
+        streamerIds: nextStreamerIds,
+      };
+    });
+  }, [applications, projects, streamers]);
+
+  React.useEffect(() => {
+    if (applicationData == null && actions.refreshApplications) {
+      actions
+        .refreshApplications()
+        .catch((error) => warnBackgroundRefreshFailure("tasks", error));
+    }
+  }, [actions, applicationData]);
 
   React.useEffect(() => {
     if (project === "all") return;
@@ -10252,6 +11404,7 @@ function ScreenTasks({ go }) {
     const eligibleStreamers = joinedStreamersForProject(
       defaultProject.id,
       streamers,
+      applications,
     );
     const defaultStreamer =
       streamerFilter === "all"
@@ -10310,13 +11463,20 @@ function ScreenTasks({ go }) {
         batchDraft.endTime,
       );
       const plannedDuration = scheduleMinutes(plannedStartAt, plannedEndAt);
+      const eligibleStreamers = joinedStreamersForProject(
+        project.id,
+        streamers,
+        applications,
+      );
       const batchTasks = batchDraft.streamerIds
         .split(",")
         .map((id) => id.trim())
         .filter(Boolean)
         .map((streamerId) => {
-          const streamer = streamers.find((item) => item.id === streamerId);
-          if (!streamer || !isStreamerJoinedProject(streamer, project.id)) {
+          const streamer = eligibleStreamers.find(
+            (item) => item.id === streamerId,
+          );
+          if (!streamer) {
             return null;
           }
           return {
@@ -10635,6 +11795,7 @@ function ScreenTasks({ go }) {
           task={selectedTask}
           projects={projects}
           streamers={streamers}
+          applications={applications}
           onClose={() => setSelectedTask(null)}
           onCreateTask={createTask}
           onCancelTask={cancelTask}
@@ -10875,7 +12036,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
     const task = visibleTasks.find(
       (item) => item.streamerId === id || item.streamerName === id,
     );
-    return { id, alias: task?.streamerName || id };
+    return { id, alias: displayTaskStreamerName(task) };
   });
   const dayWidth = "minmax(140px, 1fr)";
   const HOUR_START = 12; // visible window: 12:00 - 24:00 (used in hour view)
@@ -11492,11 +12653,97 @@ function projectById(projectId, projects = PROJECTS) {
   return projects.find((item) => item.id === projectId) || projects[0] || null;
 }
 
-function joinedStreamersForProject(projectId, streamers = STREAMERS) {
+function joinedStreamersForProject(
+  projectId,
+  streamers = STREAMERS,
+  applications = [],
+) {
   if (!projectId) return [];
-  return streamers.filter((streamer) =>
+  const project = { id: projectId };
+  const joinedFromStreamers = streamers.filter((streamer) =>
     isStreamerJoinedProject(streamer, projectId),
   );
+  const joinedFromApplications = applications
+    .filter(
+      (application) =>
+        application.status === "joined" &&
+        applicationBelongsToProject(application, project),
+    )
+    .map((application) =>
+      applicationToScheduledStreamer(application, streamers, projectId),
+    )
+    .filter(Boolean);
+
+  return mergeRosterRows(joinedFromStreamers, joinedFromApplications);
+}
+
+function applicationToScheduledStreamer(application, streamers, projectId) {
+  const streamer = application.streamer || {};
+  const streamerId =
+    application.streamerId || application.streamer_id || streamer.id;
+  if (!streamerId) return null;
+  const card = streamers.find((item) => item.id === streamerId);
+  const joinedProject = applicationJoinedProjectRecord(application, projectId);
+  const base = card || {
+    id: streamerId,
+    alias: streamer.displayName || streamer.name || streamerId,
+    real: streamer.realName || streamer.displayName || "未填写",
+    gender: "",
+    source: "项目邀约",
+    supplier: "未绑定",
+    games: [],
+    platforms: [],
+    style: "",
+    cooperation: streamer.cooperationStatus || "active",
+    risk: streamer.riskLevel || "low",
+    metrics: {},
+    matchScore: 65,
+    defaultRule: "CPT",
+    completedProjects: 0,
+    projects: [],
+  };
+
+  return {
+    ...base,
+    projects: ensureJoinedProject(base.projects, joinedProject),
+  };
+}
+
+function applicationJoinedProjectRecord(application, fallbackProjectId) {
+  const project = application.project || {};
+  return {
+    id:
+      application.projectId ||
+      application.project_id ||
+      project.id ||
+      fallbackProjectId,
+    code: project.code,
+    name: project.name,
+    status: "joined",
+    settlementHours: 0,
+    grossContrib: 0,
+  };
+}
+
+function ensureJoinedProject(projects = [], joinedProject) {
+  const existingProjects = Array.isArray(projects) ? projects : [];
+  if (!joinedProject.id) return existingProjects;
+  const hasProject = existingProjects.some(
+    (project) =>
+      project.id === joinedProject.id ||
+      (joinedProject.code && project.code === joinedProject.code) ||
+      (joinedProject.name && project.name === joinedProject.name),
+  );
+  if (hasProject) {
+    return existingProjects.map((project) =>
+      project.id === joinedProject.id ||
+      (joinedProject.code && project.code === joinedProject.code) ||
+      (joinedProject.name && project.name === joinedProject.name)
+        ? { ...project, status: "joined" }
+        : project,
+    );
+  }
+  return [...existingProjects, joinedProject];
 }
 
 function isStreamerJoinedProject(streamer, projectId) {
@@ -11522,12 +12769,27 @@ function formatTaskActionError(error) {
   return message;
 }
 
+function normalizeTaskType(type) {
+  return TASK_TYPE_OPTIONS.some((option) => option.value === type)
+    ? type
+    : "project";
+}
+
+function taskTypeLabel(type) {
+  const normalizedType = normalizeTaskType(type);
+  return (
+    TASK_TYPE_OPTIONS.find((option) => option.value === normalizedType)
+      ?.label || "项目任务"
+  );
+}
+
 function opsLiveTaskInput({
   projectId = "",
   streamerId = "",
   dayIdx = SCHEDULE_WEEK.todayIdx,
   startHour = 20,
   endHour = 23.5,
+  type = "project",
   note = "经营端页面创建任务",
   projects = PROJECTS,
   streamers = STREAMERS,
@@ -11544,6 +12806,7 @@ function opsLiveTaskInput({
     projectId: project.id,
     streamerId: streamer.id,
     title: `${project.name} · ${streamer.alias}`,
+    type: normalizeTaskType(type),
     plannedStartAt,
     plannedEndAt,
     plannedDuration: scheduleMinutes(plannedStartAt, plannedEndAt),
@@ -11607,14 +12870,7 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
                   className="mono"
                   style={{ fontSize: 11, color: "var(--ink-400)" }}
                 >
-                  {projectName} · {projectCode} ·{" "}
-                  {r.type === "project"
-                    ? "项目任务"
-                    : r.type === "trial"
-                      ? "试播任务"
-                      : r.type === "training"
-                        ? "训练任务"
-                        : "临时任务"}
+                  {projectName} · {projectCode} · {taskTypeLabel(r.type)}
                 </div>
               </div>
             );
@@ -11624,14 +12880,11 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
           title: "主播",
           render: (r) => {
             const s = resolveTaskStreamer(r, streamers);
+            const streamerLabel = s?.alias || displayTaskStreamerName(r);
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Avatar name={s?.alias || r.streamerName} size={24} />
-                <span>
-                  {s?.alias ||
-                    r.streamerName ||
-                    displayRecordId(r.streamerId, "主播")}
-                </span>
+                <Avatar name={streamerLabel} size={24} />
+                <span>{streamerLabel}</span>
               </div>
             );
           },
@@ -11707,7 +12960,9 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
 // ——— Anomaly List ———————————————————
 
 function AnomalyList({ tasks, projects = [], streamers = [] }) {
+  const actions = useOpsLiveActions();
   const [actionMessage, setActionMessage] = React.useState("");
+  const [scanBusy, setScanBusy] = React.useState("");
   const anomalies = tasks
     .filter((t) => t.anomaly)
     .map((t) => {
@@ -11726,6 +12981,26 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
   anomalies.forEach((a) => {
     (groups[a.typeKey] = groups[a.typeKey] || []).push(a);
   });
+
+  const runAnomalyScan = async (mode) => {
+    if (scanBusy) return;
+    setScanBusy(mode);
+    setActionMessage("");
+    try {
+      const result = await actions.scanAnomalies?.();
+      const detectedCount = result?.detectedCount ?? 0;
+      const sentCount = result?.sentCount ?? 0;
+      setActionMessage(
+        mode === "dispatch"
+          ? `异常批量分派完成：发现 ${detectedCount} 项，已分派 ${sentCount} 条通知。`
+          : `异常扫描完成：发现 ${detectedCount} 项，已分派 ${sentCount} 条通知。`,
+      );
+    } catch (error) {
+      setActionMessage(error?.message || "异常扫描失败，请稍后重试。");
+    } finally {
+      setScanBusy("");
+    }
+  };
 
   return (
     <div
@@ -11754,16 +13029,18 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
         <Button
           size="sm"
           kind="default"
-          onClick={() => setActionMessage("异常扫描历史后台暂未接入。")}
+          onClick={() => runAnomalyScan("history")}
+          disabled={Boolean(scanBusy)}
         >
-          扫描历史
+          {scanBusy === "history" ? "扫描中" : "扫描历史"}
         </Button>
         <Button
           size="sm"
           kind="primary"
-          onClick={() => setActionMessage("异常批量分派后台暂未接入。")}
+          onClick={() => runAnomalyScan("dispatch")}
+          disabled={Boolean(scanBusy)}
         >
-          批量分派处理
+          {scanBusy === "dispatch" ? "分派中" : "批量分派处理"}
         </Button>
       </div>
       {actionMessage ? (
@@ -11953,6 +13230,7 @@ function TaskDrawer({
   task,
   projects,
   streamers,
+  applications,
   onClose,
   onCreateTask,
   onCancelTask,
@@ -11966,6 +13244,7 @@ function TaskDrawer({
         task={task}
         projects={projects}
         streamers={streamers}
+        applications={applications}
         onClose={onClose}
         onCreateTask={onCreateTask}
       />
@@ -11974,7 +13253,7 @@ function TaskDrawer({
 
   const s = resolveTaskStreamer(task, streamers);
   const p = resolveTaskProject(task, projects);
-  const streamerName = s?.alias || task.streamerName || task.streamerId;
+  const streamerName = s?.alias || displayTaskStreamerName(task);
   const projectName = p?.name || task.projectName || task.project;
   const statusKey = task.anomaly ? "abnormal" : task.status;
   const st = TASK_STATUS[statusKey];
@@ -12035,18 +13314,7 @@ function TaskDrawer({
             label="计划时长"
             value={`${(task.endHour - task.startHour).toFixed(1)} h`}
           />
-          <DrawerStat
-            label="任务类型"
-            value={
-              task.type === "project"
-                ? "项目任务"
-                : task.type === "trial"
-                  ? "试播任务"
-                  : task.type === "training"
-                    ? "训练任务"
-                    : "临时任务"
-            }
-          />
+          <DrawerStat label="任务类型" value={taskTypeLabel(task.type)} />
         </div>
 
         <div
@@ -12252,6 +13520,7 @@ function NewTaskDrawer({
   task,
   projects = [],
   streamers = [],
+  applications = [],
   onClose,
   onCreateTask,
 }) {
@@ -12267,9 +13536,25 @@ function NewTaskDrawer({
   const [endTime, setEndTime] = React.useState(
     decimalHourToTime(task.endHour ?? 23.5),
   );
+  const [taskType, setTaskType] = React.useState(
+    normalizeTaskType(task.type || "project"),
+  );
   const [note, setNote] = React.useState("");
   const p = projects.find((x) => x.id === selectedProjectId) || projects[0];
-  const eligibleStreamers = p ? joinedStreamersForProject(p.id, streamers) : [];
+  const eligibleStreamers = p
+    ? joinedStreamersForProject(p.id, streamers, applications)
+    : [];
+  const pendingConfirmApplications = p
+    ? applications.filter(
+        (application) =>
+          isConfirmableRosterApplication(application.status) &&
+          applicationBelongsToProject(application, p),
+      )
+    : [];
+  const joinedRequirementMessage =
+    pendingConfirmApplications.length > 0
+      ? `该项目有 ${pendingConfirmApplications.length} 位待确认主播，请先到项目详情的主播阵容点击确认加入后再排班。`
+      : JOINED_STREAMER_REQUIRED_MESSAGE;
   const s = eligibleStreamers.find((x) => x.id === selectedStreamerId) || null;
   const projectName = p?.name || task.projectName || task.project || "";
   const [busy, setBusy] = React.useState(false);
@@ -12278,7 +13563,7 @@ function NewTaskDrawer({
     const project =
       projects.find((x) => x.id === selectedProjectId) || projects[0];
     const nextEligibleStreamers = project
-      ? joinedStreamersForProject(project.id, streamers)
+      ? joinedStreamersForProject(project.id, streamers, applications)
       : [];
     if (
       !nextEligibleStreamers.some(
@@ -12287,7 +13572,13 @@ function NewTaskDrawer({
     ) {
       setSelectedStreamerId(nextEligibleStreamers[0]?.id || "");
     }
-  }, [projects, selectedProjectId, selectedStreamerId, streamers]);
+  }, [
+    applications,
+    projects,
+    selectedProjectId,
+    selectedStreamerId,
+    streamers,
+  ]);
   const handleCreate = async () => {
     if (!onCreateTask || !p) {
       setDraftMessage("请先选择项目。");
@@ -12313,9 +13604,10 @@ function NewTaskDrawer({
           dayIdx: task.dayIdx,
           startHour,
           endHour,
+          type: taskType,
           note: note.trim() || "经营端页面创建任务",
           projects,
-          streamers,
+          streamers: eligibleStreamers,
         }),
       );
     } finally {
@@ -12369,13 +13661,14 @@ function NewTaskDrawer({
             aria-live="polite"
             style={{ fontSize: 12, color: "var(--danger-600)" }}
           >
-            {JOINED_STREAMER_REQUIRED_MESSAGE}
+            {joinedRequirementMessage}
           </div>
         ) : null}
         <FormField label="任务类型">
           <SegmentedControl
-            options={["项目任务", "试播任务", "训练任务", "临时任务"]}
-            value="项目任务"
+            options={TASK_TYPE_OPTIONS}
+            value={taskType}
+            onChange={setTaskType}
           />
         </FormField>
         <div
@@ -12491,25 +13784,34 @@ function FormField({ label, children }) {
   );
 }
 
-function SegmentedControl({ options, value }) {
+function SegmentedControl({ options, value, onChange }) {
+  const normalizedOptions = options.map((option) =>
+    typeof option === "string" ? { value: option, label: option } : option,
+  );
   return (
     <div style={{ display: "flex", gap: 6 }}>
-      {options.map((o) => (
+      {normalizedOptions.map((option) => (
         <button
-          key={o}
+          key={option.value}
+          type="button"
+          aria-pressed={option.value === value}
+          onClick={() => onChange?.(option.value)}
           style={{
             flex: 1,
             height: 30,
             fontSize: 12,
-            background: o === value ? "var(--blue-50)" : "#fff",
-            border: `1px solid ${o === value ? "var(--blue-500)" : "var(--line-strong)"}`,
-            color: o === value ? "var(--blue-700)" : "var(--ink-500)",
+            background: option.value === value ? "var(--blue-50)" : "#fff",
+            border: `1px solid ${
+              option.value === value ? "var(--blue-500)" : "var(--line-strong)"
+            }`,
+            color:
+              option.value === value ? "var(--blue-700)" : "var(--ink-500)",
             borderRadius: 6,
             cursor: "pointer",
-            fontWeight: o === value ? 600 : 500,
+            fontWeight: option.value === value ? 600 : 500,
           }}
         >
-          {o}
+          {option.label}
         </button>
       ))}
     </div>
@@ -12998,13 +14300,25 @@ function ScreenOrg({ go, onOpenOrganizationSettings }) {
 
   React.useEffect(() => {
     if (projectData == null && actions.refreshProjects) {
-      actions.refreshProjects().catch(() => {});
+      actions
+        .refreshProjects()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("organization overview", error),
+        );
     }
     if (streamerData == null && actions.refreshStreamers) {
-      actions.refreshStreamers().catch(() => {});
+      actions
+        .refreshStreamers()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("organization overview", error),
+        );
     }
     if (billingStatusData == null && actions.refreshBillingStatus) {
-      actions.refreshBillingStatus().catch(() => {});
+      actions
+        .refreshBillingStatus()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("organization overview", error),
+        );
     }
   }, [actions, billingStatusData, projectData, streamerData]);
 
@@ -15696,9 +17010,21 @@ function ScreenNotifications() {
 
 function ScreenExport() {
   const actions = useOpsLiveActions();
+  const projects = useOpsProjects();
   const [kind, setKind] = React.useState("audit_logs");
+  const [projectId, setProjectId] = React.useState(projects[0]?.id ?? "");
   const [busy, setBusy] = React.useState(false);
   const [result, setResult] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!projectId && projects[0]?.id) {
+      setProjectId(projects[0].id);
+      return;
+    }
+    if (projectId && !projects.some((project) => project.id === projectId)) {
+      setProjectId(projects[0]?.id ?? "");
+    }
+  }, [projectId, projects]);
 
   const exportKinds = [
     { key: "audit_logs", label: "审计日志" },
@@ -15711,9 +17037,13 @@ function ScreenExport() {
     if (!actions.createGovernedExport || busy) return;
     setBusy(true);
     try {
+      const rows =
+        kind === "vendor_delivery"
+          ? await actions.readVendorDeliveryPackage?.(projectId)
+          : [];
       const exportResult = await actions.createGovernedExport({
         kind,
-        rows: [],
+        rows: Array.isArray(rows) ? rows : [],
       });
       setResult(exportResult);
     } catch (error) {
@@ -15763,6 +17093,41 @@ function ScreenExport() {
           </div>
           <div style={{ padding: "0 16px 16px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {kind === "vendor_delivery" ? (
+                <label
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    fontSize: 12,
+                    color: "var(--ink-500)",
+                    fontWeight: 600,
+                  }}
+                >
+                  交付包项目
+                  <select
+                    aria-label="交付包项目"
+                    value={projectId}
+                    onChange={(event) => setProjectId(event.target.value)}
+                    style={{
+                      height: 34,
+                      border: "1px solid var(--line-strong)",
+                      borderRadius: 6,
+                      background: "#fff",
+                      color: "var(--ink-700)",
+                      fontSize: 13,
+                      outline: "none",
+                      padding: "0 10px",
+                    }}
+                  >
+                    {projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <SectionTitle>治理规则</SectionTitle>
               {[
                 { label: "字段控制", val: "服务端白名单", tone: "blue" },
@@ -16165,6 +17530,40 @@ function billingModeLabel(mode) {
   return mode === "read_only" ? "只读模式" : "活跃";
 }
 
+function upsertReferenceTasks(currentTasks, nextTasks) {
+  const base = Array.isArray(currentTasks) ? currentTasks : [];
+  const normalizedNext = nextTasks.filter(Boolean);
+  const nextIds = new Set(normalizedNext.map((task) => task.id));
+  return [...base.filter((task) => !nextIds.has(task.id)), ...normalizedNext];
+}
+
+function toOpsReferenceTaskFromMutation(task, fallback = {}) {
+  if (!task?.id) return null;
+  return toOpsReferenceTask({
+    id: task.id,
+    title: task.title || fallback.title || "排班任务",
+    status: task.status || "pending_live",
+    taskType:
+      task.taskType ||
+      task.type ||
+      fallback.taskType ||
+      fallback.type ||
+      "project",
+    projectId: task.projectId || fallback.projectId || null,
+    projectName:
+      task.projectName ||
+      fallback.projectName ||
+      fallback.projectId ||
+      "Unknown project",
+    streamerId: task.streamerId || fallback.streamerId || "",
+    streamerName: task.streamerName || fallback.streamerName || "",
+    plannedStartAt: task.plannedStartAt ?? fallback.plannedStartAt ?? null,
+    plannedEndAt: task.plannedEndAt ?? fallback.plannedEndAt ?? null,
+    plannedDuration: task.plannedDuration ?? fallback.plannedDuration ?? null,
+    systemDuration: task.systemDuration ?? 0,
+  });
+}
+
 // ===== src\app.jsx =====
 // ——— App entry ————————————————————————————————
 
@@ -16551,10 +17950,74 @@ function OpsReferenceInner({
       }
     };
 
+    const refreshAdmissionProjectBoards = async () => {
+      const body = await fetchJson(
+        "/api/applications/admission-board",
+        "refresh admission project board failed",
+        { method: "GET" },
+      );
+      return Array.isArray(body.projects) ? body.projects : [];
+    };
+
+    const exportAdmissionRecordings = async (projectId) => {
+      const body = await fetchJson(
+        "/api/exports/admission-recordings",
+        "export admission recordings failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId }),
+        },
+      );
+      return body.export;
+    };
+
+    const createAdmissionShareBoard = async (projectId, input) => {
+      return fetchJson(
+        `/api/projects/${projectId}/admission-share-boards`,
+        "create admission share board failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+      );
+    };
+
+    const readVendorDeliveryPackage = async (projectId) => {
+      const trimmedProjectId = String(projectId || "").trim();
+      if (!trimmedProjectId) {
+        return [];
+      }
+      const params = new URLSearchParams({ projectId: trimmedProjectId });
+      const body = await fetchJson(
+        `/api/delivery-packages?${params.toString()}`,
+        "read delivery package failed",
+        { method: "GET" },
+      );
+      return Array.isArray(body.items) ? body.items : [];
+    };
+
+    const scanAnomalies = async () => {
+      const body = await fetchJson(
+        "/api/anomalies/scan",
+        "scan anomalies failed",
+        { method: "POST" },
+      );
+      return body.result ?? {};
+    };
+
     return {
       refreshProjects,
       refreshStreamers,
       refreshApplications,
+      refreshAdmissionProjectBoards,
+      refreshOpsTasks,
+      refreshReports,
+      readVendorDeliveryPackage,
+      exportAdmissionRecordings,
+      createAdmissionShareBoard,
+      scanAnomalies,
       createProjectDraft: async (input) => {
         const body = await fetchJson("/api/projects", "create project failed", {
           method: "POST",
@@ -16645,6 +18108,14 @@ function OpsReferenceInner({
           { method: "POST" },
         );
         await refreshApplications();
+        await Promise.all([
+          refreshStreamers().catch((error) =>
+            warnBackgroundRefreshFailure("confirm application join", error),
+          ),
+          refreshProjects().catch((error) =>
+            warnBackgroundRefreshFailure("confirm application join", error),
+          ),
+        ]);
         return body;
       },
       createLiveTask: async (input) => {
@@ -16657,7 +18128,12 @@ function OpsReferenceInner({
             body: JSON.stringify(input),
           },
         );
-        await refreshOpsTasks();
+        const createdTask = toOpsReferenceTaskFromMutation(body.task, input);
+        if (createdTask) {
+          setTasksState((current) =>
+            upsertReferenceTasks(current, [createdTask]),
+          );
+        }
         return body;
       },
       createLiveTasks: async (input) => {
@@ -16670,7 +18146,16 @@ function OpsReferenceInner({
             body: JSON.stringify(input),
           },
         );
-        await refreshOpsTasks();
+        const createdTasks = Array.isArray(body.tasks)
+          ? body.tasks.map((task, index) =>
+              toOpsReferenceTaskFromMutation(task, input?.tasks?.[index] ?? {}),
+            )
+          : [];
+        if (createdTasks.length > 0) {
+          setTasksState((current) =>
+            upsertReferenceTasks(current, createdTasks),
+          );
+        }
         return body;
       },
       cancelLiveTask: async (id, input) => {
@@ -16688,7 +18173,7 @@ function OpsReferenceInner({
       },
       reviewReport: async (id, decision) => {
         const approved = decision === "approve";
-        await fetchJson(
+        const body = await fetchJson(
           `/api/live-reports/${id}/review`,
           "review report failed",
           {
@@ -16702,8 +18187,35 @@ function OpsReferenceInner({
             }),
           },
         );
-        await refreshReports();
-        await refreshSettlementPool();
+        const nextStatus = approved
+          ? "approved"
+          : decision === "need_more"
+            ? "need_supply"
+            : "rejected";
+        const applyReviewedStatus = () => {
+          setReportsState((current) =>
+            Array.isArray(current)
+              ? current.map((report) =>
+                  report.id === id
+                    ? {
+                        ...report,
+                        status:
+                          body.report?.status === "need_more"
+                            ? "need_supply"
+                            : body.report?.status || nextStatus,
+                      }
+                    : report,
+                )
+              : current,
+          );
+        };
+        applyReviewedStatus();
+        await Promise.all([
+          refreshReports(),
+          refreshOpsTasks(),
+          refreshSettlementPool(),
+        ]);
+        applyReviewedStatus();
       },
       createSettlementBatch: async (input) => {
         const body = await fetchJson(
@@ -16855,6 +18367,52 @@ function OpsReferenceInner({
       },
     };
   }, [settlementScope]);
+
+  React.useEffect(() => {
+    if (!["project", "tasks", "reports"].includes(route)) {
+      return undefined;
+    }
+
+    const refreshLiveQueue = () => {
+      const request =
+        route === "reports"
+          ? actions.refreshReports()
+          : actions.refreshOpsTasks();
+      request?.catch?.((error) =>
+        warnBackgroundRefreshFailure(`${route} live queue`, error),
+      );
+    };
+
+    const shouldRefreshImmediately =
+      (route === "tasks" && tasksState == null) ||
+      (route === "reports" && reportsState == null);
+    if (shouldRefreshImmediately) {
+      refreshLiveQueue();
+    }
+    const intervalId = globalThis.setInterval?.(refreshLiveQueue, 15000);
+    const refreshWhenVisible = () => {
+      if (globalThis.document?.visibilityState !== "hidden") {
+        refreshLiveQueue();
+      }
+    };
+
+    globalThis.addEventListener?.("focus", refreshLiveQueue);
+    globalThis.document?.addEventListener?.(
+      "visibilitychange",
+      refreshWhenVisible,
+    );
+
+    return () => {
+      if (intervalId) {
+        globalThis.clearInterval?.(intervalId);
+      }
+      globalThis.removeEventListener?.("focus", refreshLiveQueue);
+      globalThis.document?.removeEventListener?.(
+        "visibilitychange",
+        refreshWhenVisible,
+      );
+    };
+  }, [actions, reportsState, route, tasksState]);
 
   const go = (r, arg) => {
     if (r === "project") {

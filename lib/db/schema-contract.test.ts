@@ -77,9 +77,25 @@ describe("P0 database contract", () => {
     expect(allMigrations).toContain("public.can_access_project(lr.project_id)");
   });
 
+  it("allows MCN staff to read organization live queues after streamer updates", () => {
+    expect(allMigrations).toContain("mcn staff can read live tasks in org");
+    expect(allMigrations).toContain("mcn staff can read live reports in org");
+    expect(allMigrations).toContain("public.is_mcn_staff(organization_id)");
+    expect(allMigrations).toContain(
+      "streamer_id = public.current_streamer_id(organization_id)",
+    );
+  });
+
   it("allows business operators to read project drafts they created", () => {
     expect(allMigrations).toContain("function public.can_access_project");
     expect(allMigrations).toContain("project creators can read own projects");
+    expect(allMigrations).toContain("created_by = auth.uid()");
+  });
+
+  it("allows project creators and owners to update accessible project drafts", () => {
+    expect(allMigrations).toContain("project creators can update own projects");
+    expect(allMigrations).toContain("public.can_access_project(id)");
+    expect(allMigrations).toContain("owner_id = auth.uid()");
     expect(allMigrations).toContain("created_by = auth.uid()");
   });
 
@@ -106,7 +122,9 @@ describe("P0 database contract", () => {
     expect(allMigrations).toContain(
       "grant select on public.streamer_public_project_announcements to authenticated",
     );
-    expect(allMigrations).toContain("public.current_streamer_id(organization_id)");
+    expect(allMigrations).toContain(
+      "public.current_streamer_id(organization_id)",
+    );
     expect(allMigrations).toContain(
       "function public.mark_application_recording_reviewing",
     );
@@ -124,13 +142,9 @@ describe("P0 database contract", () => {
     expect(allMigrations).toContain(
       "default_cps_rate_bps integer not null default 0",
     );
-    expect(allMigrations).toContain(
-      "streamers_default_cps_rate_bps_range",
-    );
+    expect(allMigrations).toContain("streamers_default_cps_rate_bps_range");
     expect(allMigrations).toContain("cps_rate_bps integer not null default 0");
-    expect(allMigrations).toContain(
-      "project_streamers_cps_rate_bps_range",
-    );
+    expect(allMigrations).toContain("project_streamers_cps_rate_bps_range");
     expect(allMigrations).toContain(
       "default_cps_rate_bps >= 0 and default_cps_rate_bps <= 10000",
     );
