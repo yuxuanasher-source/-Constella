@@ -61,6 +61,10 @@ function makeRepo(
       displayName: "Streamer One",
       userId: streamerActor.userId,
       riskLevel: "low",
+      defaultSettlementMethod: "manual",
+      defaultHourlyRate: 0,
+      defaultBaseSalary: 0,
+      defaultCpsRateBps: 0,
     }),
     getApplicationById: vi.fn().mockResolvedValue(baseApplication),
     getApplicationByProjectAndStreamer: vi.fn().mockResolvedValue(null),
@@ -291,7 +295,50 @@ describe("application service", () => {
     ).rejects.toThrow("Only owner and ops_manager can confirm project join");
   });
 
-  it("copies the project settlement snapshot when joining", async () => {
+  it("freezes the streamer default settlement rule when joining", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_approved",
+      }),
+      getStreamerForAdmission: vi.fn().mockResolvedValue({
+        id: "streamer-1",
+        displayName: "Streamer One",
+        userId: streamerActor.userId,
+        riskLevel: "low",
+        defaultSettlementMethod: "base_salary_cpt",
+        defaultHourlyRate: 80,
+        defaultBaseSalary: 6000,
+        defaultCpsRateBps: 0,
+      }),
+    });
+
+    await confirmApplicationJoin({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor: staffActor,
+      input: { applicationId: "app-1" },
+    });
+
+    expect(repo.createProjectStreamer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        settlementMethod: "base_salary_cpt",
+        hourlyRate: 80,
+        baseSalary: 6000,
+        cpsRateBps: 0,
+        settlementRule: expect.objectContaining({
+          source: "streamer_default",
+          settlementMethod: "base_salary_cpt",
+          cptHourlyRate: 80,
+          baseSalary: 6000,
+          cpsRateBps: 0,
+        }),
+      }),
+    );
+  });
+
+  it("falls back to project settlement rule when streamer default is unconfigured", async () => {
     const repo = makeRepo({
       getApplicationById: vi.fn().mockResolvedValue({
         ...baseApplication,
@@ -312,7 +359,15 @@ describe("application service", () => {
       expect.objectContaining({
         settlementMethod: "cpt",
         hourlyRate: 80,
-        settlementRule: { method: "cpt", hourly_rate: 80 },
+        baseSalary: 0,
+        cpsRateBps: 0,
+        settlementRule: expect.objectContaining({
+          source: "project_default",
+          settlementMethod: "cpt",
+          cptHourlyRate: 80,
+          baseSalary: 0,
+          cpsRateBps: 0,
+        }),
       }),
     );
     expect(audit).toHaveBeenCalledWith(

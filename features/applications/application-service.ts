@@ -43,6 +43,10 @@ export type StreamerAdmissionRecord = {
   displayName: string;
   userId?: string | null;
   riskLevel: "low" | "medium" | "high" | "blacklisted";
+  defaultSettlementMethod?: string | null;
+  defaultHourlyRate?: number | null;
+  defaultBaseSalary?: number | null;
+  defaultCpsRateBps?: number | null;
 };
 
 export type ApplicationRecord = {
@@ -132,6 +136,7 @@ export type ApplicationRepository = {
     settlementMethod: string;
     hourlyRate: number;
     baseSalary: number;
+    cpsRateBps: number;
     settlementRule: Record<string, unknown>;
     createdBy: string;
   }): Promise<ProjectStreamerRecord>;
@@ -438,23 +443,31 @@ export async function confirmApplicationJoin({
 
   const application = await requireApplication(repo, input.applicationId);
   const project = await requireProject(repo, application.projectId);
+  const streamer = await requireStreamer(repo, application.streamerId);
   assertApplicationTransition(application.status, "joined");
+  const now = new Date().toISOString();
+  const settlementSnapshot = resolveProjectStreamerSettlementSnapshot({
+    project,
+    streamer,
+    now,
+  });
 
   const projectStreamer = await repo.createProjectStreamer({
     organizationId: actor.organizationId,
     projectId: application.projectId,
     streamerId: application.streamerId,
     status: "joined",
-    settlementMethod: project.defaultSettlementMethod,
-    hourlyRate: project.defaultHourlyRate,
-    baseSalary: project.defaultBaseSalary,
-    settlementRule: project.defaultSettlementRule,
+    settlementMethod: settlementSnapshot.settlementMethod,
+    hourlyRate: settlementSnapshot.hourlyRate,
+    baseSalary: settlementSnapshot.baseSalary,
+    cpsRateBps: settlementSnapshot.cpsRateBps,
+    settlementRule: settlementSnapshot.settlementRule,
     createdBy: actor.userId,
   });
   const updated = await repo.updateApplicationStatus(application.id, {
     status: "joined",
     decidedBy: actor.userId,
-    decidedAt: new Date().toISOString(),
+    decidedAt: now,
   });
 
   await audit({
@@ -552,6 +565,64 @@ function canManageAdmission(role: AppRole): boolean {
 
 function canConfirmJoin(role: AppRole): boolean {
   return role === "owner" || role === "ops_manager";
+}
+
+function resolveProjectStreamerSettlementSnapshot({
+  project,
+  streamer,
+  now,
+}: {
+  project: ProjectAdmissionConfig;
+  streamer: StreamerAdmissionRecord;
+  now: string;
+}) {
+  if (streamerHasConfiguredSettlement(streamer)) {
+    const method = streamer.defaultSettlementMethod ?? "manual";
+    const hourlyRate = streamer.defaultHourlyRate ?? 0;
+    const baseSalary = streamer.defaultBaseSalary ?? 0;
+    const cpsRateBps = streamer.defaultCpsRateBps ?? 0;
+    return {
+      settlementMethod: method,
+      hourlyRate,
+      baseSalary,
+      cpsRateBps,
+      settlementRule: {
+        source: "streamer_default",
+        settlementMethod: method,
+        cptHourlyRate: hourlyRate,
+        baseSalary,
+        cpsRateBps,
+        snapshotAt: now,
+      },
+    };
+  }
+
+  return {
+    settlementMethod: project.defaultSettlementMethod,
+    hourlyRate: project.defaultHourlyRate,
+    baseSalary: project.defaultBaseSalary,
+    cpsRateBps: 0,
+    settlementRule: {
+      ...project.defaultSettlementRule,
+      source: "project_default",
+      settlementMethod: project.defaultSettlementMethod,
+      cptHourlyRate: project.defaultHourlyRate,
+      baseSalary: project.defaultBaseSalary,
+      cpsRateBps: 0,
+      snapshotAt: now,
+    },
+  };
+}
+
+function streamerHasConfiguredSettlement(streamer: StreamerAdmissionRecord) {
+  const method = streamer.defaultSettlementMethod ?? "manual";
+  return (
+    (["cpt", "base_salary_cpt"].includes(method) &&
+      (streamer.defaultHourlyRate ?? 0) > 0) ||
+    (["base_salary", "base_salary_cpt"].includes(method) &&
+      (streamer.defaultBaseSalary ?? 0) > 0) ||
+    (method === "cps" && (streamer.defaultCpsRateBps ?? 0) > 0)
+  );
 }
 
 function assertStreamerCanEnterAdmission(

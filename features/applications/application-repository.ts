@@ -36,6 +36,10 @@ type StreamerAdmissionRow = {
   user_id: string | null;
   risk_level: "low" | "medium" | "high";
   cooperation_status: string;
+  default_settlement_method: string;
+  default_price: number | null;
+  default_base_salary: number | null;
+  default_cps_rate_bps: number | null;
 };
 
 type ApplicationRow = {
@@ -120,7 +124,9 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
   ): Promise<StreamerAdmissionRecord | null> {
     const { data, error } = await this.client
       .from("streamers")
-      .select("id, display_name, user_id, risk_level, cooperation_status")
+      .select(
+        "id, display_name, user_id, risk_level, cooperation_status, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps",
+      )
       .eq("id", streamerId)
       .maybeSingle<StreamerAdmissionRow>();
 
@@ -330,6 +336,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     settlementMethod: string;
     hourlyRate: number;
     baseSalary: number;
+    cpsRateBps: number;
     settlementRule: Record<string, unknown>;
     createdBy: string;
   }): Promise<ProjectStreamerRecord> {
@@ -345,6 +352,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
           settlement_method: input.settlementMethod,
           hourly_rate: input.hourlyRate,
           base_salary: input.baseSalary,
+          cps_rate_bps: input.cpsRateBps,
           settlement_rule: input.settlementRule,
           created_by: input.createdBy,
         },
@@ -408,6 +416,10 @@ function toStreamerAdmissionRecord(
     userId: row.user_id,
     riskLevel:
       row.cooperation_status === "blacklisted" ? "blacklisted" : row.risk_level,
+    defaultSettlementMethod: row.default_settlement_method,
+    defaultHourlyRate: Number(row.default_price ?? 0),
+    defaultBaseSalary: Number(row.default_base_salary ?? 0),
+    defaultCpsRateBps: Number(row.default_cps_rate_bps ?? 0),
   };
 }
 
