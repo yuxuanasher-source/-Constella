@@ -4,6 +4,7 @@ import {
   assertStreamerCanBeInvited,
   createStreamerProfile,
   updateStreamerRisk,
+  updateStreamerSettlementRule,
 } from "./streamer-service";
 
 const actor = {
@@ -36,6 +37,7 @@ describe("streamer service", () => {
       }),
       getById: vi.fn(),
       updateRisk: vi.fn(),
+      updateSettlementRule: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -67,6 +69,7 @@ describe("streamer service", () => {
       }),
       getById: vi.fn(),
       updateRisk: vi.fn(),
+      updateSettlementRule: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -118,11 +121,98 @@ describe("streamer service", () => {
     );
   });
 
+  it("creates streamer profiles with default settlement pricing", async () => {
+    const repo = {
+      createProfile: vi.fn().mockResolvedValue({
+        id: "S-price",
+        displayName: "Price Streamer",
+        userId: null,
+        riskLevel: "low",
+        cooperationStatus: "not_started",
+      }),
+      getById: vi.fn(),
+      updateRisk: vi.fn(),
+      updateSettlementRule: vi.fn(),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await createStreamerProfile({
+      repo,
+      audit,
+      actor,
+      input: {
+        displayName: " Price Streamer ",
+        defaultSettlementMethod: "base_salary_cpt",
+        defaultHourlyRate: 80,
+        defaultBaseSalary: 6000,
+        defaultCpsRateBps: 1500,
+      },
+    });
+
+    expect(repo.createProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayName: "Price Streamer",
+        defaultSettlementMethod: "base_salary_cpt",
+        defaultHourlyRate: 80,
+        defaultBaseSalary: 6000,
+        defaultCpsRateBps: 1500,
+      }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        changedFields: expect.arrayContaining([
+          "default_settlement_method",
+          "default_price",
+          "default_base_salary",
+          "default_cps_rate_bps",
+        ]),
+      }),
+    );
+  });
+
+  it("rejects invalid streamer default settlement numbers", async () => {
+    const repo = {
+      createProfile: vi.fn(),
+      getById: vi.fn(),
+      updateRisk: vi.fn(),
+      updateSettlementRule: vi.fn(),
+    };
+    const audit = vi.fn();
+
+    await expect(
+      createStreamerProfile({
+        repo,
+        audit,
+        actor,
+        input: { displayName: "Bad", defaultHourlyRate: -1 },
+      }),
+    ).rejects.toThrow("defaultHourlyRate must be non-negative");
+
+    await expect(
+      createStreamerProfile({
+        repo,
+        audit,
+        actor,
+        input: { displayName: "Bad", defaultBaseSalary: -1 },
+      }),
+    ).rejects.toThrow("defaultBaseSalary must be non-negative");
+
+    await expect(
+      createStreamerProfile({
+        repo,
+        audit,
+        actor,
+        input: { displayName: "Bad", defaultCpsRateBps: 10001 },
+      }),
+    ).rejects.toThrow("defaultCpsRateBps must be between 0 and 10000");
+  });
+
   it("rejects risk edits from operator_business", async () => {
     const repo = {
       createProfile: vi.fn(),
       getById: vi.fn(),
       updateRisk: vi.fn(),
+      updateSettlementRule: vi.fn(),
     };
     const audit = vi.fn();
 
@@ -153,6 +243,7 @@ describe("streamer service", () => {
       createProfile: vi.fn(),
       getById: vi.fn().mockResolvedValue(before),
       updateRisk: vi.fn().mockResolvedValue(after),
+      updateSettlementRule: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -180,5 +271,97 @@ describe("streamer service", () => {
         reason: "负责人风控调整",
       }),
     );
+  });
+
+  it("updates streamer settlement defaults with high-risk audit", async () => {
+    const before = {
+      id: "S-price",
+      displayName: "Price Streamer",
+      userId: null,
+      riskLevel: "low" as const,
+      cooperationStatus: "active" as const,
+    };
+    const after = { ...before };
+    const repo = {
+      createProfile: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      updateRisk: vi.fn(),
+      updateSettlementRule: vi.fn().mockResolvedValue(after),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await updateStreamerSettlementRule({
+      repo,
+      audit,
+      actor: { ...actor, role: "owner" },
+      streamerId: before.id,
+      input: {
+        defaultSettlementMethod: "cps",
+        defaultHourlyRate: 0,
+        defaultBaseSalary: 0,
+        defaultCpsRateBps: 1500,
+      },
+      reason: "signed cps update",
+    });
+
+    expect(repo.updateSettlementRule).toHaveBeenCalledWith(before.id, {
+      default_settlement_method: "cps",
+      default_price: 0,
+      default_base_salary: 0,
+      default_cps_rate_bps: 1500,
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        module: "streamer",
+        objectType: "streamer",
+        isHighRisk: true,
+        reason: "signed cps update",
+        changedFields: [
+          "default_settlement_method",
+          "default_price",
+          "default_base_salary",
+          "default_cps_rate_bps",
+        ],
+      }),
+    );
+  });
+
+  it("requires owner or ops_manager and reason for settlement default updates", async () => {
+    const repo = {
+      createProfile: vi.fn(),
+      getById: vi.fn().mockResolvedValue({
+        id: "S-price",
+        displayName: "Price Streamer",
+        riskLevel: "low",
+        cooperationStatus: "active",
+      }),
+      updateRisk: vi.fn(),
+      updateSettlementRule: vi.fn(),
+    };
+
+    await expect(
+      updateStreamerSettlementRule({
+        repo,
+        audit: vi.fn(),
+        actor,
+        streamerId: "S-price",
+        input: { defaultCpsRateBps: 1500 },
+        reason: "update",
+      }),
+    ).rejects.toThrow(
+      "Only owner and ops_manager can update streamer settlement rules",
+    );
+
+    await expect(
+      updateStreamerSettlementRule({
+        repo,
+        audit: vi.fn(),
+        actor: { ...actor, role: "ops_manager" },
+        streamerId: "S-price",
+        input: { defaultCpsRateBps: 1500 },
+        reason: " ",
+      }),
+    ).rejects.toThrow("Streamer settlement rule changes require a reason");
   });
 });
