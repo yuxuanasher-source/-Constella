@@ -25,6 +25,12 @@ describe("P1/P2 settlement golden path", () => {
         manualAmount: 0,
       }),
     ]);
+    expect(result.batchItems[0].evidenceSnapshot).toMatchObject({
+      settlementDuration: 120,
+      timeSource: "system",
+      evidenceLevel: "green",
+    });
+    expect(result.batchItems[0].computedAmount).toBe(160);
     expect(result.poolAfterBatch).toHaveLength(0);
     expect(result.streamerBill.currentMonth).toMatchObject({
       month: "2026-06",

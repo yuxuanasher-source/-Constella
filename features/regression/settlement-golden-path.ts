@@ -343,6 +343,7 @@ class GoldenPathRepository
       settlementMethod: "cpt",
       hourlyRate: 80,
       baseSalary: 0,
+      cpsRateBps: 0,
     }));
   }
 
@@ -354,6 +355,7 @@ class GoldenPathRepository
       settlementMethod: "cpt",
       hourlyRate: 100,
       baseSalary: 0,
+      cpsRateBps: 0,
     };
   }
 
