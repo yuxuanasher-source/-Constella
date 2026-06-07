@@ -169,6 +169,56 @@ describe("toStreamerCardDto", () => {
     expect(dto.matchTrend).toEqual([]);
     expect(dto.projects).toEqual([]);
   });
+
+  it("formats default settlement labels with cpt cps and base salary details", () => {
+    expect(
+      toStreamerCardDto({
+        id: "s-cpt",
+        display_name: "CPT Streamer",
+        real_name: null,
+        gender: null,
+        source_type: "external",
+        cooperation_status: "active",
+        categories: [],
+        platforms: [],
+        styles: [],
+        default_settlement_method: "cpt",
+        default_price: 80,
+        default_base_salary: 0,
+        default_cps_rate_bps: 0,
+        risk_level: "low",
+        clean_report_count: 0,
+        created_at: "2026-06-01T00:00:00.000Z",
+      }).defaultRule,
+    ).toBe("CPT ¥80/h");
+
+    const cpsDto = toStreamerCardDto({
+      id: "s-cps",
+      display_name: "CPS Streamer",
+      real_name: null,
+      gender: null,
+      source_type: "external",
+      cooperation_status: "active",
+      categories: [],
+      platforms: [],
+      styles: [],
+      default_settlement_method: "cps",
+      default_price: 0,
+      default_base_salary: 0,
+      default_cps_rate_bps: 1500,
+      risk_level: "low",
+      clean_report_count: 0,
+      created_at: "2026-06-01T00:00:00.000Z",
+    });
+    expect(cpsDto.defaultRule).toBe("CPS 15%");
+    expect(cpsDto.settlement).toMatchObject({
+      method: "cps",
+      cptHourlyRate: 0,
+      baseSalary: 0,
+      cpsRateBps: 1500,
+      label: "CPS 15%",
+    });
+  });
 });
 
 describe("toStreamerDesktopProfileDto", () => {
@@ -190,6 +240,7 @@ describe("toStreamerDesktopProfileDto", () => {
         default_settlement_method: "base_salary_cpt",
         default_price: 80,
         default_base_salary: 6000,
+        default_cps_rate_bps: 1500,
         risk_level: "low",
         clean_report_count: 2,
         created_at: "2026-06-01T00:00:00.000Z",
@@ -290,5 +341,7 @@ describe("toStreamerDesktopProfileDto", () => {
     expect(dto.settlement.rule).toContain("80");
     expect(dto.settlement.baseSalary).toContain("6000");
     expect(dto.settlement.cpt).toContain("80");
+    expect(dto.settlement.cpsShare).toContain("15%");
   });
+
 });

@@ -22,6 +22,13 @@ export type StreamerCardDto = {
   cooperation: string;
   risk: string;
   defaultRule: string;
+  settlement: {
+    method: string;
+    cptHourlyRate: number;
+    baseSalary: number;
+    cpsRateBps: number;
+    label: string;
+  };
   hasPerformanceData: boolean;
   createdAtLabel: string;
   matchScore: number;
@@ -77,6 +84,7 @@ export type StreamerDesktopProfileDto = {
     cycle: string;
     baseSalary: string;
     cpt: string;
+    cpsShare: string;
     giftShare: string;
     bank: string;
   };
@@ -95,6 +103,7 @@ export function toStreamerCardDto(
   const cleanCount = Math.max(row.clean_report_count ?? 0, 0);
   const stableScore = Math.min(95, 65 + cleanCount * 2);
   const liveMetrics = deriveLivePerformance(row, stableScore, options);
+  const settlement = settlementSummary(row);
 
   return {
     id: row.id,
@@ -108,7 +117,8 @@ export function toStreamerCardDto(
     style: row.styles[0] ?? "未填写",
     cooperation: row.cooperation_status,
     risk: row.risk_level,
-    defaultRule: row.default_settlement_method.toUpperCase(),
+    defaultRule: settlement.label,
+    settlement,
     hasPerformanceData: liveMetrics.hasPerformanceData,
     createdAtLabel: row.created_at.slice(0, 10),
     matchScore: liveMetrics.matchScore,
@@ -138,6 +148,7 @@ export function toStreamerDesktopProfileDto(
 
   const baseSalary = Number(row.default_base_salary ?? 0);
   const cpt = Number(row.default_price ?? 0);
+  const cpsRateBps = Number(row.default_cps_rate_bps ?? 0);
   const settlementMethod = row.default_settlement_method || "unset";
 
   return {
@@ -171,11 +182,13 @@ export function toStreamerDesktopProfileDto(
       equipment: nonEmptyTags(extractStringValues(row.equipment), "未配置设备"),
     },
     settlement: {
-      rule: settlementRuleLabel(settlementMethod, baseSalary, cpt),
+      rule: settlementRuleLabel(settlementMethod, baseSalary, cpt, cpsRateBps),
       cycle: baseSalary > 0 ? "按月结" : "按项目规则",
       baseSalary:
         baseSalary > 0 ? `¥${formatNumber(baseSalary)} / 月` : "未配置",
       cpt: cpt > 0 ? `¥${formatNumber(cpt)} / 有效直播小时` : "未配置",
+      cpsShare:
+        cpsRateBps > 0 ? `${formatPercentBps(cpsRateBps)}%` : "未配置",
       giftShare: "按项目规则配置",
       bank: "未向前端暴露",
     },
@@ -248,27 +261,53 @@ function extractStringValues(value: unknown): string[] {
   return [];
 }
 
-function settlementRuleLabel(method: string, baseSalary: number, cpt: number) {
-  const baseText = baseSalary > 0 ? `底薪 ${formatNumber(baseSalary)}` : "";
-  const cptText = cpt > 0 ? `CPT ${formatNumber(cpt)}/h` : "";
+function settlementSummary(row: StreamerListRow) {
+  const method = row.default_settlement_method || "manual";
+  const cptHourlyRate = Number(row.default_price ?? 0);
+  const baseSalary = Number(row.default_base_salary ?? 0);
+  const cpsRateBps = Number(row.default_cps_rate_bps ?? 0);
+  return {
+    method,
+    cptHourlyRate,
+    baseSalary,
+    cpsRateBps,
+    label: settlementRuleLabel(method, baseSalary, cptHourlyRate, cpsRateBps),
+  };
+}
+
+function settlementRuleLabel(
+  method: string,
+  baseSalary: number,
+  cpt: number,
+  cpsRateBps = 0,
+) {
+  const baseText = baseSalary > 0 ? `底薪 ¥${formatNumber(baseSalary)}` : "";
+  const cptText = cpt > 0 ? `CPT ¥${formatNumber(cpt)}/h` : "";
+  const cpsText =
+    cpsRateBps > 0 ? `CPS ${formatPercentBps(cpsRateBps)}%` : "";
 
   if (method === "base_salary_cpt") {
-    return [baseText || "底薪未配置", cptText || "CPT 未配置"].join(" + ");
+    return [baseText || "底薪", cptText || "CPT"].join(" + ");
   }
   if (method === "base_salary") {
-    return baseText || "底薪未配置";
+    return baseText || "底薪";
   }
   if (method === "cpt") {
-    return cptText || "CPT 未配置";
+    return cptText || "CPT";
   }
   if (method === "cps") {
-    return "CPS 按项目规则";
+    return cpsText || "CPS";
   }
   return method ? method.toUpperCase() : "未配置";
 }
 
 function formatNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function formatPercentBps(value: number) {
+  const percent = value / 100;
+  return Number.isInteger(percent) ? String(percent) : percent.toFixed(2);
 }
 
 function deriveLivePerformance(
