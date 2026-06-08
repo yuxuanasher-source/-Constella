@@ -416,21 +416,11 @@ async function createSelfRegisteredMcnOwner({
     );
   }
 
-  const { data: authData, error: authError } = await authAdmin.createUser({
-    email: input.contactEmail,
-    password: input.password,
-    email_confirm: true,
-    user_metadata: {
-      full_name: input.contactName,
-      organization_role: "owner",
-      onboarding_mode: "mcn_self_registration",
-      organization_name: input.companyName,
-    },
+  const authData = await createSelfRegistrationAuthUser({
+    admin,
+    authAdmin,
+    input,
   });
-  if (isAuthDuplicateEmailError(authError)) {
-    throw new RegistrationActionError("registration-email");
-  }
-  throwIfSupabaseError(authError, "Auth user creation failed");
 
   const user = authData.user;
   if (!user?.id) {
@@ -458,6 +448,58 @@ async function createSelfRegisteredMcnOwner({
     });
     throw error;
   }
+}
+
+async function createSelfRegistrationAuthUser({
+  admin,
+  authAdmin,
+  input,
+}: {
+  admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>;
+  authAdmin: AuthAdminClient;
+  input: Extract<
+    ReturnType<typeof validateMcnApplicationInput>,
+    { ok: true }
+  >["value"];
+}) {
+  const createInput = {
+    email: input.contactEmail,
+    password: input.password,
+    email_confirm: true,
+    user_metadata: {
+      full_name: input.contactName,
+      organization_role: "owner",
+      onboarding_mode: "mcn_self_registration",
+      organization_name: input.companyName,
+    },
+  };
+  const { data: authData, error: authError } =
+    await authAdmin.createUser(createInput);
+
+  if (!isAuthDuplicateEmailError(authError)) {
+    throwIfSupabaseError(authError, "Auth user creation failed");
+    return authData;
+  }
+
+  const orphanedUser = await findOrphanedAuthUserByEmail({
+    admin,
+    authAdmin,
+    email: input.contactEmail,
+  });
+
+  if (!orphanedUser?.id) {
+    throw new RegistrationActionError("registration-email");
+  }
+
+  const { error: deleteError } = await authAdmin.deleteUser(orphanedUser.id);
+  if (deleteError) {
+    throw new RegistrationActionError("application");
+  }
+
+  const { data: retryAuthData, error: retryAuthError } =
+    await authAdmin.createUser(createInput);
+  throwIfSupabaseError(retryAuthError, "Auth user creation failed");
+  return retryAuthData;
 }
 
 async function createSelfRegisteredMcnOwnerRecords({
@@ -597,6 +639,50 @@ async function getRegistrationProfileConflict(
   }
   if (phoneConflict) {
     return "phone";
+  }
+
+  return null;
+}
+
+async function findOrphanedAuthUserByEmail({
+  admin,
+  authAdmin,
+  email,
+}: {
+  admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>;
+  authAdmin: AuthAdminClient;
+  email: string;
+}) {
+  const profileConflict = await hasProfileWithValue(admin, "email", email);
+  if (profileConflict) {
+    return null;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const perPage = 1000;
+
+  try {
+    for (let page = 1; page <= 20; page += 1) {
+      const { data, error } = await authAdmin.listUsers({ page, perPage });
+
+      if (error) {
+        return null;
+      }
+
+      const users = data?.users ?? [];
+      const matchedUser = users.find(
+        (user) => user.email?.trim().toLowerCase() === normalizedEmail,
+      );
+      if (matchedUser?.id) {
+        return matchedUser;
+      }
+
+      if (users.length < perPage) {
+        break;
+      }
+    }
+  } catch {
+    return null;
   }
 
   return null;
@@ -768,7 +854,11 @@ function isAuthDuplicateEmailError(
   error: { message?: string } | null | undefined,
 ) {
   const message = error?.message?.toLowerCase() ?? "";
-  return message.includes("email") && message.includes("registered");
+  return (
+    (message.includes("email") && message.includes("registered")) ||
+    message.includes("user already registered") ||
+    message.includes("already been registered")
+  );
 }
 
 async function getPendingActivationProfile(

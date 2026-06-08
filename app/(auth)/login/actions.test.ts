@@ -641,6 +641,89 @@ describe("login server actions", () => {
     );
   });
 
+  it("recovers an orphaned Auth user before retrying MCN self-registration", async () => {
+    const serverSignIn = vi.fn(async () => ({ error: null }));
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { signInWithPassword: serverSignIn },
+    } as never);
+
+    const createUser = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: { user: null },
+        error: { message: "User already registered" },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          user: { id: "user-new", email: "owner@example.cn" },
+        },
+        error: null,
+      });
+    const listUsers = vi.fn(async () => ({
+      data: {
+        users: [{ id: "orphan-user", email: "owner@example.cn" }],
+      },
+      error: null,
+    }));
+    const deleteUser = vi.fn(async () => ({ error: null }));
+    const insertOrganization = vi.fn(() => ({
+      select: vi.fn(() => ({
+        single: vi.fn(async () => ({
+          data: { id: "org-new", name: "Star Ops" },
+          error: null,
+        })),
+      })),
+    }));
+    const upsertProfile = vi.fn(async () => ({ error: null }));
+    const insertMembership = vi.fn(async () => ({ error: null }));
+    const adminFrom = vi.fn((table: string) => {
+      if (table === "organizations") {
+        return { insert: insertOrganization };
+      }
+      if (table === "profiles") {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+            })),
+          })),
+          upsert: upsertProfile,
+        };
+      }
+      if (table === "organization_members") {
+        return { insert: insertMembership };
+      }
+      return { insert: vi.fn(async () => ({ error: null })) };
+    });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      auth: { admin: { createUser, deleteUser, listUsers } },
+      from: adminFrom,
+    } as never);
+
+    await expect(
+      submitMcnApplicationAction(
+        form({
+          companyName: "Star Ops",
+          contactName: "Lin Manager",
+          contactEmail: "owner@example.cn",
+          contactPhone: "13800138000",
+          password: "Secret123",
+        }),
+      ),
+    ).rejects.toThrow("NEXT_REDIRECT:/console/projects");
+
+    expect(deleteUser).toHaveBeenCalledWith("orphan-user");
+    expect(createUser).toHaveBeenCalledTimes(2);
+    expect(upsertProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "user-new", email: "owner@example.cn" }),
+      { onConflict: "id" },
+    );
+    expect(serverSignIn).toHaveBeenCalledWith({
+      email: "owner@example.cn",
+      password: "Secret123",
+    });
+  });
+
   it("rolls back the Auth user and organization when profile creation fails", async () => {
     vi.mocked(createSupabaseServerClient).mockResolvedValue({
       auth: { signInWithPassword },
