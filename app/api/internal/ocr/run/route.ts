@@ -50,12 +50,23 @@ export async function POST(request: Request) {
   const provider = createTencentOcrProvider(
     readTencentOcrConfigFromEnv(process.env),
   );
-  const jobs = await claimRunnableOcrJobs({
-    client: supabase as never,
-    organizationId,
-    runnerId: userId,
-    limit,
-  });
+  let jobs;
+  try {
+    jobs = await claimRunnableOcrJobs({
+      client: supabase as never,
+      organizationId,
+      runnerId: userId,
+      limit,
+    });
+  } catch {
+    return NextResponse.json(
+      {
+        errorCode: "claim_failed",
+        errorMessage: "OCR runner could not claim jobs",
+      },
+      { status: 500 },
+    );
+  }
 
   const completed = [];
   const failures = [];

@@ -1,11 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { POST } from "./route";
 
+import { resolveOcrImageInput } from "@/features/ai/ocr-image-source";
 import { claimRunnableOcrJobs, runOcrJobOnce } from "@/features/ai/ocr-jobs";
 import { createTencentOcrProvider } from "@/features/ai/providers/tencent-ocr-provider";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+
+vi.mock("@/features/ai/ocr-image-source", () => ({
+  resolveOcrImageInput: vi.fn(async () => ({ imageBase64: "AQID" })),
+}));
 
 vi.mock("@/features/ai/ocr-jobs", () => ({
   claimRunnableOcrJobs: vi.fn(),
@@ -34,16 +39,24 @@ const auth = {
   role: "ops_manager" as const,
 };
 
+const supabase = {
+  from: vi.fn(),
+  storage: { from: vi.fn() },
+};
+
 describe("/api/ocr/jobs/run", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(createSupabaseServerClient).mockResolvedValue({
-      from: vi.fn(),
-    } as never);
+    vi.stubEnv("SUPABASE_PRIVATE_BUCKET", "evidence-private");
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
     vi.mocked(getAuthContext).mockResolvedValue(auth);
     vi.mocked(createTencentOcrProvider).mockReturnValue({
       runGeneralBasicOcr: vi.fn(),
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("runs the next runnable OCR job and returns safe metadata only", async () => {
@@ -112,6 +125,26 @@ describe("/api/ocr/jobs/run", () => {
         imageResolver: expect.any(Function),
       }),
     );
+    const imageResolver =
+      vi.mocked(runOcrJobOnce).mock.calls[0]?.[0].imageResolver;
+    await expect(
+      imageResolver?.({
+        liveReportId: "report-1",
+        screenshotId: "screenshot-1",
+        imageBucket: "evidence-private",
+        imagePath: "org/report-screenshots/task-1/end.png",
+      }),
+    ).resolves.toEqual({ imageBase64: "AQID" });
+    expect(resolveOcrImageInput).toHaveBeenCalledWith({
+      client: supabase,
+      payload: {
+        liveReportId: "report-1",
+        screenshotId: "screenshot-1",
+        imageBucket: "evidence-private",
+        imagePath: "org/report-screenshots/task-1/end.png",
+      },
+      defaultBucket: "evidence-private",
+    });
   });
 
   it("continues processing later OCR jobs when one job fails", async () => {

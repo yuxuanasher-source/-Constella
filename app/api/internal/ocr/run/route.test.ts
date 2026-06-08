@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { POST } from "./route";
 
@@ -25,7 +25,6 @@ vi.mock("@/lib/db/supabase-server", () => ({
   createSupabaseAdminClient: vi.fn(),
 }));
 
-const envSnapshot = { ...process.env };
 const supabase = {
   from: vi.fn(),
   storage: { from: vi.fn() },
@@ -34,19 +33,20 @@ const supabase = {
 describe("/api/internal/ocr/run", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env = {
-      ...envSnapshot,
-      OCR_RUNNER_TOKEN: "runner-token",
-      OCR_RUNNER_ORGANIZATION_ID: "org-runner",
-      OCR_RUNNER_USER_ID: "user-runner",
-      OCR_RUNNER_USER_NAME: "System OCR Runner",
-      SUPABASE_PRIVATE_BUCKET: "evidence-private",
-    };
+    vi.stubEnv("OCR_RUNNER_TOKEN", "runner-token");
+    vi.stubEnv("OCR_RUNNER_ORGANIZATION_ID", "org-runner");
+    vi.stubEnv("OCR_RUNNER_USER_ID", "user-runner");
+    vi.stubEnv("OCR_RUNNER_USER_NAME", "System OCR Runner");
+    vi.stubEnv("SUPABASE_PRIVATE_BUCKET", "evidence-private");
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
     vi.mocked(createTencentOcrProvider).mockReturnValue({
       runGeneralBasicOcr: vi.fn(),
     });
     vi.mocked(claimRunnableOcrJobs).mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("rejects missing runner token without claiming or running jobs", async () => {
@@ -86,6 +86,38 @@ describe("/api/internal/ocr/run", () => {
     );
 
     expect(response.status).toBe(401);
+    expect(claimRunnableOcrJobs).not.toHaveBeenCalled();
+    expect(runOcrJobOnce).not.toHaveBeenCalled();
+  });
+
+  it("requires a configured runner organization", async () => {
+    vi.stubEnv("OCR_RUNNER_ORGANIZATION_ID", "");
+
+    const response = await POST(
+      new Request("http://localhost/api/internal/ocr/run", {
+        method: "POST",
+        headers: { authorization: "Bearer runner-token" },
+        body: JSON.stringify({}),
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    expect(claimRunnableOcrJobs).not.toHaveBeenCalled();
+    expect(runOcrJobOnce).not.toHaveBeenCalled();
+  });
+
+  it("requires a configured runner user", async () => {
+    vi.stubEnv("OCR_RUNNER_USER_ID", "");
+
+    const response = await POST(
+      new Request("http://localhost/api/internal/ocr/run", {
+        method: "POST",
+        headers: { authorization: "Bearer runner-token" },
+        body: JSON.stringify({}),
+      }),
+    );
+
+    expect(response.status).toBe(500);
     expect(claimRunnableOcrJobs).not.toHaveBeenCalled();
     expect(runOcrJobOnce).not.toHaveBeenCalled();
   });
@@ -159,6 +191,31 @@ describe("/api/internal/ocr/run", () => {
     );
   });
 
+  it("returns a safe failure when job claiming fails", async () => {
+    vi.mocked(claimRunnableOcrJobs).mockRejectedValue(
+      new Error("claim failed for private/path.png with secret=abc123"),
+    );
+
+    const response = await POST(
+      new Request("http://localhost/api/internal/ocr/run", {
+        method: "POST",
+        headers: { authorization: "Bearer runner-token" },
+        body: JSON.stringify({}),
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body).toEqual({
+      errorCode: "claim_failed",
+      errorMessage: "OCR runner could not claim jobs",
+    });
+    expect(JSON.stringify(body)).not.toContain("private/path.png");
+    expect(JSON.stringify(body)).not.toContain("secret=abc123");
+    expect(JSON.stringify(body)).not.toContain("claim failed");
+    expect(runOcrJobOnce).not.toHaveBeenCalled();
+  });
+
   it("sanitizes job failures and never leaks paths or secrets", async () => {
     vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
       {
@@ -198,6 +255,62 @@ describe("/api/internal/ocr/run", () => {
     ]);
     expect(JSON.stringify(body)).not.toContain("private/path.png");
     expect(JSON.stringify(body)).not.toContain("secret=abc123");
+  });
+
+  it("continues processing later OCR jobs when one job fails", async () => {
+    vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
+      {
+        id: "job-fail",
+        organizationId: "org-runner",
+        jobType: "ocr.extract_live_report",
+        status: "queued",
+        attempt: 0,
+        maxAttempts: 3,
+        payload: { liveReportId: "report-fail" },
+      },
+      {
+        id: "job-ok",
+        organizationId: "org-runner",
+        jobType: "ocr.extract_live_report",
+        status: "queued",
+        attempt: 0,
+        maxAttempts: 3,
+        payload: { liveReportId: "report-ok" },
+      },
+    ]);
+    vi.mocked(runOcrJobOnce)
+      .mockRejectedValueOnce(new Error("provider failed with secret=abc123"))
+      .mockResolvedValueOnce({
+        id: "job-ok",
+        organizationId: "org-runner",
+        jobType: "ocr.extract_live_report",
+        status: "succeeded",
+        attempt: 1,
+        maxAttempts: 3,
+        payload: { liveReportId: "report-ok" },
+      });
+
+    const response = await POST(
+      new Request("http://localhost/api/internal/ocr/run", {
+        method: "POST",
+        headers: { authorization: "Bearer runner-token" },
+        body: JSON.stringify({ limit: 2 }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.jobs).toEqual([
+      { id: "job-ok", status: "succeeded", attempt: 1 },
+    ]);
+    expect(body.failures).toEqual([
+      {
+        jobId: "job-fail",
+        errorCode: "runner_failed",
+        errorMessage: "provider failed",
+      },
+    ]);
+    expect(runOcrJobOnce).toHaveBeenCalledTimes(2);
   });
 
   it("returns safe metadata when the provider is unconfigured", async () => {

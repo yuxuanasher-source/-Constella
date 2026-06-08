@@ -83,6 +83,16 @@ describe("AI runtime schema contract", () => {
     expect(allMigrations).toContain("create policy ocr_results_staff_update");
   });
 
+  it("preserves service-role OCR runner claims with live report organization checks", () => {
+    expect(allMigrations).toContain("auth.role() = 'service_role'");
+    expect(allMigrations).toMatch(
+      /lr\.id = public\.ocr_job_live_report_id\(bj\.payload\)[\s\S]*lr\.organization_id = p_organization_id/,
+    );
+    expect(allMigrations).toMatch(
+      /public\.can_access_ocr_job\(bj\.organization_id, bj\.payload\)[\s\S]*auth\.role\(\) = 'service_role'/,
+    );
+  });
+
   it("uses integer-safe AI costs and token counters", () => {
     expect(allMigrations).toContain("prompt_tokens integer not null default 0");
     expect(allMigrations).toContain(
