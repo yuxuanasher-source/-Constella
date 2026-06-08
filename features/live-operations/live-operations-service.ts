@@ -608,6 +608,106 @@ export async function submitLiveReportScreenshotForOcr({
   return { report, job };
 }
 
+export async function confirmLiveReportOcrResult({
+  repo,
+  audit,
+  notify,
+  actor,
+  reportId,
+  input,
+}: {
+  repo: LiveOperationsRepository;
+  audit: LiveOperationsAuditWriter;
+  notify: LiveOperationsNotifier;
+  actor: LiveOperationsActor;
+  reportId: string;
+  input: {
+    ocrDuration?: number | null;
+    ocrViewers?: number | null;
+    confirmedDuration: number;
+    confirmedViewers?: number | null;
+    note?: string;
+  };
+}): Promise<LiveReportRecord> {
+  const before = await requireLiveReport(repo, reportId);
+  assertSameOrganization(actor, before.organizationId);
+  if (actor.role === "streamer" && actor.streamerId !== before.streamerId) {
+    throw new Error("Streamers can only confirm their own reports");
+  }
+  if (!["ocr_ing", "pending_confirm", "need_more"].includes(before.status)) {
+    throw new Error("Only OCR pending reports can be confirmed");
+  }
+
+  const screenshotDuration = input.ocrDuration ?? input.confirmedDuration;
+  const evidence = resolveReportEvidence({
+    systemDuration: before.systemDuration,
+    screenshotDuration,
+    claimedDuration: input.confirmedDuration,
+  });
+  const confirmed = await repo.updateLiveReport(reportId, {
+    status: "pending_review",
+    screenshotDuration,
+    claimedDuration: input.confirmedDuration,
+    settlementDuration: evidence.settlementDuration,
+    timeSource: evidence.timeSource,
+    evidenceLevel: evidence.evidenceLevel,
+    divergencePct: evidence.divergencePct,
+    viewers: input.confirmedViewers ?? input.ocrViewers ?? before.viewers,
+    riskFlags: evidence.riskFlags,
+  });
+
+  await repo.createReportChangeLog({
+    organizationId: actor.organizationId,
+    liveReportId: reportId,
+    changedBy: actor.userId,
+    before: before as unknown as Record<string, unknown>,
+    after: confirmed as unknown as Record<string, unknown>,
+    changedFields: [
+      "status",
+      "screenshot_duration",
+      "claimed_duration",
+      "viewers",
+      "risk_flags",
+    ],
+    reason: input.note,
+  });
+
+  await audit({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action: "update",
+    module: "live_report",
+    objectType: "live_report",
+    objectId: reportId,
+    projectId: before.projectId,
+    streamerId: before.streamerId,
+    before: before as unknown as Record<string, unknown>,
+    after: confirmed as unknown as Record<string, unknown>,
+    changedFields: [
+      "status",
+      "screenshot_duration",
+      "claimed_duration",
+      "viewers",
+    ],
+    reason: input.note,
+  });
+
+  await notify({
+    organizationId: actor.organizationId,
+    recipientRole: "operator_business",
+    type: "review",
+    title: "Live report pending review",
+    content: "A streamer confirmed OCR report values.",
+    objectType: "live_report",
+    objectId: reportId,
+    source: "live_report.ocr.confirm",
+  });
+
+  return confirmed;
+}
+
 export async function reviewLiveReport({
   repo,
   audit,

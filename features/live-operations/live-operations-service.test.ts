@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   cancelLiveTask,
+  confirmLiveReportOcrResult,
   createLiveTask,
   reviewLiveReport,
   startLiveTask,
@@ -49,6 +50,26 @@ const task = {
   systemDuration: 0,
 };
 
+const baseReport = {
+  id: "report-1",
+  organizationId: "org-1",
+  liveTaskId: "task-1",
+  projectId: "project-1",
+  streamerId: "streamer-1",
+  status: "pending_review" as const,
+  systemDuration: 120,
+  screenshotDuration: 124,
+  claimedDuration: 124,
+  settlementDuration: 120,
+  timeSource: "system" as const,
+  evidenceLevel: "green" as const,
+  divergencePct: 0.0333,
+  viewers: 800,
+  includeInTaskResult: true,
+  enterSettlementPool: true,
+  riskFlags: [],
+};
+
 function createRepo(): LiveOperationsRepository {
   return {
     getProjectStreamer: vi.fn(async () => ({
@@ -94,43 +115,10 @@ function createRepo(): LiveOperationsRepository {
       enterSettlementPool: true,
       riskFlags: input.riskFlags,
     })),
-    getLiveReportById: vi.fn(async () => ({
-      id: "report-1",
-      organizationId: "org-1",
-      liveTaskId: "task-1",
-      projectId: "project-1",
-      streamerId: "streamer-1",
-      status: "pending_review" as const,
-      systemDuration: 120,
-      screenshotDuration: 124,
-      claimedDuration: 124,
-      settlementDuration: 120,
-      timeSource: "system" as const,
-      evidenceLevel: "green" as const,
-      divergencePct: 0.0333,
-      viewers: 800,
-      includeInTaskResult: true,
-      enterSettlementPool: true,
-      riskFlags: [],
-    })),
+    getLiveReportById: vi.fn(async () => ({ ...baseReport })),
     updateLiveReport: vi.fn(async (_reportId, patch) => ({
-      id: "report-1",
-      organizationId: "org-1",
-      liveTaskId: "task-1",
-      projectId: "project-1",
-      streamerId: "streamer-1",
-      status: patch.status ?? ("pending_review" as const),
-      systemDuration: 120,
-      screenshotDuration: 124,
-      claimedDuration: 124,
-      settlementDuration: 120,
-      timeSource: "system" as const,
-      evidenceLevel: "green" as const,
-      divergencePct: 0.0333,
-      viewers: 800,
-      includeInTaskResult: patch.includeInTaskResult ?? true,
-      enterSettlementPool: patch.enterSettlementPool ?? true,
-      riskFlags: [],
+      ...baseReport,
+      ...patch,
     })),
     createReportScreenshot: vi.fn(async () => undefined),
     createReportChangeLog: vi.fn(async () => undefined),
@@ -667,6 +655,206 @@ describe("live operations service", () => {
       }),
     );
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("confirmLiveReportOcrResult confirms OCR result values and sends the report to review", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "ocr_ing",
+      streamerId: "streamer-1",
+      organizationId: "org-1",
+      systemDuration: 120,
+    });
+
+    const result = await confirmLiveReportOcrResult({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      reportId: "report-1",
+      input: {
+        ocrDuration: 78,
+        ocrViewers: 300,
+        confirmedDuration: 80,
+        confirmedViewers: 320,
+      },
+    });
+
+    expect(result.status).toBe("pending_review");
+    expect(repo.updateLiveReport).toHaveBeenCalledWith(
+      "report-1",
+      expect.objectContaining({
+        status: "pending_review",
+        screenshotDuration: 78,
+        claimedDuration: 80,
+        settlementDuration: 120,
+        timeSource: "system",
+        evidenceLevel: "yellow",
+        viewers: 320,
+        riskFlags: expect.arrayContaining(["duration_divergence"]),
+      }),
+    );
+    expect(repo.createReportChangeLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        liveReportId: "report-1",
+        changedFields: expect.arrayContaining([
+          "status",
+          "screenshot_duration",
+          "claimed_duration",
+          "viewers",
+          "risk_flags",
+        ]),
+      }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        module: "live_report",
+        objectId: "report-1",
+      }),
+    );
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientRole: "operator_business",
+        source: "live_report.ocr.confirm",
+      }),
+    );
+  });
+
+  it("blocks another streamer from confirming an OCR report before side effects", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "ocr_ing",
+    });
+
+    await expect(
+      confirmLiveReportOcrResult({
+        repo,
+        audit,
+        notify,
+        actor: { ...streamerActor, streamerId: "streamer-2" },
+        reportId: "report-1",
+        input: {
+          ocrDuration: 78,
+          confirmedDuration: 80,
+        },
+      }),
+    ).rejects.toThrow("Streamers can only confirm their own reports");
+
+    expect(repo.updateLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportChangeLog).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-OCR reports before confirmation side effects", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "approved",
+    });
+
+    await expect(
+      confirmLiveReportOcrResult({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        reportId: "report-1",
+        input: {
+          ocrDuration: 78,
+          confirmedDuration: 80,
+        },
+      }),
+    ).rejects.toThrow("Only OCR pending reports can be confirmed");
+
+    expect(repo.updateLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportChangeLog).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("lets same-organization staff confirm an OCR report", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "pending_confirm",
+    });
+
+    const result = await confirmLiveReportOcrResult({
+      repo,
+      audit,
+      notify,
+      actor,
+      reportId: "report-1",
+      input: {
+        ocrDuration: 118,
+        confirmedDuration: 119,
+        confirmedViewers: 410,
+      },
+    });
+
+    expect(result.status).toBe("pending_review");
+    expect(repo.updateLiveReport).toHaveBeenCalledWith(
+      "report-1",
+      expect.objectContaining({
+        status: "pending_review",
+        viewers: 410,
+      }),
+    );
+  });
+
+  it("falls back to OCR viewers when confirmed viewers are omitted", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "need_more",
+      viewers: 800,
+    });
+
+    await confirmLiveReportOcrResult({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      reportId: "report-1",
+      input: {
+        ocrDuration: 80,
+        ocrViewers: 305,
+        confirmedDuration: 80,
+      },
+    });
+
+    expect(repo.updateLiveReport).toHaveBeenCalledWith(
+      "report-1",
+      expect.objectContaining({
+        viewers: 305,
+      }),
+    );
+  });
+
+  it("keeps existing viewers when confirmed and OCR viewers are omitted", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "ocr_ing",
+      viewers: 800,
+    });
+
+    await confirmLiveReportOcrResult({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      reportId: "report-1",
+      input: {
+        ocrDuration: 80,
+        confirmedDuration: 80,
+      },
+    });
+
+    expect(repo.updateLiveReport).toHaveBeenCalledWith(
+      "report-1",
+      expect.objectContaining({
+        viewers: 800,
+      }),
+    );
   });
 
   it("approves a report into the settlement pool without creating settlement items", async () => {
