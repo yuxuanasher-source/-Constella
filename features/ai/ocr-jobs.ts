@@ -6,7 +6,10 @@ import { recordUsageEvent } from "@/features/billing/usage-metering";
 import type { AiActor } from "./contracts";
 import { recordAiInvocation } from "./invocation-ledger";
 import { parseLiveReportOcrText } from "./ocr-template-parser";
-import type { TencentOcrProvider } from "./providers/tencent-ocr-provider";
+import type {
+  TencentOcrInput,
+  TencentOcrProvider,
+} from "./providers/tencent-ocr-provider";
 
 export type OcrJobStatus =
   | "queued"
@@ -24,6 +27,8 @@ export type OcrJobPayload = {
   screenshotId?: string;
   imageBase64?: string;
   imageUrl?: string;
+  imageBucket?: string;
+  imagePath?: string;
   expectedDuration?: number;
 };
 
@@ -142,8 +147,8 @@ export async function createOcrJob({
 }): Promise<OcrJobRecord> {
   const jobId = input.id ?? randomUUID();
   const invocationId = input.invocationId ?? randomUUID();
-  if (!input.imageBase64 && !input.imageUrl) {
-    throw new Error("OCR job requires imageBase64 or imageUrl");
+  if (!input.imageBase64 && !input.imageUrl && !input.imagePath) {
+    throw new Error("OCR job requires imageBase64, imageUrl, or imagePath");
   }
   await assertLiveReportAccessible({
     client,
@@ -155,6 +160,8 @@ export async function createOcrJob({
     screenshotId: input.screenshotId,
     imageBase64: input.imageBase64,
     imageUrl: input.imageUrl,
+    imageBucket: input.imageBucket,
+    imagePath: input.imagePath,
     expectedDuration: input.expectedDuration,
   };
 
@@ -375,6 +382,7 @@ export async function runOcrJobOnce({
   runnerId = "manual-runner",
   now = () => new Date(),
   lockTimeoutMs = 15 * 60 * 1000,
+  imageResolver = defaultOcrImageResolver,
 }: {
   client: OcrJobClient;
   actor: AiActor;
@@ -383,6 +391,7 @@ export async function runOcrJobOnce({
   runnerId?: string;
   now?: () => Date;
   lockTimeoutMs?: number;
+  imageResolver?: (payload: OcrJobPayload) => Promise<TencentOcrInput>;
 }): Promise<OcrJobRecord> {
   const job = await requireOcrJob(client, jobId);
   await assertOcrJobAccessible({ client, actor, job });
@@ -407,9 +416,7 @@ export async function runOcrJobOnce({
   });
 
   const providerResult = await provider.runGeneralBasicOcr(
-    job.payload.imageUrl
-      ? { imageUrl: job.payload.imageUrl }
-      : { imageBase64: job.payload.imageBase64 ?? "" },
+    await imageResolver(job.payload),
   );
 
   if (providerResult.status !== "succeeded") {
@@ -630,6 +637,14 @@ export async function markOcrJobNeedsReview({
     errorCode: "needs_review",
     errorMessage: reason,
   };
+}
+
+async function defaultOcrImageResolver(
+  payload: OcrJobPayload,
+): Promise<TencentOcrInput> {
+  if (payload.imageUrl) return { imageUrl: payload.imageUrl };
+  if (payload.imageBase64) return { imageBase64: payload.imageBase64 };
+  throw new Error("OCR job requires imageBase64, imageUrl, or imagePath");
 }
 
 async function requireOcrJob(

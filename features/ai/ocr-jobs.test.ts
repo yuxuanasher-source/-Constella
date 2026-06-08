@@ -233,6 +233,51 @@ describe("OCR jobs", () => {
     ]);
   });
 
+  it("uses an injected image resolver before calling the OCR provider", async () => {
+    const { client } = createClient({
+      jobs: [
+        {
+          id: "job-storage",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          aiInvocationId: "invocation-storage",
+          payload: {
+            liveReportId: "report-storage",
+            screenshotId: "screenshot-storage",
+            imageBucket: "evidence-private",
+            imagePath: "org/report-screenshots/task-1/end.png",
+          },
+        },
+      ],
+    });
+    const runGeneralBasicOcr = vi.fn(async () => ({
+      status: "succeeded" as const,
+      textLines: [],
+      confidence: 96,
+      requestId: "request-storage",
+      rawResponse: {},
+    }));
+    const imageResolver = vi.fn(async () => ({ imageBase64: "AQID" }));
+
+    await runOcrJobOnce({
+      client,
+      actor,
+      jobId: "job-storage",
+      provider: { runGeneralBasicOcr },
+      imageResolver,
+    });
+
+    expect(imageResolver).toHaveBeenCalledWith({
+      liveReportId: "report-storage",
+      screenshotId: "screenshot-storage",
+      imageBucket: "evidence-private",
+      imagePath: "org/report-screenshots/task-1/end.png",
+    });
+    expect(runGeneralBasicOcr).toHaveBeenCalledWith({ imageBase64: "AQID" });
+  });
+
   it("marks low-confidence OCR as needs confirmation instead of trusted", async () => {
     const { client, updates } = createClient({
       jobs: [
