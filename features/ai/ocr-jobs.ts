@@ -415,9 +415,25 @@ export async function runOcrJobOnce({
     locked_by: runnerId,
   });
 
-  const providerResult = await provider.runGeneralBasicOcr(
-    await imageResolver(job.payload),
-  );
+  let providerInput: TencentOcrInput;
+  try {
+    providerInput = await imageResolver(job.payload);
+  } catch (error) {
+    return failOcrJobAttempt({
+      client,
+      job,
+      attempt,
+      maxAttempts,
+      startedAt,
+      errorCode: "image_source_failed",
+      errorSummary:
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "OCR image source failed",
+    });
+  }
+
+  const providerResult = await provider.runGeneralBasicOcr(providerInput);
 
   if (providerResult.status !== "succeeded") {
     const errorSummary =
@@ -425,39 +441,15 @@ export async function runOcrJobOnce({
       providerResult.degradedReason ??
       "Tencent OCR failed";
     const errorCode = safeProviderErrorCode(providerResult);
-    const safeMessage = sanitizeErrorMessage(errorSummary);
-    const finalAttempt = attempt >= maxAttempts;
-    const retryAt = new Date(
-      startedAt.getTime() + retryDelayMs(attempt),
-    ).toISOString();
-    await updateOcrResult(client, job, {
-      status: finalAttempt ? "failed" : "pending",
-      error_code: errorCode,
-      error_message: safeMessage,
-      needs_confirmation: false,
-    });
-    await updateOrThrow(client, "background_jobs", jobId, {
-      status: finalAttempt ? "failed" : "queued",
+    return failOcrJobAttempt({
+      client,
+      job,
       attempt,
-      run_after: finalAttempt ? startedAt.toISOString() : retryAt,
-      next_run_at: finalAttempt ? null : retryAt,
-      locked_at: null,
-      locked_by: null,
-      error_code: errorCode,
-      error_message: safeMessage,
-      error_summary: safeMessage,
-    });
-    return {
-      ...job,
-      status: finalAttempt ? "failed" : "queued",
-      attempt,
-      runAfter: finalAttempt ? startedAt.toISOString() : retryAt,
-      nextRunAt: finalAttempt ? undefined : retryAt,
-      lockedAt: undefined,
-      lockedBy: undefined,
+      maxAttempts,
+      startedAt,
       errorCode,
-      errorMessage: safeMessage,
-    };
+      errorSummary,
+    });
   }
 
   const parsed = parseLiveReportOcrText(providerResult.textLines, {
@@ -744,6 +736,60 @@ async function updateOcrResult(
   if (error) {
     throw error;
   }
+}
+
+async function failOcrJobAttempt({
+  client,
+  job,
+  attempt,
+  maxAttempts,
+  startedAt,
+  errorCode,
+  errorSummary,
+}: {
+  client: OcrJobClient;
+  job: OcrJobRecord;
+  attempt: number;
+  maxAttempts: number;
+  startedAt: Date;
+  errorCode: string;
+  errorSummary: string;
+}): Promise<OcrJobRecord> {
+  const safeMessage = sanitizeErrorMessage(errorSummary);
+  const finalAttempt = attempt >= maxAttempts;
+  const retryAt = new Date(
+    startedAt.getTime() + retryDelayMs(attempt),
+  ).toISOString();
+
+  await updateOcrResult(client, job, {
+    status: finalAttempt ? "failed" : "pending",
+    error_code: errorCode,
+    error_message: safeMessage,
+    needs_confirmation: false,
+  });
+  await updateOrThrow(client, "background_jobs", job.id, {
+    status: finalAttempt ? "failed" : "queued",
+    attempt,
+    run_after: finalAttempt ? startedAt.toISOString() : retryAt,
+    next_run_at: finalAttempt ? null : retryAt,
+    locked_at: null,
+    locked_by: null,
+    error_code: errorCode,
+    error_message: safeMessage,
+    error_summary: safeMessage,
+  });
+
+  return {
+    ...job,
+    status: finalAttempt ? "failed" : "queued",
+    attempt,
+    runAfter: finalAttempt ? startedAt.toISOString() : retryAt,
+    nextRunAt: finalAttempt ? undefined : retryAt,
+    lockedAt: undefined,
+    lockedBy: undefined,
+    errorCode,
+    errorMessage: safeMessage,
+  };
 }
 
 function toOcrJobRecord(row: OcrJobRow): OcrJobRecord {

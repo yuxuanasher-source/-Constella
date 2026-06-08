@@ -175,6 +175,47 @@ describe("OCR jobs", () => {
     ]);
   });
 
+  it("creates an OCR job with only storage image path input", async () => {
+    const { client, inserts } = createClient({
+      liveReports: [
+        {
+          id: "report-path",
+          organization_id: "org-1",
+          project_id: "project-1",
+        },
+      ],
+    });
+
+    const job = await createOcrJob({
+      client,
+      actor,
+      input: {
+        id: "job-path",
+        invocationId: "invocation-path",
+        liveReportId: "report-path",
+        screenshotId: "screenshot-path",
+        imageBucket: "evidence-private",
+        imagePath: "org/report-screenshots/task-1/end.png",
+      },
+    });
+
+    expect(job.payload).toMatchObject({
+      liveReportId: "report-path",
+      screenshotId: "screenshot-path",
+      imageBucket: "evidence-private",
+      imagePath: "org/report-screenshots/task-1/end.png",
+    });
+    expect(inserts.background_jobs).toEqual([
+      expect.objectContaining({
+        id: "job-path",
+        payload: expect.objectContaining({
+          imageBucket: "evidence-private",
+          imagePath: "org/report-screenshots/task-1/end.png",
+        }),
+      }),
+    ]);
+  });
+
   it("runs OCR successfully, stores parsed fields, and records OCR usage", async () => {
     const { client, inserts, updates } = createClient({
       jobs: [
@@ -276,6 +317,79 @@ describe("OCR jobs", () => {
       imagePath: "org/report-screenshots/task-1/end.png",
     });
     expect(runGeneralBasicOcr).toHaveBeenCalledWith({ imageBase64: "AQID" });
+  });
+
+  it("requeues and unlocks OCR jobs when image resolution fails before provider call", async () => {
+    const { client, updates } = createClient({
+      jobs: [
+        {
+          id: "job-image-error",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          maxAttempts: 3,
+          runAfter: "2026-06-05T01:00:00.000Z",
+          payload: {
+            liveReportId: "report-image-error",
+            imagePath: "org/report-screenshots/task-1/missing.png",
+          },
+        },
+      ],
+    });
+    const runGeneralBasicOcr = vi.fn(async () => ({
+      status: "succeeded" as const,
+      textLines: [],
+      confidence: 100,
+    }));
+    const imageResolver = vi.fn(async () => {
+      throw new Error("download failed with secret=abc\nstack trace");
+    });
+
+    const result = await runOcrJobOnce({
+      client,
+      actor,
+      jobId: "job-image-error",
+      runnerId: "runner-1",
+      now: () => new Date("2026-06-05T02:00:00.000Z"),
+      provider: { runGeneralBasicOcr },
+      imageResolver,
+    });
+
+    expect(result).toMatchObject({
+      status: "queued",
+      attempt: 1,
+      errorCode: "image_source_failed",
+    });
+    expect(runGeneralBasicOcr).not.toHaveBeenCalled();
+    expect(updates.ocr_results).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          status: "pending",
+          error_code: "image_source_failed",
+          error_message: expect.stringContaining("download failed"),
+          needs_confirmation: false,
+        }),
+      }),
+    ]);
+    expect(updates.background_jobs.at(-1)).toEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          status: "queued",
+          attempt: 1,
+          error_code: "image_source_failed",
+          error_message: expect.stringContaining("download failed"),
+          locked_at: null,
+          locked_by: null,
+        }),
+      }),
+    );
+    const lastBackgroundUpdate = updates.background_jobs.at(-1) as
+      | { payload: { error_message?: unknown } }
+      | undefined;
+    expect(String(lastBackgroundUpdate?.payload.error_message)).not.toContain(
+      "secret=abc",
+    );
   });
 
   it("marks low-confidence OCR as needs confirmation instead of trusted", async () => {

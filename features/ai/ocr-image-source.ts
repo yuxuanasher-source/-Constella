@@ -15,12 +15,12 @@ export async function resolveOcrImageInput({
   >;
   defaultBucket: string;
 }): Promise<TencentOcrInput> {
-  if (payload.imageBase64) {
-    return { imageBase64: payload.imageBase64 };
-  }
-
   if (payload.imageUrl) {
     return { imageUrl: payload.imageUrl };
+  }
+
+  if (payload.imageBase64) {
+    return { imageBase64: payload.imageBase64 };
   }
 
   if (!payload.imagePath) {
