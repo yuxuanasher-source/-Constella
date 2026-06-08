@@ -76,6 +76,20 @@ describe("/api/internal/ocr/run", () => {
     expect(runOcrJobOnce).not.toHaveBeenCalled();
   });
 
+  it("rejects a token without the bearer scheme", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/internal/ocr/run", {
+        method: "POST",
+        headers: { authorization: "runner-token" },
+        body: JSON.stringify({}),
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(claimRunnableOcrJobs).not.toHaveBeenCalled();
+    expect(runOcrJobOnce).not.toHaveBeenCalled();
+  });
+
   it("claims jobs with the configured system runner and returns safe metadata", async () => {
     vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
       {
@@ -184,6 +198,56 @@ describe("/api/internal/ocr/run", () => {
     ]);
     expect(JSON.stringify(body)).not.toContain("private/path.png");
     expect(JSON.stringify(body)).not.toContain("secret=abc123");
+  });
+
+  it("returns safe metadata when the provider is unconfigured", async () => {
+    vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
+      {
+        id: "job-provider-missing",
+        organizationId: "org-runner",
+        jobType: "ocr.extract_live_report",
+        status: "queued",
+        attempt: 0,
+        maxAttempts: 3,
+        payload: {
+          liveReportId: "report-1",
+          imagePath: "private/path.png",
+        },
+      },
+    ]);
+    vi.mocked(runOcrJobOnce).mockResolvedValue({
+      id: "job-provider-missing",
+      organizationId: "org-runner",
+      jobType: "ocr.extract_live_report",
+      status: "queued",
+      attempt: 1,
+      maxAttempts: 3,
+      errorCode: "provider_unconfigured",
+      errorMessage: "Tencent OCR credentials are not configured",
+      payload: {
+        liveReportId: "report-1",
+        imagePath: "private/path.png",
+      },
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/internal/ocr/run", {
+        method: "POST",
+        headers: { authorization: "Bearer runner-token" },
+        body: JSON.stringify({}),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({
+      failures: [],
+      jobs: [{ id: "job-provider-missing", status: "queued", attempt: 1 }],
+    });
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("provider_unconfigured");
+    expect(serialized).not.toContain("private/path.png");
+    expect(serialized).not.toContain("Tencent OCR credentials");
   });
 
   it("uses the storage resolver for OCR image input", async () => {

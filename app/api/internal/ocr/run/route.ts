@@ -12,7 +12,7 @@ export async function POST(request: Request) {
   const expected = process.env.OCR_RUNNER_TOKEN;
   const actual = request.headers
     .get("authorization")
-    ?.replace(/^Bearer\s+/i, "");
+    ?.match(/^Bearer\s+(.+)$/i)?.[1];
   if (!expected || actual !== expected) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
