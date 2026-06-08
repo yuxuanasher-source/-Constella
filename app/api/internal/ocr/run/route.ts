@@ -30,7 +30,7 @@ export async function POST(request: Request) {
   };
   const organizationId = process.env.OCR_RUNNER_ORGANIZATION_ID;
   const userId = process.env.OCR_RUNNER_USER_ID;
-  if (!organizationId || !userId) {
+  if (!isUuid(organizationId) || !isUuid(userId)) {
     return NextResponse.json(
       { error: "OCR runner organization and user are not configured" },
       { status: 500 },
@@ -114,4 +114,13 @@ function sanitizeRunnerError(error: unknown): string {
     .replace(/secret[^\s;]*/gi, "[redacted]")
     .replace(/\n[\s\S]*/g, "")
     .slice(0, 160);
+}
+
+function isUuid(value: string | undefined): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  );
 }

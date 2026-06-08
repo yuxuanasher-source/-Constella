@@ -29,13 +29,15 @@ const supabase = {
   from: vi.fn(),
   storage: { from: vi.fn() },
 };
+const runnerOrganizationId = "11111111-1111-4111-8111-111111111111";
+const runnerUserId = "22222222-2222-4222-8222-222222222222";
 
 describe("/api/internal/ocr/run", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("OCR_RUNNER_TOKEN", "runner-token");
-    vi.stubEnv("OCR_RUNNER_ORGANIZATION_ID", "org-runner");
-    vi.stubEnv("OCR_RUNNER_USER_ID", "user-runner");
+    vi.stubEnv("OCR_RUNNER_ORGANIZATION_ID", runnerOrganizationId);
+    vi.stubEnv("OCR_RUNNER_USER_ID", runnerUserId);
     vi.stubEnv("OCR_RUNNER_USER_NAME", "System OCR Runner");
     vi.stubEnv("SUPABASE_PRIVATE_BUCKET", "evidence-private");
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
@@ -106,6 +108,25 @@ describe("/api/internal/ocr/run", () => {
     expect(runOcrJobOnce).not.toHaveBeenCalled();
   });
 
+  it("requires a UUID-shaped runner organization", async () => {
+    vi.stubEnv("OCR_RUNNER_ORGANIZATION_ID", "org-runner");
+
+    const response = await POST(
+      new Request("http://localhost/api/internal/ocr/run", {
+        method: "POST",
+        headers: { authorization: "Bearer runner-token" },
+        body: JSON.stringify({}),
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "OCR runner organization and user are not configured",
+    });
+    expect(claimRunnableOcrJobs).not.toHaveBeenCalled();
+    expect(runOcrJobOnce).not.toHaveBeenCalled();
+  });
+
   it("requires a configured runner user", async () => {
     vi.stubEnv("OCR_RUNNER_USER_ID", "");
 
@@ -122,11 +143,30 @@ describe("/api/internal/ocr/run", () => {
     expect(runOcrJobOnce).not.toHaveBeenCalled();
   });
 
+  it("requires a UUID-shaped runner user", async () => {
+    vi.stubEnv("OCR_RUNNER_USER_ID", "user-runner");
+
+    const response = await POST(
+      new Request("http://localhost/api/internal/ocr/run", {
+        method: "POST",
+        headers: { authorization: "Bearer runner-token" },
+        body: JSON.stringify({}),
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "OCR runner organization and user are not configured",
+    });
+    expect(claimRunnableOcrJobs).not.toHaveBeenCalled();
+    expect(runOcrJobOnce).not.toHaveBeenCalled();
+  });
+
   it("claims jobs with the configured system runner and returns safe metadata", async () => {
     vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
       {
         id: "job-1",
-        organizationId: "org-runner",
+        organizationId: runnerOrganizationId,
         jobType: "ocr.extract_live_report",
         status: "queued",
         attempt: 0,
@@ -140,7 +180,7 @@ describe("/api/internal/ocr/run", () => {
     ]);
     vi.mocked(runOcrJobOnce).mockResolvedValue({
       id: "job-1",
-      organizationId: "org-runner",
+      organizationId: runnerOrganizationId,
       jobType: "ocr.extract_live_report",
       status: "succeeded",
       attempt: 1,
@@ -170,8 +210,8 @@ describe("/api/internal/ocr/run", () => {
     expect(claimRunnableOcrJobs).toHaveBeenCalledWith(
       expect.objectContaining({
         client: supabase,
-        organizationId: "org-runner",
-        runnerId: "user-runner",
+        organizationId: runnerOrganizationId,
+        runnerId: runnerUserId,
         limit: 10,
       }),
     );
@@ -179,13 +219,13 @@ describe("/api/internal/ocr/run", () => {
       expect.objectContaining({
         client: supabase,
         actor: {
-          userId: "user-runner",
+          userId: runnerUserId,
           name: "System OCR Runner",
           role: "ops_manager",
-          organizationId: "org-runner",
+          organizationId: runnerOrganizationId,
         },
         jobId: "job-1",
-        runnerId: "user-runner",
+        runnerId: runnerUserId,
         imageResolver: expect.any(Function),
       }),
     );
@@ -220,7 +260,7 @@ describe("/api/internal/ocr/run", () => {
     vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
       {
         id: "job-fail",
-        organizationId: "org-runner",
+        organizationId: runnerOrganizationId,
         jobType: "ocr.extract_live_report",
         status: "queued",
         attempt: 0,
@@ -261,7 +301,7 @@ describe("/api/internal/ocr/run", () => {
     vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
       {
         id: "job-fail",
-        organizationId: "org-runner",
+        organizationId: runnerOrganizationId,
         jobType: "ocr.extract_live_report",
         status: "queued",
         attempt: 0,
@@ -270,7 +310,7 @@ describe("/api/internal/ocr/run", () => {
       },
       {
         id: "job-ok",
-        organizationId: "org-runner",
+        organizationId: runnerOrganizationId,
         jobType: "ocr.extract_live_report",
         status: "queued",
         attempt: 0,
@@ -282,7 +322,7 @@ describe("/api/internal/ocr/run", () => {
       .mockRejectedValueOnce(new Error("provider failed with secret=abc123"))
       .mockResolvedValueOnce({
         id: "job-ok",
-        organizationId: "org-runner",
+        organizationId: runnerOrganizationId,
         jobType: "ocr.extract_live_report",
         status: "succeeded",
         attempt: 1,
@@ -317,7 +357,7 @@ describe("/api/internal/ocr/run", () => {
     vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
       {
         id: "job-provider-missing",
-        organizationId: "org-runner",
+        organizationId: runnerOrganizationId,
         jobType: "ocr.extract_live_report",
         status: "queued",
         attempt: 0,
@@ -330,7 +370,7 @@ describe("/api/internal/ocr/run", () => {
     ]);
     vi.mocked(runOcrJobOnce).mockResolvedValue({
       id: "job-provider-missing",
-      organizationId: "org-runner",
+      organizationId: runnerOrganizationId,
       jobType: "ocr.extract_live_report",
       status: "queued",
       attempt: 1,
@@ -367,7 +407,7 @@ describe("/api/internal/ocr/run", () => {
     vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
       {
         id: "job-1",
-        organizationId: "org-runner",
+        organizationId: runnerOrganizationId,
         jobType: "ocr.extract_live_report",
         status: "queued",
         attempt: 0,
@@ -385,7 +425,7 @@ describe("/api/internal/ocr/run", () => {
       });
       return {
         id: "job-1",
-        organizationId: "org-runner",
+        organizationId: runnerOrganizationId,
         jobType: "ocr.extract_live_report",
         status: "succeeded",
         attempt: 1,

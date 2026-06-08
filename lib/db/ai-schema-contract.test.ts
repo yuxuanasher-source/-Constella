@@ -8,6 +8,10 @@ const allMigrations = readdirSync(migrationsDir)
   .filter((file) => file.endsWith(".sql"))
   .map((file) => readFileSync(join(migrationsDir, file), "utf8").toLowerCase())
   .join("\n");
+const ocrRunnerClaimMigration = readFileSync(
+  join(migrationsDir, "20260608215200_ocr_runner_service_role_claims.sql"),
+  "utf8",
+).toLowerCase();
 
 describe("AI runtime schema contract", () => {
   it("creates organization-scoped AI runtime tables", () => {
@@ -84,11 +88,14 @@ describe("AI runtime schema contract", () => {
   });
 
   it("preserves service-role OCR runner claims with live report organization checks", () => {
-    expect(allMigrations).toContain("auth.role() = 'service_role'");
-    expect(allMigrations).toMatch(
+    expect(ocrRunnerClaimMigration).toContain(
+      "create or replace function public.claim_ocr_jobs",
+    );
+    expect(ocrRunnerClaimMigration).toContain("auth.role() = 'service_role'");
+    expect(ocrRunnerClaimMigration).toMatch(
       /lr\.id = public\.ocr_job_live_report_id\(bj\.payload\)[\s\S]*lr\.organization_id = p_organization_id/,
     );
-    expect(allMigrations).toMatch(
+    expect(ocrRunnerClaimMigration).toMatch(
       /public\.can_access_ocr_job\(bj\.organization_id, bj\.payload\)[\s\S]*auth\.role\(\) = 'service_role'/,
     );
   });
