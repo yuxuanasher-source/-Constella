@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { resolveOcrImageInput } from "@/features/ai/ocr-image-source";
 import { claimRunnableOcrJobs, runOcrJobOnce } from "@/features/ai/ocr-jobs";
 import {
   createTencentOcrProvider,
@@ -60,6 +61,13 @@ export async function POST(request: Request) {
           jobId: job.id,
           provider,
           runnerId,
+          imageResolver: (payload) =>
+            resolveOcrImageInput({
+              client: supabase,
+              payload,
+              defaultBucket:
+                process.env.SUPABASE_PRIVATE_BUCKET ?? "evidence-private",
+            }),
         });
         completed.push(toSafeJob(result));
       } catch (error) {

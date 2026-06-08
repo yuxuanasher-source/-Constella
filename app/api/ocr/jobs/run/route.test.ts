@@ -58,7 +58,8 @@ describe("/api/ocr/jobs/run", () => {
         payload: {
           liveReportId: "report-1",
           screenshotId: "screenshot-1",
-          imageBase64: "secret-image",
+          imageBucket: "evidence-private",
+          imagePath: "org/report-screenshots/task-1/end.png",
         },
       },
     ]);
@@ -75,7 +76,8 @@ describe("/api/ocr/jobs/run", () => {
       payload: {
         liveReportId: "report-1",
         screenshotId: "screenshot-1",
-        imageBase64: "secret-image",
+        imageBucket: "evidence-private",
+        imagePath: "org/report-screenshots/task-1/end.png",
       },
     });
 
@@ -104,7 +106,12 @@ describe("/api/ocr/jobs/run", () => {
         },
       ],
     });
-    expect(JSON.stringify(body)).not.toContain("secret-image");
+    expect(JSON.stringify(body)).not.toContain("org/report-screenshots");
+    expect(runOcrJobOnce).toHaveBeenCalledWith(
+      expect.objectContaining({
+        imageResolver: expect.any(Function),
+      }),
+    );
   });
 
   it("continues processing later OCR jobs when one job fails", async () => {
