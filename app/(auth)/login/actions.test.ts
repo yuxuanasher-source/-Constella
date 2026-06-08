@@ -128,6 +128,44 @@ describe("login server actions", () => {
     expect(adminFrom).toHaveBeenCalled();
   });
 
+  it("preserves the authenticated streamer role when redirecting to activation", async () => {
+    vi.mocked(getAuthContext).mockResolvedValue({
+      userId: "user-1",
+      email: "streamer@example.cn",
+      name: "Streamer",
+      role: "streamer",
+      organizationId: "org-1",
+      organizationName: "Org 1",
+    });
+    const serverFrom = vi.fn(() => ({
+      select: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          maybeSingle: vi.fn(async () => ({
+            data: { requires_onboarding: true },
+            error: null,
+          })),
+        })),
+      })),
+    }));
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { signInWithPassword, getUser, signOut },
+      from: serverFrom,
+    } as never);
+
+    await expect(
+      signInAction(
+        form({
+          email: "streamer@example.cn",
+          password: "Secret123",
+          roleIntent: "mcn",
+          next: "/console/projects",
+        }),
+      ),
+    ).rejects.toThrow(
+      "NEXT_REDIRECT:/login?mode=activate&role=streamer&next=%2Fconsole%2Fprojects",
+    );
+  });
+
   it("rejects activation unless the current profile is a pending subaccount", async () => {
     vi.mocked(createSupabaseServerClient).mockResolvedValue({
       auth: { getUser, signOut },
@@ -172,6 +210,7 @@ describe("login server actions", () => {
       auth: { getUser, signOut },
     } as never);
     const updateUserById = vi.fn(async () => ({ error: null }));
+    const listUsers = vi.fn(async () => ({ data: { users: [] }, error: null }));
     const updateProfile = vi.fn(() => ({
       eq: vi.fn(async () => ({ error: null })),
     }));
@@ -200,7 +239,7 @@ describe("login server actions", () => {
       update: updateProfile,
     }));
     vi.mocked(createSupabaseAdminClient).mockReturnValue({
-      auth: { admin: { updateUserById } },
+      auth: { admin: { updateUserById, listUsers } },
       from: adminFrom,
     } as never);
 
@@ -236,6 +275,74 @@ describe("login server actions", () => {
       requires_onboarding: false,
     });
     expect(signOut).toHaveBeenCalled();
+  });
+
+  it("rejects activation before updating Auth when the phone belongs to another Auth user", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { getUser, signOut },
+    } as never);
+    const updateUserById = vi.fn(async () => ({ error: null }));
+    const listUsers = vi.fn(async () => ({
+      data: {
+        users: [
+          {
+            id: "other-user",
+            email: "other@example.cn",
+            phone: "8618083748097",
+          },
+        ],
+      },
+      error: null,
+    }));
+    const updateProfile = vi.fn(() => ({
+      eq: vi.fn(async () => ({ error: null })),
+    }));
+    const adminFrom = vi.fn(() => ({
+      select: vi.fn((columns: string) => ({
+        eq:
+          columns === "requires_onboarding, login_account"
+            ? vi.fn(() => ({
+                maybeSingle: vi.fn(async () => ({
+                  data: {
+                    requires_onboarding: true,
+                    login_account: "jy-sub-001",
+                  },
+                  error: null,
+                })),
+              }))
+            : vi.fn(() => ({
+                neq: vi.fn(() => ({
+                  maybeSingle: vi.fn(async () => ({
+                    data: null,
+                    error: null,
+                  })),
+                })),
+              })),
+      })),
+      update: updateProfile,
+    }));
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      auth: { admin: { updateUserById, listUsers } },
+      from: adminFrom,
+    } as never);
+
+    await expect(
+      activateSubaccountAction(
+        form({
+          email: "streamer@example.cn",
+          phone: "18083748097",
+          password: "Secret123",
+          roleIntent: "streamer",
+          entryPoint: "mobile",
+        }),
+      ),
+    ).rejects.toThrow(
+      "NEXT_REDIRECT:/m/login?mode=activate&role=streamer&error=activation-phone",
+    );
+
+    expect(updateUserById).not.toHaveBeenCalled();
+    expect(updateProfile).not.toHaveBeenCalled();
+    expect(signOut).not.toHaveBeenCalled();
   });
 
   it("rejects activation before updating Auth when the phone belongs to another profile", async () => {

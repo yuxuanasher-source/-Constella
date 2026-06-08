@@ -74,6 +74,7 @@
 ### Task 1: Schema Contract and Migration
 
 **Files:**
+
 - Create: `supabase/migrations/20260607150000_streamer_default_settlement_rules.sql`
 - Modify: `lib/db/schema-contract.test.ts`
 
@@ -82,26 +83,20 @@
 Add this test to `lib/db/schema-contract.test.ts` inside `describe("P0 database contract", ...)`:
 
 ```ts
-  it("declares streamer default settlement cps snapshot fields", () => {
-    expect(allMigrations).toContain(
-      "default_cps_rate_bps integer not null default 0",
-    );
-    expect(allMigrations).toContain(
-      "streamers_default_cps_rate_bps_range",
-    );
-    expect(allMigrations).toContain(
-      "cps_rate_bps integer not null default 0",
-    );
-    expect(allMigrations).toContain(
-      "project_streamers_cps_rate_bps_range",
-    );
-    expect(allMigrations).toContain(
-      "default_cps_rate_bps >= 0 and default_cps_rate_bps <= 10000",
-    );
-    expect(allMigrations).toContain(
-      "cps_rate_bps >= 0 and cps_rate_bps <= 10000",
-    );
-  });
+it("declares streamer default settlement cps snapshot fields", () => {
+  expect(allMigrations).toContain(
+    "default_cps_rate_bps integer not null default 0",
+  );
+  expect(allMigrations).toContain("streamers_default_cps_rate_bps_range");
+  expect(allMigrations).toContain("cps_rate_bps integer not null default 0");
+  expect(allMigrations).toContain("project_streamers_cps_rate_bps_range");
+  expect(allMigrations).toContain(
+    "default_cps_rate_bps >= 0 and default_cps_rate_bps <= 10000",
+  );
+  expect(allMigrations).toContain(
+    "cps_rate_bps >= 0 and cps_rate_bps <= 10000",
+  );
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -158,6 +153,7 @@ git commit -m "feat: add streamer settlement cps schema"
 ### Task 2: Streamer Service Settlement Defaults
 
 **Files:**
+
 - Modify: `features/streamers/streamer-service.test.ts`
 - Modify: `features/streamers/streamer-service.ts`
 
@@ -177,91 +173,91 @@ import {
 Add tests:
 
 ```ts
-  it("creates streamer profiles with default settlement pricing", async () => {
-    const repo = {
-      createProfile: vi.fn().mockResolvedValue({
-        id: "S-price",
-        displayName: "Price Streamer",
-        userId: null,
-        riskLevel: "low",
-        cooperationStatus: "not_started",
-      }),
-      getById: vi.fn(),
-      updateRisk: vi.fn(),
-      updateSettlementRule: vi.fn(),
-    };
-    const audit = vi.fn().mockResolvedValue(undefined);
+it("creates streamer profiles with default settlement pricing", async () => {
+  const repo = {
+    createProfile: vi.fn().mockResolvedValue({
+      id: "S-price",
+      displayName: "Price Streamer",
+      userId: null,
+      riskLevel: "low",
+      cooperationStatus: "not_started",
+    }),
+    getById: vi.fn(),
+    updateRisk: vi.fn(),
+    updateSettlementRule: vi.fn(),
+  };
+  const audit = vi.fn().mockResolvedValue(undefined);
 
-    await createStreamerProfile({
+  await createStreamerProfile({
+    repo,
+    audit,
+    actor,
+    input: {
+      displayName: " Price Streamer ",
+      defaultSettlementMethod: "base_salary_cpt",
+      defaultHourlyRate: 80,
+      defaultBaseSalary: 6000,
+      defaultCpsRateBps: 1500,
+    },
+  });
+
+  expect(repo.createProfile).toHaveBeenCalledWith(
+    expect.objectContaining({
+      displayName: "Price Streamer",
+      defaultSettlementMethod: "base_salary_cpt",
+      defaultHourlyRate: 80,
+      defaultBaseSalary: 6000,
+      defaultCpsRateBps: 1500,
+    }),
+  );
+  expect(audit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      changedFields: expect.arrayContaining([
+        "default_settlement_method",
+        "default_price",
+        "default_base_salary",
+        "default_cps_rate_bps",
+      ]),
+    }),
+  );
+});
+
+it("rejects invalid streamer default settlement numbers", async () => {
+  const repo = {
+    createProfile: vi.fn(),
+    getById: vi.fn(),
+    updateRisk: vi.fn(),
+    updateSettlementRule: vi.fn(),
+  };
+  const audit = vi.fn();
+
+  await expect(
+    createStreamerProfile({
       repo,
       audit,
       actor,
-      input: {
-        displayName: " Price Streamer ",
-        defaultSettlementMethod: "base_salary_cpt",
-        defaultHourlyRate: 80,
-        defaultBaseSalary: 6000,
-        defaultCpsRateBps: 1500,
-      },
-    });
+      input: { displayName: "Bad", defaultHourlyRate: -1 },
+    }),
+  ).rejects.toThrow("defaultHourlyRate must be non-negative");
 
-    expect(repo.createProfile).toHaveBeenCalledWith(
-      expect.objectContaining({
-        displayName: "Price Streamer",
-        defaultSettlementMethod: "base_salary_cpt",
-        defaultHourlyRate: 80,
-        defaultBaseSalary: 6000,
-        defaultCpsRateBps: 1500,
-      }),
-    );
-    expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        changedFields: expect.arrayContaining([
-          "default_settlement_method",
-          "default_price",
-          "default_base_salary",
-          "default_cps_rate_bps",
-        ]),
-      }),
-    );
-  });
+  await expect(
+    createStreamerProfile({
+      repo,
+      audit,
+      actor,
+      input: { displayName: "Bad", defaultBaseSalary: -1 },
+    }),
+  ).rejects.toThrow("defaultBaseSalary must be non-negative");
 
-  it("rejects invalid streamer default settlement numbers", async () => {
-    const repo = {
-      createProfile: vi.fn(),
-      getById: vi.fn(),
-      updateRisk: vi.fn(),
-      updateSettlementRule: vi.fn(),
-    };
-    const audit = vi.fn();
-
-    await expect(
-      createStreamerProfile({
-        repo,
-        audit,
-        actor,
-        input: { displayName: "Bad", defaultHourlyRate: -1 },
-      }),
-    ).rejects.toThrow("defaultHourlyRate must be non-negative");
-
-    await expect(
-      createStreamerProfile({
-        repo,
-        audit,
-        actor,
-        input: { displayName: "Bad", defaultBaseSalary: -1 },
-      }),
-    ).rejects.toThrow("defaultBaseSalary must be non-negative");
-
-    await expect(
-      createStreamerProfile({
-        repo,
-        audit,
-        actor,
-        input: { displayName: "Bad", defaultCpsRateBps: 10001 },
-      }),
-    ).rejects.toThrow("defaultCpsRateBps must be between 0 and 10000");
-  });
+  await expect(
+    createStreamerProfile({
+      repo,
+      audit,
+      actor,
+      input: { displayName: "Bad", defaultCpsRateBps: 10001 },
+    }),
+  ).rejects.toThrow("defaultCpsRateBps must be between 0 and 10000");
+});
 ```
 
 - [ ] **Step 2: Write failing update service tests**
@@ -269,95 +265,97 @@ Add tests:
 Add:
 
 ```ts
-  it("updates streamer settlement defaults with high-risk audit", async () => {
-    const before = {
+it("updates streamer settlement defaults with high-risk audit", async () => {
+  const before = {
+    id: "S-price",
+    displayName: "Price Streamer",
+    userId: null,
+    riskLevel: "low" as const,
+    cooperationStatus: "active" as const,
+  };
+  const after = { ...before };
+  const repo = {
+    createProfile: vi.fn(),
+    getById: vi.fn().mockResolvedValue(before),
+    updateRisk: vi.fn(),
+    updateSettlementRule: vi.fn().mockResolvedValue(after),
+  };
+  const audit = vi.fn().mockResolvedValue(undefined);
+
+  await updateStreamerSettlementRule({
+    repo,
+    audit,
+    actor: { ...actor, role: "owner" },
+    streamerId: before.id,
+    input: {
+      defaultSettlementMethod: "cps",
+      defaultHourlyRate: 0,
+      defaultBaseSalary: 0,
+      defaultCpsRateBps: 1500,
+    },
+    reason: "signed cps update",
+  });
+
+  expect(repo.updateSettlementRule).toHaveBeenCalledWith(before.id, {
+    default_settlement_method: "cps",
+    default_price: 0,
+    default_base_salary: 0,
+    default_cps_rate_bps: 1500,
+  });
+  expect(audit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      action: "update",
+      module: "streamer",
+      objectType: "streamer",
+      isHighRisk: true,
+      reason: "signed cps update",
+      changedFields: [
+        "default_settlement_method",
+        "default_price",
+        "default_base_salary",
+        "default_cps_rate_bps",
+      ],
+    }),
+  );
+});
+
+it("requires owner or ops_manager and reason for settlement default updates", async () => {
+  const repo = {
+    createProfile: vi.fn(),
+    getById: vi.fn().mockResolvedValue({
       id: "S-price",
       displayName: "Price Streamer",
-      userId: null,
-      riskLevel: "low" as const,
-      cooperationStatus: "active" as const,
-    };
-    const after = { ...before };
-    const repo = {
-      createProfile: vi.fn(),
-      getById: vi.fn().mockResolvedValue(before),
-      updateRisk: vi.fn(),
-      updateSettlementRule: vi.fn().mockResolvedValue(after),
-    };
-    const audit = vi.fn().mockResolvedValue(undefined);
+      riskLevel: "low",
+      cooperationStatus: "active",
+    }),
+    updateRisk: vi.fn(),
+    updateSettlementRule: vi.fn(),
+  };
 
-    await updateStreamerSettlementRule({
+  await expect(
+    updateStreamerSettlementRule({
       repo,
-      audit,
-      actor: { ...actor, role: "owner" },
-      streamerId: before.id,
-      input: {
-        defaultSettlementMethod: "cps",
-        defaultHourlyRate: 0,
-        defaultBaseSalary: 0,
-        defaultCpsRateBps: 1500,
-      },
-      reason: "signed cps update",
-    });
+      audit: vi.fn(),
+      actor,
+      streamerId: "S-price",
+      input: { defaultCpsRateBps: 1500 },
+      reason: "update",
+    }),
+  ).rejects.toThrow(
+    "Only owner and ops_manager can update streamer settlement rules",
+  );
 
-    expect(repo.updateSettlementRule).toHaveBeenCalledWith(before.id, {
-      default_settlement_method: "cps",
-      default_price: 0,
-      default_base_salary: 0,
-      default_cps_rate_bps: 1500,
-    });
-    expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: "update",
-        module: "streamer",
-        objectType: "streamer",
-        isHighRisk: true,
-        reason: "signed cps update",
-        changedFields: [
-          "default_settlement_method",
-          "default_price",
-          "default_base_salary",
-          "default_cps_rate_bps",
-        ],
-      }),
-    );
-  });
-
-  it("requires owner or ops_manager and reason for settlement default updates", async () => {
-    const repo = {
-      createProfile: vi.fn(),
-      getById: vi.fn().mockResolvedValue({
-        id: "S-price",
-        displayName: "Price Streamer",
-        riskLevel: "low",
-        cooperationStatus: "active",
-      }),
-      updateRisk: vi.fn(),
-      updateSettlementRule: vi.fn(),
-    };
-
-    await expect(
-      updateStreamerSettlementRule({
-        repo,
-        audit: vi.fn(),
-        actor,
-        streamerId: "S-price",
-        input: { defaultCpsRateBps: 1500 },
-        reason: "update",
-      }),
-    ).rejects.toThrow("Only owner and ops_manager can update streamer settlement rules");
-
-    await expect(
-      updateStreamerSettlementRule({
-        repo,
-        audit: vi.fn(),
-        actor: { ...actor, role: "ops_manager" },
-        streamerId: "S-price",
-        input: { defaultCpsRateBps: 1500 },
-        reason: " ",
-      }),
-    ).rejects.toThrow("Streamer settlement rule changes require a reason");
-  });
+  await expect(
+    updateStreamerSettlementRule({
+      repo,
+      audit: vi.fn(),
+      actor: { ...actor, role: "ops_manager" },
+      streamerId: "S-price",
+      input: { defaultCpsRateBps: 1500 },
+      reason: " ",
+    }),
+  ).rejects.toThrow("Streamer settlement rule changes require a reason");
+});
 ```
 
 - [ ] **Step 3: Run tests to verify they fail**
@@ -488,27 +486,27 @@ Update `normalizeCreateStreamerInput` return:
 Pass fields into `createInput`:
 
 ```ts
-  if (normalizedInput.defaultHourlyRate !== undefined) {
-    createInput.defaultHourlyRate = normalizedInput.defaultHourlyRate;
-  }
-  if (normalizedInput.defaultBaseSalary !== undefined) {
-    createInput.defaultBaseSalary = normalizedInput.defaultBaseSalary;
-  }
-  if (normalizedInput.defaultCpsRateBps !== undefined) {
-    createInput.defaultCpsRateBps = normalizedInput.defaultCpsRateBps;
-  }
+if (normalizedInput.defaultHourlyRate !== undefined) {
+  createInput.defaultHourlyRate = normalizedInput.defaultHourlyRate;
+}
+if (normalizedInput.defaultBaseSalary !== undefined) {
+  createInput.defaultBaseSalary = normalizedInput.defaultBaseSalary;
+}
+if (normalizedInput.defaultCpsRateBps !== undefined) {
+  createInput.defaultCpsRateBps = normalizedInput.defaultCpsRateBps;
+}
 ```
 
 Extend changed fields:
 
 ```ts
-  if (input.defaultHourlyRate !== undefined) fields.push("default_price");
-  if (input.defaultBaseSalary !== undefined) {
-    fields.push("default_base_salary");
-  }
-  if (input.defaultCpsRateBps !== undefined) {
-    fields.push("default_cps_rate_bps");
-  }
+if (input.defaultHourlyRate !== undefined) fields.push("default_price");
+if (input.defaultBaseSalary !== undefined) {
+  fields.push("default_base_salary");
+}
+if (input.defaultCpsRateBps !== undefined) {
+  fields.push("default_cps_rate_bps");
+}
 ```
 
 - [ ] **Step 5: Implement update service**
@@ -532,7 +530,9 @@ export async function updateStreamerSettlementRule({
   reason: string;
 }): Promise<StreamerRecord> {
   if (!canEditStreamerSettlementRule(actor.role)) {
-    throw new Error("Only owner and ops_manager can update streamer settlement rules");
+    throw new Error(
+      "Only owner and ops_manager can update streamer settlement rules",
+    );
   }
   if (!reason.trim()) {
     throw new Error("Streamer settlement rule changes require a reason");
@@ -572,7 +572,9 @@ export async function updateStreamerSettlementRule({
   return streamer;
 }
 
-function normalizeSettlementRuleInput(input: UpdateStreamerSettlementRuleInput) {
+function normalizeSettlementRuleInput(
+  input: UpdateStreamerSettlementRuleInput,
+) {
   return {
     defaultSettlementMethod: input.defaultSettlementMethod,
     defaultHourlyRate: normalizeNonNegativeNumber(
@@ -614,6 +616,7 @@ git commit -m "feat: validate streamer settlement defaults"
 ### Task 3: Streamer Repository, Queries, DTOs, and Routes
 
 **Files:**
+
 - Modify: `features/streamers/streamer-repository.ts`
 - Modify: `features/streamers/streamer-queries.ts`
 - Modify: `features/streamers/streamer-ui-dto.ts`
@@ -627,49 +630,49 @@ git commit -m "feat: validate streamer settlement defaults"
 In `features/streamers/streamer-ui-dto.test.ts`, add:
 
 ```ts
-  it("formats default settlement labels with cpt cps and base salary details", () => {
-    expect(
-      toStreamerCardDto({
-        id: "s-cpt",
-        display_name: "CPT Streamer",
-        real_name: null,
-        gender: null,
-        source_type: "external",
-        cooperation_status: "active",
-        categories: [],
-        platforms: [],
-        styles: [],
-        default_settlement_method: "cpt",
-        default_price: 80,
-        default_base_salary: 0,
-        default_cps_rate_bps: 0,
-        risk_level: "low",
-        clean_report_count: 0,
-        created_at: "2026-06-01T00:00:00.000Z",
-      }).defaultRule,
-    ).toBe("CPT ¥80/h");
+it("formats default settlement labels with cpt cps and base salary details", () => {
+  expect(
+    toStreamerCardDto({
+      id: "s-cpt",
+      display_name: "CPT Streamer",
+      real_name: null,
+      gender: null,
+      source_type: "external",
+      cooperation_status: "active",
+      categories: [],
+      platforms: [],
+      styles: [],
+      default_settlement_method: "cpt",
+      default_price: 80,
+      default_base_salary: 0,
+      default_cps_rate_bps: 0,
+      risk_level: "low",
+      clean_report_count: 0,
+      created_at: "2026-06-01T00:00:00.000Z",
+    }).defaultRule,
+  ).toBe("CPT ¥80/h");
 
-    expect(
-      toStreamerCardDto({
-        id: "s-cps",
-        display_name: "CPS Streamer",
-        real_name: null,
-        gender: null,
-        source_type: "external",
-        cooperation_status: "active",
-        categories: [],
-        platforms: [],
-        styles: [],
-        default_settlement_method: "cps",
-        default_price: 0,
-        default_base_salary: 0,
-        default_cps_rate_bps: 1500,
-        risk_level: "low",
-        clean_report_count: 0,
-        created_at: "2026-06-01T00:00:00.000Z",
-      }).defaultRule,
-    ).toBe("CPS 15%");
-  });
+  expect(
+    toStreamerCardDto({
+      id: "s-cps",
+      display_name: "CPS Streamer",
+      real_name: null,
+      gender: null,
+      source_type: "external",
+      cooperation_status: "active",
+      categories: [],
+      platforms: [],
+      styles: [],
+      default_settlement_method: "cps",
+      default_price: 0,
+      default_base_salary: 0,
+      default_cps_rate_bps: 1500,
+      risk_level: "low",
+      clean_report_count: 0,
+      created_at: "2026-06-01T00:00:00.000Z",
+    }).defaultRule,
+  ).toBe("CPS 15%");
+});
 ```
 
 Add to the desktop profile test row:
@@ -681,7 +684,7 @@ Add to the desktop profile test row:
 Add expectation:
 
 ```ts
-    expect(dto.settlement.cpsShare).toContain("15%");
+expect(dto.settlement.cpsShare).toContain("15%");
 ```
 
 - [ ] **Step 2: Run DTO tests to verify failure**
@@ -711,25 +714,25 @@ Add `default_cps_rate_bps` to `getStreamerProfileRow` select string.
 In `features/streamers/streamer-ui-dto.ts`, extend `StreamerCardDto`:
 
 ```ts
-  settlement: {
-    method: string;
-    cptHourlyRate: number;
-    baseSalary: number;
-    cpsRateBps: number;
-    label: string;
-  };
+settlement: {
+  method: string;
+  cptHourlyRate: number;
+  baseSalary: number;
+  cpsRateBps: number;
+  label: string;
+}
 ```
 
 Extend `StreamerDesktopProfileDto["settlement"]`:
 
 ```ts
-    cpsShare: string;
+cpsShare: string;
 ```
 
 In `toStreamerCardDto`, calculate:
 
 ```ts
-  const settlement = settlementSummary(row);
+const settlement = settlementSummary(row);
 ```
 
 Return:
@@ -742,7 +745,7 @@ Return:
 In `toStreamerDesktopProfileDto`, read:
 
 ```ts
-  const cpsRateBps = Number(row.default_cps_rate_bps ?? 0);
+const cpsRateBps = Number(row.default_cps_rate_bps ?? 0);
 ```
 
 Return:
@@ -785,8 +788,7 @@ function settlementRuleLabel(
 ) {
   const baseText = baseSalary > 0 ? `底薪 ¥${formatNumber(baseSalary)}` : "";
   const cptText = cpt > 0 ? `CPT ¥${formatNumber(cpt)}/h` : "";
-  const cpsText =
-    cpsRateBps > 0 ? `CPS ${formatPercentBps(cpsRateBps)}%` : "";
+  const cpsText = cpsRateBps > 0 ? `CPS ${formatPercentBps(cpsRateBps)}%` : "";
 
   if (method === "base_salary_cpt") {
     return [baseText || "底薪未配置", cptText || "CPT 未配置"].join(" + ");
@@ -836,15 +838,15 @@ In `features/streamers/streamer-repository.ts`, add `updateSettlementRule` imple
 Also map create inputs:
 
 ```ts
-    if (input.defaultHourlyRate !== undefined) {
-      insertPayload.default_price = input.defaultHourlyRate;
-    }
-    if (input.defaultBaseSalary !== undefined) {
-      insertPayload.default_base_salary = input.defaultBaseSalary;
-    }
-    if (input.defaultCpsRateBps !== undefined) {
-      insertPayload.default_cps_rate_bps = input.defaultCpsRateBps;
-    }
+if (input.defaultHourlyRate !== undefined) {
+  insertPayload.default_price = input.defaultHourlyRate;
+}
+if (input.defaultBaseSalary !== undefined) {
+  insertPayload.default_base_salary = input.defaultBaseSalary;
+}
+if (input.defaultCpsRateBps !== undefined) {
+  insertPayload.default_cps_rate_bps = input.defaultCpsRateBps;
+}
 ```
 
 Import `StreamerSettlementMethod` from `streamer-service` in this file.
@@ -870,21 +872,21 @@ Update expected `input`:
 Add invalid number test:
 
 ```ts
-  it("POST /api/streamers rejects invalid settlement numbers", async () => {
-    const { POST } = await import("./route");
-    const response = await POST(
-      jsonRequest({
-        displayName: "Bad Streamer",
-        defaultHourlyRate: -1,
-      }),
-    );
+it("POST /api/streamers rejects invalid settlement numbers", async () => {
+  const { POST } = await import("./route");
+  const response = await POST(
+    jsonRequest({
+      displayName: "Bad Streamer",
+      defaultHourlyRate: -1,
+    }),
+  );
 
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
-      error: "defaultHourlyRate must be non-negative",
-    });
-    expect(createStreamerProfile).not.toHaveBeenCalled();
+  expect(response.status).toBe(400);
+  await expect(response.json()).resolves.toEqual({
+    error: "defaultHourlyRate must be non-negative",
   });
+  expect(createStreamerProfile).not.toHaveBeenCalled();
+});
 ```
 
 - [ ] **Step 7: Update streamers create route parser**
@@ -953,45 +955,45 @@ vi.mock("@/features/billing/route-guard", () => ({
 Add:
 
 ```ts
-  it("PATCH /api/streamers/[streamerId]/settlement-rule updates high-risk settlement defaults", async () => {
-    vi.mocked(updateStreamerSettlementRule).mockResolvedValue({
-      id: "s1",
-      displayName: "Price Streamer",
-      riskLevel: "low",
-      cooperationStatus: "active",
-    } as never);
+it("PATCH /api/streamers/[streamerId]/settlement-rule updates high-risk settlement defaults", async () => {
+  vi.mocked(updateStreamerSettlementRule).mockResolvedValue({
+    id: "s1",
+    displayName: "Price Streamer",
+    riskLevel: "low",
+    cooperationStatus: "active",
+  } as never);
 
-    const { PATCH } = await import("./[streamerId]/settlement-rule/route");
-    const response = await PATCH(
-      jsonRequest(
-        {
-          defaultSettlementMethod: "cps",
-          defaultHourlyRate: 0,
-          defaultBaseSalary: 0,
-          defaultCpsRateBps: 1500,
-          reason: "signed cps update",
-        },
-        "PATCH",
-      ),
-      { params: Promise.resolve({ streamerId: "s1" }) },
-    );
-
-    expect(response.status).toBe(200);
-    expect(updateStreamerSettlementRule).toHaveBeenCalledWith(
-      expect.objectContaining({
-        audit: expect.any(Function),
-        actor: auth,
-        streamerId: "s1",
+  const { PATCH } = await import("./[streamerId]/settlement-rule/route");
+  const response = await PATCH(
+    jsonRequest(
+      {
+        defaultSettlementMethod: "cps",
+        defaultHourlyRate: 0,
+        defaultBaseSalary: 0,
+        defaultCpsRateBps: 1500,
         reason: "signed cps update",
-        input: {
-          defaultSettlementMethod: "cps",
-          defaultHourlyRate: 0,
-          defaultBaseSalary: 0,
-          defaultCpsRateBps: 1500,
-        },
-      }),
-    );
-  });
+      },
+      "PATCH",
+    ),
+    { params: Promise.resolve({ streamerId: "s1" }) },
+  );
+
+  expect(response.status).toBe(200);
+  expect(updateStreamerSettlementRule).toHaveBeenCalledWith(
+    expect.objectContaining({
+      audit: expect.any(Function),
+      actor: auth,
+      streamerId: "s1",
+      reason: "signed cps update",
+      input: {
+        defaultSettlementMethod: "cps",
+        defaultHourlyRate: 0,
+        defaultBaseSalary: 0,
+        defaultCpsRateBps: 1500,
+      },
+    }),
+  );
+});
 ```
 
 - [ ] **Step 9: Create settlement-rule route**
@@ -1031,7 +1033,9 @@ export async function PATCH(
       featureKey: "settlement",
     });
 
-    const body = (await request.json().catch(() => ({}))) as StreamerSettlementPatchBody;
+    const body = (await request
+      .json()
+      .catch(() => ({}))) as StreamerSettlementPatchBody;
     const defaultSettlementMethod = normalizeEnum(
       body.defaultSettlementMethod,
       STREAMER_SETTLEMENT_METHODS,
@@ -1171,6 +1175,7 @@ git commit -m "feat: expose streamer settlement defaults"
 ### Task 4: Project Join Settlement Snapshot
 
 **Files:**
+
 - Modify: `features/applications/application-service.test.ts`
 - Modify: `features/applications/application-service.ts`
 - Modify: `features/applications/application-repository.ts`
@@ -1189,87 +1194,87 @@ In `features/applications/application-service.test.ts`, update `makeRepo().getSt
 Add tests:
 
 ```ts
-  it("freezes the streamer default settlement rule when joining", async () => {
-    const repo = makeRepo({
-      getApplicationById: vi.fn().mockResolvedValue({
-        ...baseApplication,
-        status: "recording_approved",
-      }),
-      getStreamerForAdmission: vi.fn().mockResolvedValue({
-        id: "streamer-1",
-        displayName: "Streamer One",
-        userId: streamerActor.userId,
-        riskLevel: "low",
-        defaultSettlementMethod: "base_salary_cpt",
-        defaultHourlyRate: 80,
-        defaultBaseSalary: 6000,
-        defaultCpsRateBps: 0,
-      }),
-    });
+it("freezes the streamer default settlement rule when joining", async () => {
+  const repo = makeRepo({
+    getApplicationById: vi.fn().mockResolvedValue({
+      ...baseApplication,
+      status: "recording_approved",
+    }),
+    getStreamerForAdmission: vi.fn().mockResolvedValue({
+      id: "streamer-1",
+      displayName: "Streamer One",
+      userId: streamerActor.userId,
+      riskLevel: "low",
+      defaultSettlementMethod: "base_salary_cpt",
+      defaultHourlyRate: 80,
+      defaultBaseSalary: 6000,
+      defaultCpsRateBps: 0,
+    }),
+  });
 
-    await confirmApplicationJoin({
-      repo,
-      audit: vi.fn().mockResolvedValue(undefined),
-      notify: vi.fn().mockResolvedValue(undefined),
-      actor: staffActor,
-      input: { applicationId: "app-1" },
-    });
+  await confirmApplicationJoin({
+    repo,
+    audit: vi.fn().mockResolvedValue(undefined),
+    notify: vi.fn().mockResolvedValue(undefined),
+    actor: staffActor,
+    input: { applicationId: "app-1" },
+  });
 
-    expect(repo.createProjectStreamer).toHaveBeenCalledWith(
-      expect.objectContaining({
+  expect(repo.createProjectStreamer).toHaveBeenCalledWith(
+    expect.objectContaining({
+      settlementMethod: "base_salary_cpt",
+      hourlyRate: 80,
+      baseSalary: 6000,
+      cpsRateBps: 0,
+      settlementRule: expect.objectContaining({
+        source: "streamer_default",
         settlementMethod: "base_salary_cpt",
-        hourlyRate: 80,
+        cptHourlyRate: 80,
         baseSalary: 6000,
         cpsRateBps: 0,
-        settlementRule: expect.objectContaining({
-          source: "streamer_default",
-          settlementMethod: "base_salary_cpt",
-          cptHourlyRate: 80,
-          baseSalary: 6000,
-          cpsRateBps: 0,
-        }),
       }),
-    );
+    }),
+  );
+});
+
+it("falls back to project settlement rule when streamer default is unconfigured", async () => {
+  const repo = makeRepo({
+    getApplicationById: vi.fn().mockResolvedValue({
+      ...baseApplication,
+      status: "recording_approved",
+    }),
+    getStreamerForAdmission: vi.fn().mockResolvedValue({
+      id: "streamer-1",
+      displayName: "Streamer One",
+      userId: streamerActor.userId,
+      riskLevel: "low",
+      defaultSettlementMethod: "manual",
+      defaultHourlyRate: 0,
+      defaultBaseSalary: 0,
+      defaultCpsRateBps: 0,
+    }),
   });
 
-  it("falls back to project settlement rule when streamer default is unconfigured", async () => {
-    const repo = makeRepo({
-      getApplicationById: vi.fn().mockResolvedValue({
-        ...baseApplication,
-        status: "recording_approved",
-      }),
-      getStreamerForAdmission: vi.fn().mockResolvedValue({
-        id: "streamer-1",
-        displayName: "Streamer One",
-        userId: streamerActor.userId,
-        riskLevel: "low",
-        defaultSettlementMethod: "manual",
-        defaultHourlyRate: 0,
-        defaultBaseSalary: 0,
-        defaultCpsRateBps: 0,
-      }),
-    });
-
-    await confirmApplicationJoin({
-      repo,
-      audit: vi.fn().mockResolvedValue(undefined),
-      notify: vi.fn().mockResolvedValue(undefined),
-      actor: staffActor,
-      input: { applicationId: "app-1" },
-    });
-
-    expect(repo.createProjectStreamer).toHaveBeenCalledWith(
-      expect.objectContaining({
-        settlementMethod: "cpt",
-        hourlyRate: 80,
-        baseSalary: 0,
-        cpsRateBps: 0,
-        settlementRule: expect.objectContaining({
-          source: "project_default",
-        }),
-      }),
-    );
+  await confirmApplicationJoin({
+    repo,
+    audit: vi.fn().mockResolvedValue(undefined),
+    notify: vi.fn().mockResolvedValue(undefined),
+    actor: staffActor,
+    input: { applicationId: "app-1" },
   });
+
+  expect(repo.createProjectStreamer).toHaveBeenCalledWith(
+    expect.objectContaining({
+      settlementMethod: "cpt",
+      hourlyRate: 80,
+      baseSalary: 0,
+      cpsRateBps: 0,
+      settlementRule: expect.objectContaining({
+        source: "project_default",
+      }),
+    }),
+  );
+});
 ```
 
 Update the existing "copies the project settlement snapshot when joining" test to expect `cpsRateBps: 0` and either rename it or keep it focused on fallback.
@@ -1298,7 +1303,7 @@ In `features/applications/application-service.ts`, extend `StreamerAdmissionReco
 Extend `createProjectStreamer` input:
 
 ```ts
-    cpsRateBps: number;
+cpsRateBps: number;
 ```
 
 - [ ] **Step 4: Add snapshot resolver**
@@ -1370,13 +1375,13 @@ function streamerHasConfiguredSettlement(streamer: StreamerAdmissionRecord) {
 In `confirmApplicationJoin`, load streamer before snapshot:
 
 ```ts
-  const streamer = await requireStreamer(repo, application.streamerId);
-  const now = new Date().toISOString();
-  const settlementSnapshot = resolveProjectStreamerSettlementSnapshot({
-    project,
-    streamer,
-    now,
-  });
+const streamer = await requireStreamer(repo, application.streamerId);
+const now = new Date().toISOString();
+const settlementSnapshot = resolveProjectStreamerSettlementSnapshot({
+  project,
+  streamer,
+  now,
+});
 ```
 
 Replace create call fields:
@@ -1400,16 +1405,16 @@ Use the same `now` for `decidedAt`:
 In `features/applications/application-repository.ts`, extend `StreamerAdmissionRow`:
 
 ```ts
-  default_settlement_method: string;
-  default_price: number;
-  default_base_salary: number;
-  default_cps_rate_bps: number;
+default_settlement_method: string;
+default_price: number;
+default_base_salary: number;
+default_cps_rate_bps: number;
 ```
 
 Update select in `getStreamerForAdmission`:
 
 ```ts
-"id, display_name, user_id, risk_level, cooperation_status, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps"
+"id, display_name, user_id, risk_level, cooperation_status, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps";
 ```
 
 Extend `createProjectStreamer` input with `cpsRateBps: number`, and add insert field:
@@ -1449,6 +1454,7 @@ git commit -m "feat: freeze streamer settlement defaults on join"
 ### Task 5: Settlement CPS Helper and Manual Import
 
 **Files:**
+
 - Modify: `features/settlements/settlement-engine.test.ts`
 - Modify: `features/settlements/settlement-engine.ts`
 - Modify: `features/settlements/settlement-service.test.ts`
@@ -1468,14 +1474,14 @@ In `features/settlements/settlement-engine.test.ts`, add import:
 Add:
 
 ```ts
-  it("calculates CPS manual amount from sales amount and basis points", () => {
-    expect(
-      calculateCpsManualAmount({ salesAmount: 12000, cpsRateBps: 1500 }),
-    ).toBe(1800);
-    expect(
-      calculateCpsManualAmount({ salesAmount: 999.99, cpsRateBps: 250 }),
-    ).toBe(25);
-  });
+it("calculates CPS manual amount from sales amount and basis points", () => {
+  expect(
+    calculateCpsManualAmount({ salesAmount: 12000, cpsRateBps: 1500 }),
+  ).toBe(1800);
+  expect(
+    calculateCpsManualAmount({ salesAmount: 999.99, cpsRateBps: 250 }),
+  ).toBe(25);
+});
 ```
 
 - [ ] **Step 2: Run engine tests to verify failure**
@@ -1527,35 +1533,35 @@ In `features/settlements/settlement-service.test.ts`, change `settlementRule` to
 Add:
 
 ```ts
-  it("calculates CPS manual rows from sales amount and frozen rate", async () => {
-    const item = await addManualSettlementItem({
-      repo,
-      audit,
-      notify,
-      actor: opsActor,
-      batchId: "batch-1",
-      input: {
-        itemType: "cps",
-        projectId: "project-1",
-        streamerId: "streamer-1",
-        salesAmount: 12000,
-        evidenceLevel: "yellow",
-        reason: "Imported CPS sales sheet",
-      },
-    });
-
-    expect(item).toMatchObject({
+it("calculates CPS manual rows from sales amount and frozen rate", async () => {
+  const item = await addManualSettlementItem({
+    repo,
+    audit,
+    notify,
+    actor: opsActor,
+    batchId: "batch-1",
+    input: {
       itemType: "cps",
-      manualAmount: 1800,
-      computedAmount: 0,
-      evidenceSnapshot: expect.objectContaining({
-        source: "manual_cps_import",
-        salesAmount: 12000,
-        cpsRateBps: 1500,
-        settlementRuleSource: "project_streamer_snapshot",
-      }),
-    });
+      projectId: "project-1",
+      streamerId: "streamer-1",
+      salesAmount: 12000,
+      evidenceLevel: "yellow",
+      reason: "Imported CPS sales sheet",
+    },
   });
+
+  expect(item).toMatchObject({
+    itemType: "cps",
+    manualAmount: 1800,
+    computedAmount: 0,
+    evidenceSnapshot: expect.objectContaining({
+      source: "manual_cps_import",
+      salesAmount: 12000,
+      cpsRateBps: 1500,
+      settlementRuleSource: "project_streamer_snapshot",
+    }),
+  });
+});
 ```
 
 - [ ] **Step 5: Run settlement service test to verify failure**
@@ -1603,7 +1609,7 @@ type SettlementRuleRow = {
 Select:
 
 ```ts
-"project_id, streamer_id, settlement_method, hourly_rate, base_salary, cps_rate_bps"
+"project_id, streamer_id, settlement_method, hourly_rate, base_salary, cps_rate_bps";
 ```
 
 Mapper:
@@ -1632,17 +1638,17 @@ Extend input type:
 Before creating item, derive manual amount:
 
 ```ts
-  const manualAmount = await resolveManualSettlementAmount({
-    repo,
-    batch: before,
-    input,
-  });
+const manualAmount = await resolveManualSettlementAmount({
+  repo,
+  batch: before,
+  input,
+});
 ```
 
 Replace `assertManualAmount(input.manualAmount);` with:
 
 ```ts
-  assertManualAmount(manualAmount);
+assertManualAmount(manualAmount);
 ```
 
 Replace created item amount:
@@ -1735,9 +1741,9 @@ to:
 Keep `manualAmount` required for non-CPS by adding route validation:
 
 ```ts
-    if (itemType !== "cps" && body.manualAmount === undefined) {
-      throw new RouteError("manualAmount is required", 400);
-    }
+if (itemType !== "cps" && body.manualAmount === undefined) {
+  throw new RouteError("manualAmount is required", 400);
+}
 ```
 
 - [ ] **Step 9: Run settlement tests**
@@ -1762,6 +1768,7 @@ git commit -m "feat: support cps settlement import amounts"
 ### Task 6: Regression Golden Path
 
 **Files:**
+
 - Modify: `features/regression/settlement-golden-path.ts`
 - Modify: `features/regression/settlement-golden-path.test.ts`
 
@@ -1770,21 +1777,21 @@ git commit -m "feat: support cps settlement import amounts"
 In `features/regression/settlement-golden-path.test.ts`, add expectations to the golden path result test:
 
 ```ts
-    expect(result.batchItems[0].evidenceSnapshot).toMatchObject({
-      settlementDuration: 120,
-      timeSource: "system",
-      evidenceLevel: "green",
-    });
-    expect(result.batchItems[0].computedAmount).toBe(160);
+expect(result.batchItems[0].evidenceSnapshot).toMatchObject({
+  settlementDuration: 120,
+  timeSource: "system",
+  evidenceLevel: "green",
+});
+expect(result.batchItems[0].computedAmount).toBe(160);
 ```
 
 If there is already an amount assertion, add a second streamer-default assertion by extending the in-memory repository test fixture:
 
 ```ts
-    expect(result.batchItems[0]).toMatchObject({
-      computedAmount: 160,
-      streamerId: "streamer-1",
-    });
+expect(result.batchItems[0]).toMatchObject({
+  computedAmount: 160,
+  streamerId: "streamer-1",
+});
 ```
 
 - [ ] **Step 2: Update in-memory repository for new type**
@@ -1819,6 +1826,7 @@ git commit -m "test: cover streamer settlement default golden path"
 ### Task 7: Ops Reference UI
 
 **Files:**
+
 - Modify: `components/reference-ui/ops-reference.jsx`
 - Modify: `components/reference-ui/ops-reference.test.jsx`
 
@@ -1829,9 +1837,9 @@ In `components/reference-ui/ops-reference.test.jsx`, update the "creates a strea
 After selecting default settlement method `cps`, add:
 
 ```ts
-    fireEvent.change(screen.getByLabelText("CPS 分成比例"), {
-      target: { value: "15" },
-    });
+fireEvent.change(screen.getByLabelText("CPS 分成比例"), {
+  target: { value: "15" },
+});
 ```
 
 Update expected POST body:
@@ -1957,53 +1965,55 @@ Update create payload:
 After the default settlement select, add:
 
 ```jsx
-              {["cpt", "base_salary_cpt"].includes(
-                draft.defaultSettlementMethod,
-              ) ? (
-                <label style={draftLabelStyle}>
-                  CPT 小时单价
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={draft.defaultHourlyRate}
-                    onChange={updateDraft("defaultHourlyRate")}
-                    placeholder="80"
-                    style={draftFieldStyle}
-                  />
-                </label>
-              ) : null}
-              {draft.defaultSettlementMethod === "cps" ? (
-                <label style={draftLabelStyle}>
-                  CPS 分成比例
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="0.01"
-                    value={draft.defaultCpsRatePercent}
-                    onChange={updateDraft("defaultCpsRatePercent")}
-                    placeholder="15"
-                    style={draftFieldStyle}
-                  />
-                </label>
-              ) : null}
-              {["base_salary", "base_salary_cpt"].includes(
-                draft.defaultSettlementMethod,
-              ) ? (
-                <label style={draftLabelStyle}>
-                  底薪
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={draft.defaultBaseSalary}
-                    onChange={updateDraft("defaultBaseSalary")}
-                    placeholder="6000"
-                    style={draftFieldStyle}
-                  />
-                </label>
-              ) : null}
+{
+  ["cpt", "base_salary_cpt"].includes(draft.defaultSettlementMethod) ? (
+    <label style={draftLabelStyle}>
+      CPT 小时单价
+      <input
+        type="number"
+        min="0"
+        step="0.01"
+        value={draft.defaultHourlyRate}
+        onChange={updateDraft("defaultHourlyRate")}
+        placeholder="80"
+        style={draftFieldStyle}
+      />
+    </label>
+  ) : null;
+}
+{
+  draft.defaultSettlementMethod === "cps" ? (
+    <label style={draftLabelStyle}>
+      CPS 分成比例
+      <input
+        type="number"
+        min="0"
+        max="100"
+        step="0.01"
+        value={draft.defaultCpsRatePercent}
+        onChange={updateDraft("defaultCpsRatePercent")}
+        placeholder="15"
+        style={draftFieldStyle}
+      />
+    </label>
+  ) : null;
+}
+{
+  ["base_salary", "base_salary_cpt"].includes(draft.defaultSettlementMethod) ? (
+    <label style={draftLabelStyle}>
+      底薪
+      <input
+        type="number"
+        min="0"
+        step="0.01"
+        value={draft.defaultBaseSalary}
+        onChange={updateDraft("defaultBaseSalary")}
+        placeholder="6000"
+        style={draftFieldStyle}
+      />
+    </label>
+  ) : null;
+}
 ```
 
 - [ ] **Step 5: Show structured settlement fields in detail panel**
@@ -2011,33 +2021,33 @@ After the default settlement select, add:
 In `StreamerPanel`, after default settlement KV, add:
 
 ```jsx
-          {s.settlement ? (
-            <>
-              <KV label="CPT 单价">
-                {s.settlement.cptHourlyRate > 0
-                  ? `¥${s.settlement.cptHourlyRate}/h`
-                  : "未配置"}
-              </KV>
-              <KV label="CPS 分成">
-                {s.settlement.cpsRateBps > 0
-                  ? `${s.settlement.cpsRateBps / 100}%`
-                  : "未配置"}
-              </KV>
-              <KV label="底薪">
-                {s.settlement.baseSalary > 0
-                  ? `¥${s.settlement.baseSalary}`
-                  : "未配置"}
-              </KV>
-            </>
-          ) : null}
+{
+  s.settlement ? (
+    <>
+      <KV label="CPT 单价">
+        {s.settlement.cptHourlyRate > 0
+          ? `¥${s.settlement.cptHourlyRate}/h`
+          : "未配置"}
+      </KV>
+      <KV label="CPS 分成">
+        {s.settlement.cpsRateBps > 0
+          ? `${s.settlement.cpsRateBps / 100}%`
+          : "未配置"}
+      </KV>
+      <KV label="底薪">
+        {s.settlement.baseSalary > 0 ? `¥${s.settlement.baseSalary}` : "未配置"}
+      </KV>
+    </>
+  ) : null;
+}
 ```
 
 Add a small note below the KVs:
 
 ```jsx
-          <div style={{ marginTop: 8, fontSize: 12, color: "var(--ink-400)" }}>
-            适用于未来入项，已入项项目以项目内快照为准。
-          </div>
+<div style={{ marginTop: 8, fontSize: 12, color: "var(--ink-400)" }}>
+  适用于未来入项，已入项项目以项目内快照为准。
+</div>
 ```
 
 - [ ] **Step 6: Run UI smoke subset**
@@ -2062,6 +2072,7 @@ git commit -m "feat: add streamer settlement fields to ops ui"
 ### Task 8: Streamer Desktop Safe Display
 
 **Files:**
+
 - Modify: `components/reference-ui/streamer-desktop-reference.jsx`
 - Modify: `components/reference-ui/streamer-desktop-reference.test.jsx`
 
@@ -2080,7 +2091,7 @@ Use the existing test's import/render shape and current label encoding.
 In `components/reference-ui/streamer-desktop-reference.jsx`, add under the CPT row:
 
 ```jsx
-            <KV label="CPS 分成">{profile.settlement.cpsShare}</KV>
+<KV label="CPS 分成">{profile.settlement.cpsShare}</KV>
 ```
 
 - [ ] **Step 3: Run streamer desktop tests**
@@ -2105,6 +2116,7 @@ git commit -m "feat: show safe streamer cps settlement share"
 ### Task 9: Final Verification and Cleanup
 
 **Files:**
+
 - Review all touched files.
 
 - [ ] **Step 1: Run focused backend tests**

@@ -90,6 +90,7 @@ describe("streamer profile route", () => {
     expect(getStreamerIdForUser).toHaveBeenCalledWith(
       context.supabase,
       "user-streamer",
+      "org-1",
     );
     expect(getStreamerProfileRow).toHaveBeenCalledWith(
       context.supabase,

@@ -18,6 +18,41 @@ function createClient() {
 }
 
 describe("createGovernedExport", () => {
+  it("generates admission recording exports with Chinese headers", async () => {
+    const { client } = createClient();
+
+    const result = await createGovernedExport({
+      client,
+      actor: {
+        userId: "user-ops",
+        name: "运营经理",
+        role: "ops_manager",
+        organizationId: "org-1",
+      },
+      kind: "admission_recordings",
+      rows: [
+        {
+          projectCode: "P-001",
+          projectName: "Alpha",
+          vendorProduct: "Vendor / Game",
+          streamerName: "主播一",
+          streamerAccount: "Douyin / one-live",
+          recordingUrl: "https://video.example/rec-1",
+          recordingVersion: 1,
+          recordingSubmittedAt: "2026-06-07T01:10:00.000Z",
+          mcnReviewStatus: "recording_reviewing",
+          vendorDecision: "pending",
+          vendorRemark: "",
+        },
+      ],
+      now: "2026-06-07T10:00:00.000Z",
+    });
+
+    expect(result.content.split("\n")[0]).toBe(
+      "项目编号,项目名称,厂商/产品,主播,主播账号,录屏链接,录屏版本,录屏提交时间,MCN审核状态,厂商决策,厂商备注",
+    );
+  });
+
   it("generates CSV using server-side field whitelist and writes export audit", async () => {
     const { client, auditInserts } = createClient();
 

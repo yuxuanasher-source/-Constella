@@ -16,33 +16,33 @@ export type ExportField = {
 
 export const exportDefinitions: Record<ExportKind, ExportField[]> = {
   admission_recordings: [
-    { key: "projectCode", label: "Project code", sensitivity: "public" },
-    { key: "projectName", label: "Project name", sensitivity: "public" },
-    { key: "vendorProduct", label: "Vendor / product", sensitivity: "public" },
-    { key: "streamerName", label: "Streamer", sensitivity: "public" },
+    { key: "projectCode", label: "项目编号", sensitivity: "public" },
+    { key: "projectName", label: "项目名称", sensitivity: "public" },
+    { key: "vendorProduct", label: "厂商/产品", sensitivity: "public" },
+    { key: "streamerName", label: "主播", sensitivity: "public" },
     {
       key: "streamerAccount",
-      label: "Streamer account",
+      label: "主播账号",
       sensitivity: "public",
     },
-    { key: "recordingUrl", label: "Recording URL", sensitivity: "public" },
+    { key: "recordingUrl", label: "录屏链接", sensitivity: "public" },
     {
       key: "recordingVersion",
-      label: "Recording version",
+      label: "录屏版本",
       sensitivity: "public",
     },
     {
       key: "recordingSubmittedAt",
-      label: "Recording submitted at",
+      label: "录屏提交时间",
       sensitivity: "public",
     },
     {
       key: "mcnReviewStatus",
-      label: "MCN review status",
+      label: "MCN审核状态",
       sensitivity: "public",
     },
-    { key: "vendorDecision", label: "Vendor decision", sensitivity: "public" },
-    { key: "vendorRemark", label: "Vendor remark", sensitivity: "public" },
+    { key: "vendorDecision", label: "厂商决策", sensitivity: "public" },
+    { key: "vendorRemark", label: "厂商备注", sensitivity: "public" },
   ],
   vendor_delivery: [
     { key: "projectName", label: "项目名称", sensitivity: "public" },

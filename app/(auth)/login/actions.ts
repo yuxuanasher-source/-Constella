@@ -61,7 +61,11 @@ export async function signInAction(formData: FormData) {
 
   const onboarding = await getCurrentProfileOnboardingState(supabase);
   if (onboarding?.requires_onboarding) {
-    redirect(`${loginBasePath}?mode=activate&next=${encodeURIComponent(next)}`);
+    const activationRoleIntent =
+      context?.role === "streamer" ? "streamer" : roleIntent;
+    redirect(
+      `${loginBasePath}?mode=activate&role=${activationRoleIntent}&next=${encodeURIComponent(next)}`,
+    );
   }
 
   await persistLoginPreference({
@@ -129,6 +133,16 @@ export async function activateSubaccountAction(formData: FormData) {
   if (profileConflict) {
     redirect(
       `${loginBasePath}?mode=activate&role=${roleIntent}&error=${activationConflictError(profileConflict)}`,
+    );
+  }
+
+  const authConflict = await getActivationAuthConflict(authAdmin, user.id, {
+    email: validation.value.email,
+    phone: validation.value.phone,
+  });
+  if (authConflict) {
+    redirect(
+      `${loginBasePath}?mode=activate&role=${roleIntent}&error=${activationConflictError(authConflict)}`,
     );
   }
 
@@ -472,6 +486,9 @@ function normalizeAuthPhone(phone: string) {
 }
 
 type ActivationProfileConflict = "email" | "phone" | "unknown";
+type AuthAdminClient = NonNullable<
+  NonNullable<ReturnType<typeof createSupabaseAdminClient>>["auth"]["admin"]
+>;
 
 async function getActivationProfileConflict(
   admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>,
@@ -507,6 +524,46 @@ async function getActivationProfileConflict(
   return null;
 }
 
+async function getActivationAuthConflict(
+  authAdmin: AuthAdminClient,
+  userId: string,
+  input: { email: string; phone: string },
+): Promise<ActivationProfileConflict | null> {
+  const email = input.email.trim().toLowerCase();
+  const phoneCandidates = getAuthPhoneComparisonValues(input.phone);
+  const perPage = 1000;
+
+  for (let page = 1; page <= 20; page += 1) {
+    const { data, error } = await authAdmin.listUsers({ page, perPage });
+
+    if (error) {
+      return "unknown";
+    }
+
+    const users = data?.users ?? [];
+    for (const user of users) {
+      if (user.id === userId) {
+        continue;
+      }
+
+      if (user.email?.trim().toLowerCase() === email) {
+        return "email";
+      }
+
+      const existingPhone = normalizePhoneForAuthComparison(user.phone ?? "");
+      if (existingPhone && phoneCandidates.has(existingPhone)) {
+        return "phone";
+      }
+    }
+
+    if (users.length < perPage) {
+      break;
+    }
+  }
+
+  return null;
+}
+
 async function hasOtherProfileWithValue(
   admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>,
   userId: string,
@@ -525,6 +582,34 @@ async function hasOtherProfileWithValue(
   }
 
   return Boolean(data?.id);
+}
+
+function getAuthPhoneComparisonValues(phone: string) {
+  const normalized = normalizePhoneForAuthComparison(phone);
+  const candidates = new Set<string>();
+
+  if (normalized) {
+    candidates.add(normalized);
+  }
+
+  const authPhone = normalizePhoneForAuthComparison(normalizeAuthPhone(phone));
+  if (authPhone) {
+    candidates.add(authPhone);
+  }
+
+  if (/^86(1[3-9]\d{9})$/.test(normalized)) {
+    candidates.add(normalized.slice(2));
+  }
+
+  if (/^1[3-9]\d{9}$/.test(normalized)) {
+    candidates.add(`86${normalized}`);
+  }
+
+  return candidates;
+}
+
+function normalizePhoneForAuthComparison(phone: string) {
+  return phone.trim().replace(/[\s-]/g, "").replace(/^\+/, "");
 }
 
 function activationConflictError(conflict: ActivationProfileConflict) {

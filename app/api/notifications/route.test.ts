@@ -2,11 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GET } from "./route";
 
-import { listNotificationCenterItems } from "@/features/notifications/notification-center-queries";
+import {
+  countUnreadNotificationCenterItems,
+  listNotificationCenterItems,
+} from "@/features/notifications/notification-center-queries";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/notifications/notification-center-queries", () => ({
+  countUnreadNotificationCenterItems: vi.fn(),
   listNotificationCenterItems: vi.fn(),
 }));
 
@@ -34,6 +38,7 @@ describe("notifications route", () => {
       client: "supabase",
     } as never);
     vi.mocked(getAuthContext).mockResolvedValue(auth);
+    vi.mocked(countUnreadNotificationCenterItems).mockResolvedValue(0);
   });
 
   it("returns notification center items and unread count", async () => {
@@ -61,6 +66,7 @@ describe("notifications route", () => {
         createdAt: "2026-06-02T11:00:00.000Z",
       },
     ]);
+    vi.mocked(countUnreadNotificationCenterItems).mockResolvedValue(22);
 
     const response = await GET(
       new Request("http://localhost/api/notifications?status=unread"),
@@ -69,7 +75,7 @@ describe("notifications route", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       items: expect.any(Array),
-      unreadCount: 1,
+      unreadCount: 22,
     });
     expect(listNotificationCenterItems).toHaveBeenCalledWith(
       { client: "supabase" },
@@ -79,6 +85,14 @@ describe("notifications route", () => {
         organizationId: "org-1",
       },
       { status: "unread" },
+    );
+    expect(countUnreadNotificationCenterItems).toHaveBeenCalledWith(
+      { client: "supabase" },
+      {
+        userId: "user-ops",
+        role: "ops_manager",
+        organizationId: "org-1",
+      },
     );
   });
 });

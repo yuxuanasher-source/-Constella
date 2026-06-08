@@ -1,26 +1,30 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  countUnreadNotificationCenterItems,
   listNotificationCenterItems,
   toNotificationCenterItem,
   type NotificationCenterRow,
 } from "./notification-center-queries";
 
-function createClient(rows: NotificationCenterRow[]) {
+function createClient(rows: NotificationCenterRow[], count = rows.length) {
   const calls: Array<[string, unknown[]]> = [];
   const or = vi.fn((filter: string) => {
     calls.push(["or", [filter]]);
     return query;
   });
   const query = {
-    select: vi.fn(() => query),
+    select: vi.fn((columns: string, options?: unknown) => {
+      calls.push(["select", [columns, options]]);
+      return query;
+    }),
     eq: vi.fn((key: string, value: unknown) => {
       calls.push(["eq", [key, value]]);
       return query;
     }),
     or,
     order: vi.fn(() => query),
-    limit: vi.fn(async () => ({ data: rows, error: null })),
+    limit: vi.fn(async () => ({ data: rows, count, error: null })),
   };
 
   return {
@@ -87,6 +91,28 @@ describe("notification center queries", () => {
       { status: "unread" },
     );
 
+    expect(calls).toContainEqual(["eq", ["status", "unread"]]);
+  });
+
+  it("counts unread notifications scoped to the actor user or role", async () => {
+    const { client, calls } = createClient([], 22);
+
+    const unreadCount = await countUnreadNotificationCenterItems(client, {
+      userId: "user-streamer",
+      role: "streamer",
+      organizationId: "org-1",
+    });
+
+    expect(unreadCount).toBe(22);
+    expect(calls).toContainEqual([
+      "select",
+      ["id", { count: "exact", head: true }],
+    ]);
+    expect(calls).toContainEqual(["eq", ["organization_id", "org-1"]]);
+    expect(calls).toContainEqual([
+      "or",
+      ["recipient_user_id.eq.user-streamer,recipient_role.eq.streamer"],
+    ]);
     expect(calls).toContainEqual(["eq", ["status", "unread"]]);
   });
 });

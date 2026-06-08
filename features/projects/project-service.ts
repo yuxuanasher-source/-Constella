@@ -203,6 +203,9 @@ export async function updateProjectBasics({
   }
 
   const before = await requireProject(repo, projectId);
+  if (before.status === "draft" && input.status === "recruiting") {
+    throw new Error("Draft projects must be published with the publish action");
+  }
   if (input.status) {
     assertProjectTransition(before.status, input.status);
   }

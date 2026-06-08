@@ -11,7 +11,10 @@ import {
   requiredString,
   RouteError,
 } from "@/features/live-operations/live-operations-route-utils";
-import { createLiveTask } from "@/features/live-operations/live-operations-service";
+import {
+  createLiveTask,
+  type LiveTaskType,
+} from "@/features/live-operations/live-operations-service";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
 export async function GET() {
@@ -21,7 +24,10 @@ export async function GET() {
       throw new RouteError("Only MCN staff can view live tasks", 403);
     }
 
-    const tasks = await listOpsLiveTaskQueue(context.supabase);
+    const tasks = await listOpsLiveTaskQueue(
+      context.supabase,
+      context.auth.organizationId,
+    );
     return NextResponse.json({ tasks });
   } catch (error) {
     return jsonError(error);
@@ -41,6 +47,7 @@ export async function POST(request: Request) {
         projectId: requiredString(body, "projectId"),
         streamerId: requiredString(body, "streamerId"),
         title: requiredString(body, "title"),
+        taskType: optionalLiveTaskType(body),
         plannedStartAt: optionalString(body, "plannedStartAt"),
         plannedEndAt: optionalString(body, "plannedEndAt"),
         plannedDuration: optionalNumber(body, "plannedDuration"),
@@ -52,4 +59,21 @@ export async function POST(request: Request) {
   } catch (error) {
     return jsonError(error);
   }
+}
+
+function optionalLiveTaskType(
+  body: Record<string, unknown>,
+): LiveTaskType | undefined {
+  const value =
+    optionalString(body, "type") ?? optionalString(body, "taskType");
+  if (!value) return undefined;
+  if (
+    value === "project" ||
+    value === "trial" ||
+    value === "training" ||
+    value === "temporary"
+  ) {
+    return value;
+  }
+  throw new RouteError("Invalid live task type", 400);
 }

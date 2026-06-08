@@ -375,6 +375,36 @@ describe("application service", () => {
     );
   });
 
+  it("confirms a direct invitation as a joined project streamer", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        source: "direct_invite",
+        status: "invited",
+      }),
+    });
+
+    await confirmApplicationJoin({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor: staffActor,
+      input: { applicationId: "app-1" },
+    });
+
+    expect(repo.createProjectStreamer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        status: "joined",
+      }),
+    );
+    expect(repo.updateApplicationStatus).toHaveBeenCalledWith(
+      "app-1",
+      expect.objectContaining({ status: "joined" }),
+    );
+  });
+
   it("records a not-joined reason during final rejection", async () => {
     const repo = makeRepo({
       getApplicationById: vi.fn().mockResolvedValue({

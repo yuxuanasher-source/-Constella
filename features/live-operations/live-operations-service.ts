@@ -45,12 +45,15 @@ export type ProjectStreamerForTask = {
     | "removed";
 };
 
+export type LiveTaskType = "project" | "trial" | "training" | "temporary";
+
 export type LiveTaskRecord = {
   id: string;
   organizationId: string;
   projectId: string | null;
   streamerId: string;
   title: string;
+  taskType: LiveTaskType;
   status: LiveTaskStatus;
   plannedStartAt?: string | null;
   plannedEndAt?: string | null;
@@ -92,6 +95,7 @@ export type LiveOperationsRepository = {
     projectId: string;
     streamerId: string;
     title: string;
+    taskType: LiveTaskType;
     plannedStartAt?: string | null;
     plannedEndAt?: string | null;
     plannedDuration?: number | null;
@@ -171,6 +175,7 @@ export async function createLiveTask({
     projectId: string;
     streamerId: string;
     title: string;
+    taskType?: LiveTaskType;
     plannedStartAt?: string | null;
     plannedEndAt?: string | null;
     plannedDuration?: number | null;
@@ -194,6 +199,7 @@ export async function createLiveTask({
     projectId: input.projectId,
     streamerId: input.streamerId,
     title: input.title,
+    taskType: input.taskType ?? "project",
     plannedStartAt: input.plannedStartAt,
     plannedEndAt: input.plannedEndAt,
     plannedDuration: input.plannedDuration,
@@ -215,7 +221,12 @@ export async function createLiveTask({
     projectId: task.projectId ?? undefined,
     streamerId: task.streamerId,
     after: task as unknown as Record<string, unknown>,
-    changedFields: ["status", "planned_start_at", "planned_end_at"],
+    changedFields: [
+      "status",
+      "task_type",
+      "planned_start_at",
+      "planned_end_at",
+    ],
   });
 
   await notify({

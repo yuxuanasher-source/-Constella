@@ -30,7 +30,9 @@ export async function PATCH(
     });
 
     const { streamerId } = await params;
-    const body = (await request.json().catch(() => ({}))) as StreamerSettlementPatchBody;
+    const body = (await request
+      .json()
+      .catch(() => ({}))) as StreamerSettlementPatchBody;
     const defaultSettlementMethod = normalizeEnum(
       body.defaultSettlementMethod,
       STREAMER_SETTLEMENT_METHODS,

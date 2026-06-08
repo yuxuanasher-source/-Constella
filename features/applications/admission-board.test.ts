@@ -145,8 +145,8 @@ const vendorReviews = [
     application_id: "app-2",
     recording_submission_id: "rec-2",
     recording_version: 1,
-    decision: "selected" as const,
-    remark: "Good pacing.",
+    decision: "backup" as const,
+    remark: "Keep as backup.",
     vendor_reviewer_name: "Vendor Reviewer",
     vendor_reviewer_contact: "reviewer@example.com",
     submitted_at: "2026-06-07T04:00:00.000Z",
@@ -200,8 +200,8 @@ describe("admission project board DTO", () => {
           mcnRejected: 0,
           needsChanges: 0,
           vendorPending: 1,
-          vendorSelected: 1,
-          vendorBackup: 0,
+          vendorSelected: 0,
+          vendorBackup: 1,
           vendorRejected: 0,
           vendorNeedsChanges: 0,
           pendingFinalConfirm: 1,
@@ -238,6 +238,86 @@ describe("admission project board DTO", () => {
         hasPrivateStorage: true,
       }),
     );
+    expect(details[1].vendorReview).toEqual(
+      expect.objectContaining({
+        decision: "backup",
+        remark: "Keep as backup.",
+      }),
+    );
+  });
+
+  it("exposes vendor rejection and change request reasons in detail rows", () => {
+    const details = toAdmissionRecordingDetails(
+      [
+        {
+          ...applications[0],
+          id: "app-rejected",
+          status: "recording_rejected",
+          decision_reason: "Quality is not enough.",
+        },
+        {
+          ...applications[2],
+          id: "app-change",
+          status: "recording_required",
+          decision_reason: "Please add gameplay intro.",
+        },
+      ],
+      [
+        {
+          ...recordings[1],
+          id: "rec-rejected",
+          application_id: "app-rejected",
+          status: "rejected",
+        },
+        {
+          ...recordings[2],
+          id: "rec-change",
+          application_id: "app-change",
+          status: "needs_changes",
+        },
+      ],
+      [
+        {
+          application_id: "app-rejected",
+          recording_submission_id: "rec-rejected",
+          recording_version: 2,
+          decision: "rejected",
+          remark: "Quality is not enough.",
+          vendor_reviewer_name: "Vendor Reviewer",
+          vendor_reviewer_contact: "reviewer@example.com",
+          submitted_at: "2026-06-07T05:00:00.000Z",
+        },
+        {
+          application_id: "app-change",
+          recording_submission_id: "rec-change",
+          recording_version: 1,
+          decision: "needs_changes",
+          remark: "Please add gameplay intro.",
+          vendor_reviewer_name: "Vendor Reviewer",
+          vendor_reviewer_contact: "reviewer@example.com",
+          submitted_at: "2026-06-07T05:30:00.000Z",
+        },
+      ],
+    );
+
+    expect(details[0]).toEqual(
+      expect.objectContaining({
+        decisionReason: "Quality is not enough.",
+        vendorReview: expect.objectContaining({
+          decision: "rejected",
+          remark: "Quality is not enough.",
+        }),
+      }),
+    );
+    expect(details[1]).toEqual(
+      expect.objectContaining({
+        decisionReason: "Please add gameplay intro.",
+        vendorReview: expect.objectContaining({
+          decision: "needs_changes",
+          remark: "Please add gameplay intro.",
+        }),
+      }),
+    );
   });
 
   it("maps detail rows into safe admission recording export rows", () => {
@@ -255,8 +335,8 @@ describe("admission project board DTO", () => {
       recordingVersion: 1,
       recordingSubmittedAt: "2026-06-07T02:10:00.000Z",
       mcnReviewStatus: "recording_approved",
-      vendorDecision: "selected",
-      vendorRemark: "Good pacing.",
+      vendorDecision: "backup",
+      vendorRemark: "Keep as backup.",
     });
     expect(JSON.stringify(rows)).not.toContain("private/org/project");
   });

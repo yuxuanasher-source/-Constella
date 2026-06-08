@@ -98,12 +98,12 @@ async function loadLiveReferenceData(
   }
 
   if (module === "m4") {
-    const tasks = await listOpsLiveTaskQueue(supabase);
+    const tasks = await listOpsLiveTaskQueue(supabase, auth.organizationId);
     return { liveTasks: tasks.map((task) => toOpsReferenceTask(task)) };
   }
 
   if (module === "m5") {
-    const reports = await listOpsLiveReportQueue(supabase);
+    const reports = await listOpsLiveReportQueue(supabase, auth.organizationId);
     return {
       liveReports: reports.map((report) => toOpsReferenceReport(report)),
     };

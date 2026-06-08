@@ -310,6 +310,38 @@ describe("project service", () => {
     expect(audit).not.toHaveBeenCalled();
   });
 
+  it("rejects publishing draft projects through basic settings", async () => {
+    const before = {
+      id: "99999999-9999-9999-9999-999999999999",
+      name: "Project",
+      code: "OLD",
+      status: "draft" as const,
+    };
+    const after = { ...before, status: "recruiting" as const };
+    const repo = {
+      createDraft: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      publish: vi.fn(),
+      updateBasics: vi.fn().mockResolvedValue(after),
+      updateSettlementRule: vi.fn(),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      updateProjectBasics({
+        repo,
+        audit,
+        actor,
+        projectId: before.id,
+        input: { status: "recruiting" },
+      }),
+    ).rejects.toThrow(
+      "Draft projects must be published with the publish action",
+    );
+    expect(repo.updateBasics).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
   it("allows owner and ops_manager to assign the project owner", async () => {
     const before = {
       id: "99999999-9999-9999-9999-999999999999",

@@ -82,6 +82,7 @@ async function getStreamerRecordingContext() {
   const streamerId = await getStreamerIdForUser(
     context.supabase,
     context.auth.userId,
+    context.auth.organizationId,
   );
   if (!streamerId) {
     throw new RouteError("Current user is not bound to a streamer", 400);

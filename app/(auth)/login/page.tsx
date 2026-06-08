@@ -145,9 +145,9 @@ export default async function LoginPage({
         <Link
           href="/login?mode=help"
           aria-label="帮助中心"
-          className="fixed right-5 top-1/2 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full bg-[var(--blue-600)] text-white shadow-[var(--shadow-fab)]"
+          className="fixed right-5 top-1/2 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full border border-[var(--line)] bg-white text-[color:var(--blue-600)] shadow-[0_18px_42px_rgba(15,23,42,0.14)] transition hover:border-blue-200 hover:bg-[var(--blue-50)]"
         >
-          <MessageCircle className="h-6 w-6" />
+          <MessageCircle className="h-6 w-6 text-[color:var(--blue-600)]" />
         </Link>
       </section>
     </main>

@@ -187,8 +187,7 @@ export function toStreamerDesktopProfileDto(
       baseSalary:
         baseSalary > 0 ? `¥${formatNumber(baseSalary)} / 月` : "未配置",
       cpt: cpt > 0 ? `¥${formatNumber(cpt)} / 有效直播小时` : "未配置",
-      cpsShare:
-        cpsRateBps > 0 ? `${formatPercentBps(cpsRateBps)}%` : "未配置",
+      cpsShare: cpsRateBps > 0 ? `${formatPercentBps(cpsRateBps)}%` : "未配置",
       giftShare: "按项目规则配置",
       bank: "未向前端暴露",
     },
@@ -203,6 +202,7 @@ export function toStreamerDesktopProfileDto(
 
 function profileStatusLabel(status: string) {
   const labels: Record<string, string> = {
+    not_started: "待配置",
     active: "合作中",
     signed: "已签约",
     inactive: "已停用",
@@ -283,8 +283,7 @@ function settlementRuleLabel(
 ) {
   const baseText = baseSalary > 0 ? `底薪 ¥${formatNumber(baseSalary)}` : "";
   const cptText = cpt > 0 ? `CPT ¥${formatNumber(cpt)}/h` : "";
-  const cpsText =
-    cpsRateBps > 0 ? `CPS ${formatPercentBps(cpsRateBps)}%` : "";
+  const cpsText = cpsRateBps > 0 ? `CPS ${formatPercentBps(cpsRateBps)}%` : "";
 
   if (method === "base_salary_cpt") {
     return [baseText || "底薪", cptText || "CPT"].join(" + ");

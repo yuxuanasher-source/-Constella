@@ -8,6 +8,7 @@ import {
   publishProject,
   updateProjectBasics,
 } from "@/features/projects/project-service";
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { listProjects } from "@/features/projects/project-queries";
 
 vi.mock("@/lib/auth/context", () => ({
@@ -35,6 +36,10 @@ vi.mock("@/features/projects/project-service", async () => {
   };
 });
 
+vi.mock("@/features/billing/route-guard", () => ({
+  assertBillingWriteAllowed: vi.fn(),
+}));
+
 const supabase = { client: "supabase" };
 const audit = vi.fn();
 const auth = {
@@ -58,6 +63,7 @@ describe("project api routes", () => {
     vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
     vi.mocked(getAuthContext).mockResolvedValue(auth as never);
     vi.mocked(createProjectAuditWriter).mockReturnValue(audit);
+    vi.mocked(assertBillingWriteAllowed).mockResolvedValue(undefined);
   });
 
   it("GET /api/projects returns UI DTOs", async () => {
@@ -123,6 +129,28 @@ describe("project api routes", () => {
         input: { name: "鸣潮暑期招募", code: "P2412", supplierId: undefined },
       }),
     );
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith({
+      client: supabase,
+      organizationId: "org-1",
+      featureKey: "project_management",
+    });
+  });
+
+  it("POST /api/projects blocks draft creation while billing is read-only", async () => {
+    vi.mocked(assertBillingWriteAllowed).mockRejectedValueOnce(
+      new Error("Organization is read-only because billing is past due"),
+    );
+
+    const { POST } = await import("./route");
+    const response = await POST(
+      jsonRequest({ name: "Read Only", code: "P-RO" }),
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "Organization is read-only because billing is past due",
+    });
+    expect(createProjectDraft).not.toHaveBeenCalled();
   });
 
   it("POST /api/projects/[projectId]/publish publishes through the audited service", async () => {
@@ -150,6 +178,11 @@ describe("project api routes", () => {
         projectId: "p1",
       }),
     );
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith({
+      client: supabase,
+      organizationId: "org-1",
+      featureKey: "project_management",
+    });
   });
 
   it("PATCH /api/projects/[projectId] updates project status through the audited service", async () => {
@@ -218,5 +251,10 @@ describe("project api routes", () => {
         }),
       }),
     );
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith({
+      client: supabase,
+      organizationId: "org-1",
+      featureKey: "project_management",
+    });
   });
 });

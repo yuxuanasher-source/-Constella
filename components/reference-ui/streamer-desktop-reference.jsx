@@ -946,14 +946,29 @@ const MY_TASKS = [];
 
 const STATUS_MAP = {
   pending_live: { tone: "neutral", label: "待开播" },
+  missed_live: { tone: "red", label: "直播已延期" },
   live: { tone: "blue", label: "直播中" },
   pending_report: { tone: "amber", label: "待上传截图" },
   pending_review: { tone: "violet", label: "审核中" },
+  report_pending_review: { tone: "violet", label: "审核中" },
   approved: { tone: "green", label: "审核通过" },
+  report_approved: { tone: "green", label: "审核通过" },
   rejected: { tone: "red", label: "审核驳回" },
+  report_rejected: { tone: "red", label: "审核驳回" },
   trial: { tone: "teal", label: "试播任务" },
   completed: { tone: "green", label: "已完成" },
+  cancelled: { tone: "neutral", label: "已取消" },
+  abnormal: { tone: "red", label: "异常" },
 };
+
+function getTaskStatusMeta(status) {
+  return (
+    STATUS_MAP[status] || {
+      tone: "neutral",
+      label: status || STATUS_MAP.pending_live.label,
+    }
+  );
+}
 
 const MY_NOTIFICATIONS = [];
 
@@ -1277,9 +1292,14 @@ function TopBar({
   subtitle,
   actions,
   unreadNotificationCount = 0,
+  notifications = MY_NOTIFICATIONS,
   profile = EMPTY_PROFILE,
 }) {
+  const [notificationOpen, setNotificationOpen] = React.useState(false);
   const notificationLabel = `通知 ${unreadNotificationCount} 条未读`;
+  const topbarNotifications = Array.isArray(notifications)
+    ? notifications.slice(0, 5)
+    : [];
 
   return (
     <div
@@ -1321,49 +1341,167 @@ function TopBar({
 
       {actions}
 
-      {/* Notification */}
-      <button
-        aria-label={notificationLabel}
-        title={notificationLabel}
+      <div
         style={{
           position: "relative",
-          width: 34,
-          height: 34,
-          borderRadius: 8,
-          border: "1px solid var(--line)",
-          background: "#fff",
-          cursor: "pointer",
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "var(--ink-500)",
         }}
       >
-        <Icon.Bell size={16} />
-        {unreadNotificationCount > 0 && (
-          <span
+        {/* Notification */}
+        <button
+          aria-label={notificationLabel}
+          title={notificationLabel}
+          onClick={() => setNotificationOpen((open) => !open)}
+          style={{
+            position: "relative",
+            width: 34,
+            height: 34,
+            borderRadius: 8,
+            border: "1px solid var(--line)",
+            background: "#fff",
+            cursor: "pointer",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--ink-500)",
+          }}
+        >
+          <Icon.Bell size={16} />
+          {unreadNotificationCount > 0 && (
+            <span
+              style={{
+                position: "absolute",
+                top: 5,
+                right: 5,
+                minWidth: 14,
+                height: 14,
+                borderRadius: 999,
+                background: "var(--danger-600)",
+                color: "#fff",
+                fontSize: 10,
+                fontWeight: 600,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "0 3px",
+                border: "1.5px solid #fff",
+              }}
+            >
+              {unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}
+            </span>
+          )}
+        </button>
+        {notificationOpen && (
+          <Card
+            padded={false}
             style={{
               position: "absolute",
-              top: 5,
-              right: 5,
-              minWidth: 14,
-              height: 14,
-              borderRadius: 999,
-              background: "var(--danger-600)",
-              color: "#fff",
-              fontSize: 10,
-              fontWeight: 600,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "0 3px",
-              border: "1.5px solid #fff",
+              right: 0,
+              top: 42,
+              width: 340,
+              zIndex: 20,
+              boxShadow: "0 14px 36px rgba(15, 23, 42, 0.16)",
             }}
           >
-            {unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}
-          </span>
+            <div
+              style={{
+                padding: "12px 14px",
+                borderBottom: "1px solid var(--line)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 13.5,
+                  fontWeight: 700,
+                  color: "var(--ink-900)",
+                }}
+              >
+                通知
+              </span>
+              <Badge tone={unreadNotificationCount > 0 ? "red" : "neutral"}>
+                {unreadNotificationCount} 条未读
+              </Badge>
+            </div>
+            {topbarNotifications.length === 0 ? (
+              <div
+                style={{
+                  padding: 18,
+                  color: "var(--ink-400)",
+                  fontSize: 12,
+                  textAlign: "center",
+                }}
+              >
+                暂无通知
+              </div>
+            ) : (
+              topbarNotifications.map((item, index) => (
+                <div
+                  key={item.id ?? index}
+                  style={{
+                    padding: "12px 14px",
+                    display: "flex",
+                    gap: 10,
+                    borderBottom:
+                      index < topbarNotifications.length - 1
+                        ? "1px solid var(--line)"
+                        : "none",
+                    background: item.unread ? "rgba(238,243,255,0.65)" : "#fff",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 999,
+                      marginTop: 6,
+                      flexShrink: 0,
+                      background: item.unread
+                        ? "var(--blue-600)"
+                        : "transparent",
+                    }}
+                  />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div
+                      style={{
+                        fontSize: 12.5,
+                        fontWeight: item.unread ? 700 : 600,
+                        color: "var(--ink-900)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {item.title}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11.5,
+                        color: "var(--ink-500)",
+                        marginTop: 3,
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {item.detail}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 10.5,
+                        color: "var(--ink-400)",
+                        marginTop: 3,
+                      }}
+                    >
+                      {item.time}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </Card>
         )}
-      </button>
+      </div>
 
       {/* Avatar dropdown */}
       <button
@@ -1502,6 +1640,14 @@ function normalizeStreamerRecordings(items) {
   }));
 }
 
+function normalizeProjectAnnouncements(items) {
+  if (!Array.isArray(items)) {
+    return null;
+  }
+
+  return items;
+}
+
 function isProfileActive(profile = EMPTY_PROFILE) {
   return Boolean(profile.id) && ["合作中", "已签约"].includes(profile.level);
 }
@@ -1563,6 +1709,17 @@ function countUnreadNotifications(notifications = MY_NOTIFICATIONS) {
     .length;
 }
 
+function normalizeNotificationUnreadCount(value, notifications) {
+  const count = Number(value);
+  if (Number.isFinite(count) && count >= 0) {
+    return Math.trunc(count);
+  }
+
+  return countUnreadNotifications(
+    normalizeStreamerNotifications(notifications) || [],
+  );
+}
+
 function formatNotificationTime(value) {
   const date = value ? new Date(value) : null;
   if (!date || Number.isNaN(date.getTime())) {
@@ -1586,14 +1743,16 @@ function ScreenDashboard({
   notifications = MY_NOTIFICATIONS,
   profile = EMPTY_PROFILE,
 }) {
-  const today = tasks.filter((t) =>
-    ["pending_live", "live", "pending_report"].includes(t.status),
-  );
+  const dashboardTaskStatuses = [
+    "pending_live",
+    "missed_live",
+    "live",
+    "pending_report",
+  ];
+  const today = tasks.filter((t) => dashboardTaskStatuses.includes(t.status));
   const pendingReport = tasks.filter((t) => t.status === "pending_report");
   const upcoming = tasks
-    .filter(
-      (t) => !["pending_live", "live", "pending_report"].includes(t.status),
-    )
+    .filter((t) => !dashboardTaskStatuses.includes(t.status))
     .slice(0, 4);
   const reviewing = tasks.filter((t) => t.status === "pending_review");
   const visibleNotifications = notifications.slice(0, 4);
@@ -2263,7 +2422,8 @@ function EarningsCard({ go, earnings = MY_EARNINGS }) {
 
 // Task card (full)
 function DesktopTaskCard({ task, onClick, primary, compact }) {
-  const st = STATUS_MAP[task.status] || STATUS_MAP.pending_live;
+  const st = getTaskStatusMeta(task.status);
+  const isMissedLive = task.status === "missed_live";
   const tones = {
     blue: "var(--blue-600)",
     violet: "var(--violet-600)",
@@ -2276,7 +2436,16 @@ function DesktopTaskCard({ task, onClick, primary, compact }) {
   return (
     <Card
       style={{
-        borderColor: primary ? "var(--blue-200)" : "var(--line)",
+        borderColor: primary
+          ? isMissedLive
+            ? "#F3C4C9"
+            : "var(--blue-200)"
+          : isMissedLive
+            ? "#F3C4C9"
+            : "var(--line)",
+        background: isMissedLive
+          ? "linear-gradient(135deg, #FFF8F8 0%, #FFFFFF 55%)"
+          : "#fff",
         position: "relative",
         overflow: "hidden",
       }}
@@ -2416,7 +2585,11 @@ function DesktopTaskCard({ task, onClick, primary, compact }) {
           >
             <Badge tone="blue">{task.settleHint}</Badge>
             {task.needScreening && <Badge tone="amber">需录屏</Badge>}
-            {task.needStartStop && <Badge tone="neutral">需点击开播</Badge>}
+            {isMissedLive ? (
+              <Badge tone="red">不可直播</Badge>
+            ) : (
+              task.needStartStop && <Badge tone="neutral">需点击开播</Badge>
+            )}
             <span style={{ flex: 1 }} />
             {task.status === "pending_live" && (
               <Button
@@ -2458,7 +2631,7 @@ function DesktopTaskCard({ task, onClick, primary, compact }) {
 }
 
 function CompactTaskCard({ task, onClick }) {
-  const st = STATUS_MAP[task.status] || STATUS_MAP.pending_live;
+  const st = getTaskStatusMeta(task.status);
   return (
     <Card onClick={onClick} style={{ cursor: "pointer" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -2669,6 +2842,7 @@ function ScreenTasks({ go, openTaskId, tasks = MY_TASKS, actions = {} }) {
   const counts = {
     all: tasks.length,
     pending_live: tasks.filter((t) => t.status === "pending_live").length,
+    missed_live: tasks.filter((t) => t.status === "missed_live").length,
     pending_report: tasks.filter((t) => t.status === "pending_report").length,
     pending_review: tasks.filter((t) => t.status === "pending_review").length,
     trial: tasks.filter((t) => t.status === "trial").length,
@@ -2719,6 +2893,11 @@ function ScreenTasks({ go, openTaskId, tasks = MY_TASKS, actions = {} }) {
                   key: "pending_live",
                   label: "待开播",
                   count: counts.pending_live,
+                },
+                {
+                  key: "missed_live",
+                  label: "已延期",
+                  count: counts.missed_live,
                 },
                 {
                   key: "pending_report",
@@ -2792,11 +2971,14 @@ function ScreenTasks({ go, openTaskId, tasks = MY_TASKS, actions = {} }) {
               },
               {
                 title: "状态",
-                render: (r) => (
-                  <Badge tone={STATUS_MAP[r.status].tone} dot>
-                    {STATUS_MAP[r.status].label}
-                  </Badge>
-                ),
+                render: (r) => {
+                  const status = getTaskStatusMeta(r.status);
+                  return (
+                    <Badge tone={status.tone} dot>
+                      {status.label}
+                    </Badge>
+                  );
+                },
               },
             ]}
             rows={filtered}
@@ -2831,7 +3013,7 @@ function TaskDetail({ id, go, tasks = MY_TASKS, actions = {} }) {
     );
   }
 
-  const st = STATUS_MAP[t.status];
+  const st = getTaskStatusMeta(t.status);
 
   return (
     <div
@@ -2899,6 +3081,10 @@ function TaskDetail({ id, go, tasks = MY_TASKS, actions = {} }) {
           {t.status === "pending_live" && (
             <PendingLiveCTA task={t} onStart={actions.startTask} />
           )}
+          {t.status === "missed_live" && <MissedLiveCTA task={t} />}
+          {t.status === "live" && (
+            <LiveCTA task={t} onStop={actions.stopTask} />
+          )}
           {t.status === "pending_report" && <PendingReportCTA task={t} />}
           {t.status === "pending_review" && <ReviewingCTA task={t} />}
           {t.status === "trial" && <TrialCTA task={t} />}
@@ -2910,7 +3096,11 @@ function TaskDetail({ id, go, tasks = MY_TASKS, actions = {} }) {
             <Badge tone="blue">{t.settleHint}</Badge>
           </KV>
           <KV label="开播 / 停止">
-            {t.needStartStop ? (
+            {t.status === "missed_live" ? (
+              <span style={{ color: "var(--danger-600)", fontWeight: 700 }}>
+                已延期，不可开播
+              </span>
+            ) : t.needStartStop ? (
               <span style={{ color: "var(--ok-600)", fontWeight: 600 }}>
                 需要在 App 内点击
               </span>
@@ -2942,22 +3132,29 @@ function TaskDetail({ id, go, tasks = MY_TASKS, actions = {} }) {
             { title: "排班创建", time: "系统生成", done: true },
             {
               title: "点击开始直播",
-              time: t.status === "pending_live" ? "待你操作" : "5/27 19:58",
-              done: t.status !== "pending_live",
-              current: t.status === "pending_live",
+              time:
+                t.status === "missed_live"
+                  ? "计划窗口已结束"
+                  : t.status === "pending_live"
+                    ? "待你操作"
+                    : "5/27 19:58",
+              done: !["pending_live", "missed_live"].includes(t.status),
+              current: ["pending_live", "missed_live"].includes(t.status),
             },
             {
               title: "点击停止 + 上传下播截图",
               time:
-                t.status === "pending_report"
+                t.status === "live"
                   ? "待你操作"
-                  : t.status === "pending_review"
-                    ? "5/26 22:48"
-                    : "—",
+                  : t.status === "pending_report"
+                    ? "待你操作"
+                    : t.status === "pending_review"
+                      ? "5/26 22:48"
+                      : "—",
               done: ["pending_review", "approved", "completed"].includes(
                 t.status,
               ),
-              current: t.status === "pending_report",
+              current: ["live", "pending_report"].includes(t.status),
             },
             {
               title: "确认 OCR 结果",
@@ -3050,6 +3247,111 @@ function PendingLiveCTA({ task, onStart }) {
         </Button>
         <Button kind="default" style={{ flex: 1 }}>
           修改排班
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function MissedLiveCTA({ task }) {
+  return (
+    <div
+      style={{
+        padding: 16,
+        background: "linear-gradient(135deg, #FFF8F8 0%, #FFFDF9 100%)",
+        borderRadius: 10,
+        border: "1px solid #F3C4C9",
+      }}
+    >
+      <div
+        style={{ fontSize: 13.5, color: "var(--danger-600)", fontWeight: 700 }}
+      >
+        直播已延期
+      </div>
+      <div
+        style={{
+          marginTop: 8,
+          fontSize: 12.5,
+          color: "var(--ink-600)",
+          lineHeight: 1.65,
+        }}
+      >
+        计划 {task.dateStr} {task.start}–{task.end} 已结束，系统未记录开播。
+      </div>
+      <div
+        style={{
+          marginTop: 12,
+          padding: "10px 12px",
+          borderRadius: 8,
+          background: "#fff",
+          border: "1px dashed #F3C4C9",
+          color: "var(--danger-600)",
+          fontSize: 12,
+          lineHeight: 1.6,
+          fontWeight: 700,
+        }}
+      >
+        当前不可直播，请联系运营确认延期或未开播原因。
+      </div>
+    </div>
+  );
+}
+
+function LiveCTA({ task, onStop }) {
+  const [busy, setBusy] = React.useState(false);
+  const stop = async () => {
+    if (!onStop || busy) return;
+    setBusy(true);
+    try {
+      await onStop(task.id);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        padding: 16,
+        background: "linear-gradient(135deg, #F4FBF7 0%, #EEF9F2 100%)",
+        borderRadius: 10,
+        border: "1px solid #BDEBD2",
+      }}
+    >
+      <div style={{ fontSize: 12, color: "var(--ink-500)" }}>当前状态</div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginTop: 8,
+          color: "var(--ok-600)",
+          fontWeight: 700,
+        }}
+      >
+        <span
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: 999,
+            background: "var(--ok-600)",
+            boxShadow: "0 0 0 4px rgba(22,163,74,0.14)",
+          }}
+        />
+        直播中
+      </div>
+      <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+        <Button kind="default" style={{ flex: 1 }}>
+          暂停
+        </Button>
+        <Button
+          kind="primary"
+          icon={<Icon.Upload size={14} stroke="#fff" />}
+          onClick={stop}
+          disabled={busy}
+          style={{ flex: 2 }}
+        >
+          {busy ? "结束中…" : "结束直播 + 上传截图"}
         </Button>
       </div>
     </div>
@@ -3304,7 +3606,11 @@ function Timeline({ events }) {
 // ===== src-streamer-pc\screen-videos.jsx =====
 // ——— Screen: 录屏库 ——————————————————————
 
-function ScreenVideos({ recordings = MY_RECORDINGS, actions = {} }) {
+function ScreenVideos({
+  recordings = MY_RECORDINGS,
+  projectAnnouncements = [],
+  actions = {},
+}) {
   const [tab, setTab] = React.useState("all");
   const [form, setForm] = React.useState(() => ({
     product: "",
@@ -3314,6 +3620,14 @@ function ScreenVideos({ recordings = MY_RECORDINGS, actions = {} }) {
   }));
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [selectedProject, setSelectedProject] = React.useState(null);
+  const [projectForm, setProjectForm] = React.useState({ link: "" });
+  const [projectSubmitting, setProjectSubmitting] = React.useState(false);
+  const [projectError, setProjectError] = React.useState("");
+  const [detailLoading, setDetailLoading] = React.useState(false);
+  const announcementRows = Array.isArray(projectAnnouncements)
+    ? projectAnnouncements
+    : [];
   const counts = {
     all: recordings.length,
     submitted: recordings.filter((item) => item.status === "submitted").length,
@@ -3328,6 +3642,33 @@ function ScreenVideos({ recordings = MY_RECORDINGS, actions = {} }) {
   const updateForm = (key, value) => {
     setError("");
     setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const openProjectDetail = async (project) => {
+    setProjectError("");
+    setDetailLoading(true);
+    setSelectedProject(project);
+    try {
+      const detail = await actions.getProjectAnnouncement?.(project.id);
+      if (detail) {
+        setSelectedProject(detail);
+      }
+    } catch (detailError) {
+      setProjectError(recordingLinkErrorMessage(detailError));
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const closeProjectDetail = () => {
+    setSelectedProject(null);
+    setProjectForm({ link: "" });
+    setProjectError("");
+  };
+
+  const updateProjectForm = (key, value) => {
+    setProjectError("");
+    setProjectForm((current) => ({ ...current, [key]: value }));
   };
 
   const submit = async (event) => {
@@ -3346,6 +3687,42 @@ function ScreenVideos({ recordings = MY_RECORDINGS, actions = {} }) {
       setError(recordingLinkErrorMessage(submitError));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const submitProjectRecording = async (event) => {
+    event.preventDefault();
+    if (!selectedProject) {
+      return;
+    }
+
+    setProjectSubmitting(true);
+    setProjectError("");
+    try {
+      const result = await actions.submitRecordingLink?.({
+        projectId: selectedProject.id,
+        link: projectForm.link,
+      });
+      const reviewStatusLabel = result?.reviewStatusLabel || "审核中";
+      setSelectedProject((current) =>
+        current && current.id === selectedProject.id
+          ? {
+              ...current,
+              applicationId: result?.applicationId ?? current.applicationId,
+              applicationStatus: "recording_reviewing",
+              latestRecordingStatus: "submitted",
+              latestRecordingVersion:
+                result?.recording?.version ?? current.latestRecordingVersion,
+              reviewStatusLabel,
+              canSubmitRecording: false,
+            }
+          : current,
+      );
+      setProjectForm({ link: "" });
+    } catch (submitError) {
+      setProjectError(recordingLinkErrorMessage(submitError));
+    } finally {
+      setProjectSubmitting(false);
     }
   };
 
@@ -3368,6 +3745,49 @@ function ScreenVideos({ recordings = MY_RECORDINGS, actions = {} }) {
           </>
         }
       />
+
+      <div style={{ padding: "24px 24px 0", display: "grid", gap: 16 }}>
+        <Card
+          title="项目公告"
+          extra={<Badge tone="blue">{announcementRows.length} 个</Badge>}
+        >
+          {announcementRows.length === 0 ? (
+            <EmptyCard
+              title="暂无公开项目公告"
+              hint="当前组织暂未发布公开招募项目。"
+            />
+          ) : (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                gap: 12,
+              }}
+            >
+              {announcementRows.map((project) => (
+                <DesktopProjectAnnouncementCard
+                  key={project.id}
+                  project={project}
+                  onOpen={openProjectDetail}
+                />
+              ))}
+            </div>
+          )}
+        </Card>
+
+        {selectedProject ? (
+          <DesktopProjectAnnouncementDetail
+            project={selectedProject}
+            form={projectForm}
+            error={projectError}
+            loading={detailLoading}
+            submitting={projectSubmitting}
+            onChange={updateProjectForm}
+            onSubmit={submitProjectRecording}
+            onClose={closeProjectDetail}
+          />
+        ) : null}
+      </div>
 
       <div
         style={{
@@ -3560,6 +3980,197 @@ function ScreenVideos({ recordings = MY_RECORDINGS, actions = {} }) {
         </div>
       </div>
     </>
+  );
+}
+
+function DesktopProjectAnnouncementCard({ project, onOpen }) {
+  return (
+    <div
+      style={{
+        border: "1px solid var(--line)",
+        borderRadius: 8,
+        padding: 14,
+        background: "var(--bg-soft)",
+        display: "grid",
+        gap: 10,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div
+            style={{
+              fontSize: 14,
+              fontWeight: 700,
+              color: "var(--ink-900)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {project.name}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 3 }}>
+            {project.product || project.code}
+          </div>
+        </div>
+        <Badge tone={recordingStatusTone(project.latestRecordingStatus)} dot>
+          {project.reviewStatusLabel}
+        </Badge>
+      </div>
+      {project.publicSummary ? (
+        <div style={{ fontSize: 12, color: "var(--ink-600)", lineHeight: 1.6 }}>
+          {project.publicSummary}
+        </div>
+      ) : null}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {project.gameDownloadUrl ? (
+          <a
+            href={project.gameDownloadUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              height: 30,
+              padding: "0 10px",
+              borderRadius: 6,
+              display: "inline-flex",
+              alignItems: "center",
+              background: "#fff",
+              color: "var(--blue-700)",
+              fontSize: 12,
+              fontWeight: 700,
+              textDecoration: "none",
+            }}
+          >
+            打开游戏下载
+          </a>
+        ) : null}
+        <Button size="sm" kind="primary" onClick={() => onOpen(project)}>
+          查看详情
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function DesktopProjectAnnouncementDetail({
+  project,
+  form,
+  error,
+  loading,
+  submitting,
+  onChange,
+  onSubmit,
+  onClose,
+}) {
+  return (
+    <Card
+      title="项目详情"
+      extra={
+        <Badge tone={recordingStatusTone(project.latestRecordingStatus)} dot>
+          {project.reviewStatusLabel}
+        </Badge>
+      }
+    >
+      <div style={{ display: "grid", gap: 14 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div
+              style={{ fontSize: 18, fontWeight: 700, color: "var(--ink-900)" }}
+            >
+              {project.name}
+            </div>
+            <div
+              style={{ marginTop: 4, fontSize: 13, color: "var(--ink-500)" }}
+            >
+              {project.product || project.code}
+            </div>
+          </div>
+          <Button kind="default" size="sm" onClick={onClose}>
+            返回列表
+          </Button>
+        </div>
+        {loading ? (
+          <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+            正在加载项目详情...
+          </div>
+        ) : null}
+        {project.publicSummary ? (
+          <div
+            style={{ fontSize: 13, color: "var(--ink-700)", lineHeight: 1.7 }}
+          >
+            {project.publicSummary}
+          </div>
+        ) : null}
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          <KV label="录屏要求">
+            {project.forceRecording
+              ? "需提交项目试播录屏"
+              : "可提交项目试播录屏"}
+          </KV>
+          {project.gameDownloadUrl ? (
+            <KV label="游戏下载">
+              <a
+                href={project.gameDownloadUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  color: "var(--blue-700)",
+                  textDecoration: "none",
+                  wordBreak: "break-all",
+                }}
+              >
+                {project.gameDownloadUrl}
+              </a>
+            </KV>
+          ) : null}
+        </div>
+        {project.recordingFeedback ? (
+          <div
+            style={{
+              color: "var(--warn-600)",
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          >
+            {project.recordingFeedback}
+          </div>
+        ) : null}
+        <form
+          onSubmit={onSubmit}
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(240px, 1fr) auto",
+            gap: 10,
+            alignItems: "end",
+          }}
+        >
+          <FieldInput
+            label="录屏链接"
+            value={form.link}
+            placeholder="https://..."
+            onChange={(value) => onChange("link", value)}
+          />
+          <Button
+            kind="primary"
+            type="submit"
+            disabled={submitting || !project.canSubmitRecording}
+          >
+            {submitting ? "提交中" : "提交项目录屏"}
+          </Button>
+          {error ? (
+            <div
+              style={{
+                gridColumn: "1 / -1",
+                color: "var(--danger-600)",
+                fontSize: 12,
+              }}
+            >
+              {error}
+            </div>
+          ) : null}
+        </form>
+      </div>
+    </Card>
   );
 }
 
@@ -5494,6 +6105,7 @@ function toDesktopReferenceTask(task) {
     (plannedStart && plannedEnd
       ? Math.max(0, (plannedEnd.getTime() - plannedStart.getTime()) / 60000)
       : 0);
+  const status = getDesktopReferenceTaskStatus(task.status, plannedEnd);
 
   return {
     id: task.id,
@@ -5503,7 +6115,7 @@ function toDesktopReferenceTask(task) {
     start: plannedStart ? formatDesktopTime(plannedStart) : "--:--",
     end: plannedEnd ? formatDesktopTime(plannedEnd) : "--:--",
     durationPlan: plannedMinutes ? plannedMinutes / 60 : 0,
-    status: task.status || "pending_live",
+    status,
     needStartStop: task.needStartStop ?? true,
     needScreening: task.needScreening ?? true,
     settleHint: task.settleHint || "按项目规则",
@@ -5513,6 +6125,20 @@ function toDesktopReferenceTask(task) {
       : undefined,
     reportedAudience: task.viewers,
   };
+}
+
+function getDesktopReferenceTaskStatus(status, plannedEnd) {
+  const baseStatus = status || "pending_live";
+  if (
+    baseStatus === "pending_live" &&
+    plannedEnd &&
+    !Number.isNaN(plannedEnd.getTime()) &&
+    Date.now() > plannedEnd.getTime()
+  ) {
+    return "missed_live";
+  }
+
+  return baseStatus;
 }
 
 function formatDesktopDate(date) {
@@ -5535,8 +6161,10 @@ function StreamerDesktopReferenceInner({
   initialRoute = "dashboard",
   liveTasks,
   notificationItems,
+  notificationUnreadCount,
   profile,
   recordings,
+  projectAnnouncements = [],
 }) {
   const [route, setRoute] = React.useState(initialRoute);
   const [taskId, setTaskId] = React.useState(null);
@@ -5546,11 +6174,21 @@ function StreamerDesktopReferenceInner({
   const [notifications, setNotifications] = React.useState(() =>
     normalizeStreamerNotifications(notificationItems),
   );
+  const [notificationUnreadCountState, setNotificationUnreadCountState] =
+    React.useState(() =>
+      normalizeNotificationUnreadCount(
+        notificationUnreadCount,
+        notificationItems,
+      ),
+    );
   const [profileState, setProfileState] = React.useState(() =>
     normalizeStreamerProfile(profile),
   );
   const [recordingRows, setRecordingRows] = React.useState(() =>
     normalizeStreamerRecordings(recordings),
+  );
+  const [announcementRows, setAnnouncementRows] = React.useState(() =>
+    normalizeProjectAnnouncements(projectAnnouncements),
   );
 
   React.useEffect(() => {
@@ -5562,12 +6200,25 @@ function StreamerDesktopReferenceInner({
   }, [notificationItems]);
 
   React.useEffect(() => {
+    setNotificationUnreadCountState(
+      normalizeNotificationUnreadCount(
+        notificationUnreadCount,
+        notificationItems,
+      ),
+    );
+  }, [notificationUnreadCount, notificationItems]);
+
+  React.useEffect(() => {
     setProfileState(normalizeStreamerProfile(profile));
   }, [profile]);
 
   React.useEffect(() => {
     setRecordingRows(normalizeStreamerRecordings(recordings));
   }, [recordings]);
+
+  React.useEffect(() => {
+    setAnnouncementRows(normalizeProjectAnnouncements(projectAnnouncements));
+  }, [projectAnnouncements]);
 
   const visibleTasks = Array.isArray(tasks) ? tasks : MY_TASKS;
   const visibleNotifications = Array.isArray(notifications)
@@ -5577,6 +6228,9 @@ function StreamerDesktopReferenceInner({
   const visibleRecordings = Array.isArray(recordingRows)
     ? recordingRows
     : MY_RECORDINGS;
+  const visibleAnnouncements = Array.isArray(announcementRows)
+    ? announcementRows
+    : [];
   const actions = React.useMemo(() => {
     const readJson = async (response, fallbackMessage) => {
       const body = await response.json().catch(() => ({}));
@@ -5609,6 +6263,9 @@ function StreamerDesktopReferenceInner({
       if (Array.isArray(body.items)) {
         setNotifications(normalizeStreamerNotifications(body.items));
       }
+      setNotificationUnreadCountState(
+        normalizeNotificationUnreadCount(body.unreadCount, body.items),
+      );
     };
 
     const refreshProfile = async () => {
@@ -5631,11 +6288,33 @@ function StreamerDesktopReferenceInner({
       }
     };
 
+    const refreshProjectAnnouncements = async () => {
+      const body = await fetchJson(
+        "/api/streamer/project-announcements",
+        "refresh project announcements failed",
+      );
+      if (Array.isArray(body.announcements)) {
+        setAnnouncementRows(normalizeProjectAnnouncements(body.announcements));
+      }
+    };
+
+    const getProjectAnnouncement = async (projectId) => {
+      const body = await fetchJson(
+        `/api/streamer/project-announcements/${projectId}`,
+        "load project announcement failed",
+      );
+      return body.project
+        ? normalizeProjectAnnouncements([body.project])[0]
+        : null;
+    };
+
     return {
       refreshTasks,
       refreshNotifications,
       refreshProfile,
       refreshRecordings,
+      refreshProjectAnnouncements,
+      getProjectAnnouncement,
       submitRecordingLink: async (form) => {
         const body = await fetchJson(
           "/api/streamer/recordings",
@@ -5646,15 +6325,28 @@ function StreamerDesktopReferenceInner({
             body: JSON.stringify(form),
           },
         );
+        if (body.projectRecording) {
+          await refreshProjectAnnouncements();
+          return body.projectRecording;
+        }
         if (body.recording) {
           setRecordingRows((current) => [
             normalizeStreamerRecordings([body.recording])[0],
             ...(Array.isArray(current) ? current : []),
           ]);
         }
+        return body.recording;
       },
       startTask: async (id) => {
         await fetchJson(`/api/live-tasks/${id}/start`, "start task failed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        await refreshTasks();
+      },
+      stopTask: async (id) => {
+        await fetchJson(`/api/live-tasks/${id}/stop`, "stop task failed", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
@@ -5773,9 +6465,8 @@ function StreamerDesktopReferenceInner({
         <TopBar
           title={meta.t}
           subtitle={meta.s}
-          unreadNotificationCount={countUnreadNotifications(
-            visibleNotifications,
-          )}
+          unreadNotificationCount={notificationUnreadCountState}
+          notifications={visibleNotifications}
           profile={visibleProfile}
         />
         <div id="content-scroll" style={{ flex: 1, overflowY: "auto" }}>
@@ -5796,7 +6487,11 @@ function StreamerDesktopReferenceInner({
             />
           )}
           {route === "videos" && (
-            <ScreenVideos recordings={visibleRecordings} actions={actions} />
+            <ScreenVideos
+              recordings={visibleRecordings}
+              projectAnnouncements={visibleAnnouncements}
+              actions={actions}
+            />
           )}
           {route === "ai" && <ScreenAI go={go} profile={visibleProfile} />}
           {route === "earnings" && <ScreenEarnings go={go} />}
@@ -5809,20 +6504,27 @@ function StreamerDesktopReferenceInner({
   );
 }
 
+/**
+ * @param {{ initialRoute?: string; liveTasks?: any[] | null; notificationItems?: any[] | null; notificationUnreadCount?: number | null; profile?: any; recordings?: any[] | null; projectAnnouncements?: any[] | null }} props
+ */
 export default function StreamerDesktopReferenceApp({
   initialRoute = "dashboard",
   liveTasks,
   notificationItems,
+  notificationUnreadCount,
   profile,
   recordings,
+  projectAnnouncements = [],
 }) {
   return (
     <StreamerDesktopReferenceInner
       initialRoute={initialRoute}
       liveTasks={liveTasks}
       notificationItems={notificationItems}
+      notificationUnreadCount={notificationUnreadCount}
       profile={profile}
       recordings={recordings}
+      projectAnnouncements={projectAnnouncements}
     />
   );
 }

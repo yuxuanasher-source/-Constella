@@ -183,12 +183,27 @@ function normalizeEnum<T extends string>(
 }
 
 function jsonServiceError(error: unknown) {
+  const message = serviceErrorMessage(error);
   if (error instanceof Error) {
     return NextResponse.json(
-      { error: error.message },
+      { error: message },
       { status: statusForServiceError(error) },
     );
   }
 
-  return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
+  return NextResponse.json({ error: message }, { status: 500 });
+}
+
+function serviceErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (isRecord(error) && typeof error.message === "string") {
+    return error.message;
+  }
+  return "Unexpected error";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

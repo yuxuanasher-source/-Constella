@@ -162,6 +162,21 @@ describe("streamer api routes", () => {
     expect(createStreamerProfile).not.toHaveBeenCalled();
   });
 
+  it("surfaces Supabase query errors instead of hiding them as unexpected", async () => {
+    vi.mocked(listStreamerPool).mockRejectedValue({
+      code: "42703",
+      message: "column streamers.default_cps_rate_bps does not exist",
+    });
+
+    const { GET } = await import("./route");
+    const response = await GET();
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "column streamers.default_cps_rate_bps does not exist",
+    });
+  });
+
   it("PATCH /api/streamers/[streamerId]/risk requires reason and calls risk service", async () => {
     vi.mocked(updateStreamerRisk).mockResolvedValue({
       id: "s1",

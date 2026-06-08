@@ -27,7 +27,6 @@ type PublicProjectForRecordingRow = {
   name: string;
   organization_id: string;
   status: string;
-  is_public_to_streamers: boolean;
 };
 
 type StreamerAdmissionRow = {
@@ -100,7 +99,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
   async getPublicProjectForRecording(projectId: string) {
     const { data, error } = await this.client
       .from("streamer_public_project_announcements")
-      .select("id, name, organization_id, status, is_public_to_streamers")
+      .select("id, name, organization_id, status")
       .eq("id", projectId)
       .maybeSingle<PublicProjectForRecordingRow>();
 
@@ -114,7 +113,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
           name: data.name,
           organizationId: data.organization_id,
           status: data.status,
-          isPublicToStreamers: data.is_public_to_streamers,
+          isPublicToStreamers: true,
         }
       : null;
   }
@@ -377,18 +376,24 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
 export async function getStreamerIdForUser(
   client: SupabaseClient,
   userId: string,
+  organizationId?: string,
 ): Promise<string | null> {
-  const { data, error } = await client
-    .from("streamers")
-    .select("id")
-    .eq("user_id", userId)
-    .maybeSingle<{ id: string }>();
+  let query = client.from("streamers").select("id").eq("user_id", userId);
+
+  if (organizationId) {
+    query = query.eq("organization_id", organizationId);
+  }
+
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1);
 
   if (error) {
     throw error;
   }
 
-  return data?.id ?? null;
+  return data?.[0]?.id ?? null;
 }
 
 function toProjectAdmissionConfig(

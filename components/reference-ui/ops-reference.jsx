@@ -1067,6 +1067,7 @@ const TASKS = [];
 
 const TASK_STATUS = {
   pending_live: { tone: "neutral", label: "待开播" },
+  missed_live: { tone: "red", label: "已延期未直播" },
   live: { tone: "blue", label: "直播中", pulse: true },
   pending_report: { tone: "violet", label: "待报数" },
   pending_review: { tone: "amber", label: "报数待审" },
@@ -1085,12 +1086,18 @@ const TASK_TYPE_OPTIONS = [
 ];
 
 const ANOMALY_TYPES = {
+  not_started: { tone: "red", label: "已延期未直播" },
+  not_reported: { tone: "amber", label: "未报数" },
+  report_overdue: { tone: "amber", label: "报数逾期" },
+  missing_checkout_screenshot: { tone: "amber", label: "缺少下播截图" },
+  live_over_48h: { tone: "red", label: "直播超过 48 小时" },
   unstopped: { tone: "red", label: "未停止 / 未报数" },
   late_report: { tone: "amber", label: "报数逾期" },
   unstart: { tone: "amber", label: "未开播" },
   short: { tone: "amber", label: "时长不足" },
   rejected: { tone: "red", label: "审核驳回未重提" },
   conflict: { tone: "red", label: "时间冲突" },
+  abnormal: { tone: "red", label: "异常" },
 };
 // ===== src\icons.jsx =====
 // Inline stroke-icons — 16/18/20 sizing. All paths from scratch (simple geometry).
@@ -6136,7 +6143,7 @@ function ProjectScheduleTasks({ p, tasks = [], streamers = [], go }) {
   const waitingCount = tasks.filter((task) =>
     ["pending_live", "pending_report", "pending_review"].includes(task.status),
   ).length;
-  const anomalyCount = tasks.filter((task) => task.anomaly).length;
+  const anomalyCount = tasks.filter(isTaskOperationalAnomaly).length;
   const plannedHours = tasks.reduce((total, task) => {
     const plannedMinutes = Number(task.plannedDuration);
     if (Number.isFinite(plannedMinutes) && plannedMinutes > 0) {
@@ -7294,6 +7301,10 @@ function ScreenStreamers({ go, initialActiveId }) {
     const displayName = draft.displayName.trim();
     if (!displayName) {
       setDraftError("请填写主播昵称");
+      return;
+    }
+    if (userSearch.trim() && !selectedSubaccount) {
+      setDraftError("请从候选列表选择主播子账号，或清空后不绑定");
       return;
     }
 
@@ -9561,11 +9572,58 @@ function ScreenAdmission() {
   const [selectedProjectId, setSelectedProjectId] = React.useState("");
   const [admissionMessage, setAdmissionMessage] = React.useState("");
   const [busyAction, setBusyAction] = React.useState("");
+
+  const syncAdmissionProjectBoards = async () => {
+    if (!actions.refreshAdmissionProjectBoards) {
+      return;
+    }
+    const projects = await actions.refreshAdmissionProjectBoards();
+    if (!Array.isArray(projects)) {
+      return;
+    }
+    setProjectBoards(projects);
+    setSelectedProjectId(
+      (current) => current || projects[0]?.project?.id || "",
+    );
+  };
+
   const review = async (applicationId, decision) => {
-    await actions.reviewApplicationRecording?.(applicationId, {
-      decision,
-      note: "经营端选播准入审核",
-    });
+    if (!actions.reviewApplicationRecording) {
+      setAdmissionMessage("录屏审核后台暂未接入。");
+      return;
+    }
+    setBusyAction(`review:${applicationId}:${decision}`);
+    setAdmissionMessage("");
+    try {
+      await actions.reviewApplicationRecording(applicationId, {
+        decision,
+        note: "经营端选播准入审核",
+      });
+      await syncAdmissionProjectBoards();
+      setAdmissionMessage(recordingDecisionSuccessMessage(decision));
+    } catch (error) {
+      setAdmissionMessage(error?.message || "录屏审核失败，请稍后重试");
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const confirmJoin = async (applicationId) => {
+    if (!actions.confirmApplicationJoin) {
+      setAdmissionMessage("二次确认后台暂未接入。");
+      return;
+    }
+    setBusyAction(`confirm:${applicationId}`);
+    setAdmissionMessage("");
+    try {
+      await actions.confirmApplicationJoin(applicationId);
+      await syncAdmissionProjectBoards();
+      setAdmissionMessage("二次确认已完成");
+    } catch (error) {
+      setAdmissionMessage(error?.message || "二次确认失败，请稍后重试");
+    } finally {
+      setBusyAction("");
+    }
   };
   const boards = projectBoards ?? buildAdmissionProjectBoards(applications);
   const selectedBoard =
@@ -9617,6 +9675,7 @@ function ScreenAdmission() {
     setAdmissionMessage("");
     try {
       const result = await actions.exportAdmissionRecordings(board.project.id);
+      downloadAdmissionExport(result);
       setAdmissionMessage(
         result?.filename
           ? `录屏表导出已生成：${result.filename}`
@@ -9634,28 +9693,38 @@ function ScreenAdmission() {
       setAdmissionMessage("分享链接后台暂未接入。");
       return;
     }
-    const applicationIds = applications
-      .filter(
-        (application) => admissionProjectId(application) === board.project.id,
-      )
+    const projectApplications = applications.filter(
+      (application) => admissionProjectId(application) === board.project.id,
+    );
+    const shareableApplications = projectApplications.filter((application) =>
+      isMcnApprovedAdmissionRecording(application),
+    );
+    const applicationIds = shareableApplications
       .map((application) => application.id)
       .filter(Boolean);
-    if (applicationIds.length === 0) {
-      setAdmissionMessage("当前项目没有可分享的报名记录。");
+    if (applicationIds.length === 0 && board.counts.mcnApproved === 0) {
+      setAdmissionMessage("当前项目暂无 MCN 已通过的可分享录屏");
       return;
     }
+    const skippedNotApproved = applicationIds.length
+      ? projectApplications.length - shareableApplications.length
+      : 0;
+    const skippedMessage =
+      skippedNotApproved > 0
+        ? `（已跳过 ${skippedNotApproved} 条未通过 MCN 初审或暂无录屏）`
+        : "";
     setBusyAction(`share:${board.project.id}`);
     setAdmissionMessage("");
     try {
       const result = await actions.createAdmissionShareBoard(board.project.id, {
         title: `${board.project.name || board.project.code || "项目"} 录屏复核`,
-        applicationIds,
+        ...(applicationIds.length ? { applicationIds } : {}),
         allowVendorSubmit: true,
       });
       setAdmissionMessage(
         result?.shareUrl
-          ? `分享链接已生成：${result.shareUrl}`
-          : "分享链接已生成",
+          ? `分享链接已生成：${result.shareUrl}${skippedMessage}`
+          : `分享链接已生成${skippedMessage}`,
       );
     } catch (error) {
       setAdmissionMessage(error?.message || "分享链接创建失败，请稍后重试");
@@ -9764,7 +9833,10 @@ function ScreenAdmission() {
                       size="sm"
                       kind="primary"
                       onClick={() => createShareBoard(board)}
-                      disabled={busyAction === `share:${board.project.id}`}
+                      disabled={
+                        busyAction === `share:${board.project.id}` ||
+                        board.counts.recordingCount === 0
+                      }
                     >
                       创建分享链接
                     </Button>
@@ -9875,38 +9947,67 @@ function ScreenAdmission() {
                 },
                 {
                   title: "操作",
-                  render: (r) => (
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <Button
-                        size="sm"
-                        kind="default"
-                        onClick={() => review(r.id, "needs_changes")}
-                      >
-                        需补充
-                      </Button>
-                      <Button
-                        size="sm"
-                        kind="default"
-                        onClick={() => review(r.id, "rejected")}
-                      >
-                        驳回
-                      </Button>
-                      <Button
-                        size="sm"
-                        kind="primary"
-                        onClick={() => review(r.id, "approved")}
-                      >
-                        通过
-                      </Button>
-                      <Button
-                        size="sm"
-                        kind="default"
-                        onClick={() => actions.confirmApplicationJoin?.(r.id)}
-                      >
-                        二次确认
-                      </Button>
-                    </div>
-                  ),
+                  render: (r) => {
+                    const reviewable = isAdmissionRecordingReviewable(r);
+                    const confirmable =
+                      r.status === "recording_approved" &&
+                      r.vendorReview?.decision === "selected";
+                    if (!reviewable && !confirmable) {
+                      return (
+                        <span style={{ color: "var(--ink-400)" }}>
+                          {admissionNextActionLabel(r)}
+                        </span>
+                      );
+                    }
+                    return (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        {reviewable ? (
+                          <>
+                            <Button
+                              size="sm"
+                              kind="default"
+                              onClick={() => review(r.id, "needs_changes")}
+                              disabled={
+                                busyAction === `review:${r.id}:needs_changes`
+                              }
+                            >
+                              需补充
+                            </Button>
+                            <Button
+                              size="sm"
+                              kind="default"
+                              onClick={() => review(r.id, "rejected")}
+                              disabled={
+                                busyAction === `review:${r.id}:rejected`
+                              }
+                            >
+                              驳回
+                            </Button>
+                            <Button
+                              size="sm"
+                              kind="primary"
+                              onClick={() => review(r.id, "approved")}
+                              disabled={
+                                busyAction === `review:${r.id}:approved`
+                              }
+                            >
+                              通过
+                            </Button>
+                          </>
+                        ) : null}
+                        {confirmable ? (
+                          <Button
+                            size="sm"
+                            kind="default"
+                            onClick={() => confirmJoin(r.id)}
+                            disabled={busyAction === `confirm:${r.id}`}
+                          >
+                            二次确认
+                          </Button>
+                        ) : null}
+                      </div>
+                    );
+                  },
                 },
               ]}
             />
@@ -9915,6 +10016,31 @@ function ScreenAdmission() {
       </div>
     </>
   );
+}
+
+function downloadAdmissionExport(result) {
+  if (
+    !result?.content ||
+    !result?.filename ||
+    typeof document === "undefined" ||
+    typeof URL === "undefined" ||
+    typeof URL.createObjectURL !== "function"
+  ) {
+    return;
+  }
+
+  const blob = new Blob(["\uFEFF", result.content], {
+    type: "text/csv;charset=utf-8",
+  });
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = result.filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL?.(href);
 }
 
 function buildAdmissionProjectBoards(applications = []) {
@@ -9984,6 +10110,46 @@ function incrementAdmissionCounts(board, application) {
   if (decision === "backup") board.counts.vendorBackup += 1;
   if (decision === "rejected") board.counts.vendorRejected += 1;
   if (decision === "needs_changes") board.counts.vendorNeedsChanges += 1;
+}
+
+function isAdmissionRecordingReviewable(application) {
+  const status = application.status;
+  const recordingStatus = application.latestRecording?.status;
+  return (
+    Boolean(application.latestRecording) &&
+    ([
+      "recording_reviewing",
+      "pending_recording_review",
+      "pending_review",
+    ].includes(status) ||
+      ["submitted", "reviewing", "pending_review"].includes(recordingStatus))
+  );
+}
+
+function isMcnApprovedAdmissionRecording(application) {
+  return (
+    application.status === "recording_approved" &&
+    application.latestRecording?.status === "approved"
+  );
+}
+
+function admissionNextActionLabel(application) {
+  const decision = application.vendorReview?.decision;
+  if (decision === "selected" && application.status === "recording_approved") {
+    return "邀请进入项目";
+  }
+  if (decision === "backup") return "厂家备选，等待最终名额";
+  if (decision === "rejected") return "等待主播重新上传";
+  if (decision === "needs_changes") return "等待主播补充录屏";
+  if (isAdmissionRecordingReviewable(application)) return "MCN 初审";
+  if (!application.latestRecording) return "等待录屏";
+  return "无需操作";
+}
+
+function recordingDecisionSuccessMessage(decision) {
+  if (decision === "approved") return "录屏已通过";
+  if (decision === "rejected") return "录屏已驳回";
+  return "已要求补充录屏";
 }
 
 function admissionProject(application) {
@@ -11310,9 +11476,7 @@ function ScreenTasks({ go }) {
   const pendingReviewCount = tasks.filter(
     (t) => t.status === "pending_review",
   ).length;
-  const anomalyCount = tasks.filter(
-    (t) => t.status === "abnormal" || t.anomaly,
-  ).length;
+  const anomalyCount = tasks.filter(isTaskOperationalAnomaly).length;
   const todayCount = tasks.filter(
     (t) => t.dayIdx === SCHEDULE_WEEK.todayIdx,
   ).length;
@@ -11881,9 +12045,7 @@ function TaskProjectMappingStrip({
   totalTasks = 0,
   onOpenProject,
 }) {
-  const anomalyCount = tasks.filter(
-    (task) => task.anomaly || task.status === "abnormal",
-  ).length;
+  const anomalyCount = tasks.filter(isTaskOperationalAnomaly).length;
   const pendingCount = tasks.filter((task) =>
     ["pending_live", "live", "pending_report", "pending_review"].includes(
       task.status,
@@ -11976,10 +12138,64 @@ function taskMatchesTaskFilters(task, filters, projects = []) {
     [task.streamerId, task.streamerName]
       .filter(Boolean)
       .includes(filters.streamer);
-  const statusKey = task.anomaly ? "abnormal" : task.status;
+  const statusKey = getTaskDisplayStatusKey(task);
   const matchesStatus =
     filters.status === "all" || statusKey === filters.status;
   return matchesProject && matchesStreamer && matchesStatus;
+}
+
+function getTaskDisplayStatusKey(task) {
+  const baseStatus = task?.anomaly
+    ? "abnormal"
+    : task?.status || "pending_live";
+  if (
+    baseStatus === "pending_live" &&
+    hasTaskPlannedWindowEnded(task?.plannedEndAt)
+  ) {
+    return "missed_live";
+  }
+  return baseStatus;
+}
+
+function hasTaskPlannedWindowEnded(plannedEndAt) {
+  if (!plannedEndAt) return false;
+  const plannedEnd = new Date(plannedEndAt);
+  return (
+    !Number.isNaN(plannedEnd.getTime()) && Date.now() > plannedEnd.getTime()
+  );
+}
+
+function getTaskOperationalAnomalyKey(task) {
+  if (task?.anomaly) return task.anomaly;
+  if (task?.status === "abnormal") return "abnormal";
+  if (getTaskDisplayStatusKey(task) === "missed_live") return "not_started";
+  return "";
+}
+
+function isTaskOperationalAnomaly(task) {
+  return Boolean(getTaskOperationalAnomalyKey(task));
+}
+
+function taskOperationalAnomalyDescription(anomalyKey) {
+  const descriptions = {
+    not_started:
+      "计划窗口已结束但系统未记录开播，建议联系主播补充未直播原因或重新排班。",
+    unstart:
+      "计划窗口已结束但系统未记录开播，建议联系主播补充未直播原因或重新排班。",
+    not_reported: "直播任务已结束但尚未提交报数，建议提醒主播尽快补报。",
+    report_overdue: "已超过项目上传期限，建议运营提示主播尽快补传截图。",
+    late_report: "已超过项目上传期限，建议运营提示主播尽快补传截图。",
+    missing_checkout_screenshot: "任务缺少下播截图，建议提醒主播补充履约证据。",
+    live_over_48h:
+      "直播持续超过 48 小时未上传下播截图，建议主动联系主播并提示截图上传。",
+    unstopped:
+      "直播持续超过 48 小时未上传下播截图，建议主动联系主播并提示截图上传。",
+    short: "实际直播时长低于计划时长 75%，触发时长不足异常。",
+    rejected: "报数审核被驳回后尚未重新提交，建议跟进主播补充材料。",
+    conflict: "该任务与同主播其他排班存在时间冲突，请调整排班窗口。",
+    abnormal: "任务已进入异常状态，请运营跟进处理并记录原因。",
+  };
+  return descriptions[anomalyKey] || descriptions.abnormal;
 }
 
 function resolveTaskProject(task, projects = []) {
@@ -12379,7 +12595,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
 
 // Day-unit block — full width within its day cell
 function DayTaskBlock({ task, projects = [], onClick }) {
-  const statusKey = task.anomaly ? "abnormal" : task.status;
+  const statusKey = getTaskDisplayStatusKey(task);
   const st = TASK_STATUS[statusKey] || TASK_STATUS.pending_live;
   const tones = {
     blue: {
@@ -12451,7 +12667,20 @@ function DayTaskBlock({ task, projects = [], onClick }) {
         >
           {formatHour(task.startHour)} – {formatHour(task.endHour)}
         </span>
-        <span style={{ flex: 1 }} />
+        <span style={{ flex: 1, minWidth: 4 }} />
+        <span
+          style={{
+            fontSize: 10,
+            color: c.text,
+            opacity: 0.9,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            maxWidth: 82,
+          }}
+        >
+          {st.label}
+        </span>
         <span
           className="num"
           style={{ fontSize: 10, color: c.text, opacity: 0.75 }}
@@ -12497,7 +12726,7 @@ function HourTaskBar({ task, projects = [], hourStart, hourEnd, onClick }) {
     100 - leftPct,
     ((task.endHour - task.startHour) / span) * 100,
   );
-  const statusKey = task.anomaly ? "abnormal" : task.status;
+  const statusKey = getTaskDisplayStatusKey(task);
   const st = TASK_STATUS[statusKey] || TASK_STATUS.pending_live;
 
   const tones = {
@@ -12542,7 +12771,8 @@ function HourTaskBar({ task, projects = [], hourStart, hourEnd, onClick }) {
         padding: 0,
         cursor: "pointer",
       }}
-      title={`${task.name} · ${formatHour(task.startHour)} - ${formatHour(task.endHour)}`}
+      aria-label={`${task.name} · ${st.label} · ${formatHour(task.startHour)} - ${formatHour(task.endHour)}`}
+      title={`${task.name} · ${st.label} · ${formatHour(task.startHour)} - ${formatHour(task.endHour)}`}
     >
       <div
         style={{
@@ -12582,9 +12812,26 @@ function HourTaskBar({ task, projects = [], hourStart, hourEnd, onClick }) {
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
+            flex: "1 1 auto",
+            minWidth: 0,
           }}
         >
           {projectName} · {task.name.replace(/^.+·\s*/, "")}
+        </span>
+        <span
+          style={{
+            marginLeft: 6,
+            maxWidth: 72,
+            fontSize: 9.5,
+            color: c.text,
+            opacity: 0.8,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            flexShrink: 1,
+          }}
+        >
+          {st.label}
         </span>
         <span
           style={{
@@ -12912,7 +13159,7 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
         {
           title: "状态",
           render: (r) => {
-            const k = r.anomaly ? "abnormal" : r.status;
+            const k = getTaskDisplayStatusKey(r);
             const st = TASK_STATUS[k] || TASK_STATUS.pending_live;
             return (
               <Badge tone={st.tone} dot>
@@ -12923,14 +13170,16 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
         },
         {
           title: "异常",
-          render: (r) =>
-            r.anomaly ? (
-              <Badge tone={ANOMALY_TYPES[r.anomaly].tone}>
-                {ANOMALY_TYPES[r.anomaly].label}
-              </Badge>
+          render: (r) => {
+            const anomalyKey = getTaskOperationalAnomalyKey(r);
+            const anomalyMeta =
+              ANOMALY_TYPES[anomalyKey] || ANOMALY_TYPES.abnormal;
+            return anomalyKey ? (
+              <Badge tone={anomalyMeta.tone}>{anomalyMeta.label}</Badge>
             ) : (
               <span style={{ color: "var(--ink-300)" }}>—</span>
-            ),
+            );
+          },
         },
         {
           title: "",
@@ -12963,18 +13212,17 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
   const actions = useOpsLiveActions();
   const [actionMessage, setActionMessage] = React.useState("");
   const [scanBusy, setScanBusy] = React.useState("");
-  const anomalies = tasks
-    .filter((t) => t.anomaly)
-    .map((t) => {
-      const project = resolveTaskProject(t, projects);
-      const streamer = resolveTaskStreamer(t, streamers);
-      return {
-        ...t,
-        projectDisplay: project?.name || t.projectName || t.project,
-        streamer: streamer?.alias || t.streamerName,
-        typeKey: t.anomaly,
-      };
-    });
+  const anomalies = tasks.filter(isTaskOperationalAnomaly).map((t) => {
+    const anomalyKey = getTaskOperationalAnomalyKey(t);
+    const project = resolveTaskProject(t, projects);
+    const streamer = resolveTaskStreamer(t, streamers);
+    return {
+      ...t,
+      projectDisplay: project?.name || t.projectName || t.project,
+      streamer: streamer?.alias || t.streamerName,
+      typeKey: anomalyKey,
+    };
+  });
 
   // Group by type
   const groups = {};
@@ -13062,8 +13310,11 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
               marginBottom: 8,
             }}
           >
-            <Badge tone={ANOMALY_TYPES[type].tone} dot>
-              {ANOMALY_TYPES[type].label}
+            <Badge
+              tone={(ANOMALY_TYPES[type] || ANOMALY_TYPES.abnormal).tone}
+              dot
+            >
+              {(ANOMALY_TYPES[type] || ANOMALY_TYPES.abnormal).label}
             </Badge>
             <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
               {items.length} 项
@@ -13255,8 +13506,14 @@ function TaskDrawer({
   const p = resolveTaskProject(task, projects);
   const streamerName = s?.alias || displayTaskStreamerName(task);
   const projectName = p?.name || task.projectName || task.project;
-  const statusKey = task.anomaly ? "abnormal" : task.status;
-  const st = TASK_STATUS[statusKey];
+  const statusKey = getTaskDisplayStatusKey(task);
+  const flowStatusKey = task.status || "pending_live";
+  const taskAnomalyKey = getTaskOperationalAnomalyKey(task);
+  const taskAnomalyMeta =
+    ANOMALY_TYPES[taskAnomalyKey] || ANOMALY_TYPES.abnormal;
+  const st = TASK_STATUS[statusKey] || TASK_STATUS.pending_live;
+  const showHeaderAnomalyBadge =
+    taskAnomalyKey && taskAnomalyMeta.label !== st.label;
 
   return (
     <Drawer
@@ -13272,10 +13529,8 @@ function TaskDrawer({
           <Badge tone={st.tone} dot>
             {st.label}
           </Badge>
-          {task.anomaly && (
-            <Badge tone={ANOMALY_TYPES[task.anomaly].tone}>
-              {ANOMALY_TYPES[task.anomaly].label}
-            </Badge>
+          {showHeaderAnomalyBadge && (
+            <Badge tone={taskAnomalyMeta.tone}>{taskAnomalyMeta.label}</Badge>
           )}
         </div>
       }
@@ -13376,13 +13631,13 @@ function TaskDrawer({
                 done: true,
               },
               {
-                time: statusKey === "pending_live" ? "待开播" : "已开播",
+                time: flowStatusKey === "pending_live" ? "待开播" : "已开播",
                 who: streamerName,
                 action: "点击开始直播",
-                done: statusKey !== "pending_live",
+                done: flowStatusKey !== "pending_live",
               },
               {
-                time: statusKey === "live" ? "进行中…" : "已结束",
+                time: flowStatusKey === "live" ? "进行中…" : "已结束",
                 who: streamerName,
                 action: "点击停止 + 上传下播截图",
                 done: [
@@ -13390,28 +13645,28 @@ function TaskDrawer({
                   "pending_review",
                   "completed",
                   "approved",
-                ].includes(statusKey),
-                current: statusKey === "live",
+                ].includes(flowStatusKey),
+                current: flowStatusKey === "live",
               },
               {
                 time: "—",
                 who: streamerName,
                 action: "主播确认 OCR 结果",
                 done: ["pending_review", "completed", "approved"].includes(
-                  statusKey,
+                  flowStatusKey,
                 ),
               },
               {
                 time: "—",
                 who: "运营审核",
                 action: "报数审核",
-                done: ["completed", "approved"].includes(statusKey),
+                done: ["completed", "approved"].includes(flowStatusKey),
               },
             ]}
           />
         </div>
 
-        {task.anomaly && (
+        {taskAnomalyKey && (
           <div
             style={{
               padding: 14,
@@ -13445,17 +13700,12 @@ function TaskDrawer({
                   color: "var(--danger-600)",
                 }}
               >
-                {ANOMALY_TYPES[task.anomaly].label}
+                {taskAnomalyMeta.label}
               </div>
               <div
                 style={{ fontSize: 12, color: "var(--ink-700)", marginTop: 4 }}
               >
-                {task.anomaly === "unstopped" &&
-                  "直播持续超过 48 小时未上传下播截图，建议主动联系主播并提示截图上传。"}
-                {task.anomaly === "late_report" &&
-                  "已超过项目上传期限，建议运营提示主播尽快补传截图。"}
-                {task.anomaly === "short" &&
-                  "实际直播时长低于计划时长 75%，触发时长不足异常。"}
+                {taskOperationalAnomalyDescription(taskAnomalyKey)}
               </div>
             </div>
           </div>

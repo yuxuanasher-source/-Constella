@@ -13,4 +13,17 @@ describe("application route utils", () => {
       error: "Only streamers can apply to projects",
     });
   });
+
+  it("preserves database error messages from plain PostgREST-style objects", async () => {
+    const response = jsonError({
+      code: "22P02",
+      message:
+        'invalid input value for enum audit_action: "create_share_board"',
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: 'invalid input value for enum audit_action: "create_share_board"',
+    });
+  });
 });

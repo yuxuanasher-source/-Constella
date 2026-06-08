@@ -1,18 +1,22 @@
 import StreamerMobileReferenceApp from "@/components/reference-ui/streamer-mobile-reference";
-import { getStreamerIdForUser } from "@/features/live-operations/live-operations-repository";
 import { listStreamerProjectAnnouncements } from "@/features/recordings/project-announcements";
 import { listStreamerRecordingLinks } from "@/features/recordings/streamer-recording-library";
-import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+
+import {
+  getStreamerMobileContext,
+  type StreamerMobileContext,
+} from "../streamer-mobile-data";
 
 export default async function StreamerRecordingsPage() {
+  const context = await getStreamerMobileContext();
   const { recordings, projectAnnouncements } =
-    await loadStreamerRecordingPageData();
+    await loadStreamerRecordingPageData(context);
 
   return (
     <div className="mobile-prototype-stage">
       <StreamerMobileReferenceApp
         initialRoute="videos"
+        profile={context?.profile ?? undefined}
         recordings={recordings}
         projectAnnouncements={projectAnnouncements}
       />
@@ -20,26 +24,21 @@ export default async function StreamerRecordingsPage() {
   );
 }
 
-async function loadStreamerRecordingPageData() {
-  const supabase = await createSupabaseServerClient();
-  const auth = await getAuthContext(supabase);
-  if (!supabase || !auth || auth.role !== "streamer") {
-    return { recordings: undefined, projectAnnouncements: undefined };
-  }
-
-  const streamerId = await getStreamerIdForUser(supabase, auth.userId);
-  if (!streamerId) {
+async function loadStreamerRecordingPageData(
+  context: StreamerMobileContext | null,
+) {
+  if (!context) {
     return { recordings: undefined, projectAnnouncements: undefined };
   }
 
   const input = {
-    organizationId: auth.organizationId,
-    streamerId,
+    organizationId: context.auth.organizationId,
+    streamerId: context.streamerId,
   };
 
   const [recordings, projectAnnouncements] = await Promise.all([
-    listStreamerRecordingLinks(supabase, input),
-    listStreamerProjectAnnouncements(supabase, input),
+    listStreamerRecordingLinks(context.supabase, input),
+    listStreamerProjectAnnouncements(context.supabase, input),
   ]);
 
   return { recordings, projectAnnouncements };

@@ -6,6 +6,7 @@ import type {
 
 type StreamerReferenceTaskStatus =
   | "pending_live"
+  | "missed_live"
   | "live"
   | "pending_report"
   | "pending_review"
@@ -23,6 +24,8 @@ export type StreamerReferenceTask = {
   vendor: string;
   start: string;
   end: string;
+  plannedStartAt?: string | null;
+  plannedEndAt?: string | null;
   durationPlan: number;
   status: StreamerReferenceTaskStatus;
   needStartStop: boolean;
@@ -44,8 +47,11 @@ export type OpsReferenceTask = {
   project: string;
   projectName: string;
   name: string;
-  type: "project";
+  type: OpsLiveTaskQueueItem["taskType"];
   status: string;
+  plannedStartAt?: string | null;
+  plannedEndAt?: string | null;
+  plannedDuration?: number | null;
   systemDuration?: number;
 };
 
@@ -73,7 +79,11 @@ export function toStreamerReferenceTask(
   const start = parseDate(task.plannedStartAt);
   const end = parseDate(task.plannedEndAt);
   const now = options.now ? new Date(options.now) : new Date();
-  const status = toReferenceTaskStatus(task.status);
+  const baseStatus = toReferenceTaskStatus(task.status);
+  const status =
+    baseStatus === "pending_live" && hasPlannedWindowEnded(end, now)
+      ? "missed_live"
+      : baseStatus;
 
   return {
     id: task.id,
@@ -84,13 +94,15 @@ export function toStreamerReferenceTask(
     vendor: "经营舱",
     start: formatClock(start),
     end: formatClock(end),
+    plannedStartAt: task.plannedStartAt,
+    plannedEndAt: task.plannedEndAt,
     durationPlan: minutesToHours(
       task.plannedDuration ?? differenceMinutes(start, end),
     ),
     status,
     needStartStop: true,
     needScreening: true,
-    note: status === "pending_review" ? "运营审核中，预计 24 小时内出结果" : "",
+    note: streamerReferenceTaskNote(status),
     settleHint: "CPT · 审核后入池",
     reportedDuration:
       status === "pending_review" || status === "approved"
@@ -116,8 +128,11 @@ export function toOpsReferenceTask(
     project: task.projectId ?? task.projectName,
     projectName: task.projectName,
     name: task.title,
-    type: "project",
+    type: task.taskType ?? "project",
     status: toOpsReferenceTaskStatus(task.status),
+    plannedStartAt: task.plannedStartAt,
+    plannedEndAt: task.plannedEndAt,
+    plannedDuration: task.plannedDuration,
     systemDuration: task.systemDuration,
   };
 }
@@ -129,9 +144,9 @@ export function toOpsReferenceReport(
     id: report.id,
     date: report.submittedAt.slice(0, 10),
     streamer: report.streamerName,
-    streamerId: report.streamerName,
+    streamerId: report.streamerId || report.streamerName,
     project: report.projectName,
-    taskId: report.taskTitle,
+    taskId: report.taskId || report.taskTitle,
     duration: minutesToHours(report.settlementDuration ?? 0),
     audience: report.viewers ?? 0,
     status: reportStatusToReference(report.status),
@@ -139,6 +154,20 @@ export function toOpsReferenceReport(
     source: report.timeSource === "claimed" ? "manual" : "OCR",
     note: `${report.timeSource ?? "unknown"} · ${report.evidenceLevel ?? "unknown"}`,
   };
+}
+
+function streamerReferenceTaskNote(
+  status: StreamerReferenceTaskStatus,
+): string {
+  if (status === "pending_review") {
+    return "运营审核中，预计 24 小时内出结果";
+  }
+
+  if (status === "missed_live") {
+    return "计划窗口已结束，系统未记录开播，请联系运营补充未直播原因。";
+  }
+
+  return "";
 }
 
 function toReferenceTaskStatus(status: string): StreamerReferenceTaskStatus {
@@ -155,6 +184,15 @@ function toReferenceTaskStatus(status: string): StreamerReferenceTaskStatus {
   };
 
   return map[status] ?? "pending_live";
+}
+
+function hasPlannedWindowEnded(end: Date | null, now: Date): boolean {
+  return (
+    !!end &&
+    !Number.isNaN(end.getTime()) &&
+    !Number.isNaN(now.getTime()) &&
+    now.getTime() > end.getTime()
+  );
 }
 
 function toOpsReferenceTaskStatus(status: string): string {
@@ -174,6 +212,10 @@ function toOpsReferenceTaskStatus(status: string): string {
 }
 
 function reportStatusToReference(status: string): string {
+  if (status === "pending_adjudication") {
+    return "pending_review";
+  }
+
   if (status === "need_more") {
     return "need_supply";
   }

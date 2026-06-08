@@ -215,6 +215,7 @@ class GoldenPathRepository
       streamerId: input.streamerId,
       title: input.title,
       status: "pending_live",
+      taskType: "project",
       plannedStartAt: input.plannedStartAt,
       plannedEndAt: input.plannedEndAt,
       plannedDuration: input.plannedDuration,

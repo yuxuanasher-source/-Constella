@@ -382,7 +382,9 @@ async function listProjectStreamerRules(
 ): Promise<ProjectStreamerRuleRow[]> {
   const { data, error } = await client
     .from("project_streamers")
-    .select("streamer_id, settlement_method, hourly_rate, base_salary, cps_rate_bps")
+    .select(
+      "streamer_id, settlement_method, hourly_rate, base_salary, cps_rate_bps",
+    )
     .eq("project_id", projectId)
     .in("streamer_id", streamerIds)
     .returns<ProjectStreamerRuleRow[]>();

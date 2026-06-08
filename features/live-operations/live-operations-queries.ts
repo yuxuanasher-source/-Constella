@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { EvidenceLevel, TimeSource } from "./live-report-evidence";
 import type { LiveTaskStatus } from "./live-task-state";
-import type { ReportStatus } from "./live-operations-service";
+import type { LiveTaskType, ReportStatus } from "./live-operations-service";
 
 export type StreamerTaskCard = {
   id: string;
@@ -17,6 +17,9 @@ export type StreamerTaskCard = {
 
 export type OpsLiveReportQueueItem = {
   id: string;
+  taskId: string;
+  projectId: string;
+  streamerId: string;
   status: ReportStatus;
   taskTitle: string;
   projectName: string;
@@ -32,6 +35,7 @@ export type OpsLiveTaskQueueItem = {
   id: string;
   title: string;
   status: LiveTaskStatus;
+  taskType: LiveTaskType;
   projectId: string | null;
   projectName: string;
   streamerId: string;
@@ -55,6 +59,9 @@ type StreamerTaskRow = {
 
 type OpsLiveReportRow = {
   id: string;
+  live_task_id: string;
+  project_id: string;
+  streamer_id: string;
   status: ReportStatus;
   settlement_duration: number | null;
   time_source: TimeSource | null;
@@ -70,6 +77,7 @@ type OpsLiveTaskRow = {
   id: string;
   title: string;
   status: LiveTaskStatus;
+  task_type: LiveTaskType;
   project_id: string | null;
   streamer_id: string;
   planned_start_at: string | null;
@@ -102,13 +110,26 @@ export async function listStreamerTaskCards(
 
 export async function listOpsLiveReportQueue(
   client: SupabaseClient,
+  organizationId?: string,
 ): Promise<OpsLiveReportQueueItem[]> {
-  const { data, error } = await client
+  let query = client
     .from("live_reports")
     .select(
-      "id, status, settlement_duration, time_source, evidence_level, viewers, created_at, live_tasks(title), projects(name), streamers(display_name)",
+      "id, live_task_id, project_id, streamer_id, status, settlement_duration, time_source, evidence_level, viewers, created_at, live_tasks(title), projects(name), streamers(display_name)",
     )
-    .in("status", ["pending_review", "pending_adjudication"])
+    .in("status", [
+      "pending_review",
+      "pending_adjudication",
+      "approved",
+      "rejected",
+      "need_more",
+    ]);
+
+  if (organizationId) {
+    query = query.eq("organization_id", organizationId);
+  }
+
+  const { data, error } = await query
     .order("created_at", { ascending: false })
     .returns<OpsLiveReportRow[]>();
 
@@ -121,12 +142,19 @@ export async function listOpsLiveReportQueue(
 
 export async function listOpsLiveTaskQueue(
   client: SupabaseClient,
+  organizationId?: string,
 ): Promise<OpsLiveTaskQueueItem[]> {
-  const { data, error } = await client
+  let query = client
     .from("live_tasks")
     .select(
-      "id, title, status, project_id, streamer_id, planned_start_at, planned_end_at, planned_duration, system_duration, projects(name), streamers(display_name)",
-    )
+      "id, title, status, task_type, project_id, streamer_id, planned_start_at, planned_end_at, planned_duration, system_duration, projects(name), streamers(display_name)",
+    );
+
+  if (organizationId) {
+    query = query.eq("organization_id", organizationId);
+  }
+
+  const { data, error } = await query
     .order("planned_start_at", { ascending: true })
     .returns<OpsLiveTaskRow[]>();
 
@@ -161,6 +189,9 @@ export function toOpsLiveReportQueueItem(
 
   return {
     id: row.id,
+    taskId: row.live_task_id,
+    projectId: row.project_id,
+    streamerId: row.streamer_id,
     status: row.status,
     taskTitle: task?.title ?? "Unknown task",
     projectName: project?.name ?? "Unknown project",
@@ -183,6 +214,7 @@ export function toOpsLiveTaskQueueItem(
     id: row.id,
     title: row.title,
     status: row.status,
+    taskType: row.task_type,
     projectId: row.project_id,
     projectName: project?.name ?? "Unknown project",
     streamerId: row.streamer_id,

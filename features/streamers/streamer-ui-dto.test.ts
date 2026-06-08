@@ -344,4 +344,23 @@ describe("toStreamerDesktopProfileDto", () => {
     expect(dto.settlement.cpsShare).toContain("15%");
   });
 
+  it("maps not_started cooperation status to a user-facing profile label", () => {
+    const dto = toStreamerDesktopProfileDto({
+      id: "streamer-profile-2",
+      display_name: "Profile Streamer",
+      real_name: null,
+      gender: null,
+      source_type: "external",
+      cooperation_status: "not_started",
+      categories: [],
+      platforms: [],
+      styles: [],
+      default_settlement_method: "cpt",
+      risk_level: "low",
+      clean_report_count: 0,
+      created_at: "2026-06-01T00:00:00.000Z",
+    });
+
+    expect(dto.level).toBe("\u5f85\u914d\u7f6e");
+  });
 });

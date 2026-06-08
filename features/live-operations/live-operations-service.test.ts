@@ -31,6 +31,7 @@ const task = {
   projectId: "project-1",
   streamerId: "streamer-1",
   title: "Project A · Streamer 1",
+  taskType: "project" as const,
   status: "pending_live" as const,
   plannedStartAt: "2026-06-02T10:00:00.000Z",
   plannedEndAt: "2026-06-02T12:00:00.000Z",
@@ -56,6 +57,7 @@ function createRepo(): LiveOperationsRepository {
       projectId: input.projectId,
       streamerId: input.streamerId,
       title: input.title,
+      taskType: input.taskType,
       plannedStartAt: input.plannedStartAt,
       plannedEndAt: input.plannedEndAt,
       plannedDuration: input.plannedDuration,
@@ -165,6 +167,30 @@ describe("live operations service", () => {
     );
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "create", module: "live_task" }),
+    );
+  });
+
+  it("persists the selected live task type", async () => {
+    await createLiveTask({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        title: "Project A · Streamer 1",
+        taskType: "training",
+        plannedStartAt: "2026-06-02T10:00:00.000Z",
+        plannedEndAt: "2026-06-02T12:00:00.000Z",
+        plannedDuration: 120,
+      },
+    });
+
+    expect(repo.createLiveTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskType: "training",
+      }),
     );
   });
 

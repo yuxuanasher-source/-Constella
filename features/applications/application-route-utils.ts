@@ -96,6 +96,7 @@ export async function resolveStreamerId(
   const ownStreamerId = await getStreamerIdForUser(
     context.supabase,
     context.auth.userId,
+    context.auth.organizationId,
   );
   if (!ownStreamerId) {
     throw new RouteError("Current user is not bound to a streamer", 400);
@@ -119,7 +120,21 @@ export function jsonError(error: unknown) {
     );
   }
 
+  const message = messageFromUnknownError(error);
+  if (message) {
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+
   return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
+}
+
+function messageFromUnknownError(error: unknown): string | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" && message.trim() ? message : null;
 }
 
 export class RouteError extends Error {

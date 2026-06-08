@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { SupabaseProjectRepository } from "@/features/projects/project-repository";
 import {
   createProjectAuditWriter,
@@ -40,6 +41,12 @@ export async function PATCH(
       gameDownloadUrl?: string | null;
     };
     const { projectId } = await params;
+    await assertBillingWriteAllowed({
+      client: supabase,
+      organizationId: auth.organizationId,
+      featureKey: "project_management",
+    });
+
     const project = await updateProjectBasics({
       repo: new SupabaseProjectRepository(supabase),
       audit: createProjectAuditWriter(supabase),

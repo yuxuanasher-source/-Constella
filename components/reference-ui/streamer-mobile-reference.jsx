@@ -727,6 +727,7 @@ const MY_TASKS = [];
 
 const STATUS_MAP = {
   pending_live: { tone: "neutral", label: "待开播" },
+  missed_live: { tone: "red", label: "已延期未直播" },
   live: { tone: "blue", label: "直播中" },
   pending_report: { tone: "amber", label: "待上传截图" },
   pending_review: { tone: "violet", label: "审核中" },
@@ -737,8 +738,10 @@ const STATUS_MAP = {
 };
 
 const StreamerLiveDataContext = React.createContext({
+  profile: null,
   tasks: null,
   earnings: null,
+  applications: null,
   projectAnnouncements: [],
   actions: {},
 });
@@ -753,6 +756,11 @@ function useStreamerEarnings() {
   return earnings && typeof earnings === "object" ? earnings : MY_EARNINGS;
 }
 
+function useStreamerProfile() {
+  const { profile } = React.useContext(StreamerLiveDataContext);
+  return normalizeStreamerProfile(profile);
+}
+
 function useStreamerLiveActions() {
   const { actions } = React.useContext(StreamerLiveDataContext);
   return actions || {};
@@ -761,6 +769,26 @@ function useStreamerLiveActions() {
 function useStreamerRecordings() {
   const { recordings } = React.useContext(StreamerLiveDataContext);
   return Array.isArray(recordings) ? recordings : [];
+}
+
+function useStreamerApplications() {
+  const { applications } = React.useContext(StreamerLiveDataContext);
+  return Array.isArray(applications) ? applications : [];
+}
+
+function normalizeStreamerProfile(profile) {
+  if (!profile || typeof profile !== "object") {
+    return ME;
+  }
+
+  return {
+    ...ME,
+    ...profile,
+    alias: profile.alias || ME.alias,
+    level: profile.level || ME.level,
+    org: profile.org || ME.org,
+    platforms: Array.isArray(profile.platforms) ? profile.platforms : [],
+  };
 }
 
 const MY_NOTIFICATIONS = [];
@@ -794,6 +822,7 @@ const AI_THREAD = [];
 // ——— Streamer Home (我的任务) ——————————————————————
 
 function StreamerHome({ go }) {
+  const profile = useStreamerProfile();
   const tasks = useStreamerTasks();
   const earnings = useStreamerEarnings();
   const today = tasks.filter((t) => t.date === "今天");
@@ -823,7 +852,7 @@ function StreamerHome({ go }) {
               fontSize: 17,
             }}
           >
-            {ME.alias.slice(0, 1)}
+            {profile.alias.slice(0, 1)}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div
@@ -833,10 +862,10 @@ function StreamerHome({ go }) {
                 letterSpacing: "-0.005em",
               }}
             >
-              {ME.alias}
+              {profile.alias}
             </div>
             <div style={{ fontSize: 11, color: "rgba(255,255,255,0.72)" }}>
-              {ME.level} · {ME.org}
+              {profile.level} · {profile.org}
             </div>
           </div>
           <button
@@ -986,7 +1015,7 @@ function StreamerHome({ go }) {
       <MSection
         title="即将开始"
         action={
-          <MButton kind="ghost" size="sm">
+          <MButton kind="ghost" size="sm" onClick={() => go("tasks")}>
             查看全部 →
           </MButton>
         }
@@ -1092,6 +1121,8 @@ function TaskCard({
   compact = false,
 }) {
   const st = STATUS_MAP[task.status] || STATUS_MAP.pending_live;
+  const shouldShowNote =
+    task.note && (!compact || task.status === "missed_live");
   return (
     <div
       onClick={onClick}
@@ -1213,7 +1244,7 @@ function TaskCard({
         </span>
       </div>
 
-      {!compact && task.note && (
+      {shouldShowNote && (
         <div
           style={{
             fontSize: 12,
@@ -1273,6 +1304,72 @@ function TaskCard({
   );
 }
 
+function StreamerTaskList({ go }) {
+  const tasks = useStreamerTasks();
+  const today = tasks.filter((t) => t.date === "今天");
+  const pendingReport = tasks.filter((t) => t.status === "pending_report");
+  const reviewing = tasks.filter((t) => t.status === "pending_review");
+
+  return (
+    <div style={{ paddingBottom: 96, background: "var(--bg)" }}>
+      <MAppBar
+        title="全部任务"
+        subtitle={`${tasks.length} 个任务 · ${pendingReport.length} 个待上传 · ${reviewing.length} 个审核中`}
+        onBack={() => go("home")}
+        dark={false}
+      />
+
+      <MSection title="任务概览" style={{ marginTop: 16 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(3, 1fr)",
+            gap: 8,
+          }}
+        >
+          <MCard style={{ padding: 12 }}>
+            <MStat label="全部" value={tasks.length} />
+          </MCard>
+          <MCard style={{ padding: 12 }}>
+            <MStat label="今天" value={today.length} color="var(--blue-600)" />
+          </MCard>
+          <MCard style={{ padding: 12 }}>
+            <MStat
+              label="待上传"
+              value={pendingReport.length}
+              color="var(--warn-600)"
+            />
+          </MCard>
+        </div>
+      </MSection>
+
+      <MSection title="任务列表">
+        {tasks.length === 0 ? (
+          <MCard>
+            <div style={{ fontWeight: 700, color: "var(--ink-900)" }}>
+              暂无任务数据
+            </div>
+            <div
+              style={{ marginTop: 6, fontSize: 12, color: "var(--ink-400)" }}
+            >
+              后端返回直播任务后会显示在这里。
+            </div>
+          </MCard>
+        ) : (
+          tasks.map((t, index) => (
+            <TaskCard
+              key={`${t.id || "task"}-${index}`}
+              task={t}
+              onClick={() => go("task", t.id)}
+              compact
+            />
+          ))
+        )}
+      </MSection>
+    </div>
+  );
+}
+
 // ===== src-streamer\screen-task.jsx =====
 // ——— Streamer: Task Detail ——————————————————————
 
@@ -1303,6 +1400,7 @@ function StreamerTask({ taskId, go }) {
   const st = STATUS_MAP[t.status];
   const isLive = t.status === "live";
   const isPendingLive = t.status === "pending_live";
+  const isMissedLive = t.status === "missed_live";
   const isPendingReport = t.status === "pending_report";
 
   return (
@@ -1388,6 +1486,7 @@ function StreamerTask({ taskId, go }) {
         {isPendingLive && (
           <PendingLiveCTA task={t} go={go} onStart={actions.startTask} />
         )}
+        {isMissedLive && <MissedLiveCTA task={t} />}
         {isLive && <LiveCTA task={t} go={go} onStop={actions.stopTask} />}
         {isPendingReport && <PendingReportCTA task={t} go={go} />}
         {t.status === "pending_review" && <ReviewingCTA task={t} go={go} />}
@@ -1470,9 +1569,13 @@ function StreamerTask({ taskId, go }) {
                 { title: "排班创建", time: "系统生成", done: true },
                 {
                   title: "点击开始直播",
-                  time: t.status === "pending_live" ? "待你操作" : "5/27 19:58",
-                  done: !isPendingLive,
-                  current: isPendingLive,
+                  time: isMissedLive
+                    ? "未开始 · 待补充原因"
+                    : t.status === "pending_live"
+                      ? "待你操作"
+                      : "5/27 19:58",
+                  done: !isPendingLive && !isMissedLive,
+                  current: isPendingLive || isMissedLive,
                 },
                 {
                   title: "点击停止 + 上传下播截图",
@@ -1515,6 +1618,7 @@ function StreamerTask({ taskId, go }) {
 // CTA: 待开播
 function PendingLiveCTA({ task, go, onStart }) {
   const [busy, setBusy] = React.useState(false);
+  const timing = getPendingLiveTiming(task);
   const handleStart = async () => {
     if (!onStart) return;
     setBusy(true);
@@ -1534,9 +1638,9 @@ function PendingLiveCTA({ task, go, onStart }) {
       }}
     >
       <div style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 4 }}>
-        距开播还有
+        {timing.heading}
       </div>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <span
           className="num"
           style={{
@@ -1546,22 +1650,8 @@ function PendingLiveCTA({ task, go, onStart }) {
             letterSpacing: "-0.02em",
           }}
         >
-          2
+          {timing.durationText}
         </span>
-        <span style={{ fontSize: 14, color: "var(--ink-500)" }}>小时</span>
-        <span
-          className="num"
-          style={{
-            fontSize: 36,
-            fontWeight: 700,
-            color: "var(--blue-700)",
-            letterSpacing: "-0.02em",
-            marginLeft: 4,
-          }}
-        >
-          14
-        </span>
-        <span style={{ fontSize: 14, color: "var(--ink-500)" }}>分钟</span>
       </div>
       <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
         <MButton
@@ -1572,7 +1662,7 @@ function PendingLiveCTA({ task, go, onStart }) {
           disabled={busy}
           onClick={handleStart}
         >
-          {busy ? "正在开始…" : "准时点击「开始直播」"}
+          {busy ? "正在开始…" : timing.buttonLabel}
         </MButton>
       </div>
       <div
@@ -1583,10 +1673,106 @@ function PendingLiveCTA({ task, go, onStart }) {
           textAlign: "center",
         }}
       >
-        系统会自动记录开播时间 · 时长以审核报数为准
+        {timing.helperText}
       </div>
     </MCard>
   );
+}
+
+function MissedLiveCTA({ task }) {
+  return (
+    <MCard
+      style={{
+        padding: 20,
+        background: "linear-gradient(135deg, #FFF8F8 0%, #FFFDF9 100%)",
+        border: "1px solid #F3C4C9",
+      }}
+    >
+      <div
+        style={{ fontSize: 13, color: "var(--danger-600)", fontWeight: 700 }}
+      >
+        已延期未直播
+      </div>
+      <div
+        style={{
+          marginTop: 8,
+          fontSize: 13,
+          color: "var(--ink-600)",
+          lineHeight: 1.65,
+        }}
+      >
+        计划 {task.dateStr} {task.start}–{task.end} 已结束，系统未记录开播。
+      </div>
+      <div
+        style={{
+          marginTop: 12,
+          padding: "10px 12px",
+          borderRadius: 10,
+          background: "#fff",
+          border: "1px dashed #F3C4C9",
+          color: "var(--danger-600)",
+          fontSize: 12,
+          lineHeight: 1.6,
+          fontWeight: 700,
+        }}
+      >
+        未直播原因待补充：{task.note || "请联系运营填写延期或未开播原因。"}
+      </div>
+    </MCard>
+  );
+}
+
+function getPendingLiveTiming(task) {
+  const plannedStart = parseTaskTimestamp(task.plannedStartAt);
+  if (!plannedStart) {
+    return {
+      heading: "等待开播",
+      durationText: "计划时间待确认",
+      buttonLabel: "点击「开始直播」",
+      helperText: "系统会自动记录开播时间 · 时长以审核报数为准",
+    };
+  }
+
+  const remainingMinutes = Math.round(
+    (plannedStart.getTime() - Date.now()) / 60_000,
+  );
+  if (remainingMinutes > 0) {
+    return {
+      heading: "距开播还有",
+      durationText: formatLiveTimingDuration(remainingMinutes),
+      buttonLabel: "准时点击「开始直播」",
+      helperText: "系统会自动记录开播时间 · 时长以审核报数为准",
+    };
+  }
+
+  return {
+    heading: "计划已开始",
+    durationText: `已过开播时间 ${formatLiveTimingDuration(Math.abs(remainingMinutes))}`,
+    buttonLabel: "立即点击「开始直播」",
+    helperText: "如未能按时开播，请尽快联系运营补充原因",
+  };
+}
+
+function parseTaskTimestamp(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatLiveTimingDuration(totalMinutes) {
+  const minutes = Math.max(0, totalMinutes);
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+
+  if (hours <= 0) {
+    return `${remainder} 分钟`;
+  }
+
+  if (remainder === 0) {
+    return `${hours} 小时`;
+  }
+
+  return `${hours} 小时 ${remainder} 分钟`;
 }
 
 function LiveCTA({ task, onStop }) {
@@ -3126,6 +3312,7 @@ function StreamerMe({ go }) {
   const [tab, setTab] = React.useState("overview");
   const [settingsPanel, setSettingsPanel] = React.useState(null);
   const earnings = useStreamerEarnings();
+  const profile = useStreamerProfile();
   return (
     <div style={{ paddingBottom: 96 }}>
       <MHero
@@ -3152,7 +3339,7 @@ function StreamerMe({ go }) {
               fontSize: 22,
             }}
           >
-            {ME.alias.slice(0, 1)}
+            {profile.alias.slice(0, 1)}
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -3163,10 +3350,10 @@ function StreamerMe({ go }) {
                   letterSpacing: "-0.01em",
                 }}
               >
-                {ME.alias}
+                {profile.alias}
               </span>
               <span style={{ fontSize: 11, color: "rgba(255,255,255,0.7)" }}>
-                {ME.real}
+                {profile.real}
               </span>
             </div>
             <div
@@ -3176,10 +3363,10 @@ function StreamerMe({ go }) {
                 marginTop: 3,
               }}
             >
-              {ME.level} · {ME.org}
+              {profile.level} · {profile.org}
             </div>
             <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
-              {ME.platforms.map((p) => (
+              {profile.platforms.map((p) => (
                 <span
                   key={p.id}
                   style={{
@@ -3354,6 +3541,7 @@ function StreamerMe({ go }) {
       >
         {[
           { k: "overview", l: "概览" },
+          { k: "applications", l: "报名" },
           { k: "earnings", l: "结算" },
           { k: "videos", l: "录屏" },
         ].map((t) => (
@@ -3383,12 +3571,14 @@ function StreamerMe({ go }) {
       {tab === "overview" && (
         <OverviewTab
           go={go}
+          profile={profile}
           earnings={earnings}
           setTab={setTab}
           settingsPanel={settingsPanel}
           setSettingsPanel={setSettingsPanel}
         />
       )}
+      {tab === "applications" && <ApplicationsTab />}
       {tab === "earnings" && <EarningsTab earnings={earnings} />}
       {tab === "videos" && <VideosTab />}
     </div>
@@ -3410,6 +3600,7 @@ const iconBtnGlassMe = {
 
 function OverviewTab({
   go,
+  profile,
   earnings,
   setTab,
   settingsPanel,
@@ -3454,7 +3645,7 @@ function OverviewTab({
       <MSection
         title="近期任务"
         action={
-          <MButton size="sm" kind="ghost" onClick={() => go("home")}>
+          <MButton size="sm" kind="ghost" onClick={() => go("tasks")}>
             查看全部 →
           </MButton>
         }
@@ -3534,6 +3725,13 @@ function OverviewTab({
             onClick={() => go("videos")}
           />
           <ToolRow
+            icon="Check"
+            tone="green"
+            title="我的报名"
+            detail="查看申请状态与录屏审核进度"
+            onClick={() => setTab("applications")}
+          />
+          <ToolRow
             icon="Money"
             tone="teal"
             title="结算账单"
@@ -3552,7 +3750,7 @@ function OverviewTab({
             icon="Settings"
             tone="neutral"
             title="账号与平台绑定"
-            detail={`已绑定 ${ME.platforms.length} 个平台`}
+            detail={`已绑定 ${profile.platforms.length} 个平台`}
             onClick={() => setSettingsPanel("platforms")}
           />
           <ToolRow
@@ -3573,7 +3771,9 @@ function OverviewTab({
         </MCard>
       </MSection>
 
-      {settingsPanel && <ProfileSettingsPanel kind={settingsPanel} />}
+      {settingsPanel && (
+        <ProfileSettingsPanel kind={settingsPanel} profile={profile} />
+      )}
     </>
   );
 }
@@ -3584,6 +3784,7 @@ function ToolRow({ icon, tone, title, detail, onClick, last }) {
     blue: ["var(--blue-50)", "var(--blue-700)"],
     violet: ["var(--violet-50)", "var(--violet-600)"],
     teal: ["var(--teal-50)", "var(--teal-600)"],
+    green: ["var(--ok-50)", "var(--ok-600)"],
     amber: ["var(--warn-50)", "var(--warn-600)"],
     neutral: ["var(--ink-50)", "var(--ink-500)"],
   };
@@ -3640,8 +3841,175 @@ function ToolRow({ icon, tone, title, detail, onClick, last }) {
   );
 }
 
-function ProfileSettingsPanel({ kind }) {
-  const panel = profileSettingsPanel(kind);
+function ApplicationsTab() {
+  const { applications, actions } = React.useContext(StreamerLiveDataContext);
+  const rows = useStreamerApplications();
+  const [loading, setLoading] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+
+  const refresh = React.useCallback(async () => {
+    if (!actions.refreshApplications || loading) return;
+    setLoading(true);
+    setMessage("");
+    try {
+      await actions.refreshApplications();
+    } catch (error) {
+      setMessage(error?.message || "报名状态刷新失败，请稍后重试。");
+    } finally {
+      setLoading(false);
+    }
+  }, [actions, loading]);
+
+  React.useEffect(() => {
+    if (!Array.isArray(applications)) {
+      refresh();
+    }
+  }, [applications, refresh]);
+
+  return (
+    <div>
+      <MSection
+        title="我的报名"
+        action={
+          <MButton size="sm" kind="ghost" onClick={refresh} disabled={loading}>
+            {loading ? "刷新中" : "刷新"}
+          </MButton>
+        }
+      >
+        {message ? (
+          <div
+            aria-live="polite"
+            style={{
+              marginBottom: 10,
+              fontSize: 12,
+              color: "var(--danger-600)",
+            }}
+          >
+            {message}
+          </div>
+        ) : null}
+        {rows.length ? (
+          rows.map((application) => (
+            <ApplicationStatusCard
+              key={application.id || application.projectId}
+              application={application}
+            />
+          ))
+        ) : (
+          <MCard>
+            <div style={{ fontSize: 13, color: "var(--ink-500)" }}>
+              {loading ? "正在读取报名状态…" : "暂无报名记录"}
+            </div>
+          </MCard>
+        )}
+      </MSection>
+    </div>
+  );
+}
+
+function ApplicationStatusCard({ application }) {
+  return (
+    <MCard style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <div
+          style={{
+            width: 40,
+            height: 40,
+            borderRadius: 10,
+            background: "var(--ok-50)",
+            color: "var(--ok-600)",
+            display: "grid",
+            placeItems: "center",
+            flexShrink: 0,
+          }}
+        >
+          <Icon.Check size={18} stroke="var(--ok-600)" />
+        </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              justifyContent: "space-between",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 14,
+                fontWeight: 700,
+                color: "var(--ink-900)",
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {application.projectName}
+            </div>
+            <MBadge tone={applicationStatusTone(application.status)} dot>
+              {application.statusLabel}
+            </MBadge>
+          </div>
+          <div
+            style={{
+              marginTop: 6,
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 8,
+              fontSize: 11,
+              color: "var(--ink-400)",
+            }}
+          >
+            {application.projectCode ? (
+              <span className="mono">{application.projectCode}</span>
+            ) : null}
+            <span>{application.source === "invite" ? "邀约" : "自主报名"}</span>
+            {application.submittedAt ? (
+              <span className="mono">
+                {application.submittedAt.slice(0, 10)}
+              </span>
+            ) : null}
+          </div>
+          <div
+            style={{
+              marginTop: 8,
+              padding: "8px 10px",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              border: "1px solid var(--line)",
+              fontSize: 12,
+              color: "var(--ink-600)",
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 10,
+            }}
+          >
+            <span>录屏审核</span>
+            <span style={{ fontWeight: 700 }}>
+              {application.reviewStatusLabel}
+            </span>
+          </div>
+          {application.decisionReason ? (
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 12,
+                color: "var(--danger-600)",
+                lineHeight: 1.5,
+              }}
+            >
+              {application.decisionReason}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </MCard>
+  );
+}
+
+function ProfileSettingsPanel({ kind, profile }) {
+  const panel = profileSettingsPanel(kind, profile);
 
   return (
     <MSection title={panel.title}>
@@ -3679,12 +4047,12 @@ function ProfileSettingsPanel({ kind }) {
   );
 }
 
-function profileSettingsPanel(kind) {
+function profileSettingsPanel(kind, profile = ME) {
   if (kind === "platforms") {
     return {
       title: "平台绑定明细",
-      rows: ME.platforms.length
-        ? ME.platforms.map((platform) => ({
+      rows: profile.platforms.length
+        ? profile.platforms.map((platform) => ({
             label: platform.platform,
             value: platform.primary
               ? "主账号"
@@ -3720,7 +4088,7 @@ function profileSettingsPanel(kind) {
     title: "设置项",
     rows: [
       { label: "通知提醒", value: "跟随任务和审核状态" },
-      { label: "账号绑定", value: `${ME.platforms.length} 个平台` },
+      { label: "账号绑定", value: `${profile.platforms.length} 个平台` },
       { label: "隐私权限", value: "按主播角色自动限制字段" },
     ],
   };
@@ -4044,8 +4412,6 @@ function VideosTab({ recordings, projectAnnouncements }) {
     : [];
   const actions = useStreamerLiveActions();
   const [form, setForm] = React.useState(() => ({
-    projectId: "",
-    projectName: "",
     product: "",
     category: "",
     link: "",
@@ -4053,21 +4419,37 @@ function VideosTab({ recordings, projectAnnouncements }) {
   }));
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [selectedProject, setSelectedProject] = React.useState(null);
+  const [projectForm, setProjectForm] = React.useState({ link: "" });
+  const [projectSubmitting, setProjectSubmitting] = React.useState(false);
+  const [projectError, setProjectError] = React.useState("");
+  const [detailLoading, setDetailLoading] = React.useState(false);
 
   const updateForm = (key, value) => {
     setError("");
     setForm((current) => ({ ...current, [key]: value }));
   };
 
-  const selectProjectForRecording = (project) => {
-    setError("");
-    setForm((current) => ({
-      ...current,
-      projectId: project.id,
-      projectName: project.name,
-      product: project.product || project.name,
-      category: "项目录播",
-    }));
+  const openProjectDetail = async (project) => {
+    setProjectError("");
+    setDetailLoading(true);
+    setSelectedProject(project);
+    try {
+      const detail = await actions.getProjectAnnouncement?.(project.id);
+      if (detail) {
+        setSelectedProject(detail);
+      }
+    } catch (detailError) {
+      setProjectError(recordingLinkErrorMessage(detailError));
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const closeProjectDetail = () => {
+    setSelectedProject(null);
+    setProjectForm({ link: "" });
+    setProjectError("");
   };
 
   const submitRecordingLink = async (event) => {
@@ -4077,8 +4459,6 @@ function VideosTab({ recordings, projectAnnouncements }) {
     try {
       await actions.submitRecordingLink?.(form);
       setForm({
-        projectId: "",
-        projectName: "",
         product: "",
         category: "",
         link: "",
@@ -4088,6 +4468,47 @@ function VideosTab({ recordings, projectAnnouncements }) {
       setError(recordingLinkErrorMessage(submitError));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const updateProjectForm = (key, value) => {
+    setProjectError("");
+    setProjectForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const submitProjectRecording = async (event) => {
+    event.preventDefault();
+    if (!selectedProject) {
+      return;
+    }
+
+    setProjectSubmitting(true);
+    setProjectError("");
+    try {
+      const result = await actions.submitRecordingLink?.({
+        projectId: selectedProject.id,
+        link: projectForm.link,
+      });
+      const reviewStatusLabel = result?.reviewStatusLabel || "审核中";
+      setSelectedProject((current) =>
+        current && current.id === selectedProject.id
+          ? {
+              ...current,
+              applicationId: result?.applicationId ?? current.applicationId,
+              applicationStatus: "recording_reviewing",
+              latestRecordingStatus: "submitted",
+              latestRecordingVersion:
+                result?.recording?.version ?? current.latestRecordingVersion,
+              reviewStatusLabel,
+              canSubmitRecording: false,
+            }
+          : current,
+      );
+      setProjectForm({ link: "" });
+    } catch (submitError) {
+      setProjectError(recordingLinkErrorMessage(submitError));
+    } finally {
+      setProjectSubmitting(false);
     }
   };
 
@@ -4110,33 +4531,31 @@ function VideosTab({ recordings, projectAnnouncements }) {
             <ProjectAnnouncementCard
               key={project.id}
               project={project}
-              onSelect={selectProjectForRecording}
+              onOpen={openProjectDetail}
             />
           ))
         )}
       </MSection>
 
-      <MSection title="提交录屏链接">
+      {selectedProject ? (
+        <ProjectAnnouncementDetail
+          project={selectedProject}
+          form={projectForm}
+          error={projectError}
+          loading={detailLoading}
+          submitting={projectSubmitting}
+          onChange={updateProjectForm}
+          onSubmit={submitProjectRecording}
+          onClose={closeProjectDetail}
+        />
+      ) : null}
+
+      <MSection title="个人录屏链接">
         <MCard>
           <form
             onSubmit={submitRecordingLink}
             style={{ display: "grid", gap: 10 }}
           >
-            {form.projectId ? (
-              <div
-                style={{
-                  border: "1px solid var(--blue-100)",
-                  borderRadius: 8,
-                  padding: "8px 10px",
-                  background: "var(--blue-50)",
-                  color: "var(--blue-800)",
-                  fontSize: 12,
-                  fontWeight: 700,
-                }}
-              >
-                投递项目：{form.projectName}
-              </div>
-            ) : null}
             <MobileRecordingField
               label="产品"
               value={form.product}
@@ -4208,7 +4627,7 @@ function VideosTab({ recordings, projectAnnouncements }) {
   );
 }
 
-function ProjectAnnouncementCard({ project, onSelect }) {
+function ProjectAnnouncementCard({ project, onOpen }) {
   return (
     <MCard style={{ marginBottom: 10 }}>
       <div style={{ display: "grid", gap: 8 }}>
@@ -4279,27 +4698,167 @@ function ProjectAnnouncementCard({ project, onSelect }) {
           ) : null}
           <button
             type="button"
-            disabled={!project.canSubmitRecording}
-            onClick={() => onSelect(project)}
+            onClick={() => onOpen(project)}
             style={{
               height: 32,
               borderRadius: 8,
               border: "none",
               padding: "0 10px",
-              background: project.canSubmitRecording
-                ? "var(--blue-600)"
-                : "var(--line-strong)",
-              color: project.canSubmitRecording ? "#fff" : "var(--ink-400)",
+              background: "var(--blue-600)",
+              color: "#fff",
               fontSize: 12,
               fontWeight: 800,
-              cursor: project.canSubmitRecording ? "pointer" : "not-allowed",
+              cursor: "pointer",
             }}
           >
-            投递录播
+            查看详情
           </button>
         </div>
       </div>
     </MCard>
+  );
+}
+
+function ProjectAnnouncementDetail({
+  project,
+  form,
+  error,
+  loading,
+  submitting,
+  onChange,
+  onSubmit,
+  onClose,
+}) {
+  return (
+    <MSection
+      title="项目详情"
+      action={
+        <MBadge tone={recordingStatusTone(project.latestRecordingStatus)} dot>
+          {project.reviewStatusLabel}
+        </MBadge>
+      }
+    >
+      <MCard>
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div
+                style={{
+                  fontSize: 16,
+                  fontWeight: 800,
+                  color: "var(--ink-900)",
+                }}
+              >
+                {project.name}
+              </div>
+              <div
+                style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 2 }}
+              >
+                {project.product || project.code}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              style={{
+                border: "1px solid var(--line-strong)",
+                borderRadius: 8,
+                background: "#fff",
+                color: "var(--ink-500)",
+                height: 30,
+                padding: "0 10px",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              返回
+            </button>
+          </div>
+          {loading ? (
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              正在加载项目详情...
+            </div>
+          ) : null}
+          {project.publicSummary ? (
+            <div
+              style={{
+                fontSize: 13,
+                color: "var(--ink-700)",
+                lineHeight: 1.65,
+              }}
+            >
+              {project.publicSummary}
+            </div>
+          ) : null}
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
+              录屏要求：
+              {project.forceRecording
+                ? "需提交项目试播录屏"
+                : "可提交项目试播录屏"}
+            </div>
+            {project.recordingFeedback ? (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--warn-600)",
+                  lineHeight: 1.55,
+                }}
+              >
+                {project.recordingFeedback}
+              </div>
+            ) : null}
+            {project.gameDownloadUrl ? (
+              <a
+                href={project.gameDownloadUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  color: "var(--blue-700)",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  textDecoration: "none",
+                  wordBreak: "break-all",
+                }}
+              >
+                打开游戏下载
+              </a>
+            ) : null}
+          </div>
+          <form onSubmit={onSubmit} style={{ display: "grid", gap: 10 }}>
+            <MobileRecordingField
+              label="录屏链接"
+              value={form.link}
+              placeholder="https://..."
+              onChange={(value) => onChange("link", value)}
+            />
+            <button
+              type="submit"
+              disabled={submitting || !project.canSubmitRecording}
+              style={{
+                height: 44,
+                borderRadius: 10,
+                border: "none",
+                background: project.canSubmitRecording
+                  ? "var(--blue-600)"
+                  : "var(--line-strong)",
+                color: project.canSubmitRecording ? "#fff" : "var(--ink-400)",
+                fontSize: 14,
+                fontWeight: 800,
+                opacity: submitting ? 0.58 : 1,
+              }}
+            >
+              {submitting ? "提交中" : "提交项目录屏"}
+            </button>
+            {error ? (
+              <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                {error}
+              </div>
+            ) : null}
+          </form>
+        </div>
+      </MCard>
+    </MSection>
   );
 }
 
@@ -4426,6 +4985,48 @@ function normalizeStreamerRecordings(items) {
   }));
 }
 
+function normalizeStreamerApplications(items) {
+  if (!Array.isArray(items)) {
+    return null;
+  }
+
+  return items.map((item) => {
+    const project = item.project ?? {};
+    const latestRecording = item.latestRecording ?? {};
+    const latestRecordingStatus =
+      item.latestRecordingStatus || latestRecording.status || "";
+
+    return {
+      id: item.id,
+      projectId: item.projectId || project.id,
+      projectName: item.projectName || project.name || "项目记录",
+      projectCode: item.projectCode || project.code || "",
+      status: item.status || "submitted",
+      statusLabel:
+        item.statusLabel || applicationStatusLabel(item.status || "submitted"),
+      source: item.source || "signup",
+      submittedAt: item.submittedAt || item.submitted_at || "",
+      decisionReason: item.decisionReason || item.decision_reason || "",
+      recordingFeedback:
+        item.recordingFeedback ||
+        item.recording_feedback ||
+        item.decisionReason ||
+        item.decision_reason ||
+        "",
+      forceRecording:
+        item.forceRecording ??
+        project.forceRecording ??
+        project.force_recording,
+      latestRecordingStatus,
+      reviewStatusLabel:
+        item.reviewStatusLabel ||
+        (latestRecordingStatus
+          ? recordingStatusLabel(latestRecordingStatus)
+          : "暂无录屏"),
+    };
+  });
+}
+
 function normalizeProjectAnnouncements(items) {
   if (!Array.isArray(items)) {
     return [];
@@ -4465,6 +5066,50 @@ function recordingStatusTone(status) {
   );
 }
 
+function recordingStatusLabel(status) {
+  return (
+    {
+      submitted: "已提交",
+      reviewing: "审核中",
+      approved: "已通过",
+      rejected: "未通过",
+      needs_changes: "需修改",
+    }[status] ??
+    status ??
+    "暂无录屏"
+  );
+}
+
+function applicationStatusLabel(status) {
+  return (
+    {
+      submitted: "待审核",
+      recording_required: "待提交录屏",
+      recording_reviewing: "录屏审核中",
+      approved: "已通过",
+      rejected: "已拒绝",
+      joined: "已加入项目",
+      cancelled: "已取消",
+    }[status] ??
+    status ??
+    "待审核"
+  );
+}
+
+function applicationStatusTone(status) {
+  return (
+    {
+      submitted: "amber",
+      recording_required: "blue",
+      recording_reviewing: "violet",
+      approved: "green",
+      joined: "green",
+      rejected: "red",
+      cancelled: "neutral",
+    }[status] ?? "neutral"
+  );
+}
+
 function recordingLinkErrorMessage(error) {
   const message = error?.message || "";
   if (message.includes("Only streamers")) {
@@ -4494,6 +5139,18 @@ function recordingLinkErrorMessage(error) {
   return message || "录屏链接提交失败，请稍后重试。";
 }
 
+function isStreamerAccountAccessError(error) {
+  const message = error?.message || "";
+  return (
+    message.includes("Only streamers") ||
+    message.includes("not bound to a streamer")
+  );
+}
+
+function warnStreamerBackgroundRefreshFailure(scope, error) {
+  globalThis.console?.warn?.(`${scope} background refresh failed`, error);
+}
+
 function currentMonthLabel() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -4504,12 +5161,13 @@ function currentMonthLabel() {
 
 function StreamerMobileReferenceInner({
   initialRoute = "home",
+  profile,
   liveTasks,
   liveEarnings,
   recordings,
   projectAnnouncements,
 }) {
-  // route: 'home' | 'task' | 'report' | 'ai' | 'me' | 'videos'
+  // route: 'home' | 'tasks' | 'task' | 'report' | 'ai' | 'me' | 'videos'
   const [route, setRoute] = React.useState(initialRoute);
   const [taskId, setTaskId] = React.useState(null);
   const [tasks, setTasks] = React.useState(liveTasks ?? null);
@@ -4517,6 +5175,7 @@ function StreamerMobileReferenceInner({
   const [recordingRows, setRecordingRows] = React.useState(() =>
     normalizeStreamerRecordings(recordings),
   );
+  const [applicationRows, setApplicationRows] = React.useState(null);
   const [announcementRows, setAnnouncementRows] = React.useState(() =>
     projectAnnouncements === undefined
       ? null
@@ -4568,22 +5227,68 @@ function StreamerMobileReferenceInner({
     };
 
     const refreshRecordings = async () => {
-      const body = await fetchJson(
-        "/api/streamer/recordings",
-        "refresh streamer recordings failed",
-      );
-      if (Array.isArray(body.recordings)) {
-        setRecordingRows(normalizeStreamerRecordings(body.recordings));
+      try {
+        const body = await fetchJson(
+          "/api/streamer/recordings",
+          "refresh streamer recordings failed",
+        );
+        if (Array.isArray(body.recordings)) {
+          setRecordingRows(normalizeStreamerRecordings(body.recordings));
+        }
+      } catch (error) {
+        if (isStreamerAccountAccessError(error)) {
+          setRecordingRows([]);
+          return;
+        }
+        throw error;
       }
     };
 
     const refreshProjectAnnouncements = async () => {
+      try {
+        const body = await fetchJson(
+          "/api/streamer/project-announcements",
+          "refresh project announcements failed",
+        );
+        if (Array.isArray(body.announcements)) {
+          setAnnouncementRows(
+            normalizeProjectAnnouncements(body.announcements),
+          );
+        }
+      } catch (error) {
+        if (isStreamerAccountAccessError(error)) {
+          setAnnouncementRows([]);
+          return;
+        }
+        throw error;
+      }
+    };
+
+    const getProjectAnnouncement = async (projectId) => {
       const body = await fetchJson(
-        "/api/streamer/project-announcements",
-        "refresh project announcements failed",
+        `/api/streamer/project-announcements/${projectId}`,
+        "load project announcement failed",
       );
-      if (Array.isArray(body.announcements)) {
-        setAnnouncementRows(normalizeProjectAnnouncements(body.announcements));
+      return body.project
+        ? normalizeProjectAnnouncements([body.project])[0]
+        : null;
+    };
+
+    const refreshApplications = async () => {
+      try {
+        const body = await fetchJson(
+          "/api/streamer/applications",
+          "refresh streamer applications failed",
+        );
+        if (Array.isArray(body.applications)) {
+          setApplicationRows(normalizeStreamerApplications(body.applications));
+        }
+      } catch (error) {
+        if (isStreamerAccountAccessError(error)) {
+          setApplicationRows([]);
+          return;
+        }
+        throw error;
       }
     };
 
@@ -4606,6 +5311,8 @@ function StreamerMobileReferenceInner({
       },
       refreshRecordings,
       refreshProjectAnnouncements,
+      getProjectAnnouncement,
+      refreshApplications,
       submitRecordingLink: async (form) => {
         const payload = form.projectId
           ? form
@@ -4626,7 +5333,7 @@ function StreamerMobileReferenceInner({
         );
         if (body.projectRecording) {
           await refreshProjectAnnouncements();
-          return;
+          return body.projectRecording;
         }
         if (body.recording) {
           setRecordingRows((current) => [
@@ -4634,6 +5341,7 @@ function StreamerMobileReferenceInner({
             ...(Array.isArray(current) ? current : []),
           ]);
         }
+        return body.recording;
       },
       startTask: async (id) => {
         await fetchJson(`/api/live-tasks/${id}/start`, "start task failed", {
@@ -4689,10 +5397,21 @@ function StreamerMobileReferenceInner({
 
   React.useEffect(() => {
     if (route === "videos" && recordingRows === null) {
-      actions.refreshRecordings?.();
+      actions
+        .refreshRecordings?.()
+        .catch((error) =>
+          warnStreamerBackgroundRefreshFailure("streamer recordings", error),
+        );
     }
     if (route === "videos" && announcementRows === null) {
-      actions.refreshProjectAnnouncements?.();
+      actions
+        .refreshProjectAnnouncements?.()
+        .catch((error) =>
+          warnStreamerBackgroundRefreshFailure(
+            "streamer project announcements",
+            error,
+          ),
+        );
     }
   }, [route, recordingRows, announcementRows, actions]);
 
@@ -4720,7 +5439,7 @@ function StreamerMobileReferenceInner({
       ?.scrollTo?.({ top: 0, behavior: "instant" });
   };
 
-  const navKey = ["home"].includes(route)
+  const navKey = ["home", "tasks"].includes(route)
     ? "home"
     : ["task", "report"].includes(route)
       ? "home"
@@ -4732,7 +5451,9 @@ function StreamerMobileReferenceInner({
     <StreamerLiveDataContext.Provider
       value={{
         tasks: visibleTasks,
+        profile,
         earnings,
+        applications: applicationRows,
         recordings: visibleRecordings,
         projectAnnouncements: visibleAnnouncements,
         actions,
@@ -4740,6 +5461,7 @@ function StreamerMobileReferenceInner({
     >
       <div className="phone">
         {route === "home" && <StreamerHome go={go} />}
+        {route === "tasks" && <StreamerTaskList go={go} />}
         {route === "task" && <StreamerTask go={go} taskId={taskId} />}
         {route === "report" && <StreamerReport go={go} taskId={taskId} />}
         {route === "ai" && <StreamerAI go={go} />}
@@ -4752,16 +5474,18 @@ function StreamerMobileReferenceInner({
           />
         )}
 
-        <MTabBar
-          value={navKey}
-          onChange={(k) => {
-            if (k === "videos") {
-              go("videos");
-            } else {
-              go(k);
-            }
-          }}
-        />
+        {route !== "report" && (
+          <MTabBar
+            value={navKey}
+            onChange={(k) => {
+              if (k === "videos") {
+                go("videos");
+              } else {
+                go(k);
+              }
+            }}
+          />
+        )}
       </div>
     </StreamerLiveDataContext.Provider>
   );
@@ -4785,10 +5509,11 @@ function VideosOnlyPage({ recordings, projectAnnouncements }) {
 }
 
 /**
- * @param {{ initialRoute?: string; liveTasks?: any[]; liveEarnings?: any; recordings?: any[]; projectAnnouncements?: any[] }} props
+ * @param {{ initialRoute?: string; profile?: any; liveTasks?: any[]; liveEarnings?: any; recordings?: any[]; projectAnnouncements?: any[] }} props
  */
 export default function StreamerMobileReferenceApp({
   initialRoute = "home",
+  profile,
   liveTasks,
   liveEarnings,
   recordings,
@@ -4797,6 +5522,7 @@ export default function StreamerMobileReferenceApp({
   return (
     <StreamerMobileReferenceInner
       initialRoute={initialRoute}
+      profile={profile}
       liveTasks={liveTasks}
       liveEarnings={liveEarnings}
       recordings={recordings}

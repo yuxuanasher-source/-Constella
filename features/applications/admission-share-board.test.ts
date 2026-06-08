@@ -33,7 +33,7 @@ function createRepo(
         organizationId: "org-1",
         projectId: "project-1",
         streamerId: "streamer-1",
-        status: "recording_reviewing",
+        status: "recording_approved",
       },
       {
         id: "app-2",
@@ -50,6 +50,7 @@ function createRepo(
         projectId: "project-1",
         streamerId: "streamer-1",
         version: 2,
+        status: "approved",
       },
       {
         id: "rec-2",
@@ -57,6 +58,7 @@ function createRepo(
         projectId: "project-1",
         streamerId: "streamer-2",
         version: 1,
+        status: "approved",
       },
     ]),
     createShareBoard: vi.fn().mockImplementation(async (input) => {
@@ -152,7 +154,7 @@ describe("admission share board service", () => {
           organizationId: "org-1",
           projectId: "project-1",
           streamerId: "streamer-1",
-          status: "recording_reviewing",
+          status: "recording_approved",
         },
       ]),
       listLatestRecordings: vi.fn().mockResolvedValue([]),
@@ -168,6 +170,143 @@ describe("admission share board service", () => {
         tokenFactory: () => "plain-token",
       }),
     ).rejects.toThrow("Every shared application must have a recording");
+  });
+
+  it("rejects explicitly selected recordings that are not MCN approved", async () => {
+    const repo = createRepo({
+      listShareableApplications: vi.fn().mockResolvedValue([
+        {
+          id: "app-1",
+          organizationId: "org-1",
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          status: "recording_approved",
+        },
+      ]),
+      listLatestRecordings: vi.fn().mockResolvedValue([
+        {
+          id: "rec-1",
+          applicationId: "app-1",
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          version: 1,
+          status: "submitted",
+        },
+      ]),
+    });
+
+    await expect(
+      createAdmissionShareBoard({
+        repo,
+        actor,
+        projectId: "project-1",
+        input: { title: "Vendor review", applicationIds: ["app-1"] },
+        now: "2026-06-07T00:00:00.000Z",
+        tokenFactory: () => "plain-token",
+      }),
+    ).rejects.toThrow("Every shared recording must be approved by MCN");
+  });
+
+  it("shares only approved applications with recordings when creating a project-level board", async () => {
+    const repo = createRepo({
+      listShareableApplications: vi.fn().mockResolvedValue([
+        {
+          id: "app-1",
+          organizationId: "org-1",
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          status: "recording_approved",
+        },
+        {
+          id: "app-no-recording",
+          organizationId: "org-1",
+          projectId: "project-1",
+          streamerId: "streamer-2",
+          status: "submitted",
+        },
+      ]),
+      listLatestRecordings: vi.fn().mockResolvedValue([
+        {
+          id: "rec-1",
+          applicationId: "app-1",
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          version: 1,
+          status: "approved",
+        },
+      ]),
+    });
+
+    await createAdmissionShareBoard({
+      repo,
+      actor,
+      projectId: "project-1",
+      input: { title: "Vendor review" },
+      now: "2026-06-07T00:00:00.000Z",
+      tokenFactory: () => "plain-token",
+    });
+
+    expect(repo.shareItemInserts).toEqual([
+      expect.objectContaining({
+        applicationId: "app-1",
+        recordingSubmissionId: "rec-1",
+      }),
+    ]);
+  });
+
+  it("shares only MCN-approved recordings when creating a project-level board", async () => {
+    const repo = createRepo({
+      listShareableApplications: vi.fn().mockResolvedValue([
+        {
+          id: "app-approved",
+          organizationId: "org-1",
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          status: "recording_approved",
+        },
+        {
+          id: "app-reviewing",
+          organizationId: "org-1",
+          projectId: "project-1",
+          streamerId: "streamer-2",
+          status: "recording_reviewing",
+        },
+      ]),
+      listLatestRecordings: vi.fn().mockResolvedValue([
+        {
+          id: "rec-approved",
+          applicationId: "app-approved",
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          version: 1,
+          status: "approved",
+        },
+        {
+          id: "rec-reviewing",
+          applicationId: "app-reviewing",
+          projectId: "project-1",
+          streamerId: "streamer-2",
+          version: 1,
+          status: "submitted",
+        },
+      ]),
+    });
+
+    await createAdmissionShareBoard({
+      repo,
+      actor,
+      projectId: "project-1",
+      input: { title: "Vendor review" },
+      now: "2026-06-07T00:00:00.000Z",
+      tokenFactory: () => "plain-token",
+    });
+
+    expect(repo.shareItemInserts).toEqual([
+      expect.objectContaining({
+        applicationId: "app-approved",
+        recordingSubmissionId: "rec-approved",
+      }),
+    ]);
   });
 
   it("rejects applications outside the target project", async () => {
@@ -208,7 +347,7 @@ describe("admission share board service", () => {
     ).toEqual({
       applicationStatus: null,
       recordingStatus: null,
-      syncStatus: "skipped",
+      syncStatus: "synced",
     });
     expect(mapVendorDecisionToSyncPatch("selected", "joined")).toEqual({
       applicationStatus: null,
@@ -336,6 +475,129 @@ describe("admission share board service", () => {
       "2026-06-07T05:00:00.000Z",
     );
   });
+
+  it("persists vendor backup decisions without changing MCN-approved statuses", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+    });
+
+    await submitVendorAdmissionReviews({
+      repo,
+      token: "plain-token",
+      input: {
+        reviewerName: "Vendor",
+        items: [
+          {
+            recordingSubmissionId: "rec-1",
+            recordingVersion: 2,
+            decision: "backup",
+            remark: "Keep as backup.",
+          },
+        ],
+      },
+      now: "2026-06-07T08:00:00.000Z",
+    });
+
+    expect(repo.updateRecordingReviewForVendor).not.toHaveBeenCalled();
+    expect(repo.updateApplicationStatusForVendor).not.toHaveBeenCalled();
+    expect(repo.upsertVendorReviews).toHaveBeenCalledWith([
+      expect.objectContaining({
+        decision: "backup",
+        remark: "Keep as backup.",
+        syncedApplicationStatus: null,
+        syncedRecordingStatus: null,
+        syncStatus: "synced",
+      }),
+    ]);
+  });
+
+  it.each([
+    {
+      decision: "rejected",
+      expectedApplicationStatus: "recording_rejected",
+      expectedRecordingStatus: "rejected",
+      remark: "Quality is not enough.",
+    },
+    {
+      decision: "needs_changes",
+      expectedApplicationStatus: "recording_required",
+      expectedRecordingStatus: "needs_changes",
+      remark: "Please add gameplay intro.",
+    },
+  ] as const)(
+    "syncs vendor $decision to recording and application details",
+    async ({
+      decision,
+      expectedApplicationStatus,
+      expectedRecordingStatus,
+      remark,
+    }) => {
+      const repo = createRepo({
+        getPublicShareBoardSnapshot: vi
+          .fn()
+          .mockResolvedValue(publicSnapshot()),
+      });
+
+      await submitVendorAdmissionReviews({
+        repo,
+        token: "plain-token",
+        input: {
+          items: [
+            {
+              recordingSubmissionId: "rec-1",
+              recordingVersion: 2,
+              decision,
+              remark,
+            },
+          ],
+        },
+        now: "2026-06-07T08:00:00.000Z",
+      });
+
+      expect(repo.updateRecordingReviewForVendor).toHaveBeenCalledWith(
+        "rec-1",
+        expect.objectContaining({
+          status: expectedRecordingStatus,
+          reviewNote: remark,
+        }),
+      );
+      expect(repo.updateApplicationStatusForVendor).toHaveBeenCalledWith(
+        "app-1",
+        expect.objectContaining({
+          status: expectedApplicationStatus,
+          decisionReason: remark,
+        }),
+      );
+    },
+  );
+
+  it.each(["rejected", "needs_changes"] as const)(
+    "requires a remark for vendor %s decisions",
+    async (decision) => {
+      const repo = createRepo({
+        getPublicShareBoardSnapshot: vi
+          .fn()
+          .mockResolvedValue(publicSnapshot()),
+      });
+
+      await expect(
+        submitVendorAdmissionReviews({
+          repo,
+          token: "plain-token",
+          input: {
+            items: [
+              {
+                recordingSubmissionId: "rec-1",
+                recordingVersion: 2,
+                decision,
+                remark: " ",
+              },
+            ],
+          },
+        }),
+      ).rejects.toThrow("Vendor rejection or change request requires a remark");
+    },
+  );
 
   it("rejects stale recording versions on vendor submit", async () => {
     const repo = createRepo({

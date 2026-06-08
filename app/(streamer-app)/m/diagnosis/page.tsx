@@ -1,9 +1,16 @@
 import StreamerMobileReferenceApp from "@/components/reference-ui/streamer-mobile-reference";
 
-export default function StreamerDiagnosisPage() {
+import { getStreamerMobileContext } from "../streamer-mobile-data";
+
+export default async function StreamerDiagnosisPage() {
+  const context = await getStreamerMobileContext();
+
   return (
     <div className="mobile-prototype-stage">
-      <StreamerMobileReferenceApp initialRoute="ai" />
+      <StreamerMobileReferenceApp
+        initialRoute="ai"
+        profile={context?.profile ?? undefined}
+      />
     </div>
   );
 }

@@ -31,6 +31,7 @@ const allowedApplicationTransitions: Record<
   invited: [
     "recording_required",
     "recording_reviewing",
+    "joined",
     "declined",
     "withdrawn",
   ],

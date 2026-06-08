@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { SupabaseProjectRepository } from "@/features/projects/project-repository";
 import {
   createProjectAuditWriter,
@@ -21,6 +22,12 @@ export async function POST(
     }
 
     const { projectId } = await params;
+    await assertBillingWriteAllowed({
+      client: supabase,
+      organizationId: auth.organizationId,
+      featureKey: "project_management",
+    });
+
     const project = await publishProject({
       repo: new SupabaseProjectRepository(supabase),
       audit: createProjectAuditWriter(supabase),

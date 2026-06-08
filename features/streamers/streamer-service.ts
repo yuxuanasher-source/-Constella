@@ -161,13 +161,13 @@ export async function createStreamerProfile({
     createInput.defaultSettlementMethod =
       normalizedInput.defaultSettlementMethod;
   }
-  if (normalizedInput.defaultHourlyRate !== undefined) {
+  if (normalizedInput.defaultHourlyRate != null) {
     createInput.defaultHourlyRate = normalizedInput.defaultHourlyRate;
   }
-  if (normalizedInput.defaultBaseSalary !== undefined) {
+  if (normalizedInput.defaultBaseSalary != null) {
     createInput.defaultBaseSalary = normalizedInput.defaultBaseSalary;
   }
-  if (normalizedInput.defaultCpsRateBps !== undefined) {
+  if (normalizedInput.defaultCpsRateBps != null) {
     createInput.defaultCpsRateBps = normalizedInput.defaultCpsRateBps;
   }
 
@@ -398,7 +398,9 @@ export async function updateStreamerSettlementRule({
   return streamer;
 }
 
-function normalizeSettlementRuleInput(input: UpdateStreamerSettlementRuleInput) {
+function normalizeSettlementRuleInput(
+  input: UpdateStreamerSettlementRuleInput,
+) {
   return {
     defaultSettlementMethod: input.defaultSettlementMethod,
     defaultHourlyRate: normalizeNonNegativeNumber(

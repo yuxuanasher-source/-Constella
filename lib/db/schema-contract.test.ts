@@ -138,6 +138,28 @@ describe("P0 database contract", () => {
     );
   });
 
+  it("keeps current streamer resolution deterministic for RLS checks", () => {
+    expect(allMigrations).toContain(
+      "create or replace function public.current_streamer_id(target_organization_id uuid)",
+    );
+    expect(allMigrations).toContain("order by s.created_at desc, s.id desc");
+  });
+
+  it("extends audit actions for admission recording share workflows", () => {
+    expect(allMigrations).toContain(
+      "add value if not exists 'create_share_board'",
+    );
+    expect(allMigrations).toContain(
+      "add value if not exists 'revoke_share_board'",
+    );
+    expect(allMigrations).toContain(
+      "add value if not exists 'vendor_review_submit'",
+    );
+    expect(allMigrations).toContain(
+      "add value if not exists 'vendor_review_sync'",
+    );
+  });
+
   it("declares streamer default settlement cps snapshot fields", () => {
     expect(allMigrations).toContain(
       "default_cps_rate_bps integer not null default 0",

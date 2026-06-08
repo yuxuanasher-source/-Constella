@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
+import { listOpsLiveTaskQueue } from "@/features/live-operations/live-operations-queries";
 import { listProjects } from "@/features/projects/project-queries";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
@@ -24,6 +25,18 @@ vi.mock("@/components/reference-ui/ops-reference", () => ({
 
 vi.mock("@/features/projects/project-queries", () => ({
   listProjects: vi.fn(),
+}));
+
+vi.mock("@/features/live-operations/live-operations-queries", () => ({
+  listOpsLiveTaskQueue: vi.fn(),
+}));
+
+vi.mock("@/features/live-operations/live-ui-adapters", () => ({
+  toOpsReferenceTask: vi.fn((task) => ({
+    id: task.id,
+    projectId: task.projectId,
+    title: task.title,
+  })),
 }));
 
 vi.mock("@/lib/auth/context", () => ({
@@ -51,6 +64,22 @@ describe("console projects route", () => {
       role: "owner",
     });
     vi.mocked(listProjects).mockResolvedValue([]);
+    vi.mocked(listOpsLiveTaskQueue).mockResolvedValue([
+      {
+        id: "task-after-refresh",
+        title: "3号 · asd",
+        status: "pending_live",
+        taskType: "project",
+        projectId: "project-1",
+        projectName: "3号",
+        streamerId: "streamer-1",
+        streamerName: "asd",
+        plannedStartAt: null,
+        plannedEndAt: null,
+        plannedDuration: null,
+        systemDuration: 0,
+      },
+    ]);
 
     render(await ProjectsPage());
 
@@ -69,9 +98,17 @@ describe("console projects route", () => {
         organizationSettings: expect.objectContaining({
           name: "Demo Org",
         }),
+        liveTasks: [
+          expect.objectContaining({
+            id: "task-after-refresh",
+            projectId: "project-1",
+            title: "3号 · asd",
+          }),
+        ],
       }),
       undefined,
     );
+    expect(listOpsLiveTaskQueue).toHaveBeenCalledWith(supabase, "org-1");
   });
 
   it("redirects unauthenticated visitors to login", async () => {

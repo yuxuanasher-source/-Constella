@@ -8,6 +8,8 @@ const permissionErrorPatterns = [
   /^Streamers can only /,
   /^Current streamer is not bound /,
   /^Cross-organization access is not allowed$/,
+  /^Organization is read-only because billing /,
+  /^Current plan is not entitled to /,
 ];
 
 export function statusForServiceError(error: Error): number {

@@ -4,6 +4,7 @@ import type {
   LiveOperationsRepository,
   LiveReportRecord,
   LiveTaskRecord,
+  LiveTaskType,
   ProjectStreamerForTask,
   ReportStatus,
 } from "./live-operations-service";
@@ -23,6 +24,7 @@ type LiveTaskRow = {
   project_id: string | null;
   streamer_id: string;
   title: string;
+  task_type: LiveTaskType;
   status: LiveTaskStatus;
   planned_start_at: string | null;
   planned_end_at: string | null;
@@ -60,6 +62,7 @@ const liveTaskSelect = `
   project_id,
   streamer_id,
   title,
+  task_type,
   status,
   planned_start_at,
   planned_end_at,
@@ -117,6 +120,7 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     projectId: string;
     streamerId: string;
     title: string;
+    taskType: LiveTaskType;
     plannedStartAt?: string | null;
     plannedEndAt?: string | null;
     plannedDuration?: number | null;
@@ -131,6 +135,7 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
         project_id: input.projectId,
         streamer_id: input.streamerId,
         title: input.title,
+        task_type: input.taskType,
         planned_start_at: input.plannedStartAt,
         planned_end_at: input.plannedEndAt,
         planned_duration: input.plannedDuration,
@@ -316,18 +321,24 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
 export async function getStreamerIdForUser(
   client: SupabaseClient,
   userId: string,
+  organizationId?: string,
 ): Promise<string | null> {
-  const { data, error } = await client
-    .from("streamers")
-    .select("id")
-    .eq("user_id", userId)
-    .maybeSingle<{ id: string }>();
+  let query = client.from("streamers").select("id").eq("user_id", userId);
+
+  if (organizationId) {
+    query = query.eq("organization_id", organizationId);
+  }
+
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1);
 
   if (error) {
     throw error;
   }
 
-  return data?.id ?? null;
+  return data?.[0]?.id ?? null;
 }
 
 function toProjectStreamer(row: ProjectStreamerRow): ProjectStreamerForTask {
@@ -346,6 +357,7 @@ function toLiveTaskRecord(row: LiveTaskRow): LiveTaskRecord {
     projectId: row.project_id,
     streamerId: row.streamer_id,
     title: row.title,
+    taskType: row.task_type,
     status: row.status,
     plannedStartAt: row.planned_start_at,
     plannedEndAt: row.planned_end_at,
@@ -385,6 +397,7 @@ function toLiveTaskPatch(
 ): Record<string, unknown> {
   return removeUndefined({
     status: patch.status,
+    task_type: patch.taskType,
     planned_start_at: patch.plannedStartAt,
     planned_end_at: patch.plannedEndAt,
     planned_duration: patch.plannedDuration,

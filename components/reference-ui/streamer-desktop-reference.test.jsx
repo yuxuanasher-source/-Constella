@@ -5,6 +5,7 @@ import StreamerDesktopReferenceApp from "./streamer-desktop-reference";
 
 describe("StreamerDesktopReferenceApp live task smoke", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -90,6 +91,159 @@ describe("StreamerDesktopReferenceApp live task smoke", () => {
       undefined,
     );
     expect((await screen.findAllByText("直播中")).length).toBeGreaterThan(0);
+  });
+
+  it("ends a live task through the streamer task API", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/live-tasks/desktop-task-live/stop") {
+        return {
+          ok: true,
+          json: async () => ({
+            task: { id: "desktop-task-live", status: "pending_report" },
+          }),
+        };
+      }
+
+      if (String(url) === "/api/streamer/live-tasks") {
+        return {
+          ok: true,
+          json: async () => ({
+            tasks: [
+              {
+                id: "desktop-task-live",
+                title: "Desktop Live Project",
+                status: "pending_report",
+                projectName: "Desktop Live Project",
+                plannedStartAt: "2026-06-03T12:00:00.000Z",
+                plannedEndAt: "2026-06-03T14:00:00.000Z",
+                plannedDuration: 120,
+                systemDuration: 120,
+              },
+            ],
+          }),
+        };
+      }
+
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerDesktopReferenceApp
+        initialRoute="tasks"
+        liveTasks={[
+          {
+            id: "desktop-task-live",
+            projectName: "Desktop Live Project",
+            vendor: "Vendor",
+            dateStr: "2026-06-03",
+            start: "20:00",
+            end: "22:00",
+            durationPlan: 2,
+            status: "live",
+            needStartStop: true,
+            needScreening: true,
+            settleHint: "CPT 80/h",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "结束直播 + 上传截图" }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/streamer/live-tasks",
+      undefined,
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/live-tasks/desktop-task-live/stop",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/streamer/live-tasks",
+      undefined,
+    );
+    expect(
+      (await screen.findAllByText("\u5f85\u4e0a\u4f20\u622a\u56fe")).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("renders live task service statuses without crashing", () => {
+    expect(() =>
+      render(
+        <StreamerDesktopReferenceApp
+          initialRoute="tasks"
+          liveTasks={[
+            {
+              id: "desktop-task-reviewing",
+              projectName: "Reviewing Project",
+              vendor: "Vendor",
+              dateStr: "2026-06-07",
+              start: "20:00",
+              end: "22:00",
+              durationPlan: 2,
+              status: "report_pending_review",
+              needStartStop: true,
+              needScreening: true,
+              settleHint: "CPT 80/h",
+            },
+          ]}
+        />,
+      ),
+    ).not.toThrow();
+
+    expect(screen.getAllByText("\u5ba1\u6838\u4e2d").length).toBeGreaterThan(0);
+  });
+
+  it("marks expired pending live tasks as delayed and unavailable", () => {
+    vi.setSystemTime(new Date("2026-06-08T00:00:00.000Z"));
+    const expiredTask = {
+      id: "desktop-task-expired",
+      title: "Delayed Project",
+      status: "pending_live",
+      projectName: "Delayed Project",
+      plannedStartAt: "2026-06-07T12:00:00.000Z",
+      plannedEndAt: "2026-06-07T15:30:00.000Z",
+      plannedDuration: 210,
+      systemDuration: 0,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url) => {
+        if (String(url) === "/api/streamer/live-tasks") {
+          return {
+            ok: true,
+            json: async () => ({ tasks: [expiredTask] }),
+          };
+        }
+
+        return {
+          ok: false,
+          json: async () => ({ error: "unexpected request" }),
+        };
+      }),
+    );
+
+    render(
+      <StreamerDesktopReferenceApp
+        initialRoute="dashboard"
+        liveTasks={[expiredTask]}
+      />,
+    );
+
+    expect(screen.getAllByText("直播已延期").length).toBeGreaterThan(0);
+    expect(screen.getByText("不可直播")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查看任务" })).toBeNull();
   });
 
   it("opens the earnings route when the streamer has no settlement batches yet", () => {
@@ -298,6 +452,53 @@ describe("StreamerDesktopReferenceApp notifications", () => {
     });
     expect(fetchMock).toHaveBeenCalledWith("/api/notifications", undefined);
   });
+
+  it("uses the notification API unread count and items in the topbar", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/notifications") {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: "notice-topbar-1",
+                type: "task",
+                status: "read",
+                title: "API topbar notice",
+                content: "Real notification from API",
+                objectType: "live_task",
+                objectId: "task-1",
+                isHighRisk: false,
+                createdAt: "2026-06-03T13:00:00.000Z",
+              },
+            ],
+            unreadCount: 22,
+          }),
+        };
+      }
+
+      return {
+        ok: false,
+        json: async () => ({ error: "unexpected request" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerDesktopReferenceApp
+        initialRoute="tasks"
+        notificationItems={[]}
+      />,
+    );
+
+    const notificationButton = await screen.findByLabelText(
+      "\u901a\u77e5 22 \u6761\u672a\u8bfb",
+    );
+    fireEvent.click(notificationButton);
+
+    expect(screen.getByText("API topbar notice")).toBeInTheDocument();
+    expect(screen.getByText("Real notification from API")).toBeInTheDocument();
+  });
 });
 
 describe("StreamerDesktopReferenceApp streamer profile", () => {
@@ -497,6 +698,190 @@ describe("StreamerDesktopReferenceApp recording library", () => {
         }),
       }),
     );
+  });
+
+  it("opens a public recruitment project detail and submits project recording", async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      if (String(url) === "/api/streamer/project-announcements/project-1") {
+        return {
+          ok: true,
+          json: async () => ({
+            project: {
+              id: "project-1",
+              code: "PUB-1",
+              name: "Public Project",
+              status: "recruiting",
+              vendor: "Vendor A",
+              product: "Game A",
+              publicSummary: "Streamer-facing summary",
+              gameDownloadUrl: "https://download.example.com/game-a",
+              openSignup: true,
+              forceRecording: true,
+              applicationId: null,
+              applicationStatus: null,
+              latestRecordingStatus: null,
+              latestRecordingVersion: null,
+              decisionReason: null,
+              reviewStatusLabel: "待投递",
+              canSubmitRecording: true,
+            },
+          }),
+        };
+      }
+
+      if (
+        String(url) === "/api/streamer/recordings" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            projectRecording: {
+              applicationId: "application-1",
+              projectId: "project-1",
+              recording: {
+                id: "recording-1",
+                applicationId: "application-1",
+                version: 1,
+                status: "submitted",
+              },
+              reviewStatusLabel: "审核中",
+            },
+          }),
+        };
+      }
+
+      if (String(url) === "/api/streamer/recordings") {
+        return { ok: true, json: async () => ({ recordings: [] }) };
+      }
+
+      if (String(url) === "/api/streamer/project-announcements") {
+        return {
+          ok: true,
+          json: async () => ({
+            announcements: [
+              {
+                id: "project-1",
+                code: "PUB-1",
+                name: "Public Project",
+                status: "recruiting",
+                vendor: "Vendor A",
+                product: "Game A",
+                publicSummary: "Streamer-facing summary",
+                gameDownloadUrl: "https://download.example.com/game-a",
+                openSignup: true,
+                forceRecording: true,
+                applicationId: "application-1",
+                applicationStatus: "recording_reviewing",
+                latestRecordingStatus: "submitted",
+                latestRecordingVersion: 1,
+                decisionReason: null,
+                reviewStatusLabel: "审核中",
+                canSubmitRecording: false,
+              },
+            ],
+          }),
+        };
+      }
+
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerDesktopReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[
+          {
+            id: "project-1",
+            code: "PUB-1",
+            name: "Public Project",
+            status: "recruiting",
+            vendor: "Vendor A",
+            product: "Game A",
+            publicSummary: "Streamer-facing summary",
+            gameDownloadUrl: "https://download.example.com/game-a",
+            openSignup: true,
+            forceRecording: true,
+            applicationId: null,
+            applicationStatus: null,
+            latestRecordingStatus: null,
+            latestRecordingVersion: null,
+            decisionReason: null,
+            reviewStatusLabel: "待投递",
+            canSubmitRecording: true,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+    await screen.findByText("项目详情");
+    expect(
+      screen.getAllByText("Streamer-facing summary").length,
+    ).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByLabelText("录屏链接"), {
+      target: { value: "https://videos.example.com/project-1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提交项目录屏" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText("审核中").length).toBeGreaterThan(0);
+    });
+    const submitCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/api/streamer/recordings" && init?.method === "POST",
+    );
+    expect(JSON.parse(submitCall[1].body)).toEqual(
+      expect.objectContaining({
+        projectId: "project-1",
+        link: "https://videos.example.com/project-1",
+      }),
+    );
+  });
+
+  it("shows project recording feedback and allows desktop resubmission", () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ recordings: [] }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerDesktopReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[
+          {
+            id: "project-feedback",
+            code: "PUB-F",
+            name: "Feedback Project",
+            status: "recruiting",
+            vendor: "Vendor A",
+            product: "Game A",
+            publicSummary: "Streamer-facing summary",
+            gameDownloadUrl: "https://download.example.com/game-a",
+            openSignup: true,
+            forceRecording: true,
+            applicationId: "application-feedback",
+            applicationStatus: "recording_required",
+            latestRecordingStatus: "needs_changes",
+            latestRecordingVersion: 1,
+            decisionReason: "Please add gameplay intro.",
+            recordingFeedback: "Please add gameplay intro.",
+            reviewStatusLabel: "需修改",
+            canSubmitRecording: true,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+
+    expect(screen.getByText("Please add gameplay intro.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "提交项目录屏" })).toBeEnabled();
   });
 });
 

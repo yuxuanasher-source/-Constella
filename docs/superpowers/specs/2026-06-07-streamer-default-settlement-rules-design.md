@@ -116,7 +116,7 @@ updateStreamerSettlementRule({
   streamerId,
   input,
   reason,
-})
+});
 ```
 
 Permission:
@@ -269,8 +269,8 @@ For settlement center imports or manual carrying rows, support a CPS helper:
 ```ts
 calculateCpsManualAmount({
   salesAmount,
-  cpsRateBps
-}) = roundCurrency(salesAmount * cpsRateBps / 10000)
+  cpsRateBps,
+}) = roundCurrency((salesAmount * cpsRateBps) / 10000);
 ```
 
 The generated manual row should store:

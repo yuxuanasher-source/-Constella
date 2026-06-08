@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { listProjects } from "@/features/projects/project-queries";
 import { SupabaseProjectRepository } from "@/features/projects/project-repository";
 import {
@@ -47,6 +48,12 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+
+    await assertBillingWriteAllowed({
+      client: supabase,
+      organizationId: auth.organizationId,
+      featureKey: "project_management",
+    });
 
     const project = await createProjectDraft({
       repo: new SupabaseProjectRepository(supabase),

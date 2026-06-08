@@ -15,7 +15,10 @@ export async function GET() {
       throw new RouteError("Only MCN staff can view report queue", 403);
     }
 
-    const reports = await listOpsLiveReportQueue(context.supabase);
+    const reports = await listOpsLiveReportQueue(
+      context.supabase,
+      context.auth.organizationId,
+    );
     return NextResponse.json({ reports });
   } catch (error) {
     return jsonError(error);

@@ -3,6 +3,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -2300,7 +2301,7 @@ describe("OpsReferenceApp streamer smoke", () => {
   });
 
   it("submits CPT and base salary fields from the streamer create form", async () => {
-    const fetchMock = vi.fn(async (url, init) => {
+    const fetchMock = vi.fn(async (url) => {
       if (String(url) === "/api/organization/members") {
         return {
           ok: true,
@@ -2361,6 +2362,62 @@ describe("OpsReferenceApp streamer smoke", () => {
         defaultCpsRateBps: 0,
       }),
     );
+  });
+
+  it("requires selecting a matched streamer subaccount before binding", async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      if (String(url) === "/api/organization/members") {
+        return {
+          ok: true,
+          json: async () => ({
+            members: [
+              {
+                id: "member-streamer",
+                userId: "user-streamer-sub",
+                email: "789@789.com",
+                name: "1",
+                role: "streamer",
+                status: "active",
+              },
+            ],
+            permissions: {
+              canViewMembers: true,
+              canCreateMembers: true,
+              creatableRoles: ["streamer"],
+            },
+          }),
+        };
+      }
+      if (String(url) === "/api/streamers" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ streamer: { id: "streamer-should-not-save" } }),
+        };
+      }
+      return { ok: true, json: async () => ({ streamers: [] }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="streamers" streamerCards={[]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "新增主播档案" }));
+    fireEvent.change(screen.getByLabelText("主播昵称"), {
+      target: { value: "阿斯顿" },
+    });
+    fireEvent.change(screen.getByLabelText("绑定主播子账号"), {
+      target: { value: "1 · 789@789.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建档案" }));
+
+    expect(
+      await screen.findByText("请从候选列表选择主播子账号，或清空后不绑定"),
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url) === "/api/streamers" && init?.method === "POST",
+      ),
+    ).toBe(false);
   });
 
   it("filters streamer rows by search and risk", () => {
@@ -2755,6 +2812,83 @@ describe("OpsReferenceApp admission smoke", () => {
     expect(screen.getByText("小鹿")).toBeInTheDocument();
   });
   it("renders the project-first admission board and creates vendor share links", async () => {
+    const createObjectURL = vi.fn(() => "blob:admission-recordings");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL,
+      revokeObjectURL,
+    });
+    const clickDownload = vi.fn();
+    const originalCreateElement = document.createElement.bind(document);
+    const createElement = vi
+      .spyOn(document, "createElement")
+      .mockImplementation((tagName, options) => {
+        const element = originalCreateElement(tagName, options);
+        if (tagName === "a") {
+          element.click = clickDownload;
+        }
+        return element;
+      });
+    const admissionApplications = [
+      {
+        id: "app-ui-1",
+        status: "recording_reviewing",
+        source: "signup",
+        submittedAt: "2026-06-07T01:00:00.000Z",
+        project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+        streamer: {
+          id: "streamer-1",
+          displayName: "Streamer One",
+          accountLabel: "Douyin / one-live",
+        },
+        latestRecording: {
+          id: "rec-1",
+          version: 2,
+          status: "reviewing",
+          url: "https://video.example/latest",
+        },
+        vendorReview: null,
+      },
+      {
+        id: "app-ui-2",
+        status: "recording_approved",
+        source: "direct_invite",
+        submittedAt: "2026-06-07T02:00:00.000Z",
+        project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+        streamer: {
+          id: "streamer-2",
+          displayName: "Streamer Two",
+          accountLabel: "Bilibili / two-live",
+        },
+        latestRecording: {
+          id: "rec-2",
+          version: 1,
+          status: "approved",
+          url: null,
+          hasPrivateStorage: true,
+        },
+        vendorReview: {
+          decision: "selected",
+          remark: "Good pacing.",
+          submittedAt: "2026-06-07T04:00:00.000Z",
+        },
+      },
+      {
+        id: "app-ui-3",
+        status: "submitted",
+        source: "signup",
+        submittedAt: "2026-06-07T03:00:00.000Z",
+        project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+        streamer: {
+          id: "streamer-3",
+          displayName: "Streamer Three",
+          accountLabel: "Kuaishou / three-live",
+        },
+        latestRecording: null,
+        vendorReview: null,
+      },
+    ];
     const fetchMock = vi.fn(async (url) => {
       if (String(url) === "/api/applications/admission-board") {
         return {
@@ -2796,11 +2930,37 @@ describe("OpsReferenceApp admission smoke", () => {
         };
       }
 
+      if (String(url) === "/api/applications/app-ui-1/review") {
+        return {
+          ok: true,
+          json: async () => ({
+            application: { ...admissionApplications[0], status: "approved" },
+          }),
+        };
+      }
+
+      if (String(url) === "/api/applications") {
+        return {
+          ok: true,
+          json: async () => ({
+            applications: admissionApplications.map((application) =>
+              application.id === "app-ui-1"
+                ? { ...application, status: "recording_approved" }
+                : application,
+            ),
+          }),
+        };
+      }
+
       if (String(url) === "/api/exports/admission-recordings") {
         return {
           ok: true,
           json: async () => ({
-            export: { id: "export-admission", filename: "admission.csv" },
+            export: {
+              id: "export-admission",
+              filename: "admission.csv",
+              content: "项目编号,主播\nP-001,Streamer One",
+            },
           }),
         };
       }
@@ -2821,51 +2981,7 @@ describe("OpsReferenceApp admission smoke", () => {
     render(
       <OpsReferenceApp
         initialRoute="admission"
-        applicationQueue={[
-          {
-            id: "app-ui-1",
-            status: "recording_reviewing",
-            source: "signup",
-            submittedAt: "2026-06-07T01:00:00.000Z",
-            project: { id: "project-1", code: "P-001", name: "Alpha Project" },
-            streamer: {
-              id: "streamer-1",
-              displayName: "Streamer One",
-              accountLabel: "Douyin / one-live",
-            },
-            latestRecording: {
-              id: "rec-1",
-              version: 2,
-              status: "reviewing",
-              url: "https://video.example/latest",
-            },
-            vendorReview: null,
-          },
-          {
-            id: "app-ui-2",
-            status: "recording_approved",
-            source: "direct_invite",
-            submittedAt: "2026-06-07T02:00:00.000Z",
-            project: { id: "project-1", code: "P-001", name: "Alpha Project" },
-            streamer: {
-              id: "streamer-2",
-              displayName: "Streamer Two",
-              accountLabel: "Bilibili / two-live",
-            },
-            latestRecording: {
-              id: "rec-2",
-              version: 1,
-              status: "approved",
-              url: null,
-              hasPrivateStorage: true,
-            },
-            vendorReview: {
-              decision: "selected",
-              remark: "Good pacing.",
-              submittedAt: "2026-06-07T04:00:00.000Z",
-            },
-          },
-        ]}
+        applicationQueue={admissionApplications}
       />,
     );
 
@@ -2881,6 +2997,41 @@ describe("OpsReferenceApp admission smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: "查看录屏" }));
     expect(screen.getByText("Streamer Two")).toBeInTheDocument();
     expect(screen.getByText("Good pacing.")).toBeInTheDocument();
+    const reviewingRow = screen.getByText("Streamer One").closest("tr");
+    const approvedRow = screen.getByText("Streamer Two").closest("tr");
+
+    expect(reviewingRow).not.toBeNull();
+    expect(approvedRow).not.toBeNull();
+    expect(
+      within(approvedRow).queryByRole("button", { name: "通过" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(approvedRow).queryByRole("button", { name: "驳回" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(approvedRow).queryByRole("button", { name: "需补充" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(approvedRow).getByRole("button", { name: "二次确认" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(reviewingRow).getByRole("button", { name: "通过" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/app-ui-1/review",
+        expect.objectContaining({ method: "PATCH" }),
+      ),
+    );
+    const reviewCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/api/applications/app-ui-1/review" &&
+        init?.method === "PATCH",
+    );
+    expect(JSON.parse(reviewCall[1].body)).toEqual({
+      decision: "approved",
+      note: "经营端选播准入审核",
+    });
+    expect(await screen.findByText("录屏已通过")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "导出录屏表" }));
     await waitFor(() =>
@@ -2894,6 +3045,10 @@ describe("OpsReferenceApp admission smoke", () => {
     );
     expect(JSON.parse(exportCall[1].body)).toEqual({ projectId: "project-1" });
     expect(await screen.findByText(/admission.csv/)).toBeInTheDocument();
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect(clickDownload).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:admission-recordings");
+    createElement.mockRestore();
 
     fireEvent.click(screen.getByRole("button", { name: "创建分享链接" }));
     await waitFor(() =>
@@ -2908,7 +3063,7 @@ describe("OpsReferenceApp admission smoke", () => {
     );
     expect(JSON.parse(shareCall[1].body)).toEqual({
       title: "Alpha Project 录屏复核",
-      applicationIds: ["app-ui-1", "app-ui-2"],
+      applicationIds: ["app-ui-2"],
       allowVendorSubmit: true,
     });
     expect(
@@ -2916,6 +3071,356 @@ describe("OpsReferenceApp admission smoke", () => {
         /https:\/\/share.example\/admission\/plain-token/,
       ),
     ).toBeInTheDocument();
+  });
+
+  it("creates a project-level share board when server board rows have recordings but the local queue is stale", async () => {
+    const staleApplications = [
+      {
+        id: "app-stale",
+        status: "recording_reviewing",
+        source: "signup",
+        submittedAt: "2026-06-07T01:00:00.000Z",
+        project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+        streamer: { id: "streamer-1", displayName: "Streamer One" },
+        latestRecording: null,
+        vendorReview: null,
+      },
+    ];
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/applications/admission-board") {
+        return {
+          ok: true,
+          json: async () => ({
+            projects: [
+              {
+                project: {
+                  id: "project-1",
+                  code: "P-001",
+                  name: "Alpha Project",
+                  vendor: "Vendor A",
+                  product: "Game A",
+                },
+                counts: {
+                  totalApplications: 1,
+                  recordingCount: 1,
+                  mcnPendingReview: 0,
+                  mcnApproved: 1,
+                  mcnRejected: 0,
+                  needsChanges: 0,
+                  vendorPending: 1,
+                  vendorSelected: 0,
+                  vendorBackup: 0,
+                  vendorRejected: 0,
+                  vendorNeedsChanges: 0,
+                  pendingFinalConfirm: 0,
+                },
+                share: {
+                  id: null,
+                  status: "unshared",
+                  expiresAt: null,
+                  lastSubmittedAt: null,
+                },
+                lastActivityAt: "2026-06-07T01:00:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+      if (String(url) === "/api/projects/project-1/admission-share-boards") {
+        return {
+          ok: true,
+          json: async () => ({
+            shareUrl: "https://share.example/admission/project-token",
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={staleApplications}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/admission-board",
+        expect.objectContaining({ method: "GET" }),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "创建分享链接" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-1/admission-share-boards",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const shareCall = fetchMock.mock.calls.find(
+      ([url]) =>
+        String(url) === "/api/projects/project-1/admission-share-boards",
+    );
+    expect(JSON.parse(shareCall[1].body)).toEqual({
+      title: "Alpha Project 录屏复核",
+      allowVendorSubmit: true,
+    });
+    expect(
+      await screen.findByText(
+        /https:\/\/share.example\/admission\/project-token/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("blocks creating a vendor share link when no recordings are MCN approved", async () => {
+    const unapprovedApplications = [
+      {
+        id: "app-reviewing",
+        status: "recording_reviewing",
+        source: "signup",
+        submittedAt: "2026-06-07T01:00:00.000Z",
+        project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+        streamer: { id: "streamer-1", displayName: "Streamer One" },
+        latestRecording: {
+          id: "rec-reviewing",
+          version: 1,
+          status: "submitted",
+          url: "https://video.example/reviewing",
+        },
+        vendorReview: null,
+      },
+    ];
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/applications/admission-board") {
+        return {
+          ok: true,
+          json: async () => ({
+            projects: [
+              {
+                project: {
+                  id: "project-1",
+                  code: "P-001",
+                  name: "Alpha Project",
+                  vendor: "Vendor A",
+                  product: "Game A",
+                },
+                counts: {
+                  totalApplications: 1,
+                  recordingCount: 1,
+                  mcnPendingReview: 1,
+                  mcnApproved: 0,
+                  mcnRejected: 0,
+                  needsChanges: 0,
+                  vendorPending: 1,
+                  vendorSelected: 0,
+                  vendorBackup: 0,
+                  vendorRejected: 0,
+                  vendorNeedsChanges: 0,
+                  pendingFinalConfirm: 0,
+                },
+                share: {
+                  id: null,
+                  status: "unshared",
+                  expiresAt: null,
+                  lastSubmittedAt: null,
+                },
+                lastActivityAt: "2026-06-07T01:00:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={unapprovedApplications}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/admission-board",
+        expect.objectContaining({ method: "GET" }),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "创建分享链接" }));
+
+    expect(
+      await screen.findByText("当前项目暂无 MCN 已通过的可分享录屏"),
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).includes("/admission-share-boards"),
+      ),
+    ).toBe(false);
+  });
+
+  it("shows vendor decisions with the correct MCN next actions", async () => {
+    const decisionApplications = [
+      {
+        id: "app-selected",
+        status: "recording_approved",
+        source: "signup",
+        submittedAt: "2026-06-07T01:00:00.000Z",
+        project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+        streamer: { id: "streamer-selected", displayName: "Selected Streamer" },
+        latestRecording: { id: "rec-selected", version: 1, status: "approved" },
+        vendorReview: {
+          decision: "selected",
+          remark: "Best fit.",
+          submittedAt: "2026-06-07T08:00:00.000Z",
+        },
+      },
+      {
+        id: "app-backup",
+        status: "recording_approved",
+        source: "signup",
+        submittedAt: "2026-06-07T02:00:00.000Z",
+        project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+        streamer: { id: "streamer-backup", displayName: "Backup Streamer" },
+        latestRecording: { id: "rec-backup", version: 1, status: "approved" },
+        vendorReview: {
+          decision: "backup",
+          remark: "Keep as backup.",
+          submittedAt: "2026-06-07T08:10:00.000Z",
+        },
+      },
+      {
+        id: "app-rejected",
+        status: "recording_rejected",
+        source: "signup",
+        submittedAt: "2026-06-07T03:00:00.000Z",
+        project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+        streamer: { id: "streamer-rejected", displayName: "Rejected Streamer" },
+        latestRecording: { id: "rec-rejected", version: 1, status: "rejected" },
+        vendorReview: {
+          decision: "rejected",
+          remark: "Quality is not enough.",
+          submittedAt: "2026-06-07T08:20:00.000Z",
+        },
+      },
+      {
+        id: "app-change",
+        status: "recording_required",
+        source: "signup",
+        submittedAt: "2026-06-07T04:00:00.000Z",
+        project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+        streamer: { id: "streamer-change", displayName: "Change Streamer" },
+        latestRecording: {
+          id: "rec-change",
+          version: 1,
+          status: "needs_changes",
+        },
+        vendorReview: {
+          decision: "needs_changes",
+          remark: "Please add gameplay intro.",
+          submittedAt: "2026-06-07T08:30:00.000Z",
+        },
+      },
+    ];
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/applications/admission-board") {
+        return {
+          ok: true,
+          json: async () => ({
+            projects: [
+              {
+                project: {
+                  id: "project-1",
+                  code: "P-001",
+                  name: "Alpha Project",
+                  vendor: "Vendor A",
+                  product: "Game A",
+                },
+                counts: {
+                  totalApplications: 4,
+                  recordingCount: 4,
+                  mcnPendingReview: 0,
+                  mcnApproved: 2,
+                  mcnRejected: 1,
+                  needsChanges: 1,
+                  vendorPending: 0,
+                  vendorSelected: 1,
+                  vendorBackup: 1,
+                  vendorRejected: 1,
+                  vendorNeedsChanges: 1,
+                  pendingFinalConfirm: 2,
+                },
+                share: {
+                  id: "share-1",
+                  status: "active",
+                  expiresAt: "2026-06-14T00:00:00.000Z",
+                  lastSubmittedAt: "2026-06-07T08:30:00.000Z",
+                },
+                lastActivityAt: "2026-06-07T08:30:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={decisionApplications}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/admission-board",
+        expect.objectContaining({ method: "GET" }),
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "查看录屏" }));
+
+    const selectedRow = screen.getByText("Selected Streamer").closest("tr");
+    const backupRow = screen.getByText("Backup Streamer").closest("tr");
+    const rejectedRow = screen.getByText("Rejected Streamer").closest("tr");
+    const changeRow = screen.getByText("Change Streamer").closest("tr");
+
+    expect(screen.getByText("厂家已选")).toBeInTheDocument();
+    expect(screen.getByText("Best fit.")).toBeInTheDocument();
+    expect(
+      within(selectedRow).getByRole("button", {
+        name: /邀请进入项目|二次确认/,
+      }),
+    ).toBeInTheDocument();
+
+    expect(within(backupRow).getByText("厂家备选")).toBeInTheDocument();
+    expect(within(backupRow).getByText("Keep as backup.")).toBeInTheDocument();
+    expect(
+      within(backupRow).queryByRole("button", {
+        name: /邀请进入项目|二次确认/,
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(backupRow).getByText("厂家备选，等待最终名额"),
+    ).toBeInTheDocument();
+
+    expect(within(rejectedRow).getByText("厂家拒绝")).toBeInTheDocument();
+    expect(
+      within(rejectedRow).getByText("Quality is not enough."),
+    ).toBeInTheDocument();
+    expect(
+      within(rejectedRow).getByText("等待主播重新上传"),
+    ).toBeInTheDocument();
+
+    expect(within(changeRow).getByText("需修改")).toBeInTheDocument();
+    expect(
+      within(changeRow).getByText("Please add gameplay intro."),
+    ).toBeInTheDocument();
+    expect(within(changeRow).getByText("等待主播补充录屏")).toBeInTheDocument();
   });
 });
 
@@ -3451,6 +3956,152 @@ describe("OpsReferenceApp live task smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "从 Excel 导入" }));
     expect(screen.getByText("Excel 导入后台暂未接入")).toBeInTheDocument();
+  });
+
+  it("keeps overdue pending-live status synced between the schedule board and task drawer", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-07T13:12:00.000Z"));
+    const statusLabel = "\u5df2\u5ef6\u671f\u672a\u76f4\u64ad";
+
+    try {
+      render(
+        <OpsReferenceApp
+          initialRoute="tasks"
+          liveTasks={[
+            {
+              id: "task-overdue-live",
+              name: "Delayed Task",
+              status: "pending_live",
+              project: "project-live",
+              projectId: "project-live",
+              projectName: "Fixture Project",
+              streamerId: "streamer-one",
+              streamerName: "Streamer One",
+              dayIdx: 1,
+              startHour: 20,
+              endHour: 22,
+              plannedStartAt: "2026-06-04T12:00:00.000Z",
+              plannedEndAt: "2026-06-04T15:30:00.000Z",
+              plannedDuration: 210,
+              type: "project",
+            },
+          ]}
+          projectCards={taskProjectCards}
+          streamerCards={taskStreamerCards}
+          applicationQueue={[]}
+        />,
+      );
+
+      const scheduleTask = screen.getByRole("button", {
+        name: /Delayed Task/,
+      });
+      expect(within(scheduleTask).getByText(statusLabel)).toBeInTheDocument();
+
+      fireEvent.click(scheduleTask);
+      const drawer = screen.getByRole("dialog");
+      expect(within(drawer).getAllByText(statusLabel).length).toBeGreaterThan(
+        0,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts overdue pending-live tasks as anomalies in the MCN task module", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-07T13:12:00.000Z"));
+
+    try {
+      render(
+        <OpsReferenceApp
+          initialRoute="tasks"
+          liveTasks={[
+            {
+              id: "task-overdue-anomaly",
+              name: "Overdue Task",
+              status: "pending_live",
+              project: "project-live",
+              projectId: "project-live",
+              projectName: "Fixture Project",
+              streamerId: "streamer-one",
+              streamerName: "Streamer One",
+              dayIdx: 1,
+              startHour: 20,
+              endHour: 22,
+              plannedStartAt: "2026-06-04T12:00:00.000Z",
+              plannedEndAt: "2026-06-04T15:30:00.000Z",
+              plannedDuration: 210,
+              type: "project",
+            },
+          ]}
+          projectCards={taskProjectCards}
+          streamerCards={taskStreamerCards}
+          applicationQueue={[]}
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", {
+          name: /\u5f02\u5e38\u4efb\u52a1\s*1/,
+        }),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows overdue pending-live tasks in the anomaly task list", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-07T13:12:00.000Z"));
+    const statusLabel = "\u5df2\u5ef6\u671f\u672a\u76f4\u64ad";
+
+    try {
+      render(
+        <OpsReferenceApp
+          initialRoute="tasks"
+          liveTasks={[
+            {
+              id: "task-overdue-list",
+              name: "Overdue List Task",
+              status: "pending_live",
+              project: "project-live",
+              projectId: "project-live",
+              projectName: "Fixture Project",
+              streamerId: "streamer-one",
+              streamerName: "Streamer One",
+              dayIdx: 1,
+              startHour: 20,
+              endHour: 22,
+              plannedStartAt: "2026-06-04T12:00:00.000Z",
+              plannedEndAt: "2026-06-04T15:30:00.000Z",
+              plannedDuration: 210,
+              type: "project",
+            },
+          ]}
+          projectCards={taskProjectCards}
+          streamerCards={taskStreamerCards}
+          applicationQueue={[]}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText("\u72b6\u6001\u7b5b\u9009"), {
+        target: { value: "missed_live" },
+      });
+      expect(
+        screen.getByRole("button", { name: /Overdue List Task/ }),
+      ).toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: /\u5f02\u5e38\u4efb\u52a1\s*1/,
+        }),
+      );
+
+      expect(screen.getByText(/Overdue List Task/)).toBeInTheDocument();
+      expect(screen.getAllByText(statusLabel).length).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("marks anomaly actions and new task draft saves as explicit pending states", async () => {

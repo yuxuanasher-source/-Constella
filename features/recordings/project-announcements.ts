@@ -53,6 +53,7 @@ export type StreamerProjectAnnouncementCard = {
   latestRecordingStatus: RecordingReviewStatus | null;
   latestRecordingVersion: number | null;
   decisionReason: string | null;
+  recordingFeedback: string | null;
   reviewStatusLabel: string;
   canSubmitRecording: boolean;
 };
@@ -118,6 +119,48 @@ export async function listStreamerProjectAnnouncements(
   });
 }
 
+export async function getStreamerProjectAnnouncement(
+  supabase: SupabaseClient | null,
+  input: { organizationId: string; streamerId: string; projectId: string },
+): Promise<StreamerProjectAnnouncementCard | null> {
+  if (!supabase) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("streamer_public_project_announcements")
+    .select(
+      "id, code, name, status, vendor_name, product_name, open_signup, force_recording, public_summary, game_download_url, published_at, created_at",
+    )
+    .eq("organization_id", input.organizationId)
+    .eq("id", input.projectId)
+    .in("status", visibleProjectStatuses)
+    .maybeSingle<StreamerProjectAnnouncementProjectRow>();
+
+  if (error) {
+    throw error;
+  }
+  if (!data) {
+    return null;
+  }
+
+  const applications = await listApplicationsForProjects(supabase, {
+    organizationId: input.organizationId,
+    streamerId: input.streamerId,
+    projectIds: [data.id],
+  });
+  const application = applications[0] ?? null;
+  const latestRecordings = await listLatestRecordingsForApplications(
+    supabase,
+    application ? [application.id] : [],
+  );
+  const latestRecording = application
+    ? (latestRecordings.get(application.id) ?? null)
+    : null;
+
+  return toStreamerProjectAnnouncementCard(data, application, latestRecording);
+}
+
 export function toStreamerProjectAnnouncementCard(
   project: StreamerProjectAnnouncementProjectRow,
   application: StreamerProjectAnnouncementApplicationRow | null,
@@ -141,6 +184,7 @@ export function toStreamerProjectAnnouncementCard(
     latestRecordingStatus: latestRecording?.status ?? null,
     latestRecordingVersion: latestRecording?.version ?? null,
     decisionReason: application?.decision_reason ?? null,
+    recordingFeedback: application?.decision_reason?.trim() || null,
     reviewStatusLabel: reviewStatusLabel(applicationStatus, latestRecording),
     canSubmitRecording:
       !applicationStatus ||

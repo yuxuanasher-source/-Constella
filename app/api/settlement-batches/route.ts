@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { listOpsSettlementBatches } from "@/features/settlements/settlement-queries";
 import {
   getSettlementRouteContext,
@@ -40,6 +41,12 @@ export async function POST(request: Request) {
     }
 
     const context = await getSettlementRouteContext();
+    await assertBillingWriteAllowed({
+      client: context.supabase,
+      organizationId: context.auth.organizationId,
+      featureKey: "settlement",
+    });
+
     const result = await generateSettlementBatch({
       repo: context.repo,
       audit: (input) => context.audit(context.supabase, input),
