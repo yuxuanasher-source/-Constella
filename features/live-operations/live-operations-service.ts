@@ -485,6 +485,120 @@ export async function submitLiveReport({
   return report;
 }
 
+export async function submitLiveReportScreenshotForOcr({
+  repo,
+  audit,
+  notify,
+  actor,
+  taskId,
+  input,
+  createOcrJob,
+}: {
+  repo: LiveOperationsRepository;
+  audit: LiveOperationsAuditWriter;
+  notify: LiveOperationsNotifier;
+  actor: LiveOperationsActor;
+  taskId: string;
+  input: {
+    screenshotStoragePath: string;
+    screenshotFileHash: string;
+    imageBucket?: string;
+  };
+  createOcrJob: (input: {
+    liveReportId: string;
+    screenshotId?: string;
+    imageBucket?: string;
+    imagePath: string;
+    expectedDuration?: number;
+  }) => Promise<{ id: string; status: string }>;
+}): Promise<{
+  report: LiveReportRecord;
+  job: { id: string; status: string };
+}> {
+  const task = await requireLiveTask(repo, taskId);
+  assertCanOperateTask(actor, task);
+  if (!["pending_report", "report_rejected"].includes(task.status)) {
+    throw new Error(
+      "OCR reports can only be submitted from pending report tasks",
+    );
+  }
+  if (!task.systemDuration || task.systemDuration <= 0) {
+    throw new Error("OCR report requires a recorded system duration");
+  }
+
+  const evidence = resolveReportEvidence({
+    systemDuration: task.systemDuration,
+    screenshotDuration: null,
+    claimedDuration: null,
+  });
+  const report = await repo.createLiveReport({
+    organizationId: actor.organizationId,
+    liveTaskId: task.id,
+    projectId: requireProjectId(task),
+    streamerId: task.streamerId,
+    status: "ocr_ing",
+    systemDuration: task.systemDuration,
+    screenshotDuration: null,
+    claimedDuration: null,
+    settlementDuration: evidence.settlementDuration,
+    timeSource: evidence.timeSource,
+    evidenceLevel: evidence.evidenceLevel,
+    divergencePct: evidence.divergencePct,
+    viewers: null,
+    riskFlags: [...evidence.riskFlags, "ocr_pending"],
+    createdBy: actor.userId,
+  });
+
+  await repo.createReportScreenshot({
+    organizationId: actor.organizationId,
+    liveReportId: report.id,
+    projectId: report.projectId,
+    streamerId: report.streamerId,
+    storagePath: input.screenshotStoragePath,
+    fileHash: input.screenshotFileHash,
+    uploadedBy: actor.userId,
+    metadata: { imageBucket: input.imageBucket },
+  });
+
+  const job = await createOcrJob({
+    liveReportId: report.id,
+    imageBucket: input.imageBucket,
+    imagePath: input.screenshotStoragePath,
+    expectedDuration: task.systemDuration,
+  });
+
+  assertLiveTaskTransition(task.status, "report_pending_review");
+  await repo.updateLiveTask(task.id, { status: "report_pending_review" });
+
+  await audit({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action: "create",
+    module: "live_report",
+    objectType: "live_report",
+    objectId: report.id,
+    projectId: report.projectId,
+    streamerId: report.streamerId,
+    after: { status: "ocr_ing", ocrJobId: job.id },
+    changedFields: ["status", "ocr_job"],
+  });
+
+  await notify({
+    organizationId: actor.organizationId,
+    recipientRole: "operator_business",
+    type: "review",
+    title: "Live report OCR queued",
+    content: `${task.title} has a screenshot waiting for OCR.`,
+    objectType: "live_report",
+    objectId: report.id,
+    source: "live_report.ocr.submit",
+  });
+
+  return { report, job };
+}
+
 export async function reviewLiveReport({
   repo,
   audit,

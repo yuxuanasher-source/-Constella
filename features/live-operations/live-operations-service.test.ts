@@ -7,6 +7,7 @@ import {
   startLiveTask,
   stopLiveTask,
   submitLiveReport,
+  submitLiveReportScreenshotForOcr,
   type LiveOperationsRepository,
 } from "./live-operations-service";
 
@@ -74,7 +75,7 @@ function createRepo(): LiveOperationsRepository {
       liveTaskId: input.liveTaskId,
       projectId: input.projectId,
       streamerId: input.streamerId,
-      status: "pending_review" as const,
+      status: input.status,
       systemDuration: input.systemDuration,
       screenshotDuration: input.screenshotDuration,
       claimedDuration: input.claimedDuration,
@@ -362,6 +363,124 @@ describe("live operations service", () => {
       "task-1",
       expect.objectContaining({ status: "report_pending_review" }),
     );
+  });
+
+  it("queues OCR when a streamer submits a live report screenshot for OCR", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "pending_report",
+      systemStartedAt: "2026-06-02T10:00:00.000Z",
+      systemStoppedAt: "2026-06-02T11:20:00.000Z",
+      systemDuration: 80,
+    });
+    const createOcrJob = vi.fn(async () => ({
+      id: "ocr-job-1",
+      organizationId: "org-1",
+      jobType: "ocr.extract_live_report",
+      status: "queued",
+      attempt: 0,
+      payload: {
+        liveReportId: "report-1",
+        imagePath: "org/report-screenshots/task-1/end.png",
+      },
+    }));
+
+    const result = await submitLiveReportScreenshotForOcr({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      taskId: "task-1",
+      input: {
+        screenshotStoragePath: "org/report-screenshots/task-1/end.png",
+        screenshotFileHash: "hash-1",
+        imageBucket: "evidence-private",
+      },
+      createOcrJob,
+    });
+
+    expect(result.report.status).toBe("ocr_ing");
+    expect(result.job.id).toBe("ocr-job-1");
+    expect(repo.createLiveReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "ocr_ing",
+        settlementDuration: 80,
+        timeSource: "system",
+        evidenceLevel: "yellow",
+        riskFlags: expect.arrayContaining([
+          "missing_screenshot_duration",
+          "ocr_pending",
+        ]),
+      }),
+    );
+  });
+
+  it("blocks OCR submission from another streamer's task", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "pending_report",
+      systemDuration: 80,
+    });
+    const createOcrJob = vi.fn(async () => ({
+      id: "ocr-job-1",
+      status: "queued",
+    }));
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: { ...streamerActor, streamerId: "streamer-2" },
+        taskId: "task-1",
+        input: {
+          screenshotStoragePath: "org/report-screenshots/task-1/end.png",
+          screenshotFileHash: "hash-1",
+          imageBucket: "evidence-private",
+        },
+        createOcrJob,
+      }),
+    ).rejects.toThrow("Streamers can only operate their own live tasks");
+
+    expect(repo.createLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportScreenshot).not.toHaveBeenCalled();
+    expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
+  it("does not advance the task when OCR job creation fails", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "pending_report",
+      systemDuration: 80,
+    });
+    const createOcrJob = vi.fn(async () => {
+      throw new Error("queue unavailable");
+    });
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: {
+          screenshotStoragePath: "org/report-screenshots/task-1/end.png",
+          screenshotFileHash: "hash-1",
+          imageBucket: "evidence-private",
+        },
+        createOcrJob,
+      }),
+    ).rejects.toThrow("queue unavailable");
+
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        module: "live_report",
+        changedFields: expect.arrayContaining(["ocr_job"]),
+      }),
+    );
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it("approves a report into the settlement pool without creating settlement items", async () => {
