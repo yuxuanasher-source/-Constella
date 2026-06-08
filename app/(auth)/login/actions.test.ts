@@ -20,6 +20,9 @@ vi.mock("next/navigation", () => ({
 
 const deleteCookie = vi.fn();
 const setCookie = vi.fn();
+const consoleWarn = vi
+  .spyOn(console, "warn")
+  .mockImplementation(() => undefined);
 
 vi.mock("next/headers", () => ({
   cookies: vi.fn(async () => ({
@@ -74,6 +77,7 @@ describe("login server actions", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    consoleWarn.mockClear();
     deleteCookie.mockClear();
     setCookie.mockClear();
 
@@ -597,6 +601,50 @@ describe("login server actions", () => {
     expect(createUser).not.toHaveBeenCalled();
   });
 
+  it("reports profile precheck failures with a diagnostic registration code", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { signInWithPassword },
+    } as never);
+
+    const createUser = vi.fn();
+    const adminFrom = vi.fn((table: string) => {
+      if (table === "profiles") {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({
+                data: null,
+                error: { message: "Could not find the 'phone' column" },
+              })),
+            })),
+          })),
+          upsert: vi.fn(async () => ({ error: null })),
+        };
+      }
+      return { insert: vi.fn(async () => ({ error: null })) };
+    });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      auth: { admin: { createUser } },
+      from: adminFrom,
+    } as never);
+
+    await expect(
+      submitMcnApplicationAction(
+        form({
+          companyName: "Star Ops",
+          contactName: "Lin Manager",
+          contactEmail: "owner@example.cn",
+          contactPhone: "13800138000",
+          password: "Secret123",
+        }),
+      ),
+    ).rejects.toThrow(
+      "NEXT_REDIRECT:/login?mode=apply&error=registration-profile-check",
+    );
+
+    expect(createUser).not.toHaveBeenCalled();
+  });
+
   it("reports an Auth duplicate email as a registration email conflict", async () => {
     vi.mocked(createSupabaseServerClient).mockResolvedValue({
       auth: { signInWithPassword },
@@ -748,7 +796,9 @@ describe("login server actions", () => {
       eq: vi.fn(async () => ({ error: null })),
     }));
     const upsertProfile = vi.fn(async () => ({
-      error: { message: "profile write failed" },
+      error: {
+        message: "profile write failed for owner@example.cn and 13800138000",
+      },
     }));
     const insertMembership = vi.fn(async () => ({ error: null }));
     const adminFrom = vi.fn((table: string) => {
@@ -782,10 +832,17 @@ describe("login server actions", () => {
           password: "Secret123",
         }),
       ),
-    ).rejects.toThrow("NEXT_REDIRECT:/login?mode=apply&error=application");
+    ).rejects.toThrow(
+      "NEXT_REDIRECT:/login?mode=apply&error=registration-profile",
+    );
 
     expect(deleteOrganization).toHaveBeenCalled();
     expect(deleteUser).toHaveBeenCalledWith("user-new");
     expect(insertMembership).not.toHaveBeenCalled();
+    expect(consoleWarn).toHaveBeenCalledWith("[auth.registration] failure", {
+      code: "registration-profile",
+      errorName: "RegistrationActionError",
+      message: "profile write failed for [redacted-email] and [redacted-phone]",
+    });
   });
 });

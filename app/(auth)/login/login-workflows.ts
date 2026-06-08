@@ -333,6 +333,36 @@ function getNotice(searchParams: Record<string, string | undefined>) {
       message: "该联系电话已被其他账号绑定，请更换电话或联系管理员。",
     } satisfies LoginNotice;
   }
+  if (searchParams.error === "registration-profile-check") {
+    return {
+      tone: "error",
+      message: "注册资料校验失败，请联系管理员确认生产数据库字段已同步。",
+    } satisfies LoginNotice;
+  }
+  if (searchParams.error === "registration-auth") {
+    return {
+      tone: "error",
+      message: "注册账号创建失败，请稍后重试或联系管理员处理。",
+    } satisfies LoginNotice;
+  }
+  if (searchParams.error === "registration-organization") {
+    return {
+      tone: "error",
+      message: "注册机构创建失败，请联系管理员检查机构资料写入。",
+    } satisfies LoginNotice;
+  }
+  if (searchParams.error === "registration-profile") {
+    return {
+      tone: "error",
+      message: "注册账号资料写入失败，请联系管理员检查账号资料表。",
+    } satisfies LoginNotice;
+  }
+  if (searchParams.error === "registration-membership") {
+    return {
+      tone: "error",
+      message: "注册成员权限写入失败，请联系管理员检查机构成员关系。",
+    } satisfies LoginNotice;
+  }
   if (searchParams.error === "application") {
     return {
       tone: "error",

@@ -143,6 +143,28 @@ describe("login workflows", () => {
     expect(phoneConflict.notice?.message).toContain("联系电话");
   });
 
+  it("shows registration diagnostic stage errors", () => {
+    const cases = [
+      ["registration-profile-check", "资料校验失败"],
+      ["registration-auth", "账号创建失败"],
+      ["registration-organization", "机构创建失败"],
+      ["registration-profile", "账号资料写入失败"],
+      ["registration-membership", "成员权限写入失败"],
+    ] as const;
+
+    for (const [error, message] of cases) {
+      const viewState = buildLoginViewState({
+        searchParams: { mode: "apply", error },
+      });
+
+      expect(viewState).toMatchObject({
+        mode: "apply",
+        notice: { tone: "error" },
+      });
+      expect(viewState.notice?.message).toContain(message);
+    }
+  });
+
   it("shows activation-specific duplicate field errors", () => {
     expect(
       buildLoginViewState({
