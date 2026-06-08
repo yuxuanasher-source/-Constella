@@ -123,6 +123,26 @@ describe("login workflows", () => {
     });
   });
 
+  it("shows registration-specific duplicate contact field errors", () => {
+    const emailConflict = buildLoginViewState({
+      searchParams: { mode: "apply", error: "registration-email" },
+    });
+    const phoneConflict = buildLoginViewState({
+      searchParams: { mode: "apply", error: "registration-phone" },
+    });
+
+    expect(emailConflict).toMatchObject({
+      mode: "apply",
+      notice: { tone: "error" },
+    });
+    expect(emailConflict.notice?.message).toContain("联系邮箱");
+    expect(phoneConflict).toMatchObject({
+      mode: "apply",
+      notice: { tone: "error" },
+    });
+    expect(phoneConflict.notice?.message).toContain("联系电话");
+  });
+
   it("shows activation-specific duplicate field errors", () => {
     expect(
       buildLoginViewState({

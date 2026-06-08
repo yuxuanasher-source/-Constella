@@ -309,8 +309,10 @@ export async function submitMcnApplicationAction(formData: FormData) {
       authAdmin,
       input: validation.value,
     });
-  } catch {
-    redirect("/login?mode=apply&error=application");
+  } catch (error) {
+    const errorCode =
+      error instanceof RegistrationActionError ? error.code : "application";
+    redirect(`/login?mode=apply&error=${errorCode}`);
   }
 
   const { error: signInError } = await supabase.auth.signInWithPassword({
@@ -404,6 +406,16 @@ async function createSelfRegisteredMcnOwner({
     { ok: true }
   >["value"];
 }) {
+  const profileConflict = await getRegistrationProfileConflict(admin, {
+    email: input.contactEmail,
+    phone: input.contactPhone,
+  });
+  if (profileConflict) {
+    throw new RegistrationActionError(
+      registrationConflictError(profileConflict),
+    );
+  }
+
   const { data: authData, error: authError } = await authAdmin.createUser({
     email: input.contactEmail,
     password: input.password,
@@ -415,6 +427,9 @@ async function createSelfRegisteredMcnOwner({
       organization_name: input.companyName,
     },
   });
+  if (isAuthDuplicateEmailError(authError)) {
+    throw new RegistrationActionError("registration-email");
+  }
   throwIfSupabaseError(authError, "Auth user creation failed");
 
   const user = authData.user;
@@ -423,6 +438,42 @@ async function createSelfRegisteredMcnOwner({
   }
 
   const ownerEmail = user.email?.trim().toLowerCase() || input.contactEmail;
+  let createdOrganizationId: string | null = null;
+
+  try {
+    await createSelfRegisteredMcnOwnerRecords({
+      admin,
+      input,
+      user: { id: user.id, email: ownerEmail },
+      onOrganizationCreated: (organizationId) => {
+        createdOrganizationId = organizationId;
+      },
+    });
+  } catch (error) {
+    await cleanupSelfRegistrationAttempt({
+      admin,
+      authAdmin,
+      userId: user.id,
+      organizationId: createdOrganizationId,
+    });
+    throw error;
+  }
+}
+
+async function createSelfRegisteredMcnOwnerRecords({
+  admin,
+  input,
+  user,
+  onOrganizationCreated,
+}: {
+  admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>;
+  input: Extract<
+    ReturnType<typeof validateMcnApplicationInput>,
+    { ok: true }
+  >["value"];
+  user: { id: string; email: string };
+  onOrganizationCreated: (organizationId: string) => void;
+}) {
   const { data: organization, error: organizationError } = await admin
     .from("organizations")
     .insert({
@@ -436,11 +487,12 @@ async function createSelfRegisteredMcnOwner({
   if (!organization?.id) {
     throw new Error("Organization creation returned no organization");
   }
+  onOrganizationCreated(organization.id);
 
   const { error: profileError } = await admin.from("profiles").upsert(
     {
       id: user.id,
-      email: ownerEmail,
+      email: user.email,
       full_name: input.contactName,
       phone: input.contactPhone,
       login_account: null,
@@ -459,6 +511,32 @@ async function createSelfRegisteredMcnOwner({
       status: "active",
     });
   throwIfSupabaseError(membershipError, "Owner membership creation failed");
+}
+
+async function cleanupSelfRegistrationAttempt({
+  admin,
+  authAdmin,
+  userId,
+  organizationId,
+}: {
+  admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>;
+  authAdmin: AuthAdminClient;
+  userId: string;
+  organizationId: string | null;
+}) {
+  if (organizationId) {
+    try {
+      await admin.from("organizations").delete().eq("id", organizationId);
+    } catch {
+      // Best-effort rollback: keep the original registration error.
+    }
+  }
+
+  try {
+    await authAdmin.deleteUser(userId);
+  } catch {
+    // Best-effort rollback: keep the original registration error.
+  }
 }
 
 function createMcnOrganizationCode() {
@@ -486,9 +564,43 @@ function normalizeAuthPhone(phone: string) {
 }
 
 type ActivationProfileConflict = "email" | "phone" | "unknown";
+type RegistrationContactConflict = "email" | "phone" | "unknown";
+type RegistrationErrorCode =
+  | "application"
+  | "registration-email"
+  | "registration-phone";
 type AuthAdminClient = NonNullable<
   NonNullable<ReturnType<typeof createSupabaseAdminClient>>["auth"]["admin"]
 >;
+
+class RegistrationActionError extends Error {
+  constructor(public readonly code: RegistrationErrorCode) {
+    super(code);
+  }
+}
+
+async function getRegistrationProfileConflict(
+  admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>,
+  input: { email: string; phone: string },
+): Promise<RegistrationContactConflict | null> {
+  const emailConflict = await hasProfileWithValue(admin, "email", input.email);
+  if (emailConflict === "error") {
+    return "unknown";
+  }
+  if (emailConflict) {
+    return "email";
+  }
+
+  const phoneConflict = await hasProfileWithValue(admin, "phone", input.phone);
+  if (phoneConflict === "error") {
+    return "unknown";
+  }
+  if (phoneConflict) {
+    return "phone";
+  }
+
+  return null;
+}
 
 async function getActivationProfileConflict(
   admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>,
@@ -584,6 +696,24 @@ async function hasOtherProfileWithValue(
   return Boolean(data?.id);
 }
 
+async function hasProfileWithValue(
+  admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>,
+  column: "email" | "phone",
+  value: string,
+): Promise<boolean | "error"> {
+  const { data, error } = await admin
+    .from("profiles")
+    .select("id")
+    .eq(column, value)
+    .maybeSingle<{ id: string }>();
+
+  if (error) {
+    return "error";
+  }
+
+  return Boolean(data?.id);
+}
+
 function getAuthPhoneComparisonValues(phone: string) {
   const normalized = normalizePhoneForAuthComparison(phone);
   const candidates = new Set<string>();
@@ -620,6 +750,25 @@ function activationConflictError(conflict: ActivationProfileConflict) {
     return "activation-phone";
   }
   return "activation";
+}
+
+function registrationConflictError(
+  conflict: RegistrationContactConflict,
+): RegistrationErrorCode {
+  if (conflict === "email") {
+    return "registration-email";
+  }
+  if (conflict === "phone") {
+    return "registration-phone";
+  }
+  return "application";
+}
+
+function isAuthDuplicateEmailError(
+  error: { message?: string } | null | undefined,
+) {
+  const message = error?.message?.toLowerCase() ?? "";
+  return message.includes("email") && message.includes("registered");
 }
 
 async function getPendingActivationProfile(

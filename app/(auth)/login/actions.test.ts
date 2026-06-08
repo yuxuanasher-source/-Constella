@@ -433,7 +433,14 @@ describe("login server actions", () => {
         return { insert: insertOrganization };
       }
       if (table === "profiles") {
-        return { upsert: upsertProfile };
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+            })),
+          })),
+          upsert: upsertProfile,
+        };
       }
       if (table === "organization_members") {
         return { insert: insertMembership };
@@ -496,5 +503,206 @@ describe("login server actions", () => {
       email: "owner@example.cn",
       password: "Secret123",
     });
+  });
+
+  it("rejects MCN self-registration before Auth creation when contact email is already bound", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { signInWithPassword },
+    } as never);
+
+    const createUser = vi.fn();
+    const adminFrom = vi.fn((table: string) => {
+      if (table === "profiles") {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn((column: string) => ({
+              maybeSingle: vi.fn(async () => ({
+                data: column === "email" ? { id: "existing-user" } : null,
+                error: null,
+              })),
+            })),
+          })),
+          upsert: vi.fn(async () => ({ error: null })),
+        };
+      }
+      return { insert: vi.fn(async () => ({ error: null })) };
+    });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      auth: { admin: { createUser } },
+      from: adminFrom,
+    } as never);
+
+    await expect(
+      submitMcnApplicationAction(
+        form({
+          companyName: "星耀互动",
+          contactName: "林经理",
+          contactEmail: "owner@example.cn",
+          contactPhone: "13800138000",
+          password: "Secret123",
+        }),
+      ),
+    ).rejects.toThrow(
+      "NEXT_REDIRECT:/login?mode=apply&error=registration-email",
+    );
+
+    expect(createUser).not.toHaveBeenCalled();
+  });
+
+  it("rejects MCN self-registration before Auth creation when contact phone is already bound", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { signInWithPassword },
+    } as never);
+
+    const createUser = vi.fn();
+    const adminFrom = vi.fn((table: string) => {
+      if (table === "profiles") {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn((column: string) => ({
+              maybeSingle: vi.fn(async () => ({
+                data: column === "phone" ? { id: "existing-user" } : null,
+                error: null,
+              })),
+            })),
+          })),
+          upsert: vi.fn(async () => ({
+            error: {
+              message: "duplicate key value violates unique constraint",
+            },
+          })),
+        };
+      }
+      return { insert: vi.fn(async () => ({ error: null })) };
+    });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      auth: { admin: { createUser } },
+      from: adminFrom,
+    } as never);
+
+    await expect(
+      submitMcnApplicationAction(
+        form({
+          companyName: "星耀互动",
+          contactName: "林经理",
+          contactEmail: "owner@example.cn",
+          contactPhone: "13800138000",
+          password: "Secret123",
+        }),
+      ),
+    ).rejects.toThrow(
+      "NEXT_REDIRECT:/login?mode=apply&error=registration-phone",
+    );
+
+    expect(createUser).not.toHaveBeenCalled();
+  });
+
+  it("reports an Auth duplicate email as a registration email conflict", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { signInWithPassword },
+    } as never);
+
+    const createUser = vi.fn(async () => ({
+      data: { user: null },
+      error: {
+        message: "A user with this email address has already been registered",
+      },
+    }));
+    const adminFrom = vi.fn((table: string) => {
+      if (table === "profiles") {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+            })),
+          })),
+          upsert: vi.fn(async () => ({ error: null })),
+        };
+      }
+      return { insert: vi.fn(async () => ({ error: null })) };
+    });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      auth: { admin: { createUser } },
+      from: adminFrom,
+    } as never);
+
+    await expect(
+      submitMcnApplicationAction(
+        form({
+          companyName: "星耀互动",
+          contactName: "林经理",
+          contactEmail: "owner@example.cn",
+          contactPhone: "13800138000",
+          password: "Secret123",
+        }),
+      ),
+    ).rejects.toThrow(
+      "NEXT_REDIRECT:/login?mode=apply&error=registration-email",
+    );
+  });
+
+  it("rolls back the Auth user and organization when profile creation fails", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { signInWithPassword },
+    } as never);
+
+    const createUser = vi.fn(async () => ({
+      data: {
+        user: { id: "user-new", email: "owner@example.cn" },
+      },
+      error: null,
+    }));
+    const deleteUser = vi.fn(async () => ({ error: null }));
+    const insertOrganization = vi.fn(() => ({
+      select: vi.fn(() => ({
+        single: vi.fn(async () => ({
+          data: { id: "org-new", name: "星耀互动" },
+          error: null,
+        })),
+      })),
+    }));
+    const deleteOrganization = vi.fn(() => ({
+      eq: vi.fn(async () => ({ error: null })),
+    }));
+    const upsertProfile = vi.fn(async () => ({
+      error: { message: "profile write failed" },
+    }));
+    const insertMembership = vi.fn(async () => ({ error: null }));
+    const adminFrom = vi.fn((table: string) => {
+      if (table === "organizations") {
+        return { insert: insertOrganization, delete: deleteOrganization };
+      }
+      if (table === "profiles") {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+            })),
+          })),
+          upsert: upsertProfile,
+        };
+      }
+      return { insert: insertMembership };
+    });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      auth: { admin: { createUser, deleteUser } },
+      from: adminFrom,
+    } as never);
+
+    await expect(
+      submitMcnApplicationAction(
+        form({
+          companyName: "星耀互动",
+          contactName: "林经理",
+          contactEmail: "owner@example.cn",
+          contactPhone: "13800138000",
+          password: "Secret123",
+        }),
+      ),
+    ).rejects.toThrow("NEXT_REDIRECT:/login?mode=apply&error=application");
+
+    expect(deleteOrganization).toHaveBeenCalled();
+    expect(deleteUser).toHaveBeenCalledWith("user-new");
+    expect(insertMembership).not.toHaveBeenCalled();
   });
 });

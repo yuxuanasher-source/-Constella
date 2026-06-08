@@ -321,10 +321,22 @@ function getNotice(searchParams: Record<string, string | undefined>) {
       message: "注册信息校验失败，请确认邮箱、电话和至少 8 位密码。",
     } satisfies LoginNotice;
   }
+  if (searchParams.error === "registration-email") {
+    return {
+      tone: "error",
+      message: "该联系邮箱已注册，请更换邮箱或直接登录。",
+    } satisfies LoginNotice;
+  }
+  if (searchParams.error === "registration-phone") {
+    return {
+      tone: "error",
+      message: "该联系电话已被其他账号绑定，请更换电话或联系管理员。",
+    } satisfies LoginNotice;
+  }
   if (searchParams.error === "application") {
     return {
       tone: "error",
-      message: "注册失败，请检查邮箱是否已注册，或稍后重试。",
+      message: "注册失败，请稍后重试或联系管理员处理。",
     } satisfies LoginNotice;
   }
   return null;
