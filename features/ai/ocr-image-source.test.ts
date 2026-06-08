@@ -48,6 +48,26 @@ describe("resolveOcrImageInput", () => {
     expect(result).toEqual({ imageBase64: "AQID" });
   });
 
+  it("reports a missing storage object when download returns no data", async () => {
+    const download = vi.fn(async () => ({
+      data: null,
+      error: new Error("storage object not found"),
+    }));
+    const from = vi.fn(() => ({ download }));
+
+    await expect(
+      resolveOcrImageInput({
+        client: { storage: { from } } as never,
+        payload: {
+          liveReportId: "report-1",
+          imageBucket: "evidence-private",
+          imagePath: "org/report-screenshots/task-1/missing.png",
+        },
+        defaultBucket: "fallback-bucket",
+      }),
+    ).rejects.toThrow("OCR image object was not found");
+  });
+
   it("requires at least one image source", async () => {
     await expect(
       resolveOcrImageInput({

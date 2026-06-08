@@ -31,11 +31,11 @@ export async function resolveOcrImageInput({
   const { data, error } = await client.storage
     .from(bucket)
     .download(payload.imagePath);
-  if (error) {
-    throw error;
-  }
   if (!data) {
     throw new Error("OCR image object was not found");
+  }
+  if (error) {
+    throw error;
   }
 
   const bytes = Buffer.from(await data.arrayBuffer());
