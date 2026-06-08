@@ -439,6 +439,14 @@ describe("live operations service", () => {
       "task-1",
       expect.objectContaining({ status: "report_pending_review" }),
     );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        module: "live_task",
+        objectId: "task-1",
+        changedFields: ["status"],
+      }),
+    );
     expect(JSON.stringify(audit.mock.calls)).not.toContain(
       "org/report-screenshots",
     );

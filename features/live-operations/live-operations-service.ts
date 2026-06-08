@@ -568,7 +568,9 @@ export async function submitLiveReportScreenshotForOcr({
   });
 
   assertLiveTaskTransition(task.status, "report_pending_review");
-  await repo.updateLiveTask(task.id, { status: "report_pending_review" });
+  const afterTask = await repo.updateLiveTask(task.id, {
+    status: "report_pending_review",
+  });
 
   await audit({
     organizationId: actor.organizationId,
@@ -583,6 +585,13 @@ export async function submitLiveReportScreenshotForOcr({
     streamerId: report.streamerId,
     after: { status: "ocr_ing", ocrJobId: job.id },
     changedFields: ["status", "ocr_job"],
+  });
+  await auditLiveTaskUpdate({
+    audit,
+    actor,
+    before: task,
+    after: afterTask,
+    changedFields: ["status"],
   });
 
   await notify({
