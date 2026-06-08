@@ -26,6 +26,12 @@ const streamerActor = {
   streamerId: "streamer-1",
 };
 
+const ocrInput = {
+  screenshotStoragePath: "org/report-screenshots/task-1/end.png",
+  screenshotFileHash: "hash-1",
+  imageBucket: "evidence-private",
+};
+
 const task = {
   id: "task-1",
   organizationId: "org-1",
@@ -129,6 +135,20 @@ function createRepo(): LiveOperationsRepository {
     createReportScreenshot: vi.fn(async () => undefined),
     createReportChangeLog: vi.fn(async () => undefined),
   };
+}
+
+function createQueuedOcrJob() {
+  return vi.fn(async () => ({
+    id: "ocr-job-1",
+    organizationId: "org-1",
+    jobType: "ocr.extract_live_report",
+    status: "queued",
+    attempt: 0,
+    payload: {
+      liveReportId: "report-1",
+      imagePath: "org/report-screenshots/task-1/end.png",
+    },
+  }));
 }
 
 describe("live operations service", () => {
@@ -373,17 +393,7 @@ describe("live operations service", () => {
       systemStoppedAt: "2026-06-02T11:20:00.000Z",
       systemDuration: 80,
     });
-    const createOcrJob = vi.fn(async () => ({
-      id: "ocr-job-1",
-      organizationId: "org-1",
-      jobType: "ocr.extract_live_report",
-      status: "queued",
-      attempt: 0,
-      payload: {
-        liveReportId: "report-1",
-        imagePath: "org/report-screenshots/task-1/end.png",
-      },
-    }));
+    const createOcrJob = createQueuedOcrJob();
 
     const result = await submitLiveReportScreenshotForOcr({
       repo,
@@ -391,11 +401,7 @@ describe("live operations service", () => {
       notify,
       actor: streamerActor,
       taskId: "task-1",
-      input: {
-        screenshotStoragePath: "org/report-screenshots/task-1/end.png",
-        screenshotFileHash: "hash-1",
-        imageBucket: "evidence-private",
-      },
+      input: ocrInput,
       createOcrJob,
     });
 
@@ -412,6 +418,67 @@ describe("live operations service", () => {
           "ocr_pending",
         ]),
       }),
+    );
+    expect(repo.createReportScreenshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storagePath: "org/report-screenshots/task-1/end.png",
+        fileHash: "hash-1",
+        uploadedBy: "user-streamer",
+        metadata: { imageBucket: "evidence-private" },
+      }),
+    );
+    expect(createOcrJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        liveReportId: "report-1",
+        imageBucket: "evidence-private",
+        imagePath: "org/report-screenshots/task-1/end.png",
+        expectedDuration: 80,
+      }),
+    );
+    expect(repo.updateLiveTask).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ status: "report_pending_review" }),
+    );
+    expect(JSON.stringify(audit.mock.calls)).not.toContain(
+      "org/report-screenshots",
+    );
+    expect(JSON.stringify(audit.mock.calls)).not.toContain("hash-1");
+    expect(JSON.stringify(notify.mock.calls)).not.toContain(
+      "org/report-screenshots",
+    );
+    expect(JSON.stringify(notify.mock.calls)).not.toContain("hash-1");
+  });
+
+  it("queues OCR from a rejected report retry path", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "report_rejected",
+      systemStartedAt: "2026-06-02T10:00:00.000Z",
+      systemStoppedAt: "2026-06-02T11:20:00.000Z",
+      systemDuration: 80,
+    });
+    const createOcrJob = createQueuedOcrJob();
+
+    const result = await submitLiveReportScreenshotForOcr({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      taskId: "task-1",
+      input: ocrInput,
+      createOcrJob,
+    });
+
+    expect(result.report.status).toBe("ocr_ing");
+    expect(createOcrJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        liveReportId: "report-1",
+        expectedDuration: 80,
+      }),
+    );
+    expect(repo.updateLiveTask).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ status: "report_pending_review" }),
     );
   });
 
@@ -433,11 +500,7 @@ describe("live operations service", () => {
         notify,
         actor: { ...streamerActor, streamerId: "streamer-2" },
         taskId: "task-1",
-        input: {
-          screenshotStoragePath: "org/report-screenshots/task-1/end.png",
-          screenshotFileHash: "hash-1",
-          imageBucket: "evidence-private",
-        },
+        input: ocrInput,
         createOcrJob,
       }),
     ).rejects.toThrow("Streamers can only operate their own live tasks");
@@ -447,7 +510,123 @@ describe("live operations service", () => {
     expect(createOcrJob).not.toHaveBeenCalled();
   });
 
-  it("does not advance the task when OCR job creation fails", async () => {
+  it("rejects OCR submission for invalid task status before report or job creation", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "live",
+      systemDuration: 80,
+    });
+    const createOcrJob = createQueuedOcrJob();
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob,
+      }),
+    ).rejects.toThrow(
+      "OCR reports can only be submitted from pending or rejected report tasks",
+    );
+
+    expect(repo.createLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportScreenshot).not.toHaveBeenCalled();
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
+    expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["zero", 0],
+    ["missing", undefined],
+  ])(
+    "rejects OCR submission with %s system duration before report or job creation",
+    async (_case, systemDuration) => {
+      vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+        ...task,
+        status: "pending_report",
+        systemDuration: systemDuration as number,
+      });
+      const createOcrJob = createQueuedOcrJob();
+
+      await expect(
+        submitLiveReportScreenshotForOcr({
+          repo,
+          audit,
+          notify,
+          actor: streamerActor,
+          taskId: "task-1",
+          input: ocrInput,
+          createOcrJob,
+        }),
+      ).rejects.toThrow("OCR report requires a recorded system duration");
+
+      expect(repo.createLiveReport).not.toHaveBeenCalled();
+      expect(repo.createReportScreenshot).not.toHaveBeenCalled();
+      expect(repo.updateLiveTask).not.toHaveBeenCalled();
+      expect(createOcrJob).not.toHaveBeenCalled();
+    },
+  );
+
+  it("blocks cross-organization OCR submission before report or job creation", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      organizationId: "org-2",
+      status: "pending_report",
+      systemDuration: 80,
+    });
+    const createOcrJob = createQueuedOcrJob();
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob,
+      }),
+    ).rejects.toThrow("Cross-organization access is not allowed");
+
+    expect(repo.createLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportScreenshot).not.toHaveBeenCalled();
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
+    expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
+  it("blocks unexpected non-streamer roles from OCR submission before report or job creation", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "pending_report",
+      systemDuration: 80,
+    });
+    const createOcrJob = createQueuedOcrJob();
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: {
+          ...streamerActor,
+          role: "guest" as typeof streamerActor.role,
+        },
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob,
+      }),
+    ).rejects.toThrow("Current role cannot operate live tasks");
+
+    expect(repo.createLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportScreenshot).not.toHaveBeenCalled();
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
+    expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
+  it("may create report and screenshot when OCR queue fails but does not advance, audit, or notify", async () => {
     vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
       ...task,
       status: "pending_report",
@@ -464,15 +643,14 @@ describe("live operations service", () => {
         notify,
         actor: streamerActor,
         taskId: "task-1",
-        input: {
-          screenshotStoragePath: "org/report-screenshots/task-1/end.png",
-          screenshotFileHash: "hash-1",
-          imageBucket: "evidence-private",
-        },
+        input: ocrInput,
         createOcrJob,
       }),
     ).rejects.toThrow("queue unavailable");
 
+    // Without a repository transaction, the pre-queue report/evidence writes may already exist.
+    expect(repo.createLiveReport).toHaveBeenCalled();
+    expect(repo.createReportScreenshot).toHaveBeenCalled();
     expect(repo.updateLiveTask).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalledWith(
       expect.objectContaining({

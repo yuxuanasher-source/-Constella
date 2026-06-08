@@ -519,7 +519,7 @@ export async function submitLiveReportScreenshotForOcr({
   assertCanOperateTask(actor, task);
   if (!["pending_report", "report_rejected"].includes(task.status)) {
     throw new Error(
-      "OCR reports can only be submitted from pending report tasks",
+      "OCR reports can only be submitted from pending or rejected report tasks",
     );
   }
   if (!task.systemDuration || task.systemDuration <= 0) {
