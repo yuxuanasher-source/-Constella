@@ -14,19 +14,22 @@ import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
 export default async function StreamerDesktopPage() {
+  const context = await getStreamerDesktopContext();
   const [
     liveTasks,
     notificationData,
     profile,
     recordings,
     projectAnnouncements,
-  ] = await Promise.all([
-    loadStreamerTasks(),
-    loadStreamerNotifications(),
-    loadStreamerProfile(),
-    loadStreamerRecordings(),
-    loadStreamerProjectAnnouncements(),
-  ]);
+  ] = context
+    ? await Promise.all([
+        loadStreamerTasks(context),
+        loadStreamerNotifications(context),
+        loadStreamerProfile(context),
+        loadStreamerRecordings(context),
+        loadStreamerProjectAnnouncements(context),
+      ])
+    : [null, null, null, null, null];
 
   return (
     <StreamerDesktopReferenceApp
@@ -41,7 +44,13 @@ export default async function StreamerDesktopPage() {
   );
 }
 
-async function loadStreamerTasks() {
+type StreamerDesktopContext = {
+  supabase: NonNullable<Awaited<ReturnType<typeof createSupabaseServerClient>>>;
+  auth: NonNullable<Awaited<ReturnType<typeof getAuthContext>>>;
+  streamerId: string;
+};
+
+async function getStreamerDesktopContext(): Promise<StreamerDesktopContext | null> {
   const supabase = await createSupabaseServerClient();
   const auth = await getAuthContext(supabase);
   if (!supabase || !auth || auth.role !== "streamer") {
@@ -57,21 +66,20 @@ async function loadStreamerTasks() {
     return null;
   }
 
-  return listStreamerTaskCards(supabase, streamerId);
+  return { supabase, auth, streamerId };
 }
 
-async function loadStreamerNotifications() {
-  const supabase = await createSupabaseServerClient();
-  const auth = await getAuthContext(supabase);
-  if (!supabase || !auth || auth.role !== "streamer") {
-    return null;
-  }
+async function loadStreamerTasks(context: StreamerDesktopContext) {
+  return listStreamerTaskCards(context.supabase, context.streamerId);
+}
 
-  const notificationClient = supabase as unknown as NotificationQueryClient;
+async function loadStreamerNotifications(context: StreamerDesktopContext) {
+  const notificationClient =
+    context.supabase as unknown as NotificationQueryClient;
   const actor = {
-    userId: auth.userId,
-    role: auth.role,
-    organizationId: auth.organizationId,
+    userId: context.auth.userId,
+    role: context.auth.role,
+    organizationId: context.auth.organizationId,
   };
   const [items, unreadCount] = await Promise.all([
     listNotificationCenterItems(notificationClient, actor, { limit: 10 }),
@@ -81,70 +89,27 @@ async function loadStreamerNotifications() {
   return { items, unreadCount };
 }
 
-async function loadStreamerProfile() {
-  const supabase = await createSupabaseServerClient();
-  const auth = await getAuthContext(supabase);
-  if (!supabase || !auth || auth.role !== "streamer") {
-    return null;
-  }
-
-  const streamerId = await getStreamerIdForUser(
-    supabase,
-    auth.userId,
-    auth.organizationId,
-  );
-  if (!streamerId) {
-    return null;
-  }
-
-  const row = await getStreamerProfileRow(supabase, streamerId);
+async function loadStreamerProfile(context: StreamerDesktopContext) {
+  const row = await getStreamerProfileRow(context.supabase, context.streamerId);
   return row
     ? toStreamerDesktopProfileDto(row, {
-        organizationName: auth.organizationName,
+        organizationName: context.auth.organizationName,
       })
     : null;
 }
 
-async function loadStreamerRecordings() {
-  const supabase = await createSupabaseServerClient();
-  const auth = await getAuthContext(supabase);
-  if (!supabase || !auth || auth.role !== "streamer") {
-    return null;
-  }
-
-  const streamerId = await getStreamerIdForUser(
-    supabase,
-    auth.userId,
-    auth.organizationId,
-  );
-  if (!streamerId) {
-    return null;
-  }
-
-  return listStreamerRecordingLinks(supabase, {
-    organizationId: auth.organizationId,
-    streamerId,
+async function loadStreamerRecordings(context: StreamerDesktopContext) {
+  return listStreamerRecordingLinks(context.supabase, {
+    organizationId: context.auth.organizationId,
+    streamerId: context.streamerId,
   });
 }
 
-async function loadStreamerProjectAnnouncements() {
-  const supabase = await createSupabaseServerClient();
-  const auth = await getAuthContext(supabase);
-  if (!supabase || !auth || auth.role !== "streamer") {
-    return null;
-  }
-
-  const streamerId = await getStreamerIdForUser(
-    supabase,
-    auth.userId,
-    auth.organizationId,
-  );
-  if (!streamerId) {
-    return null;
-  }
-
-  return listStreamerProjectAnnouncements(supabase, {
-    organizationId: auth.organizationId,
-    streamerId,
+async function loadStreamerProjectAnnouncements(
+  context: StreamerDesktopContext,
+) {
+  return listStreamerProjectAnnouncements(context.supabase, {
+    organizationId: context.auth.organizationId,
+    streamerId: context.streamerId,
   });
 }

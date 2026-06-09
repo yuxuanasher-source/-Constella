@@ -40,6 +40,10 @@ export async function signInAction(formData: FormData) {
   const email = await resolvePasswordLoginEmail(accountIdentifier);
   const { error } = await supabase.auth.signInWithPassword({ email, password });
 
+  if (error) {
+    redirect(`${loginBasePath}?error=auth`);
+  }
+
   const context = await getAuthContext(supabase);
   if (context) {
     await writeAuditLog(supabase, {
@@ -50,17 +54,14 @@ export async function signInAction(formData: FormData) {
       action: "login",
       module: "auth",
       objectType: "session",
-      result: error ? "failure" : "success",
-      errorMessage: error?.message,
+      result: "success",
     });
   }
 
-  if (error) {
-    redirect(`${loginBasePath}?error=auth`);
-  }
-
-  const onboarding = await getCurrentProfileOnboardingState(supabase);
-  if (onboarding?.requires_onboarding) {
+  const requiresOnboarding =
+    context?.requiresOnboarding ??
+    (await getCurrentProfileOnboardingState(supabase))?.requires_onboarding;
+  if (requiresOnboarding) {
     const activationRoleIntent =
       context?.role === "streamer" ? "streamer" : roleIntent;
     redirect(
@@ -136,16 +137,6 @@ export async function activateSubaccountAction(formData: FormData) {
     );
   }
 
-  const authConflict = await getActivationAuthConflict(authAdmin, user.id, {
-    email: validation.value.email,
-    phone: validation.value.phone,
-  });
-  if (authConflict) {
-    redirect(
-      `${loginBasePath}?mode=activate&role=${roleIntent}&error=${activationConflictError(authConflict)}`,
-    );
-  }
-
   const { error: authError } = await authAdmin.updateUserById(user.id, {
     email: validation.value.email,
     phone: normalizeAuthPhone(validation.value.phone),
@@ -160,7 +151,7 @@ export async function activateSubaccountAction(formData: FormData) {
 
   if (authError) {
     redirect(
-      `${loginBasePath}?mode=activate&role=${roleIntent}&error=activation`,
+      `${loginBasePath}?mode=activate&role=${roleIntent}&error=${activationAuthUpdateError(authError)}`,
     );
   }
 
@@ -375,20 +366,25 @@ async function resolvePasswordLoginEmail(identifier: string) {
     return trimmed.toLowerCase();
   }
 
-  const { data: phoneProfile } = await admin
-    .from("profiles")
-    .select("email")
-    .eq("phone", trimmed)
-    .maybeSingle<{ email: string }>();
+  const [phoneResult, accountResult] = await Promise.all([
+    admin
+      .from("profiles")
+      .select("email")
+      .eq("phone", trimmed)
+      .maybeSingle<{ email: string }>(),
+    admin
+      .from("profiles")
+      .select("email")
+      .eq("login_account", trimmed.toLowerCase())
+      .maybeSingle<{ email: string }>(),
+  ]);
+
+  const phoneProfile = phoneResult.data;
   if (phoneProfile?.email) {
     return phoneProfile.email;
   }
 
-  const { data: accountProfile } = await admin
-    .from("profiles")
-    .select("email")
-    .eq("login_account", trimmed.toLowerCase())
-    .maybeSingle<{ email: string }>();
+  const accountProfile = accountResult.data;
   return accountProfile?.email ?? trimmed.toLowerCase();
 }
 
@@ -625,20 +621,18 @@ async function getRegistrationProfileConflict(
   admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>,
   input: { email: string; phone: string },
 ): Promise<RegistrationContactConflict | null> {
-  const emailConflict = await hasProfileWithValue(admin, "email", input.email);
-  if (emailConflict === "error") {
-    return "unknown";
-  }
-  if (emailConflict) {
+  const [emailConflict, phoneConflict] = await Promise.all([
+    hasProfileWithValue(admin, "email", input.email),
+    hasProfileWithValue(admin, "phone", input.phone),
+  ]);
+  if (emailConflict === true) {
     return "email";
   }
-
-  const phoneConflict = await hasProfileWithValue(admin, "phone", input.phone);
-  if (phoneConflict === "error") {
-    return "unknown";
-  }
-  if (phoneConflict) {
+  if (phoneConflict === true) {
     return "phone";
+  }
+  if (emailConflict === "error" || phoneConflict === "error") {
+    return "unknown";
   }
 
   return null;
@@ -693,70 +687,18 @@ async function getActivationProfileConflict(
   userId: string,
   input: { email: string; phone: string },
 ): Promise<ActivationProfileConflict | null> {
-  const emailConflict = await hasOtherProfileWithValue(
-    admin,
-    userId,
-    "email",
-    input.email,
-  );
-  if (emailConflict === "error") {
-    return "unknown";
-  }
-  if (emailConflict) {
+  const [emailConflict, phoneConflict] = await Promise.all([
+    hasOtherProfileWithValue(admin, userId, "email", input.email),
+    hasOtherProfileWithValue(admin, userId, "phone", input.phone),
+  ]);
+  if (emailConflict === true) {
     return "email";
   }
-
-  const phoneConflict = await hasOtherProfileWithValue(
-    admin,
-    userId,
-    "phone",
-    input.phone,
-  );
-  if (phoneConflict === "error") {
-    return "unknown";
-  }
-  if (phoneConflict) {
+  if (phoneConflict === true) {
     return "phone";
   }
-
-  return null;
-}
-
-async function getActivationAuthConflict(
-  authAdmin: AuthAdminClient,
-  userId: string,
-  input: { email: string; phone: string },
-): Promise<ActivationProfileConflict | null> {
-  const email = input.email.trim().toLowerCase();
-  const phoneCandidates = getAuthPhoneComparisonValues(input.phone);
-  const perPage = 1000;
-
-  for (let page = 1; page <= 20; page += 1) {
-    const { data, error } = await authAdmin.listUsers({ page, perPage });
-
-    if (error) {
-      return "unknown";
-    }
-
-    const users = data?.users ?? [];
-    for (const user of users) {
-      if (user.id === userId) {
-        continue;
-      }
-
-      if (user.email?.trim().toLowerCase() === email) {
-        return "email";
-      }
-
-      const existingPhone = normalizePhoneForAuthComparison(user.phone ?? "");
-      if (existingPhone && phoneCandidates.has(existingPhone)) {
-        return "phone";
-      }
-    }
-
-    if (users.length < perPage) {
-      break;
-    }
+  if (emailConflict === "error" || phoneConflict === "error") {
+    return "unknown";
   }
 
   return null;
@@ -800,40 +742,23 @@ async function hasProfileWithValue(
   return Boolean(data?.id);
 }
 
-function getAuthPhoneComparisonValues(phone: string) {
-  const normalized = normalizePhoneForAuthComparison(phone);
-  const candidates = new Set<string>();
-
-  if (normalized) {
-    candidates.add(normalized);
-  }
-
-  const authPhone = normalizePhoneForAuthComparison(normalizeAuthPhone(phone));
-  if (authPhone) {
-    candidates.add(authPhone);
-  }
-
-  if (/^86(1[3-9]\d{9})$/.test(normalized)) {
-    candidates.add(normalized.slice(2));
-  }
-
-  if (/^1[3-9]\d{9}$/.test(normalized)) {
-    candidates.add(`86${normalized}`);
-  }
-
-  return candidates;
-}
-
-function normalizePhoneForAuthComparison(phone: string) {
-  return phone.trim().replace(/[\s-]/g, "").replace(/^\+/, "");
-}
-
 function activationConflictError(conflict: ActivationProfileConflict) {
   if (conflict === "email") {
     return "activation-email";
   }
   if (conflict === "phone") {
     return "activation-phone";
+  }
+  return "activation";
+}
+
+function activationAuthUpdateError(error: { message?: string }) {
+  const message = error.message?.toLowerCase() ?? "";
+  if (message.includes("phone")) {
+    return "activation-phone";
+  }
+  if (message.includes("email")) {
+    return "activation-email";
   }
   return "activation";
 }

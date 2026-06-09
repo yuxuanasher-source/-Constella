@@ -128,6 +128,59 @@ describe("login server actions", () => {
     expect(adminFrom).toHaveBeenCalled();
   });
 
+  it("redirects failed password sign-ins before loading organization context", async () => {
+    const failedSignIn = vi.fn(async () => ({
+      error: { message: "Invalid login credentials" },
+    }));
+    const serverFrom = vi.fn();
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { signInWithPassword: failedSignIn, getUser, signOut },
+      from: serverFrom,
+    } as never);
+
+    await expect(
+      signInAction(
+        form({
+          email: "ops@example.cn",
+          password: "WrongSecret",
+          roleIntent: "mcn",
+        }),
+      ),
+    ).rejects.toThrow("NEXT_REDIRECT:/login?error=auth");
+
+    expect(getAuthContext).not.toHaveBeenCalled();
+    expect(serverFrom).not.toHaveBeenCalled();
+  });
+
+  it("uses the login auth context onboarding flag without a second profile lookup", async () => {
+    const serverFrom = vi.fn();
+    vi.mocked(getAuthContext).mockResolvedValue({
+      userId: "user-1",
+      email: "ops@example.cn",
+      name: "Ops",
+      role: "owner",
+      organizationId: "org-1",
+      organizationName: "Org 1",
+      requiresOnboarding: false,
+    } as never);
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { signInWithPassword, getUser, signOut },
+      from: serverFrom,
+    } as never);
+
+    await expect(
+      signInAction(
+        form({
+          email: "ops@example.cn",
+          password: "Secret123",
+          roleIntent: "mcn",
+        }),
+      ),
+    ).rejects.toThrow("NEXT_REDIRECT:/console/projects");
+
+    expect(serverFrom).not.toHaveBeenCalled();
+  });
+
   it("preserves the authenticated streamer role when redirecting to activation", async () => {
     vi.mocked(getAuthContext).mockResolvedValue({
       userId: "user-1",
@@ -277,23 +330,16 @@ describe("login server actions", () => {
     expect(signOut).toHaveBeenCalled();
   });
 
-  it("rejects activation before updating Auth when the phone belongs to another Auth user", async () => {
+  it("does not enumerate Auth users during activation and maps duplicate phone update errors", async () => {
     vi.mocked(createSupabaseServerClient).mockResolvedValue({
       auth: { getUser, signOut },
     } as never);
-    const updateUserById = vi.fn(async () => ({ error: null }));
-    const listUsers = vi.fn(async () => ({
-      data: {
-        users: [
-          {
-            id: "other-user",
-            email: "other@example.cn",
-            phone: "8618083748097",
-          },
-        ],
-      },
-      error: null,
+    const updateUserById = vi.fn(async () => ({
+      error: { message: "A user with this phone already exists" },
     }));
+    const listUsers = vi.fn(async () => {
+      throw new Error("activation should not scan the Auth user table");
+    });
     const updateProfile = vi.fn(() => ({
       eq: vi.fn(async () => ({ error: null })),
     }));
@@ -340,7 +386,8 @@ describe("login server actions", () => {
       "NEXT_REDIRECT:/m/login?mode=activate&role=streamer&error=activation-phone",
     );
 
-    expect(updateUserById).not.toHaveBeenCalled();
+    expect(listUsers).not.toHaveBeenCalled();
+    expect(updateUserById).toHaveBeenCalled();
     expect(updateProfile).not.toHaveBeenCalled();
     expect(signOut).not.toHaveBeenCalled();
   });

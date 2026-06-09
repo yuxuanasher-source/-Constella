@@ -9,6 +9,7 @@ export type AuthContext = {
   organizationId: string;
   organizationName: string;
   role: AppRole;
+  requiresOnboarding?: boolean;
 };
 
 type MembershipRow = {
@@ -19,6 +20,7 @@ type MembershipRow = {
 
 type ProfileRow = {
   full_name: string;
+  requires_onboarding: boolean;
 };
 
 export async function getAuthContext(
@@ -36,19 +38,23 @@ export async function getAuthContext(
     return null;
   }
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("full_name")
-    .eq("id", user.id)
-    .maybeSingle<ProfileRow>();
+  const [profileResult, membershipResult] = await Promise.all([
+    supabase
+      .from("profiles")
+      .select("full_name, requires_onboarding")
+      .eq("id", user.id)
+      .maybeSingle<ProfileRow>(),
+    supabase
+      .from("organization_members")
+      .select("organization_id, role, organizations(name)")
+      .eq("user_id", user.id)
+      .eq("status", "active")
+      .limit(1)
+      .maybeSingle<MembershipRow>(),
+  ]);
 
-  const { data: membership } = await supabase
-    .from("organization_members")
-    .select("organization_id, role, organizations(name)")
-    .eq("user_id", user.id)
-    .eq("status", "active")
-    .limit(1)
-    .maybeSingle<MembershipRow>();
+  const profile = profileResult.data;
+  const membership = membershipResult.data;
 
   if (!membership) {
     return null;
@@ -65,5 +71,6 @@ export async function getAuthContext(
     organizationId: membership.organization_id,
     organizationName: organization?.name ?? "未选择组织",
     role: membership.role,
+    requiresOnboarding: profile?.requires_onboarding ?? false,
   };
 }
