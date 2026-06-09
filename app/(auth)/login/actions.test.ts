@@ -845,4 +845,77 @@ describe("login server actions", () => {
       message: "profile write failed for [redacted-email] and [redacted-phone]",
     });
   });
+
+  it("rolls back the profile when membership creation fails", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      auth: { signInWithPassword },
+    } as never);
+
+    const createUser = vi.fn(async () => ({
+      data: {
+        user: { id: "user-new", email: "owner@example.cn" },
+      },
+      error: null,
+    }));
+    const deleteUser = vi.fn(async () => ({ error: null }));
+    const insertOrganization = vi.fn(() => ({
+      select: vi.fn(() => ({
+        single: vi.fn(async () => ({
+          data: { id: "org-new", name: "星耀互动" },
+          error: null,
+        })),
+      })),
+    }));
+    const deleteOrganization = vi.fn(() => ({
+      eq: vi.fn(async () => ({ error: null })),
+    }));
+    const upsertProfile = vi.fn(async () => ({ error: null }));
+    const deleteProfileEq = vi.fn(async () => ({ error: null }));
+    const deleteProfile = vi.fn(() => ({ eq: deleteProfileEq }));
+    const insertMembership = vi.fn(async () => ({
+      error: { message: "membership write failed" },
+    }));
+    const adminFrom = vi.fn((table: string) => {
+      if (table === "organizations") {
+        return { insert: insertOrganization, delete: deleteOrganization };
+      }
+      if (table === "profiles") {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+            })),
+          })),
+          upsert: upsertProfile,
+          delete: deleteProfile,
+        };
+      }
+      return { insert: insertMembership };
+    });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      auth: { admin: { createUser, deleteUser } },
+      from: adminFrom,
+    } as never);
+
+    await expect(
+      submitMcnApplicationAction(
+        form({
+          companyName: "星耀互动",
+          contactName: "林经理",
+          contactEmail: "owner@example.cn",
+          contactPhone: "13800138000",
+          password: "Secret123",
+        }),
+      ),
+    ).rejects.toThrow(
+      "NEXT_REDIRECT:/login?mode=apply&error=registration-membership",
+    );
+
+    expect(upsertProfile).toHaveBeenCalled();
+    expect(insertMembership).toHaveBeenCalled();
+    expect(deleteOrganization).toHaveBeenCalled();
+    expect(deleteProfile).toHaveBeenCalled();
+    expect(deleteProfileEq).toHaveBeenCalledWith("id", "user-new");
+    expect(deleteUser).toHaveBeenCalledWith("user-new");
+  });
 });

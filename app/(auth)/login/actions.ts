@@ -602,6 +602,12 @@ async function cleanupSelfRegistrationAttempt({
   }
 
   try {
+    await admin.from("profiles").delete().eq("id", userId);
+  } catch {
+    // Best-effort rollback: keep the original registration error.
+  }
+
+  try {
     await authAdmin.deleteUser(userId);
   } catch {
     // Best-effort rollback: keep the original registration error.
