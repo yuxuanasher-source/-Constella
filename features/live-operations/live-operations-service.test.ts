@@ -622,7 +622,7 @@ describe("live operations service", () => {
     expect(createOcrJob).not.toHaveBeenCalled();
   });
 
-  it("may create report and screenshot when OCR queue fails but does not advance, audit, or notify", async () => {
+  it("keeps the OCR report confirmable when OCR queueing fails after evidence is stored", async () => {
     vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
       ...task,
       status: "pending_report",
@@ -632,29 +632,42 @@ describe("live operations service", () => {
       throw new Error("queue unavailable");
     });
 
-    await expect(
-      submitLiveReportScreenshotForOcr({
-        repo,
-        audit,
-        notify,
-        actor: streamerActor,
-        taskId: "task-1",
-        input: ocrInput,
-        createOcrJob,
-      }),
-    ).rejects.toThrow("queue unavailable");
+    const result = await submitLiveReportScreenshotForOcr({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      taskId: "task-1",
+      input: ocrInput,
+      createOcrJob,
+    });
 
-    // Without a repository transaction, the pre-queue report/evidence writes may already exist.
+    expect(result.report.status).toBe("ocr_ing");
+    expect(result.job).toMatchObject({
+      status: "failed",
+      errorCode: "ocr_queue_failed",
+    });
     expect(repo.createLiveReport).toHaveBeenCalled();
     expect(repo.createReportScreenshot).toHaveBeenCalled();
-    expect(repo.updateLiveTask).not.toHaveBeenCalled();
-    expect(audit).not.toHaveBeenCalledWith(
+    expect(repo.updateLiveTask).toHaveBeenCalledWith("task-1", {
+      status: "report_pending_review",
+    });
+    expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
         module: "live_report",
-        changedFields: expect.arrayContaining(["ocr_job"]),
+        after: expect.objectContaining({
+          ocrJobId: null,
+          ocrQueueStatus: "failed",
+        }),
+        changedFields: expect.arrayContaining(["ocr_queue"]),
       }),
     );
-    expect(notify).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "review",
+        objectId: "report-1",
+      }),
+    );
   });
 
   it("confirmLiveReportOcrResult confirms OCR result values and sends the report to review", async () => {

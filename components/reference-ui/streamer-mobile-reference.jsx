@@ -1842,6 +1842,13 @@ function LiveCTA({ task, onStop }) {
 }
 
 function PendingReportCTA({ task, go }) {
+  const fileInputRef = React.useRef(null);
+  const handleFileChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    go("report", task.id, { screenshotFile: file });
+  };
+
   return (
     <MCard
       style={{
@@ -1888,10 +1895,18 @@ function PendingReportCTA({ task, go }) {
         kind="primary"
         full
         icon={<Icon.Upload size={16} stroke="#fff" />}
-        onClick={() => go("report", task.id)}
+        onClick={() => fileInputRef.current?.click?.()}
       >
         从相册选择截图
       </MButton>
+      <input
+        ref={fileInputRef}
+        aria-label="上传下播截图"
+        type="file"
+        accept="image/*"
+        onChange={handleFileChange}
+        style={{ display: "none" }}
+      />
       <div
         style={{
           marginTop: 10,
@@ -2135,16 +2150,23 @@ function Timeline({ events }) {
 // ===== src-streamer\screen-report.jsx =====
 // ——— Streamer: Report Confirm (OCR) ——————————————————
 
-function StreamerReport({ taskId, go }) {
+function StreamerReport({ taskId, go, screenshotFile }) {
   const tasks = useStreamerTasks();
   const actions = useStreamerLiveActions();
   const t = tasks.find((x) => x.id === taskId) || tasks[0] || MY_TASKS[0];
+  const fileInputRef = React.useRef(null);
   const [duration, setDuration] = React.useState("4.0");
   const [audience, setAudience] = React.useState("11240");
   const [note, setNote] = React.useState("");
   const [submitted, setSubmitted] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [submitError, setSubmitError] = React.useState("");
+  const [selectedScreenshotFile, setSelectedScreenshotFile] =
+    React.useState(screenshotFile);
+
+  React.useEffect(() => {
+    setSelectedScreenshotFile(screenshotFile);
+  }, [screenshotFile]);
 
   // OCR-recognized values (slightly off, to show diff highlight)
   const ocrDuration = "4.3";
@@ -2202,12 +2224,34 @@ function StreamerReport({ taskId, go }) {
       <MSection
         title="下播截图"
         action={
-          <MButton size="sm" kind="ghost" icon={<Icon.Upload size={13} />}>
+          <MButton
+            size="sm"
+            kind="ghost"
+            icon={<Icon.Upload size={13} />}
+            onClick={() => fileInputRef.current?.click?.()}
+          >
             重传
           </MButton>
         }
       >
         <ScreenshotPreview />
+        <input
+          ref={fileInputRef}
+          aria-label="重新上传下播截图"
+          type="file"
+          accept="image/*"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) {
+              setSelectedScreenshotFile(file);
+              setSubmitError("");
+            }
+          }}
+          style={{ display: "none" }}
+        />
+        <div style={{ marginTop: 8, fontSize: 12, color: "var(--ink-400)" }}>
+          {selectedScreenshotFile?.name || "尚未选择截图"}
+        </div>
       </MSection>
 
       {/* OCR result */}
@@ -2391,10 +2435,14 @@ function StreamerReport({ taskId, go }) {
               setSubmitting(true);
               setSubmitError("");
               try {
+                if (!selectedScreenshotFile) {
+                  throw new Error("请先上传下播截图");
+                }
                 await actions.submitReport?.(t.id, {
                   durationHours: duration,
                   audience,
                   note,
+                  screenshotFile: selectedScreenshotFile,
                 });
                 setSubmitted(true);
               } catch (error) {
@@ -2595,45 +2643,13 @@ function ScreenshotPreview() {
   );
 }
 
-function escapeXmlText(value) {
-  return String(value ?? "").replace(/[<>&'"]/g, (char) => {
-    switch (char) {
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      case "&":
-        return "&amp;";
-      case "'":
-        return "&apos;";
-      case '"':
-        return "&quot;";
-      default:
-        return char;
-    }
-  });
-}
-
-function createReportScreenshotUploadBody({
-  taskId,
-  confirmedDuration,
-  viewers,
-}) {
-  const svg = [
-    '<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">',
-    '<rect width="960" height="540" fill="#0E1530"/>',
-    '<rect x="48" y="48" width="864" height="444" rx="24" fill="#111B3B" stroke="#516091" stroke-width="3"/>',
-    '<text x="88" y="140" fill="#E5EAF6" font-family="Arial, sans-serif" font-size="42" font-weight="700">Live report screenshot</text>',
-    `<text x="88" y="225" fill="#B8C2DB" font-family="Arial, sans-serif" font-size="30">Task: ${escapeXmlText(taskId)}</text>`,
-    `<text x="88" y="290" fill="#D8F3DC" font-family="Arial, sans-serif" font-size="34">Duration: ${escapeXmlText(confirmedDuration)} min</text>`,
-    `<text x="88" y="355" fill="#FFE8A3" font-family="Arial, sans-serif" font-size="34">Viewers: ${escapeXmlText(viewers)}</text>`,
-    "</svg>",
-  ].join("");
-
-  if (typeof Blob === "function") {
-    return new Blob([svg], { type: "image/svg+xml" });
-  }
-  return svg;
+function sanitizeReportScreenshotFileName(name) {
+  const safeName = String(name || "")
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/[^\w.\-()\u4e00-\u9fa5]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return safeName || "report-screenshot.png";
 }
 function ShotStat({ label, value }) {
   return (
@@ -5229,6 +5245,7 @@ function StreamerMobileReferenceInner({
   // route: 'home' | 'tasks' | 'task' | 'report' | 'ai' | 'me' | 'videos'
   const [route, setRoute] = React.useState(initialRoute);
   const [taskId, setTaskId] = React.useState(null);
+  const [reportScreenshotFile, setReportScreenshotFile] = React.useState(null);
   const [tasks, setTasks] = React.useState(liveTasks ?? null);
   const [earnings, setEarnings] = React.useState(liveEarnings ?? null);
   const [recordingRows, setRecordingRows] = React.useState(() =>
@@ -5422,6 +5439,13 @@ function StreamerMobileReferenceInner({
         const durationHours = Number(input.durationHours || 0);
         const audience = Number(input.audience || 0);
         const confirmedDuration = Math.round(durationHours * 60);
+        const screenshotFile = input.screenshotFile;
+        if (!screenshotFile) {
+          throw new Error("report screenshot file is required");
+        }
+        const fileName = sanitizeReportScreenshotFileName(
+          screenshotFile.name || "report-screenshot.png",
+        );
         const signed = await fetchJson(
           "/api/uploads/signed",
           "create report screenshot upload failed",
@@ -5431,74 +5455,35 @@ function StreamerMobileReferenceInner({
             body: JSON.stringify({
               category: "report-screenshots",
               ownerId: id,
-              fileName: "manual-submit.png",
+              fileName,
             }),
           },
         );
-        const screenshotFileHash = `manual-${id}-${Date.now()}`;
-        const manualReportPayload = {
-          screenshotStoragePath: signed.path,
-          screenshotFileHash,
-          screenshotDuration: confirmedDuration,
-          claimedDuration: confirmedDuration,
-          viewers: audience,
-        };
-        const screenshotUploadBody =
-          input.screenshotFile ||
-          createReportScreenshotUploadBody({
-            taskId: id,
-            confirmedDuration,
-            viewers: audience,
-          });
-        const screenshotUploadType =
-          screenshotUploadBody &&
-          typeof screenshotUploadBody === "object" &&
-          "type" in screenshotUploadBody &&
-          screenshotUploadBody.type
-            ? screenshotUploadBody.type
-            : "application/octet-stream";
+        const screenshotFileHash = `manual-${id}-${Date.now()}-${fileName}-${screenshotFile.size ?? 0}`;
         const uploadResponse = await fetch(signed.signedUrl, {
           method: "PUT",
-          headers: { "Content-Type": screenshotUploadType },
-          body: screenshotUploadBody,
+          headers: {
+            "Content-Type": screenshotFile.type || "application/octet-stream",
+          },
+          body: screenshotFile,
         });
         if (!uploadResponse.ok) {
           throw new Error("upload report screenshot failed");
         }
 
-        let queued;
-        try {
-          queued = await fetchJson(
-            `/api/live-tasks/${id}/ocr`,
-            "create OCR report failed",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                screenshotStoragePath: signed.path,
-                screenshotFileHash,
-                imageBucket: signed.bucket,
-              }),
-            },
-          );
-        } catch (error) {
-          globalThis.console?.warn?.(
-            "streamer OCR report creation failed; falling back to manual report",
-            error,
-          );
-
-          await fetchJson(
-            `/api/live-tasks/${id}/reports`,
-            "submit report failed",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(manualReportPayload),
-            },
-          );
-          await refreshTasks();
-          return;
-        }
+        const queued = await fetchJson(
+          `/api/live-tasks/${id}/ocr`,
+          "create OCR report failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              screenshotStoragePath: signed.path,
+              screenshotFileHash,
+              imageBucket: signed.bucket,
+            }),
+          },
+        );
 
         const queuedReportId = queued.report?.id;
         if (!queuedReportId) {
@@ -5561,10 +5546,11 @@ function StreamerMobileReferenceInner({
     ? announcementRows
     : [];
 
-  const go = (r, arg) => {
+  const go = (r, arg, options = {}) => {
     if (r === "task") {
       setRoute("task");
       setTaskId(arg || visibleTasks[0]?.id || null);
+      setReportScreenshotFile(null);
     } else if (r === "report") {
       setRoute("report");
       setTaskId(
@@ -5572,7 +5558,11 @@ function StreamerMobileReferenceInner({
           visibleTasks.find((t) => t.status === "pending_report")?.id ||
           null,
       );
-    } else setRoute(r);
+      setReportScreenshotFile(options.screenshotFile ?? null);
+    } else {
+      setRoute(r);
+      setReportScreenshotFile(null);
+    }
     // Scroll to top on nav
     document
       .querySelector(".phone")
@@ -5603,7 +5593,13 @@ function StreamerMobileReferenceInner({
         {route === "home" && <StreamerHome go={go} />}
         {route === "tasks" && <StreamerTaskList go={go} />}
         {route === "task" && <StreamerTask go={go} taskId={taskId} />}
-        {route === "report" && <StreamerReport go={go} taskId={taskId} />}
+        {route === "report" && (
+          <StreamerReport
+            go={go}
+            taskId={taskId}
+            screenshotFile={reportScreenshotFile}
+          />
+        )}
         {route === "ai" && <StreamerAI go={go} />}
         {route === "me" && <StreamerMe go={go} />}
         {route === "videos" && (

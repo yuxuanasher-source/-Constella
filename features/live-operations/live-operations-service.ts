@@ -525,7 +525,12 @@ export async function submitLiveReportScreenshotForOcr({
   }) => Promise<{ id: string; status: string }>;
 }): Promise<{
   report: LiveReportRecord;
-  job: { id: string; status: string };
+  job: {
+    id?: string | null;
+    status: string;
+    errorCode?: string;
+    errorMessage?: string;
+  };
 }> {
   const task = await requireLiveTask(repo, taskId);
   assertCanOperateTask(actor, task);
@@ -572,12 +577,28 @@ export async function submitLiveReportScreenshotForOcr({
     metadata: { imageBucket: input.imageBucket },
   });
 
-  const job = await createOcrJob({
-    liveReportId: report.id,
-    imageBucket: input.imageBucket,
-    imagePath: input.screenshotStoragePath,
-    expectedDuration: task.systemDuration,
-  });
+  let job: {
+    id?: string | null;
+    status: string;
+    errorCode?: string;
+    errorMessage?: string;
+  };
+  try {
+    job = await createOcrJob({
+      liveReportId: report.id,
+      imageBucket: input.imageBucket,
+      imagePath: input.screenshotStoragePath,
+      expectedDuration: task.systemDuration,
+    });
+  } catch (error) {
+    job = {
+      id: null,
+      status: "failed",
+      errorCode: "ocr_queue_failed",
+      errorMessage:
+        error instanceof Error ? error.message : "OCR queue unavailable",
+    };
+  }
 
   assertLiveTaskTransition(task.status, "report_pending_review");
   const afterTask = await repo.updateLiveTask(task.id, {
@@ -595,8 +616,13 @@ export async function submitLiveReportScreenshotForOcr({
     objectId: report.id,
     projectId: report.projectId,
     streamerId: report.streamerId,
-    after: { status: "ocr_ing", ocrJobId: job.id },
-    changedFields: ["status", "ocr_job"],
+    after: {
+      status: "ocr_ing",
+      ocrJobId: job.id ?? null,
+      ocrQueueStatus: job.status,
+      ocrQueueErrorCode: job.errorCode,
+    },
+    changedFields: ["status", job.id ? "ocr_job" : "ocr_queue"],
   });
   await auditLiveTaskUpdate({
     audit,
@@ -610,8 +636,10 @@ export async function submitLiveReportScreenshotForOcr({
     organizationId: actor.organizationId,
     recipientRole: "operator_business",
     type: "review",
-    title: "Live report OCR queued",
-    content: `${task.title} has a screenshot waiting for OCR.`,
+    title: job.id ? "Live report OCR queued" : "Live report OCR unavailable",
+    content: job.id
+      ? `${task.title} has a screenshot waiting for OCR.`
+      : `${task.title} has a screenshot ready for manual OCR confirmation.`,
     objectType: "live_report",
     objectId: report.id,
     source: "live_report.ocr.submit",

@@ -327,9 +327,17 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
       undefined,
     );
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "从相册选择截图" }),
-    );
+    const screenshotFile = new File(["real screenshot bytes"], "end.png", {
+      type: "image/png",
+    });
+    fireEvent.change(await screen.findByLabelText("上传下播截图"), {
+      target: { files: [screenshotFile] },
+    });
+    await screen.findByRole("button", { name: "确认无误，提交审核" });
+    expect(
+      screen.queryByRole("button", { name: "从相册选择截图" }),
+    ).not.toBeInTheDocument();
+
     fireEvent.click(
       await screen.findByRole("button", { name: "确认无误，提交审核" }),
     );
@@ -343,7 +351,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
         body: JSON.stringify({
           category: "report-screenshots",
           ownerId: "live-task-ui-smoke-1",
-          fileName: "manual-submit.png",
+          fileName: "end.png",
         }),
       }),
     );
@@ -352,8 +360,8 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
       "https://upload.local/org-1/report-screenshots/live-task-ui-smoke-1/manual-submit.png",
       expect.objectContaining({
         method: "PUT",
-        headers: { "Content-Type": "image/svg+xml" },
-        body: expect.any(Blob),
+        headers: { "Content-Type": "image/png" },
+        body: screenshotFile,
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -365,7 +373,8 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
         body: JSON.stringify({
           screenshotStoragePath:
             "org-1/report-screenshots/live-task-ui-smoke-1/manual-submit.png",
-          screenshotFileHash: "manual-live-task-ui-smoke-1-1780000000000",
+          screenshotFileHash:
+            "manual-live-task-ui-smoke-1-1780000000000-end.png-21",
           imageBucket: "evidence-private",
         }),
       }),
@@ -395,7 +404,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
     expect(await screen.findByText("报数已提交审核")).toBeInTheDocument();
   }, 15000);
 
-  it("falls back to manual report submission when OCR is unavailable", async () => {
+  it("does not submit a duplicate manual report when OCR creation fails", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1780000000000);
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const fetchMock = vi.fn(async (url) => {
@@ -461,7 +470,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
 
     render(
       <StreamerMobileReferenceApp
-        initialRoute="report"
+        initialRoute="task"
         liveTasks={[
           {
             id: "live-task-fallback",
@@ -484,11 +493,20 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
       />,
     );
 
+    const screenshotFile = new File(["fallback screenshot"], "fallback.png", {
+      type: "image/png",
+    });
+    fireEvent.change(await screen.findByLabelText("上传下播截图"), {
+      target: { files: [screenshotFile] },
+    });
     fireEvent.click(
       await screen.findByRole("button", { name: "确认无误，提交审核" }),
     );
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "provider_unconfigured",
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       "/api/uploads/signed",
@@ -502,8 +520,8 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
       "https://upload.local/org-1/report-screenshots/live-task-fallback/manual-submit.png",
       expect.objectContaining({
         method: "PUT",
-        headers: { "Content-Type": "image/svg+xml" },
-        body: expect.any(Blob),
+        headers: { "Content-Type": "image/png" },
+        body: screenshotFile,
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -514,28 +532,9 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
         headers: { "Content-Type": "application/json" },
       }),
     );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      4,
-      "/api/live-tasks/live-task-fallback/reports",
-      expect.objectContaining({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          screenshotStoragePath:
-            "org-1/report-screenshots/live-task-fallback/manual-submit.png",
-          screenshotFileHash: "manual-live-task-fallback-1780000000000",
-          screenshotDuration: 240,
-          claimedDuration: 240,
-          viewers: 11240,
-        }),
-      }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      5,
-      "/api/streamer/live-tasks",
-      undefined,
-    );
-    expect(await screen.findByText("报数已提交审核")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).endsWith("/reports")),
+    ).toBe(false);
   }, 15000);
 
   it("does not submit a duplicate manual report when OCR confirmation fails", async () => {
@@ -612,7 +611,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
 
     render(
       <StreamerMobileReferenceApp
-        initialRoute="report"
+        initialRoute="task"
         liveTasks={[
           {
             id: "live-task-confirm-fail",
@@ -634,6 +633,16 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
       />,
     );
 
+    const screenshotFile = new File(
+      ["confirm fail screenshot"],
+      "confirm.png",
+      {
+        type: "image/png",
+      },
+    );
+    fireEvent.change(await screen.findByLabelText("上传下播截图"), {
+      target: { files: [screenshotFile] },
+    });
     fireEvent.click(
       await screen.findByRole("button", {
         name: "\u786e\u8ba4\u65e0\u8bef\uff0c\u63d0\u4ea4\u5ba1\u6838",
