@@ -701,6 +701,10 @@ describe("live operations service", () => {
           "status",
           "screenshot_duration",
           "claimed_duration",
+          "settlement_duration",
+          "time_source",
+          "evidence_level",
+          "divergence_pct",
           "viewers",
           "risk_flags",
         ]),
@@ -711,11 +715,24 @@ describe("live operations service", () => {
         action: "update",
         module: "live_report",
         objectId: "report-1",
+        changedFields: expect.arrayContaining([
+          "status",
+          "screenshot_duration",
+          "claimed_duration",
+          "settlement_duration",
+          "time_source",
+          "evidence_level",
+          "divergence_pct",
+          "viewers",
+          "risk_flags",
+        ]),
       }),
     );
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({
         recipientRole: "operator_business",
+        title: "Live report values confirmed",
+        content: "A streamer confirmed OCR report values.",
         source: "live_report.ocr.confirm",
       }),
     );
@@ -742,6 +759,39 @@ describe("live operations service", () => {
     ).rejects.toThrow("Streamers can only confirm their own reports");
 
     expect(repo.updateLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportChangeLog).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("blocks finance from confirming OCR reports before side effects", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "ocr_ing",
+      organizationId: "org-1",
+    });
+
+    await expect(
+      confirmLiveReportOcrResult({
+        repo,
+        audit,
+        notify,
+        actor: {
+          userId: "user-finance",
+          name: "Finance",
+          role: "finance",
+          organizationId: "org-1",
+        },
+        reportId: "report-1",
+        input: {
+          ocrDuration: 78,
+          confirmedDuration: 80,
+        },
+      }),
+    ).rejects.toThrow("Current role cannot review live reports");
+
+    expect(repo.updateLiveReport).not.toHaveBeenCalled();
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
     expect(repo.createReportChangeLog).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
     expect(notify).not.toHaveBeenCalled();
@@ -800,12 +850,18 @@ describe("live operations service", () => {
         viewers: 410,
       }),
     );
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Live report values confirmed",
+        content: "A staff member confirmed OCR report values.",
+      }),
+    );
   });
 
   it("falls back to OCR viewers when confirmed viewers are omitted", async () => {
     vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
       ...baseReport,
-      status: "need_more",
+      status: "pending_confirm",
       viewers: 800,
     });
 
@@ -829,6 +885,103 @@ describe("live operations service", () => {
       }),
     );
   });
+
+  it("moves need-more confirmation tasks back to pending review so approval can complete", async () => {
+    vi.mocked(repo.getLiveReportById)
+      .mockResolvedValueOnce({
+        ...baseReport,
+        status: "need_more",
+        viewers: 800,
+      })
+      .mockResolvedValueOnce({
+        ...baseReport,
+        status: "pending_review",
+        screenshotDuration: 80,
+        claimedDuration: 80,
+        settlementDuration: 120,
+        viewers: 305,
+      });
+    vi.mocked(repo.getLiveTaskById)
+      .mockResolvedValueOnce({
+        ...task,
+        status: "report_rejected",
+      })
+      .mockResolvedValueOnce({
+        ...task,
+        status: "report_pending_review",
+      });
+
+    await confirmLiveReportOcrResult({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      reportId: "report-1",
+      input: {
+        ocrDuration: 80,
+        ocrViewers: 305,
+        confirmedDuration: 80,
+      },
+    });
+
+    expect(repo.updateLiveTask).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ status: "report_pending_review" }),
+    );
+
+    await reviewLiveReport({
+      repo,
+      audit,
+      notify,
+      actor,
+      reportId: "report-1",
+      input: {
+        decision: "approve",
+        includeInTaskResult: true,
+        enterSettlementPool: true,
+        reviewNotes: "ok",
+      },
+    });
+
+    expect(repo.updateLiveTask).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ status: "completed" }),
+    );
+  });
+
+  it.each([
+    ["confirmedViewers", { confirmedViewers: -1 }],
+    ["ocrViewers", { ocrViewers: -1 }],
+  ])(
+    "rejects negative %s before confirmation side effects",
+    async (_field, viewerInput) => {
+      vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+        ...baseReport,
+        status: "ocr_ing",
+      });
+
+      await expect(
+        confirmLiveReportOcrResult({
+          repo,
+          audit,
+          notify,
+          actor: streamerActor,
+          reportId: "report-1",
+          input: {
+            ocrDuration: 80,
+            confirmedDuration: 80,
+            ...viewerInput,
+          },
+        }),
+      ).rejects.toThrow("Viewer count must be a non-negative number");
+
+      expect(repo.updateLiveReport).not.toHaveBeenCalled();
+      expect(repo.updateLiveTask).not.toHaveBeenCalled();
+      expect(repo.createReportChangeLog).not.toHaveBeenCalled();
+      expect(audit).not.toHaveBeenCalled();
+      expect(notify).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps existing viewers when confirmed and OCR viewers are omitted", async () => {
     vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({

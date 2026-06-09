@@ -160,6 +160,18 @@ export type LiveOperationsNotifier = (
   input: NotificationInput,
 ) => Promise<void>;
 
+const ocrConfirmationChangedFields = [
+  "status",
+  "screenshot_duration",
+  "claimed_duration",
+  "settlement_duration",
+  "time_source",
+  "evidence_level",
+  "divergence_pct",
+  "viewers",
+  "risk_flags",
+];
+
 export async function createLiveTask({
   repo,
   audit,
@@ -631,11 +643,22 @@ export async function confirmLiveReportOcrResult({
 }): Promise<LiveReportRecord> {
   const before = await requireLiveReport(repo, reportId);
   assertSameOrganization(actor, before.organizationId);
-  if (actor.role === "streamer" && actor.streamerId !== before.streamerId) {
-    throw new Error("Streamers can only confirm their own reports");
-  }
+  assertCanConfirmOcrReport(actor, before);
   if (!["ocr_ing", "pending_confirm", "need_more"].includes(before.status)) {
     throw new Error("Only OCR pending reports can be confirmed");
+  }
+  const viewers = resolveConfirmedViewerCount({
+    confirmedViewers: input.confirmedViewers,
+    ocrViewers: input.ocrViewers,
+    previousViewers: before.viewers,
+  });
+  const taskBefore =
+    before.status === "need_more"
+      ? await requireLiveTask(repo, before.liveTaskId)
+      : null;
+  if (taskBefore) {
+    assertSameOrganization(actor, taskBefore.organizationId);
+    assertLiveTaskTransition(taskBefore.status, "report_pending_review");
   }
 
   const screenshotDuration = input.ocrDuration ?? input.confirmedDuration;
@@ -652,9 +675,14 @@ export async function confirmLiveReportOcrResult({
     timeSource: evidence.timeSource,
     evidenceLevel: evidence.evidenceLevel,
     divergencePct: evidence.divergencePct,
-    viewers: input.confirmedViewers ?? input.ocrViewers ?? before.viewers,
+    viewers,
     riskFlags: evidence.riskFlags,
   });
+  if (taskBefore && taskBefore.status !== "report_pending_review") {
+    await repo.updateLiveTask(taskBefore.id, {
+      status: "report_pending_review",
+    });
+  }
 
   await repo.createReportChangeLog({
     organizationId: actor.organizationId,
@@ -662,13 +690,7 @@ export async function confirmLiveReportOcrResult({
     changedBy: actor.userId,
     before: before as unknown as Record<string, unknown>,
     after: confirmed as unknown as Record<string, unknown>,
-    changedFields: [
-      "status",
-      "screenshot_duration",
-      "claimed_duration",
-      "viewers",
-      "risk_flags",
-    ],
+    changedFields: [...ocrConfirmationChangedFields],
     reason: input.note,
   });
 
@@ -685,21 +707,18 @@ export async function confirmLiveReportOcrResult({
     streamerId: before.streamerId,
     before: before as unknown as Record<string, unknown>,
     after: confirmed as unknown as Record<string, unknown>,
-    changedFields: [
-      "status",
-      "screenshot_duration",
-      "claimed_duration",
-      "viewers",
-    ],
+    changedFields: [...ocrConfirmationChangedFields],
     reason: input.note,
   });
 
+  const confirmationActor =
+    actor.role === "streamer" ? "A streamer" : "A staff member";
   await notify({
     organizationId: actor.organizationId,
     recipientRole: "operator_business",
     type: "review",
-    title: "Live report pending review",
-    content: "A streamer confirmed OCR report values.",
+    title: "Live report values confirmed",
+    content: `${confirmationActor} confirmed OCR report values.`,
     objectType: "live_report",
     objectId: reportId,
     source: "live_report.ocr.confirm",
@@ -832,6 +851,45 @@ function assertCanReviewReports(role: AppRole): void {
     role !== "operator_business"
   ) {
     throw new Error("Current role cannot review live reports");
+  }
+}
+
+function assertCanConfirmOcrReport(
+  actor: LiveOperationsActor,
+  report: LiveReportRecord,
+): void {
+  if (actor.role !== "streamer") {
+    assertCanReviewReports(actor.role);
+    return;
+  }
+
+  if (actor.streamerId !== report.streamerId) {
+    throw new Error("Streamers can only confirm their own reports");
+  }
+}
+
+function resolveConfirmedViewerCount({
+  confirmedViewers,
+  ocrViewers,
+  previousViewers,
+}: {
+  confirmedViewers?: number | null;
+  ocrViewers?: number | null;
+  previousViewers?: number | null;
+}): number | null | undefined {
+  assertValidViewerCount(confirmedViewers);
+  assertValidViewerCount(ocrViewers);
+
+  return confirmedViewers ?? ocrViewers ?? previousViewers;
+}
+
+function assertValidViewerCount(viewers?: number | null): void {
+  if (viewers === null || viewers === undefined) {
+    return;
+  }
+
+  if (!Number.isFinite(viewers) || viewers < 0) {
+    throw new Error("Viewer count must be a non-negative number");
   }
 }
 
