@@ -312,6 +312,7 @@ export async function submitMcnApplicationAction(formData: FormData) {
   } catch (error) {
     const errorCode =
       error instanceof RegistrationActionError ? error.code : "application";
+    logRegistrationFailure(error, errorCode);
     redirect(`/login?mode=apply&error=${errorCode}`);
   }
 
@@ -477,7 +478,11 @@ async function createSelfRegistrationAuthUser({
     await authAdmin.createUser(createInput);
 
   if (!isAuthDuplicateEmailError(authError)) {
-    throwIfSupabaseError(authError, "Auth user creation failed");
+    throwRegistrationSupabaseError(
+      authError,
+      "registration-auth",
+      "Auth user creation failed",
+    );
     return authData;
   }
 
@@ -493,12 +498,19 @@ async function createSelfRegistrationAuthUser({
 
   const { error: deleteError } = await authAdmin.deleteUser(orphanedUser.id);
   if (deleteError) {
-    throw new RegistrationActionError("application");
+    throw new RegistrationActionError(
+      "registration-auth",
+      deleteError.message ?? "Orphaned Auth user cleanup failed",
+    );
   }
 
   const { data: retryAuthData, error: retryAuthError } =
     await authAdmin.createUser(createInput);
-  throwIfSupabaseError(retryAuthError, "Auth user creation failed");
+  throwRegistrationSupabaseError(
+    retryAuthError,
+    "registration-auth",
+    "Auth user creation failed",
+  );
   return retryAuthData;
 }
 
@@ -524,10 +536,17 @@ async function createSelfRegisteredMcnOwnerRecords({
     })
     .select("id, name")
     .single<{ id: string; name: string }>();
-  throwIfSupabaseError(organizationError, "Organization creation failed");
+  throwRegistrationSupabaseError(
+    organizationError,
+    "registration-organization",
+    "Organization creation failed",
+  );
 
   if (!organization?.id) {
-    throw new Error("Organization creation returned no organization");
+    throw new RegistrationActionError(
+      "registration-organization",
+      "Organization creation returned no organization",
+    );
   }
   onOrganizationCreated(organization.id);
 
@@ -542,7 +561,11 @@ async function createSelfRegisteredMcnOwnerRecords({
     },
     { onConflict: "id" },
   );
-  throwIfSupabaseError(profileError, "Owner profile creation failed");
+  throwRegistrationSupabaseError(
+    profileError,
+    "registration-profile",
+    "Owner profile creation failed",
+  );
 
   const { error: membershipError } = await admin
     .from("organization_members")
@@ -552,7 +575,11 @@ async function createSelfRegisteredMcnOwnerRecords({
       role: "owner",
       status: "active",
     });
-  throwIfSupabaseError(membershipError, "Owner membership creation failed");
+  throwRegistrationSupabaseError(
+    membershipError,
+    "registration-membership",
+    "Owner membership creation failed",
+  );
 }
 
 async function cleanupSelfRegistrationAttempt({
@@ -575,6 +602,12 @@ async function cleanupSelfRegistrationAttempt({
   }
 
   try {
+    await admin.from("profiles").delete().eq("id", userId);
+  } catch {
+    // Best-effort rollback: keep the original registration error.
+  }
+
+  try {
     await authAdmin.deleteUser(userId);
   } catch {
     // Best-effort rollback: keep the original registration error.
@@ -583,15 +616,6 @@ async function cleanupSelfRegistrationAttempt({
 
 function createMcnOrganizationCode() {
   return `mcn-${randomUUID()}`;
-}
-
-function throwIfSupabaseError(
-  error: { message?: string } | null | undefined,
-  fallbackMessage: string,
-) {
-  if (error) {
-    throw new Error(error.message ?? fallbackMessage);
-  }
 }
 
 function normalizeAuthPhone(phone: string) {
@@ -610,15 +634,77 @@ type RegistrationContactConflict = "email" | "phone" | "unknown";
 type RegistrationErrorCode =
   | "application"
   | "registration-email"
-  | "registration-phone";
+  | "registration-phone"
+  | "registration-profile-check"
+  | "registration-auth"
+  | "registration-organization"
+  | "registration-profile"
+  | "registration-membership";
 type AuthAdminClient = NonNullable<
   NonNullable<ReturnType<typeof createSupabaseAdminClient>>["auth"]["admin"]
 >;
 
 class RegistrationActionError extends Error {
-  constructor(public readonly code: RegistrationErrorCode) {
-    super(code);
+  constructor(
+    public readonly code: RegistrationErrorCode,
+    message: string = code,
+  ) {
+    super(message);
+    this.name = "RegistrationActionError";
   }
+}
+
+type ProfileLookupError = { errorMessage: string };
+
+function throwRegistrationSupabaseError(
+  error: { message?: string } | null | undefined,
+  code: RegistrationErrorCode,
+  fallbackMessage: string,
+) {
+  if (error) {
+    throw new RegistrationActionError(code, error.message ?? fallbackMessage);
+  }
+}
+
+function logRegistrationFailure(error: unknown, code: RegistrationErrorCode) {
+  console.warn("[auth.registration] failure", {
+    code,
+    errorName: getRegistrationErrorName(error),
+    message: sanitizeRegistrationLogMessage(getRegistrationErrorMessage(error)),
+  });
+}
+
+function getRegistrationErrorName(error: unknown) {
+  if (error instanceof Error) {
+    return error.name || "Error";
+  }
+  return typeof error;
+}
+
+function getRegistrationErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "Unknown registration failure";
+}
+
+function sanitizeRegistrationLogMessage(message: string) {
+  return message
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(
+      /(^|[^\d])(?:\+?86[-\s]?)?1[3-9]\d(?:[\s-]?\d){8}(?!\d)/g,
+      "$1[redacted-phone]",
+    )
+    .slice(0, 500);
+}
+
+function isProfileLookupError(
+  result: boolean | ProfileLookupError,
+): result is ProfileLookupError {
+  return typeof result === "object";
 }
 
 async function getRegistrationProfileConflict(
@@ -626,16 +712,22 @@ async function getRegistrationProfileConflict(
   input: { email: string; phone: string },
 ): Promise<RegistrationContactConflict | null> {
   const emailConflict = await hasProfileWithValue(admin, "email", input.email);
-  if (emailConflict === "error") {
-    return "unknown";
+  if (isProfileLookupError(emailConflict)) {
+    throw new RegistrationActionError(
+      "registration-profile-check",
+      `Profile email lookup failed: ${emailConflict.errorMessage}`,
+    );
   }
   if (emailConflict) {
     return "email";
   }
 
   const phoneConflict = await hasProfileWithValue(admin, "phone", input.phone);
-  if (phoneConflict === "error") {
-    return "unknown";
+  if (isProfileLookupError(phoneConflict)) {
+    throw new RegistrationActionError(
+      "registration-profile-check",
+      `Profile phone lookup failed: ${phoneConflict.errorMessage}`,
+    );
   }
   if (phoneConflict) {
     return "phone";
@@ -654,7 +746,7 @@ async function findOrphanedAuthUserByEmail({
   email: string;
 }) {
   const profileConflict = await hasProfileWithValue(admin, "email", email);
-  if (profileConflict) {
+  if (isProfileLookupError(profileConflict) || profileConflict) {
     return null;
   }
 
@@ -786,7 +878,7 @@ async function hasProfileWithValue(
   admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>,
   column: "email" | "phone",
   value: string,
-): Promise<boolean | "error"> {
+): Promise<boolean | ProfileLookupError> {
   const { data, error } = await admin
     .from("profiles")
     .select("id")
@@ -794,7 +886,7 @@ async function hasProfileWithValue(
     .maybeSingle<{ id: string }>();
 
   if (error) {
-    return "error";
+    return { errorMessage: error.message ?? `Profile ${column} lookup failed` };
   }
 
   return Boolean(data?.id);
