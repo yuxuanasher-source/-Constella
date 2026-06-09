@@ -4,6 +4,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
 import { listOpsLiveTaskQueue } from "@/features/live-operations/live-operations-queries";
 import { listProjects } from "@/features/projects/project-queries";
+import {
+  getOpsSettlementDefaultScope,
+  listOpsSettlementBatches,
+  listOpsSettlementBatchDetails,
+  listOpsSettlementPool,
+} from "@/features/settlements/settlement-queries";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
@@ -36,6 +42,33 @@ vi.mock("@/features/live-operations/live-ui-adapters", () => ({
     id: task.id,
     projectId: task.projectId,
     title: task.title,
+  })),
+}));
+
+vi.mock("@/features/settlements/settlement-queries", () => ({
+  getOpsSettlementDefaultScope: vi.fn(),
+  listOpsSettlementBatches: vi.fn(),
+  listOpsSettlementBatchDetails: vi.fn(),
+  listOpsSettlementPool: vi.fn(),
+}));
+
+vi.mock("@/features/settlements/settlement-ui-adapters", () => ({
+  toOpsReferenceBatch: vi.fn((batch) => ({
+    id: batch.id,
+    projectId: batch.projectId,
+    type:
+      batch.batchType === "receivable"
+        ? "vendor_receivable"
+        : "streamer_payable",
+    amount: batch.totalAmount,
+  })),
+  toOpsReferenceBatchDetailItem: vi.fn((item) => ({
+    id: item.id,
+    streamer: item.streamerName,
+  })),
+  toOpsReferenceSettlementPoolItem: vi.fn((item) => ({
+    id: item.id,
+    expected: item.expectedAmount,
   })),
 }));
 
@@ -80,6 +113,10 @@ describe("console projects route", () => {
         systemDuration: 0,
       },
     ]);
+    vi.mocked(listOpsSettlementBatches).mockResolvedValue([]);
+    vi.mocked(listOpsSettlementBatchDetails).mockResolvedValue({});
+    vi.mocked(getOpsSettlementDefaultScope).mockResolvedValue(null);
+    vi.mocked(listOpsSettlementPool).mockResolvedValue([]);
 
     render(await ProjectsPage());
 
@@ -109,6 +146,104 @@ describe("console projects route", () => {
       undefined,
     );
     expect(listOpsLiveTaskQueue).toHaveBeenCalledWith(supabase, "org-1");
+  });
+
+  it("hydrates settlement center data for in-app navigation from the projects entry", async () => {
+    const supabase = {};
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
+    vi.mocked(getAuthContext).mockResolvedValue({
+      userId: "user-owner",
+      email: "owner@example.test",
+      name: "Owner User",
+      organizationId: "org-1",
+      organizationName: "Demo Org",
+      role: "owner",
+    });
+    vi.mocked(listProjects).mockResolvedValue([]);
+    vi.mocked(listOpsLiveTaskQueue).mockResolvedValue([]);
+    vi.mocked(listOpsSettlementBatches).mockResolvedValue([
+      {
+        id: "batch-real-1",
+        projectId: "project-real",
+        batchType: "receivable",
+        status: "generated",
+        projectName: "Real Project",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+        computedAmount: 120,
+        manualAmount: 0,
+        adjustmentAmount: 0,
+        totalAmount: 120,
+        evidenceSummary: {},
+        itemCount: 1,
+        createdBy: "Finance",
+        updatedAt: "2026-06-03T10:00:00.000Z",
+      },
+    ]);
+    vi.mocked(listOpsSettlementBatchDetails).mockResolvedValue({
+      "batch-real-1": [
+        {
+          id: "item-real-1",
+          batchId: "batch-real-1",
+          itemType: "live_report",
+          streamerName: "Streamer One",
+          settlementDuration: 120,
+          timeSource: "system",
+          evidenceLevel: "green",
+          systemAmount: 120,
+          manualAmount: 0,
+          adjustmentAmount: 0,
+          totalAmount: 120,
+        },
+      ],
+    });
+    vi.mocked(getOpsSettlementDefaultScope).mockResolvedValue({
+      projectId: "project-real",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+      poolCount: 1,
+    });
+    vi.mocked(listOpsSettlementPool).mockResolvedValue([
+      {
+        id: "report-real-1",
+        projectName: "Real Project",
+        streamerName: "Streamer One",
+        settlementDuration: 120,
+        timeSource: "system",
+        evidenceLevel: "green",
+        settlementMethod: "cpt",
+        cpsRateBps: 0,
+        expectedAmount: 120,
+        approvedAt: "2026-06-03T09:00:00.000Z",
+      },
+    ]);
+
+    render(await ProjectsPage());
+
+    expect(listOpsSettlementBatches).toHaveBeenCalledWith(supabase);
+    expect(listOpsSettlementBatchDetails).toHaveBeenCalledWith(supabase);
+    expect(getOpsSettlementDefaultScope).toHaveBeenCalledWith(
+      supabase,
+      "org-1",
+    );
+    expect(listOpsSettlementPool).toHaveBeenCalledWith(supabase, {
+      organizationId: "org-1",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+    });
+    expect(OpsReferenceApp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        liveBatches: [expect.objectContaining({ id: "batch-real-1" })],
+        liveBatchDetails: {
+          "batch-real-1": [expect.objectContaining({ id: "item-real-1" })],
+        },
+        liveSettlementPool: [expect.objectContaining({ id: "report-real-1" })],
+        settlementScope: expect.objectContaining({
+          projectId: "project-real",
+        }),
+      }),
+      undefined,
+    );
   });
 
   it("redirects unauthenticated visitors to login", async () => {

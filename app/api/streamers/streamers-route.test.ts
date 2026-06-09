@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { listStreamerPool } from "@/features/streamers/streamer-queries";
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import {
   createStreamerProfile,
+  updateStreamerProfile,
   updateStreamerRisk,
   updateStreamerSettlementRule,
 } from "@/features/streamers/streamer-service";
@@ -24,6 +26,7 @@ vi.mock("@/features/streamers/streamer-service", async () => {
   return {
     ...actual,
     createStreamerProfile: vi.fn(),
+    updateStreamerProfile: vi.fn(),
     updateStreamerRisk: vi.fn(),
     updateStreamerSettlementRule: vi.fn(),
   };
@@ -254,6 +257,126 @@ describe("streamer api routes", () => {
           defaultCpsRateBps: 1500,
         },
       }),
+    );
+  });
+
+  it("PATCH /api/streamers/[streamerId] updates profile and settlement fields through the audited service", async () => {
+    vi.mocked(updateStreamerProfile).mockResolvedValue({
+      id: "s1",
+      displayName: "Updated Streamer",
+      riskLevel: "low",
+      cooperationStatus: "active",
+    } as never);
+
+    const { PATCH } = await import("./[streamerId]/route");
+    const response = await PATCH(
+      jsonRequest(
+        {
+          displayName: " Updated Streamer ",
+          realName: " Updated Real ",
+          gender: "female",
+          sourceType: "signed",
+          cooperationStatus: "active",
+          categories: ["RPG", "Card", ""],
+          platforms: "Douyin, Kuaishou",
+          styles: "Story",
+          defaultSettlementMethod: "cps",
+          defaultHourlyRate: 80,
+          defaultBaseSalary: 6000,
+          defaultCpsRateBps: 1500,
+          reason: "business closure sync",
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ streamerId: "s1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      streamer: expect.objectContaining({
+        id: "s1",
+        displayName: "Updated Streamer",
+      }),
+    });
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: supabase,
+        organizationId: auth.organizationId,
+        featureKey: "project_management",
+      }),
+    );
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: supabase,
+        organizationId: auth.organizationId,
+        featureKey: "settlement",
+      }),
+    );
+    expect(updateStreamerProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audit: expect.any(Function),
+        actor: auth,
+        streamerId: "s1",
+        reason: "business closure sync",
+        input: {
+          displayName: "Updated Streamer",
+          realName: "Updated Real",
+          gender: "female",
+          sourceType: "signed",
+          cooperationStatus: "active",
+          categories: ["RPG", "Card"],
+          platforms: ["Douyin", "Kuaishou"],
+          styles: ["Story"],
+          defaultSettlementMethod: "cps",
+          defaultHourlyRate: 80,
+          defaultBaseSalary: 6000,
+          defaultCpsRateBps: 1500,
+        },
+      }),
+    );
+  });
+
+  it("PATCH /api/streamers/[streamerId] preserves explicit profile clear requests", async () => {
+    vi.mocked(updateStreamerProfile).mockResolvedValue({
+      id: "s-clear",
+      displayName: "Clearable Streamer",
+      riskLevel: "low",
+      cooperationStatus: "active",
+    } as never);
+
+    const { PATCH } = await import("./[streamerId]/route");
+    const response = await PATCH(
+      jsonRequest(
+        {
+          realName: "",
+          gender: "",
+          categories: "",
+          platforms: [],
+          styles: "   ",
+          reason: "clear stale profile fields",
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ streamerId: "s-clear" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(updateStreamerProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        streamerId: "s-clear",
+        reason: "clear stale profile fields",
+        input: expect.objectContaining({
+          realName: null,
+          gender: null,
+          categories: [],
+          platforms: [],
+          styles: [],
+        }),
+      }),
+    );
+    expect(assertBillingWriteAllowed).toHaveBeenCalledTimes(1);
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith(
+      expect.objectContaining({ featureKey: "project_management" }),
     );
   });
 });

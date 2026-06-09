@@ -76,4 +76,72 @@ describe("toProjectCardDto", () => {
     });
     expect(dto).not.toHaveProperty("manufacturerReceivable");
   });
+
+  it("marks a project with settlement batches as settling for the ops list", () => {
+    const dto = toProjectCardDto(
+      baseProjectRow({
+        status: "recruiting",
+        settlement_batches: [{ id: "batch-1", status: "generated" }],
+      }),
+    );
+
+    expect(dto).toMatchObject({
+      status: "settling",
+      statusLabel: "\u7ed3\u7b97\u4e2d",
+    });
+  });
+
+  it("marks an approved unbatched settlement-pool report as settling", () => {
+    const dto = toProjectCardDto(
+      baseProjectRow({
+        status: "active",
+        live_reports: [
+          {
+            id: "report-1",
+            status: "approved",
+            enter_settlement_pool: true,
+            settled_batch_item_id: null,
+          },
+        ],
+      }),
+    );
+
+    expect(dto).toMatchObject({
+      status: "settling",
+      statusLabel: "\u7ed3\u7b97\u4e2d",
+    });
+  });
 });
+
+function baseProjectRow(overrides = {}) {
+  return {
+    id: "p1",
+    code: "P2412",
+    name: "Project A",
+    status: "recruiting",
+    sensitivity: "normal",
+    starts_at: "2026-06-03",
+    ends_at: "2026-06-20",
+    open_signup: false,
+    allow_direct_invite: false,
+    force_recording: false,
+    force_system_timing: true,
+    default_hourly_rate: 4500,
+    default_settlement_method: "cpt",
+    vendor_name: "Vendor A",
+    product_name: "Product A",
+    agent_name: "Agent A",
+    supplier_name: "Supplier A",
+    description: "Project description",
+    is_public_to_streamers: true,
+    public_summary: "Streamer card summary",
+    game_download_url: "https://download.example.com/game",
+    created_by: "user-creator",
+    owner_id: null,
+    owner: null,
+    creator: { full_name: "Creator" },
+    published_at: "2026-06-01T10:00:00.000Z",
+    created_at: "2026-06-01T09:00:00.000Z",
+    ...overrides,
+  };
+}

@@ -113,10 +113,14 @@ async function loadLiveReferenceData(
     const [batches, details, settlementScope] = await Promise.all([
       listOpsSettlementBatches(supabase),
       listOpsSettlementBatchDetails(supabase),
-      getOpsSettlementDefaultScope(supabase),
+      getOpsSettlementDefaultScope(supabase, auth.organizationId),
     ]);
     const settlementPool = settlementScope
-      ? await listOpsSettlementPool(supabase, settlementScope)
+      ? await listOpsSettlementPool(supabase, {
+          organizationId: auth.organizationId,
+          periodStart: settlementScope.periodStart,
+          periodEnd: settlementScope.periodEnd,
+        })
       : [];
     return {
       liveBatches: batches.map((batch) => toOpsReferenceBatch(batch)),

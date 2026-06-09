@@ -5,6 +5,19 @@ type ProjectPersonRelation =
   | { full_name: string | null }[]
   | null;
 
+type ProjectSettlementBatchRelation =
+  | { id: string; status: string | null }[]
+  | null;
+
+type ProjectLiveReportRelation =
+  | {
+      id: string;
+      status: string | null;
+      enter_settlement_pool: boolean | null;
+      settled_batch_item_id: string | null;
+    }[]
+  | null;
+
 export type ProjectListItem = {
   id: string;
   code: string;
@@ -33,6 +46,8 @@ export type ProjectListItem = {
   creator?: ProjectPersonRelation;
   owner?: ProjectPersonRelation;
   opsManager?: ProjectPersonRelation;
+  settlement_batches?: ProjectSettlementBatchRelation;
+  live_reports?: ProjectLiveReportRelation;
   published_at: string | null;
   created_at: string;
 };
@@ -47,7 +62,7 @@ export async function listProjects(
   const { data, error } = await supabase
     .from("projects")
     .select(
-      "id, code, name, status, sensitivity, starts_at, ends_at, open_signup, allow_direct_invite, force_recording, force_system_timing, default_hourly_rate, default_settlement_method, vendor_name, product_name, agent_name, supplier_name, description, is_public_to_streamers, public_summary, game_download_url, created_by, owner_id, ops_manager_id, creator:profiles!projects_created_by_fkey(full_name), owner:profiles!projects_owner_id_fkey(full_name), opsManager:profiles!projects_ops_manager_id_fkey(full_name), published_at, created_at",
+      "id, code, name, status, sensitivity, starts_at, ends_at, open_signup, allow_direct_invite, force_recording, force_system_timing, default_hourly_rate, default_settlement_method, vendor_name, product_name, agent_name, supplier_name, description, is_public_to_streamers, public_summary, game_download_url, created_by, owner_id, ops_manager_id, creator:profiles!projects_created_by_fkey(full_name), owner:profiles!projects_owner_id_fkey(full_name), opsManager:profiles!projects_ops_manager_id_fkey(full_name), settlement_batches(id, status), live_reports(id, status, enter_settlement_pool, settled_batch_item_id), published_at, created_at",
     )
     .order("created_at", { ascending: false });
 

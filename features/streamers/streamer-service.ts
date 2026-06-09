@@ -15,6 +15,12 @@ export const STREAMER_SOURCE_TYPES = [
   "account_managed",
 ] as const;
 export type StreamerSourceType = (typeof STREAMER_SOURCE_TYPES)[number];
+export const STREAMER_COOPERATION_STATUSES = [
+  "not_started",
+  "active",
+  "paused",
+  "ended",
+] as const;
 export const STREAMER_SETTLEMENT_METHODS = [
   "cpt",
   "cpa",
@@ -89,6 +95,22 @@ export type UpdateStreamerSettlementRuleInput = {
   defaultCpsRateBps?: number | null;
 };
 
+export type UpdateStreamerProfileInput = {
+  displayName?: string | null;
+  userId?: string | null;
+  realName?: string | null;
+  gender?: string | null;
+  sourceType?: StreamerSourceType;
+  cooperationStatus?: StreamerCooperationStatus;
+  categories?: string[];
+  platforms?: string[];
+  styles?: string[];
+  defaultSettlementMethod?: StreamerSettlementMethod;
+  defaultHourlyRate?: number | null;
+  defaultBaseSalary?: number | null;
+  defaultCpsRateBps?: number | null;
+};
+
 export type StreamerRepository = {
   createProfile(
     input: CreateStreamerProfileRepositoryInput,
@@ -105,6 +127,24 @@ export type StreamerRepository = {
   updateSettlementRule(
     streamerId: string,
     input: {
+      default_settlement_method?: StreamerSettlementMethod;
+      default_price?: number;
+      default_base_salary?: number;
+      default_cps_rate_bps?: number;
+    },
+  ): Promise<StreamerRecord>;
+  updateProfile(
+    streamerId: string,
+    input: {
+      display_name?: string;
+      user_id?: string | null;
+      real_name?: string | null;
+      gender?: string | null;
+      source_type?: StreamerSourceType;
+      cooperation_status?: StreamerCooperationStatus;
+      categories?: string[];
+      platforms?: string[];
+      styles?: string[];
       default_settlement_method?: StreamerSettlementMethod;
       default_price?: number;
       default_base_salary?: number;
@@ -258,6 +298,35 @@ function normalizeTextList(values: string[] | undefined) {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function normalizePatchDisplayName(value: string | null | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) {
+    throw new Error("displayName cannot be empty");
+  }
+  return normalized;
+}
+
+function normalizeNullableTextPatch(value: string | null | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  return value.trim() || null;
+}
+
+function normalizePatchTextList(values: string[] | undefined) {
+  if (values === undefined) {
+    return undefined;
+  }
+  return values.map((value) => value.trim()).filter(Boolean);
+}
+
 function normalizeNonNegativeNumber(
   value: number | null | undefined,
   fieldName: string,
@@ -337,6 +406,106 @@ export async function updateStreamerRisk({
 }
 
 function canEditStreamerRisk(role: AppRole): boolean {
+  return role === "owner" || role === "ops_manager";
+}
+
+export async function updateStreamerProfile({
+  repo,
+  audit,
+  actor,
+  streamerId,
+  input,
+  reason,
+}: {
+  repo: StreamerRepository;
+  audit: StreamerAuditWriter;
+  actor: StreamerActor;
+  streamerId: string;
+  input: UpdateStreamerProfileInput;
+  reason: string;
+}): Promise<StreamerRecord> {
+  if (!canEditStreamerProfile(actor.role)) {
+    throw new Error("Only owner and ops_manager can update streamer profile");
+  }
+  if (!reason.trim()) {
+    throw new Error("Streamer profile changes require a reason");
+  }
+
+  const before = await repo.getById(streamerId);
+  if (!before) {
+    throw new Error("Streamer not found");
+  }
+
+  const normalized = normalizeUpdateStreamerProfileInput(input);
+  const patch = removeUndefined({
+    display_name: normalized.displayName,
+    user_id: normalized.userId,
+    real_name: normalized.realName,
+    gender: normalized.gender,
+    source_type: normalized.sourceType,
+    cooperation_status: normalized.cooperationStatus,
+    categories: normalized.categories,
+    platforms: normalized.platforms,
+    styles: normalized.styles,
+    default_settlement_method: normalized.defaultSettlementMethod,
+    default_price: normalized.defaultHourlyRate,
+    default_base_salary: normalized.defaultBaseSalary,
+    default_cps_rate_bps: normalized.defaultCpsRateBps,
+  });
+  const changedFields = Object.keys(patch);
+  if (changedFields.length === 0) {
+    throw new Error("No streamer profile changes provided");
+  }
+
+  const streamer = await repo.updateProfile(streamerId, patch);
+
+  await audit({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action: "update",
+    module: "streamer",
+    objectType: "streamer",
+    objectId: streamer.id,
+    objectName: streamer.displayName,
+    before,
+    after: streamer,
+    changedFields,
+    isHighRisk: true,
+    reason: reason.trim(),
+  });
+
+  return streamer;
+}
+
+function normalizeUpdateStreamerProfileInput(
+  input: UpdateStreamerProfileInput,
+) {
+  return {
+    displayName: normalizePatchDisplayName(input.displayName),
+    userId: normalizeNullableTextPatch(input.userId),
+    realName: normalizeNullableTextPatch(input.realName),
+    gender: normalizeNullableTextPatch(input.gender),
+    sourceType: input.sourceType,
+    cooperationStatus: input.cooperationStatus,
+    categories: normalizePatchTextList(input.categories),
+    platforms: normalizePatchTextList(input.platforms),
+    styles: normalizePatchTextList(input.styles),
+    defaultSettlementMethod: input.defaultSettlementMethod,
+    defaultHourlyRate: normalizeNonNegativeNumber(
+      input.defaultHourlyRate,
+      "defaultHourlyRate",
+    ),
+    defaultBaseSalary: normalizeNonNegativeNumber(
+      input.defaultBaseSalary,
+      "defaultBaseSalary",
+    ),
+    defaultCpsRateBps: normalizeCpsRateBps(input.defaultCpsRateBps),
+  };
+}
+
+function canEditStreamerProfile(role: AppRole): boolean {
   return role === "owner" || role === "ops_manager";
 }
 

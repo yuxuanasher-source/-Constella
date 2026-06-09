@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   assertStreamerCanBeInvited,
   createStreamerProfile,
+  updateStreamerProfile,
   updateStreamerRisk,
   updateStreamerSettlementRule,
 } from "./streamer-service";
@@ -38,6 +39,7 @@ describe("streamer service", () => {
       getById: vi.fn(),
       updateRisk: vi.fn(),
       updateSettlementRule: vi.fn(),
+      updateProfile: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -70,6 +72,7 @@ describe("streamer service", () => {
       getById: vi.fn(),
       updateRisk: vi.fn(),
       updateSettlementRule: vi.fn(),
+      updateProfile: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -133,6 +136,7 @@ describe("streamer service", () => {
       getById: vi.fn(),
       updateRisk: vi.fn(),
       updateSettlementRule: vi.fn(),
+      updateProfile: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -176,6 +180,7 @@ describe("streamer service", () => {
       getById: vi.fn(),
       updateRisk: vi.fn(),
       updateSettlementRule: vi.fn(),
+      updateProfile: vi.fn(),
     };
     const audit = vi.fn();
 
@@ -213,6 +218,7 @@ describe("streamer service", () => {
       getById: vi.fn(),
       updateRisk: vi.fn(),
       updateSettlementRule: vi.fn(),
+      updateProfile: vi.fn(),
     };
     const audit = vi.fn();
 
@@ -244,6 +250,7 @@ describe("streamer service", () => {
       getById: vi.fn().mockResolvedValue(before),
       updateRisk: vi.fn().mockResolvedValue(after),
       updateSettlementRule: vi.fn(),
+      updateProfile: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -287,6 +294,7 @@ describe("streamer service", () => {
       getById: vi.fn().mockResolvedValue(before),
       updateRisk: vi.fn(),
       updateSettlementRule: vi.fn().mockResolvedValue(after),
+      updateProfile: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -327,6 +335,198 @@ describe("streamer service", () => {
     );
   });
 
+  it("updates streamer profile business fields with audited changed fields", async () => {
+    const before = {
+      id: "S-profile",
+      displayName: "Old Streamer",
+      userId: null,
+      riskLevel: "low" as const,
+      cooperationStatus: "not_started" as const,
+    };
+    const after = {
+      ...before,
+      displayName: "Updated Streamer",
+      cooperationStatus: "active" as const,
+    };
+    const repo = {
+      createProfile: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      updateRisk: vi.fn(),
+      updateSettlementRule: vi.fn(),
+      updateProfile: vi.fn().mockResolvedValue(after),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await updateStreamerProfile({
+      repo,
+      audit,
+      actor: { ...actor, role: "owner" },
+      streamerId: before.id,
+      input: {
+        displayName: " Updated Streamer ",
+        realName: " Updated Real ",
+        gender: "female",
+        sourceType: "signed",
+        cooperationStatus: "active",
+        categories: ["RPG", "Card", ""],
+        platforms: ["Douyin"],
+        styles: ["Story"],
+        defaultSettlementMethod: "cps",
+        defaultHourlyRate: 80,
+        defaultBaseSalary: 6000,
+        defaultCpsRateBps: 1500,
+      },
+      reason: "business closure sync",
+    });
+
+    expect(repo.updateProfile).toHaveBeenCalledWith(before.id, {
+      display_name: "Updated Streamer",
+      real_name: "Updated Real",
+      gender: "female",
+      source_type: "signed",
+      cooperation_status: "active",
+      categories: ["RPG", "Card"],
+      platforms: ["Douyin"],
+      styles: ["Story"],
+      default_settlement_method: "cps",
+      default_price: 80,
+      default_base_salary: 6000,
+      default_cps_rate_bps: 1500,
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        module: "streamer",
+        objectType: "streamer",
+        objectId: before.id,
+        objectName: "Updated Streamer",
+        isHighRisk: true,
+        reason: "business closure sync",
+        changedFields: [
+          "display_name",
+          "real_name",
+          "gender",
+          "source_type",
+          "cooperation_status",
+          "categories",
+          "platforms",
+          "styles",
+          "default_settlement_method",
+          "default_price",
+          "default_base_salary",
+          "default_cps_rate_bps",
+        ],
+      }),
+    );
+  });
+
+  it("clears nullable and list profile fields when they are explicitly provided empty", async () => {
+    const before = {
+      id: "S-clear",
+      displayName: "Clearable Streamer",
+      userId: "user-streamer",
+      realName: "Old Real",
+      gender: "female",
+      categories: ["RPG"],
+      platforms: ["Douyin"],
+      styles: ["Story"],
+      riskLevel: "low" as const,
+      cooperationStatus: "active" as const,
+    };
+    const after = {
+      ...before,
+      userId: null,
+      realName: null,
+      gender: null,
+      categories: [],
+      platforms: [],
+      styles: [],
+    };
+    const repo = {
+      createProfile: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      updateRisk: vi.fn(),
+      updateSettlementRule: vi.fn(),
+      updateProfile: vi.fn().mockResolvedValue(after),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await updateStreamerProfile({
+      repo,
+      audit,
+      actor: { ...actor, role: "ops_manager" },
+      streamerId: before.id,
+      input: {
+        userId: null,
+        realName: "",
+        gender: null,
+        categories: [],
+        platforms: [" "],
+        styles: [],
+      },
+      reason: "clear stale profile fields",
+    });
+
+    expect(repo.updateProfile).toHaveBeenCalledWith(before.id, {
+      user_id: null,
+      real_name: null,
+      gender: null,
+      categories: [],
+      platforms: [],
+      styles: [],
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        changedFields: [
+          "user_id",
+          "real_name",
+          "gender",
+          "categories",
+          "platforms",
+          "styles",
+        ],
+        reason: "clear stale profile fields",
+      }),
+    );
+  });
+
+  it("requires owner or ops_manager and a reason for streamer profile updates", async () => {
+    const repo = {
+      createProfile: vi.fn(),
+      getById: vi.fn().mockResolvedValue({
+        id: "S-profile",
+        displayName: "Profile Streamer",
+        riskLevel: "low",
+        cooperationStatus: "active",
+      }),
+      updateRisk: vi.fn(),
+      updateSettlementRule: vi.fn(),
+      updateProfile: vi.fn(),
+    };
+
+    await expect(
+      updateStreamerProfile({
+        repo,
+        audit: vi.fn(),
+        actor,
+        streamerId: "S-profile",
+        input: { displayName: "Blocked" },
+        reason: "update",
+      }),
+    ).rejects.toThrow("Only owner and ops_manager can update streamer profile");
+
+    await expect(
+      updateStreamerProfile({
+        repo,
+        audit: vi.fn(),
+        actor: { ...actor, role: "ops_manager" },
+        streamerId: "S-profile",
+        input: { displayName: "Blocked" },
+        reason: " ",
+      }),
+    ).rejects.toThrow("Streamer profile changes require a reason");
+  });
+
   it("requires owner or ops_manager and reason for settlement default updates", async () => {
     const repo = {
       createProfile: vi.fn(),
@@ -338,6 +538,7 @@ describe("streamer service", () => {
       }),
       updateRisk: vi.fn(),
       updateSettlementRule: vi.fn(),
+      updateProfile: vi.fn(),
     };
 
     await expect(

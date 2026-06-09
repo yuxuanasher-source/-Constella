@@ -8073,6 +8073,10 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
   const actions = useOpsLiveActions();
   const projects = useOpsProjects();
   const s = streamers.find((x) => x.id === id);
+  const [profileOpen, setProfileOpen] = React.useState(false);
+  const [profileDraft, setProfileDraft] = React.useState(null);
+  const [profileError, setProfileError] = React.useState("");
+  const [profileSubmitting, setProfileSubmitting] = React.useState(false);
   const [riskOpen, setRiskOpen] = React.useState(false);
   const [riskLevel, setRiskLevel] = React.useState("low");
   const [riskReason, setRiskReason] = React.useState("");
@@ -8088,6 +8092,9 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
     setRiskLevel(s.risk || "low");
     setRiskReason("");
     setRiskError("");
+    setProfileOpen(false);
+    setProfileError("");
+    setProfileDraft(streamerProfileDraftFromCard(s));
     setRiskOpen(false);
     setInviteOpen(false);
     setInviteError("");
@@ -8139,6 +8146,71 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
   };
   const streamerProjects = Array.isArray(s.projects) ? s.projects : [];
   const hasPerformanceData = hasStreamerPerformanceData(s);
+  const updateProfileDraft = (field) => (event) => {
+    setProfileDraft((value) => ({
+      ...(value || streamerProfileDraftFromCard(s)),
+      [field]: event.target.value,
+    }));
+  };
+  const openProfileForm = () => {
+    setProfileDraft(streamerProfileDraftFromCard(s));
+    setProfileError("");
+    setProfileOpen(true);
+  };
+  const closeProfileForm = () => {
+    setProfileOpen(false);
+    setProfileError("");
+    setProfileDraft(streamerProfileDraftFromCard(s));
+  };
+  const submitProfileUpdate = async (event) => {
+    event.preventDefault();
+    const draft = profileDraft || streamerProfileDraftFromCard(s);
+    const displayName = draft.displayName.trim();
+    const reason = draft.reason.trim();
+    if (!displayName) {
+      setProfileError("请填写主播昵称");
+      return;
+    }
+    if (!reason) {
+      setProfileError("请填写变更原因");
+      return;
+    }
+
+    setProfileSubmitting(true);
+    setProfileError("");
+    try {
+      const settlementMethod = draft.defaultSettlementMethod;
+      await actions.updateStreamerProfile?.(s.id, {
+        displayName,
+        realName: draft.realName.trim(),
+        gender: draft.gender.trim(),
+        sourceType: draft.sourceType,
+        cooperationStatus: draft.cooperationStatus,
+        categories: splitDraftList(draft.categories),
+        platforms: splitDraftList(draft.platforms),
+        styles: splitDraftList(draft.styles),
+        defaultSettlementMethod: settlementMethod,
+        defaultHourlyRate: ["cpt", "base_salary_cpt"].includes(settlementMethod)
+          ? draftNumber(draft.defaultHourlyRate)
+          : 0,
+        defaultBaseSalary: ["base_salary", "base_salary_cpt"].includes(
+          settlementMethod,
+        )
+          ? draftNumber(draft.defaultBaseSalary)
+          : 0,
+        defaultCpsRateBps:
+          settlementMethod === "cps"
+            ? draftPercentToBps(draft.defaultCpsRatePercent)
+            : 0,
+        reason,
+      });
+      setProfileOpen(false);
+    } catch (error) {
+      setProfileError(error?.message || "档案更新失败，请稍后重试");
+    } finally {
+      setProfileSubmitting(false);
+    }
+  };
   const openRiskForm = () => {
     setRiskOpen(true);
     setRiskError("");
@@ -8228,6 +8300,7 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
               <div style={{ display: "flex", gap: 4 }}>
                 <button
                   title="编辑档案"
+                  onClick={openProfileForm}
                   style={{
                     width: 28,
                     height: 28,
@@ -8352,6 +8425,192 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
           ) : null}
         </div>
       </Card>
+
+      {profileOpen ? (
+        <Card title="编辑主播档案" padded={true}>
+          <form
+            onSubmit={submitProfileUpdate}
+            style={{ display: "flex", flexDirection: "column", gap: 10 }}
+          >
+            <label style={panelLabelStyle}>
+              主播昵称
+              <input
+                value={profileDraft?.displayName ?? ""}
+                onChange={updateProfileDraft("displayName")}
+                style={panelFieldStyle}
+              />
+            </label>
+            <label style={panelLabelStyle}>
+              真实姓名
+              <input
+                value={profileDraft?.realName ?? ""}
+                onChange={updateProfileDraft("realName")}
+                style={panelFieldStyle}
+              />
+            </label>
+            <label style={panelLabelStyle}>
+              性别
+              <input
+                value={profileDraft?.gender ?? ""}
+                onChange={updateProfileDraft("gender")}
+                placeholder="女 / 男 / 其他"
+                style={panelFieldStyle}
+              />
+            </label>
+            <label style={panelLabelStyle}>
+              来源
+              <select
+                value={profileDraft?.sourceType ?? "external"}
+                onChange={updateProfileDraft("sourceType")}
+                style={panelFieldStyle}
+              >
+                <option value="external">外部</option>
+                <option value="signed">签约</option>
+                <option value="self_incubated">自孵化</option>
+                <option value="supplier_recommended">供应商</option>
+                <option value="account_managed">代运营</option>
+              </select>
+            </label>
+            <label style={panelLabelStyle}>
+              合作状态
+              <select
+                value={profileDraft?.cooperationStatus ?? "not_started"}
+                onChange={updateProfileDraft("cooperationStatus")}
+                style={panelFieldStyle}
+              >
+                <option value="not_started">未填写</option>
+                <option value="active">合作中</option>
+                <option value="paused">暂停</option>
+                <option value="ended">已结束</option>
+              </select>
+            </label>
+            <label style={panelLabelStyle}>
+              擅长品类
+              <input
+                value={profileDraft?.categories ?? ""}
+                onChange={updateProfileDraft("categories")}
+                placeholder="RPG, SLG"
+                style={panelFieldStyle}
+              />
+            </label>
+            <label style={panelLabelStyle}>
+              平台
+              <input
+                value={profileDraft?.platforms ?? ""}
+                onChange={updateProfileDraft("platforms")}
+                placeholder="抖音, 快手"
+                style={panelFieldStyle}
+              />
+            </label>
+            <label style={panelLabelStyle}>
+              直播风格
+              <input
+                value={profileDraft?.styles ?? ""}
+                onChange={updateProfileDraft("styles")}
+                placeholder="高能整活"
+                style={panelFieldStyle}
+              />
+            </label>
+            <label style={panelLabelStyle}>
+              默认结算
+              <select
+                value={profileDraft?.defaultSettlementMethod ?? "cpt"}
+                onChange={updateProfileDraft("defaultSettlementMethod")}
+                style={panelFieldStyle}
+              >
+                <option value="cpt">CPT</option>
+                <option value="cpa">CPA</option>
+                <option value="cps">CPS</option>
+                <option value="gift">礼物流水</option>
+                <option value="base_salary">保底</option>
+                <option value="base_salary_cpt">保底 + CPT</option>
+                <option value="manual">手动结算</option>
+              </select>
+            </label>
+            {["cpt", "base_salary_cpt"].includes(
+              profileDraft?.defaultSettlementMethod,
+            ) ? (
+              <label style={panelLabelStyle}>
+                CPT 小时单价
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={profileDraft?.defaultHourlyRate ?? ""}
+                  onChange={updateProfileDraft("defaultHourlyRate")}
+                  style={panelFieldStyle}
+                />
+              </label>
+            ) : null}
+            {profileDraft?.defaultSettlementMethod === "cps" ? (
+              <label style={panelLabelStyle}>
+                CPS 分成比例
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  value={profileDraft?.defaultCpsRatePercent ?? ""}
+                  onChange={updateProfileDraft("defaultCpsRatePercent")}
+                  style={panelFieldStyle}
+                />
+              </label>
+            ) : null}
+            {["base_salary", "base_salary_cpt"].includes(
+              profileDraft?.defaultSettlementMethod,
+            ) ? (
+              <label style={panelLabelStyle}>
+                底薪
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={profileDraft?.defaultBaseSalary ?? ""}
+                  onChange={updateProfileDraft("defaultBaseSalary")}
+                  style={panelFieldStyle}
+                />
+              </label>
+            ) : null}
+            <label style={panelLabelStyle}>
+              变更原因
+              <textarea
+                value={profileDraft?.reason ?? ""}
+                onChange={updateProfileDraft("reason")}
+                rows={3}
+                placeholder="例如：同步主播资源池主档案"
+                style={{ ...panelFieldStyle, padding: 10, lineHeight: 1.5 }}
+              />
+            </label>
+            {profileError ? (
+              <div
+                aria-live="polite"
+                style={{
+                  color: "var(--danger-600)",
+                  fontSize: 12,
+                  lineHeight: 1.4,
+                }}
+              >
+                {profileError}
+              </div>
+            ) : null}
+            <div
+              style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}
+            >
+              <Button
+                kind="default"
+                type="button"
+                disabled={profileSubmitting}
+                onClick={closeProfileForm}
+              >
+                取消
+              </Button>
+              <Button kind="primary" type="submit" disabled={profileSubmitting}>
+                {profileSubmitting ? "保存中" : "保存档案"}
+              </Button>
+            </div>
+          </form>
+        </Card>
+      ) : null}
 
       <Card title="经营画像 · 近 90 天" padded={true}>
         {hasPerformanceData ? (
@@ -8638,6 +8897,51 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
       </div>
     </div>
   );
+}
+
+function streamerProfileDraftFromCard(streamer) {
+  const settlement = streamer?.settlement || {};
+  return {
+    displayName: streamer?.alias || "",
+    realName: streamer?.real || "",
+    gender: streamer?.gender || "",
+    sourceType: streamerSourceValue(streamer?.source),
+    cooperationStatus: streamer?.cooperation || "not_started",
+    categories: editableListText(streamer?.games),
+    platforms: editableListText(streamer?.platforms),
+    styles: editableListText([streamer?.style]),
+    defaultSettlementMethod: settlement.method || "cpt",
+    defaultHourlyRate:
+      settlement.cptHourlyRate > 0 ? String(settlement.cptHourlyRate) : "",
+    defaultBaseSalary:
+      settlement.baseSalary > 0 ? String(settlement.baseSalary) : "",
+    defaultCpsRatePercent:
+      settlement.cpsRateBps > 0 ? String(settlement.cpsRateBps / 100) : "",
+    reason: "",
+  };
+}
+
+function streamerSourceValue(source) {
+  const values = {
+    外部: "external",
+    签约: "signed",
+    自孵化: "self_incubated",
+    供应商: "supplier_recommended",
+    代运营: "account_managed",
+    external: "external",
+    signed: "signed",
+    self_incubated: "self_incubated",
+    supplier_recommended: "supplier_recommended",
+    account_managed: "account_managed",
+  };
+  return values[source] || "external";
+}
+
+function editableListText(values) {
+  return (values || [])
+    .map((value) => String(value || "").trim())
+    .filter((value) => value && value !== "未填写")
+    .join(", ");
 }
 
 function formatStreamerMoneyK(value) {
@@ -10455,6 +10759,28 @@ function ScreenSettlement({ go }) {
     settlementPool.length > 0
       ? settlementPool.length
       : (settlementScope?.poolCount ?? 0);
+  const settlementSummary = React.useMemo(() => {
+    const vendorBatches = batches.filter((batch) => {
+      return batch.type === "vendor_receivable";
+    });
+    const lockedPayableBatches = batches.filter((batch) => {
+      return batch.type === "streamer_payable" && batch.status === "locked";
+    });
+    const vendorReceivable = sumSettlementBatchAmounts(vendorBatches);
+    const lockedPayable = sumSettlementBatchAmounts(lockedPayableBatches);
+    const gross = vendorReceivable - lockedPayable;
+    const marginRate =
+      vendorReceivable > 0 ? (gross / vendorReceivable) * 100 : 0;
+
+    return {
+      vendorReceivable,
+      vendorBatchCount: vendorBatches.length,
+      lockedPayable,
+      lockedPayableBatchCount: lockedPayableBatches.length,
+      gross,
+      marginRate,
+    };
+  }, [batches]);
 
   const runSettlementAction = async (actionName, fn) => {
     if (busyAction) return;
@@ -10639,20 +10965,32 @@ function ScreenSettlement({ go }) {
           <Card>
             <Metric
               label="本月厂家应收 (草稿)"
-              value="¥286,400"
-              delta="+¥120k"
-              hint="2 个待确认批次"
+              value={formatSettlementCurrency(
+                settlementSummary.vendorReceivable,
+              )}
+              hint={settlementBatchHint(
+                settlementSummary.vendorBatchCount,
+                "应收",
+              )}
             />
           </Card>
           <Card>
             <Metric
               label="本月主播应付 (锁定)"
-              value="¥92,400"
-              hint="已发送至财务"
+              value={formatSettlementCurrency(settlementSummary.lockedPayable)}
+              hint={settlementBatchHint(
+                settlementSummary.lockedPayableBatchCount,
+                "锁定",
+              )}
             />
           </Card>
           <Card style={{ borderColor: "var(--blue-200)" }}>
-            <Metric label="本月预估毛利" value="¥73,200" delta="34.2% 毛利率" />
+            <Metric
+              label="本月预估毛利"
+              value={formatSettlementCurrency(settlementSummary.gross)}
+              delta={`${settlementSummary.marginRate.toFixed(1)}% 毛利率`}
+              deltaTone={settlementSummary.gross >= 0 ? "green" : "red"}
+            />
           </Card>
         </div>
 
@@ -10916,6 +11254,20 @@ function ScreenSettlement({ go }) {
       </div>
     </>
   );
+}
+
+function sumSettlementBatchAmounts(batches) {
+  return batches.reduce((sum, batch) => sum + Number(batch.amount ?? 0), 0);
+}
+
+function formatSettlementCurrency(value) {
+  const amount = Math.round(Number(value) || 0);
+  const prefix = amount < 0 ? "-¥" : "¥";
+  return `${prefix}${Math.abs(amount).toLocaleString()}`;
+}
+
+function settlementBatchHint(count, label) {
+  return count > 0 ? `${count} 个${label}批次` : `暂无${label}批次`;
 }
 
 function SettlementPoolPreview({ rows, settlementScope }) {
@@ -18004,11 +18356,10 @@ function OpsReferenceInner({
     };
 
     const settlementPoolUrl = (scope) => {
-      if (!scope?.projectId || !scope?.periodStart || !scope?.periodEnd) {
+      if (!scope?.periodStart || !scope?.periodEnd) {
         return null;
       }
       const params = new URLSearchParams({
-        projectId: scope.projectId,
         periodStart: scope.periodStart,
         periodEnd: scope.periodEnd,
       });
@@ -18347,6 +18698,26 @@ function OpsReferenceInner({
         await refreshStreamers();
         return body;
       },
+      updateStreamerProfile: async (id, input) => {
+        const body = await fetchJson(
+          `/api/streamers/${id}`,
+          "update streamer profile failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await Promise.all([
+          refreshStreamers(),
+          refreshProjects(),
+          refreshApplications(),
+          refreshOpsTasks(),
+          refreshReports(),
+          refreshSettlementPool(),
+        ]);
+        return body;
+      },
       updateStreamerRisk: async (id, input) => {
         const body = await fetchJson(
           `/api/streamers/${id}/risk`,
@@ -18496,6 +18867,7 @@ function OpsReferenceInner({
         };
         applyReviewedStatus();
         await Promise.all([
+          refreshProjects(),
           refreshReports(),
           refreshOpsTasks(),
           refreshSettlementPool(),
@@ -18522,6 +18894,7 @@ function OpsReferenceInner({
           periodEnd: input.periodEnd,
           batchType: input.batchType,
         });
+        await refreshProjects();
         return body;
       },
       addManualSettlementItem: async (batchId, input) => {

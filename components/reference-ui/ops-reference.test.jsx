@@ -2647,6 +2647,189 @@ describe("OpsReferenceApp streamer smoke", () => {
     expect(screen.getAllByText("风险 high").length).toBeGreaterThan(0);
   });
 
+  it("edits streamer profile from the detail panel and refreshes business loop data", async () => {
+    const refreshedStreamer = {
+      id: "streamer-edit",
+      alias: "Updated Streamer",
+      real: "Updated Real",
+      gender: "female",
+      source: "签约",
+      supplier: "未绑定",
+      games: ["RPG", "Card"],
+      platforms: ["Douyin"],
+      style: "Story",
+      cooperation: "active",
+      risk: "low",
+      defaultRule: "CPS 15%",
+      settlement: {
+        method: "cps",
+        cptHourlyRate: 0,
+        baseSalary: 0,
+        cpsRateBps: 1500,
+        label: "CPS 15%",
+      },
+      metrics: {
+        screenPass: 80,
+        projectFinish: 80,
+        roi: 1.08,
+        grossContrib: 0,
+      },
+      matchScore: 80,
+    };
+    const fetchMock = vi.fn(async (url, init) => {
+      const requestUrl = String(url);
+      if (
+        requestUrl === "/api/streamers/streamer-edit" &&
+        init?.method === "PATCH"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({ streamer: { id: "streamer-edit" } }),
+        };
+      }
+      if (requestUrl === "/api/streamers") {
+        return {
+          ok: true,
+          json: async () => ({ streamers: [refreshedStreamer] }),
+        };
+      }
+      if (requestUrl === "/api/projects") {
+        return { ok: true, json: async () => ({ projects: [] }) };
+      }
+      if (requestUrl === "/api/applications") {
+        return { ok: true, json: async () => ({ applications: [] }) };
+      }
+      if (requestUrl === "/api/live-tasks") {
+        return { ok: true, json: async () => ({ tasks: [] }) };
+      }
+      if (requestUrl === "/api/live-reports") {
+        return { ok: true, json: async () => ({ reports: [] }) };
+      }
+      if (requestUrl.startsWith("/api/settlement-pool?")) {
+        return { ok: true, json: async () => ({ reports: [] }) };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        streamerCards={[
+          {
+            id: "streamer-edit",
+            alias: "Old Streamer",
+            real: "Old Real",
+            gender: "unknown",
+            source: "外部",
+            supplier: "未绑定",
+            games: ["Old"],
+            platforms: ["OldPlatform"],
+            style: "OldStyle",
+            cooperation: "not_started",
+            risk: "low",
+            defaultRule: "CPT ¥70/h",
+            settlement: {
+              method: "cpt",
+              cptHourlyRate: 70,
+              baseSalary: 0,
+              cpsRateBps: 0,
+              label: "CPT ¥70/h",
+            },
+            metrics: {
+              screenPass: 80,
+              projectFinish: 80,
+              roi: 1.08,
+              grossContrib: 0,
+            },
+            matchScore: 80,
+          },
+        ]}
+        projectCards={[]}
+        applicationQueue={[]}
+        liveTasks={[]}
+        liveReports={[]}
+        liveSettlementPool={[]}
+        settlementScope={{
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByTitle("\u7f16\u8f91\u6863\u6848"));
+    fireEvent.change(screen.getByLabelText("\u4e3b\u64ad\u6635\u79f0"), {
+      target: { value: "Updated Streamer" },
+    });
+    fireEvent.change(screen.getByLabelText("\u771f\u5b9e\u59d3\u540d"), {
+      target: { value: "Updated Real" },
+    });
+    fireEvent.change(screen.getByLabelText("\u6765\u6e90"), {
+      target: { value: "signed" },
+    });
+    fireEvent.change(screen.getByLabelText("\u5408\u4f5c\u72b6\u6001"), {
+      target: { value: "active" },
+    });
+    fireEvent.change(screen.getByLabelText("\u64c5\u957f\u54c1\u7c7b"), {
+      target: { value: "RPG, Card" },
+    });
+    fireEvent.change(screen.getByLabelText("\u5e73\u53f0"), {
+      target: { value: "Douyin" },
+    });
+    fireEvent.change(screen.getByLabelText("\u76f4\u64ad\u98ce\u683c"), {
+      target: { value: "Story" },
+    });
+    fireEvent.change(screen.getByLabelText("\u9ed8\u8ba4\u7ed3\u7b97"), {
+      target: { value: "cps" },
+    });
+    fireEvent.change(screen.getByLabelText("CPS \u5206\u6210\u6bd4\u4f8b"), {
+      target: { value: "15" },
+    });
+    fireEvent.change(screen.getByLabelText("\u53d8\u66f4\u539f\u56e0"), {
+      target: { value: "business closure sync" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "\u4fdd\u5b58\u6863\u6848" }),
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/streamers/streamer-edit",
+        expect.objectContaining({ method: "PATCH" }),
+      ),
+    );
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/api/streamers/streamer-edit" &&
+        init?.method === "PATCH",
+    );
+    expect(JSON.parse(patchCall[1].body)).toEqual({
+      displayName: "Updated Streamer",
+      realName: "Updated Real",
+      gender: "unknown",
+      sourceType: "signed",
+      cooperationStatus: "active",
+      categories: ["RPG", "Card"],
+      platforms: ["Douyin"],
+      styles: ["Story"],
+      defaultSettlementMethod: "cps",
+      defaultHourlyRate: 0,
+      defaultBaseSalary: 0,
+      defaultCpsRateBps: 1500,
+      reason: "business closure sync",
+    });
+    expect(fetchMock).toHaveBeenCalledWith("/api/streamers", undefined);
+    expect(fetchMock).toHaveBeenCalledWith("/api/projects", undefined);
+    expect(fetchMock).toHaveBeenCalledWith("/api/applications", undefined);
+    expect(fetchMock).toHaveBeenCalledWith("/api/live-tasks", undefined);
+    expect(fetchMock).toHaveBeenCalledWith("/api/live-reports", undefined);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settlement-pool?periodStart=2026-06-01&periodEnd=2026-06-30",
+      undefined,
+    );
+    expect(await screen.findAllByText("Updated Streamer")).toHaveLength(2);
+  });
+
   it("invites streamer to a selected project", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -4335,6 +4518,97 @@ describe("OpsReferenceApp settlement smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  it("derives settlement summary metrics from live batches instead of fixed display amounts", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        liveBatches={[
+          {
+            id: "batch-real-receivable",
+            projectId: "project-real",
+            type: "vendor_receivable",
+            name: "Real Project vendor receivable",
+            project: "Real Project",
+            vendor: "Real Vendor",
+            period: "2026-06-01 -> 2026-06-30",
+            items: 2,
+            amount: 12345,
+            status: "generated",
+            updated: "2026-06-03 10:00",
+            creator: "Finance",
+          },
+          {
+            id: "batch-real-payable-locked",
+            projectId: "project-real",
+            type: "streamer_payable",
+            name: "Real Project streamer payable",
+            project: "Real Project",
+            vendor: "-",
+            period: "2026-06-01 -> 2026-06-30",
+            items: 1,
+            amount: 6789,
+            status: "locked",
+            updated: "2026-06-03 11:00",
+            creator: "Finance",
+          },
+          {
+            id: "batch-real-payable-generated",
+            projectId: "project-real",
+            type: "streamer_payable",
+            name: "Real Project generated payable",
+            project: "Real Project",
+            vendor: "-",
+            period: "2026-06-01 -> 2026-06-30",
+            items: 1,
+            amount: 1000,
+            status: "generated",
+            updated: "2026-06-03 12:00",
+            creator: "Finance",
+          },
+        ]}
+        liveSettlementPool={[
+          {
+            id: "pool-real-one",
+            streamer: "Streamer One",
+            project: "Real Project",
+            hours: 2,
+            evidence: "green -> system",
+            rule: "cpt",
+            expected: 160,
+            approvedAt: "2026-06-03 09:00",
+          },
+          {
+            id: "pool-real-two",
+            streamer: "Streamer Two",
+            project: "Real Project",
+            hours: 1,
+            evidence: "yellow -> screenshot",
+            rule: "cpt",
+            expected: 80,
+            approvedAt: "2026-06-03 09:30",
+          },
+        ]}
+        settlementScope={{
+          projectId: "project-real",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+          poolCount: 5,
+        }}
+      />,
+    );
+
+    const metricFor = (label) => screen.getByText(label).parentElement;
+    expect(metricFor("本月厂家应收 (草稿)")).toHaveTextContent("¥12,345");
+    expect(metricFor("本月主播应付 (锁定)")).toHaveTextContent("¥6,789");
+    expect(metricFor("本月预估毛利")).toHaveTextContent("¥5,556");
+    expect(metricFor("本月预估毛利")).toHaveTextContent("45.0% 毛利率");
+    expect(screen.getByText("1 个应收批次")).toBeInTheDocument();
+    expect(screen.getByText("1 个锁定批次")).toBeInTheDocument();
+    expect(screen.queryByText("¥286,400")).not.toBeInTheDocument();
+    expect(screen.queryByText("¥92,400")).not.toBeInTheDocument();
+    expect(screen.queryByText("¥73,200")).not.toBeInTheDocument();
+  });
+
   it("exports filtered report details through governed export", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -4474,6 +4748,12 @@ describe("OpsReferenceApp settlement smoke", () => {
         return {
           ok: true,
           json: async () => ({ tasks: [] }),
+        };
+      }
+      if (String(url) === "/api/projects") {
+        return {
+          ok: true,
+          json: async () => ({ projects: [] }),
         };
       }
 
@@ -4632,7 +4912,7 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(await screen.findByText(/gray/)).toBeInTheDocument();
   });
 
-  it("approves a pending report then refreshes M4, M5, and M6 data from the API", async () => {
+  it("approves a pending report then refreshes project, M4, M5, and M6 data from the API", async () => {
     const fetchMock = vi.fn(async (url) => {
       if (
         String(url).includes("/api/live-reports/report-ui-smoke-approve/review")
@@ -4748,7 +5028,7 @@ describe("OpsReferenceApp settlement smoke", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "审核通过" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/live-reports/report-ui-smoke-approve/review",
       expect.objectContaining({
@@ -4765,9 +5045,10 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/live-reports", undefined);
     expect(fetchMock).toHaveBeenCalledWith("/api/live-tasks", undefined);
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/settlement-pool?projectId=project-1&periodStart=2026-06-01&periodEnd=2026-06-30",
+      "/api/settlement-pool?periodStart=2026-06-01&periodEnd=2026-06-30",
       undefined,
     );
+    expect(fetchMock).toHaveBeenCalledWith("/api/projects", undefined);
 
     fireEvent.click(screen.getByRole("button", { name: "结算中心" }));
 
@@ -4777,7 +5058,7 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(screen.getByText("1 条待入批次")).toBeInTheDocument();
   });
 
-  it("creates a payable settlement batch then refreshes M6 list, detail, and pool data", async () => {
+  it("creates a payable settlement batch then refreshes project, M6 list, detail, and pool data", async () => {
     const promptMock = vi.fn();
     vi.stubGlobal("prompt", promptMock);
 
@@ -4886,7 +5167,7 @@ describe("OpsReferenceApp settlement smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: "新建结算批次" }));
     fireEvent.click(screen.getByRole("button", { name: "确认新建批次" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
     expect(promptMock).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/settlement-batches",
@@ -4910,9 +5191,10 @@ describe("OpsReferenceApp settlement smoke", () => {
       undefined,
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/settlement-pool?projectId=project-1&periodStart=2026-06-01&periodEnd=2026-06-30",
+      "/api/settlement-pool?periodStart=2026-06-01&periodEnd=2026-06-30",
       undefined,
     );
+    expect(fetchMock).toHaveBeenCalledWith("/api/projects", undefined);
 
     expect(await screen.findAllByText("batch-ui-smoke-1")).toHaveLength(2);
     expect(screen.getByText("暂无待入批次")).toBeInTheDocument();

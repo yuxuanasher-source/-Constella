@@ -60,6 +60,8 @@ export type ProjectCardDto = {
 };
 
 export function toProjectCardDto(row: ProjectListItem): ProjectCardDto {
+  const uiStatus = uiStatusFromProject(row);
+
   return {
     id: row.id,
     code: row.code,
@@ -68,8 +70,8 @@ export function toProjectCardDto(row: ProjectListItem): ProjectCardDto {
     supplier: textOrFallback(row.supplier_name, "未填写"),
     vendor: textOrFallback(row.vendor_name, "未填写"),
     product: textOrFallback(row.product_name, row.name),
-    status: uiStatusFromProjectStatus(row.status),
-    statusLabel: statusLabels[row.status] ?? row.status,
+    status: uiStatus,
+    statusLabel: statusLabels[uiStatus] ?? uiStatus,
     hourlyRateLabel: `${(row.default_hourly_rate / 100).toFixed(2)} 元/小时`,
     timingLabel: row.force_system_timing ? "系统计时" : "人工校验",
     publishedAtLabel: row.published_at
@@ -160,4 +162,32 @@ function uiStatusFromProjectStatus(status: string) {
   if (status === "closed") return "ended";
   if (status === "scheduling" || status === "live") return "active";
   return status;
+}
+
+function uiStatusFromProject(row: ProjectListItem) {
+  const status = uiStatusFromProjectStatus(row.status);
+  if (status === "settling" || status === "ended" || status === "paused") {
+    return status;
+  }
+  if (hasSettlementWorkflow(row)) {
+    return "settling";
+  }
+  return status;
+}
+
+function hasSettlementWorkflow(row: ProjectListItem) {
+  return hasSettlementBatch(row) || hasApprovedPoolReport(row);
+}
+
+function hasSettlementBatch(row: ProjectListItem) {
+  return (row.settlement_batches ?? []).some((batch) => Boolean(batch.id));
+}
+
+function hasApprovedPoolReport(row: ProjectListItem) {
+  return (row.live_reports ?? []).some(
+    (report) =>
+      report.status === "approved" &&
+      report.enter_settlement_pool !== false &&
+      !report.settled_batch_item_id,
+  );
 }
