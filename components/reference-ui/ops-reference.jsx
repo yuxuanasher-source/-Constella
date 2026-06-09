@@ -2436,6 +2436,7 @@ function OcrOperationsPanel({
       viewers: Number(value.viewers || 0),
     };
   };
+  const safeJobs = jobs.map(toSafeOcrJobView);
 
   return (
     <Card
@@ -2505,7 +2506,8 @@ function OcrOperationsPanel({
               "Attempts",
               "Error",
               "Report",
-              "Updated",
+              "Screenshot",
+              "OCR Result",
               "Actions",
             ].map((heading) => (
               <th
@@ -2524,8 +2526,8 @@ function OcrOperationsPanel({
           </tr>
         </thead>
         <tbody>
-          {jobs.length ? (
-            jobs.map((job) => (
+          {safeJobs.length ? (
+            safeJobs.map((job) => (
               <tr key={job.id}>
                 <td style={ocrCellStyle}>
                   {displayRecordId(job.id, "OCR 任务")}
@@ -2548,7 +2550,15 @@ function OcrOperationsPanel({
                   {displayRecordId(job.liveReportId, "报数记录")}
                 </td>
                 <td style={ocrCellStyle}>
-                  {job.updatedAt || job.createdAt || job.nextRunAt || "未记录"}
+                  {displayRecordId(job.screenshotId, "未记录")}
+                </td>
+                <td style={ocrCellStyle}>
+                  <div>
+                    时长 {formatOcrResultNumber(job.result.extractedDuration)}
+                  </div>
+                  <div style={{ color: "var(--ink-400)", marginTop: 2 }}>
+                    场观 {formatOcrResultNumber(job.result.extractedViewers)}
+                  </div>
                 </td>
                 <td style={ocrCellStyle}>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -2651,6 +2661,31 @@ function OcrOperationsPanel({
       </table>
     </Card>
   );
+}
+
+function toSafeOcrJobView(job) {
+  const result =
+    job?.result && typeof job.result === "object" ? job.result : {};
+  return {
+    id: job?.id,
+    status: job?.status,
+    attempt: job?.attempt,
+    maxAttempts: job?.maxAttempts,
+    liveReportId: job?.liveReportId,
+    screenshotId: job?.screenshotId,
+    errorCode: job?.errorCode,
+    errorMessage: job?.errorMessage,
+    result: {
+      extractedDuration: result.extractedDuration,
+      extractedViewers: result.extractedViewers,
+    },
+  };
+}
+
+function formatOcrResultNumber(value) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value.toLocaleString()
+    : "未识别";
 }
 
 const ocrCellStyle = {

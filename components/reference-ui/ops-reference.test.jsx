@@ -1845,6 +1845,16 @@ describe("OpsReferenceApp OCR operations smoke", () => {
                 screenshotId: "screenshot-1",
                 errorCode: "provider_failed",
                 errorMessage: "Tencent OCR HTTP 500",
+                payload: {
+                  imageBase64: "secret-image",
+                  imagePath: "org/report-screenshots/task-1/end.png",
+                },
+                rawResponse: { text: "rawResponse" },
+                result: {
+                  extractedDuration: 80,
+                  extractedViewers: 320,
+                  rawResponse: "rawResponse",
+                },
                 createdAt: "2026-06-05T01:00:00.000Z",
                 updatedAt: "2026-06-05T01:10:00.000Z",
               },
@@ -1949,8 +1959,19 @@ describe("OpsReferenceApp OCR operations smoke", () => {
       expect(fetchMock).toHaveBeenCalledWith("/api/ocr/jobs", undefined),
     );
     expect(screen.getByText("ocr-job-1")).toBeInTheDocument();
+    expect(screen.getByText("screenshot-1")).toBeInTheDocument();
+    expect(screen.getByText("时长 80")).toBeInTheDocument();
+    expect(screen.getByText("场观 320")).toBeInTheDocument();
     expect(screen.getByText("provider_failed")).toBeInTheDocument();
     expect(screen.getByText("2/3")).toBeInTheDocument();
+    expect(
+      JSON.stringify(screen.queryByText("org/report-screenshots")),
+    ).not.toContain("org/report-screenshots");
+    expect(
+      screen.queryByText(/org\/report-screenshots/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("imagePath")).not.toBeInTheDocument();
+    expect(screen.queryByText("imageBase64")).not.toBeInTheDocument();
     expect(screen.queryByText("rawResponse")).not.toBeInTheDocument();
     expect(screen.queryByText("secret-image")).not.toBeInTheDocument();
 
