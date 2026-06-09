@@ -8,6 +8,7 @@ import {
   getLiveOperationsRouteContext,
 } from "@/features/live-operations/live-operations-route-utils";
 import { submitLiveReportScreenshotForOcr } from "@/features/live-operations/live-operations-service";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/ai/ocr-jobs", () => ({
   createOcrJob: vi.fn(),
@@ -29,7 +30,12 @@ vi.mock("@/features/live-operations/live-operations-service", () => ({
   submitLiveReportScreenshotForOcr: vi.fn(),
 }));
 
+vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseAdminClient: vi.fn(),
+}));
+
 const supabase = { client: "supabase" };
+const adminSupabase = { client: "admin-supabase" };
 const auth = {
   userId: "user-streamer",
   email: "streamer@example.com",
@@ -69,6 +75,9 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
     vi.clearAllMocks();
     vi.mocked(getLiveOperationsRouteContext).mockResolvedValue(
       context as never,
+    );
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(
+      adminSupabase as never,
     );
     vi.mocked(actorFromContext).mockResolvedValue(actor);
     vi.mocked(createOcrJob).mockResolvedValue({
@@ -121,6 +130,7 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
     expect(JSON.stringify(body)).not.toContain("imageBase64");
 
     expect(actorFromContext).toHaveBeenCalledWith(context, true);
+    expect(createSupabaseAdminClient).toHaveBeenCalledTimes(1);
     expect(submitLiveReportScreenshotForOcr).toHaveBeenCalledWith(
       expect.objectContaining({
         repo: context.repo,
@@ -134,7 +144,7 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
       }),
     );
     expect(createOcrJob).toHaveBeenCalledWith({
-      client: supabase,
+      client: adminSupabase,
       actor: auth,
       input: {
         liveReportId: "report-1",
@@ -166,6 +176,37 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
     expect(createOcrJob).not.toHaveBeenCalled();
   });
 
+  it("fails safely before report side effects when the admin client is unavailable", async () => {
+    vi.mocked(createSupabaseAdminClient).mockReturnValueOnce(null);
+
+    const response = await postTaskOcr({
+      screenshotStoragePath: "org/report-screenshots/task-1/end.png",
+      screenshotFileHash: "sha256:abc123",
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "Supabase admin client is unavailable",
+    });
+    expect(createSupabaseAdminClient).toHaveBeenCalledTimes(1);
+    expect(submitLiveReportScreenshotForOcr).not.toHaveBeenCalled();
+    expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
+  it("requires the screenshot storage path", async () => {
+    const response = await postTaskOcr({
+      screenshotFileHash: "sha256:abc123",
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "screenshotStoragePath is required",
+    });
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
+    expect(submitLiveReportScreenshotForOcr).not.toHaveBeenCalled();
+    expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
   it("requires the screenshot file hash", async () => {
     const response = await postTaskOcr({
       screenshotStoragePath: "org/report-screenshots/task-1/end.png",
@@ -175,6 +216,7 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
     await expect(response.json()).resolves.toEqual({
       error: "screenshotFileHash is required",
     });
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
     expect(submitLiveReportScreenshotForOcr).not.toHaveBeenCalled();
   });
 });

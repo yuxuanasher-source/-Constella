@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { createOcrJob } from "@/features/ai/ocr-jobs";
 import {
+  RouteError,
   actorFromContext,
   getLiveOperationsRouteContext,
   jsonError,
@@ -10,6 +11,7 @@ import {
   requiredString,
 } from "@/features/live-operations/live-operations-route-utils";
 import { submitLiveReportScreenshotForOcr } from "@/features/live-operations/live-operations-service";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 export async function POST(
   request: Request,
@@ -22,6 +24,10 @@ export async function POST(
     const screenshotFileHash = requiredString(body, "screenshotFileHash");
     const imageBucket = optionalString(body, "imageBucket");
     const context = await getLiveOperationsRouteContext();
+    const ocrJobClient = createSupabaseAdminClient();
+    if (!ocrJobClient) {
+      throw new RouteError("Supabase admin client is unavailable", 500);
+    }
 
     const result = await submitLiveReportScreenshotForOcr({
       repo: context.repo,
@@ -36,7 +42,7 @@ export async function POST(
       },
       createOcrJob: (input) =>
         createOcrJob({
-          client: context.supabase as never,
+          client: ocrJobClient as never,
           actor: context.auth,
           input: {
             liveReportId: input.liveReportId,
