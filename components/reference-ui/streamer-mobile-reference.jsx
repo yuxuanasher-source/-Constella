@@ -5362,6 +5362,7 @@ function StreamerMobileReferenceInner({
       submitReport: async (id, input) => {
         const durationHours = Number(input.durationHours || 0);
         const audience = Number(input.audience || 0);
+        const confirmedDuration = Math.round(durationHours * 60);
         const signed = await fetchJson(
           "/api/uploads/signed",
           "create report screenshot upload failed",
@@ -5375,19 +5376,64 @@ function StreamerMobileReferenceInner({
             }),
           },
         );
+        const screenshotFileHash = `manual-${id}-${Date.now()}`;
+        const manualReportPayload = {
+          screenshotStoragePath: signed.path,
+          screenshotFileHash,
+          screenshotDuration: confirmedDuration,
+          claimedDuration: confirmedDuration,
+          viewers: audience,
+        };
+
+        try {
+          const queued = await fetchJson(
+            `/api/live-tasks/${id}/ocr`,
+            "create OCR report failed",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                screenshotStoragePath: signed.path,
+                screenshotFileHash,
+                imageBucket: signed.bucket,
+              }),
+            },
+          );
+          const queuedReportId = queued.report?.id;
+          if (!queuedReportId) {
+            throw new Error("OCR report response missing report id");
+          }
+          await fetchJson(
+            `/api/live-reports/${queuedReportId}/ocr`,
+            "confirm OCR report failed",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ocrDuration: queued.job?.result?.extractedDuration,
+                ocrViewers: queued.job?.result?.extractedViewers,
+                confirmedDuration,
+                confirmedViewers: audience,
+                note: input.note,
+              }),
+            },
+          );
+          await refreshTasks();
+          return;
+        } catch (error) {
+          globalThis.console?.warn?.(
+            "streamer report OCR failed; falling back to manual report",
+            error,
+          );
+        }
+
         await fetchJson(
           `/api/live-tasks/${id}/reports`,
           "submit report failed",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              screenshotStoragePath: signed.path,
-              screenshotFileHash: `manual-${id}-${Date.now()}`,
-              screenshotDuration: Math.round(durationHours * 60),
-              claimedDuration: Math.round(durationHours * 60),
-              viewers: audience,
-            }),
+            body: JSON.stringify(manualReportPayload),
           },
         );
         await refreshTasks();

@@ -218,7 +218,21 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
           }),
         };
       }
-      if (requestUrl.endsWith("/reports")) {
+      if (requestUrl === "/api/live-tasks/live-task-ui-smoke-1/ocr") {
+        return {
+          ok: true,
+          json: async () => ({
+            report: {
+              id: "report-ui-smoke-streamer",
+            },
+            job: {
+              id: "ocr-job-ui-smoke-streamer",
+              status: "queued",
+            },
+          }),
+        };
+      }
+      if (requestUrl === "/api/live-reports/report-ui-smoke-streamer/ocr") {
         taskState.status = "report_pending_review";
         taskState.systemDuration = 240;
         return {
@@ -319,7 +333,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "确认无误，提交审核" }),
     );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(7));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
     expect(fetchMock).toHaveBeenNthCalledWith(
       5,
       "/api/uploads/signed",
@@ -335,7 +349,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       6,
-      "/api/live-tasks/live-task-ui-smoke-1/reports",
+      "/api/live-tasks/live-task-ui-smoke-1/ocr",
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -343,6 +357,157 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
           screenshotStoragePath:
             "org-1/report-screenshots/live-task-ui-smoke-1/manual-submit.png",
           screenshotFileHash: "manual-live-task-ui-smoke-1-1780000000000",
+          imageBucket: "evidence-private",
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      7,
+      "/api/live-reports/report-ui-smoke-streamer/ocr",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          confirmedDuration: 240,
+          confirmedViewers: 11240,
+          note: "",
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      8,
+      "/api/streamer/live-tasks",
+      undefined,
+    );
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).endsWith("/reports"),
+      ),
+    ).toBe(false);
+
+    expect(await screen.findByText("报数已提交审核")).toBeInTheDocument();
+  }, 15000);
+
+  it("falls back to manual report submission when OCR is unavailable", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1780000000000);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchMock = vi.fn(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl === "/api/uploads/signed") {
+        return {
+          ok: true,
+          json: async () => ({
+            bucket: "evidence-private",
+            path: "org-1/report-screenshots/live-task-fallback/manual-submit.png",
+            signedUrl:
+              "https://upload.local/org-1/report-screenshots/live-task-fallback/manual-submit.png",
+            token: "token-1",
+          }),
+        };
+      }
+      if (requestUrl === "/api/live-tasks/live-task-fallback/ocr") {
+        return {
+          ok: false,
+          json: async () => ({ error: "provider_unconfigured" }),
+        };
+      }
+      if (requestUrl === "/api/live-tasks/live-task-fallback/reports") {
+        return {
+          ok: true,
+          json: async () => ({
+            report: {
+              id: "report-ui-fallback-streamer",
+              status: "pending_review",
+              settlementDuration: 240,
+              timeSource: "screenshot",
+              evidenceLevel: "yellow",
+            },
+          }),
+        };
+      }
+      if (requestUrl === "/api/streamer/live-tasks") {
+        return {
+          ok: true,
+          json: async () => ({
+            tasks: [
+              {
+                id: "live-task-fallback",
+                title: "Fallback Project",
+                status: "pending_review",
+                projectName: "Fallback Project",
+                plannedStartAt: "2026-06-02T11:00:00.000Z",
+                plannedEndAt: "2026-06-02T13:00:00.000Z",
+                plannedDuration: 120,
+                systemDuration: 240,
+              },
+            ],
+          }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="report"
+        liveTasks={[
+          {
+            id: "live-task-fallback",
+            project: "P-FALLBACK",
+            projectName: "Fallback Project",
+            vendor: "Demo Vendor",
+            dateStr: "2026-06-02",
+            start: "19:00",
+            end: "21:00",
+            durationPlan: 2,
+            status: "pending_report",
+            plannedStartAt: "2026-06-02T11:00:00.000Z",
+            plannedEndAt: "2026-06-02T13:00:00.000Z",
+            needStartStop: true,
+            needScreening: true,
+            settleHint: "CPT ¥80/h",
+            note: "Fallback task",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认无误，提交审核" }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/uploads/signed",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/live-tasks/live-task-fallback/ocr",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/live-tasks/live-task-fallback/reports",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          screenshotStoragePath:
+            "org-1/report-screenshots/live-task-fallback/manual-submit.png",
+          screenshotFileHash: "manual-live-task-fallback-1780000000000",
           screenshotDuration: 240,
           claimedDuration: 240,
           viewers: 11240,
@@ -350,11 +515,10 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
-      7,
+      4,
       "/api/streamer/live-tasks",
       undefined,
     );
-
     expect(await screen.findByText("报数已提交审核")).toBeInTheDocument();
   }, 15000);
 
