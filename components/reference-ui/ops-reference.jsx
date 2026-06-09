@@ -2650,7 +2650,7 @@ function OcrOperationsPanel({
           ) : (
             <tr>
               <td
-                colSpan={7}
+                colSpan={8}
                 style={{ ...ocrCellStyle, color: "var(--ink-400)" }}
               >
                 暂无 OCR 作业
