@@ -2144,6 +2144,7 @@ function StreamerReport({ taskId, go }) {
   const [note, setNote] = React.useState("");
   const [submitted, setSubmitted] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
+  const [submitError, setSubmitError] = React.useState("");
 
   // OCR-recognized values (slightly off, to show diff highlight)
   const ocrDuration = "4.3";
@@ -2355,40 +2356,57 @@ function StreamerReport({ taskId, go }) {
           borderTop: "1px solid var(--line)",
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
-          display: "flex",
-          gap: 10,
+          display: "grid",
+          gap: 8,
           zIndex: 20,
         }}
       >
-        <MButton
-          kind="default"
-          size="lg"
-          style={{ flex: 1 }}
-          onClick={() => go("task", t.id)}
-        >
-          取消
-        </MButton>
-        <MButton
-          kind="primary"
-          size="lg"
-          style={{ flex: 2 }}
-          disabled={submitting}
-          onClick={async () => {
-            setSubmitting(true);
-            try {
-              await actions.submitReport?.(t.id, {
-                durationHours: duration,
-                audience,
-                note,
-              });
-              setSubmitted(true);
-            } finally {
-              setSubmitting(false);
-            }
-          }}
-        >
-          {submitting ? "正在提交…" : "确认无误，提交审核"}
-        </MButton>
+        {submitError ? (
+          <div
+            role="alert"
+            style={{
+              fontSize: 12,
+              lineHeight: 1.5,
+              color: "var(--danger-600)",
+            }}
+          >
+            {submitError}
+          </div>
+        ) : null}
+        <div style={{ display: "flex", gap: 10 }}>
+          <MButton
+            kind="default"
+            size="lg"
+            style={{ flex: 1 }}
+            onClick={() => go("task", t.id)}
+          >
+            取消
+          </MButton>
+          <MButton
+            kind="primary"
+            size="lg"
+            style={{ flex: 2 }}
+            disabled={submitting}
+            onClick={async () => {
+              setSubmitting(true);
+              setSubmitError("");
+              try {
+                await actions.submitReport?.(t.id, {
+                  durationHours: duration,
+                  audience,
+                  note,
+                });
+                setSubmitted(true);
+              } catch (error) {
+                setSubmitError(error?.message || "提交失败，请稍后重试");
+              } finally {
+                setSubmitting(false);
+              }
+            }}
+          >
+            {submitting ? "正在提交…" : "确认无误，提交审核"}
+          </MButton>
+        </div>
       </div>
     </div>
   );
@@ -2575,6 +2593,47 @@ function ScreenshotPreview() {
       </div>
     </MCard>
   );
+}
+
+function escapeXmlText(value) {
+  return String(value ?? "").replace(/[<>&'"]/g, (char) => {
+    switch (char) {
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case "&":
+        return "&amp;";
+      case "'":
+        return "&apos;";
+      case '"':
+        return "&quot;";
+      default:
+        return char;
+    }
+  });
+}
+
+function createReportScreenshotUploadBody({
+  taskId,
+  confirmedDuration,
+  viewers,
+}) {
+  const svg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">',
+    '<rect width="960" height="540" fill="#0E1530"/>',
+    '<rect x="48" y="48" width="864" height="444" rx="24" fill="#111B3B" stroke="#516091" stroke-width="3"/>',
+    '<text x="88" y="140" fill="#E5EAF6" font-family="Arial, sans-serif" font-size="42" font-weight="700">Live report screenshot</text>',
+    `<text x="88" y="225" fill="#B8C2DB" font-family="Arial, sans-serif" font-size="30">Task: ${escapeXmlText(taskId)}</text>`,
+    `<text x="88" y="290" fill="#D8F3DC" font-family="Arial, sans-serif" font-size="34">Duration: ${escapeXmlText(confirmedDuration)} min</text>`,
+    `<text x="88" y="355" fill="#FFE8A3" font-family="Arial, sans-serif" font-size="34">Viewers: ${escapeXmlText(viewers)}</text>`,
+    "</svg>",
+  ].join("");
+
+  if (typeof Blob === "function") {
+    return new Blob([svg], { type: "image/svg+xml" });
+  }
+  return svg;
 }
 function ShotStat({ label, value }) {
   return (
@@ -5384,9 +5443,32 @@ function StreamerMobileReferenceInner({
           claimedDuration: confirmedDuration,
           viewers: audience,
         };
+        const screenshotUploadBody =
+          input.screenshotFile ||
+          createReportScreenshotUploadBody({
+            taskId: id,
+            confirmedDuration,
+            viewers: audience,
+          });
+        const screenshotUploadType =
+          screenshotUploadBody &&
+          typeof screenshotUploadBody === "object" &&
+          "type" in screenshotUploadBody &&
+          screenshotUploadBody.type
+            ? screenshotUploadBody.type
+            : "application/octet-stream";
+        const uploadResponse = await fetch(signed.signedUrl, {
+          method: "PUT",
+          headers: { "Content-Type": screenshotUploadType },
+          body: screenshotUploadBody,
+        });
+        if (!uploadResponse.ok) {
+          throw new Error("upload report screenshot failed");
+        }
 
+        let queued;
         try {
-          const queued = await fetchJson(
+          queued = await fetchJson(
             `/api/live-tasks/${id}/ocr`,
             "create OCR report failed",
             {
@@ -5399,10 +5481,31 @@ function StreamerMobileReferenceInner({
               }),
             },
           );
-          const queuedReportId = queued.report?.id;
-          if (!queuedReportId) {
-            throw new Error("OCR report response missing report id");
-          }
+        } catch (error) {
+          globalThis.console?.warn?.(
+            "streamer OCR report creation failed; falling back to manual report",
+            error,
+          );
+
+          await fetchJson(
+            `/api/live-tasks/${id}/reports`,
+            "submit report failed",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(manualReportPayload),
+            },
+          );
+          await refreshTasks();
+          return;
+        }
+
+        const queuedReportId = queued.report?.id;
+        if (!queuedReportId) {
+          throw new Error("OCR report response missing report id");
+        }
+
+        try {
           await fetchJson(
             `/api/live-reports/${queuedReportId}/ocr`,
             "confirm OCR report failed",
@@ -5418,24 +5521,15 @@ function StreamerMobileReferenceInner({
               }),
             },
           );
-          await refreshTasks();
-          return;
         } catch (error) {
-          globalThis.console?.warn?.(
-            "streamer report OCR failed; falling back to manual report",
-            error,
+          await refreshTasks().catch((refreshError) =>
+            globalThis.console?.warn?.(
+              "streamer task refresh after OCR confirmation failure failed",
+              refreshError,
+            ),
           );
+          throw error;
         }
-
-        await fetchJson(
-          `/api/live-tasks/${id}/reports`,
-          "submit report failed",
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(manualReportPayload),
-          },
-        );
         await refreshTasks();
       },
     };

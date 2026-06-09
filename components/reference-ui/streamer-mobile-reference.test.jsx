@@ -333,7 +333,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "确认无误，提交审核" }),
     );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(9));
     expect(fetchMock).toHaveBeenNthCalledWith(
       5,
       "/api/uploads/signed",
@@ -349,6 +349,15 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       6,
+      "https://upload.local/org-1/report-screenshots/live-task-ui-smoke-1/manual-submit.png",
+      expect.objectContaining({
+        method: "PUT",
+        headers: { "Content-Type": "image/svg+xml" },
+        body: expect.any(Blob),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      7,
       "/api/live-tasks/live-task-ui-smoke-1/ocr",
       expect.objectContaining({
         method: "POST",
@@ -362,7 +371,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
-      7,
+      8,
       "/api/live-reports/report-ui-smoke-streamer/ocr",
       expect.objectContaining({
         method: "POST",
@@ -375,14 +384,12 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
-      8,
+      9,
       "/api/streamer/live-tasks",
       undefined,
     );
     expect(
-      fetchMock.mock.calls.some(([url]) =>
-        String(url).endsWith("/reports"),
-      ),
+      fetchMock.mock.calls.some(([url]) => String(url).endsWith("/reports")),
     ).toBe(false);
 
     expect(await screen.findByText("报数已提交审核")).toBeInTheDocument();
@@ -481,7 +488,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
       await screen.findByRole("button", { name: "确认无误，提交审核" }),
     );
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       "/api/uploads/signed",
@@ -492,6 +499,15 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
+      "https://upload.local/org-1/report-screenshots/live-task-fallback/manual-submit.png",
+      expect.objectContaining({
+        method: "PUT",
+        headers: { "Content-Type": "image/svg+xml" },
+        body: expect.any(Blob),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
       "/api/live-tasks/live-task-fallback/ocr",
       expect.objectContaining({
         method: "POST",
@@ -499,7 +515,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
+      4,
       "/api/live-tasks/live-task-fallback/reports",
       expect.objectContaining({
         method: "POST",
@@ -515,11 +531,122 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
-      4,
+      5,
       "/api/streamer/live-tasks",
       undefined,
     );
     expect(await screen.findByText("报数已提交审核")).toBeInTheDocument();
+  }, 15000);
+
+  it("does not submit a duplicate manual report when OCR confirmation fails", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1780000000000);
+    const fetchMock = vi.fn(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl === "/api/uploads/signed") {
+        return {
+          ok: true,
+          json: async () => ({
+            bucket: "evidence-private",
+            path: "org-1/report-screenshots/live-task-confirm-fail/manual-submit.png",
+            signedUrl:
+              "https://upload.local/org-1/report-screenshots/live-task-confirm-fail/manual-submit.png",
+            token: "token-1",
+          }),
+        };
+      }
+      if (
+        requestUrl ===
+        "https://upload.local/org-1/report-screenshots/live-task-confirm-fail/manual-submit.png"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({}),
+        };
+      }
+      if (requestUrl === "/api/live-tasks/live-task-confirm-fail/ocr") {
+        return {
+          ok: true,
+          json: async () => ({
+            report: {
+              id: "report-ui-confirm-fail",
+            },
+            job: {
+              id: "ocr-job-ui-confirm-fail",
+              status: "queued",
+            },
+          }),
+        };
+      }
+      if (requestUrl === "/api/live-reports/report-ui-confirm-fail/ocr") {
+        return {
+          ok: false,
+          json: async () => ({ error: "confirm_failed" }),
+        };
+      }
+      if (requestUrl === "/api/streamer/live-tasks") {
+        return {
+          ok: true,
+          json: async () => ({
+            tasks: [
+              {
+                id: "live-task-confirm-fail",
+                title: "Confirm Fail Project",
+                status: "report_pending_review",
+                projectName: "Confirm Fail Project",
+                plannedStartAt: "2026-06-02T11:00:00.000Z",
+                plannedEndAt: "2026-06-02T13:00:00.000Z",
+                plannedDuration: 120,
+                systemDuration: 240,
+              },
+            ],
+          }),
+        };
+      }
+
+      return {
+        ok: false,
+        json: async () => ({ error: `unexpected request ${requestUrl}` }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="report"
+        liveTasks={[
+          {
+            id: "live-task-confirm-fail",
+            project: "P-CONFIRM-FAIL",
+            projectName: "Confirm Fail Project",
+            vendor: "Demo Vendor",
+            dateStr: "2026-06-02",
+            start: "19:00",
+            end: "21:00",
+            durationPlan: 2,
+            status: "pending_report",
+            plannedStartAt: "2026-06-02T11:00:00.000Z",
+            plannedEndAt: "2026-06-02T13:00:00.000Z",
+            needStartStop: true,
+            needScreening: true,
+            settleHint: "CPT 楼80/h",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "\u786e\u8ba4\u65e0\u8bef\uff0c\u63d0\u4ea4\u5ba1\u6838",
+      }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "confirm_failed",
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).endsWith("/reports")),
+    ).toBe(false);
   }, 15000);
 
   it("keeps the report submit action visible instead of showing bottom navigation", () => {
