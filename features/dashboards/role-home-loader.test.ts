@@ -107,6 +107,22 @@ describe("loadRoleHomeDashboard", () => {
     );
   });
 
+  it("uses Shanghai-local month boundaries for settlement periods", async () => {
+    await loadRoleHomeDashboard({
+      supabase: supabase as never,
+      auth,
+      now: "2026-05-31T18:00:00.000Z",
+    });
+
+    expect(listOpsSettlementPool).toHaveBeenCalledWith(
+      supabase,
+      expect.objectContaining({
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      }),
+    );
+  });
+
   it("enriches zeroed project card placeholders with live dashboard facts", async () => {
     const projectRows = [
       projectRow({

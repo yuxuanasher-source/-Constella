@@ -38,6 +38,8 @@ import {
   type RoleHomeDashboardDto,
 } from "./role-home";
 
+const DASHBOARD_TIME_ZONE = "Asia/Shanghai";
+
 export async function loadRoleHomeDashboard(input: {
   supabase: SupabaseClient;
   auth: AuthContext;
@@ -126,16 +128,36 @@ function assertDashboardStaffRole(
 }
 
 function currentMonthPeriod(now: string) {
-  const date = new Date(now);
-  const year = date.getUTCFullYear();
-  const month = date.getUTCMonth();
-  const start = new Date(Date.UTC(year, month, 1));
-  const end = new Date(Date.UTC(year, month + 1, 0));
+  const { year, month } = localYearMonth(now, DASHBOARD_TIME_ZONE);
+  const monthLabel = pad2(month);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
 
   return {
-    periodStart: start.toISOString().slice(0, 10),
-    periodEnd: end.toISOString().slice(0, 10),
+    periodStart: `${year}-${monthLabel}-01`,
+    periodEnd: `${year}-${monthLabel}-${pad2(lastDay)}`,
   };
+}
+
+function localYearMonth(value: string, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(new Date(value));
+  const byType = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+
+  return {
+    year: Number(byType.year),
+    month: Number(byType.month),
+  };
+}
+
+function pad2(value: number) {
+  return String(value).padStart(2, "0");
 }
 
 function scopeRowsForRole(
