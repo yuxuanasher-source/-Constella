@@ -994,7 +994,7 @@ P6 正式商业化规格已沉淀：
 | P1/P2 黄金路径 | `pnpm test:golden`                  |
 | P3 治理        | `pnpm test:p3-governance`           |
 | P4 决策飞轮    | `pnpm test:p4-flywheel`             |
-| M10 角色化看板 | `pnpm vitest run features/dashboards app/api/dashboards components/reference-ui/ops-reference.test.jsx app/(ops)/console/page.test.tsx` |
+| M10 角色化看板 | `pnpm vitest run features/dashboards app/api/dashboards components/reference-ui/ops-reference.test.jsx 'app/(ops)/console/page.test.tsx'` |
 | P5 商业化      | `pnpm test:p5-commercialization`    |
 | AI 系统        | `pnpm test:ai-system`               |
 | 权限重点回归   | `pnpm test:permissions`             |
