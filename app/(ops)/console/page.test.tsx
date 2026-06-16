@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
+import { loadRoleHomeDashboard } from "@/features/dashboards/role-home-loader";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
@@ -14,11 +15,23 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/components/reference-ui/ops-reference", () => ({
-  default: vi.fn((props: { currentUser?: { name?: string } }) => (
-    <div data-testid="ops-reference-app">
-      {props.currentUser?.name ?? "missing-user"}
-    </div>
-  )),
+  default: vi.fn(
+    (props: {
+      currentUser?: { name?: string };
+      dashboardHome?: { profile?: { title?: string } };
+    }) => (
+      <div data-testid="ops-reference-app">
+        {props.currentUser?.name ?? "missing-user"}
+        <span>
+          {props.dashboardHome?.profile?.title ?? "missing-dashboard"}
+        </span>
+      </div>
+    ),
+  ),
+}));
+
+vi.mock("@/features/dashboards/role-home-loader", () => ({
+  loadRoleHomeDashboard: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/context", () => ({
@@ -32,6 +45,19 @@ vi.mock("@/lib/db/supabase-server", () => ({
 describe("console route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(loadRoleHomeDashboard).mockResolvedValue({
+      profile: {
+        role: "ops_manager",
+        title: "项目推进看板",
+        subtitle: "关注招募、录屏、排班、报数和异常卡点",
+        scopeLabel: "授权项目",
+      },
+      kpis: [],
+      queue: [],
+      risks: [],
+      drilldowns: [],
+      generatedAt: "2026-06-16T09:30:00.000Z",
+    });
   });
 
   it("passes the authenticated staff identity into the ops UI", async () => {
@@ -51,9 +77,22 @@ describe("console route", () => {
     expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
       "Alice Ops",
     );
+    expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
+      "项目推进看板",
+    );
+    expect(loadRoleHomeDashboard).toHaveBeenCalledWith({
+      supabase,
+      auth: expect.objectContaining({
+        userId: "user-ops",
+        role: "ops_manager",
+      }),
+    });
     expect(OpsReferenceApp).toHaveBeenCalledWith(
       expect.objectContaining({
         initialRoute: "warroom",
+        dashboardHome: expect.objectContaining({
+          profile: expect.objectContaining({ title: "项目推进看板" }),
+        }),
         currentUser: expect.objectContaining({
           id: "user-ops",
           name: "Alice Ops",
