@@ -60,7 +60,7 @@ describe("console route", () => {
     });
   });
 
-  it("passes the authenticated staff identity into the ops UI", async () => {
+  it("passes the authenticated staff identity and dashboardHome into the ops UI", async () => {
     const supabase = {};
     vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
     vi.mocked(getAuthContext).mockResolvedValue({
