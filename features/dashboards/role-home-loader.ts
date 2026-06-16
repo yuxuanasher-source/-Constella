@@ -36,10 +36,8 @@ export async function loadRoleHomeDashboard(input: {
   auth: AuthContext;
   now?: string;
 }): Promise<RoleHomeDashboardDto> {
-  if (!isMcnStaff(input.auth.role)) {
-    throw new Error("Only MCN staff can view the role dashboard");
-  }
-
+  const role = input.auth.role;
+  assertDashboardStaffRole(role);
   const now = input.now ?? new Date().toISOString();
   const { periodStart, periodEnd } = currentMonthPeriod(now);
   const organizationId = input.auth.organizationId;
@@ -54,7 +52,7 @@ export async function loadRoleHomeDashboard(input: {
     batchRows,
     notifications,
   ] = await Promise.all([
-    listProjects(input.supabase),
+    listProjects(input.supabase, { organizationId }),
     listOpsLiveTaskQueue(input.supabase, organizationId),
     listOpsLiveReportQueue(input.supabase, organizationId),
     listOpsSettlementPool(input.supabase, {
@@ -69,7 +67,7 @@ export async function loadRoleHomeDashboard(input: {
       notificationClient,
       {
         userId: input.auth.userId,
-        role: input.auth.role,
+        role,
         organizationId,
       },
       { limit: 20 },
@@ -77,7 +75,7 @@ export async function loadRoleHomeDashboard(input: {
   ]);
 
   return buildRoleHomeDashboard({
-    role: input.auth.role as DashboardStaffRole,
+    role,
     userId: input.auth.userId,
     organizationId,
     source: {
@@ -91,6 +89,14 @@ export async function loadRoleHomeDashboard(input: {
       auditEntries: [],
     },
   });
+}
+
+function assertDashboardStaffRole(
+  role: AuthContext["role"],
+): asserts role is DashboardStaffRole {
+  if (!isMcnStaff(role)) {
+    throw new Error("Only MCN staff can view the role dashboard");
+  }
 }
 
 function currentMonthPeriod(now: string) {
@@ -129,10 +135,25 @@ function toDashboardReport(
     project: report.projectName ?? null,
     streamer: report.streamerName ?? null,
     status: report.status ?? "unknown",
-    source: report.timeSource === "system" ? "system" : "OCR",
+    source: dashboardReportSource(report.timeSource),
     duration: report.settlementDuration ?? 0,
     audience: report.viewers ?? 0,
   };
+}
+
+function dashboardReportSource(
+  timeSource: OpsLiveReportQueueItem["timeSource"] | undefined,
+) {
+  switch (timeSource) {
+    case "system":
+      return "system";
+    case "screenshot":
+      return "OCR";
+    case "claimed":
+      return "manual";
+    default:
+      return "unknown";
+  }
 }
 
 function toDashboardSettlementPoolItem(
