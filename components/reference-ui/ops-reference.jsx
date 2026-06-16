@@ -2226,6 +2226,29 @@ function ScreenRoleHome({ dashboard, go }) {
   );
 }
 
+const DASHBOARD_TARGET_ROUTE_LABELS = {
+  project: "项目",
+  projects: "项目",
+  streamers: "主播",
+  tasks: "任务",
+  reports: "报数",
+  settle: "结算",
+  audit: "审计",
+  notifications: "通知",
+};
+
+const DASHBOARD_FOCUS_ROUTES = new Set([
+  "tasks",
+  "reports",
+  "settle",
+  "audit",
+  "notifications",
+]);
+
+function dashboardTargetRouteLabel(route) {
+  return DASHBOARD_TARGET_ROUTE_LABELS[route] || "查看";
+}
+
 function RoleHomeKpis({ items }) {
   return (
     <div
@@ -2263,6 +2286,9 @@ function RoleHomeSection({ title, items, go }) {
         {items.map((item) => {
           const targetRoute = item.target?.route || "warroom";
           const targetId = item.target?.id;
+          const targetLabel = item.target?.route
+            ? dashboardTargetRouteLabel(targetRoute)
+            : "查看";
 
           return (
             <button
@@ -2288,12 +2314,36 @@ function RoleHomeSection({ title, items, go }) {
                   {item.subtitle}
                 </span>
               </span>
-              <Badge tone={item.tone || "neutral"}>{targetRoute}</Badge>
+              <Badge tone={item.tone || "neutral"}>{targetLabel}</Badge>
             </button>
           );
         })}
       </div>
     </Card>
+  );
+}
+
+function DashboardTargetContextBanner({ target }) {
+  if (!target?.route || !target?.id) {
+    return null;
+  }
+
+  return (
+    <div style={{ padding: "10px 20px 0" }}>
+      <div
+        aria-live="polite"
+        style={{
+          border: "1px solid var(--line)",
+          borderRadius: 8,
+          background: "#fff",
+          color: "var(--ink-600)",
+          fontSize: 12,
+          padding: "8px 12px",
+        }}
+      >
+        {`已定位：${dashboardTargetRouteLabel(target.route)} ${target.id}`}
+      </div>
+    </div>
   );
 }
 
@@ -19417,6 +19467,7 @@ function OpsReferenceInner({
   const [route, setRoute] = React.useState(initialRoute);
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
+  const [dashboardTarget, setDashboardTarget] = React.useState(null);
   const [tasksState, setTasksState] = React.useState(liveTasks ?? null);
   const [reportsState, setReportsState] = React.useState(liveReports ?? null);
   const [batchesState, setBatchesState] = React.useState(liveBatches ?? null);
@@ -20373,12 +20424,17 @@ function OpsReferenceInner({
     if (r === "project") {
       setRoute("project");
       setProjectId(arg || null);
+      setDashboardTarget(null);
     } else if (r === "streamers") {
       setRoute("streamers");
       if (arg) setStreamerId(arg);
+      setDashboardTarget(null);
     } else {
       setRoute(r);
       if (r === "projects") setProjectId(null);
+      setDashboardTarget(
+        arg && DASHBOARD_FOCUS_ROUTES.has(r) ? { route: r, id: arg } : null,
+      );
     }
     // Scroll content to top
     const content = globalThis.document?.getElementById("content-scroll");
@@ -20498,6 +20554,9 @@ function OpsReferenceInner({
             notificationCount={unreadNotificationCount}
           />
           <div id="content-scroll" style={{ flex: 1, overflowY: "auto" }}>
+            {dashboardTarget?.route === route ? (
+              <DashboardTargetContextBanner target={dashboardTarget} />
+            ) : null}
             {route === "warroom" && <ScreenWarRoom go={go} />}
             {(route === "projects" || route === "project") && (
               <ScreenProjects go={go} projectId={projectId} />
