@@ -10,6 +10,13 @@ const migration = readFileSync(
   ),
   "utf8",
 ).toLowerCase();
+const hardeningMigration = readFileSync(
+  join(
+    process.cwd(),
+    "supabase/migrations/20260616120000_harden_project_collaboration_application_integrity.sql",
+  ),
+  "utf8",
+).toLowerCase();
 
 describe("project MCN collaboration schema contract", () => {
   it("adds project collaboration settings fields", () => {
@@ -109,5 +116,44 @@ describe("project MCN collaboration schema contract", () => {
     ]) {
       expect(migration).toContain(`add value if not exists '${action}'`);
     }
+  });
+
+  it("hardens collaboration application share/project/owner integrity", () => {
+    expect(hardeningMigration).toContain(
+      "project_collaboration_shares_id_project_owner_unique",
+    );
+    expect(hardeningMigration).toContain(
+      "unique (id, project_id, owner_organization_id)",
+    );
+    expect(hardeningMigration).toContain(
+      "project_collaboration_applications_share_project_owner_fk",
+    );
+    expect(hardeningMigration).toContain(
+      "foreign key (share_id, project_id, owner_organization_id)",
+    );
+    expect(hardeningMigration).toContain(
+      "references public.project_collaboration_shares (id, project_id, owner_organization_id)",
+    );
+    expect(hardeningMigration).toContain(
+      "project_collaboration_applications_one_open_per_partner",
+    );
+  });
+
+  it("requires valid active public shares for direct partner application inserts", () => {
+    expect(hardeningMigration).toContain(
+      "public.can_submit_project_collaboration_application",
+    );
+    expect(hardeningMigration).toContain(
+      "drop policy if exists project_collaboration_applications_partner_insert",
+    );
+    expect(hardeningMigration).toContain("share.status = 'active'");
+    expect(hardeningMigration).toContain("share.expires_at > now()");
+    expect(hardeningMigration).toContain("share.allow_applications");
+    expect(hardeningMigration).toContain(
+      "project.is_open_to_mcn_collaboration",
+    );
+    expect(hardeningMigration).toContain(
+      "public.can_submit_project_collaboration_application(",
+    );
   });
 });

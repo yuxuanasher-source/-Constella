@@ -30,6 +30,7 @@ const streamerActor = {
   name: "Streamer One",
   role: "streamer" as const,
   organizationId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  streamerId: "streamer-1",
 };
 
 const baseApplication: ApplicationRecord = {
@@ -356,6 +357,32 @@ describe("application service", () => {
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ recipientRole: "operator_business" }),
     );
+  });
+
+  it("rejects streamer recording submissions for another streamer's application", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        streamerId: "streamer-2",
+        status: "recording_required",
+      }),
+    });
+
+    await expect(
+      submitRecording({
+        repo,
+        audit: vi.fn().mockResolvedValue(undefined),
+        notify: vi.fn().mockResolvedValue(undefined),
+        actor: streamerActor,
+        input: {
+          applicationId: "app-1",
+          externalUrl: "https://videos.example.com/other-streamer",
+        },
+      }),
+    ).rejects.toThrow("Application is not available for the current streamer");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+    expect(repo.markApplicationRecordingReviewing).not.toHaveBeenCalled();
   });
 
   it("copies application collaboration attribution onto recording submissions", async () => {

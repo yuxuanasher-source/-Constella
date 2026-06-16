@@ -2161,6 +2161,7 @@ function StreamerReport({ taskId, go, screenshotFile }) {
   const [submitted, setSubmitted] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [submitError, setSubmitError] = React.useState("");
+  const [pendingOcrReport, setPendingOcrReport] = React.useState(null);
   const [selectedScreenshotFile, setSelectedScreenshotFile] =
     React.useState(screenshotFile);
 
@@ -2199,6 +2200,20 @@ function StreamerReport({ taskId, go, screenshotFile }) {
     return (
       <ReportSubmitted
         task={t}
+        duration={duration}
+        audience={audience}
+        go={go}
+      />
+    );
+  }
+
+  if (pendingOcrReport) {
+    return (
+      <ReportOcrPending
+        task={t}
+        pending={pendingOcrReport}
+        setPending={setPendingOcrReport}
+        onConfirmed={() => setSubmitted(true)}
         duration={duration}
         audience={audience}
         go={go}
@@ -2438,13 +2453,25 @@ function StreamerReport({ taskId, go, screenshotFile }) {
                 if (!selectedScreenshotFile) {
                   throw new Error("请先上传下播截图");
                 }
-                await actions.submitReport?.(t.id, {
+                const queued = await actions.submitReport?.(t.id, {
                   durationHours: duration,
                   audience,
                   note,
                   screenshotFile: selectedScreenshotFile,
                 });
-                setSubmitted(true);
+                const reportId = queued?.report?.id;
+                if (!reportId) {
+                  throw new Error("OCR report response missing report id");
+                }
+                setPendingOcrReport({
+                  reportId,
+                  jobId: queued?.job?.id ?? null,
+                  status: queued?.job?.status || "queued",
+                  result: queued?.job?.result ?? null,
+                  confirmedDuration: Math.round(Number(duration || 0) * 60),
+                  confirmedViewers: Number(audience || 0),
+                  note,
+                });
               } catch (error) {
                 setSubmitError(error?.message || "提交失败，请稍后重试");
               } finally {
@@ -2731,6 +2758,175 @@ function Stepper({ steps, current }) {
           </React.Fragment>
         );
       })}
+    </div>
+  );
+}
+
+function ReportOcrPending({
+  task,
+  pending,
+  setPending,
+  onConfirmed,
+  duration,
+  audience,
+  go,
+}) {
+  const actions = useStreamerLiveActions();
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const ocrDuration = pending.result?.extractedDuration;
+  const ocrViewers = pending.result?.extractedViewers;
+  const hasResult = ocrDuration !== undefined || ocrViewers !== undefined;
+  const statusLabel =
+    pending.status === "succeeded"
+      ? "识别完成"
+      : pending.status === "failed"
+        ? "识别失败，可按手填值提交"
+        : "OCR 识别中";
+
+  const refreshResult = async () => {
+    if (!pending.jobId || !actions.refreshOcrJob) return;
+    setBusy(true);
+    setError("");
+    try {
+      const job = await actions.refreshOcrJob(pending.jobId);
+      setPending((current) =>
+        current?.jobId === pending.jobId
+          ? {
+              ...current,
+              status: job.status || current.status,
+              result: job.result || current.result,
+            }
+          : current,
+      );
+    } catch (refreshError) {
+      setError(refreshError?.message || "刷新 OCR 结果失败，请稍后重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmReport = async () => {
+    if (!actions.confirmOcrReport) return;
+    setBusy(true);
+    setError("");
+    try {
+      await actions.confirmOcrReport(pending.reportId, {
+        ocrDuration,
+        ocrViewers,
+        confirmedDuration: pending.confirmedDuration,
+        confirmedViewers: pending.confirmedViewers,
+        note: pending.note,
+      });
+      onConfirmed?.();
+    } catch (confirmError) {
+      setError(confirmError?.message || "确认 OCR 报数失败，请稍后重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ paddingBottom: 100 }}>
+      <MAppBar
+        onBack={() => go("task", task.id)}
+        title="OCR 识别中"
+        dark={false}
+      />
+      <div style={{ padding: "32px 20px 20px", textAlign: "center" }}>
+        <div
+          style={{
+            width: 80,
+            height: 80,
+            borderRadius: 999,
+            margin: "0 auto",
+            background: "linear-gradient(135deg, #DDEBFF 0%, #79A8FF 100%)",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            boxShadow: "0 8px 28px rgba(24,66,166,0.28)",
+          }}
+        >
+          <Icon.Reports size={36} stroke="#fff" sw={2.2} />
+        </div>
+        <div
+          role="status"
+          style={{
+            fontSize: 22,
+            fontWeight: 700,
+            color: "var(--ink-900)",
+            marginTop: 16,
+          }}
+        >
+          {statusLabel}
+        </div>
+        <div style={{ fontSize: 13, color: "var(--ink-500)", marginTop: 6 }}>
+          识别结果返回后再确认提交，报数会继续使用同一张截图和同一个报数单。
+        </div>
+      </div>
+
+      <MSection>
+        <MCard>
+          <Field label="项目">{task.projectName}</Field>
+          <Divider />
+          <Field label="报数单">
+            {displayRecordId(pending.reportId, "报数")}
+          </Field>
+          <Divider />
+          <Field label="OCR 状态">
+            <MBadge tone={pending.status === "failed" ? "red" : "blue"} dot>
+              {pending.status}
+            </MBadge>
+          </Field>
+          <Divider />
+          <Field label="OCR 时长">
+            {ocrDuration === undefined ? "待识别" : `${ocrDuration} 分钟`}
+          </Field>
+          <Divider />
+          <Field label="OCR 场观">
+            {ocrViewers === undefined ? "待识别" : `${ocrViewers} 人`}
+          </Field>
+          <Divider />
+          <Field label="手填时长">{duration} h</Field>
+          <Divider />
+          <Field label="手填场观">{audience}</Field>
+        </MCard>
+      </MSection>
+
+      {error ? (
+        <div
+          role="alert"
+          style={{
+            margin: "0 16px 12px",
+            fontSize: 12,
+            lineHeight: 1.5,
+            color: "var(--danger-600)",
+          }}
+        >
+          {error}
+        </div>
+      ) : null}
+
+      <div style={{ padding: "0 16px 24px", display: "grid", gap: 10 }}>
+        {pending.jobId ? (
+          <MButton
+            kind="default"
+            size="lg"
+            disabled={busy}
+            onClick={refreshResult}
+          >
+            刷新识别结果
+          </MButton>
+        ) : null}
+        <MButton
+          kind="primary"
+          size="lg"
+          disabled={busy || (!hasResult && pending.status !== "failed")}
+          onClick={confirmReport}
+        >
+          {hasResult ? "确认 OCR 结果，提交审核" : "按手填值提交审核"}
+        </MButton>
+      </div>
     </div>
   );
 }
@@ -5435,6 +5631,28 @@ function StreamerMobileReferenceInner({
         });
         await refreshTasks();
       },
+      refreshOcrJob: async (jobId) => {
+        if (!jobId) {
+          throw new Error("OCR job id is required");
+        }
+        const body = await fetchJson(
+          `/api/ocr/jobs/${jobId}`,
+          "load OCR result failed",
+        );
+        return body.job || body;
+      },
+      confirmOcrReport: async (reportId, input) => {
+        await fetchJson(
+          `/api/live-reports/${reportId}/ocr`,
+          "confirm OCR report failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshTasks();
+      },
       submitReport: async (id, input) => {
         const durationHours = Number(input.durationHours || 0);
         const audience = Number(input.audience || 0);
@@ -5490,32 +5708,8 @@ function StreamerMobileReferenceInner({
           throw new Error("OCR report response missing report id");
         }
 
-        try {
-          await fetchJson(
-            `/api/live-reports/${queuedReportId}/ocr`,
-            "confirm OCR report failed",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                ocrDuration: queued.job?.result?.extractedDuration,
-                ocrViewers: queued.job?.result?.extractedViewers,
-                confirmedDuration,
-                confirmedViewers: audience,
-                note: input.note,
-              }),
-            },
-          );
-        } catch (error) {
-          await refreshTasks().catch((refreshError) =>
-            globalThis.console?.warn?.(
-              "streamer task refresh after OCR confirmation failure failed",
-              refreshError,
-            ),
-          );
-          throw error;
-        }
         await refreshTasks();
+        return queued;
       },
     };
   }, []);

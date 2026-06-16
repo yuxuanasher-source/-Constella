@@ -1076,6 +1076,7 @@ async function activateAgreementFromApplication({
   if (activeAgreement) {
     throw new Error("Applicant already has an active agreement");
   }
+  await assertApplicationShareIsActive(repo, application);
 
   const approved = await repo.updateApplication(application.id, {
     status: "approved",
@@ -1101,6 +1102,22 @@ async function activateAgreementFromApplication({
   });
 
   return { application: approved, agreement };
+}
+
+async function assertApplicationShareIsActive(
+  repo: ProjectCollaborationRepository,
+  application: CollaborationApplicationRecord,
+) {
+  const shares = await repo.listShares(application.projectId);
+  const share = shares.find((item) => item.id === application.shareId);
+  if (
+    !share ||
+    share.projectId !== application.projectId ||
+    share.ownerOrganizationId !== application.ownerOrganizationId ||
+    share.status !== "active"
+  ) {
+    throw new Error("Collaboration application is inconsistent with its share");
+  }
 }
 
 function assertBasisPoints(value: number) {
@@ -1172,7 +1189,6 @@ function toSafeShare(share: CollaborationShareRecord) {
 
 function toPublicShare(share: CollaborationShareRecord) {
   return {
-    id: share.id,
     status: share.status,
     expiresAt: share.expiresAt,
     allowApplications: share.allowApplications,

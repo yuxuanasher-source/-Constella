@@ -18,7 +18,7 @@ type RouteContext = {
 
 export async function GET(_request: Request, context: RouteContext) {
   try {
-    const authResult = await requireMcnStaff();
+    const authResult = await requireAuthenticated();
     if (authResult.response) {
       return authResult.response;
     }
@@ -29,6 +29,12 @@ export async function GET(_request: Request, context: RouteContext) {
       jobId,
     });
     if (!job || job.organizationId !== authResult.auth.organizationId) {
+      return NextResponse.json({ error: "OCR job not found" }, { status: 404 });
+    }
+    if (
+      !isMcnStaff(authResult.auth.role) &&
+      !(await canReadStreamerOcrJob(authResult.supabase, authResult.auth, job))
+    ) {
       return NextResponse.json({ error: "OCR job not found" }, { status: 404 });
     }
 
@@ -114,6 +120,26 @@ function optionalString(value: unknown): string | undefined {
 }
 
 async function requireMcnStaff() {
+  const authResult = await requireAuthenticated();
+  if (authResult.response) {
+    return authResult;
+  }
+
+  if (!isMcnStaff(authResult.auth.role)) {
+    return {
+      response: NextResponse.json(
+        { error: "Only MCN staff can manage OCR jobs" },
+        { status: 403 },
+      ),
+      auth: authResult.auth,
+      supabase: authResult.supabase,
+    };
+  }
+
+  return authResult;
+}
+
+async function requireAuthenticated() {
   const supabase = await createSupabaseServerClient();
   if (!supabase) {
     return {
@@ -128,16 +154,37 @@ async function requireMcnStaff() {
     };
   }
 
-  if (!isMcnStaff(auth.role)) {
-    return {
-      response: NextResponse.json(
-        { error: "Only MCN staff can manage OCR jobs" },
-        { status: 403 },
-      ),
-    };
+  return { auth, supabase };
+}
+
+async function canReadStreamerOcrJob(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  auth: NonNullable<Awaited<ReturnType<typeof getAuthContext>>>,
+  job: {
+    payload: { liveReportId?: string };
+  },
+) {
+  if (auth.role !== "streamer" || !job.payload.liveReportId || !supabase) {
+    return false;
   }
 
-  return { auth, supabase };
+  const { data, error } = await supabase
+    .from("live_reports")
+    .select("id, organization_id")
+    .eq("id", job.payload.liveReportId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  const report = data as {
+    organization_id?: string;
+    organizationId?: string;
+  } | null;
+  return (
+    (report?.organization_id ?? report?.organizationId) === auth.organizationId
+  );
 }
 
 function toSafeJob(job: {

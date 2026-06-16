@@ -13,7 +13,6 @@ type PublicProjectCollaboration =
   | {
       available: true;
       share: {
-        id: string;
         status: "active" | "expired" | "revoked";
         expiresAt: string;
         allowApplications: boolean;

@@ -68,6 +68,51 @@ describe("/api/ocr/jobs/[jobId]", () => {
     });
   });
 
+  it("allows streamers to view their own OCR job result", async () => {
+    const maybeSingle = vi.fn().mockResolvedValue({
+      data: { id: "report-streamer", organization_id: "org-1" },
+      error: null,
+    });
+    const eq = vi.fn().mockReturnValue({ maybeSingle });
+    const select = vi.fn().mockReturnValue({ eq });
+    vi.mocked(createSupabaseServerClient).mockResolvedValue({
+      from: vi.fn().mockReturnValue({ select }),
+    } as never);
+    vi.mocked(getAuthContext).mockResolvedValue({
+      ...auth,
+      userId: "user-streamer",
+      role: "streamer",
+    });
+    vi.mocked(getOcrJob).mockResolvedValue({
+      id: "job-streamer",
+      organizationId: "org-1",
+      jobType: "ocr.extract_live_report",
+      status: "succeeded",
+      attempt: 1,
+      result: { extractedDuration: 238, extractedViewers: 11240 },
+      payload: {
+        liveReportId: "report-streamer",
+        imagePath: "private/report.png",
+      },
+    });
+
+    const response = await GET(
+      new Request("http://localhost/api/ocr/jobs/job-streamer"),
+      {
+        params: Promise.resolve({ jobId: "job-streamer" }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.job).toMatchObject({
+      id: "job-streamer",
+      status: "succeeded",
+      result: { extractedDuration: 238, extractedViewers: 11240 },
+    });
+    expect(JSON.stringify(body)).not.toContain("private/report.png");
+  });
+
   it("retries a failed OCR job for MCN staff", async () => {
     vi.mocked(getOcrJob).mockResolvedValue({
       id: "job-1",

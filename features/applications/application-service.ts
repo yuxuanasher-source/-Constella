@@ -24,6 +24,7 @@ export type AdmissionActor = {
   name?: string;
   role: AppRole;
   organizationId: string;
+  streamerId?: string | null;
 };
 
 export type ProjectAdmissionConfig = {
@@ -340,6 +341,11 @@ export async function submitRecording({
   }
 
   const application = await requireApplication(repo, input.applicationId);
+  if (actor.role === "streamer") {
+    if (!actor.streamerId || application.streamerId !== actor.streamerId) {
+      throw new Error("Application is not available for the current streamer");
+    }
+  }
   assertCanSubmitRecording(application.status);
 
   const nextStatus = "recording_reviewing";

@@ -27,7 +27,9 @@ export async function GET(
     const repo = new SupabaseProjectCollaborationRepository(supabase);
     const collaboration = await getPublicProjectCollaboration({ repo, token });
 
-    return NextResponse.json({ collaboration });
+    return NextResponse.json({
+      collaboration: toPublicCollaborationResponse(collaboration),
+    });
   } catch (error) {
     return jsonError(error);
   }
@@ -105,6 +107,33 @@ function jsonError(error: unknown) {
   }
 
   return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
+}
+
+function toPublicCollaborationResponse(collaboration: unknown) {
+  if (
+    !collaboration ||
+    typeof collaboration !== "object" ||
+    !("available" in collaboration)
+  ) {
+    return collaboration;
+  }
+
+  if ((collaboration as { available?: unknown }).available !== true) {
+    return collaboration;
+  }
+
+  const availableCollaboration = collaboration as {
+    share?: Record<string, unknown>;
+    project?: unknown;
+  };
+  const share = { ...(availableCollaboration.share ?? {}) };
+  delete share.id;
+  delete share.tokenHash;
+
+  return {
+    ...availableCollaboration,
+    share,
+  };
 }
 
 class RouteError extends Error {

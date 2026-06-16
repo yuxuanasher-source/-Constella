@@ -59,7 +59,7 @@ describe("public project collaboration route", () => {
         status: "active",
         expiresAt: "2026-06-24T00:00:00.000Z",
         allowApplications: true,
-      },
+      } as never,
       project: {
         id: "project-1",
         name: "Owner project",
@@ -96,9 +96,11 @@ describe("public project collaboration route", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
+    const body = await response.json();
+    expect(body).toEqual({
       collaboration: expect.objectContaining({ available: true }),
     });
+    expect(body.collaboration.share).not.toHaveProperty("id");
     expect(getPublicProjectCollaboration).toHaveBeenCalledWith(
       expect.objectContaining({ token: "raw-token" }),
     );

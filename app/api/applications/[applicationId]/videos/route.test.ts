@@ -2,8 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { POST } from "./route";
 
+import { getStreamerIdForUser } from "@/features/applications/application-repository";
 import { submitRecording } from "@/features/applications/application-service";
 import { getAdmissionRouteContext } from "@/features/applications/application-route-utils";
+
+vi.mock("@/features/applications/application-repository", () => ({
+  getStreamerIdForUser: vi.fn(),
+  SupabaseApplicationRepository: vi.fn(),
+}));
 
 vi.mock("@/features/applications/application-service", () => ({
   submitRecording: vi.fn(),
@@ -45,6 +51,7 @@ describe("POST /api/applications/[applicationId]/videos", () => {
       audit: vi.fn(),
       notify: vi.fn(),
     } as never);
+    vi.mocked(getStreamerIdForUser).mockResolvedValue("streamer-1");
     vi.mocked(submitRecording).mockResolvedValue({
       id: "recording-1",
       applicationId: "app-1",
@@ -63,9 +70,17 @@ describe("POST /api/applications/[applicationId]/videos", () => {
     );
 
     expect(response.status).toBe(201);
+    expect(getStreamerIdForUser).toHaveBeenCalledWith(
+      { client: "supabase" },
+      "user-streamer",
+      "org-1",
+    );
     expect(submitRecording).toHaveBeenCalledWith(
       expect.objectContaining({
-        actor: auth,
+        actor: expect.objectContaining({
+          ...auth,
+          streamerId: "streamer-1",
+        }),
         input: {
           applicationId: "app-1",
           storagePath: undefined,

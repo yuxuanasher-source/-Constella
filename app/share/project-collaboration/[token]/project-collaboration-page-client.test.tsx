@@ -6,7 +6,6 @@ import ProjectCollaborationPageClient from "./project-collaboration-page-client"
 const collaboration = {
   available: true,
   share: {
-    id: "share-1",
     status: "active",
     expiresAt: "2026-06-24T00:00:00.000Z",
     allowApplications: true,
@@ -78,6 +77,7 @@ describe("ProjectCollaborationPageClient", () => {
     expect(screen.getByText("8-12%")).toBeInTheDocument();
     expect(container.textContent).not.toContain("tokenHash");
     expect(container.textContent).not.toContain("privateMargin");
+    expect(container.textContent).not.toContain("share-1");
   });
 
   it("submits a requested revenue share as basis points", async () => {

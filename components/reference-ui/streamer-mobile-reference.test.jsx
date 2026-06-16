@@ -341,7 +341,7 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "确认无误，提交审核" }),
     );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(9));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
     expect(fetchMock).toHaveBeenNthCalledWith(
       5,
       "/api/uploads/signed",
@@ -381,27 +381,304 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       8,
-      "/api/live-reports/report-ui-smoke-streamer/ocr",
-      expect.objectContaining({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          confirmedDuration: 240,
-          confirmedViewers: 11240,
-          note: "",
-        }),
-      }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      9,
       "/api/streamer/live-tasks",
       undefined,
     );
     expect(
+      fetchMock.mock.calls.some(
+        ([url]) =>
+          String(url) === "/api/live-reports/report-ui-smoke-streamer/ocr",
+      ),
+    ).toBe(false);
+    expect(
       fetchMock.mock.calls.some(([url]) => String(url).endsWith("/reports")),
     ).toBe(false);
 
+    expect((await screen.findAllByText("OCR 识别中")).length).toBeGreaterThan(
+      0,
+    );
+  }, 15000);
+
+  it("confirms a queued OCR report after refreshing the OCR result", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1780000000000);
+    const fetchMock = vi.fn(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl === "/api/uploads/signed") {
+        return {
+          ok: true,
+          json: async () => ({
+            bucket: "evidence-private",
+            path: "org-1/report-screenshots/live-task-ocr-confirm/manual-submit.png",
+            signedUrl:
+              "https://upload.local/org-1/report-screenshots/live-task-ocr-confirm/manual-submit.png",
+          }),
+        };
+      }
+      if (
+        requestUrl ===
+        "https://upload.local/org-1/report-screenshots/live-task-ocr-confirm/manual-submit.png"
+      ) {
+        return { ok: true, json: async () => ({}) };
+      }
+      if (requestUrl === "/api/live-tasks/live-task-ocr-confirm/ocr") {
+        return {
+          ok: true,
+          json: async () => ({
+            report: { id: "report-ocr-confirm" },
+            job: { id: "ocr-job-confirm", status: "queued" },
+          }),
+        };
+      }
+      if (requestUrl === "/api/ocr/jobs/ocr-job-confirm") {
+        return {
+          ok: true,
+          json: async () => ({
+            job: {
+              id: "ocr-job-confirm",
+              status: "succeeded",
+              result: { extractedDuration: 238, extractedViewers: 11240 },
+            },
+          }),
+        };
+      }
+      if (requestUrl === "/api/live-reports/report-ocr-confirm/ocr") {
+        return {
+          ok: true,
+          json: async () => ({
+            report: { id: "report-ocr-confirm", status: "pending_review" },
+          }),
+        };
+      }
+      if (requestUrl === "/api/streamer/live-tasks") {
+        return {
+          ok: true,
+          json: async () => ({
+            tasks: [
+              {
+                id: "live-task-ocr-confirm",
+                title: "OCR Confirm Project",
+                status: "pending_review",
+                projectName: "OCR Confirm Project",
+                plannedStartAt: "2026-06-02T11:00:00.000Z",
+                plannedEndAt: "2026-06-02T13:00:00.000Z",
+                plannedDuration: 120,
+                systemDuration: 240,
+              },
+            ],
+          }),
+        };
+      }
+
+      return {
+        ok: false,
+        json: async () => ({ error: `unexpected request ${requestUrl}` }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="task"
+        liveTasks={[
+          {
+            id: "live-task-ocr-confirm",
+            project: "P-OCR-CONFIRM",
+            projectName: "OCR Confirm Project",
+            vendor: "Demo Vendor",
+            dateStr: "2026-06-02",
+            start: "19:00",
+            end: "21:00",
+            durationPlan: 2,
+            status: "pending_report",
+            plannedStartAt: "2026-06-02T11:00:00.000Z",
+            plannedEndAt: "2026-06-02T13:00:00.000Z",
+            needStartStop: true,
+            needScreening: true,
+            settleHint: "CPT 楼80/h",
+          },
+        ]}
+      />,
+    );
+
+    const screenshotFile = new File(["ocr confirm screenshot"], "ocr.png", {
+      type: "image/png",
+    });
+    fireEvent.change(await screen.findByLabelText("上传下播截图"), {
+      target: { files: [screenshotFile] },
+    });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认无误，提交审核" }),
+    );
+    expect((await screen.findAllByText("OCR 识别中")).length).toBeGreaterThan(
+      0,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新识别结果" }));
+    expect(await screen.findByText("识别完成")).toBeInTheDocument();
+    expect(await screen.findByText("238 分钟")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "确认 OCR 结果，提交审核" }),
+    );
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url]) => String(url) === "/api/live-reports/report-ocr-confirm/ocr",
+        ),
+      ).toBe(true),
+    );
+    const confirmCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/live-reports/report-ocr-confirm/ocr",
+    );
+    expect(JSON.parse(confirmCall?.[1]?.body)).toEqual({
+      ocrDuration: 238,
+      ocrViewers: 11240,
+      confirmedDuration: 240,
+      confirmedViewers: 11240,
+      note: "",
+    });
     expect(await screen.findByText("报数已提交审核")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).endsWith("/reports")),
+    ).toBe(false);
+  }, 15000);
+
+  it("allows manual confirmation on the queued report when OCR fails", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1780000000000);
+    const fetchMock = vi.fn(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl === "/api/uploads/signed") {
+        return {
+          ok: true,
+          json: async () => ({
+            bucket: "evidence-private",
+            path: "org-1/report-screenshots/live-task-ocr-failed/manual-submit.png",
+            signedUrl:
+              "https://upload.local/org-1/report-screenshots/live-task-ocr-failed/manual-submit.png",
+          }),
+        };
+      }
+      if (
+        requestUrl ===
+        "https://upload.local/org-1/report-screenshots/live-task-ocr-failed/manual-submit.png"
+      ) {
+        return { ok: true, json: async () => ({}) };
+      }
+      if (requestUrl === "/api/live-tasks/live-task-ocr-failed/ocr") {
+        return {
+          ok: true,
+          json: async () => ({
+            report: { id: "report-ocr-failed" },
+            job: { id: "ocr-job-failed", status: "queued" },
+          }),
+        };
+      }
+      if (requestUrl === "/api/ocr/jobs/ocr-job-failed") {
+        return {
+          ok: true,
+          json: async () => ({
+            job: {
+              id: "ocr-job-failed",
+              status: "failed",
+              errorCode: "provider_failed",
+            },
+          }),
+        };
+      }
+      if (requestUrl === "/api/live-reports/report-ocr-failed/ocr") {
+        return {
+          ok: true,
+          json: async () => ({
+            report: { id: "report-ocr-failed", status: "pending_review" },
+          }),
+        };
+      }
+      if (requestUrl === "/api/streamer/live-tasks") {
+        return {
+          ok: true,
+          json: async () => ({
+            tasks: [
+              {
+                id: "live-task-ocr-failed",
+                title: "OCR Failed Project",
+                status: "report_pending_review",
+                projectName: "OCR Failed Project",
+                plannedStartAt: "2026-06-02T11:00:00.000Z",
+                plannedEndAt: "2026-06-02T13:00:00.000Z",
+                plannedDuration: 120,
+                systemDuration: 240,
+              },
+            ],
+          }),
+        };
+      }
+
+      return {
+        ok: false,
+        json: async () => ({ error: `unexpected request ${requestUrl}` }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="task"
+        liveTasks={[
+          {
+            id: "live-task-ocr-failed",
+            project: "P-OCR-FAILED",
+            projectName: "OCR Failed Project",
+            vendor: "Demo Vendor",
+            dateStr: "2026-06-02",
+            start: "19:00",
+            end: "21:00",
+            durationPlan: 2,
+            status: "pending_report",
+            plannedStartAt: "2026-06-02T11:00:00.000Z",
+            plannedEndAt: "2026-06-02T13:00:00.000Z",
+            needStartStop: true,
+            needScreening: true,
+            settleHint: "CPT 楼80/h",
+          },
+        ]}
+      />,
+    );
+
+    const screenshotFile = new File(["ocr failed screenshot"], "failed.png", {
+      type: "image/png",
+    });
+    fireEvent.change(await screen.findByLabelText("上传下播截图"), {
+      target: { files: [screenshotFile] },
+    });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认无误，提交审核" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "刷新识别结果" }),
+    );
+    expect(
+      await screen.findByText("识别失败，可按手填值提交"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "按手填值提交审核" }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url]) => String(url) === "/api/live-reports/report-ocr-failed/ocr",
+        ),
+      ).toBe(true),
+    );
+    const confirmCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/live-reports/report-ocr-failed/ocr",
+    );
+    expect(JSON.parse(confirmCall?.[1]?.body)).toEqual({
+      confirmedDuration: 240,
+      confirmedViewers: 11240,
+      note: "",
+    });
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).endsWith("/reports")),
+    ).toBe(false);
   }, 15000);
 
   it("does not submit a duplicate manual report when OCR creation fails", async () => {
@@ -576,6 +853,21 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
           }),
         };
       }
+      if (requestUrl === "/api/ocr/jobs/ocr-job-ui-confirm-fail") {
+        return {
+          ok: true,
+          json: async () => ({
+            job: {
+              id: "ocr-job-ui-confirm-fail",
+              status: "succeeded",
+              result: {
+                extractedDuration: 240,
+                extractedViewers: 11240,
+              },
+            },
+          }),
+        };
+      }
       if (requestUrl === "/api/live-reports/report-ui-confirm-fail/ocr") {
         return {
           ok: false,
@@ -648,11 +940,18 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
         name: "\u786e\u8ba4\u65e0\u8bef\uff0c\u63d0\u4ea4\u5ba1\u6838",
       }),
     );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "刷新识别结果" }),
+    );
+    expect(await screen.findByText("识别完成")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "确认 OCR 结果，提交审核" }),
+    );
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "confirm_failed",
     );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
     expect(
       fetchMock.mock.calls.some(([url]) => String(url).endsWith("/reports")),
     ).toBe(false);

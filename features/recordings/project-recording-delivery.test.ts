@@ -7,6 +7,7 @@ const actor = {
   name: "Streamer",
   role: "streamer" as const,
   organizationId: "org-1",
+  streamerId: "streamer-1",
 };
 
 function baseRepo() {

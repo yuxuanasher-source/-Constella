@@ -6,6 +6,7 @@ import {
   getAdmissionRouteContext,
   jsonError,
 } from "@/features/applications/application-route-utils";
+import { getStreamerIdForUser } from "@/features/applications/application-repository";
 import { submitRecording } from "@/features/applications/application-service";
 import { parseJsonBody } from "@/lib/http/parse-json-body";
 
@@ -23,11 +24,22 @@ export async function POST(
     const { applicationId } = await params;
     const body = await parseJsonBody(request, submitRecordingBodySchema);
     const context = await getAdmissionRouteContext();
+    const currentStreamerId =
+      context.auth.role === "streamer"
+        ? await getStreamerIdForUser(
+            context.supabase,
+            context.auth.userId,
+            context.auth.organizationId,
+          )
+        : null;
     const recording = await submitRecording({
       repo: context.repo,
       audit: (input) => context.audit(context.supabase, input),
       notify: (input) => context.notify(context.supabase, input),
-      actor: actorFromContext(context),
+      actor: {
+        ...actorFromContext(context),
+        streamerId: currentStreamerId,
+      },
       input: {
         applicationId,
         storagePath: body.storagePath,

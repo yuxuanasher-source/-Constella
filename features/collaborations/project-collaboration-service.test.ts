@@ -157,7 +157,6 @@ describe("project collaboration service", () => {
     expect(result).toEqual({
       available: true,
       share: {
-        id: "share-1",
         status: "active",
         expiresAt: "2026-06-24T00:00:00.000Z",
         allowApplications: true,
@@ -173,6 +172,10 @@ describe("project collaboration service", () => {
     });
     expect(JSON.stringify(result)).not.toContain("tokenHash");
     expect(JSON.stringify(result)).not.toContain("privateMargin");
+    expect(JSON.stringify(result)).not.toContain('"share":{"id"');
+    if (result.available) {
+      expect(result.share).not.toHaveProperty("id");
+    }
   });
 
   it("omits summary and terms when visibleFields excludes them", async () => {
@@ -260,6 +263,30 @@ describe("project collaboration service", () => {
       }),
     );
     expect(repo.agreements).toHaveLength(1);
+  });
+
+  it("refuses to activate an application whose share is no longer active", async () => {
+    const repo = await repoWithShare();
+    const application = await submitProjectCollaborationApplication({
+      repo,
+      actor: partnerActor,
+      token: "raw-token",
+      input: { requestedRevenueShareBps: 1000 },
+    });
+    repo.shares[0].status = "revoked";
+
+    await expect(
+      reviewProjectCollaborationApplication({
+        repo,
+        actor: ownerActor,
+        projectId: "project-1",
+        applicationId: application.id,
+        input: { action: "accept" },
+      }),
+    ).rejects.toThrow(
+      "Collaboration application is inconsistent with its share",
+    );
+    expect(repo.agreements).toHaveLength(0);
   });
 
   it("refuses to accept a rejected application", async () => {

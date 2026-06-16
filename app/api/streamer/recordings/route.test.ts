@@ -184,6 +184,7 @@ describe("streamer recordings route", () => {
           userId: "user-streamer",
           role: "streamer",
           organizationId: "org-1",
+          streamerId: "streamer-1",
         }),
         input: {
           projectId: "project-1",

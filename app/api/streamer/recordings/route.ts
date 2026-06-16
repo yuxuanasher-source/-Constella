@@ -42,6 +42,7 @@ export async function POST(request: Request) {
           name: context.auth.name,
           role: context.auth.role,
           organizationId: context.auth.organizationId,
+          streamerId,
         },
         input: {
           projectId: body.projectId,
