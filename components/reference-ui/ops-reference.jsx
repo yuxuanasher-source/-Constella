@@ -858,6 +858,7 @@ const OpsLiveDataContext = React.createContext({
   organizationMemberPermissions: null,
   organizationSettings: DEFAULT_ORGANIZATION_SETTINGS,
   billingStatus: null,
+  dashboardHome: null,
   currentUser: DEFAULT_CURRENT_USER,
   actions: {},
 });
@@ -19273,6 +19274,7 @@ function OpsReferenceInner({
   organizationMemberPermissions,
   organizationSettings,
   billingStatus,
+  dashboardHome,
   projectCards,
   collaborationProjectCards,
   streamerCards,
@@ -19311,6 +19313,9 @@ function OpsReferenceInner({
     React.useState(false);
   const [billingStatusState, setBillingStatusState] = React.useState(
     billingStatus ?? null,
+  );
+  const [dashboardHomeState, setDashboardHomeState] = React.useState(
+    dashboardHome ?? null,
   );
   const [projectsState, setProjectsState] = React.useState(
     projectCards ?? null,
@@ -19375,6 +19380,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setBillingStatusState(billingStatus ?? null);
   }, [billingStatus]);
+
+  React.useEffect(() => {
+    setDashboardHomeState(dashboardHome ?? null);
+  }, [dashboardHome]);
 
   React.useEffect(() => {
     setProjectsState(projectCards ?? null);
@@ -20326,6 +20335,7 @@ function OpsReferenceInner({
         organizationMemberPermissions: organizationMemberPermissionsState,
         organizationSettings: organizationSettingsState,
         billingStatus: billingStatusState,
+        dashboardHome: dashboardHomeState,
         currentUser: normalizeCurrentUser(currentUser),
         actions,
       }}
@@ -20593,7 +20603,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; currentUser?: any }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; dashboardHome?: any; currentUser?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -20609,6 +20619,7 @@ export default function OpsReferenceApp({
   organizationMemberPermissions,
   organizationSettings,
   billingStatus,
+  dashboardHome,
   projectCards,
   collaborationProjectCards,
   streamerCards,
@@ -20630,6 +20641,7 @@ export default function OpsReferenceApp({
       organizationMemberPermissions={organizationMemberPermissions}
       organizationSettings={organizationSettings}
       billingStatus={billingStatus}
+      dashboardHome={dashboardHome}
       projectCards={projectCards}
       collaborationProjectCards={collaborationProjectCards}
       streamerCards={streamerCards}

@@ -161,6 +161,71 @@ const projectManagementCards = [
   },
 ];
 
+describe("OpsReferenceApp role dashboard contract", () => {
+  afterEach(() => {
+    vi.doUnmock("react");
+    vi.resetModules();
+  });
+
+  it("publishes dashboardHome into the live data context boundary", async () => {
+    const providerValues = [];
+    vi.resetModules();
+    vi.doMock("react", async (importOriginal) => {
+      const actual = await importOriginal();
+      const actualReact = actual.default ?? actual;
+      const createContext = (defaultValue) => {
+        const context = actualReact.createContext(defaultValue);
+        const isOpsLiveDataContext =
+          defaultValue &&
+          Object.prototype.hasOwnProperty.call(defaultValue, "projects") &&
+          Object.prototype.hasOwnProperty.call(defaultValue, "actions");
+
+        if (isOpsLiveDataContext) {
+          const Provider = context.Provider;
+          context.Provider = function OpsLiveDataProviderCapture(props) {
+            providerValues.push(props.value);
+            return actualReact.createElement(Provider, props);
+          };
+        }
+
+        return context;
+      };
+
+      return {
+        ...actual,
+        createContext,
+        default: { ...actualReact, createContext },
+      };
+    });
+    const { default: InstrumentedOpsReferenceApp } =
+      await import("./ops-reference");
+    const dashboardHome = {
+      profile: {
+        role: "ops_manager",
+        title: "项目推进看板",
+        subtitle: "关注招募、录屏、排班、报数和异常卡点",
+        scopeLabel: "授权项目",
+      },
+      kpis: [],
+      queue: [],
+      risks: [],
+      drilldowns: [],
+      generatedAt: "2026-06-16T09:30:00.000Z",
+    };
+
+    render(
+      <InstrumentedOpsReferenceApp
+        initialRoute="warroom"
+        dashboardHome={dashboardHome}
+      />,
+    );
+
+    expect(providerValues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ dashboardHome })]),
+    );
+  });
+});
+
 describe("OpsReferenceApp project smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();

@@ -114,5 +114,6 @@ describe("console route", () => {
     await expect(Promise.resolve().then(() => ConsolePage())).rejects.toThrow(
       "NEXT_REDIRECT:/login",
     );
+    expect(loadRoleHomeDashboard).not.toHaveBeenCalled();
   });
 });
