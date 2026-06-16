@@ -336,6 +336,8 @@ describe("OpsReferenceApp role dashboard contract", () => {
     );
 
     expect(screen.getByText("我的今日待办")).toBeInTheDocument();
+    expect(screen.getByText("我的今日任务")).toBeInTheDocument();
+    expect(screen.getByText("待审核报数")).toBeInTheDocument();
     expect(screen.queryByText("本月厂家应收")).not.toBeInTheDocument();
     expect(screen.queryByText("预估毛利")).not.toBeInTheDocument();
   });
