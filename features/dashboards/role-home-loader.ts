@@ -157,9 +157,6 @@ function scopeRowsForRole(
   const allowedProjectIds = new Set(
     allowedProjects.map((project) => project.id),
   );
-  const allowedProjectNames = new Set(
-    allowedProjects.map((project) => project.name),
-  );
 
   return {
     projectRows: allowedProjects,
@@ -170,7 +167,7 @@ function scopeRowsForRole(
       allowedProjectIds.has(report.projectId),
     ),
     settlementPoolRows: rows.settlementPoolRows.filter((item) =>
-      allowedProjectNames.has(item.projectName),
+      allowedProjectIds.has(item.projectId),
     ),
     batchRows: rows.batchRows.filter((batch) =>
       allowedProjectIds.has(batch.projectId),
@@ -196,16 +193,6 @@ function buildDashboardProjects(input: {
 }): DashboardProjectInput[] {
   const projectRowsById = new Map(
     input.projectRows.map((project) => [project.id, project]),
-  );
-  const projectIdsByName = input.projectRows.reduce<Map<string, string[]>>(
-    (grouped, project) => {
-      grouped.set(project.name, [
-        ...(grouped.get(project.name) ?? []),
-        project.id,
-      ]);
-      return grouped;
-    },
-    new Map(),
   );
   const factsByProjectId = new Map(
     input.projectRows.map((project) => [project.id, createProjectFacts()]),
@@ -238,8 +225,7 @@ function buildDashboardProjects(input: {
   }
 
   for (const item of input.settlementPoolRows) {
-    const projectId = uniqueProjectIdForName(projectIdsByName, item.projectName);
-    const facts = projectId ? factsByProjectId.get(projectId) : null;
+    const facts = factsByProjectId.get(item.projectId);
     if (!facts) continue;
 
     facts.payable += item.expectedAmount;
@@ -277,6 +263,9 @@ function buildDashboardProjects(input: {
       streamers: {
         ...card.streamers,
         active: facts.streamerIds.size,
+        candidate: hasStreamerGapProject(projectRowsById.get(card.id), facts)
+          ? 1
+          : 0,
         pendingReview: facts.reportedPending,
       },
     };
@@ -339,12 +328,18 @@ function addStreamer(
   }
 }
 
-function uniqueProjectIdForName(
-  projectIdsByName: Map<string, string[]>,
-  projectName: string,
+function hasStreamerGapProject(
+  project: ProjectListItem | undefined,
+  facts: ReturnType<typeof createProjectFacts>,
 ) {
-  const ids = projectIdsByName.get(projectName) ?? [];
-  return ids.length === 1 ? ids[0] : null;
+  if (!project) {
+    return false;
+  }
+
+  return (
+    ["active", "recruiting", "pending_start"].includes(project.status) &&
+    facts.streamerIds.size === 0
+  );
 }
 
 function roundHours(value: number) {

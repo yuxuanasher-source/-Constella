@@ -193,6 +193,7 @@ describe("loadRoleHomeDashboard", () => {
     vi.mocked(listOpsSettlementPool).mockResolvedValue([
       {
         id: "pool-1",
+        projectId: "project-1",
         projectName: "Alpha",
         streamerName: "Streamer A",
         settlementDuration: 60,
@@ -249,6 +250,7 @@ describe("loadRoleHomeDashboard", () => {
         }),
         streamers: expect.objectContaining({
           active: 2,
+          candidate: 0,
           pendingReview: 1,
         }),
       }),
@@ -368,6 +370,143 @@ describe("loadRoleHomeDashboard", () => {
     );
     expect(JSON.stringify(dashboard)).toContain("Mine");
     expect(JSON.stringify(dashboard)).not.toContain("Theirs");
+  });
+
+  it("scopes operator settlement pool rows by project id when project names repeat", async () => {
+    vi.mocked(listProjects).mockResolvedValue([
+      projectRow({
+        id: "project-mine",
+        name: "Shared Launch",
+        created_by: "operator-a",
+        owner_id: "owner-a",
+        ops_manager_id: "ops-a",
+      }),
+      projectRow({
+        id: "project-theirs",
+        name: "Shared Launch",
+        created_by: "operator-b",
+        owner_id: "owner-b",
+        ops_manager_id: "ops-b",
+      }),
+    ] as never);
+    vi.mocked(listOpsSettlementPool).mockResolvedValue([
+      {
+        id: "pool-mine",
+        projectId: "project-mine",
+        projectName: "Shared Launch",
+        streamerName: "Streamer A",
+        settlementDuration: 60,
+        timeSource: "system",
+        evidenceLevel: "green",
+        settlementMethod: "cpt",
+        cpsRateBps: 0,
+        expectedAmount: 100,
+        approvedAt: "2026-06-16T10:00:00.000Z",
+      },
+      {
+        id: "pool-theirs",
+        projectId: "project-theirs",
+        projectName: "Shared Launch",
+        streamerName: "Streamer B",
+        settlementDuration: 60,
+        timeSource: "system",
+        evidenceLevel: "green",
+        settlementMethod: "cpt",
+        cpsRateBps: 0,
+        expectedAmount: 200,
+        approvedAt: "2026-06-16T10:00:00.000Z",
+      },
+    ] as never);
+
+    await loadRoleHomeDashboard({
+      supabase: supabase as never,
+      auth: {
+        ...auth,
+        userId: "operator-a",
+        role: "operator_business",
+      },
+      now: "2026-06-16T09:30:00.000Z",
+    });
+
+    const source = vi.mocked(buildRoleHomeDashboard).mock.calls[0]?.[0].source;
+    expect(source?.settlementPool.map((item) => item.id)).toEqual([
+      "pool-mine",
+    ]);
+    expect(source?.projects).toEqual([
+      expect.objectContaining({
+        id: "project-mine",
+        metrics: expect.objectContaining({
+          payable: 100,
+        }),
+      }),
+    ]);
+  });
+
+  it("marks active ops projects with no streamer activity as streamer gap projects", async () => {
+    const projectRows = [
+      projectRow({
+        id: "project-gap",
+        name: "Needs Streamer",
+        status: "active",
+      }),
+      projectRow({
+        id: "project-staffed",
+        name: "Staffed",
+        status: "active",
+      }),
+    ];
+    expect(toProjectCardDtos(projectRows)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "project-gap",
+          streamers: expect.objectContaining({ candidate: 0 }),
+        }),
+      ]),
+    );
+    vi.mocked(listProjects).mockResolvedValue(projectRows as never);
+    vi.mocked(listOpsLiveTaskQueue).mockResolvedValue([
+      {
+        id: "task-staffed",
+        title: "Staffed live",
+        status: "pending_live",
+        taskType: "project",
+        projectId: "project-staffed",
+        projectName: "Staffed",
+        streamerId: "streamer-1",
+        streamerName: "Streamer A",
+        plannedStartAt: "2026-06-16T08:00:00.000Z",
+        plannedEndAt: "2026-06-16T10:00:00.000Z",
+        plannedDuration: 120,
+        systemDuration: 0,
+      },
+    ]);
+
+    const dashboard = await loadRoleHomeDashboard({
+      supabase: supabase as never,
+      auth: {
+        ...auth,
+        role: "ops_manager",
+      },
+      now: "2026-06-16T09:30:00.000Z",
+    });
+
+    expect(
+      vi.mocked(buildRoleHomeDashboard).mock.calls[0]?.[0].source.projects,
+    ).toEqual([
+      expect.objectContaining({
+        id: "project-gap",
+        streamers: expect.objectContaining({ active: 0, candidate: 1 }),
+      }),
+      expect.objectContaining({
+        id: "project-staffed",
+        streamers: expect.objectContaining({ active: 1, candidate: 0 }),
+      }),
+    ]);
+    expect(dashboard.kpis).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "streamerGapProjects", value: 1 }),
+      ]),
+    );
   });
 
   it("maps report timing sources into dashboard report sources", async () => {

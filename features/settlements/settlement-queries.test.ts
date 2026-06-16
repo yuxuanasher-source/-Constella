@@ -53,6 +53,7 @@ describe("settlement DTO mappers", () => {
   it("maps settlement pool rows with frozen evidence and rule preview", () => {
     const item = toOpsSettlementPoolItem({
       id: "report-1",
+      project_id: "project-1",
       created_at: "2026-06-02T12:00:00.000Z",
       settlement_duration: 120,
       time_source: "system",
@@ -71,6 +72,7 @@ describe("settlement DTO mappers", () => {
 
     expect(item).toEqual({
       id: "report-1",
+      projectId: "project-1",
       projectName: "Launch Week",
       streamerName: "Streamer One",
       settlementDuration: 120,
@@ -182,6 +184,7 @@ describe("settlement DTO mappers", () => {
   it("maps settlement pool rows into reference pool rows without computed settlement side effects", () => {
     const poolItem = toOpsSettlementPoolItem({
       id: "report-2",
+      project_id: "project-1",
       created_at: "2026-06-02T12:30:00.000Z",
       settlement_duration: 90,
       time_source: "system",
