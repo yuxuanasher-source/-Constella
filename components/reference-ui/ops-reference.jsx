@@ -859,7 +859,7 @@ const OpsLiveDataContext = React.createContext({
   organizationSettings: DEFAULT_ORGANIZATION_SETTINGS,
   billingStatus: null,
   complexCost: null,
-dashboardHome: null,
+  dashboardHome: null,
   currentUser: DEFAULT_CURRENT_USER,
   actions: {},
 });
@@ -2215,8 +2215,16 @@ function ScreenRoleHome({ dashboard, go }) {
           />
         ) : null}
         <RoleHomeKpis items={dashboard.kpis || []} />
-        <RoleHomeSection title="优先处理" items={dashboard.queue || []} go={go} />
-        <RoleHomeSection title="风险提醒" items={dashboard.risks || []} go={go} />
+        <RoleHomeSection
+          title="优先处理"
+          items={dashboard.queue || []}
+          go={go}
+        />
+        <RoleHomeSection
+          title="风险提醒"
+          items={dashboard.risks || []}
+          go={go}
+        />
         <RoleHomeSection
           title="常用入口"
           items={dashboard.drilldowns || []}

@@ -518,9 +518,7 @@ describe("loadRoleHomeDashboard", () => {
       "project-mine",
     ]);
     expect(source?.tasks.map((task) => task.id)).toEqual(["task-mine"]);
-    expect(source?.reports.map((report) => report.id)).toEqual([
-      "report-mine",
-    ]);
+    expect(source?.reports.map((report) => report.id)).toEqual(["report-mine"]);
     expect(dashboard.kpis).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ key: "myTodayTasks", value: 1 }),

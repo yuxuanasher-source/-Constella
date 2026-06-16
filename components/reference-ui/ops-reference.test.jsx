@@ -238,7 +238,12 @@ describe("OpsReferenceApp role dashboard contract", () => {
             scopeLabel: "全组织",
           },
           kpis: [
-            { key: "activeProjects", label: "进行中项目", value: 3, unit: "个" },
+            {
+              key: "activeProjects",
+              label: "进行中项目",
+              value: 3,
+              unit: "个",
+            },
             {
               key: "grossMarginRate",
               label: "预估毛利率",
@@ -324,8 +329,18 @@ describe("OpsReferenceApp role dashboard contract", () => {
             scopeLabel: "我的项目",
           },
           kpis: [
-            { key: "myTodayTasks", label: "我的今日任务", value: 4, unit: "项" },
-            { key: "pendingReports", label: "待审核报数", value: 2, unit: "条" },
+            {
+              key: "myTodayTasks",
+              label: "我的今日任务",
+              value: 4,
+              unit: "项",
+            },
+            {
+              key: "pendingReports",
+              label: "待审核报数",
+              value: 2,
+              unit: "条",
+            },
           ],
           queue: [],
           risks: [],
@@ -426,22 +441,34 @@ describe("OpsReferenceApp role dashboard contract", () => {
     );
 
     expect(
-      within(screen.getByRole("button", { name: /项目卡点/ })).getByText("项目"),
+      within(screen.getByRole("button", { name: /项目卡点/ })).getByText(
+        "项目",
+      ),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByRole("button", { name: /任务卡点/ })).getByText("任务"),
+      within(screen.getByRole("button", { name: /任务卡点/ })).getByText(
+        "任务",
+      ),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByRole("button", { name: /报数卡点/ })).getByText("报数"),
+      within(screen.getByRole("button", { name: /报数卡点/ })).getByText(
+        "报数",
+      ),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByRole("button", { name: /结算卡点/ })).getByText("结算"),
+      within(screen.getByRole("button", { name: /结算卡点/ })).getByText(
+        "结算",
+      ),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByRole("button", { name: /审计卡点/ })).getByText("审计"),
+      within(screen.getByRole("button", { name: /审计卡点/ })).getByText(
+        "审计",
+      ),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByRole("button", { name: /通知卡点/ })).getByText("通知"),
+      within(screen.getByRole("button", { name: /通知卡点/ })).getByText(
+        "通知",
+      ),
     ).toBeInTheDocument();
   });
 

@@ -56,10 +56,7 @@ Create `features/dashboards/role-home.test.ts`:
 ```ts
 import { describe, expect, it } from "vitest";
 
-import {
-  buildRoleHomeDashboard,
-  type DashboardSourceData,
-} from "./role-home";
+import { buildRoleHomeDashboard, type DashboardSourceData } from "./role-home";
 
 const source: DashboardSourceData = {
   now: "2026-06-16T09:30:00.000Z",
@@ -815,7 +812,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { AuthContext } from "@/lib/auth/context";
 import { isMcnStaff } from "@/lib/rbac/roles";
-import { listOpsLiveReportQueue, listOpsLiveTaskQueue } from "@/features/live-operations/live-operations-queries";
+import {
+  listOpsLiveReportQueue,
+  listOpsLiveTaskQueue,
+} from "@/features/live-operations/live-operations-queries";
 import { listNotificationCenterItems } from "@/features/notifications/notification-center-queries";
 import { listProjects } from "@/features/projects/project-queries";
 import { toProjectCardDtos } from "@/features/projects/project-ui-dto";
@@ -1188,7 +1188,9 @@ vi.mocked(loadRoleHomeDashboard).mockResolvedValue({
 Extend the existing happy-path expectation:
 
 ```ts
-expect(screen.getByTestId("ops-reference-app")).toHaveTextContent("椤圭洰鎺ㄨ繘鐪嬫澘");
+expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
+  "椤圭洰鎺ㄨ繘鐪嬫澘",
+);
 expect(loadRoleHomeDashboard).toHaveBeenCalledWith({
   supabase,
   auth: expect.objectContaining({
@@ -1386,11 +1388,11 @@ Add `dashboardHome` to `OpsReferenceInner` parameters, provider value, JSDoc, an
 In `ScreenWarRoom`, add:
 
 ```jsx
-  const dashboardHome = useOpsDashboardHome();
+const dashboardHome = useOpsDashboardHome();
 
-  if (dashboardHome) {
-    return <ScreenRoleHome dashboard={dashboardHome} go={go} />;
-  }
+if (dashboardHome) {
+  return <ScreenRoleHome dashboard={dashboardHome} go={go} />;
+}
 ```
 
 Add this component before `ScreenWarRoom`:

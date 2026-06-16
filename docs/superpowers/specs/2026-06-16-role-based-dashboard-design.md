@@ -32,15 +32,15 @@ Scope: Redesign the dashboard experience so each account type lands on the metri
 
 ## 4. Account Types
 
-| Account type | Existing role or scope | Default business question | Dashboard posture |
-| --- | --- | --- | --- |
-| Boss / owner | `owner` | Is the business healthy, profitable, and controlled? | Executive operating view |
-| Operations lead | `ops_manager` | Which projects are blocked and what should the team handle first? | Project delivery command view |
-| Frontline operator | `operator_business` | What do I personally need to process today? | Personal action queue |
-| Finance | `finance` | Which reports can be settled safely and which amounts are risky? | Settlement safety view |
-| Streamer | `streamer` | What do I need to broadcast, submit, fix, and get paid for? | Task and earnings view |
-| Collaboration MCN | collaboration agreement scope | What did my organization contribute and what needs action? | Partner-scoped execution view |
-| External vendor / customer | tokenized share or delivery scope | Which candidates or delivery outputs can I review? | Public delivery review view |
+| Account type               | Existing role or scope            | Default business question                                         | Dashboard posture             |
+| -------------------------- | --------------------------------- | ----------------------------------------------------------------- | ----------------------------- |
+| Boss / owner               | `owner`                           | Is the business healthy, profitable, and controlled?              | Executive operating view      |
+| Operations lead            | `ops_manager`                     | Which projects are blocked and what should the team handle first? | Project delivery command view |
+| Frontline operator         | `operator_business`               | What do I personally need to process today?                       | Personal action queue         |
+| Finance                    | `finance`                         | Which reports can be settled safely and which amounts are risky?  | Settlement safety view        |
+| Streamer                   | `streamer`                        | What do I need to broadcast, submit, fix, and get paid for?       | Task and earnings view        |
+| Collaboration MCN          | collaboration agreement scope     | What did my organization contribute and what needs action?        | Partner-scoped execution view |
+| External vendor / customer | tokenized share or delivery scope | Which candidates or delivery outputs can I review?                | Public delivery review view   |
 
 ## 5. Shared Metric Foundation
 
@@ -392,15 +392,15 @@ Field rules:
 
 The dashboard DTO layer should mask fields before they reach client components.
 
-| Data family | Owner | Ops manager | Frontline operator | Finance | Streamer | Collaboration MCN | Vendor/customer |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Project status and delivery progress | Yes | Yes | Scoped | Read | Own task only | Scoped | Public scope |
-| Vendor receivable | Yes | Yes | Scoped if already allowed | Yes | No | Scoped if explicitly allowed | Public summary only |
-| Streamer payable | Yes | Scoped | No by default | Yes | Own safe payable only | Own org scoped | No |
-| MCN gross profit and margin | Yes | Yes if already allowed | No by default | Yes | No | No by default | No |
-| Internal risk notes | Yes | Yes | Scoped operational notes only | Read if finance-related | No | No | No |
-| Audit and high-risk actions | Yes | Yes | Own/actionable subset | Finance-related subset | No | Own collaboration subset | No |
-| Sensitive exports | Yes | Yes | Request or limited export | Finance exports | Own safe data only | Scoped exports | Authorized package only |
+| Data family                          | Owner | Ops manager            | Frontline operator            | Finance                 | Streamer              | Collaboration MCN            | Vendor/customer         |
+| ------------------------------------ | ----- | ---------------------- | ----------------------------- | ----------------------- | --------------------- | ---------------------------- | ----------------------- |
+| Project status and delivery progress | Yes   | Yes                    | Scoped                        | Read                    | Own task only         | Scoped                       | Public scope            |
+| Vendor receivable                    | Yes   | Yes                    | Scoped if already allowed     | Yes                     | No                    | Scoped if explicitly allowed | Public summary only     |
+| Streamer payable                     | Yes   | Scoped                 | No by default                 | Yes                     | Own safe payable only | Own org scoped               | No                      |
+| MCN gross profit and margin          | Yes   | Yes if already allowed | No by default                 | Yes                     | No                    | No by default                | No                      |
+| Internal risk notes                  | Yes   | Yes                    | Scoped operational notes only | Read if finance-related | No                    | No                           | No                      |
+| Audit and high-risk actions          | Yes   | Yes                    | Own/actionable subset         | Finance-related subset  | No                    | Own collaboration subset     | No                      |
+| Sensitive exports                    | Yes   | Yes                    | Request or limited export     | Finance exports         | Own safe data only    | Scoped exports               | Authorized package only |
 
 ## 8. Data Flow
 
