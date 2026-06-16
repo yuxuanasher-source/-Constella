@@ -3,9 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   listOpsSettlementBatches,
   listOpsSettlementBatchDetails,
+  toOpsSettlementBatchCostDetailItem,
   toOpsSettlementBatchDetailItem,
   toOpsSettlementBatchListItem,
   toOpsSettlementPoolItem,
+  toStreamerSafeSettlementBatchDetailItems,
 } from "./settlement-queries";
 import {
   toOpsReferenceBatch,
@@ -17,6 +19,7 @@ function createSettlementQueryClient(data: unknown[] = []) {
   const query = {
     select: vi.fn(() => query),
     eq: vi.fn(() => query),
+    not: vi.fn(() => query),
     order: vi.fn(() => query),
     returns: vi.fn(async () => ({ data, error: null })),
   };
@@ -177,6 +180,29 @@ describe("settlement DTO mappers", () => {
       adjust: 20,
       total: 320,
     });
+  });
+
+  it("maps project cost items for staff and hides them from streamer-safe details", () => {
+    const costItem = toOpsSettlementBatchCostDetailItem({
+      id: "cost-1",
+      settlement_batch_id: "batch-1",
+      item_type: "supplier_fee",
+      amount_cents: 12000,
+      direction: "cost",
+      evidence_level: "yellow",
+      source: "manual",
+      reason: "Supplier bill confirmed.",
+    });
+
+    expect(costItem).toMatchObject({
+      id: "cost-1",
+      batchId: "batch-1",
+      itemType: "supplier_fee",
+      internalOnly: true,
+      manualAmount: 12000,
+      totalAmount: 12000,
+    });
+    expect(toStreamerSafeSettlementBatchDetailItems([costItem])).toEqual([]);
   });
 
   it("maps settlement pool rows into reference pool rows without computed settlement side effects", () => {

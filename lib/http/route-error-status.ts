@@ -10,6 +10,7 @@ const permissionErrorPatterns = [
   /^Cross-organization access is not allowed$/,
   /^Organization is read-only because billing /,
   /^Current plan is not entitled to /,
+  /^Complex cost rules are not enabled for this project$/,
 ];
 
 export function statusForServiceError(error: Error): number {

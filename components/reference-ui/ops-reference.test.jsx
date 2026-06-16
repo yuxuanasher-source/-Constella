@@ -6201,6 +6201,57 @@ describe("OpsReferenceApp export center smoke", () => {
   });
 });
 
+describe("OpsReferenceApp complex cost smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("shows complex cost settings in settlement when entitlement is enabled", async () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        complexCost={{ enabled: true, includedProjects: 5, usedProjects: 2 }}
+      />,
+    );
+
+    expect(screen.getByText("复杂成本规则")).toBeInTheDocument();
+    expect(screen.getByText("已用 2 / 5 个项目额度")).toBeInTheDocument();
+  });
+
+  it("submits a complex cost preview from war room", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (
+        String(url) === "/api/projects/project-live/complex-cost-rule/preview"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            preview: {
+              grossMarginCents: 580000,
+              marginRateBps: 5800,
+              riskNotes: [],
+            },
+          }),
+        };
+      }
+
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        projectCards={taskProjectCards}
+      />,
+    );
+    fireEvent.click(screen.getByText("复杂成本测算"));
+
+    await screen.findByText("毛利率 58.0%");
+  });
+});
+
 describe("OpsReferenceApp war room smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();
