@@ -109,6 +109,7 @@ describe("loadRoleHomeDashboard", () => {
       periodStart: "2026-06-01",
       periodEnd: "2026-06-30",
     });
+    expect(listOpsSettlementBatches).toHaveBeenCalledWith(supabase, "org-1");
     expect(listNotificationCenterItems).toHaveBeenCalledWith(
       supabase,
       {
@@ -120,23 +121,46 @@ describe("loadRoleHomeDashboard", () => {
     );
   });
 
-  it("maps claimed report timing to a manual dashboard source", async () => {
+  it("maps report timing sources into dashboard report sources", async () => {
+    const reportBase = {
+      taskId: "task-1",
+      projectId: "project-1",
+      streamerId: "streamer-1",
+      status: "pending_review" as const,
+      taskTitle: "Task",
+      projectName: "Alpha",
+      streamerName: "Streamer A",
+      settlementDuration: 60,
+      evidenceLevel: null,
+      viewers: 100,
+      submittedAt: "2026-06-16T09:00:00.000Z",
+    };
+
     vi.mocked(listOpsLiveReportQueue).mockResolvedValue([
       {
-        id: "report-claimed",
-        taskId: "task-1",
-        projectId: "project-1",
-        streamerId: "streamer-1",
-        status: "pending_review",
-        taskTitle: "Task",
-        projectName: "Alpha",
-        streamerName: "Streamer A",
-        settlementDuration: 60,
-        timeSource: "claimed",
-        evidenceLevel: null,
-        viewers: 100,
-        submittedAt: "2026-06-16T09:00:00.000Z",
+        ...reportBase,
+        id: "report-system",
+        timeSource: "system",
       },
+      {
+        ...reportBase,
+        id: "report-screenshot",
+        timeSource: "screenshot",
+      },
+      {
+        ...reportBase,
+        id: "report-claimed",
+        timeSource: "claimed",
+      },
+      {
+        ...reportBase,
+        id: "report-null-source",
+        timeSource: null,
+      },
+      {
+        ...reportBase,
+        id: "report-missing-source",
+      } as never,
     ]);
 
     await loadRoleHomeDashboard({
@@ -149,8 +173,24 @@ describe("loadRoleHomeDashboard", () => {
       vi.mocked(buildRoleHomeDashboard).mock.calls[0]?.[0].source.reports,
     ).toEqual([
       expect.objectContaining({
+        id: "report-system",
+        source: "system",
+      }),
+      expect.objectContaining({
+        id: "report-screenshot",
+        source: "OCR",
+      }),
+      expect.objectContaining({
         id: "report-claimed",
         source: "manual",
+      }),
+      expect.objectContaining({
+        id: "report-null-source",
+        source: "unknown",
+      }),
+      expect.objectContaining({
+        id: "report-missing-source",
+        source: "unknown",
       }),
     ]);
   });
