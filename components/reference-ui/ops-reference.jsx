@@ -959,6 +959,13 @@ function useOpsBillingStatus() {
     : null;
 }
 
+function useOpsDashboardHome() {
+  const { dashboardHome } = React.useContext(OpsLiveDataContext);
+  return dashboardHome && typeof dashboardHome === "object"
+    ? dashboardHome
+    : null;
+}
+
 function useOpsLiveActions() {
   const { actions } = React.useContext(OpsLiveDataContext);
   return actions || {};
@@ -2171,11 +2178,131 @@ function PageHeader({ title, subtitle, status, actions }) {
   );
 }
 
+function ScreenRoleHome({ dashboard, go }) {
+  const generatedAt = dashboard.generatedAt
+    ? new Date(dashboard.generatedAt).toLocaleString("zh-CN")
+    : "";
+
+  return (
+    <>
+      <PageHeader
+        title={dashboard.profile?.title || "角色看板"}
+        subtitle={dashboard.profile?.subtitle || "按当前账号展示经营重点"}
+        status={
+          <Badge tone="neutral">
+            {dashboard.profile?.scopeLabel || "授权范围"}
+          </Badge>
+        }
+      />
+      <div
+        style={{
+          padding: 20,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        {dashboard.emptyState ? (
+          <EmptyHint
+            title={dashboard.emptyState.title}
+            hint={dashboard.emptyState.hint}
+          />
+        ) : null}
+        <RoleHomeKpis items={dashboard.kpis || []} />
+        <RoleHomeSection title="优先处理" items={dashboard.queue || []} go={go} />
+        <RoleHomeSection title="风险提醒" items={dashboard.risks || []} go={go} />
+        <RoleHomeSection
+          title="常用入口"
+          items={dashboard.drilldowns || []}
+          go={go}
+        />
+        {generatedAt ? (
+          <div style={{ color: "var(--ink-500)", fontSize: 12 }}>
+            数据更新时间：{generatedAt}
+          </div>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+function RoleHomeKpis({ items }) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+        gap: 12,
+      }}
+    >
+      {items.map((item) => (
+        <Card key={item.key}>
+          <Metric
+            label={item.label}
+            value={String(item.value)}
+            unit={item.unit}
+            hint={item.hint}
+          />
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function RoleHomeSection({ title, items, go }) {
+  if (!items.length) {
+    return null;
+  }
+
+  return (
+    <Card padded={false}>
+      <div style={{ padding: 16, borderBottom: "1px solid var(--line)" }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>{title}</h3>
+      </div>
+      <div style={{ display: "grid", gap: 0 }}>
+        {items.map((item) => {
+          const targetRoute = item.target?.route || "warroom";
+          const targetId = item.target?.id;
+
+          return (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => go(targetRoute, targetId)}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                padding: "12px 16px",
+                border: 0,
+                borderBottom: "1px solid var(--line)",
+                background: "#fff",
+                textAlign: "left",
+                cursor: "pointer",
+              }}
+            >
+              <span>
+                <b>{item.title}</b>
+                <br />
+                <span style={{ color: "var(--ink-500)", fontSize: 12 }}>
+                  {item.subtitle}
+                </span>
+              </span>
+              <Badge tone={item.tone || "neutral"}>{targetRoute}</Badge>
+            </button>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
 // ===== src\screen-warroom.jsx =====
 // ——— Screen: 智能项目作战台 ————————————————————————————
 
 function ScreenWarRoom({ go }) {
   const actions = useOpsLiveActions();
+  const dashboardHome = useOpsDashboardHome();
   const [tab, setTab] = React.useState("overview");
   const [ocrOpen, setOcrOpen] = React.useState(false);
   const [warRoomMessage, setWarRoomMessage] = React.useState("");
@@ -2212,6 +2339,11 @@ function ScreenWarRoom({ go }) {
       0,
     );
   const pendingActionCount = pendingReportCount + anomalyCount;
+
+  if (dashboardHome) {
+    return <ScreenRoleHome dashboard={dashboardHome} go={go} />;
+  }
+
   const exportDailyBrief = async () => {
     if (warRoomExporting) return;
     setWarRoomMessage("");

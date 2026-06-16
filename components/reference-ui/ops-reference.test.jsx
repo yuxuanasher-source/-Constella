@@ -224,6 +224,118 @@ describe("OpsReferenceApp role dashboard contract", () => {
       expect.arrayContaining([expect.objectContaining({ dashboardHome })]),
     );
   });
+
+  it("renders owner role dashboard cards on the warroom route", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        currentUser={{ id: "owner-1", name: "Owner", role: "owner" }}
+        dashboardHome={{
+          profile: {
+            role: "owner",
+            title: "经营总览看板",
+            subtitle: "关注收入、毛利、履约和高风险动作",
+            scopeLabel: "全组织",
+          },
+          kpis: [
+            { key: "activeProjects", label: "进行中项目", value: 3, unit: "个" },
+            {
+              key: "grossMarginRate",
+              label: "预估毛利率",
+              value: 31.2,
+              unit: "%",
+            },
+          ],
+          queue: [
+            {
+              key: "project:1",
+              title: "Alpha",
+              subtitle: "active · Alice",
+              tone: "neutral",
+              target: { route: "project", id: "project-1" },
+            },
+          ],
+          risks: [],
+          drilldowns: [],
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("经营总览看板")).toBeInTheDocument();
+    expect(screen.getByText("进行中项目")).toBeInTheDocument();
+    expect(screen.getByText("预估毛利率")).toBeInTheDocument();
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+  });
+
+  it("renders finance dashboard without owner margin cards", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        currentUser={{ id: "finance-1", name: "Finance", role: "finance" }}
+        dashboardHome={{
+          profile: {
+            role: "finance",
+            title: "结算安全看板",
+            subtitle: "关注可结算池、弱证据、人工承载和批次状态",
+            scopeLabel: "财务授权范围",
+          },
+          kpis: [
+            {
+              key: "settlementPoolAmount",
+              label: "可结算池金额",
+              value: 8000,
+              unit: "元",
+            },
+            {
+              key: "weakEvidenceAmount",
+              label: "弱证据金额",
+              value: 1200,
+              unit: "元",
+            },
+          ],
+          queue: [],
+          risks: [],
+          drilldowns: [],
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("结算安全看板")).toBeInTheDocument();
+    expect(screen.getByText("可结算池金额")).toBeInTheDocument();
+    expect(screen.queryByText("预估毛利率")).not.toBeInTheDocument();
+  });
+
+  it("renders dashboard empty state on the warroom route", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        dashboardHome={{
+          profile: {
+            role: "ops_manager",
+            title: "项目推进看板",
+            subtitle: "关注招募、录屏、排班、报数和异常卡点",
+            scopeLabel: "授权项目",
+          },
+          kpis: [],
+          queue: [],
+          risks: [],
+          drilldowns: [],
+          emptyState: {
+            title: "暂无授权项目",
+            hint: "当你获得项目授权后，系统会在这里展示优先事项。",
+          },
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("暂无授权项目")).toBeInTheDocument();
+    expect(
+      screen.getByText("当你获得项目授权后，系统会在这里展示优先事项。"),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("OpsReferenceApp project smoke", () => {
