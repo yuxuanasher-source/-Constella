@@ -174,6 +174,27 @@ flowchart LR
 | M10  | 作战台       | warroom       | 报价、匹配、复盘、AI 经营建议    |
 | M11  | 商业化与套餐 | billing       | 套餐、权益、用量、只读状态       |
 
+### 6.1 角色化默认看板
+
+`/console` 不再只被理解为所有 MCN 员工共用的一张总看板。登录后应根据账号类型进入对应默认首页，同一套业务指标在后端保持统一口径，再由角色化 DTO 投影出不同字段、队列和动作。
+
+| 账号类型 | 现有角色或访问范围 | 默认看板目标 | 第一屏重点 |
+| -------- | ------------------ | ------------ | ---------- |
+| 老板 / 负责人 | `owner` | 判断经营是否健康、盈利是否安全、风险是否受控 | 进行中项目、本月厂家应收、预估毛利和毛利率、低/负毛利项目、高风险事项 |
+| 运营负责人 | `ops_manager` | 判断哪些项目卡住、团队今天先处理什么 | 招募/执行/结算项目数、主播缺口、录屏待审、今日排班、异常任务 |
+| 一线运营 | `operator_business` | 只看自己负责项目今天要处理的动作 | 我的今日任务、未开播、待报数、待审核报数、需要联系主播事项 |
+| 财务 | `finance` | 判断哪些钱可以安全结算、哪些金额有风险 | 可结算池金额、可结算报数、待生成批次、本月主播应付、弱证据/人工承载金额 |
+| 主播 | `streamer` | 完成任务、补证据、查看安全收益状态 | 今日任务、待上传截图、审核中报数、待补充事项、可结算/已结算收益 |
+| 协作 MCN | 协作协议范围 | 处理本组织参与项目的贡献、异常和分账 | 协作项目、已加入主播、协作直播时长、通过报数、待确认分账 |
+| 外部厂家 / 客户 | 分享链接或交付包范围 | 审核候选和验收交付，不接触内部财务 | 候选主播、待审核录屏、已通过候选、交付场次、交付包状态 |
+
+通用规则：
+
+- 看板只给经营判断和跳转上下文，不直接执行高风险动作。
+- 每个指标必须能回到项目、主播、任务、报数、结算、审计或导出记录。
+- 隐藏字段必须在服务端 DTO 层剥离，不能只靠前端隐藏。
+- 主播、协作方和厂家不接收 MCN 毛利、供应商内部成本、其他主播结算、内部风险备注和私密审计细节。
+
 ## 7. 核心状态机
 
 ### 7.1 项目状态
@@ -619,6 +640,7 @@ flowchart LR
 
 主要功能：
 
+- 角色化默认看板：owner、ops_manager、operator_business、finance 先作为员工端 MVP；streamer、协作 MCN、厂家/客户作为后续作用域化入口。
 - 报价测算。
 - 游戏直播复杂成本和毛利测算。
 - 主播匹配排序。
@@ -628,6 +650,27 @@ flowchart LR
 - AI 经营分析、选播建议、脚本优化、报价权衡、主播诊断、M10 Copilot。
 - AI 调用账本和工具调用账本。
 - OpenAI / Hunyuan / deterministic provider registry 和 gateway。
+
+角色化看板指标族：
+
+| 指标族 | 业务问题 | 典型来源 |
+| ------ | -------- | -------- |
+| 项目健康 | 项目是否按计划推进、是否存在延期或亏损风险 | `projects`、`project_streamers`、`live_tasks`、`live_reports`、`settlement_batches` |
+| 招募与准入 | 主播供给是否卡住、录屏和最终入项是否积压 | `project_applications`、`recording_submissions`、`project_recording_share_*` |
+| 直播执行 | 今日排班是否正常、是否有未开播/未报数/异常任务 | `live_tasks`、`task_anomalies`、`notifications` |
+| 报数证据 | 报数能否入池、证据是否足够强 | `live_reports`、OCR 作业、AI 调用账本 |
+| 结算毛利 | 哪些金额可结算、哪些金额存在弱证据或人工承载风险 | `settlement_batches`、`settlement_batch_items`、`live_reports`、`project_streamers` |
+| 协作分账 | 协作方贡献和分账是否待确认 | `project_collaboration_*`、协作结算记录 |
+| 治理风险 | 高风险动作、敏感导出和异常待办是否受控 | `audit_logs`、`notifications`、受控导出记录 |
+
+角色化默认布局：
+
+| 账号类型 | KPI 区 | 队列区 | 风险区 | 默认跳转 |
+| -------- | ------ | ------ | ------ | -------- |
+| owner | 项目数、应收、毛利、低毛利项目、高风险事项 | 项目经营排行 | 低/负毛利、延期、敏感导出、批次重开 | 项目复盘、毛利分析、审计、结算批次 |
+| ops_manager | 项目状态、主播缺口、录屏待审、今日排班、异常任务 | 项目卡点队列、准入漏斗、今日执行盘 | 超时卡点、未处理异常、录屏/入项积压 | 录屏审核、最终入项、异常分派、项目详情 |
+| operator_business | 我的今日任务、未开播、待报数、待审核、需联系主播 | 时间线待办、报数审核、主播提醒 | 未开播、未停止、截图缺失、证据偏差 | 任务详情、报数审核、通知上下文 |
+| finance | 可结算池、报数条数、待生成批次、主播应付、弱证据金额 | 可结算池、批次状态、财务导出 | 红/黄证据、人工调整、规则变更、重开批次 | 结算池、批次详情、导出中心、审计 |
 
 报价测算输出：
 
@@ -909,6 +952,7 @@ P6 正式商业化规格已沉淀：
 
 | API                                | 方法 | 功能                  |
 | ---------------------------------- | ---- | --------------------- |
+| `/api/dashboards/role-home`        | GET  | 读取当前账号角色化看板 |
 | `/api/war-room/pricing`            | POST | 报价测算              |
 | `/api/war-room/matching`           | POST | 主播匹配和供应商评分  |
 | `/api/war-room/project-review`     | POST | 项目复盘报告          |
@@ -1026,6 +1070,8 @@ MVP 新增：
 | `ai_diagnoses`            | AI 诊断记录     |
 | `ai_script_versions`      | AI 脚本版本     |
 
+角色化看板第一版优先复用现有业务表和查询聚合，不新增看板专用事实表。若后续需要跨月趋势、复杂筛选或大客户历史对比，再评估增加快照或物化视图。
+
 ### 11.7 商业化
 
 | 表                           | 用途       |
@@ -1039,30 +1085,32 @@ MVP 新增：
 
 ## 12. 验收与测试覆盖
 
-| 范围            | 入口                                                                                         |
-| --------------- | -------------------------------------------------------------------------------------------- |
-| 全量测试        | `pnpm test`                                                                                  |
-| 类型检查        | `pnpm type-check`                                                                            |
-| Lint            | `pnpm lint`                                                                                  |
-| 构建            | `pnpm build`                                                                                 |
-| API 合约        | `pnpm test:api-contracts`                                                                    |
-| DTO 合约        | `pnpm test:dto-contracts`                                                                    |
-| P1/P2 黄金路径  | `pnpm test:golden`                                                                           |
-| P3 治理         | `pnpm test:p3-governance`                                                                    |
-| P4 决策飞轮     | `pnpm test:p4-flywheel`                                                                      |
-| P5 商业化       | `pnpm test:p5-commercialization`                                                             |
+| 范围           | 入口                                |
+| -------------- | ----------------------------------- |
+| 全量测试       | `pnpm test`                         |
+| 类型检查       | `pnpm type-check`                   |
+| Lint           | `pnpm lint`                         |
+| 构建           | `pnpm build`                        |
+| API 合约       | `pnpm test:api-contracts`           |
+| DTO 合约       | `pnpm test:dto-contracts`           |
+| P1/P2 黄金路径 | `pnpm test:golden`                  |
+| P3 治理        | `pnpm test:p3-governance`           |
+| P4 决策飞轮    | `pnpm test:p4-flywheel`             |
+| M10 角色化看板 | `pnpm vitest run features/dashboards app/api/dashboards components/reference-ui/ops-reference.test.jsx 'app/(ops)/console/page.test.tsx'` |
+| P5 商业化      | `pnpm test:p5-commercialization`    |
 | X1 复杂成本规则 | `pnpm vitest run features/complex-cost features/regression/complex-cost-golden-path.test.ts` |
-| AI 系统         | `pnpm test:ai-system`                                                                        |
-| 权限重点回归    | `pnpm test:permissions`                                                                      |
-| UI smoke        | `pnpm test:ui-smoke`                                                                         |
-| API 集成 smoke  | `pnpm test:api-integration-smoke`                                                            |
-| 手工验收 smoke  | `pnpm test:manual-acceptance-smoke`                                                          |
+| AI 系统        | `pnpm test:ai-system`               |
+| 权限重点回归   | `pnpm test:permissions`             |
+| UI smoke       | `pnpm test:ui-smoke`                |
+| API 集成 smoke | `pnpm test:api-integration-smoke`   |
+| 手工验收 smoke | `pnpm test:manual-acceptance-smoke` |
 
 已确认的闭环证据：
 
 - P1/P2 黄金路径覆盖“报数提交 -> 审核通过 -> 结算池 -> 应付批次 -> 主播安全账单”。
 - P3 覆盖审计中心、通知、异常扫描、导出、交付包。
 - P4 覆盖报价、匹配、供应商评分、复盘、AI 工具安全和自动审核边界。
+- M10 角色化看板覆盖：角色默认首页、指标口径一致性、服务端字段脱敏、空态和部分失败态、看板卡片跳转上下文。
 - P5 覆盖套餐权益、用量计量、欠费只读和账单状态。
 - X1 复杂成本规则需要新增覆盖：项目级权益门控、规则版本、成本预览、导入确认、批次成本项、导出脱敏。
 - UI smoke 覆盖经营端核心按钮和主播端核心任务流。
@@ -1089,7 +1137,11 @@ P5 是商业化底座，不是正式支付闭环。真实支付、发票、对�
 
 游戏直播复杂成本规则 MVP 已接入项目级开通、套餐权益门控、规则版本、成本预览、导入确认、复杂成本项、批次附件、供应商对账/项目成本导出和经营端入口。边界仍保持清晰：CPA/CPS/礼物/投流/供应商成本不做全自动结算，必须经导入或人工确认后才进入项目成本项和结算批次。
 
-### 13.6 AI 外部 provider 受配置影响
+### 13.6 角色化看板员工端 MVP 已上线
+
+角色化看板员工端 MVP 已在 `/console` 落地：owner、ops_manager、operator_business、finance 使用统一指标聚合和角色投影 DTO，通过 `/api/dashboards/role-home` 返回默认首页数据，并包含服务端字段脱敏、空态、部分失败态和卡片跳转上下文测试。主播、协作 MCN、厂家/客户看板仍属于后续作用域化入口，不应混同为员工端 MVP 已完成范围。
+
+### 13.7 AI 外部 provider 受配置影响
 
 AI provider registry 支持 deterministic、OpenAI、Hunyuan。无密钥或配置缺失时会降级或使用确定性 provider，业务不能假设每次都有真实外部模型响应。
 

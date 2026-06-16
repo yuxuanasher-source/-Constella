@@ -55,19 +55,29 @@ export type ProjectListItem = {
   created_at: string;
 };
 
+export type ListProjectsOptions = {
+  organizationId?: string;
+};
+
 export async function listProjects(
   supabase: SupabaseClient | null,
+  options: ListProjectsOptions = {},
 ): Promise<ProjectListItem[]> {
   if (!supabase) {
     return [];
   }
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("projects")
     .select(
       "id, code, name, status, sensitivity, starts_at, ends_at, open_signup, allow_direct_invite, force_recording, force_system_timing, default_hourly_rate, default_settlement_method, vendor_name, product_name, agent_name, supplier_name, description, is_public_to_streamers, public_summary, game_download_url, is_open_to_mcn_collaboration, mcn_collaboration_summary, mcn_collaboration_terms, created_by, owner_id, ops_manager_id, creator:profiles!projects_created_by_fkey(full_name), owner:profiles!projects_owner_id_fkey(full_name), opsManager:profiles!projects_ops_manager_id_fkey(full_name), settlement_batches(id, status), live_reports(id, status, enter_settlement_pool, settled_batch_item_id), published_at, created_at",
-    )
-    .order("created_at", { ascending: false });
+    );
+
+  if (options.organizationId) {
+    query = query.eq("organization_id", options.organizationId);
+  }
+
+  const { data, error } = await query.order("created_at", { ascending: false });
 
   if (error) {
     throw error;

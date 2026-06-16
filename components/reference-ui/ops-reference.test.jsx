@@ -161,6 +161,375 @@ const projectManagementCards = [
   },
 ];
 
+describe("OpsReferenceApp role dashboard contract", () => {
+  afterEach(() => {
+    vi.doUnmock("react");
+    vi.resetModules();
+  });
+
+  it("publishes dashboardHome into the live data context boundary", async () => {
+    const providerValues = [];
+    vi.resetModules();
+    vi.doMock("react", async (importOriginal) => {
+      const actual = await importOriginal();
+      const actualReact = actual.default ?? actual;
+      const createContext = (defaultValue) => {
+        const context = actualReact.createContext(defaultValue);
+        const isOpsLiveDataContext =
+          defaultValue &&
+          Object.prototype.hasOwnProperty.call(defaultValue, "projects") &&
+          Object.prototype.hasOwnProperty.call(defaultValue, "actions");
+
+        if (isOpsLiveDataContext) {
+          const Provider = context.Provider;
+          context.Provider = function OpsLiveDataProviderCapture(props) {
+            providerValues.push(props.value);
+            return actualReact.createElement(Provider, props);
+          };
+        }
+
+        return context;
+      };
+
+      return {
+        ...actual,
+        createContext,
+        default: { ...actualReact, createContext },
+      };
+    });
+    const { default: InstrumentedOpsReferenceApp } =
+      await import("./ops-reference");
+    const dashboardHome = {
+      profile: {
+        role: "ops_manager",
+        title: "项目推进看板",
+        subtitle: "关注招募、录屏、排班、报数和异常卡点",
+        scopeLabel: "授权项目",
+      },
+      kpis: [],
+      queue: [],
+      risks: [],
+      drilldowns: [],
+      generatedAt: "2026-06-16T09:30:00.000Z",
+    };
+
+    render(
+      <InstrumentedOpsReferenceApp
+        initialRoute="warroom"
+        dashboardHome={dashboardHome}
+      />,
+    );
+
+    expect(providerValues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ dashboardHome })]),
+    );
+  });
+
+  it("renders owner role dashboard cards on the warroom route", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        currentUser={{ id: "owner-1", name: "Owner", role: "owner" }}
+        dashboardHome={{
+          profile: {
+            role: "owner",
+            title: "经营总览看板",
+            subtitle: "关注收入、毛利、履约和高风险动作",
+            scopeLabel: "全组织",
+          },
+          kpis: [
+            { key: "activeProjects", label: "进行中项目", value: 3, unit: "个" },
+            {
+              key: "grossMarginRate",
+              label: "预估毛利率",
+              value: 31.2,
+              unit: "%",
+            },
+          ],
+          queue: [
+            {
+              key: "project:1",
+              title: "Alpha",
+              subtitle: "active · Alice",
+              tone: "neutral",
+              target: { route: "project", id: "project-1" },
+            },
+          ],
+          risks: [],
+          drilldowns: [],
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("经营总览看板")).toBeInTheDocument();
+    expect(screen.getByText("进行中项目")).toBeInTheDocument();
+    expect(screen.getByText("预估毛利率")).toBeInTheDocument();
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+  });
+
+  it("renders finance dashboard without owner margin cards", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        currentUser={{ id: "finance-1", name: "Finance", role: "finance" }}
+        dashboardHome={{
+          profile: {
+            role: "finance",
+            title: "结算安全看板",
+            subtitle: "关注可结算池、弱证据、人工承载和批次状态",
+            scopeLabel: "财务授权范围",
+          },
+          kpis: [
+            {
+              key: "settlementPoolAmount",
+              label: "可结算池金额",
+              value: 8000,
+              unit: "元",
+            },
+            {
+              key: "weakEvidenceAmount",
+              label: "弱证据金额",
+              value: 1200,
+              unit: "元",
+            },
+          ],
+          queue: [],
+          risks: [],
+          drilldowns: [],
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("结算安全看板")).toBeInTheDocument();
+    expect(screen.getByText("可结算池金额")).toBeInTheDocument();
+    expect(screen.queryByText("预估毛利率")).not.toBeInTheDocument();
+  });
+
+  it("does not render executive finance labels for operator dashboard", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        currentUser={{
+          id: "operator-1",
+          name: "Operator",
+          role: "operator_business",
+        }}
+        dashboardHome={{
+          profile: {
+            role: "operator_business",
+            title: "我的今日待办",
+            subtitle: "关注自己负责项目的任务、报数和主播提醒",
+            scopeLabel: "我的项目",
+          },
+          kpis: [
+            { key: "myTodayTasks", label: "我的今日任务", value: 4, unit: "项" },
+            { key: "pendingReports", label: "待审核报数", value: 2, unit: "条" },
+          ],
+          queue: [],
+          risks: [],
+          drilldowns: [],
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("我的今日待办")).toBeInTheDocument();
+    expect(screen.getByText("我的今日任务")).toBeInTheDocument();
+    expect(screen.getByText("待审核报数")).toBeInTheDocument();
+    expect(screen.queryByText("本月厂家应收")).not.toBeInTheDocument();
+    expect(screen.queryByText("预估毛利")).not.toBeInTheDocument();
+  });
+
+  it("renders dashboard empty state on the warroom route", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        dashboardHome={{
+          profile: {
+            role: "ops_manager",
+            title: "项目推进看板",
+            subtitle: "关注招募、录屏、排班、报数和异常卡点",
+            scopeLabel: "授权项目",
+          },
+          kpis: [],
+          queue: [],
+          risks: [],
+          drilldowns: [],
+          emptyState: {
+            title: "暂无授权项目",
+            hint: "当你获得项目授权后，系统会在这里展示优先事项。",
+          },
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("暂无授权项目")).toBeInTheDocument();
+    expect(
+      screen.getByText("当你获得项目授权后，系统会在这里展示优先事项。"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders dashboard target badges with Chinese route labels", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        dashboardHome={{
+          profile: {
+            role: "ops_manager",
+            title: "项目推进看板",
+            subtitle: "关注招募、录屏、排班、报数和异常卡点",
+            scopeLabel: "授权项目",
+          },
+          kpis: [],
+          queue: [
+            {
+              key: "project:1",
+              title: "项目卡点",
+              target: { route: "project", id: "project-1" },
+            },
+            {
+              key: "task:1",
+              title: "任务卡点",
+              target: { route: "tasks", id: "task-1" },
+            },
+          ],
+          risks: [
+            {
+              key: "report:1",
+              title: "报数卡点",
+              target: { route: "reports", id: "report-1" },
+            },
+            {
+              key: "settle:1",
+              title: "结算卡点",
+              target: { route: "settle", id: "batch-1" },
+            },
+          ],
+          drilldowns: [
+            {
+              key: "audit:1",
+              title: "审计卡点",
+              target: { route: "audit", id: "audit-1" },
+            },
+            {
+              key: "notification:1",
+              title: "通知卡点",
+              target: { route: "notifications", id: "notice-1" },
+            },
+          ],
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    expect(
+      within(screen.getByRole("button", { name: /项目卡点/ })).getByText("项目"),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("button", { name: /任务卡点/ })).getByText("任务"),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("button", { name: /报数卡点/ })).getByText("报数"),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("button", { name: /结算卡点/ })).getByText("结算"),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("button", { name: /审计卡点/ })).getByText("审计"),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("button", { name: /通知卡点/ })).getByText("通知"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps project dashboard target navigation on the project detail route", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        projectCards={taskProjectCards}
+        streamerCards={[]}
+        applicationQueue={[]}
+        dashboardHome={{
+          profile: {
+            role: "owner",
+            title: "经营总览看板",
+            subtitle: "关注收入、毛利、履约和高风险动作",
+            scopeLabel: "全组织",
+          },
+          kpis: [],
+          queue: [
+            {
+              key: "project:live",
+              title: "项目卡点",
+              subtitle: "active · Ops",
+              tone: "neutral",
+              target: { route: "project", id: "project-live" },
+            },
+          ],
+          risks: [],
+          drilldowns: [],
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    const projectRow = screen.getByRole("button", { name: /项目卡点/ });
+    fireEvent.click(projectRow);
+
+    expect(
+      screen.getByRole("heading", { name: "Fixture Project" }),
+    ).toBeInTheDocument();
+  });
+
+  it("preserves non-project dashboard target ids after navigation", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        projectCards={[]}
+        streamerCards={[]}
+        applicationQueue={[]}
+        liveTasks={[]}
+        dashboardHome={{
+          profile: {
+            role: "ops_manager",
+            title: "项目推进看板",
+            subtitle: "关注招募、录屏、排班、报数和异常卡点",
+            scopeLabel: "授权项目",
+          },
+          kpis: [],
+          queue: [
+            {
+              key: "task:1",
+              title: "任务卡点",
+              subtitle: "pending_review · Streamer One",
+              tone: "amber",
+              target: { route: "tasks", id: "task-1" },
+            },
+          ],
+          risks: [],
+          drilldowns: [],
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    const taskRow = screen.getByRole("button", { name: /任务卡点/ });
+    fireEvent.click(taskRow);
+
+    expect(screen.getByText("已定位：任务 task-1")).toBeInTheDocument();
+  });
+
+  it("uses the legacy war room fallback when dashboardHome is absent", () => {
+    render(<OpsReferenceApp initialRoute="warroom" />);
+
+    expect(screen.getByText("智能项目作战台")).toBeInTheDocument();
+    expect(screen.queryByText("角色看板")).not.toBeInTheDocument();
+  });
+});
+
 describe("OpsReferenceApp project smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();

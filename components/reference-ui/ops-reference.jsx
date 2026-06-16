@@ -859,6 +859,7 @@ const OpsLiveDataContext = React.createContext({
   organizationSettings: DEFAULT_ORGANIZATION_SETTINGS,
   billingStatus: null,
   complexCost: null,
+dashboardHome: null,
   currentUser: DEFAULT_CURRENT_USER,
   actions: {},
 });
@@ -962,6 +963,13 @@ function useOpsBillingStatus() {
 function useOpsComplexCost() {
   const { complexCost } = React.useContext(OpsLiveDataContext);
   return complexCost && typeof complexCost === "object" ? complexCost : null;
+}
+
+function useOpsDashboardHome() {
+  const { dashboardHome } = React.useContext(OpsLiveDataContext);
+  return dashboardHome && typeof dashboardHome === "object"
+    ? dashboardHome
+    : null;
 }
 
 function useOpsLiveActions() {
@@ -2176,11 +2184,181 @@ function PageHeader({ title, subtitle, status, actions }) {
   );
 }
 
+function ScreenRoleHome({ dashboard, go }) {
+  const generatedAt = dashboard.generatedAt
+    ? new Date(dashboard.generatedAt).toLocaleString("zh-CN")
+    : "";
+
+  return (
+    <>
+      <PageHeader
+        title={dashboard.profile?.title || "角色看板"}
+        subtitle={dashboard.profile?.subtitle || "按当前账号展示经营重点"}
+        status={
+          <Badge tone="neutral">
+            {dashboard.profile?.scopeLabel || "授权范围"}
+          </Badge>
+        }
+      />
+      <div
+        style={{
+          padding: 20,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        {dashboard.emptyState ? (
+          <EmptyHint
+            title={dashboard.emptyState.title}
+            hint={dashboard.emptyState.hint}
+          />
+        ) : null}
+        <RoleHomeKpis items={dashboard.kpis || []} />
+        <RoleHomeSection title="优先处理" items={dashboard.queue || []} go={go} />
+        <RoleHomeSection title="风险提醒" items={dashboard.risks || []} go={go} />
+        <RoleHomeSection
+          title="常用入口"
+          items={dashboard.drilldowns || []}
+          go={go}
+        />
+        {generatedAt ? (
+          <div style={{ color: "var(--ink-500)", fontSize: 12 }}>
+            数据更新时间：{generatedAt}
+          </div>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+const DASHBOARD_TARGET_ROUTE_LABELS = {
+  project: "项目",
+  projects: "项目",
+  streamers: "主播",
+  tasks: "任务",
+  reports: "报数",
+  settle: "结算",
+  audit: "审计",
+  notifications: "通知",
+};
+
+const DASHBOARD_FOCUS_ROUTES = new Set([
+  "tasks",
+  "reports",
+  "settle",
+  "audit",
+  "notifications",
+]);
+
+function dashboardTargetRouteLabel(route) {
+  return DASHBOARD_TARGET_ROUTE_LABELS[route] || "查看";
+}
+
+function RoleHomeKpis({ items }) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+        gap: 12,
+      }}
+    >
+      {items.map((item) => (
+        <Card key={item.key}>
+          <Metric
+            label={item.label}
+            value={String(item.value)}
+            unit={item.unit}
+            hint={item.hint}
+          />
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function RoleHomeSection({ title, items, go }) {
+  if (!items.length) {
+    return null;
+  }
+
+  return (
+    <Card padded={false}>
+      <div style={{ padding: 16, borderBottom: "1px solid var(--line)" }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>{title}</h3>
+      </div>
+      <div style={{ display: "grid", gap: 0 }}>
+        {items.map((item) => {
+          const targetRoute = item.target?.route || "warroom";
+          const targetId = item.target?.id;
+          const targetLabel = item.target?.route
+            ? dashboardTargetRouteLabel(targetRoute)
+            : "查看";
+
+          return (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => go(targetRoute, targetId)}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                padding: "12px 16px",
+                border: 0,
+                borderBottom: "1px solid var(--line)",
+                background: "#fff",
+                textAlign: "left",
+                cursor: "pointer",
+              }}
+            >
+              <span>
+                <b>{item.title}</b>
+                <br />
+                <span style={{ color: "var(--ink-500)", fontSize: 12 }}>
+                  {item.subtitle}
+                </span>
+              </span>
+              <Badge tone={item.tone || "neutral"}>{targetLabel}</Badge>
+            </button>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function DashboardTargetContextBanner({ target }) {
+  if (!target?.route || !target?.id) {
+    return null;
+  }
+
+  return (
+    <div style={{ padding: "10px 20px 0" }}>
+      <div
+        aria-live="polite"
+        style={{
+          border: "1px solid var(--line)",
+          borderRadius: 8,
+          background: "#fff",
+          color: "var(--ink-600)",
+          fontSize: 12,
+          padding: "8px 12px",
+        }}
+      >
+        {`已定位：${dashboardTargetRouteLabel(target.route)} ${target.id}`}
+      </div>
+    </div>
+  );
+}
+
 // ===== src\screen-warroom.jsx =====
 // ——— Screen: 智能项目作战台 ————————————————————————————
 
 function ScreenWarRoom({ go }) {
   const actions = useOpsLiveActions();
+  const dashboardHome = useOpsDashboardHome();
   const [tab, setTab] = React.useState("overview");
   const [ocrOpen, setOcrOpen] = React.useState(false);
   const [warRoomMessage, setWarRoomMessage] = React.useState("");
@@ -2218,6 +2396,11 @@ function ScreenWarRoom({ go }) {
       0,
     );
   const pendingActionCount = pendingReportCount + anomalyCount;
+
+  if (dashboardHome) {
+    return <ScreenRoleHome dashboard={dashboardHome} go={go} />;
+  }
+
   const exportDailyBrief = async () => {
     if (warRoomExporting) return;
     setWarRoomMessage("");
@@ -19389,6 +19572,7 @@ function OpsReferenceInner({
   organizationSettings,
   billingStatus,
   complexCost,
+  dashboardHome,
   projectCards,
   collaborationProjectCards,
   streamerCards,
@@ -19399,6 +19583,7 @@ function OpsReferenceInner({
   const [route, setRoute] = React.useState(initialRoute);
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
+  const [dashboardTarget, setDashboardTarget] = React.useState(null);
   const [tasksState, setTasksState] = React.useState(liveTasks ?? null);
   const [reportsState, setReportsState] = React.useState(liveReports ?? null);
   const [batchesState, setBatchesState] = React.useState(liveBatches ?? null);
@@ -19430,6 +19615,9 @@ function OpsReferenceInner({
   );
   const [complexCostState, setComplexCostState] = React.useState(
     complexCost ?? null,
+  );
+  const [dashboardHomeState, setDashboardHomeState] = React.useState(
+    dashboardHome ?? null,
   );
   const [projectsState, setProjectsState] = React.useState(
     projectCards ?? null,
@@ -19498,6 +19686,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setComplexCostState(complexCost ?? null);
   }, [complexCost]);
+
+  React.useEffect(() => {
+    setDashboardHomeState(dashboardHome ?? null);
+  }, [dashboardHome]);
 
   React.useEffect(() => {
     setProjectsState(projectCards ?? null);
@@ -20387,12 +20579,17 @@ function OpsReferenceInner({
     if (r === "project") {
       setRoute("project");
       setProjectId(arg || null);
+      setDashboardTarget(null);
     } else if (r === "streamers") {
       setRoute("streamers");
       if (arg) setStreamerId(arg);
+      setDashboardTarget(null);
     } else {
       setRoute(r);
       if (r === "projects") setProjectId(null);
+      setDashboardTarget(
+        arg && DASHBOARD_FOCUS_ROUTES.has(r) ? { route: r, id: arg } : null,
+      );
     }
     // Scroll content to top
     const content = globalThis.document?.getElementById("content-scroll");
@@ -20482,6 +20679,7 @@ function OpsReferenceInner({
         organizationSettings: organizationSettingsState,
         billingStatus: billingStatusState,
         complexCost: complexCostState,
+        dashboardHome: dashboardHomeState,
         currentUser: normalizeCurrentUser(currentUser),
         actions,
       }}
@@ -20512,6 +20710,9 @@ function OpsReferenceInner({
             notificationCount={unreadNotificationCount}
           />
           <div id="content-scroll" style={{ flex: 1, overflowY: "auto" }}>
+            {dashboardTarget?.route === route ? (
+              <DashboardTargetContextBanner target={dashboardTarget} />
+            ) : null}
             {route === "warroom" && <ScreenWarRoom go={go} />}
             {(route === "projects" || route === "project") && (
               <ScreenProjects go={go} projectId={projectId} />
@@ -20749,7 +20950,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; currentUser?: any }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; currentUser?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -20766,6 +20967,7 @@ export default function OpsReferenceApp({
   organizationSettings,
   billingStatus,
   complexCost,
+  dashboardHome,
   projectCards,
   collaborationProjectCards,
   streamerCards,
@@ -20788,6 +20990,7 @@ export default function OpsReferenceApp({
       organizationSettings={organizationSettings}
       billingStatus={billingStatus}
       complexCost={complexCost}
+      dashboardHome={dashboardHome}
       projectCards={projectCards}
       collaborationProjectCards={collaborationProjectCards}
       streamerCards={streamerCards}

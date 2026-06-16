@@ -8,6 +8,7 @@ import type {
 
 export type OpsSettlementPoolItem = {
   id: string;
+  projectId: string;
   projectName: string;
   streamerName: string;
   settlementDuration: number | null;
@@ -381,6 +382,7 @@ export function toOpsSettlementPoolItem(
 
   return {
     id: row.id,
+    projectId: row.project_id ?? "unknown-project",
     projectName: project?.name ?? "Unknown project",
     streamerName: streamer?.display_name ?? "Unknown streamer",
     settlementDuration: row.settlement_duration,

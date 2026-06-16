@@ -231,6 +231,7 @@ describe("console projects route", () => {
     vi.mocked(listOpsSettlementPool).mockResolvedValue([
       {
         id: "report-real-1",
+        projectId: "project-real",
         projectName: "Real Project",
         streamerName: "Streamer One",
         settlementDuration: 120,
