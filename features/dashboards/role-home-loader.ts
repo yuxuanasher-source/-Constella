@@ -128,7 +128,7 @@ function assertDashboardStaffRole(
 }
 
 function currentMonthPeriod(now: string) {
-  const { year, month } = localYearMonth(now, DASHBOARD_TIME_ZONE);
+  const { year, month } = localDateParts(now, DASHBOARD_TIME_ZONE);
   const monthLabel = pad2(month);
   const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
 
@@ -138,12 +138,30 @@ function currentMonthPeriod(now: string) {
   };
 }
 
-function localYearMonth(value: string, timeZone: string) {
+function localDateKey(value: string, timeZone: string) {
+  const parts = localDateParts(value, timeZone);
+
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
+}
+
+function localDateParts(value: string, timeZone: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    const [year = "0", month = "0", day = "0"] = value.slice(0, 10).split("-");
+    return {
+      year: Number(year),
+      month: Number(month),
+      day: Number(day),
+    };
+  }
+
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
     year: "numeric",
     month: "2-digit",
-  }).formatToParts(new Date(value));
+    day: "2-digit",
+  }).formatToParts(date);
   const byType = Object.fromEntries(
     parts
       .filter((part) => part.type !== "literal")
@@ -153,6 +171,7 @@ function localYearMonth(value: string, timeZone: string) {
   return {
     year: Number(byType.year),
     month: Number(byType.month),
+    day: Number(byType.day),
   };
 }
 
@@ -380,7 +399,7 @@ function isCountablePayableBatchInPeriod(
 }
 
 function isDateKeyInPeriod(value: string, periodStart: string, periodEnd: string) {
-  const dateKey = value.slice(0, 10);
+  const dateKey = localDateKey(value, DASHBOARD_TIME_ZONE);
   return dateKey >= periodStart && dateKey <= periodEnd;
 }
 

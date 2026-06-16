@@ -123,6 +123,70 @@ describe("loadRoleHomeDashboard", () => {
     );
   });
 
+  it("counts approved report financials by Shanghai-local submitted date", async () => {
+    vi.mocked(listProjects).mockResolvedValue([
+      projectRow({
+        id: "project-1",
+        name: "Alpha",
+        default_hourly_rate: 8000,
+      }),
+    ] as never);
+    vi.mocked(listOpsLiveReportQueue).mockResolvedValue([
+      {
+        id: "report-local-june",
+        taskId: "task-1",
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        status: "approved",
+        taskTitle: "Local June live",
+        projectName: "Alpha",
+        streamerName: "Streamer A",
+        settlementDuration: 60,
+        timeSource: "system",
+        evidenceLevel: "green",
+        viewers: 100,
+        submittedAt: "2026-05-31T18:30:00.000Z",
+      },
+      {
+        id: "report-local-may",
+        taskId: "task-2",
+        projectId: "project-1",
+        streamerId: "streamer-2",
+        status: "approved",
+        taskTitle: "Local May live",
+        projectName: "Alpha",
+        streamerName: "Streamer B",
+        settlementDuration: 600,
+        timeSource: "system",
+        evidenceLevel: "green",
+        viewers: 100,
+        submittedAt: "2026-05-31T15:30:00.000Z",
+      },
+    ]);
+
+    const dashboard = await loadRoleHomeDashboard({
+      supabase: supabase as never,
+      auth,
+      now: "2026-05-31T18:00:00.000Z",
+    });
+
+    expect(
+      vi.mocked(buildRoleHomeDashboard).mock.calls[0]?.[0].source.projects,
+    ).toEqual([
+      expect.objectContaining({
+        id: "project-1",
+        metrics: expect.objectContaining({
+          receivable: 80,
+        }),
+      }),
+    ]);
+    expect(dashboard.kpis).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "vendorReceivable", value: 80 }),
+      ]),
+    );
+  });
+
   it("enriches zeroed project card placeholders with live dashboard facts", async () => {
     const projectRows = [
       projectRow({
