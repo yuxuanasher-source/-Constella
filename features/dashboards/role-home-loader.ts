@@ -102,6 +102,8 @@ export async function loadRoleHomeDashboard(input: {
         reportRows: scopedRows.reportRows,
         settlementPoolRows: scopedRows.settlementPoolRows,
         batchRows: scopedRows.batchRows,
+        periodStart,
+        periodEnd,
       }),
       tasks: scopedRows.taskRows.map(toDashboardTask),
       reports: scopedRows.reportRows.map(toDashboardReport),
@@ -190,6 +192,8 @@ function buildDashboardProjects(input: {
   reportRows: OpsLiveReportQueueItem[];
   settlementPoolRows: OpsSettlementPoolItem[];
   batchRows: OpsSettlementBatchListItem[];
+  periodStart: string;
+  periodEnd: string;
 }): DashboardProjectInput[] {
   const projectRowsById = new Map(
     input.projectRows.map((project) => [project.id, project]),
@@ -216,7 +220,9 @@ function buildDashboardProjects(input: {
     if (!facts || !project) continue;
 
     const settlementHours = minutesToHours(report.settlementDuration ?? 0);
-    facts.receivable += settlementHours * hourlyRateYuan(project);
+    if (isApprovedReportInPeriod(report, input.periodStart, input.periodEnd)) {
+      facts.receivable += settlementHours * hourlyRateYuan(project);
+    }
     facts.audience += report.viewers ?? 0;
     if (isPendingReportStatus(report.status)) {
       facts.reportedPending += 1;
@@ -232,7 +238,15 @@ function buildDashboardProjects(input: {
   }
 
   for (const batch of input.batchRows) {
-    if (batch.batchType !== "payable") continue;
+    if (
+      !isCountablePayableBatchInPeriod(
+        batch,
+        input.periodStart,
+        input.periodEnd,
+      )
+    ) {
+      continue;
+    }
     const facts = factsByProjectId.get(batch.projectId);
     if (!facts) continue;
 
@@ -317,6 +331,35 @@ function hourlyRateYuan(project: ProjectListItem) {
 
 function isPendingReportStatus(status: OpsLiveReportQueueItem["status"]) {
   return status === "pending_review" || status === "pending_adjudication";
+}
+
+function isApprovedReportInPeriod(
+  report: OpsLiveReportQueueItem,
+  periodStart: string,
+  periodEnd: string,
+) {
+  return (
+    report.status === "approved" &&
+    isDateKeyInPeriod(report.submittedAt, periodStart, periodEnd)
+  );
+}
+
+function isCountablePayableBatchInPeriod(
+  batch: OpsSettlementBatchListItem,
+  periodStart: string,
+  periodEnd: string,
+) {
+  return (
+    batch.batchType === "payable" &&
+    batch.status !== "voided" &&
+    batch.periodStart === periodStart &&
+    batch.periodEnd === periodEnd
+  );
+}
+
+function isDateKeyInPeriod(value: string, periodStart: string, periodEnd: string) {
+  const dateKey = value.slice(0, 10);
+  return dateKey >= periodStart && dateKey <= periodEnd;
 }
 
 function addStreamer(
