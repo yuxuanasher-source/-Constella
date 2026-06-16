@@ -9,7 +9,13 @@ import {
 
 export default async function ConsolePage() {
   const { supabase, auth } = await requireConsoleStaffAuth();
-  const dashboardHome = await loadRoleHomeDashboard({ supabase, auth });
+  let dashboardHome = null;
+
+  try {
+    dashboardHome = await loadRoleHomeDashboard({ supabase, auth });
+  } catch (error) {
+    console.error("Failed to load role dashboard", error);
+  }
 
   return (
     <OpsReferenceApp

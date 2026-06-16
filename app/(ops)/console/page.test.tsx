@@ -18,7 +18,7 @@ vi.mock("@/components/reference-ui/ops-reference", () => ({
   default: vi.fn(
     (props: {
       currentUser?: { name?: string };
-      dashboardHome?: { profile?: { title?: string } };
+      dashboardHome?: { profile?: { title?: string } } | null;
     }) => (
       <div data-testid="ops-reference-app">
         {props.currentUser?.name ?? "missing-user"}
@@ -105,6 +105,52 @@ describe("console route", () => {
       }),
       undefined,
     );
+  });
+
+  it("falls back to the legacy war room when dashboard loading fails", async () => {
+    const supabase = {};
+    const dashboardError = new Error("dashboard unavailable");
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
+    vi.mocked(getAuthContext).mockResolvedValue({
+      userId: "user-ops",
+      email: "alice@example.test",
+      name: "Alice Ops",
+      organizationId: "org-1",
+      organizationName: "Demo Org",
+      role: "ops_manager",
+    });
+    vi.mocked(loadRoleHomeDashboard).mockRejectedValue(dashboardError);
+
+    try {
+      render(await ConsolePage());
+
+      expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
+        "Alice Ops",
+      );
+      expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
+        "missing-dashboard",
+      );
+      expect(OpsReferenceApp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          initialRoute: "warroom",
+          dashboardHome: null,
+          currentUser: expect.objectContaining({
+            id: "user-ops",
+            role: "ops_manager",
+          }),
+        }),
+        undefined,
+      );
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "Failed to load role dashboard",
+        dashboardError,
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   it("redirects unauthenticated visitors to login", async () => {

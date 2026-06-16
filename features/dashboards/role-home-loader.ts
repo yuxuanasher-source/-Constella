@@ -10,8 +10,14 @@ import {
   listNotificationCenterItems,
   type NotificationQueryClient,
 } from "@/features/notifications/notification-center-queries";
-import { listProjects } from "@/features/projects/project-queries";
-import { toProjectCardDtos } from "@/features/projects/project-ui-dto";
+import {
+  listProjects,
+  type ProjectListItem,
+} from "@/features/projects/project-queries";
+import {
+  toProjectCardDtos,
+  type ProjectCardDto,
+} from "@/features/projects/project-ui-dto";
 import {
   listOpsSettlementBatches,
   listOpsSettlementPool,
@@ -24,6 +30,7 @@ import { isMcnStaff } from "@/lib/rbac/roles";
 import {
   buildRoleHomeDashboard,
   type DashboardBatchInput,
+  type DashboardProjectInput,
   type DashboardReportInput,
   type DashboardSettlementPoolInput,
   type DashboardStaffRole,
@@ -73,6 +80,14 @@ export async function loadRoleHomeDashboard(input: {
       { limit: 20 },
     ),
   ]);
+  const scopedRows = scopeRowsForRole(role, input.auth.userId, {
+    projectRows,
+    taskRows,
+    reportRows,
+    settlementPoolRows,
+    batchRows,
+  });
+  const projectCards = toProjectCardDtos(scopedRows.projectRows);
 
   return buildRoleHomeDashboard({
     role,
@@ -80,11 +95,20 @@ export async function loadRoleHomeDashboard(input: {
     organizationId,
     source: {
       now,
-      projects: toProjectCardDtos(projectRows),
-      tasks: taskRows.map(toDashboardTask),
-      reports: reportRows.map(toDashboardReport),
-      settlementPool: settlementPoolRows.map(toDashboardSettlementPoolItem),
-      batches: batchRows.map(toDashboardBatch),
+      projects: buildDashboardProjects({
+        projectRows: scopedRows.projectRows,
+        projectCards,
+        taskRows: scopedRows.taskRows,
+        reportRows: scopedRows.reportRows,
+        settlementPoolRows: scopedRows.settlementPoolRows,
+        batchRows: scopedRows.batchRows,
+      }),
+      tasks: scopedRows.taskRows.map(toDashboardTask),
+      reports: scopedRows.reportRows.map(toDashboardReport),
+      settlementPool: scopedRows.settlementPoolRows.map(
+        toDashboardSettlementPoolItem,
+      ),
+      batches: scopedRows.batchRows.map(toDashboardBatch),
       notifications,
       auditEntries: [],
     },
@@ -110,6 +134,229 @@ function currentMonthPeriod(now: string) {
     periodStart: start.toISOString().slice(0, 10),
     periodEnd: end.toISOString().slice(0, 10),
   };
+}
+
+function scopeRowsForRole(
+  role: DashboardStaffRole,
+  userId: string,
+  rows: {
+    projectRows: ProjectListItem[];
+    taskRows: OpsLiveTaskQueueItem[];
+    reportRows: OpsLiveReportQueueItem[];
+    settlementPoolRows: OpsSettlementPoolItem[];
+    batchRows: OpsSettlementBatchListItem[];
+  },
+) {
+  if (role !== "operator_business") {
+    return rows;
+  }
+
+  const allowedProjects = rows.projectRows.filter((project) =>
+    isProjectAssignedToUser(project, userId),
+  );
+  const allowedProjectIds = new Set(
+    allowedProjects.map((project) => project.id),
+  );
+  const allowedProjectNames = new Set(
+    allowedProjects.map((project) => project.name),
+  );
+
+  return {
+    projectRows: allowedProjects,
+    taskRows: rows.taskRows.filter(
+      (task) => task.projectId !== null && allowedProjectIds.has(task.projectId),
+    ),
+    reportRows: rows.reportRows.filter((report) =>
+      allowedProjectIds.has(report.projectId),
+    ),
+    settlementPoolRows: rows.settlementPoolRows.filter((item) =>
+      allowedProjectNames.has(item.projectName),
+    ),
+    batchRows: rows.batchRows.filter((batch) =>
+      allowedProjectIds.has(batch.projectId),
+    ),
+  };
+}
+
+function isProjectAssignedToUser(project: ProjectListItem, userId: string) {
+  return (
+    project.created_by === userId ||
+    project.owner_id === userId ||
+    project.ops_manager_id === userId
+  );
+}
+
+function buildDashboardProjects(input: {
+  projectRows: ProjectListItem[];
+  projectCards: ProjectCardDto[];
+  taskRows: OpsLiveTaskQueueItem[];
+  reportRows: OpsLiveReportQueueItem[];
+  settlementPoolRows: OpsSettlementPoolItem[];
+  batchRows: OpsSettlementBatchListItem[];
+}): DashboardProjectInput[] {
+  const projectRowsById = new Map(
+    input.projectRows.map((project) => [project.id, project]),
+  );
+  const projectIdsByName = input.projectRows.reduce<Map<string, string[]>>(
+    (grouped, project) => {
+      grouped.set(project.name, [
+        ...(grouped.get(project.name) ?? []),
+        project.id,
+      ]);
+      return grouped;
+    },
+    new Map(),
+  );
+  const factsByProjectId = new Map(
+    input.projectRows.map((project) => [project.id, createProjectFacts()]),
+  );
+
+  for (const task of input.taskRows) {
+    const facts = task.projectId ? factsByProjectId.get(task.projectId) : null;
+    if (!facts) continue;
+
+    facts.plannedHours += minutesToHours(plannedTaskMinutes(task));
+    facts.doneHours += minutesToHours(task.systemDuration);
+    if (task.status === "abnormal") {
+      facts.anomalies += 1;
+    }
+    addStreamer(facts, task.streamerId);
+  }
+
+  for (const report of input.reportRows) {
+    const facts = factsByProjectId.get(report.projectId);
+    const project = projectRowsById.get(report.projectId);
+    if (!facts || !project) continue;
+
+    const settlementHours = minutesToHours(report.settlementDuration ?? 0);
+    facts.receivable += settlementHours * hourlyRateYuan(project);
+    facts.audience += report.viewers ?? 0;
+    if (isPendingReportStatus(report.status)) {
+      facts.reportedPending += 1;
+    }
+    addStreamer(facts, report.streamerId);
+  }
+
+  for (const item of input.settlementPoolRows) {
+    const projectId = uniqueProjectIdForName(projectIdsByName, item.projectName);
+    const facts = projectId ? factsByProjectId.get(projectId) : null;
+    if (!facts) continue;
+
+    facts.payable += item.expectedAmount;
+  }
+
+  for (const batch of input.batchRows) {
+    if (batch.batchType !== "payable") continue;
+    const facts = factsByProjectId.get(batch.projectId);
+    if (!facts) continue;
+
+    facts.payable += batch.totalAmount;
+  }
+
+  return input.projectCards.map((card) => {
+    const facts = factsByProjectId.get(card.id) ?? createProjectFacts();
+    const receivable = roundCurrency(facts.receivable);
+    const payable = roundCurrency(facts.payable);
+    const gross = roundCurrency(receivable - payable);
+
+    return {
+      ...card,
+      metrics: {
+        ...card.metrics,
+        plannedHours: roundHours(facts.plannedHours),
+        doneHours: roundHours(facts.doneHours),
+        audience: facts.audience,
+        reportedPending: facts.reportedPending,
+        anomalies: facts.anomalies,
+        receivable,
+        payable,
+        gross,
+        margin:
+          receivable > 0 ? roundPercentage((gross / receivable) * 100) : 0,
+      },
+      streamers: {
+        ...card.streamers,
+        active: facts.streamerIds.size,
+        pendingReview: facts.reportedPending,
+      },
+    };
+  });
+}
+
+function createProjectFacts() {
+  return {
+    plannedHours: 0,
+    doneHours: 0,
+    audience: 0,
+    reportedPending: 0,
+    anomalies: 0,
+    receivable: 0,
+    payable: 0,
+    streamerIds: new Set<string>(),
+  };
+}
+
+function plannedTaskMinutes(task: OpsLiveTaskQueueItem) {
+  if (Number.isFinite(task.plannedDuration ?? Number.NaN)) {
+    return Math.max(task.plannedDuration ?? 0, 0);
+  }
+
+  return minutesBetween(task.plannedStartAt, task.plannedEndAt);
+}
+
+function minutesBetween(start: string | null, end: string | null) {
+  if (!start || !end) {
+    return 0;
+  }
+
+  const started = new Date(start).getTime();
+  const ended = new Date(end).getTime();
+  if (!Number.isFinite(started) || !Number.isFinite(ended) || ended <= started) {
+    return 0;
+  }
+
+  return Math.floor((ended - started) / 60_000);
+}
+
+function minutesToHours(minutes: number) {
+  return Math.max(minutes, 0) / 60;
+}
+
+function hourlyRateYuan(project: ProjectListItem) {
+  return Math.max(project.default_hourly_rate, 0) / 100;
+}
+
+function isPendingReportStatus(status: OpsLiveReportQueueItem["status"]) {
+  return status === "pending_review" || status === "pending_adjudication";
+}
+
+function addStreamer(
+  facts: ReturnType<typeof createProjectFacts>,
+  streamerId: string | null,
+) {
+  if (streamerId) {
+    facts.streamerIds.add(streamerId);
+  }
+}
+
+function uniqueProjectIdForName(
+  projectIdsByName: Map<string, string[]>,
+  projectName: string,
+) {
+  const ids = projectIdsByName.get(projectName) ?? [];
+  return ids.length === 1 ? ids[0] : null;
+}
+
+function roundHours(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+function roundCurrency(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function roundPercentage(value: number) {
+  return Math.round(value * 10) / 10;
 }
 
 function toDashboardTask(
