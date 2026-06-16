@@ -1,6 +1,8 @@
 import type { AppRole } from "@/lib/rbac/roles";
 
-type DashboardStaffRole = Extract<
+const DEFAULT_DASHBOARD_TIME_ZONE = "Asia/Shanghai";
+
+export type DashboardStaffRole = Extract<
   AppRole,
   "owner" | "ops_manager" | "operator_business" | "finance"
 >;
@@ -83,6 +85,7 @@ export type DashboardNotificationInput = {
 
 export type DashboardSourceData = {
   now: string;
+  timeZone?: string;
   projects: DashboardProjectInput[];
   tasks: DashboardTaskInput[];
   reports: DashboardReportInput[];
@@ -139,12 +142,23 @@ export type RoleHomeDashboardDto = {
   generatedAt: string;
 };
 
-export function buildRoleHomeDashboard(input: {
+/**
+ * Pure projection input for role home dashboards.
+ *
+ * `userId` and `organizationId` are retained for loader/API contract parity,
+ * but this function does not perform authorization or filtering. The loader
+ * must pass `source` data that is already scoped to the supplied user and org.
+ */
+export type BuildRoleHomeDashboardInput = {
   role: DashboardStaffRole;
   userId: string;
   organizationId: string;
   source: DashboardSourceData;
-}): RoleHomeDashboardDto {
+};
+
+export function buildRoleHomeDashboard(
+  input: BuildRoleHomeDashboardInput,
+): RoleHomeDashboardDto {
   const facts = collectFacts(input.source);
   const dashboard = projectFactsForRole(input.role, facts, input.source.now);
 
@@ -152,6 +166,7 @@ export function buildRoleHomeDashboard(input: {
 }
 
 function collectFacts(source: DashboardSourceData) {
+  const timeZone = source.timeZone ?? DEFAULT_DASHBOARD_TIME_ZONE;
   const activeProjects = source.projects.filter((project) =>
     ["recruiting", "pending_start", "active", "paused", "settling"].includes(
       project.status,
@@ -197,7 +212,7 @@ function collectFacts(source: DashboardSourceData) {
     (task) => task.anomaly || task.status === "abnormal",
   );
   const todayTasks = source.tasks.filter((task) =>
-    isTaskForToday(task, source.now),
+    isTaskForToday(task, source.now, timeZone),
   );
   const notStartedTasks = todayTasks.filter((task) =>
     ["pending_live", "not_started", "scheduled"].includes(task.status),
@@ -257,19 +272,18 @@ function projectFactsForRole(
   facts: ReturnType<typeof collectFacts>,
   generatedAt: string,
 ): RoleHomeDashboardDto {
-  if (role === "finance") {
-    return financeDashboard(role, facts, generatedAt);
+  switch (role) {
+    case "owner":
+      return ownerDashboard(role, facts, generatedAt);
+    case "ops_manager":
+      return opsManagerDashboard(role, facts, generatedAt);
+    case "operator_business":
+      return operatorDashboard(role, facts, generatedAt);
+    case "finance":
+      return financeDashboard(role, facts, generatedAt);
+    default:
+      return rejectUnsupportedRole(role);
   }
-
-  if (role === "operator_business") {
-    return operatorDashboard(role, facts, generatedAt);
-  }
-
-  if (role === "ops_manager") {
-    return opsManagerDashboard(role, facts, generatedAt);
-  }
-
-  return ownerDashboard(role, facts, generatedAt);
 }
 
 function ownerDashboard(
@@ -299,7 +313,7 @@ function ownerDashboard(
     ],
     queue: projectQueue(facts.activeProjects, "project"),
     risks: [
-      ...(facts.activeProjects.length > 0
+      ...(facts.lowMarginProjects.length > 0
         ? [
             riskItem(
               "lowMarginProjects",
@@ -563,22 +577,44 @@ function progressRate(done: number, planned: number) {
   return planned > 0 ? Number(((done / planned) * 100).toFixed(1)) : 0;
 }
 
-function isTaskForToday(task: DashboardTaskInput, now: string) {
-  const nowDay = dayKey(now);
-  const startDay = task.plannedStartAt ? dayKey(task.plannedStartAt) : null;
-  const endDay = task.plannedEndAt ? dayKey(task.plannedEndAt) : null;
+function isTaskForToday(
+  task: DashboardTaskInput,
+  now: string,
+  timeZone: string,
+) {
+  const nowDay = dayKey(now, timeZone);
+  const startDay = task.plannedStartAt
+    ? dayKey(task.plannedStartAt, timeZone)
+    : null;
+  const endDay = task.plannedEndAt ? dayKey(task.plannedEndAt, timeZone) : null;
 
   return startDay === nowDay || endDay === nowDay;
 }
 
-function dayKey(value: string) {
+function dayKey(value: string, timeZone: string) {
   const date = new Date(value);
 
   if (Number.isNaN(date.getTime())) {
     return value.slice(0, 10);
   }
 
-  return date.toISOString().slice(0, 10);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const dayParts = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+
+  return `${dayParts.year}-${dayParts.month}-${dayParts.day}`;
+}
+
+function rejectUnsupportedRole(role: never): never {
+  throw new Error(`Unsupported dashboard role: ${String(role)}`);
 }
 
 function sumBy<T>(items: T[], getter: (item: T) => number | null | undefined) {

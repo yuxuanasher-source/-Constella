@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { buildRoleHomeDashboard, type DashboardSourceData } from "./role-home";
 
+type RoleHomeInput = Parameters<typeof buildRoleHomeDashboard>[0];
+
 const source: DashboardSourceData = {
   now: "2026-06-16T09:30:00.000Z",
   projects: [
@@ -82,6 +84,14 @@ const source: DashboardSourceData = {
   auditEntries: [],
 };
 
+function kpiKeys(dashboard: ReturnType<typeof buildRoleHomeDashboard>) {
+  return dashboard.kpis.map((item) => item.key);
+}
+
+function riskKeys(dashboard: ReturnType<typeof buildRoleHomeDashboard>) {
+  return dashboard.risks.map((item) => item.key);
+}
+
 describe("role home dashboard", () => {
   it("projects owner metrics into an executive dashboard", () => {
     const dashboard = buildRoleHomeDashboard({
@@ -95,6 +105,13 @@ describe("role home dashboard", () => {
       role: "owner",
       title: "经营总览看板",
     });
+    expect(kpiKeys(dashboard)).toEqual([
+      "activeProjects",
+      "vendorReceivable",
+      "estimatedGross",
+      "grossMarginRate",
+      "highRiskItems",
+    ]);
     expect(dashboard.kpis).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ key: "activeProjects", value: 1 }),
@@ -102,11 +119,30 @@ describe("role home dashboard", () => {
         expect.objectContaining({ key: "highRiskItems", value: 1 }),
       ]),
     );
-    expect(dashboard.risks).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ key: "lowMarginProjects" }),
-      ]),
-    );
+    expect(riskKeys(dashboard)).not.toContain("lowMarginProjects");
+    expect(riskKeys(dashboard)).toContain("reopenedBatches");
+  });
+
+  it("only adds owner low margin risk when a project is actually below threshold", () => {
+    const dashboard = buildRoleHomeDashboard({
+      role: "owner",
+      userId: "user-owner",
+      organizationId: "org-1",
+      source: {
+        ...source,
+        projects: [
+          {
+            ...source.projects[0],
+            metrics: {
+              ...source.projects[0].metrics,
+              margin: 10,
+            },
+          },
+        ],
+      },
+    });
+
+    expect(riskKeys(dashboard)).toContain("lowMarginProjects");
   });
 
   it("projects finance metrics without exposing owner-only project margin rows", () => {
@@ -118,6 +154,13 @@ describe("role home dashboard", () => {
     });
 
     expect(dashboard.profile.title).toBe("结算安全看板");
+    expect(kpiKeys(dashboard)).toEqual([
+      "settlementPoolAmount",
+      "settlementPoolCount",
+      "draftBatches",
+      "weakEvidenceAmount",
+      "reopenedBatches",
+    ]);
     expect(dashboard.kpis).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ key: "settlementPoolAmount", value: 8000 }),
@@ -137,6 +180,12 @@ describe("role home dashboard", () => {
     });
 
     expect(dashboard.profile.title).toBe("我的今日待办");
+    expect(kpiKeys(dashboard)).toEqual([
+      "myTodayTasks",
+      "notStartedTasks",
+      "pendingReports",
+      "streamerReminders",
+    ]);
     expect(dashboard.kpis).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ key: "myTodayTasks", value: 1 }),
@@ -145,6 +194,40 @@ describe("role home dashboard", () => {
     );
     expect(JSON.stringify(dashboard)).not.toContain("100000");
     expect(JSON.stringify(dashboard)).not.toContain("30000");
+  });
+
+  it("counts today tasks using the China-local dashboard day", () => {
+    const dashboard = buildRoleHomeDashboard({
+      role: "operator_business",
+      userId: "user-operator",
+      organizationId: "org-1",
+      source: {
+        now: "2026-06-16T01:00:00.000Z",
+        projects: [],
+        tasks: [
+          {
+            id: "task-local-midnight",
+            project: "project-1",
+            projectName: "Alpha",
+            streamerName: "Streamer A",
+            status: "pending_live",
+            plannedStartAt: "2026-06-15T16:30:00.000Z",
+            plannedEndAt: "2026-06-15T17:30:00.000Z",
+          },
+        ],
+        reports: [],
+        settlementPool: [],
+        batches: [],
+        notifications: [],
+        auditEntries: [],
+      },
+    });
+
+    expect(dashboard.kpis).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "myTodayTasks", value: 1 }),
+      ]),
+    );
   });
 
   it("returns explicit empty states for an empty source", () => {
@@ -165,8 +248,27 @@ describe("role home dashboard", () => {
     });
 
     expect(dashboard.profile.title).toBe("项目推进看板");
+    expect(kpiKeys(dashboard)).toEqual([
+      "activeProjects",
+      "deliveryProgress",
+      "streamerGapProjects",
+      "recordingsPending",
+      "pendingReports",
+      "anomalyTasks",
+    ]);
     expect(dashboard.emptyState).toMatchObject({
       title: "暂无需要处理的项目经营数据",
     });
+  });
+
+  it("rejects unsupported runtime roles instead of falling back to owner", () => {
+    expect(() =>
+      buildRoleHomeDashboard({
+        role: "streamer" as unknown as RoleHomeInput["role"],
+        userId: "user-streamer",
+        organizationId: "org-1",
+        source,
+      }),
+    ).toThrow("Unsupported dashboard role: streamer");
   });
 });
