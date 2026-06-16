@@ -17,7 +17,7 @@ export async function proxy(request: NextRequest) {
 
   if (!url || !anonKey) {
     const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = "/login";
+    loginUrl.pathname = getLoginPath(request.nextUrl.pathname);
     loginUrl.searchParams.set("next", request.nextUrl.pathname);
     loginUrl.searchParams.set("error", "config");
     return NextResponse.redirect(loginUrl);
@@ -42,7 +42,7 @@ export async function proxy(request: NextRequest) {
 
   if (!user) {
     const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = "/login";
+    loginUrl.pathname = getLoginPath(request.nextUrl.pathname);
     loginUrl.searchParams.set("next", request.nextUrl.pathname);
     return NextResponse.redirect(loginUrl);
   }
@@ -53,3 +53,7 @@ export async function proxy(request: NextRequest) {
 export const config = {
   matcher: ["/console/:path*", "/m/:path*", "/desktop/:path*"],
 };
+
+function getLoginPath(pathname: string) {
+  return pathname.startsWith("/m") ? "/m/login" : "/login";
+}

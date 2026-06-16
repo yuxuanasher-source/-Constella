@@ -2,6 +2,12 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
+import {
+  getOpsSettlementDefaultScope,
+  listOpsSettlementBatches,
+  listOpsSettlementBatchDetails,
+  listOpsSettlementPool,
+} from "@/features/settlements/settlement-queries";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
@@ -105,5 +111,34 @@ describe("console module stubs route", () => {
         StubPage({ params: Promise.resolve({ module: "m1" }) }),
       ),
     ).rejects.toThrow("NEXT_REDIRECT:/login");
+  });
+
+  it("hydrates the settlement module with org-scoped batch reads", async () => {
+    const supabase = {};
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
+    vi.mocked(getAuthContext).mockResolvedValue({
+      userId: "user-finance",
+      email: "finance@example.test",
+      name: "Finance User",
+      organizationId: "org-1",
+      organizationName: "Demo Org",
+      role: "finance",
+    });
+    vi.mocked(listOpsSettlementBatches).mockResolvedValue([]);
+    vi.mocked(listOpsSettlementBatchDetails).mockResolvedValue({});
+    vi.mocked(getOpsSettlementDefaultScope).mockResolvedValue(null);
+    vi.mocked(listOpsSettlementPool).mockResolvedValue([]);
+
+    render(await StubPage({ params: Promise.resolve({ module: "m6" }) }));
+
+    expect(listOpsSettlementBatches).toHaveBeenCalledWith(supabase, "org-1");
+    expect(listOpsSettlementBatchDetails).toHaveBeenCalledWith(supabase, {
+      organizationId: "org-1",
+    });
+    expect(getOpsSettlementDefaultScope).toHaveBeenCalledWith(
+      supabase,
+      "org-1",
+    );
+    expect(listOpsSettlementPool).not.toHaveBeenCalled();
   });
 });

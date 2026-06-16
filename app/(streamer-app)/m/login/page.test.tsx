@@ -39,5 +39,21 @@ describe("streamer mobile login page", () => {
       "value",
       "",
     );
+    const entryPointValues = Array.from(
+      container.querySelectorAll<HTMLInputElement>(
+        'form input[name="entryPoint"]',
+      ),
+      (input) => input.value,
+    );
+    const roleIntentValues = Array.from(
+      container.querySelectorAll<HTMLInputElement>(
+        'form input[name="roleIntent"]',
+      ),
+      (input) => input.value,
+    );
+    expect(entryPointValues.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(entryPointValues)).toEqual(new Set(["mobile"]));
+    expect(roleIntentValues.length).toBe(entryPointValues.length);
+    expect(new Set(roleIntentValues)).toEqual(new Set(["streamer"]));
   });
 });

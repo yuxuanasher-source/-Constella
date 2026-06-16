@@ -72,7 +72,6 @@ export async function signInAction(formData: FormData) {
   await persistLoginPreference({
     remember,
     email: accountIdentifier,
-    roleIntent,
   });
 
   redirect(
@@ -322,27 +321,31 @@ export async function signInWithProviderAction(formData: FormData) {
   const provider = String(formData.get("provider") ?? "");
   const roleIntent = normalizeRoleIntent(formData.get("roleIntent"));
   const entryPoint = normalizeLoginEntryPoint(formData.get("entryPoint"));
+  const next = String(formData.get("next") ?? "");
   const loginBasePath = getLoginBasePath(entryPoint);
 
   if (provider === "wechat") {
     const supabase = await createSupabaseServerClient();
     if (!supabase || process.env.NEXT_PUBLIC_AUTH_WECHAT_ENABLED !== "true") {
-      redirect(`${loginBasePath}?role=${roleIntent}&provider=unconfigured`);
+      redirect(`${loginBasePath}?provider=unconfigured`);
+    }
+
+    const callback = new URL("/auth/callback", getAppUrl());
+    callback.searchParams.set("entryPoint", entryPoint);
+    callback.searchParams.set("roleIntent", roleIntent);
+    if (next && next.startsWith("/") && !next.startsWith("//")) {
+      callback.searchParams.set("next", next);
     }
 
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: "wechat" as Provider,
       options: {
-        redirectTo: `${getAppUrl()}${resolvePostLoginPath({
-          role: roleIntent === "streamer" ? "streamer" : "owner",
-          roleIntent,
-          entryPoint,
-        })}`,
+        redirectTo: callback.toString(),
       },
     });
 
     if (error || !data.url) {
-      redirect(`${loginBasePath}?role=${roleIntent}&provider=unconfigured`);
+      redirect(`${loginBasePath}?provider=unconfigured`);
     }
 
     redirect(data.url);
@@ -352,7 +355,7 @@ export async function signInWithProviderAction(formData: FormData) {
     redirect(process.env.AUTH_FEISHU_LOGIN_URL);
   }
 
-  redirect(`${loginBasePath}?role=${roleIntent}&provider=unconfigured`);
+  redirect(`${loginBasePath}?provider=unconfigured`);
 }
 
 async function resolvePasswordLoginEmail(identifier: string) {
@@ -832,24 +835,17 @@ async function getCurrentProfileOnboardingState(
 async function persistLoginPreference(input: {
   remember: boolean;
   email: string;
-  roleIntent: "mcn" | "streamer";
 }) {
   const cookieStore = await cookies();
+  cookieStore.delete(loginRoleCookie);
 
   if (!input.remember) {
     cookieStore.delete(loginEmailCookie);
-    cookieStore.delete(loginRoleCookie);
     return;
   }
 
   const maxAge = 60 * 60 * 24 * 7;
   cookieStore.set(loginEmailCookie, input.email.trim(), {
-    httpOnly: true,
-    sameSite: "lax",
-    maxAge,
-    path: "/",
-  });
-  cookieStore.set(loginRoleCookie, input.roleIntent, {
     httpOnly: true,
     sameSite: "lax",
     maxAge,

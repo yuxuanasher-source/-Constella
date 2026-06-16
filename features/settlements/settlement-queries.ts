@@ -212,12 +212,14 @@ export async function listOpsSettlementPool(
 
 export async function listOpsSettlementBatches(
   client: SupabaseClient,
+  organizationId: string,
 ): Promise<OpsSettlementBatchListItem[]> {
   const { data, error } = await client
     .from("settlement_batches")
     .select(
       "id, project_id, batch_type, status, period_start, period_end, computed_amount, manual_amount, adjustment_amount, evidence_summary, updated_at, created_by, projects(name), settlement_batch_items(id)",
     )
+    .eq("organization_id", organizationId)
     .order("updated_at", { ascending: false })
     .returns<SettlementBatchRow[]>();
 
@@ -230,17 +232,21 @@ export async function listOpsSettlementBatches(
 
 export async function listOpsSettlementBatchDetails(
   client: SupabaseClient,
-  batchId?: string,
+  input: {
+    organizationId: string;
+    batchId?: string;
+  },
 ): Promise<Record<string, OpsSettlementBatchDetailItem[]>> {
   let query = client
     .from("settlement_batch_items")
     .select(
       "id, settlement_batch_id, item_type, computed_amount, manual_amount, adjustment_amount, evidence_level, evidence_snapshot, streamers(display_name)",
     )
+    .eq("organization_id", input.organizationId)
     .order("created_at", { ascending: true });
 
-  if (batchId) {
-    query = query.eq("settlement_batch_id", batchId);
+  if (input.batchId) {
+    query = query.eq("settlement_batch_id", input.batchId);
   }
 
   const { data, error } = await query.returns<SettlementBatchDetailRow[]>();

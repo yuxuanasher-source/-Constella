@@ -25,7 +25,10 @@ export async function GET() {
       throw new RouteError("Only MCN staff can view settlement batches", 403);
     }
 
-    const batches = await listOpsSettlementBatches(context.supabase);
+    const batches = await listOpsSettlementBatches(
+      context.supabase,
+      context.auth.organizationId,
+    );
     return NextResponse.json({ batches });
   } catch (error) {
     return jsonError(error);

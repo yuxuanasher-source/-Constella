@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  listOpsSettlementBatches,
+  listOpsSettlementBatchDetails,
   toOpsSettlementBatchDetailItem,
   toOpsSettlementBatchListItem,
   toOpsSettlementPoolItem,
@@ -11,7 +13,43 @@ import {
   toOpsReferenceSettlementPoolItem,
 } from "./settlement-ui-adapters";
 
+function createSettlementQueryClient(data: unknown[] = []) {
+  const query = {
+    select: vi.fn(() => query),
+    eq: vi.fn(() => query),
+    order: vi.fn(() => query),
+    returns: vi.fn(async () => ({ data, error: null })),
+  };
+  const client = {
+    from: vi.fn(() => query),
+  };
+
+  return { client, query };
+}
+
 describe("settlement DTO mappers", () => {
+  it("scopes ops settlement batch lists to the active organization", async () => {
+    const { client, query } = createSettlementQueryClient();
+
+    await listOpsSettlementBatches(client as never, "org-1");
+
+    expect(client.from).toHaveBeenCalledWith("settlement_batches");
+    expect(query.eq).toHaveBeenCalledWith("organization_id", "org-1");
+  });
+
+  it("scopes ops settlement batch details to the active organization and selected batch", async () => {
+    const { client, query } = createSettlementQueryClient();
+
+    await listOpsSettlementBatchDetails(client as never, {
+      organizationId: "org-1",
+      batchId: "batch-1",
+    });
+
+    expect(client.from).toHaveBeenCalledWith("settlement_batch_items");
+    expect(query.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(query.eq).toHaveBeenCalledWith("settlement_batch_id", "batch-1");
+  });
+
   it("maps settlement pool rows with frozen evidence and rule preview", () => {
     const item = toOpsSettlementPoolItem({
       id: "report-1",

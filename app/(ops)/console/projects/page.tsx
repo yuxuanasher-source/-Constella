@@ -81,8 +81,8 @@ async function loadSettlementReferenceData(
   organizationId: string,
 ) {
   const [batches, details, settlementScope] = await Promise.all([
-    listOpsSettlementBatches(supabase),
-    listOpsSettlementBatchDetails(supabase),
+    listOpsSettlementBatches(supabase, organizationId),
+    listOpsSettlementBatchDetails(supabase, { organizationId }),
     getOpsSettlementDefaultScope(supabase, organizationId),
   ]);
   const settlementPool = settlementScope

@@ -111,8 +111,10 @@ async function loadLiveReferenceData(
 
   if (module === "m6") {
     const [batches, details, settlementScope] = await Promise.all([
-      listOpsSettlementBatches(supabase),
-      listOpsSettlementBatchDetails(supabase),
+      listOpsSettlementBatches(supabase, auth.organizationId),
+      listOpsSettlementBatchDetails(supabase, {
+        organizationId: auth.organizationId,
+      }),
       getOpsSettlementDefaultScope(supabase, auth.organizationId),
     ]);
     const settlementPool = settlementScope

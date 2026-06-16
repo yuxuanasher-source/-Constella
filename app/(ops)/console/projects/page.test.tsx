@@ -245,8 +245,10 @@ describe("console projects route", () => {
 
     render(await ProjectsPage());
 
-    expect(listOpsSettlementBatches).toHaveBeenCalledWith(supabase);
-    expect(listOpsSettlementBatchDetails).toHaveBeenCalledWith(supabase);
+    expect(listOpsSettlementBatches).toHaveBeenCalledWith(supabase, "org-1");
+    expect(listOpsSettlementBatchDetails).toHaveBeenCalledWith(supabase, {
+      organizationId: "org-1",
+    });
     expect(getOpsSettlementDefaultScope).toHaveBeenCalledWith(
       supabase,
       "org-1",
