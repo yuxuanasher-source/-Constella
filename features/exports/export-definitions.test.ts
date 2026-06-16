@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getAllowedExportFields } from "./export-definitions";
+import { getAllowedExportFields, isExportKind } from "./export-definitions";
 
 describe("export definitions", () => {
   it("keeps admission recording exports scoped to public review fields", () => {
@@ -62,6 +62,16 @@ describe("export definitions", () => {
 
     expect(fields.map((field) => field.sensitivity)).not.toContain(
       "finance_sensitive",
+    );
+  });
+
+  it("supports project cost and supplier reconciliation exports", () => {
+    expect(isExportKind("project_costs")).toBe(true);
+    expect(isExportKind("supplier_reconcile")).toBe(true);
+    expect(
+      getAllowedExportFields("project_costs", "operator_business"),
+    ).not.toContainEqual(
+      expect.objectContaining({ sensitivity: "finance_sensitive" }),
     );
   });
 });

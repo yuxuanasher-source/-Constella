@@ -7,7 +7,8 @@ export type UsageMetric =
   | "ocr"
   | "ai"
   | "storage_mb"
-  | "export";
+  | "export"
+  | "complex_cost_project";
 
 export type UsageStatus = {
   metric: UsageMetric;

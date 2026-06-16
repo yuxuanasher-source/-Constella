@@ -25,6 +25,7 @@ import {
   listOpsSettlementBatchDetails,
   listOpsSettlementPool,
 } from "@/features/settlements/settlement-queries";
+import { getProjectComplexCostSettings } from "@/features/complex-cost/complex-cost-queries";
 import {
   toOpsReferenceBatch,
   toOpsReferenceBatchDetailItem,
@@ -59,6 +60,7 @@ export default async function StubPage({
     auditEntries,
     notificationItems,
     billingStatus,
+    complexCost,
   } = await loadLiveReferenceData(module, supabase, auth);
   const route = routeForOpsModule(module);
 
@@ -78,6 +80,7 @@ export default async function StubPage({
       auditEntries={auditEntries}
       notificationItems={notificationItems}
       billingStatus={billingStatus}
+      complexCost={complexCost}
     />
   );
 }
@@ -124,6 +127,13 @@ async function loadLiveReferenceData(
           periodEnd: settlementScope.periodEnd,
         })
       : [];
+    const complexCost = settlementScope?.projectId
+      ? await loadComplexCostReferenceData(
+          supabase,
+          auth,
+          settlementScope.projectId,
+        )
+      : { enabled: false, includedProjects: 0, usedProjects: 0 };
     return {
       liveBatches: batches.map((batch) => toOpsReferenceBatch(batch)),
       liveBatchDetails: Object.fromEntries(
@@ -136,6 +146,7 @@ async function loadLiveReferenceData(
         toOpsReferenceSettlementPoolItem(item),
       ),
       settlementScope,
+      complexCost,
     };
   }
 
@@ -173,4 +184,21 @@ async function loadLiveReferenceData(
   }
 
   return {};
+}
+
+async function loadComplexCostReferenceData(
+  supabase: SupabaseClient,
+  auth: AuthContext,
+  projectId: string,
+) {
+  const settings = await getProjectComplexCostSettings(supabase, {
+    organizationId: auth.organizationId,
+    projectId,
+  });
+  return {
+    enabled: Boolean(settings.entitlement),
+    includedProjects: 5,
+    usedProjects: settings.entitlement ? 1 : 0,
+    activeRuleVersion: settings.activeRule?.versionNo ?? null,
+  };
 }
