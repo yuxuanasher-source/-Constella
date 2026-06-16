@@ -3,6 +3,10 @@
 import React from "react";
 
 import { getAllowedProjectStatusTransitions } from "@/features/projects/project-state";
+import {
+  toCollaborationApplicationProjectCardDtos,
+  toCollaborationProjectCardDtos,
+} from "@/features/projects/project-ui-dto";
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
 import {
   toPricingResultDto,
@@ -825,10 +829,15 @@ const REPORTS = [];
 
 const REPORT_STATUS = {
   pending_streamer: { tone: "neutral", label: "待主播确认" },
+  pending: { tone: "neutral", label: "待提交" },
+  ocr_ing: { tone: "violet", label: "OCR 识别中" },
+  pending_confirm: { tone: "amber", label: "待确认" },
   pending_review: { tone: "blue", label: "待审核" },
+  pending_adjudication: { tone: "violet", label: "待裁决" },
   need_supply: { tone: "amber", label: "需补充" },
   approved: { tone: "green", label: "审核通过" },
   rejected: { tone: "red", label: "审核驳回" },
+  voided: { tone: "neutral", label: "已作废" },
 };
 
 const OpsLiveDataContext = React.createContext({
@@ -840,6 +849,7 @@ const OpsLiveDataContext = React.createContext({
   batches: null,
   batchDetails: null,
   settlementPool: null,
+  collaborationProjects: null,
   settlementScope: null,
   auditEntries: null,
   ocrJobs: null,
@@ -855,6 +865,11 @@ const OpsLiveDataContext = React.createContext({
 function useOpsProjects() {
   const { projects } = React.useContext(OpsLiveDataContext);
   return Array.isArray(projects) ? projects : PROJECTS;
+}
+
+function useOpsCollaborationProjects() {
+  const { collaborationProjects } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(collaborationProjects) ? collaborationProjects : [];
 }
 
 function useOpsStreamers() {
@@ -958,7 +973,20 @@ const BATCH_STATUS = {
   confirmed: { tone: "green", label: "已确认" },
   locked: { tone: "teal", label: "已锁定" },
   reopened: { tone: "violet", label: "已重开" },
+  voided: { tone: "neutral", label: "已作废" },
 };
+
+function labelOf(map, status) {
+  return map[status] ?? { tone: "neutral", label: status || "未知状态" };
+}
+
+function reportStatusMeta(status) {
+  return labelOf(REPORT_STATUS, status);
+}
+
+function batchStatusMeta(status) {
+  return labelOf(BATCH_STATUS, status);
+}
 
 const BATCH_DETAIL_ITEMS = [];
 
@@ -1268,6 +1296,14 @@ const Icon = {
       </>,
     ),
   Check: (p) => ic(p, <path d="m5 12 4.5 4.5L19 7" />),
+  Copy: (p) =>
+    ic(
+      p,
+      <>
+        <rect x="8" y="8" width="11" height="11" rx="1.8" />
+        <path d="M5 15.5V6.8A1.8 1.8 0 0 1 6.8 5h8.7" />
+      </>,
+    ),
   X: (p) => ic(p, <path d="m6 6 12 12M18 6 6 18" />),
   Eye: (p) =>
     ic(
@@ -4498,6 +4534,7 @@ function ScreenProjects({ go, projectId }) {
 
 function ProjectList({ go }) {
   const projects = useOpsProjects();
+  const collaborationProjects = useOpsCollaborationProjects();
   const actions = useOpsLiveActions();
   const [status, setStatus] = React.useState("all");
   const [query, setQuery] = React.useState("");
@@ -4505,9 +4542,12 @@ function ProjectList({ go }) {
   const [ownerFilter, setOwnerFilter] = React.useState("all");
   const [scheduleFilter, setScheduleFilter] = React.useState("all");
   const [draftOpen, setDraftOpen] = React.useState(false);
+  const [draftMode, setDraftMode] = React.useState("owned");
   const [draftName, setDraftName] = React.useState("");
   const [draftCode, setDraftCode] = React.useState("");
+  const [inviteLink, setInviteLink] = React.useState("");
   const [draftError, setDraftError] = React.useState("");
+  const [draftMessage, setDraftMessage] = React.useState("");
   const [draftSubmitting, setDraftSubmitting] = React.useState(false);
   const [exportMessage, setExportMessage] = React.useState("");
   const [exportSubmitting, setExportSubmitting] = React.useState(false);
@@ -4525,12 +4565,39 @@ function ProjectList({ go }) {
   const openDraftForm = () => {
     setDraftOpen(true);
     setDraftError("");
+    setDraftMessage("");
+    setDraftMode("owned");
     setDraftName((value) => value || "新项目草稿");
     setDraftCode((value) => value || `P-${Date.now()}`);
   };
   const closeDraftForm = () => {
     setDraftOpen(false);
     setDraftError("");
+  };
+  const submitCollaborationInvite = async (event) => {
+    event.preventDefault();
+    const trimmedLink = inviteLink.trim();
+    if (!trimmedLink) {
+      setDraftError("请填写邀请链接");
+      return;
+    }
+    setDraftSubmitting(true);
+    setDraftError("");
+    setDraftMessage("");
+    try {
+      await actions.joinCollaborationProject?.({
+        inviteLink: trimmedLink,
+        requestedRevenueShareBps: 0,
+        applicantNote: "",
+      });
+      setDraftOpen(false);
+      setInviteLink("");
+      setDraftMessage("协作申请已提交，等待项目方审核");
+    } catch (error) {
+      setDraftError(error?.message || "协作申请提交失败，请稍后重试");
+    } finally {
+      setDraftSubmitting(false);
+    }
   };
   const submitProjectDraft = async (event) => {
     event.preventDefault();
@@ -4542,6 +4609,7 @@ function ProjectList({ go }) {
     }
     setDraftSubmitting(true);
     setDraftError("");
+    setDraftMessage("");
     try {
       await actions.createProjectDraft?.({ name, code });
       setDraftOpen(false);
@@ -4572,16 +4640,17 @@ function ProjectList({ go }) {
       setExportSubmitting(false);
     }
   };
+  const displayProjects = [...projects, ...collaborationProjects];
   const counts = {
-    all: projects.length,
-    active: projects.filter((p) => p.status === "active").length,
-    recruiting: projects.filter((p) => p.status === "recruiting").length,
-    settling: projects.filter((p) => p.status === "settling").length,
-    paused: projects.filter((p) => p.status === "paused").length,
-    ended: projects.filter((p) => p.status === "ended").length,
+    all: displayProjects.length,
+    active: displayProjects.filter((p) => p.status === "active").length,
+    recruiting: displayProjects.filter((p) => p.status === "recruiting").length,
+    settling: displayProjects.filter((p) => p.status === "settling").length,
+    paused: displayProjects.filter((p) => p.status === "paused").length,
+    ended: displayProjects.filter((p) => p.status === "ended").length,
   };
   const normalizedQuery = query.trim().toLowerCase();
-  const filtered = projects.filter((p) => {
+  const filtered = displayProjects.filter((p) => {
     const matchesStatus = status === "all" || p.status === status;
     const matchesSearch =
       !normalizedQuery ||
@@ -4681,13 +4750,13 @@ function ProjectList({ go }) {
               label="厂商筛选"
               value={vendorFilter}
               onChange={setVendorFilter}
-              options={uniqueProjectOptions(projects, "vendor")}
+              options={uniqueProjectOptions(displayProjects, "vendor")}
             />
             <ProjectInlineFilter
               label="负责人筛选"
               value={ownerFilter}
               onChange={setOwnerFilter}
-              options={uniqueProjectOptions(projects, "leadOps")}
+              options={uniqueProjectOptions(displayProjects, "leadOps")}
             />
             <ProjectInlineFilter
               label="时间范围筛选"
@@ -4725,7 +4794,11 @@ function ProjectList({ go }) {
 
           {draftOpen ? (
             <form
-              onSubmit={submitProjectDraft}
+              onSubmit={
+                draftMode === "owned"
+                  ? submitProjectDraft
+                  : submitCollaborationInvite
+              }
               style={{
                 display: "grid",
                 gridTemplateColumns:
@@ -4737,42 +4810,133 @@ function ProjectList({ go }) {
                 background: "var(--bg-soft)",
               }}
             >
-              <label
+              <div
                 style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
-                  fontSize: 12,
-                  color: "var(--ink-500)",
-                  fontWeight: 600,
+                  gridColumn: "1 / -1",
+                  display: "inline-flex",
+                  width: "fit-content",
+                  gap: 4,
+                  padding: 3,
+                  border: "1px solid var(--line)",
+                  borderRadius: 8,
+                  background: "#fff",
                 }}
               >
-                项目名称
-                <input
-                  value={draftName}
-                  onChange={(event) => setDraftName(event.target.value)}
-                  placeholder="例如：品牌直播专项"
-                  style={draftInputStyle}
-                />
-              </label>
-              <label
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
-                  fontSize: 12,
-                  color: "var(--ink-500)",
-                  fontWeight: 600,
-                }}
-              >
-                项目编号
-                <input
-                  value={draftCode}
-                  onChange={(event) => setDraftCode(event.target.value)}
-                  placeholder="例如：项目编号"
-                  style={draftInputStyle}
-                />
-              </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftMode("owned");
+                    setDraftError("");
+                    setDraftMessage("");
+                  }}
+                  style={{
+                    height: 28,
+                    padding: "0 10px",
+                    border: "none",
+                    borderRadius: 6,
+                    background:
+                      draftMode === "owned" ? "var(--blue-50)" : "transparent",
+                    color:
+                      draftMode === "owned"
+                        ? "var(--blue-700)"
+                        : "var(--ink-500)",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  自有项目
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftMode("collaboration");
+                    setDraftError("");
+                    setDraftMessage("");
+                  }}
+                  style={{
+                    height: 28,
+                    padding: "0 10px",
+                    border: "none",
+                    borderRadius: 6,
+                    background:
+                      draftMode === "collaboration"
+                        ? "var(--blue-50)"
+                        : "transparent",
+                    color:
+                      draftMode === "collaboration"
+                        ? "var(--blue-700)"
+                        : "var(--ink-500)",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  外部合作
+                </button>
+              </div>
+
+              {draftMode === "owned" ? (
+                <>
+                  <label
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                      fontSize: 12,
+                      color: "var(--ink-500)",
+                      fontWeight: 600,
+                    }}
+                  >
+                    项目名称
+                    <input
+                      value={draftName}
+                      onChange={(event) => setDraftName(event.target.value)}
+                      placeholder="例如：品牌直播专项"
+                      style={draftInputStyle}
+                    />
+                  </label>
+                  <label
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                      fontSize: 12,
+                      color: "var(--ink-500)",
+                      fontWeight: 600,
+                    }}
+                  >
+                    项目编号
+                    <input
+                      value={draftCode}
+                      onChange={(event) => setDraftCode(event.target.value)}
+                      placeholder="例如：项目编号"
+                      style={draftInputStyle}
+                    />
+                  </label>
+                </>
+              ) : (
+                <label
+                  style={{
+                    gridColumn: "1 / 3",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    fontSize: 12,
+                    color: "var(--ink-500)",
+                    fontWeight: 600,
+                  }}
+                >
+                  邀请链接
+                  <input
+                    value={inviteLink}
+                    onChange={(event) => setInviteLink(event.target.value)}
+                    placeholder="粘贴 /share/project-collaboration/... 邀请链接"
+                    style={draftInputStyle}
+                  />
+                </label>
+              )}
+
               <div
                 style={{
                   display: "flex",
@@ -4795,7 +4959,13 @@ function ProjectList({ go }) {
                   disabled={draftSubmitting}
                   icon={<Icon.Plus size={14} stroke="#fff" />}
                 >
-                  {draftSubmitting ? "创建中" : "创建草稿"}
+                  {draftSubmitting
+                    ? draftMode === "owned"
+                      ? "创建中"
+                      : "提交中"
+                    : draftMode === "owned"
+                      ? "创建草稿"
+                      : "提交申请"}
                 </Button>
               </div>
               {draftError ? (
@@ -4812,6 +4982,20 @@ function ProjectList({ go }) {
                 </div>
               ) : null}
             </form>
+          ) : null}
+
+          {draftMessage ? (
+            <div
+              aria-live="polite"
+              style={{
+                padding: "8px 16px",
+                borderBottom: "1px solid var(--line)",
+                color: "var(--green-700)",
+                fontSize: 12,
+              }}
+            >
+              {draftMessage}
+            </div>
           ) : null}
 
           <DataTable
@@ -4839,6 +5023,15 @@ function ProjectList({ go }) {
                     <div>
                       <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
                         {r.name}
+                        {r.collaborationRole === "partner" ? (
+                          <Badge
+                            tone="teal"
+                            dot
+                            style={{ marginLeft: 8, verticalAlign: "middle" }}
+                          >
+                            外部合作
+                          </Badge>
+                        ) : null}
                       </div>
                       <div
                         className="mono"
@@ -5018,6 +5211,7 @@ function warnBackgroundRefreshFailure(scope, error) {
 
 function ProjectDetail({ id, go }) {
   const projects = useOpsProjects();
+  const collaborationProjects = useOpsCollaborationProjects();
   const streamers = useOpsStreamers();
   const applications = useOpsApplications();
   const tasks = useOpsTasks();
@@ -5029,7 +5223,9 @@ function ProjectDetail({ id, go }) {
     streamers: streamerData,
     applications: applicationData,
   } = React.useContext(OpsLiveDataContext);
-  const p = projects.find((x) => x.id === id) || projects[0] || PROJECTS[0];
+  const allProjects = [...projects, ...collaborationProjects];
+  const p =
+    allProjects.find((x) => x.id === id) || allProjects[0] || PROJECTS[0];
   const [tab, setTab] = React.useState("overview");
   const [detailMessage, setDetailMessage] = React.useState("");
   const [detailSubmitting, setDetailSubmitting] = React.useState("");
@@ -5039,12 +5235,39 @@ function ProjectDetail({ id, go }) {
   );
   const [settingsError, setSettingsError] = React.useState("");
   const [settingsSubmitting, setSettingsSubmitting] = React.useState(false);
+  const [collaborationDraft, setCollaborationDraft] = React.useState(() =>
+    projectCollaborationInitialDraft(p),
+  );
+  const [collaborationMessage, setCollaborationMessage] = React.useState("");
+  const [collaborationError, setCollaborationError] = React.useState("");
+  const [collaborationSubmitting, setCollaborationSubmitting] =
+    React.useState("");
+  const [collaborationShareUrl, setCollaborationShareUrl] = React.useState("");
+  const [collaborationApplications, setCollaborationApplications] =
+    React.useState([]);
 
   React.useEffect(() => {
     setSettingsDraft(projectSettingsInitialDraft(p));
     setSettingsOpen(false);
     setSettingsError("");
   }, [p]);
+
+  React.useEffect(() => {
+    setCollaborationDraft(projectCollaborationInitialDraft(p));
+  }, [
+    p.id,
+    p.isOpenToMcnCollaboration,
+    p.mcnCollaborationSummary,
+    p.mcnCollaborationTerms?.revenueShareHint,
+  ]);
+
+  React.useEffect(() => {
+    setCollaborationMessage("");
+    setCollaborationError("");
+    setCollaborationSubmitting("");
+    setCollaborationShareUrl("");
+    setCollaborationApplications([]);
+  }, [p.id]);
 
   React.useEffect(() => {
     if (
@@ -5109,6 +5332,7 @@ function ProjectDetail({ id, go }) {
   }
 
   const status = PROJECT_STATUS[p.status] || PROJECT_STATUS.draft;
+  const isPartnerCollaboration = p.collaborationRole === "partner";
   const canAssignOwner = canAssignProjectOwnerInUi(currentUser.role);
   const ownerOptions = projectOwnerOptions(members, p, currentUser);
   const donePct =
@@ -5213,6 +5437,150 @@ function ProjectDetail({ id, go }) {
       setSettingsSubmitting(false);
     }
   };
+  const handleCollaborationChange = (field, value) => {
+    setCollaborationDraft((current) => ({ ...current, [field]: value }));
+  };
+  const persistProjectCollaborationSettings = async () => {
+    if (!actions.updateProjectBasics) {
+      throw new Error("项目协作设置接口不可用");
+    }
+    const revenueShareHint = collaborationDraft.revenueShareHint.trim();
+    await actions.updateProjectBasics(p.id, {
+      isOpenToMcnCollaboration: collaborationDraft.enabled,
+      mcnCollaborationSummary: collaborationDraft.summary.trim(),
+      mcnCollaborationTerms: revenueShareHint ? { revenueShareHint } : {},
+    });
+  };
+  const handleSaveProjectCollaboration = async (event) => {
+    event.preventDefault();
+    setCollaborationSubmitting("settings");
+    setCollaborationError("");
+    setCollaborationMessage("");
+    try {
+      await persistProjectCollaborationSettings();
+      setCollaborationMessage("协作设置已保存");
+    } catch (error) {
+      setCollaborationError(error?.message || "协作设置保存失败，请稍后重试");
+    } finally {
+      setCollaborationSubmitting("");
+    }
+  };
+  const handleCreateProjectCollaborationShare = async () => {
+    if (!collaborationDraft.enabled) {
+      setCollaborationError("请先开启外部 MCN 协作");
+      return;
+    }
+    setCollaborationSubmitting("share");
+    setCollaborationError("");
+    setCollaborationMessage("");
+    try {
+      if (!actions.createProjectCollaborationShare) {
+        throw new Error("协作链接接口不可用");
+      }
+      const result = await actions.createProjectCollaborationShare(p.id);
+      const url =
+        result?.shareUrl ||
+        result?.url ||
+        result?.share?.url ||
+        result?.share?.shareUrl ||
+        "";
+      setCollaborationShareUrl(url);
+      setCollaborationMessage(
+        url ? "协作链接已生成" : "协作链接已生成，请刷新查看",
+      );
+    } catch (error) {
+      setCollaborationError(error?.message || "协作链接生成失败，请稍后重试");
+    } finally {
+      setCollaborationSubmitting("");
+    }
+  };
+  const handleRefreshProjectCollaborationApplications = async () => {
+    setCollaborationSubmitting("applications");
+    setCollaborationError("");
+    setCollaborationMessage("");
+    try {
+      if (!actions.listProjectCollaborationApplications) {
+        throw new Error("协作申请接口不可用");
+      }
+      const items = await actions.listProjectCollaborationApplications(p.id);
+      setCollaborationApplications(Array.isArray(items) ? items : []);
+      setCollaborationMessage(
+        items?.length ? `已加载 ${items.length} 条协作申请` : "暂无协作申请",
+      );
+    } catch (error) {
+      setCollaborationError(error?.message || "协作申请刷新失败，请稍后重试");
+    } finally {
+      setCollaborationSubmitting("");
+    }
+  };
+  const handleReviewProjectCollaborationApplication = async (
+    application,
+    input = { action: "accept", ownerReviewNote: "" },
+  ) => {
+    setCollaborationSubmitting(`review:${application.id}`);
+    setCollaborationError("");
+    setCollaborationMessage("");
+    try {
+      if (!actions.reviewProjectCollaborationApplication) {
+        throw new Error("协作申请审核接口不可用");
+      }
+      const result = await actions.reviewProjectCollaborationApplication(
+        p.id,
+        application.id,
+        input,
+      );
+      const reviewedApplication = result?.application || {};
+      const nextStatus =
+        reviewedApplication.status ||
+        (input.action === "counter"
+          ? "owner_countered"
+          : input.action === "reject"
+            ? "rejected"
+            : "approved");
+      setCollaborationApplications((current) =>
+        current.map((item) =>
+          item.id === application.id
+            ? { ...item, ...reviewedApplication, status: nextStatus }
+            : item,
+        ),
+      );
+      setCollaborationMessage(
+        input.action === "counter"
+          ? "反报价已提交，等待对方确认"
+          : input.action === "reject"
+            ? "协作申请已拒绝"
+            : "协作申请已通过",
+      );
+    } catch (error) {
+      setCollaborationError(error?.message || "协作申请审核失败，请稍后重试");
+    } finally {
+      setCollaborationSubmitting("");
+    }
+  };
+  const handleConfirmProjectCollaborationCounter = async () => {
+    if (!p.collaborationApplicationId) return;
+    setCollaborationSubmitting(`confirm:${p.collaborationApplicationId}`);
+    setCollaborationError("");
+    setCollaborationMessage("");
+    setDetailMessage("");
+    try {
+      if (!actions.confirmProjectCollaborationCounter) {
+        throw new Error("协作反报价确认接口不可用");
+      }
+      await actions.confirmProjectCollaborationCounter(
+        p.id,
+        p.collaborationApplicationId,
+      );
+      setCollaborationMessage("反报价已确认，协作已生效");
+      setDetailMessage("反报价已确认，协作已生效");
+    } catch (error) {
+      const message = error?.message || "反报价确认失败，请稍后重试";
+      setCollaborationError(message);
+      setDetailMessage(message);
+    } finally {
+      setCollaborationSubmitting("");
+    }
+  };
 
   return (
     <>
@@ -5246,22 +5614,26 @@ function ProjectDetail({ id, go }) {
             >
               返回列表
             </Button>
-            <Button
-              kind="default"
-              icon={<Icon.Export size={14} />}
-              onClick={exportVendorDelivery}
-              disabled={detailSubmitting === "delivery"}
-            >
-              {detailSubmitting === "delivery" ? "生成中" : "厂家交付包"}
-            </Button>
-            <Button
-              kind="default"
-              icon={<Icon.Settings size={14} />}
-              onClick={openProjectSettings}
-            >
-              项目设置
-            </Button>
-            {p.status === "draft" && (
+            {!isPartnerCollaboration ? (
+              <>
+                <Button
+                  kind="default"
+                  icon={<Icon.Export size={14} />}
+                  onClick={exportVendorDelivery}
+                  disabled={detailSubmitting === "delivery"}
+                >
+                  {detailSubmitting === "delivery" ? "生成中" : "厂家交付包"}
+                </Button>
+                <Button
+                  kind="default"
+                  icon={<Icon.Settings size={14} />}
+                  onClick={openProjectSettings}
+                >
+                  项目设置
+                </Button>
+              </>
+            ) : null}
+            {!isPartnerCollaboration && p.status === "draft" && (
               <Button
                 kind="default"
                 icon={<Icon.Play size={14} />}
@@ -5324,6 +5696,33 @@ function ProjectDetail({ id, go }) {
               setSettingsError("");
               setSettingsDraft(projectSettingsInitialDraft(p));
             }}
+          />
+        ) : null}
+        {!isPartnerCollaboration ? (
+          <ProjectCollaborationPanel
+            project={p}
+            draft={collaborationDraft}
+            message={collaborationMessage}
+            error={collaborationError}
+            submitting={collaborationSubmitting}
+            shareUrl={collaborationShareUrl}
+            applications={collaborationApplications}
+            onChange={handleCollaborationChange}
+            onSave={handleSaveProjectCollaboration}
+            onCreateShare={handleCreateProjectCollaborationShare}
+            onRefreshApplications={
+              handleRefreshProjectCollaborationApplications
+            }
+            onReviewApplication={handleReviewProjectCollaborationApplication}
+          />
+        ) : null}
+        {isPartnerCollaboration && p.collaborationApplicationId ? (
+          <PartnerCollaborationApplicationPanel
+            project={p}
+            message={collaborationMessage}
+            error={collaborationError}
+            submitting={collaborationSubmitting}
+            onConfirmCounter={handleConfirmProjectCollaborationCounter}
           />
         ) : null}
         {/* Top metric strip (owner view) */}
@@ -5474,6 +5873,16 @@ function projectSettingsInitialDraft(project) {
     isPublicToStreamers: project?.isPublicToStreamers ?? false,
     publicSummary: normalizeProjectTextDraft(project?.publicSummary),
     gameDownloadUrl: normalizeProjectTextDraft(project?.gameDownloadUrl),
+  };
+}
+
+function projectCollaborationInitialDraft(project) {
+  return {
+    enabled: project?.isOpenToMcnCollaboration ?? false,
+    summary: normalizeProjectTextDraft(project?.mcnCollaborationSummary),
+    revenueShareHint: normalizeProjectTextDraft(
+      project?.mcnCollaborationTerms?.revenueShareHint,
+    ),
   };
 }
 
@@ -5860,6 +6269,612 @@ function ProjectSettingsDateField({ label, value, onChange }) {
         </span>
       </div>
     </ProjectSettingsField>
+  );
+}
+
+function projectCollaborationApplicationStatusLabel(status) {
+  const labels = {
+    submitted: "待审核",
+    owner_countered: "待对方确认",
+    approved: "已通过",
+    rejected: "已拒绝",
+    active: "已生效",
+  };
+  return labels[status] || status || "未知";
+}
+
+function projectCollaborationShareLabel(value) {
+  const bps = Number(value);
+  if (!Number.isFinite(bps) || bps <= 0) return "未填写";
+  return `${(bps / 100).toFixed(2)}%`;
+}
+
+function projectCollaborationPercentToBps(value) {
+  const percent = Number.parseFloat(String(value ?? "").trim());
+  if (!Number.isFinite(percent)) return null;
+  const bps = Math.round(percent * 100);
+  if (bps < 0 || bps > 10000) return null;
+  return bps;
+}
+
+function projectCollaborationApplicantLabel(application) {
+  return (
+    application?.applicantOrganizationName ||
+    application?.organizationName ||
+    application?.applicantOrganizationId ||
+    "外部 MCN"
+  );
+}
+
+function ProjectCollaborationPanel({
+  project,
+  draft,
+  message,
+  error,
+  submitting,
+  shareUrl,
+  applications = [],
+  onChange,
+  onSave,
+  onCreateShare,
+  onRefreshApplications,
+  onReviewApplication,
+}) {
+  const isBusy = Boolean(submitting);
+  const enabled = Boolean(draft.enabled);
+  const persisted = Boolean(project?.isOpenToMcnCollaboration);
+  const [copyState, setCopyState] = React.useState("");
+  const [applicationDrafts, setApplicationDrafts] = React.useState({});
+
+  const updateApplicationDraft = (applicationId, patch) => {
+    setApplicationDrafts((current) => ({
+      ...current,
+      [applicationId]: {
+        counterSharePercent: "",
+        rejectionReason: "",
+        ...(current[applicationId] || {}),
+        ...patch,
+      },
+    }));
+  };
+
+  const copyShareUrl = async () => {
+    if (!shareUrl) return;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareUrl);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = shareUrl;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCopyState("已复制");
+    } catch {
+      setCopyState("复制失败，请手动复制");
+    }
+  };
+
+  return (
+    <Card
+      title="外部 MCN 协作"
+      extra={
+        <Badge tone={persisted ? "green" : enabled ? "blue" : "neutral"} dot>
+          {persisted ? "已开启" : enabled ? "待保存" : "未开启"}
+        </Badge>
+      }
+      padded={true}
+    >
+      <form
+        onSubmit={onSave}
+        style={{ display: "flex", flexDirection: "column", gap: 16 }}
+      >
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 14,
+            alignItems: "stretch",
+          }}
+        >
+          <div
+            style={{
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              padding: 14,
+              display: "flex",
+              flexDirection: "column",
+              flex: "1 1 260px",
+              minWidth: 240,
+              gap: 12,
+            }}
+          >
+            <ProjectSettingsCheck
+              label="开放外部 MCN 协作"
+              checked={enabled}
+              onChange={(checked) => onChange("enabled", checked)}
+            />
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--ink-500)",
+                lineHeight: 1.55,
+              }}
+            >
+              开启后，其他 MCN
+              可通过邀请链接加入本项目；项目方保留项目设置与审核权限。
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Button
+                kind="default"
+                icon={<Icon.Plus size={14} />}
+                onClick={onCreateShare}
+                disabled={isBusy}
+              >
+                {submitting === "share" ? "生成中" : "生成协作链接"}
+              </Button>
+              <Button
+                kind="default"
+                icon={<Icon.Search size={14} />}
+                onClick={onRefreshApplications}
+                disabled={isBusy}
+              >
+                {submitting === "applications" ? "刷新中" : "刷新申请"}
+              </Button>
+            </div>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              flex: "3 1 420px",
+              minWidth: 260,
+              flexWrap: "wrap",
+              gap: 12,
+              alignItems: "start",
+            }}
+          >
+            <div style={{ flex: "1 1 360px", minWidth: 240 }}>
+              <ProjectSettingsField label="协作摘要">
+                <textarea
+                  value={draft.summary}
+                  onChange={(event) => onChange("summary", event.target.value)}
+                  rows={3}
+                  placeholder="给外部 MCN 看的项目亮点、主播要求和交付口径"
+                  style={{
+                    ...projectSettingsInputStyle,
+                    minHeight: 92,
+                    paddingTop: 9,
+                    resize: "vertical",
+                    lineHeight: 1.45,
+                    fontFamily: "inherit",
+                  }}
+                />
+              </ProjectSettingsField>
+            </div>
+            <div style={{ flex: "0 1 180px", minWidth: 160 }}>
+              <ProjectSettingsField label="分成建议">
+                <input
+                  value={draft.revenueShareHint}
+                  onChange={(event) =>
+                    onChange("revenueShareHint", event.target.value)
+                  }
+                  placeholder="例如 8-12%"
+                  style={projectSettingsInputStyle}
+                />
+              </ProjectSettingsField>
+            </div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "flex-end",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <div
+            style={{
+              marginRight: "auto",
+              minHeight: 18,
+              fontSize: 12,
+              color: error ? "var(--danger-600)" : "var(--ink-500)",
+            }}
+          >
+            {error || message}
+          </div>
+          <Button kind="primary" type="submit" disabled={isBusy}>
+            {submitting === "settings" ? "保存中" : "保存协作设置"}
+          </Button>
+        </div>
+      </form>
+
+      {shareUrl ? (
+        <div
+          style={{
+            marginTop: 14,
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            background: "#FAFBFD",
+            padding: 12,
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1fr) auto",
+            gap: 10,
+            alignItems: "end",
+          }}
+        >
+          <label
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              minWidth: 0,
+              fontSize: 12,
+              color: "var(--ink-500)",
+              fontWeight: 600,
+            }}
+          >
+            协作链接
+            <input
+              readOnly
+              value={shareUrl}
+              style={{
+                ...projectSettingsInputStyle,
+                width: "100%",
+                color: "var(--blue-700)",
+                background: "#fff",
+                fontFamily:
+                  "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            />
+          </label>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {copyState ? (
+              <span
+                aria-live="polite"
+                style={{
+                  fontSize: 12,
+                  color:
+                    copyState === "已复制"
+                      ? "var(--green-700)"
+                      : "var(--danger-600)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {copyState}
+              </span>
+            ) : null}
+            <Button
+              kind="default"
+              icon={<Icon.Copy size={14} />}
+              onClick={copyShareUrl}
+            >
+              复制链接
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      <div
+        style={{
+          marginTop: 14,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+        }}
+      >
+        {applications.length ? (
+          applications.map((application) => {
+            const canReview = application.status === "submitted";
+            const applicationDraft = applicationDrafts[application.id] || {
+              counterSharePercent: "",
+              rejectionReason: "",
+            };
+            const counterShareBps = projectCollaborationPercentToBps(
+              applicationDraft.counterSharePercent,
+            );
+            const canSubmitCounter = canReview && counterShareBps !== null;
+            const canReject =
+              canReview && applicationDraft.rejectionReason.trim().length > 0;
+            const isReviewing = submitting === `review:${application.id}`;
+            return (
+              <div
+                key={application.id}
+                style={{
+                  border: "1px solid var(--line)",
+                  borderRadius: 8,
+                  padding: 12,
+                  display: "grid",
+                  gridTemplateColumns: "minmax(0, 1fr)",
+                  gap: 12,
+                  background: "var(--bg-soft)",
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <strong style={{ fontSize: 13, color: "var(--ink-900)" }}>
+                      {projectCollaborationApplicantLabel(application)}
+                    </strong>
+                    <Badge tone={canReview ? "blue" : "neutral"} dot>
+                      {projectCollaborationApplicationStatusLabel(
+                        application.status,
+                      )}
+                    </Badge>
+                    <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                      分成{" "}
+                      {projectCollaborationShareLabel(
+                        application.requestedRevenueShareBps,
+                      )}
+                    </span>
+                    {application.ownerCounterRevenueShareBps ? (
+                      <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                        反报价{" "}
+                        {projectCollaborationShareLabel(
+                          application.ownerCounterRevenueShareBps,
+                        )}
+                      </span>
+                    ) : null}
+                  </div>
+                  {application.applicantNote ? (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        fontSize: 12,
+                        color: "var(--ink-500)",
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {application.applicantNote}
+                    </div>
+                  ) : null}
+                  {application.rejectionReason ? (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        fontSize: 12,
+                        color: "var(--danger-600)",
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {application.rejectionReason}
+                    </div>
+                  ) : null}
+                </div>
+                {canReview ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 10,
+                      flexWrap: "wrap",
+                      alignItems: "end",
+                    }}
+                  >
+                    <Button
+                      kind="primary"
+                      size="sm"
+                      icon={<Icon.Check size={13} stroke="#fff" />}
+                      disabled={isReviewing}
+                      onClick={() =>
+                        onReviewApplication(application, {
+                          action: "accept",
+                          ownerReviewNote: "",
+                        })
+                      }
+                    >
+                      通过申请
+                    </Button>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        flexWrap: "wrap",
+                        alignItems: "end",
+                      }}
+                    >
+                      <ProjectSettingsField label="反报价比例">
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.01"
+                          value={applicationDraft.counterSharePercent}
+                          onChange={(event) =>
+                            updateApplicationDraft(application.id, {
+                              counterSharePercent: event.target.value,
+                            })
+                          }
+                          placeholder="8"
+                          style={{ ...projectSettingsInputStyle, width: 120 }}
+                        />
+                      </ProjectSettingsField>
+                      <Button
+                        kind="default"
+                        size="sm"
+                        disabled={isReviewing || !canSubmitCounter}
+                        onClick={() =>
+                          onReviewApplication(application, {
+                            action: "counter",
+                            ownerCounterRevenueShareBps: counterShareBps,
+                            ownerReviewNote: "",
+                          })
+                        }
+                      >
+                        提交反报价
+                      </Button>
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        flexWrap: "wrap",
+                        alignItems: "end",
+                      }}
+                    >
+                      <ProjectSettingsField label="拒绝原因">
+                        <input
+                          value={applicationDraft.rejectionReason}
+                          onChange={(event) =>
+                            updateApplicationDraft(application.id, {
+                              rejectionReason: event.target.value,
+                            })
+                          }
+                          placeholder="例如 档期不匹配"
+                          style={{ ...projectSettingsInputStyle, width: 180 }}
+                        />
+                      </ProjectSettingsField>
+                      <Button
+                        kind="danger"
+                        size="sm"
+                        icon={<Icon.X size={13} />}
+                        disabled={isReviewing || !canReject}
+                        onClick={() =>
+                          onReviewApplication(application, {
+                            action: "reject",
+                            ownerReviewNote: "",
+                            rejectionReason:
+                              applicationDraft.rejectionReason.trim(),
+                          })
+                        }
+                      >
+                        确认拒绝
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })
+        ) : (
+          <div
+            style={{
+              padding: "12px 0 0",
+              fontSize: 12,
+              color: "var(--ink-400)",
+            }}
+          >
+            暂无外部 MCN 申请
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function PartnerCollaborationApplicationPanel({
+  project,
+  message,
+  error,
+  submitting,
+  onConfirmCounter,
+}) {
+  const isCountered =
+    project.collaborationApplicationStatus === "owner_countered";
+  const isBusy = submitting === `confirm:${project.collaborationApplicationId}`;
+
+  return (
+    <Card
+      title={isCountered ? "协作反报价待确认" : "协作申请待审核"}
+      extra={
+        <Badge tone={isCountered ? "amber" : "blue"} dot>
+          {isCountered ? "待确认" : "待项目方审核"}
+        </Badge>
+      }
+      padded={true}
+    >
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            flexWrap: "wrap",
+            alignItems: "center",
+          }}
+        >
+          <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+            申请分成{" "}
+            {projectCollaborationShareLabel(project.requestedRevenueShareBps)}
+          </span>
+          {project.ownerCounterRevenueShareBps ? (
+            <span style={{ fontSize: 13, color: "var(--ink-900)" }}>
+              项目方反报价{" "}
+              {projectCollaborationShareLabel(
+                project.ownerCounterRevenueShareBps,
+              )}
+            </span>
+          ) : null}
+          {project.ownerOrganizationName ? (
+            <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+              项目方 {project.ownerOrganizationName}
+            </span>
+          ) : null}
+        </div>
+        {project.collaborationSummary ? (
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--ink-500)",
+              lineHeight: 1.5,
+            }}
+          >
+            {project.collaborationSummary}
+          </div>
+        ) : null}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <div
+            aria-live="polite"
+            style={{
+              minHeight: 18,
+              fontSize: 12,
+              color: error ? "var(--danger-600)" : "var(--ink-500)",
+            }}
+          >
+            {error || message}
+          </div>
+          {isCountered ? (
+            <Button
+              kind="primary"
+              icon={<Icon.Check size={14} stroke="#fff" />}
+              disabled={isBusy}
+              onClick={onConfirmCounter}
+            >
+              {isBusy ? "确认中" : "确认反报价"}
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -6569,7 +7584,11 @@ function ProjectRoster({ p, go }) {
     setInviteSubmitting(true);
     setInviteError("");
     try {
-      await actions.inviteStreamerToProject?.(p.id, selectedStreamer.id);
+      await actions.inviteStreamerToProject?.(
+        p.id,
+        selectedStreamer.id,
+        p.collaborationId ?? p.collaborationAgreementId,
+      );
       const row = {
         ...selectedStreamer,
         projectStatus: "邀约中",
@@ -9415,11 +10434,14 @@ function ScreenReports({ go }) {
               },
               {
                 title: "状态",
-                render: (r) => (
-                  <Badge tone={REPORT_STATUS[r.status].tone} dot>
-                    {REPORT_STATUS[r.status].label}
-                  </Badge>
-                ),
+                render: (r) => {
+                  const status = reportStatusMeta(r.status);
+                  return (
+                    <Badge tone={status.tone} dot>
+                      {status.label}
+                    </Badge>
+                  );
+                },
               },
             ]}
             rows={filtered}
@@ -9535,9 +10557,14 @@ function ReportDetail({ id, reports }) {
               {r.streamer} · {projectName}
             </div>
           </div>
-          <Badge tone={REPORT_STATUS[r.status].tone} dot>
-            {REPORT_STATUS[r.status].label}
-          </Badge>
+          {(() => {
+            const status = reportStatusMeta(r.status);
+            return (
+              <Badge tone={status.tone} dot>
+                {status.label}
+              </Badge>
+            );
+          })()}
         </div>
 
         {/* Screenshot preview */}
@@ -9760,9 +10787,10 @@ function ReportDetail({ id, reports }) {
               fontSize: 12,
             }}
           >
-            <Badge tone={REPORT_STATUS[r.status].tone}>
-              {REPORT_STATUS[r.status].label}
-            </Badge>
+            {(() => {
+              const status = reportStatusMeta(r.status);
+              return <Badge tone={status.tone}>{status.label}</Badge>;
+            })()}
             该报数已完成当前审核流转。
           </div>
         )}
@@ -11226,11 +12254,14 @@ function ScreenSettlement({ go }) {
                 },
                 {
                   title: "状态",
-                  render: (r) => (
-                    <Badge tone={BATCH_STATUS[r.status].tone} dot>
-                      {BATCH_STATUS[r.status].label}
-                    </Badge>
-                  ),
+                  render: (r) => {
+                    const status = batchStatusMeta(r.status);
+                    return (
+                      <Badge tone={status.tone} dot>
+                        {status.label}
+                      </Badge>
+                    );
+                  },
                 },
               ]}
               rows={filtered}
@@ -11831,7 +12862,8 @@ function BatchDetail({
 
 function ScreenTasks({ go }) {
   const tasks = useOpsTasks();
-  const projects = useOpsProjects();
+  const ownerProjects = useOpsProjects();
+  const collaborationProjects = useOpsCollaborationProjects();
   const streamers = useOpsStreamers();
   const applications = useOpsApplications();
   const actions = useOpsLiveActions();
@@ -11840,6 +12872,17 @@ function ScreenTasks({ go }) {
     streamers: streamerData,
     applications: applicationData,
   } = React.useContext(OpsLiveDataContext);
+  const projects = React.useMemo(
+    () => [
+      ...ownerProjects,
+      ...collaborationProjects.filter(
+        (project) =>
+          !project.collaborationApplicationId &&
+          (project.collaborationId || project.collaborationAgreementId),
+      ),
+    ],
+    [collaborationProjects, ownerProjects],
+  );
   const [view, setView] = React.useState("board");
   const [project, setProject] = React.useState("all");
   const [streamerFilter, setStreamerFilter] = React.useState("all");
@@ -11972,8 +13015,13 @@ function ScreenTasks({ go }) {
 
   const createTask = async (input) => {
     await runTaskAction("create", async () => {
-      await actions.createLiveTask?.(input);
       const taskProject = projects.find((item) => item.id === input.projectId);
+      const collaborationId =
+        taskProject?.collaborationId ?? taskProject?.collaborationAgreementId;
+      await actions.createLiveTask?.({
+        ...input,
+        ...(collaborationId ? { collaborationId } : {}),
+      });
       setTaskMessage(
         `已创建任务并绑定项目：${
           taskProject?.name || displayRecordId(input.projectId, "项目")
@@ -12038,6 +13086,12 @@ function ScreenTasks({ go }) {
             plannedEndAt,
             plannedDuration,
             note: "经营端批量排班创建",
+            ...(project.collaborationId || project.collaborationAgreementId
+              ? {
+                  collaborationId:
+                    project.collaborationId ?? project.collaborationAgreementId,
+                }
+              : {}),
           };
         })
         .filter(Boolean);
@@ -18220,6 +19274,7 @@ function OpsReferenceInner({
   organizationSettings,
   billingStatus,
   projectCards,
+  collaborationProjectCards,
   streamerCards,
   applicationQueue,
   currentUser,
@@ -18260,6 +19315,8 @@ function OpsReferenceInner({
   const [projectsState, setProjectsState] = React.useState(
     projectCards ?? null,
   );
+  const [collaborationProjectsState, setCollaborationProjectsState] =
+    React.useState(collaborationProjectCards ?? null);
   const [streamersState, setStreamersState] = React.useState(
     streamerCards ?? null,
   );
@@ -18322,6 +19379,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setProjectsState(projectCards ?? null);
   }, [projectCards]);
+
+  React.useEffect(() => {
+    setCollaborationProjectsState(collaborationProjectCards ?? null);
+  }, [collaborationProjectCards]);
 
   React.useEffect(() => {
     setStreamersState(streamerCards ?? null);
@@ -18566,6 +19627,21 @@ function OpsReferenceInner({
       }
     };
 
+    const refreshCollaborationProjects = async () => {
+      const body = await fetchJson(
+        "/api/collaboration-projects",
+        "refresh collaboration projects failed",
+      );
+      const projectCards = Array.isArray(body.projects)
+        ? toCollaborationProjectCardDtos(body.projects)
+        : [];
+      const applicationCards = Array.isArray(body.applications)
+        ? toCollaborationApplicationProjectCardDtos(body.applications)
+        : [];
+      setCollaborationProjectsState([...projectCards, ...applicationCards]);
+      return { projects: body.projects, applications: body.applications };
+    };
+
     const refreshStreamers = async () => {
       const body = await fetchJson(
         "/api/streamers",
@@ -18620,6 +19696,60 @@ function OpsReferenceInner({
       );
     };
 
+    const createProjectCollaborationShare = async (projectId) => {
+      const body = await fetchJson(
+        `/api/projects/${projectId}/collaboration-shares`,
+        "create project collaboration share failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
+      await refreshProjects();
+      return body;
+    };
+
+    const listProjectCollaborationApplications = async (projectId) => {
+      const body = await fetchJson(
+        `/api/projects/${projectId}/collaboration-applications`,
+        "list project collaboration applications failed",
+        { method: "GET" },
+      );
+      return Array.isArray(body.applications) ? body.applications : [];
+    };
+
+    const reviewProjectCollaborationApplication = async (
+      projectId,
+      applicationId,
+      input,
+    ) => {
+      return fetchJson(
+        `/api/projects/${projectId}/collaboration-applications/${applicationId}/review`,
+        "review project collaboration application failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+      );
+    };
+
+    const confirmProjectCollaborationCounter = async (
+      projectId,
+      applicationId,
+    ) => {
+      const body = await fetchJson(
+        `/api/projects/${projectId}/collaboration-applications/${applicationId}/confirm`,
+        "confirm project collaboration counter failed",
+        {
+          method: "POST",
+        },
+      );
+      await refreshCollaborationProjects();
+      return body;
+    };
+
     const readVendorDeliveryPackage = async (projectId) => {
       const trimmedProjectId = String(projectId || "").trim();
       if (!trimmedProjectId) {
@@ -18645,6 +19775,7 @@ function OpsReferenceInner({
 
     return {
       refreshProjects,
+      refreshCollaborationProjects,
       refreshStreamers,
       refreshApplications,
       refreshAdmissionProjectBoards,
@@ -18653,6 +19784,10 @@ function OpsReferenceInner({
       readVendorDeliveryPackage,
       exportAdmissionRecordings,
       createAdmissionShareBoard,
+      createProjectCollaborationShare,
+      listProjectCollaborationApplications,
+      reviewProjectCollaborationApplication,
+      confirmProjectCollaborationCounter,
       scanAnomalies,
       createProjectDraft: async (input) => {
         const body = await fetchJson("/api/projects", "create project failed", {
@@ -18661,6 +19796,19 @@ function OpsReferenceInner({
           body: JSON.stringify(input),
         });
         await refreshProjects();
+        return body;
+      },
+      joinCollaborationProject: async (input) => {
+        const body = await fetchJson(
+          "/api/collaboration-projects/join",
+          "join collaboration project failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshCollaborationProjects();
         return body;
       },
       publishProject: async (id) => {
@@ -18731,14 +19879,22 @@ function OpsReferenceInner({
         await refreshStreamers();
         return body;
       },
-      inviteStreamerToProject: async (projectId, streamerId) => {
+      inviteStreamerToProject: async (
+        projectId,
+        streamerId,
+        collaborationId,
+      ) => {
+        const requestBody = { streamerId };
+        if (collaborationId) {
+          requestBody.collaborationId = collaborationId;
+        }
         const body = await fetchJson(
           `/api/projects/${projectId}/invitations`,
           "invite streamer failed",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ streamerId }),
+            body: JSON.stringify(requestBody),
           },
         );
         await refreshApplications();
@@ -19161,6 +20317,7 @@ function OpsReferenceInner({
         batches: batchesState,
         batchDetails: batchDetailsState,
         settlementPool: settlementPoolState,
+        collaborationProjects: collaborationProjectsState,
         settlementScope,
         auditEntries: auditEntriesState,
         ocrJobs: ocrJobsState,
@@ -19436,7 +20593,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; currentUser?: any }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; currentUser?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -19453,6 +20610,7 @@ export default function OpsReferenceApp({
   organizationSettings,
   billingStatus,
   projectCards,
+  collaborationProjectCards,
   streamerCards,
   applicationQueue,
   currentUser,
@@ -19473,6 +20631,7 @@ export default function OpsReferenceApp({
       organizationSettings={organizationSettings}
       billingStatus={billingStatus}
       projectCards={projectCards}
+      collaborationProjectCards={collaborationProjectCards}
       streamerCards={streamerCards}
       applicationQueue={applicationQueue}
       currentUser={currentUser}

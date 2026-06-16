@@ -44,6 +44,7 @@ export async function POST(request: Request) {
           plannedEndAt: optionalString(taskBody, "plannedEndAt"),
           plannedDuration: optionalNumber(taskBody, "plannedDuration"),
           note: optionalString(taskBody, "note"),
+          collaborationId: optionalString(taskBody, "collaborationId"),
         };
       }),
     });

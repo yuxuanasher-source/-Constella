@@ -30,6 +30,14 @@ function jsonRequest(body: Record<string, unknown>) {
   });
 }
 
+function rawRequest(body: string) {
+  return new Request("http://localhost/api/uploads/signed", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  });
+}
+
 describe("POST /api/uploads/signed", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -64,5 +72,60 @@ describe("POST /api/uploads/signed", () => {
     expect(createSignedUploadUrl).toHaveBeenCalledWith(
       "org-1/recordings/application-1/demo_video.mp4",
     );
+  });
+
+  it("rejects malformed JSON through the shared body validator", async () => {
+    const { POST } = await import("./signed/route");
+    const response = await POST(rawRequest("{not-json"));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Invalid JSON request body",
+    });
+    expect(createSignedUploadUrl).not.toHaveBeenCalled();
+  });
+
+  it("rejects upload categories outside the schema before building a path", async () => {
+    const { POST } = await import("./signed/route");
+    const response = await POST(
+      jsonRequest({
+        category: "reports/../../recordings",
+        ownerId: "application-1",
+        fileName: "demo.mp4",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Invalid request body",
+    });
+    expect(createSignedUploadUrl).not.toHaveBeenCalled();
+  });
+
+  it("sanitizes unexpected storage errors", async () => {
+    createSignedUploadUrl.mockResolvedValueOnce({
+      data: null,
+      error: new Error("database password leaked"),
+    } as never);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    const { POST } = await import("./signed/route");
+    const response = await POST(
+      jsonRequest({
+        category: "recordings",
+        ownerId: "application-1",
+        fileName: "demo.mp4",
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "Unexpected error",
+    });
+    expect(consoleError).toHaveBeenCalledOnce();
+
+    consoleError.mockRestore();
   });
 });

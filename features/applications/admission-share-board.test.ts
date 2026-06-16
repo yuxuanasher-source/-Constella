@@ -594,6 +594,7 @@ describe("admission share board service", () => {
               },
             ],
           },
+          now: "2026-06-07T08:00:00.000Z",
         }),
       ).rejects.toThrow("Vendor rejection or change request requires a remark");
     },

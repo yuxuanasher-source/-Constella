@@ -79,7 +79,7 @@ export function toStreamerPayableItem(
     manualAmount: Number(row.manual_amount),
     adjustmentAmount: Number(row.adjustment_amount),
     hours: Math.round((hours / 60) * 10) / 10,
-    evidence: `${row.evidence_level ?? "unknown"} 路 ${timeSource || source}`,
+    evidence: `${row.evidence_level ?? "unknown"} · ${timeSource || source}`,
     source,
     createdAt: row.created_at,
   };

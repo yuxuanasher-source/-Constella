@@ -4,6 +4,7 @@ import type {
   ApplicationSource,
   ApplicationRecord,
   ApplicationRepository,
+  ActiveCollaborationAgreementRecord,
   ProjectAdmissionConfig,
   ProjectStreamerRecord,
   RecordingSubmissionRecord,
@@ -31,6 +32,7 @@ type PublicProjectForRecordingRow = {
 
 type StreamerAdmissionRow = {
   id: string;
+  organization_id: string;
   display_name: string;
   user_id: string | null;
   risk_level: "low" | "medium" | "high";
@@ -49,6 +51,8 @@ type ApplicationRow = {
   source: ApplicationRecord["source"];
   status: ApplicationRecord["status"];
   decision_reason: string | null;
+  collaboration_id: string | null;
+  contributor_organization_id: string | null;
 };
 
 type RecordingSubmissionRow = {
@@ -56,6 +60,8 @@ type RecordingSubmissionRow = {
   application_id: string;
   version: number;
   status: RecordingSubmissionRecord["status"];
+  collaboration_id: string | null;
+  contributor_organization_id: string | null;
 };
 
 type ProjectStreamerRow = {
@@ -63,6 +69,15 @@ type ProjectStreamerRow = {
   project_id: string;
   streamer_id: string;
   status: ProjectStreamerRecord["status"];
+  collaboration_id: string | null;
+  contributor_organization_id: string | null;
+};
+
+type ActiveCollaborationAgreementRow = {
+  id: string;
+  project_id: string;
+  partner_organization_id: string;
+  status: "active";
 };
 
 const applicationSelect = `
@@ -72,7 +87,9 @@ const applicationSelect = `
   streamer_id,
   source,
   status,
-  decision_reason
+  decision_reason,
+  collaboration_id,
+  contributor_organization_id
 `;
 
 export class SupabaseApplicationRepository implements ApplicationRepository {
@@ -124,7 +141,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     const { data, error } = await this.client
       .from("streamers")
       .select(
-        "id, display_name, user_id, risk_level, cooperation_status, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps",
+        "id, organization_id, display_name, user_id, risk_level, cooperation_status, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps",
       )
       .eq("id", streamerId)
       .maybeSingle<StreamerAdmissionRow>();
@@ -177,6 +194,34 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     return data ? toApplicationRecord(data) : null;
   }
 
+  async getActiveCollaborationAgreement(input: {
+    projectId: string;
+    collaborationId: string;
+    contributorOrganizationId: string;
+  }): Promise<ActiveCollaborationAgreementRecord | null> {
+    const { data, error } = await this.client
+      .from("project_collaboration_agreements")
+      .select("id, project_id, partner_organization_id, status")
+      .eq("id", input.collaborationId)
+      .eq("project_id", input.projectId)
+      .eq("partner_organization_id", input.contributorOrganizationId)
+      .eq("status", "active")
+      .maybeSingle<ActiveCollaborationAgreementRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return data
+      ? {
+          id: data.id,
+          projectId: data.project_id,
+          partnerOrganizationId: data.partner_organization_id,
+          status: data.status,
+        }
+      : null;
+  }
+
   async createApplication(input: {
     organizationId: string;
     projectId: string;
@@ -184,6 +229,8 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     source: ApplicationRecord["source"];
     status: ApplicationRecord["status"];
     invitedBy?: string;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<ApplicationRecord> {
     const { data, error } = await this.client
       .from("project_applications")
@@ -194,6 +241,8 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
         source: input.source,
         status: input.status,
         invited_by: input.invitedBy,
+        collaboration_id: input.collaborationId,
+        contributor_organization_id: input.contributorOrganizationId,
       })
       .select(applicationSelect)
       .single<ApplicationRow>();
@@ -258,6 +307,8 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     storagePath?: string;
     externalUrl?: string;
     durationSeconds?: number;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<RecordingSubmissionRecord> {
     const { data, error } = await this.client
       .from("recording_submissions")
@@ -270,8 +321,12 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
         storage_path: input.storagePath,
         external_url: input.externalUrl,
         duration_seconds: input.durationSeconds,
+        collaboration_id: input.collaborationId,
+        contributor_organization_id: input.contributorOrganizationId,
       })
-      .select("id, application_id, version, status")
+      .select(
+        "id, application_id, version, status, collaboration_id, contributor_organization_id",
+      )
       .single<RecordingSubmissionRow>();
 
     if (error) {
@@ -286,7 +341,9 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
   ): Promise<RecordingSubmissionRecord | null> {
     const { data, error } = await this.client
       .from("recording_submissions")
-      .select("id, application_id, version, status")
+      .select(
+        "id, application_id, version, status, collaboration_id, contributor_organization_id",
+      )
       .eq("application_id", applicationId)
       .order("version", { ascending: false })
       .limit(1)
@@ -317,7 +374,9 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
         review_note: input.reviewNote,
       })
       .eq("id", recordingId)
-      .select("id, application_id, version, status")
+      .select(
+        "id, application_id, version, status, collaboration_id, contributor_organization_id",
+      )
       .single<RecordingSubmissionRow>();
 
     if (error) {
@@ -338,6 +397,8 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     cpsRateBps: number;
     settlementRule: Record<string, unknown>;
     createdBy: string;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<ProjectStreamerRecord> {
     const { data, error } = await this.client
       .from("project_streamers")
@@ -354,10 +415,14 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
           cps_rate_bps: input.cpsRateBps,
           settlement_rule: input.settlementRule,
           created_by: input.createdBy,
+          collaboration_id: input.collaborationId,
+          contributor_organization_id: input.contributorOrganizationId,
         },
         { onConflict: "project_id,streamer_id" },
       )
-      .select("id, project_id, streamer_id, status")
+      .select(
+        "id, project_id, streamer_id, status, collaboration_id, contributor_organization_id",
+      )
       .single<ProjectStreamerRow>();
 
     if (error) {
@@ -369,6 +434,8 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
       projectId: data.project_id,
       streamerId: data.streamer_id,
       status: data.status,
+      collaborationId: data.collaboration_id,
+      contributorOrganizationId: data.contributor_organization_id,
     };
   }
 }
@@ -418,6 +485,7 @@ function toStreamerAdmissionRecord(
   return {
     id: row.id,
     displayName: row.display_name,
+    organizationId: row.organization_id,
     userId: row.user_id,
     riskLevel:
       row.cooperation_status === "blacklisted" ? "blacklisted" : row.risk_level,
@@ -437,6 +505,8 @@ function toApplicationRecord(row: ApplicationRow): ApplicationRecord {
     source: row.source,
     status: row.status,
     decisionReason: row.decision_reason,
+    collaborationId: row.collaboration_id,
+    contributorOrganizationId: row.contributor_organization_id,
   };
 }
 
@@ -448,5 +518,7 @@ function toRecordingSubmissionRecord(
     applicationId: row.application_id,
     version: row.version,
     status: row.status,
+    collaborationId: row.collaboration_id,
+    contributorOrganizationId: row.contributor_organization_id,
   };
 }

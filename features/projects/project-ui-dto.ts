@@ -3,14 +3,12 @@ import type { ProjectListItem } from "./project-queries";
 const statusLabels: Record<string, string> = {
   draft: "草稿",
   recruiting: "招募中",
+  pending_start: "待开始",
   active: "进行中",
-  scheduling: "排班中",
-  live: "直播中",
   settling: "结算中",
-  settlement: "结算中",
   paused: "已暂停",
   ended: "已结束",
-  closed: "已结项",
+  archived: "已归档",
 };
 
 export type ProjectCardDto = {
@@ -31,6 +29,9 @@ export type ProjectCardDto = {
   isPublicToStreamers: boolean;
   publicSummary: string;
   gameDownloadUrl: string | null;
+  isOpenToMcnCollaboration: boolean;
+  mcnCollaborationSummary: string;
+  mcnCollaborationTerms: Record<string, unknown>;
   ownerId: string | null;
   leadOps: string;
   bizOwner: string;
@@ -57,6 +58,47 @@ export type ProjectCardDto = {
     margin: number;
   };
   risk: "low" | "medium" | "high";
+  collaborationRole?: "owner" | "partner";
+  collaborationId?: string;
+  collaborationAgreementId?: string;
+  collaborationApplicationId?: string;
+  collaborationApplicationStatus?: string;
+  requestedRevenueShareBps?: number;
+  ownerCounterRevenueShareBps?: number | null;
+  ownerOrganizationName?: string;
+  collaborationSummary?: string;
+};
+
+export type PartnerCollaborationProjectListItem = {
+  agreement: {
+    id: string;
+    status: string;
+    revenueShareBps: number;
+    settlementBasis: string;
+  };
+  project: {
+    id: string;
+    name: string;
+    code: string;
+    ownerOrganizationName: string;
+    collaborationSummary: string;
+  };
+};
+
+export type PartnerCollaborationApplicationProjectListItem = {
+  application: {
+    id: string;
+    status: string;
+    requestedRevenueShareBps: number;
+    ownerCounterRevenueShareBps: number | null;
+  };
+  project: {
+    id: string;
+    name: string;
+    code: string;
+    ownerOrganizationName: string;
+    collaborationSummary: string;
+  };
 };
 
 export function toProjectCardDto(row: ProjectListItem): ProjectCardDto {
@@ -82,6 +124,9 @@ export function toProjectCardDto(row: ProjectListItem): ProjectCardDto {
     isPublicToStreamers: row.is_public_to_streamers,
     publicSummary: row.public_summary?.trim() || "",
     gameDownloadUrl: row.game_download_url?.trim() || null,
+    isOpenToMcnCollaboration: row.is_open_to_mcn_collaboration ?? false,
+    mcnCollaborationSummary: row.mcn_collaboration_summary?.trim() || "",
+    mcnCollaborationTerms: row.mcn_collaboration_terms ?? {},
     ownerId: row.owner_id ?? row.created_by ?? null,
     leadOps: projectOwnerName(row),
     bizOwner: "未分配",
@@ -151,6 +196,137 @@ export function toProjectCardDtos(rows: ProjectListItem[]) {
   return rows.map(toProjectCardDto);
 }
 
+export function toCollaborationProjectCardDto(
+  row: PartnerCollaborationProjectListItem,
+): ProjectCardDto {
+  return {
+    id: row.project.id,
+    code: row.project.code,
+    name: row.project.name,
+    agent: "外部合作",
+    supplier: row.project.ownerOrganizationName,
+    vendor: row.project.ownerOrganizationName,
+    product: row.project.name,
+    status: row.agreement.status === "active" ? "active" : "recruiting",
+    statusLabel: row.agreement.status === "active" ? "进行中" : "招募中",
+    hourlyRateLabel: "按协作协议",
+    timingLabel: "本组织执行",
+    publishedAtLabel: "协作项目",
+    pricing: `分成 ${(row.agreement.revenueShareBps / 100).toFixed(2)}%`,
+    description: row.project.collaborationSummary || "",
+    isPublicToStreamers: false,
+    publicSummary: "",
+    gameDownloadUrl: null,
+    isOpenToMcnCollaboration: true,
+    mcnCollaborationSummary: row.project.collaborationSummary || "",
+    mcnCollaborationTerms: {},
+    ownerId: null,
+    leadOps: row.project.ownerOrganizationName,
+    bizOwner: "外部合作",
+    start: "",
+    end: "",
+    openSignup: false,
+    allowDirectInvite: false,
+    needScreening: true,
+    needStartStop: true,
+    streamers: { active: 0, candidate: 0, pendingReview: 0 },
+    metrics: {
+      plannedHours: 0,
+      doneHours: 0,
+      audience: 0,
+      reportedPending: 0,
+      anomalies: 0,
+      receivable: 0,
+      payable: 0,
+      gross: 0,
+      margin: 0,
+    },
+    risk: "low",
+    collaborationRole: "partner",
+    collaborationId: row.agreement.id,
+    collaborationAgreementId: row.agreement.id,
+    ownerOrganizationName: row.project.ownerOrganizationName,
+    collaborationSummary: row.project.collaborationSummary,
+  };
+}
+
+export function toCollaborationProjectCardDtos(
+  rows: PartnerCollaborationProjectListItem[],
+) {
+  return rows.map(toCollaborationProjectCardDto);
+}
+
+export function toCollaborationApplicationProjectCardDto(
+  row: PartnerCollaborationApplicationProjectListItem,
+): ProjectCardDto {
+  const ownerCounter = row.application.ownerCounterRevenueShareBps;
+  const statusLabel =
+    row.application.status === "owner_countered"
+      ? "\u5f85\u786e\u8ba4\u53cd\u62a5\u4ef7"
+      : "\u5f85\u9879\u76ee\u65b9\u5ba1\u6838";
+  const pricing = ownerCounter
+    ? `\u7533\u8bf7\u5206\u6210 ${(row.application.requestedRevenueShareBps / 100).toFixed(2)}% \u00b7 \u53cd\u62a5\u4ef7 ${(ownerCounter / 100).toFixed(2)}%`
+    : `\u7533\u8bf7\u5206\u6210 ${(row.application.requestedRevenueShareBps / 100).toFixed(2)}%`;
+
+  return {
+    id: row.project.id,
+    code: row.project.code,
+    name: row.project.name,
+    agent: "\u5916\u90e8\u5408\u4f5c",
+    supplier: row.project.ownerOrganizationName,
+    vendor: row.project.ownerOrganizationName,
+    product: row.project.name,
+    status: "recruiting",
+    statusLabel,
+    hourlyRateLabel: "\u5f85\u534f\u4f5c\u786e\u8ba4",
+    timingLabel: "\u672c\u7ec4\u7ec7\u6267\u884c",
+    publishedAtLabel: "\u534f\u4f5c\u7533\u8bf7",
+    pricing,
+    description: row.project.collaborationSummary || "",
+    isPublicToStreamers: false,
+    publicSummary: "",
+    gameDownloadUrl: null,
+    isOpenToMcnCollaboration: true,
+    mcnCollaborationSummary: row.project.collaborationSummary || "",
+    mcnCollaborationTerms: {},
+    ownerId: null,
+    leadOps: row.project.ownerOrganizationName,
+    bizOwner: "\u5916\u90e8\u5408\u4f5c",
+    start: "",
+    end: "",
+    openSignup: false,
+    allowDirectInvite: false,
+    needScreening: true,
+    needStartStop: true,
+    streamers: { active: 0, candidate: 0, pendingReview: 0 },
+    metrics: {
+      plannedHours: 0,
+      doneHours: 0,
+      audience: 0,
+      reportedPending: 0,
+      anomalies: 0,
+      receivable: 0,
+      payable: 0,
+      gross: 0,
+      margin: 0,
+    },
+    risk: "low",
+    collaborationRole: "partner",
+    collaborationApplicationId: row.application.id,
+    collaborationApplicationStatus: row.application.status,
+    requestedRevenueShareBps: row.application.requestedRevenueShareBps,
+    ownerCounterRevenueShareBps: ownerCounter,
+    ownerOrganizationName: row.project.ownerOrganizationName,
+    collaborationSummary: row.project.collaborationSummary,
+  };
+}
+
+export function toCollaborationApplicationProjectCardDtos(
+  rows: PartnerCollaborationApplicationProjectListItem[],
+) {
+  return rows.map(toCollaborationApplicationProjectCardDto);
+}
+
 function riskFromSensitivity(value: string): "low" | "medium" | "high" {
   if (value === "high") return "high";
   if (value === "sensitive" || value === "medium") return "medium";
@@ -158,9 +334,6 @@ function riskFromSensitivity(value: string): "low" | "medium" | "high" {
 }
 
 function uiStatusFromProjectStatus(status: string) {
-  if (status === "settlement") return "settling";
-  if (status === "closed") return "ended";
-  if (status === "scheduling" || status === "live") return "active";
   return status;
 }
 

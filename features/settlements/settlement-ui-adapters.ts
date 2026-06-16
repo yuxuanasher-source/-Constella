@@ -90,7 +90,7 @@ export function toOpsReferenceSettlementPoolItem(
     streamer: item.streamerName,
     project: item.projectName,
     hours: Math.round(((item.settlementDuration ?? 0) / 60) * 10) / 10,
-    evidence: `${item.evidenceLevel ?? "unknown"} 路 ${
+    evidence: `${item.evidenceLevel ?? "unknown"} · ${
       item.timeSource ?? "unknown"
     }`,
     rule: item.settlementMethod,

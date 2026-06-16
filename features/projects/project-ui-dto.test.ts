@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { toProjectCardDto } from "./project-ui-dto";
+import {
+  toCollaborationApplicationProjectCardDto,
+  toCollaborationProjectCardDto,
+  toProjectCardDto,
+} from "./project-ui-dto";
 
 describe("toProjectCardDto", () => {
   it("formats project list rows for the reference UI without exposing unsafe money math", () => {
@@ -26,6 +30,9 @@ describe("toProjectCardDto", () => {
       is_public_to_streamers: true,
       public_summary: "Streamer card summary",
       game_download_url: "https://download.example.com/game",
+      is_open_to_mcn_collaboration: true,
+      mcn_collaboration_summary: "Partner MCNs can contribute.",
+      mcn_collaboration_terms: { revenueShareHint: "8-12%" },
       created_by: "user-creator",
       owner_id: null,
       owner: null,
@@ -46,6 +53,9 @@ describe("toProjectCardDto", () => {
       isPublicToStreamers: true,
       publicSummary: "Streamer card summary",
       gameDownloadUrl: "https://download.example.com/game",
+      isOpenToMcnCollaboration: true,
+      mcnCollaborationSummary: "Partner MCNs can contribute.",
+      mcnCollaborationTerms: { revenueShareHint: "8-12%" },
       status: "recruiting",
       statusLabel: "招募中",
       hourlyRateLabel: "45.00 元/小时",
@@ -111,6 +121,78 @@ describe("toProjectCardDto", () => {
       statusLabel: "\u7ed3\u7b97\u4e2d",
     });
   });
+
+  it("labels current database project statuses and leaves removed statuses as raw fallbacks", () => {
+    expect(
+      toProjectCardDto(baseProjectRow({ status: "pending_start" })),
+    ).toMatchObject({
+      status: "pending_start",
+      statusLabel: "待开始",
+    });
+    expect(
+      toProjectCardDto(baseProjectRow({ status: "archived" })),
+    ).toMatchObject({
+      status: "archived",
+      statusLabel: "已归档",
+    });
+    expect(
+      toProjectCardDto(baseProjectRow({ status: "closed" })),
+    ).toMatchObject({
+      status: "closed",
+      statusLabel: "closed",
+    });
+  });
+
+  it("maps partner collaboration projects with collaboration attribution", () => {
+    const dto = toCollaborationProjectCardDto({
+      agreement: {
+        id: "agreement-1",
+        status: "active",
+        revenueShareBps: 900,
+        settlementBasis: "project_revenue",
+      },
+      project: {
+        id: "project-1",
+        name: "Owner project",
+        code: "COLLAB",
+        ownerOrganizationName: "Owner Org",
+        collaborationSummary: "Partner MCNs can contribute.",
+      },
+    });
+
+    expect(dto).toMatchObject({
+      id: "project-1",
+      collaborationRole: "partner",
+      collaborationAgreementId: "agreement-1",
+      collaborationId: "agreement-1",
+    });
+  });
+
+  it("maps partner collaboration applications waiting for confirmation", () => {
+    const dto = toCollaborationApplicationProjectCardDto({
+      application: {
+        id: "application-1",
+        status: "owner_countered",
+        requestedRevenueShareBps: 1200,
+        ownerCounterRevenueShareBps: 900,
+      },
+      project: {
+        id: "project-1",
+        name: "Owner project",
+        code: "COLLAB",
+        ownerOrganizationName: "Owner Org",
+        collaborationSummary: "Partner MCNs can contribute.",
+      },
+    });
+
+    expect(dto).toMatchObject({
+      id: "project-1",
+      collaborationRole: "partner",
+      collaborationApplicationId: "application-1",
+      collaborationApplicationStatus: "owner_countered",
+      ownerCounterRevenueShareBps: 900,
+    });
+  });
 });
 
 function baseProjectRow(overrides = {}) {
@@ -136,6 +218,9 @@ function baseProjectRow(overrides = {}) {
     is_public_to_streamers: true,
     public_summary: "Streamer card summary",
     game_download_url: "https://download.example.com/game",
+    is_open_to_mcn_collaboration: false,
+    mcn_collaboration_summary: "",
+    mcn_collaboration_terms: {},
     created_by: "user-creator",
     owner_id: null,
     owner: null,

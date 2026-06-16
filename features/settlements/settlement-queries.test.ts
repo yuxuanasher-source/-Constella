@@ -165,7 +165,7 @@ describe("settlement DTO mappers", () => {
       streamer: "Streamer Two",
       project: "Launch Week",
       hours: 1.5,
-      evidence: "green 路 system",
+      evidence: "green · system",
       rule: "cpt",
       expected: 150,
       approvedAt: "2026-06-02 20:30",

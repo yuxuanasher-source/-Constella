@@ -72,6 +72,9 @@ describe("createGovernedExport", () => {
           settlementDuration: 120,
           evidenceLevel: "system",
           grossMarginCents: 3000,
+          supplierCostCents: 271828,
+          internalRiskNote: "内部风险-只读",
+          vendorReceivableCents: 424242,
         },
       ],
       now: "2026-06-02T10:00:00.000Z",
@@ -81,6 +84,9 @@ describe("createGovernedExport", () => {
     expect(result.content).toContain("项目名称,主播,结算时长,证据等级");
     expect(result.content).toContain("王者荣耀暑期冲榜,阿洛,120,system");
     expect(result.content).not.toContain("grossMarginCents");
+    expect(result.content).not.toContain("271828");
+    expect(result.content).not.toContain("内部风险-只读");
+    expect(result.content).not.toContain("424242");
     expect(auditInserts).toEqual([
       expect.objectContaining({
         organization_id: "org-1",

@@ -110,4 +110,42 @@ describe("auto review evaluate route", () => {
     expect(response.status).toBe(403);
     expect(evaluateAutoReviewShadow).not.toHaveBeenCalled();
   });
+
+  it("rejects invalid report snapshots before evaluation", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/auto-review/evaluate", {
+        method: "POST",
+        body: JSON.stringify({
+          report: {
+            id: "report-1",
+            status: "pending_review",
+            evidenceLevel: "purple",
+            timeSource: "system",
+            settlementDuration: 120,
+            systemDuration: 120,
+            screenshotDuration: 121,
+            riskFlags: [],
+            taskHasAnomaly: false,
+            durationOverridden: false,
+            projectSensitivity: "normal",
+            streamerTrust: "trusted",
+            plannedDuration: 120,
+          },
+          rule: {
+            id: "rule-1",
+            mode: "shadow",
+            maxDurationDeviationPct: 10,
+            maxDurationDeviationMinutes: 15,
+            dailyHardLimitMinutes: 480,
+          },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Invalid request body",
+    });
+    expect(evaluateAutoReviewShadow).not.toHaveBeenCalled();
+  });
 });

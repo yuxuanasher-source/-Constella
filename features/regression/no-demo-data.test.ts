@@ -43,7 +43,6 @@ const forbiddenDemoMarkers = [
   /R-08831/,
   /B-2026/,
   /\bPROJECT_ID\b/,
-  /2026-05/,
   /2025-08-12/,
   /org_galaxy/i,
   /B-001/,
@@ -77,9 +76,7 @@ const forbiddenDemoText = [
   "6\u6708\u5e94\u4ed8\u6279\u6b21",
   "\u5143\u68a6\u4e4b\u661f",
   "\u6c38\u52ab\u65e0\u95f4",
-  "KPL",
   "\u9ec4\u91d1\u6863",
-  "4.7",
   "\u51ef\u8587\u5a1c",
 ] as const;
 
@@ -88,22 +85,35 @@ describe("production demo data guard", () => {
     const productionFiles = listProductionFiles();
     const violations = productionFiles.flatMap((file) => {
       const source = readFileSync(join(root, file), "utf8");
-      const regexViolations = forbiddenDemoMarkers
-        .filter((marker) => marker.test(source))
-        .map((marker) => `${file}: ${marker}`);
-      const textViolations = forbiddenDemoText
-        .filter((marker) => source.includes(marker))
-        .map((marker) => `${file}: ${marker}`);
-      return [...regexViolations, ...textViolations];
+      return findForbiddenDemoViolations(file, source);
     });
 
     expect(violations).toEqual([]);
+  });
+
+  it("does not treat generic release dates versions or esports terms as demo data", () => {
+    expect(
+      findForbiddenDemoViolations(
+        "features/release-note.ts",
+        "2026-05 版本 4.7 支持 KPL 场景复盘",
+      ),
+    ).toEqual([]);
   });
 });
 
 function listProductionFiles() {
   const discovered = productionRoots.flatMap((dir) => walkProductionFiles(dir));
   return [...discovered, ...additionalProductionFiles].sort();
+}
+
+function findForbiddenDemoViolations(file: string, source: string): string[] {
+  const regexViolations = forbiddenDemoMarkers
+    .filter((marker) => marker.test(source))
+    .map((marker) => `${file}: ${marker}`);
+  const textViolations = forbiddenDemoText
+    .filter((marker) => source.includes(marker))
+    .map((marker) => `${file}: ${marker}`);
+  return [...regexViolations, ...textViolations];
 }
 
 function walkProductionFiles(dir: string): string[] {

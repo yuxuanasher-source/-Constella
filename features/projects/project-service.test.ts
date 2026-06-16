@@ -252,6 +252,64 @@ describe("project service", () => {
     );
   });
 
+  it("updates project MCN collaboration settings with normal audit", async () => {
+    const before = {
+      id: "99999999-9999-9999-9999-999999999999",
+      name: "Collaboration project",
+      code: "COLLAB",
+      status: "recruiting" as const,
+      is_open_to_mcn_collaboration: false,
+      mcn_collaboration_summary: "",
+      mcn_collaboration_terms: {},
+    };
+    const after = {
+      ...before,
+      is_open_to_mcn_collaboration: true,
+      mcn_collaboration_summary:
+        "Partner MCNs can contribute verified streamers.",
+      mcn_collaboration_terms: { revenueShareHint: "8-12%" },
+    };
+    const repo = {
+      createDraft: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      publish: vi.fn(),
+      updateBasics: vi.fn().mockResolvedValue(after),
+      updateSettlementRule: vi.fn(),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await updateProjectBasics({
+      repo,
+      audit,
+      actor: { ...actor, role: "ops_manager" },
+      projectId: before.id,
+      input: {
+        isOpenToMcnCollaboration: true,
+        mcnCollaborationSummary:
+          "Partner MCNs can contribute verified streamers.",
+        mcnCollaborationTerms: { revenueShareHint: "8-12%" },
+      },
+    });
+
+    expect(repo.updateBasics).toHaveBeenCalledWith(before.id, {
+      is_open_to_mcn_collaboration: true,
+      mcn_collaboration_summary:
+        "Partner MCNs can contribute verified streamers.",
+      mcn_collaboration_terms: { revenueShareHint: "8-12%" },
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        changedFields: [
+          "is_open_to_mcn_collaboration",
+          "mcn_collaboration_summary",
+          "mcn_collaboration_terms",
+        ],
+        isHighRisk: false,
+      }),
+    );
+  });
+
   it("rejects non-http game download URLs", async () => {
     const before = {
       id: "99999999-9999-9999-9999-999999999999",

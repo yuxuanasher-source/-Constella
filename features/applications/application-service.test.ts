@@ -60,6 +60,7 @@ function makeRepo(
       id: "streamer-1",
       displayName: "Streamer One",
       userId: streamerActor.userId,
+      organizationId: streamerActor.organizationId,
       riskLevel: "low",
       defaultSettlementMethod: "manual",
       defaultHourlyRate: 0,
@@ -68,6 +69,7 @@ function makeRepo(
     }),
     getApplicationById: vi.fn().mockResolvedValue(baseApplication),
     getApplicationByProjectAndStreamer: vi.fn().mockResolvedValue(null),
+    getActiveCollaborationAgreement: vi.fn().mockResolvedValue(null),
     markApplicationRecordingReviewing: vi.fn().mockImplementation((id) =>
       Promise.resolve({
         ...baseApplication,
@@ -187,6 +189,113 @@ describe("application service", () => {
     expect(notify).not.toHaveBeenCalled();
   });
 
+  it("creates partner collaboration applications with contributor attribution", async () => {
+    const partnerActor = {
+      ...operatorActor,
+      userId: "partner-user",
+      organizationId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    };
+    const repo = makeRepo({
+      getStreamerForAdmission: vi.fn().mockResolvedValue({
+        id: "streamer-1",
+        displayName: "Streamer One",
+        userId: streamerActor.userId,
+        organizationId: partnerActor.organizationId,
+        riskLevel: "low",
+      }),
+      getActiveCollaborationAgreement: vi.fn().mockResolvedValue({
+        id: "collaboration-1",
+        projectId: "project-1",
+        partnerOrganizationId: partnerActor.organizationId,
+        status: "active",
+      }),
+    });
+
+    await inviteStreamerToProject({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor: partnerActor,
+      input: {
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        collaborationId: "collaboration-1",
+      },
+    });
+
+    expect(repo.getActiveCollaborationAgreement).toHaveBeenCalledWith({
+      projectId: "project-1",
+      collaborationId: "collaboration-1",
+      contributorOrganizationId: partnerActor.organizationId,
+    });
+    expect(repo.createApplication).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: partnerActor.organizationId,
+        collaborationId: "collaboration-1",
+        contributorOrganizationId: partnerActor.organizationId,
+      }),
+    );
+  });
+
+  it("rejects partner invitations when the streamer is not in the partner organization", async () => {
+    const partnerActor = {
+      ...operatorActor,
+      userId: "partner-user",
+      organizationId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    };
+    const repo = makeRepo({
+      getStreamerForAdmission: vi.fn().mockResolvedValue({
+        id: "streamer-1",
+        displayName: "Streamer One",
+        userId: streamerActor.userId,
+        organizationId: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        riskLevel: "low",
+      }),
+      getActiveCollaborationAgreement: vi.fn().mockResolvedValue({
+        id: "collaboration-1",
+        projectId: "project-1",
+        partnerOrganizationId: partnerActor.organizationId,
+        status: "active",
+      }),
+    });
+
+    await expect(
+      inviteStreamerToProject({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: partnerActor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          collaborationId: "collaboration-1",
+        },
+      }),
+    ).rejects.toThrow(/partner organization/);
+    expect(repo.createApplication).not.toHaveBeenCalled();
+  });
+
+  it("blocks collaboration applications without an active agreement", async () => {
+    const repo = makeRepo({
+      getActiveCollaborationAgreement: vi.fn().mockResolvedValue(null),
+    });
+
+    await expect(
+      inviteStreamerToProject({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: operatorActor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          collaborationId: "collaboration-1",
+        },
+      }),
+    ).rejects.toThrow("Active collaboration agreement is required");
+    expect(repo.createApplication).not.toHaveBeenCalled();
+  });
+
   it("still blocks reusing an invitation when the streamer is now blacklisted", async () => {
     const repo = makeRepo({
       getApplicationByProjectAndStreamer: vi.fn().mockResolvedValue({
@@ -246,6 +355,35 @@ describe("application service", () => {
     expect(repo.updateApplicationStatus).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ recipientRole: "operator_business" }),
+    );
+  });
+
+  it("copies application collaboration attribution onto recording submissions", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_required",
+        collaborationId: "collaboration-1",
+        contributorOrganizationId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      }),
+    });
+
+    await submitRecording({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor: streamerActor,
+      input: {
+        applicationId: "app-1",
+        externalUrl: "https://videos.example.com/collab-recording",
+      },
+    });
+
+    expect(repo.createRecordingSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collaborationId: "collaboration-1",
+        contributorOrganizationId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      }),
     );
   });
 
@@ -334,6 +472,32 @@ describe("application service", () => {
           baseSalary: 6000,
           cpsRateBps: 0,
         }),
+      }),
+    );
+  });
+
+  it("copies application collaboration attribution onto joined project streamers", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_approved",
+        collaborationId: "collaboration-1",
+        contributorOrganizationId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      }),
+    });
+
+    await confirmApplicationJoin({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor: staffActor,
+      input: { applicationId: "app-1" },
+    });
+
+    expect(repo.createProjectStreamer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collaborationId: "collaboration-1",
+        contributorOrganizationId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
       }),
     );
   });

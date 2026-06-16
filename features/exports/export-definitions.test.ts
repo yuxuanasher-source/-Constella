@@ -8,8 +8,9 @@ describe("export definitions", () => {
       "admission_recordings",
       "operator_business",
     );
+    const fieldKeys = fields.map((field) => field.key);
 
-    expect(fields.map((field) => field.key)).toEqual([
+    expect(fieldKeys).toEqual([
       "projectCode",
       "projectName",
       "vendorProduct",
@@ -22,15 +23,22 @@ describe("export definitions", () => {
       "vendorDecision",
       "vendorRemark",
     ]);
-    expect(fields.map((field) => field.key)).not.toEqual(
-      expect.arrayContaining([
-        "vendorReceivableCents",
-        "grossMarginCents",
-        "supplierCostCents",
-        "internalRiskNote",
-        "settlementPrice",
-      ]),
-    );
+    assertExportKeysExclude(fieldKeys, [
+      "vendorReceivableCents",
+      "grossMarginCents",
+      "supplierCostCents",
+      "internalRiskNote",
+      "settlementPrice",
+    ]);
+  });
+
+  it("fails the guard when any single finance-sensitive field is present", () => {
+    expect(() =>
+      assertExportKeysExclude(
+        ["projectName", "grossMarginCents"],
+        ["vendorReceivableCents", "grossMarginCents"],
+      ),
+    ).toThrow(/grossMarginCents/);
   });
 
   it("keeps vendor delivery package free of cost and margin fields", () => {
@@ -57,3 +65,14 @@ describe("export definitions", () => {
     );
   });
 });
+
+function assertExportKeysExclude(
+  keys: string[],
+  forbiddenKeys: string[],
+): void {
+  for (const forbiddenKey of forbiddenKeys) {
+    expect(keys, `forbidden export field ${forbiddenKey}`).not.toContain(
+      forbiddenKey,
+    );
+  }
+}

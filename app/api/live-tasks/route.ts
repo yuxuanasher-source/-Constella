@@ -52,6 +52,7 @@ export async function POST(request: Request) {
         plannedEndAt: optionalString(body, "plannedEndAt"),
         plannedDuration: optionalNumber(body, "plannedDuration"),
         note: optionalString(body, "note"),
+        collaborationId: optionalString(body, "collaborationId"),
       },
     });
 

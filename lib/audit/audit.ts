@@ -15,7 +15,15 @@ export type AuditAction =
   | "create_share_board"
   | "revoke_share_board"
   | "vendor_review_submit"
-  | "vendor_review_sync";
+  | "vendor_review_sync"
+  | "enable_collaboration"
+  | "disable_collaboration"
+  | "create_collaboration_share"
+  | "revoke_collaboration_share"
+  | "submit_collaboration_application"
+  | "review_collaboration_application"
+  | "confirm_collaboration_counter"
+  | "activate_collaboration_agreement";
 
 type AuditInsertClient = {
   from(table: "audit_logs"): {

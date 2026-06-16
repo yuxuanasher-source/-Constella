@@ -118,6 +118,7 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
       screenshotStoragePath: "org/report-screenshots/task-1/end.png",
       screenshotFileHash: "sha256:abc123",
       imageBucket: "evidence-private",
+      collaborationId: "agreement-1",
       imageBase64: "must-not-be-forwarded",
     });
 
@@ -140,6 +141,7 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
           screenshotStoragePath: "org/report-screenshots/task-1/end.png",
           screenshotFileHash: "sha256:abc123",
           imageBucket: "evidence-private",
+          collaborationId: "agreement-1",
         },
       }),
     );

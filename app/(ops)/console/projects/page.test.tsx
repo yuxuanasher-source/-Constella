@@ -5,13 +5,20 @@ import OpsReferenceApp from "@/components/reference-ui/ops-reference";
 import { listOpsLiveTaskQueue } from "@/features/live-operations/live-operations-queries";
 import { listProjects } from "@/features/projects/project-queries";
 import {
+  listPartnerCollaborationApplications,
+  listPartnerCollaborationProjects,
+} from "@/features/collaborations/project-collaboration-service";
+import {
   getOpsSettlementDefaultScope,
   listOpsSettlementBatches,
   listOpsSettlementBatchDetails,
   listOpsSettlementPool,
 } from "@/features/settlements/settlement-queries";
 import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import {
+  createSupabaseAdminClient,
+  createSupabaseServerClient,
+} from "@/lib/db/supabase-server";
 
 import ProjectsPage from "./page";
 
@@ -43,6 +50,18 @@ vi.mock("@/features/live-operations/live-ui-adapters", () => ({
     projectId: task.projectId,
     title: task.title,
   })),
+}));
+
+vi.mock("@/features/collaborations/project-collaboration-service", () => ({
+  SupabaseProjectCollaborationRepository: vi
+    .fn()
+    .mockImplementation(function () {
+      return {
+        type: "collaboration-repo",
+      };
+    }),
+  listPartnerCollaborationApplications: vi.fn(),
+  listPartnerCollaborationProjects: vi.fn(),
 }));
 
 vi.mock("@/features/settlements/settlement-queries", () => ({
@@ -77,12 +96,18 @@ vi.mock("@/lib/auth/context", () => ({
 }));
 
 vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseAdminClient: vi.fn(),
   createSupabaseServerClient: vi.fn(),
 }));
 
 describe("console projects route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      client: "admin-supabase",
+    } as never);
+    vi.mocked(listPartnerCollaborationApplications).mockResolvedValue([]);
+    vi.mocked(listPartnerCollaborationProjects).mockResolvedValue([]);
   });
 
   it("passes the authenticated staff identity into the ops UI", async () => {

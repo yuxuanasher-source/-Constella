@@ -28,6 +28,9 @@ export type ProjectRecord = {
   is_public_to_streamers?: boolean;
   public_summary?: string | null;
   game_download_url?: string | null;
+  is_open_to_mcn_collaboration?: boolean;
+  mcn_collaboration_summary?: string | null;
+  mcn_collaboration_terms?: Record<string, unknown>;
   created_by?: string | null;
   owner_id?: string | null;
   ops_manager_id?: string | null;
@@ -68,6 +71,9 @@ export type UpdateProjectBasicsInput = {
   publicSummary?: string;
   gameDownloadUrl?: string | null;
   ownerId?: string | null;
+  isOpenToMcnCollaboration?: boolean;
+  mcnCollaborationSummary?: string;
+  mcnCollaborationTerms?: Record<string, unknown>;
 };
 
 export type UpdateProjectSettlementRuleInput = {
@@ -318,6 +324,9 @@ function mapBasicProjectPatch(
     is_public_to_streamers: input.isPublicToStreamers,
     public_summary: input.publicSummary,
     game_download_url: normalizeOptionalHttpUrl(input.gameDownloadUrl),
+    is_open_to_mcn_collaboration: input.isOpenToMcnCollaboration,
+    mcn_collaboration_summary: input.mcnCollaborationSummary,
+    mcn_collaboration_terms: input.mcnCollaborationTerms,
     owner_id: input.ownerId,
   });
 }

@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type {
+  ActiveLiveCollaborationAgreementRecord,
   LiveOperationsRepository,
   LiveReportRecord,
   LiveTaskRecord,
@@ -34,6 +35,8 @@ type LiveTaskRow = {
   system_stopped_at: string | null;
   system_duration: number;
   created_by: string | null;
+  collaboration_id: string | null;
+  contributor_organization_id: string | null;
 };
 
 type LiveReportRow = {
@@ -54,6 +57,15 @@ type LiveReportRow = {
   include_in_task_result: boolean;
   enter_settlement_pool: boolean;
   risk_flags: string[];
+  collaboration_id: string | null;
+  contributor_organization_id: string | null;
+};
+
+type CollaborationAgreementRow = {
+  id: string;
+  project_id: string;
+  partner_organization_id: string;
+  status: "active";
 };
 
 const liveTaskSelect = `
@@ -71,7 +83,9 @@ const liveTaskSelect = `
   system_started_at,
   system_stopped_at,
   system_duration,
-  created_by
+  created_by,
+  collaboration_id,
+  contributor_organization_id
 `;
 
 const liveReportSelect = `
@@ -91,7 +105,9 @@ const liveReportSelect = `
   viewers,
   include_in_task_result,
   enter_settlement_pool,
-  risk_flags
+  risk_flags,
+  collaboration_id,
+  contributor_organization_id
 `;
 
 export class SupabaseLiveOperationsRepository implements LiveOperationsRepository {
@@ -115,6 +131,34 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     return data ? toProjectStreamer(data) : null;
   }
 
+  async getActiveCollaborationAgreement(input: {
+    projectId: string;
+    collaborationId: string;
+    contributorOrganizationId: string;
+  }): Promise<ActiveLiveCollaborationAgreementRecord | null> {
+    const { data, error } = await this.client
+      .from("project_collaboration_agreements")
+      .select("id, project_id, partner_organization_id, status")
+      .eq("id", input.collaborationId)
+      .eq("project_id", input.projectId)
+      .eq("partner_organization_id", input.contributorOrganizationId)
+      .eq("status", "active")
+      .maybeSingle<CollaborationAgreementRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return data
+      ? {
+          id: data.id,
+          projectId: data.project_id,
+          partnerOrganizationId: data.partner_organization_id,
+          status: data.status,
+        }
+      : null;
+  }
+
   async createLiveTask(input: {
     organizationId: string;
     projectId: string;
@@ -127,6 +171,8 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     requiresTiming: boolean;
     createdBy: string;
     note?: string;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<LiveTaskRecord> {
     const { data, error } = await this.client
       .from("live_tasks")
@@ -142,6 +188,8 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
         requires_timing: input.requiresTiming,
         created_by: input.createdBy,
         note: input.note,
+        collaboration_id: input.collaborationId,
+        contributor_organization_id: input.contributorOrganizationId,
       })
       .select(liveTaskSelect)
       .single<LiveTaskRow>();
@@ -201,6 +249,8 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     viewers?: number | null;
     riskFlags: string[];
     createdBy: string;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<LiveReportRecord> {
     const { data, error } = await this.client
       .from("live_reports")
@@ -220,6 +270,8 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
         viewers: input.viewers,
         risk_flags: input.riskFlags,
         created_by: input.createdBy,
+        collaboration_id: input.collaborationId,
+        contributor_organization_id: input.contributorOrganizationId,
       })
       .select(liveReportSelect)
       .single<LiveReportRow>();
@@ -367,6 +419,8 @@ function toLiveTaskRecord(row: LiveTaskRow): LiveTaskRecord {
     systemStoppedAt: row.system_stopped_at,
     systemDuration: row.system_duration,
     createdBy: row.created_by,
+    collaborationId: row.collaboration_id,
+    contributorOrganizationId: row.contributor_organization_id,
   };
 }
 
@@ -389,6 +443,8 @@ function toLiveReportRecord(row: LiveReportRow): LiveReportRecord {
     includeInTaskResult: row.include_in_task_result,
     enterSettlementPool: row.enter_settlement_pool,
     riskFlags: row.risk_flags,
+    collaborationId: row.collaboration_id,
+    contributorOrganizationId: row.contributor_organization_id,
   };
 }
 
@@ -405,6 +461,8 @@ function toLiveTaskPatch(
     system_started_at: patch.systemStartedAt,
     system_stopped_at: patch.systemStoppedAt,
     system_duration: patch.systemDuration,
+    collaboration_id: patch.collaborationId,
+    contributor_organization_id: patch.contributorOrganizationId,
   });
 }
 
@@ -431,6 +489,8 @@ function toLiveReportPatch(
     reviewed_by: patch.reviewedBy,
     reviewed_at: patch.reviewedAt,
     review_notes: patch.reviewNotes,
+    collaboration_id: patch.collaborationId,
+    contributor_organization_id: patch.contributorOrganizationId,
   });
 }
 

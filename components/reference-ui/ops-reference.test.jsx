@@ -440,6 +440,9 @@ describe("OpsReferenceApp project smoke", () => {
             pricing: "CPT",
             leadOps: "未分配",
             streamers: { active: 0, candidate: 0, pendingReview: 0 },
+            collaborationRole: "partner",
+            collaborationId: "agreement-1",
+            collaborationAgreementId: "agreement-1",
             metrics: {
               plannedHours: 0,
               doneHours: 0,
@@ -481,6 +484,9 @@ describe("OpsReferenceApp project smoke", () => {
             start: "2026-06-01",
             end: "2026-06-30",
             streamers: { active: 0, candidate: 0, pendingReview: 0 },
+            collaborationRole: "partner",
+            collaborationId: "agreement-1",
+            collaborationAgreementId: "agreement-1",
             metrics: {
               plannedHours: 0,
               doneHours: 0,
@@ -769,6 +775,101 @@ describe("OpsReferenceApp project smoke", () => {
     );
   });
 
+  it("submits an external collaboration application from the new project flow", async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      const requestUrl = String(url);
+      if (
+        requestUrl === "/api/collaboration-projects/join" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            application: { id: "application-1", status: "submitted" },
+            project: {
+              id: "project-1",
+              name: "Owner project",
+              code: "COLLAB",
+              ownerOrganizationName: "Owner Org",
+              collaborationSummary: "Partner MCNs can contribute.",
+            },
+            pendingOwnerReview: true,
+          }),
+        };
+      }
+      if (requestUrl === "/api/collaboration-projects") {
+        return {
+          ok: true,
+          json: async () => ({
+            projects: [
+              {
+                agreement: {
+                  id: "agreement-1",
+                  status: "active",
+                  revenueShareBps: 0,
+                  settlementBasis: "project_revenue",
+                },
+                project: {
+                  id: "project-1",
+                  name: "Owner project",
+                  code: "COLLAB",
+                  ownerOrganizationName: "Owner Org",
+                  collaborationSummary: "Partner MCNs can contribute.",
+                },
+              },
+            ],
+          }),
+        };
+      }
+      return {
+        ok: false,
+        json: async () => ({ error: `unexpected request ${requestUrl}` }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={[]}
+        collaborationProjectCards={[]}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "\u65b0\u5efa\u9879\u76ee" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "\u5916\u90e8\u5408\u4f5c" }),
+    );
+    fireEvent.change(screen.getByLabelText("\u9080\u8bf7\u94fe\u63a5"), {
+      target: {
+        value: "http://localhost:3000/share/project-collaboration/raw-token",
+      },
+    });
+    fireEvent.click(screen.getByText("\u63d0\u4ea4\u7533\u8bf7"));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/collaboration-projects/join",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const joinCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/collaboration-projects/join",
+    );
+    expect(JSON.parse(joinCall[1].body)).toEqual({
+      inviteLink: "http://localhost:3000/share/project-collaboration/raw-token",
+      requestedRevenueShareBps: 0,
+      applicantNote: "",
+    });
+    expect(
+      await screen.findByText(
+        "\u534f\u4f5c\u7533\u8bf7\u5df2\u63d0\u4ea4\uff0c\u7b49\u5f85\u9879\u76ee\u65b9\u5ba1\u6838",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("invites a streamer from the project roster tab", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -793,6 +894,9 @@ describe("OpsReferenceApp project smoke", () => {
             start: "2026-06-01",
             end: "2026-06-30",
             streamers: { active: 0, candidate: 0, pendingReview: 0 },
+            collaborationRole: "partner",
+            collaborationId: "agreement-1",
+            collaborationAgreementId: "agreement-1",
             metrics: {
               plannedHours: 0,
               doneHours: 0,
@@ -826,7 +930,10 @@ describe("OpsReferenceApp project smoke", () => {
         expect.objectContaining({
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ streamerId: "streamer-one" }),
+          body: JSON.stringify({
+            streamerId: "streamer-one",
+            collaborationId: "agreement-1",
+          }),
         }),
       ),
     );
@@ -1800,6 +1907,380 @@ describe("OpsReferenceApp project smoke", () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).not.toHaveProperty(
       "status",
     );
+  });
+
+  it("manages external MCN collaboration from project detail", async () => {
+    const collaborationProject = {
+      ...projectManagementCards[0],
+      isOpenToMcnCollaboration: false,
+      mcnCollaborationSummary: "",
+      mcnCollaborationTerms: {},
+    };
+    const refreshedProject = {
+      ...collaborationProject,
+      isOpenToMcnCollaboration: true,
+      mcnCollaborationSummary:
+        "Partner MCNs can contribute verified streamers.",
+      mcnCollaborationTerms: { revenueShareHint: "8-12%" },
+    };
+    const fetchMock = vi.fn(async (url, init) => {
+      const requestUrl = String(url);
+      if (
+        requestUrl === "/api/projects/project-alpha" &&
+        init?.method === "PATCH"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({ project: { id: "project-alpha" } }),
+        };
+      }
+      if (requestUrl === "/api/projects") {
+        return {
+          ok: true,
+          json: async () => ({ projects: [refreshedProject] }),
+        };
+      }
+      if (
+        requestUrl === "/api/projects/project-alpha/collaboration-shares" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            share: { id: "share-1", status: "active" },
+            shareUrl:
+              "http://localhost:3000/share/project-collaboration/raw-token",
+          }),
+        };
+      }
+      if (
+        requestUrl ===
+          "/api/projects/project-alpha/collaboration-applications" &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            applications: [
+              {
+                id: "application-1",
+                applicantOrganizationId: "org-partner",
+                requestedRevenueShareBps: 900,
+                status: "submitted",
+                applicantNote: "We can bring streamers.",
+              },
+              {
+                id: "application-2",
+                applicantOrganizationId: "org-counter",
+                requestedRevenueShareBps: 1200,
+                status: "submitted",
+                applicantNote: "Counter us.",
+              },
+              {
+                id: "application-3",
+                applicantOrganizationId: "org-reject",
+                requestedRevenueShareBps: 1500,
+                status: "submitted",
+                applicantNote: "Reject us.",
+              },
+            ],
+          }),
+        };
+      }
+      if (
+        requestUrl.startsWith(
+          "/api/projects/project-alpha/collaboration-applications/",
+        ) &&
+        requestUrl.endsWith("/review") &&
+        init?.method === "POST"
+      ) {
+        const id = requestUrl.split("/").at(-2);
+        const body = JSON.parse(init.body);
+        const status =
+          body.action === "counter"
+            ? "owner_countered"
+            : body.action === "reject"
+              ? "rejected"
+              : "approved";
+        return {
+          ok: true,
+          json: async () => ({
+            application: { id, status },
+            agreement:
+              body.action === "accept"
+                ? { id: "agreement-1", status: "active" }
+                : null,
+          }),
+        };
+      }
+      return {
+        ok: false,
+        json: async () => ({ error: `unexpected request ${requestUrl}` }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        currentUser={{
+          id: "user-owner",
+          name: "Owner",
+          role: "owner",
+          dept: "Demo Org",
+        }}
+        projectCards={[collaborationProject]}
+        streamerCards={[]}
+        applicationQueue={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Alpha Launch"));
+    expect(
+      screen.getByText("\u5916\u90e8 MCN \u534f\u4f5c"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByLabelText("\u5f00\u653e\u5916\u90e8 MCN \u534f\u4f5c"),
+    );
+    fireEvent.change(screen.getByLabelText("\u534f\u4f5c\u6458\u8981"), {
+      target: { value: "Partner MCNs can contribute verified streamers." },
+    });
+    fireEvent.change(screen.getByLabelText("\u5206\u6210\u5efa\u8bae"), {
+      target: { value: "8-12%" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "\u4fdd\u5b58\u534f\u4f5c\u8bbe\u7f6e",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-alpha",
+        expect.objectContaining({ method: "PATCH" }),
+      ),
+    );
+    const updateCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/api/projects/project-alpha" &&
+        init?.method === "PATCH",
+    );
+    expect(JSON.parse(updateCall[1].body)).toEqual({
+      isOpenToMcnCollaboration: true,
+      mcnCollaborationSummary:
+        "Partner MCNs can contribute verified streamers.",
+      mcnCollaborationTerms: { revenueShareHint: "8-12%" },
+    });
+
+    await screen.findByText("\u534f\u4f5c\u8bbe\u7f6e\u5df2\u4fdd\u5b58");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "\u751f\u6210\u534f\u4f5c\u94fe\u63a5",
+      }),
+    );
+    expect(
+      await screen.findByDisplayValue(
+        "http://localhost:3000/share/project-collaboration/raw-token",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "\u590d\u5236\u94fe\u63a5" }),
+    ).toBeInTheDocument();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      screen.getByDisplayValue(
+        "http://localhost:3000/share/project-collaboration/raw-token",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "\u5237\u65b0\u7533\u8bf7" }),
+    );
+    expect(
+      await screen.findByText("We can bring streamers."),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "\u901a\u8fc7\u7533\u8bf7" })[0],
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-alpha/collaboration-applications/application-1/review",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const reviewCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith(
+          "/collaboration-applications/application-1/review",
+        ) && init?.method === "POST",
+    );
+    expect(JSON.parse(reviewCall[1].body)).toEqual({
+      action: "accept",
+      ownerReviewNote: "",
+    });
+
+    fireEvent.change(
+      screen.getAllByLabelText("\u53cd\u62a5\u4ef7\u6bd4\u4f8b")[0],
+      {
+        target: { value: "8" },
+      },
+    );
+    fireEvent.click(
+      screen.getAllByRole("button", {
+        name: "\u63d0\u4ea4\u53cd\u62a5\u4ef7",
+      })[0],
+    );
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url).endsWith(
+              "/collaboration-applications/application-2/review",
+            ) && init?.method === "POST",
+        ),
+      ).toBe(true),
+    );
+    const counterCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith(
+          "/collaboration-applications/application-2/review",
+        ) && init?.method === "POST",
+    );
+    expect(JSON.parse(counterCall[1].body)).toEqual({
+      action: "counter",
+      ownerCounterRevenueShareBps: 800,
+      ownerReviewNote: "",
+    });
+
+    fireEvent.change(screen.getAllByLabelText("\u62d2\u7edd\u539f\u56e0")[0], {
+      target: { value: "\u5f53\u524d\u6863\u671f\u4e0d\u5339\u914d\u3002" },
+    });
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "\u786e\u8ba4\u62d2\u7edd" })[0],
+    );
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url, init]) =>
+            String(url).endsWith(
+              "/collaboration-applications/application-3/review",
+            ) && init?.method === "POST",
+        ),
+      ).toBe(true),
+    );
+    const rejectCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith(
+          "/collaboration-applications/application-3/review",
+        ) && init?.method === "POST",
+    );
+    expect(JSON.parse(rejectCall[1].body)).toEqual({
+      action: "reject",
+      ownerReviewNote: "",
+      rejectionReason: "\u5f53\u524d\u6863\u671f\u4e0d\u5339\u914d\u3002",
+    });
+  });
+
+  it("confirms owner counter offers from partner collaboration detail", async () => {
+    const counterProject = {
+      ...projectManagementCards[0],
+      id: "project-counter",
+      code: "COUNTER",
+      name: "Counter Project",
+      collaborationRole: "partner",
+      collaborationApplicationId: "application-1",
+      collaborationApplicationStatus: "owner_countered",
+      requestedRevenueShareBps: 1200,
+      ownerCounterRevenueShareBps: 900,
+      ownerOrganizationName: "Owner Org",
+      collaborationSummary: "Needs confirmation.",
+    };
+    const fetchMock = vi.fn(async (url, init) => {
+      const requestUrl = String(url);
+      if (
+        requestUrl ===
+          "/api/projects/project-counter/collaboration-applications/application-1/confirm" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            application: { id: "application-1", status: "approved" },
+            agreement: { id: "agreement-1", status: "active" },
+          }),
+        };
+      }
+      if (requestUrl === "/api/collaboration-projects") {
+        return {
+          ok: true,
+          json: async () => ({
+            projects: [
+              {
+                agreement: {
+                  id: "agreement-1",
+                  status: "active",
+                  revenueShareBps: 900,
+                  settlementBasis: "project_revenue",
+                },
+                project: {
+                  id: "project-counter",
+                  name: "Counter Project",
+                  code: "COUNTER",
+                  ownerOrganizationName: "Owner Org",
+                  collaborationSummary: "Needs confirmation.",
+                },
+              },
+            ],
+            applications: [],
+          }),
+        };
+      }
+      return {
+        ok: false,
+        json: async () => ({ error: `unexpected request ${requestUrl}` }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={[]}
+        collaborationProjectCards={[counterProject]}
+        streamerCards={[]}
+        applicationQueue={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Counter Project"));
+    expect(
+      screen.getByText("\u534f\u4f5c\u53cd\u62a5\u4ef7\u5f85\u786e\u8ba4"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("\u9879\u76ee\u65b9\u53cd\u62a5\u4ef7 9.00%"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "\u786e\u8ba4\u53cd\u62a5\u4ef7" }),
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-counter/collaboration-applications/application-1/confirm",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(
+      await screen.findByText(
+        "\u53cd\u62a5\u4ef7\u5df2\u786e\u8ba4\uff0c\u534f\u4f5c\u5df2\u751f\u6548",
+      ),
+    ).toBeInTheDocument();
   });
 });
 
@@ -3710,6 +4191,73 @@ describe("OpsReferenceApp live task smoke", () => {
     expect(screen.queryByText("task-ui-historical")).not.toBeInTheDocument();
   });
 
+  it("creates partner collaboration live tasks with collaboration attribution", async () => {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        task: {
+          id: "task-collaboration",
+          title: "Partner Project 路 Streamer One",
+          status: "pending_live",
+        },
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[]}
+        projectCards={[]}
+        collaborationProjectCards={[
+          {
+            ...taskProjectCards[0],
+            id: "project-collab",
+            name: "Partner Project",
+            collaborationRole: "partner",
+            collaborationId: "agreement-1",
+            collaborationAgreementId: "agreement-1",
+          },
+        ]}
+        streamerCards={[
+          {
+            ...taskStreamerCards[0],
+            projects: [
+              {
+                id: "project-collab",
+                code: "COLLAB",
+                name: "Partner Project",
+                status: "joined",
+                settlementHours: 0,
+                grossContrib: 0,
+              },
+            ],
+          },
+        ]}
+        applicationQueue={[]}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /新建任务|鏂板缓浠诲姟/ }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: /创建任务|鍒涘缓浠诲姟/ }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(
+      expect.objectContaining({
+        projectId: "project-collab",
+        streamerId: "streamer-one",
+        collaborationId: "agreement-1",
+        plannedStartAt: `${todayKey}T12:00:00.000Z`,
+        plannedEndAt: `${todayKey}T15:30:00.000Z`,
+      }),
+    );
+  });
+
   it("blocks task creation inline when the selected project has no joined streamers", async () => {
     const alertMock = vi.fn();
     const fetchMock = vi.fn();
@@ -4516,6 +5064,58 @@ describe("OpsReferenceApp settlement smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("renders report badges for newer backend report statuses", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="reports"
+        liveReports={[
+          {
+            id: "report-pending-confirm",
+            date: "2026-06-02",
+            streamer: "Streamer Confirm",
+            project: "Project Confirm",
+            taskId: "task-pending-confirm",
+            duration: 2,
+            audience: 900,
+            status: "pending_confirm",
+            screens: 1,
+            source: "OCR",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /全部/ }));
+
+    expect(screen.getAllByText("待确认").length).toBeGreaterThan(0);
+  });
+
+  it("renders settlement batch badges for voided batches", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        liveBatches={[
+          {
+            id: "batch-voided",
+            projectId: "project-real",
+            type: "streamer_payable",
+            name: "Voided payable batch",
+            project: "Real Project",
+            vendor: "-",
+            period: "2026-06-01 -> 2026-06-30",
+            items: 1,
+            amount: 6789,
+            status: "voided",
+            updated: "2026-06-03 10:00",
+            creator: "Finance",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("已作废").length).toBeGreaterThan(0);
   });
 
   it("derives settlement summary metrics from live batches instead of fixed display amounts", () => {

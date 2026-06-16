@@ -1,15 +1,22 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 
 import {
   buildPrivateUploadPath,
   createSignedUploadUrl,
-  type UploadCategory,
 } from "@/features/storage/private-upload";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-import { statusForServiceError } from "@/lib/http/route-error-status";
+import { toHttpError } from "@/lib/http/http-error";
+import { parseJsonBody } from "@/lib/http/parse-json-body";
 
 const defaultBucket = "evidence-private";
+
+const uploadBodySchema = z.object({
+  category: z.enum(["recordings", "report-screenshots"]),
+  ownerId: z.string().min(1),
+  fileName: z.string().min(1),
+});
 
 export async function POST(request: Request) {
   try {
@@ -19,17 +26,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = (await request.json().catch(() => ({}))) as {
-      category?: UploadCategory;
-      ownerId?: string;
-      fileName?: string;
-    };
-    if (!body.category || !body.ownerId || !body.fileName) {
-      return NextResponse.json(
-        { error: "category, ownerId and fileName are required" },
-        { status: 400 },
-      );
-    }
+    const body = await parseJsonBody(request, uploadBodySchema);
 
     const bucket = process.env.SUPABASE_PRIVATE_BUCKET ?? defaultBucket;
     const path = buildPrivateUploadPath({
@@ -51,13 +48,10 @@ export async function POST(request: Request) {
       token: signed.token,
     });
   } catch (error) {
-    if (error instanceof Error) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: statusForServiceError(error) },
-      );
-    }
-
-    return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
+    const httpError = toHttpError(error);
+    return NextResponse.json(
+      { error: httpError.message },
+      { status: httpError.status },
+    );
   }
 }

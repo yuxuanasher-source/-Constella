@@ -84,6 +84,9 @@ describe("project api routes", () => {
         is_public_to_streamers: false,
         public_summary: "",
         game_download_url: null,
+        is_open_to_mcn_collaboration: false,
+        mcn_collaboration_summary: "",
+        mcn_collaboration_terms: {},
         published_at: null,
         created_at: "2026-06-01T09:00:00.000Z",
       },
@@ -256,5 +259,29 @@ describe("project api routes", () => {
       organizationId: "org-1",
       featureKey: "project_management",
     });
+  });
+
+  it("PATCH /api/projects/[projectId] rejects oversized MCN collaboration terms", async () => {
+    const terms = Object.fromEntries(
+      Array.from({ length: 51 }, (_, index) => [`term_${index}`, index]),
+    );
+
+    const { PATCH } = await import("./[projectId]/route");
+    const response = await PATCH(
+      jsonRequest(
+        {
+          name: "Collaboration Project",
+          mcnCollaborationTerms: terms,
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ projectId: "p1" }) },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "MCN collaboration terms are too large",
+    });
+    expect(updateProjectBasics).not.toHaveBeenCalled();
   });
 });

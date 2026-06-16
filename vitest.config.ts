@@ -13,6 +13,7 @@ export default defineConfig({
       "**/node_modules/**",
       "**/.git/**",
       "**/.next/**",
+      "**/.claude/worktrees/**",
       "**/.worktrees/**",
     ],
     globals: true,

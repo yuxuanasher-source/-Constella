@@ -87,14 +87,19 @@ function extractViewers(lines: string[]): number | null {
       continue;
     }
 
-    const viewerMatch = compact.match(/(\d[\d,，.]*)\s*(?:人|次)?/);
+    const viewerMatch = compact.match(
+      /(\d[\d,，]*(?:\.\d+)?)\s*(万)?\s*(?:人|次)?/,
+    );
     if (!viewerMatch) {
       continue;
     }
 
-    const parsed = Number(viewerMatch[1].replace(/[，,]/g, ""));
+    const unit = viewerMatch[2];
+    const parsed =
+      Number(viewerMatch[1].replace(/[，,]/g, "")) *
+      (unit === "万" ? 10000 : 1);
     if (Number.isFinite(parsed) && parsed >= 0) {
-      return Math.trunc(parsed);
+      return Math.round(parsed);
     }
   }
 

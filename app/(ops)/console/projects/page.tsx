@@ -2,7 +2,17 @@ import OpsReferenceApp from "@/components/reference-ui/ops-reference";
 import { listOpsLiveTaskQueue } from "@/features/live-operations/live-operations-queries";
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
 import { listProjects } from "@/features/projects/project-queries";
-import { toProjectCardDtos } from "@/features/projects/project-ui-dto";
+import {
+  toCollaborationApplicationProjectCardDtos,
+  toCollaborationProjectCardDtos,
+  toProjectCardDtos,
+} from "@/features/projects/project-ui-dto";
+import {
+  listPartnerCollaborationApplications,
+  listPartnerCollaborationProjects,
+  SupabaseProjectCollaborationRepository,
+} from "@/features/collaborations/project-collaboration-service";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import {
   getOpsSettlementDefaultScope,
   listOpsSettlementBatches,
@@ -24,8 +34,25 @@ import {
 
 export default async function ProjectsPage() {
   const { supabase, auth } = await requireConsoleStaffAuth();
-  const [projects, liveTasks, settlementData] = await Promise.all([
+  const collaborationRepo = new SupabaseProjectCollaborationRepository(
+    createSupabaseAdminClient() ?? supabase,
+  );
+  const [
+    projects,
+    collaborationProjects,
+    collaborationApplications,
+    liveTasks,
+    settlementData,
+  ] = await Promise.all([
     listProjects(supabase),
+    listPartnerCollaborationProjects({
+      repo: collaborationRepo,
+      actor: auth,
+    }),
+    listPartnerCollaborationApplications({
+      repo: collaborationRepo,
+      actor: auth,
+    }),
     listOpsLiveTaskQueue(supabase, auth.organizationId),
     loadSettlementReferenceData(supabase, auth.organizationId),
   ]);
@@ -36,6 +63,10 @@ export default async function ProjectsPage() {
       currentUser={currentUserFromAuth(auth)}
       organizationSettings={organizationSettingsFromAuth(auth)}
       projectCards={toProjectCardDtos(projects)}
+      collaborationProjectCards={[
+        ...toCollaborationProjectCardDtos(collaborationProjects),
+        ...toCollaborationApplicationProjectCardDtos(collaborationApplications),
+      ]}
       liveTasks={liveTasks.map((task) => toOpsReferenceTask(task))}
       liveBatches={settlementData.liveBatches}
       liveBatchDetails={settlementData.liveBatchDetails}

@@ -27,6 +27,21 @@ const streamerActor = {
   streamerId: "streamer-1",
 };
 
+const partnerOpsActor = {
+  userId: "user-partner-ops",
+  name: "Partner Ops",
+  role: "operator_business" as const,
+  organizationId: "org-partner",
+};
+
+const partnerStreamerActor = {
+  userId: "user-partner-streamer",
+  name: "Partner Streamer",
+  role: "streamer" as const,
+  organizationId: "org-partner",
+  streamerId: "streamer-1",
+};
+
 const ocrInput = {
   screenshotStoragePath: "org/report-screenshots/task-1/end.png",
   screenshotFileHash: "hash-1",
@@ -78,6 +93,7 @@ function createRepo(): LiveOperationsRepository {
       streamerId: "streamer-1",
       status: "joined" as const,
     })),
+    getActiveCollaborationAgreement: vi.fn(async () => null),
     createLiveTask: vi.fn(async (input) => ({
       ...task,
       id: "task-created",
@@ -90,6 +106,8 @@ function createRepo(): LiveOperationsRepository {
       plannedEndAt: input.plannedEndAt,
       plannedDuration: input.plannedDuration,
       createdBy: input.createdBy,
+      collaborationId: input.collaborationId,
+      contributorOrganizationId: input.contributorOrganizationId,
     })),
     getLiveTaskById: vi.fn(async () => task),
     updateLiveTask: vi.fn(async (_taskId, patch) => ({
@@ -114,6 +132,8 @@ function createRepo(): LiveOperationsRepository {
       includeInTaskResult: true,
       enterSettlementPool: true,
       riskFlags: input.riskFlags,
+      collaborationId: input.collaborationId,
+      contributorOrganizationId: input.contributorOrganizationId,
     })),
     getLiveReportById: vi.fn(async () => ({ ...baseReport })),
     updateLiveReport: vi.fn(async (_reportId, patch) => ({
@@ -201,6 +221,65 @@ describe("live operations service", () => {
         taskType: "training",
       }),
     );
+  });
+
+  it("validates active collaboration before creating an attributed task", async () => {
+    vi.mocked(repo.getActiveCollaborationAgreement).mockResolvedValueOnce({
+      id: "agreement-1",
+      projectId: "project-1",
+      partnerOrganizationId: "org-partner",
+      status: "active",
+    });
+
+    await createLiveTask({
+      repo,
+      audit,
+      notify,
+      actor: partnerOpsActor,
+      input: {
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        title: "Partner project task",
+        collaborationId: "agreement-1",
+        plannedStartAt: "2026-06-02T10:00:00.000Z",
+        plannedEndAt: "2026-06-02T12:00:00.000Z",
+        plannedDuration: 120,
+      },
+    });
+
+    expect(repo.getActiveCollaborationAgreement).toHaveBeenCalledWith({
+      projectId: "project-1",
+      collaborationId: "agreement-1",
+      contributorOrganizationId: "org-partner",
+    });
+    expect(repo.createLiveTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collaborationId: "agreement-1",
+        contributorOrganizationId: "org-partner",
+      }),
+    );
+  });
+
+  it("rejects live task collaboration attribution without an active agreement", async () => {
+    await expect(
+      createLiveTask({
+        repo,
+        audit,
+        notify,
+        actor: partnerOpsActor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          title: "Partner project task",
+          collaborationId: "agreement-1",
+          plannedStartAt: "2026-06-02T10:00:00.000Z",
+          plannedEndAt: "2026-06-02T12:00:00.000Z",
+          plannedDuration: 120,
+        },
+      }),
+    ).rejects.toThrow("Active collaboration agreement is required");
+
+    expect(repo.createLiveTask).not.toHaveBeenCalled();
   });
 
   it("lets a streamer start and stop their own task with system timing", async () => {
@@ -370,6 +449,47 @@ describe("live operations service", () => {
     expect(repo.updateLiveTask).toHaveBeenCalledWith(
       "task-1",
       expect.objectContaining({ status: "report_pending_review" }),
+    );
+  });
+
+  it("inherits collaboration attribution when submitting a report", async () => {
+    vi.mocked(repo.getActiveCollaborationAgreement).mockResolvedValueOnce({
+      id: "agreement-1",
+      projectId: "project-1",
+      partnerOrganizationId: "org-partner",
+      status: "active",
+    });
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      organizationId: "org-partner",
+      status: "pending_report",
+      systemStartedAt: "2026-06-02T10:00:00.000Z",
+      systemStoppedAt: "2026-06-02T12:00:00.000Z",
+      systemDuration: 120,
+      collaborationId: "agreement-1",
+      contributorOrganizationId: "org-partner",
+    });
+
+    await submitLiveReport({
+      repo,
+      audit,
+      notify,
+      actor: partnerStreamerActor,
+      taskId: "task-1",
+      input: {
+        screenshotStoragePath: "private/reports/task-1/end.png",
+        screenshotFileHash: "hash-1",
+        screenshotDuration: 122,
+        claimedDuration: 122,
+        viewers: 952,
+      },
+    });
+
+    expect(repo.createLiveReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collaborationId: "agreement-1",
+        contributorOrganizationId: "org-partner",
+      }),
     );
   });
 

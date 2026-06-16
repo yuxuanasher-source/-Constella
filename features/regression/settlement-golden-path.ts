@@ -197,6 +197,10 @@ class GoldenPathRepository
       : null;
   }
 
+  async getActiveCollaborationAgreement(): Promise<null> {
+    return null;
+  }
+
   async createLiveTask(input: {
     organizationId: string;
     projectId: string;

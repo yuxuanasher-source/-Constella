@@ -22,6 +22,9 @@ type ProjectRow = {
   is_public_to_streamers: boolean;
   public_summary: string;
   game_download_url: string | null;
+  is_open_to_mcn_collaboration: boolean;
+  mcn_collaboration_summary: string;
+  mcn_collaboration_terms: Record<string, unknown>;
   created_by: string | null;
   owner_id: string | null;
   ops_manager_id: string | null;
@@ -51,6 +54,9 @@ const projectSelect = `
   is_public_to_streamers,
   public_summary,
   game_download_url,
+  is_open_to_mcn_collaboration,
+  mcn_collaboration_summary,
+  mcn_collaboration_terms,
   created_by,
   owner_id,
   ops_manager_id,
@@ -182,6 +188,9 @@ function toProjectRecord(row: ProjectRow): ProjectRecord {
     is_public_to_streamers: row.is_public_to_streamers,
     public_summary: row.public_summary,
     game_download_url: row.game_download_url,
+    is_open_to_mcn_collaboration: row.is_open_to_mcn_collaboration,
+    mcn_collaboration_summary: row.mcn_collaboration_summary,
+    mcn_collaboration_terms: row.mcn_collaboration_terms,
     created_by: row.created_by,
     owner_id: row.owner_id,
     ops_manager_id: row.ops_manager_id,

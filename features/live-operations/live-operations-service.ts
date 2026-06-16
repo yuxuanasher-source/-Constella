@@ -63,6 +63,8 @@ export type LiveTaskRecord = {
   systemStoppedAt?: string | null;
   systemDuration: number;
   createdBy?: string | null;
+  collaborationId?: string | null;
+  contributorOrganizationId?: string | null;
 };
 
 export type LiveReportRecord = {
@@ -83,6 +85,15 @@ export type LiveReportRecord = {
   includeInTaskResult: boolean;
   enterSettlementPool: boolean;
   riskFlags: string[];
+  collaborationId?: string | null;
+  contributorOrganizationId?: string | null;
+};
+
+export type ActiveLiveCollaborationAgreementRecord = {
+  id: string;
+  projectId: string;
+  partnerOrganizationId: string;
+  status: "active";
 };
 
 export type LiveOperationsRepository = {
@@ -90,6 +101,11 @@ export type LiveOperationsRepository = {
     projectId: string;
     streamerId: string;
   }): Promise<ProjectStreamerForTask | null>;
+  getActiveCollaborationAgreement(input: {
+    projectId: string;
+    collaborationId: string;
+    contributorOrganizationId: string;
+  }): Promise<ActiveLiveCollaborationAgreementRecord | null>;
   createLiveTask(input: {
     organizationId: string;
     projectId: string;
@@ -102,6 +118,8 @@ export type LiveOperationsRepository = {
     requiresTiming: boolean;
     createdBy: string;
     note?: string;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<LiveTaskRecord>;
   getLiveTaskById(taskId: string): Promise<LiveTaskRecord | null>;
   updateLiveTask(
@@ -124,6 +142,8 @@ export type LiveOperationsRepository = {
     viewers?: number | null;
     riskFlags: string[];
     createdBy: string;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<LiveReportRecord>;
   getLiveReportById(reportId: string): Promise<LiveReportRecord | null>;
   updateLiveReport(
@@ -193,6 +213,7 @@ export async function createLiveTask({
     plannedDuration?: number | null;
     requiresTiming?: boolean;
     note?: string;
+    collaborationId?: string;
   };
 }): Promise<LiveTaskRecord> {
   assertCanManageLiveTasks(actor.role);
@@ -205,6 +226,12 @@ export async function createLiveTask({
   if (!projectStreamer || projectStreamer.status !== "joined") {
     throw new Error("Only joined project streamers can be scheduled");
   }
+  const collaborationAttribution = await resolveLiveCollaborationAttribution({
+    repo,
+    actor,
+    projectId: input.projectId,
+    collaborationId: input.collaborationId,
+  });
 
   const task = await repo.createLiveTask({
     organizationId: actor.organizationId,
@@ -218,6 +245,9 @@ export async function createLiveTask({
     requiresTiming: input.requiresTiming ?? true,
     createdBy: actor.userId,
     note: input.note,
+    collaborationId: collaborationAttribution?.collaborationId,
+    contributorOrganizationId:
+      collaborationAttribution?.contributorOrganizationId,
   });
 
   await audit({
@@ -404,6 +434,7 @@ export async function submitLiveReport({
     screenshotDuration?: number | null;
     claimedDuration?: number | null;
     viewers?: number | null;
+    collaborationId?: string;
   };
 }): Promise<LiveReportRecord> {
   const task = await requireLiveTask(repo, taskId);
@@ -416,6 +447,12 @@ export async function submitLiveReport({
     systemDuration: task.systemDuration,
     screenshotDuration: input.screenshotDuration,
     claimedDuration: input.claimedDuration,
+  });
+  const collaborationAttribution = await resolveLiveReportAttribution({
+    repo,
+    actor,
+    task,
+    collaborationId: input.collaborationId,
   });
   const report = await repo.createLiveReport({
     organizationId: actor.organizationId,
@@ -433,6 +470,9 @@ export async function submitLiveReport({
     viewers: input.viewers,
     riskFlags: evidence.riskFlags,
     createdBy: actor.userId,
+    collaborationId: collaborationAttribution?.collaborationId,
+    contributorOrganizationId:
+      collaborationAttribution?.contributorOrganizationId,
   });
 
   if (input.screenshotStoragePath && input.screenshotFileHash) {
@@ -515,6 +555,7 @@ export async function submitLiveReportScreenshotForOcr({
     screenshotStoragePath: string;
     screenshotFileHash: string;
     imageBucket?: string;
+    collaborationId?: string;
   };
   createOcrJob: (input: {
     liveReportId: string;
@@ -548,6 +589,12 @@ export async function submitLiveReportScreenshotForOcr({
     screenshotDuration: null,
     claimedDuration: null,
   });
+  const collaborationAttribution = await resolveLiveReportAttribution({
+    repo,
+    actor,
+    task,
+    collaborationId: input.collaborationId,
+  });
   const report = await repo.createLiveReport({
     organizationId: actor.organizationId,
     liveTaskId: task.id,
@@ -564,6 +611,9 @@ export async function submitLiveReportScreenshotForOcr({
     viewers: null,
     riskFlags: [...evidence.riskFlags, "ocr_pending"],
     createdBy: actor.userId,
+    collaborationId: collaborationAttribution?.collaborationId,
+    contributorOrganizationId:
+      collaborationAttribution?.contributorOrganizationId,
   });
 
   await repo.createReportScreenshot({
@@ -860,6 +910,68 @@ export async function reviewLiveReport({
   });
 
   return report;
+}
+
+async function resolveLiveCollaborationAttribution({
+  repo,
+  actor,
+  projectId,
+  collaborationId,
+}: {
+  repo: Pick<LiveOperationsRepository, "getActiveCollaborationAgreement">;
+  actor: LiveOperationsActor;
+  projectId: string;
+  collaborationId?: string | null;
+}): Promise<{
+  collaborationId: string;
+  contributorOrganizationId: string;
+} | null> {
+  const normalizedCollaborationId = collaborationId?.trim();
+  if (!normalizedCollaborationId) {
+    return null;
+  }
+
+  const agreement = await repo.getActiveCollaborationAgreement({
+    projectId,
+    collaborationId: normalizedCollaborationId,
+    contributorOrganizationId: actor.organizationId,
+  });
+  if (!agreement) {
+    throw new Error("Active collaboration agreement is required");
+  }
+
+  return {
+    collaborationId: agreement.id,
+    contributorOrganizationId: agreement.partnerOrganizationId,
+  };
+}
+
+async function resolveLiveReportAttribution({
+  repo,
+  actor,
+  task,
+  collaborationId,
+}: {
+  repo: Pick<LiveOperationsRepository, "getActiveCollaborationAgreement">;
+  actor: LiveOperationsActor;
+  task: LiveTaskRecord;
+  collaborationId?: string | null;
+}): Promise<{
+  collaborationId: string;
+  contributorOrganizationId: string;
+} | null> {
+  const normalizedCollaborationId =
+    collaborationId?.trim() || task.collaborationId?.trim();
+  if (!normalizedCollaborationId) {
+    return null;
+  }
+
+  return resolveLiveCollaborationAttribution({
+    repo,
+    actor,
+    projectId: requireProjectId(task),
+    collaborationId: normalizedCollaborationId,
+  });
 }
 
 function assertCanManageLiveTasks(role: AppRole): void {

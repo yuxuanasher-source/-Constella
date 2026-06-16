@@ -23,6 +23,7 @@ export async function POST(
     const screenshotStoragePath = requiredString(body, "screenshotStoragePath");
     const screenshotFileHash = requiredString(body, "screenshotFileHash");
     const imageBucket = optionalString(body, "imageBucket");
+    const collaborationId = optionalString(body, "collaborationId");
     const context = await getLiveOperationsRouteContext();
     const ocrJobClient = createSupabaseAdminClient();
     if (!ocrJobClient) {
@@ -39,6 +40,7 @@ export async function POST(
         screenshotStoragePath,
         screenshotFileHash,
         imageBucket,
+        collaborationId,
       },
       createOcrJob: (input) =>
         createOcrJob({

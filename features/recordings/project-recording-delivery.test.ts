@@ -25,6 +25,7 @@ function baseRepo() {
       riskLevel: "low",
     }),
     getApplicationByProjectAndStreamer: vi.fn().mockResolvedValue(null),
+    getActiveCollaborationAgreement: vi.fn().mockResolvedValue(null),
     createApplication: vi.fn().mockResolvedValue({
       id: "application-1",
       organizationId: "org-1",
