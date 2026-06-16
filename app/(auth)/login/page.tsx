@@ -12,8 +12,6 @@ import {
   MessageCircle,
   Phone,
   ShieldCheck,
-  Sparkles,
-  UserRound,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -126,7 +124,6 @@ export default async function LoginPage({
             <HelpPanel />
           ) : (
             <PasswordLoginForm
-              roleIntent={viewState.roleIntent}
               rememberedEmail={viewState.rememberedEmail}
               next={next}
               providers={providers}
@@ -161,17 +158,7 @@ export function BrandStoryPanel() {
       <div className="absolute inset-x-0 bottom-0 h-80 bg-[radial-gradient(circle_at_82%_82%,rgba(34,211,238,0.82),transparent_34%),linear-gradient(180deg,rgba(19,87,223,0),rgba(10,38,154,0.84))]" />
 
       <div className="relative flex min-h-screen flex-col justify-between px-12 py-12 xl:px-16">
-        <div className="flex items-center justify-start">
-          <div className="flex items-center gap-3">
-            <div className="grid h-9 w-9 place-items-center rounded-md border border-white/20 bg-white/12 shadow-sm">
-              <Sparkles className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="text-sm font-semibold">星耀传媒</div>
-              <div className="text-xs text-white/66">报数与结算工作台</div>
-            </div>
-          </div>
-        </div>
+        <div aria-hidden="true" className="h-9" />
 
         <div className="max-w-[650px]">
           <div className="inline-flex items-center gap-2 rounded-full border border-white/16 bg-white/12 px-3 py-1 text-xs font-semibold text-white/90">
@@ -204,12 +191,10 @@ export function BrandStoryPanel() {
 }
 
 function PasswordLoginForm({
-  roleIntent,
   rememberedEmail,
   next,
   providers,
 }: {
-  roleIntent: RoleIntent;
   rememberedEmail: string;
   next: string;
   providers: Record<"wechat" | "feishu", AuthProviderAvailability>;
@@ -219,7 +204,6 @@ function PasswordLoginForm({
       <form action={signInAction} className="space-y-5">
         <input type="hidden" name="next" value={next} />
         <input type="hidden" name="entryPoint" value="desktop" />
-        <RoleSelector selected={roleIntent} />
 
         <TextField
           icon={<Mail className="h-4 w-4" />}
@@ -236,7 +220,7 @@ function PasswordLoginForm({
           <div className="mb-2 flex items-center justify-between text-xs font-medium text-[var(--ink-700)]">
             <span>密码</span>
             <Link
-              href={`/login?mode=reset&role=${roleIntent}`}
+              href="/login?mode=reset"
               className="font-medium text-[var(--blue-600)]"
             >
               忘记密码？
@@ -265,7 +249,7 @@ function PasswordLoginForm({
             7 天内保持登录偏好
           </label>
           <Link
-            href={`/login?mode=phone&role=${roleIntent}`}
+            href="/login?mode=phone"
             className="font-medium text-[var(--blue-600)]"
           >
             手机验证码登录
@@ -291,13 +275,11 @@ function PasswordLoginForm({
           provider="wechat"
           label="微信扫码"
           state={providers.wechat}
-          roleIntent={roleIntent}
         />
         <ProviderButton
           provider="feishu"
           label="飞书登录"
           state={providers.feishu}
-          roleIntent={roleIntent}
         />
       </div>
 
@@ -516,69 +498,18 @@ function HelpPanel() {
   );
 }
 
-function RoleSelector({ selected }: { selected: RoleIntent }) {
-  return (
-    <fieldset className="grid grid-cols-2 gap-2 rounded-md bg-[var(--ink-50)] p-1">
-      <legend className="sr-only">选择登录身份</legend>
-      <RoleOption
-        value="mcn"
-        selected={selected}
-        icon={<FileText className="h-4 w-4" />}
-        label="我是 MCN 运营"
-      />
-      <RoleOption
-        value="streamer"
-        selected={selected}
-        icon={<UserRound className="h-4 w-4" />}
-        label="我是主播"
-      />
-    </fieldset>
-  );
-}
-
-function RoleOption({
-  value,
-  selected,
-  icon,
-  label,
-}: {
-  value: RoleIntent;
-  selected: RoleIntent;
-  icon: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <label>
-      <input
-        className="peer sr-only"
-        type="radio"
-        name="roleIntent"
-        value={value}
-        defaultChecked={selected === value}
-      />
-      <span className="flex h-9 cursor-pointer items-center justify-center gap-2 rounded-md text-xs font-semibold text-[var(--ink-500)] transition peer-checked:bg-white peer-checked:text-[var(--ink-900)] peer-checked:shadow-sm">
-        {icon}
-        {label}
-      </span>
-    </label>
-  );
-}
-
 function ProviderButton({
   provider,
   label,
   state,
-  roleIntent,
 }: {
   provider: "wechat" | "feishu";
   label: string;
   state: AuthProviderAvailability;
-  roleIntent: RoleIntent;
 }) {
   return (
     <form action={signInWithProviderAction}>
       <input type="hidden" name="provider" value={provider} />
-      <input type="hidden" name="roleIntent" value={roleIntent} />
       <input type="hidden" name="entryPoint" value="desktop" />
       <Button
         type="submit"
