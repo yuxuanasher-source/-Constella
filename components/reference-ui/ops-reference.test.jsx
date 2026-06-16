@@ -307,6 +307,39 @@ describe("OpsReferenceApp role dashboard contract", () => {
     expect(screen.queryByText("预估毛利率")).not.toBeInTheDocument();
   });
 
+  it("does not render executive finance labels for operator dashboard", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        currentUser={{
+          id: "operator-1",
+          name: "Operator",
+          role: "operator_business",
+        }}
+        dashboardHome={{
+          profile: {
+            role: "operator_business",
+            title: "我的今日待办",
+            subtitle: "关注自己负责项目的任务、报数和主播提醒",
+            scopeLabel: "我的项目",
+          },
+          kpis: [
+            { key: "myTodayTasks", label: "我的今日任务", value: 4, unit: "项" },
+            { key: "pendingReports", label: "待审核报数", value: 2, unit: "条" },
+          ],
+          queue: [],
+          risks: [],
+          drilldowns: [],
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("我的今日待办")).toBeInTheDocument();
+    expect(screen.queryByText("本月厂家应收")).not.toBeInTheDocument();
+    expect(screen.queryByText("预估毛利")).not.toBeInTheDocument();
+  });
+
   it("renders dashboard empty state on the warroom route", () => {
     render(
       <OpsReferenceApp

@@ -196,6 +196,23 @@ describe("role home dashboard", () => {
     expect(JSON.stringify(dashboard)).not.toContain("30000");
   });
 
+  it("does not serialize forbidden financial fields for operator and finance projections", () => {
+    for (const role of ["operator_business", "finance"] as const) {
+      const dashboard = buildRoleHomeDashboard({
+        role,
+        userId: `user-${role}`,
+        organizationId: "org-1",
+        source,
+      });
+      const json = JSON.stringify(dashboard);
+
+      expect(json).not.toContain("vendorReceivable");
+      expect(json).not.toContain("estimatedGross");
+      expect(json).not.toContain("supplierCost");
+      expect(json).not.toContain("internalRisk");
+    }
+  });
+
   it("counts today tasks using the China-local dashboard day", () => {
     const dashboard = buildRoleHomeDashboard({
       role: "operator_business",
