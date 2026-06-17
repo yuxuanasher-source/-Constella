@@ -3454,7 +3454,9 @@ function PendingReportCTA({ task, go, actions = {} }) {
         style={{ display: "none" }}
       />
       {error && (
-        <div style={{ marginTop: 10, fontSize: 12, color: "var(--danger-600)" }}>
+        <div
+          style={{ marginTop: 10, fontSize: 12, color: "var(--danger-600)" }}
+        >
           {error}
         </div>
       )}
