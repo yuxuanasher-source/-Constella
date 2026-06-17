@@ -67,7 +67,12 @@ export async function POST(
       },
     });
 
-    const shareUrl = new URL(`/share/admission/${result.token}`, request.url);
+    // Build the public link from the configured app URL so it works for
+    // external visitors; fall back to the request origin in local/dev.
+    const shareUrl = new URL(
+      `/share/admission/${result.token}`,
+      process.env.NEXT_PUBLIC_APP_URL ?? request.url,
+    );
     return NextResponse.json({
       shareBoard: toSafeShareBoard(result.shareBoard),
       shareUrl: shareUrl.toString(),

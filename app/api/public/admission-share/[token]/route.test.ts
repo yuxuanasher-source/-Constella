@@ -6,7 +6,7 @@ import {
   getPublicAdmissionShareBoard,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/applications/admission-share-board", () => ({
   SupabaseAdmissionShareBoardRepository: vi
@@ -18,7 +18,7 @@ vi.mock("@/features/applications/admission-share-board", () => ({
 }));
 
 vi.mock("@/lib/db/supabase-server", () => ({
-  createSupabaseServerClient: vi.fn(),
+  createSupabaseAdminClient: vi.fn(),
 }));
 
 const params = Promise.resolve({ token: "plain-token" });
@@ -27,7 +27,7 @@ const supabase = { client: "supabase" };
 describe("public admission share route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
     vi.mocked(getPublicAdmissionShareBoard).mockResolvedValue({
       id: "share-1",
       title: "Vendor review",
