@@ -7,6 +7,7 @@ import {
   readTencentOcrConfigFromEnv,
 } from "@/features/ai/providers/tencent-ocr-provider";
 import { getAuthContext } from "@/lib/auth/context";
+import { getPrivateStorageBucket } from "@/lib/config/env";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 import { canManageOcrJobs } from "@/lib/rbac/permissions";
@@ -65,8 +66,7 @@ export async function POST(request: Request) {
             resolveOcrImageInput({
               client: supabase,
               payload,
-              defaultBucket:
-                process.env.SUPABASE_PRIVATE_BUCKET ?? "evidence-private",
+              defaultBucket: getPrivateStorageBucket(),
             }),
         });
         completed.push(toSafeJob(result));

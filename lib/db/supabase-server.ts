@@ -2,16 +2,10 @@ import { createServerClient } from "@supabase/ssr";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 
-import { parsePublicEnv } from "@/lib/config/env";
+import { getPublicEnv, getServerEnv } from "@/lib/config/env";
 
 function getSupabaseConfig() {
-  const parsed = parsePublicEnv({
-    NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
-    NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
-  });
-
-  return parsed;
+  return getPublicEnv();
 }
 
 export async function createSupabaseServerClient(): Promise<SupabaseClient | null> {
@@ -47,18 +41,18 @@ export async function createSupabaseServerClient(): Promise<SupabaseClient | nul
 export function createSupabaseAdminClient(): SupabaseClient | null {
   try {
     const config = getSupabaseConfig();
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const serverConfig = getServerEnv();
 
-    if (!serviceRoleKey) {
-      return null;
-    }
-
-    return createClient(config.NEXT_PUBLIC_SUPABASE_URL, serviceRoleKey, {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
+    return createClient(
+      config.NEXT_PUBLIC_SUPABASE_URL,
+      serverConfig.SUPABASE_SERVICE_ROLE_KEY,
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
       },
-    }) as SupabaseClient;
+    ) as SupabaseClient;
   } catch {
     return null;
   }
