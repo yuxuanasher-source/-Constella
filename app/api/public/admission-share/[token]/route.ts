@@ -8,7 +8,7 @@ import {
   jsonError,
   RouteError,
 } from "@/features/applications/application-route-utils";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 export async function GET(
   request: Request,
@@ -16,7 +16,10 @@ export async function GET(
 ) {
   try {
     const { token } = await params;
-    const supabase = await createSupabaseServerClient();
+    // Public visitors are unauthenticated, so RLS (staff-only policies) would
+    // hide the share board. Access is instead gated by the secret share token,
+    // so we read through the service-role client which stays server-side only.
+    const supabase = createSupabaseAdminClient();
     if (!supabase) {
       throw new RouteError("Public share service is unavailable", 500);
     }

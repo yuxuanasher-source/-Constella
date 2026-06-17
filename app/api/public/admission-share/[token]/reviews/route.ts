@@ -12,7 +12,7 @@ import {
   readJsonBody,
   RouteError,
 } from "@/features/applications/application-route-utils";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 export async function POST(
   request: Request,
@@ -20,7 +20,10 @@ export async function POST(
 ) {
   try {
     const { token } = await params;
-    const supabase = await createSupabaseServerClient();
+    // Vendors submit through the public link without an authenticated session,
+    // so RLS would block them. The secret share token authorizes the request,
+    // and the service-role client stays server-side only.
+    const supabase = createSupabaseAdminClient();
     if (!supabase) {
       throw new RouteError("Public share service is unavailable", 500);
     }
