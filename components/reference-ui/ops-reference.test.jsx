@@ -6790,6 +6790,24 @@ describe("OpsReferenceApp war room smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  it("keeps the war-room surface free of explanatory helper copy", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+      />,
+    );
+
+    expect(screen.getByText("智能项目作战台")).toBeInTheDocument();
+    expect(screen.queryByText(/项目经营决策面板/)).not.toBeInTheDocument();
+    expect(screen.queryByText("按风险与履约进度排序")).not.toBeInTheDocument();
+    expect(screen.queryByText("基于近 14 天数据")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("接入真实项目复盘结果后会展示可执行建议。"),
+    ).not.toBeInTheDocument();
+  });
+
   it("exports the daily brief and opens pricing from the header", async () => {
     const fetchMock = vi.fn(async (url) => {
       if (String(url) === "/api/exports") {
