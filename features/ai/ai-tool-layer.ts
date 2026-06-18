@@ -1,5 +1,6 @@
 import { writeAuditLog } from "@/lib/audit/audit";
 
+import { runBusinessCopilotAgent } from "./business-copilot-agent";
 import { createAiInvocationId, recordAiInvocation } from "./invocation-ledger";
 import { recordAiToolInvocation } from "./tool-ledger";
 import { assertRegistrableTool, type AiTier } from "./tiers";
@@ -25,6 +26,7 @@ import {
   type AiTool,
   type AiToolScope,
 } from "./contracts";
+import type { RoleHomeDashboardDto } from "@/features/dashboards/role-home";
 
 type AiClient = {
   from(
@@ -187,6 +189,32 @@ const registeredTools: Record<string, RegisteredAiTool> = {
           citations: result.citations,
           passageCount: passages.length,
         },
+      };
+    },
+  },
+  business_copilot_answer: {
+    name: "business_copilot_answer",
+    description:
+      "Answers natural-language business questions from an authorized role dashboard DTO.",
+    inputSchema: {
+      type: "object",
+      required: ["question", "dashboard"],
+      properties: {
+        question: { type: "string" },
+        dashboard: { type: "object" },
+      },
+    },
+    scopes: ["mcn_staff"],
+    masking: { input: ["dashboard"], output: [], streamerForbiddenKeys },
+    readOnly: true,
+    tier: "L1_PERCEIVE",
+    handler(input) {
+      return {
+        answer: "经营问答已生成。",
+        output: runBusinessCopilotAgent({
+          question: stringValue(input.question, ""),
+          dashboard: objectValue(input.dashboard) as RoleHomeDashboardDto,
+        }),
       };
     },
   },

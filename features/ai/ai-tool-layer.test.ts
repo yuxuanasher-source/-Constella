@@ -89,6 +89,7 @@ describe("runAiToolQuery", () => {
     const tools = listRegisteredAiTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual(
       [
+        "business_copilot_answer",
         "compute_deviation",
         "kb_search",
         "match_blacklist",
@@ -126,6 +127,89 @@ describe("runAiToolQuery", () => {
         input: { sql: "select * from settlement_batches" },
       }),
     ).rejects.toThrow("AI tool is not registered");
+  });
+
+  it("registers the business copilot as a read-only MCN staff tool", () => {
+    expect(listRegisteredAiTools()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "business_copilot_answer",
+          readOnly: true,
+          scopes: expect.arrayContaining(["mcn_staff"]),
+          inputSchema: expect.objectContaining({
+            type: "object",
+            required: ["question", "dashboard"],
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("runs business copilot through the audited AI tool path", async () => {
+    const { client, inserts } = createClient();
+
+    const result = await runAiToolQuery({
+      client,
+      actor: {
+        userId: "user-owner",
+        name: "Owner",
+        role: "owner",
+        organizationId: "org-1",
+      },
+      toolName: "business_copilot_answer",
+      input: {
+        question: "这个月经营健康吗",
+        dashboard: {
+          profile: {
+            role: "owner",
+            title: "经营总览看板",
+            subtitle: "关注收入、毛利、履约和高风险动作",
+            scopeLabel: "全组织",
+          },
+          kpis: [
+            { key: "grossMarginRate", label: "毛利率", value: 30, unit: "%" },
+          ],
+          queue: [],
+          risks: [],
+          drilldowns: [],
+          generatedAt: "2026-06-18T04:00:00.000Z",
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      toolName: "business_copilot_answer",
+      mode: "deterministic",
+      output: {
+        intent: "executive_health",
+        facts: expect.arrayContaining([
+          expect.objectContaining({ sourceId: "kpi:grossMarginRate" }),
+        ]),
+      },
+    });
+    expect(inserts.ai_invocations).toEqual([
+      expect.objectContaining({
+        object_id: "business_copilot_answer",
+        status: "succeeded",
+      }),
+    ]);
+    expect(inserts.ai_tool_invocations).toEqual([
+      expect.objectContaining({
+        tool_name: "business_copilot_answer",
+        read_only: true,
+        allowed: true,
+        status: "succeeded",
+      }),
+    ]);
+    expect(inserts.audit_logs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          module: "ai",
+          object_type: "ai_query",
+          object_name: "business_copilot_answer",
+        }),
+      ]),
+    );
   });
 
   it("filters streamer diagnosis DTOs so streamer AI cannot see MCN finance", async () => {
