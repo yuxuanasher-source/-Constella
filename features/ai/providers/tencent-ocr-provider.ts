@@ -10,9 +10,18 @@ export type TencentOcrInput =
   | { imageBase64: string; imageUrl?: never }
   | { imageUrl: string; imageBase64?: never };
 
+export type OcrTextItem = {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 export type TencentOcrResult = {
   status: "succeeded" | "failed" | "degraded";
   textLines: string[];
+  textItems: OcrTextItem[];
   confidence: number;
   requestId?: string;
   rawResponse?: unknown;
@@ -73,6 +82,7 @@ export function createTencentOcrProvider({
         return {
           status: "degraded",
           textLines: [],
+          textItems: [],
           confidence: 0,
           degradedReason: "provider_unconfigured",
           errorSummary: "Tencent OCR credentials are not configured",
@@ -102,6 +112,7 @@ export function createTencentOcrProvider({
           return {
             status: "failed",
             textLines: [],
+            textItems: [],
             confidence: 0,
             rawResponse,
             errorSummary:
@@ -113,6 +124,7 @@ export function createTencentOcrProvider({
           return {
             status: "failed",
             textLines: [],
+            textItems: [],
             confidence: 0,
             requestId: parsed.requestId,
             rawResponse,
@@ -123,6 +135,7 @@ export function createTencentOcrProvider({
         return {
           status: "succeeded",
           textLines: parsed.textLines,
+          textItems: parsed.textItems,
           confidence: parsed.confidence,
           requestId: parsed.requestId,
           rawResponse,
@@ -131,6 +144,7 @@ export function createTencentOcrProvider({
         return {
           status: "failed",
           textLines: [],
+          textItems: [],
           confidence: 0,
           errorSummary:
             error instanceof Error
@@ -207,6 +221,7 @@ function signTencentRequest({
 
 function parseTencentResponse(rawResponse: unknown): {
   textLines: string[];
+  textItems: OcrTextItem[];
   confidence: number;
   requestId?: string;
   errorSummary?: string;
@@ -218,6 +233,7 @@ function parseTencentResponse(rawResponse: unknown): {
   if (errorMessage) {
     return {
       textLines: [],
+      textItems: [],
       confidence: 0,
       requestId: stringValue(responseObject.RequestId),
       errorSummary: errorMessage,
@@ -227,9 +243,24 @@ function parseTencentResponse(rawResponse: unknown): {
   const detections = Array.isArray(responseObject.TextDetections)
     ? responseObject.TextDetections
     : [];
-  const textLines = detections
-    .map((item) => stringValue(objectValue(item).DetectedText))
-    .filter((line): line is string => Boolean(line));
+  const textItems = detections
+    .map((item): OcrTextItem | null => {
+      const detection = objectValue(item);
+      const text = stringValue(detection.DetectedText);
+      if (!text) {
+        return null;
+      }
+      const polygon = objectValue(detection.ItemPolygon);
+      return {
+        text,
+        x: numberValue(polygon.X) ?? 0,
+        y: numberValue(polygon.Y) ?? 0,
+        width: numberValue(polygon.Width) ?? 0,
+        height: numberValue(polygon.Height) ?? 0,
+      };
+    })
+    .filter((item): item is OcrTextItem => item !== null);
+  const textLines = textItems.map((item) => item.text);
   const confidenceValues = detections
     .map((item) => numberValue(objectValue(item).Confidence))
     .filter((confidence): confidence is number => confidence !== null);
@@ -239,6 +270,7 @@ function parseTencentResponse(rawResponse: unknown): {
 
   return {
     textLines,
+    textItems,
     confidence: Math.trunc(confidence),
     requestId: stringValue(responseObject.RequestId),
   };

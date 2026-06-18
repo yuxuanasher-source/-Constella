@@ -1,3 +1,5 @@
+import type { OcrTextItem } from "./providers/tencent-ocr-provider";
+
 export type LiveReportOcrParseStatus =
   | "trusted"
   | "needs_confirmation"
@@ -20,11 +22,14 @@ export function parseLiveReportOcrText(
   options: {
     expectedDuration?: number;
     minConfidence?: number;
+    items?: OcrTextItem[];
   } = {},
 ): LiveReportOcrParseResult {
   const normalized = lines.map((line) => line.trim()).filter(Boolean);
   const extractedDuration = extractDuration(normalized);
-  const extractedViewers = extractViewers(normalized);
+  const extractedViewers =
+    (options.items ? extractViewersFromItems(options.items) : null) ??
+    extractViewers(normalized);
   const reasons: string[] = [];
 
   if (extractedDuration === null && extractedViewers === null) {
@@ -119,12 +124,16 @@ function parseTimeRangeDuration(compact: string): number | null {
 function extractViewers(lines: string[]): number | null {
   for (let i = 0; i < lines.length; i += 1) {
     const compact = lines[i].replace(/\s+/g, "");
-    if (!VIEWER_KEYWORDS.test(compact)) {
+    const match = compact.match(VIEWER_KEYWORDS);
+    if (!match) {
       continue;
     }
 
-    // Inline layouts: "场观 1,280 人".
-    const sameLine = parseViewerCount(compact);
+    // Inline layouts: "场观 1,280 人" / "观众1234.5". Only parse a number from
+    // the text AFTER the matched keyword so that an unrelated leading number in
+    // a sentence (e.g. "近7目观众评论率…") is not mistaken for a viewer count.
+    const afterKeyword = compact.slice((match.index ?? 0) + match[0].length);
+    const sameLine = parseViewerCount(afterKeyword);
     if (sameLine !== null) {
       return sameLine;
     }
@@ -136,6 +145,43 @@ function extractViewers(lines: string[]): number | null {
       const value = parseViewerCount(next);
       if (value !== null) {
         return value;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractViewersFromItems(items: OcrTextItem[]): number | null {
+  const labelPattern = /(观众人数|观看人数|在线人数|场观|人气值?)/;
+  const valuePattern = /^\d[\d,，]*(?:\.\d+)?万?$/;
+
+  for (const label of items) {
+    const labelText = label.text.replace(/\s+/g, "");
+    if (!labelPattern.test(labelText)) {
+      continue;
+    }
+
+    let best: { value: OcrTextItem; dy: number; dx: number } | null = null;
+    for (const value of items) {
+      const valueText = value.text.replace(/\s+/g, "");
+      if (!valuePattern.test(valueText)) {
+        continue;
+      }
+      const dy = value.y - label.y;
+      const dx = Math.abs(value.x - label.x);
+      if (dy <= 0 || dy >= 80 || dx >= 80) {
+        continue;
+      }
+      if (!best || dy < best.dy || (dy === best.dy && dx < best.dx)) {
+        best = { value, dy, dx };
+      }
+    }
+
+    if (best) {
+      const parsed = parseViewerCount(best.value.text.replace(/\s+/g, ""));
+      if (parsed !== null) {
+        return parsed;
       }
     }
   }
