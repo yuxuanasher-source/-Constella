@@ -885,6 +885,57 @@ describe("StreamerDesktopReferenceApp recording library", () => {
   });
 });
 
+describe("StreamerDesktopReferenceApp AI diagnosis", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("sends a question to the diagnosis API and renders the model findings and recommendations", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/ai/diagnosis") {
+        return {
+          ok: true,
+          json: async () => ({
+            result: { answer: "" },
+            agentOutput: {
+              facts: [],
+              findings: [
+                { summary: "开场互动偏弱，留存信号承压", evidence: [] },
+              ],
+              caveats: [],
+              recommendations: [
+                {
+                  proposal: "优化开场钩子与互动节奏",
+                  expectedImpact: "提升留存信号",
+                  requiresHumanApproval: true,
+                },
+              ],
+            },
+            validation: { valid: true, errors: [] },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<StreamerDesktopReferenceApp initialRoute="ai" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "今晚怎么开播" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/ai/diagnosis",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(await screen.findByText(/留存信号承压/)).toBeInTheDocument();
+    expect(screen.getByText(/优化开场钩子与互动节奏/)).toBeInTheDocument();
+  });
+});
+
 function profileFixture(overrides = {}) {
   return {
     id: "streamer-profile-1",
