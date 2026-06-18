@@ -43,7 +43,9 @@ describe("createTencentOcrProvider", () => {
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
-          Authorization: expect.stringContaining("TC3-HMAC-SHA256"),
+          Authorization: expect.stringMatching(
+            /^TC3-HMAC-SHA256 Credential=AKIDEXAMPLE\/2026-06-04\/ocr\/tc3_request, SignedHeaders=content-type;host, Signature=[a-f0-9]{64}$/,
+          ),
           "Content-Type": "application/json; charset=utf-8",
           Host: "ocr.tencentcloudapi.com",
           "X-TC-Action": "GeneralBasicOCR",

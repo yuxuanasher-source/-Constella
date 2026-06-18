@@ -186,12 +186,13 @@ function signTencentRequest({
   const secretService = hmac(secretDate, service);
   const secretSigning = hmac(secretService, "tc3_request");
   const signature = hmacHex(secretSigning, stringToSign);
-  const authorization = [
-    "TC3-HMAC-SHA256",
-    `Credential=${secretId}/${credentialScope}`,
-    `SignedHeaders=${signedHeaders}`,
-    `Signature=${signature}`,
-  ].join(", ");
+  const authorization =
+    "TC3-HMAC-SHA256 " +
+    [
+      `Credential=${secretId}/${credentialScope}`,
+      `SignedHeaders=${signedHeaders}`,
+      `Signature=${signature}`,
+    ].join(", ");
 
   return {
     Authorization: authorization,
