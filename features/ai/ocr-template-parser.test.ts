@@ -56,6 +56,39 @@ describe("parseLiveReportOcrText", () => {
     });
   });
 
+  it("reads a Douyin live-companion recap with stacked label/value and 共N小时", () => {
+    expect(
+      parseLiveReportOcrText([
+        "直播已结束",
+        "09:29~12:30 共3小时",
+        "数据汇总",
+        "观众人数",
+        "2,488",
+      ]),
+    ).toMatchObject({
+      status: "trusted",
+      extractedDuration: 180,
+      extractedViewers: 2488,
+    });
+  });
+
+  it("derives duration from a start-end time range when hours are absent", () => {
+    expect(
+      parseLiveReportOcrText(["直播 09:00~10:30", "观看人数 100"]),
+    ).toMatchObject({
+      extractedDuration: 90,
+      extractedViewers: 100,
+    });
+  });
+
+  it("does not pair a viewer label with an adjacent non-numeric label", () => {
+    expect(
+      parseLiveReportOcrText(["观众人数", "送礼人数", "评论人数"]),
+    ).toMatchObject({
+      extractedViewers: null,
+    });
+  });
+
   it("fails when OCR returns no useful live report facts", () => {
     expect(parseLiveReportOcrText(["hello", "world"])).toMatchObject({
       status: "failed",
