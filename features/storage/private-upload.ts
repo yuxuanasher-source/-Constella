@@ -37,6 +37,23 @@ export async function createSignedUploadUrl(input: {
   return data;
 }
 
+export async function createSignedDownloadUrl(input: {
+  client: SupabaseClient;
+  bucket: string;
+  path: string;
+  expiresInSeconds?: number;
+}) {
+  const { data, error } = await input.client.storage
+    .from(input.bucket)
+    .createSignedUrl(input.path, input.expiresInSeconds ?? 3600);
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+
 function cleanUploadCategory(category: UploadCategory): UploadCategory {
   if (
     !allowedUploadCategories.includes(category as UploadCategory) ||

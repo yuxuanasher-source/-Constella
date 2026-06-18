@@ -5636,15 +5636,19 @@ describe("OpsReferenceApp settlement smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "导出报数明细" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/exports",
-      expect.objectContaining({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      }),
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/exports",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
     );
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+    const exportCall = fetchMock.mock.calls.find(
+      ([url]) => url === "/api/exports",
+    );
+    expect(JSON.parse(exportCall[1].body)).toEqual({
       kind: "report_details",
       rows: [
         {
@@ -5804,7 +5808,7 @@ describe("OpsReferenceApp settlement smoke", () => {
       expect.objectContaining({ method: "PATCH" }),
     );
     const reviewBodies = fetchMock.mock.calls
-      .filter(([url]) => String(url).includes("/api/live-reports/"))
+      .filter(([url]) => String(url).endsWith("/review"))
       .map(([, init]) => JSON.parse(init.body));
     expect(reviewBodies).toEqual([
       expect.objectContaining({ decision: "approve" }),
@@ -5887,7 +5891,10 @@ describe("OpsReferenceApp settlement smoke", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+    const evaluateCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/auto-review/evaluate",
+    );
+    expect(JSON.parse(evaluateCall[1].body)).toMatchObject({
       report: {
         id: "report-auto-review-one",
         status: "pending_review",
@@ -6026,7 +6033,13 @@ describe("OpsReferenceApp settlement smoke", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "审核通过" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url]) => !String(url).endsWith("/screenshot"),
+        ),
+      ).toHaveLength(5),
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/live-reports/report-ui-smoke-approve/review",
       expect.objectContaining({
