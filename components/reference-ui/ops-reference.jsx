@@ -2781,14 +2781,14 @@ function OcrOperationsPanel({
         <thead>
           <tr>
             {[
-              "Job",
-              "Status",
-              "Attempts",
-              "Error",
-              "Report",
-              "Screenshot",
-              "OCR Result",
-              "Actions",
+              "作业",
+              "状态",
+              "尝试",
+              "错误",
+              "报数",
+              "截图",
+              "OCR 结果",
+              "操作",
             ].map((heading) => (
               <th
                 key={heading}
@@ -2813,16 +2813,20 @@ function OcrOperationsPanel({
                   {displayRecordId(job.id, "OCR 任务")}
                 </td>
                 <td style={ocrCellStyle}>
-                  <Badge tone={ocrStatusTone(job.status)}>{job.status}</Badge>
+                  <Badge tone={ocrStatusTone(job.status)}>
+                    {ocrStatusLabel(job.status)}
+                  </Badge>
                 </td>
                 <td style={ocrCellStyle}>
                   {job.attempt ?? 0}/{job.maxAttempts ?? 3}
                 </td>
                 <td style={ocrCellStyle}>
-                  <div>{job.errorCode || "无"}</div>
+                  <div>
+                    {job.errorCode ? ocrErrorLabel(job.errorCode) : "无"}
+                  </div>
                   {job.errorMessage ? (
                     <div style={{ color: "var(--ink-400)", marginTop: 2 }}>
-                      {job.errorMessage}
+                      {ocrErrorLabel(job.errorMessage)}
                     </div>
                   ) : null}
                 </td>
@@ -3006,6 +3010,39 @@ function ocrStatusTone(status) {
       needs_review: "amber",
       cancelled: "neutral",
     }[status] ?? "neutral"
+  );
+}
+
+function ocrStatusLabel(status) {
+  return (
+    {
+      queued: "排队中",
+      pending: "排队中",
+      running: "处理中",
+      processing: "处理中",
+      succeeded: "成功",
+      failed: "失败",
+      needs_confirmation: "待确认",
+      needs_review: "需复核",
+      cancelled: "已取消",
+    }[status] ?? status
+  );
+}
+
+function ocrErrorLabel(code) {
+  return (
+    {
+      needs_review: "需复核",
+      duration_conflict: "时长冲突",
+      low_confidence: "置信度低",
+      low_provider_confidence: "识别置信度低",
+      provider_failed: "识别服务失败",
+      no_live_report_fields: "未识别到有效字段",
+      ocr_pending: "等待识别",
+      ocr_queue_failed: "排队失败",
+      runner_failed: "执行失败",
+      missing_screenshot_duration: "缺少截图时长",
+    }[code] ?? code
   );
 }
 

@@ -2839,7 +2839,7 @@ describe("OpsReferenceApp OCR operations smoke", () => {
     expect(screen.getByText("screenshot-1")).toBeInTheDocument();
     expect(screen.getByText("时长 80")).toBeInTheDocument();
     expect(screen.getByText("场观 320")).toBeInTheDocument();
-    expect(screen.getByText("provider_failed")).toBeInTheDocument();
+    expect(screen.getByText("识别服务失败")).toBeInTheDocument();
     expect(screen.getByText("2/3")).toBeInTheDocument();
     expect(
       JSON.stringify(screen.queryByText("org/report-screenshots")),
@@ -2871,7 +2871,9 @@ describe("OpsReferenceApp OCR operations smoke", () => {
         }),
       ),
     );
-    expect(await screen.findByText("queued")).toBeInTheDocument();
+    expect(
+      await screen.findByText("排队中", { selector: "span" }),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "运行下一条 OCR" }));
     await waitFor(() =>
@@ -2884,7 +2886,7 @@ describe("OpsReferenceApp OCR operations smoke", () => {
         }),
       ),
     );
-    expect(await screen.findByText("needs_confirmation")).toBeInTheDocument();
+    expect(await screen.findByText("待确认")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "标记需复核" }));
     await waitFor(() =>
@@ -2897,9 +2899,7 @@ describe("OpsReferenceApp OCR operations smoke", () => {
         }),
       ),
     );
-    expect((await screen.findAllByText("needs_review")).length).toBeGreaterThan(
-      0,
-    );
+    expect((await screen.findAllByText("需复核")).length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByLabelText("修正时长 ocr-job-1"), {
       target: { value: "80" },
@@ -2922,7 +2922,9 @@ describe("OpsReferenceApp OCR operations smoke", () => {
         }),
       ),
     );
-    expect(await screen.findByText("succeeded")).toBeInTheDocument();
+    expect(
+      await screen.findByText("成功", { selector: "span" }),
+    ).toBeInTheDocument();
   });
 });
 
