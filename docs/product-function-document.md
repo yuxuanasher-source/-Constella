@@ -648,6 +648,7 @@ flowchart LR
 - 项目复盘报告。
 - 自动审核 shadow / active 评估。
 - AI 经营分析、选播建议、脚本优化、报价权衡、主播诊断、M10 Copilot。
+- AI 经营问答 Copilot：员工在角色化首页用自然语言追问经营健康、今日优先级、结算风险和证据质量。
 - AI 调用账本和工具调用账本。
 - OpenAI / Hunyuan / deterministic provider registry 和 gateway。
 
@@ -662,6 +663,12 @@ flowchart LR
 | 结算毛利   | 哪些金额可结算、哪些金额存在弱证据或人工承载风险 | `settlement_batches`、`settlement_batch_items`、`live_reports`、`project_streamers` |
 | 协作分账   | 协作方贡献和分账是否待确认                       | `project_collaboration_*`、协作结算记录                                             |
 | 治理风险   | 高风险动作、敏感导出和异常待办是否受控           | `audit_logs`、`notifications`、受控导出记录                                         |
+
+AI 经营问答：
+
+`/console` 角色化首页支持 MCN 员工用自然语言追问经营数据。系统不会让 AI 直接写 SQL，而是把问题归类为经营健康、今日优先级、结算风险或证据质量，再通过 `business_copilot_answer` 只读白名单工具读取当前角色可见的经营看板事实。
+
+回答包含结论、事实来源、风险判断、人工处理建议和模块跳转。所有问答都会写入 AI 调用账本、AI 工具调用账本、用量和审计日志。AI 只给建议，不直接执行发布、审核、结算、导出或权限变更。
 
 角色化默认布局：
 
@@ -747,6 +754,7 @@ AI 安全规则：
 - AI 工具全部 read-only。
 - 工具按 scope 匹配角色。
 - 工具调用和 AI 调用均写账本。
+- AI 经营问答只经 `business_copilot_answer` 只读工具读取角色化看板事实，不接受 raw SQL、表名或任意字段投影。
 - 主播角色输出会剥离 `receivableCents`、`grossMarginCents`、`supplierCostCents`、`vendorReceivableCents`、`internalRiskNotes` 等字段。
 - AgentOutput 必须包含 facts、findings、caveats、recommendations。
 - recommendations 必须 `requiresHumanApproval=true`，不能包含可执行动作。
@@ -963,6 +971,7 @@ P6 正式商业化规格已沉淀：
 | `/api/ai/scripts`                  | POST | AI 脚本优化草稿        |
 | `/api/ai/diagnosis`                | POST | 主播 AI 卡点诊断       |
 | `/api/ai/copilot`                  | POST | M10 Copilot 路由       |
+| `/api/ai/business-copilot`         | POST | AI 经营问答            |
 
 ### 10.8 商业化
 
