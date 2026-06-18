@@ -2253,7 +2253,6 @@ function ScreenWarRoom({ go }) {
     <>
       <PageHeader
         title="智能项目作战台"
-        subtitle="覆盖立项前 → 招募中 → 执行中 → 结算中 → 结项复盘的项目经营决策面板"
         status={
           <span
             style={{
@@ -2804,7 +2803,7 @@ function Overview({ go }) {
       {/* Left: active projects + AI insights */}
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <div>
-          <SectionTitle hint="按风险与履约进度排序">活跃项目</SectionTitle>
+          <SectionTitle>活跃项目</SectionTitle>
           <Card padded={false}>
             <DataTable
               columns={[
@@ -2977,14 +2976,8 @@ function Overview({ go }) {
                 >
                   AI 经营简报
                 </span>
-                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
-                  基于近 14 天数据
-                </span>
               </div>
-              <EmptyHint
-                title="暂无经营简报"
-                hint="接入真实项目复盘结果后会展示可执行建议。"
-              />
+              <EmptyHint title="暂无经营简报" />
               <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
                 <Button
                   size="sm"
@@ -8141,18 +8134,20 @@ function EmptyHint({ title, hint, actionLabel, onAction }) {
       <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ink-700)" }}>
         {title}
       </div>
-      <div
-        style={{
-          fontSize: 12,
-          color: "var(--ink-400)",
-          marginTop: 6,
-          maxWidth: 420,
-          marginLeft: "auto",
-          marginRight: "auto",
-        }}
-      >
-        {hint}
-      </div>
+      {hint ? (
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--ink-400)",
+            marginTop: 6,
+            maxWidth: 420,
+            marginLeft: "auto",
+            marginRight: "auto",
+          }}
+        >
+          {hint}
+        </div>
+      ) : null}
       {actionLabel && (
         <div style={{ marginTop: 14 }}>
           <Button kind="primary" onClick={onAction}>
