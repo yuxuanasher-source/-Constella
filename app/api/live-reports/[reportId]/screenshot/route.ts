@@ -71,7 +71,9 @@ export async function GET(
       expiresInSeconds: 3600,
     });
 
-    return NextResponse.json({ url: signed.signedUrl });
+    // Redirect straight to the signed URL so a plain <img src> can load the
+    // screenshot without any client-side fetch.
+    return NextResponse.redirect(signed.signedUrl, 302);
   } catch (error) {
     return jsonError(error);
   }

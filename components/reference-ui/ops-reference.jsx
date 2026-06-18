@@ -10752,38 +10752,38 @@ function ScreenReports({ go }) {
   );
 }
 
+function ReportScreenshot({ reportId, streamer, fallback }) {
+  const [failed, setFailed] = React.useState(false);
+  if (failed) {
+    return fallback;
+  }
+  const src = `/api/live-reports/${reportId}/screenshot`;
+  return (
+    <a
+      href={src}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{ display: "block" }}
+    >
+      <img
+        src={src}
+        alt={`${streamer} 下播截图`}
+        onError={() => setFailed(true)}
+        style={{
+          width: "100%",
+          borderRadius: 10,
+          border: "1px solid var(--line)",
+          display: "block",
+        }}
+      />
+    </a>
+  );
+}
+
 function ReportDetail({ id, reports }) {
   const actions = useOpsLiveActions();
   const [busyDecision, setBusyDecision] = React.useState(null);
-  const [screenshot, setScreenshot] = React.useState({
-    status: "idle",
-    url: null,
-  });
   const r = reports.find((x) => x.id === id) || reports[0] || null;
-  const reportId = r?.id ?? null;
-  const loadScreenshotUrl = actions.getReportScreenshotUrl;
-  React.useEffect(() => {
-    if (!reportId || typeof loadScreenshotUrl !== "function") {
-      setScreenshot({ status: "none", url: null });
-      return;
-    }
-    let active = true;
-    setScreenshot({ status: "loading", url: null });
-    loadScreenshotUrl(reportId)
-      .then((url) => {
-        if (active) {
-          setScreenshot({ status: url ? "ready" : "none", url: url || null });
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setScreenshot({ status: "error", url: null });
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [reportId, loadScreenshotUrl]);
   if (!r) {
     return (
       <div
@@ -10901,49 +10901,20 @@ function ReportDetail({ id, reports }) {
 
         {/* Screenshot preview */}
         <div style={{ padding: 16 }}>
-          {screenshot.status === "ready" && screenshot.url ? (
-            <a
-              href={screenshot.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ display: "block" }}
-            >
-              <img
-                src={screenshot.url}
-                alt={`${r.streamer} 下播截图`}
-                style={{
-                  width: "100%",
-                  borderRadius: 10,
-                  border: "1px solid var(--line)",
-                  display: "block",
-                }}
+          <ReportScreenshot
+            key={r.id}
+            reportId={r.id}
+            streamer={r.streamer}
+            fallback={
+              <ScreenshotPreview
+                platform={s?.platforms?.[0] || "抖音"}
+                streamer={r.streamer}
+                date={r.date}
+                duration={r.duration}
+                audience={r.audience}
               />
-            </a>
-          ) : screenshot.status === "loading" ? (
-            <div
-              style={{
-                height: 180,
-                borderRadius: 10,
-                border: "1px dashed var(--line)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 12,
-                color: "var(--ink-400)",
-                background: "var(--bg-soft)",
-              }}
-            >
-              截图加载中…
-            </div>
-          ) : (
-            <ScreenshotPreview
-              platform={s?.platforms?.[0] || "抖音"}
-              streamer={r.streamer}
-              date={r.date}
-              duration={r.duration}
-              audience={r.audience}
-            />
-          )}
+            }
+          />
         </div>
 
         {/* OCR vs Manual */}
@@ -20938,13 +20909,6 @@ function OpsReferenceInner({
           refreshSettlementPool(),
         ]);
         applyReviewedStatus();
-      },
-      getReportScreenshotUrl: async (id) => {
-        const body = await fetchJson(
-          `/api/live-reports/${id}/screenshot`,
-          "load report screenshot failed",
-        );
-        return typeof body.url === "string" ? body.url : null;
       },
       createSettlementBatch: async (input) => {
         const body = await fetchJson(

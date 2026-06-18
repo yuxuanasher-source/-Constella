@@ -73,14 +73,14 @@ describe("GET /api/live-reports/[reportId]/screenshot", () => {
     });
   });
 
-  it("returns a signed download URL for the report's latest screenshot", async () => {
+  it("redirects to the signed download URL for the report's latest screenshot", async () => {
     const { GET } = await import("./screenshot/route");
     const response = await GET(request(), context());
 
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      url: "https://download.local/org-1/report-screenshots/task-1/end.png",
-    });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      "https://download.local/org-1/report-screenshots/task-1/end.png",
+    );
     expect(adminClient.storage.from).toHaveBeenCalledWith("jy-private");
   });
 
