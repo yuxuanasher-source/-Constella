@@ -63,10 +63,14 @@ export type OpsReferenceReport = {
   project: string;
   taskId: string;
   duration: number;
+  systemDurationHours: number;
+  ocrDurationHours: number | null;
+  divergencePct: number | null;
   audience: number;
   status: string;
   screens: number;
   source: "OCR" | "manual";
+  riskFlags: string[];
   note: string;
 };
 
@@ -148,10 +152,17 @@ export function toOpsReferenceReport(
     project: report.projectName,
     taskId: report.taskId || report.taskTitle,
     duration: minutesToHours(report.settlementDuration ?? 0),
+    systemDurationHours: minutesToHours(report.systemDuration ?? 0),
+    ocrDurationHours:
+      report.screenshotDuration != null
+        ? minutesToHours(report.screenshotDuration)
+        : null,
+    divergencePct: report.divergencePct ?? null,
     audience: report.viewers ?? 0,
     status: reportStatusToReference(report.status),
     screens: 1,
     source: report.timeSource === "claimed" ? "manual" : "OCR",
+    riskFlags: report.riskFlags ?? [],
     note: `${report.timeSource ?? "unknown"} · ${report.evidenceLevel ?? "unknown"}`,
   };
 }

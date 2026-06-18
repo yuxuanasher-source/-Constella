@@ -25,9 +25,13 @@ export type OpsLiveReportQueueItem = {
   projectName: string;
   streamerName: string;
   settlementDuration: number | null;
+  systemDuration: number | null;
+  screenshotDuration: number | null;
+  divergencePct: number | null;
   timeSource: TimeSource | null;
   evidenceLevel: EvidenceLevel | null;
   viewers: number | null;
+  riskFlags: string[];
   submittedAt: string;
 };
 
@@ -64,9 +68,13 @@ type OpsLiveReportRow = {
   streamer_id: string;
   status: ReportStatus;
   settlement_duration: number | null;
+  system_duration: number | null;
+  screenshot_duration: number | null;
+  divergence_pct: number | null;
   time_source: TimeSource | null;
   evidence_level: EvidenceLevel | null;
   viewers: number | null;
+  risk_flags: string[] | null;
   created_at: string;
   live_tasks: { title: string } | { title: string }[] | null;
   projects: { name: string } | { name: string }[] | null;
@@ -115,7 +123,7 @@ export async function listOpsLiveReportQueue(
   let query = client
     .from("live_reports")
     .select(
-      "id, live_task_id, project_id, streamer_id, status, settlement_duration, time_source, evidence_level, viewers, created_at, live_tasks(title), projects(name), streamers(display_name)",
+      "id, live_task_id, project_id, streamer_id, status, settlement_duration, system_duration, screenshot_duration, divergence_pct, time_source, evidence_level, viewers, risk_flags, created_at, live_tasks(title), projects(name), streamers(display_name)",
     )
     .in("status", [
       "pending_review",
@@ -197,9 +205,13 @@ export function toOpsLiveReportQueueItem(
     projectName: project?.name ?? "Unknown project",
     streamerName: streamer?.display_name ?? "Unknown streamer",
     settlementDuration: row.settlement_duration,
+    systemDuration: row.system_duration,
+    screenshotDuration: row.screenshot_duration,
+    divergencePct: row.divergence_pct,
     timeSource: row.time_source,
     evidenceLevel: row.evidence_level,
     viewers: row.viewers,
+    riskFlags: row.risk_flags ?? [],
     submittedAt: row.created_at,
   };
 }
