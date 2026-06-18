@@ -40,6 +40,13 @@ describe("proxy auth boundary", () => {
     expect(createServerClient).not.toHaveBeenCalled();
   });
 
+  it("allows non-protected routes without Supabase config", async () => {
+    const response = await proxy(createRequest("/public"));
+
+    expect(response.status).toBe(200);
+    expect(createServerClient).not.toHaveBeenCalled();
+  });
+
   it("redirects protected mobile routes to mobile login when Supabase config is missing", async () => {
     const response = await proxy(createRequest("/m/tasks"));
 
@@ -66,6 +73,25 @@ describe("proxy auth boundary", () => {
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe(
       "https://preview.example.cn/m/login?next=%2Fm%2Ftasks",
+    );
+  });
+
+  it("redirects protected routes when Supabase auth is unavailable", async () => {
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.example.cn";
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon-key";
+    vi.mocked(createServerClient).mockReturnValue({
+      auth: {
+        getUser: vi.fn(async () => {
+          throw new Error("network unavailable");
+        }),
+      },
+    } as never);
+
+    const response = await proxy(createRequest("/console/projects"));
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe(
+      "https://preview.example.cn/login?next=%2Fconsole%2Fprojects&error=auth",
     );
   });
 });

@@ -47,7 +47,7 @@ const supabase = {
 describe("/api/ocr/jobs/run", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv("SUPABASE_PRIVATE_BUCKET", "evidence-private");
+    vi.stubEnv("STORAGE_BUCKET_PRIVATE", "evidence-private");
     vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
     vi.mocked(getAuthContext).mockResolvedValue(auth);
     vi.mocked(createTencentOcrProvider).mockReturnValue({
@@ -198,6 +198,59 @@ describe("/api/ocr/jobs/run", () => {
       },
     ]);
     expect(runOcrJobOnce).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the documented private storage bucket for OCR image resolution", async () => {
+    vi.stubEnv("STORAGE_BUCKET_PRIVATE", "ocr-private");
+    vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
+      {
+        id: "job-1",
+        organizationId: "org-1",
+        jobType: "ocr.extract_live_report",
+        status: "queued",
+        attempt: 0,
+        maxAttempts: 3,
+        payload: {
+          liveReportId: "report-1",
+          imagePath: "private/path.png",
+        },
+      },
+    ]);
+    vi.mocked(runOcrJobOnce).mockImplementation(async ({ imageResolver }) => {
+      await imageResolver?.({
+        liveReportId: "report-1",
+        imagePath: "private/path.png",
+      });
+      return {
+        id: "job-1",
+        organizationId: "org-1",
+        jobType: "ocr.extract_live_report",
+        status: "succeeded",
+        attempt: 1,
+        maxAttempts: 3,
+        payload: {
+          liveReportId: "report-1",
+          imagePath: "private/path.png",
+        },
+      } as Awaited<ReturnType<typeof runOcrJobOnce>>;
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs/run", {
+        method: "POST",
+        body: JSON.stringify({}),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(resolveOcrImageInput).toHaveBeenCalledWith({
+      client: supabase,
+      payload: {
+        liveReportId: "report-1",
+        imagePath: "private/path.png",
+      },
+      defaultBucket: "ocr-private",
+    });
   });
 
   it("blocks streamers from running OCR jobs", async () => {

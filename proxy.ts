@@ -1,12 +1,12 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { getPublicEnv } from "@/lib/config/env";
+
 const protectedPrefixes = ["/console", "/m", "/desktop"];
 
 export async function proxy(request: NextRequest) {
   const response = NextResponse.next({ request });
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   const isProtected = protectedPrefixes.some((prefix) =>
     request.nextUrl.pathname.startsWith(prefix),
   );
@@ -15,39 +15,43 @@ export async function proxy(request: NextRequest) {
     return response;
   }
 
-  if (!url || !anonKey) {
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = getLoginPath(request.nextUrl.pathname);
-    loginUrl.searchParams.set("next", request.nextUrl.pathname);
-    loginUrl.searchParams.set("error", "config");
-    return NextResponse.redirect(loginUrl);
+  let env;
+  try {
+    env = getPublicEnv();
+  } catch {
+    return redirectToLogin(request, "config");
   }
 
-  const supabase = createServerClient(url, anonKey, {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
+  try {
+    const supabase = createServerClient(
+      env.NEXT_PUBLIC_SUPABASE_URL,
+      env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+      {
+        cookies: {
+          getAll() {
+            return request.cookies.getAll();
+          },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              response.cookies.set(name, value, options);
+            });
+          },
+        },
       },
-      setAll(cookiesToSet) {
-        cookiesToSet.forEach(({ name, value, options }) => {
-          response.cookies.set(name, value, options);
-        });
-      },
-    },
-  });
+    );
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
-  if (!user) {
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = getLoginPath(request.nextUrl.pathname);
-    loginUrl.searchParams.set("next", request.nextUrl.pathname);
-    return NextResponse.redirect(loginUrl);
+    if (!user) {
+      return redirectToLogin(request);
+    }
+
+    return response;
+  } catch {
+    return redirectToLogin(request, "auth");
   }
-
-  return response;
 }
 
 export const config = {
@@ -56,4 +60,14 @@ export const config = {
 
 function getLoginPath(pathname: string) {
   return pathname.startsWith("/m") ? "/m/login" : "/login";
+}
+
+function redirectToLogin(request: NextRequest, error?: string) {
+  const loginUrl = request.nextUrl.clone();
+  loginUrl.pathname = getLoginPath(request.nextUrl.pathname);
+  loginUrl.searchParams.set("next", request.nextUrl.pathname);
+  if (error) {
+    loginUrl.searchParams.set("error", error);
+  }
+  return NextResponse.redirect(loginUrl);
 }
