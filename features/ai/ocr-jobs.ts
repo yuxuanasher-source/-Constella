@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { writeAuditLog } from "@/lib/audit/audit";
 import { recordUsageEvent } from "@/features/billing/usage-metering";
+import { resolveReportEvidence } from "@/features/live-operations/live-report-evidence";
 
 import type { AiActor } from "./contracts";
 import { recordAiInvocation } from "./invocation-ledger";
@@ -500,6 +501,18 @@ export async function runOcrJobOnce({
     result,
   });
 
+  // Sync the extracted values back to the live report and move it into the
+  // 报数审核池 (review pool). Both trusted and needs-confirmation results enter
+  // the pool; conflicting ones carry a flag so reviewers can double-check.
+  await advanceLiveReportAfterOcr({
+    client,
+    liveReportId: job.payload.liveReportId,
+    extractedDuration: parsed.extractedDuration,
+    extractedViewers: parsed.extractedViewers,
+    needsConfirmation: status === "needs_confirmation",
+    reasons,
+  });
+
   await recordUsageEvent({
     client: client as Parameters<typeof recordUsageEvent>[0]["client"],
     actor,
@@ -569,6 +582,27 @@ export async function confirmOcrJob({
     locked_at: null,
     locked_by: null,
   });
+
+  // A human confirmed the OCR result, so advance the live report into the
+  // review pool with the (optionally corrected) values and clear the
+  // needs-review flag. No-op if a prior run already advanced the report.
+  await advanceLiveReportAfterOcr({
+    client,
+    liveReportId: job.payload.liveReportId,
+    extractedDuration: pickNumericField(
+      manualResult.extractedDuration,
+      manualResult.duration,
+      job.result?.extractedDuration,
+    ),
+    extractedViewers: pickNumericField(
+      manualResult.extractedViewers,
+      manualResult.viewers,
+      job.result?.extractedViewers,
+    ),
+    needsConfirmation: false,
+    reasons: [],
+  });
+
   await writeAuditLog(client as Parameters<typeof writeAuditLog>[0], {
     organizationId: actor.organizationId,
     actorUserId: actor.userId,
@@ -737,6 +771,133 @@ async function updateOcrResult(
   if (error) {
     throw error;
   }
+}
+
+type LiveReportAdvanceRow = {
+  id: string;
+  status?: string | null;
+  system_duration?: number | null;
+  systemDuration?: number | null;
+  claimed_duration?: number | null;
+  claimedDuration?: number | null;
+  risk_flags?: string[] | null;
+  riskFlags?: string[] | null;
+};
+
+async function advanceLiveReportAfterOcr({
+  client,
+  liveReportId,
+  extractedDuration,
+  extractedViewers,
+  needsConfirmation,
+  reasons,
+}: {
+  client: OcrJobClient;
+  liveReportId: string;
+  extractedDuration: number | null;
+  extractedViewers: number | null;
+  needsConfirmation: boolean;
+  reasons: string[];
+}): Promise<void> {
+  const { data, error } = await client
+    .from("live_reports")
+    .select("id, status, system_duration, claimed_duration, risk_flags")
+    .eq("id", liveReportId)
+    .maybeSingle();
+  if (error) {
+    throw error;
+  }
+
+  const report = data as LiveReportAdvanceRow | null;
+  if (!report) {
+    return;
+  }
+
+  // Only advance reports that are still waiting on OCR. If a human or an
+  // earlier run already moved the report forward we must not regress it.
+  const currentStatus = report.status ?? undefined;
+  if (currentStatus && currentStatus !== "ocr_ing") {
+    return;
+  }
+
+  const systemDuration =
+    report.system_duration ?? report.systemDuration ?? null;
+  const claimedDuration =
+    report.claimed_duration ?? report.claimedDuration ?? null;
+  const existingFlags = (report.risk_flags ?? report.riskFlags ?? []).filter(
+    (flag) => flag !== "ocr_pending",
+  );
+
+  const patch: Record<string, unknown> = {
+    status: "pending_review",
+    screenshot_duration: extractedDuration,
+    updated_at: new Date().toISOString(),
+  };
+  if (extractedViewers !== null) {
+    patch.viewers = extractedViewers;
+  }
+
+  const riskFlags = new Set(existingFlags);
+
+  // Recompute settlement evidence when we have at least one duration source.
+  if (
+    systemDuration !== null ||
+    extractedDuration !== null ||
+    claimedDuration !== null
+  ) {
+    const evidence = resolveReportEvidence({
+      systemDuration,
+      screenshotDuration: extractedDuration,
+      claimedDuration,
+    });
+    patch.settlement_duration = evidence.settlementDuration;
+    patch.time_source = evidence.timeSource;
+    patch.evidence_level = evidence.evidenceLevel;
+    patch.divergence_pct = evidence.divergencePct;
+    for (const flag of evidence.riskFlags) {
+      riskFlags.add(flag);
+    }
+  }
+
+  if (needsConfirmation) {
+    riskFlags.add("ocr_needs_review");
+    for (const reason of reasons) {
+      riskFlags.add(`ocr_${reason}`);
+    }
+  } else {
+    // A trusted (or human-confirmed) result clears prior OCR review markers.
+    for (const flag of [...riskFlags]) {
+      if (flag === "ocr_needs_review" || flag.startsWith("ocr_")) {
+        riskFlags.delete(flag);
+      }
+    }
+  }
+
+  patch.risk_flags = [...riskFlags];
+
+  const { error: updateError } = await client
+    .from("live_reports")
+    .update(patch)
+    .eq("id", liveReportId);
+  if (updateError) {
+    throw updateError;
+  }
+}
+
+function pickNumericField(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (
+      typeof value === "string" &&
+      value.trim() &&
+      !Number.isNaN(Number(value))
+    ) {
+      return Number(value);
+    }
+  }
+  return null;
 }
 
 async function failOcrJobAttempt({

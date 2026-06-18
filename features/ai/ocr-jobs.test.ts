@@ -17,6 +17,10 @@ function createClient(
       id: string;
       organization_id: string;
       project_id: string;
+      status?: string;
+      system_duration?: number | null;
+      claimed_duration?: number | null;
+      risk_flags?: string[] | null;
     }>;
   } = {},
 ) {
@@ -800,6 +804,176 @@ describe("OCR jobs", () => {
         }),
       }),
     ]);
+  });
+
+  it("advances the live report into the review pool when OCR succeeds", async () => {
+    const { client, updates } = createClient({
+      jobs: [
+        {
+          id: "job-advance",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          aiInvocationId: "invocation-advance",
+          payload: {
+            liveReportId: "report-advance",
+            imageBase64: "ZmFrZQ==",
+            expectedDuration: 180,
+          },
+        },
+      ],
+      liveReports: [
+        {
+          id: "report-advance",
+          organization_id: "org-1",
+          project_id: "project-1",
+          status: "ocr_ing",
+          system_duration: 180,
+          risk_flags: ["ocr_pending"],
+        },
+      ],
+    });
+
+    const result = await runOcrJobOnce({
+      client,
+      actor,
+      jobId: "job-advance",
+      provider: {
+        runGeneralBasicOcr: vi.fn(async () => ({
+          status: "succeeded" as const,
+          textLines: ["09:29~12:30 共3小时", "观看人数 2,488"],
+          textItems: [],
+          confidence: 96,
+          requestId: "request-advance",
+          rawResponse: {},
+        })),
+      },
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(updates.live_reports).toEqual([
+      expect.objectContaining({
+        column: "id",
+        value: "report-advance",
+        payload: expect.objectContaining({
+          status: "pending_review",
+          screenshot_duration: 180,
+          viewers: 2488,
+          settlement_duration: 180,
+          time_source: "system",
+          evidence_level: "green",
+        }),
+      }),
+    ]);
+    const advancePayload = (
+      updates.live_reports[0] as { payload: { risk_flags: string[] } }
+    ).payload;
+    expect(advancePayload.risk_flags).not.toContain("ocr_pending");
+    expect(advancePayload.risk_flags).not.toContain("ocr_needs_review");
+  });
+
+  it("flags conflicting OCR results in the review pool but still admits them", async () => {
+    const { client, updates } = createClient({
+      jobs: [
+        {
+          id: "job-conflict",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          aiInvocationId: "invocation-conflict",
+          payload: {
+            liveReportId: "report-conflict",
+            imageBase64: "ZmFrZQ==",
+            expectedDuration: 180,
+          },
+        },
+      ],
+      liveReports: [
+        {
+          id: "report-conflict",
+          organization_id: "org-1",
+          project_id: "project-1",
+          status: "ocr_ing",
+          system_duration: 180,
+          risk_flags: ["ocr_pending"],
+        },
+      ],
+    });
+
+    const result = await runOcrJobOnce({
+      client,
+      actor,
+      jobId: "job-conflict",
+      provider: {
+        runGeneralBasicOcr: vi.fn(async () => ({
+          status: "succeeded" as const,
+          textLines: ["直播时长 20分钟", "观看人数 300"],
+          textItems: [],
+          confidence: 96,
+          requestId: "request-conflict",
+          rawResponse: {},
+        })),
+      },
+    });
+
+    expect(result.status).toBe("needs_confirmation");
+    const conflictPayload = (
+      updates.live_reports[0] as {
+        payload: { status: string; risk_flags: string[] };
+      }
+    ).payload;
+    expect(conflictPayload.status).toBe("pending_review");
+    expect(conflictPayload.risk_flags).toContain("ocr_needs_review");
+    expect(conflictPayload.risk_flags).toContain("ocr_duration_conflict");
+  });
+
+  it("does not regress a live report that already left the OCR stage", async () => {
+    const { client, updates } = createClient({
+      jobs: [
+        {
+          id: "job-late",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          aiInvocationId: "invocation-late",
+          payload: {
+            liveReportId: "report-late",
+            imageBase64: "ZmFrZQ==",
+            expectedDuration: 180,
+          },
+        },
+      ],
+      liveReports: [
+        {
+          id: "report-late",
+          organization_id: "org-1",
+          project_id: "project-1",
+          status: "approved",
+          system_duration: 180,
+        },
+      ],
+    });
+
+    await runOcrJobOnce({
+      client,
+      actor,
+      jobId: "job-late",
+      provider: {
+        runGeneralBasicOcr: vi.fn(async () => ({
+          status: "succeeded" as const,
+          textLines: ["共3小时", "观看人数 2,488"],
+          textItems: [],
+          confidence: 96,
+          requestId: "request-late",
+          rawResponse: {},
+        })),
+      },
+    });
+
+    expect(updates.live_reports).toBeUndefined();
   });
 });
 
