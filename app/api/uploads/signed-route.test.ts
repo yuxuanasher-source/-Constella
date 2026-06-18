@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
@@ -50,6 +50,10 @@ describe("POST /api/uploads/signed", () => {
     } as never);
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("returns a signed private upload URL under the current organization path", async () => {
     const { POST } = await import("./signed/route");
     const response = await POST(
@@ -62,16 +66,35 @@ describe("POST /api/uploads/signed", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      bucket: "evidence-private",
+      bucket: "jy-private",
       path: "org-1/recordings/application-1/demo_video.mp4",
       signedUrl:
         "https://upload.local/org-1/recordings/application-1/demo_video.mp4",
       token: "token-1",
     });
-    expect(supabase.storage.from).toHaveBeenCalledWith("evidence-private");
+    expect(supabase.storage.from).toHaveBeenCalledWith("jy-private");
     expect(createSignedUploadUrl).toHaveBeenCalledWith(
       "org-1/recordings/application-1/demo_video.mp4",
     );
+  });
+
+  it("uses the documented private storage bucket env var", async () => {
+    vi.stubEnv("STORAGE_BUCKET_PRIVATE", "customer-private");
+
+    const { POST } = await import("./signed/route");
+    const response = await POST(
+      jsonRequest({
+        category: "recordings",
+        ownerId: "application-1",
+        fileName: "demo.mp4",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      bucket: "customer-private",
+    });
+    expect(supabase.storage.from).toHaveBeenCalledWith("customer-private");
   });
 
   it("rejects malformed JSON through the shared body validator", async () => {

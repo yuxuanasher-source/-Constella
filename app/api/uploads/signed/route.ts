@@ -6,11 +6,10 @@ import {
   createSignedUploadUrl,
 } from "@/features/storage/private-upload";
 import { getAuthContext } from "@/lib/auth/context";
+import { getPrivateStorageBucket } from "@/lib/config/env";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { toHttpError } from "@/lib/http/http-error";
 import { parseJsonBody } from "@/lib/http/parse-json-body";
-
-const defaultBucket = "evidence-private";
 
 const uploadBodySchema = z.object({
   category: z.enum(["recordings", "report-screenshots"]),
@@ -28,7 +27,7 @@ export async function POST(request: Request) {
 
     const body = await parseJsonBody(request, uploadBodySchema);
 
-    const bucket = process.env.SUPABASE_PRIVATE_BUCKET ?? defaultBucket;
+    const bucket = getPrivateStorageBucket();
     const path = buildPrivateUploadPath({
       organizationId: auth.organizationId,
       category: body.category,

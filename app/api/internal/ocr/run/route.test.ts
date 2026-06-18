@@ -39,7 +39,7 @@ describe("/api/internal/ocr/run", () => {
     vi.stubEnv("OCR_RUNNER_ORGANIZATION_ID", runnerOrganizationId);
     vi.stubEnv("OCR_RUNNER_USER_ID", runnerUserId);
     vi.stubEnv("OCR_RUNNER_USER_NAME", "System OCR Runner");
-    vi.stubEnv("SUPABASE_PRIVATE_BUCKET", "evidence-private");
+    vi.stubEnv("STORAGE_BUCKET_PRIVATE", "evidence-private");
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
     vi.mocked(createTencentOcrProvider).mockReturnValue({
       runGeneralBasicOcr: vi.fn(),
@@ -404,6 +404,7 @@ describe("/api/internal/ocr/run", () => {
   });
 
   it("uses the storage resolver for OCR image input", async () => {
+    vi.stubEnv("STORAGE_BUCKET_PRIVATE", "ocr-private");
     vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
       {
         id: "job-1",
@@ -452,7 +453,7 @@ describe("/api/internal/ocr/run", () => {
         liveReportId: "report-1",
         imagePath: "private/path.png",
       },
-      defaultBucket: "evidence-private",
+      defaultBucket: "ocr-private",
     });
   });
 });
