@@ -4451,32 +4451,80 @@ function VideoCard({ v }) {
 // ===== src-streamer-pc\screen-ai.jsx =====
 // ——— Screen: AI 卡点诊断 (Desktop) ———————————————————
 
-function ScreenAI({ go, profile = EMPTY_PROFILE }) {
+function formatDesktopDiagnosis(body) {
+  const output = body?.agentOutput ?? {};
+  const findings = Array.isArray(output.findings) ? output.findings : [];
+  const recommendations = Array.isArray(output.recommendations)
+    ? output.recommendations
+    : [];
+  const lines = [];
+  findings.forEach((finding) => {
+    if (finding?.summary) lines.push(`• ${finding.summary}`);
+  });
+  if (recommendations.length) {
+    if (lines.length) lines.push("");
+    lines.push("改进建议：");
+    recommendations.forEach((recommendation) => {
+      if (!recommendation?.proposal) return;
+      lines.push(
+        recommendation.expectedImpact
+          ? `• ${recommendation.proposal}（预期：${recommendation.expectedImpact}）`
+          : `• ${recommendation.proposal}`,
+      );
+    });
+  }
+  if (lines.length) return lines.join("\n");
+  const direct = body?.result?.answer;
+  if (typeof direct === "string" && direct.trim()) return direct;
+  return "诊断已完成，但本次没有返回可展示建议。请补充直播时间、产品和卡点现象后再试。";
+}
+
+function ScreenAI({ go, profile = EMPTY_PROFILE, actions = {} }) {
   const [thread, setThread] = React.useState(AI_THREAD);
   const [input, setInput] = React.useState("");
   const [typing, setTyping] = React.useState(false);
   const endRef = React.useRef(null);
 
   React.useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    endRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
   }, [thread, typing]);
 
-  const send = (text) => {
-    if (!text) return;
-    setThread((prev) => [...prev, { role: "me", text, time: nowHM() }]);
+  const send = async (text) => {
+    const question = String(text || "").trim();
+    if (!question) return;
+    setThread((prev) => [
+      ...prev,
+      { role: "me", text: question, time: nowHM() },
+    ]);
     setInput("");
     setTyping(true);
-    setTimeout(() => {
-      setTyping(false);
+    try {
+      const answer = await actions.askDiagnosis?.(question);
       setThread((prev) => [
         ...prev,
         {
           role: "ai",
-          text: "收到。基于你的描述，建议先观察开播后 30 分钟：进房峰值、停留曲线和互动密度。如果任一指标明显低于近期均值，就切换备用话术。我会在直播后做对照复盘。",
+          text:
+            answer ||
+            "诊断已完成，但本次没有返回可展示建议。请补充直播时间、产品和卡点现象后再试。",
           time: nowHM(),
         },
       ]);
-    }, 1000);
+    } catch (error) {
+      setThread((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          text:
+            error instanceof Error
+              ? error.message
+              : "诊断服务暂时不可用，请稍后重试。",
+          time: nowHM(),
+        },
+      ]);
+    } finally {
+      setTyping(false);
+    }
   };
 
   return (
@@ -4638,7 +4686,7 @@ function ScreenAI({ go, profile = EMPTY_PROFILE }) {
               开播表现复盘
             </div>
             <div style={{ fontSize: 11.5, color: "var(--ink-400)" }}>
-              基于你近 14 天任务、报数、录屏 · 默认模型：haiku-4-5
+              基于你近 14 天任务、报数、录屏数据
             </div>
           </div>
           <Button kind="ghost" size="sm" icon={<Icon.Export size={13} />}>
@@ -6367,6 +6415,18 @@ function StreamerDesktopReferenceInner({
       refreshRecordings,
       refreshProjectAnnouncements,
       getProjectAnnouncement,
+      askDiagnosis: async (question) => {
+        const body = await fetchJson(
+          "/api/ai/diagnosis",
+          "AI diagnosis failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question, source: "streamer_desktop" }),
+          },
+        );
+        return formatDesktopDiagnosis(body);
+      },
       submitRecordingLink: async (form) => {
         const body = await fetchJson(
           "/api/streamer/recordings",
@@ -6597,7 +6657,9 @@ function StreamerDesktopReferenceInner({
               actions={actions}
             />
           )}
-          {route === "ai" && <ScreenAI go={go} profile={visibleProfile} />}
+          {route === "ai" && (
+            <ScreenAI go={go} profile={visibleProfile} actions={actions} />
+          )}
           {route === "earnings" && <ScreenEarnings go={go} />}
           {route === "profile" && (
             <ScreenProfile go={go} profile={visibleProfile} />
