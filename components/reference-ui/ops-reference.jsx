@@ -10752,6 +10752,34 @@ function ScreenReports({ go }) {
   );
 }
 
+function ReportScreenshot({ reportId, streamer, fallback }) {
+  const [failed, setFailed] = React.useState(false);
+  if (failed) {
+    return fallback;
+  }
+  const src = `/api/live-reports/${reportId}/screenshot`;
+  return (
+    <a
+      href={src}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{ display: "block" }}
+    >
+      <img
+        src={src}
+        alt={`${streamer} 下播截图`}
+        onError={() => setFailed(true)}
+        style={{
+          width: "100%",
+          borderRadius: 10,
+          border: "1px solid var(--line)",
+          display: "block",
+        }}
+      />
+    </a>
+  );
+}
+
 function ReportDetail({ id, reports }) {
   const actions = useOpsLiveActions();
   const [busyDecision, setBusyDecision] = React.useState(null);
@@ -10873,12 +10901,19 @@ function ReportDetail({ id, reports }) {
 
         {/* Screenshot preview */}
         <div style={{ padding: 16 }}>
-          <ScreenshotPreview
-            platform={s?.platforms?.[0] || "抖音"}
+          <ReportScreenshot
+            key={r.id}
+            reportId={r.id}
             streamer={r.streamer}
-            date={r.date}
-            duration={r.duration}
-            audience={r.audience}
+            fallback={
+              <ScreenshotPreview
+                platform={s?.platforms?.[0] || "抖音"}
+                streamer={r.streamer}
+                date={r.date}
+                duration={r.duration}
+                audience={r.audience}
+              />
+            }
           />
         </div>
 
