@@ -2835,7 +2835,7 @@ describe("OpsReferenceApp OCR operations smoke", () => {
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith("/api/ocr/jobs", undefined),
     );
-    expect(await screen.findByText("ocr-job-1")).toBeInTheDocument();
+    expect(screen.getByText("ocr-job-1")).toBeInTheDocument();
     expect(screen.getByText("screenshot-1")).toBeInTheDocument();
     expect(screen.getByText("时长 80")).toBeInTheDocument();
     expect(screen.getByText("场观 320")).toBeInTheDocument();
@@ -3850,7 +3850,7 @@ describe("OpsReferenceApp streamer smoke", () => {
         },
       ],
     });
-    expect(await screen.findByText("导出已生成")).toBeInTheDocument();
+    expect(screen.getByText("导出已生成")).toBeInTheDocument();
   });
 });
 
@@ -5383,9 +5383,7 @@ describe("OpsReferenceApp live task smoke", () => {
       await waitFor(() =>
         expect(fetchMock).toHaveBeenCalledWith("/api/live-tasks", undefined),
       );
-      expect(
-        await screen.findByText("task-refresh-status"),
-      ).toBeInTheDocument();
+      expect(screen.getByText("task-refresh-status")).toBeInTheDocument();
       await waitFor(() =>
         expect(
           screen.getByRole("row", { name: /task-refresh-status.*待报数/ }),
@@ -5638,19 +5636,15 @@ describe("OpsReferenceApp settlement smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "导出报数明细" }));
 
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/exports",
-        expect.objectContaining({
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        }),
-      ),
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/exports",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
     );
-    const exportCall = fetchMock.mock.calls.find(
-      ([url]) => url === "/api/exports",
-    );
-    expect(JSON.parse(exportCall[1].body)).toEqual({
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       kind: "report_details",
       rows: [
         {
@@ -5660,7 +5654,7 @@ describe("OpsReferenceApp settlement smoke", () => {
         },
       ],
     });
-    expect(await screen.findByText("报数明细导出已生成")).toBeInTheDocument();
+    expect(screen.getByText("报数明细导出已生成")).toBeInTheDocument();
   });
 
   it("polls streamer-submitted reports into the pending review queue with task details", async () => {
@@ -5810,7 +5804,7 @@ describe("OpsReferenceApp settlement smoke", () => {
       expect.objectContaining({ method: "PATCH" }),
     );
     const reviewBodies = fetchMock.mock.calls
-      .filter(([url]) => String(url).endsWith("/review"))
+      .filter(([url]) => String(url).includes("/api/live-reports/"))
       .map(([, init]) => JSON.parse(init.body));
     expect(reviewBodies).toEqual([
       expect.objectContaining({ decision: "approve" }),
@@ -5893,10 +5887,7 @@ describe("OpsReferenceApp settlement smoke", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
-    const evaluateCall = fetchMock.mock.calls.find(
-      ([url]) => String(url) === "/api/auto-review/evaluate",
-    );
-    expect(JSON.parse(evaluateCall[1].body)).toMatchObject({
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
       report: {
         id: "report-auto-review-one",
         status: "pending_review",
@@ -6035,13 +6026,7 @@ describe("OpsReferenceApp settlement smoke", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "审核通过" }));
 
-    await waitFor(() =>
-      expect(
-        fetchMock.mock.calls.filter(
-          ([url]) => !String(url).endsWith("/screenshot"),
-        ),
-      ).toHaveLength(5),
-    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/live-reports/report-ui-smoke-approve/review",
       expect.objectContaining({
@@ -6210,7 +6195,7 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/projects", undefined);
 
     expect(await screen.findAllByText("batch-ui-smoke-1")).toHaveLength(2);
-    expect(await screen.findByText("暂无待入批次")).toBeInTheDocument();
+    expect(screen.getByText("暂无待入批次")).toBeInTheDocument();
     expect(screen.queryByText("report-ui-smoke-1")).not.toBeInTheDocument();
   });
 
