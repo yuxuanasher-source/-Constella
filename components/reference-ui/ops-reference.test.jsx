@@ -3850,7 +3850,7 @@ describe("OpsReferenceApp streamer smoke", () => {
         },
       ],
     });
-    expect(screen.getByText("导出已生成")).toBeInTheDocument();
+    expect(await screen.findByText("导出已生成")).toBeInTheDocument();
   });
 });
 
@@ -5658,7 +5658,7 @@ describe("OpsReferenceApp settlement smoke", () => {
         },
       ],
     });
-    expect(screen.getByText("报数明细导出已生成")).toBeInTheDocument();
+    expect(await screen.findByText("报数明细导出已生成")).toBeInTheDocument();
   });
 
   it("polls streamer-submitted reports into the pending review queue with task details", async () => {
