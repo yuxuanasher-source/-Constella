@@ -2835,7 +2835,7 @@ describe("OpsReferenceApp OCR operations smoke", () => {
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith("/api/ocr/jobs", undefined),
     );
-    expect(screen.getByText("ocr-job-1")).toBeInTheDocument();
+    expect(await screen.findByText("ocr-job-1")).toBeInTheDocument();
     expect(screen.getByText("screenshot-1")).toBeInTheDocument();
     expect(screen.getByText("时长 80")).toBeInTheDocument();
     expect(screen.getByText("场观 320")).toBeInTheDocument();
@@ -5383,7 +5383,9 @@ describe("OpsReferenceApp live task smoke", () => {
       await waitFor(() =>
         expect(fetchMock).toHaveBeenCalledWith("/api/live-tasks", undefined),
       );
-      expect(screen.getByText("task-refresh-status")).toBeInTheDocument();
+      expect(
+        await screen.findByText("task-refresh-status"),
+      ).toBeInTheDocument();
       await waitFor(() =>
         expect(
           screen.getByRole("row", { name: /task-refresh-status.*待报数/ }),
@@ -6208,7 +6210,7 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/projects", undefined);
 
     expect(await screen.findAllByText("batch-ui-smoke-1")).toHaveLength(2);
-    expect(screen.getByText("暂无待入批次")).toBeInTheDocument();
+    expect(await screen.findByText("暂无待入批次")).toBeInTheDocument();
     expect(screen.queryByText("report-ui-smoke-1")).not.toBeInTheDocument();
   });
 
