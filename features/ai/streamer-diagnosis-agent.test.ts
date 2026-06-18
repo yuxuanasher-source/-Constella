@@ -1,8 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { validateAgentOutput } from "./agent-output-contract";
-import { runStreamerDiagnosisAgent } from "./streamer-diagnosis-agent";
+import {
+  gatherStreamerDiagnosisContext,
+  runStreamerDiagnosisAgent,
+} from "./streamer-diagnosis-agent";
 import type { AgentOutput, AiProvider } from "./contracts";
+
+function queryResult(rows: unknown[]) {
+  const chain = {
+    select: () => chain,
+    eq: () => chain,
+    order: () => chain,
+    limit: async () => ({ data: rows, error: null }),
+  };
+  return chain;
+}
 
 function fakeProvider(name: AiProvider["name"]): AiProvider {
   const ok = {
@@ -256,6 +269,54 @@ describe("runStreamerDiagnosisAgent", () => {
       "Interaction pattern needs attention before the next live session",
     );
     expectNoNumbersOutsideFacts(result.agentOutput);
+  });
+});
+
+describe("gatherStreamerDiagnosisContext", () => {
+  it("pulls the streamer's latest report metrics scoped to their own data", async () => {
+    const client = {
+      from: vi.fn((table: string) => {
+        if (table === "streamers") {
+          return queryResult([{ id: "streamer-1" }]);
+        }
+        if (table === "live_reports") {
+          return queryResult([
+            {
+              viewers: 2488,
+              settlement_duration: 180,
+              evidence_level: "green",
+              risk_flags: ["duration_divergence"],
+            },
+          ]);
+        }
+        return queryResult([]);
+      }),
+    };
+
+    const context = await gatherStreamerDiagnosisContext({
+      client: client as never,
+      actor: streamerActor,
+    });
+
+    expect(context.report).toEqual({
+      totalViews: 2488,
+      settlementDuration: 180,
+      evidenceLevel: "green",
+    });
+    expect(context.feedback).toEqual(["duration_divergence"]);
+  });
+
+  it("returns empty context when the user is not a streamer", async () => {
+    const client = {
+      from: vi.fn(() => queryResult([])),
+    };
+
+    const context = await gatherStreamerDiagnosisContext({
+      client: client as never,
+      actor: streamerActor,
+    });
+
+    expect(context).toEqual({});
   });
 });
 
