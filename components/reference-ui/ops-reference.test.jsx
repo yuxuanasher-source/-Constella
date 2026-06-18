@@ -1333,7 +1333,7 @@ describe("OpsReferenceApp project smoke", () => {
         }),
       ),
     );
-    expect(screen.getByText("已邀请 Streamer One")).toBeInTheDocument();
+    expect(await screen.findByText("已邀请 Streamer One")).toBeInTheDocument();
     expect(screen.getByText("streamer-one · Streamer One")).toBeInTheDocument();
     expect(screen.getAllByText("邀约中").length).toBeGreaterThan(0);
   });
