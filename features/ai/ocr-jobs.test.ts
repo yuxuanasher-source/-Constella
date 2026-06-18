@@ -244,6 +244,7 @@ describe("OCR jobs", () => {
         runGeneralBasicOcr: vi.fn(async () => ({
           status: "succeeded" as const,
           textLines: ["直播时长 80分钟", "观看人数 320"],
+          textItems: [],
           confidence: 96,
           requestId: "request-1",
           rawResponse: { Response: { RequestId: "request-1" } },
@@ -296,6 +297,7 @@ describe("OCR jobs", () => {
     const runGeneralBasicOcr = vi.fn(async () => ({
       status: "succeeded" as const,
       textLines: [],
+      textItems: [],
       confidence: 96,
       requestId: "request-storage",
       rawResponse: {},
@@ -340,6 +342,7 @@ describe("OCR jobs", () => {
     const runGeneralBasicOcr = vi.fn(async () => ({
       status: "succeeded" as const,
       textLines: [],
+      textItems: [],
       confidence: 100,
     }));
     const imageResolver = vi.fn(async () => {
@@ -420,6 +423,7 @@ describe("OCR jobs", () => {
         runGeneralBasicOcr: vi.fn(async () => ({
           status: "succeeded" as const,
           textLines: ["时长 20分钟"],
+          textItems: [],
           confidence: 55,
           requestId: "request-2",
           rawResponse: {},
@@ -643,6 +647,7 @@ describe("OCR jobs", () => {
           runGeneralBasicOcr: vi.fn(async () => ({
             status: "succeeded" as const,
             textLines: [],
+            textItems: [],
             confidence: 100,
           })),
         },
@@ -676,6 +681,7 @@ describe("OCR jobs", () => {
         runGeneralBasicOcr: vi.fn(async () => ({
           status: "failed" as const,
           textLines: [],
+          textItems: [],
           confidence: 0,
           errorSummary: "upstream stack trace with secret=abc",
         })),
@@ -731,6 +737,7 @@ describe("OCR jobs", () => {
         runGeneralBasicOcr: vi.fn(async () => ({
           status: "failed" as const,
           textLines: [],
+          textItems: [],
           confidence: 0,
           errorSummary: "Tencent OCR HTTP 500",
         })),

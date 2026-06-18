@@ -81,6 +81,45 @@ describe("parseLiveReportOcrText", () => {
     });
   });
 
+  it("pairs a grid viewer label with the value directly below it using coordinates", () => {
+    expect(
+      parseLiveReportOcrText(
+        [
+          "近7目观众评论率指标比同水平主播低",
+          "观众人数",
+          "送礼人数",
+          "2 488",
+          "79",
+        ],
+        {
+          items: [
+            {
+              text: "近7目观众评论率指标比同水平主播低",
+              x: 60,
+              y: 120,
+              width: 600,
+              height: 24,
+            },
+            { text: "观众人数", x: 448, y: 265, width: 96, height: 22 },
+            { text: "送礼人数", x: 620, y: 265, width: 96, height: 22 },
+            { text: "2 488", x: 448, y: 291, width: 80, height: 26 },
+            { text: "79", x: 620, y: 291, width: 40, height: 26 },
+          ],
+        },
+      ),
+    ).toMatchObject({
+      extractedViewers: 2488,
+    });
+  });
+
+  it("does not extract a viewer count from a sentence containing 观众 and a leading number", () => {
+    expect(
+      parseLiveReportOcrText(["近7目观众评论率指标比同水平主播低"]),
+    ).toMatchObject({
+      extractedViewers: null,
+    });
+  });
+
   it("does not pair a viewer label with an adjacent non-numeric label", () => {
     expect(
       parseLiveReportOcrText(["观众人数", "送礼人数", "评论人数"]),

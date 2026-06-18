@@ -454,6 +454,7 @@ export async function runOcrJobOnce({
 
   const parsed = parseLiveReportOcrText(providerResult.textLines, {
     expectedDuration: job.payload.expectedDuration,
+    items: providerResult.textItems,
   });
   const reasons = [...parsed.reasons];
   if (providerResult.confidence < 70) {
