@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 
 import { runStreamerDiagnosisAgent } from "@/features/ai/streamer-diagnosis-agent";
 import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import {
+  createSupabaseAdminClient,
+  createSupabaseServerClient,
+} from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 
 export async function POST(request: Request) {
@@ -18,8 +21,13 @@ export async function POST(request: Request) {
     }
 
     const body = (await request.json()) as Record<string, unknown>;
+    // The AI ledger tables (ai_invocations / ai_tool_invocations) only allow
+    // MCN-staff inserts under RLS, but this tool is streamer-facing. Record the
+    // append-only telemetry with the service client; the organization id is
+    // taken from the authenticated context, not from the caller's input.
+    const ledgerClient = createSupabaseAdminClient() ?? supabase;
     const result = await runStreamerDiagnosisAgent({
-      client: supabase,
+      client: ledgerClient,
       actor: auth,
       input: body,
     });
