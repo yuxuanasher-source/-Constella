@@ -138,9 +138,13 @@ describe("live UI adapters", () => {
       projectName: "Launch Week",
       streamerName: "Streamer One",
       settlementDuration: 115,
+      systemDuration: 120,
+      screenshotDuration: 90,
+      divergencePct: 0.25,
       timeSource: "system",
       evidenceLevel: "green",
       viewers: 952,
+      riskFlags: ["duration_divergence"],
       submittedAt: "2026-06-02T13:05:00.000Z",
     });
 
@@ -152,10 +156,14 @@ describe("live UI adapters", () => {
       project: "Launch Week",
       taskId: "task-1",
       duration: 1.9,
+      systemDurationHours: 2,
+      ocrDurationHours: 1.5,
+      divergencePct: 0.25,
       audience: 952,
       status: "pending_review",
       screens: 1,
       source: "OCR",
+      riskFlags: ["duration_divergence"],
       note: "system · green",
     });
     expect(JSON.stringify(report)).not.toContain("amount");
@@ -172,9 +180,13 @@ describe("live UI adapters", () => {
       projectName: "Launch Week",
       streamerName: "Streamer One",
       settlementDuration: 115,
+      systemDuration: 120,
+      screenshotDuration: null,
+      divergencePct: null,
       timeSource: "system",
       evidenceLevel: "green",
       viewers: 952,
+      riskFlags: [],
       submittedAt: "2026-06-02T13:05:00.000Z",
     });
 

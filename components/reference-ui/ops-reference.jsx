@@ -999,6 +999,22 @@ function reportStatusMeta(status) {
   return labelOf(REPORT_STATUS, status);
 }
 
+const RISK_FLAG_LABELS = {
+  duration_divergence: "时长偏差超阈值",
+  missing_screenshot_duration: "未识别到截图时长",
+  missing_system_duration: "缺少系统时长",
+  ocr_needs_review: "OCR 待人工复核",
+  ocr_duration_conflict: "OCR 时长与系统冲突",
+  ocr_low_confidence: "OCR 置信度偏低",
+  ocr_low_provider_confidence: "识别服务置信度偏低",
+  ocr_no_live_report_fields: "未识别到有效报数字段",
+  ocr_pending: "OCR 处理中",
+};
+
+function riskFlagLabel(flag) {
+  return RISK_FLAG_LABELS[flag] ?? flag;
+}
+
 function batchStatusMeta(status) {
   return labelOf(BATCH_STATUS, status);
 }
@@ -10776,28 +10792,35 @@ function ReportDetail({ id, reports }) {
     }
   };
 
-  // OCR-vs-manual side-by-side
+  // OCR (screenshot) vs system/platform, built from real report data.
+  const systemHours = (r.systemDurationHours ?? r.duration ?? 0).toFixed(1);
+  const ocrHours =
+    r.ocrDurationHours != null
+      ? r.ocrDurationHours.toFixed(1) + " h"
+      : "未识别";
+  const durationDiff =
+    r.ocrDurationHours != null &&
+    Math.abs(r.ocrDurationHours - (r.systemDurationHours ?? r.duration ?? 0)) >=
+      0.05;
   const ocrFields = [
     { label: "直播日期", ocr: r.date, manual: r.date, diff: false },
     {
       label: "直播时长",
-      ocr: (r.duration + 0.3).toFixed(1) + " h",
-      manual: r.duration.toFixed(1) + " h",
-      diff: true,
+      ocr: ocrHours,
+      manual: systemHours + " h",
+      diff: durationDiff,
     },
     {
       label: "场观",
-      ocr: (r.audience + 240).toLocaleString(),
-      manual: r.audience.toLocaleString(),
-      diff: true,
-    },
-    {
-      label: "直播账号",
-      ocr: "live_account",
-      manual: "live_account",
+      ocr: (r.audience ?? 0).toLocaleString(),
+      manual: <span style={{ color: "var(--ink-300)" }}>—</span>,
       diff: false,
     },
   ];
+  const diffCount = ocrFields.filter((f) => f.diff).length;
+  const riskFlags = Array.isArray(r.riskFlags) ? r.riskFlags : [];
+  const divergencePct =
+    typeof r.divergencePct === "number" ? r.divergencePct : null;
 
   return (
     <div
@@ -10872,10 +10895,16 @@ function ReportDetail({ id, reports }) {
               gap: 8,
             }}
           >
-            OCR 识别 vs 主播确认
-            <Badge tone="violet" dot>
-              差异 2 项
-            </Badge>
+            OCR 识别 vs 系统/平台
+            {diffCount > 0 ? (
+              <Badge tone="violet" dot>
+                差异 {diffCount} 项
+              </Badge>
+            ) : (
+              <Badge tone="green" dot>
+                一致
+              </Badge>
+            )}
           </div>
           <table
             style={{
@@ -10920,7 +10949,7 @@ function ReportDetail({ id, reports }) {
                     color: "var(--ink-400)",
                   }}
                 >
-                  主播确认
+                  系统/平台
                 </th>
               </tr>
             </thead>
@@ -10976,30 +11005,49 @@ function ReportDetail({ id, reports }) {
           </KV>
           <KV label="风控提示">
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span
-                style={{
-                  fontSize: 12,
-                  color: "var(--ok-600)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <Icon.Check size={12} stroke="var(--ok-600)" />
-                图片哈希无重复
-              </span>
-              <span
-                style={{
-                  fontSize: 12,
-                  color: "var(--warn-600)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <Icon.Warn size={12} stroke="var(--warn-600)" />
-                时长字段偏差 8.6%，已标记复核
-              </span>
+              {divergencePct != null && divergencePct > 0 ? (
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: "var(--warn-600)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <Icon.Warn size={12} stroke="var(--warn-600)" />
+                  时长偏差 {(divergencePct * 100).toFixed(1)}%
+                </span>
+              ) : null}
+              {riskFlags.map((flag) => (
+                <span
+                  key={flag}
+                  style={{
+                    fontSize: 12,
+                    color: "var(--warn-600)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <Icon.Warn size={12} stroke="var(--warn-600)" />
+                  {riskFlagLabel(flag)}
+                </span>
+              ))}
+              {divergencePct == null && riskFlags.length === 0 ? (
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: "var(--ok-600)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <Icon.Check size={12} stroke="var(--ok-600)" />
+                  无风险提示
+                </span>
+              ) : null}
             </div>
           </KV>
         </div>
@@ -11136,7 +11184,29 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
           <span style={{ flex: 1 }} />
           <span style={{ fontSize: 10, color: "#7C8AB0" }}>{date}</span>
         </div>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>本场直播已结束</div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          本场直播已结束
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 500,
+              padding: "1px 6px",
+              borderRadius: 4,
+              color: "#B8C2DB",
+              border: "1px solid rgba(184,194,219,0.4)",
+            }}
+          >
+            示意图 · 真实截图待接入
+          </span>
+        </div>
 
         <div
           style={{
