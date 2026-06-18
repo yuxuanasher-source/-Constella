@@ -906,7 +906,7 @@ function useOpsSettlementBatchDetails() {
 
 function useOpsSettlementPool() {
   const { settlementPool } = React.useContext(OpsLiveDataContext);
-  return Array.isArray(settlementPool) ? settlementPool : [];
+  return Array.isArray(settlementPool) ? settlementPool : SETTLEMENT_POOL;
 }
 
 function useOpsSettlementScope() {
@@ -979,6 +979,7 @@ function useOpsLiveActions() {
 
 // Settlement batches ———————————————————————————————————
 const BATCHES = [];
+const SETTLEMENT_POOL = [];
 
 const BATCH_STATUS = {
   draft: { tone: "neutral", label: "草稿" },
@@ -11956,6 +11957,7 @@ function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {
 function toReferenceSettlementPoolFromApi(item) {
   return {
     id: item.id,
+    projectId: item.projectId,
     streamer: item.streamerName || "Unknown streamer",
     project: item.projectName || "Unknown project",
     hours: Math.round(((item.settlementDuration ?? 0) / 60) * 10) / 10,
@@ -11975,6 +11977,7 @@ function toSettlementPoolFromReviewedReport(report, sourceReport) {
 
   return {
     id: report.id || sourceReport?.id,
+    projectId: report.projectId || sourceReport?.projectId,
     streamer:
       sourceReport?.streamer || displayRecordId(report.streamerId, "主播"),
     project: sourceReport?.project || displayRecordId(report.projectId, "项目"),
@@ -11988,16 +11991,180 @@ function toSettlementPoolFromReviewedReport(report, sourceReport) {
   };
 }
 
+const SETTLEMENT_METHOD_OPTIONS = [
+  { value: "cpt", label: "CPT" },
+  { value: "cpa", label: "CPA" },
+  { value: "cps", label: "CPS" },
+  { value: "gift", label: "礼物流水" },
+  { value: "base_salary", label: "保底" },
+  { value: "base_salary_cpt", label: "保底 + CPT" },
+  { value: "manual", label: "手动结算" },
+];
+
+function settlementProjectOptions({
+  projects = [],
+  batches = [],
+  settlementPool = [],
+  settlementScope = null,
+}) {
+  const options = new Map();
+  const upsert = (projectId, projectName, source = {}) => {
+    const id = cleanSettlementText(projectId);
+    if (!id) return;
+
+    const existing = options.get(id) || {};
+    const name =
+      cleanSettlementText(source.name) ||
+      cleanSettlementText(projectName) ||
+      cleanSettlementText(existing.name) ||
+      displayRecordId(id, "项目记录");
+
+    options.set(id, {
+      id,
+      name,
+      code: cleanSettlementText(source.code) || existing.code || "",
+      pricing: cleanSettlementText(source.pricing) || existing.pricing || "",
+      start: cleanSettlementText(source.start) || existing.start || "",
+      end: cleanSettlementText(source.end) || existing.end || "",
+      metrics: source.metrics || existing.metrics || {},
+      defaultSettlementMethod:
+        source.defaultSettlementMethod ?? existing.defaultSettlementMethod,
+      defaultHourlyRate:
+        source.defaultHourlyRate ?? existing.defaultHourlyRate ?? "",
+      defaultBaseSalary:
+        source.defaultBaseSalary ?? existing.defaultBaseSalary ?? "",
+      defaultSettlementRule:
+        source.defaultSettlementRule ?? existing.defaultSettlementRule ?? {},
+    });
+  };
+
+  projects.forEach((project) => {
+    upsert(project.id || project.projectId || project.name, project.name, {
+      name: project.name,
+      code: project.code,
+      pricing: project.pricing,
+      start: project.start,
+      end: project.end,
+      metrics: project.metrics,
+      defaultSettlementMethod: project.defaultSettlementMethod,
+      defaultHourlyRate: project.defaultHourlyRate,
+      defaultBaseSalary: project.defaultBaseSalary,
+      defaultSettlementRule: project.defaultSettlementRule,
+    });
+  });
+  batches.forEach((batch) => {
+    upsert(batch.projectId || batch.project, batch.project);
+  });
+  settlementPool.forEach((row) => {
+    upsert(row.projectId || row.project, row.project);
+  });
+  if (settlementScope?.projectId) {
+    const scopeName =
+      settlementScope.projectName ||
+      settlementScope.project ||
+      (settlementPool.length === 1 ? settlementPool[0]?.project : "") ||
+      settlementScope.projectId;
+    upsert(settlementScope.projectId, scopeName);
+  }
+
+  return Array.from(options.values());
+}
+
+function filterSettlementRowsByProject(rows, projectId, projectName) {
+  const id = cleanSettlementText(projectId);
+  const name = cleanSettlementText(projectName);
+  if (!id && !name) return rows;
+
+  return rows.filter((row) => {
+    const rowProjectId = cleanSettlementText(row.projectId || row.project_id);
+    const rowProjectName = cleanSettlementText(row.project || row.projectName);
+    return (
+      (id && rowProjectId === id) ||
+      (id && rowProjectName === id) ||
+      (name && rowProjectName === name)
+    );
+  });
+}
+
+function settlementRuleDraft(project) {
+  const rule = settlementRuleObject(project?.defaultSettlementRule);
+  return {
+    defaultSettlementMethod:
+      project?.defaultSettlementMethod ||
+      settlementMethodFromPricing(project?.pricing),
+    defaultHourlyRate:
+      project?.defaultHourlyRate || project?.defaultHourlyRate === 0
+        ? String(project.defaultHourlyRate)
+        : "",
+    defaultBaseSalary:
+      project?.defaultBaseSalary || project?.defaultBaseSalary === 0
+        ? String(project.defaultBaseSalary)
+        : "",
+    defaultSettlementRule: JSON.stringify(rule, null, 2),
+  };
+}
+
+function parseSettlementRuleDraft(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return {};
+
+  const parsed = JSON.parse(trimmed);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("复杂规则必须是 JSON 对象");
+  }
+  return parsed;
+}
+
+function settlementRuleObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value;
+}
+
+function settlementMethodFromPricing(value) {
+  const text = String(value || "").toLowerCase();
+  if (text.includes("base_salary_cpt") || text.includes("保底 + cpt")) {
+    return "base_salary_cpt";
+  }
+  if (text.includes("base_salary") || text.includes("保底")) {
+    return "base_salary";
+  }
+  if (text.includes("cps")) return "cps";
+  if (text.includes("cpa")) return "cpa";
+  if (text.includes("gift") || text.includes("礼物")) return "gift";
+  if (text.includes("manual") || text.includes("手动")) return "manual";
+  return "cpt";
+}
+
+function cleanSettlementText(value) {
+  return String(value || "").trim();
+}
+
 // ===== src\screen-settlement.jsx =====
 // ——— Screen: 结算中心 ————————————————————————————
 
 function ScreenSettlement({ go }) {
+  const projects = useOpsProjects();
   const batches = useOpsSettlementBatches();
   const batchDetails = useOpsSettlementBatchDetails();
   const settlementPool = useOpsSettlementPool();
   const settlementScope = useOpsSettlementScope();
   const complexCost = useOpsComplexCost();
   const actions = useOpsLiveActions();
+  const projectOptions = React.useMemo(
+    () =>
+      settlementProjectOptions({
+        projects,
+        batches,
+        settlementPool,
+        settlementScope,
+      }),
+    [projects, batches, settlementPool, settlementScope],
+  );
+  const [selectedProjectId, setSelectedProjectId] = React.useState(
+    settlementScope?.projectId || projectOptions[0]?.id || "",
+  );
   const [type, setType] = React.useState("all");
   const [busyAction, setBusyAction] = React.useState(null);
   const [activeId, setActiveId] = React.useState(batches[0]?.id ?? null);
@@ -12016,26 +12183,74 @@ function ScreenSettlement({ go }) {
     evidenceLevel: "red",
     reason: "人工录入 CPA/CPS/礼物金额",
   });
+  const [ruleDraft, setRuleDraft] = React.useState(() =>
+    settlementRuleDraft(projectOptions[0]),
+  );
 
   React.useEffect(() => {
-    if (!batches.some((b) => b.id === activeId)) {
-      setActiveId(batches[0]?.id ?? null);
+    if (!projectOptions.length) return;
+    if (!selectedProjectId) {
+      setSelectedProjectId(projectOptions[0].id);
+      return;
     }
-  }, [activeId, batches]);
+    if (!projectOptions.some((project) => project.id === selectedProjectId)) {
+      setSelectedProjectId(projectOptions[0].id);
+    }
+  }, [projectOptions, selectedProjectId]);
+
+  const selectedProject =
+    projectOptions.find((project) => project.id === selectedProjectId) ||
+    projectOptions[0] ||
+    null;
+  const selectedProjectName = selectedProject?.name || "";
+  const projectBatches = React.useMemo(
+    () =>
+      filterSettlementRowsByProject(
+        batches,
+        selectedProjectId,
+        selectedProjectName,
+      ),
+    [batches, selectedProjectId, selectedProjectName],
+  );
+  const projectSettlementPool = React.useMemo(
+    () =>
+      filterSettlementRowsByProject(
+        settlementPool,
+        selectedProjectId,
+        selectedProjectName,
+      ),
+    [settlementPool, selectedProjectId, selectedProjectName],
+  );
+
+  React.useEffect(() => {
+    if (!projectBatches.some((b) => b.id === activeId)) {
+      setActiveId(projectBatches[0]?.id ?? null);
+    }
+  }, [activeId, projectBatches]);
+
+  React.useEffect(() => {
+    setRuleDraft(settlementRuleDraft(selectedProject));
+  }, [selectedProject]);
 
   const filtered =
-    type === "all" ? batches : batches.filter((b) => b.type === type);
+    type === "all"
+      ? projectBatches
+      : projectBatches.filter((b) => b.type === type);
   const activeBatch =
-    batches.find((batch) => batch.id === activeId) || batches[0] || null;
+    projectBatches.find((batch) => batch.id === activeId) ||
+    projectBatches[0] ||
+    null;
   const poolCount =
-    settlementPool.length > 0
-      ? settlementPool.length
-      : (settlementScope?.poolCount ?? 0);
+    projectSettlementPool.length > 0
+      ? projectSettlementPool.length
+      : selectedProjectId === settlementScope?.projectId
+        ? (settlementScope?.poolCount ?? 0)
+        : 0;
   const settlementSummary = React.useMemo(() => {
-    const vendorBatches = batches.filter((batch) => {
+    const vendorBatches = projectBatches.filter((batch) => {
       return batch.type === "vendor_receivable";
     });
-    const lockedPayableBatches = batches.filter((batch) => {
+    const lockedPayableBatches = projectBatches.filter((batch) => {
       return batch.type === "streamer_payable" && batch.status === "locked";
     });
     const vendorReceivable = sumSettlementBatchAmounts(vendorBatches);
@@ -12052,7 +12267,7 @@ function ScreenSettlement({ go }) {
       gross,
       marginRate,
     };
-  }, [batches]);
+  }, [projectBatches]);
 
   const runSettlementAction = async (actionName, fn) => {
     if (busyAction) return;
@@ -12075,6 +12290,7 @@ function ScreenSettlement({ go }) {
     setBatchDraft((draft) => ({
       ...draft,
       projectId:
+        selectedProjectId ||
         draft.projectId ||
         settlementScope?.projectId ||
         activeBatch?.projectId ||
@@ -12082,13 +12298,24 @@ function ScreenSettlement({ go }) {
       periodStart: draft.periodStart || settlementScope?.periodStart || "",
       periodEnd: draft.periodEnd || settlementScope?.periodEnd || "",
     }));
-  }, [activeBatch, settlementScope]);
+  }, [activeBatch, selectedProjectId, settlementScope]);
+
+  const selectProject = (event) => {
+    const projectId = event.target.value;
+    setSelectedProjectId(projectId);
+    setActiveId(null);
+    setBatchDraft((draft) => ({ ...draft, projectId }));
+    setSettlementMessage("");
+  };
 
   const updateBatchDraft = (field) => (event) => {
     setBatchDraft((draft) => ({ ...draft, [field]: event.target.value }));
   };
   const updateManualDraft = (field) => (event) => {
     setManualDraft((draft) => ({ ...draft, [field]: event.target.value }));
+  };
+  const updateRuleDraft = (field) => (event) => {
+    setRuleDraft((draft) => ({ ...draft, [field]: event.target.value }));
   };
 
   const createBatch = (event) => {
@@ -12153,6 +12380,26 @@ function ScreenSettlement({ go }) {
       });
       return false;
     });
+  const saveProjectRule = (event) => {
+    event?.preventDefault?.();
+    return runSettlementAction("project-rule", async () => {
+      if (!selectedProjectId) {
+        setSettlementMessage("请选择结算项目");
+        return false;
+      }
+      await actions.updateProjectSettlementRule?.(selectedProjectId, {
+        defaultSettlementMethod: ruleDraft.defaultSettlementMethod,
+        defaultHourlyRate: draftNumber(ruleDraft.defaultHourlyRate),
+        defaultBaseSalary: draftNumber(ruleDraft.defaultBaseSalary),
+        defaultSettlementRule: parseSettlementRuleDraft(
+          ruleDraft.defaultSettlementRule,
+        ),
+        reason: "结算中心项目规则调整",
+      });
+      setSettlementMessage("项目结算规则已保存");
+      return false;
+    });
+  };
   const exportBatches = () =>
     runSettlementAction("export", async () => {
       await actions.createGovernedExport?.({
@@ -12307,6 +12554,156 @@ function ScreenSettlement({ go }) {
           </Card>
         ) : null}
 
+        <Card padded={false}>
+          <div
+            style={{
+              padding: "12px 16px",
+              borderBottom: "1px solid var(--line)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  fontSize: 14,
+                  fontWeight: 700,
+                  color: "var(--ink-900)",
+                }}
+              >
+                项目结算详情
+              </div>
+              <div
+                className="mono"
+                style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 3 }}
+              >
+                {selectedProjectId || "no-project-selected"}
+              </div>
+            </div>
+            <select
+              aria-label="结算项目"
+              value={selectedProjectId}
+              onChange={selectProject}
+              style={{ ...taskInputStyle, width: 260 }}
+            >
+              {projectOptions.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "0.85fr 1.35fr",
+              gap: 16,
+              padding: 16,
+            }}
+          >
+            <div>
+              <KV label="项目名称">{selectedProject?.name || "暂无项目"}</KV>
+              <KV label="项目编号">
+                <span className="mono">
+                  {selectedProject?.code || selectedProjectId || "未设置"}
+                </span>
+              </KV>
+              <KV label="结算方式">
+                <Badge tone="blue">
+                  {SETTLEMENT_METHOD_OPTIONS.find(
+                    (option) =>
+                      option.value === ruleDraft.defaultSettlementMethod,
+                  )?.label || ruleDraft.defaultSettlementMethod}
+                </Badge>
+              </KV>
+              <KV label="项目周期">
+                {selectedProject?.start || selectedProject?.end
+                  ? `${selectedProject?.start || "未设置"} → ${
+                      selectedProject?.end || "未设置"
+                    }`
+                  : "未设置"}
+              </KV>
+              <KV label="待入池">
+                <span className="num">{projectSettlementPool.length}</span> 条
+              </KV>
+              <KV label="批次数">
+                <span className="num">{projectBatches.length}</span> 个
+              </KV>
+            </div>
+            <form
+              onSubmit={saveProjectRule}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, minmax(120px, 1fr)) auto",
+                gap: 10,
+                alignItems: "end",
+                minWidth: 0,
+              }}
+            >
+              <TaskFormLabel label="默认结算">
+                <select
+                  value={ruleDraft.defaultSettlementMethod}
+                  onChange={updateRuleDraft("defaultSettlementMethod")}
+                  style={taskInputStyle}
+                >
+                  {SETTLEMENT_METHOD_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </TaskFormLabel>
+              <TaskFormLabel label="CPT 小时单价">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={ruleDraft.defaultHourlyRate}
+                  onChange={updateRuleDraft("defaultHourlyRate")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="底薪">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={ruleDraft.defaultBaseSalary}
+                  onChange={updateRuleDraft("defaultBaseSalary")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <Button
+                kind="primary"
+                type="submit"
+                disabled={!!busyAction || !selectedProjectId}
+              >
+                {busyAction === "project-rule" ? "保存中…" : "保存项目规则"}
+              </Button>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <TaskFormLabel label="复杂规则 JSON">
+                  <textarea
+                    value={ruleDraft.defaultSettlementRule}
+                    onChange={updateRuleDraft("defaultSettlementRule")}
+                    rows={4}
+                    style={{
+                      ...taskInputStyle,
+                      height: 92,
+                      padding: "8px 10px",
+                      resize: "vertical",
+                      fontFamily:
+                        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+                      lineHeight: 1.45,
+                    }}
+                  />
+                </TaskFormLabel>
+              </div>
+            </form>
+          </div>
+        </Card>
+
         {settlementMessage ? (
           <div
             aria-live="polite"
@@ -12435,7 +12832,7 @@ function ScreenSettlement({ go }) {
         ) : null}
 
         <SettlementPoolPreview
-          rows={settlementPool}
+          rows={projectSettlementPool}
           settlementScope={settlementScope}
         />
 
@@ -12458,18 +12855,20 @@ function ScreenSettlement({ go }) {
                 value={type}
                 onChange={setType}
                 items={[
-                  { key: "all", label: "全部", count: batches.length },
+                  { key: "all", label: "全部", count: projectBatches.length },
                   {
                     key: "vendor_receivable",
                     label: "厂家应收",
-                    count: batches.filter((b) => b.type === "vendor_receivable")
-                      .length,
+                    count: projectBatches.filter(
+                      (b) => b.type === "vendor_receivable",
+                    ).length,
                   },
                   {
                     key: "streamer_payable",
                     label: "主播应付",
-                    count: batches.filter((b) => b.type === "streamer_payable")
-                      .length,
+                    count: projectBatches.filter(
+                      (b) => b.type === "streamer_payable",
+                    ).length,
                   },
                 ]}
               />
@@ -12556,7 +12955,7 @@ function ScreenSettlement({ go }) {
           {/* Batch detail */}
           <BatchDetail
             id={activeId}
-            batches={batches}
+            batches={projectBatches}
             batchDetails={batchDetails}
             onAddManualItem={() => {
               setManualFormOpen(true);
@@ -19747,6 +20146,9 @@ function OpsReferenceInner({
         periodStart: scope.periodStart,
         periodEnd: scope.periodEnd,
       });
+      if (scope.projectId) {
+        params.set("projectId", scope.projectId);
+      }
       if (scope.batchType && scope.batchType !== "payable") {
         params.set("batchType", scope.batchType);
       }
@@ -20147,6 +20549,19 @@ function OpsReferenceInner({
         const body = await fetchJson(
           `/api/projects/${id}`,
           "update project failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshProjects();
+        return body;
+      },
+      updateProjectSettlementRule: async (id, input) => {
+        const body = await fetchJson(
+          `/api/projects/${id}/settlement-rule`,
+          "update project settlement rule failed",
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },

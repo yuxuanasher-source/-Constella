@@ -123,6 +123,7 @@ async function loadLiveReferenceData(
     const settlementPool = settlementScope
       ? await listOpsSettlementPool(supabase, {
           organizationId: auth.organizationId,
+          projectId: settlementScope.projectId,
           periodStart: settlementScope.periodStart,
           periodEnd: settlementScope.periodEnd,
         })

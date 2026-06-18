@@ -7,6 +7,7 @@ import {
   createProjectAuditWriter,
   publishProject,
   updateProjectBasics,
+  updateProjectSettlementRule,
 } from "@/features/projects/project-service";
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { listProjects } from "@/features/projects/project-queries";
@@ -33,6 +34,7 @@ vi.mock("@/features/projects/project-service", async () => {
     createProjectDraft: vi.fn(),
     publishProject: vi.fn(),
     updateProjectBasics: vi.fn(),
+    updateProjectSettlementRule: vi.fn(),
   };
 });
 
@@ -283,5 +285,73 @@ describe("project api routes", () => {
       error: "MCN collaboration terms are too large",
     });
     expect(updateProjectBasics).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/projects/[projectId]/settlement-rule saves project settlement rules with audit reason", async () => {
+    vi.mocked(updateProjectSettlementRule).mockResolvedValue({
+      id: "p1",
+      name: "Project Alpha",
+      code: "PA-001",
+      status: "active",
+      organization_id: "org-1",
+      default_settlement_method: "base_salary_cpt",
+      default_hourly_rate: 80,
+      default_base_salary: 6000,
+      default_settlement_rule: {
+        template: "game_live_complex",
+        cpsRateBps: 1500,
+        supplierFeeCents: 120000,
+      },
+    } as never);
+
+    const { PATCH } = await import("./[projectId]/settlement-rule/route");
+    const response = await PATCH(
+      jsonRequest(
+        {
+          defaultSettlementMethod: "base_salary_cpt",
+          defaultHourlyRate: 80,
+          defaultBaseSalary: 6000,
+          defaultSettlementRule: {
+            template: "game_live_complex",
+            cpsRateBps: 1500,
+            supplierFeeCents: 120000,
+          },
+          reason: "settlement center complex rule setup",
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ projectId: "p1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      project: expect.objectContaining({
+        id: "p1",
+        default_settlement_method: "base_salary_cpt",
+      }),
+    });
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith({
+      client: supabase,
+      organizationId: "org-1",
+      featureKey: "settlement",
+    });
+    expect(updateProjectSettlementRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audit,
+        actor: auth,
+        projectId: "p1",
+        reason: "settlement center complex rule setup",
+        input: {
+          defaultSettlementMethod: "base_salary_cpt",
+          defaultHourlyRate: 80,
+          defaultBaseSalary: 6000,
+          defaultSettlementRule: {
+            template: "game_live_complex",
+            cpsRateBps: 1500,
+            supplierFeeCents: 120000,
+          },
+        },
+      }),
+    );
   });
 });

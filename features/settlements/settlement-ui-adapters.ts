@@ -33,6 +33,7 @@ export type OpsReferenceBatchDetailItem = {
 
 export type OpsReferenceSettlementPoolItem = {
   id: string;
+  projectId: string;
   streamer: string;
   project: string;
   hours: number;
@@ -87,6 +88,7 @@ export function toOpsReferenceSettlementPoolItem(
 ): OpsReferenceSettlementPoolItem {
   return {
     id: item.id,
+    projectId: item.projectId,
     streamer: item.streamerName,
     project: item.projectName,
     hours: Math.round(((item.settlementDuration ?? 0) / 60) * 10) / 10,

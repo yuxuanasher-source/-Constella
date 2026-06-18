@@ -6041,7 +6041,7 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/live-reports", undefined);
     expect(fetchMock).toHaveBeenCalledWith("/api/live-tasks", undefined);
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/settlement-pool?periodStart=2026-06-01&periodEnd=2026-06-30",
+      "/api/settlement-pool?periodStart=2026-06-01&periodEnd=2026-06-30&projectId=project-1",
       undefined,
     );
     expect(fetchMock).toHaveBeenCalledWith("/api/projects", undefined);
@@ -6187,7 +6187,7 @@ describe("OpsReferenceApp settlement smoke", () => {
       undefined,
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/settlement-pool?periodStart=2026-06-01&periodEnd=2026-06-30",
+      "/api/settlement-pool?periodStart=2026-06-01&periodEnd=2026-06-30&projectId=project-1",
       undefined,
     );
     expect(fetchMock).toHaveBeenCalledWith("/api/projects", undefined);
@@ -6195,6 +6195,128 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(await screen.findAllByText("batch-ui-smoke-1")).toHaveLength(2);
     expect(screen.getByText("暂无待入批次")).toBeInTheDocument();
     expect(screen.queryByText("report-ui-smoke-1")).not.toBeInTheDocument();
+  });
+
+  it("focuses settlement details by project and saves project settlement rules", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/projects/project-alpha/settlement-rule") {
+        return {
+          ok: true,
+          json: async () => ({
+            project: {
+              id: "project-alpha",
+              default_settlement_method: "base_salary_cpt",
+            },
+          }),
+        };
+      }
+
+      if (String(url) === "/api/projects") {
+        return {
+          ok: true,
+          json: async () => ({ projects: projectManagementCards }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[
+          {
+            id: "batch-alpha-payable",
+            projectId: "project-alpha",
+            type: "streamer_payable",
+            name: "Alpha Launch · streamer payable",
+            project: "Alpha Launch",
+            vendor: "—",
+            period: "2026-06-01 → 2026-06-30",
+            items: 2,
+            amount: 15000,
+            status: "generated",
+            updated: "2026-06-12 10:00",
+            creator: "Ops A",
+          },
+          {
+            id: "batch-beta-payable",
+            projectId: "project-beta",
+            type: "streamer_payable",
+            name: "Beta Growth · streamer payable",
+            project: "Beta Growth",
+            vendor: "—",
+            period: "2026-06-01 → 2026-06-30",
+            items: 1,
+            amount: 3000,
+            status: "generated",
+            updated: "2026-06-12 11:00",
+            creator: "Ops B",
+          },
+        ]}
+        liveSettlementPool={[
+          {
+            id: "pool-alpha-one",
+            projectId: "project-alpha",
+            streamer: "Alpha Streamer",
+            project: "Alpha Launch",
+            hours: 2,
+            evidence: "green · system",
+            rule: "cpt",
+            expected: 160,
+            approvedAt: "2026-06-12 09:00",
+          },
+          {
+            id: "pool-beta-one",
+            projectId: "project-beta",
+            streamer: "Beta Streamer",
+            project: "Beta Growth",
+            hours: 1,
+            evidence: "yellow · screenshot",
+            rule: "manual",
+            expected: 0,
+            approvedAt: "2026-06-12 09:30",
+          },
+        ]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+          poolCount: 2,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("项目结算详情")).toBeInTheDocument();
+    expect(screen.getAllByText("Alpha Launch").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("batch-alpha-payable").length).toBeGreaterThan(
+      0,
+    );
+    expect(screen.getByText("pool-alpha-one")).toBeInTheDocument();
+    expect(screen.queryByText("batch-beta-payable")).not.toBeInTheDocument();
+    expect(screen.queryByText("pool-beta-one")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "保存项目规则" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-alpha/settlement-rule",
+        expect.objectContaining({
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      defaultSettlementMethod: "cpt",
+      reason: "结算中心项目规则调整",
+    });
+    expect(await screen.findByText("项目结算规则已保存")).toBeInTheDocument();
   });
 
   it("adds a manual settlement item then refreshes the active batch instead of reloading", async () => {

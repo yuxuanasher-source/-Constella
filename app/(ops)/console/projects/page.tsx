@@ -88,6 +88,7 @@ async function loadSettlementReferenceData(
   const settlementPool = settlementScope
     ? await listOpsSettlementPool(supabase, {
         organizationId,
+        projectId: settlementScope.projectId,
         periodStart: settlementScope.periodStart,
         periodEnd: settlementScope.periodEnd,
       })

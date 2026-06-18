@@ -25,6 +25,10 @@ export type ProjectCardDto = {
   timingLabel: string;
   publishedAtLabel: string;
   pricing: string;
+  defaultSettlementMethod: string;
+  defaultHourlyRate: number;
+  defaultBaseSalary: number;
+  defaultSettlementRule: Record<string, unknown>;
   description: string;
   isPublicToStreamers: boolean;
   publicSummary: string;
@@ -120,6 +124,10 @@ export function toProjectCardDto(row: ProjectListItem): ProjectCardDto {
       ? row.published_at.slice(0, 10)
       : "未发布",
     pricing: settlementMethodLabel(row.default_settlement_method),
+    defaultSettlementMethod: row.default_settlement_method || "cpt",
+    defaultHourlyRate: row.default_hourly_rate ?? 0,
+    defaultBaseSalary: row.default_base_salary ?? 0,
+    defaultSettlementRule: recordOrEmpty(row.default_settlement_rule),
     description: row.description?.trim() || "",
     isPublicToStreamers: row.is_public_to_streamers,
     publicSummary: row.public_summary?.trim() || "",
@@ -192,6 +200,13 @@ function settlementMethodLabel(value: string | null | undefined) {
   return labels[value || ""] || "CPT";
 }
 
+function recordOrEmpty(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value as Record<string, unknown>;
+}
+
 export function toProjectCardDtos(rows: ProjectListItem[]) {
   return rows.map(toProjectCardDto);
 }
@@ -213,6 +228,10 @@ export function toCollaborationProjectCardDto(
     timingLabel: "本组织执行",
     publishedAtLabel: "协作项目",
     pricing: `分成 ${(row.agreement.revenueShareBps / 100).toFixed(2)}%`,
+    defaultSettlementMethod: "manual",
+    defaultHourlyRate: 0,
+    defaultBaseSalary: 0,
+    defaultSettlementRule: {},
     description: row.project.collaborationSummary || "",
     isPublicToStreamers: false,
     publicSummary: "",
@@ -282,6 +301,10 @@ export function toCollaborationApplicationProjectCardDto(
     timingLabel: "\u672c\u7ec4\u7ec7\u6267\u884c",
     publishedAtLabel: "\u534f\u4f5c\u7533\u8bf7",
     pricing,
+    defaultSettlementMethod: "manual",
+    defaultHourlyRate: 0,
+    defaultBaseSalary: 0,
+    defaultSettlementRule: {},
     description: row.project.collaborationSummary || "",
     isPublicToStreamers: false,
     publicSummary: "",

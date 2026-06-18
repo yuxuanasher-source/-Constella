@@ -31,7 +31,9 @@ export type ProjectListItem = {
   force_recording: boolean;
   force_system_timing: boolean;
   default_hourly_rate: number;
+  default_base_salary?: number | null;
   default_settlement_method?: string | null;
+  default_settlement_rule?: unknown;
   vendor_name?: string | null;
   product_name?: string | null;
   agent_name?: string | null;
@@ -70,7 +72,7 @@ export async function listProjects(
   let query = supabase
     .from("projects")
     .select(
-      "id, code, name, status, sensitivity, starts_at, ends_at, open_signup, allow_direct_invite, force_recording, force_system_timing, default_hourly_rate, default_settlement_method, vendor_name, product_name, agent_name, supplier_name, description, is_public_to_streamers, public_summary, game_download_url, is_open_to_mcn_collaboration, mcn_collaboration_summary, mcn_collaboration_terms, created_by, owner_id, ops_manager_id, creator:profiles!projects_created_by_fkey(full_name), owner:profiles!projects_owner_id_fkey(full_name), opsManager:profiles!projects_ops_manager_id_fkey(full_name), settlement_batches(id, status), live_reports(id, status, enter_settlement_pool, settled_batch_item_id), published_at, created_at",
+      "id, code, name, status, sensitivity, starts_at, ends_at, open_signup, allow_direct_invite, force_recording, force_system_timing, default_hourly_rate, default_base_salary, default_settlement_method, default_settlement_rule, vendor_name, product_name, agent_name, supplier_name, description, is_public_to_streamers, public_summary, game_download_url, is_open_to_mcn_collaboration, mcn_collaboration_summary, mcn_collaboration_terms, created_by, owner_id, ops_manager_id, creator:profiles!projects_created_by_fkey(full_name), owner:profiles!projects_owner_id_fkey(full_name), opsManager:profiles!projects_ops_manager_id_fkey(full_name), settlement_batches(id, status), live_reports(id, status, enter_settlement_pool, settled_batch_item_id), published_at, created_at",
     );
 
   if (options.organizationId) {

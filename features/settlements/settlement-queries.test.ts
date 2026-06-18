@@ -229,6 +229,7 @@ describe("settlement DTO mappers", () => {
 
     expect(toOpsReferenceSettlementPoolItem(poolItem)).toEqual({
       id: "report-2",
+      projectId: "project-1",
       streamer: "Streamer Two",
       project: "Launch Week",
       hours: 1.5,

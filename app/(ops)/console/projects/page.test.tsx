@@ -256,6 +256,7 @@ describe("console projects route", () => {
     );
     expect(listOpsSettlementPool).toHaveBeenCalledWith(supabase, {
       organizationId: "org-1",
+      projectId: "project-real",
       periodStart: "2026-06-01",
       periodEnd: "2026-06-30",
     });
