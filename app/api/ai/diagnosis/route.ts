@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 
-import { runStreamerDiagnosisAgent } from "@/features/ai/streamer-diagnosis-agent";
+import {
+  gatherStreamerDiagnosisContext,
+  runStreamerDiagnosisAgent,
+} from "@/features/ai/streamer-diagnosis-agent";
 import { getAuthContext } from "@/lib/auth/context";
 import {
   createSupabaseAdminClient,
@@ -26,10 +29,23 @@ export async function POST(request: Request) {
     // append-only telemetry with the service client; the organization id is
     // taken from the authenticated context, not from the caller's input.
     const ledgerClient = createSupabaseAdminClient() ?? supabase;
+
+    // Ground the diagnosis in the streamer's real recent report data unless the
+    // caller already supplied it.
+    const context = await gatherStreamerDiagnosisContext({
+      client: ledgerClient,
+      actor: auth,
+    });
+    const input = {
+      ...body,
+      report: body.report ?? context.report,
+      feedback: Array.isArray(body.feedback) ? body.feedback : context.feedback,
+    };
+
     const result = await runStreamerDiagnosisAgent({
       client: ledgerClient,
       actor: auth,
-      input: body,
+      input,
     });
 
     return NextResponse.json({

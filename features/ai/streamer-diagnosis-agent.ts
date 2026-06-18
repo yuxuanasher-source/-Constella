@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 import { validateAgentOutput } from "./agent-output-contract";
 import { runAiToolQuery, type AiToolResult } from "./ai-tool-layer";
 import type {
@@ -17,8 +19,76 @@ import {
   createConfiguredAiProviders,
   resolveAiProviderRouting,
 } from "./provider-registry";
+import { getStreamerIdForUser } from "@/features/live-operations/live-operations-repository";
 
 type StreamerDiagnosisClient = Parameters<typeof runAiToolQuery>[0]["client"];
+
+export type StreamerDiagnosisContext = {
+  report?: Record<string, unknown>;
+  feedback?: string[];
+};
+
+type StreamerLatestReportRow = {
+  viewers: number | null;
+  settlement_duration: number | null;
+  evidence_level: string | null;
+  risk_flags: string[] | null;
+};
+
+// Pulls the streamer's most recent live-report metrics so the model has real
+// numbers to diagnose instead of an empty request body. Scoped to the
+// authenticated streamer's own data; failures degrade to no context.
+export async function gatherStreamerDiagnosisContext({
+  client,
+  actor,
+}: {
+  client: SupabaseClient;
+  actor: AiActor;
+}): Promise<StreamerDiagnosisContext> {
+  try {
+    const streamerId = await getStreamerIdForUser(
+      client,
+      actor.userId,
+      actor.organizationId,
+    );
+    if (!streamerId) {
+      return {};
+    }
+
+    const { data, error } = await client
+      .from("live_reports")
+      .select("viewers, settlement_duration, evidence_level, risk_flags")
+      .eq("organization_id", actor.organizationId)
+      .eq("streamer_id", streamerId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (error || !Array.isArray(data) || !data[0]) {
+      return {};
+    }
+
+    const row = data[0] as StreamerLatestReportRow;
+    const report: Record<string, unknown> = {};
+    if (typeof row.viewers === "number") {
+      report.totalViews = row.viewers;
+    }
+    if (typeof row.settlement_duration === "number") {
+      report.settlementDuration = row.settlement_duration;
+    }
+    if (row.evidence_level) {
+      report.evidenceLevel = row.evidence_level;
+    }
+    const feedback = Array.isArray(row.risk_flags)
+      ? row.risk_flags.map(String).filter(Boolean)
+      : [];
+
+    return {
+      report: Object.keys(report).length > 0 ? report : undefined,
+      feedback: feedback.length > 0 ? feedback : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
 
 const STREAMER_DIAGNOSIS_PROMPT_KEY = "streamer_diagnosis";
 const STREAMER_DIAGNOSIS_PROMPT_VERSION = 1;
