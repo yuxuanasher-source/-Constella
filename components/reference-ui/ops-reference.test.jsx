@@ -1984,9 +1984,7 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.click(screen.getByText("Alpha Launch"));
     fireEvent.click(screen.getByRole("button", { name: "新建排班" }));
     expect(
-      screen.getByText(
-        "项目维度排班看板 + 任务表格 · 任务完成依据为报数审核通过",
-      ),
+      screen.getByRole("heading", { name: "排班与任务" }),
     ).toBeInTheDocument();
 
     unmount();

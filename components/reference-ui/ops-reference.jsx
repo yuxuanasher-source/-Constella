@@ -4968,7 +4968,6 @@ function ProjectList({ go }) {
     <>
       <PageHeader
         title="项目管理"
-        subtitle="厂商 → 产品 → 项目；同时管理报名、录屏、排班、报数与结算"
         actions={
           <>
             <Button
@@ -8747,7 +8746,6 @@ function ScreenStreamers({ go, initialActiveId }) {
     <>
       <PageHeader
         title="主播资源池"
-        subtitle="不是通讯录 · 用于回答：能不能接？适合接什么？历史表现如何？值不值得继续合作？"
         actions={
           <>
             <Button
@@ -10519,7 +10517,6 @@ function ScreenReports({ go }) {
     <>
       <PageHeader
         title="下播截图报数 · 审核"
-        subtitle="一条任务可能对应多条报数。审核通过的报数将进入可结算池，但不自动生成结算。"
         actions={
           <>
             <Button
@@ -11483,10 +11480,7 @@ function ScreenAdmission() {
 
   return (
     <>
-      <PageHeader
-        title="选播准入"
-        subtitle="主播报名 → 试播录屏 → 运营审核 → 二次确认加入项目"
-      />
+      <PageHeader title="选播准入" />
       <div style={{ padding: 20 }}>
         <Card title="项目准入板" padded={false}>
           <div
@@ -12557,7 +12551,6 @@ function ScreenSettlement({ go }) {
     <>
       <PageHeader
         title="结算中心"
-        subtitle="厂家应收与主播应付分别开批次 · 锁定批次只允许负责人重新打开 · 全程审计"
         actions={
           <>
             <Button
@@ -13945,7 +13938,6 @@ function ScreenTasks({ go }) {
     <>
       <PageHeader
         title="排班与任务"
-        subtitle="项目维度排班看板 + 任务表格 · 任务完成依据为报数审核通过"
         actions={
           <>
             <Button
@@ -16908,7 +16900,6 @@ function ScreenOrg({ go, onOpenOrganizationSettings }) {
     <>
       <PageHeader
         title="组织与权限"
-        subtitle="多组织数据隔离 · 字段级脱敏 · AI 查询继承用户权限"
         actions={
           <>
             <Button
@@ -18911,7 +18902,6 @@ function ScreenAudit() {
     <>
       <PageHeader
         title="操作日志 & 审计"
-        subtitle="差异日志、角色可见范围、高风险原因与导出留痕统一进入审计中心"
         actions={
           <>
             <Button
@@ -19312,7 +19302,6 @@ function ScreenNotifications() {
     <>
       <PageHeader
         title="通知待办"
-        subtitle="站内提醒、待办状态与高风险动作通知统一在这里处理"
         actions={
           <Button
             kind="primary"
@@ -19590,7 +19579,6 @@ function ScreenExport() {
     <>
       <PageHeader
         title="数据导出中心"
-        subtitle="按角色字段白名单生成导出预览，导出动作统一写入审计日志"
         actions={
           <Button
             kind="primary"
@@ -19845,7 +19833,6 @@ function ScreenBilling({ billingStatus, onRefresh }) {
     <>
       <PageHeader
         title="商业化与套餐"
-        subtitle="组织套餐、功能权益与用量状态统一由账务服务返回"
         actions={
           <Button kind="primary" onClick={refresh} disabled={busy}>
             {busy ? "刷新中…" : "刷新账务状态"}
