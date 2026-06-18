@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { enrichAgentOutputWithLlm } from "@/features/ai/agent-llm-enrichment";
+import { validateAgentOutput } from "@/features/ai/agent-output-contract";
 import {
   runCastingAdviceAgent,
   type CastingAdviceInput,
@@ -45,7 +47,22 @@ export async function POST(request: Request) {
               .maxRecommendations,
           });
 
-    return NextResponse.json(result);
+    const agentOutput = await enrichAgentOutputWithLlm({
+      output: result.agentOutput,
+      scene: input.kind === "pricing" ? "pricing_tradeoff" : "casting_advice",
+      role:
+        input.kind === "pricing"
+          ? "你是 MCN 定价策略助手,基于项目定价与权衡事实给出定价诊断。"
+          : "你是 MCN 选播策略助手,基于候选主播与项目匹配事实给出选播诊断。",
+      client: supabase,
+      actor: auth,
+    });
+
+    return NextResponse.json({
+      ...result,
+      agentOutput,
+      validation: validateAgentOutput(agentOutput),
+    });
   } catch (error) {
     if (error instanceof Error) {
       return NextResponse.json(

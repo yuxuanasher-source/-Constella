@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { enrichAgentOutputWithLlm } from "@/features/ai/agent-llm-enrichment";
+import { validateAgentOutput } from "@/features/ai/agent-output-contract";
 import {
   runScriptOptimizationAgent,
   type ScriptOptimizationInput,
@@ -57,10 +59,18 @@ export async function POST(request: Request) {
       throw error;
     }
 
+    const agentOutput = await enrichAgentOutputWithLlm({
+      output: result.agentOutput,
+      scene: "script_optimization",
+      role: "你是直播话术优化助手,基于脚本与直播事实给出话术优化诊断。",
+      client: supabase,
+      actor: auth,
+    });
+
     return NextResponse.json({
       scriptVersionDraft: draft,
-      agentOutput: result.agentOutput,
-      validation: result.validation,
+      agentOutput,
+      validation: validateAgentOutput(agentOutput),
     });
   } catch (error) {
     if (error instanceof Error) {

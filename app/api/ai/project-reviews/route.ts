@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { enrichAgentOutputWithLlm } from "@/features/ai/agent-llm-enrichment";
+import { validateAgentOutput } from "@/features/ai/agent-output-contract";
 import { runBusinessAnalysisAgent } from "@/features/ai/business-analysis-agent";
 import type { ProjectReviewInput } from "@/features/war-room/project-review-report";
 import { getAuthContext } from "@/lib/auth/context";
@@ -28,11 +30,18 @@ export async function POST(request: Request) {
 
     const input = (await request.json()) as ProjectReviewInput;
     const result = runBusinessAnalysisAgent(input);
+    const agentOutput = await enrichAgentOutputWithLlm({
+      output: result.output,
+      scene: "business_analysis",
+      role: "你是 MCN 资深经营分析助手,基于项目经营事实为该项目给出经营诊断。",
+      client: supabase,
+      actor: auth,
+    });
 
     return NextResponse.json({
       report: result.report,
-      agentOutput: result.output,
-      validation: result.validation,
+      agentOutput,
+      validation: validateAgentOutput(agentOutput),
     });
   } catch (error) {
     if (error instanceof Error) {
