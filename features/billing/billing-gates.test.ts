@@ -37,6 +37,31 @@ describe("resolvePlanEntitlements", () => {
       private_deployment: true,
     });
   });
+
+  it("opens complex cost rules for pro and enterprise, while addons can open lower tiers", () => {
+    expect(
+      resolvePlanEntitlements({ planTier: "free", featureAddons: [] })
+        .complex_cost_rules,
+    ).toBe(false);
+    expect(
+      resolvePlanEntitlements({ planTier: "basic", featureAddons: [] })
+        .complex_cost_rules,
+    ).toBe(false);
+    expect(
+      resolvePlanEntitlements({ planTier: "pro", featureAddons: [] })
+        .complex_cost_rules,
+    ).toBe(true);
+    expect(
+      resolvePlanEntitlements({ planTier: "enterprise", featureAddons: [] })
+        .complex_cost_rules,
+    ).toBe(true);
+    expect(
+      resolvePlanEntitlements({
+        planTier: "basic",
+        featureAddons: [{ featureKey: "complex_cost_rules", enabled: true }],
+      }).complex_cost_rules,
+    ).toBe(true);
+  });
 });
 
 describe("evaluateBillingGate", () => {

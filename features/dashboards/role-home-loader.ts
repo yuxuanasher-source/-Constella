@@ -204,7 +204,8 @@ function scopeRowsForRole(
   return {
     projectRows: allowedProjects,
     taskRows: rows.taskRows.filter(
-      (task) => task.projectId !== null && allowedProjectIds.has(task.projectId),
+      (task) =>
+        task.projectId !== null && allowedProjectIds.has(task.projectId),
     ),
     reportRows: rows.reportRows.filter((report) =>
       allowedProjectIds.has(report.projectId),
@@ -355,7 +356,11 @@ function minutesBetween(start: string | null, end: string | null) {
 
   const started = new Date(start).getTime();
   const ended = new Date(end).getTime();
-  if (!Number.isFinite(started) || !Number.isFinite(ended) || ended <= started) {
+  if (
+    !Number.isFinite(started) ||
+    !Number.isFinite(ended) ||
+    ended <= started
+  ) {
     return 0;
   }
 
@@ -398,7 +403,11 @@ function isCountablePayableBatchInPeriod(
   );
 }
 
-function isDateKeyInPeriod(value: string, periodStart: string, periodEnd: string) {
+function isDateKeyInPeriod(
+  value: string,
+  periodStart: string,
+  periodEnd: string,
+) {
   const dateKey = localDateKey(value, DASHBOARD_TIME_ZONE);
   return dateKey >= periodStart && dateKey <= periodEnd;
 }

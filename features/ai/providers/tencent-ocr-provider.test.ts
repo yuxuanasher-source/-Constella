@@ -13,7 +13,11 @@ describe("createTencentOcrProvider", () => {
       json: async () => ({
         Response: {
           TextDetections: [
-            { DetectedText: "直播时长 80分钟", Confidence: 99 },
+            {
+              DetectedText: "直播时长 80分钟",
+              Confidence: 99,
+              ItemPolygon: { X: 12, Y: 24, Width: 200, Height: 30 },
+            },
             { DetectedText: "观看人数 320", Confidence: 98 },
           ],
           RequestId: "request-1",
@@ -35,6 +39,10 @@ describe("createTencentOcrProvider", () => {
     expect(result).toMatchObject({
       status: "succeeded",
       textLines: ["直播时长 80分钟", "观看人数 320"],
+      textItems: [
+        { text: "直播时长 80分钟", x: 12, y: 24, width: 200, height: 30 },
+        { text: "观看人数 320", x: 0, y: 0, width: 0, height: 0 },
+      ],
       confidence: 98,
       requestId: "request-1",
     });
@@ -43,7 +51,9 @@ describe("createTencentOcrProvider", () => {
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
-          Authorization: expect.stringContaining("TC3-HMAC-SHA256"),
+          Authorization: expect.stringMatching(
+            /^TC3-HMAC-SHA256 Credential=AKIDEXAMPLE\/2026-06-04\/ocr\/tc3_request, SignedHeaders=content-type;host, Signature=[a-f0-9]{64}$/,
+          ),
           "Content-Type": "application/json; charset=utf-8",
           Host: "ocr.tencentcloudapi.com",
           "X-TC-Action": "GeneralBasicOCR",

@@ -3085,7 +3085,9 @@ function TaskDetail({ id, go, tasks = MY_TASKS, actions = {} }) {
           {t.status === "live" && (
             <LiveCTA task={t} onStop={actions.stopTask} />
           )}
-          {t.status === "pending_report" && <PendingReportCTA task={t} />}
+          {t.status === "pending_report" && (
+            <PendingReportCTA task={t} go={go} actions={actions} />
+          )}
           {t.status === "pending_review" && <ReviewingCTA task={t} />}
           {t.status === "trial" && <TrialCTA task={t} />}
         </div>
@@ -3358,7 +3360,40 @@ function LiveCTA({ task, onStop }) {
   );
 }
 
-function PendingReportCTA({ task }) {
+function sanitizeReportScreenshotFileName(name) {
+  const safeName = String(name || "")
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/[^\w.\-()一-龥]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return safeName || "report-screenshot.png";
+}
+
+function PendingReportCTA({ task, go, actions = {} }) {
+  const fileInputRef = React.useRef(null);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  const handleFileChange = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!actions.submitReport) {
+      setError("上传功能暂不可用，请刷新页面后重试");
+      return;
+    }
+    setError("");
+    setBusy(true);
+    try {
+      await actions.submitReport(task.id, { screenshotFile: file });
+      go?.("tasks", task.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "上传失败，请重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div
       style={{
@@ -3397,7 +3432,7 @@ function PendingReportCTA({ task }) {
             请上传下播截图
           </div>
           <div style={{ fontSize: 11.5, color: "var(--ink-500)" }}>
-            截图需包含「时长 / 场观」
+            截图需包含「时长 / 场观」，上传后系统会自动识别
           </div>
         </div>
       </div>
@@ -3405,9 +3440,26 @@ function PendingReportCTA({ task }) {
         kind="primary"
         icon={<Icon.Upload size={13} stroke="#fff" />}
         style={{ width: "100%" }}
+        disabled={busy}
+        onClick={() => fileInputRef.current?.click?.()}
       >
-        从本地选择截图
+        {busy ? "上传中…" : "从本地选择截图"}
       </Button>
+      <input
+        ref={fileInputRef}
+        aria-label="上传下播截图"
+        type="file"
+        accept="image/*"
+        onChange={handleFileChange}
+        style={{ display: "none" }}
+      />
+      {error && (
+        <div
+          style={{ marginTop: 10, fontSize: 12, color: "var(--danger-600)" }}
+        >
+          {error}
+        </div>
+      )}
     </div>
   );
 }
@@ -6352,6 +6404,58 @@ function StreamerDesktopReferenceInner({
           body: JSON.stringify({}),
         });
         await refreshTasks();
+      },
+      submitReport: async (id, input) => {
+        const screenshotFile = input?.screenshotFile;
+        if (!screenshotFile) {
+          throw new Error("请先选择下播截图");
+        }
+        const fileName = sanitizeReportScreenshotFileName(
+          screenshotFile.name || "report-screenshot.png",
+        );
+        const signed = await fetchJson(
+          "/api/uploads/signed",
+          "create report screenshot upload failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              category: "report-screenshots",
+              ownerId: id,
+              fileName,
+            }),
+          },
+        );
+        const screenshotFileHash = `manual-${id}-${Date.now()}-${fileName}-${screenshotFile.size ?? 0}`;
+        const uploadResponse = await fetch(signed.signedUrl, {
+          method: "PUT",
+          headers: {
+            "Content-Type": screenshotFile.type || "application/octet-stream",
+          },
+          body: screenshotFile,
+        });
+        if (!uploadResponse.ok) {
+          throw new Error("upload report screenshot failed");
+        }
+        const queued = await fetchJson(
+          `/api/live-tasks/${id}/ocr`,
+          "create OCR report failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              screenshotStoragePath: signed.path,
+              screenshotFileHash,
+              imageBucket: signed.bucket,
+            }),
+          },
+        );
+        const queuedReportId = queued.report?.id;
+        if (!queuedReportId) {
+          throw new Error("OCR report response missing report id");
+        }
+        await refreshTasks();
+        return queued;
       },
     };
   }, []);

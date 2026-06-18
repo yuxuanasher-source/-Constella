@@ -50,6 +50,8 @@ export type OpsSettlementBatchDetailItem = {
   manualAmount: number;
   adjustmentAmount: number;
   totalAmount: number;
+  internalOnly?: boolean;
+  sourceKind?: "settlement" | "project_cost";
 };
 
 export type OpsSettlementDefaultScope = {
@@ -103,6 +105,17 @@ export type SettlementBatchDetailRow = {
   evidence_level: "green" | "yellow" | "red" | null;
   evidence_snapshot: Record<string, unknown>;
   streamers: { display_name: string } | { display_name: string }[] | null;
+};
+
+export type SettlementBatchCostItemRow = {
+  id: string;
+  settlement_batch_id: string;
+  item_type: string;
+  amount_cents: number;
+  direction: "cost" | "revenue_offset" | "adjustment";
+  evidence_level: "green" | "yellow" | "red";
+  source: "system" | "import" | "manual";
+  reason: string;
 };
 
 type PoolQueryRow = Omit<SettlementPoolRow, "project_streamers"> & {
@@ -256,10 +269,34 @@ export async function listOpsSettlementBatchDetails(
     throw error;
   }
 
-  return (data ?? []).reduce<Record<string, OpsSettlementBatchDetailItem[]>>(
+  let costQuery = client
+    .from("project_cost_items")
+    .select(
+      "id, settlement_batch_id, item_type, amount_cents, direction, evidence_level, source, reason",
+    )
+    .eq("organization_id", input.organizationId)
+    .not("settlement_batch_id", "is", null)
+    .order("created_at", { ascending: true });
+
+  if (input.batchId) {
+    costQuery = costQuery.eq("settlement_batch_id", input.batchId);
+  }
+
+  const { data: costRows, error: costError } =
+    await costQuery.returns<SettlementBatchCostItemRow[]>();
+
+  if (costError) {
+    throw costError;
+  }
+
+  const detailItems = [
+    ...(data ?? []).map(toOpsSettlementBatchDetailItem),
+    ...(costRows ?? []).map(toOpsSettlementBatchCostDetailItem),
+  ];
+
+  return detailItems.reduce<Record<string, OpsSettlementBatchDetailItem[]>>(
     (grouped, row) => {
-      const item = toOpsSettlementBatchDetailItem(row);
-      grouped[item.batchId] = [...(grouped[item.batchId] ?? []), item];
+      grouped[row.batchId] = [...(grouped[row.batchId] ?? []), row];
       return grouped;
     },
     {},
@@ -416,7 +453,35 @@ export function toOpsSettlementBatchDetailItem(
     manualAmount,
     adjustmentAmount,
     totalAmount: systemAmount + manualAmount + adjustmentAmount,
+    sourceKind: "settlement",
   };
+}
+
+export function toOpsSettlementBatchCostDetailItem(
+  row: SettlementBatchCostItemRow,
+): OpsSettlementBatchDetailItem {
+  const amount = Number(row.amount_cents);
+  return {
+    id: row.id,
+    batchId: row.settlement_batch_id,
+    itemType: row.item_type,
+    streamerName: "Project cost",
+    settlementDuration: 0,
+    timeSource: row.source,
+    evidenceLevel: row.evidence_level,
+    systemAmount: 0,
+    manualAmount: amount,
+    adjustmentAmount: 0,
+    totalAmount: amount,
+    internalOnly: true,
+    sourceKind: "project_cost",
+  };
+}
+
+export function toStreamerSafeSettlementBatchDetailItems(
+  items: OpsSettlementBatchDetailItem[],
+): OpsSettlementBatchDetailItem[] {
+  return items.filter((item) => !item.internalOnly);
 }
 
 async function listProjectStreamerRules(

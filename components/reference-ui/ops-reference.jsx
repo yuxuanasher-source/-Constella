@@ -858,6 +858,7 @@ const OpsLiveDataContext = React.createContext({
   organizationMemberPermissions: null,
   organizationSettings: DEFAULT_ORGANIZATION_SETTINGS,
   billingStatus: null,
+  complexCost: null,
   dashboardHome: null,
   currentUser: DEFAULT_CURRENT_USER,
   actions: {},
@@ -957,6 +958,11 @@ function useOpsBillingStatus() {
   return billingStatus && typeof billingStatus === "object"
     ? billingStatus
     : null;
+}
+
+function useOpsComplexCost() {
+  const { complexCost } = React.useContext(OpsLiveDataContext);
+  return complexCost && typeof complexCost === "object" ? complexCost : null;
 }
 
 function useOpsDashboardHome() {
@@ -2209,8 +2215,16 @@ function ScreenRoleHome({ dashboard, go }) {
           />
         ) : null}
         <RoleHomeKpis items={dashboard.kpis || []} />
-        <RoleHomeSection title="优先处理" items={dashboard.queue || []} go={go} />
-        <RoleHomeSection title="风险提醒" items={dashboard.risks || []} go={go} />
+        <RoleHomeSection
+          title="优先处理"
+          items={dashboard.queue || []}
+          go={go}
+        />
+        <RoleHomeSection
+          title="风险提醒"
+          items={dashboard.risks || []}
+          go={go}
+        />
         <RoleHomeSection
           title="常用入口"
           items={dashboard.drilldowns || []}
@@ -2357,6 +2371,7 @@ function ScreenWarRoom({ go }) {
   const [ocrOpen, setOcrOpen] = React.useState(false);
   const [warRoomMessage, setWarRoomMessage] = React.useState("");
   const [warRoomExporting, setWarRoomExporting] = React.useState(false);
+  const [complexPreviewing, setComplexPreviewing] = React.useState(false);
   const projects = useOpsProjects();
   const tasks = useOpsTasks();
   const reports = useOpsReports();
@@ -2420,6 +2435,44 @@ function ScreenWarRoom({ go }) {
       setWarRoomExporting(false);
     }
   };
+  const previewComplexCost = async () => {
+    if (complexPreviewing) return;
+    const project = activeProjects[0] || projects[0];
+    if (!project?.id) {
+      setWarRoomMessage("复杂成本测算需要先选择项目。");
+      return;
+    }
+    setWarRoomMessage("");
+    setComplexPreviewing(true);
+    try {
+      const preview = await actions.previewComplexCost?.(project.id, {
+        expectedReceivableCents: Math.round(
+          Number(project.metrics?.receivable ?? 10000) * 100,
+        ),
+        streamerCount: Number(project.streamers?.active ?? 1),
+        estimatedMinutesPerStreamer: Math.round(
+          Number(project.metrics?.plannedHours ?? 1) * 60,
+        ),
+        streamerHourlyCostCents: 8000,
+        supplierCostCents: Math.round(
+          Number(project.metrics?.payable ?? 0) * 20,
+        ),
+        trafficCostCents: 0,
+        platformFeeBps: 500,
+      });
+      const marginRate =
+        typeof preview?.marginRateBps === "number"
+          ? (preview.marginRateBps / 100).toFixed(1)
+          : "0.0";
+      setWarRoomMessage(`毛利率 ${marginRate}%`);
+    } catch (error) {
+      setWarRoomMessage(
+        error instanceof Error ? error.message : "复杂成本测算失败",
+      );
+    } finally {
+      setComplexPreviewing(false);
+    }
+  };
   const openOcrPanel = async () => {
     setWarRoomMessage("");
     setOcrOpen(true);
@@ -2467,6 +2520,13 @@ function ScreenWarRoom({ go }) {
               disabled={warRoomExporting}
             >
               {warRoomExporting ? "导出中…" : "导出当日简报"}
+            </Button>
+            <Button
+              kind="default"
+              onClick={previewComplexCost}
+              disabled={complexPreviewing}
+            >
+              {complexPreviewing ? "测算中…" : "复杂成本测算"}
             </Button>
             <Button
               kind="primary"
@@ -11936,6 +11996,7 @@ function ScreenSettlement({ go }) {
   const batchDetails = useOpsSettlementBatchDetails();
   const settlementPool = useOpsSettlementPool();
   const settlementScope = useOpsSettlementScope();
+  const complexCost = useOpsComplexCost();
   const actions = useOpsLiveActions();
   const [type, setType] = React.useState("all");
   const [busyAction, setBusyAction] = React.useState(null);
@@ -12204,6 +12265,47 @@ function ScreenSettlement({ go }) {
             />
           </Card>
         </div>
+
+        {complexCost?.enabled ? (
+          <Card
+            title="复杂成本规则"
+            extra={<Badge tone="green">已开通</Badge>}
+            padded={true}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 13, color: "var(--ink-700)" }}>
+                  已用 {Number(complexCost.usedProjects ?? 0)} /{" "}
+                  {Number(complexCost.includedProjects ?? 0)} 个项目额度
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "var(--ink-400)",
+                    marginTop: 4,
+                  }}
+                >
+                  CPA/CPS/礼物/投流/供应商费用需导入或人工确认后进入批次
+                </div>
+              </div>
+              <Button
+                kind="default"
+                onClick={() =>
+                  setSettlementMessage("复杂成本规则配置请在项目设置中维护。")
+                }
+              >
+                成本规则设置
+              </Button>
+            </div>
+          </Card>
+        ) : null}
 
         {settlementMessage ? (
           <div
@@ -13009,6 +13111,16 @@ function BatchDetail({
                 disabled={!!busyAction}
               >
                 {busyAction === "manual" ? "处理中…" : "添加人工调整"}
+              </Button>
+              <Button
+                kind="default"
+                onClick={() =>
+                  showPendingDetail(
+                    "复杂成本项需导入或人工确认后，再附加到结算批次。",
+                  )
+                }
+              >
+                添加复杂成本项
               </Button>
               <Button
                 kind="default"
@@ -18905,6 +19017,8 @@ function ScreenExport() {
     { key: "vendor_delivery", label: "厂家交付包" },
     { key: "settlement_batch", label: "结算批次" },
     { key: "report_details", label: "报数明细" },
+    { key: "project_costs", label: "项目成本明细" },
+    { key: "supplier_reconcile", label: "供应商对账" },
   ];
 
   const submit = async () => {
@@ -18915,10 +19029,17 @@ function ScreenExport() {
         kind === "vendor_delivery"
           ? await actions.readVendorDeliveryPackage?.(projectId)
           : [];
-      const exportResult = await actions.createGovernedExport({
-        kind,
-        rows: Array.isArray(rows) ? rows : [],
-      });
+      const costExport =
+        kind === "project_costs" || kind === "supplier_reconcile";
+      const exportResult = costExport
+        ? await actions.createProjectCostExport?.(projectId, {
+            kind,
+            rows: Array.isArray(rows) ? rows : [],
+          })
+        : await actions.createGovernedExport({
+            kind,
+            rows: Array.isArray(rows) ? rows : [],
+          });
       setResult(exportResult);
     } catch (error) {
       globalThis.alert?.(
@@ -18967,7 +19088,9 @@ function ScreenExport() {
           </div>
           <div style={{ padding: "0 16px 16px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {kind === "vendor_delivery" ? (
+              {kind === "vendor_delivery" ||
+              kind === "project_costs" ||
+              kind === "supplier_reconcile" ? (
                 <label
                   style={{
                     display: "flex",
@@ -18978,7 +19101,7 @@ function ScreenExport() {
                     fontWeight: 600,
                   }}
                 >
-                  交付包项目
+                  {kind === "vendor_delivery" ? "交付包项目" : "成本项目"}
                   <select
                     aria-label="交付包项目"
                     value={projectId}
@@ -19456,6 +19579,7 @@ function OpsReferenceInner({
   organizationMemberPermissions,
   organizationSettings,
   billingStatus,
+  complexCost,
   dashboardHome,
   projectCards,
   collaborationProjectCards,
@@ -19496,6 +19620,9 @@ function OpsReferenceInner({
     React.useState(false);
   const [billingStatusState, setBillingStatusState] = React.useState(
     billingStatus ?? null,
+  );
+  const [complexCostState, setComplexCostState] = React.useState(
+    complexCost ?? null,
   );
   const [dashboardHomeState, setDashboardHomeState] = React.useState(
     dashboardHome ?? null,
@@ -19563,6 +19690,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setBillingStatusState(billingStatus ?? null);
   }, [billingStatus]);
+
+  React.useEffect(() => {
+    setComplexCostState(complexCost ?? null);
+  }, [complexCost]);
 
   React.useEffect(() => {
     setDashboardHomeState(dashboardHome ?? null);
@@ -20363,6 +20494,38 @@ function OpsReferenceInner({
         );
         await refreshNotifications();
       },
+      previewComplexCost: async (projectId, input) => {
+        const trimmedProjectId = String(projectId || "").trim();
+        if (!trimmedProjectId) {
+          throw new Error("complex cost project is required");
+        }
+        const body = await fetchJson(
+          `/api/projects/${trimmedProjectId}/complex-cost-rule/preview`,
+          "complex cost preview failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input ?? {}),
+          },
+        );
+        return body.preview;
+      },
+      createProjectCostExport: async (projectId, input) => {
+        const trimmedProjectId = String(projectId || "").trim();
+        if (!trimmedProjectId) {
+          throw new Error("complex cost export project is required");
+        }
+        const body = await fetchJson(
+          `/api/projects/${trimmedProjectId}/cost-export`,
+          "create complex cost export failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input ?? {}),
+          },
+        );
+        return body.export;
+      },
       createGovernedExport: async (input) => {
         const body = await fetchJson("/api/exports", "create export failed", {
           method: "POST",
@@ -20523,6 +20686,7 @@ function OpsReferenceInner({
         organizationMemberPermissions: organizationMemberPermissionsState,
         organizationSettings: organizationSettingsState,
         billingStatus: billingStatusState,
+        complexCost: complexCostState,
         dashboardHome: dashboardHomeState,
         currentUser: normalizeCurrentUser(currentUser),
         actions,
@@ -20794,7 +20958,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; dashboardHome?: any; currentUser?: any }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; currentUser?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -20810,6 +20974,7 @@ export default function OpsReferenceApp({
   organizationMemberPermissions,
   organizationSettings,
   billingStatus,
+  complexCost,
   dashboardHome,
   projectCards,
   collaborationProjectCards,
@@ -20832,6 +20997,7 @@ export default function OpsReferenceApp({
       organizationMemberPermissions={organizationMemberPermissions}
       organizationSettings={organizationSettings}
       billingStatus={billingStatus}
+      complexCost={complexCost}
       dashboardHome={dashboardHome}
       projectCards={projectCards}
       collaborationProjectCards={collaborationProjectCards}

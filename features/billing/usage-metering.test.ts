@@ -44,6 +44,24 @@ describe("calculateUsageStatus", () => {
       billableOverageQuantity: 0,
     });
   });
+
+  it("calculates complex cost project usage as a soft overage metric", () => {
+    expect(
+      calculateUsageStatus({
+        metric: "complex_cost_project",
+        usedQuantity: 6,
+        includedQuantity: 5,
+        addonQuantity: 0,
+      }),
+    ).toMatchObject({
+      metric: "complex_cost_project",
+      remainingQuantity: 0,
+      overageQuantity: 1,
+      billableOverageQuantity: 1,
+      softOverage: true,
+      shouldHardBlock: false,
+    });
+  });
 });
 
 describe("getUsagePeriodMonth", () => {

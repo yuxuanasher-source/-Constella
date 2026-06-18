@@ -6,7 +6,9 @@ export type ExportKind =
   | "settlement_batch"
   | "audit_logs"
   | "vendor_delivery"
-  | "admission_recordings";
+  | "admission_recordings"
+  | "project_costs"
+  | "supplier_reconcile";
 
 export type ExportField = {
   key: string;
@@ -15,6 +17,32 @@ export type ExportField = {
 };
 
 export const exportDefinitions: Record<ExportKind, ExportField[]> = {
+  project_costs: [
+    { key: "projectName", label: "Project Name", sensitivity: "public" },
+    { key: "itemType", label: "Cost Type", sensitivity: "internal" },
+    {
+      key: "amountCents",
+      label: "Cost Amount",
+      sensitivity: "finance_sensitive",
+    },
+    { key: "source", label: "Source", sensitivity: "internal" },
+    { key: "reason", label: "Reason", sensitivity: "internal" },
+  ],
+  supplier_reconcile: [
+    { key: "projectName", label: "Project Name", sensitivity: "public" },
+    { key: "supplierName", label: "Supplier", sensitivity: "public" },
+    { key: "itemType", label: "Cost Type", sensitivity: "public" },
+    {
+      key: "amountCents",
+      label: "Reconcile Amount",
+      sensitivity: "finance_sensitive",
+    },
+    {
+      key: "evidenceLevel",
+      label: "Evidence Level",
+      sensitivity: "internal",
+    },
+  ],
   admission_recordings: [
     { key: "projectCode", label: "项目编号", sensitivity: "public" },
     { key: "projectName", label: "项目名称", sensitivity: "public" },
@@ -103,6 +131,8 @@ export function isExportKind(value: unknown): value is ExportKind {
     value === "settlement_batch" ||
     value === "audit_logs" ||
     value === "vendor_delivery" ||
-    value === "admission_recordings"
+    value === "admission_recordings" ||
+    value === "project_costs" ||
+    value === "supplier_reconcile"
   );
 }

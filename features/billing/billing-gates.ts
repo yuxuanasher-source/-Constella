@@ -10,6 +10,7 @@ export type SubscriptionStatus =
 export type BillingFeatureKey =
   | "project_management"
   | "settlement"
+  | "complex_cost_rules"
   | "export_center"
   | "war_room"
   | "auto_review_shadow"
@@ -29,6 +30,7 @@ const baseEntitlements: Record<BillingPlanTier, PlanEntitlements> = {
   free: {
     project_management: true,
     settlement: false,
+    complex_cost_rules: false,
     export_center: false,
     war_room: false,
     auto_review_shadow: false,
@@ -40,6 +42,7 @@ const baseEntitlements: Record<BillingPlanTier, PlanEntitlements> = {
   basic: {
     project_management: true,
     settlement: true,
+    complex_cost_rules: false,
     export_center: false,
     war_room: false,
     auto_review_shadow: false,
@@ -51,6 +54,7 @@ const baseEntitlements: Record<BillingPlanTier, PlanEntitlements> = {
   pro: {
     project_management: true,
     settlement: true,
+    complex_cost_rules: true,
     export_center: true,
     war_room: true,
     auto_review_shadow: true,
@@ -62,6 +66,7 @@ const baseEntitlements: Record<BillingPlanTier, PlanEntitlements> = {
   enterprise: {
     project_management: true,
     settlement: true,
+    complex_cost_rules: true,
     export_center: true,
     war_room: true,
     auto_review_shadow: true,
