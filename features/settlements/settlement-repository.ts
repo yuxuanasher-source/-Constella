@@ -11,6 +11,10 @@ import type {
   SettlementRuleRecord,
 } from "./settlement-service";
 import type { SettlementMethod } from "./settlement-engine";
+import type {
+  ProjectStreamerSettlementPatch,
+  ProjectStreamerSettlementRecord,
+} from "./project-streamer-settlement-service";
 import { extractStructuredSettlementRule } from "./structured-settlement-rule";
 
 type SettlementPoolReportRow = {
@@ -371,6 +375,83 @@ export class SupabaseSettlementRepository implements SettlementRepository {
 
     return toSettlementBatchRecord(data);
   }
+
+  async getProjectStreamerSettlement(input: {
+    organizationId: string;
+    projectId: string;
+    streamerId: string;
+  }): Promise<ProjectStreamerSettlementRecord | null> {
+    const { data, error } = await this.client
+      .from("project_streamers")
+      .select(projectStreamerSettlementSelect)
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("streamer_id", input.streamerId)
+      .maybeSingle<ProjectStreamerSettlementRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return data ? toProjectStreamerSettlementRecord(data) : null;
+  }
+
+  async updateProjectStreamerSettlementRule(input: {
+    organizationId: string;
+    projectId: string;
+    streamerId: string;
+    patch: ProjectStreamerSettlementPatch;
+  }): Promise<ProjectStreamerSettlementRecord> {
+    const { data, error } = await this.client
+      .from("project_streamers")
+      .update(input.patch)
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("streamer_id", input.streamerId)
+      .select(projectStreamerSettlementSelect)
+      .single<ProjectStreamerSettlementRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return toProjectStreamerSettlementRecord(data);
+  }
+}
+
+const projectStreamerSettlementSelect =
+  "id, project_id, streamer_id, settlement_method, hourly_rate, base_salary, cps_rate_bps, streamers(display_name)";
+
+type ProjectStreamerSettlementRow = {
+  id: string;
+  project_id: string;
+  streamer_id: string;
+  settlement_method: SettlementMethod | null;
+  hourly_rate: number | null;
+  base_salary: number | null;
+  cps_rate_bps: number | null;
+  streamers?:
+    | { display_name: string | null }
+    | Array<{ display_name: string | null }>
+    | null;
+};
+
+function toProjectStreamerSettlementRecord(
+  row: ProjectStreamerSettlementRow,
+): ProjectStreamerSettlementRecord {
+  const streamer = Array.isArray(row.streamers)
+    ? row.streamers[0]
+    : row.streamers;
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    streamerId: row.streamer_id,
+    streamerName: streamer?.display_name ?? null,
+    settlementMethod: row.settlement_method,
+    hourlyRate: row.hourly_rate,
+    baseSalary: row.base_salary,
+    cpsRateBps: row.cps_rate_bps,
+  };
 }
 
 function toSettlementPoolReport(
