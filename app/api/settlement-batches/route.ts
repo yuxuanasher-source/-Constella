@@ -7,6 +7,7 @@ import {
   jsonError,
   readJsonBody,
   requiredString,
+  requiredUuid,
   RouteError,
   settlementActorFromContext,
 } from "@/features/settlements/settlement-route-utils";
@@ -56,7 +57,7 @@ export async function POST(request: Request) {
       notify: (input) => context.notify(context.supabase, input),
       actor: settlementActorFromContext(context),
       input: {
-        projectId: requiredString(body, "projectId"),
+        projectId: requiredUuid(body, "projectId"),
         batchType: batchType as SettlementBatchType,
         periodStart: requiredString(body, "periodStart"),
         periodEnd: requiredString(body, "periodEnd"),

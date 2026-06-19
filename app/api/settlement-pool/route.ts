@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { listOpsSettlementPool } from "@/features/settlements/settlement-queries";
 import {
   getSettlementRouteContext,
+  isUuid,
   jsonError,
   requiredQueryParam,
   RouteError,
@@ -21,6 +22,9 @@ export async function GET(request: Request) {
 
     const url = new URL(request.url);
     const projectId = url.searchParams.get("projectId")?.trim() || null;
+    if (projectId && !isUuid(projectId)) {
+      throw new RouteError("projectId must be a valid UUID", 400);
+    }
     const periodStart = requiredQueryParam(request.url, "periodStart");
     const periodEnd = requiredQueryParam(request.url, "periodEnd");
     const batchType = url.searchParams.get("batchType")?.trim() || "payable";

@@ -102,11 +102,78 @@ export function requiredQueryParam(url: string, key: string): string {
   return value;
 }
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isUuid(value: string): boolean {
+  return UUID_PATTERN.test(value);
+}
+
+// Validate ids up front so a malformed value (e.g. a project name typed into a
+// project-id field) returns a clear 400 instead of reaching Postgres and
+// surfacing as an opaque "invalid input syntax for type uuid" failure that the
+// error handler can only report as a generic 500.
+export function requiredUuid(
+  body: Record<string, unknown>,
+  key: string,
+): string {
+  const value = requiredString(body, key);
+  if (!isUuid(value)) {
+    throw new RouteError(`${key} must be a valid UUID`, 400);
+  }
+
+  return value;
+}
+
+export function requiredUuidQueryParam(url: string, key: string): string {
+  const value = requiredQueryParam(url, key);
+  if (!isUuid(value)) {
+    throw new RouteError(`${key} must be a valid UUID`, 400);
+  }
+
+  return value;
+}
+
+type PostgrestErrorLike = {
+  code: string;
+  message: string;
+  details?: string | null;
+  hint?: string | null;
+};
+
+// Supabase surfaces database failures as PostgrestError objects (which, in some
+// versions, are plain objects rather than Error instances). Detect them so they
+// are mapped to a meaningful status with their message preserved, instead of
+// collapsing to a generic "Unexpected error" 500 that hides the cause.
+function isPostgrestError(error: unknown): error is PostgrestErrorLike {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+
+  const candidate = error as Record<string, unknown>;
+  return (
+    typeof candidate.code === "string" && typeof candidate.message === "string"
+  );
+}
+
 export function jsonError(error: unknown) {
   if (error instanceof RouteError) {
     return NextResponse.json(
       { error: error.message },
       { status: error.statusCode },
+    );
+  }
+
+  if (isPostgrestError(error)) {
+    // SQLSTATE class 22 (data exception, e.g. invalid uuid/enum text) and class
+    // 23 (integrity constraint violation) are caused by bad client input, so
+    // report them as 400 with the database message. Anything else is an
+    // unexpected server/DB fault — return 500 without leaking internals.
+    const isClientError =
+      error.code.startsWith("22") || error.code.startsWith("23");
+    return NextResponse.json(
+      { error: isClientError ? error.message : "Database error" },
+      { status: isClientError ? 400 : 500 },
     );
   }
 
