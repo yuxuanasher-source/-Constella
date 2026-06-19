@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { calculateSettlementItem } from "./settlement-engine";
+import { extractStructuredSettlementRule } from "./structured-settlement-rule";
 import type {
   SettlementBatchStatus,
   SettlementBatchType,
@@ -68,7 +69,10 @@ export type SettlementPoolRow = {
   settlement_duration: number | null;
   time_source: "system" | "screenshot" | "claimed" | null;
   evidence_level: "green" | "yellow" | "red" | null;
-  projects: { name: string } | { name: string }[] | null;
+  projects:
+    | { name: string; default_settlement_rule?: unknown }
+    | { name: string; default_settlement_rule?: unknown }[]
+    | null;
   streamers: { display_name: string } | { display_name: string }[] | null;
   project_streamers?: Array<{
     settlement_method: string | null;
@@ -150,7 +154,7 @@ export async function listOpsSettlementPool(
   let query = client
     .from("live_reports")
     .select(
-      "id, project_id, streamer_id, created_at, settlement_duration, time_source, evidence_level, projects(name), streamers(display_name)",
+      "id, project_id, streamer_id, created_at, settlement_duration, time_source, evidence_level, projects(name, default_settlement_rule), streamers(display_name)",
     )
     .eq("organization_id", input.organizationId)
     .eq("status", "approved")
@@ -362,6 +366,9 @@ export function toOpsSettlementPoolItem(
   const project = first(row.projects);
   const streamer = first(row.streamers);
   const rule = first(row.project_streamers ?? null);
+  const structured = extractStructuredSettlementRule(
+    project?.default_settlement_rule,
+  );
   const expected = calculateSettlementItem({
     report: {
       id: row.id,
@@ -377,6 +384,7 @@ export function toOpsSettlementPoolItem(
       hourlyRate: rule?.hourly_rate ?? 0,
       baseSalary: rule?.base_salary ?? 0,
       cpsRateBps: rule?.cps_rate_bps ?? 0,
+      ...structured,
     },
   });
 

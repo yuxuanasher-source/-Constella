@@ -6,6 +6,7 @@ import {
   createProjectAuditWriter,
   updateProjectSettlementRule,
 } from "@/features/projects/project-service";
+import { validateStructuredSettlementRule } from "@/features/settlements/structured-settlement-rule";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
@@ -114,7 +115,13 @@ function optionalRulePayload(value: unknown) {
   if (new TextEncoder().encode(serialized).length > 16 * 1024) {
     throw new Error("defaultSettlementRule is too large");
   }
-  return value as Record<string, unknown>;
+  // Validate the structured fields (tiers / penalties / floor / cap) and persist
+  // the normalized shape so the settlement engine can honor them.
+  const structured = validateStructuredSettlementRule(value);
+  return {
+    ...(value as Record<string, unknown>),
+    ...structured,
+  };
 }
 
 function optionalText(value: unknown) {
