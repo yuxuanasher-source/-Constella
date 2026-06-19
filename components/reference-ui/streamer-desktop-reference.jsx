@@ -2609,6 +2609,16 @@ function DesktopTaskCard({ task, onClick, primary, compact }) {
                 上传截图
               </Button>
             )}
+            {(task.status === "rejected" ||
+              task.status === "report_rejected") && (
+              <Button
+                kind="primary"
+                icon={<Icon.Upload size={13} stroke="#fff" />}
+                onClick={onClick}
+              >
+                重新上传
+              </Button>
+            )}
             {task.status === "pending_review" && (
               <Button kind="default" onClick={onClick}>
                 查看进度
@@ -3088,6 +3098,9 @@ function TaskDetail({ id, go, tasks = MY_TASKS, actions = {} }) {
           {t.status === "pending_report" && (
             <PendingReportCTA task={t} go={go} actions={actions} />
           )}
+          {(t.status === "rejected" || t.status === "report_rejected") && (
+            <RejectedReportCTA task={t} go={go} actions={actions} />
+          )}
           {t.status === "pending_review" && <ReviewingCTA task={t} />}
           {t.status === "trial" && <TrialCTA task={t} />}
         </div>
@@ -3369,15 +3382,50 @@ function sanitizeReportScreenshotFileName(name) {
   return safeName || "report-screenshot.png";
 }
 
-function PendingReportCTA({ task, go, actions = {} }) {
+function ScreenshotUploader({ task, go, actions = {}, confirmLabel }) {
   const fileInputRef = React.useRef(null);
+  const pasteRef = React.useRef(null);
+  const [pendingFile, setPendingFile] = React.useState(null);
+  const [previewUrl, setPreviewUrl] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
 
-  const handleFileChange = async (event) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
+  React.useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL?.(previewUrl);
+    };
+  }, [previewUrl]);
+
+  const choose = (file) => {
     if (!file) return;
+    setError("");
+    setPendingFile(file);
+    if (previewUrl) URL.revokeObjectURL?.(previewUrl);
+    setPreviewUrl(URL.createObjectURL?.(file) || "");
+  };
+
+  const handlePaste = (event) => {
+    const items = event.clipboardData?.items || [];
+    for (const item of items) {
+      if (item.type && item.type.startsWith("image/")) {
+        const blob = item.getAsFile?.();
+        if (blob) {
+          event.preventDefault();
+          const ext = (blob.type.split("/")[1] || "png").replace("jpeg", "jpg");
+          choose(
+            new File([blob], `pasted-${Date.now()}.${ext}`, {
+              type: blob.type,
+            }),
+          );
+          return;
+        }
+      }
+    }
+    setError("剪贴板里没有图片，请先截图再粘贴");
+  };
+
+  const confirmUpload = async () => {
+    if (!pendingFile) return;
     if (!actions.submitReport) {
       setError("上传功能暂不可用，请刷新页面后重试");
       return;
@@ -3385,7 +3433,7 @@ function PendingReportCTA({ task, go, actions = {} }) {
     setError("");
     setBusy(true);
     try {
-      await actions.submitReport(task.id, { screenshotFile: file });
+      await actions.submitReport(task.id, { screenshotFile: pendingFile });
       go?.("tasks", task.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "上传失败，请重试");
@@ -3394,6 +3442,101 @@ function PendingReportCTA({ task, go, actions = {} }) {
     }
   };
 
+  return (
+    <div>
+      <div
+        ref={pasteRef}
+        tabIndex={0}
+        role="button"
+        aria-label="粘贴截图上传区，聚焦后按 Ctrl 或 Command + V 粘贴"
+        onPaste={handlePaste}
+        onClick={() => pasteRef.current?.focus?.()}
+        style={{
+          marginBottom: 10,
+          padding: previewUrl ? 8 : 18,
+          borderRadius: 10,
+          border: "1.5px dashed var(--warn-600)",
+          background: "#fff",
+          textAlign: "center",
+          cursor: "pointer",
+          outline: "none",
+        }}
+      >
+        {previewUrl ? (
+          <img
+            src={previewUrl}
+            alt="粘贴的截图预览"
+            style={{
+              maxWidth: "100%",
+              maxHeight: 220,
+              borderRadius: 6,
+              display: "block",
+              margin: "0 auto",
+            }}
+          />
+        ) : (
+          <div style={{ fontSize: 12.5, color: "var(--ink-500)" }}>
+            <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+              点击此处后按 Ctrl / ⌘ + V 粘贴截图
+            </div>
+            <div style={{ marginTop: 4 }}>
+              截图复制到剪贴板后，在这里直接粘贴即可
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <Button
+          kind={pendingFile ? "ghost" : "primary"}
+          icon={<Icon.Upload size={13} />}
+          style={{ flex: 1 }}
+          disabled={busy}
+          onClick={() => fileInputRef.current?.click?.()}
+        >
+          从本地选择截图
+        </Button>
+        {pendingFile && (
+          <Button
+            kind="primary"
+            style={{ flex: 1 }}
+            disabled={busy}
+            onClick={confirmUpload}
+          >
+            {busy ? "上传中…" : confirmLabel || "确定上传"}
+          </Button>
+        )}
+      </div>
+
+      <input
+        ref={fileInputRef}
+        aria-label="上传下播截图"
+        type="file"
+        accept="image/*"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          choose(file);
+        }}
+        style={{ display: "none" }}
+      />
+      {pendingFile && (
+        <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--ink-400)" }}>
+          已选择：{pendingFile.name}
+        </div>
+      )}
+      {error && (
+        <div
+          style={{ marginTop: 10, fontSize: 12, color: "var(--danger-600)" }}
+        >
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PendingReportCTA({ task, go, actions = {} }) {
   return (
     <div
       style={{
@@ -3436,30 +3579,62 @@ function PendingReportCTA({ task, go, actions = {} }) {
           </div>
         </div>
       </div>
-      <Button
-        kind="primary"
-        icon={<Icon.Upload size={13} stroke="#fff" />}
-        style={{ width: "100%" }}
-        disabled={busy}
-        onClick={() => fileInputRef.current?.click?.()}
+      <ScreenshotUploader task={task} go={go} actions={actions} />
+    </div>
+  );
+}
+
+function RejectedReportCTA({ task, go, actions = {} }) {
+  return (
+    <div
+      style={{
+        padding: 16,
+        background: "var(--danger-50)",
+        borderRadius: 10,
+        border: "1px solid #F3C9CC",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          marginBottom: 10,
+        }}
       >
-        {busy ? "上传中…" : "从本地选择截图"}
-      </Button>
-      <input
-        ref={fileInputRef}
-        aria-label="上传下播截图"
-        type="file"
-        accept="image/*"
-        onChange={handleFileChange}
-        style={{ display: "none" }}
-      />
-      {error && (
-        <div
-          style={{ marginTop: 10, fontSize: 12, color: "var(--danger-600)" }}
+        <span
+          style={{
+            width: 30,
+            height: 30,
+            borderRadius: 8,
+            background: "var(--danger-600)",
+            color: "#fff",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
         >
-          {error}
+          <Icon.Upload size={14} stroke="#fff" sw={1.8} />
+        </span>
+        <div>
+          <div
+            style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink-900)" }}
+          >
+            审核被驳回，请重新上传截图
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--ink-500)" }}>
+            {task.note
+              ? `驳回原因：${task.note}`
+              : "请按要求重新截图（包含时长 / 场观）后再次提交"}
+          </div>
         </div>
-      )}
+      </div>
+      <ScreenshotUploader
+        task={task}
+        go={go}
+        actions={actions}
+        confirmLabel="重新提交"
+      />
     </div>
   );
 }
