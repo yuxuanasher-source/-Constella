@@ -6,6 +6,7 @@ import {
   createProjectAuditWriter,
   updateProjectSettlementRule,
 } from "@/features/projects/project-service";
+import { validateStructuredSettlementRule } from "@/features/settlements/structured-settlement-rule";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
@@ -114,6 +115,11 @@ function optionalRulePayload(value: unknown) {
   if (new TextEncoder().encode(serialized).length > 16 * 1024) {
     throw new Error("defaultSettlementRule is too large");
   }
+  // Validate the structured fields (tiers / penalties / floor / cap) so malformed
+  // input is rejected, but persist the payload as provided. The settlement engine
+  // reads it back through the lenient extractor, so no normalized scaffolding is
+  // injected here (keeps the stored rule free of empty defaults).
+  validateStructuredSettlementRule(value);
   return value as Record<string, unknown>;
 }
 

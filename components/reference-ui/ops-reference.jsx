@@ -16,6 +16,10 @@ import {
 } from "@/features/war-room/war-room-ui-dto";
 
 import AiUsageDashboard from "./ai-usage-dashboard";
+import SettlementRuleBuilder, {
+  builderRuleFromStored,
+  serializeBuilderRule,
+} from "./settlement-rule-builder";
 
 // ===== src\ui.jsx =====
 // ——— Reusable UI atoms ——————————————————————————————————————
@@ -12234,19 +12238,8 @@ function settlementRuleDraft(project) {
       project?.defaultBaseSalary || project?.defaultBaseSalary === 0
         ? String(project.defaultBaseSalary)
         : "",
-    defaultSettlementRule: JSON.stringify(rule, null, 2),
+    defaultSettlementRule: builderRuleFromStored(rule),
   };
-}
-
-function parseSettlementRuleDraft(value) {
-  const trimmed = String(value || "").trim();
-  if (!trimmed) return {};
-
-  const parsed = JSON.parse(trimmed);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("复杂规则必须是 JSON 对象");
-  }
-  return parsed;
 }
 
 function settlementRuleObject(value) {
@@ -12525,7 +12518,7 @@ function ScreenSettlement({ go }) {
         defaultSettlementMethod: ruleDraft.defaultSettlementMethod,
         defaultHourlyRate: draftNumber(ruleDraft.defaultHourlyRate),
         defaultBaseSalary: draftNumber(ruleDraft.defaultBaseSalary),
-        defaultSettlementRule: parseSettlementRuleDraft(
+        defaultSettlementRule: serializeBuilderRule(
           ruleDraft.defaultSettlementRule,
         ),
         reason: "结算中心项目规则调整",
@@ -12816,20 +12809,19 @@ function ScreenSettlement({ go }) {
                 {busyAction === "project-rule" ? "保存中…" : "保存项目规则"}
               </Button>
               <div style={{ gridColumn: "1 / -1" }}>
-                <TaskFormLabel label="复杂规则 JSON">
-                  <textarea
+                <TaskFormLabel label="进阶结算规则">
+                  <SettlementRuleBuilder
                     value={ruleDraft.defaultSettlementRule}
-                    onChange={updateRuleDraft("defaultSettlementRule")}
-                    rows={4}
-                    style={{
-                      ...taskInputStyle,
-                      height: 92,
-                      padding: "8px 10px",
-                      resize: "vertical",
-                      fontFamily:
-                        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-                      lineHeight: 1.45,
-                    }}
+                    onChange={(next) =>
+                      setRuleDraft((draft) => ({
+                        ...draft,
+                        defaultSettlementRule: next,
+                      }))
+                    }
+                    flatHourlyRate={
+                      draftNumber(ruleDraft.defaultHourlyRate) || 0
+                    }
+                    method={ruleDraft.defaultSettlementMethod}
                   />
                 </TaskFormLabel>
               </div>

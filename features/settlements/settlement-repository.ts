@@ -11,6 +11,7 @@ import type {
   SettlementRuleRecord,
 } from "./settlement-service";
 import type { SettlementMethod } from "./settlement-engine";
+import { extractStructuredSettlementRule } from "./structured-settlement-rule";
 
 type SettlementPoolReportRow = {
   id: string;
@@ -48,6 +49,7 @@ type ProjectSettlementRuleRow = {
   default_settlement_method: SettlementMethod;
   default_hourly_rate: number;
   default_base_salary: number;
+  default_settlement_rule?: unknown;
 };
 
 type SettlementBatchRow = {
@@ -194,7 +196,24 @@ export class SupabaseSettlementRepository implements SettlementRepository {
       throw error;
     }
 
-    return (data ?? []).map(toSettlementRuleRecord);
+    // The project-level structured rule (tiers / penalties / floor / cap)
+    // applies on top of each streamer's flat method + rate columns.
+    const projectRule = await this.getProjectSettlementRule({
+      projectId: input.projectId,
+    });
+    const structured = projectRule
+      ? extractStructuredSettlementRule({
+          hourlyTiers: projectRule.hourlyTiers,
+          penalties: projectRule.penalties,
+          floorAmount: projectRule.floorAmount,
+          capAmount: projectRule.capAmount,
+        })
+      : {};
+
+    return (data ?? []).map((row) => ({
+      ...toSettlementRuleRecord(row),
+      ...structured,
+    }));
   }
 
   async getProjectSettlementRule(input: {
@@ -203,7 +222,7 @@ export class SupabaseSettlementRepository implements SettlementRepository {
     const { data, error } = await this.client
       .from("projects")
       .select(
-        "id, default_settlement_method, default_hourly_rate, default_base_salary",
+        "id, default_settlement_method, default_hourly_rate, default_base_salary, default_settlement_rule",
       )
       .eq("id", input.projectId)
       .maybeSingle<ProjectSettlementRuleRow>();
@@ -409,6 +428,7 @@ function toProjectSettlementRuleRecord(
     settlementMethod: row.default_settlement_method,
     hourlyRate: Number(row.default_hourly_rate ?? 0),
     baseSalary: Number(row.default_base_salary ?? 0),
+    ...extractStructuredSettlementRule(row.default_settlement_rule),
   };
 }
 
