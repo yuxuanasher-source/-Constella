@@ -136,6 +136,7 @@ function createRepo(): LiveOperationsRepository {
       contributorOrganizationId: input.contributorOrganizationId,
     })),
     getLiveReportById: vi.fn(async () => ({ ...baseReport })),
+    listLiveReportsByTask: vi.fn(async () => []),
     updateLiveReport: vi.fn(async (_reportId, patch) => ({
       ...baseReport,
       ...patch,
@@ -742,7 +743,7 @@ describe("live operations service", () => {
     expect(createOcrJob).not.toHaveBeenCalled();
   });
 
-  it("keeps the OCR report confirmable when OCR queueing fails after evidence is stored", async () => {
+  it("voids the report and does not advance the task when OCR queueing fails", async () => {
     vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
       ...task,
       status: "pending_report",
@@ -752,7 +753,44 @@ describe("live operations service", () => {
       throw new Error("queue unavailable");
     });
 
-    const result = await submitLiveReportScreenshotForOcr({
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob,
+      }),
+    ).rejects.toThrow("OCR 入队失败");
+
+    // The report is created but then voided, and the task is never advanced
+    // into review (so the streamer can simply re-upload).
+    expect(repo.createLiveReport).toHaveBeenCalled();
+    expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
+      status: "voided",
+    });
+    expect(repo.updateLiveTask).not.toHaveBeenCalledWith("task-1", {
+      status: "report_pending_review",
+    });
+  });
+
+  it("supersedes prior open reports for the task on resubmit", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "report_rejected",
+      systemDuration: 80,
+    });
+    vi.mocked(repo.listLiveReportsByTask).mockResolvedValueOnce([
+      { ...baseReport, id: "old-report", status: "rejected" },
+    ]);
+    const createOcrJob = vi.fn(async () => ({
+      id: "job-1",
+      status: "queued",
+    }));
+
+    await submitLiveReportScreenshotForOcr({
       repo,
       audit,
       notify,
@@ -762,32 +800,14 @@ describe("live operations service", () => {
       createOcrJob,
     });
 
-    expect(result.report.status).toBe("ocr_ing");
-    expect(result.job).toMatchObject({
-      status: "failed",
-      errorCode: "ocr_queue_failed",
+    // The previously rejected report is voided before the new one is created.
+    expect(repo.updateLiveReport).toHaveBeenCalledWith("old-report", {
+      status: "voided",
     });
     expect(repo.createLiveReport).toHaveBeenCalled();
-    expect(repo.createReportScreenshot).toHaveBeenCalled();
     expect(repo.updateLiveTask).toHaveBeenCalledWith("task-1", {
       status: "report_pending_review",
     });
-    expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        module: "live_report",
-        after: expect.objectContaining({
-          ocrJobId: null,
-          ocrQueueStatus: "failed",
-        }),
-        changedFields: expect.arrayContaining(["ocr_queue"]),
-      }),
-    );
-    expect(notify).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "review",
-        objectId: "report-1",
-      }),
-    );
   });
 
   it("confirmLiveReportOcrResult confirms OCR result values and sends the report to review", async () => {
