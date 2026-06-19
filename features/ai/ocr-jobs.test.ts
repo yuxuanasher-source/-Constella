@@ -22,8 +22,13 @@ function createClient(
       claimed_duration?: number | null;
       risk_flags?: string[] | null;
     }>;
+    ocrResults?: Array<{
+      live_report_id: string;
+      background_job_id: string | null;
+    }>;
   } = {},
 ) {
+  const ocrResults = [...(fixtures.ocrResults ?? [])];
   const inserts: Record<string, Record<string, unknown>[]> = {};
   const updates: Record<string, Record<string, unknown>[]> = {};
   const jobs = [...(fixtures.jobs ?? [])];
@@ -73,6 +78,14 @@ function createClient(
             if (table === "live_reports" && column === "id") {
               return {
                 data: liveReports.find((report) => report.id === value) ?? null,
+                error: null,
+              };
+            }
+            if (table === "ocr_results" && column === "live_report_id") {
+              return {
+                data:
+                  ocrResults.find((row) => row.live_report_id === value) ??
+                  null,
                 error: null,
               };
             }
@@ -397,6 +410,86 @@ describe("OCR jobs", () => {
     expect(String(lastBackgroundUpdate?.payload.error_message)).not.toContain(
       "secret=abc",
     );
+  });
+
+  it("releases the lock and requeues when the provider throws unexpectedly", async () => {
+    const { client, updates } = createClient({
+      jobs: [
+        {
+          id: "job-runner-error",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          maxAttempts: 3,
+          runAfter: "2026-06-05T01:00:00.000Z",
+          payload: {
+            liveReportId: "report-runner-error",
+            imageBase64: "AQID",
+          },
+        },
+      ],
+    });
+    const runGeneralBasicOcr = vi.fn(async () => {
+      throw new Error("tencent network blew up");
+    });
+
+    const result = await runOcrJobOnce({
+      client,
+      actor,
+      jobId: "job-runner-error",
+      runnerId: "runner-1",
+      now: () => new Date("2026-06-05T02:00:00.000Z"),
+      provider: { runGeneralBasicOcr },
+      imageResolver: vi.fn(async () => ({ imageBase64: "AQID" })),
+    });
+
+    // Unexpected throw after the lock was taken: the job is requeued and the
+    // lock cleared rather than left stuck in `running`.
+    expect(result).toMatchObject({ status: "queued", attempt: 1 });
+    expect(updates.background_jobs.at(-1)).toEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          status: "queued",
+          attempt: 1,
+          error_code: "runner_error",
+          locked_at: null,
+          locked_by: null,
+        }),
+      }),
+    );
+  });
+
+  it("is idempotent: returns the existing job instead of enqueueing a duplicate", async () => {
+    const existingJob: OcrJobRecord = {
+      id: "job-existing",
+      organizationId: "org-1",
+      jobType: "ocr.extract_live_report",
+      status: "queued",
+      attempt: 0,
+      maxAttempts: 3,
+      payload: { liveReportId: "report-dup", imagePath: "org/x.png" },
+    };
+    const { client, inserts } = createClient({
+      jobs: [existingJob],
+      liveReports: [
+        { id: "report-dup", organization_id: "org-1", project_id: "project-1" },
+      ],
+      ocrResults: [
+        { live_report_id: "report-dup", background_job_id: "job-existing" },
+      ],
+    });
+
+    const job = await createOcrJob({
+      client,
+      actor,
+      input: { liveReportId: "report-dup", imagePath: "org/x.png" },
+    });
+
+    expect(job.id).toBe("job-existing");
+    // No duplicate background job or ocr_results row inserted.
+    expect(inserts.background_jobs).toBeUndefined();
+    expect(inserts.ocr_results).toBeUndefined();
   });
 
   it("marks low-confidence OCR as needs confirmation instead of trusted", async () => {

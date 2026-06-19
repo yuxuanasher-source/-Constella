@@ -156,6 +156,18 @@ export async function createOcrJob({
     actor,
     liveReportId: input.liveReportId,
   });
+
+  // Idempotency: one OCR job per live report. If a job was already enqueued for
+  // this report (e.g. a retried submit), return it instead of creating a
+  // duplicate job + ledger entry.
+  const existing = await findExistingOcrJobForReport({
+    client,
+    liveReportId: input.liveReportId,
+  });
+  if (existing) {
+    return existing;
+  }
+
   const payload: OcrJobPayload = {
     liveReportId: input.liveReportId,
     screenshotId: input.screenshotId,
@@ -236,6 +248,34 @@ export async function getOcrJob({
   }
 
   return data ? toOcrJobRecord(data as OcrJobRow) : null;
+}
+
+// Look up the OCR job already enqueued for a live report (via its ocr_results
+// row) so job creation stays idempotent per report.
+async function findExistingOcrJobForReport({
+  client,
+  liveReportId,
+}: {
+  client: OcrJobClient;
+  liveReportId: string;
+}): Promise<OcrJobRecord | null> {
+  const { data, error } = await client
+    .from("ocr_results")
+    .select("background_job_id")
+    .eq("live_report_id", liveReportId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  const jobId = (data as { background_job_id?: string | null } | null)
+    ?.background_job_id;
+  if (!jobId) {
+    return null;
+  }
+
+  return getOcrJob({ client, jobId });
 }
 
 export async function listOcrJobs({
@@ -416,6 +456,58 @@ export async function runOcrJobOnce({
     locked_by: runnerId,
   });
 
+  try {
+    return await runLockedOcrJob({
+      client,
+      actor,
+      job,
+      jobId,
+      provider,
+      attempt,
+      maxAttempts,
+      startedAt,
+      imageResolver,
+    });
+  } catch (error) {
+    // The lock was already taken; any unexpected error here would otherwise
+    // leave the job stuck in `running` until the lock times out. Release the
+    // lock and schedule a retry (or fail it out) instead.
+    return failOcrJobAttempt({
+      client,
+      job,
+      attempt,
+      maxAttempts,
+      startedAt,
+      errorCode: "runner_error",
+      errorSummary:
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "OCR runner error",
+    });
+  }
+}
+
+async function runLockedOcrJob({
+  client,
+  actor,
+  job,
+  jobId,
+  provider,
+  attempt,
+  maxAttempts,
+  startedAt,
+  imageResolver,
+}: {
+  client: OcrJobClient;
+  actor: AiActor;
+  job: OcrJobRecord;
+  jobId: string;
+  provider: TencentOcrProvider;
+  attempt: number;
+  maxAttempts: number;
+  startedAt: Date;
+  imageResolver: (payload: OcrJobPayload) => Promise<TencentOcrInput>;
+}): Promise<OcrJobRecord> {
   let providerInput: TencentOcrInput;
   try {
     providerInput = await imageResolver(job.payload);
