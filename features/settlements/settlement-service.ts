@@ -227,14 +227,24 @@ export async function generateSettlementBatch({
     rules.map((rule) => [rule.streamerId, rule] as const),
   );
   const baseSalaryApplied = new Set<string>();
+  let receivableBaseSalaryApplied = false;
   const calculations = eligibleReports.map((report) => {
     const rule =
       input.batchType === "receivable"
         ? (projectRule ?? fallbackRule())
         : (ruleByStreamer.get(report.streamerId) ?? fallbackRule());
-    const includeBaseSalary = !baseSalaryApplied.has(report.streamerId);
-    if (includeBaseSalary) {
-      baseSalaryApplied.add(report.streamerId);
+    // Receivable base salary is a project-level fee billed to the vendor once
+    // for the whole batch; applying it per streamer over-bills by (N-1) × base
+    // salary. Payable base salary stays per streamer (once per streamer).
+    let includeBaseSalary: boolean;
+    if (input.batchType === "receivable") {
+      includeBaseSalary = !receivableBaseSalaryApplied;
+      receivableBaseSalaryApplied = true;
+    } else {
+      includeBaseSalary = !baseSalaryApplied.has(report.streamerId);
+      if (includeBaseSalary) {
+        baseSalaryApplied.add(report.streamerId);
+      }
     }
 
     return {
