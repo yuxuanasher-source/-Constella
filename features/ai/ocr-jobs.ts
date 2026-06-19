@@ -681,12 +681,12 @@ export async function confirmOcrJob({
   await advanceLiveReportAfterOcr({
     client,
     liveReportId: job.payload.liveReportId,
-    extractedDuration: pickNumericField(
+    extractedDuration: pickPositiveNumericField(
       manualResult.extractedDuration,
       manualResult.duration,
       job.result?.extractedDuration,
     ),
-    extractedViewers: pickNumericField(
+    extractedViewers: pickPositiveNumericField(
       manualResult.extractedViewers,
       manualResult.viewers,
       job.result?.extractedViewers,
@@ -976,16 +976,18 @@ async function advanceLiveReportAfterOcr({
   }
 }
 
-function pickNumericField(...values: unknown[]): number | null {
+// Manual confirmation values are optional corrections. A zero (or negative)
+// value means "not provided" — the confirm dialog defaults empty fields to 0 —
+// so it must NOT override a genuine OCR-extracted measurement. Treating 0 as a
+// real override let a blank confirmation wipe the extracted duration to 0,
+// which then diverged 100% from the system duration and forced every report to
+// yellow evidence (blocking automatic CPT settlement).
+function pickPositiveNumericField(...values: unknown[]): number | null {
   for (const value of values) {
-    if (typeof value === "number" && Number.isFinite(value)) {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
       return value;
     }
-    if (
-      typeof value === "string" &&
-      value.trim() &&
-      !Number.isNaN(Number(value))
-    ) {
+    if (typeof value === "string" && value.trim() && Number(value) > 0) {
       return Number(value);
     }
   }

@@ -899,6 +899,59 @@ describe("OCR jobs", () => {
     ]);
   });
 
+  it("keeps the OCR-extracted duration when a confirmation submits zero", async () => {
+    const { client, updates } = createClient({
+      jobs: [
+        {
+          id: "job-confirm-zero",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "needs_confirmation",
+          attempt: 1,
+          maxAttempts: 3,
+          payload: { liveReportId: "report-confirm-zero", imageBase64: "ZmFrZQ==" },
+          result: { extractedDuration: 180, extractedViewers: 2488 },
+        },
+      ],
+      liveReports: [
+        {
+          id: "report-confirm-zero",
+          organization_id: "org-1",
+          project_id: "project-1",
+          status: "ocr_ing",
+          system_duration: 180,
+          risk_flags: ["ocr_pending"],
+        },
+      ],
+    });
+
+    await confirmOcrJob({
+      client,
+      actor,
+      jobId: "job-confirm-zero",
+      // The confirm dialog defaults empty fields to 0; this must not wipe the
+      // genuine OCR-extracted duration, otherwise the report is forced to
+      // yellow evidence and never settles automatically.
+      manualResult: { duration: 0, viewers: 0 },
+      now: () => new Date("2026-06-05T02:30:00.000Z"),
+    });
+
+    expect(updates.live_reports).toEqual([
+      expect.objectContaining({
+        column: "id",
+        value: "report-confirm-zero",
+        payload: expect.objectContaining({
+          status: "pending_review",
+          screenshot_duration: 180,
+          viewers: 2488,
+          settlement_duration: 180,
+          time_source: "system",
+          evidence_level: "green",
+        }),
+      }),
+    ]);
+  });
+
   it("advances the live report into the review pool when OCR succeeds", async () => {
     const { client, updates } = createClient({
       jobs: [
