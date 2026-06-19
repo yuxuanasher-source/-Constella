@@ -363,6 +363,64 @@ describe("StreamerDesktopReferenceApp task summary", () => {
   });
 });
 
+describe("StreamerDesktopReferenceApp rejected report re-upload", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("shows a re-upload CTA for a rejected task and accepts a pasted screenshot", async () => {
+    const rejectedTask = {
+      id: "rejected-task-1",
+      projectName: "Rejected Project",
+      vendor: "Vendor",
+      dateStr: "2026-06-03",
+      start: "20:00",
+      end: "22:00",
+      durationPlan: 2,
+      status: "rejected",
+      settleHint: "CPT 80/h",
+      note: "截图缺少场观",
+    };
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/streamer/live-tasks") {
+        return { ok: true, json: async () => ({ tasks: [rejectedTask] }) };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerDesktopReferenceApp
+        initialRoute="tasks"
+        liveTasks={[rejectedTask]}
+      />,
+    );
+
+    // The rejected task detail offers a re-upload CTA with the reject reason.
+    expect(
+      await screen.findByText("审核被驳回，请重新上传截图"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("驳回原因：截图缺少场观")).toBeInTheDocument();
+
+    // Pasting an image into the paste zone stages it for upload.
+    const pasteZone = screen.getByRole("button", {
+      name: /粘贴截图上传区/,
+    });
+    const file = new File(["binary"], "shot.png", { type: "image/png" });
+    fireEvent.paste(pasteZone, {
+      clipboardData: {
+        items: [{ type: "image/png", getAsFile: () => file }],
+      },
+    });
+
+    expect(
+      await screen.findByRole("button", { name: "重新提交" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/已选择：pasted-\d+\.png/)).toBeInTheDocument();
+  });
+});
+
 describe("StreamerDesktopReferenceApp notifications", () => {
   afterEach(() => {
     vi.restoreAllMocks();
