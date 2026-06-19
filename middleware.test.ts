@@ -2,7 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { proxy } from "./proxy";
+import { middleware } from "./middleware";
 
 vi.mock("@supabase/ssr", () => ({
   createServerClient: vi.fn(),
@@ -17,7 +17,7 @@ function createRequest(pathname: string) {
   return new NextRequest(new URL(pathname, "https://preview.example.cn"));
 }
 
-describe("proxy auth boundary", () => {
+describe("middleware auth boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -31,7 +31,7 @@ describe("proxy auth boundary", () => {
   });
 
   it("redirects protected routes to login when Supabase config is missing", async () => {
-    const response = await proxy(createRequest("/console/projects"));
+    const response = await middleware(createRequest("/console/projects"));
 
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe(
@@ -41,14 +41,14 @@ describe("proxy auth boundary", () => {
   });
 
   it("allows non-protected routes without Supabase config", async () => {
-    const response = await proxy(createRequest("/public"));
+    const response = await middleware(createRequest("/public"));
 
     expect(response.status).toBe(200);
     expect(createServerClient).not.toHaveBeenCalled();
   });
 
   it("redirects protected mobile routes to mobile login when Supabase config is missing", async () => {
-    const response = await proxy(createRequest("/m/tasks"));
+    const response = await middleware(createRequest("/m/tasks"));
 
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe(
@@ -68,7 +68,7 @@ describe("proxy auth boundary", () => {
       },
     } as never);
 
-    const response = await proxy(createRequest("/m/tasks"));
+    const response = await middleware(createRequest("/m/tasks"));
 
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe(
@@ -87,7 +87,7 @@ describe("proxy auth boundary", () => {
       },
     } as never);
 
-    const response = await proxy(createRequest("/console/projects"));
+    const response = await middleware(createRequest("/console/projects"));
 
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe(
