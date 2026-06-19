@@ -237,6 +237,69 @@ function Card({ children, title, extra, padded = true, style, bodyStyle }) {
   );
 }
 
+// Collapsible section — keeps advanced/secondary controls out of the way until
+// the operator opens them. Default collapsed.
+function CollapsibleSection({ title, hint, defaultOpen = false, children }) {
+  const [open, setOpen] = React.useState(defaultOpen);
+  return (
+    <div
+      style={{
+        border: "1px solid var(--line)",
+        borderRadius: 8,
+        background: "#fff",
+        overflow: "hidden",
+      }}
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          padding: "10px 14px",
+          background: open ? "var(--bg-soft)" : "#fff",
+          border: "none",
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span
+            style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}
+          >
+            {title}
+          </span>
+          {hint && (
+            <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              {hint}
+            </span>
+          )}
+        </span>
+        <span
+          aria-hidden="true"
+          style={{
+            fontSize: 12,
+            color: "var(--ink-400)",
+            transform: open ? "rotate(90deg)" : "none",
+            transition: "transform 0.15s",
+          }}
+        >
+          ▶
+        </span>
+      </button>
+      {open && (
+        <div style={{ padding: 14, borderTop: "1px solid var(--line)" }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Sectional header inside a page (between cards)
 function SectionTitle({ children, hint, extra }) {
   return (
@@ -12832,7 +12895,10 @@ function ScreenSettlement({ go }) {
                 {busyAction === "project-rule" ? "保存中…" : "保存项目规则"}
               </Button>
               <div style={{ gridColumn: "1 / -1" }}>
-                <TaskFormLabel label="进阶结算规则">
+                <CollapsibleSection
+                  title="进阶结算规则"
+                  hint="阶梯小时单价 / 扣罚 / 保底封顶"
+                >
                   <SettlementRuleBuilder
                     value={ruleDraft.defaultSettlementRule}
                     onChange={(next) =>
@@ -12846,13 +12912,25 @@ function ScreenSettlement({ go }) {
                     }
                     method={ruleDraft.defaultSettlementMethod}
                   />
-                </TaskFormLabel>
+                  <div
+                    style={{
+                      marginTop: 8,
+                      fontSize: 12,
+                      color: "var(--ink-400)",
+                    }}
+                  >
+                    进阶规则随上方「保存项目规则」一并保存。
+                  </div>
+                </CollapsibleSection>
               </div>
             </form>
           </div>
         </Card>
 
-        <Card title="项目财务设置(税费与采购)">
+        <CollapsibleSection
+          title="项目财务设置"
+          hint="税费与采购 · 开票 / 销项税 / 附加税 / 采购成本"
+        >
           <form
             onSubmit={saveProjectFinancials}
             style={{ display: "flex", flexDirection: "column", gap: 12 }}
@@ -12876,7 +12954,7 @@ function ScreenSettlement({ go }) {
               </Button>
             </div>
           </form>
-        </Card>
+        </CollapsibleSection>
 
         {settlementMessage ? (
           <div
