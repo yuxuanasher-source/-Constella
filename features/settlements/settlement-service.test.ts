@@ -6,6 +6,7 @@ import {
   listSettlementPool,
   lockSettlementBatch,
   reopenSettlementBatch,
+  type SettlementBatchAtomicItemInput,
   type SettlementBatchRecord,
   type SettlementRepository,
 } from "./settlement-service";
@@ -106,6 +107,28 @@ function createRepo(): SettlementRepository {
       ...input,
       createdAt: "2026-06-02T12:11:00.000Z",
     })),
+    createSettlementBatchAtomic: vi.fn(async (input) => ({
+      batch: createBatch({
+        id: "batch-created",
+        projectId: input.projectId,
+        batchType: input.batchType,
+        periodStart: input.periodStart,
+        periodEnd: input.periodEnd,
+        computedAmount: input.computedAmount,
+        manualAmount: input.manualAmount,
+        adjustmentAmount: input.adjustmentAmount,
+        evidenceSummary: input.evidenceSummary,
+        createdBy: input.createdBy,
+      }),
+      items: input.items.map((item: SettlementBatchAtomicItemInput, index: number) => ({
+        id: `item-${index + 1}`,
+        organizationId: input.organizationId,
+        settlementBatchId: "batch-created",
+        projectId: input.projectId,
+        ...item,
+        createdAt: "2026-06-02T12:11:00.000Z",
+      })),
+    })),
     markReportSettled: vi.fn(async () => undefined),
     getSettlementBatchById: vi.fn(async () => createBatch()),
     updateSettlementBatch: vi.fn(async (_batchId, patch) =>
@@ -186,19 +209,25 @@ describe("settlement service", () => {
       status: "generated",
     });
     expect(result.items).toHaveLength(1);
-    expect(repo.createSettlementBatchItem).toHaveBeenCalledWith(
+    expect(repo.createSettlementBatchAtomic).toHaveBeenCalledWith(
       expect.objectContaining({
-        settlementBatchId: "batch-created",
-        liveReportId: "report-1",
+        organizationId: "org-1",
+        projectId: "project-1",
+        batchType: "payable",
         computedAmount: 160,
-        manualAmount: 0,
+        items: [
+          expect.objectContaining({
+            liveReportId: "report-1",
+            itemType: "live_report_payable",
+            computedAmount: 160,
+            manualAmount: 0,
+          }),
+        ],
       }),
     );
-    expect(repo.markReportSettled).toHaveBeenCalledWith({
-      reportId: "report-1",
-      settlementBatchItemId: "item-1",
-      batchType: "payable",
-    });
+    // The legacy non-atomic persistence path is no longer used.
+    expect(repo.createSettlementBatchItem).not.toHaveBeenCalled();
+    expect(repo.markReportSettled).not.toHaveBeenCalled();
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "create",
@@ -229,16 +258,14 @@ describe("settlement service", () => {
     expect(repo.getProjectSettlementRule).toHaveBeenCalledWith({
       projectId: "project-1",
     });
-    expect(repo.createSettlementBatchItem).toHaveBeenCalledWith(
+    expect(repo.createSettlementBatchAtomic).toHaveBeenCalledWith(
       expect.objectContaining({
-        itemType: "live_report_receivable",
+        batchType: "receivable",
+        items: [
+          expect.objectContaining({ itemType: "live_report_receivable" }),
+        ],
       }),
     );
-    expect(repo.markReportSettled).toHaveBeenCalledWith({
-      reportId: "report-1",
-      settlementBatchItemId: "item-1",
-      batchType: "receivable",
-    });
   });
 
   it("bills receivable base salary once across multiple streamers", async () => {
@@ -342,7 +369,7 @@ describe("settlement service", () => {
       }),
     ).rejects.toThrow("No unsettled approved reports found");
 
-    expect(repo.createSettlementBatch).not.toHaveBeenCalled();
+    expect(repo.createSettlementBatchAtomic).not.toHaveBeenCalled();
     expect(repo.createSettlementBatchItem).not.toHaveBeenCalled();
   });
 

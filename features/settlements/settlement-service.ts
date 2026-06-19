@@ -88,6 +88,17 @@ export type SettlementBatchItemRecord = {
   createdAt?: string;
 };
 
+export type SettlementBatchAtomicItemInput = {
+  streamerId?: string | null;
+  liveReportId?: string | null;
+  itemType: string;
+  computedAmount: number;
+  manualAmount: number;
+  adjustmentAmount: number;
+  evidenceLevel?: "green" | "yellow" | "red" | null;
+  evidenceSnapshot: Record<string, unknown>;
+};
+
 export type SettlementRepository = {
   listSettlementPoolReports(input: {
     organizationId: string;
@@ -118,6 +129,19 @@ export type SettlementRepository = {
   createSettlementBatchItem(
     input: Omit<SettlementBatchItemRecord, "id" | "createdAt">,
   ): Promise<SettlementBatchItemRecord>;
+  createSettlementBatchAtomic(input: {
+    organizationId: string;
+    projectId: string;
+    batchType: SettlementBatchType;
+    periodStart: string;
+    periodEnd: string;
+    computedAmount: number;
+    manualAmount: number;
+    adjustmentAmount: number;
+    evidenceSummary: Record<string, unknown>;
+    createdBy: string;
+    items: SettlementBatchAtomicItemInput[];
+  }): Promise<{ batch: SettlementBatchRecord; items: SettlementBatchItemRecord[] }>;
   markReportSettled(input: {
     reportId: string;
     settlementBatchItemId: string;
@@ -258,7 +282,10 @@ export async function generateSettlementBatch({
   });
 
   const totals = totalItems(calculations.map(({ item }) => item));
-  const batch = await repo.createSettlementBatch({
+  // Persist the batch, its items and the per-report settled pointers in a single
+  // database transaction (see the generate_settlement_batch RPC) so a partial
+  // failure can never leave an orphaned batch with only some items/reports.
+  const { batch, items } = await repo.createSettlementBatchAtomic({
     organizationId: actor.organizationId,
     projectId: input.projectId,
     batchType: input.batchType,
@@ -273,14 +300,7 @@ export async function generateSettlementBatch({
       })),
     ),
     createdBy: actor.userId,
-  });
-
-  const items: SettlementBatchItemRecord[] = [];
-  for (const { report, item } of calculations) {
-    const createdItem = await repo.createSettlementBatchItem({
-      organizationId: actor.organizationId,
-      settlementBatchId: batch.id,
-      projectId: report.projectId,
+    items: calculations.map(({ report, item }) => ({
       streamerId: report.streamerId,
       liveReportId: report.id,
       itemType: liveReportItemType(input.batchType),
@@ -289,14 +309,8 @@ export async function generateSettlementBatch({
       adjustmentAmount: item.adjustmentAmount,
       evidenceLevel: report.evidenceLevel,
       evidenceSnapshot: item.evidenceSnapshot,
-    });
-    await repo.markReportSettled({
-      reportId: report.id,
-      settlementBatchItemId: createdItem.id,
-      batchType: input.batchType,
-    });
-    items.push(createdItem);
-  }
+    })),
+  });
 
   await audit({
     organizationId: actor.organizationId,
