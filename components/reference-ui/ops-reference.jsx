@@ -15,6 +15,8 @@ import {
   toSupplierQualityDtos,
 } from "@/features/war-room/war-room-ui-dto";
 
+import AiUsageDashboard from "./ai-usage-dashboard";
+
 // ===== src\ui.jsx =====
 // ——— Reusable UI atoms ——————————————————————————————————————
 
@@ -1445,6 +1447,7 @@ const NAV = [
   { key: "reports", label: "报数审核", icon: "Reports" },
   { key: "settle", label: "结算中心", icon: "Money" },
   { key: "billing", label: "商业化与套餐", icon: "Money" },
+  { key: "aiusage", label: "AI 用量与成本", icon: "Sparkles" },
   { divider: true },
   { key: "export", label: "数据导出", icon: "Export" },
   { key: "audit", label: "操作日志", icon: "Audit" },
@@ -18850,6 +18853,15 @@ function PolicyCard({ title, icon, items, accent }) {
   );
 }
 
+function ScreenAiUsage() {
+  return (
+    <>
+      <PageHeader title="AI 用量与成本" />
+      <AiUsageDashboard />
+    </>
+  );
+}
+
 function ScreenAudit() {
   const entries = useOpsAuditEntries();
   const actions = useOpsLiveActions();
@@ -21277,6 +21289,7 @@ function OpsReferenceInner({
                 onRefresh={actions.refreshBillingStatus}
               />
             )}
+            {route === "aiusage" && <ScreenAiUsage />}
             {route === "audit" && <ScreenAudit go={go} />}
             {route === "notifications" && <ScreenNotifications go={go} />}
             {route === "org" && (
