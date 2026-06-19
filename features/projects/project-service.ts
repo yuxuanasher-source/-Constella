@@ -38,6 +38,10 @@ export type ProjectRecord = {
   default_hourly_rate?: number;
   default_base_salary?: number;
   default_settlement_rule?: unknown;
+  is_invoiced?: boolean;
+  output_vat_rate_bps?: number;
+  surtax_rate_bps?: number;
+  procurement_cost_cents?: number;
 };
 
 export type ProjectActor = {
@@ -83,6 +87,13 @@ export type UpdateProjectSettlementRuleInput = {
   defaultSettlementRule?: Record<string, unknown>;
 };
 
+export type UpdateProjectFinancialSettingsInput = {
+  isInvoiced?: boolean;
+  outputVatRateBps?: number;
+  surtaxRateBps?: number;
+  procurementCostCents?: number;
+};
+
 export type ProjectRepository = {
   createDraft(input: {
     organizationId: string;
@@ -99,6 +110,10 @@ export type ProjectRepository = {
     input: Partial<ProjectRecord>,
   ): Promise<ProjectRecord>;
   updateSettlementRule(
+    projectId: string,
+    input: Partial<ProjectRecord>,
+  ): Promise<ProjectRecord>;
+  updateFinancialSettings(
     projectId: string,
     input: Partial<ProjectRecord>,
   ): Promise<ProjectRecord>;
@@ -284,6 +299,65 @@ export async function updateProjectSettlementRule({
   });
 
   return project;
+}
+
+export async function updateProjectFinancialSettings({
+  repo,
+  audit,
+  actor,
+  projectId,
+  input,
+  reason,
+}: {
+  repo: ProjectRepository;
+  audit: ProjectAuditWriter;
+  actor: ProjectActor;
+  projectId: string;
+  input: UpdateProjectFinancialSettingsInput;
+  reason: string;
+}): Promise<ProjectRecord> {
+  if (!canPublishProject(actor.role)) {
+    throw new Error("Only owner and ops_manager can update financial settings");
+  }
+
+  if (!reason.trim()) {
+    throw new Error("Financial settings changes require a reason");
+  }
+
+  const before = await requireProject(repo, projectId);
+  const patch = mapFinancialProjectPatch(input);
+  const changedFields = Object.keys(patch);
+  const project = await repo.updateFinancialSettings(projectId, patch);
+
+  await audit({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action: "update",
+    module: "project",
+    objectType: "project",
+    objectId: project.id,
+    objectName: project.name,
+    before,
+    after: project,
+    changedFields,
+    isHighRisk: true,
+    reason: reason.trim(),
+  });
+
+  return project;
+}
+
+function mapFinancialProjectPatch(
+  input: UpdateProjectFinancialSettingsInput,
+): Partial<ProjectRecord> {
+  return removeUndefined({
+    is_invoiced: input.isInvoiced,
+    output_vat_rate_bps: input.outputVatRateBps,
+    surtax_rate_bps: input.surtaxRateBps,
+    procurement_cost_cents: input.procurementCostCents,
+  });
 }
 
 export function createProjectAuditWriter(

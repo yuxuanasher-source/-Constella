@@ -139,6 +139,14 @@ export type ComplexCostDashboardRecord = {
   trafficCostCents?: number;
   platformFeeCents?: number;
   manualAdjustmentCents?: number;
+  // Project financial settings layer (Phase 2): tax + procurement.
+  isInvoiced?: boolean;
+  outputVatRateBps?: number;
+  surtaxRateBps?: number;
+  outputVatCents?: number;
+  surtaxCents?: number;
+  procurementCostCents?: number;
+  taxTotalCents?: number;
   grossMarginCents?: number;
   marginRateBps?: number;
   items: ProjectCostItemRecord[];

@@ -29,6 +29,10 @@ export type ProjectCardDto = {
   defaultHourlyRate: number;
   defaultBaseSalary: number;
   defaultSettlementRule: Record<string, unknown>;
+  isInvoiced: boolean;
+  outputVatRateBps: number;
+  surtaxRateBps: number;
+  procurementCostCents: number;
   description: string;
   isPublicToStreamers: boolean;
   publicSummary: string;
@@ -128,6 +132,10 @@ export function toProjectCardDto(row: ProjectListItem): ProjectCardDto {
     defaultHourlyRate: row.default_hourly_rate ?? 0,
     defaultBaseSalary: row.default_base_salary ?? 0,
     defaultSettlementRule: recordOrEmpty(row.default_settlement_rule),
+    isInvoiced: row.is_invoiced ?? false,
+    outputVatRateBps: row.output_vat_rate_bps ?? 0,
+    surtaxRateBps: row.surtax_rate_bps ?? 0,
+    procurementCostCents: row.procurement_cost_cents ?? 0,
     description: row.description?.trim() || "",
     isPublicToStreamers: row.is_public_to_streamers,
     publicSummary: row.public_summary?.trim() || "",
@@ -232,6 +240,10 @@ export function toCollaborationProjectCardDto(
     defaultHourlyRate: 0,
     defaultBaseSalary: 0,
     defaultSettlementRule: {},
+    isInvoiced: false,
+    outputVatRateBps: 0,
+    surtaxRateBps: 0,
+    procurementCostCents: 0,
     description: row.project.collaborationSummary || "",
     isPublicToStreamers: false,
     publicSummary: "",
@@ -305,6 +317,10 @@ export function toCollaborationApplicationProjectCardDto(
     defaultHourlyRate: 0,
     defaultBaseSalary: 0,
     defaultSettlementRule: {},
+    isInvoiced: false,
+    outputVatRateBps: 0,
+    surtaxRateBps: 0,
+    procurementCostCents: 0,
     description: row.project.collaborationSummary || "",
     isPublicToStreamers: false,
     publicSummary: "",
