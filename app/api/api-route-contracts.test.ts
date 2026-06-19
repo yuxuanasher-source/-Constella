@@ -194,7 +194,7 @@ describe("api route contracts", () => {
 
     const response = await settlementBatchPost(
       jsonRequest("http://localhost/api/settlement-batches", {
-        projectId: "project-1",
+        projectId: "2ba8b258-b9f6-4ac2-bd3e-b55f686ac608",
         batchType: "payable",
         periodStart: "2026-06-01",
         periodEnd: "2026-06-30",
@@ -214,7 +214,7 @@ describe("api route contracts", () => {
           organizationId: "org-1",
         },
         input: {
-          projectId: "project-1",
+          projectId: "2ba8b258-b9f6-4ac2-bd3e-b55f686ac608",
           batchType: "payable",
           periodStart: "2026-06-01",
           periodEnd: "2026-06-30",
@@ -320,7 +320,7 @@ describe("api route contracts", () => {
 
     const response = await settlementBatchPost(
       jsonRequest("http://localhost/api/settlement-batches", {
-        projectId: "project-1",
+        projectId: "2ba8b258-b9f6-4ac2-bd3e-b55f686ac608",
         periodStart: "2026-06-01",
         periodEnd: "2026-06-30",
         batchType: "payable",
@@ -339,7 +339,7 @@ describe("api route contracts", () => {
     expect(generateSettlementBatch).toHaveBeenCalledWith(
       expect.objectContaining({
         input: {
-          projectId: "project-1",
+          projectId: "2ba8b258-b9f6-4ac2-bd3e-b55f686ac608",
           periodStart: "2026-06-01",
           periodEnd: "2026-06-30",
           batchType: "payable",
