@@ -12218,9 +12218,17 @@ function settlementProjectOptions({
     if (!id) return;
 
     const existing = options.get(id) || {};
+    // A "name" that is empty, UUID-like, or equal to the project id itself is
+    // not a real label — a manually-entered project id flows through here as
+    // the name. Ignore it so an already-resolved real name (or the formatted
+    // displayRecordId fallback) wins instead of showing a raw UUID.
+    const resolveName = (value) => {
+      const text = cleanSettlementText(value);
+      return text && text !== id && !isUuidLikeId(text) ? text : "";
+    };
     const name =
-      cleanSettlementText(source.name) ||
-      cleanSettlementText(projectName) ||
+      resolveName(source.name) ||
+      resolveName(projectName) ||
       cleanSettlementText(existing.name) ||
       displayRecordId(id, "项目记录");
 
@@ -12268,7 +12276,7 @@ function settlementProjectOptions({
       settlementScope.projectName ||
       settlementScope.project ||
       (settlementPool.length === 1 ? settlementPool[0]?.project : "") ||
-      settlementScope.projectId;
+      "";
     upsert(settlementScope.projectId, scopeName);
   }
 
