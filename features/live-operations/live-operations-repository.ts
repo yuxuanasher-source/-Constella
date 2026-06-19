@@ -297,6 +297,21 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     return data ? toLiveReportRecord(data) : null;
   }
 
+  async listLiveReportsByTask(taskId: string): Promise<LiveReportRecord[]> {
+    const { data, error } = await this.client
+      .from("live_reports")
+      .select(liveReportSelect)
+      .eq("live_task_id", taskId)
+      .order("created_at", { ascending: false })
+      .returns<LiveReportRow[]>();
+
+    if (error) {
+      throw error;
+    }
+
+    return (data ?? []).map(toLiveReportRecord);
+  }
+
   async updateLiveReport(
     reportId: string,
     patch: Partial<LiveReportRecord> & {

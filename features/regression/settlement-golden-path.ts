@@ -291,6 +291,12 @@ class GoldenPathRepository
     return this.reports.get(reportId) ?? null;
   }
 
+  async listLiveReportsByTask(taskId: string): Promise<LiveReportRecord[]> {
+    return [...this.reports.values()].filter(
+      (report) => report.liveTaskId === taskId,
+    );
+  }
+
   async updateLiveReport(
     reportId: string,
     patch: Partial<LiveReportRecord>,
