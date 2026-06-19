@@ -261,11 +261,33 @@ function parseTencentResponse(rawResponse: unknown): {
     })
     .filter((item): item is OcrTextItem => item !== null);
   const textLines = textItems.map((item) => item.text);
-  const confidenceValues = detections
-    .map((item) => numberValue(objectValue(item).Confidence))
-    .filter((confidence): confidence is number => confidence !== null);
-  const confidence = confidenceValues.length
-    ? Math.min(...confidenceValues)
+  // Character-length-weighted average confidence. A single short, noisy token
+  // (e.g. a stray icon) no longer drags the whole extraction below the
+  // human-confirmation threshold the way a plain min() did; longer detected
+  // strings (which carry the duration / 场观 numbers we parse) weigh more.
+  const weightedConfidences = detections
+    .map((item) => {
+      const detection = objectValue(item);
+      const confidence = numberValue(detection.Confidence);
+      if (confidence === null) {
+        return null;
+      }
+      const text = stringValue(detection.DetectedText) ?? "";
+      return { confidence, weight: Math.max(1, text.trim().length) };
+    })
+    .filter(
+      (entry): entry is { confidence: number; weight: number } =>
+        entry !== null,
+    );
+  const totalWeight = weightedConfidences.reduce(
+    (sum, entry) => sum + entry.weight,
+    0,
+  );
+  const confidence = totalWeight
+    ? weightedConfidences.reduce(
+        (sum, entry) => sum + entry.confidence * entry.weight,
+        0,
+      ) / totalWeight
     : 0;
 
   return {

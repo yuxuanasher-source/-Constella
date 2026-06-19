@@ -66,6 +66,40 @@ describe("createTencentOcrProvider", () => {
     );
   });
 
+  it("weights confidence by detected text length instead of taking the minimum", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        Response: {
+          TextDetections: [
+            // The numbers we actually parse, long and high-confidence.
+            { DetectedText: "直播时长 120分钟 观看人数 5000", Confidence: 96 },
+            // A short, noisy token that a plain min() would let drag the whole
+            // extraction down to needs-confirmation.
+            { DetectedText: "x", Confidence: 10 },
+          ],
+          RequestId: "request-weighted",
+        },
+      }),
+    }));
+    const provider = createTencentOcrProvider({
+      secretId: "AKIDEXAMPLE",
+      secretKey: "SECRETEXAMPLE",
+      region: "ap-guangzhou",
+      fetchImpl,
+      now: () => new Date("2026-06-04T04:00:00.000Z"),
+    });
+
+    const result = await provider.runGeneralBasicOcr({
+      imageBase64: "ZmFrZS1pbWFnZQ==",
+    });
+
+    // min() would be 10; the length-weighted average stays well above the
+    // 70 human-confirmation threshold.
+    expect(result.confidence).toBeGreaterThanOrEqual(90);
+  });
+
   it("returns degraded when Tencent OCR credentials are not configured", async () => {
     const provider = createTencentOcrProvider({
       secretId: "",
