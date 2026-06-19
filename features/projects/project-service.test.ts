@@ -26,6 +26,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn(),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -55,6 +56,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn(),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn();
 
@@ -82,6 +84,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn().mockResolvedValue(after),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -119,6 +122,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn().mockResolvedValue(after),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -162,6 +166,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn().mockResolvedValue(after),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -219,6 +224,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn().mockResolvedValue(after),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -275,6 +281,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn().mockResolvedValue(after),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -323,6 +330,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn(),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -352,6 +360,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn(),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -382,6 +391,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn().mockResolvedValue(after),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -418,6 +428,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn().mockResolvedValue(after),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 
@@ -454,6 +465,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn(),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn();
 
@@ -481,6 +493,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn(),
       updateSettlementRule: vi.fn(),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn();
 
@@ -509,6 +522,7 @@ describe("project service", () => {
       publish: vi.fn(),
       updateBasics: vi.fn(),
       updateSettlementRule: vi.fn().mockResolvedValue(after),
+      updateFinancialSettings: vi.fn(),
     };
     const audit = vi.fn().mockResolvedValue(undefined);
 

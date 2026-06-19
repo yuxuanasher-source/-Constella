@@ -13,6 +13,13 @@ export type ComplexCostDashboardDto =
       trafficCostCents?: number;
       platformFeeCents?: number;
       manualAdjustmentCents?: number;
+      isInvoiced?: boolean;
+      outputVatRateBps?: number;
+      surtaxRateBps?: number;
+      outputVatCents?: number;
+      surtaxCents?: number;
+      procurementCostCents?: number;
+      taxTotalCents?: number;
       grossMarginCents?: number;
       marginRateBps?: number;
       items: ProjectCostItemDto[];
@@ -45,6 +52,13 @@ export function toComplexCostDashboardDto(
     trafficCostCents: dashboard.trafficCostCents,
     platformFeeCents: dashboard.platformFeeCents,
     manualAdjustmentCents: dashboard.manualAdjustmentCents,
+    isInvoiced: dashboard.isInvoiced,
+    outputVatRateBps: dashboard.outputVatRateBps,
+    surtaxRateBps: dashboard.surtaxRateBps,
+    outputVatCents: dashboard.outputVatCents,
+    surtaxCents: dashboard.surtaxCents,
+    procurementCostCents: dashboard.procurementCostCents,
+    taxTotalCents: dashboard.taxTotalCents,
     grossMarginCents: dashboard.grossMarginCents,
     marginRateBps: dashboard.marginRateBps,
     items: dashboard.items.map(toProjectCostItemDto),

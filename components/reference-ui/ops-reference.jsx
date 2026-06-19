@@ -20,6 +20,10 @@ import SettlementRuleBuilder, {
   builderRuleFromStored,
   serializeBuilderRule,
 } from "./settlement-rule-builder";
+import ProjectFinancialSettings, {
+  financialDraftFromProject,
+  serializeFinancialDraft,
+} from "./project-financial-settings";
 
 // ===== src\ui.jsx =====
 // ——— Reusable UI atoms ——————————————————————————————————————
@@ -12313,6 +12317,9 @@ function ScreenSettlement({ go }) {
   const [ruleDraft, setRuleDraft] = React.useState(() =>
     settlementRuleDraft(projectOptions[0]),
   );
+  const [financialDraft, setFinancialDraft] = React.useState(() =>
+    financialDraftFromProject(projectOptions[0]),
+  );
 
   React.useEffect(() => {
     if (!projectOptions.length) return;
@@ -12357,6 +12364,7 @@ function ScreenSettlement({ go }) {
 
   React.useEffect(() => {
     setRuleDraft(settlementRuleDraft(selectedProject));
+    setFinancialDraft(financialDraftFromProject(selectedProject));
   }, [selectedProject]);
 
   const filtered =
@@ -12524,6 +12532,21 @@ function ScreenSettlement({ go }) {
         reason: "结算中心项目规则调整",
       });
       setSettlementMessage("项目结算规则已保存");
+      return false;
+    });
+  };
+  const saveProjectFinancials = (event) => {
+    event?.preventDefault?.();
+    return runSettlementAction("project-financials", async () => {
+      if (!selectedProjectId) {
+        setSettlementMessage("请选择结算项目");
+        return false;
+      }
+      await actions.updateProjectFinancialSettings?.(selectedProjectId, {
+        ...serializeFinancialDraft(financialDraft),
+        reason: "结算中心项目财务设置调整",
+      });
+      setSettlementMessage("项目财务设置已保存");
       return false;
     });
   };
@@ -12827,6 +12850,32 @@ function ScreenSettlement({ go }) {
               </div>
             </form>
           </div>
+        </Card>
+
+        <Card title="项目财务设置(税费与采购)">
+          <form
+            onSubmit={saveProjectFinancials}
+            style={{ display: "flex", flexDirection: "column", gap: 12 }}
+          >
+            <ProjectFinancialSettings
+              value={financialDraft}
+              onChange={setFinancialDraft}
+              expectedReceivableCents={Math.round(
+                (settlementSummary.vendorReceivable || 0) * 100,
+              )}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <Button
+                kind="primary"
+                type="submit"
+                disabled={!!busyAction || !selectedProjectId}
+              >
+                {busyAction === "project-financials"
+                  ? "保存中…"
+                  : "保存财务设置"}
+              </Button>
+            </div>
+          </form>
         </Card>
 
         {settlementMessage ? (
@@ -20690,6 +20739,19 @@ function OpsReferenceInner({
         const body = await fetchJson(
           `/api/projects/${id}/settlement-rule`,
           "update project settlement rule failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshProjects();
+        return body;
+      },
+      updateProjectFinancialSettings: async (id, input) => {
+        const body = await fetchJson(
+          `/api/projects/${id}/financial-settings`,
+          "update project financial settings failed",
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },

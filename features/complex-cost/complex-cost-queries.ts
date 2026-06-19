@@ -2,6 +2,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { calculateComplexCostPreview } from "./complex-cost-calculator";
 import {
+  calculateProjectFinancials,
+  normalizeProjectFinancialSettings,
+} from "./project-financials";
+import {
   mapCostItemRow,
   mapEntitlementRow,
   mapRuleVersionRow,
@@ -40,7 +44,10 @@ export async function getProjectComplexCostDashboard(
   client: SupabaseClient,
   input: { organizationId: string; projectId: string },
 ): Promise<ComplexCostDashboardRecord> {
-  const items = await listProjectCostItems(client, input);
+  const [items, settings] = await Promise.all([
+    listProjectCostItems(client, input),
+    getProjectFinancialSettings(client, input),
+  ]);
   const supplierCostCents = sumItems(items, ["supplier_fee"]);
   const trafficCostCents = sumItems(items, ["traffic"]);
   const platformFeeCents = sumItems(items, ["platform_fee"]);
@@ -56,6 +63,17 @@ export async function getProjectComplexCostDashboard(
     manualAdjustmentCents,
   });
 
+  // Layer the project financial settings (tax + procurement) onto the margin.
+  const financials = calculateProjectFinancials({
+    expectedReceivableCents,
+    settings,
+  });
+  const grossMarginCents =
+    (preview.grossMarginCents ?? 0) - financials.totalFinancialCostCents;
+  const marginRateBps = expectedReceivableCents
+    ? Math.round((grossMarginCents / expectedReceivableCents) * 10000)
+    : 0;
+
   return {
     expectedReceivableCents,
     streamerPayableCents: preview.streamerPayableCents,
@@ -63,10 +81,47 @@ export async function getProjectComplexCostDashboard(
     trafficCostCents,
     platformFeeCents,
     manualAdjustmentCents,
-    grossMarginCents: preview.grossMarginCents,
-    marginRateBps: preview.marginRateBps,
+    isInvoiced: financials.isInvoiced,
+    outputVatRateBps: financials.outputVatRateBps,
+    surtaxRateBps: financials.surtaxRateBps,
+    outputVatCents: financials.outputVatCents,
+    surtaxCents: financials.surtaxCents,
+    procurementCostCents: financials.procurementCostCents,
+    taxTotalCents: financials.outputVatCents + financials.surtaxCents,
+    grossMarginCents,
+    marginRateBps,
     items,
   };
+}
+
+async function getProjectFinancialSettings(
+  client: SupabaseClient,
+  input: { organizationId: string; projectId: string },
+) {
+  const { data, error } = await client
+    .from("projects")
+    .select(
+      "is_invoiced, output_vat_rate_bps, surtax_rate_bps, procurement_cost_cents",
+    )
+    .eq("organization_id", input.organizationId)
+    .eq("id", input.projectId)
+    .maybeSingle<{
+      is_invoiced: boolean | null;
+      output_vat_rate_bps: number | null;
+      surtax_rate_bps: number | null;
+      procurement_cost_cents: number | null;
+    }>();
+
+  if (error) {
+    throw error;
+  }
+
+  return normalizeProjectFinancialSettings({
+    isInvoiced: data?.is_invoiced ?? false,
+    outputVatRateBps: data?.output_vat_rate_bps ?? 0,
+    surtaxRateBps: data?.surtax_rate_bps ?? 0,
+    procurementCostCents: data?.procurement_cost_cents ?? 0,
+  });
 }
 
 export async function listSettlementBatchProjectCostItems(

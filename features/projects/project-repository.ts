@@ -32,6 +32,10 @@ type ProjectRow = {
   default_hourly_rate: number;
   default_base_salary: number;
   default_settlement_rule: unknown;
+  is_invoiced: boolean | null;
+  output_vat_rate_bps: number | null;
+  surtax_rate_bps: number | null;
+  procurement_cost_cents: number | null;
 };
 
 const projectSelect = `
@@ -63,7 +67,11 @@ const projectSelect = `
   default_settlement_method,
   default_hourly_rate,
   default_base_salary,
-  default_settlement_rule
+  default_settlement_rule,
+  is_invoiced,
+  output_vat_rate_bps,
+  surtax_rate_bps,
+  procurement_cost_cents
 `;
 
 export class SupabaseProjectRepository implements ProjectRepository {
@@ -165,6 +173,24 @@ export class SupabaseProjectRepository implements ProjectRepository {
 
     return toProjectRecord(data);
   }
+
+  async updateFinancialSettings(
+    projectId: string,
+    input: Partial<ProjectRecord>,
+  ): Promise<ProjectRecord> {
+    const { data, error } = await this.client
+      .from("projects")
+      .update(input)
+      .eq("id", projectId)
+      .select(projectSelect)
+      .single<ProjectRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return toProjectRecord(data);
+  }
 }
 
 function toProjectRecord(row: ProjectRow): ProjectRecord {
@@ -198,5 +224,9 @@ function toProjectRecord(row: ProjectRow): ProjectRecord {
     default_hourly_rate: row.default_hourly_rate,
     default_base_salary: row.default_base_salary,
     default_settlement_rule: row.default_settlement_rule,
+    is_invoiced: row.is_invoiced ?? false,
+    output_vat_rate_bps: row.output_vat_rate_bps ?? 0,
+    surtax_rate_bps: row.surtax_rate_bps ?? 0,
+    procurement_cost_cents: row.procurement_cost_cents ?? 0,
   };
 }
