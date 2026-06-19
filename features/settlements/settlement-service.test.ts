@@ -241,6 +241,36 @@ describe("settlement service", () => {
     });
   });
 
+  it("bills receivable base salary once across multiple streamers", async () => {
+    vi.mocked(repo.listSettlementPoolReports).mockResolvedValueOnce([
+      { ...report, id: "report-a", streamerId: "streamer-1" },
+      { ...report, id: "report-b", streamerId: "streamer-2" },
+    ]);
+    vi.mocked(repo.getProjectSettlementRule).mockResolvedValueOnce({
+      projectId: "project-1",
+      settlementMethod: "base_salary_cpt",
+      hourlyRate: 60,
+      baseSalary: 500,
+    });
+
+    const result = await generateSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        batchType: "receivable",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      },
+    });
+
+    // 2 × CPT ((120 / 60) × 60 = 120) + the project base salary once (500) = 740,
+    // not 1240 (which would double-count the base salary per streamer).
+    expect(result.batch.computedAmount).toBe(740);
+  });
+
   it("keeps receivable and payable settlement eligibility separate", async () => {
     vi.mocked(repo.listSettlementPoolReports).mockResolvedValueOnce([
       {
