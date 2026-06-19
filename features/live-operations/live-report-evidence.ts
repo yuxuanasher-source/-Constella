@@ -24,8 +24,16 @@ export function resolveReportEvidence(
   input: ReportEvidenceInput,
 ): ReportEvidenceSnapshot {
   const systemDuration = validDuration(input.systemDuration);
-  const screenshotDuration = validDuration(input.screenshotDuration);
-  const claimedDuration = validDuration(input.claimedDuration);
+  // A screenshot/claimed duration of 0 means the value was never captured, not
+  // that the stream genuinely lasted 0 minutes. Treat it as "not provided" so a
+  // missing screenshot is flagged as missing_screenshot_duration instead of
+  // being scored as a 100% divergence from the system duration.
+  const screenshotDuration = validDuration(input.screenshotDuration, {
+    treatZeroAsMissing: true,
+  });
+  const claimedDuration = validDuration(input.claimedDuration, {
+    treatZeroAsMissing: true,
+  });
   const riskFlags: string[] = [];
 
   if (systemDuration !== null) {
@@ -87,7 +95,10 @@ export function resolveReportEvidence(
   throw new Error("Report requires system, screenshot, or claimed duration");
 }
 
-function validDuration(value: number | null | undefined): number | null {
+function validDuration(
+  value: number | null | undefined,
+  options: { treatZeroAsMissing?: boolean } = {},
+): number | null {
   if (value === null || value === undefined) {
     return null;
   }
@@ -96,7 +107,12 @@ function validDuration(value: number | null | undefined): number | null {
     throw new Error("Duration must be a non-negative number");
   }
 
-  return Math.floor(value);
+  const floored = Math.floor(value);
+  if (options.treatZeroAsMissing && floored === 0) {
+    return null;
+  }
+
+  return floored;
 }
 
 function roundDivergence(value: number): number {
