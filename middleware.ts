@@ -5,7 +5,7 @@ import { getPublicEnv } from "@/lib/config/env";
 
 const protectedPrefixes = ["/console", "/m", "/desktop"];
 
-export async function proxy(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const response = NextResponse.next({ request });
   const isProtected = protectedPrefixes.some((prefix) =>
     request.nextUrl.pathname.startsWith(prefix),
