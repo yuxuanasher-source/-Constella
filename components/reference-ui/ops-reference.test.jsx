@@ -5260,7 +5260,8 @@ describe("OpsReferenceApp live task smoke", () => {
 
   it("marks anomaly actions and new task draft saves as explicit pending states", async () => {
     const fetchMock = vi.fn(async (url) => {
-      if (String(url) === "/api/anomalies/scan") {
+      const requested = String(url);
+      if (requested === "/api/anomalies/scan") {
         return {
           ok: true,
           json: async () => ({
@@ -5270,6 +5271,12 @@ describe("OpsReferenceApp live task smoke", () => {
             },
           }),
         };
+      }
+      if (requested.endsWith("/resolve-anomaly")) {
+        return { ok: true, json: async () => ({ task: { id: "task-anomaly-one" } }) };
+      }
+      if (requested === "/api/live-tasks") {
+        return { ok: true, json: async () => ({ tasks: [] }) };
       }
 
       return { ok: false, json: async () => ({ error: "unexpected request" }) };
@@ -5313,9 +5320,13 @@ describe("OpsReferenceApp live task smoke", () => {
     expect(await screen.findByText(/异常扫描完成/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "标记处理" }));
-    expect(
-      await screen.findByText("异常处理状态后台暂未接入。"),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/live-tasks/task-anomaly-one/resolve-anomaly",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(await screen.findByText(/已标记处理/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "新建任务" }));
     fireEvent.click(await screen.findByRole("button", { name: "保存草稿" }));

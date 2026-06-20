@@ -48,6 +48,7 @@ export type OpsLiveTaskQueueItem = {
   plannedEndAt: string | null;
   plannedDuration: number | null;
   systemDuration: number;
+  anomalyFlags?: string[];
 };
 
 type StreamerTaskRow = {
@@ -92,6 +93,7 @@ type OpsLiveTaskRow = {
   planned_end_at: string | null;
   planned_duration: number | null;
   system_duration: number;
+  anomaly_flags?: string[] | null;
   projects: { name: string } | { name: string }[] | null;
   streamers: { display_name: string } | { display_name: string }[] | null;
 };
@@ -155,7 +157,7 @@ export async function listOpsLiveTaskQueue(
   let query = client
     .from("live_tasks")
     .select(
-      "id, title, status, task_type, project_id, streamer_id, planned_start_at, planned_end_at, planned_duration, system_duration, projects(name), streamers(display_name)",
+      "id, title, status, task_type, project_id, streamer_id, planned_start_at, planned_end_at, planned_duration, system_duration, anomaly_flags, projects(name), streamers(display_name)",
     );
 
   if (organizationId) {
@@ -235,6 +237,7 @@ export function toOpsLiveTaskQueueItem(
     plannedEndAt: row.planned_end_at,
     plannedDuration: row.planned_duration,
     systemDuration: row.system_duration,
+    anomalyFlags: row.anomaly_flags ?? [],
   };
 }
 
