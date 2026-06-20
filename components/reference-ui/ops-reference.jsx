@@ -30,6 +30,18 @@ import {
   reconciliationGate,
   reconciliationSeverityTone,
 } from "./settlement-reconciliation-view";
+import {
+  buildCostItemPayload,
+  canConfirmCostItem,
+  canVoidCostItem,
+  costStatusLabel,
+  costStatusTone,
+  COST_DIRECTION_OPTIONS,
+  COST_EVIDENCE_OPTIONS,
+  COST_ITEM_TYPE_OPTIONS,
+  defaultCostDraft,
+  formatYuanFromCents,
+} from "./external-cost-view";
 
 // ===== src\ui.jsx =====
 // ——— Reusable UI atoms ——————————————————————————————————————
@@ -12411,6 +12423,9 @@ function ScreenSettlement({ go }) {
   // for, so a stale verdict from a different period (same project) never gates
   // another batch's lock.
   const [reconciliationKey, setReconciliationKey] = React.useState(null);
+  const [costItems, setCostItems] = React.useState([]);
+  const [costItemsLoadedFor, setCostItemsLoadedFor] = React.useState(null);
+  const [costDraft, setCostDraft] = React.useState(() => defaultCostDraft());
 
   React.useEffect(() => {
     if (!projectOptions.length) return;
@@ -12534,7 +12549,68 @@ function ScreenSettlement({ go }) {
     setSettlementMessage("");
     setReconciliation(null);
     setReconciliationKey(null);
+    setCostItems([]);
+    setCostItemsLoadedFor(null);
   };
+
+  const updateCostDraft = (field) => (event) =>
+    setCostDraft((draft) => ({ ...draft, [field]: event.target.value }));
+
+  const reloadCostItems = async (projectId) => {
+    const items = await actions.fetchProjectCostItems?.(projectId);
+    setCostItems(Array.isArray(items) ? items : []);
+    setCostItemsLoadedFor(projectId);
+  };
+
+  const loadCostItems = () =>
+    runSettlementAction("cost-load", async () => {
+      if (!selectedProjectId) {
+        setSettlementMessage("请先选择结算项目");
+        return false;
+      }
+      await reloadCostItems(selectedProjectId);
+      setSettlementMessage("");
+      return false;
+    });
+
+  const submitCostItem = (event) => {
+    event?.preventDefault?.();
+    return runSettlementAction("cost-create", async () => {
+      if (!selectedProjectId) {
+        setSettlementMessage("请先选择结算项目");
+        return false;
+      }
+      const built = buildCostItemPayload(costDraft);
+      if (built.error) {
+        setSettlementMessage(built.error);
+        return false;
+      }
+      await actions.createProjectCostItem?.(selectedProjectId, built.payload);
+      await reloadCostItems(selectedProjectId);
+      setCostDraft(defaultCostDraft());
+      setSettlementMessage("外部成本已录入（待确认）");
+      return false;
+    });
+  };
+
+  const reviewCostItem = (itemId, status) =>
+    runSettlementAction(`cost-review-${itemId}`, async () => {
+      if (!selectedProjectId) return false;
+      const reason = globalThis.prompt?.(
+        status === "confirmed" ? "确认入账原因" : "作废原因",
+      );
+      if (!reason || !reason.trim()) {
+        setSettlementMessage("操作已取消：需填写原因");
+        return false;
+      }
+      await actions.reviewProjectCostItem?.(selectedProjectId, itemId, {
+        status,
+        reason: reason.trim(),
+      });
+      await reloadCostItems(selectedProjectId);
+      setSettlementMessage("");
+      return false;
+    });
 
   const reconciliationKeyOf = (projectId, periodStart, periodEnd) =>
     `${projectId}|${periodStart}|${periodEnd}`;
@@ -13318,6 +13394,191 @@ function ScreenSettlement({ go }) {
               </Button>
             </div>
           </form>
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="外部成本录入与确认"
+          hint="供应商 / 投流 / 平台 / 罚扣等，确认后计入项目成本与结算校验"
+        >
+          <form
+            onSubmit={submitCostItem}
+            style={{ display: "flex", flexDirection: "column", gap: 12 }}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                gap: 10,
+                alignItems: "end",
+                minWidth: 0,
+              }}
+            >
+              <TaskFormLabel label="成本类型">
+                <select
+                  value={costDraft.itemType}
+                  onChange={updateCostDraft("itemType")}
+                  style={taskInputStyle}
+                >
+                  {COST_ITEM_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </TaskFormLabel>
+              <TaskFormLabel label="金额(元)">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={costDraft.amountYuan}
+                  onChange={updateCostDraft("amountYuan")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="方向">
+                <select
+                  value={costDraft.direction}
+                  onChange={updateCostDraft("direction")}
+                  style={taskInputStyle}
+                >
+                  {COST_DIRECTION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </TaskFormLabel>
+              <TaskFormLabel label="证据等级">
+                <select
+                  value={costDraft.evidenceLevel}
+                  onChange={updateCostDraft("evidenceLevel")}
+                  style={taskInputStyle}
+                >
+                  {COST_EVIDENCE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </TaskFormLabel>
+              <TaskFormLabel label="原因">
+                <input
+                  type="text"
+                  value={costDraft.reason}
+                  onChange={updateCostDraft("reason")}
+                  style={taskInputStyle}
+                  placeholder="必填，记入审计"
+                />
+              </TaskFormLabel>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+              }}
+            >
+              <Button
+                kind="default"
+                onClick={loadCostItems}
+                disabled={!!busyAction || !selectedProjectId}
+              >
+                {busyAction === "cost-load" ? "加载中…" : "加载/刷新"}
+              </Button>
+              <Button
+                kind="primary"
+                type="submit"
+                disabled={!!busyAction || !selectedProjectId}
+              >
+                {busyAction === "cost-create" ? "录入中…" : "录入外部成本"}
+              </Button>
+            </div>
+          </form>
+
+          {costItemsLoadedFor === selectedProjectId ? (
+            costItems.length ? (
+              <div
+                style={{
+                  marginTop: 12,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                }}
+              >
+                {costItems.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      padding: "6px 10px",
+                      borderRadius: 8,
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        fontSize: 12,
+                      }}
+                    >
+                      <Badge tone={costStatusTone(item.status)}>
+                        {costStatusLabel(item.status)}
+                      </Badge>
+                      <span style={{ color: "var(--ink-700)" }}>
+                        {item.itemType} · {item.direction} ·{" "}
+                        {formatYuanFromCents(item.amountCents)}
+                      </span>
+                      <span style={{ color: "var(--ink-400)" }}>
+                        {item.reason}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {canConfirmCostItem(item.status) ? (
+                        <Button
+                          kind="default"
+                          onClick={() => reviewCostItem(item.id, "confirmed")}
+                          disabled={!!busyAction}
+                        >
+                          确认
+                        </Button>
+                      ) : null}
+                      {canVoidCostItem(item.status) ? (
+                        <Button
+                          kind="ghost"
+                          onClick={() => reviewCostItem(item.id, "voided")}
+                          disabled={!!busyAction}
+                        >
+                          作废
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                style={{
+                  marginTop: 12,
+                  fontSize: 12,
+                  color: "var(--ink-400)",
+                }}
+              >
+                本项目暂无外部成本记录
+              </div>
+            )
+          ) : (
+            <div
+              style={{ marginTop: 12, fontSize: 12, color: "var(--ink-400)" }}
+            >
+              点击「加载/刷新」查看本项目已录入的外部成本
+            </div>
+          )}
         </CollapsibleSection>
 
         {settlementMessage ? (
@@ -21505,6 +21766,37 @@ function OpsReferenceInner({
           "load settlement reconciliation failed",
         );
         return body.reconciliation ?? null;
+      },
+      fetchProjectCostItems: async (projectId) => {
+        const body = await fetchJson(
+          `/api/projects/${projectId}/cost-items`,
+          "load project cost items failed",
+        );
+        return body.items ?? [];
+      },
+      createProjectCostItem: async (projectId, input) => {
+        const body = await fetchJson(
+          `/api/projects/${projectId}/cost-items`,
+          "create project cost item failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        return body.item ?? null;
+      },
+      reviewProjectCostItem: async (projectId, itemId, input) => {
+        const body = await fetchJson(
+          `/api/projects/${projectId}/cost-items/${itemId}`,
+          "review project cost item failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        return body.item ?? null;
       },
       refreshAuditEntries,
       refreshOcrJobs,
