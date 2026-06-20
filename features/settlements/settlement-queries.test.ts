@@ -115,6 +115,8 @@ describe("settlement DTO mappers", () => {
       project: "Launch Week",
       vendor: "—",
       period: "2026-06-01 → 2026-06-30",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
       items: 1,
       amount: 175,
       status: "generated",

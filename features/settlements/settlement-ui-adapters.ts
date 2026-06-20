@@ -12,6 +12,8 @@ export type OpsReferenceBatch = {
   project: string;
   vendor: string;
   period: string;
+  periodStart: string;
+  periodEnd: string;
   items: number;
   amount: number;
   status: string;
@@ -56,6 +58,8 @@ export function toOpsReferenceBatch(
     project: batch.projectName,
     vendor: isPayable ? "—" : batch.projectName,
     period: `${batch.periodStart} → ${batch.periodEnd}`,
+    periodStart: batch.periodStart,
+    periodEnd: batch.periodEnd,
     items: batch.itemCount,
     amount: batch.totalAmount,
     status: toReferenceStatus(batch.status),

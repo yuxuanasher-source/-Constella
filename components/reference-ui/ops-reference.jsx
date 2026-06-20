@@ -24,6 +24,12 @@ import ProjectFinancialSettings, {
   financialDraftFromProject,
   serializeFinancialDraft,
 } from "./project-financial-settings";
+import {
+  buildReconciliationRows,
+  reconciliationBlockMessage,
+  reconciliationGate,
+  reconciliationSeverityTone,
+} from "./settlement-reconciliation-view";
 
 // ===== src\ui.jsx =====
 // ——— Reusable UI atoms ——————————————————————————————————————
@@ -12400,6 +12406,9 @@ function ScreenSettlement({ go }) {
   const [financialDraft, setFinancialDraft] = React.useState(() =>
     financialDraftFromProject(projectOptions[0]),
   );
+  const [reconciliation, setReconciliation] = React.useState(null);
+  const [reconciliationProjectId, setReconciliationProjectId] =
+    React.useState(null);
 
   React.useEffect(() => {
     if (!projectOptions.length) return;
@@ -12521,7 +12530,42 @@ function ScreenSettlement({ go }) {
     setActiveId(null);
     setBatchDraft((draft) => ({ ...draft, projectId }));
     setSettlementMessage("");
+    setReconciliation(null);
+    setReconciliationProjectId(null);
   };
+
+  const reconciliationPeriod = () => ({
+    projectId: selectedProjectId || activeBatch?.projectId || "",
+    periodStart:
+      activeBatch?.periodStart || batchDraft.periodStart || "",
+    periodEnd: activeBatch?.periodEnd || batchDraft.periodEnd || "",
+  });
+
+  const runReconciliation = () =>
+    runSettlementAction("reconcile", async () => {
+      const { projectId, periodStart, periodEnd } = reconciliationPeriod();
+      if (!projectId || !periodStart || !periodEnd) {
+        setSettlementMessage("请先选择项目并设置结算周期再运行校验");
+        return false;
+      }
+      const result = await actions.fetchSettlementReconciliation?.({
+        projectId,
+        periodStart,
+        periodEnd,
+      });
+      setReconciliation(result ?? null);
+      setReconciliationProjectId(projectId);
+      setSettlementMessage("");
+      return false;
+    });
+
+  // Gate the active batch's lock on the §3.4 reconciliation verdict: the check
+  // must have been run for this batch's project and must not be blocking.
+  const activeReconciliation =
+    activeBatch && reconciliationProjectId === activeBatch.projectId
+      ? reconciliation
+      : null;
+  const activeGate = reconciliationGate(activeReconciliation);
 
   const updateBatchDraft = (field) => (event) => {
     setBatchDraft((draft) => ({ ...draft, [field]: event.target.value }));
@@ -12581,6 +12625,19 @@ function ScreenSettlement({ go }) {
   const lockBatch = () =>
     runSettlementAction("lock", async () => {
       if (!activeBatch) return false;
+      const gate = reconciliationGate(
+        reconciliationProjectId === activeBatch.projectId
+          ? reconciliation
+          : null,
+      );
+      if (!gate.evaluated) {
+        setSettlementMessage("锁定前请先运行「单项目结算校验」");
+        return false;
+      }
+      if (!gate.canLock) {
+        setSettlementMessage(reconciliationBlockMessage(reconciliation));
+        return false;
+      }
       await actions.lockSettlementBatch?.(activeBatch.id, {
         reason: "财务核对无误",
       });
@@ -12788,6 +12845,137 @@ function ScreenSettlement({ go }) {
             />
           </Card>
         </div>
+
+        <Card
+          title="单项目结算校验 · §3.4"
+          extra={
+            reconciliation ? (
+              <Badge
+                tone={
+                  reconciliationGate(reconciliation).hasBlocking
+                    ? "red"
+                    : reconciliationGate(reconciliation).warnings.length > 0
+                      ? "amber"
+                      : "green"
+                }
+              >
+                {reconciliationGate(reconciliation).hasBlocking
+                  ? "校验未通过"
+                  : reconciliationGate(reconciliation).warnings.length > 0
+                    ? "通过 · 有告警"
+                    : "校验通过"}
+              </Badge>
+            ) : (
+              <Badge tone="neutral">未运行</Badge>
+            )
+          }
+          padded={true}
+        >
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: 12 }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                合并 应收 / 成本 / 税费，输出毛利与可结判定（锁定前必须通过）
+              </div>
+              <Button
+                kind="default"
+                onClick={runReconciliation}
+                disabled={!!busyAction}
+              >
+                {busyAction === "reconcile" ? "校验中…" : "运行校验"}
+              </Button>
+            </div>
+
+            {reconciliation ? (
+              <>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, 1fr)",
+                    gap: 10,
+                  }}
+                >
+                  {buildReconciliationRows(reconciliation).map((row) => (
+                    <div
+                      key={row.key}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 8,
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        background: "var(--ink-50, #f6f7f9)",
+                      }}
+                    >
+                      <span
+                        style={{ fontSize: 12, color: "var(--ink-500)" }}
+                      >
+                        {row.label}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color:
+                            row.tone === "red"
+                              ? "var(--red-600, #d92d20)"
+                              : "var(--ink-800)",
+                        }}
+                      >
+                        {row.value}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {reconciliation.checks?.length ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                    }}
+                  >
+                    {reconciliation.checks.map((check) => (
+                      <div
+                        key={check.key}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          fontSize: 12,
+                        }}
+                      >
+                        <Badge tone={reconciliationSeverityTone(check.severity)}>
+                          {check.severity === "block" ? "阻断" : "告警"}
+                        </Badge>
+                        <span style={{ color: "var(--ink-700)" }}>
+                          {check.message}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: "var(--green-600, #079455)" }}>
+                    无阻断或告警项
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                点击「运行校验」生成本期对账单与可结判定
+              </div>
+            )}
+          </div>
+        </Card>
 
         {complexCost?.enabled ? (
           <Card
@@ -21280,6 +21468,18 @@ function OpsReferenceInner({
         );
         await refreshSettlementBatchDetail(batchId);
         await refreshSettlementBatches();
+      },
+      fetchSettlementReconciliation: async ({
+        projectId,
+        periodStart,
+        periodEnd,
+      }) => {
+        const params = new URLSearchParams({ periodStart, periodEnd });
+        const body = await fetchJson(
+          `/api/projects/${projectId}/settlement-reconciliation?${params.toString()}`,
+          "load settlement reconciliation failed",
+        );
+        return body.reconciliation ?? null;
       },
       refreshAuditEntries,
       refreshOcrJobs,

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   runProjectSettlementReconciliation,
+  SupabaseReconciliationDataSource,
   type ReconciliationDataSource,
 } from "./project-settlement-reconciliation-service";
 import type { SettlementActor } from "./settlement-service";
@@ -150,5 +151,57 @@ describe("runProjectSettlementReconciliation", () => {
         periodEnd: "2026-06-01",
       }),
     ).rejects.toThrow(/period end cannot be earlier/);
+  });
+});
+
+describe("SupabaseReconciliationDataSource", () => {
+  it("normalizes numeric(12,2) yuan batch amounts to cents", async () => {
+    const client = {
+      from: (table: string) => ({
+        select: () => ({
+          eq: function () {
+            return this;
+          },
+          neq: function () {
+            return this;
+          },
+          lte: function () {
+            return this;
+          },
+          gte: function () {
+            return this;
+          },
+          returns: async () =>
+            table === "settlement_batches"
+              ? {
+                  data: [
+                    {
+                      computed_amount: 1234.56,
+                      manual_amount: 10.0,
+                      adjustment_amount: 0,
+                      evidence_summary: { green: 3, yellow: 1, red: 0 },
+                    },
+                  ],
+                  error: null,
+                }
+              : { data: [], error: null },
+        }),
+      }),
+    };
+
+    const source = new SupabaseReconciliationDataSource(client as never);
+    const { totals, evidence } = await source.getBatchTotals({
+      organizationId: "org-1",
+      projectId: "p-1",
+      batchType: "receivable",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+    });
+
+    // 1234.56 yuan -> 123456 cents; 10.00 yuan -> 1000 cents.
+    expect(totals.computedCents).toBe(123_456);
+    expect(totals.manualCents).toBe(1_000);
+    expect(evidence.green).toBe(3);
+    expect(evidence.yellow).toBe(1);
   });
 });
