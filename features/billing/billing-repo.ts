@@ -126,6 +126,10 @@ export interface BillingRepo {
     organizationId: string,
     patch: Partial<SubscriptionRecord>,
   ): Promise<void>;
+  /** 生命周期定时任务用：扫描可能需要催缴 / 滚动的订阅（跨组织，service role）。 */
+  listLifecycleSubscriptions(): Promise<SubscriptionRecord[]>;
+  /** 生命周期定时任务用：扫描待支付订单（用于超时关闭，跨组织，service role）。 */
+  listPendingOrders(): Promise<OrderRecord[]>;
 
   findOrderByIdempotencyKey(
     organizationId: string,

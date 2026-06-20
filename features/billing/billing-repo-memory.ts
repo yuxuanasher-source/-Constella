@@ -82,6 +82,16 @@ export function createMemoryBillingRepo(seed: {
       }
       state.subscriptions.set(organizationId, { ...current, ...patch });
     },
+    async listLifecycleSubscriptions() {
+      return [...state.subscriptions.values()].filter((sub) =>
+        ["trialing", "active", "past_due"].includes(sub.status),
+      );
+    },
+    async listPendingOrders() {
+      return [...state.orders.values()].filter(
+        (order) => order.status === "pending",
+      );
+    },
     async findOrderByIdempotencyKey(organizationId, idempotencyKey) {
       for (const order of state.orders.values()) {
         if (

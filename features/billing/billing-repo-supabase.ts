@@ -127,6 +127,26 @@ export function createSupabaseBillingRepo(client: SupabaseClient): BillingRepo {
       throwIf(error);
     },
 
+    async listLifecycleSubscriptions() {
+      const { data, error } = await client
+        .from("organization_subscriptions")
+        .select(SUBSCRIPTION_COLUMNS)
+        .in("status", ["trialing", "active", "past_due"])
+        .returns<SubscriptionRow[]>();
+      throwIf(error);
+      return (data ?? []).map(toSubscriptionRecord);
+    },
+
+    async listPendingOrders() {
+      const { data, error } = await client
+        .from("billing_orders")
+        .select(ORDER_COLUMNS)
+        .eq("status", "pending")
+        .returns<OrderRow[]>();
+      throwIf(error);
+      return (data ?? []).map(toOrderRecord);
+    },
+
     async findOrderByIdempotencyKey(organizationId, idempotencyKey) {
       const { data } = await client
         .from("billing_orders")
