@@ -58,8 +58,14 @@ export function canVoidCostItem(status) {
   return status !== "voided";
 }
 
-// Convert a yuan input string/number into integer cents for the API.
+// Convert a yuan input string/number into integer cents for the API. A blank
+// or whitespace-only string is invalid (returns null) rather than coercing to
+// 0, so an empty amount field surfaces a validation error instead of silently
+// posting a zero-cost item.
 export function yuanInputToCents(value) {
+  if (typeof value === "string" && value.trim() === "") {
+    return null;
+  }
   const yuan = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(yuan) || yuan < 0) {
     return null;

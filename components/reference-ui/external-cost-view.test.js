@@ -16,6 +16,16 @@ describe("external-cost-view", () => {
     expect(yuanInputToCents(0)).toBe(0);
     expect(yuanInputToCents("-5")).toBeNull();
     expect(yuanInputToCents("abc")).toBeNull();
+    // Blank / whitespace must be invalid, not coerced to 0.
+    expect(yuanInputToCents("")).toBeNull();
+    expect(yuanInputToCents("   ")).toBeNull();
+  });
+
+  it("rejects a draft with a blank amount", () => {
+    expect(
+      buildCostItemPayload({ ...defaultCostDraft(), amountYuan: "", reason: "x" })
+        .error,
+    ).toMatch(/金额/);
   });
 
   it("maps status to tone and label", () => {
