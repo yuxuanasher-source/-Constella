@@ -275,6 +275,44 @@ describe("console projects route", () => {
     );
   });
 
+  it("still renders when partner collaboration loading fails (degrades to empty)", async () => {
+    const supabase = {};
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
+    vi.mocked(getAuthContext).mockResolvedValue({
+      userId: "user-owner",
+      email: "owner@example.test",
+      name: "Owner User",
+      organizationId: "org-1",
+      organizationName: "Demo Org",
+      role: "owner",
+    });
+    vi.mocked(listProjects).mockResolvedValue([]);
+    vi.mocked(listOpsLiveTaskQueue).mockResolvedValue([]);
+    vi.mocked(listOpsSettlementBatches).mockResolvedValue([]);
+    vi.mocked(listOpsSettlementBatchDetails).mockResolvedValue({});
+    vi.mocked(getOpsSettlementDefaultScope).mockResolvedValue(null);
+    vi.mocked(listOpsSettlementPool).mockResolvedValue([]);
+    // Simulate a bad service-role key surfacing as a header-encoding error.
+    vi.mocked(listPartnerCollaborationProjects).mockRejectedValue(
+      new TypeError("Cannot convert argument to a ByteString"),
+    );
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    render(await ProjectsPage());
+
+    expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
+      "Owner User",
+    );
+    expect(OpsReferenceApp).toHaveBeenCalledWith(
+      expect.objectContaining({ collaborationProjectCards: [] }),
+      undefined,
+    );
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
   it("redirects unauthenticated visitors to login", async () => {
     vi.mocked(createSupabaseServerClient).mockResolvedValue({} as never);
     vi.mocked(getAuthContext).mockResolvedValue(null);

@@ -12,6 +12,7 @@ import {
   listPartnerCollaborationProjects,
   SupabaseProjectCollaborationRepository,
 } from "@/features/collaborations/project-collaboration-service";
+import type { AuthContext } from "@/lib/auth/context";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import {
   getOpsSettlementDefaultScope,
@@ -39,20 +40,12 @@ export default async function ProjectsPage() {
   );
   const [
     projects,
-    collaborationProjects,
-    collaborationApplications,
+    collaborations,
     liveTasks,
     settlementData,
   ] = await Promise.all([
     listProjects(supabase),
-    listPartnerCollaborationProjects({
-      repo: collaborationRepo,
-      actor: auth,
-    }),
-    listPartnerCollaborationApplications({
-      repo: collaborationRepo,
-      actor: auth,
-    }),
+    loadPartnerCollaborations(collaborationRepo, auth),
     listOpsLiveTaskQueue(supabase, auth.organizationId),
     loadSettlementReferenceData(supabase, auth.organizationId),
   ]);
@@ -64,8 +57,10 @@ export default async function ProjectsPage() {
       organizationSettings={organizationSettingsFromAuth(auth)}
       projectCards={toProjectCardDtos(projects)}
       collaborationProjectCards={[
-        ...toCollaborationProjectCardDtos(collaborationProjects),
-        ...toCollaborationApplicationProjectCardDtos(collaborationApplications),
+        ...toCollaborationProjectCardDtos(collaborations.projects),
+        ...toCollaborationApplicationProjectCardDtos(
+          collaborations.applications,
+        ),
       ]}
       liveTasks={liveTasks.map((task) => toOpsReferenceTask(task))}
       liveBatches={settlementData.liveBatches}
@@ -74,6 +69,34 @@ export default async function ProjectsPage() {
       settlementScope={settlementData.settlementScope}
     />
   );
+}
+
+// Partner collaboration data is loaded through the service-role admin client.
+// If that client is misconfigured (e.g. a bad SUPABASE_SERVICE_ROLE_KEY) or the
+// query fails, degrade to no collaboration data and log it instead of letting
+// the error 500 the entire projects console.
+async function loadPartnerCollaborations(
+  repo: SupabaseProjectCollaborationRepository,
+  auth: AuthContext,
+): Promise<{
+  projects: Awaited<ReturnType<typeof listPartnerCollaborationProjects>>;
+  applications: Awaited<
+    ReturnType<typeof listPartnerCollaborationApplications>
+  >;
+}> {
+  try {
+    const [projects, applications] = await Promise.all([
+      listPartnerCollaborationProjects({ repo, actor: auth }),
+      listPartnerCollaborationApplications({ repo, actor: auth }),
+    ]);
+    return { projects, applications };
+  } catch (error) {
+    console.error(
+      "[console/projects] failed to load partner collaborations",
+      error,
+    );
+    return { projects: [], applications: [] };
+  }
 }
 
 async function loadSettlementReferenceData(
