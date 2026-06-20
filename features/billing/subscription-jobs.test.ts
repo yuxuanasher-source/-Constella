@@ -9,6 +9,7 @@ import {
 import {
   runDunningSweep,
   runExpirePendingOrdersSweep,
+  runRenewalSweep,
 } from "./subscription-jobs";
 
 const NOW = new Date("2026-06-20T00:00:00.000Z");
@@ -73,6 +74,69 @@ describe("runDunningSweep", () => {
     expect(state.subscriptions.get("org-ok")?.status).toBe("active");
     expect(onPastDue).toHaveBeenCalledTimes(2);
     expect(onReadonly).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runRenewalSweep", () => {
+  function setupDue(extra?: Parameters<typeof makeSubscription>[0]) {
+    const { repo, state } = createMemoryBillingRepo({
+      plans: TEST_PLANS,
+      prices: TEST_PRICES,
+      owners: { "org-1": "user-owner" },
+    });
+    state.subscriptions.set(
+      "org-1",
+      makeSubscription({
+        organizationId: "org-1",
+        planId: "plan_pro",
+        status: "active",
+        currentPeriodEnd: "2026-06-22",
+        autoRenew: true,
+        ...extra,
+      }),
+    );
+    return { repo, state };
+  }
+
+  it("generates a pending renewal order once and notifies", async () => {
+    const { repo, state } = setupDue();
+    const onRenewalOrder = vi.fn(async () => undefined);
+
+    const first = await runRenewalSweep({
+      repo,
+      now: NOW,
+      hooks: { onRenewalOrder },
+    });
+    expect(first.generated).toHaveLength(1);
+    expect(onRenewalOrder).toHaveBeenCalledTimes(1);
+
+    const order = state.orders.get(first.generated[0]);
+    expect(order).toMatchObject({
+      kind: "subscription_renewal",
+      planId: "plan_pro",
+      amountCents: 99900,
+      status: "pending",
+      createdBy: "user-owner",
+    });
+
+    // idempotent: a second sweep reuses the existing order
+    const second = await runRenewalSweep({ repo, now: NOW });
+    expect(second.generated).toHaveLength(0);
+    expect(state.orders.size).toBe(1);
+  });
+
+  it("prices a scheduled downgrade at the pending plan", async () => {
+    const { repo, state } = setupDue({
+      organizationId: "org-1",
+      planId: "plan_pro",
+      pendingPlanId: "plan_basic",
+      pendingBillingCycle: "monthly",
+      status: "active",
+      currentPeriodEnd: "2026-06-22",
+    });
+    const summary = await runRenewalSweep({ repo, now: NOW });
+    const order = state.orders.get(summary.generated[0]);
+    expect(order).toMatchObject({ planId: "plan_basic", amountCents: 29900 });
   });
 });
 

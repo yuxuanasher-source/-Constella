@@ -60,7 +60,7 @@ export async function createCheckoutOrder({
 }): Promise<CheckoutResult> {
   const subscription = await repo.getSubscription(actor.organizationId);
   const resolved = await resolveOrderAmount({ repo, intent, subscription, now });
-  const idempotencyKey = buildIdempotencyKey(intent, now);
+  const idempotencyKey = checkoutIdempotencyKey(intent, now);
 
   const existing = await repo.findOrderByIdempotencyKey(
     actor.organizationId,
@@ -265,7 +265,11 @@ async function resolveCurrentPlanPriceCents(
   }
 }
 
-function buildIdempotencyKey(intent: CheckoutIntent, now: Date): string {
+/**
+ * 下单幂等键。续费定时任务用同一规则生成订单，使前端再次发起 checkout 时
+ * 能复用同一未支付订单（cron 生成 → 用户付款 的衔接）。
+ */
+export function checkoutIdempotencyKey(intent: CheckoutIntent, now: Date): string {
   const month = periodMonthOf(now);
   switch (intent.kind) {
     case "usage_addon":

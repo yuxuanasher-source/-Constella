@@ -26,6 +26,7 @@ export type MemoryBillingState = {
   >;
   usageAddons: Array<{ organizationId: string; metric: string; quantity: number }>;
   featureAddons: Map<string, { featureKey: string; enabled: boolean }>;
+  owners: Map<string, string>;
 };
 
 /**
@@ -35,6 +36,7 @@ export function createMemoryBillingRepo(seed: {
   plans?: PlanRecord[];
   prices?: Record<string, PlanPriceRow[]>;
   subscription?: SubscriptionRecord | null;
+  owners?: Record<string, string>;
 }): { repo: BillingRepo; state: MemoryBillingState } {
   const state: MemoryBillingState = {
     plans: seed.plans ?? [],
@@ -46,6 +48,7 @@ export function createMemoryBillingRepo(seed: {
     usageCounters: new Map(),
     usageAddons: [],
     featureAddons: new Map(),
+    owners: new Map(Object.entries(seed.owners ?? {})),
   };
   if (seed.subscription) {
     state.subscriptions.set(seed.subscription.organizationId, {
@@ -91,6 +94,9 @@ export function createMemoryBillingRepo(seed: {
       return [...state.orders.values()].filter(
         (order) => order.status === "pending",
       );
+    },
+    async getOwnerUserId(organizationId) {
+      return state.owners.get(organizationId) ?? null;
     },
     async findOrderByIdempotencyKey(organizationId, idempotencyKey) {
       for (const order of state.orders.values()) {

@@ -130,6 +130,8 @@ export interface BillingRepo {
   listLifecycleSubscriptions(): Promise<SubscriptionRecord[]>;
   /** 生命周期定时任务用：扫描待支付订单（用于超时关闭，跨组织，service role）。 */
   listPendingOrders(): Promise<OrderRecord[]>;
+  /** 续费定时任务用：取组织 owner 的 user id 作为系统生成订单的 created_by。 */
+  getOwnerUserId(organizationId: string): Promise<string | null>;
 
   findOrderByIdempotencyKey(
     organizationId: string,

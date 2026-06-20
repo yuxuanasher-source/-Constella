@@ -4,6 +4,7 @@ import { createSupabaseBillingRepo } from "@/features/billing/billing-repo-supab
 import {
   runDunningSweep,
   runExpirePendingOrdersSweep,
+  runRenewalSweep,
 } from "@/features/billing/subscription-jobs";
 import { recordFunnelEvent } from "@/features/funnel/funnel-events";
 import { writeAuditLog } from "@/lib/audit/audit";
@@ -82,6 +83,28 @@ export async function POST(request: Request, context: RouteContext) {
               objectType: "organization_subscription",
               after: { status: "readonly" },
               changedFields: ["status"],
+            });
+          },
+        },
+      });
+      return NextResponse.json({ task, summary });
+    }
+
+    if (task === "renewals") {
+      const summary = await runRenewalSweep({
+        repo,
+        hooks: {
+          async onRenewalOrder(subscription, order) {
+            await sendNotification(admin, {
+              organizationId: subscription.organizationId,
+              recipientRole: "owner",
+              type: "system",
+              title: "订阅续费提醒",
+              content:
+                "已为您生成续费订单，请在到期前完成支付以保持服务不中断。",
+              objectType: "billing_order",
+              objectId: order.id,
+              source: "billing.renewal",
             });
           },
         },

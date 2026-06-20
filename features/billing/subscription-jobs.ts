@@ -1,8 +1,12 @@
-import type { BillingRepo, SubscriptionRecord } from "./billing-repo";
+import type { BillingRepo, OrderRecord, SubscriptionRecord } from "./billing-repo";
+import { checkoutIdempotencyKey } from "./checkout";
+import { resolvePlanPriceCents } from "./pricing";
 import {
   evaluateDunning,
   isPendingOrderExpired,
+  shouldGenerateRenewal,
   DEFAULT_GRACE_DAYS,
+  DEFAULT_RENEW_LEAD_DAYS,
 } from "./subscription-lifecycle";
 
 export type DunningHooks = {
@@ -60,6 +64,92 @@ export async function runDunningSweep({
       summary.enteredReadonly.push(subscription.organizationId);
       await hooks?.onReadonly?.(subscription);
     }
+  }
+
+  return summary;
+}
+
+export type RenewalHooks = {
+  onRenewalOrder?: (
+    subscription: SubscriptionRecord,
+    order: OrderRecord,
+  ) => Promise<void>;
+};
+
+export type RenewalSummary = {
+  scanned: number;
+  generated: string[];
+  skipped: number;
+};
+
+/**
+ * 续费扫描（每日）：到期前 N 天为开启自动续费的订阅生成一张待支付续费单并通知。
+ * 首版不做免密代扣（生成待支付订单 + 通知），用与 checkout 相同的幂等键，
+ * 用户再次发起 checkout 时复用同一订单完成支付。若有排期降级则按 pending plan 计费。
+ */
+export async function runRenewalSweep({
+  repo,
+  now = new Date(),
+  leadDays = DEFAULT_RENEW_LEAD_DAYS,
+  hooks,
+}: {
+  repo: BillingRepo;
+  now?: Date;
+  leadDays?: number;
+  hooks?: RenewalHooks;
+}): Promise<RenewalSummary> {
+  const subscriptions = await repo.listLifecycleSubscriptions();
+  const summary: RenewalSummary = {
+    scanned: subscriptions.length,
+    generated: [],
+    skipped: 0,
+  };
+
+  for (const subscription of subscriptions) {
+    if (!shouldGenerateRenewal({ subscription, now, leadDays })) {
+      continue;
+    }
+    const planId = subscription.pendingPlanId ?? subscription.planId;
+    const cycle = subscription.pendingBillingCycle ?? subscription.billingCycle;
+    const plan = await repo.getPlanById(planId);
+    const ownerUserId = await repo.getOwnerUserId(subscription.organizationId);
+    if (!plan || !ownerUserId) {
+      summary.skipped += 1;
+      continue;
+    }
+
+    const intent = {
+      kind: "subscription_renewal" as const,
+      target: { planCode: plan.code, billingCycle: cycle },
+    };
+    const idempotencyKey = checkoutIdempotencyKey(intent, now);
+    const existing = await repo.findOrderByIdempotencyKey(
+      subscription.organizationId,
+      idempotencyKey,
+    );
+    if (existing) {
+      summary.skipped += 1;
+      continue;
+    }
+
+    const prices = await repo.getPlanPrices(plan.id);
+    const amountCents = resolvePlanPriceCents(prices, cycle);
+    const planPriceId = await repo.getPlanPriceId(plan.id, cycle);
+
+    const order = await repo.insertOrder({
+      organizationId: subscription.organizationId,
+      kind: "subscription_renewal",
+      amountCents,
+      currency: "CNY",
+      target: intent.target,
+      planId: plan.id,
+      planPriceId,
+      billingCycle: cycle,
+      idempotencyKey,
+      createdBy: ownerUserId,
+    });
+    summary.generated.push(order.id);
+    await hooks?.onRenewalOrder?.(subscription, order);
   }
 
   return summary;

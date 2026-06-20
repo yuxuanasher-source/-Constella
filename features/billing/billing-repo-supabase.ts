@@ -147,6 +147,18 @@ export function createSupabaseBillingRepo(client: SupabaseClient): BillingRepo {
       return (data ?? []).map(toOrderRecord);
     },
 
+    async getOwnerUserId(organizationId) {
+      const { data } = await client
+        .from("organization_members")
+        .select("user_id")
+        .eq("organization_id", organizationId)
+        .eq("role", "owner")
+        .eq("status", "active")
+        .limit(1)
+        .maybeSingle<{ user_id: string }>();
+      return data?.user_id ?? null;
+    },
+
     async findOrderByIdempotencyKey(organizationId, idempotencyKey) {
       const { data } = await client
         .from("billing_orders")
