@@ -13569,6 +13569,8 @@ function ScreenSettlement({ go }) {
             }}
             onLockBatch={lockBatch}
             onReopenBatch={reopenBatch}
+            lockGate={activeGate}
+            lockBlockMessage={reconciliationBlockMessage(activeReconciliation)}
             busyAction={busyAction}
           />
         </div>
@@ -13718,6 +13720,8 @@ function BatchDetail({
   onAddManualItem,
   onLockBatch,
   onReopenBatch,
+  lockGate = { evaluated: false, hasBlocking: false },
+  lockBlockMessage = "",
   busyAction,
 }) {
   const [detailMessage, setDetailMessage] = React.useState("");
@@ -14137,9 +14141,20 @@ function BatchDetail({
                 kind="primary"
                 icon={<Icon.Lock size={14} stroke="#fff" />}
                 onClick={onLockBatch}
-                disabled={!!busyAction}
+                disabled={!!busyAction || lockGate?.hasBlocking}
+                title={
+                  lockGate?.hasBlocking
+                    ? lockBlockMessage
+                    : lockGate?.evaluated
+                      ? undefined
+                      : "锁定前请先运行「单项目结算校验」"
+                }
               >
-                {busyAction === "lock" ? "处理中…" : "确认并锁定"}
+                {busyAction === "lock"
+                  ? "处理中…"
+                  : lockGate?.hasBlocking
+                    ? "校验未通过 · 不可锁定"
+                    : "确认并锁定"}
               </Button>
             </>
           )}
