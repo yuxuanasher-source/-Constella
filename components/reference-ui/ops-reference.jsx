@@ -1164,6 +1164,7 @@ const NAV = [
   { key: "reports", label: "报数审核", icon: "Reports" },
   { key: "settle", label: "结算中心", icon: "Money" },
   { key: "billing", label: "商业化与套餐", icon: "Money" },
+  { key: "funnel", label: "转化漏斗", icon: "Sparkles" },
   { divider: true },
   { key: "export", label: "数据导出", icon: "Export" },
   { key: "audit", label: "操作日志", icon: "Audit" },
@@ -13458,6 +13459,156 @@ function billingModeLabel(mode) {
   return mode === "read_only" ? "只读模式" : "活跃";
 }
 
+function formatFunnelPercent(rate) {
+  const value = Number.isFinite(rate) ? rate : 0;
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+const FUNNEL_RATE_LABELS = {
+  activationRate: "激活率",
+  paywallCtr: "付费墙点击率",
+  checkoutConversion: "结账转化率",
+  trialToPaid: "Trial → Paid",
+};
+
+// 转化漏斗看板：读 GET /api/funnel/metrics（按当前组织聚合）。
+function ScreenFunnel({ onLoad }) {
+  const [metrics, setMetrics] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  const load = React.useCallback(async () => {
+    if (!onLoad) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await onLoad();
+      setMetrics(result ?? null);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error ? loadError.message : "加载漏斗数据失败",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [onLoad]);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  const rateRows = metrics
+    ? Object.keys(FUNNEL_RATE_LABELS).map((key) => ({
+        key,
+        label: FUNNEL_RATE_LABELS[key],
+        value: formatFunnelPercent(metrics.rates?.[key]),
+      }))
+    : [];
+  const reasonRows = metrics
+    ? Object.entries(metrics.paywallReasons ?? {}).map(([reason, count]) => ({
+        reason,
+        label: paywallReasonLabel(reason),
+        count,
+      }))
+    : [];
+
+  return (
+    <>
+      <PageHeader
+        title="转化漏斗"
+        subtitle="注册 → 激活 → 付费 全链路转化（按当前组织聚合）"
+        actions={
+          <Button kind="primary" onClick={load} disabled={busy}>
+            {busy ? "加载中…" : "刷新数据"}
+          </Button>
+        }
+      />
+      <div
+        style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}
+      >
+        {error && (
+          <div style={{ color: "var(--danger-600)", fontSize: 12 }}>{error}</div>
+        )}
+        {!metrics ? (
+          <Card>
+            <EmptyHint
+              title="暂无漏斗数据"
+              hint="点击刷新后从埋点服务读取当前组织的转化漏斗。"
+              actionLabel="刷新数据"
+              onAction={load}
+            />
+          </Card>
+        ) : (
+          <>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+                gap: 12,
+              }}
+            >
+              <Card>
+                <Metric
+                  label="注册完成"
+                  value={String(metrics.totals.signupCompleted)}
+                  hint="signup_completed"
+                />
+              </Card>
+              <Card>
+                <Metric
+                  label="激活"
+                  value={String(metrics.totals.activated)}
+                  hint="activated"
+                />
+              </Card>
+              <Card>
+                <Metric
+                  label="首结算批次"
+                  value={String(metrics.totals.firstSettlementBatch)}
+                  hint="first_settlement_batch"
+                />
+              </Card>
+              <Card>
+                <Metric
+                  label="付费转化"
+                  value={String(metrics.totals.subscriptionActivated)}
+                  hint="subscription_activated"
+                />
+              </Card>
+            </div>
+
+            <Card title="转化率" padded={false}>
+              <DataTable
+                columns={[
+                  { title: "指标", render: (row) => row.label },
+                  { title: "数值", render: (row) => row.value },
+                ]}
+                rows={rateRows}
+              />
+            </Card>
+
+            <Card title="付费墙触发原因" padded={false}>
+              {reasonRows.length === 0 ? (
+                <div style={{ padding: 16, color: "var(--ink-400)", fontSize: 12 }}>
+                  暂无付费墙曝光记录。
+                </div>
+              ) : (
+                <DataTable
+                  columns={[
+                    { title: "原因", render: (row) => row.label },
+                    { title: "次数", render: (row) => String(row.count) },
+                  ]}
+                  rows={reasonRows}
+                />
+              )}
+            </Card>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
 function sampleExportRows(kind) {
   if (kind === "audit_logs") {
     return [{ module: "settlement", action: "lock" }];
@@ -13949,6 +14100,13 @@ function OpsReferenceInner({
           body: JSON.stringify(payload),
         });
       },
+      refreshFunnelMetrics: async () => {
+        const body = await fetchJson(
+          "/api/funnel/metrics",
+          "refresh funnel metrics failed",
+        );
+        return body.metrics;
+      },
       updateNotificationStatus: async (id, action) => {
         await fetchJson(
           `/api/notifications/${id}`,
@@ -14090,6 +14248,9 @@ function OpsReferenceInner({
                 onRefreshOrder={actions.refreshBillingOrder}
                 onEvent={actions.recordFunnelEvent}
               />
+            )}
+            {route === "funnel" && (
+              <ScreenFunnel onLoad={actions.refreshFunnelMetrics} />
             )}
             {route === "audit" && <ScreenAudit go={go} />}
             {route === "notifications" && <ScreenNotifications go={go} />}

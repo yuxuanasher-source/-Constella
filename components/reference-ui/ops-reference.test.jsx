@@ -2412,6 +2412,53 @@ describe("OpsReferenceApp billing smoke", () => {
   });
 });
 
+describe("OpsReferenceApp funnel smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("loads conversion funnel metrics from the funnel API", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/funnel/metrics") {
+        return {
+          ok: true,
+          json: async () => ({
+            metrics: {
+              counts: {},
+              totals: {
+                signupCompleted: 4,
+                activated: 2,
+                firstSettlementBatch: 1,
+                paywallShown: 2,
+                paywallClicked: 1,
+                checkoutStarted: 1,
+                subscriptionActivated: 1,
+              },
+              rates: {
+                activationRate: 0.5,
+                paywallCtr: 0.4,
+                checkoutConversion: 1,
+                trialToPaid: 0.25,
+              },
+              paywallReasons: { trial_ending: 2 },
+            },
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="funnel" />);
+
+    expect(await screen.findByText("激活率")).toBeInTheDocument();
+    expect(screen.getByText("50.0%")).toBeInTheDocument();
+    expect(screen.getByText("Trial → Paid")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalled();
+  });
+});
+
 describe("OpsReferenceApp org smoke", () => {
   it("filters members through a real role selector and marks org-only actions pending", () => {
     render(<OpsReferenceApp initialRoute="org" />);
