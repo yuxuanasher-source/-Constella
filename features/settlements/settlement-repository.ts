@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type {
+  SettlementBatchAtomicItemInput,
   SettlementBatchItemRecord,
   SettlementBatchRecord,
   SettlementBatchStatus,
@@ -301,6 +302,59 @@ export class SupabaseSettlementRepository implements SettlementRepository {
     }
 
     return toSettlementBatchItemRecord(data);
+  }
+
+  async createSettlementBatchAtomic(input: {
+    organizationId: string;
+    projectId: string;
+    batchType: SettlementBatchType;
+    periodStart: string;
+    periodEnd: string;
+    computedAmount: number;
+    manualAmount: number;
+    adjustmentAmount: number;
+    evidenceSummary: Record<string, unknown>;
+    createdBy: string;
+    items: SettlementBatchAtomicItemInput[];
+  }): Promise<{
+    batch: SettlementBatchRecord;
+    items: SettlementBatchItemRecord[];
+  }> {
+    const { data, error } = await this.client.rpc("generate_settlement_batch", {
+      p_organization_id: input.organizationId,
+      p_project_id: input.projectId,
+      p_batch_type: input.batchType,
+      p_period_start: input.periodStart,
+      p_period_end: input.periodEnd,
+      p_computed_amount: input.computedAmount,
+      p_manual_amount: input.manualAmount,
+      p_adjustment_amount: input.adjustmentAmount,
+      p_evidence_summary: input.evidenceSummary,
+      p_created_by: input.createdBy,
+      p_items: input.items.map((item) => ({
+        streamer_id: item.streamerId ?? null,
+        live_report_id: item.liveReportId ?? null,
+        item_type: item.itemType,
+        computed_amount: item.computedAmount,
+        manual_amount: item.manualAmount,
+        adjustment_amount: item.adjustmentAmount,
+        evidence_level: item.evidenceLevel ?? null,
+        evidence_snapshot: item.evidenceSnapshot,
+      })),
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    const result = data as {
+      batch: SettlementBatchRow;
+      items: SettlementBatchItemRow[];
+    };
+    return {
+      batch: toSettlementBatchRecord(result.batch),
+      items: (result.items ?? []).map(toSettlementBatchItemRecord),
+    };
   }
 
   async markReportSettled(input: {
