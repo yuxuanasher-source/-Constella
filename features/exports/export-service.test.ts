@@ -97,4 +97,37 @@ describe("createGovernedExport", () => {
       }),
     ]);
   });
+
+  it("neutralizes spreadsheet formula injection in cell values", async () => {
+    const { client } = createClient();
+
+    const result = await createGovernedExport({
+      client,
+      actor: {
+        userId: "user-ops",
+        name: "运营经理",
+        role: "operator_business",
+        organizationId: "org-1",
+      },
+      kind: "vendor_delivery",
+      rows: [
+        {
+          projectName: '=HYPERLINK("http://evil.example","x")',
+          streamerName: "+1234",
+          settlementDuration: 120,
+          evidenceLevel: "system",
+        },
+      ],
+      now: "2026-06-02T10:00:00.000Z",
+    });
+
+    // Formula-triggering values are prefixed with a single quote (and quoted
+    // because they now contain a comma / quote) so spreadsheets treat them as
+    // text rather than evaluating them.
+    expect(result.content).toContain(
+      `"'=HYPERLINK(""http://evil.example"",""x"")"`,
+    );
+    expect(result.content).toContain("'+1234");
+    expect(result.content).not.toMatch(/(^|,)=HYPERLINK/);
+  });
 });
