@@ -12910,15 +12910,20 @@ function paywallReasonLabel(reason) {
 
 // 付费墙体验层：只渲染后端 getBillingStatus + resolvePaywall 的结论，
 // CTA 统一走 P6 /api/billing/checkout。真正的权限与额度由后端兜底。
-function BillingPaywall({ billingStatus, onCheckout, onRefresh, onRefreshOrder }) {
+function BillingPaywall({
+  billingStatus,
+  onCheckout,
+  onRefresh,
+  onRefreshOrder,
+  onEvent,
+}) {
   const [busyKey, setBusyKey] = React.useState("");
   const [error, setError] = React.useState("");
   const [pay, setPay] = React.useState(null);
   const [orderStatus, setOrderStatus] = React.useState("");
 
-  if (!billingStatus) return null;
-
   const decide = (context) => {
+    if (!billingStatus) return null;
     try {
       return resolvePaywall(billingStatus, context);
     } catch {
@@ -12926,11 +12931,29 @@ function BillingPaywall({ billingStatus, onCheckout, onRefresh, onRefreshOrder }
     }
   };
   const global = decide({});
+  const globalReason = global?.reason;
+
+  const emitEvent = React.useCallback(
+    (payload) => {
+      if (!onEvent) return;
+      Promise.resolve(onEvent(payload)).catch(() => {});
+    },
+    [onEvent],
+  );
+
+  React.useEffect(() => {
+    if (globalReason) {
+      emitEvent({ event: "paywall_shown", reason: globalReason });
+    }
+  }, [globalReason, emitEvent]);
+
+  if (!billingStatus) return null;
 
   const runCheckout = async (intent, key) => {
     if (!onCheckout || busyKey) return;
     setBusyKey(key);
     setError("");
+    emitEvent({ event: "paywall_cta_clicked", reason: intent.kind });
     try {
       const result = await onCheckout(intent);
       setPay(result ?? null);
@@ -13170,7 +13193,13 @@ function formatBillingDate(value) {
   return date.toISOString().slice(0, 10);
 }
 
-function ScreenBilling({ billingStatus, onRefresh, onCheckout, onRefreshOrder }) {
+function ScreenBilling({
+  billingStatus,
+  onRefresh,
+  onCheckout,
+  onRefreshOrder,
+  onEvent,
+}) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const usageRows = billingStatus?.usage ?? [];
@@ -13297,6 +13326,7 @@ function ScreenBilling({ billingStatus, onRefresh, onCheckout, onRefreshOrder })
               onCheckout={onCheckout}
               onRefresh={onRefresh}
               onRefreshOrder={onRefreshOrder}
+              onEvent={onEvent}
             />
 
             <Card title="功能权益" padded={false}>
@@ -13912,6 +13942,13 @@ function OpsReferenceInner({
         );
         return body.order;
       },
+      recordFunnelEvent: async (payload) => {
+        await fetchJson("/api/funnel/events", "record funnel event failed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      },
       updateNotificationStatus: async (id, action) => {
         await fetchJson(
           `/api/notifications/${id}`,
@@ -14051,6 +14088,7 @@ function OpsReferenceInner({
                 onRefresh={actions.refreshBillingStatus}
                 onCheckout={actions.startCheckout}
                 onRefreshOrder={actions.refreshBillingOrder}
+                onEvent={actions.recordFunnelEvent}
               />
             )}
             {route === "audit" && <ScreenAudit go={go} />}
