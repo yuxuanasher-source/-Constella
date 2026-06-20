@@ -12407,8 +12407,10 @@ function ScreenSettlement({ go }) {
     financialDraftFromProject(projectOptions[0]),
   );
   const [reconciliation, setReconciliation] = React.useState(null);
-  const [reconciliationProjectId, setReconciliationProjectId] =
-    React.useState(null);
+  // Identifies the project + period the current reconciliation verdict was run
+  // for, so a stale verdict from a different period (same project) never gates
+  // another batch's lock.
+  const [reconciliationKey, setReconciliationKey] = React.useState(null);
 
   React.useEffect(() => {
     if (!projectOptions.length) return;
@@ -12531,8 +12533,11 @@ function ScreenSettlement({ go }) {
     setBatchDraft((draft) => ({ ...draft, projectId }));
     setSettlementMessage("");
     setReconciliation(null);
-    setReconciliationProjectId(null);
+    setReconciliationKey(null);
   };
+
+  const reconciliationKeyOf = (projectId, periodStart, periodEnd) =>
+    `${projectId}|${periodStart}|${periodEnd}`;
 
   const reconciliationPeriod = () => ({
     projectId: selectedProjectId || activeBatch?.projectId || "",
@@ -12554,15 +12559,23 @@ function ScreenSettlement({ go }) {
         periodEnd,
       });
       setReconciliation(result ?? null);
-      setReconciliationProjectId(projectId);
+      setReconciliationKey(reconciliationKeyOf(projectId, periodStart, periodEnd));
       setSettlementMessage("");
       return false;
     });
 
   // Gate the active batch's lock on the §3.4 reconciliation verdict: the check
-  // must have been run for this batch's project and must not be blocking.
+  // must have been run for this batch's exact project + period and must not be
+  // blocking. Keying on project + period prevents a stale verdict from another
+  // period of the same project from gating this batch.
   const activeReconciliation =
-    activeBatch && reconciliationProjectId === activeBatch.projectId
+    activeBatch &&
+    reconciliationKey ===
+      reconciliationKeyOf(
+        activeBatch.projectId,
+        activeBatch.periodStart,
+        activeBatch.periodEnd,
+      )
       ? reconciliation
       : null;
   const activeGate = reconciliationGate(activeReconciliation);
@@ -12625,17 +12638,14 @@ function ScreenSettlement({ go }) {
   const lockBatch = () =>
     runSettlementAction("lock", async () => {
       if (!activeBatch) return false;
-      const gate = reconciliationGate(
-        reconciliationProjectId === activeBatch.projectId
-          ? reconciliation
-          : null,
-      );
-      if (!gate.evaluated) {
-        setSettlementMessage("锁定前请先运行「单项目结算校验」");
+      if (!activeGate.evaluated) {
+        setSettlementMessage(
+          "锁定前请先为本批次周期运行「单项目结算校验」",
+        );
         return false;
       }
-      if (!gate.canLock) {
-        setSettlementMessage(reconciliationBlockMessage(reconciliation));
+      if (!activeGate.canLock) {
+        setSettlementMessage(reconciliationBlockMessage(activeReconciliation));
         return false;
       }
       await actions.lockSettlementBatch?.(activeBatch.id, {
