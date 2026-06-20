@@ -31,6 +31,7 @@ type LiveTaskRow = {
   system_started_at: string | null;
   system_stopped_at: string | null;
   system_duration: number;
+  anomaly_flags: string[] | null;
   created_by: string | null;
 };
 
@@ -68,6 +69,7 @@ const liveTaskSelect = `
   system_started_at,
   system_stopped_at,
   system_duration,
+  anomaly_flags,
   created_by
 `;
 
@@ -354,6 +356,7 @@ function toLiveTaskRecord(row: LiveTaskRow): LiveTaskRecord {
     systemStartedAt: row.system_started_at,
     systemStoppedAt: row.system_stopped_at,
     systemDuration: row.system_duration,
+    anomalyFlags: row.anomaly_flags ?? [],
     createdBy: row.created_by,
   };
 }
@@ -385,6 +388,7 @@ function toLiveTaskPatch(
 ): Record<string, unknown> {
   return removeUndefined({
     status: patch.status,
+    title: patch.title,
     planned_start_at: patch.plannedStartAt,
     planned_end_at: patch.plannedEndAt,
     planned_duration: patch.plannedDuration,
@@ -392,6 +396,7 @@ function toLiveTaskPatch(
     system_started_at: patch.systemStartedAt,
     system_stopped_at: patch.systemStoppedAt,
     system_duration: patch.systemDuration,
+    anomaly_flags: patch.anomalyFlags,
   });
 }
 

@@ -47,6 +47,7 @@ export type OpsReferenceTask = {
   type: "project";
   status: string;
   systemDuration?: number;
+  anomaly?: string;
 };
 
 export type OpsReferenceReport = {
@@ -119,7 +120,38 @@ export function toOpsReferenceTask(
     type: "project",
     status: toOpsReferenceTaskStatus(task.status),
     systemDuration: task.systemDuration,
+    anomaly: toReferenceAnomalyType(task.anomalyFlags, task.status),
   };
+}
+
+const ANOMALY_FLAG_MAP: Record<string, string> = {
+  no_stop_48h: "unstopped",
+  no_stop: "unstopped",
+  unstopped: "unstopped",
+  report_overdue: "late_report",
+  late_report: "late_report",
+  no_start: "unstart",
+  unstart: "unstart",
+  short_duration: "short",
+  short: "short",
+  schedule_conflict: "conflict",
+  conflict: "conflict",
+};
+
+function toReferenceAnomalyType(
+  flags: string[] | undefined,
+  status: string,
+): string | undefined {
+  for (const flag of flags ?? []) {
+    const mapped = ANOMALY_FLAG_MAP[flag];
+    if (mapped) {
+      return mapped;
+    }
+  }
+  if ((flags ?? []).length > 0 || status === "abnormal") {
+    return "unstopped";
+  }
+  return undefined;
 }
 
 export function toOpsReferenceReport(

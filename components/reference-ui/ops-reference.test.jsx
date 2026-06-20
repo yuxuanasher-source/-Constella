@@ -488,7 +488,7 @@ describe("OpsReferenceApp project smoke", () => {
     expect(await screen.findByText(/厂家交付包已生成/)).toBeInTheDocument();
   });
 
-  it("routes new schedule to the task module and marks project settings pending", () => {
+  it("routes new schedule to the task module and opens project settings", () => {
     const { unmount } = render(
       <OpsReferenceApp
         initialRoute="projects"
@@ -513,7 +513,9 @@ describe("OpsReferenceApp project smoke", () => {
     );
     fireEvent.click(screen.getByText("Alpha Launch"));
     fireEvent.click(screen.getByRole("button", { name: "项目设置" }));
-    expect(screen.getByText("项目设置后台暂未接入")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "保存设置" }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -1303,7 +1305,19 @@ describe("OpsReferenceApp live task smoke", () => {
     expect(screen.getByText("Excel 导入后台暂未接入")).toBeInTheDocument();
   });
 
-  it("marks anomaly actions and new task draft saves as explicit pending states", async () => {
+  it("resolves an anomaly through the api and keeps stubbed actions pending", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      const requested = String(url);
+      if (requested.endsWith("/resolve-anomaly")) {
+        return { ok: true, json: async () => ({ task: { id: "task-anomaly-one" } }) };
+      }
+      if (requested === "/api/live-tasks") {
+        return { ok: true, json: async () => ({ tasks: [] }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
     render(
       <OpsReferenceApp
         initialRoute="tasks"
@@ -1334,7 +1348,13 @@ describe("OpsReferenceApp live task smoke", () => {
     expect(screen.getByText("异常扫描历史后台暂未接入。")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "标记处理" }));
-    expect(screen.getByText("异常处理状态后台暂未接入。")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/live-tasks/task-anomaly-one/resolve-anomaly",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(await screen.findByText(/已标记处理/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "新建任务" }));
     fireEvent.click(await screen.findByRole("button", { name: "保存草稿" }));

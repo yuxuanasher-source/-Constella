@@ -10,6 +10,13 @@ export type ProjectListItem = {
   default_hourly_rate: number;
   published_at: string | null;
   created_at: string;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  open_signup?: boolean;
+  allow_direct_invite?: boolean;
+  force_recording?: boolean;
+  is_public_to_streamers?: boolean;
+  public_summary?: string | null;
 };
 
 export async function listProjects(
@@ -22,7 +29,7 @@ export async function listProjects(
   const { data, error } = await supabase
     .from("projects")
     .select(
-      "id, code, name, status, sensitivity, force_system_timing, default_hourly_rate, published_at, created_at",
+      "id, code, name, status, sensitivity, force_system_timing, default_hourly_rate, published_at, created_at, starts_at, ends_at, open_signup, allow_direct_invite, force_recording, is_public_to_streamers, public_summary",
     )
     .order("created_at", { ascending: false });
 

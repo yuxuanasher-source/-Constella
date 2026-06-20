@@ -28,6 +28,8 @@ export async function PATCH(
       allowDirectInvite?: boolean;
       forceRecording?: boolean;
       forceSystemTiming?: boolean;
+      isPublicToStreamers?: boolean;
+      publicSummary?: string | null;
     };
     const { projectId } = await params;
     const project = await updateProjectBasics({
@@ -43,6 +45,11 @@ export async function PATCH(
         allowDirectInvite: body.allowDirectInvite,
         forceRecording: body.forceRecording,
         forceSystemTiming: body.forceSystemTiming,
+        isPublicToStreamers: body.isPublicToStreamers,
+        publicSummary:
+          typeof body.publicSummary === "string"
+            ? body.publicSummary.trim()
+            : undefined,
       },
     });
 

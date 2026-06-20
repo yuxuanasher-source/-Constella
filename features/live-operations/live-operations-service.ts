@@ -59,6 +59,7 @@ export type LiveTaskRecord = {
   systemStartedAt?: string | null;
   systemStoppedAt?: string | null;
   systemDuration: number;
+  anomalyFlags?: string[];
   createdBy?: string | null;
 };
 
@@ -357,6 +358,95 @@ export async function cancelLiveTask({
     after: task,
     changedFields: ["status"],
     reason,
+  });
+
+  return task;
+}
+
+export async function updateLiveTask({
+  repo,
+  audit,
+  actor,
+  taskId,
+  input,
+}: {
+  repo: LiveOperationsRepository;
+  audit: LiveOperationsAuditWriter;
+  actor: LiveOperationsActor;
+  taskId: string;
+  input: {
+    title?: string;
+    plannedStartAt?: string | null;
+    plannedEndAt?: string | null;
+    plannedDuration?: number | null;
+  };
+}): Promise<LiveTaskRecord> {
+  assertCanManageLiveTasks(actor.role);
+  const before = await requireLiveTask(repo, taskId);
+  assertSameOrganization(actor, before.organizationId);
+  if (["completed", "cancelled"].includes(before.status)) {
+    throw new Error("Completed or cancelled tasks cannot be rescheduled");
+  }
+
+  const nextStartAt =
+    input.plannedStartAt === undefined
+      ? before.plannedStartAt
+      : input.plannedStartAt;
+  const nextEndAt =
+    input.plannedEndAt === undefined ? before.plannedEndAt : input.plannedEndAt;
+  assertScheduleWindow(nextStartAt, nextEndAt);
+
+  const task = await repo.updateLiveTask(taskId, {
+    title: input.title?.trim() ? input.title.trim() : undefined,
+    plannedStartAt: input.plannedStartAt,
+    plannedEndAt: input.plannedEndAt,
+    plannedDuration: input.plannedDuration,
+  });
+
+  await auditLiveTaskUpdate({
+    audit,
+    actor,
+    before,
+    after: task,
+    changedFields: [
+      "title",
+      "planned_start_at",
+      "planned_end_at",
+      "planned_duration",
+    ],
+  });
+
+  return task;
+}
+
+export async function resolveLiveTaskAnomaly({
+  repo,
+  audit,
+  actor,
+  taskId,
+}: {
+  repo: LiveOperationsRepository;
+  audit: LiveOperationsAuditWriter;
+  actor: LiveOperationsActor;
+  taskId: string;
+}): Promise<LiveTaskRecord> {
+  assertCanManageLiveTasks(actor.role);
+  const before = await requireLiveTask(repo, taskId);
+  assertSameOrganization(actor, before.organizationId);
+
+  // Clear anomaly flags; an unresolved abnormal task moves on to report review.
+  const nextStatus = before.status === "abnormal" ? "pending_report" : before.status;
+  const task = await repo.updateLiveTask(taskId, {
+    status: nextStatus,
+    anomalyFlags: [],
+  });
+
+  await auditLiveTaskUpdate({
+    audit,
+    actor,
+    before,
+    after: task,
+    changedFields: ["status", "anomaly_flags"],
   });
 
   return task;

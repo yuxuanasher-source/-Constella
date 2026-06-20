@@ -497,6 +497,232 @@ function Metric({
   );
 }
 
+// Collapsible section card — the header (title + optional always-visible `extra`)
+// is always rendered so triggers stay reachable; only the body toggles. Use for
+// progressive disclosure of secondary panels. When closed, an optional `summary`
+// keeps the key takeaway visible in the header.
+function Collapsible({
+  title,
+  hint,
+  summary,
+  extra,
+  defaultOpen = false,
+  children,
+  style,
+}) {
+  const [open, setOpen] = React.useState(defaultOpen);
+  return (
+    <div
+      style={{
+        background: "#fff",
+        border: "1px solid var(--line)",
+        borderRadius: 10,
+        boxShadow: "var(--shadow-card)",
+        ...style,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          padding: "10px 14px",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            background: "transparent",
+            border: "none",
+            padding: 0,
+            cursor: "pointer",
+            minWidth: 0,
+            flex: 1,
+            textAlign: "left",
+          }}
+        >
+          <span
+            style={{
+              display: "inline-flex",
+              flexShrink: 0,
+              transition: "transform .15s ease",
+              transform: open ? "rotate(0deg)" : "rotate(-90deg)",
+            }}
+          >
+            <Icon.ChevDown size={16} stroke="var(--ink-400)" />
+          </span>
+          <span
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: "var(--ink-900)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {title}
+          </span>
+          {hint && (
+            <span
+              style={{
+                fontSize: 12,
+                color: "var(--ink-400)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {hint}
+            </span>
+          )}
+          {!open && summary && (
+            <span
+              style={{
+                fontSize: 12,
+                color: "var(--ink-400)",
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {summary}
+            </span>
+          )}
+        </button>
+        {extra}
+      </div>
+      {open && (
+        <div
+          style={{
+            padding: "14px 16px 16px",
+            borderTop: "1px solid var(--line)",
+          }}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Vertically clip a long block and reveal it in full on demand. All children stay
+// mounted (DOM + accessibility tree) so rows remain reachable for tests/AT — only
+// visually capped when collapsed. Use to stop long lists/tables dumping everything.
+function ShowMore({
+  collapsedHeight = 168,
+  moreLabel = "查看全部",
+  lessLabel = "收起",
+  defaultExpanded = false,
+  children,
+}) {
+  const [expanded, setExpanded] = React.useState(defaultExpanded);
+  return (
+    <div>
+      <div
+        style={{
+          position: "relative",
+          maxHeight: expanded ? "none" : collapsedHeight,
+          overflow: "hidden",
+        }}
+      >
+        {children}
+        {!expanded && (
+          <div
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: 44,
+              background:
+                "linear-gradient(180deg, rgba(255,255,255,0), #fff 88%)",
+              pointerEvents: "none",
+            }}
+          />
+        )}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          borderTop: "1px solid var(--line)",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          style={{
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            color: "var(--blue-600)",
+            fontSize: 12,
+            fontWeight: 500,
+            padding: "8px 12px",
+          }}
+        >
+          {expanded ? lessLabel : moreLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Compact secondary stat — label + value + unit + optional hint. Used inside grouped
+// KPI strips so a single primary metric can stay dominant while supporting metrics ride
+// alongside at a smaller weight (instead of N equal-sized cards all shouting at once).
+function MiniStat({ label, value, unit, hint, hintTone = "muted" }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 12, color: "var(--ink-400)" }}>{label}</div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          gap: 4,
+          marginTop: 4,
+        }}
+      >
+        <span
+          className="num"
+          style={{
+            fontSize: 18,
+            fontWeight: 600,
+            color: "var(--ink-900)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {value}
+        </span>
+        {unit && (
+          <span style={{ fontSize: 11, color: "var(--ink-400)" }}>{unit}</span>
+        )}
+      </div>
+      {hint && (
+        <div
+          style={{
+            fontSize: 11,
+            marginTop: 2,
+            color:
+              hintTone === "red"
+                ? "var(--danger-600)"
+                : hintTone === "green"
+                  ? "var(--ok-600)"
+                  : "var(--ink-400)",
+          }}
+        >
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Search input
 function SearchInput({ placeholder = "搜索…", value, onChange, width = 280 }) {
   return (
@@ -698,6 +924,7 @@ const OpsLiveDataContext = React.createContext({
   settlementScope: null,
   auditEntries: null,
   notificationItems: null,
+  orgMembers: null,
   actions: {},
 });
 
@@ -749,6 +976,11 @@ function useOpsSettlementScope() {
 function useOpsAuditEntries() {
   const { auditEntries } = React.useContext(OpsLiveDataContext);
   return Array.isArray(auditEntries) ? auditEntries : [];
+}
+
+function useOpsMembers() {
+  const { orgMembers } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(orgMembers) ? orgMembers : [];
 }
 
 function useOpsNotifications() {
@@ -1716,81 +1948,220 @@ function ScreenWarRoom({ go }) {
           gap: 20,
         }}
       >
-        {/* Top metrics strip */}
+        {/* KPI strip — one primary metric + compact secondaries + a separated action zone */}
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(5, 1fr)",
+            gridTemplateColumns: "minmax(0, 1fr) 220px",
             gap: 16,
+            alignItems: "stretch",
           }}
         >
-          <Card style={{ position: "relative", overflow: "hidden" }}>
+          <Card
+            padded={false}
+            bodyStyle={{
+              display: "flex",
+              alignItems: "center",
+              gap: 24,
+              padding: "16px 18px",
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
             <div
               style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                right: 0,
-                height: 3,
-                background: "var(--blue-600)",
+                paddingRight: 24,
+                borderRight: "1px solid var(--line)",
+                minWidth: 168,
               }}
-            />
-            <Metric
-              label="进行中项目"
-              value={String(activeProjects.length)}
-              unit="个"
-              hint={
-                highRiskProjects.length > 0
-                  ? `${highRiskProjects.length} 个高风险`
-                  : "暂无高风险项目"
-              }
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="本周直播时长"
-              value={totalDoneHours.toFixed(1)}
-              unit="h"
-              hint="按当前项目数据汇总"
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="本周厂家应收"
-              value={`¥${totalReceivable.toLocaleString("zh-CN")}`}
-              hint="按当前项目数据汇总"
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="预估毛利率"
-              value={grossMargin.toFixed(1)}
-              unit="%"
-              hint={totalReceivable > 0 ? "毛利率" : "暂无应收数据"}
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="待处理事项"
-              value={String(pendingActionCount)}
-              unit="项"
-              hint={
-                pendingActionCount > 0
-                  ? `审核 ${pendingReportCount} · 异常 ${anomalyCount}`
-                  : "暂无待处理事项"
-              }
-              accent={
-                <span
+            >
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                本周厂家应收
+              </div>
+              <div
+                className="num"
+                style={{
+                  fontSize: 28,
+                  fontWeight: 600,
+                  color: "var(--blue-600)",
+                  letterSpacing: "-0.02em",
+                  marginTop: 4,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                ¥{totalReceivable.toLocaleString("zh-CN")}
+              </div>
+              <div
+                style={{
+                  fontSize: 12,
+                  marginTop: 4,
+                  color:
+                    totalReceivable > 0 ? "var(--ok-600)" : "var(--ink-400)",
+                }}
+              >
+                {totalReceivable > 0
+                  ? `预估毛利率 ${grossMargin.toFixed(1)}%`
+                  : "暂无应收数据"}
+              </div>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                gap: 28,
+                flex: 1,
+                flexWrap: "wrap",
+                rowGap: 12,
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                  进行中项目
+                </div>
+                <div
                   style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 999,
-                    background: "var(--danger-600)",
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 4,
+                    marginTop: 4,
                   }}
-                />
-              }
-            />
+                >
+                  <span
+                    className="num"
+                    style={{
+                      fontSize: 18,
+                      fontWeight: 600,
+                      color: "var(--ink-900)",
+                    }}
+                  >
+                    {activeProjects.length}
+                  </span>
+                  <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                    个
+                  </span>
+                </div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    marginTop: 2,
+                    color:
+                      highRiskProjects.length > 0
+                        ? "var(--danger-600)"
+                        : "var(--ink-400)",
+                  }}
+                >
+                  {highRiskProjects.length > 0
+                    ? `${highRiskProjects.length} 个高风险`
+                    : "无高风险"}
+                </div>
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                  本周直播时长
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 4,
+                    marginTop: 4,
+                  }}
+                >
+                  <span
+                    className="num"
+                    style={{
+                      fontSize: 18,
+                      fontWeight: 600,
+                      color: "var(--ink-900)",
+                    }}
+                  >
+                    {totalDoneHours.toFixed(1)}
+                  </span>
+                  <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                    h
+                  </span>
+                </div>
+                <div
+                  style={{ fontSize: 11, marginTop: 2, color: "var(--ink-400)" }}
+                >
+                  本周累计
+                </div>
+              </div>
+            </div>
           </Card>
+          <button
+            type="button"
+            onClick={() => go(pendingReportCount > 0 ? "reports" : "tasks")}
+            style={{
+              textAlign: "left",
+              cursor: "pointer",
+              background: pendingActionCount > 0 ? "var(--danger-50)" : "#fff",
+              border: `1px solid ${
+                pendingActionCount > 0 ? "#f3c9cc" : "var(--line)"
+              }`,
+              borderRadius: 10,
+              boxShadow: "var(--shadow-card)",
+              padding: "16px 18px",
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "center",
+              gap: 6,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                color:
+                  pendingActionCount > 0
+                    ? "var(--danger-600)"
+                    : "var(--ink-400)",
+              }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: 999,
+                  background:
+                    pendingActionCount > 0
+                      ? "var(--danger-600)"
+                      : "var(--ink-300)",
+                }}
+              />
+              待处理事项
+            </div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color:
+                    pendingActionCount > 0
+                      ? "var(--danger-600)"
+                      : "var(--ink-900)",
+                }}
+              >
+                {pendingActionCount}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--ink-400)" }}>项</span>
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                color:
+                  pendingActionCount > 0
+                    ? "var(--danger-600)"
+                    : "var(--ink-400)",
+              }}
+            >
+              {pendingActionCount > 0
+                ? `审核 ${pendingReportCount} · 异常 ${anomalyCount} →`
+                : "暂无待处理"}
+            </div>
+          </button>
         </div>
         {warRoomMessage ? (
           <div
@@ -1864,12 +2235,26 @@ function Overview({ go }) {
     }
   };
 
+  const activeProjectRows = projects.filter((p) =>
+    ["active", "settling", "paused", "recruiting"].includes(p.status),
+  );
+  const visibleProjectRows = activeProjectRows.slice(0, 6);
+
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 20 }}>
       {/* Left: active projects + AI insights */}
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <div>
-          <SectionTitle hint="按风险与履约进度排序">活跃项目</SectionTitle>
+          <SectionTitle
+            hint="按风险与履约进度排序"
+            extra={
+              <Button size="sm" kind="link" onClick={() => go("projects")}>
+                查看全部 →
+              </Button>
+            }
+          >
+            活跃项目
+          </SectionTitle>
           <Card padded={false}>
             <DataTable
               columns={[
@@ -1991,13 +2376,22 @@ function Overview({ go }) {
                 },
                 { title: "风险", render: (r) => <RiskDot level={r.risk} /> },
               ]}
-              rows={projects.filter((p) =>
-                ["active", "settling", "paused", "recruiting"].includes(
-                  p.status,
-                ),
-              )}
+              rows={visibleProjectRows}
               onRowClick={() => go("project")}
             />
+            {activeProjectRows.length > visibleProjectRows.length && (
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "center",
+                  borderTop: "1px solid var(--line)",
+                }}
+              >
+                <Button size="sm" kind="link" onClick={() => go("projects")}>
+                  查看全部 {activeProjectRows.length} 个项目 →
+                </Button>
+              </div>
+            )}
           </Card>
         </div>
 
@@ -2270,7 +2664,39 @@ function Matching({ go }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [actionMessage, setActionMessage] = React.useState("");
+  const projects = useOpsProjects();
+  const actions = useOpsLiveActions();
+  const [inviteProjectId, setInviteProjectId] = React.useState("");
+  const [invitingId, setInvitingId] = React.useState("");
   const rows = matchRows ?? DEFAULT_MATCHING_ROWS;
+  const invitableProjects = projects.filter((p) =>
+    ["recruiting", "active", "draft"].includes(p.status),
+  );
+  React.useEffect(() => {
+    if (!inviteProjectId && invitableProjects[0]) {
+      setInviteProjectId(invitableProjects[0].id);
+    }
+  }, [inviteProjectId, invitableProjects]);
+  const inviteToProject = async (match) => {
+    if (!inviteProjectId) {
+      setActionMessage("请先选择要邀约的项目。");
+      return;
+    }
+    setInvitingId(match.id);
+    setActionMessage("");
+    try {
+      await actions.inviteStreamerToProject?.(inviteProjectId, match.id);
+      const projectName =
+        invitableProjects.find((p) => p.id === inviteProjectId)?.name || "项目";
+      setActionMessage(
+        `已向「${projectName}」发起对 ${match.alias || match.name} 的邀约。`,
+      );
+    } catch (error) {
+      setActionMessage(error?.message || "邀约失败，请稍后重试。");
+    } finally {
+      setInvitingId("");
+    }
+  };
 
   const runMatching = async () => {
     if (busy) return;
@@ -2313,7 +2739,33 @@ function Matching({ go }) {
             基于品类匹配、历史完成率、录屏通过率、ROI、风险扣分综合评分
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select
+            aria-label="邀约目标项目"
+            value={inviteProjectId}
+            onChange={(event) => setInviteProjectId(event.target.value)}
+            style={{
+              height: 32,
+              border: "1px solid var(--line-strong)",
+              borderRadius: 6,
+              background: "#fff",
+              color: "var(--ink-700)",
+              fontSize: 12,
+              padding: "0 8px",
+              maxWidth: 200,
+              outline: "none",
+            }}
+          >
+            {invitableProjects.length === 0 ? (
+              <option value="">暂无可邀约项目</option>
+            ) : (
+              invitableProjects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  邀约至：{p.name}
+                </option>
+              ))
+            )}
+          </select>
           <Button
             kind="default"
             icon={<Icon.Filter size={14} />}
@@ -2523,11 +2975,10 @@ function Matching({ go }) {
                 <Button
                   size="sm"
                   kind="primary"
-                  onClick={() =>
-                    setActionMessage(`${r.name} 的项目邀约后台暂未接入。`)
-                  }
+                  disabled={invitingId === r.id || !inviteProjectId}
+                  onClick={() => inviteToProject(r)}
                 >
-                  发起邀约
+                  {invitingId === r.id ? "邀约中…" : "发起邀约"}
                 </Button>
               </div>
             </Card>
@@ -3790,6 +4241,59 @@ function ProjectDetail({ id, go }) {
   const [tab, setTab] = React.useState("overview");
   const [detailMessage, setDetailMessage] = React.useState("");
   const [detailSubmitting, setDetailSubmitting] = React.useState("");
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [settingsBusy, setSettingsBusy] = React.useState(false);
+  const [settingsError, setSettingsError] = React.useState("");
+  const [settingsForm, setSettingsForm] = React.useState(null);
+  const openSettings = () => {
+    if (!p) return;
+    setSettingsForm({
+      name: p.name || "",
+      startsAt: p.startsAt ? p.startsAt.slice(0, 10) : "",
+      endsAt: p.endsAt ? p.endsAt.slice(0, 10) : "",
+      openSignup: p.openSignup !== false,
+      allowDirectInvite: p.allowDirectInvite !== false,
+      forceRecording: p.needScreening !== false,
+      forceSystemTiming: p.needStartStop !== false,
+      isPublicToStreamers: p.isPublicToStreamers === true,
+      publicSummary: p.publicSummary || "",
+    });
+    setSettingsError("");
+    setSettingsOpen(true);
+  };
+  const updateSettings = (field, value) =>
+    setSettingsForm((current) => ({ ...current, [field]: value }));
+  const submitSettings = async (event) => {
+    event.preventDefault();
+    if (settingsBusy || !settingsForm) return;
+    setSettingsBusy(true);
+    setSettingsError("");
+    try {
+      await actions.updateProjectBasics?.(p.id, {
+        name: settingsForm.name.trim() || undefined,
+        startsAt: settingsForm.startsAt
+          ? new Date(`${settingsForm.startsAt}T00:00:00`).toISOString()
+          : null,
+        endsAt: settingsForm.endsAt
+          ? new Date(`${settingsForm.endsAt}T00:00:00`).toISOString()
+          : null,
+        openSignup: settingsForm.openSignup,
+        allowDirectInvite: settingsForm.allowDirectInvite,
+        forceRecording: settingsForm.forceRecording,
+        forceSystemTiming: settingsForm.forceSystemTiming,
+        isPublicToStreamers: settingsForm.isPublicToStreamers,
+        publicSummary: settingsForm.isPublicToStreamers
+          ? settingsForm.publicSummary.trim()
+          : "",
+      });
+      setSettingsOpen(false);
+      setDetailMessage("项目设置已保存");
+    } catch (error) {
+      setSettingsError(error?.message || "保存失败，请稍后重试");
+    } finally {
+      setSettingsBusy(false);
+    }
+  };
   if (!p) {
     return (
       <>
@@ -3864,6 +4368,11 @@ function ProjectDetail({ id, go }) {
                 {p.risk === "high" ? "高风险" : "中风险"}
               </Badge>
             )}
+            {p.isPublicToStreamers && (
+              <Badge tone="teal" dot>
+                组织内公开
+              </Badge>
+            )}
           </>
         }
         actions={
@@ -3886,7 +4395,7 @@ function ProjectDetail({ id, go }) {
             <Button
               kind="default"
               icon={<Icon.Settings size={14} />}
-              onClick={() => setDetailMessage("项目设置后台暂未接入")}
+              onClick={openSettings}
             >
               项目设置
             </Button>
@@ -3938,62 +4447,81 @@ function ProjectDetail({ id, go }) {
             {detailMessage}
           </div>
         ) : null}
-        {/* Top metric strip (owner view) */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(6, 1fr)",
-            gap: 12,
+        {/* Grouped exec strip — primary 毛利 + compact secondaries */}
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="项目周期"
-              value={`${p.start.slice(5)} → ${p.end.slice(5)}`}
-              hint={`共 ${diffDays(p.start, p.end)} 天`}
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 160,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>预估毛利</div>
+            <div
+              className="num"
+              style={{
+                fontSize: 26,
+                fontWeight: 600,
+                color: "var(--blue-600)",
+                letterSpacing: "-0.02em",
+                marginTop: 4,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ¥{(p.metrics.gross / 10000).toFixed(1)}万
+            </div>
+            <div
+              style={{ fontSize: 12, marginTop: 4, color: "var(--ok-600)" }}
+            >
+              毛利率 {p.metrics.margin}%
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="累计直播时长"
               value={p.metrics.doneHours.toFixed(1)}
               unit="h"
-              delta={`${donePct}% 达成`}
-              deltaTone={
-                donePct >= 90 ? "green" : donePct >= 50 ? "neutral" : "red"
-              }
+              hint={`${donePct}% 达成`}
+              hintTone={donePct >= 90 ? "green" : donePct >= 50 ? "muted" : "red"}
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="累计场观"
               value={(p.metrics.audience / 10000).toFixed(1)}
               unit="万人次"
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="预计厂家应收"
               value={`¥${(p.metrics.receivable / 10000).toFixed(1)}万`}
-              hint="按当前项目数据汇总"
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="主播应付"
               value={`¥${(p.metrics.payable / 10000).toFixed(1)}万`}
-              hint="按当前项目数据汇总"
             />
-          </Card>
-          <Card style={{ borderColor: "var(--blue-200)" }}>
-            <Metric
-              label="预估毛利"
-              value={`¥${(p.metrics.gross / 10000).toFixed(1)}万`}
-              delta={`${p.metrics.margin}%`}
-              hint="毛利率"
+            <MiniStat
+              label="项目周期"
+              value={`${p.start.slice(5)} → ${p.end.slice(5)}`}
+              hint={`共 ${diffDays(p.start, p.end)} 天`}
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
         <Card padded={false}>
           <div
@@ -4040,6 +4568,297 @@ function ProjectDetail({ id, go }) {
           </div>
         </Card>
       </div>
+
+      {settingsOpen && settingsForm ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(11, 23, 51, 0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+            zIndex: 60,
+          }}
+          onClick={() => !settingsBusy && setSettingsOpen(false)}
+        >
+          <form
+            onSubmit={submitSettings}
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              width: 480,
+              maxWidth: "100%",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              background: "#fff",
+              borderRadius: 12,
+              boxShadow: "var(--shadow-pop)",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "14px 18px",
+                borderBottom: "1px solid var(--line)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 15,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                }}
+              >
+                项目设置
+              </div>
+              <button
+                type="button"
+                aria-label="关闭"
+                onClick={() => setSettingsOpen(false)}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  color: "var(--ink-400)",
+                  fontSize: 18,
+                  lineHeight: 1,
+                  padding: 4,
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div
+              style={{
+                padding: 18,
+                display: "flex",
+                flexDirection: "column",
+                gap: 14,
+              }}
+            >
+              <label
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                  fontWeight: 600,
+                }}
+              >
+                项目名称
+                <input
+                  value={settingsForm.name}
+                  onChange={(event) => updateSettings("name", event.target.value)}
+                  style={{
+                    height: 34,
+                    border: "1px solid var(--line-strong)",
+                    borderRadius: 6,
+                    padding: "0 10px",
+                    fontSize: 13,
+                    color: "var(--ink-900)",
+                    outline: "none",
+                  }}
+                />
+              </label>
+              <div style={{ display: "flex", gap: 12 }}>
+                <label
+                  style={{
+                    flex: 1,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    fontSize: 12,
+                    color: "var(--ink-500)",
+                    fontWeight: 600,
+                  }}
+                >
+                  开始日期
+                  <input
+                    type="date"
+                    value={settingsForm.startsAt}
+                    onChange={(event) =>
+                      updateSettings("startsAt", event.target.value)
+                    }
+                    style={{
+                      height: 34,
+                      border: "1px solid var(--line-strong)",
+                      borderRadius: 6,
+                      padding: "0 10px",
+                      fontSize: 13,
+                      color: "var(--ink-900)",
+                      outline: "none",
+                    }}
+                  />
+                </label>
+                <label
+                  style={{
+                    flex: 1,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    fontSize: 12,
+                    color: "var(--ink-500)",
+                    fontWeight: 600,
+                  }}
+                >
+                  结束日期
+                  <input
+                    type="date"
+                    value={settingsForm.endsAt}
+                    onChange={(event) =>
+                      updateSettings("endsAt", event.target.value)
+                    }
+                    style={{
+                      height: 34,
+                      border: "1px solid var(--line-strong)",
+                      borderRadius: 6,
+                      padding: "0 10px",
+                      fontSize: 13,
+                      color: "var(--ink-900)",
+                      outline: "none",
+                    }}
+                  />
+                </label>
+              </div>
+              {[
+                { key: "openSignup", label: "开放报名", hint: "主播可自助报名加入" },
+                {
+                  key: "allowDirectInvite",
+                  label: "允许直接邀约",
+                  hint: "运营可绕过报名直接邀约主播",
+                },
+                {
+                  key: "forceRecording",
+                  label: "强制录屏",
+                  hint: "候选主播必须提交录屏供审核",
+                },
+                {
+                  key: "forceSystemTiming",
+                  label: "系统强制计时",
+                  hint: "时长以系统开播/停止为准",
+                },
+                {
+                  key: "isPublicToStreamers",
+                  label: "公开给组织内主播",
+                  hint: "组织内主播可在主播端看到并报名此项目",
+                },
+              ].map((row) => (
+                <label
+                  key={row.key}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    padding: "10px 12px",
+                    border: "1px solid var(--line)",
+                    borderRadius: 8,
+                    background: "var(--bg-soft)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span style={{ minWidth: 0 }}>
+                    <span
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: "var(--ink-900)",
+                      }}
+                    >
+                      {row.label}
+                    </span>
+                    <span
+                      style={{
+                        display: "block",
+                        fontSize: 11,
+                        color: "var(--ink-400)",
+                        marginTop: 2,
+                      }}
+                    >
+                      {row.hint}
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={!!settingsForm[row.key]}
+                    onChange={(event) =>
+                      updateSettings(row.key, event.target.checked)
+                    }
+                    style={{ width: 18, height: 18, flexShrink: 0 }}
+                  />
+                </label>
+              ))}
+              {settingsForm.isPublicToStreamers ? (
+                <label
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    fontSize: 12,
+                    color: "var(--ink-500)",
+                    fontWeight: 600,
+                  }}
+                >
+                  主播公告概括
+                  <textarea
+                    value={settingsForm.publicSummary}
+                    onChange={(event) =>
+                      updateSettings("publicSummary", event.target.value)
+                    }
+                    rows={2}
+                    placeholder="给组织内主播看的项目摘要（报名前可见）"
+                    style={{
+                      border: "1px solid var(--line-strong)",
+                      borderRadius: 6,
+                      padding: 10,
+                      fontSize: 13,
+                      color: "var(--ink-900)",
+                      outline: "none",
+                      lineHeight: 1.5,
+                      resize: "vertical",
+                    }}
+                  />
+                </label>
+              ) : null}
+              {settingsError ? (
+                <div
+                  aria-live="polite"
+                  style={{ fontSize: 12, color: "var(--danger-600)" }}
+                >
+                  {settingsError}
+                </div>
+              ) : null}
+            </div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+                padding: "14px 18px",
+                borderTop: "1px solid var(--line)",
+              }}
+            >
+              <Button
+                kind="default"
+                type="button"
+                disabled={settingsBusy}
+                onClick={() => setSettingsOpen(false)}
+              >
+                取消
+              </Button>
+              <Button kind="primary" type="submit" disabled={settingsBusy}>
+                {settingsBusy ? "保存中…" : "保存设置"}
+              </Button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -4143,14 +4962,14 @@ function ProjectOverview({ p }) {
           )}
         </Card>
 
-        <Card
+        <Collapsible
           title="项目复盘要点"
+          summary={insights.length ? `${insights.length} 条要点` : "暂无"}
           extra={
             <Badge tone="violet" dot>
               按真实数据生成
             </Badge>
           }
-          padded={true}
         >
           {insights.length ? (
             <ul
@@ -4179,7 +4998,7 @@ function ProjectOverview({ p }) {
               hint="需要真实任务、报数或结算数据后才会生成项目复盘。"
             />
           )}
-        </Card>
+        </Collapsible>
       </div>
     </div>
   );
@@ -5795,20 +6614,20 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
         </div>
       </Card>
 
-      <Card
+      <Collapsible
         title="参与项目"
+        summary="暂无"
         extra={
           <Button size="sm" kind="link" onClick={() => go?.("projects")}>
             查看全部
           </Button>
         }
-        padded={false}
       >
         <EmptyHint
           title="暂无参与项目"
           hint="接入真实主播履约记录后会展示项目贡献。"
         />
-      </Card>
+      </Collapsible>
 
       {riskOpen ? (
         <Card title="设置风险" padded={true}>
@@ -6081,6 +6900,7 @@ function ScreenReports({ go }) {
   const [activeId, setActiveId] = React.useState(reports[0]?.id ?? null);
   const [exportMessage, setExportMessage] = React.useState("");
   const [exportSubmitting, setExportSubmitting] = React.useState(false);
+  const [batchBusy, setBatchBusy] = React.useState(false);
 
   React.useEffect(() => {
     if (
@@ -6090,6 +6910,31 @@ function ScreenReports({ go }) {
       setActiveId(reports[0].id);
     }
   }, [activeId, reports]);
+
+  const pendingReports = reports.filter((r) => r.status === "pending_review");
+  const batchApprove = async () => {
+    if (batchBusy) return;
+    if (pendingReports.length === 0) {
+      setExportMessage("当前没有待审核的报数。");
+      return;
+    }
+    setBatchBusy(true);
+    setExportMessage("");
+    let approved = 0;
+    let failed = 0;
+    for (const report of pendingReports) {
+      try {
+        await actions.reviewReport?.(report.id, "approve");
+        approved += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    setExportMessage(
+      `批量审核完成：通过 ${approved} 条${failed ? ` · 失败 ${failed} 条` : ""}`,
+    );
+    setBatchBusy(false);
+  };
 
   const counts = {
     all: reports.length,
@@ -6138,9 +6983,14 @@ function ScreenReports({ go }) {
             <Button
               kind="primary"
               icon={<Icon.Check size={14} stroke="#fff" />}
-              onClick={() => setExportMessage("批量审核后台暂未接入")}
+              onClick={batchApprove}
+              disabled={batchBusy || pendingReports.length === 0}
             >
-              批量审核通过
+              {batchBusy
+                ? "审核中…"
+                : `批量审核通过${
+                    pendingReports.length ? ` (${pendingReports.length})` : ""
+                  }`}
             </Button>
           </>
         }
@@ -7288,41 +8138,72 @@ function ScreenSettlement({ go }) {
           gap: 20,
         }}
       >
-        {/* Top metrics */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 16,
+        {/* Grouped settlement strip — primary 预估毛利 + compact secondaries */}
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="可结算池 · 报数条数"
-              value={String(poolCount)}
-              unit="条"
-              hint="审核通过 · 待入批次"
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 160,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              本月预估毛利
+            </div>
+            <div
+              className="num"
+              style={{
+                fontSize: 26,
+                fontWeight: 600,
+                color: "var(--blue-600)",
+                letterSpacing: "-0.02em",
+                marginTop: 4,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ¥73,200
+            </div>
+            <div style={{ fontSize: 12, marginTop: 4, color: "var(--ok-600)" }}>
+              毛利率 34.2%
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="本月厂家应收 (草稿)"
               value="¥286,400"
-              delta="+¥120k"
-              hint="2 个待确认批次"
+              hint="2 个待确认批次 · +¥120k"
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="本月主播应付 (锁定)"
               value="¥92,400"
               hint="已发送至财务"
             />
-          </Card>
-          <Card style={{ borderColor: "var(--blue-200)" }}>
-            <Metric label="本月预估毛利" value="¥73,200" delta="34.2% 毛利率" />
-          </Card>
-        </div>
+            <MiniStat
+              label="可结算池 · 报数"
+              value={String(poolCount)}
+              unit="条"
+              hint="审核通过 · 待入批次"
+            />
+          </div>
+        </Card>
 
         {settlementMessage ? (
           <div
@@ -7716,6 +8597,9 @@ function BatchDetail({
   busyAction,
 }) {
   const [detailMessage, setDetailMessage] = React.useState("");
+  const [auditBusy, setAuditBusy] = React.useState(false);
+  const auditEntries = useOpsAuditEntries();
+  const actions = useOpsLiveActions();
   const b = batches.find((x) => x.id === id) || batches[0] || BATCHES[1];
   if (!b) {
     return (
@@ -7766,6 +8650,28 @@ function BatchDetail({
   const adjSum = detailRows.reduce((s, x) => s + x.adjust, 0);
   const showPendingDetail = (message) => {
     setDetailMessage(message);
+  };
+  const batchAudit = auditEntries.filter(
+    (entry) =>
+      entry.objectId === b.id ||
+      (entry.module === "settlement" && entry.objectName === b.name),
+  );
+  const loadBatchAudit = async () => {
+    if (auditBusy) return;
+    setDetailMessage("");
+    if (!actions.refreshAuditEntries) {
+      setDetailMessage("审计明细需要登录后台后查看。");
+      return;
+    }
+    setAuditBusy(true);
+    try {
+      await actions.refreshAuditEntries();
+      setDetailMessage("批次审计明细已刷新，见下方审计轨迹。");
+    } catch (error) {
+      setDetailMessage(error?.message || "审计明细刷新失败，请稍后重试。");
+    } finally {
+      setAuditBusy(false);
+    }
   };
 
   return (
@@ -8070,13 +8976,10 @@ function BatchDetail({
               <Button
                 kind="ghost"
                 icon={<Icon.History size={14} />}
-                onClick={() =>
-                  showPendingDetail(
-                    "批次审计明细后台暂未接入，请查看下方审计轨迹。",
-                  )
-                }
+                onClick={loadBatchAudit}
+                disabled={auditBusy}
               >
-                查看审计
+                {auditBusy ? "刷新中…" : "查看审计"}
               </Button>
               <Button
                 kind="default"
@@ -8131,13 +9034,72 @@ function BatchDetail({
         </div>
       </Card>
 
-      {/* Audit timeline */}
-      <Card title="批次审计轨迹" padded={true}>
-        <EmptyHint
-          title="暂无审计轨迹"
-          hint="批次操作日志会在后端返回后展示。"
-        />
-      </Card>
+      {/* Audit timeline — real entries filtered to this batch */}
+      <Collapsible
+        title="批次审计轨迹"
+        summary={batchAudit.length ? `${batchAudit.length} 条` : "暂无"}
+        defaultOpen={batchAudit.length > 0}
+      >
+        {batchAudit.length ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {batchAudit.map((entry) => (
+              <div
+                key={entry.id}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  paddingBottom: 10,
+                  borderBottom: "1px solid var(--line)",
+                }}
+              >
+                <Avatar name={entry.actorName || entry.actorRole || "系统"} size={26} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "baseline",
+                      gap: 8,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12.5,
+                        fontWeight: 600,
+                        color: "var(--ink-900)",
+                      }}
+                    >
+                      {entry.actorName || "系统"}
+                    </span>
+                    <Badge tone={auditModuleTone(entry.module)}>
+                      {auditModuleLabel(entry.module)} / {entry.action}
+                    </Badge>
+                    <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                      {formatOpsMinute(entry.createdAt)}
+                    </span>
+                  </div>
+                  {entry.reason ? (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "var(--ink-500)",
+                        marginTop: 2,
+                      }}
+                    >
+                      原因：{entry.reason}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyHint
+            title="暂无审计轨迹"
+            hint="对该批次执行锁定/解锁/调整后，操作会记录在这里。点击上方「查看审计」可刷新。"
+          />
+        )}
+      </Collapsible>
     </div>
   );
 }
@@ -8362,28 +9324,70 @@ function ScreenTasks({ go }) {
           gap: 16,
         }}
       >
-        {/* Top metrics */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(5, 1fr)",
-            gap: 14,
+        {/* Grouped task strip — primary 今日任务 + compact secondaries */}
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="今日任务"
-              value={todayCount}
-              unit="个"
-              hint={SCHEDULE_WEEK.days[SCHEDULE_WEEK.todayIdx]?.date ?? "本周"}
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="正在直播"
-              value={liveCount}
-              unit="个"
-              accent={
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 140,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>今日任务</div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 6,
+                marginTop: 4,
+              }}
+            >
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                  letterSpacing: "-0.02em",
+                }}
+              >
+                {todayCount}
+              </span>
+              <span style={{ fontSize: 12, color: "var(--ink-400)" }}>个</span>
+            </div>
+            <div style={{ fontSize: 12, marginTop: 4, color: "var(--ink-400)" }}>
+              {SCHEDULE_WEEK.days[SCHEDULE_WEEK.todayIdx]?.date ?? "本周"}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--ink-400)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
                 <span
                   style={{
                     width: 6,
@@ -8393,44 +9397,77 @@ function ScreenTasks({ go }) {
                     boxShadow: "0 0 0 3px rgba(30,80,200,0.25)",
                   }}
                 />
-              }
-            />
-          </Card>
-          <Card>
-            <Metric
+                正在直播
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 4,
+                  marginTop: 4,
+                }}
+              >
+                <span
+                  className="num"
+                  style={{
+                    fontSize: 18,
+                    fontWeight: 600,
+                    color: "var(--ink-900)",
+                  }}
+                >
+                  {liveCount}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>个</span>
+              </div>
+            </div>
+            <MiniStat
               label="待报数 / 待审核"
               value={`${pendingReportCount} / ${pendingReviewCount}`}
             />
-          </Card>
-          <Card
-            style={{ borderColor: anomalyCount > 0 ? "#F3C4C9" : undefined }}
-          >
-            <Metric
-              label="异常任务"
-              value={anomalyCount}
-              unit="项"
-              deltaTone="red"
-              accent={
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>异常任务</div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 4,
+                  marginTop: 4,
+                }}
+              >
                 <span
+                  className="num"
                   style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 999,
-                    background: "var(--danger-600)",
+                    fontSize: 18,
+                    fontWeight: 600,
+                    color:
+                      anomalyCount > 0
+                        ? "var(--danger-600)"
+                        : "var(--ink-900)",
                   }}
-                />
-              }
-            />
-          </Card>
-          <Card>
-            <Metric
+                >
+                  {anomalyCount}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>项</span>
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  marginTop: 2,
+                  color:
+                    anomalyCount > 0 ? "var(--danger-600)" : "var(--ink-400)",
+                }}
+              >
+                {anomalyCount > 0 ? "需复核" : "正常"}
+              </div>
+            </div>
+            <MiniStat
               label="本周已排"
               value={tasks.length}
               unit="个"
               hint={`共 ${streamers.length} 位主播`}
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
         <TaskProjectMappingStrip
           project={selectedProject}
@@ -8829,14 +9866,31 @@ function ScheduleBoard({ filters, onSelectTask }) {
   const knownStreamers = useOpsStreamers();
   const [unit, setUnit] = React.useState("day"); // 'day' | 'hour'
   const [toolbarMessage, setToolbarMessage] = React.useState("");
+  const [weekOffset, setWeekOffset] = React.useState(0);
+
+  const weekMeta = React.useMemo(() => {
+    if (weekOffset === 0) {
+      return { label: "本周排班", days: SCHEDULE_WEEK.days };
+    }
+    const base = new Date();
+    base.setDate(base.getDate() + weekOffset * 7);
+    const week = createScheduleWeek(base);
+    return {
+      label: `${week.days[0].date} - ${week.days[6].date}`,
+      days: week.days.map((day) => ({ ...day, today: false })),
+    };
+  }, [weekOffset]);
 
   // Filter tasks
   const visibleTasks = tasks.filter((task) =>
     taskMatchesTaskFilters(task, filters, projects),
   );
+  // Sample tasks use a relative day index within the current week, so only the
+  // current week carries schedule data; other weeks render an empty board.
+  const boardTasks = weekOffset === 0 ? visibleTasks : [];
   const streamerIds = Array.from(
     new Set(
-      visibleTasks
+      boardTasks
         .map((task) => task.streamerId || task.streamerName)
         .filter(Boolean),
     ),
@@ -8844,7 +9898,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
   const streamers = streamerIds.map((id) => {
     const fromKnown = knownStreamers.find((streamer) => streamer.id === id);
     if (fromKnown) return fromKnown;
-    const task = visibleTasks.find(
+    const task = boardTasks.find(
       (item) => item.streamerId === id || item.streamerName === id,
     );
     return { id, alias: task?.streamerName || id };
@@ -8853,7 +9907,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
   const HOUR_START = 12; // visible window: 12:00 - 24:00 (used in hour view)
   const HOUR_END = 24;
 
-  if (!visibleTasks.length) {
+  if (weekOffset === 0 && !visibleTasks.length) {
     return (
       <div style={{ padding: 16 }}>
         <EmptyHint title="暂无排班数据" hint="创建排班或任务后会展示周视图。" />
@@ -8877,24 +9931,43 @@ function ScheduleBoard({ filters, onSelectTask }) {
         <button
           type="button"
           style={iconBtn}
-          onClick={() => setToolbarMessage("上一周排班后台暂未接入。")}
+          aria-label="上一周"
+          onClick={() => {
+            setToolbarMessage("");
+            setWeekOffset((value) => value - 1);
+          }}
         >
           <Icon.ChevLeft size={14} />
         </button>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}>
-          本周排班
+        <div
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: "var(--ink-900)",
+            minWidth: 96,
+            textAlign: "center",
+          }}
+        >
+          {weekMeta.label}
         </div>
         <button
           type="button"
           style={iconBtn}
-          onClick={() => setToolbarMessage("下一周排班后台暂未接入。")}
+          aria-label="下一周"
+          onClick={() => {
+            setToolbarMessage("");
+            setWeekOffset((value) => value + 1);
+          }}
         >
           <Icon.ChevRight size={14} />
         </button>
         <Button
           size="sm"
           kind="default"
-          onClick={() => setToolbarMessage("已定位到本周排班。")}
+          onClick={() => {
+            setWeekOffset(0);
+            setToolbarMessage("");
+          }}
         >
           今天
         </Button>
@@ -8986,7 +10059,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
         >
           主播 / 日期
         </div>
-        {SCHEDULE_WEEK.days.map((d, i) => (
+        {weekMeta.days.map((d, i) => (
           <div
             key={i}
             style={{
@@ -9027,6 +10100,19 @@ function ScheduleBoard({ filters, onSelectTask }) {
           </div>
         ))}
       </div>
+
+      {streamers.length === 0 ? (
+        <div
+          style={{
+            padding: 32,
+            textAlign: "center",
+            color: "var(--ink-400)",
+            fontSize: 13,
+          }}
+        >
+          {weekMeta.label} 暂无排班记录。
+        </div>
+      ) : null}
 
       {/* Rows */}
       {streamers.map((s, ri) => {
@@ -9082,7 +10168,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
             </div>
 
             {/* Day cells */}
-            {SCHEDULE_WEEK.days.map((d, di) => {
+            {weekMeta.days.map((d, di) => {
               const dayTasks = sTasks.filter((t) => t.dayIdx === di);
               return (
                 <div
@@ -9651,7 +10737,10 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
 // ——— Anomaly List ———————————————————
 
 function AnomalyList({ tasks, projects = [], streamers = [] }) {
+  const actions = useOpsLiveActions();
   const [actionMessage, setActionMessage] = React.useState("");
+  const [resolvingId, setResolvingId] = React.useState("");
+  const [bulkBusy, setBulkBusy] = React.useState(false);
   const anomalies = tasks
     .filter((t) => t.anomaly)
     .map((t) => {
@@ -9670,6 +10759,42 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
   anomalies.forEach((a) => {
     (groups[a.typeKey] = groups[a.typeKey] || []).push(a);
   });
+
+  const resolveOne = async (a) => {
+    if (resolvingId) return;
+    setResolvingId(a.id);
+    setActionMessage("");
+    try {
+      await actions.resolveTaskAnomaly?.(a.id);
+      setActionMessage(`已标记处理：${a.streamer} · ${a.id}`);
+    } catch (error) {
+      setActionMessage(error?.message || "标记处理失败，请稍后重试。");
+    } finally {
+      setResolvingId("");
+    }
+  };
+  const resolveAll = async () => {
+    if (bulkBusy || anomalies.length === 0) {
+      if (anomalies.length === 0) setActionMessage("当前没有待处理异常。");
+      return;
+    }
+    setBulkBusy(true);
+    setActionMessage("");
+    let done = 0;
+    let failed = 0;
+    for (const a of anomalies) {
+      try {
+        await actions.resolveTaskAnomaly?.(a.id);
+        done += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    setActionMessage(
+      `批量处理完成：已处理 ${done} 项${failed ? ` · 失败 ${failed} 项` : ""}`,
+    );
+    setBulkBusy(false);
+  };
 
   return (
     <div
@@ -9705,9 +10830,10 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
         <Button
           size="sm"
           kind="primary"
-          onClick={() => setActionMessage("异常批量分派后台暂未接入。")}
+          onClick={resolveAll}
+          disabled={bulkBusy || anomalies.length === 0}
         >
-          批量分派处理
+          {bulkBusy ? "处理中…" : "批量标记处理"}
         </Button>
       </div>
       {actionMessage ? (
@@ -9816,11 +10942,10 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
                     <Button
                       size="sm"
                       kind="primary"
-                      onClick={() =>
-                        setActionMessage("异常处理状态后台暂未接入。")
-                      }
+                      onClick={() => resolveOne(a)}
+                      disabled={resolvingId === a.id}
                     >
-                      标记处理
+                      {resolvingId === a.id ? "处理中…" : "标记处理"}
                     </Button>
                   </div>
                 </div>
@@ -9902,6 +11027,53 @@ function TaskDrawer({
   go,
 }) {
   const [drawerMessage, setDrawerMessage] = React.useState("");
+  const actions = useOpsLiveActions();
+  const [editing, setEditing] = React.useState(false);
+  const [editForm, setEditForm] = React.useState({
+    title: "",
+    startHour: 20,
+    endHour: 23,
+  });
+  const [editBusy, setEditBusy] = React.useState(false);
+  const [editError, setEditError] = React.useState("");
+  const openEdit = () => {
+    setEditForm({
+      title: task.name || "",
+      startHour: task.startHour ?? 20,
+      endHour: task.endHour ?? 23,
+    });
+    setEditError("");
+    setDrawerMessage("");
+    setEditing(true);
+  };
+  const submitEdit = async (event) => {
+    event.preventDefault();
+    if (editBusy) return;
+    const startHour = Number(editForm.startHour);
+    const endHour = Number(editForm.endHour);
+    if (!(endHour > startHour)) {
+      setEditError("结束时间需晚于开始时间。");
+      return;
+    }
+    setEditBusy(true);
+    setEditError("");
+    try {
+      const startIso = dayScheduleTimeToIso(task.dayIdx, startHour);
+      const endIso = dayScheduleTimeToIso(task.dayIdx, endHour);
+      await actions.updateLiveTask?.(task.id, {
+        title: editForm.title.trim() || undefined,
+        plannedStartAt: startIso,
+        plannedEndAt: endIso,
+        plannedDuration: scheduleMinutes(startIso, endIso),
+      });
+      setEditing(false);
+      setDrawerMessage("排班已更新。");
+    } catch (error) {
+      setEditError(error?.message || "更新失败，请稍后重试。");
+    } finally {
+      setEditBusy(false);
+    }
+  };
   if (task._new) {
     return (
       <NewTaskDrawer
@@ -10149,6 +11321,145 @@ function TaskDrawer({
             {drawerMessage}
           </div>
         ) : null}
+
+        {editing ? (
+          <form
+            onSubmit={submitEdit}
+            style={{
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              padding: 14,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              background: "var(--bg-soft)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--ink-900)",
+              }}
+            >
+              编辑排班
+            </div>
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                fontSize: 12,
+                color: "var(--ink-500)",
+                fontWeight: 600,
+              }}
+            >
+              任务标题
+              <input
+                value={editForm.title}
+                onChange={(event) =>
+                  setEditForm((form) => ({ ...form, title: event.target.value }))
+                }
+                style={{
+                  height: 32,
+                  border: "1px solid var(--line-strong)",
+                  borderRadius: 6,
+                  padding: "0 10px",
+                  fontSize: 13,
+                  outline: "none",
+                }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 10 }}>
+              <label
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                  fontWeight: 600,
+                }}
+              >
+                开始 (时)
+                <input
+                  type="number"
+                  min={0}
+                  max={23}
+                  value={editForm.startHour}
+                  onChange={(event) =>
+                    setEditForm((form) => ({
+                      ...form,
+                      startHour: event.target.value,
+                    }))
+                  }
+                  style={{
+                    height: 32,
+                    border: "1px solid var(--line-strong)",
+                    borderRadius: 6,
+                    padding: "0 10px",
+                    fontSize: 13,
+                    outline: "none",
+                  }}
+                />
+              </label>
+              <label
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                  fontWeight: 600,
+                }}
+              >
+                结束 (时)
+                <input
+                  type="number"
+                  min={1}
+                  max={24}
+                  value={editForm.endHour}
+                  onChange={(event) =>
+                    setEditForm((form) => ({
+                      ...form,
+                      endHour: event.target.value,
+                    }))
+                  }
+                  style={{
+                    height: 32,
+                    border: "1px solid var(--line-strong)",
+                    borderRadius: 6,
+                    padding: "0 10px",
+                    fontSize: 13,
+                    outline: "none",
+                  }}
+                />
+              </label>
+            </div>
+            {editError ? (
+              <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                {editError}
+              </div>
+            ) : null}
+            <div
+              style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}
+            >
+              <Button
+                kind="default"
+                type="button"
+                disabled={editBusy}
+                onClick={() => setEditing(false)}
+              >
+                取消
+              </Button>
+              <Button kind="primary" type="submit" disabled={editBusy}>
+                {editBusy ? "保存中…" : "保存排班"}
+              </Button>
+            </div>
+          </form>
+        ) : null}
       </div>
 
       <div
@@ -10169,10 +11480,7 @@ function TaskDrawer({
           {busyAction === "cancel" ? "取消中…" : "取消任务"}
         </Button>
         <div style={{ flex: 1 }} />
-        <Button
-          kind="default"
-          onClick={() => setDrawerMessage("编辑排班后台暂未接入")}
-        >
+        <Button kind="default" onClick={openEdit}>
           编辑排班
         </Button>
         <Button
@@ -10588,7 +11896,6 @@ function Drawer({ children, onClose, title }) {
 // ===== src\screen-org.jsx =====
 // ——— Screen: 组织与权限 ————————————————————————
 
-const MEMBERS = [];
 
 const PERM_MATRIX = [
   {
@@ -10859,6 +12166,7 @@ const SENSITIVE_FIELDS = [
 function ScreenOrg({ go }) {
   const [tab, setTab] = React.useState("overview");
   const [orgMessage, setOrgMessage] = React.useState("");
+  const orgMembers = useOpsMembers();
   const showOrgPending = (message) => {
     setOrgMessage(message);
   };
@@ -10966,9 +12274,10 @@ function ScreenOrg({ go }) {
               marginTop: 16,
               paddingTop: 16,
               borderTop: "1px solid var(--line)",
-              display: "grid",
-              gridTemplateColumns: "repeat(5, 1fr)",
-              gap: 24,
+              display: "flex",
+              flexWrap: "wrap",
+              columnGap: 40,
+              rowGap: 14,
             }}
           >
             <StatCell label="活跃成员" value="32" detail="本月 +3" />
@@ -10992,7 +12301,7 @@ function ScreenOrg({ go }) {
               onChange={setTab}
               items={[
                 { key: "overview", label: "角色总览" },
-                { key: "members", label: "成员管理", count: MEMBERS.length },
+                { key: "members", label: "成员管理", count: orgMembers.length },
                 { key: "matrix", label: "权限矩阵" },
                 {
                   key: "sensitive",
@@ -11046,8 +12355,9 @@ function StatCell({ label, value, detail }) {
 // ——— Role Overview ————————————————————————
 
 function RoleOverview() {
+  const orgMembers = useOpsMembers();
   const counts = {};
-  MEMBERS.forEach((m) => {
+  orgMembers.forEach((m) => {
     counts[m.role] = (counts[m.role] || 0) + 1;
   });
 
@@ -11251,10 +12561,70 @@ function RoleCard({ title, code, tone, desc, perms, count }) {
 // ——— Members table ———————————————————————
 
 function MemberList({ onPendingAction }) {
+  const members = useOpsMembers();
+  const actions = useOpsLiveActions();
   const [filter, setFilter] = React.useState("all");
-  const rows =
-    filter === "all" ? MEMBERS : MEMBERS.filter((m) => m.role === filter);
+  const [search, setSearch] = React.useState("");
+  const [inviteOpen, setInviteOpen] = React.useState(false);
+  const [inviteForm, setInviteForm] = React.useState({
+    email: "",
+    name: "",
+    role: "operator_business",
+  });
+  const [inviteBusy, setInviteBusy] = React.useState(false);
+  const [inviteError, setInviteError] = React.useState("");
+  const [roleEdit, setRoleEdit] = React.useState(null);
+  const [roleBusy, setRoleBusy] = React.useState(false);
+  const [roleError, setRoleError] = React.useState("");
   const notify = (message) => onPendingAction?.(message);
+  const query = search.trim().toLowerCase();
+  const rows = members
+    .filter((m) => {
+      const matchesRole = filter === "all" || m.role === filter;
+      const matchesSearch =
+        !query ||
+        [m.name, m.email].filter(Boolean).join(" ").toLowerCase().includes(query);
+      return matchesRole && matchesSearch;
+    })
+    .map((m) => ({ ...m, id: m.userId }));
+  const submitInvite = async (event) => {
+    event.preventDefault();
+    if (inviteBusy) return;
+    if (!inviteForm.email.trim()) {
+      setInviteError("请填写邮箱");
+      return;
+    }
+    setInviteBusy(true);
+    setInviteError("");
+    try {
+      await actions.inviteMember?.({
+        email: inviteForm.email.trim(),
+        name: inviteForm.name.trim(),
+        role: inviteForm.role,
+      });
+      setInviteOpen(false);
+      setInviteForm({ email: "", name: "", role: "operator_business" });
+      notify(`已邀请 ${inviteForm.email.trim()} 加入组织。`);
+    } catch (error) {
+      setInviteError(error?.message || "邀请失败，请稍后重试。");
+    } finally {
+      setInviteBusy(false);
+    }
+  };
+  const submitRole = async (role) => {
+    if (!roleEdit || roleBusy) return;
+    setRoleBusy(true);
+    setRoleError("");
+    try {
+      await actions.updateMemberRole?.(roleEdit.userId, role);
+      setRoleEdit(null);
+      notify(`${roleEdit.name} 的角色已更新。`);
+    } catch (error) {
+      setRoleError(error?.message || "角色更新失败，请稍后重试。");
+    } finally {
+      setRoleBusy(false);
+    }
+  };
 
   return (
     <div>
@@ -11266,7 +12636,12 @@ function MemberList({ onPendingAction }) {
           marginBottom: 14,
         }}
       >
-        <SearchInput placeholder="姓名 / 邮箱 / 手机" width={240} />
+        <SearchInput
+          placeholder="姓名 / 邮箱"
+          width={240}
+          value={search}
+          onChange={setSearch}
+        />
         <RoleFilter value={filter} onChange={setFilter} />
         <Button
           kind="default"
@@ -11293,7 +12668,10 @@ function MemberList({ onPendingAction }) {
         <Button
           kind="primary"
           icon={<Icon.Plus size={13} stroke="#fff" />}
-          onClick={() => notify("邀请成员后台暂未接入。")}
+          onClick={() => {
+            setInviteError("");
+            setInviteOpen(true);
+          }}
         >
           邀请成员
         </Button>
@@ -11400,7 +12778,10 @@ function MemberList({ onPendingAction }) {
                   <Button
                     size="sm"
                     kind="default"
-                    onClick={() => notify(`${m.name} 的角色编辑后台暂未接入。`)}
+                    onClick={() => {
+                      setRoleError("");
+                      setRoleEdit(m);
+                    }}
                   >
                     编辑角色
                   </Button>
@@ -11431,9 +12812,216 @@ function MemberList({ onPendingAction }) {
           rows={rows}
         />
       </Card>
+
+      {inviteOpen ? (
+        <div
+          style={memberModalOverlay}
+          onClick={() => !inviteBusy && setInviteOpen(false)}
+        >
+          <form
+            onSubmit={submitInvite}
+            onClick={(event) => event.stopPropagation()}
+            style={memberModalCard}
+          >
+            <div style={memberModalHeader}>
+              <span style={{ fontSize: 15, fontWeight: 600 }}>邀请成员</span>
+              <button
+                type="button"
+                aria-label="关闭"
+                onClick={() => setInviteOpen(false)}
+                style={memberModalClose}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
+              <label style={memberFieldLabel}>
+                邮箱
+                <input
+                  type="email"
+                  value={inviteForm.email}
+                  onChange={(event) =>
+                    setInviteForm((form) => ({ ...form, email: event.target.value }))
+                  }
+                  placeholder="name@company.com"
+                  style={memberFieldInput}
+                />
+              </label>
+              <label style={memberFieldLabel}>
+                姓名
+                <input
+                  value={inviteForm.name}
+                  onChange={(event) =>
+                    setInviteForm((form) => ({ ...form, name: event.target.value }))
+                  }
+                  placeholder="可选，默认取邮箱前缀"
+                  style={memberFieldInput}
+                />
+              </label>
+              <label style={memberFieldLabel}>
+                角色
+                <select
+                  value={inviteForm.role}
+                  onChange={(event) =>
+                    setInviteForm((form) => ({ ...form, role: event.target.value }))
+                  }
+                  style={memberFieldInput}
+                >
+                  {MEMBER_ROLE_OPTIONS.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {inviteError ? (
+                <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                  {inviteError}
+                </div>
+              ) : null}
+            </div>
+            <div style={memberModalFooter}>
+              <Button
+                kind="default"
+                type="button"
+                disabled={inviteBusy}
+                onClick={() => setInviteOpen(false)}
+              >
+                取消
+              </Button>
+              <Button kind="primary" type="submit" disabled={inviteBusy}>
+                {inviteBusy ? "邀请中…" : "发送邀请"}
+              </Button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {roleEdit ? (
+        <div
+          style={memberModalOverlay}
+          onClick={() => !roleBusy && setRoleEdit(null)}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            style={{ ...memberModalCard, width: 360 }}
+          >
+            <div style={memberModalHeader}>
+              <span style={{ fontSize: 15, fontWeight: 600 }}>
+                编辑角色 · {roleEdit.name}
+              </span>
+              <button
+                type="button"
+                aria-label="关闭"
+                onClick={() => setRoleEdit(null)}
+                style={memberModalClose}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
+              <label style={memberFieldLabel}>
+                角色
+                <select
+                  defaultValue={roleEdit.role}
+                  disabled={roleBusy}
+                  onChange={(event) => submitRole(event.target.value)}
+                  style={memberFieldInput}
+                  aria-label="成员角色"
+                >
+                  {MEMBER_ROLE_OPTIONS.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                {roleBusy ? "保存中…" : "选择新角色后立即生效。"}
+              </div>
+              {roleError ? (
+                <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                  {roleError}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
+
+const MEMBER_ROLE_OPTIONS = [
+  ["owner", "负责人"],
+  ["ops_manager", "运营负责人"],
+  ["operator_business", "次级运营"],
+  ["finance", "财务"],
+  ["streamer", "主播"],
+];
+const memberModalOverlay = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(11, 23, 51, 0.45)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 20,
+  zIndex: 60,
+};
+const memberModalCard = {
+  width: 440,
+  maxWidth: "100%",
+  maxHeight: "90vh",
+  overflowY: "auto",
+  background: "#fff",
+  borderRadius: 12,
+  boxShadow: "var(--shadow-pop)",
+  display: "flex",
+  flexDirection: "column",
+};
+const memberModalHeader = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  padding: "14px 18px",
+  borderBottom: "1px solid var(--line)",
+  color: "var(--ink-900)",
+};
+const memberModalFooter = {
+  display: "flex",
+  justifyContent: "flex-end",
+  gap: 8,
+  padding: "14px 18px",
+  borderTop: "1px solid var(--line)",
+};
+const memberModalClose = {
+  border: "none",
+  background: "transparent",
+  cursor: "pointer",
+  color: "var(--ink-400)",
+  fontSize: 18,
+  lineHeight: 1,
+  padding: 4,
+};
+const memberFieldLabel = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  fontSize: 12,
+  color: "var(--ink-500)",
+  fontWeight: 600,
+};
+const memberFieldInput = {
+  height: 34,
+  border: "1px solid var(--line-strong)",
+  borderRadius: 6,
+  padding: "0 10px",
+  fontSize: 13,
+  color: "var(--ink-900)",
+  outline: "none",
+  background: "#fff",
+};
 
 function RoleFilter({ value, onChange }) {
   const opts = [
@@ -12928,49 +14516,46 @@ function ScreenBilling({ billingStatus, onRefresh }) {
           </Card>
         ) : (
           <>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-                gap: 12,
+            <Card
+              padded={false}
+              bodyStyle={{
+                display: "flex",
+                alignItems: "center",
+                gap: 36,
+                padding: "16px 18px",
+                flexWrap: "wrap",
+                rowGap: 12,
               }}
             >
-              <Card>
-                <Metric
-                  label="当前套餐"
-                  value={billingPlanName(billingStatus.plan)}
-                  hint={billingStatus.plan.code}
-                />
-              </Card>
-              <Card>
-                <Metric
-                  label="订阅状态"
-                  value={billingStatusLabel(billingStatus.subscriptionStatus)}
-                  hint={billingStatus.subscriptionStatus}
-                />
-              </Card>
-              <Card>
-                <Metric
-                  label="账务模式"
-                  value={billingModeLabel(billingStatus.mode)}
-                  hint={
-                    billingStatus.mode === "read_only"
-                      ? "写入动作会被套餐闸口拦截"
-                      : "写入动作按权益放行"
-                  }
-                />
-              </Card>
-              <Card>
-                <Metric
-                  label="已开权益"
-                  value={String(
-                    entitlementRows.filter((row) => row.enabled).length,
-                  )}
-                  unit="项"
-                  hint={`${entitlementRows.length} 项可配置能力`}
-                />
-              </Card>
-            </div>
+              <MiniStat
+                label="当前套餐"
+                value={billingPlanName(billingStatus.plan)}
+                hint={billingStatus.plan.code}
+              />
+              <MiniStat
+                label="订阅状态"
+                value={billingStatusLabel(billingStatus.subscriptionStatus)}
+                hint={billingStatus.subscriptionStatus}
+              />
+              <MiniStat
+                label="账务模式"
+                value={billingModeLabel(billingStatus.mode)}
+                hint={
+                  billingStatus.mode === "read_only"
+                    ? "写入将被闸口拦截"
+                    : "写入按权益放行"
+                }
+                hintTone={billingStatus.mode === "read_only" ? "red" : "muted"}
+              />
+              <MiniStat
+                label="已开权益"
+                value={String(
+                  entitlementRows.filter((row) => row.enabled).length,
+                )}
+                unit="项"
+                hint={`${entitlementRows.length} 项可配置能力`}
+              />
+            </Card>
 
             {billingStatus.mode === "read_only" && (
               <Card>
@@ -13159,6 +14744,7 @@ function OpsReferenceInner({
   settlementScope,
   auditEntries,
   notificationItems,
+  orgMembers,
   billingStatus,
   projectCards,
   streamerCards,
@@ -13182,6 +14768,9 @@ function OpsReferenceInner({
   );
   const [notificationItemsState, setNotificationItemsState] = React.useState(
     notificationItems ?? null,
+  );
+  const [orgMembersState, setOrgMembersState] = React.useState(
+    orgMembers ?? null,
   );
   const [billingStatusState, setBillingStatusState] = React.useState(
     billingStatus ?? null,
@@ -13223,6 +14812,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setNotificationItemsState(notificationItems ?? null);
   }, [notificationItems]);
+
+  React.useEffect(() => {
+    setOrgMembersState(orgMembers ?? null);
+  }, [orgMembers]);
 
   React.useEffect(() => {
     setBillingStatusState(billingStatus ?? null);
@@ -13350,6 +14943,16 @@ function OpsReferenceInner({
       }
     };
 
+    const refreshMembers = async () => {
+      const body = await fetchJson(
+        "/api/organization/members",
+        "refresh members failed",
+      );
+      if (Array.isArray(body.members)) {
+        setOrgMembersState(body.members);
+      }
+    };
+
     const refreshBillingStatus = async () => {
       const body = await fetchJson(
         "/api/billing/status",
@@ -13406,6 +15009,19 @@ function OpsReferenceInner({
           `/api/projects/${id}/publish`,
           "publish project failed",
           { method: "POST" },
+        );
+        await refreshProjects();
+        return body;
+      },
+      updateProjectBasics: async (id, input) => {
+        const body = await fetchJson(
+          `/api/projects/${id}`,
+          "update project failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
         );
         await refreshProjects();
         return body;
@@ -13508,6 +15124,28 @@ function OpsReferenceInner({
         await refreshOpsTasks();
         return body;
       },
+      updateLiveTask: async (id, input) => {
+        const body = await fetchJson(
+          `/api/live-tasks/${id}`,
+          "update live task failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshOpsTasks();
+        return body;
+      },
+      resolveTaskAnomaly: async (id) => {
+        const body = await fetchJson(
+          `/api/live-tasks/${id}/resolve-anomaly`,
+          "resolve anomaly failed",
+          { method: "POST" },
+        );
+        await refreshOpsTasks();
+        return body;
+      },
       reviewReport: async (id, decision) => {
         await fetchJson(
           `/api/live-reports/${id}/review`,
@@ -13589,6 +15227,32 @@ function OpsReferenceInner({
       refreshAuditEntries,
       refreshNotifications,
       refreshBillingStatus,
+      refreshMembers,
+      inviteMember: async (input) => {
+        const body = await fetchJson(
+          "/api/organization/members",
+          "invite member failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshMembers();
+        return body;
+      },
+      updateMemberRole: async (userId, role) => {
+        await fetchJson(
+          `/api/organization/members/${userId}`,
+          "update member role failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ role }),
+          },
+        );
+        await refreshMembers();
+      },
       updateNotificationStatus: async (id, action) => {
         await fetchJson(
           `/api/notifications/${id}`,
@@ -13690,6 +15354,7 @@ function OpsReferenceInner({
         settlementScope,
         auditEntries: auditEntriesState,
         notificationItems: notificationItemsState,
+        orgMembers: orgMembersState,
         actions,
       }}
     >
@@ -13934,7 +15599,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; billingStatus?: any }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; orgMembers?: any[]; billingStatus?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -13946,6 +15611,7 @@ export default function OpsReferenceApp({
   settlementScope,
   auditEntries,
   notificationItems,
+  orgMembers,
   billingStatus,
   projectCards,
   streamerCards,
@@ -13961,6 +15627,7 @@ export default function OpsReferenceApp({
       liveSettlementPool={liveSettlementPool}
       settlementScope={settlementScope}
       auditEntries={auditEntries}
+      orgMembers={orgMembers}
       notificationItems={notificationItems}
       billingStatus={billingStatus}
       projectCards={projectCards}

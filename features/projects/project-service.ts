@@ -19,6 +19,8 @@ export type ProjectRecord = {
   allow_direct_invite?: boolean;
   force_recording?: boolean;
   force_system_timing?: boolean;
+  is_public_to_streamers?: boolean;
+  public_summary?: string | null;
   default_settlement_method?: string;
   default_hourly_rate?: number;
   default_base_salary?: number;
@@ -46,6 +48,8 @@ export type UpdateProjectBasicsInput = {
   allowDirectInvite?: boolean;
   forceRecording?: boolean;
   forceSystemTiming?: boolean;
+  isPublicToStreamers?: boolean;
+  publicSummary?: string;
 };
 
 export type UpdateProjectSettlementRuleInput = {
@@ -276,6 +280,8 @@ function mapBasicProjectPatch(
     allow_direct_invite: input.allowDirectInvite,
     force_recording: input.forceRecording,
     force_system_timing: input.forceSystemTiming,
+    is_public_to_streamers: input.isPublicToStreamers,
+    public_summary: input.publicSummary,
   });
 }
 

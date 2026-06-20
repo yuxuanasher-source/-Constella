@@ -31,6 +31,12 @@ export type ProjectCardDto = {
   bizOwner: string;
   start: string;
   end: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  openSignup: boolean;
+  allowDirectInvite: boolean;
+  isPublicToStreamers: boolean;
+  publicSummary: string;
   needScreening: boolean;
   needStartStop: boolean;
   streamers: {
@@ -69,9 +75,18 @@ export function toProjectCardDto(row: ProjectListItem): ProjectCardDto {
     pricing: "CPT",
     leadOps: "未分配",
     bizOwner: "未分配",
-    start: row.created_at.slice(0, 10),
-    end: row.published_at?.slice(0, 10) ?? row.created_at.slice(0, 10),
-    needScreening: true,
+    start: (row.starts_at ?? row.created_at).slice(0, 10),
+    end:
+      row.ends_at?.slice(0, 10) ??
+      row.published_at?.slice(0, 10) ??
+      row.created_at.slice(0, 10),
+    startsAt: row.starts_at ?? null,
+    endsAt: row.ends_at ?? null,
+    openSignup: row.open_signup ?? true,
+    allowDirectInvite: row.allow_direct_invite ?? true,
+    isPublicToStreamers: row.is_public_to_streamers ?? false,
+    publicSummary: row.public_summary ?? "",
+    needScreening: row.force_recording ?? true,
     needStartStop: row.force_system_timing,
     streamers: { active: 0, candidate: 0, pendingReview: 0 },
     metrics: {
