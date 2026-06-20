@@ -1,4 +1,8 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 import type { BillingActor } from "@/features/billing/billing-write-guard";
+
+import { recordFunnelEvent } from "./funnel-events";
 
 export type OnboardingStep =
   | "create_project"
@@ -60,4 +64,49 @@ export async function markOnboardingStep({
   if (error) {
     throw error;
   }
+}
+
+/**
+ * 业务动作的服务层「顺带」记录 onboarding 进度：标记步骤 + 落
+ * onboarding_step_completed 埋点；当本步跨过激活阈值时再落 activated 埋点。
+ * 调用方应以 best-effort 方式包裹（失败不阻断主业务动作）。
+ */
+export async function recordOnboardingProgress({
+  client,
+  actor,
+  step,
+}: {
+  client: SupabaseClient;
+  actor: BillingActor;
+  step: OnboardingStep;
+}): Promise<{ activated: boolean; newlyActivated: boolean }> {
+  const { data } = await client
+    .from("onboarding_progress")
+    .select("step")
+    .eq("organization_id", actor.organizationId)
+    .returns<{ step: OnboardingStep }[]>();
+  const before = (data ?? []).map((row) => row.step);
+  const wasActivated = isActivated(before);
+
+  await markOnboardingStep({ client: client as never, actor, step });
+
+  const after = before.includes(step) ? before : [...before, step];
+  const activated = isActivated(after);
+  const newlyActivated = activated && !wasActivated;
+
+  await recordFunnelEvent(client as never, {
+    event: "onboarding_step_completed",
+    organizationId: actor.organizationId,
+    userId: actor.userId,
+    properties: { step },
+  });
+  if (newlyActivated) {
+    await recordFunnelEvent(client as never, {
+      event: "activated",
+      organizationId: actor.organizationId,
+      userId: actor.userId,
+    });
+  }
+
+  return { activated, newlyActivated };
 }
