@@ -19,9 +19,15 @@ export type UsageStatus = {
   remainingQuantity: number;
   overageQuantity: number;
   billableOverageQuantity: number;
-  softOverage: true;
-  shouldHardBlock: false;
+  softOverage: boolean;
+  shouldHardBlock: boolean;
 };
+
+/**
+ * 强计量指标：超额且无加量包时硬阻断（OCR 成本高，不允许软超额）。
+ * AI 等其余指标维持 5% 软超额并提示加购（见成本模型）。
+ */
+export const HARD_BLOCK_METRICS: UsageMetric[] = ["ocr"];
 
 type BillingUsageClient = {
   from(table: "usage_events" | "audit_logs"): {
@@ -41,17 +47,20 @@ export function calculateUsageStatus({
   usedQuantity,
   includedQuantity,
   addonQuantity,
+  hardBlockMetrics = HARD_BLOCK_METRICS,
 }: {
   metric: UsageMetric;
   usedQuantity: number;
   includedQuantity: number;
   addonQuantity: number;
+  hardBlockMetrics?: UsageMetric[];
 }): UsageStatus {
   const used = nonnegative(usedQuantity);
   const included = nonnegative(includedQuantity);
   const addon = nonnegative(addonQuantity);
   const allowance = included + addon;
   const overage = Math.max(0, used - allowance);
+  const shouldHardBlock = overage > 0 && hardBlockMetrics.includes(metric);
 
   return {
     metric,
@@ -62,8 +71,8 @@ export function calculateUsageStatus({
     remainingQuantity: Math.max(0, allowance - used),
     overageQuantity: overage,
     billableOverageQuantity: overage,
-    softOverage: true,
-    shouldHardBlock: false,
+    softOverage: !shouldHardBlock,
+    shouldHardBlock,
   };
 }
 

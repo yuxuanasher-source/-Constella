@@ -29,6 +29,30 @@ describe("calculateUsageStatus", () => {
     });
   });
 
+  it("hard-blocks OCR overage but keeps other metrics soft", () => {
+    expect(
+      calculateUsageStatus({
+        metric: "ocr",
+        usedQuantity: 260,
+        includedQuantity: 200,
+        addonQuantity: 0,
+      }),
+    ).toMatchObject({
+      overageQuantity: 60,
+      softOverage: false,
+      shouldHardBlock: true,
+    });
+
+    expect(
+      calculateUsageStatus({
+        metric: "ai",
+        usedQuantity: 1300,
+        includedQuantity: 1000,
+        addonQuantity: 200,
+      }),
+    ).toMatchObject({ shouldHardBlock: false, softOverage: true });
+  });
+
   it("uses explicit nonnegative fallbacks for bad usage values", () => {
     expect(
       calculateUsageStatus({

@@ -15,6 +15,7 @@ import {
   createLiveTask,
   type LiveTaskType,
 } from "@/features/live-operations/live-operations-service";
+import { recordOnboardingProgress } from "@/features/funnel/onboarding";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
 export async function GET() {
@@ -38,11 +39,12 @@ export async function POST(request: Request) {
   try {
     const body = await readJsonBody(request);
     const context = await getLiveOperationsRouteContext();
+    const actor = await actorFromContext(context);
     const task = await createLiveTask({
       repo: context.repo,
       audit: (input) => context.audit(context.supabase, input),
       notify: (input) => context.notify(context.supabase, input),
-      actor: await actorFromContext(context),
+      actor,
       input: {
         projectId: requiredString(body, "projectId"),
         streamerId: requiredString(body, "streamerId"),
@@ -55,6 +57,12 @@ export async function POST(request: Request) {
         collaborationId: optionalString(body, "collaborationId"),
       },
     });
+
+    await recordOnboardingProgress({
+      client: context.supabase,
+      actor,
+      step: "schedule_live",
+    }).catch(() => undefined);
 
     return NextResponse.json({ task }, { status: 201 });
   } catch (error) {
