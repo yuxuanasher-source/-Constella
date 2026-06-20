@@ -248,6 +248,28 @@ class InMemoryComplexCostRepository implements ComplexCostRepository {
     return this.costItems;
   }
 
+  async getProjectCostItemById(itemId: string) {
+    return this.costItems.find((item) => item.id === itemId) ?? null;
+  }
+
+  async updateProjectCostItem(
+    itemId: string,
+    patch: { status: ProjectCostItemRecord["status"] },
+  ) {
+    let updated: ProjectCostItemRecord | null = null;
+    this.costItems = this.costItems.map((item) => {
+      if (item.id !== itemId) {
+        return item;
+      }
+      updated = { ...item, status: patch.status };
+      return updated;
+    });
+    if (!updated) {
+      throw new Error("cost item not found");
+    }
+    return updated;
+  }
+
   async createImportBatch(input: CreateImportBatchRepoInput) {
     const batch = {
       id: `import-${this.importBatches.length + 1}`,

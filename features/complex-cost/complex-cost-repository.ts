@@ -236,6 +236,35 @@ export class SupabaseComplexCostRepository implements ComplexCostRepository {
     return (data ?? []).map(mapCostItemRow);
   }
 
+  async getProjectCostItemById(
+    itemId: string,
+  ): Promise<ProjectCostItemRecord | null> {
+    const { data, error } = await this.client
+      .from("project_cost_items")
+      .select("*")
+      .eq("id", itemId)
+      .maybeSingle<CostItemRow>();
+
+    if (error) {
+      throw error;
+    }
+    return data ? mapCostItemRow(data) : null;
+  }
+
+  async updateProjectCostItem(
+    itemId: string,
+    patch: { status: ProjectCostItemStatus },
+  ): Promise<ProjectCostItemRecord> {
+    const { data, error } = await this.client
+      .from("project_cost_items")
+      .update({ status: patch.status })
+      .eq("id", itemId)
+      .select("*")
+      .single<CostItemRow>();
+
+    return mapCostItemRow(requireSingle({ data, error }));
+  }
+
   async createImportBatch(
     input: CreateImportBatchRepoInput,
   ): Promise<ProjectCostImportBatchRecord> {

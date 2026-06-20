@@ -76,6 +76,13 @@ export type ComplexCostRepository = {
   createProjectCostItem(
     input: CreateProjectCostItemRepoInput,
   ): Promise<ProjectCostItemRecord>;
+  getProjectCostItemById(
+    itemId: string,
+  ): Promise<ProjectCostItemRecord | null>;
+  updateProjectCostItem(
+    itemId: string,
+    patch: { status: ProjectCostItemStatus },
+  ): Promise<ProjectCostItemRecord>;
   listProjectCostItems(input: {
     organizationId: string;
     projectId: string;
@@ -362,6 +369,64 @@ export async function confirmProjectCostImportBatch(args: {
   return { importBatch: updatedBatch, items };
 }
 
+// Transition a manual project cost item's review status (pending_review/draft
+// -> confirmed, or any open status -> voided). Without this, manually-entered
+// external costs are created as pending_review and can never become confirmed,
+// so they never enter the §3.4 reconciliation or a settlement batch (which both
+// only count confirmed items) — the external-cost loop stays broken.
+const COST_ITEM_REVIEW_TARGETS: ProjectCostItemStatus[] = ["confirmed", "voided"];
+
+export async function updateProjectCostItemStatus(args: {
+  repo: Pick<
+    ComplexCostRepository,
+    "getProjectCostItemById" | "updateProjectCostItem" | "getProjectEntitlement"
+  >;
+  audit: ComplexCostAuditWriter;
+  actor: ComplexCostActor;
+  itemId: string;
+  status: ProjectCostItemStatus;
+  reason: string;
+}): Promise<ProjectCostItemRecord> {
+  assertCanReviewCostItems(args.actor);
+  if (!COST_ITEM_REVIEW_TARGETS.includes(args.status)) {
+    throw new Error("Project cost item status must be confirmed or voided");
+  }
+  assertReason(args.reason, "Reviewing a project cost item requires a reason");
+
+  const before = await args.repo.getProjectCostItemById(args.itemId);
+  if (!before) {
+    throw new Error("Project cost item not found");
+  }
+  assertSameOrganization(args.actor, before.organizationId);
+  await requireProjectEntitlement(args.repo, args.actor, before.projectId);
+
+  assertCostItemTransition(before.status, args.status);
+
+  const after = await args.repo.updateProjectCostItem(args.itemId, {
+    status: args.status,
+  });
+
+  await args.audit({
+    organizationId: args.actor.organizationId,
+    actorUserId: args.actor.userId,
+    actorName: args.actor.name,
+    actorRole: args.actor.role,
+    action: args.status === "confirmed" ? "approve" : "void",
+    module: "complex_cost",
+    objectType: "project_cost_item",
+    objectId: after.id,
+    projectId: after.projectId,
+    streamerId: after.streamerId ?? undefined,
+    before: before as unknown as Record<string, unknown>,
+    after: after as unknown as Record<string, unknown>,
+    changedFields: ["status"],
+    reason: args.reason,
+    isHighRisk: true,
+  });
+
+  return after;
+}
+
 export async function attachProjectCostItemsToSettlementBatch(args: {
   repo: Pick<
     ComplexCostRepository,
@@ -453,6 +518,35 @@ function assertCanCreateCostItems(actor: ComplexCostActor): void {
     actor.role !== "operator_business"
   ) {
     throw new Error("Current role cannot manage project cost items");
+  }
+}
+
+function assertCanReviewCostItems(actor: ComplexCostActor): void {
+  if (actor.role !== "owner" && actor.role !== "ops_manager") {
+    throw new Error("Current role cannot review project cost items");
+  }
+}
+
+// Allowed status transitions: open items (draft/pending_review) may be
+// confirmed; open or confirmed items may be voided. Re-confirming or
+// re-voiding a terminal state is rejected.
+function assertCostItemTransition(
+  from: ProjectCostItemStatus,
+  to: ProjectCostItemStatus,
+): void {
+  if (to === "confirmed") {
+    if (from !== "draft" && from !== "pending_review") {
+      throw new Error(
+        `Cannot confirm a project cost item in status ${from}`,
+      );
+    }
+    return;
+  }
+  if (to === "voided") {
+    if (from === "voided") {
+      throw new Error("Project cost item is already voided");
+    }
+    return;
   }
 }
 
