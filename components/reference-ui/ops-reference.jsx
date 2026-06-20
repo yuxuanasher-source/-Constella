@@ -4021,6 +4021,7 @@ function ProjectDetail({ id, go }) {
                   count: p.metrics.reportedPending,
                 },
                 { key: "rules", label: "结算规则" },
+                { key: "collaboration", label: "跨 MCN 协作" },
                 { key: "audit", label: "操作日志" },
               ]}
             />
@@ -4029,7 +4030,10 @@ function ProjectDetail({ id, go }) {
           <div style={{ padding: 20 }}>
             {tab === "overview" && <ProjectOverview p={p} />}
             {tab === "roster" && <ProjectRoster p={p} go={go} />}
-            {tab !== "overview" && tab !== "roster" && (
+            {tab === "collaboration" && <ProjectCollaboration p={p} />}
+            {tab !== "overview" &&
+              tab !== "roster" &&
+              tab !== "collaboration" && (
               <EmptyHint
                 title={tabLabel(tab) + " · 数据视图"}
                 hint="此标签页与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
@@ -4041,6 +4045,444 @@ function ProjectDetail({ id, go }) {
         </Card>
       </div>
     </>
+  );
+}
+
+const COLLAB_SHARE_STATUS = {
+  active: { tone: "green", label: "生效中" },
+  expired: { tone: "neutral", label: "已过期" },
+  revoked: { tone: "red", label: "已撤销" },
+};
+
+const COLLAB_APPLICATION_STATUS = {
+  submitted: { tone: "amber", label: "待处理" },
+  approved: { tone: "green", label: "已通过" },
+  owner_countered: { tone: "blue", label: "已反报价 · 待对方确认" },
+  rejected: { tone: "red", label: "已拒绝" },
+  withdrawn: { tone: "neutral", label: "已撤回" },
+  expired: { tone: "neutral", label: "已过期" },
+};
+
+function bpsToPercentLabel(bps) {
+  if (typeof bps !== "number" || !Number.isFinite(bps)) {
+    return "—";
+  }
+  return `${(bps / 100).toFixed(bps % 100 === 0 ? 0 : 2)}%`;
+}
+
+// ——— Project detail: cross-MCN collaboration (owner side) ———
+function ProjectCollaboration({ p }) {
+  const actions = useOpsLiveActions();
+  const [loading, setLoading] = React.useState(true);
+  const [shares, setShares] = React.useState([]);
+  const [applications, setApplications] = React.useState([]);
+  const [message, setMessage] = React.useState("");
+  const [busy, setBusy] = React.useState("");
+  const [newShareUrl, setNewShareUrl] = React.useState("");
+  const [reviewTarget, setReviewTarget] = React.useState(null);
+
+  const reload = React.useCallback(async () => {
+    if (!actions.loadProjectCollaboration) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const data = await actions.loadProjectCollaboration(p.id);
+      setShares(Array.isArray(data.shares) ? data.shares : []);
+      setApplications(Array.isArray(data.applications) ? data.applications : []);
+    } catch (error) {
+      setMessage(error?.message || "加载协作数据失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [actions, p.id]);
+
+  React.useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const createShare = async () => {
+    if (!actions.createCollaborationShare) {
+      return;
+    }
+    setBusy("create");
+    setMessage("");
+    setNewShareUrl("");
+    try {
+      const expiresAt = new Date(
+        Date.now() + 14 * 24 * 60 * 60 * 1000,
+      ).toISOString();
+      const body = await actions.createCollaborationShare(p.id, {
+        expiresAt,
+        allowApplications: true,
+      });
+      if (body?.shareUrl) {
+        setNewShareUrl(body.shareUrl);
+      }
+      setMessage("协作邀请链接已生成，可发送给目标 MCN");
+      await reload();
+    } catch (error) {
+      setMessage(error?.message || "生成协作邀请失败，请稍后重试");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const revokeShare = async (shareId) => {
+    if (!actions.revokeCollaborationShare) {
+      return;
+    }
+    setBusy(`revoke:${shareId}`);
+    setMessage("");
+    try {
+      await actions.revokeCollaborationShare(p.id, shareId);
+      setMessage("协作分享链接已撤销");
+      await reload();
+    } catch (error) {
+      setMessage(error?.message || "撤销协作分享失败，请稍后重试");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const submitReview = async (input) => {
+    if (!actions.reviewCollaborationApplication || !reviewTarget) {
+      return;
+    }
+    setBusy("review");
+    setMessage("");
+    try {
+      await actions.reviewCollaborationApplication(
+        p.id,
+        reviewTarget.id,
+        input,
+      );
+      setMessage("协作申请已处理");
+      setReviewTarget(null);
+      await reload();
+    } catch (error) {
+      setMessage(error?.message || "处理协作申请失败，请稍后重试");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {message ? (
+        <div
+          aria-live="polite"
+          style={{
+            padding: "10px 12px",
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            background: "var(--bg-soft)",
+            color: message.includes("失败") ? "var(--danger-600)" : "var(--ink-700)",
+            fontSize: 12,
+          }}
+        >
+          {message}
+        </div>
+      ) : null}
+
+      <Card
+        title="邀请其它 MCN 协作"
+        extra={
+          <Button
+            kind="primary"
+            size="sm"
+            icon={<Icon.Plus size={13} stroke="#fff" />}
+            onClick={createShare}
+            disabled={busy === "create"}
+          >
+            {busy === "create" ? "生成中" : "生成协作邀请链接"}
+          </Button>
+        }
+      >
+        <div
+          style={{
+            padding: 16,
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+          }}
+        >
+          <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+            生成带时效的协作邀请链接，目标 MCN 凭链接查看项目概况并提交分成申请，由你审核后形成协作协议。
+          </div>
+          {newShareUrl ? (
+            <div
+              style={{
+                padding: "8px 10px",
+                borderRadius: 8,
+                background: "var(--bg-soft)",
+                border: "1px solid var(--line)",
+                fontSize: 12,
+                wordBreak: "break-all",
+              }}
+              className="mono"
+            >
+              {newShareUrl}
+            </div>
+          ) : null}
+          {loading ? (
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>加载中…</div>
+          ) : shares.length === 0 ? (
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              暂无协作分享链接。
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {shares.map((share) => {
+                const status =
+                  COLLAB_SHARE_STATUS[share.status] ||
+                  COLLAB_SHARE_STATUS.expired;
+                return (
+                  <div
+                    key={share.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "8px 10px",
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                    }}
+                  >
+                    <Badge tone={status.tone} dot>
+                      {status.label}
+                    </Badge>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 12 }}>
+                      <span style={{ color: "var(--ink-700)" }}>
+                        有效期至 {String(share.expiresAt || "").slice(0, 10) || "—"}
+                      </span>
+                      <span style={{ color: "var(--ink-400)" }}>
+                        {" · "}
+                        {share.allowApplications ? "允许提交申请" : "仅可查看"}
+                      </span>
+                    </div>
+                    {share.status === "active" ? (
+                      <Button
+                        kind="danger"
+                        size="sm"
+                        onClick={() => revokeShare(share.id)}
+                        disabled={busy === `revoke:${share.id}`}
+                      >
+                        {busy === `revoke:${share.id}` ? "撤销中" : "撤销"}
+                      </Button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      <Card title="协作申请" extra={<Badge tone="neutral">{applications.length} 条</Badge>}>
+        <div style={{ padding: 16 }}>
+          {loading ? (
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>加载中…</div>
+          ) : applications.length === 0 ? (
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              暂无其它 MCN 的协作申请。
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {applications.map((app) => {
+                const status =
+                  COLLAB_APPLICATION_STATUS[app.status] ||
+                  COLLAB_APPLICATION_STATUS.submitted;
+                return (
+                  <div
+                    key={app.id}
+                    style={{
+                      padding: "10px 12px",
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <Badge tone={status.tone} dot>
+                        {status.label}
+                      </Badge>
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 13 }}>
+                        申请分成 {bpsToPercentLabel(app.requestedRevenueShareBps)}
+                        {typeof app.ownerCounterRevenueShareBps === "number"
+                          ? ` · 我方反报价 ${bpsToPercentLabel(app.ownerCounterRevenueShareBps)}`
+                          : ""}
+                      </div>
+                      {app.status === "submitted" ? (
+                        <Button
+                          kind="default"
+                          size="sm"
+                          onClick={() => setReviewTarget(app)}
+                        >
+                          处理
+                        </Button>
+                      ) : null}
+                    </div>
+                    {app.applicantNote ? (
+                      <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                        申请说明：{app.applicantNote}
+                      </div>
+                    ) : null}
+                    {app.status === "rejected" && app.rejectionReason ? (
+                      <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                        拒绝原因：{app.rejectionReason}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {reviewTarget ? (
+        <CollaborationReviewDrawer
+          application={reviewTarget}
+          busy={busy === "review"}
+          onSubmit={submitReview}
+          onClose={() => setReviewTarget(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function CollaborationReviewDrawer({ application, busy, onSubmit, onClose }) {
+  const [action, setAction] = React.useState("accept");
+  const [note, setNote] = React.useState("");
+  const [counterPercent, setCounterPercent] = React.useState(
+    application.requestedRevenueShareBps / 100,
+  );
+  const [rejectReason, setRejectReason] = React.useState("");
+
+  const submit = () => {
+    if (action === "accept") {
+      onSubmit({ action: "accept", ownerReviewNote: note || undefined });
+      return;
+    }
+    if (action === "counter") {
+      onSubmit({
+        action: "counter",
+        ownerCounterRevenueShareBps: Math.round(Number(counterPercent) * 100),
+        ownerReviewNote: note || undefined,
+      });
+      return;
+    }
+    onSubmit({
+      action: "reject",
+      ownerReviewNote: note || undefined,
+      rejectionReason: rejectReason || undefined,
+    });
+  };
+
+  const actionTabs = [
+    { key: "accept", label: "接受" },
+    { key: "counter", label: "反报价" },
+    { key: "reject", label: "拒绝" },
+  ];
+
+  return (
+    <Drawer onClose={onClose} title={<strong>处理协作申请</strong>}>
+      <div
+        style={{ padding: 16, display: "flex", flexDirection: "column", gap: 16 }}
+      >
+        <Field label="对方申请分成">
+          <div style={{ fontSize: 14, color: "var(--ink-700)" }}>
+            {bpsToPercentLabel(application.requestedRevenueShareBps)}
+          </div>
+        </Field>
+
+        <Field label="处理方式">
+          <div style={{ display: "flex", gap: 8 }}>
+            {actionTabs.map((t) => (
+              <Button
+                key={t.key}
+                kind={action === t.key ? "primary" : "default"}
+                size="sm"
+                onClick={() => setAction(t.key)}
+              >
+                {t.label}
+              </Button>
+            ))}
+          </div>
+        </Field>
+
+        {action === "counter" ? (
+          <Field label="反报价分成（%）">
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.5}
+              value={counterPercent}
+              onChange={(e) => setCounterPercent(e.target.value)}
+              style={{
+                width: "100%",
+                height: 32,
+                padding: "0 10px",
+                border: "1px solid var(--line-strong)",
+                borderRadius: 6,
+                fontSize: 13,
+              }}
+            />
+          </Field>
+        ) : null}
+
+        {action === "reject" ? (
+          <Field label="拒绝原因">
+            <textarea
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              rows={3}
+              placeholder="请说明拒绝原因"
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                border: "1px solid var(--line-strong)",
+                borderRadius: 6,
+                fontSize: 13,
+                resize: "vertical",
+              }}
+            />
+          </Field>
+        ) : null}
+
+        <Field label="备注（可选）">
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={2}
+            placeholder="审核备注，对方可见"
+            style={{
+              width: "100%",
+              padding: "8px 10px",
+              border: "1px solid var(--line-strong)",
+              borderRadius: 6,
+              fontSize: 13,
+              resize: "vertical",
+            }}
+          />
+        </Field>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <Button kind="ghost" onClick={onClose}>
+            取消
+          </Button>
+          <Button kind="primary" onClick={submit} disabled={busy}>
+            {busy ? "提交中" : "提交"}
+          </Button>
+        </div>
+      </div>
+    </Drawer>
   );
 }
 
@@ -13392,6 +13834,56 @@ function OpsReferenceInner({
     };
 
     return {
+      loadProjectCollaboration: async (projectId) => {
+        const [shareBody, applicationBody] = await Promise.all([
+          fetchJson(
+            `/api/projects/${projectId}/collaboration-shares`,
+            "load collaboration shares failed",
+          ),
+          fetchJson(
+            `/api/projects/${projectId}/collaboration-applications`,
+            "load collaboration applications failed",
+          ),
+        ]);
+        return {
+          shares: Array.isArray(shareBody.shares) ? shareBody.shares : [],
+          applications: Array.isArray(applicationBody.applications)
+            ? applicationBody.applications
+            : [],
+        };
+      },
+      createCollaborationShare: async (projectId, input) =>
+        fetchJson(
+          `/api/projects/${projectId}/collaboration-shares`,
+          "create collaboration share failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input ?? {}),
+          },
+        ),
+      revokeCollaborationShare: async (projectId, shareId) =>
+        fetchJson(
+          `/api/projects/${projectId}/collaboration-shares/${shareId}/revoke`,
+          "revoke collaboration share failed",
+          { method: "POST" },
+        ),
+      reviewCollaborationApplication: async (projectId, applicationId, input) =>
+        fetchJson(
+          `/api/projects/${projectId}/collaboration-applications/${applicationId}/review`,
+          "review collaboration application failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input ?? {}),
+          },
+        ),
+      confirmCollaborationApplication: async (projectId, applicationId) =>
+        fetchJson(
+          `/api/projects/${projectId}/collaboration-applications/${applicationId}/confirm`,
+          "confirm collaboration application failed",
+          { method: "POST" },
+        ),
       createProjectDraft: async (input) => {
         const body = await fetchJson("/api/projects", "create project failed", {
           method: "POST",
