@@ -362,6 +362,44 @@ export function createSupabaseBillingRepo(client: SupabaseClient): BillingRepo {
       );
       throwIf(error);
     },
+
+    async listSucceededPaymentsByDate(provider, date) {
+      const start = `${date}T00:00:00.000Z`;
+      const end = `${date}T23:59:59.999Z`;
+      const { data, error } = await client
+        .from("billing_transactions")
+        .select("provider_txn_id, amount_cents")
+        .eq("provider", provider)
+        .eq("type", "payment")
+        .eq("status", "succeeded")
+        .gte("succeeded_at", start)
+        .lte("succeeded_at", end)
+        .returns<{ provider_txn_id: string | null; amount_cents: number }[]>();
+      throwIf(error);
+      return (data ?? [])
+        .filter((row) => row.provider_txn_id)
+        .map((row) => ({
+          providerTxnId: row.provider_txn_id as string,
+          amountCents: row.amount_cents,
+        }));
+    },
+
+    async upsertReconciliation(input) {
+      const { error } = await client.from("billing_reconciliations").upsert(
+        {
+          recon_date: input.reconDate,
+          provider: input.provider,
+          expected_amount_cents: input.expectedAmountCents,
+          provider_amount_cents: input.providerAmountCents,
+          matched_count: input.matchedCount,
+          mismatched_count: input.mismatchedCount,
+          status: input.status,
+          detail: input.detail,
+        },
+        { onConflict: "recon_date,provider" },
+      );
+      throwIf(error);
+    },
   };
 }
 

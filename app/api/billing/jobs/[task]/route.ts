@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 
 import { createSupabaseBillingRepo } from "@/features/billing/billing-repo-supabase";
+import { toDateString } from "@/features/billing/billing-period";
+import { getPaymentProvider } from "@/features/billing/providers/registry";
+import { runReconciliation } from "@/features/billing/reconciliation";
 import {
   runDunningSweep,
   runExpirePendingOrdersSweep,
@@ -115,6 +118,17 @@ export async function POST(request: Request, context: RouteContext) {
     if (task === "expire-orders") {
       const summary = await runExpirePendingOrdersSweep({ repo });
       return NextResponse.json({ task, summary });
+    }
+
+    if (task === "reconcile") {
+      const date =
+        new URL(request.url).searchParams.get("date") ?? toDateString(new Date());
+      const summary = await runReconciliation({
+        repo,
+        provider: getPaymentProvider(),
+        date,
+      });
+      return NextResponse.json({ task, date, summary });
     }
 
     return NextResponse.json({ error: "Unknown job" }, { status: 404 });

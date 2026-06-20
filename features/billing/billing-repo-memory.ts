@@ -27,6 +27,7 @@ export type MemoryBillingState = {
   usageAddons: Array<{ organizationId: string; metric: string; quantity: number }>;
   featureAddons: Map<string, { featureKey: string; enabled: boolean }>;
   owners: Map<string, string>;
+  reconciliations: Map<string, { status: string; mismatchedCount: number }>;
 };
 
 /**
@@ -49,6 +50,7 @@ export function createMemoryBillingRepo(seed: {
     usageAddons: [],
     featureAddons: new Map(),
     owners: new Map(Object.entries(seed.owners ?? {})),
+    reconciliations: new Map(),
   };
   if (seed.subscription) {
     state.subscriptions.set(seed.subscription.organizationId, {
@@ -244,6 +246,27 @@ export function createMemoryBillingRepo(seed: {
       state.featureAddons.set(`${input.organizationId}:${input.featureKey}`, {
         featureKey: input.featureKey,
         enabled: input.enabled,
+      });
+    },
+    async listSucceededPaymentsByDate(provider, date) {
+      return state.transactions
+        .filter(
+          (txn) =>
+            txn.provider === provider &&
+            txn.type === "payment" &&
+            txn.status === "succeeded" &&
+            !!txn.providerTxnId &&
+            (txn.succeededAt ?? "").slice(0, 10) === date,
+        )
+        .map((txn) => ({
+          providerTxnId: txn.providerTxnId as string,
+          amountCents: txn.amountCents,
+        }));
+    },
+    async upsertReconciliation(input) {
+      state.reconciliations.set(`${input.reconDate}:${input.provider}`, {
+        status: input.status,
+        mismatchedCount: input.mismatchedCount,
       });
     },
   };

@@ -67,10 +67,17 @@ export type WebhookVerifyResult =
   | { verified: false; reason: string }
   | { verified: true; event: PaymentEvent };
 
+export type StatementEntry = {
+  providerTxnId: string;
+  amountCents: number;
+};
+
 export type PaymentProvider = {
   name: string;
   createPayment(input: CreatePaymentInput): Promise<CreatePaymentResult>;
   queryPayment(providerTxnId: string): Promise<{ status: PaymentQueryStatus }>;
   refund(input: RefundInput): Promise<RefundResult>;
   verifyWebhook(input: WebhookVerifyInput): WebhookVerifyResult;
+  /** 拉取某日渠道对账文件（单号级金额）。适配层预留各渠道 parser。 */
+  fetchStatement(date: string): Promise<StatementEntry[]>;
 };

@@ -7,6 +7,7 @@ import type {
   PaymentProvider,
   RefundInput,
   RefundResult,
+  StatementEntry,
   WebhookVerifyInput,
   WebhookVerifyResult,
 } from "./payment-provider";
@@ -16,11 +17,13 @@ const DEFAULT_SECRET = "mock-secret";
 /**
  * 确定性 mock 支付 Provider：可在测试与本地联调中跑通完整下单 / 回调链路。
  * 验签用 HMAC-SHA256，回调体须携带与 {@link signMockWebhook} 一致的签名。
+ * `statement` 用于对账测试时注入渠道对账文件。
  */
 export function createMockPaymentProvider(
-  options: { secret?: string } = {},
+  options: { secret?: string; statement?: StatementEntry[] } = {},
 ): PaymentProvider {
   const secret = options.secret ?? DEFAULT_SECRET;
+  const statement = options.statement ?? [];
 
   return {
     name: "mock",
@@ -67,6 +70,10 @@ export function createMockPaymentProvider(
         return { verified: false, reason: "invalid_event" };
       }
       return { verified: true, event };
+    },
+    async fetchStatement(date: string): Promise<StatementEntry[]> {
+      void date;
+      return statement;
     },
   };
 }

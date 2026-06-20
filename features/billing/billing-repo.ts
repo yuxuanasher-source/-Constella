@@ -111,6 +111,17 @@ export type FeatureAddonInput = {
   periodEnd: string;
 };
 
+export type ReconciliationInput = {
+  reconDate: string;
+  provider: string;
+  expectedAmountCents: number;
+  providerAmountCents: number;
+  matchedCount: number;
+  mismatchedCount: number;
+  status: string;
+  detail: Record<string, unknown>;
+};
+
 /**
  * 计费数据访问层。把订单编排 / 状态机推进与 Supabase 查询解耦，
  * 便于用内存实现做幂等、状态机、并发回调的单元测试。
@@ -185,6 +196,13 @@ export interface BillingRepo {
   upsertUsageCounter(patch: UsageCounterPatch): Promise<void>;
   insertUsageAddon(input: UsageAddonInput): Promise<void>;
   upsertFeatureAddon(input: FeatureAddonInput): Promise<void>;
+
+  /** 对账用：某渠道某日成功支付流水（单号 + 金额）。 */
+  listSucceededPaymentsByDate(
+    provider: string,
+    date: string,
+  ): Promise<Array<{ providerTxnId: string; amountCents: number }>>;
+  upsertReconciliation(input: ReconciliationInput): Promise<void>;
 }
 
 const METRIC_INCLUDED_FIELD: Record<UsageMetric, keyof PlanRecord> = {
