@@ -48,11 +48,20 @@ export async function getProjectComplexCostDashboard(
     listProjectCostItems(client, input),
     getProjectFinancialSettings(client, input),
   ]);
-  const supplierCostCents = sumItems(items, ["supplier_fee"]);
-  const trafficCostCents = sumItems(items, ["traffic"]);
-  const platformFeeCents = sumItems(items, ["platform_fee"]);
-  const manualAdjustmentCents = sumItems(items, ["bonus", "penalty", "manual"]);
-  const expectedReceivableCents = sumItems(items, ["cps", "gift"]);
+  // Only confirmed items count toward the P&L, matching the §3.4 settlement
+  // reconciliation and PRD §3.3.4 (draft / pending_review never settle). The
+  // full non-voided `items` list is still returned for display so operators can
+  // see pending entries awaiting confirmation.
+  const confirmedItems = items.filter((item) => item.status === "confirmed");
+  const supplierCostCents = sumItems(confirmedItems, ["supplier_fee"]);
+  const trafficCostCents = sumItems(confirmedItems, ["traffic"]);
+  const platformFeeCents = sumItems(confirmedItems, ["platform_fee"]);
+  const manualAdjustmentCents = sumItems(confirmedItems, [
+    "bonus",
+    "penalty",
+    "manual",
+  ]);
+  const expectedReceivableCents = sumItems(confirmedItems, ["cps", "gift"]);
   const preview = calculateComplexCostPreview({
     expectedReceivableCents,
     supplierCostCents,

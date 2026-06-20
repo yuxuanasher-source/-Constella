@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { ProjectCostItemRecord } from "./complex-cost-types";
 import {
   attachProjectCostItemsToSettlementBatch,
   approveComplexCostRuleVersion,
   createManualProjectCostItem,
   saveComplexCostRuleDraft,
+  updateProjectCostItemStatus,
 } from "./complex-cost-service";
 
 const actor = {
@@ -146,5 +148,130 @@ describe("complex cost service", () => {
     ).rejects.toThrow(
       "Some project cost items could not be attached to the settlement batch",
     );
+  });
+});
+
+describe("updateProjectCostItemStatus", () => {
+  const entitlement = {
+    id: "ent-1",
+    organizationId: "org-1",
+    projectId: "project-1",
+    enabledSource: "plan" as const,
+    billingMode: "included" as const,
+  };
+  const pendingItem: ProjectCostItemRecord = {
+    id: "item-1",
+    organizationId: "org-1",
+    projectId: "project-1",
+    streamerId: null,
+    supplierOrganizationId: null,
+    liveReportId: null,
+    settlementBatchId: null,
+    itemType: "supplier_fee",
+    amountCents: 12_000,
+    direction: "cost",
+    evidenceLevel: "yellow",
+    source: "manual",
+    sourcePayload: {},
+    reason: "供应商账单",
+    status: "pending_review",
+    createdBy: "user-1",
+  };
+
+  function createRepo(item: ProjectCostItemRecord = pendingItem) {
+    return {
+      getProjectEntitlement: vi.fn(async () => entitlement),
+      getProjectCostItemById: vi.fn(async () => item),
+      updateProjectCostItem: vi.fn(
+        async (_id: string, patch: { status: ProjectCostItemRecord["status"] }) => ({
+          ...item,
+          status: patch.status,
+        }),
+      ),
+    };
+  }
+
+  it("confirms a pending item and writes a high-risk approve audit", async () => {
+    const repo = createRepo();
+    const audit = vi.fn();
+
+    const result = await updateProjectCostItemStatus({
+      repo,
+      audit,
+      actor,
+      itemId: "item-1",
+      status: "confirmed",
+      reason: "财务核对入账",
+    });
+
+    expect(result.status).toBe("confirmed");
+    expect(repo.updateProjectCostItem).toHaveBeenCalledWith("item-1", {
+      status: "confirmed",
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "approve",
+        objectType: "project_cost_item",
+        changedFields: ["status"],
+        isHighRisk: true,
+      }),
+    );
+  });
+
+  it("voids a confirmed item", async () => {
+    const repo = createRepo({ ...pendingItem, status: "confirmed" });
+    const result = await updateProjectCostItemStatus({
+      repo,
+      audit: vi.fn(),
+      actor,
+      itemId: "item-1",
+      status: "voided",
+      reason: "录入错误作废",
+    });
+    expect(result.status).toBe("voided");
+  });
+
+  it("rejects confirming an already-confirmed item", async () => {
+    const repo = createRepo({ ...pendingItem, status: "confirmed" });
+    await expect(
+      updateProjectCostItemStatus({
+        repo,
+        audit: vi.fn(),
+        actor,
+        itemId: "item-1",
+        status: "confirmed",
+        reason: "再次确认",
+      }),
+    ).rejects.toThrow(/Cannot confirm/);
+    expect(repo.updateProjectCostItem).not.toHaveBeenCalled();
+  });
+
+  it("requires a reason", async () => {
+    const repo = createRepo();
+    await expect(
+      updateProjectCostItemStatus({
+        repo,
+        audit: vi.fn(),
+        actor,
+        itemId: "item-1",
+        status: "confirmed",
+        reason: "   ",
+      }),
+    ).rejects.toThrow(/requires a reason/);
+  });
+
+  it("rejects operator_business (review is owner/ops_manager only)", async () => {
+    const repo = createRepo();
+    await expect(
+      updateProjectCostItemStatus({
+        repo,
+        audit: vi.fn(),
+        actor: { ...actor, role: "operator_business" as const },
+        itemId: "item-1",
+        status: "confirmed",
+        reason: "确认",
+      }),
+    ).rejects.toThrow(/cannot review/i);
+    expect(repo.getProjectCostItemById).not.toHaveBeenCalled();
   });
 });
