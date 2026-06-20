@@ -12354,6 +12354,7 @@ function ScreenSettlement({ go }) {
   const settlementScope = useOpsSettlementScope();
   const complexCost = useOpsComplexCost();
   const actions = useOpsLiveActions();
+  const streamers = useOpsStreamers();
   const projectOptions = React.useMemo(
     () =>
       settlementProjectOptions({
@@ -12373,6 +12374,14 @@ function ScreenSettlement({ go }) {
   const [batchFormOpen, setBatchFormOpen] = React.useState(false);
   const [manualFormOpen, setManualFormOpen] = React.useState(false);
   const [settlementMessage, setSettlementMessage] = React.useState("");
+  const [streamerRuleDraft, setStreamerRuleDraft] = React.useState({
+    streamerId: "",
+    settlementMethod: "cpt",
+    hourlyRate: "",
+    baseSalary: "",
+    cpsRatePercent: "",
+    reason: "",
+  });
   const [batchDraft, setBatchDraft] = React.useState({
     projectId: settlementScope?.projectId || "",
     periodStart: settlementScope?.periodStart || "",
@@ -12603,6 +12612,53 @@ function ScreenSettlement({ go }) {
         reason: "结算中心项目规则调整",
       });
       setSettlementMessage("项目结算规则已保存");
+      return false;
+    });
+  };
+  const updateStreamerRuleDraft = (field) => (event) => {
+    setStreamerRuleDraft((draft) => ({
+      ...draft,
+      [field]: event.target.value,
+    }));
+  };
+  const streamerRuleOptions = React.useMemo(
+    () =>
+      (Array.isArray(streamers) ? streamers : [])
+        .map((streamer) => ({
+          id: streamer?.id,
+          name:
+            streamer?.alias ||
+            streamer?.name ||
+            streamer?.displayName ||
+            streamer?.id,
+        }))
+        .filter((option) => option.id),
+    [streamers],
+  );
+  const saveStreamerRule = (event) => {
+    event?.preventDefault?.();
+    return runSettlementAction("streamer-rule", async () => {
+      if (!selectedProjectId) {
+        setSettlementMessage("请选择结算项目");
+        return false;
+      }
+      if (!streamerRuleDraft.streamerId) {
+        setSettlementMessage("请选择主播");
+        return false;
+      }
+      await actions.updateProjectStreamerSettlementRule?.(
+        selectedProjectId,
+        streamerRuleDraft.streamerId,
+        {
+          settlementMethod: streamerRuleDraft.settlementMethod,
+          hourlyRate: draftNumber(streamerRuleDraft.hourlyRate),
+          baseSalary: draftNumber(streamerRuleDraft.baseSalary),
+          cpsRateBps: draftPercentToBps(streamerRuleDraft.cpsRatePercent),
+          reason:
+            streamerRuleDraft.reason?.trim() || "结算中心主播应付规则调整",
+        },
+      );
+      setSettlementMessage("主播应付规则已保存");
       return false;
     });
   };
@@ -12959,6 +13015,108 @@ function ScreenSettlement({ go }) {
                 {busyAction === "project-financials"
                   ? "保存中…"
                   : "保存财务设置"}
+              </Button>
+            </div>
+          </form>
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="主播应付规则"
+          hint="按项目为单个主播设置应付结算方式与价格（准入后可随时修改）"
+        >
+          <form
+            onSubmit={saveStreamerRule}
+            style={{ display: "flex", flexDirection: "column", gap: 12 }}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                gap: 10,
+                alignItems: "end",
+                minWidth: 0,
+              }}
+            >
+              <TaskFormLabel label="主播">
+                <select
+                  value={streamerRuleDraft.streamerId}
+                  onChange={updateStreamerRuleDraft("streamerId")}
+                  style={taskInputStyle}
+                >
+                  <option value="">选择主播</option>
+                  {streamerRuleOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.name}
+                    </option>
+                  ))}
+                </select>
+              </TaskFormLabel>
+              <TaskFormLabel label="结算方式">
+                <select
+                  value={streamerRuleDraft.settlementMethod}
+                  onChange={updateStreamerRuleDraft("settlementMethod")}
+                  style={taskInputStyle}
+                >
+                  {SETTLEMENT_METHOD_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </TaskFormLabel>
+              <TaskFormLabel label="小时单价">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={streamerRuleDraft.hourlyRate}
+                  onChange={updateStreamerRuleDraft("hourlyRate")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="底薪">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={streamerRuleDraft.baseSalary}
+                  onChange={updateStreamerRuleDraft("baseSalary")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="CPS 比例(%)">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={streamerRuleDraft.cpsRatePercent}
+                  onChange={updateStreamerRuleDraft("cpsRatePercent")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="原因">
+                <input
+                  type="text"
+                  value={streamerRuleDraft.reason}
+                  onChange={updateStreamerRuleDraft("reason")}
+                  style={taskInputStyle}
+                  placeholder="可选，默认记为规则调整"
+                />
+              </TaskFormLabel>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <Button
+                kind="primary"
+                type="submit"
+                disabled={
+                  !!busyAction ||
+                  !selectedProjectId ||
+                  !streamerRuleDraft.streamerId
+                }
+              >
+                {busyAction === "streamer-rule"
+                  ? "保存中…"
+                  : "保存主播应付规则"}
               </Button>
             </div>
           </form>
@@ -20825,6 +20983,23 @@ function OpsReferenceInner({
         const body = await fetchJson(
           `/api/projects/${id}/settlement-rule`,
           "update project settlement rule failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshProjects();
+        return body;
+      },
+      updateProjectStreamerSettlementRule: async (
+        projectId,
+        streamerId,
+        input,
+      ) => {
+        const body = await fetchJson(
+          `/api/projects/${projectId}/streamers/${streamerId}/settlement-rule`,
+          "update project streamer settlement rule failed",
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
