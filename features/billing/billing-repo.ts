@@ -149,6 +149,8 @@ export interface BillingRepo {
     orderId: string,
     paidAt: string,
   ): Promise<{ transitioned: boolean }>;
+  /** 原子地把订单从 `refunding` 翻成 `refunded`（退款回滚只生效一次）。 */
+  markOrderRefunded(orderId: string): Promise<{ transitioned: boolean }>;
 
   /**
    * 记录一次资金动作。同一 (provider, provider_txn_id) 的支付按渠道单号
@@ -156,6 +158,12 @@ export interface BillingRepo {
    * 约束一致；退款用不同渠道单号则新增一行。
    */
   insertTransaction(input: TransactionInput): Promise<void>;
+  /** 取某订单的支付交易（退款时需要原渠道单号）。 */
+  getOrderPaymentTransaction(orderId: string): Promise<{
+    provider: string;
+    providerTxnId: string | null;
+    amountCents: number;
+  } | null>;
 
   /** 落库回调事件，返回该事件是否之前已成功处理（幂等基石）。 */
   recordWebhookEvent(
@@ -163,6 +171,15 @@ export interface BillingRepo {
   ): Promise<{ alreadyProcessed: boolean }>;
   markWebhookProcessed(provider: string, eventId: string): Promise<void>;
 
+  getUsageCounter(
+    organizationId: string,
+    metric: UsageMetric,
+    periodMonth: string,
+  ): Promise<{
+    usedQuantity: number;
+    includedQuantity: number;
+    addonQuantity: number;
+  } | null>;
   upsertUsageCounter(patch: UsageCounterPatch): Promise<void>;
   insertUsageAddon(input: UsageAddonInput): Promise<void>;
   upsertFeatureAddon(input: FeatureAddonInput): Promise<void>;

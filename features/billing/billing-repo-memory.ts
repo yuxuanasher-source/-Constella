@@ -150,6 +150,14 @@ export function createMemoryBillingRepo(seed: {
       state.orders.set(orderId, { ...current, status: "paid", paidAt });
       return { transitioned: true };
     },
+    async markOrderRefunded(orderId) {
+      const current = state.orders.get(orderId);
+      if (!current || current.status !== "refunding") {
+        return { transitioned: false };
+      }
+      state.orders.set(orderId, { ...current, status: "refunded" });
+      return { transitioned: true };
+    },
     async insertTransaction(input: TransactionInput) {
       if (input.providerTxnId) {
         const index = state.transactions.findIndex(
@@ -164,6 +172,19 @@ export function createMemoryBillingRepo(seed: {
         }
       }
       state.transactions.push(input);
+    },
+    async getOrderPaymentTransaction(orderId) {
+      const payments = state.transactions.filter(
+        (txn) => txn.orderId === orderId && txn.type === "payment",
+      );
+      const txn = payments.at(-1);
+      return txn
+        ? {
+            provider: txn.provider,
+            providerTxnId: txn.providerTxnId ?? null,
+            amountCents: txn.amountCents,
+          }
+        : null;
     },
     async recordWebhookEvent(input: WebhookEventInput) {
       const key = `${input.provider}:${input.eventId}`;
@@ -180,6 +201,18 @@ export function createMemoryBillingRepo(seed: {
       if (existing) {
         existing.processed = true;
       }
+    },
+    async getUsageCounter(organizationId, metric, periodMonth) {
+      const counter = state.usageCounters.get(
+        counterKey(organizationId, metric, periodMonth),
+      );
+      return counter
+        ? {
+            usedQuantity: counter.usedQuantity,
+            includedQuantity: counter.includedQuantity,
+            addonQuantity: counter.addonQuantity,
+          }
+        : null;
     },
     async upsertUsageCounter(patch) {
       const key = counterKey(patch.organizationId, patch.metric, patch.periodMonth);

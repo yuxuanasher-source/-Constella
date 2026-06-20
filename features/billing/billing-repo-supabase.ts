@@ -199,6 +199,18 @@ export function createSupabaseBillingRepo(client: SupabaseClient): BillingRepo {
       return { transitioned: (data?.length ?? 0) > 0 };
     },
 
+    async markOrderRefunded(orderId) {
+      const { data, error } = await client
+        .from("billing_orders")
+        .update({ status: "refunded" })
+        .eq("id", orderId)
+        .eq("status", "refunding")
+        .select("id")
+        .returns<{ id: string }[]>();
+      throwIf(error);
+      return { transitioned: (data?.length ?? 0) > 0 };
+    },
+
     async insertTransaction(input) {
       const row = transactionToRow(input);
       const { error } = input.providerTxnId
@@ -207,6 +219,28 @@ export function createSupabaseBillingRepo(client: SupabaseClient): BillingRepo {
             .upsert(row, { onConflict: "provider,provider_txn_id" })
         : await client.from("billing_transactions").insert(row);
       throwIf(error);
+    },
+
+    async getOrderPaymentTransaction(orderId) {
+      const { data } = await client
+        .from("billing_transactions")
+        .select("provider, provider_txn_id, amount_cents")
+        .eq("order_id", orderId)
+        .eq("type", "payment")
+        .order("succeeded_at", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .maybeSingle<{
+          provider: string;
+          provider_txn_id: string | null;
+          amount_cents: number;
+        }>();
+      return data
+        ? {
+            provider: data.provider,
+            providerTxnId: data.provider_txn_id,
+            amountCents: data.amount_cents,
+          }
+        : null;
     },
 
     async recordWebhookEvent(input) {
@@ -232,6 +266,27 @@ export function createSupabaseBillingRepo(client: SupabaseClient): BillingRepo {
         .eq("provider", provider)
         .eq("event_id", eventId);
       throwIf(error);
+    },
+
+    async getUsageCounter(organizationId, metric, periodMonth) {
+      const { data } = await client
+        .from("usage_monthly_counters")
+        .select("used_quantity, included_quantity, addon_quantity")
+        .eq("organization_id", organizationId)
+        .eq("metric", metric)
+        .eq("period_month", periodMonth)
+        .maybeSingle<{
+          used_quantity: number;
+          included_quantity: number;
+          addon_quantity: number;
+        }>();
+      return data
+        ? {
+            usedQuantity: data.used_quantity,
+            includedQuantity: data.included_quantity,
+            addonQuantity: data.addon_quantity,
+          }
+        : null;
     },
 
     async upsertUsageCounter(patch: UsageCounterPatch) {

@@ -4,6 +4,7 @@ import { applyPaidOrder } from "./apply-paid-order";
 import type { BillingRepo } from "./billing-repo";
 import type { BillingAudit } from "./checkout";
 import type { PaymentProvider } from "./providers/payment-provider";
+import { settleRefund } from "./refunds";
 
 export type WebhookHandleResult = {
   processed: boolean;
@@ -76,7 +77,7 @@ export async function handleWebhook({
       succeededAt: event.status === "succeeded" ? now.toISOString() : null,
     });
     if (event.status === "succeeded") {
-      await repo.updateOrder(order.id, { status: "refunded" });
+      await settleRefund({ repo, order, now });
     }
     await repo.markWebhookProcessed(provider.name, event.eventId);
     return { processed: true, orderId: order.id };

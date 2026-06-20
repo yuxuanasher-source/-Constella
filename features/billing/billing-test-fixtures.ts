@@ -15,6 +15,15 @@ export const TEST_PLANS: PlanRecord[] = [
     includedAi: 500,
   }),
   makePlan({
+    id: "plan_free",
+    code: "free",
+    tier: "free",
+    includedActiveStreamers: 2,
+    includedSeats: 2,
+    includedOcr: 50,
+    includedAi: 100,
+  }),
+  makePlan({
     id: "plan_basic",
     code: "basic",
     tier: "basic",
