@@ -195,9 +195,13 @@ export class SupabaseReconciliationDataSource
     };
 
     for (const row of data ?? []) {
-      totals.computedCents += Number(row.computed_amount ?? 0);
-      totals.manualCents += Number(row.manual_amount ?? 0);
-      totals.adjustmentCents += Number(row.adjustment_amount ?? 0);
+      // settlement_batches amounts are numeric(12,2) yuan, while the cost and
+      // tax lines are stored in cents. Normalize batch amounts to cents here so
+      // the reconciliation sums one consistent unit (mixing the two would skew
+      // every total by 100x and make every project look like a loss).
+      totals.computedCents += yuanToCents(row.computed_amount);
+      totals.manualCents += yuanToCents(row.manual_amount);
+      totals.adjustmentCents += yuanToCents(row.adjustment_amount);
       const summary = row.evidence_summary ?? {};
       evidence.green += countOf(summary, "green");
       evidence.yellow += countOf(summary, "yellow");
@@ -272,6 +276,10 @@ export class SupabaseReconciliationDataSource
       procurementCostCents: data?.procurement_cost_cents ?? 0,
     });
   }
+}
+
+function yuanToCents(value: number | null | undefined): number {
+  return Number.isFinite(value) ? Math.round((value as number) * 100) : 0;
 }
 
 function countOf(summary: Record<string, unknown>, key: string): number {
