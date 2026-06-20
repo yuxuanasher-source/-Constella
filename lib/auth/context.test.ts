@@ -31,6 +31,7 @@ describe("getAuthContext", () => {
     };
     const membershipQuery = {
       eq: vi.fn(() => membershipQuery),
+      order: vi.fn(() => membershipQuery),
       limit: vi.fn(() => membershipQuery),
       maybeSingle: vi.fn(() => membershipResult.promise),
     };

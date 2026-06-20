@@ -49,6 +49,12 @@ export async function getAuthContext(
       .select("organization_id, role, organizations(name)")
       .eq("user_id", user.id)
       .eq("status", "active")
+      // A user can belong to more than one active organization. Until an
+      // explicit active-org switcher exists, pick deterministically (earliest
+      // joined, then a stable id tie-break) so the same user always resolves to
+      // the same organization instead of an arbitrary row.
+      .order("created_at", { ascending: true })
+      .order("organization_id", { ascending: true })
       .limit(1)
       .maybeSingle<MembershipRow>(),
   ]);
