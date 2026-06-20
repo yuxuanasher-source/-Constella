@@ -15,7 +15,10 @@ describe("Self-serve funnel schema contract", () => {
       "funnel_events",
       "mcn_onboarding_requests",
     ]) {
-      expect(migration).toContain(`create table public.${table}`);
+      // mcn_onboarding_requests uses `if not exists` to tolerate prod drift
+      expect(migration).toMatch(
+        new RegExp(`create table (if not exists )?public\\.${table}`),
+      );
     }
   });
 

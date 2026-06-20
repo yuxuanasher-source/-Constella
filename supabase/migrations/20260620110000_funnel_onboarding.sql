@@ -1,7 +1,8 @@
 -- 自助试用 → Onboarding → 付费墙漏斗：自助开通、引导进度、转化埋点、销售线索
 
 -- 销售辅助 / 大客户线索（落地页「联系销售」CTA 写入）
-create table public.mcn_onboarding_requests (
+-- 部分环境已存在该「现有线索表」（见设计文档），用 if not exists 兼容生产漂移。
+create table if not exists public.mcn_onboarding_requests (
   id uuid primary key default gen_random_uuid(),
   company_name text not null,
   contact_name text not null,
