@@ -23,6 +23,11 @@ export type BillingStatus = {
   };
   entitlements: ReturnType<typeof resolvePlanEntitlements>;
   usage: UsageStatus[];
+  // P6 订阅生命周期透出（前端付费墙 / banner 用）
+  autoRenew: boolean;
+  graceUntil: string | null;
+  trialEndsAt: string | null;
+  pendingPlan: { code: string; name: string } | null;
 };
 
 export function buildBillingStatus({
@@ -37,6 +42,10 @@ export function buildBillingStatus({
       code: string;
       name: string;
     };
+    autoRenew?: boolean;
+    graceUntil?: string | null;
+    trialEndsAt?: string | null;
+    pendingPlan?: { code: string; name: string } | null;
   };
   featureAddons: Array<{ featureKey: string; enabled: boolean }>;
   usageCounters: Array<{
@@ -64,23 +73,33 @@ export function buildBillingStatus({
         addonQuantity: counter.addonQuantity,
       }),
     ),
+    autoRenew: subscription.autoRenew ?? true,
+    graceUntil: subscription.graceUntil ?? null,
+    trialEndsAt: subscription.trialEndsAt ?? null,
+    pendingPlan: subscription.pendingPlan ?? null,
   };
 }
 
+type PlanJoin =
+  | {
+      tier: BillingPlanTier;
+      code: string;
+      name: string;
+    }
+  | Array<{
+      tier: BillingPlanTier;
+      code: string;
+      name: string;
+    }>
+  | null;
+
 type SubscriptionRow = {
   status: SubscriptionStatus;
-  billing_plans:
-    | {
-        tier: BillingPlanTier;
-        code: string;
-        name: string;
-      }
-    | Array<{
-        tier: BillingPlanTier;
-        code: string;
-        name: string;
-      }>
-    | null;
+  billing_plans: PlanJoin;
+  auto_renew: boolean | null;
+  grace_until: string | null;
+  trial_ends_at: string | null;
+  pending_plan_id: string | null;
 };
 
 type FeatureAddonRow = {
@@ -106,7 +125,9 @@ export async function getBillingStatus({
 }): Promise<BillingStatus> {
   const { data: subscription } = await client
     .from("organization_subscriptions")
-    .select("status, billing_plans(tier, code, name)")
+    .select(
+      "status, auto_renew, grace_until, trial_ends_at, pending_plan_id, billing_plans(tier, code, name)",
+    )
     .eq("organization_id", organizationId)
     .maybeSingle<SubscriptionRow>();
   const { data: featureAddons } = await client
@@ -126,6 +147,16 @@ export async function getBillingStatus({
     ? subscription?.billing_plans[0]
     : subscription?.billing_plans;
 
+  let pendingPlan: { code: string; name: string } | null = null;
+  if (subscription?.pending_plan_id) {
+    const { data: pending } = await client
+      .from("billing_plans")
+      .select("code, name")
+      .eq("id", subscription.pending_plan_id)
+      .maybeSingle<{ code: string; name: string }>();
+    pendingPlan = pending ?? null;
+  }
+
   return buildBillingStatus({
     subscription: {
       status: subscription?.status ?? "trialing",
@@ -134,6 +165,10 @@ export async function getBillingStatus({
         code: "free",
         name: "免费版",
       },
+      autoRenew: subscription?.auto_renew ?? true,
+      graceUntil: subscription?.grace_until ?? null,
+      trialEndsAt: subscription?.trial_ends_at ?? null,
+      pendingPlan,
     },
     featureAddons: (featureAddons ?? []).map((addon) => ({
       featureKey: addon.feature_key,
