@@ -6272,45 +6272,50 @@ function ProjectDetail({ id, go }) {
           >
             <div
               style={{
-                maxWidth: 1040,
                 display: "flex",
-                flexDirection: "column",
+                flexWrap: "wrap",
+                alignItems: "flex-start",
+                gap: 28,
               }}
             >
-              <ProjectSettingsPanel
-                draft={settingsDraft}
-                baseStatus={p.status}
-                ownerOptions={ownerOptions}
-                canAssignOwner={canAssignOwner}
-                error={settingsError}
-                submitting={settingsSubmitting}
-                onChange={handleSettingsChange}
-                onSubmit={handleProjectSettingsSubmit}
-                onCancel={() => {
-                  setSettingsOpen(false);
-                  setSettingsError("");
-                  setSettingsDraft(projectSettingsInitialDraft(p));
-                }}
-              />
-              {!isPartnerCollaboration ? (
-                <ProjectCollaborationPanel
-                  project={p}
-                  draft={collaborationDraft}
-                  message={collaborationMessage}
-                  error={collaborationError}
-                  submitting={collaborationSubmitting}
-                  shareUrl={collaborationShareUrl}
-                  applications={collaborationApplications}
-                  onChange={handleCollaborationChange}
-                  onSave={handleSaveProjectCollaboration}
-                  onCreateShare={handleCreateProjectCollaborationShare}
-                  onRefreshApplications={
-                    handleRefreshProjectCollaborationApplications
-                  }
-                  onReviewApplication={
-                    handleReviewProjectCollaborationApplication
-                  }
+              <div style={{ flex: "2 1 520px", minWidth: 0 }}>
+                <ProjectSettingsPanel
+                  draft={settingsDraft}
+                  baseStatus={p.status}
+                  ownerOptions={ownerOptions}
+                  canAssignOwner={canAssignOwner}
+                  error={settingsError}
+                  submitting={settingsSubmitting}
+                  onChange={handleSettingsChange}
+                  onSubmit={handleProjectSettingsSubmit}
+                  onCancel={() => {
+                    setSettingsOpen(false);
+                    setSettingsError("");
+                    setSettingsDraft(projectSettingsInitialDraft(p));
+                  }}
                 />
+              </div>
+              {!isPartnerCollaboration ? (
+                <div style={{ flex: "1 1 340px", minWidth: 0 }}>
+                  <ProjectCollaborationPanel
+                    project={p}
+                    draft={collaborationDraft}
+                    message={collaborationMessage}
+                    error={collaborationError}
+                    submitting={collaborationSubmitting}
+                    shareUrl={collaborationShareUrl}
+                    applications={collaborationApplications}
+                    onChange={handleCollaborationChange}
+                    onSave={handleSaveProjectCollaboration}
+                    onCreateShare={handleCreateProjectCollaborationShare}
+                    onRefreshApplications={
+                      handleRefreshProjectCollaborationApplications
+                    }
+                    onReviewApplication={
+                      handleReviewProjectCollaborationApplication
+                    }
+                  />
+                </div>
               ) : null}
             </div>
           </Card>
@@ -7051,6 +7056,7 @@ function ProjectCollaborationPanel({
         style={{ display: "flex", flexDirection: "column", gap: 14 }}
       >
         <ProjectSettingsSection
+          first
           title="外部 MCN 协作"
           desc="开启后，其他 MCN 可通过邀请链接加入本项目；项目方保留项目设置与审核权限。"
           extra={
@@ -7096,7 +7102,7 @@ function ProjectCollaborationPanel({
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)",
+              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
               gap: 12,
               alignItems: "start",
             }}
@@ -7611,7 +7617,7 @@ function ProjectSettingsPanel({
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+            gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
             gap: 12,
             alignItems: "end",
           }}
@@ -7737,7 +7743,7 @@ function ProjectSettingsPanel({
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
             gap: 12,
             alignItems: "start",
           }}
