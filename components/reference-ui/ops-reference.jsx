@@ -13509,6 +13509,15 @@ function ScreenSettlement({ go }) {
           </div>
         </Card>
 
+        <Card
+          title="项目规则与成本"
+          extra={
+            <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              按需展开
+            </span>
+          }
+          bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}
+        >
         <CollapsibleSection
           title="项目财务设置"
           hint="税费与采购 · 开票 / 销项税 / 附加税 / 采购成本"
@@ -13824,6 +13833,7 @@ function ScreenSettlement({ go }) {
             </div>
           )}
         </CollapsibleSection>
+        </Card>
 
         {settlementMessage ? (
           <div
