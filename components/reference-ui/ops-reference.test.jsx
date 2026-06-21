@@ -2434,6 +2434,8 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("Alpha Launch"));
+    // \u5916\u90e8 MCN \u534f\u4f5c is now tucked into \u9879\u76ee\u8bbe\u7f6e \u2014 open it first.
+    fireEvent.click(screen.getByRole("button", { name: "\u9879\u76ee\u8bbe\u7f6e" }));
     expect(
       screen.getByText("\u5916\u90e8 MCN \u534f\u4f5c"),
     ).toBeInTheDocument();
