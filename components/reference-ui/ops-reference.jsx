@@ -6620,13 +6620,37 @@ function ProjectSettingsSection({ title, desc, extra, first = false, children })
       >
         <div>
           <div
-            style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-900)" }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 13,
+              fontWeight: 700,
+              color: "var(--ink-900)",
+              letterSpacing: "-0.005em",
+            }}
           >
+            <span
+              aria-hidden="true"
+              style={{
+                width: 3,
+                height: 13,
+                borderRadius: 999,
+                background: "var(--blue-500)",
+                flex: "0 0 auto",
+              }}
+            />
             {title}
           </div>
           {desc ? (
             <div
-              style={{ marginTop: 3, fontSize: 12, color: "var(--ink-500)" }}
+              style={{
+                marginTop: 4,
+                marginLeft: 11,
+                fontSize: 12,
+                color: "var(--ink-500)",
+                lineHeight: 1.5,
+              }}
             >
               {desc}
             </div>
@@ -7079,28 +7103,22 @@ function ProjectCollaborationPanel({
           >
             <ProjectSettingsField label="协作摘要">
               <textarea
+                className="psf-control"
                 value={draft.summary}
                 onChange={(event) => onChange("summary", event.target.value)}
                 rows={3}
                 placeholder="给外部 MCN 看的项目亮点、主播要求和交付口径"
-                style={{
-                  ...projectSettingsInputStyle,
-                  minHeight: 84,
-                  paddingTop: 9,
-                  resize: "vertical",
-                  lineHeight: 1.45,
-                  fontFamily: "inherit",
-                }}
+                style={{ minHeight: 84 }}
               />
             </ProjectSettingsField>
             <ProjectSettingsField label="分成建议">
               <input
+                className="psf-control"
                 value={draft.revenueShareHint}
                 onChange={(event) =>
                   onChange("revenueShareHint", event.target.value)
                 }
                 placeholder="例如 8-12%"
-                style={projectSettingsInputStyle}
               />
             </ProjectSettingsField>
           </div>
@@ -7159,12 +7177,10 @@ function ProjectCollaborationPanel({
             协作链接
             <input
               readOnly
+              className="psf-control"
               value={shareUrl}
               style={{
-                ...projectSettingsInputStyle,
-                width: "100%",
                 color: "var(--blue-700)",
-                background: "#fff",
                 fontFamily:
                   "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
                 overflow: "hidden",
@@ -7335,7 +7351,8 @@ function ProjectCollaborationPanel({
                             })
                           }
                           placeholder="8"
-                          style={{ ...projectSettingsInputStyle, width: 120 }}
+                          className="psf-control"
+                          style={{ width: 120 }}
                         />
                       </ProjectSettingsField>
                       <Button
@@ -7370,7 +7387,8 @@ function ProjectCollaborationPanel({
                             })
                           }
                           placeholder="例如 档期不匹配"
-                          style={{ ...projectSettingsInputStyle, width: 180 }}
+                          className="psf-control"
+                          style={{ width: 180 }}
                         />
                       </ProjectSettingsField>
                       <Button
@@ -7533,6 +7551,40 @@ function ProjectSettingsPanel({
             opacity: 0;
             cursor: pointer;
           }
+          .psf-control {
+            height: 34px;
+            width: 100%;
+            border: 1px solid var(--line-strong);
+            border-radius: 6px;
+            padding: 0 10px;
+            font-size: 13px;
+            color: var(--ink-900);
+            background: linear-gradient(180deg, #fff 0%, #f8faff 100%);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+            outline: none;
+            font-family: inherit;
+            transition: box-shadow 120ms ease, border-color 120ms ease;
+          }
+          .psf-control::placeholder { color: var(--ink-300); }
+          .psf-control:hover:not(:disabled) { border-color: #b9c6e6; }
+          .psf-control:focus {
+            border-color: var(--blue-300);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+          }
+          .psf-control:disabled {
+            color: var(--ink-400);
+            background: var(--bg-soft);
+            cursor: not-allowed;
+            box-shadow: none;
+          }
+          select.psf-control { cursor: pointer; }
+          textarea.psf-control {
+            height: auto;
+            min-height: 76px;
+            padding: 8px 10px;
+            line-height: 1.5;
+            resize: vertical;
+          }
         `}
       </style>
 
@@ -7566,22 +7618,17 @@ function ProjectSettingsPanel({
         >
           <ProjectSettingsField label="项目名称">
             <input
+              className="psf-control"
               value={draft.name}
               onChange={(event) => onChange("name", event.target.value)}
-              style={projectSettingsInputStyle}
             />
           </ProjectSettingsField>
           <ProjectSettingsField label="负责人">
             <select
+              className="psf-control"
               value={draft.ownerId || ""}
               onChange={(event) => onChange("ownerId", event.target.value)}
               disabled={!canAssignOwner}
-              style={{
-                ...projectSettingsInputStyle,
-                cursor: canAssignOwner ? "pointer" : "not-allowed",
-                color: canAssignOwner ? "var(--ink-900)" : "var(--ink-400)",
-                background: canAssignOwner ? "#fff" : "var(--bg-soft)",
-              }}
             >
               {ownerOptions.map((option) => (
                 <option key={option.value || "unassigned"} value={option.value}>
@@ -7592,34 +7639,34 @@ function ProjectSettingsPanel({
           </ProjectSettingsField>
           <ProjectSettingsField label="厂商">
             <input
+              className="psf-control"
               value={draft.vendorName}
               onChange={(event) => onChange("vendorName", event.target.value)}
               placeholder="未填写"
-              style={projectSettingsInputStyle}
             />
           </ProjectSettingsField>
           <ProjectSettingsField label="产品">
             <input
+              className="psf-control"
               value={draft.productName}
               onChange={(event) => onChange("productName", event.target.value)}
               placeholder="默认使用项目名称"
-              style={projectSettingsInputStyle}
             />
           </ProjectSettingsField>
           <ProjectSettingsField label="代理商">
             <input
+              className="psf-control"
               value={draft.agentName}
               onChange={(event) => onChange("agentName", event.target.value)}
               placeholder="未填写"
-              style={projectSettingsInputStyle}
             />
           </ProjectSettingsField>
           <ProjectSettingsField label="供应商">
             <input
+              className="psf-control"
               value={draft.supplierName}
               onChange={(event) => onChange("supplierName", event.target.value)}
               placeholder="未填写"
-              style={projectSettingsInputStyle}
             />
           </ProjectSettingsField>
           <ProjectSettingsDateField
@@ -7635,20 +7682,13 @@ function ProjectSettingsPanel({
           <div style={{ gridColumn: "1 / -1" }}>
             <ProjectSettingsField label="项目说明">
               <textarea
+                className="psf-control"
                 value={draft.description}
                 onChange={(event) =>
                   onChange("description", event.target.value)
                 }
                 placeholder="补充厂家关注角色、素材要求、转化口径等项目说明"
-                style={{
-                  ...projectSettingsInputStyle,
-                  width: "100%",
-                  minHeight: 68,
-                  padding: "8px 10px",
-                  resize: "vertical",
-                  lineHeight: 1.5,
-                  fontFamily: "inherit",
-                }}
+                style={{ minHeight: 68 }}
               />
             </ProjectSettingsField>
           </div>
@@ -7704,30 +7744,23 @@ function ProjectSettingsPanel({
         >
           <ProjectSettingsField label="主播公告概括">
             <textarea
+              className="psf-control"
               value={draft.publicSummary}
               onChange={(event) =>
                 onChange("publicSummary", event.target.value)
               }
               placeholder="给组织内主播看的项目概括、录播要求和注意事项"
               rows={3}
-              style={{
-                ...projectSettingsInputStyle,
-                minHeight: 76,
-                paddingTop: 8,
-                resize: "vertical",
-                lineHeight: 1.45,
-                fontFamily: "inherit",
-              }}
             />
           </ProjectSettingsField>
           <ProjectSettingsField label="游戏下载链接">
             <input
+              className="psf-control"
               value={draft.gameDownloadUrl}
               onChange={(event) =>
                 onChange("gameDownloadUrl", event.target.value)
               }
               placeholder="https://..."
-              style={projectSettingsInputStyle}
             />
           </ProjectSettingsField>
         </div>
@@ -7765,22 +7798,56 @@ function ProjectSettingsCheck({ label, checked, onChange }) {
     <label
       style={{
         height: 34,
-        border: "1px solid var(--line)",
+        border: `1px solid ${checked ? "var(--blue-300)" : "var(--line-strong)"}`,
         borderRadius: 6,
-        padding: "0 10px",
+        padding: "0 12px",
         display: "inline-flex",
         alignItems: "center",
         gap: 8,
         fontSize: 13,
-        color: "var(--ink-700)",
-        background: checked ? "var(--blue-50)" : "#fff",
+        fontWeight: checked ? 600 : 500,
+        color: checked ? "var(--blue-700)" : "var(--ink-700)",
+        background: checked
+          ? "linear-gradient(180deg, #fff 0%, #eef3ff 100%)"
+          : "linear-gradient(180deg, #fff 0%, #f8faff 100%)",
+        boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.8)",
+        cursor: "pointer",
+        userSelect: "none",
+        transition: "border-color 120ms ease, background 120ms ease",
       }}
     >
       <input
         type="checkbox"
         checked={checked}
         onChange={(event) => onChange(event.target.checked)}
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          opacity: 0,
+          pointerEvents: "none",
+        }}
       />
+      <span
+        aria-hidden="true"
+        style={{
+          width: 16,
+          height: 16,
+          flex: "0 0 auto",
+          borderRadius: 5,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          border: `1px solid ${checked ? "var(--blue-600)" : "var(--line-strong)"}`,
+          background: checked ? "var(--blue-600)" : "#fff",
+          boxShadow: checked
+            ? "0 1px 2px rgba(30, 80, 200, 0.35)"
+            : "inset 0 1px 0 rgba(255, 255, 255, 0.8)",
+          transition: "all 120ms ease",
+        }}
+      >
+        {checked ? <Icon.Check size={11} stroke="#fff" /> : null}
+      </span>
       {label}
     </label>
   );
