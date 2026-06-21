@@ -57,9 +57,13 @@ export async function POST(
       },
     });
 
+    // Build the public link from the configured app URL so it works for
+    // external MCNs; fall back to the request origin in local/dev. Without
+    // this, production (Next behind a reverse proxy) emits internal
+    // localhost:3000 links that external parties cannot open.
     const shareUrl = new URL(
       `/share/project-collaboration/${result.token}`,
-      request.url,
+      process.env.NEXT_PUBLIC_APP_URL ?? request.url,
     );
 
     return NextResponse.json({
