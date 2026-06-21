@@ -5827,7 +5827,9 @@ function ProjectDetail({ id, go }) {
     setSettingsDraft(projectSettingsInitialDraft(p));
     setSettingsOpen(false);
     setSettingsError("");
-  }, [p]);
+    // Reset only when switching to a different project — not on every data
+    // refresh (otherwise saving collaboration would close 项目设置 mid-flow).
+  }, [p.id]);
 
   React.useEffect(() => {
     setCollaborationDraft(projectCollaborationInitialDraft(p));
@@ -6259,39 +6261,43 @@ function ProjectDetail({ id, go }) {
           </div>
         ) : null}
         {settingsOpen ? (
-          <ProjectSettingsPanel
-            draft={settingsDraft}
-            baseStatus={p.status}
-            ownerOptions={ownerOptions}
-            canAssignOwner={canAssignOwner}
-            error={settingsError}
-            submitting={settingsSubmitting}
-            onChange={handleSettingsChange}
-            onSubmit={handleProjectSettingsSubmit}
-            onCancel={() => {
-              setSettingsOpen(false);
-              setSettingsError("");
-              setSettingsDraft(projectSettingsInitialDraft(p));
-            }}
-          />
-        ) : null}
-        {!isPartnerCollaboration ? (
-          <ProjectCollaborationPanel
-            project={p}
-            draft={collaborationDraft}
-            message={collaborationMessage}
-            error={collaborationError}
-            submitting={collaborationSubmitting}
-            shareUrl={collaborationShareUrl}
-            applications={collaborationApplications}
-            onChange={handleCollaborationChange}
-            onSave={handleSaveProjectCollaboration}
-            onCreateShare={handleCreateProjectCollaborationShare}
-            onRefreshApplications={
-              handleRefreshProjectCollaborationApplications
-            }
-            onReviewApplication={handleReviewProjectCollaborationApplication}
-          />
+          <>
+            <ProjectSettingsPanel
+              draft={settingsDraft}
+              baseStatus={p.status}
+              ownerOptions={ownerOptions}
+              canAssignOwner={canAssignOwner}
+              error={settingsError}
+              submitting={settingsSubmitting}
+              onChange={handleSettingsChange}
+              onSubmit={handleProjectSettingsSubmit}
+              onCancel={() => {
+                setSettingsOpen(false);
+                setSettingsError("");
+                setSettingsDraft(projectSettingsInitialDraft(p));
+              }}
+            />
+            {!isPartnerCollaboration ? (
+              <ProjectCollaborationPanel
+                project={p}
+                draft={collaborationDraft}
+                message={collaborationMessage}
+                error={collaborationError}
+                submitting={collaborationSubmitting}
+                shareUrl={collaborationShareUrl}
+                applications={collaborationApplications}
+                onChange={handleCollaborationChange}
+                onSave={handleSaveProjectCollaboration}
+                onCreateShare={handleCreateProjectCollaborationShare}
+                onRefreshApplications={
+                  handleRefreshProjectCollaborationApplications
+                }
+                onReviewApplication={
+                  handleReviewProjectCollaborationApplication
+                }
+              />
+            ) : null}
+          </>
         ) : null}
         {isPartnerCollaboration && p.collaborationApplicationId ? (
           <PartnerCollaborationApplicationPanel
