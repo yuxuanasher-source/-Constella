@@ -6302,62 +6302,79 @@ function ProjectDetail({ id, go }) {
             onConfirmCounter={handleConfirmProjectCollaborationCounter}
           />
         ) : null}
-        {/* Top metric strip (owner view) */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(6, 1fr)",
-            gap: 12,
+        {/* Grouped exec strip — primary 毛利 + compact secondaries */}
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="项目周期"
-              value={`${p.start.slice(5)} → ${p.end.slice(5)}`}
-              hint={`共 ${diffDays(p.start, p.end)} 天`}
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 160,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>预估毛利</div>
+            <div
+              className="num"
+              style={{
+                fontSize: 26,
+                fontWeight: 600,
+                color: "var(--blue-600)",
+                letterSpacing: "-0.02em",
+                marginTop: 4,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ¥{(p.metrics.gross / 10000).toFixed(1)}万
+            </div>
+            <div style={{ fontSize: 12, marginTop: 4, color: "var(--ok-600)" }}>
+              毛利率 {p.metrics.margin}%
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="累计直播时长"
               value={p.metrics.doneHours.toFixed(1)}
               unit="h"
-              delta={`${donePct}% 达成`}
-              deltaTone={
-                donePct >= 90 ? "green" : donePct >= 50 ? "neutral" : "red"
-              }
+              hint={`${donePct}% 达成`}
+              hintTone={donePct >= 90 ? "green" : donePct >= 50 ? "muted" : "red"}
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="累计场观"
               value={(p.metrics.audience / 10000).toFixed(1)}
               unit="万人次"
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="预计厂家应收"
               value={`¥${(p.metrics.receivable / 10000).toFixed(1)}万`}
-              hint="按当前项目数据汇总"
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="主播应付"
               value={`¥${(p.metrics.payable / 10000).toFixed(1)}万`}
-              hint="按当前项目数据汇总"
             />
-          </Card>
-          <Card style={{ borderColor: "var(--blue-200)" }}>
-            <Metric
-              label="预估毛利"
-              value={`¥${(p.metrics.gross / 10000).toFixed(1)}万`}
-              delta={`${p.metrics.margin}%`}
-              hint="毛利率"
+            <MiniStat
+              label="项目周期"
+              value={`${p.start.slice(5)} → ${p.end.slice(5)}`}
+              hint={`共 ${diffDays(p.start, p.end)} 天`}
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
         <Card padded={false}>
           <div
@@ -13080,36 +13097,69 @@ function ScreenSettlement({ go }) {
           gap: 20,
         }}
       >
-        {/* Top metrics */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 16,
+        {/* Grouped settlement strip — primary 预估毛利 + compact secondaries */}
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="可结算池 · 报数条数"
-              value={String(poolCount)}
-              unit="条"
-              hint="审核通过 · 待入批次"
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 160,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              本月预估毛利
+            </div>
+            <div
+              className="num"
+              style={{
+                fontSize: 26,
+                fontWeight: 600,
+                color: "var(--blue-600)",
+                letterSpacing: "-0.02em",
+                marginTop: 4,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {formatSettlementCurrency(settlementSummary.gross)}
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                marginTop: 4,
+                color:
+                  settlementSummary.gross >= 0
+                    ? "var(--ok-600)"
+                    : "var(--danger-600)",
+              }}
+            >
+              毛利率 {settlementSummary.marginRate.toFixed(1)}%
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="本月厂家应收 (草稿)"
-              value={formatSettlementCurrency(
-                settlementSummary.vendorReceivable,
-              )}
-              hint={settlementBatchHint(
-                settlementSummary.vendorBatchCount,
-                "应收",
-              )}
+              value={formatSettlementCurrency(settlementSummary.vendorReceivable)}
+              hint={settlementBatchHint(settlementSummary.vendorBatchCount, "应收")}
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="本月主播应付 (锁定)"
               value={formatSettlementCurrency(settlementSummary.lockedPayable)}
               hint={settlementBatchHint(
@@ -13117,16 +13167,14 @@ function ScreenSettlement({ go }) {
                 "锁定",
               )}
             />
-          </Card>
-          <Card style={{ borderColor: "var(--blue-200)" }}>
-            <Metric
-              label="本月预估毛利"
-              value={formatSettlementCurrency(settlementSummary.gross)}
-              delta={`${settlementSummary.marginRate.toFixed(1)}% 毛利率`}
-              deltaTone={settlementSummary.gross >= 0 ? "green" : "red"}
+            <MiniStat
+              label="可结算池 · 报数"
+              value={String(poolCount)}
+              unit="条"
+              hint="审核通过 · 待入批次"
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
         <Card
           title="单项目结算校验 · §3.4"
@@ -15024,28 +15072,70 @@ function ScreenTasks({ go }) {
           gap: 16,
         }}
       >
-        {/* Top metrics */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(5, 1fr)",
-            gap: 14,
+        {/* Grouped task strip — primary 今日任务 + compact secondaries */}
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="今日任务"
-              value={todayCount}
-              unit="个"
-              hint={SCHEDULE_WEEK.days[SCHEDULE_WEEK.todayIdx]?.date ?? "本周"}
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="正在直播"
-              value={liveCount}
-              unit="个"
-              accent={
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 140,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>今日任务</div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 6,
+                marginTop: 4,
+              }}
+            >
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                  letterSpacing: "-0.02em",
+                }}
+              >
+                {todayCount}
+              </span>
+              <span style={{ fontSize: 12, color: "var(--ink-400)" }}>个</span>
+            </div>
+            <div style={{ fontSize: 12, marginTop: 4, color: "var(--ink-400)" }}>
+              {SCHEDULE_WEEK.days[SCHEDULE_WEEK.todayIdx]?.date ?? "本周"}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--ink-400)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
                 <span
                   style={{
                     width: 6,
@@ -15055,44 +15145,77 @@ function ScreenTasks({ go }) {
                     boxShadow: "0 0 0 3px rgba(30,80,200,0.25)",
                   }}
                 />
-              }
-            />
-          </Card>
-          <Card>
-            <Metric
+                正在直播
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 4,
+                  marginTop: 4,
+                }}
+              >
+                <span
+                  className="num"
+                  style={{
+                    fontSize: 18,
+                    fontWeight: 600,
+                    color: "var(--ink-900)",
+                  }}
+                >
+                  {liveCount}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>个</span>
+              </div>
+            </div>
+            <MiniStat
               label="待报数 / 待审核"
               value={`${pendingReportCount} / ${pendingReviewCount}`}
             />
-          </Card>
-          <Card
-            style={{ borderColor: anomalyCount > 0 ? "#F3C4C9" : undefined }}
-          >
-            <Metric
-              label="异常任务"
-              value={anomalyCount}
-              unit="项"
-              deltaTone="red"
-              accent={
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>异常任务</div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 4,
+                  marginTop: 4,
+                }}
+              >
                 <span
+                  className="num"
                   style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 999,
-                    background: "var(--danger-600)",
+                    fontSize: 18,
+                    fontWeight: 600,
+                    color:
+                      anomalyCount > 0
+                        ? "var(--danger-600)"
+                        : "var(--ink-900)",
                   }}
-                />
-              }
-            />
-          </Card>
-          <Card>
-            <Metric
+                >
+                  {anomalyCount}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>项</span>
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  marginTop: 2,
+                  color:
+                    anomalyCount > 0 ? "var(--danger-600)" : "var(--ink-400)",
+                }}
+              >
+                {anomalyCount > 0 ? "需复核" : "正常"}
+              </div>
+            </div>
+            <MiniStat
               label="本周已排"
               value={tasks.length}
               unit="个"
               hint={`共 ${streamers.length} 位主播`}
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
         <TaskProjectMappingStrip
           project={selectedProject}
@@ -18297,9 +18420,10 @@ function ScreenOrg({ go, onOpenOrganizationSettings }) {
               marginTop: 16,
               paddingTop: 16,
               borderTop: "1px solid var(--line)",
-              display: "grid",
-              gridTemplateColumns: "repeat(5, 1fr)",
-              gap: 24,
+              display: "flex",
+              flexWrap: "wrap",
+              columnGap: 40,
+              rowGap: 14,
             }}
           >
             <StatCell
@@ -20231,47 +20355,74 @@ function ScreenAudit() {
           gap: 20,
         }}
       >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 16,
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="审计日志"
-              value={String(entries.length)}
-              unit="条"
-              hint="仅展示当前角色可见范围"
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 130,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>审计日志</div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 4,
+                marginTop: 4,
+              }}
+            >
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                }}
+              >
+                {String(entries.length)}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--ink-400)" }}>条</span>
+            </div>
+            <div style={{ fontSize: 11, marginTop: 2, color: "var(--ink-400)" }}>
+              当前角色可见范围
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="高风险操作"
               value={String(highRiskCount)}
               unit="条"
-              delta={highRiskCount > 0 ? "需复核原因" : "无待复核"}
-              deltaTone={highRiskCount > 0 ? "amber" : "green"}
+              hint={highRiskCount > 0 ? "需复核原因" : "无待复核"}
+              hintTone={highRiskCount > 0 ? "red" : "green"}
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="失败操作"
               value={String(failureCount)}
               unit="条"
-              hint="失败原因只显示错误摘要"
+              hint="仅显示错误摘要"
             />
-          </Card>
-          <Card style={{ borderColor: "var(--blue-200)" }}>
-            <Metric
-              label="覆盖模块"
-              value={String(moduleCount)}
-              unit="个"
-              hint="权限过滤在服务端完成"
-            />
-          </Card>
-        </div>
+            <MiniStat label="覆盖模块" value={String(moduleCount)} unit="个" />
+          </div>
+        </Card>
 
         <div
           style={{
@@ -20622,48 +20773,80 @@ function ScreenNotifications() {
           gap: 20,
         }}
       >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 16,
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="通知总数"
-              value={String(notifications.length)}
-              unit="条"
-              hint="仅展示当前用户或角色可见范围"
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 130,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>通知总数</div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 4,
+                marginTop: 4,
+              }}
+            >
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                }}
+              >
+                {String(notifications.length)}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--ink-400)" }}>条</span>
+            </div>
+            <div style={{ fontSize: 11, marginTop: 2, color: "var(--ink-400)" }}>
+              当前可见范围
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="未读"
               value={String(unreadCount)}
               unit="条"
-              delta={unreadCount > 0 ? "需要查看" : "已清空"}
-              deltaTone={unreadCount > 0 ? "amber" : "green"}
+              hint={unreadCount > 0 ? "需要查看" : "已清空"}
+              hintTone={unreadCount > 0 ? "red" : "green"}
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="待处理"
               value={String(openCount)}
               unit="条"
               hint="未读与已读未处理"
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="高风险"
               value={String(highRiskCount)}
               unit="条"
-              delta={highRiskCount > 0 ? "需复核" : "无风险提醒"}
-              deltaTone={highRiskCount > 0 ? "red" : "green"}
+              hint={highRiskCount > 0 ? "需复核" : "无风险提醒"}
+              hintTone={highRiskCount > 0 ? "red" : "green"}
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
         <Card padded={false}>
           <div

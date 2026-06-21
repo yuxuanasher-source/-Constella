@@ -5618,7 +5618,7 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(metricFor("本月厂家应收 (草稿)")).toHaveTextContent("¥12,345");
     expect(metricFor("本月主播应付 (锁定)")).toHaveTextContent("¥6,789");
     expect(metricFor("本月预估毛利")).toHaveTextContent("¥5,556");
-    expect(metricFor("本月预估毛利")).toHaveTextContent("45.0% 毛利率");
+    expect(metricFor("本月预估毛利")).toHaveTextContent("毛利率 45.0%");
     expect(screen.getByText("1 个应收批次")).toBeInTheDocument();
     expect(screen.getByText("1 个锁定批次")).toBeInTheDocument();
     expect(screen.queryByText("¥286,400")).not.toBeInTheDocument();
