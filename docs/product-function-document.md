@@ -1,9 +1,11 @@
 # 经营舱产品功能文档
 
 日期：2026-06-05
-最近更新：2026-06-16
+最近更新：2026-06-21
 范围：当前仓库内已经实现和已有规格沉淀的产品能力
 优先级：先说明产品逻辑，再列模块、接口、数据和验收证据
+
+2026-06-21 核对增补：跨 MCN 协作、准入分享看板、组织内公开给主播、项目财务设置/结算规则细分接口、直播任务编辑/异常处理/OCR 接线，以及 P6 收费底座（下单、退款受理、支付 webhook、发票申请、转化漏斗、计费定时任务）均已落地并补入本文档；真实持牌支付（微信/支付宝）、发票开具、对账与退款执行仍待接入真实 PSP。
 
 ## 1. 产品定位
 
@@ -65,7 +67,9 @@ flowchart LR
   L -. "读写门控 / 用量计量" .-> K
 ```
 
-当前主线从 P0 骨架推进到 P5 商业化底座。P1/P2 黄金路径、P3 治理、P4 决策飞轮、P5 商业化均已有回归测试入口。P6 正式收费上线方案已有规格文档，但真实支付、发票、对账、退款等仍属于后续范围。
+当前主线从 P0 骨架推进到 P6 收费底座。P1/P2 黄金路径、P3 治理、P4 决策飞轮、P5 商业化均已有回归测试入口。P6 收费底座（下单、退款受理、支付 webhook、发票申请、转化漏斗、计费定时任务）已落地，但真实持牌支付（微信/支付宝）、发票开具、对账与退款执行仍属于后续范围。
+
+此外，主线之外已交付两类跨组织协作能力：**跨 MCN 协作**（把项目以受控分享链接开放给外部 MCN，协商分账后共同履约结算，见 8.14 / X2）和**准入分享看板**（把候选主播录屏以分享链接交给外部厂家/客户评审，见 8.4），以及**组织内公开给主播**（项目公告下沉到主播端，见 8.2）。
 
 ## 4. 产品对象模型
 
@@ -98,6 +102,15 @@ flowchart LR
 | Billing Plan / Subscription     | 套餐与订阅                 | 商业化后台             | 权益、只读模式、用量             |
 | Usage Event / Counter           | 用量事件和月计数           | OCR、AI、导出、存储等  | 套餐额度、加量包                 |
 | AI Invocation / Tool Invocation | AI 调用账本                | AI 工具层              | 成本、审计、安全追踪             |
+| Collaboration Share             | 跨 MCN 协作分享链接（带 token、可过期、可撤销） | 项目开放协作   | 协作申请                         |
+| Collaboration Application       | 外部 MCN 协作申请和分账协商 | 分享链接、外部 MCN     | 协作协议                         |
+| Collaboration Agreement         | 生效的协作关系和分账比例   | 协作申请               | 协作履约、协作结算               |
+| Collaboration Settlement        | 协作分账批次和明细         | 协作协议、项目收入记录 | 协作方应收、分账确认             |
+| Admission Share Board           | 候选录屏外部评审分享看板   | 选播录屏、运营创建     | 厂家/客户录屏评审                |
+| Vendor Recording Review         | 外部厂家对候选录屏的评审   | 准入分享看板           | 选播决策参考                     |
+| Billing Order / Transaction     | 收费下单与支付/退款流水    | 收银台、支付 webhook   | 订阅状态、对账、发票             |
+| Invoice Request / Invoice       | 发票申请与开具记录         | 财务后台、订单         | 发票交付                         |
+| Funnel Event                    | 转化漏斗与自助试用埋点     | 落地页、付费墙         | 漏斗指标、增长分析               |
 
 ## 5. 用户和权限逻辑
 
@@ -155,7 +168,9 @@ flowchart LR
 | 主播移动端诊断 | `/m/diagnosis`            | 主播     | AI 卡点诊断                    |
 | 主播移动端我的 | `/m/me`                   | 主播     | 个人信息、收益摘要入口         |
 | 主播移动端登录 | `/m/login`                | 主播     | 主播端登录                     |
-| 主播桌面端     | `/desktop`                | 主播     | 桌面任务、录屏、AI、收益、档案 |
+| 主播桌面端     | `/desktop`                | 主播     | 桌面任务、录屏、AI、收益、档案、组织内公开项目公告 |
+| 协作分享页     | `/share/project-collaboration/[token]` | 外部 MCN | 查看协作项目、提交协作申请和分账意向 |
+| 准入评审分享页 | `/share/admission/[token]`             | 外部厂家/客户 | 查看候选主播录屏、提交录屏评审 |
 
 经营 Web 的模块导航：
 
@@ -173,6 +188,8 @@ flowchart LR
 | M9   | 通知待办     | notifications | 待办、通知状态                   |
 | M10  | 作战台       | warroom       | 报价、匹配、复盘、AI 经营建议    |
 | M11  | 商业化与套餐 | billing       | 套餐、权益、用量、只读状态       |
+
+跨 MCN 协作没有独立模块入口：项目方在 M1「项目设置」右侧的「外部 MCN 协作」分区开启协作、生成分享链接、审核申请；作为协作方加入他人项目的 MCN，则在「协作项目」列表（`/api/collaboration-projects`）看到待确认申请与已加入的协作项目。准入分享看板在 M3 选播准入内创建和撤销。
 
 ### 6.1 角色化默认看板
 
@@ -377,6 +394,38 @@ flowchart LR
 
 `past_due`、`readonly`、`cancelled` 会进入 read-only 模式。读动作可以继续，写动作被套餐门控拒绝，不删除历史结算或审计数据。
 
+### 7.10 跨 MCN 协作状态
+
+协作申请状态：
+
+| 状态            | 含义                       | 可流转到                          |
+| --------------- | -------------------------- | --------------------------------- |
+| submitted       | 外部 MCN 已提交协作申请    | approved, owner_countered, rejected, withdrawn, expired |
+| owner_countered | 项目方已反报价，待对方确认 | approved（对方确认）, rejected, expired |
+| approved        | 协作达成，已生成协作协议   | 无                                |
+| rejected        | 项目方驳回                 | 无                                |
+| withdrawn       | 申请方撤回                 | 无                                |
+| expired         | 分享链接过期作废           | 无                                |
+
+产品规则：
+
+- 项目方接受申请即按申请方比例直接生成协作协议（approved）。
+- 项目方反报价进入 `owner_countered`，由申请方确认后才按反报价比例生成协议。
+- 协议 `settlement_basis` 当前只支持 `project_revenue`（按项目收入分账）。
+- 协作分账比例以 bps（万分比，0-10000）记录。
+- 开启/关闭协作、创建/撤销分享、提交/审核/确认/生效均写高风险审计。
+
+协作结算批次状态：
+
+| 状态              | 含义           |
+| ----------------- | -------------- |
+| generated         | 已生成         |
+| partner_confirmed | 协作方已确认   |
+| partner_disputed  | 协作方有异议   |
+| locked            | 已锁定         |
+| reopened          | 已重开         |
+| voided            | 作废           |
+
 ## 8. 核心业务流程
 
 ### 8.1 M0 组织与权限
@@ -412,14 +461,18 @@ flowchart LR
 - 发布项目进入招募。
 - 更新项目基础信息：名称、时间、开放报名、定向邀约、是否强制录屏、是否强制系统计时、厂家/产品/代理/供应商信息、描述。
 - 更新项目默认结算规则：结算方式、时薪、底薪、规则 JSON。
+- 更新项目财务设置：是否开票、销项税率、附加税率、采购成本（`PATCH /api/projects/:projectId/financial-settings`）。
+- 组织内公开：开启 `is_public_to_streamers`，填写主播公告概括 `public_summary` 和游戏下载链接 `game_download_url`，把项目公告下沉到主播端（见 8.3 / 主播端公告）。
+- 开启外部 MCN 协作：在「项目设置」右侧「外部 MCN 协作」分区开启 `is_open_to_mcn_collaboration`、填写协作摘要与分成建议、生成/撤销协作分享链接、审核协作申请（详见 8.14）。
 - 项目卡片 DTO 显示状态、结算方式、系统计时、发布时间、风险等级和指标占位。
 
 关键规则：
 
 - `operator_business` 可以创建和编辑草稿，但不能发布项目。
 - 发布只允许 owner / ops_manager。
-- 结算规则变更高风险，必须原因。
+- 结算规则变更和财务设置高风险，必须原因。
 - 项目状态机阻止非法跳转。
+- 组织内公开公告只投影公开字段（项目名、公告概括、下载链接），不向主播端暴露财务与内部信息。
 
 ### 8.3 M2 主播池
 
@@ -467,6 +520,8 @@ flowchart LR
 - 最终拒绝并记录原因。
 - 经营端读取准入队列。
 - 主播端读取自己的报名卡片。
+- 准入分享看板：把候选主播录屏整理成分享看板（可设访问码、过期时间），用分享链接交给外部厂家/客户在 `/share/admission/[token]` 评审，外部方提交逐条录屏意见，运营据此决定入项。
+- 导出准入录屏交付包（`POST /api/exports/admission-recordings`）。
 
 关键规则：
 
@@ -476,6 +531,7 @@ flowchart LR
 - 录屏审核通过不等于入项。
 - 拒绝最终入项必须填写原因。
 - 审核和入项决策均写审计并发通知。
+- 准入分享看板只暴露候选录屏与必要项目信息，外部评审不接触财务与内部字段；创建和撤销看板写审计。
 
 ### 8.5 M4 排班直播
 
@@ -768,15 +824,24 @@ AI 安全规则：
 - 账单状态 API 输出安全的套餐、权益和用量。
 - 欠费/只读/取消阻止写动作，但保留读和历史数据。
 
-P6 正式商业化规格已沉淀：
+P6 收费底座已落地（路由、数据表、服务层就绪）：
 
-- 自助试用、选套餐、在线付款、续费、升级、用量包。
-- 发票申请、财务后台人工开票、发票状态流。
-- 聚合支付接微信/支付宝。
-- 订单、交易、webhook、订阅周期、对账、发票请求等新表。
-- Billing Guard 全量覆盖核心写路由。
+- 自助试用开通：`provision_self_serve_org()` 一事务建组织 + 14 天试用订阅。
+- 收银台下单：`POST /api/billing/checkout` 以幂等键创建订单，服务端算价，返回支付参数。
+- 订单管理：列表、详情、取消（`/api/billing/orders*`）。
+- 退款受理：`POST /api/billing/refunds`（owner、需原因，写交易流水并置订单 refunding）。
+- 支付 webhook：`POST /api/billing/webhooks/:provider`（验签、记事件、推进订单/订阅状态）。
+- 发票申请受理：`POST /api/billing/invoice-requests`（采集抬头/税号/订单），可读列表。
+- 转化漏斗：`POST /api/funnel/events` + `GET /api/funnel/metrics`，落地页/付费墙埋点与转化聚合。
+- 计费定时任务：`POST /api/billing/jobs/:task`（dunning 催欠转 past_due/readonly、renewals 续费下单、expire-orders 关闭过期订单、reconcile 对账，受 cron secret 保护）。
 
-这些是后续上线能力，不应混同为当前 P5 已落地范围。
+仍待接入真实 PSP 的部分（当前仅 `mock` provider）：
+
+- 真实持牌聚合支付（微信/支付宝）的下单、退款、对账拉单实现。
+- 发票开具（`invoices` 表已建，开票/PDF 流程未接）。
+- 退款执行与对账结算落地依赖真实支付适配器。
+
+这些已落地能力是 P6 收费底座，可承载下单、状态机与受理流；真实收款与法定开票流程尚未上线，不应宣称已具备完整线上支付。
 
 复杂成本规则商业化规划：
 
@@ -820,6 +885,40 @@ P6 正式商业化规格已沉淀：
 - MVP 不做全平台 GMV 自动抓取，不做自动扣罚，不做自然语言合同解析。
 - 先把项目级开通、规则配置、成本预览、导入确认、结算承载和导出包打通。
 - 自动化必须遵守“强证据自动算，弱证据人工承载”的结算原则。
+
+### 8.14 X2 跨 MCN 协作
+
+目标：让项目方把一个项目以受控分享链接开放给外部 MCN，协商分账比例后共同履约和结算，同时保留项目方的设置与审核权限。
+
+主要路径：
+
+```text
+项目方开启 is_open_to_mcn_collaboration
+  -> 生成协作分享链接（token，可设过期/可否申请/可见字段）
+  -> 外部 MCN 打开 /share/project-collaboration/[token]
+  -> 外部 MCN 登录后提交协作申请（申请分账 bps + 备注）
+  -> 项目方审核：通过 / 反报价 / 拒绝
+       通过 -> 直接按申请比例生成协作协议
+       反报价 -> owner_countered -> 申请方确认后按反报价比例生成协议
+  -> 协作协议 active（双方确认、settlement_basis = project_revenue）
+  -> 协作方加入项目，贡献主播/任务/报数（带 collaboration_id + contributor_organization_id）
+  -> 项目收入记录确认后生成协作分账批次，协作方确认或异议
+```
+
+主要功能：
+
+- 项目方：开启/关闭协作、生成/撤销分享链接、读取协作申请、通过/反报价/拒绝申请。
+- 协作方：在 `/share/project-collaboration/[token]` 或 `POST /api/collaboration-projects/join` 提交申请、确认反报价、在「协作项目」列表查看待办与已加入项目。
+- 协作履约：协作方贡献的主播、直播任务、报数、结算明细通过 `collaboration_id` 与 `contributor_organization_id` 归属到协作组织。
+- 协作分账：按 `项目收入 × 分账比例(bps/10000)` 生成协作结算批次，支持协作方确认/异议、锁定、重开。
+
+关键规则：
+
+- 分享链接 token 仅存哈希，链接基地址用 `NEXT_PUBLIC_APP_URL` 拼接（保证外部可访问，见 13.8）。
+- 公开页只展示分享配置允许的字段，不暴露项目方财务与内部信息。
+- 协议 `settlement_basis` 当前只有 `project_revenue`；分账比例 0-10000 bps。
+- 开启/关闭、创建/撤销分享、提交/审核/确认/生效协议均写高风险审计（`audit_action` 新增 enable/disable/create/revoke/submit/review/confirm/activate 协作相关动作）。
+- 协作方对项目的访问由 RLS 限定在该项目且该协议范围内。
 
 ## 9. 横向安全和治理边界
 
@@ -881,12 +980,16 @@ P6 正式商业化规格已沉淀：
 | ---------------------------------- | ----- | -------------------------- |
 | `/api/projects`                    | GET   | 读取项目列表               |
 | `/api/projects`                    | POST  | 创建项目草稿               |
-| `/api/projects/:projectId`         | PATCH | 更新项目基础字段或结算规则 |
+| `/api/projects/:projectId`         | PATCH | 更新项目基础字段、开关、组织内公开与协作开关 |
 | `/api/projects/:projectId/publish` | POST  | 发布项目                   |
 | `/api/streamers`                   | GET   | 读取主播池                 |
 | `/api/streamers`                   | POST  | 创建主播档案               |
+| `/api/streamers/:streamerId`       | PATCH | 更新主播档案               |
 | `/api/streamers/:streamerId/risk`  | PATCH | 更新主播风险               |
+| `/api/streamers/:streamerId/settlement-rule` | PATCH | 更新主播组织级默认结算规则 |
 | `/api/streamer/profile`            | GET   | 主播读取自己的档案         |
+| `/api/streamer/project-announcements`            | GET | 主播读取组织内公开项目公告列表 |
+| `/api/streamer/project-announcements/:projectId` | GET | 主播读取单个项目公告       |
 
 ### 10.3 选播准入和录屏
 
@@ -903,6 +1006,13 @@ P6 正式商业化规格已沉淀：
 | `/api/streamer/recordings`                      | GET   | 主播读取录屏链接库     |
 | `/api/streamer/recordings`                      | POST  | 主播提交录屏链接       |
 | `/api/uploads/signed`                           | POST  | 创建私有上传签名 URL   |
+| `/api/projects/:projectId/admission-share-boards`            | GET  | 读取项目准入分享看板列表 |
+| `/api/projects/:projectId/admission-share-boards`            | POST | 创建准入分享看板（含访问码/过期/可见录屏） |
+| `/api/projects/:projectId/admission-share-boards/:boardId/revoke` | POST | 撤销准入分享看板       |
+| `/api/applications/admission-board`             | GET   | 读取准入分享看板总览   |
+| `/api/public/admission-share/:token`            | GET   | 外部凭 token 查看候选录屏（公开） |
+| `/api/public/admission-share/:token/reviews`    | POST  | 外部提交候选录屏评审（公开） |
+| `/api/exports/admission-recordings`             | POST  | 导出准入录屏交付包     |
 
 ### 10.4 排班、报数、OCR
 
@@ -911,17 +1021,24 @@ P6 正式商业化规格已沉淀：
 | `/api/live-tasks`                    | GET   | 经营端读取直播任务     |
 | `/api/live-tasks`                    | POST  | 创建单个直播任务       |
 | `/api/live-tasks/batch`              | POST  | 批量创建直播任务       |
+| `/api/live-tasks/:taskId`            | PATCH | 编辑排班（标题、计划起止、计划时长） |
 | `/api/live-tasks/:taskId/start`      | POST  | 开播                   |
 | `/api/live-tasks/:taskId/stop`       | POST  | 下播                   |
 | `/api/live-tasks/:taskId/cancel`     | POST  | 取消任务               |
 | `/api/live-tasks/:taskId/reports`    | POST  | 提交报数               |
+| `/api/live-tasks/:taskId/resolve-anomaly` | POST | 标记任务异常已处理     |
+| `/api/live-tasks/:taskId/ocr`        | POST  | 提交截图发起报数 OCR   |
 | `/api/live-reports`                  | GET   | 经营端读取报数审核队列 |
 | `/api/live-reports/:reportId/review` | PATCH | 审核报数               |
+| `/api/live-reports/:reportId/ocr`    | POST  | 确认 OCR 识别结果      |
+| `/api/live-reports/:reportId/screenshot` | GET | 获取报数截图签名下载地址 |
 | `/api/streamer/live-tasks`           | GET   | 主播读取自己的任务     |
 | `/api/ocr/jobs`                      | GET   | 读取 OCR job 列表      |
 | `/api/ocr/jobs`                      | POST  | 创建 OCR job           |
 | `/api/ocr/jobs/:jobId`               | GET   | 读取 OCR job           |
 | `/api/ocr/jobs/:jobId`               | POST  | 重试或执行 OCR job     |
+| `/api/ocr/jobs/run`                  | POST  | 运营触发批量执行 OCR job |
+| `/api/internal/ocr/run`              | POST  | 内部 OCR runner（Bearer token） |
 
 ### 10.5 结算
 
@@ -935,6 +1052,10 @@ P6 正式商业化规格已沉淀：
 | `/api/settlement-batches/:batchId/cost-items`   | POST | 追加复杂成本项       |
 | `/api/settlement-batches/:batchId/lock`         | POST | 锁定批次             |
 | `/api/settlement-batches/:batchId/reopen`       | POST | 重开批次             |
+| `/api/projects/:projectId/settlement-rule`      | PATCH | 更新项目默认结算规则 |
+| `/api/projects/:projectId/financial-settings`   | PATCH | 更新项目财务设置（开票、税率、采购成本） |
+| `/api/projects/:projectId/streamers/:streamerId/settlement-rule` | PATCH | 更新项目内单主播结算规则 |
+| `/api/projects/:projectId/settlement-reconciliation` | GET | 读取项目结算对账数据 |
 | `/api/streamer/settlements`                     | GET  | 主播读取安全应付账单 |
 
 ### 10.6 治理、导出、通知
@@ -963,14 +1084,48 @@ P6 正式商业化规格已沉淀：
 | `/api/ai/scripts`                  | POST | AI 脚本优化草稿        |
 | `/api/ai/diagnosis`                | POST | 主播 AI 卡点诊断       |
 | `/api/ai/copilot`                  | POST | M10 Copilot 路由       |
+| `/api/ai/usage`                    | GET  | 读取 AI 用量概览       |
 
-### 10.8 商业化
+### 10.8 商业化（P6 收费底座）
 
-| API                   | 方法 | 功能                               |
-| --------------------- | ---- | ---------------------------------- |
-| `/api/billing/status` | GET  | 读取组织套餐、权益、用量和只读状态 |
+| API                                   | 方法 | 功能                               |
+| ------------------------------------- | ---- | ---------------------------------- |
+| `/api/billing/status`                 | GET  | 读取组织套餐、权益、用量和只读状态 |
+| `/api/billing/plans`                  | GET  | 读取套餐与价格（可匿名）           |
+| `/api/billing/checkout`               | POST | 创建收费订单并返回支付参数         |
+| `/api/billing/orders`                 | GET  | 读取组织订单列表                   |
+| `/api/billing/orders/:orderId`        | GET  | 读取订单详情                       |
+| `/api/billing/orders/:orderId/cancel` | POST | 取消订单                           |
+| `/api/billing/refunds`                | POST | 受理退款申请（需原因）             |
+| `/api/billing/invoice-requests`       | GET  | 读取发票申请列表                   |
+| `/api/billing/invoice-requests`       | POST | 提交发票申请                       |
+| `/api/billing/webhooks/:provider`     | POST | 支付回调（验签、记事件、推进状态） |
+| `/api/billing/jobs/:task`             | POST | 计费定时任务（dunning/renewals/expire-orders/reconcile，cron secret） |
 
-### 10.9 复杂成本规则（MVP 已交付）
+### 10.9 转化漏斗与账号
+
+| API                    | 方法 | 功能                       |
+| ---------------------- | ---- | -------------------------- |
+| `/api/funnel/events`   | POST | 记录转化漏斗埋点事件       |
+| `/api/funnel/metrics`  | GET  | 读取转化漏斗聚合指标       |
+| `/api/auth/signout`    | POST | 退出登录并重定向到登录页   |
+
+### 10.10 跨 MCN 协作
+
+| API                                                              | 方法     | 功能                       |
+| ---------------------------------------------------------------- | -------- | -------------------------- |
+| `/api/projects/:projectId/collaboration-shares`                  | GET      | 读取项目协作分享链接列表   |
+| `/api/projects/:projectId/collaboration-shares`                  | POST     | 生成协作分享链接           |
+| `/api/projects/:projectId/collaboration-shares/:shareId/revoke`  | POST     | 撤销协作分享链接           |
+| `/api/projects/:projectId/collaboration-applications`            | GET      | 项目方读取协作申请列表     |
+| `/api/projects/:projectId/collaboration-applications/:id/review` | POST     | 项目方审核（通过/反报价/拒绝） |
+| `/api/projects/:projectId/collaboration-applications/:id/confirm`| POST     | 申请方确认反报价           |
+| `/api/public/project-collaboration/:token`                       | GET      | 外部凭 token 查看协作项目（公开） |
+| `/api/public/project-collaboration/:token`                       | POST     | 外部提交协作申请           |
+| `/api/collaboration-projects`                                    | GET      | 协作方读取待办与已加入协作项目 |
+| `/api/collaboration-projects/join`                               | POST     | 协作方凭邀请链接提交申请   |
+
+### 10.11 复杂成本规则（MVP 已交付）
 
 | API                                                      | 方法 | 功能                           |
 | -------------------------------------------------------- | ---- | ------------------------------ |
@@ -1014,14 +1169,20 @@ P6 正式商业化规格已沉淀：
 | `project_applications`     | 报名/邀约                      |
 | `recording_submissions`    | 选播录屏提交                   |
 | `streamer_recording_links` | 主播录屏链接库                 |
+| `project_recording_share_boards` | 准入候选录屏外部分享看板 |
+| `project_recording_share_items`  | 分享看板与录屏的关联     |
+| `project_recording_vendor_reviews` | 外部厂家对候选录屏的评审 |
+| `streamer_public_project_announcements` | 组织内公开项目公告视图（主播端可见） |
 | `can_access_project`       | 项目访问函数                   |
 | `can_publish_project`      | 项目发布权限函数               |
+
+`projects` 新增字段：`is_open_to_mcn_collaboration`、`mcn_collaboration_summary`、`mcn_collaboration_terms`（跨 MCN 协作开关与展示），`is_public_to_streamers`、`public_summary`、`game_download_url`（组织内公开给主播）。`project_applications`、`recording_submissions`、`project_streamers`、`live_tasks`、`live_reports`、`settlement_batch_items` 新增 `collaboration_id` 和 `contributor_organization_id`，把协作方贡献归属到协作组织。
 
 ### 11.3 履约和证据
 
 | 表                   | 用途           |
 | -------------------- | -------------- |
-| `live_tasks`         | 直播任务       |
+| `live_tasks`         | 直播任务（含 `anomaly_flags` 异常标记数组） |
 | `live_reports`       | 报数和证据快照 |
 | `report_screenshots` | 报数截图       |
 | `ocr_results`        | OCR 结果       |
@@ -1077,11 +1238,31 @@ MVP 新增：
 | 表                           | 用途       |
 | ---------------------------- | ---------- |
 | `billing_plans`              | 套餐定义   |
+| `billing_plan_prices`        | 套餐价格版本（周期、币种、生效区间） |
 | `organization_subscriptions` | 组织订阅   |
 | `usage_events`               | 用量事件   |
 | `usage_monthly_counters`     | 月用量计数 |
 | `usage_addons`               | 用量加量包 |
 | `feature_addons`             | 功能加购   |
+| `billing_orders`             | 收费订单   |
+| `billing_transactions`       | 支付/退款流水 |
+| `billing_webhook_events`     | 支付回调事件 |
+| `invoice_requests`           | 发票申请   |
+| `invoices`                   | 已开具发票 |
+| `billing_reconciliations`    | 每日对账记录 |
+| `funnel_events`              | 转化漏斗埋点 |
+| `onboarding_progress`        | 自助开通引导进度 |
+
+### 11.8 跨 MCN 协作
+
+| 表                                       | 用途                               |
+| ---------------------------------------- | ---------------------------------- |
+| `project_collaboration_shares`           | 协作分享链接（token 哈希、过期、可见字段） |
+| `project_collaboration_applications`     | 外部 MCN 协作申请和分账协商         |
+| `project_collaboration_agreements`       | 生效协作协议和分账比例             |
+| `project_collaboration_revenue_records`  | 协作项目收入记录（按周期）         |
+| `project_collaboration_settlement_batches` | 协作分账结算批次                 |
+| `project_collaboration_settlement_items` | 协作分账明细                       |
 
 ## 12. 验收与测试覆盖
 
@@ -1117,9 +1298,9 @@ MVP 新增：
 
 ## 13. 当前已知边界和后续范围
 
-### 13.1 当前不是完整支付商业化
+### 13.1 P6 收费底座已落地，但真实收款未上线
 
-P5 是商业化底座，不是正式支付闭环。真实支付、发票、对账、退款、支付 webhook、聚合支付 provider、财务运营后台属于 P6。
+P6 收费底座（下单、订单管理、退款受理、支付 webhook 验签与状态推进、发票申请受理、转化漏斗、计费定时任务、14 天自助试用）已落地，路由、数据表和服务层就绪。但当前只注册了 `mock` 支付 provider：真实持牌聚合支付（微信/支付宝）的下单/退款/对账拉单、发票开具（PDF/电子发票）、退款与对账的真实执行仍待接入 PSP。不应据此宣称已具备完整线上支付与法定开票能力。
 
 ### 13.2 外部通知暂不在 P3 v1
 
@@ -1144,6 +1325,14 @@ P5 是商业化底座，不是正式支付闭环。真实支付、发票、对�
 ### 13.7 AI 外部 provider 受配置影响
 
 AI provider registry 支持 deterministic、OpenAI、Hunyuan。无密钥或配置缺失时会降级或使用确定性 provider，业务不能假设每次都有真实外部模型响应。
+
+### 13.8 跨 MCN 协作分账口径有限
+
+跨 MCN 协作已打通分享、申请、反报价、协议生效、协作履约归属和协作分账批次。当前协议 `settlement_basis` 只支持 `project_revenue`（按项目收入分账），尚未覆盖按履约工时、按主播或更复杂的分账口径；协作分账批次仍依赖项目收入记录确认后生成。
+
+### 13.9 对外分享链接依赖站点域名配置
+
+跨 MCN 协作分享链接和准入评审分享链接的基地址用 `NEXT_PUBLIC_APP_URL` 拼接。该变量必须在构建期写入并指向真实对外域名，否则会回退到请求来源（本地或反代内网 `localhost`），导致外部无法打开。组织内公开给主播只投影公开字段，外部分享页只暴露分享配置允许的范围。
 
 ## 14. 产品原则
 
