@@ -6261,43 +6261,59 @@ function ProjectDetail({ id, go }) {
           </div>
         ) : null}
         {settingsOpen ? (
-          <>
-            <ProjectSettingsPanel
-              draft={settingsDraft}
-              baseStatus={p.status}
-              ownerOptions={ownerOptions}
-              canAssignOwner={canAssignOwner}
-              error={settingsError}
-              submitting={settingsSubmitting}
-              onChange={handleSettingsChange}
-              onSubmit={handleProjectSettingsSubmit}
-              onCancel={() => {
-                setSettingsOpen(false);
-                setSettingsError("");
-                setSettingsDraft(projectSettingsInitialDraft(p));
+          <Card
+            title="项目设置"
+            extra={
+              <Badge tone="blue" dot>
+                后端实时保存
+              </Badge>
+            }
+            padded={true}
+          >
+            <div
+              style={{
+                maxWidth: 1040,
+                display: "flex",
+                flexDirection: "column",
               }}
-            />
-            {!isPartnerCollaboration ? (
-              <ProjectCollaborationPanel
-                project={p}
-                draft={collaborationDraft}
-                message={collaborationMessage}
-                error={collaborationError}
-                submitting={collaborationSubmitting}
-                shareUrl={collaborationShareUrl}
-                applications={collaborationApplications}
-                onChange={handleCollaborationChange}
-                onSave={handleSaveProjectCollaboration}
-                onCreateShare={handleCreateProjectCollaborationShare}
-                onRefreshApplications={
-                  handleRefreshProjectCollaborationApplications
-                }
-                onReviewApplication={
-                  handleReviewProjectCollaborationApplication
-                }
+            >
+              <ProjectSettingsPanel
+                draft={settingsDraft}
+                baseStatus={p.status}
+                ownerOptions={ownerOptions}
+                canAssignOwner={canAssignOwner}
+                error={settingsError}
+                submitting={settingsSubmitting}
+                onChange={handleSettingsChange}
+                onSubmit={handleProjectSettingsSubmit}
+                onCancel={() => {
+                  setSettingsOpen(false);
+                  setSettingsError("");
+                  setSettingsDraft(projectSettingsInitialDraft(p));
+                }}
               />
-            ) : null}
-          </>
+              {!isPartnerCollaboration ? (
+                <ProjectCollaborationPanel
+                  project={p}
+                  draft={collaborationDraft}
+                  message={collaborationMessage}
+                  error={collaborationError}
+                  submitting={collaborationSubmitting}
+                  shareUrl={collaborationShareUrl}
+                  applications={collaborationApplications}
+                  onChange={handleCollaborationChange}
+                  onSave={handleSaveProjectCollaboration}
+                  onCreateShare={handleCreateProjectCollaborationShare}
+                  onRefreshApplications={
+                    handleRefreshProjectCollaborationApplications
+                  }
+                  onReviewApplication={
+                    handleReviewProjectCollaborationApplication
+                  }
+                />
+              ) : null}
+            </div>
+          </Card>
         ) : null}
         {isPartnerCollaboration && p.collaborationApplicationId ? (
           <PartnerCollaborationApplicationPanel
@@ -6576,6 +6592,50 @@ function ProjectSettingsField({ label, children }) {
       <span>{label}</span>
       {children}
     </label>
+  );
+}
+
+// One consistent section shell for the project-settings surface: a title +
+// optional hint, separated from the previous section by a hairline. Keeps every
+// group (status, basics, rules, collaboration) on the same visual rhythm.
+function ProjectSettingsSection({ title, desc, extra, first = false, children }) {
+  return (
+    <section
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+        paddingTop: first ? 0 : 18,
+        marginTop: first ? 0 : 18,
+        borderTop: first ? "none" : "1px solid var(--line)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: 12,
+        }}
+      >
+        <div>
+          <div
+            style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-900)" }}
+          >
+            {title}
+          </div>
+          {desc ? (
+            <div
+              style={{ marginTop: 3, fontSize: 12, color: "var(--ink-500)" }}
+            >
+              {desc}
+            </div>
+          ) : null}
+        </div>
+        {extra}
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -6961,38 +7021,29 @@ function ProjectCollaborationPanel({
   };
 
   return (
-    <Card
-      title="外部 MCN 协作"
-      extra={
-        <Badge tone={persisted ? "green" : enabled ? "blue" : "neutral"} dot>
-          {persisted ? "已开启" : enabled ? "待保存" : "未开启"}
-        </Badge>
-      }
-      padded={true}
-    >
+    <div style={{ display: "flex", flexDirection: "column" }}>
       <form
         onSubmit={onSave}
-        style={{ display: "flex", flexDirection: "column", gap: 16 }}
+        style={{ display: "flex", flexDirection: "column", gap: 14 }}
       >
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 14,
-            alignItems: "stretch",
-          }}
+        <ProjectSettingsSection
+          title="外部 MCN 协作"
+          desc="开启后，其他 MCN 可通过邀请链接加入本项目；项目方保留项目设置与审核权限。"
+          extra={
+            <Badge
+              tone={persisted ? "green" : enabled ? "blue" : "neutral"}
+              dot
+            >
+              {persisted ? "已开启" : enabled ? "待保存" : "未开启"}
+            </Badge>
+          }
         >
           <div
             style={{
-              border: "1px solid var(--line)",
-              borderRadius: 8,
-              background: "var(--bg-soft)",
-              padding: 14,
               display: "flex",
-              flexDirection: "column",
-              flex: "1 1 260px",
-              minWidth: 240,
-              gap: 12,
+              flexWrap: "wrap",
+              gap: 10,
+              alignItems: "center",
             }}
           >
             <ProjectSettingsCheck
@@ -7000,78 +7051,60 @@ function ProjectCollaborationPanel({
               checked={enabled}
               onChange={(checked) => onChange("enabled", checked)}
             />
-            <div
-              style={{
-                fontSize: 12,
-                color: "var(--ink-500)",
-                lineHeight: 1.55,
-              }}
+            <Button
+              kind="default"
+              icon={<Icon.Plus size={14} />}
+              onClick={onCreateShare}
+              disabled={isBusy}
             >
-              开启后，其他 MCN
-              可通过邀请链接加入本项目；项目方保留项目设置与审核权限。
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Button
-                kind="default"
-                icon={<Icon.Plus size={14} />}
-                onClick={onCreateShare}
-                disabled={isBusy}
-              >
-                {submitting === "share" ? "生成中" : "生成协作链接"}
-              </Button>
-              <Button
-                kind="default"
-                icon={<Icon.Search size={14} />}
-                onClick={onRefreshApplications}
-                disabled={isBusy}
-              >
-                {submitting === "applications" ? "刷新中" : "刷新申请"}
-              </Button>
-            </div>
+              {submitting === "share" ? "生成中" : "生成协作链接"}
+            </Button>
+            <Button
+              kind="default"
+              icon={<Icon.Search size={14} />}
+              onClick={onRefreshApplications}
+              disabled={isBusy}
+            >
+              {submitting === "applications" ? "刷新中" : "刷新申请"}
+            </Button>
           </div>
 
           <div
             style={{
-              display: "flex",
-              flex: "3 1 420px",
-              minWidth: 260,
-              flexWrap: "wrap",
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)",
               gap: 12,
               alignItems: "start",
             }}
           >
-            <div style={{ flex: "1 1 360px", minWidth: 240 }}>
-              <ProjectSettingsField label="协作摘要">
-                <textarea
-                  value={draft.summary}
-                  onChange={(event) => onChange("summary", event.target.value)}
-                  rows={3}
-                  placeholder="给外部 MCN 看的项目亮点、主播要求和交付口径"
-                  style={{
-                    ...projectSettingsInputStyle,
-                    minHeight: 92,
-                    paddingTop: 9,
-                    resize: "vertical",
-                    lineHeight: 1.45,
-                    fontFamily: "inherit",
-                  }}
-                />
-              </ProjectSettingsField>
-            </div>
-            <div style={{ flex: "0 1 180px", minWidth: 160 }}>
-              <ProjectSettingsField label="分成建议">
-                <input
-                  value={draft.revenueShareHint}
-                  onChange={(event) =>
-                    onChange("revenueShareHint", event.target.value)
-                  }
-                  placeholder="例如 8-12%"
-                  style={projectSettingsInputStyle}
-                />
-              </ProjectSettingsField>
-            </div>
+            <ProjectSettingsField label="协作摘要">
+              <textarea
+                value={draft.summary}
+                onChange={(event) => onChange("summary", event.target.value)}
+                rows={3}
+                placeholder="给外部 MCN 看的项目亮点、主播要求和交付口径"
+                style={{
+                  ...projectSettingsInputStyle,
+                  minHeight: 84,
+                  paddingTop: 9,
+                  resize: "vertical",
+                  lineHeight: 1.45,
+                  fontFamily: "inherit",
+                }}
+              />
+            </ProjectSettingsField>
+            <ProjectSettingsField label="分成建议">
+              <input
+                value={draft.revenueShareHint}
+                onChange={(event) =>
+                  onChange("revenueShareHint", event.target.value)
+                }
+                placeholder="例如 8-12%"
+                style={projectSettingsInputStyle}
+              />
+            </ProjectSettingsField>
           </div>
-        </div>
+        </ProjectSettingsSection>
 
         <div
           style={{
@@ -7374,7 +7407,7 @@ function ProjectCollaborationPanel({
           </div>
         )}
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -7490,55 +7523,25 @@ function ProjectSettingsPanel({
   onCancel,
 }) {
   return (
-    <Card
-      title="项目设置"
-      extra={
-        <Badge tone="blue" dot>
-          后端实时保存
-        </Badge>
-      }
-      padded={true}
+    <form
+      onSubmit={onSubmit}
+      style={{ display: "flex", flexDirection: "column" }}
     >
-      <form
-        onSubmit={onSubmit}
-        style={{ display: "flex", flexDirection: "column", gap: 14 }}
+      <style>
+        {`
+          .project-settings-date-input::-webkit-calendar-picker-indicator {
+            opacity: 0;
+            cursor: pointer;
+          }
+        `}
+      </style>
+
+      <ProjectSettingsSection
+        first
+        title="状态设置"
+        desc="状态保存后同步刷新项目列表与详情"
       >
-        <style>
-          {`
-            .project-settings-date-input::-webkit-calendar-picker-indicator {
-              opacity: 0;
-              cursor: pointer;
-            }
-          `}
-        </style>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(120px, 0.5fr) minmax(180px, 1fr)",
-            gap: 12,
-            alignItems: "center",
-            padding: 12,
-            border: "1px solid var(--line)",
-            borderRadius: 8,
-            background: "var(--blue-50)",
-          }}
-        >
-          <div>
-            <div
-              style={{
-                fontSize: 13,
-                fontWeight: 700,
-                color: "var(--ink-900)",
-              }}
-            >
-              状态设置
-            </div>
-            <div
-              style={{ marginTop: 2, fontSize: 12, color: "var(--ink-500)" }}
-            >
-              状态保存后同步刷新项目列表与详情
-            </div>
-          </div>
+        <div style={{ maxWidth: 360 }}>
           <ProjectSettingsField label="项目状态">
             <ProjectSettingsStatusPicker
               value={draft.status}
@@ -7550,11 +7553,13 @@ function ProjectSettingsPanel({
             </span>
           </ProjectSettingsField>
         </div>
+      </ProjectSettingsSection>
 
+      <ProjectSettingsSection title="基础信息">
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+            gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
             gap: 12,
             alignItems: "end",
           }}
@@ -7648,14 +7653,13 @@ function ProjectSettingsPanel({
             </ProjectSettingsField>
           </div>
         </div>
+      </ProjectSettingsSection>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-            gap: 10,
-          }}
-        >
+      <ProjectSettingsSection
+        title="报名与录制"
+        desc="控制主播报名、定向邀约与开播录制要求"
+      >
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
           <ProjectSettingsCheck
             label="开放报名"
             checked={draft.openSignup}
@@ -7676,18 +7680,26 @@ function ProjectSettingsPanel({
             checked={draft.forceSystemTiming}
             onChange={(checked) => onChange("forceSystemTiming", checked)}
           />
+        </div>
+      </ProjectSettingsSection>
+
+      <ProjectSettingsSection
+        title="组织内公开"
+        desc="公开后组织内主播可在主播端看到该项目公告与下载链接"
+      >
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
           <ProjectSettingsCheck
             label="公开给组织内主播"
             checked={draft.isPublicToStreamers}
             onChange={(checked) => onChange("isPublicToStreamers", checked)}
           />
         </div>
-
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
             gap: 12,
+            alignItems: "start",
           }}
         >
           <ProjectSettingsField label="主播公告概括">
@@ -7719,23 +7731,32 @@ function ProjectSettingsPanel({
             />
           </ProjectSettingsField>
         </div>
+      </ProjectSettingsSection>
 
-        {error ? (
-          <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
-            {error}
-          </div>
-        ) : null}
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-          <Button kind="ghost" onClick={onCancel} disabled={submitting}>
-            取消
-          </Button>
-          <Button kind="primary" type="submit" disabled={submitting}>
-            {submitting ? "保存中" : "保存设置"}
-          </Button>
+      {error ? (
+        <div
+          style={{ marginTop: 14, fontSize: 12, color: "var(--danger-600)" }}
+        >
+          {error}
         </div>
-      </form>
-    </Card>
+      ) : null}
+
+      <div
+        style={{
+          marginTop: 18,
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 8,
+        }}
+      >
+        <Button kind="ghost" onClick={onCancel} disabled={submitting}>
+          取消
+        </Button>
+        <Button kind="primary" type="submit" disabled={submitting}>
+          {submitting ? "保存中" : "保存设置"}
+        </Button>
+      </div>
+    </form>
   );
 }
 
