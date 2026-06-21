@@ -7805,7 +7805,7 @@ function ProjectSettingsCheck({ label, checked, onChange }) {
         alignItems: "center",
         gap: 8,
         fontSize: 13,
-        fontWeight: checked ? 600 : 500,
+        fontWeight: 500,
         color: checked ? "var(--blue-700)" : "var(--ink-700)",
         background: checked
           ? "linear-gradient(180deg, #fff 0%, #eef3ff 100%)"
