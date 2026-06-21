@@ -37,6 +37,7 @@ type LiveTaskRow = {
   created_by: string | null;
   collaboration_id: string | null;
   contributor_organization_id: string | null;
+  anomaly_flags: string[] | null;
 };
 
 type LiveReportRow = {
@@ -85,7 +86,8 @@ const liveTaskSelect = `
   system_duration,
   created_by,
   collaboration_id,
-  contributor_organization_id
+  contributor_organization_id,
+  anomaly_flags
 `;
 
 const liveReportSelect = `
@@ -436,6 +438,7 @@ function toLiveTaskRecord(row: LiveTaskRow): LiveTaskRecord {
     createdBy: row.created_by,
     collaborationId: row.collaboration_id,
     contributorOrganizationId: row.contributor_organization_id,
+    anomalyFlags: row.anomaly_flags ?? [],
   };
 }
 
@@ -468,6 +471,7 @@ function toLiveTaskPatch(
 ): Record<string, unknown> {
   return removeUndefined({
     status: patch.status,
+    title: patch.title,
     task_type: patch.taskType,
     planned_start_at: patch.plannedStartAt,
     planned_end_at: patch.plannedEndAt,
@@ -478,6 +482,7 @@ function toLiveTaskPatch(
     system_duration: patch.systemDuration,
     collaboration_id: patch.collaborationId,
     contributor_organization_id: patch.contributorOrganizationId,
+    anomaly_flags: patch.anomalyFlags,
   });
 }
 

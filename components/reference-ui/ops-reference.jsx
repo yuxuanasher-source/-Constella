@@ -595,6 +595,117 @@ function Metric({
 }
 
 // Search input
+// Compact secondary stat for grouped KPI strips — one primary metric stays dominant
+// while supporting metrics ride alongside at a smaller weight.
+function MiniStat({ label, value, unit, hint, hintTone = "muted" }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 12, color: "var(--ink-400)" }}>{label}</div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          gap: 4,
+          marginTop: 4,
+        }}
+      >
+        <span
+          className="num"
+          style={{
+            fontSize: 18,
+            fontWeight: 600,
+            color: "var(--ink-900)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {value}
+        </span>
+        {unit && (
+          <span style={{ fontSize: 11, color: "var(--ink-400)" }}>{unit}</span>
+        )}
+      </div>
+      {hint && (
+        <div
+          style={{
+            fontSize: 11,
+            marginTop: 2,
+            color:
+              hintTone === "red"
+                ? "var(--danger-600)"
+                : hintTone === "green"
+                  ? "var(--ok-600)"
+                  : "var(--ink-400)",
+          }}
+        >
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Vertically clip a long block; reveal in full on demand. All children stay mounted.
+function ShowMore({
+  collapsedHeight = 168,
+  moreLabel = "查看全部",
+  lessLabel = "收起",
+  defaultExpanded = false,
+  children,
+}) {
+  const [expanded, setExpanded] = React.useState(defaultExpanded);
+  return (
+    <div>
+      <div
+        style={{
+          position: "relative",
+          maxHeight: expanded ? "none" : collapsedHeight,
+          overflow: "hidden",
+        }}
+      >
+        {children}
+        {!expanded && (
+          <div
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: 44,
+              background:
+                "linear-gradient(180deg, rgba(255,255,255,0), #fff 88%)",
+              pointerEvents: "none",
+            }}
+          />
+        )}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          borderTop: "1px solid var(--line)",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          style={{
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            color: "var(--blue-600)",
+            fontSize: 12,
+            fontWeight: 500,
+            padding: "8px 12px",
+          }}
+        >
+          {expanded ? lessLabel : moreLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SearchInput({ placeholder = "搜索…", value, onChange, width = 280 }) {
   return (
     <div
@@ -2657,81 +2768,164 @@ function ScreenWarRoom({ go }) {
           gap: 20,
         }}
       >
-        {/* Top metrics strip */}
+        {/* KPI strip — one primary metric + compact secondaries + a separated action zone */}
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(5, 1fr)",
+            gridTemplateColumns: "minmax(0, 1fr) 220px",
             gap: 16,
+            alignItems: "stretch",
           }}
         >
-          <Card style={{ position: "relative", overflow: "hidden" }}>
+          <Card
+            padded={false}
+            bodyStyle={{
+              display: "flex",
+              alignItems: "center",
+              gap: 24,
+              padding: "16px 18px",
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
             <div
               style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                right: 0,
-                height: 3,
-                background: "var(--blue-600)",
+                paddingRight: 24,
+                borderRight: "1px solid var(--line)",
+                minWidth: 168,
               }}
-            />
-            <Metric
-              label="进行中项目"
-              value={String(activeProjects.length)}
-              unit="个"
-              hint={
-                highRiskProjects.length > 0
-                  ? `${highRiskProjects.length} 个高风险`
-                  : "暂无高风险项目"
-              }
-            />
+            >
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                本周厂家应收
+              </div>
+              <div
+                className="num"
+                style={{
+                  fontSize: 28,
+                  fontWeight: 600,
+                  color: "var(--blue-600)",
+                  letterSpacing: "-0.02em",
+                  marginTop: 4,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                ¥{totalReceivable.toLocaleString("zh-CN")}
+              </div>
+              <div
+                style={{
+                  fontSize: 12,
+                  marginTop: 4,
+                  color:
+                    totalReceivable > 0 ? "var(--ok-600)" : "var(--ink-400)",
+                }}
+              >
+                {totalReceivable > 0
+                  ? `预估毛利率 ${grossMargin.toFixed(1)}%`
+                  : "暂无应收数据"}
+              </div>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                gap: 28,
+                flex: 1,
+                flexWrap: "wrap",
+                rowGap: 12,
+              }}
+            >
+              <MiniStat
+                label="进行中项目"
+                value={activeProjects.length}
+                unit="个"
+                hint={
+                  highRiskProjects.length > 0
+                    ? `${highRiskProjects.length} 个高风险`
+                    : "无高风险"
+                }
+                hintTone={highRiskProjects.length > 0 ? "red" : "muted"}
+              />
+              <MiniStat
+                label="本周直播时长"
+                value={totalDoneHours.toFixed(1)}
+                unit="h"
+                hint="本周累计"
+              />
+            </div>
           </Card>
-          <Card>
-            <Metric
-              label="本周直播时长"
-              value={totalDoneHours.toFixed(1)}
-              unit="h"
-              hint="按当前项目数据汇总"
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="本周厂家应收"
-              value={`¥${totalReceivable.toLocaleString("zh-CN")}`}
-              hint="按当前项目数据汇总"
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="预估毛利率"
-              value={grossMargin.toFixed(1)}
-              unit="%"
-              hint={totalReceivable > 0 ? "毛利率" : "暂无应收数据"}
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="待处理事项"
-              value={String(pendingActionCount)}
-              unit="项"
-              hint={
-                pendingActionCount > 0
-                  ? `审核 ${pendingReportCount} · 异常 ${anomalyCount}`
-                  : "暂无待处理事项"
-              }
-              accent={
-                <span
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 999,
-                    background: "var(--danger-600)",
-                  }}
-                />
-              }
-            />
-          </Card>
+          <button
+            type="button"
+            onClick={() => go(pendingReportCount > 0 ? "reports" : "tasks")}
+            style={{
+              textAlign: "left",
+              cursor: "pointer",
+              background: pendingActionCount > 0 ? "var(--danger-50)" : "#fff",
+              border: `1px solid ${
+                pendingActionCount > 0 ? "#f3c9cc" : "var(--line)"
+              }`,
+              borderRadius: 10,
+              boxShadow: "var(--shadow-card)",
+              padding: "16px 18px",
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "center",
+              gap: 6,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                color:
+                  pendingActionCount > 0
+                    ? "var(--danger-600)"
+                    : "var(--ink-400)",
+              }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: 999,
+                  background:
+                    pendingActionCount > 0
+                      ? "var(--danger-600)"
+                      : "var(--ink-300)",
+                }}
+              />
+              待处理事项
+            </div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color:
+                    pendingActionCount > 0
+                      ? "var(--danger-600)"
+                      : "var(--ink-900)",
+                }}
+              >
+                {pendingActionCount}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--ink-400)" }}>项</span>
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                color:
+                  pendingActionCount > 0
+                    ? "var(--danger-600)"
+                    : "var(--ink-400)",
+              }}
+            >
+              {pendingActionCount > 0
+                ? `审核 ${pendingReportCount} · 异常 ${anomalyCount} →`
+                : "暂无待处理"}
+            </div>
+          </button>
         </div>
         {warRoomMessage ? (
           <div
@@ -6108,62 +6302,79 @@ function ProjectDetail({ id, go }) {
             onConfirmCounter={handleConfirmProjectCollaborationCounter}
           />
         ) : null}
-        {/* Top metric strip (owner view) */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(6, 1fr)",
-            gap: 12,
+        {/* Grouped exec strip — primary 毛利 + compact secondaries */}
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="项目周期"
-              value={`${p.start.slice(5)} → ${p.end.slice(5)}`}
-              hint={`共 ${diffDays(p.start, p.end)} 天`}
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 160,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>预估毛利</div>
+            <div
+              className="num"
+              style={{
+                fontSize: 26,
+                fontWeight: 600,
+                color: "var(--blue-600)",
+                letterSpacing: "-0.02em",
+                marginTop: 4,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ¥{(p.metrics.gross / 10000).toFixed(1)}万
+            </div>
+            <div style={{ fontSize: 12, marginTop: 4, color: "var(--ok-600)" }}>
+              毛利率 {p.metrics.margin}%
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="累计直播时长"
               value={p.metrics.doneHours.toFixed(1)}
               unit="h"
-              delta={`${donePct}% 达成`}
-              deltaTone={
-                donePct >= 90 ? "green" : donePct >= 50 ? "neutral" : "red"
-              }
+              hint={`${donePct}% 达成`}
+              hintTone={donePct >= 90 ? "green" : donePct >= 50 ? "muted" : "red"}
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="累计场观"
               value={(p.metrics.audience / 10000).toFixed(1)}
               unit="万人次"
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="预计厂家应收"
               value={`¥${(p.metrics.receivable / 10000).toFixed(1)}万`}
-              hint="按当前项目数据汇总"
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="主播应付"
               value={`¥${(p.metrics.payable / 10000).toFixed(1)}万`}
-              hint="按当前项目数据汇总"
             />
-          </Card>
-          <Card style={{ borderColor: "var(--blue-200)" }}>
-            <Metric
-              label="预估毛利"
-              value={`¥${(p.metrics.gross / 10000).toFixed(1)}万`}
-              delta={`${p.metrics.margin}%`}
-              hint="毛利率"
+            <MiniStat
+              label="项目周期"
+              value={`${p.start.slice(5)} → ${p.end.slice(5)}`}
+              hint={`共 ${diffDays(p.start, p.end)} 天`}
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
         <Card padded={false}>
           <div
@@ -12886,36 +13097,69 @@ function ScreenSettlement({ go }) {
           gap: 20,
         }}
       >
-        {/* Top metrics */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 16,
+        {/* Grouped settlement strip — primary 预估毛利 + compact secondaries */}
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="可结算池 · 报数条数"
-              value={String(poolCount)}
-              unit="条"
-              hint="审核通过 · 待入批次"
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 160,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              本月预估毛利
+            </div>
+            <div
+              className="num"
+              style={{
+                fontSize: 26,
+                fontWeight: 600,
+                color: "var(--blue-600)",
+                letterSpacing: "-0.02em",
+                marginTop: 4,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {formatSettlementCurrency(settlementSummary.gross)}
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                marginTop: 4,
+                color:
+                  settlementSummary.gross >= 0
+                    ? "var(--ok-600)"
+                    : "var(--danger-600)",
+              }}
+            >
+              毛利率 {settlementSummary.marginRate.toFixed(1)}%
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="本月厂家应收 (草稿)"
-              value={formatSettlementCurrency(
-                settlementSummary.vendorReceivable,
-              )}
-              hint={settlementBatchHint(
-                settlementSummary.vendorBatchCount,
-                "应收",
-              )}
+              value={formatSettlementCurrency(settlementSummary.vendorReceivable)}
+              hint={settlementBatchHint(settlementSummary.vendorBatchCount, "应收")}
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="本月主播应付 (锁定)"
               value={formatSettlementCurrency(settlementSummary.lockedPayable)}
               hint={settlementBatchHint(
@@ -12923,16 +13167,14 @@ function ScreenSettlement({ go }) {
                 "锁定",
               )}
             />
-          </Card>
-          <Card style={{ borderColor: "var(--blue-200)" }}>
-            <Metric
-              label="本月预估毛利"
-              value={formatSettlementCurrency(settlementSummary.gross)}
-              delta={`${settlementSummary.marginRate.toFixed(1)}% 毛利率`}
-              deltaTone={settlementSummary.gross >= 0 ? "green" : "red"}
+            <MiniStat
+              label="可结算池 · 报数"
+              value={String(poolCount)}
+              unit="条"
+              hint="审核通过 · 待入批次"
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
         <Card
           title="单项目结算校验 · §3.4"
@@ -13998,6 +14240,9 @@ function BatchDetail({
   busyAction,
 }) {
   const [detailMessage, setDetailMessage] = React.useState("");
+  const [auditBusy, setAuditBusy] = React.useState(false);
+  const auditEntries = useOpsAuditEntries();
+  const actions = useOpsLiveActions();
   const b = batches.find((x) => x.id === id) || batches[0] || BATCHES[1];
   if (!b) {
     return (
@@ -14048,6 +14293,28 @@ function BatchDetail({
   const adjSum = detailRows.reduce((s, x) => s + x.adjust, 0);
   const showPendingDetail = (message) => {
     setDetailMessage(message);
+  };
+  const batchAudit = auditEntries.filter(
+    (entry) =>
+      entry.objectId === b.id ||
+      (entry.module === "settlement" && entry.objectName === b.name),
+  );
+  const loadBatchAudit = async () => {
+    if (auditBusy) return;
+    setDetailMessage("");
+    if (!actions.refreshAuditEntries) {
+      setDetailMessage("审计明细需要登录后台后查看。");
+      return;
+    }
+    setAuditBusy(true);
+    try {
+      await actions.refreshAuditEntries();
+      setDetailMessage("批次审计明细已刷新，见下方审计轨迹。");
+    } catch (error) {
+      setDetailMessage(error?.message || "审计明细刷新失败，请稍后重试。");
+    } finally {
+      setAuditBusy(false);
+    }
   };
 
   return (
@@ -14352,13 +14619,10 @@ function BatchDetail({
               <Button
                 kind="ghost"
                 icon={<Icon.History size={14} />}
-                onClick={() =>
-                  showPendingDetail(
-                    "批次审计明细后台暂未接入，请查看下方审计轨迹。",
-                  )
-                }
+                onClick={loadBatchAudit}
+                disabled={auditBusy}
               >
-                查看审计
+                {auditBusy ? "刷新中…" : "查看审计"}
               </Button>
               <Button
                 kind="default"
@@ -14435,11 +14699,77 @@ function BatchDetail({
       </Card>
 
       {/* Audit timeline */}
-      <Card title="批次审计轨迹" padded={true}>
-        <EmptyHint
-          title="暂无审计轨迹"
-          hint="批次操作日志会在后端返回后展示。"
-        />
+      <Card
+        title="批次审计轨迹"
+        extra={
+          batchAudit.length ? (
+            <Badge tone="neutral">{batchAudit.length} 条</Badge>
+          ) : null
+        }
+        padded={true}
+      >
+        {batchAudit.length ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {batchAudit.map((entry) => (
+              <div
+                key={entry.id}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  paddingBottom: 10,
+                  borderBottom: "1px solid var(--line)",
+                }}
+              >
+                <Avatar
+                  name={entry.actorName || entry.actorRole || "系统"}
+                  size={26}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "baseline",
+                      gap: 8,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12.5,
+                        fontWeight: 600,
+                        color: "var(--ink-900)",
+                      }}
+                    >
+                      {entry.actorName || "系统"}
+                    </span>
+                    <Badge tone={auditModuleTone(entry.module)}>
+                      {auditModuleLabel(entry.module)} / {entry.action}
+                    </Badge>
+                    <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                      {formatOpsMinute(entry.createdAt)}
+                    </span>
+                  </div>
+                  {entry.reason ? (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "var(--ink-500)",
+                        marginTop: 2,
+                      }}
+                    >
+                      原因：{entry.reason}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyHint
+            title="暂无审计轨迹"
+            hint="对该批次执行锁定/解锁/调整后，操作会记录在这里。点击上方「查看审计」可刷新。"
+          />
+        )}
       </Card>
     </div>
   );
@@ -14742,28 +15072,70 @@ function ScreenTasks({ go }) {
           gap: 16,
         }}
       >
-        {/* Top metrics */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(5, 1fr)",
-            gap: 14,
+        {/* Grouped task strip — primary 今日任务 + compact secondaries */}
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="今日任务"
-              value={todayCount}
-              unit="个"
-              hint={SCHEDULE_WEEK.days[SCHEDULE_WEEK.todayIdx]?.date ?? "本周"}
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="正在直播"
-              value={liveCount}
-              unit="个"
-              accent={
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 140,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>今日任务</div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 6,
+                marginTop: 4,
+              }}
+            >
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                  letterSpacing: "-0.02em",
+                }}
+              >
+                {todayCount}
+              </span>
+              <span style={{ fontSize: 12, color: "var(--ink-400)" }}>个</span>
+            </div>
+            <div style={{ fontSize: 12, marginTop: 4, color: "var(--ink-400)" }}>
+              {SCHEDULE_WEEK.days[SCHEDULE_WEEK.todayIdx]?.date ?? "本周"}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--ink-400)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
                 <span
                   style={{
                     width: 6,
@@ -14773,44 +15145,77 @@ function ScreenTasks({ go }) {
                     boxShadow: "0 0 0 3px rgba(30,80,200,0.25)",
                   }}
                 />
-              }
-            />
-          </Card>
-          <Card>
-            <Metric
+                正在直播
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 4,
+                  marginTop: 4,
+                }}
+              >
+                <span
+                  className="num"
+                  style={{
+                    fontSize: 18,
+                    fontWeight: 600,
+                    color: "var(--ink-900)",
+                  }}
+                >
+                  {liveCount}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>个</span>
+              </div>
+            </div>
+            <MiniStat
               label="待报数 / 待审核"
               value={`${pendingReportCount} / ${pendingReviewCount}`}
             />
-          </Card>
-          <Card
-            style={{ borderColor: anomalyCount > 0 ? "#F3C4C9" : undefined }}
-          >
-            <Metric
-              label="异常任务"
-              value={anomalyCount}
-              unit="项"
-              deltaTone="red"
-              accent={
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>异常任务</div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 4,
+                  marginTop: 4,
+                }}
+              >
                 <span
+                  className="num"
                   style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 999,
-                    background: "var(--danger-600)",
+                    fontSize: 18,
+                    fontWeight: 600,
+                    color:
+                      anomalyCount > 0
+                        ? "var(--danger-600)"
+                        : "var(--ink-900)",
                   }}
-                />
-              }
-            />
-          </Card>
-          <Card>
-            <Metric
+                >
+                  {anomalyCount}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>项</span>
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  marginTop: 2,
+                  color:
+                    anomalyCount > 0 ? "var(--danger-600)" : "var(--ink-400)",
+                }}
+              >
+                {anomalyCount > 0 ? "需复核" : "正常"}
+              </div>
+            </div>
+            <MiniStat
               label="本周已排"
               value={tasks.length}
               unit="个"
               hint={`共 ${streamers.length} 位主播`}
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
         <TaskProjectMappingStrip
           project={selectedProject}
@@ -15262,14 +15667,31 @@ function ScheduleBoard({ filters, onSelectTask }) {
   const knownStreamers = useOpsStreamers();
   const [unit, setUnit] = React.useState("day"); // 'day' | 'hour'
   const [toolbarMessage, setToolbarMessage] = React.useState("");
+  const [weekOffset, setWeekOffset] = React.useState(0);
+
+  const weekMeta = React.useMemo(() => {
+    if (weekOffset === 0) {
+      return { label: "本周排班", days: SCHEDULE_WEEK.days };
+    }
+    const base = new Date();
+    base.setDate(base.getDate() + weekOffset * 7);
+    const week = createScheduleWeek(base);
+    return {
+      label: `${week.days[0].date} - ${week.days[6].date}`,
+      days: week.days.map((day) => ({ ...day, today: false })),
+    };
+  }, [weekOffset]);
 
   // Filter tasks
   const visibleTasks = tasks.filter((task) =>
     taskMatchesTaskFilters(task, filters, projects),
   );
+  // Sample tasks use a relative day index within the current week, so only the
+  // current week carries schedule data; other weeks render an empty board.
+  const boardTasks = weekOffset === 0 ? visibleTasks : [];
   const streamerIds = Array.from(
     new Set(
-      visibleTasks
+      boardTasks
         .map((task) => task.streamerId || task.streamerName)
         .filter(Boolean),
     ),
@@ -15277,7 +15699,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
   const streamers = streamerIds.map((id) => {
     const fromKnown = knownStreamers.find((streamer) => streamer.id === id);
     if (fromKnown) return fromKnown;
-    const task = visibleTasks.find(
+    const task = boardTasks.find(
       (item) => item.streamerId === id || item.streamerName === id,
     );
     return { id, alias: displayTaskStreamerName(task) };
@@ -15286,7 +15708,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
   const HOUR_START = 12; // visible window: 12:00 - 24:00 (used in hour view)
   const HOUR_END = 24;
 
-  if (!visibleTasks.length) {
+  if (weekOffset === 0 && !visibleTasks.length) {
     return (
       <div style={{ padding: 16 }}>
         <EmptyHint title="暂无排班数据" hint="创建排班或任务后会展示周视图。" />
@@ -15310,24 +15732,43 @@ function ScheduleBoard({ filters, onSelectTask }) {
         <button
           type="button"
           style={iconBtn}
-          onClick={() => setToolbarMessage("上一周排班后台暂未接入。")}
+          aria-label="上一周"
+          onClick={() => {
+            setToolbarMessage("");
+            setWeekOffset((value) => value - 1);
+          }}
         >
           <Icon.ChevLeft size={14} />
         </button>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}>
-          本周排班
+        <div
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: "var(--ink-900)",
+            minWidth: 96,
+            textAlign: "center",
+          }}
+        >
+          {weekMeta.label}
         </div>
         <button
           type="button"
           style={iconBtn}
-          onClick={() => setToolbarMessage("下一周排班后台暂未接入。")}
+          aria-label="下一周"
+          onClick={() => {
+            setToolbarMessage("");
+            setWeekOffset((value) => value + 1);
+          }}
         >
           <Icon.ChevRight size={14} />
         </button>
         <Button
           size="sm"
           kind="default"
-          onClick={() => setToolbarMessage("已定位到本周排班。")}
+          onClick={() => {
+            setWeekOffset(0);
+            setToolbarMessage("");
+          }}
         >
           今天
         </Button>
@@ -15419,7 +15860,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
         >
           主播 / 日期
         </div>
-        {SCHEDULE_WEEK.days.map((d, i) => (
+        {weekMeta.days.map((d, i) => (
           <div
             key={i}
             style={{
@@ -15460,6 +15901,19 @@ function ScheduleBoard({ filters, onSelectTask }) {
           </div>
         ))}
       </div>
+
+      {streamers.length === 0 ? (
+        <div
+          style={{
+            padding: 32,
+            textAlign: "center",
+            color: "var(--ink-400)",
+            fontSize: 13,
+          }}
+        >
+          {weekMeta.label} 暂无排班记录。
+        </div>
+      ) : null}
 
       {/* Rows */}
       {streamers.map((s, ri) => {
@@ -15515,7 +15969,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
             </div>
 
             {/* Day cells */}
-            {SCHEDULE_WEEK.days.map((d, di) => {
+            {weekMeta.days.map((d, di) => {
               const dayTasks = sTasks.filter((t) => t.dayIdx === di);
               return (
                 <div
@@ -16240,6 +16694,20 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
   const actions = useOpsLiveActions();
   const [actionMessage, setActionMessage] = React.useState("");
   const [scanBusy, setScanBusy] = React.useState("");
+  const [resolvingId, setResolvingId] = React.useState("");
+  const resolveOne = async (a) => {
+    if (resolvingId) return;
+    setResolvingId(a.id);
+    setActionMessage("");
+    try {
+      await actions.resolveTaskAnomaly?.(a.id);
+      setActionMessage(`已标记处理：${a.streamer} · ${a.name}`);
+    } catch (error) {
+      setActionMessage(error?.message || "标记处理失败，请稍后重试。");
+    } finally {
+      setResolvingId("");
+    }
+  };
   const anomalies = tasks.filter(isTaskOperationalAnomaly).map((t) => {
     const anomalyKey = getTaskOperationalAnomalyKey(t);
     const project = resolveTaskProject(t, projects);
@@ -16430,11 +16898,10 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
                     <Button
                       size="sm"
                       kind="primary"
-                      onClick={() =>
-                        setActionMessage("异常处理状态后台暂未接入。")
-                      }
+                      onClick={() => resolveOne(a)}
+                      disabled={resolvingId === a.id}
                     >
-                      标记处理
+                      {resolvingId === a.id ? "处理中…" : "标记处理"}
                     </Button>
                   </div>
                 </div>
@@ -16517,6 +16984,53 @@ function TaskDrawer({
   go,
 }) {
   const [drawerMessage, setDrawerMessage] = React.useState("");
+  const actions = useOpsLiveActions();
+  const [editing, setEditing] = React.useState(false);
+  const [editForm, setEditForm] = React.useState({
+    title: "",
+    startHour: 20,
+    endHour: 23,
+  });
+  const [editBusy, setEditBusy] = React.useState(false);
+  const [editError, setEditError] = React.useState("");
+  const openEdit = () => {
+    setEditForm({
+      title: task.name || "",
+      startHour: task.startHour ?? 20,
+      endHour: task.endHour ?? 23,
+    });
+    setEditError("");
+    setDrawerMessage("");
+    setEditing(true);
+  };
+  const submitEdit = async (event) => {
+    event.preventDefault();
+    if (editBusy) return;
+    const startHour = Number(editForm.startHour);
+    const endHour = Number(editForm.endHour);
+    if (!(endHour > startHour)) {
+      setEditError("结束时间需晚于开始时间。");
+      return;
+    }
+    setEditBusy(true);
+    setEditError("");
+    try {
+      const startIso = dayScheduleTimeToIso(task.dayIdx, startHour);
+      const endIso = dayScheduleTimeToIso(task.dayIdx, endHour);
+      await actions.updateLiveTask?.(task.id, {
+        title: editForm.title.trim() || undefined,
+        plannedStartAt: startIso,
+        plannedEndAt: endIso,
+        plannedDuration: scheduleMinutes(startIso, endIso),
+      });
+      setEditing(false);
+      setDrawerMessage("排班已更新。");
+    } catch (error) {
+      setEditError(error?.message || "更新失败，请稍后重试。");
+    } finally {
+      setEditBusy(false);
+    }
+  };
   if (task._new) {
     return (
       <NewTaskDrawer
@@ -16753,6 +17267,145 @@ function TaskDrawer({
             {drawerMessage}
           </div>
         ) : null}
+
+        {editing ? (
+          <form
+            onSubmit={submitEdit}
+            style={{
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              padding: 14,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              background: "var(--bg-soft)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--ink-900)",
+              }}
+            >
+              编辑排班
+            </div>
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                fontSize: 12,
+                color: "var(--ink-500)",
+                fontWeight: 600,
+              }}
+            >
+              任务标题
+              <input
+                value={editForm.title}
+                onChange={(event) =>
+                  setEditForm((form) => ({ ...form, title: event.target.value }))
+                }
+                style={{
+                  height: 32,
+                  border: "1px solid var(--line-strong)",
+                  borderRadius: 6,
+                  padding: "0 10px",
+                  fontSize: 13,
+                  outline: "none",
+                }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 10 }}>
+              <label
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                  fontWeight: 600,
+                }}
+              >
+                开始 (时)
+                <input
+                  type="number"
+                  min={0}
+                  max={23}
+                  value={editForm.startHour}
+                  onChange={(event) =>
+                    setEditForm((form) => ({
+                      ...form,
+                      startHour: event.target.value,
+                    }))
+                  }
+                  style={{
+                    height: 32,
+                    border: "1px solid var(--line-strong)",
+                    borderRadius: 6,
+                    padding: "0 10px",
+                    fontSize: 13,
+                    outline: "none",
+                  }}
+                />
+              </label>
+              <label
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                  fontWeight: 600,
+                }}
+              >
+                结束 (时)
+                <input
+                  type="number"
+                  min={1}
+                  max={24}
+                  value={editForm.endHour}
+                  onChange={(event) =>
+                    setEditForm((form) => ({
+                      ...form,
+                      endHour: event.target.value,
+                    }))
+                  }
+                  style={{
+                    height: 32,
+                    border: "1px solid var(--line-strong)",
+                    borderRadius: 6,
+                    padding: "0 10px",
+                    fontSize: 13,
+                    outline: "none",
+                  }}
+                />
+              </label>
+            </div>
+            {editError ? (
+              <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                {editError}
+              </div>
+            ) : null}
+            <div
+              style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}
+            >
+              <Button
+                kind="default"
+                type="button"
+                disabled={editBusy}
+                onClick={() => setEditing(false)}
+              >
+                取消
+              </Button>
+              <Button kind="primary" type="submit" disabled={editBusy}>
+                {editBusy ? "保存中…" : "保存排班"}
+              </Button>
+            </div>
+          </form>
+        ) : null}
       </div>
 
       <div
@@ -16773,10 +17426,7 @@ function TaskDrawer({
           {busyAction === "cancel" ? "取消中…" : "取消任务"}
         </Button>
         <div style={{ flex: 1 }} />
-        <Button
-          kind="default"
-          onClick={() => setDrawerMessage("编辑排班后台暂未接入")}
-        >
+        <Button kind="default" onClick={openEdit}>
           编辑排班
         </Button>
         <Button
@@ -17770,9 +18420,10 @@ function ScreenOrg({ go, onOpenOrganizationSettings }) {
               marginTop: 16,
               paddingTop: 16,
               borderTop: "1px solid var(--line)",
-              display: "grid",
-              gridTemplateColumns: "repeat(5, 1fr)",
-              gap: 24,
+              display: "flex",
+              flexWrap: "wrap",
+              columnGap: 40,
+              rowGap: 14,
             }}
           >
             <StatCell
@@ -19704,47 +20355,74 @@ function ScreenAudit() {
           gap: 20,
         }}
       >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 16,
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="审计日志"
-              value={String(entries.length)}
-              unit="条"
-              hint="仅展示当前角色可见范围"
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 130,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>审计日志</div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 4,
+                marginTop: 4,
+              }}
+            >
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                }}
+              >
+                {String(entries.length)}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--ink-400)" }}>条</span>
+            </div>
+            <div style={{ fontSize: 11, marginTop: 2, color: "var(--ink-400)" }}>
+              当前角色可见范围
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="高风险操作"
               value={String(highRiskCount)}
               unit="条"
-              delta={highRiskCount > 0 ? "需复核原因" : "无待复核"}
-              deltaTone={highRiskCount > 0 ? "amber" : "green"}
+              hint={highRiskCount > 0 ? "需复核原因" : "无待复核"}
+              hintTone={highRiskCount > 0 ? "red" : "green"}
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="失败操作"
               value={String(failureCount)}
               unit="条"
-              hint="失败原因只显示错误摘要"
+              hint="仅显示错误摘要"
             />
-          </Card>
-          <Card style={{ borderColor: "var(--blue-200)" }}>
-            <Metric
-              label="覆盖模块"
-              value={String(moduleCount)}
-              unit="个"
-              hint="权限过滤在服务端完成"
-            />
-          </Card>
-        </div>
+            <MiniStat label="覆盖模块" value={String(moduleCount)} unit="个" />
+          </div>
+        </Card>
 
         <div
           style={{
@@ -20095,48 +20773,80 @@ function ScreenNotifications() {
           gap: 20,
         }}
       >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 16,
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="通知总数"
-              value={String(notifications.length)}
-              unit="条"
-              hint="仅展示当前用户或角色可见范围"
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 130,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>通知总数</div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 4,
+                marginTop: 4,
+              }}
+            >
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                }}
+              >
+                {String(notifications.length)}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--ink-400)" }}>条</span>
+            </div>
+            <div style={{ fontSize: 11, marginTop: 2, color: "var(--ink-400)" }}>
+              当前可见范围
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="未读"
               value={String(unreadCount)}
               unit="条"
-              delta={unreadCount > 0 ? "需要查看" : "已清空"}
-              deltaTone={unreadCount > 0 ? "amber" : "green"}
+              hint={unreadCount > 0 ? "需要查看" : "已清空"}
+              hintTone={unreadCount > 0 ? "red" : "green"}
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="待处理"
               value={String(openCount)}
               unit="条"
               hint="未读与已读未处理"
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="高风险"
               value={String(highRiskCount)}
               unit="条"
-              delta={highRiskCount > 0 ? "需复核" : "无风险提醒"}
-              deltaTone={highRiskCount > 0 ? "red" : "green"}
+              hint={highRiskCount > 0 ? "需复核" : "无风险提醒"}
+              hintTone={highRiskCount > 0 ? "red" : "green"}
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
         <Card padded={false}>
           <div
@@ -22132,6 +22842,28 @@ function OpsReferenceInner({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(input ?? {}),
           },
+        );
+        await refreshOpsTasks();
+        return body;
+      },
+      updateLiveTask: async (id, input) => {
+        const body = await fetchJson(
+          `/api/live-tasks/${id}`,
+          "update live task failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshOpsTasks();
+        return body;
+      },
+      resolveTaskAnomaly: async (id) => {
+        const body = await fetchJson(
+          `/api/live-tasks/${id}/resolve-anomaly`,
+          "resolve anomaly failed",
+          { method: "POST" },
         );
         await refreshOpsTasks();
         return body;
