@@ -12602,6 +12602,7 @@ function ScreenSettlement({ go }) {
   const [type, setType] = React.useState("all");
   const [busyAction, setBusyAction] = React.useState(null);
   const [activeId, setActiveId] = React.useState(batches[0]?.id ?? null);
+  const [detailTab, setDetailTab] = React.useState("summary");
   const [batchFormOpen, setBatchFormOpen] = React.useState(false);
   const [manualFormOpen, setManualFormOpen] = React.useState(false);
   const [settlementMessage, setSettlementMessage] = React.useState("");
@@ -13391,6 +13392,24 @@ function ScreenSettlement({ go }) {
           </div>
           <div
             style={{
+              padding: "0 16px",
+              borderBottom: "1px solid var(--line)",
+            }}
+          >
+            <Tabs
+              value={detailTab}
+              onChange={setDetailTab}
+              items={[
+                { key: "summary", label: "结算详情" },
+                { key: "finance", label: "项目财务设置" },
+                { key: "payable", label: "主播应付规则" },
+                { key: "cost", label: "项目开支" },
+              ]}
+            />
+          </div>
+          {detailTab === "summary" && (
+          <div
+            style={{
               display: "grid",
               gridTemplateColumns: "0.85fr 1.35fr",
               gap: 16,
@@ -13507,21 +13526,10 @@ function ScreenSettlement({ go }) {
               </div>
             </form>
           </div>
-        </Card>
+          )}
 
-        <Card
-          title="项目规则与成本"
-          extra={
-            <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
-              按需展开
-            </span>
-          }
-          bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}
-        >
-        <CollapsibleSection
-          title="项目财务设置"
-          hint="税费与采购 · 开票 / 销项税 / 附加税 / 采购成本"
-        >
+          {detailTab === "finance" && (
+          <div style={{ padding: 16 }}>
           <form
             onSubmit={saveProjectFinancials}
             style={{ display: "flex", flexDirection: "column", gap: 12 }}
@@ -13545,12 +13553,11 @@ function ScreenSettlement({ go }) {
               </Button>
             </div>
           </form>
-        </CollapsibleSection>
+          </div>
+          )}
 
-        <CollapsibleSection
-          title="主播应付规则"
-          hint="按项目为单个主播设置应付结算方式与价格（准入后可随时修改）"
-        >
+          {detailTab === "payable" && (
+          <div style={{ padding: 16 }}>
           <form
             onSubmit={saveStreamerRule}
             style={{ display: "flex", flexDirection: "column", gap: 12 }}
@@ -13647,12 +13654,11 @@ function ScreenSettlement({ go }) {
               </Button>
             </div>
           </form>
-        </CollapsibleSection>
+          </div>
+          )}
 
-        <CollapsibleSection
-          title="外部成本录入与确认"
-          hint="供应商 / 投流 / 平台 / 罚扣等，确认后计入项目成本与结算校验"
-        >
+          {detailTab === "cost" && (
+          <div style={{ padding: 16 }}>
           <form
             onSubmit={submitCostItem}
             style={{ display: "flex", flexDirection: "column", gap: 12 }}
@@ -13832,7 +13838,8 @@ function ScreenSettlement({ go }) {
               点击「加载/刷新」查看本项目已录入的外部成本
             </div>
           )}
-        </CollapsibleSection>
+          </div>
+          )}
         </Card>
 
         {settlementMessage ? (
