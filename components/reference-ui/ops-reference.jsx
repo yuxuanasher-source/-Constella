@@ -2415,66 +2415,7 @@ function PageHeader({ title, subtitle, status, actions }) {
   );
 }
 
-// 经营闭环阶段导航：贯穿「立项 → 准入 → 直播 → 报数 → 结算 → 复盘/治理」的阶段条，
-// 点击钻取到对应一级模块。这是「经营舱看板 · 经营闭环」的核心导航结构。
-const WAR_ROOM_LOOP_STAGES = [
-  { key: "warroom", label: "经营总览" },
-  { key: "projects", label: "项目" },
-  { key: "admission", label: "准入·录屏" },
-  { key: "tasks", label: "排班直播" },
-  { key: "reports", label: "报数审核" },
-  { key: "settle", label: "结算批次" },
-  { key: "funnel", label: "毛利分析" },
-  { key: "audit", label: "审计·导出" },
-  { key: "notifications", label: "通知" },
-];
-
-function WarRoomLoopNav({ go }) {
-  return (
-    <Card padded={false}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "10px 12px",
-          overflowX: "auto",
-        }}
-      >
-        {WAR_ROOM_LOOP_STAGES.map((stage, i) => {
-          const active = stage.key === "warroom";
-          return (
-            <React.Fragment key={stage.key}>
-              {i > 0 ? (
-                <Icon.ChevRight size={12} stroke="var(--ink-300)" />
-              ) : null}
-              <button
-                type="button"
-                onClick={() => go(stage.key)}
-                style={{
-                  flexShrink: 0,
-                  height: 30,
-                  padding: "0 12px",
-                  border: "1px solid",
-                  borderColor: active ? "var(--blue-500)" : "var(--line)",
-                  borderRadius: 999,
-                  background: active ? "var(--blue-50)" : "#fff",
-                  color: active ? "var(--blue-700)" : "var(--ink-500)",
-                  fontSize: 12,
-                  fontWeight: active ? 700 : 500,
-                  cursor: "pointer",
-                }}
-              >
-                {stage.label}
-              </button>
-            </React.Fragment>
-          );
-        })}
-      </div>
-    </Card>
-  );
-}
-
+// KPI 卡片左上角色条配色，按阶段循环。
 const WAR_ROOM_KPI_ACCENTS = [
   "var(--blue-500)",
   "var(--ok-600)",
@@ -2803,7 +2744,6 @@ function ScreenRoleHome({ dashboard, go }) {
           boxSizing: "border-box",
         }}
       >
-        <WarRoomLoopNav go={go} />
         {dashboard.emptyState ? (
           <EmptyHint
             title={dashboard.emptyState.title}
