@@ -5812,7 +5812,6 @@ function ProjectDetail({ id, go }) {
   const allProjects = [...projects, ...collaborationProjects];
   const p =
     allProjects.find((x) => x.id === id) || allProjects[0] || PROJECTS[0];
-  const [tab, setTab] = React.useState("overview");
   const [detailMessage, setDetailMessage] = React.useState("");
   const [detailSubmitting, setDetailSubmitting] = React.useState("");
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -6412,61 +6411,86 @@ function ProjectDetail({ id, go }) {
           </div>
         </Card>
 
-        <Card padded={false}>
-          <div
-            style={{ padding: "0 16px", borderBottom: "1px solid var(--line)" }}
-          >
-            <Tabs
-              value={tab}
-              onChange={setTab}
-              items={[
-                { key: "overview", label: "项目总览" },
-                {
-                  key: "roster",
-                  label: "主播阵容",
-                  count: projectRosterCount,
-                },
-                {
-                  key: "screening",
-                  label: "录屏审核",
-                  count: p.streamers.pendingReview,
-                },
-                {
-                  key: "schedule",
-                  label: "排班 & 任务",
-                  count: projectTasks.length,
-                },
-                {
-                  key: "reports",
-                  label: "报数",
-                  count: p.metrics.reportedPending,
-                },
-                { key: "rules", label: "结算规则" },
-                { key: "audit", label: "操作日志" },
-              ]}
-            />
-          </div>
+        {/* 单页连续区块：原页签内容纵向堆叠，去掉页签切换，功能全保留 */}
+        <Card title="项目总览">
+          <ProjectOverview p={p} />
+        </Card>
 
-          <div style={{ padding: 20 }}>
-            {tab === "overview" && <ProjectOverview p={p} />}
-            {tab === "roster" && <ProjectRoster p={p} go={go} />}
-            {tab === "schedule" && (
-              <ProjectScheduleTasks
-                p={p}
-                tasks={projectTasks}
-                streamers={streamers}
-                go={go}
-              />
-            )}
-            {tab !== "overview" && tab !== "roster" && tab !== "schedule" && (
-              <EmptyHint
-                title={tabLabel(tab) + " · 数据视图"}
-                hint="此标签页与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
-                actionLabel={"前往" + tabLabel(tab)}
-                onAction={() => go(tabRoute(tab))}
-              />
-            )}
-          </div>
+        <Card
+          title="主播阵容"
+          extra={
+            projectRosterCount > 0 ? (
+              <Badge tone="blue">{projectRosterCount}</Badge>
+            ) : null
+          }
+        >
+          <ProjectRoster p={p} go={go} />
+        </Card>
+
+        <Card
+          title="录屏审核"
+          extra={
+            p.streamers.pendingReview > 0 ? (
+              <Badge tone="amber">{p.streamers.pendingReview}</Badge>
+            ) : null
+          }
+        >
+          <EmptyHint
+            title="录屏审核 · 数据视图"
+            hint="此区块与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
+            actionLabel="前往录屏审核"
+            onAction={() => go("streamers")}
+          />
+        </Card>
+
+        <Card
+          title="排班 & 任务"
+          extra={
+            projectTasks.length > 0 ? (
+              <Badge tone="blue">{projectTasks.length}</Badge>
+            ) : null
+          }
+        >
+          <ProjectScheduleTasks
+            p={p}
+            tasks={projectTasks}
+            streamers={streamers}
+            go={go}
+          />
+        </Card>
+
+        <Card
+          title="报数审核"
+          extra={
+            p.metrics.reportedPending > 0 ? (
+              <Badge tone="amber">{p.metrics.reportedPending}</Badge>
+            ) : null
+          }
+        >
+          <EmptyHint
+            title="报数审核 · 数据视图"
+            hint="此区块与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
+            actionLabel="前往报数审核"
+            onAction={() => go("reports")}
+          />
+        </Card>
+
+        <Card title="结算规则">
+          <EmptyHint
+            title="结算规则 · 数据视图"
+            hint="此区块与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
+            actionLabel="前往结算规则"
+            onAction={() => go("settle")}
+          />
+        </Card>
+
+        <Card title="操作日志">
+          <EmptyHint
+            title="操作日志 · 数据视图"
+            hint="此区块与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
+            actionLabel="前往操作日志"
+            onAction={() => go("audit")}
+          />
         </Card>
       </div>
     </>
@@ -7865,29 +7889,6 @@ function ProjectSettingsCheck({ label, checked, onChange }) {
       </span>
       {label}
     </label>
-  );
-}
-
-function tabLabel(k) {
-  return (
-    {
-      screening: "录屏审核",
-      schedule: "排班 & 任务",
-      reports: "报数审核",
-      rules: "结算规则",
-      audit: "操作日志",
-    }[k] || k
-  );
-}
-function tabRoute(k) {
-  return (
-    {
-      screening: "streamers",
-      schedule: "tasks",
-      reports: "reports",
-      rules: "settle",
-      audit: "audit",
-    }[k] || "projects"
   );
 }
 
