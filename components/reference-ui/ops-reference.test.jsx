@@ -648,6 +648,40 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.getByText("审计操作员")).toBeInTheDocument();
   });
 
+  it("caps detail module blocks at 6 rows with a view-all footer", () => {
+    const manyReports = Array.from({ length: 7 }, (_, i) => ({
+      id: `rep-${i}`,
+      projectId: "project-live",
+      project: "Fixture Project",
+      streamer: `报数主播${i}`,
+      status: "approved",
+      date: "2026-06-01",
+      systemDurationHours: 1,
+      audience: 100,
+      screens: 1,
+      taskId: `task-${i}`,
+    }));
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={taskProjectCards}
+        applicationQueue={[]}
+        liveReports={manyReports}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Fixture Project"));
+
+    // 计数徽章显示总数 7，但表格仅渲染前 6 行，第 7 行被截断。
+    expect(screen.getByText("报数主播0")).toBeInTheDocument();
+    expect(screen.getByText("报数主播5")).toBeInTheDocument();
+    expect(screen.queryByText("报数主播6")).not.toBeInTheDocument();
+    // 超出时出现「查看全部」页脚。
+    expect(
+      screen.getByRole("button", { name: "查看全部 7 条 →" }),
+    ).toBeInTheDocument();
+  });
+
   it("opens organization feature settings from the sidebar and syncs the switcher display", () => {
     render(<OpsReferenceApp initialRoute="warroom" />);
 

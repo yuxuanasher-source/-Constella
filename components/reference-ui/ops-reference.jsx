@@ -6120,6 +6120,47 @@ function formatRateBps(bps) {
   return `${value / 100}%`;
 }
 
+// 详情页列表区块每块最多显示的行数；超出时底部出现「查看全部」入口。
+const PROJECT_BLOCK_ROW_LIMIT = 6;
+
+// 封顶表格：只渲染前 limit 行，总数超出时展示跳转完整模块的页脚。
+function CappedTable({
+  columns,
+  rows,
+  limit = PROJECT_BLOCK_ROW_LIMIT,
+  onRowClick,
+  onMore,
+  moreLabel,
+}) {
+  return (
+    <>
+      <DataTable
+        columns={columns}
+        rows={rows.slice(0, limit)}
+        onRowClick={onRowClick}
+      />
+      {rows.length > limit ? (
+        <div style={{ padding: "10px 16px 0", textAlign: "center" }}>
+          <button
+            type="button"
+            onClick={onMore}
+            style={{
+              border: "none",
+              background: "transparent",
+              color: "var(--blue-600)",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {moreLabel || `查看全部 ${rows.length} 条 →`}
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 // ——— Project detail ———————————————————————
 
 function ProjectDetail({ id, go }) {
@@ -6785,7 +6826,8 @@ function ProjectDetail({ id, go }) {
           }
         >
           {screeningReports.length ? (
-            <DataTable
+            <CappedTable
+              onMore={() => go("reports")}
               columns={[
                 {
                   title: "任务 / 主播",
@@ -6861,7 +6903,8 @@ function ProjectDetail({ id, go }) {
           }
         >
           {projectReports.length ? (
-            <DataTable
+            <CappedTable
+              onMore={() => go("reports")}
               columns={[
                 {
                   title: "主播",
@@ -6986,7 +7029,8 @@ function ProjectDetail({ id, go }) {
           }
         >
           {projectBatches.length ? (
-            <DataTable
+            <CappedTable
+              onMore={() => go("settle")}
               columns={[
                 {
                   title: "结算批次",
@@ -7123,7 +7167,8 @@ function ProjectDetail({ id, go }) {
           }
         >
           {projectAudit.length ? (
-            <DataTable
+            <CappedTable
+              onMore={() => go("audit")}
               columns={[
                 {
                   title: "时间",
