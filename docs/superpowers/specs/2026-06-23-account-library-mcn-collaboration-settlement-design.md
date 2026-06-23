@@ -497,7 +497,14 @@ GET   /api/settlement-batches/:batchId/breakdown         项目→主播二级�
 - [x] 设计文档（本文件）
 - [x] **P-A 账号库**：迁移 + 服务 + API + 测试
 - [x] **P-B 跨组织协作**：迁移（协作授权表 + 跨组织 RLS 函数 + 审核权限触发器 + 只读放宽策略 + accept_collaboration 认领函数）+ 服务（协作管理 / 提交 / 一审落地）+ API + 测试
-- [ ] P-C 结算增强
+- [x] **P-C 结算增强**：迁移（自定义收入/成本项 + MCN 分成表 + RLS）+ 毛利/分成引擎 + 服务（增删改收入成本项 / 重算分成 / 二级明细）+ API + 测试
+
+### P-C 实现说明
+
+- **新增模型不动旧表**：`settlement_line_items`（收入/成本，项目→主播二级，成本类目可自定义）+ `collaboration_settlements`（每批次×协作方一行）叠加在现有 `settlement_batches/settlement_batch_items` 之上，旧结算逻辑不变。
+- **毛利/分成引擎**（`settlement-margin-engine.ts`，纯函数可测）：收入 − 成本 = 毛利 → 算 MCN 分成 → 净毛利。决策 4：百分比基数=项目毛利（不为负），固定模式=结算时长(小时)。
+- **脱敏**：收入/成本项与毛利仅甲方 staff + finance 只读可见；乙方**只读自己相关的分成行**，读不到甲方成本/毛利/其他主播。
+- **可审计**：增/改/删 line item 均要求 reason 并写高风险审计；批次 locked 后不可改。
 
 ### P-B 实现说明（与设计的对齐与取舍）
 
