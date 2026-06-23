@@ -29,6 +29,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
   currentUserFromAuth,
+  loadConsoleDashboardHome,
   organizationSettingsFromAuth,
   requireConsoleStaffAuth,
 } from "../console-auth";
@@ -43,16 +44,19 @@ export default async function ProjectsPage() {
     collaborations,
     liveTasks,
     settlementData,
+    dashboardHome,
   ] = await Promise.all([
     listProjects(supabase),
     loadPartnerCollaborations(collaborationRepo, auth),
     listOpsLiveTaskQueue(supabase, auth.organizationId),
     loadSettlementReferenceData(supabase, auth.organizationId),
+    loadConsoleDashboardHome(supabase, auth),
   ]);
 
   return (
     <OpsReferenceApp
       initialRoute="projects"
+      dashboardHome={dashboardHome}
       currentUser={currentUserFromAuth(auth)}
       organizationSettings={organizationSettingsFromAuth(auth)}
       projectCards={toProjectCardDtos(projects)}
