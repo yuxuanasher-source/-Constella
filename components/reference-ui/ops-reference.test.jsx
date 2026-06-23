@@ -563,6 +563,47 @@ describe("OpsReferenceApp project smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  it("supports source filter and table/board/cards views on the project list", () => {
+    const collabCard = {
+      ...taskProjectCards[0],
+      id: "collab-project",
+      code: "CLB-001",
+      name: "协作项目",
+      status: "recruiting",
+      collaborationRole: "partner",
+    };
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={taskProjectCards}
+        collaborationProjectCards={[collabCard]}
+        applicationQueue={[]}
+      />,
+    );
+
+    // 顶部汇总：2 个项目 · 1 自有 · 1 协作。
+    expect(screen.getByText("自有")).toBeInTheDocument();
+    expect(screen.getByText("协作")).toBeInTheDocument();
+
+    // 表格视图下两个项目都在。
+    expect(screen.getAllByText("Fixture Project").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("协作项目").length).toBeGreaterThan(0);
+
+    // 切到「卡片」视图，项目卡片仍渲染。
+    fireEvent.click(screen.getByRole("button", { name: "卡片" }));
+    expect(screen.getAllByText("Fixture Project").length).toBeGreaterThan(0);
+
+    // 切到「看板」视图，按状态分列渲染。
+    fireEvent.click(screen.getByRole("button", { name: "看板" }));
+    expect(screen.getAllByText("Fixture Project").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("协作项目").length).toBeGreaterThan(0);
+
+    // 「自有」来源过滤后，协作项目被过滤掉。
+    fireEvent.click(screen.getByRole("button", { name: "自有" }));
+    expect(screen.getAllByText("Fixture Project").length).toBeGreaterThan(0);
+    expect(screen.queryByText("协作项目")).not.toBeInTheDocument();
+  });
+
   it("opens organization feature settings from the sidebar and syncs the switcher display", () => {
     render(<OpsReferenceApp initialRoute="warroom" />);
 
@@ -949,16 +990,11 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("Fixture Project"));
-    fireEvent.click(
-      screen.getByRole("button", { name: /\u6392\u73ed & \u4efb\u52a1/ }),
-    );
 
-    expect(screen.getByText("Project Live Task")).toBeInTheDocument();
+    // \u8be6\u60c5\u9875\u5df2\u5355\u9875\u5316\uff1a\u6392\u73ed & \u4efb\u52a1\u533a\u5757\u59cb\u7ec8\u6e32\u67d3\uff0c\u65e0\u9700\u5207\u6362\u9875\u7b7e\u3002
+    expect(screen.getAllByText("Project Live Task").length).toBeGreaterThan(0);
     expect(screen.getByText("task-detail-one")).toBeInTheDocument();
     expect(screen.queryByText("Other Project Task")).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/\u6570\u636e\u89c6\u56fe/),
-    ).not.toBeInTheDocument();
   });
 
   it("masks uuid-like streamer identifiers in project execution rhythm", () => {
@@ -990,7 +1026,7 @@ describe("OpsReferenceApp project smoke", () => {
 
     fireEvent.click(screen.getByText("Fixture Project"));
 
-    expect(screen.getByText("未配置主播")).toBeInTheDocument();
+    expect(screen.getAllByText("未配置主播").length).toBeGreaterThan(0);
     expect(screen.queryByText(leakedStreamerId)).not.toBeInTheDocument();
   });
 
@@ -1313,7 +1349,6 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("详情项目"));
-    fireEvent.click(screen.getByRole("button", { name: /主播阵容/ }));
     fireEvent.click(screen.getByRole("button", { name: "邀请主播" }));
     fireEvent.change(screen.getByLabelText("选择主播"), {
       target: { value: "streamer-one" },
@@ -1399,7 +1434,6 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("详情项目"));
-    fireEvent.click(screen.getByRole("button", { name: /主播阵容\s*0/ }));
     fireEvent.click(screen.getByRole("button", { name: "邀请主播" }));
     fireEvent.change(screen.getByLabelText("选择主播"), {
       target: { value: "streamer-one" },
@@ -1415,7 +1449,6 @@ describe("OpsReferenceApp project smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
     fireEvent.click(screen.getByText("详情项目"));
-    fireEvent.click(screen.getByRole("button", { name: /主播阵容/ }));
 
     expect(
       await screen.findByText("streamer-one · Streamer One"),
@@ -1482,7 +1515,6 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("详情项目"));
-    fireEvent.click(screen.getByRole("button", { name: /主播阵容/ }));
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith("/api/streamers", undefined),
@@ -1611,11 +1643,9 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("详情项目"));
-    expect(
-      await screen.findByRole("button", { name: /主播阵容\s*1/ }),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /主播阵容/ }));
 
+    // 详情页单页化后，主播阵容区块始终渲染，计数以 Badge 呈现；
+    // 下方对唯一主播行的断言即可验证阵容恢复为 1 人。
     expect(
       await screen.findByText("server-streamer · 后端主播"),
     ).toBeInTheDocument();
@@ -1717,7 +1747,6 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("Fixture Project"));
-    fireEvent.click(screen.getByRole("button", { name: /主播阵容/ }));
     expect(await screen.findByText("待确认加入")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认加入" }));
 
@@ -1802,7 +1831,6 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("Fixture Project"));
-    fireEvent.click(screen.getByRole("button", { name: /主播阵容/ }));
     expect(await screen.findByText("邀约中")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认加入" }));
 

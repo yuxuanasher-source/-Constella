@@ -5124,6 +5124,8 @@ function ProjectList({ go }) {
   const collaborationProjects = useOpsCollaborationProjects();
   const actions = useOpsLiveActions();
   const [status, setStatus] = React.useState("all");
+  const [sourceFilter, setSourceFilter] = React.useState("all");
+  const [viewMode, setViewMode] = React.useState("table");
   const [query, setQuery] = React.useState("");
   const [vendorFilter, setVendorFilter] = React.useState("all");
   const [ownerFilter, setOwnerFilter] = React.useState("all");
@@ -5228,16 +5230,32 @@ function ProjectList({ go }) {
     }
   };
   const displayProjects = [...projects, ...collaborationProjects];
-  const counts = {
-    all: displayProjects.length,
-    active: displayProjects.filter((p) => p.status === "active").length,
-    recruiting: displayProjects.filter((p) => p.status === "recruiting").length,
-    settling: displayProjects.filter((p) => p.status === "settling").length,
-    paused: displayProjects.filter((p) => p.status === "paused").length,
-    ended: displayProjects.filter((p) => p.status === "ended").length,
-  };
+  const ownedCount = projects.length;
+  const collabCount = collaborationProjects.length;
+  const isCollabProject = (p) => Boolean(p.collaborationRole);
+  // 先按「自有/协作」来源过滤，状态页签计数基于该结果（不含状态筛选本身）。
+  const sourceFiltered = displayProjects.filter((p) => {
+    if (sourceFilter === "owned") return !isCollabProject(p);
+    if (sourceFilter === "collab") return isCollabProject(p);
+    return true;
+  });
+  const countByStatus = (key) =>
+    key === "all"
+      ? sourceFiltered.length
+      : sourceFiltered.filter((p) => p.status === key).length;
+  const statusTabs = [
+    { key: "all", label: "全部" },
+    { key: "draft", label: "草稿" },
+    { key: "recruiting", label: "招募中" },
+    { key: "pending_start", label: "待开始" },
+    { key: "active", label: "进行中" },
+    { key: "paused", label: "已暂停" },
+    { key: "ended", label: "已结束" },
+    { key: "settling", label: "结算中" },
+    { key: "archived", label: "已归档" },
+  ].map((tab) => ({ ...tab, count: countByStatus(tab.key) }));
   const normalizedQuery = query.trim().toLowerCase();
-  const filtered = displayProjects.filter((p) => {
+  const filtered = sourceFiltered.filter((p) => {
     const matchesStatus = status === "all" || p.status === status;
     const matchesSearch =
       !normalizedQuery ||
@@ -5265,6 +5283,13 @@ function ProjectList({ go }) {
     <>
       <PageHeader
         title="项目管理"
+        subtitle={
+          <span>
+            共 <b className="num">{displayProjects.length}</b> 个项目 ·{" "}
+            <b className="num">{ownedCount}</b> 自有 ·{" "}
+            <b className="num">{collabCount}</b> 协作
+          </span>
+        }
         actions={
           <>
             <Button
@@ -5298,22 +5323,7 @@ function ProjectList({ go }) {
           <div
             style={{ padding: "0 12px", borderBottom: "1px solid var(--line)" }}
           >
-            <Tabs
-              value={status}
-              onChange={setStatus}
-              items={[
-                { key: "all", label: "全部", count: counts.all },
-                { key: "active", label: "进行中", count: counts.active },
-                {
-                  key: "recruiting",
-                  label: "招募中",
-                  count: counts.recruiting,
-                },
-                { key: "settling", label: "结算中", count: counts.settling },
-                { key: "paused", label: "已暂停", count: counts.paused },
-                { key: "ended", label: "已结束", count: counts.ended },
-              ]}
-            />
+            <Tabs value={status} onChange={setStatus} items={statusTabs} />
           </div>
 
           {/* Toolbar */}
@@ -5326,11 +5336,20 @@ function ProjectList({ go }) {
               borderBottom: "1px solid var(--line)",
             }}
           >
+            <ProjectSegmented
+              value={sourceFilter}
+              onChange={setSourceFilter}
+              options={[
+                { value: "all", label: "全部" },
+                { value: "owned", label: "自有" },
+                { value: "collab", label: "协作" },
+              ]}
+            />
             <SearchInput
               placeholder="项目名 / 编号 / 厂商"
               value={query}
               onChange={setQuery}
-              width={260}
+              width={240}
             />
             <ProjectInlineFilter
               label="厂商筛选"
@@ -5361,6 +5380,15 @@ function ProjectList({ go }) {
               </b>{" "}
               个项目
             </span>
+            <ProjectSegmented
+              value={viewMode}
+              onChange={setViewMode}
+              options={[
+                { value: "table", label: "表格" },
+                { value: "board", label: "看板" },
+                { value: "cards", label: "卡片" },
+              ]}
+            />
           </div>
           {exportMessage ? (
             <div
@@ -5584,7 +5612,8 @@ function ProjectList({ go }) {
             </div>
           ) : null}
 
-          <DataTable
+          {viewMode === "table" ? (
+            <DataTable
             columns={[
               {
                 title: "项目",
@@ -5744,7 +5773,12 @@ function ProjectList({ go }) {
             ]}
             rows={filtered}
             onRowClick={(r) => go("project", r.id)}
-          />
+            />
+          ) : viewMode === "cards" ? (
+            <ProjectCardsGrid rows={filtered} go={go} />
+          ) : (
+            <ProjectBoard rows={filtered} go={go} />
+          )}
         </Card>
       </div>
     </>
@@ -5789,8 +5823,301 @@ function ProjectInlineFilter({ label, value, onChange, options }) {
   );
 }
 
+// 紧凑分段控件：用于「自有/协作」来源筛选与「表格/看板/卡片」视图切换。
+function ProjectSegmented({ value, onChange, options }) {
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        gap: 4,
+        padding: 3,
+        border: "1px solid var(--line)",
+        borderRadius: 8,
+        background: "#fff",
+        flexShrink: 0,
+      }}
+    >
+      {options.map((opt) => {
+        const active = opt.value === value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onChange?.(opt.value)}
+            style={{
+              height: 26,
+              padding: "0 12px",
+              border: "none",
+              borderRadius: 6,
+              background: active ? "var(--blue-50)" : "transparent",
+              color: active ? "var(--blue-700)" : "var(--ink-500)",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// 项目卡片：卡片视图与看板视图共用。compact 用于看板列内的紧凑形态。
+function ProjectCardTile({ p, go, compact = false }) {
+  const status = PROJECT_STATUS[p.status] || PROJECT_STATUS.draft;
+  return (
+    <button
+      type="button"
+      onClick={() => go("project", p.id)}
+      style={{
+        textAlign: "left",
+        width: "100%",
+        background: "#fff",
+        border: "1px solid var(--line)",
+        borderRadius: 10,
+        padding: 14,
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+        boxShadow: "var(--shadow-card)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              fontWeight: 600,
+              color: "var(--ink-900)",
+              fontSize: 14,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <span
+              style={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {p.name}
+            </span>
+            {p.collaborationRole === "partner" ? (
+              <Badge tone="teal" dot>
+                外部合作
+              </Badge>
+            ) : null}
+          </div>
+          <div
+            className="mono"
+            style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 2 }}
+          >
+            {p.code || "未设置编号"}
+          </div>
+        </div>
+        <RiskDot level={p.risk} />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <Badge tone={status.tone} dot>
+          {status.label}
+        </Badge>
+        <Badge tone="neutral">{p.pricing}</Badge>
+      </div>
+      {!compact && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 8,
+            fontSize: 12,
+            color: "var(--ink-500)",
+          }}
+        >
+          <div>
+            厂商 ·{" "}
+            <span style={{ color: "var(--ink-700)" }}>{p.vendor}</span>
+          </div>
+          <div>
+            在播主播 ·{" "}
+            <span className="num" style={{ color: "var(--ink-700)" }}>
+              {p.streamers.active}
+            </span>
+          </div>
+          <div>
+            负责人 ·{" "}
+            <span style={{ color: "var(--ink-700)" }}>{p.leadOps}</span>
+          </div>
+          <div>
+            预估毛利 ·{" "}
+            <span className="num" style={{ color: "var(--ink-900)" }}>
+              ¥{p.metrics.gross.toLocaleString()}
+            </span>
+          </div>
+        </div>
+      )}
+    </button>
+  );
+}
+
+function ProjectCardsGrid({ rows, go }) {
+  if (!rows.length) {
+    return (
+      <div style={{ padding: 20 }}>
+        <EmptyHint title="暂无项目" hint="当前筛选条件下没有项目。" />
+      </div>
+    );
+  }
+  return (
+    <div
+      style={{
+        padding: 16,
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+        gap: 14,
+      }}
+    >
+      {rows.map((p) => (
+        <ProjectCardTile key={p.id} p={p} go={go} />
+      ))}
+    </div>
+  );
+}
+
+const PROJECT_BOARD_COLUMNS = [
+  "draft",
+  "recruiting",
+  "pending_start",
+  "active",
+  "paused",
+  "ended",
+  "settling",
+  "archived",
+];
+
+// 看板视图：按项目状态分列，仅展示有项目的列。
+function ProjectBoard({ rows, go }) {
+  const columns = PROJECT_BOARD_COLUMNS.map((key) => ({
+    key,
+    meta: PROJECT_STATUS[key] || { tone: "neutral", label: key },
+    items: rows.filter((p) => p.status === key),
+  })).filter((col) => col.items.length > 0);
+
+  if (!columns.length) {
+    return (
+      <div style={{ padding: 20 }}>
+        <EmptyHint title="暂无项目" hint="当前筛选条件下没有项目。" />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        padding: 16,
+        display: "flex",
+        gap: 12,
+        overflowX: "auto",
+        alignItems: "flex-start",
+      }}
+    >
+      {columns.map((col) => (
+        <div
+          key={col.key}
+          style={{
+            flex: "0 0 260px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "0 2px",
+            }}
+          >
+            <Badge tone={col.meta.tone} dot>
+              {col.meta.label}
+            </Badge>
+            <span
+              className="num"
+              style={{ fontSize: 12, color: "var(--ink-400)" }}
+            >
+              {col.items.length}
+            </span>
+          </div>
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: 10 }}
+          >
+            {col.items.map((p) => (
+              <ProjectCardTile key={p.id} p={p} go={go} compact />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function warnBackgroundRefreshFailure(scope, error) {
   globalThis.console?.warn?.(`${scope} background refresh failed`, error);
+}
+
+// 只读键值行：label 左、value 右，用于详情页财务/协作等只读区块。
+function DetailKV({ label, value, tone, last = false }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "9px 0",
+        borderBottom: last ? "none" : "1px solid var(--line)",
+        fontSize: 13,
+      }}
+    >
+      <span style={{ color: "var(--ink-500)" }}>{label}</span>
+      <span style={{ color: tone || "var(--ink-900)", fontWeight: 600 }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function DetailSubHeading({ children }) {
+  return (
+    <div
+      style={{
+        fontSize: 12,
+        fontWeight: 700,
+        color: "var(--ink-400)",
+        letterSpacing: "0.02em",
+        marginBottom: 4,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// bps（基点）→ 百分比文本：600 → "6%"，120 → "1.2%"。
+function formatRateBps(bps) {
+  const value = Number(bps) || 0;
+  return `${value / 100}%`;
 }
 
 // ——— Project detail ———————————————————————
@@ -5801,6 +6128,7 @@ function ProjectDetail({ id, go }) {
   const streamers = useOpsStreamers();
   const applications = useOpsApplications();
   const tasks = useOpsTasks();
+  const settlementBatches = useOpsSettlementBatches();
   const actions = useOpsLiveActions();
   const members = useOpsOrganizationMembers();
   const currentUser = useOpsCurrentUser();
@@ -5812,7 +6140,6 @@ function ProjectDetail({ id, go }) {
   const allProjects = [...projects, ...collaborationProjects];
   const p =
     allProjects.find((x) => x.id === id) || allProjects[0] || PROJECTS[0];
-  const [tab, setTab] = React.useState("overview");
   const [detailMessage, setDetailMessage] = React.useState("");
   const [detailSubmitting, setDetailSubmitting] = React.useState("");
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -5933,6 +6260,9 @@ function ProjectDetail({ id, go }) {
     projectApplicationRoster.length,
   );
   const projectTasks = tasks.filter((task) => taskBelongsToProject(task, p));
+  const projectBatches = settlementBatches.filter(
+    (batch) => batch.projectId === p.id,
+  );
   const exportVendorDelivery = async () => {
     setDetailSubmitting("delivery");
     setDetailMessage("");
@@ -6412,61 +6742,223 @@ function ProjectDetail({ id, go }) {
           </div>
         </Card>
 
-        <Card padded={false}>
-          <div
-            style={{ padding: "0 16px", borderBottom: "1px solid var(--line)" }}
-          >
-            <Tabs
-              value={tab}
-              onChange={setTab}
-              items={[
-                { key: "overview", label: "项目总览" },
+        {/* 单页连续区块：原页签内容纵向堆叠，去掉页签切换，功能全保留 */}
+        <Card title="项目总览">
+          <ProjectOverview p={p} />
+        </Card>
+
+        <Card
+          title="主播阵容"
+          extra={
+            projectRosterCount > 0 ? (
+              <Badge tone="blue">{projectRosterCount}</Badge>
+            ) : null
+          }
+        >
+          <ProjectRoster p={p} go={go} />
+        </Card>
+
+        <Card
+          title="录屏审核"
+          extra={
+            p.streamers.pendingReview > 0 ? (
+              <Badge tone="amber">{p.streamers.pendingReview}</Badge>
+            ) : null
+          }
+        >
+          <EmptyHint
+            title="录屏审核 · 数据视图"
+            hint="此区块与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
+            actionLabel="前往录屏审核"
+            onAction={() => go("streamers")}
+          />
+        </Card>
+
+        <Card
+          title="排班 & 任务"
+          extra={
+            projectTasks.length > 0 ? (
+              <Badge tone="blue">{projectTasks.length}</Badge>
+            ) : null
+          }
+        >
+          <ProjectScheduleTasks
+            p={p}
+            tasks={projectTasks}
+            streamers={streamers}
+            go={go}
+          />
+        </Card>
+
+        <Card
+          title="报数审核"
+          extra={
+            p.metrics.reportedPending > 0 ? (
+              <Badge tone="amber">{p.metrics.reportedPending}</Badge>
+            ) : null
+          }
+        >
+          <EmptyHint
+            title="报数审核 · 数据视图"
+            hint="此区块与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
+            actionLabel="前往报数审核"
+            onAction={() => go("reports")}
+          />
+        </Card>
+
+        <Card title="结算规则">
+          <EmptyHint
+            title="结算规则 · 数据视图"
+            hint="此区块与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
+            actionLabel="前往结算规则"
+            onAction={() => go("settle")}
+          />
+        </Card>
+
+        <Card
+          title="结算明细"
+          extra={
+            projectBatches.length > 0 ? (
+              <Badge tone="blue">{projectBatches.length}</Badge>
+            ) : null
+          }
+        >
+          {projectBatches.length ? (
+            <DataTable
+              columns={[
                 {
-                  key: "roster",
-                  label: "主播阵容",
-                  count: projectRosterCount,
+                  title: "结算批次",
+                  render: (b) => (
+                    <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                      {b.name}
+                    </span>
+                  ),
+                },
+                { title: "周期", render: (b) => b.period || "—" },
+                {
+                  title: "金额",
+                  align: "right",
+                  render: (b) => (
+                    <span className="num">¥{b.amount.toLocaleString()}</span>
+                  ),
                 },
                 {
-                  key: "screening",
-                  label: "录屏审核",
-                  count: p.streamers.pendingReview,
+                  title: "状态",
+                  render: (b) => {
+                    const meta = batchStatusMeta(b.status);
+                    return (
+                      <Badge tone={meta.tone} dot>
+                        {meta.label}
+                      </Badge>
+                    );
+                  },
                 },
-                {
-                  key: "schedule",
-                  label: "排班 & 任务",
-                  count: projectTasks.length,
-                },
-                {
-                  key: "reports",
-                  label: "报数",
-                  count: p.metrics.reportedPending,
-                },
-                { key: "rules", label: "结算规则" },
-                { key: "audit", label: "操作日志" },
               ]}
+              rows={projectBatches}
+              onRowClick={() => go("settle")}
+            />
+          ) : (
+            <EmptyHint
+              title="暂无结算批次"
+              hint="该项目尚未生成结算批次，可前往结算中心查看与生成。"
+              actionLabel="前往结算中心"
+              onAction={() => go("settle")}
+            />
+          )}
+        </Card>
+
+        <Card title="财务">
+          <div
+            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}
+          >
+            <div>
+              <DetailSubHeading>财务设置</DetailSubHeading>
+              <DetailKV label="是否开票" value={p.isInvoiced ? "是" : "否"} />
+              <DetailKV
+                label="销项税率"
+                value={formatRateBps(p.outputVatRateBps)}
+              />
+              <DetailKV
+                label="附加税率"
+                value={formatRateBps(p.surtaxRateBps)}
+              />
+              <DetailKV
+                label="采购成本"
+                value={`¥${(p.procurementCostCents / 100).toLocaleString()}`}
+              />
+              <DetailKV label="结算方式" value={p.pricing} last />
+            </div>
+            <div>
+              <DetailSubHeading>收益拆解</DetailSubHeading>
+              <DetailKV
+                label="应收(含税)"
+                value={`¥${p.metrics.receivable.toLocaleString()}`}
+              />
+              <DetailKV
+                label="应付主播"
+                value={`-¥${p.metrics.payable.toLocaleString()}`}
+                tone="var(--danger-600)"
+              />
+              <DetailKV
+                label="预估毛利"
+                value={`¥${p.metrics.gross.toLocaleString()}`}
+                tone="var(--blue-600)"
+              />
+              <DetailKV
+                label="毛利率"
+                value={`${p.metrics.margin.toFixed(1)}%`}
+                tone="var(--ok-600)"
+                last
+              />
+            </div>
+          </div>
+        </Card>
+
+        <Card title="协作">
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 24,
+            }}
+          >
+            <DetailKV
+              label="对外协作"
+              value={p.isOpenToMcnCollaboration ? "已开启" : "未开启"}
+              tone={
+                p.isOpenToMcnCollaboration ? "var(--ok-600)" : "var(--ink-400)"
+              }
+              last
+            />
+            <DetailKV
+              label="分成比例"
+              value={p.mcnCollaborationTerms?.revenueShareHint || "—"}
+              last
             />
           </div>
-
-          <div style={{ padding: 20 }}>
-            {tab === "overview" && <ProjectOverview p={p} />}
-            {tab === "roster" && <ProjectRoster p={p} go={go} />}
-            {tab === "schedule" && (
-              <ProjectScheduleTasks
-                p={p}
-                tasks={projectTasks}
-                streamers={streamers}
-                go={go}
-              />
-            )}
-            {tab !== "overview" && tab !== "roster" && tab !== "schedule" && (
-              <EmptyHint
-                title={tabLabel(tab) + " · 数据视图"}
-                hint="此标签页与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
-                actionLabel={"前往" + tabLabel(tab)}
-                onAction={() => go(tabRoute(tab))}
-              />
-            )}
+          <div
+            style={{
+              marginTop: 12,
+              paddingTop: 12,
+              borderTop: "1px solid var(--line)",
+              fontSize: 13,
+              color: "var(--ink-500)",
+              lineHeight: 1.6,
+            }}
+          >
+            {p.isOpenToMcnCollaboration
+              ? p.mcnCollaborationSummary || "已开启 MCN 协作，暂无补充说明。"
+              : "本项目未开启对外 MCN 协作。可在「项目设置」中开启并配置分成与说明。"}
           </div>
+        </Card>
+
+        <Card title="操作日志">
+          <EmptyHint
+            title="操作日志 · 数据视图"
+            hint="此区块与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
+            actionLabel="前往操作日志"
+            onAction={() => go("audit")}
+          />
         </Card>
       </div>
     </>
@@ -7865,29 +8357,6 @@ function ProjectSettingsCheck({ label, checked, onChange }) {
       </span>
       {label}
     </label>
-  );
-}
-
-function tabLabel(k) {
-  return (
-    {
-      screening: "录屏审核",
-      schedule: "排班 & 任务",
-      reports: "报数审核",
-      rules: "结算规则",
-      audit: "操作日志",
-    }[k] || k
-  );
-}
-function tabRoute(k) {
-  return (
-    {
-      screening: "streamers",
-      schedule: "tasks",
-      reports: "reports",
-      rules: "settle",
-      audit: "audit",
-    }[k] || "projects"
   );
 }
 
