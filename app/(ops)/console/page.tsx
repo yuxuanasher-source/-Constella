@@ -1,21 +1,15 @@
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
-import { loadRoleHomeDashboard } from "@/features/dashboards/role-home-loader";
 
 import {
   currentUserFromAuth,
+  loadConsoleDashboardHome,
   organizationSettingsFromAuth,
   requireConsoleStaffAuth,
 } from "./console-auth";
 
 export default async function ConsolePage() {
   const { supabase, auth } = await requireConsoleStaffAuth();
-  let dashboardHome = null;
-
-  try {
-    dashboardHome = await loadRoleHomeDashboard({ supabase, auth });
-  } catch (error) {
-    console.error("Failed to load role dashboard", error);
-  }
+  const dashboardHome = await loadConsoleDashboardHome(supabase, auth);
 
   return (
     <OpsReferenceApp

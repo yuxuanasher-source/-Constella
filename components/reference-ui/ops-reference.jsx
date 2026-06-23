@@ -2797,6 +2797,10 @@ function ScreenRoleHome({ dashboard, go }) {
           display: "flex",
           flexDirection: "column",
           gap: 16,
+          width: "100%",
+          maxWidth: 1440,
+          marginInline: "auto",
+          boxSizing: "border-box",
         }}
       >
         <WarRoomLoopNav go={go} />
