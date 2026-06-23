@@ -14,6 +14,11 @@ import { OPS_MODULE_ROUTES } from "@/features/ui-route-contracts/module-route-ma
 import type { AuthContext } from "@/lib/auth/context";
 import { cn } from "@/lib/utils";
 
+const OPS_EXTENSION_ROUTES = [
+  { label: "账号库", href: "/console/account-library" },
+  { label: "MCN 协作", href: "/console/collaborations" },
+] as const;
+
 export function OpsShell({
   children,
   context,
@@ -54,6 +59,27 @@ export function OpsShell({
             );
           })}
         </nav>
+
+        <div className="mt-8 border-t border-[var(--line)] pt-4">
+          <div className="px-3 pb-2 text-xs font-medium uppercase tracking-wide text-[var(--ink-300)]">
+            扩展功能
+          </div>
+          <nav className="space-y-1">
+            {OPS_EXTENSION_ROUTES.map(({ label, href }) => (
+              <Link
+                key={href}
+                href={href}
+                className={cn(
+                  "flex h-9 items-center gap-3 rounded-md px-3 text-sm text-[var(--ink-500)] transition-colors hover:bg-[var(--blue-50)] hover:text-[var(--blue-700)]",
+                  activeHref === href &&
+                    "bg-[var(--blue-50)] font-medium text-[var(--blue-700)]",
+                )}
+              >
+                <span>{label}</span>
+              </Link>
+            ))}
+          </nav>
+        </div>
       </aside>
 
       <div className="min-w-0 flex-1">

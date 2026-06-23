@@ -498,6 +498,7 @@ GET   /api/settlement-batches/:batchId/breakdown         项目→主播二级�
 - [x] **P-A 账号库**：迁移 + 服务 + API + 测试
 - [x] **P-B 跨组织协作**：迁移（协作授权表 + 跨组织 RLS 函数 + 审核权限触发器 + 只读放宽策略 + accept_collaboration 认领函数）+ 服务（协作管理 / 提交 / 一审落地）+ API + 测试
 - [x] **P-C 结算增强**：迁移（自定义收入/成本项 + MCN 分成表 + RLS）+ 毛利/分成引擎 + 服务（增删改收入成本项 / 重算分成 / 二级明细）+ API + 测试
+- [x] **前端 UI**：account-library / collaborations / settlement-batches/[batchId]/breakdown 三个 console 页面（OpsShell + 自包含客户端面板），不改动现有 OpsReferenceApp 单体；OpsShell 新增"扩展功能"导航组
 
 ### P-C 实现说明
 
