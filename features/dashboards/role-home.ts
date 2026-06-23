@@ -124,6 +124,70 @@ export type DashboardQueueItem = {
   target: DashboardTarget;
 };
 
+export type DashboardFunnelStage = {
+  key: string;
+  label: string;
+  value: number;
+  rate?: number;
+  tone?: DashboardTone;
+};
+
+export type DashboardFunnel = {
+  title: string;
+  subtitle?: string;
+  unit?: string;
+  stages: DashboardFunnelStage[];
+  target?: DashboardTarget;
+};
+
+export type DashboardLane = {
+  key: string;
+  label: string;
+  count: number;
+  amount: number;
+  tone?: DashboardTone;
+};
+
+export type DashboardRankRow = {
+  key: string;
+  title: string;
+  value: number;
+  hint?: string;
+  tone?: DashboardTone;
+  target?: DashboardTarget;
+};
+
+export type DashboardAmountRisk = {
+  key: string;
+  label: string;
+  amount: number;
+  hint?: string;
+  tone?: DashboardTone;
+  target?: DashboardTarget;
+};
+
+export type RoleHomeDashboardPanels = {
+  admissionFunnel?: DashboardFunnel;
+  settlementFunnel?: DashboardFunnel;
+  batchLanes?: {
+    title: string;
+    subtitle?: string;
+    lanes: DashboardLane[];
+    target?: DashboardTarget;
+  };
+  amountRisks?: {
+    title: string;
+    subtitle?: string;
+    rows: DashboardAmountRisk[];
+    target?: DashboardTarget;
+  };
+  projectRanking?: {
+    title: string;
+    subtitle?: string;
+    rows: DashboardRankRow[];
+  };
+};
+
 export type RoleHomeDashboardDto = {
   profile: {
     role: DashboardStaffRole;
@@ -135,6 +199,7 @@ export type RoleHomeDashboardDto = {
   queue: DashboardQueueItem[];
   risks: DashboardQueueItem[];
   drilldowns: DashboardQueueItem[];
+  panels?: RoleHomeDashboardPanels;
   emptyState?: {
     title: string;
     hint: string;
@@ -231,6 +296,10 @@ function collectFacts(source: DashboardSourceData) {
   );
 
   return {
+    allProjects: source.projects,
+    batches: source.batches,
+    draftBatches,
+    reopenedBatches,
     activeProjects,
     totalReceivable,
     totalGross,
@@ -335,6 +404,13 @@ function ownerDashboard(
         : []),
     ],
     drilldowns: highRiskQueue(facts.highRiskNotices),
+    panels: {
+      projectRanking: buildProjectRanking(facts.allProjects),
+      admissionFunnel: buildAdmissionFunnel(facts.allProjects),
+      settlementFunnel: buildSettlementFunnel(facts),
+      batchLanes: buildBatchLanes(facts),
+      amountRisks: buildAmountRisks(facts),
+    },
     generatedAt,
   };
 }
@@ -378,6 +454,9 @@ function opsManagerDashboard(
     queue: projectQueue(facts.activeProjects, "tasks"),
     risks: anomalyQueue(facts.anomalyTasks),
     drilldowns: reportQueue(facts.pendingReports),
+    panels: {
+      admissionFunnel: buildAdmissionFunnel(facts.allProjects),
+    },
     generatedAt,
   };
 }
@@ -467,7 +546,154 @@ function financeDashboard(
           ]
         : [],
     drilldowns: highRiskQueue(facts.highRiskNotices),
+    panels: {
+      settlementFunnel: buildSettlementFunnel(facts),
+      batchLanes: buildBatchLanes(facts),
+      amountRisks: buildAmountRisks(facts),
+    },
     generatedAt,
+  };
+}
+
+const BATCH_LANE_DEFS: { key: string; label: string; tone: DashboardTone }[] = [
+  { key: "draft", label: "草稿", tone: "neutral" },
+  { key: "generated", label: "已生成", tone: "blue" },
+  { key: "pending_confirm", label: "待确认", tone: "amber" },
+  { key: "locked", label: "已锁定", tone: "violet" },
+  { key: "exported", label: "已导出", tone: "green" },
+];
+
+function buildAdmissionFunnel(
+  projects: DashboardProjectInput[],
+): DashboardFunnel {
+  const candidate = sumBy(projects, (p) => p.streamers?.candidate);
+  const pendingReview = sumBy(projects, (p) => p.streamers?.pendingReview);
+  const active = sumBy(projects, (p) => p.streamers?.active);
+  const applied = candidate + pendingReview + active;
+  const review = pendingReview + active;
+  const rate = (value: number) =>
+    applied > 0 ? Number(((value / applied) * 100).toFixed(0)) : 0;
+  return {
+    title: "准入漏斗 · 录屏到入项",
+    subtitle: "候选 → 录屏待审 → 最终入项",
+    unit: "人",
+    stages: [
+      { key: "applied", label: "报名/候选", value: applied, rate: 100, tone: "blue" },
+      { key: "review", label: "录屏待审", value: review, rate: rate(review), tone: "amber" },
+      { key: "admitted", label: "最终入项", value: active, rate: rate(active), tone: "green" },
+    ],
+    target: { route: "projects" },
+  };
+}
+
+function buildSettlementFunnel(
+  facts: ReturnType<typeof collectFacts>,
+): DashboardFunnel {
+  const poolAmount = facts.settlementPoolAmount;
+  const draftAmount = sumBy(facts.draftBatches, (b) => b.totalAmount);
+  const generatedAmount = sumBy(
+    facts.batches.filter((b) => b.status !== "draft"),
+    (b) => b.totalAmount,
+  );
+  const rate = (value: number) =>
+    poolAmount > 0 ? Number(((value / poolAmount) * 100).toFixed(0)) : 0;
+  return {
+    title: "结算池漏斗 · 金额流转",
+    subtitle: "已审核进池 → 待生成批次 → 已生成批次",
+    unit: "元",
+    stages: [
+      { key: "pool", label: "已审核进池", value: poolAmount, rate: 100, tone: "blue" },
+      { key: "draft", label: "待生成批次", value: draftAmount, rate: rate(draftAmount), tone: "amber" },
+      { key: "generated", label: "已生成批次", value: generatedAmount, rate: rate(generatedAmount), tone: "green" },
+    ],
+    target: { route: "settle" },
+  };
+}
+
+function buildBatchLanes(facts: ReturnType<typeof collectFacts>) {
+  const lanes: DashboardLane[] = BATCH_LANE_DEFS.map((def) => {
+    const items = facts.batches.filter((b) => b.status === def.key);
+    return {
+      key: def.key,
+      label: def.label,
+      tone: def.tone,
+      count: items.length,
+      amount: sumBy(items, (b) => b.totalAmount),
+    };
+  });
+  return {
+    title: "结算批次泳道",
+    subtitle: "草稿 / 已生成 / 待确认 / 已锁定 / 已导出",
+    lanes,
+    target: { route: "settle" as const },
+  };
+}
+
+function buildAmountRisks(facts: ReturnType<typeof collectFacts>) {
+  const reopenedAmount = sumBy(facts.reopenedBatches, (b) => b.totalAmount);
+  const manualPool = facts.settlementPool.filter(
+    (i) => i.timeSource === "manual" || i.timeSource === "gift",
+  );
+  const manualAmount = sumBy(manualPool, (i) => i.expectedAmount);
+  const rows: DashboardAmountRisk[] = [];
+  if (facts.weakEvidenceAmount > 0) {
+    rows.push({
+      key: "weak",
+      label: "弱证据金额",
+      amount: facts.weakEvidenceAmount,
+      hint: `${facts.weakSettlementPool.length} 条 · 黄/红`,
+      tone: "amber",
+      target: { route: "settle" },
+    });
+  }
+  if (manualAmount > 0) {
+    rows.push({
+      key: "manual",
+      label: "人工承载金额",
+      amount: manualAmount,
+      hint: `${manualPool.length} 条 · 礼物/手工`,
+      tone: "violet",
+      target: { route: "settle" },
+    });
+  }
+  if (reopenedAmount > 0 || facts.reopenedBatchCount > 0) {
+    rows.push({
+      key: "reopen",
+      label: "重开批次金额",
+      amount: reopenedAmount,
+      hint: `${facts.reopenedBatchCount} 个批次`,
+      tone: "red",
+      target: { route: "settle" },
+    });
+  }
+  return {
+    title: "金额风险榜",
+    subtitle: "弱证据 / 人工承载 / 重开批次",
+    rows,
+    target: { route: "settle" as const },
+  };
+}
+
+function buildProjectRanking(projects: DashboardProjectInput[]) {
+  const rows: DashboardRankRow[] = [...projects]
+    .filter((p) => typeof p.metrics?.gross === "number")
+    .sort((a, b) => (b.metrics?.gross ?? 0) - (a.metrics?.gross ?? 0))
+    .slice(0, 6)
+    .map((p) => ({
+      key: `rank:${p.id}`,
+      title: p.name,
+      value: p.metrics?.gross ?? 0,
+      hint:
+        typeof p.metrics?.margin === "number"
+          ? `毛利率 ${p.metrics.margin.toFixed(1)}%`
+          : undefined,
+      tone: (p.metrics?.margin ?? 100) < 20 ? "amber" : "neutral",
+      target: { route: "project", id: p.id },
+    }));
+  return {
+    title: "项目经营排行",
+    subtitle: "按毛利贡献 · 点击进入复盘",
+    rows,
   };
 }
 

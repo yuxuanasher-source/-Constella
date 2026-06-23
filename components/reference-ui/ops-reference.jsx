@@ -2483,6 +2483,260 @@ const WAR_ROOM_KPI_ACCENTS = [
   "var(--violet-600)",
 ];
 
+const PANEL_TONE_COLOR = {
+  blue: "var(--blue-500)",
+  green: "var(--ok-600)",
+  amber: "var(--amber-500)",
+  red: "var(--danger-600)",
+  violet: "var(--violet-600)",
+  neutral: "var(--ink-300)",
+};
+
+function warRoomFmtAmount(value, unit) {
+  if (unit === "元") return `¥${Number(value).toLocaleString("zh-CN")}`;
+  return `${Number(value).toLocaleString("zh-CN")}${unit ? ` ${unit}` : ""}`;
+}
+
+function WarRoomPanelHeaderExtra({ subtitle }) {
+  return subtitle ? (
+    <span style={{ fontSize: 12, color: "var(--ink-400)" }}>{subtitle}</span>
+  ) : null;
+}
+
+// 漏斗面板：阶段横向条，宽度按量级、文本含金额/人数与转化率，可钻取。
+function WarRoomFunnel({ funnel, go }) {
+  const max = Math.max(1, ...funnel.stages.map((s) => s.value));
+  return (
+    <Card
+      title={funnel.title}
+      extra={<WarRoomPanelHeaderExtra subtitle={funnel.subtitle} />}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {funnel.stages.map((s) => (
+          <button
+            key={s.key}
+            type="button"
+            onClick={() =>
+              funnel.target && go(funnel.target.route, funnel.target.id)
+            }
+            style={{
+              border: "none",
+              background: "transparent",
+              cursor: funnel.target ? "pointer" : "default",
+              textAlign: "left",
+              padding: 0,
+              width: "100%",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 12,
+                marginBottom: 4,
+              }}
+            >
+              <span style={{ color: "var(--ink-700)" }}>{s.label}</span>
+              <span
+                className="num"
+                style={{ color: "var(--ink-900)", fontWeight: 600 }}
+              >
+                {warRoomFmtAmount(s.value, funnel.unit)}
+                {typeof s.rate === "number" ? ` · ${s.rate}%` : ""}
+              </span>
+            </div>
+            <div
+              style={{
+                height: 8,
+                borderRadius: 999,
+                background: "var(--bg-soft)",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${Math.max(4, (s.value / max) * 100)}%`,
+                  background: PANEL_TONE_COLOR[s.tone] || "var(--blue-500)",
+                  borderRadius: 999,
+                }}
+              />
+            </div>
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// 批次泳道：按状态分列的统计瓦片，点击进入结算中心。
+function WarRoomLanes({ data, go }) {
+  return (
+    <Card
+      title={data.title}
+      extra={<WarRoomPanelHeaderExtra subtitle={data.subtitle} />}
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${data.lanes.length}, minmax(0, 1fr))`,
+          gap: 10,
+        }}
+      >
+        {data.lanes.map((l) => (
+          <button
+            key={l.key}
+            type="button"
+            onClick={() => go(data.target?.route || "settle")}
+            style={{
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              padding: "10px 12px",
+              cursor: "pointer",
+              textAlign: "left",
+            }}
+          >
+            <Badge tone={l.tone || "neutral"}>{l.label}</Badge>
+            <div
+              className="num"
+              style={{ fontSize: 18, fontWeight: 600, marginTop: 6 }}
+            >
+              {l.count}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+              ¥{Number(l.amount).toLocaleString("zh-CN")}
+            </div>
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// 金额风险榜：弱证据 / 人工承载 / 重开批次，按金额降序，可钻取。
+function WarRoomAmountRisks({ data, go }) {
+  return (
+    <Card
+      title={data.title}
+      extra={<WarRoomPanelHeaderExtra subtitle={data.subtitle} />}
+    >
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {data.rows.map((r, i) => (
+          <button
+            key={r.key}
+            type="button"
+            onClick={() => go(r.target?.route || "settle", r.target?.id)}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+              padding: "11px 0",
+              borderBottom:
+                i < data.rows.length - 1 ? "1px solid var(--line)" : "none",
+              border: 0,
+              background: "transparent",
+              cursor: "pointer",
+              width: "100%",
+              textAlign: "left",
+            }}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Badge tone={r.tone || "neutral"} dot>
+                {r.label}
+              </Badge>
+              {r.hint ? (
+                <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                  {r.hint}
+                </span>
+              ) : null}
+            </span>
+            <span
+              className="num"
+              style={{ fontWeight: 600, color: "var(--ink-900)" }}
+            >
+              ¥{Number(r.amount).toLocaleString("zh-CN")}
+            </span>
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// 项目经营排行：按毛利贡献，可点击进入项目复盘。
+function WarRoomRanking({ data, go }) {
+  return (
+    <Card
+      title={data.title}
+      extra={<WarRoomPanelHeaderExtra subtitle={data.subtitle} />}
+    >
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {data.rows.map((r, i) => (
+          <button
+            key={r.key}
+            type="button"
+            onClick={() => go(r.target?.route || "project", r.target?.id)}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+              padding: "11px 0",
+              borderBottom:
+                i < data.rows.length - 1 ? "1px solid var(--line)" : "none",
+              border: 0,
+              background: "transparent",
+              cursor: "pointer",
+              width: "100%",
+              textAlign: "left",
+            }}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span
+                className="num"
+                style={{
+                  width: 18,
+                  color: "var(--ink-400)",
+                  fontWeight: 600,
+                  fontSize: 12,
+                }}
+              >
+                {i + 1}
+              </span>
+              <span>
+                <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                  {r.title}
+                </div>
+                {r.hint ? (
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color:
+                        r.tone === "amber"
+                          ? "var(--amber-600)"
+                          : "var(--ink-400)",
+                    }}
+                  >
+                    {r.hint}
+                  </div>
+                ) : null}
+              </span>
+            </span>
+            <span
+              className="num"
+              style={{ fontWeight: 600, color: "var(--ink-900)" }}
+            >
+              ¥{Number(r.value).toLocaleString("zh-CN")}
+            </span>
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 function ScreenRoleHome({ dashboard, go }) {
   const generatedAt = dashboard.generatedAt
     ? new Date(dashboard.generatedAt).toLocaleString("zh-CN")
@@ -2553,6 +2807,21 @@ function ScreenRoleHome({ dashboard, go }) {
           />
         ) : null}
         <RoleHomeKpis items={dashboard.kpis || []} />
+        {dashboard.panels?.admissionFunnel ? (
+          <WarRoomFunnel funnel={dashboard.panels.admissionFunnel} go={go} />
+        ) : null}
+        {dashboard.panels?.settlementFunnel ? (
+          <WarRoomFunnel funnel={dashboard.panels.settlementFunnel} go={go} />
+        ) : null}
+        {dashboard.panels?.batchLanes ? (
+          <WarRoomLanes data={dashboard.panels.batchLanes} go={go} />
+        ) : null}
+        {dashboard.panels?.amountRisks?.rows?.length ? (
+          <WarRoomAmountRisks data={dashboard.panels.amountRisks} go={go} />
+        ) : null}
+        {dashboard.panels?.projectRanking?.rows?.length ? (
+          <WarRoomRanking data={dashboard.panels.projectRanking} go={go} />
+        ) : null}
         <RoleHomeSection
           title="项目卡点队列"
           subtitle="按卡住时长 · 点击钻取对应明细"

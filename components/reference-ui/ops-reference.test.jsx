@@ -356,6 +356,62 @@ describe("OpsReferenceApp role dashboard contract", () => {
     expect(screen.getAllByText("Fixture Project").length).toBeGreaterThan(0);
   });
 
+  it("renders closed-loop analytic panels and drills from a ranking row", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        projectCards={taskProjectCards}
+        applicationQueue={[]}
+        dashboardHome={{
+          profile: {
+            role: "owner",
+            title: "经营总览看板",
+            subtitle: "关注收入、毛利、履约和高风险动作",
+            scopeLabel: "全组织",
+          },
+          kpis: [{ key: "k1", label: "进行中项目", value: 1, unit: "个" }],
+          queue: [],
+          risks: [],
+          drilldowns: [],
+          panels: {
+            admissionFunnel: {
+              title: "准入漏斗 · 录屏到入项",
+              subtitle: "候选 → 录屏待审 → 最终入项",
+              unit: "人",
+              stages: [
+                { key: "applied", label: "报名/候选", value: 6, rate: 100 },
+                { key: "admitted", label: "最终入项", value: 3, rate: 50 },
+              ],
+              target: { route: "projects" },
+            },
+            projectRanking: {
+              title: "项目经营排行",
+              subtitle: "按毛利贡献",
+              rows: [
+                {
+                  key: "rank:project-live",
+                  title: "Fixture Project",
+                  value: 5000,
+                  hint: "毛利率 41.7%",
+                  tone: "neutral",
+                  target: { route: "project", id: "project-live" },
+                },
+              ],
+            },
+          },
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("准入漏斗 · 录屏到入项")).toBeInTheDocument();
+    expect(screen.getByText("项目经营排行")).toBeInTheDocument();
+
+    // 点击经营排行行钻取到对应项目详情。
+    fireEvent.click(screen.getByText("Fixture Project"));
+    expect(screen.getByText("返回列表")).toBeInTheDocument();
+  });
+
   it("does not render executive finance labels for operator dashboard", () => {
     render(
       <OpsReferenceApp
