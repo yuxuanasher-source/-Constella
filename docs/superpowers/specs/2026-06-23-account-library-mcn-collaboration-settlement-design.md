@@ -495,6 +495,13 @@ GET   /api/settlement-batches/:batchId/breakdown         项目→主播二级�
 ## 8. 实施进度
 
 - [x] 设计文档（本文件）
-- [ ] **P-A 账号库**（进行中）：迁移 + 服务 + API + 测试
-- [ ] P-B 跨组织协作
+- [x] **P-A 账号库**：迁移 + 服务 + API + 测试
+- [x] **P-B 跨组织协作**：迁移（协作授权表 + 跨组织 RLS 函数 + 审核权限触发器 + 只读放宽策略 + accept_collaboration 认领函数）+ 服务（协作管理 / 提交 / 一审落地）+ API + 测试
 - [ ] P-C 结算增强
+
+### P-B 实现说明（与设计的对齐与取舍）
+
+- **跨组织放行只放宽 select**：为 `projects/live_tasks/live_reports/project_streamers` **新增** permissive 只读策略 `*_partner_collaborator_read`，不改动任何现有策略；写操作仍限甲方（决策 2：乙方只读、甲方代排）。`settlement_batches/settlement_batch_items` 不放宽，甲方成本/毛利不外泄。
+- **审核权限 DB 层钉死**：`enforce_collaboration_review_authority` 触发器保证除"乙方重新提交(submitted)"外，状态流转与审核/落地字段变更必须由甲方 staff 执行，即使 RLS 放宽也无法越权审批。
+- **协作码认领**：认领前 `partner_organization_id` 为空、乙方不可见，故用 `accept_collaboration` security definer 函数原子认领并校验调用者身份。
+- **一审通过落地**（决策 3）：`landApprovedSubmission` 在甲方组织内按名建档主播（`source_type=supplier_recommended`，`referrer=MCN:<partner_org>` + note 标注来源），纳入 `project_streamers(approved)` 供配班；带录屏链接时生成 `project_applications(recording_approved)` + `recording_submissions(approved)`，桥接现有履约链路。
