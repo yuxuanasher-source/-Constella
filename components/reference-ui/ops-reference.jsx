@@ -2415,6 +2415,74 @@ function PageHeader({ title, subtitle, status, actions }) {
   );
 }
 
+// 经营闭环阶段导航：贯穿「立项 → 准入 → 直播 → 报数 → 结算 → 复盘/治理」的阶段条，
+// 点击钻取到对应一级模块。这是「经营舱看板 · 经营闭环」的核心导航结构。
+const WAR_ROOM_LOOP_STAGES = [
+  { key: "warroom", label: "经营总览" },
+  { key: "projects", label: "项目" },
+  { key: "admission", label: "准入·录屏" },
+  { key: "tasks", label: "排班直播" },
+  { key: "reports", label: "报数审核" },
+  { key: "settle", label: "结算批次" },
+  { key: "funnel", label: "毛利分析" },
+  { key: "audit", label: "审计·导出" },
+  { key: "notifications", label: "通知" },
+];
+
+function WarRoomLoopNav({ go }) {
+  return (
+    <Card padded={false}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "10px 12px",
+          overflowX: "auto",
+        }}
+      >
+        {WAR_ROOM_LOOP_STAGES.map((stage, i) => {
+          const active = stage.key === "warroom";
+          return (
+            <React.Fragment key={stage.key}>
+              {i > 0 ? (
+                <Icon.ChevRight size={12} stroke="var(--ink-300)" />
+              ) : null}
+              <button
+                type="button"
+                onClick={() => go(stage.key)}
+                style={{
+                  flexShrink: 0,
+                  height: 30,
+                  padding: "0 12px",
+                  border: "1px solid",
+                  borderColor: active ? "var(--blue-500)" : "var(--line)",
+                  borderRadius: 999,
+                  background: active ? "var(--blue-50)" : "#fff",
+                  color: active ? "var(--blue-700)" : "var(--ink-500)",
+                  fontSize: 12,
+                  fontWeight: active ? 700 : 500,
+                  cursor: "pointer",
+                }}
+              >
+                {stage.label}
+              </button>
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+const WAR_ROOM_KPI_ACCENTS = [
+  "var(--blue-500)",
+  "var(--ok-600)",
+  "var(--amber-500)",
+  "var(--danger-600)",
+  "var(--violet-600)",
+];
+
 function ScreenRoleHome({ dashboard, go }) {
   const generatedAt = dashboard.generatedAt
     ? new Date(dashboard.generatedAt).toLocaleString("zh-CN")
@@ -2423,12 +2491,50 @@ function ScreenRoleHome({ dashboard, go }) {
   return (
     <>
       <PageHeader
-        title={dashboard.profile?.title || "角色看板"}
-        subtitle={dashboard.profile?.subtitle || "按当前账号展示经营重点"}
+        title={dashboard.profile?.title || "经营舱看板"}
+        subtitle={
+          dashboard.profile?.subtitle || "经营闭环 · 全链路实时盘"
+        }
         status={
-          <Badge tone="neutral">
-            {dashboard.profile?.scopeLabel || "授权范围"}
-          </Badge>
+          <>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "2px 10px",
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 600,
+                background: "linear-gradient(135deg, #EFEBFF, #DCE6FF)",
+                color: "var(--violet-600)",
+              }}
+            >
+              <Icon.Sparkles size={12} stroke="var(--violet-600)" /> 经营闭环
+            </span>
+            <Badge tone="neutral">
+              {dashboard.profile?.scopeLabel || "授权范围"}
+            </Badge>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 11,
+                color: "var(--ink-400)",
+              }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: 999,
+                  background: "var(--ok-600)",
+                }}
+              />
+              近实时
+            </span>
+          </>
         }
       />
       <div
@@ -2439,6 +2545,7 @@ function ScreenRoleHome({ dashboard, go }) {
           gap: 16,
         }}
       >
+        <WarRoomLoopNav go={go} />
         {dashboard.emptyState ? (
           <EmptyHint
             title={dashboard.emptyState.title}
@@ -2447,17 +2554,20 @@ function ScreenRoleHome({ dashboard, go }) {
         ) : null}
         <RoleHomeKpis items={dashboard.kpis || []} />
         <RoleHomeSection
-          title="优先处理"
+          title="项目卡点队列"
+          subtitle="按卡住时长 · 点击钻取对应明细"
           items={dashboard.queue || []}
           go={go}
         />
         <RoleHomeSection
-          title="风险提醒"
+          title="风险告警流"
+          subtitle="命中风险规则 · 待人工处理"
           items={dashboard.risks || []}
           go={go}
         />
         <RoleHomeSection
           title="常用入口"
+          subtitle="一键进入对应闭环阶段"
           items={dashboard.drilldowns || []}
           go={go}
         />
@@ -2495,16 +2605,26 @@ function dashboardTargetRouteLabel(route) {
 }
 
 function RoleHomeKpis({ items }) {
+  if (!items.length) {
+    return null;
+  }
   return (
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+        gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
         gap: 12,
       }}
     >
-      {items.map((item) => (
-        <Card key={item.key}>
+      {items.map((item, i) => (
+        <Card
+          key={item.key}
+          style={{
+            borderTop: `3px solid ${
+              WAR_ROOM_KPI_ACCENTS[i % WAR_ROOM_KPI_ACCENTS.length]
+            }`,
+          }}
+        >
           <Metric
             label={item.label}
             value={String(item.value)}
@@ -2517,15 +2637,29 @@ function RoleHomeKpis({ items }) {
   );
 }
 
-function RoleHomeSection({ title, items, go }) {
+function RoleHomeSection({ title, subtitle, items, go }) {
   if (!items.length) {
     return null;
   }
 
   return (
     <Card padded={false}>
-      <div style={{ padding: 16, borderBottom: "1px solid var(--line)" }}>
+      <div
+        style={{
+          padding: 16,
+          borderBottom: "1px solid var(--line)",
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: 12,
+        }}
+      >
         <h3 style={{ margin: 0, fontSize: 15 }}>{title}</h3>
+        {subtitle ? (
+          <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+            {subtitle}
+          </span>
+        ) : null}
       </div>
       <div style={{ display: "grid", gap: 0 }}>
         {items.map((item) => {
