@@ -1663,7 +1663,7 @@ const NAV = [
   },
 ];
 
-function Sidebar({
+export function Sidebar({
   route,
   onNav,
   navCounts = {},
@@ -2250,7 +2250,7 @@ function AccountPanelDialog({ mode, currentUser, onClose }) {
   );
 }
 
-function TopBar({ breadcrumbs = [], notificationCount = 0, extra }) {
+export function TopBar({ breadcrumbs = [], notificationCount = 0, extra }) {
   const hasUnreadNotifications = notificationCount > 0;
   return (
     <div

@@ -1,5 +1,5 @@
 import { AccountLibraryPanel } from "@/components/account-library/account-library-panel";
-import { OpsShell } from "@/components/layouts/ops-shell";
+import { AccountLibraryShell } from "@/components/account-library/account-library-shell";
 import { listPlatformAccounts } from "@/features/account-library/account-library-queries";
 import {
   canManageAccounts,
@@ -25,10 +25,11 @@ export default async function AccountLibraryPage() {
   );
 
   return (
-    <OpsShell
-      context={auth}
+    <AccountLibraryShell
+      orgName={auth?.organizationName ?? "未连接组织"}
+      userName={auth?.name ?? "访客"}
+      role={auth?.role ?? "guest"}
       unreadCount={unreadCount}
-      activeHref="/console/account-library"
     >
       {canView ? (
         <AccountLibraryPanel accounts={dtos} canManage={canManage} />
@@ -37,6 +38,6 @@ export default async function AccountLibraryPage() {
           需要经营端角色才能访问账号库。
         </div>
       )}
-    </OpsShell>
+    </AccountLibraryShell>
   );
 }
