@@ -604,6 +604,50 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.queryByText("协作项目")).not.toBeInTheDocument();
   });
 
+  it("wires project-scoped reports and audit into the detail page blocks", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={taskProjectCards}
+        applicationQueue={[]}
+        liveReports={[
+          {
+            id: "rep-1",
+            projectId: "project-live",
+            project: "Fixture Project",
+            streamer: "报数主播甲",
+            status: "pending_review",
+            date: "2026-06-01",
+            systemDurationHours: 3,
+            audience: 1200,
+            screens: 2,
+            taskId: "task-1",
+          },
+        ]}
+        auditEntries={[
+          {
+            id: "aud-1",
+            projectId: "project-live",
+            actorName: "审计操作员",
+            actorRole: "ops_manager",
+            createdAt: "2026-06-01 10:00",
+            action: "update",
+            module: "project",
+            objectName: "Fixture Project",
+            isHighRisk: false,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Fixture Project"));
+
+    // 报数审核 + 录屏审核（待审）均来自本项目的真实报数。
+    expect(screen.getAllByText("报数主播甲").length).toBeGreaterThan(0);
+    // 操作日志来自本项目的真实审计记录。
+    expect(screen.getByText("审计操作员")).toBeInTheDocument();
+  });
+
   it("opens organization feature settings from the sidebar and syncs the switcher display", () => {
     render(<OpsReferenceApp initialRoute="warroom" />);
 
