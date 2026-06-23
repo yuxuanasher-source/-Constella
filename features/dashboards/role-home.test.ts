@@ -288,4 +288,51 @@ describe("role home dashboard", () => {
       }),
     ).toThrow("Unsupported dashboard role: streamer");
   });
+
+  it("builds closed-loop analytic panels for owner and finance roles", () => {
+    const owner = buildRoleHomeDashboard({
+      role: "owner",
+      userId: "u",
+      organizationId: "org-1",
+      source,
+    });
+    // 经营健康大盘：准入漏斗 报名(1+2+3) → 录屏待审(2+3) → 入项(3)。
+    expect(owner.panels?.admissionFunnel?.stages.map((s) => s.value)).toEqual([
+      6, 5, 3,
+    ]);
+    expect(owner.panels?.settlementFunnel?.stages[0]).toMatchObject({
+      key: "pool",
+      value: 8000,
+    });
+    expect(owner.panels?.projectRanking?.rows[0]).toMatchObject({
+      title: "Alpha",
+      value: 30000,
+    });
+    expect(owner.panels?.amountRisks?.rows.map((r) => r.key)).toEqual(
+      expect.arrayContaining(["weak", "reopen"]),
+    );
+
+    const finance = buildRoleHomeDashboard({
+      role: "finance",
+      userId: "u",
+      organizationId: "org-1",
+      source,
+    });
+    expect(finance.panels?.settlementFunnel).toBeTruthy();
+    expect(finance.panels?.batchLanes?.lanes).toHaveLength(5);
+    // 财务看板不暴露毛利排行（角色边界）。
+    expect(finance.panels?.projectRanking).toBeUndefined();
+  });
+
+  it("does not attach financial panels to the operator dashboard", () => {
+    const operator = buildRoleHomeDashboard({
+      role: "operator_business",
+      userId: "u",
+      organizationId: "org-1",
+      source,
+    });
+    expect(operator.panels?.settlementFunnel).toBeUndefined();
+    expect(operator.panels?.amountRisks).toBeUndefined();
+    expect(operator.panels?.projectRanking).toBeUndefined();
+  });
 });

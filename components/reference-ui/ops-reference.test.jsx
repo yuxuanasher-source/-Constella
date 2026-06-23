@@ -312,6 +312,106 @@ describe("OpsReferenceApp role dashboard contract", () => {
     expect(screen.queryByText("预估毛利率")).not.toBeInTheDocument();
   });
 
+  it("renders the closed-loop stage nav and drills into a stage", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        projectCards={taskProjectCards}
+        applicationQueue={[]}
+        dashboardHome={{
+          profile: {
+            role: "ops_manager",
+            title: "今日作战台",
+            subtitle: "项目卡点、准入漏斗与直播执行实时盘",
+            scopeLabel: "授权项目",
+          },
+          kpis: [
+            { key: "k1", label: "执行中项目", value: 2, unit: "个" },
+          ],
+          queue: [
+            {
+              key: "q1",
+              title: "项目卡点A",
+              subtitle: "停留 3h",
+              tone: "amber",
+              target: { route: "project", id: "project-live" },
+            },
+          ],
+          risks: [],
+          drilldowns: [],
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    // 经营闭环品牌 + 阶段导航 + 卡点队列区块。
+    expect(screen.getByText("经营闭环")).toBeInTheDocument();
+    expect(screen.getByText("项目卡点队列")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "毛利分析" }),
+    ).toBeInTheDocument();
+
+    // 点击闭环阶段「项目」钻取到项目列表。
+    fireEvent.click(screen.getByRole("button", { name: "项目" }));
+    expect(screen.getAllByText("Fixture Project").length).toBeGreaterThan(0);
+  });
+
+  it("renders closed-loop analytic panels and drills from a ranking row", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        projectCards={taskProjectCards}
+        applicationQueue={[]}
+        dashboardHome={{
+          profile: {
+            role: "owner",
+            title: "经营总览看板",
+            subtitle: "关注收入、毛利、履约和高风险动作",
+            scopeLabel: "全组织",
+          },
+          kpis: [{ key: "k1", label: "进行中项目", value: 1, unit: "个" }],
+          queue: [],
+          risks: [],
+          drilldowns: [],
+          panels: {
+            admissionFunnel: {
+              title: "准入漏斗 · 录屏到入项",
+              subtitle: "候选 → 录屏待审 → 最终入项",
+              unit: "人",
+              stages: [
+                { key: "applied", label: "报名/候选", value: 6, rate: 100 },
+                { key: "admitted", label: "最终入项", value: 3, rate: 50 },
+              ],
+              target: { route: "projects" },
+            },
+            projectRanking: {
+              title: "项目经营排行",
+              subtitle: "按毛利贡献",
+              rows: [
+                {
+                  key: "rank:project-live",
+                  title: "Fixture Project",
+                  value: 5000,
+                  hint: "毛利率 41.7%",
+                  tone: "neutral",
+                  target: { route: "project", id: "project-live" },
+                },
+              ],
+            },
+          },
+          generatedAt: "2026-06-16T09:30:00.000Z",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("准入漏斗 · 录屏到入项")).toBeInTheDocument();
+    expect(screen.getByText("项目经营排行")).toBeInTheDocument();
+
+    // 点击经营排行行钻取到对应项目详情。
+    fireEvent.click(screen.getByText("Fixture Project"));
+    expect(screen.getByText("返回列表")).toBeInTheDocument();
+  });
+
   it("does not render executive finance labels for operator dashboard", () => {
     render(
       <OpsReferenceApp
