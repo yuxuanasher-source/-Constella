@@ -1654,6 +1654,13 @@ const NAV = [
   { key: "export", label: "数据导出", icon: "Export" },
   { key: "audit", label: "操作日志", icon: "Audit" },
   { key: "org", label: "组织与权限", icon: "Settings" },
+  { divider: true },
+  {
+    key: "ext-account-library",
+    label: "账号库",
+    icon: "Settings",
+    href: "/console/account-library",
+  },
 ];
 
 function Sidebar({
@@ -1868,7 +1875,9 @@ function Sidebar({
           return (
             <button
               key={it.key}
-              onClick={() => onNav(it.key)}
+              onClick={() =>
+                it.href ? window.location.assign(it.href) : onNav(it.key)
+              }
               style={{
                 width: "100%",
                 padding: "0 10px",
