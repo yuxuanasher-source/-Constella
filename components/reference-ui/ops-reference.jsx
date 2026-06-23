@@ -6120,6 +6120,47 @@ function formatRateBps(bps) {
   return `${value / 100}%`;
 }
 
+// 详情页列表区块每块最多显示的行数；超出时底部出现「查看全部」入口。
+const PROJECT_BLOCK_ROW_LIMIT = 6;
+
+// 封顶表格：只渲染前 limit 行，总数超出时展示跳转完整模块的页脚。
+function CappedTable({
+  columns,
+  rows,
+  limit = PROJECT_BLOCK_ROW_LIMIT,
+  onRowClick,
+  onMore,
+  moreLabel,
+}) {
+  return (
+    <>
+      <DataTable
+        columns={columns}
+        rows={rows.slice(0, limit)}
+        onRowClick={onRowClick}
+      />
+      {rows.length > limit ? (
+        <div style={{ padding: "10px 16px 0", textAlign: "center" }}>
+          <button
+            type="button"
+            onClick={onMore}
+            style={{
+              border: "none",
+              background: "transparent",
+              color: "var(--blue-600)",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {moreLabel || `查看全部 ${rows.length} 条 →`}
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 // ——— Project detail ———————————————————————
 
 function ProjectDetail({ id, go }) {
@@ -6129,6 +6170,8 @@ function ProjectDetail({ id, go }) {
   const applications = useOpsApplications();
   const tasks = useOpsTasks();
   const settlementBatches = useOpsSettlementBatches();
+  const reports = useOpsReports();
+  const auditEntries = useOpsAuditEntries();
   const actions = useOpsLiveActions();
   const members = useOpsOrganizationMembers();
   const currentUser = useOpsCurrentUser();
@@ -6263,6 +6306,22 @@ function ProjectDetail({ id, go }) {
   const projectBatches = settlementBatches.filter(
     (batch) => batch.projectId === p.id,
   );
+  const projectReports = reports.filter(
+    (r) => r.projectId === p.id || r.project === p.name,
+  );
+  const screeningReports = projectReports.filter(
+    (r) => r.status === "pending_review" || r.status === "need_supply",
+  );
+  const projectAudit = auditEntries.filter(
+    (e) =>
+      e.projectId === p.id ||
+      (e.objectType === "project" && e.objectId === p.id) ||
+      (e.objectName && e.objectName === p.name),
+  );
+  const hasCustomSettlementRule =
+    p.defaultSettlementRule &&
+    typeof p.defaultSettlementRule === "object" &&
+    Object.keys(p.defaultSettlementRule).length > 0;
   const exportVendorDelivery = async () => {
     setDetailSubmitting("delivery");
     setDetailMessage("");
@@ -6761,17 +6820,62 @@ function ProjectDetail({ id, go }) {
         <Card
           title="录屏审核"
           extra={
-            p.streamers.pendingReview > 0 ? (
-              <Badge tone="amber">{p.streamers.pendingReview}</Badge>
+            screeningReports.length > 0 ? (
+              <Badge tone="amber">{screeningReports.length}</Badge>
             ) : null
           }
         >
-          <EmptyHint
-            title="录屏审核 · 数据视图"
-            hint="此区块与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
-            actionLabel="前往录屏审核"
-            onAction={() => go("streamers")}
-          />
+          {screeningReports.length ? (
+            <CappedTable
+              onMore={() => go("reports")}
+              columns={[
+                {
+                  title: "任务 / 主播",
+                  render: (r) => (
+                    <div>
+                      <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                        {r.streamer}
+                      </div>
+                      <div
+                        className="mono"
+                        style={{ fontSize: 11, color: "var(--ink-400)" }}
+                      >
+                        {displayRecordId(r.taskId || r.id, "任务")}
+                      </div>
+                    </div>
+                  ),
+                },
+                { title: "日期", render: (r) => r.date || "—" },
+                {
+                  title: "录屏",
+                  align: "right",
+                  render: (r) => (
+                    <span className="num">{r.screens ?? 0} 段</span>
+                  ),
+                },
+                {
+                  title: "状态",
+                  render: (r) => {
+                    const meta = REPORT_STATUS[r.status] || REPORT_STATUS.pending;
+                    return (
+                      <Badge tone={meta.tone} dot>
+                        {meta.label}
+                      </Badge>
+                    );
+                  },
+                },
+              ]}
+              rows={screeningReports}
+              onRowClick={() => go("reports")}
+            />
+          ) : (
+            <EmptyHint
+              title="暂无待审录屏"
+              hint="该项目当前没有待审核的下播截图 / 录屏证据。"
+              actionLabel="前往报数审核"
+              onAction={() => go("reports")}
+            />
+          )}
         </Card>
 
         <Card
@@ -6793,26 +6897,127 @@ function ProjectDetail({ id, go }) {
         <Card
           title="报数审核"
           extra={
-            p.metrics.reportedPending > 0 ? (
-              <Badge tone="amber">{p.metrics.reportedPending}</Badge>
+            projectReports.length > 0 ? (
+              <Badge tone="blue">{projectReports.length}</Badge>
             ) : null
           }
         >
-          <EmptyHint
-            title="报数审核 · 数据视图"
-            hint="此区块与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
-            actionLabel="前往报数审核"
-            onAction={() => go("reports")}
-          />
+          {projectReports.length ? (
+            <CappedTable
+              onMore={() => go("reports")}
+              columns={[
+                {
+                  title: "主播",
+                  render: (r) => (
+                    <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                      {r.streamer}
+                    </span>
+                  ),
+                },
+                { title: "日期", render: (r) => r.date || "—" },
+                {
+                  title: "系统时长",
+                  align: "right",
+                  render: (r) => (
+                    <span className="num">
+                      {Number(r.systemDurationHours ?? r.duration ?? 0).toFixed(
+                        1,
+                      )}{" "}
+                      h
+                    </span>
+                  ),
+                },
+                {
+                  title: "场观",
+                  align: "right",
+                  render: (r) => (
+                    <span className="num">
+                      {Number(r.audience ?? 0).toLocaleString()}
+                    </span>
+                  ),
+                },
+                {
+                  title: "状态",
+                  render: (r) => {
+                    const meta = REPORT_STATUS[r.status] || REPORT_STATUS.pending;
+                    return (
+                      <Badge tone={meta.tone} dot>
+                        {meta.label}
+                      </Badge>
+                    );
+                  },
+                },
+              ]}
+              rows={projectReports}
+              onRowClick={() => go("reports")}
+            />
+          ) : (
+            <EmptyHint
+              title="暂无报数"
+              hint="该项目当前没有报数记录。"
+              actionLabel="前往报数审核"
+              onAction={() => go("reports")}
+            />
+          )}
         </Card>
 
-        <Card title="结算规则">
-          <EmptyHint
-            title="结算规则 · 数据视图"
-            hint="此区块与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
-            actionLabel="前往结算规则"
-            onAction={() => go("settle")}
-          />
+        <Card
+          title="结算规则"
+          extra={
+            <button
+              type="button"
+              onClick={() => go("settle")}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: "var(--blue-600)",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              前往结算中心 →
+            </button>
+          }
+        >
+          <div
+            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}
+          >
+            <div>
+              <DetailSubHeading>默认结算</DetailSubHeading>
+              <DetailKV label="结算方式" value={p.pricing} />
+              <DetailKV
+                label="默认时薪"
+                value={`¥${Number(p.defaultHourlyRate ?? 0).toLocaleString()}/时`}
+              />
+              <DetailKV
+                label="默认底薪"
+                value={`¥${Number(p.defaultBaseSalary ?? 0).toLocaleString()}`}
+                last
+              />
+            </div>
+            <div>
+              <DetailSubHeading>规则配置</DetailSubHeading>
+              <DetailKV
+                label="自定义规则"
+                value={hasCustomSettlementRule ? "已配置" : "未配置"}
+                tone={
+                  hasCustomSettlementRule
+                    ? "var(--ok-600)"
+                    : "var(--ink-400)"
+                }
+              />
+              <DetailKV
+                label="规则项"
+                value={
+                  hasCustomSettlementRule
+                    ? `${Object.keys(p.defaultSettlementRule).length} 项`
+                    : "—"
+                }
+                last
+              />
+            </div>
+          </div>
         </Card>
 
         <Card
@@ -6824,7 +7029,8 @@ function ProjectDetail({ id, go }) {
           }
         >
           {projectBatches.length ? (
-            <DataTable
+            <CappedTable
+              onMore={() => go("settle")}
               columns={[
                 {
                   title: "结算批次",
@@ -6952,13 +7158,75 @@ function ProjectDetail({ id, go }) {
           </div>
         </Card>
 
-        <Card title="操作日志">
-          <EmptyHint
-            title="操作日志 · 数据视图"
-            hint="此区块与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
-            actionLabel="前往操作日志"
-            onAction={() => go("audit")}
-          />
+        <Card
+          title="操作日志"
+          extra={
+            projectAudit.length > 0 ? (
+              <Badge tone="neutral">{projectAudit.length}</Badge>
+            ) : null
+          }
+        >
+          {projectAudit.length ? (
+            <CappedTable
+              onMore={() => go("audit")}
+              columns={[
+                {
+                  title: "时间",
+                  render: (e) => (
+                    <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                      {e.createdAt || "—"}
+                    </span>
+                  ),
+                },
+                {
+                  title: "操作人",
+                  render: (e) => (
+                    <div>
+                      <div style={{ color: "var(--ink-900)" }}>
+                        {e.actorName || "—"}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                        {ROLES[e.actorRole] || e.actorRole || ""}
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "动作 / 对象",
+                  render: (e) => (
+                    <div>
+                      <div style={{ color: "var(--ink-900)" }}>
+                        {e.action || e.module || "—"}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                        {e.objectName || e.objectType || ""}
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "风险",
+                  render: (e) =>
+                    e.isHighRisk ? (
+                      <Badge tone="red" dot>
+                        高风险
+                      </Badge>
+                    ) : (
+                      <Badge tone="neutral">常规</Badge>
+                    ),
+                },
+              ]}
+              rows={projectAudit}
+              onRowClick={() => go("audit")}
+            />
+          ) : (
+            <EmptyHint
+              title="暂无操作日志"
+              hint="该项目当前没有可展示的操作日志。"
+              actionLabel="前往操作日志"
+              onAction={() => go("audit")}
+            />
+          )}
         </Card>
       </div>
     </>
