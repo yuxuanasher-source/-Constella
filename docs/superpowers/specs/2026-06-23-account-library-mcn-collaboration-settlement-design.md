@@ -478,10 +478,23 @@ GET   /api/settlement-batches/:batchId/breakdown         项目→主播二级�
 
 ---
 
-## 7. 待确认问题（评审时定）
+## 7. 关键决策（已确认，2026-06-23）
 
-1. 账号库 `account_uid` 是否允许为空？为空时唯一性如何兜底（可能仅有星图ID/合作码）。
-2. 跨组织协作中，乙方对 `live_tasks` 是否需要**写**权限（"给主播排版"）？还是只读、由甲方代排？这影响 RLS 写策略的开放面。
-3. 一审通过时，乙方上传的"主播名称"如何与甲方 `streamers` 实体匹配——自动按名建档，还是人工匹配/确认？
-4. MCN 分成的计算基数：百分比模式按"项目总收入"还是"项目毛利"？固定模式的"每小时"按系统计时还是结算时长？
-5. 礼物/推广/税费/器材等成本项，本轮是纯人工录入，还是需要导入通道？
+1. **账号 UID 唯一性**：`account_uid` **不允许为空**（`NOT NULL`）。`unique(organization_id, platform, account_uid)` 直接成立，无需兜底逻辑。
+2. **乙方排班写权限**：乙方**只读**，排班/排版由甲方代排。跨组织 RLS 仅放宽 `select`，所有写操作（`live_tasks`/`live_reports`/结算）仍限甲方 staff。
+3. **主播实体匹配**：一审通过时**按名自动建档**——在甲方组织内按 `streamer_name` 建 `streamers`，并写入备注（note）+ 标签，标明 **MCN 来源**（来源标识 + 协作方组织）。
+4. **分成计算基数**：百分比模式按**项目毛利**（收入 − 成本，分成在毛利后计）；固定模式的"每小时"按**结算时长**（`live_reports.settlement_duration` 汇总成小时）。
+5. **成本项录入**：礼物/推广/税费/器材等本轮**纯人工录入**，不做导入通道。
+
+### 决策对设计的影响
+
+- 模块 A：`platform_accounts.account_uid` 改为 `not null`。
+- 模块 B：`can_access_collaborated_project` 仅用于 `select` 策略；乙方建档主播 `source_type` 用 `supplier_recommended` 或新增标识，并在 `note` + `risk_tags`/`categories` 写入 `MCN:<partner_org>` 标签。
+- 模块 C：`collaboration_settlements.basis_amount` = 项目毛利；`total_hours` 来自结算时长汇总；引擎计算顺序为「收入 − 成本 = 毛利 → 再算 MCN 分成」。
+
+## 8. 实施进度
+
+- [x] 设计文档（本文件）
+- [ ] **P-A 账号库**（进行中）：迁移 + 服务 + API + 测试
+- [ ] P-B 跨组织协作
+- [ ] P-C 结算增强
