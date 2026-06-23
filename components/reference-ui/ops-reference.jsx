@@ -1167,6 +1167,19 @@ const NAV = [
   { key: "export", label: "数据导出", icon: "Export" },
   { key: "audit", label: "操作日志", icon: "Audit" },
   { key: "org", label: "组织与权限", icon: "Settings" },
+  { divider: true },
+  {
+    key: "ext-account-library",
+    label: "账号库",
+    icon: "Settings",
+    href: "/console/account-library",
+  },
+  {
+    key: "ext-collaborations",
+    label: "MCN 协作",
+    icon: "Streamer",
+    href: "/console/collaborations",
+  },
 ];
 
 function Sidebar({ route, onNav, navCounts = {} }) {
@@ -1309,7 +1322,11 @@ function Sidebar({ route, onNav, navCounts = {} }) {
           return (
             <button
               key={it.key}
-              onClick={() => onNav(it.key)}
+              onClick={() =>
+                it.href
+                  ? window.location.assign(it.href)
+                  : onNav(it.key)
+              }
               style={{
                 width: "100%",
                 padding: "0 10px",
@@ -7880,9 +7897,35 @@ function BatchDetail({
           }}
         >
           <div
-            style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-700)" }}
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color: "var(--ink-700)",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+            }}
           >
             结算明细
+            <button
+              type="button"
+              onClick={() =>
+                window.location.assign(
+                  `/console/settlement-batches/${b.id}/breakdown`,
+                )
+              }
+              style={{
+                fontSize: 11,
+                fontWeight: 500,
+                color: "var(--blue-700)",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              毛利明细 →
+            </button>
           </div>
           <div
             style={{
