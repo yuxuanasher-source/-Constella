@@ -563,6 +563,47 @@ describe("OpsReferenceApp project smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  it("supports source filter and table/board/cards views on the project list", () => {
+    const collabCard = {
+      ...taskProjectCards[0],
+      id: "collab-project",
+      code: "CLB-001",
+      name: "协作项目",
+      status: "recruiting",
+      collaborationRole: "partner",
+    };
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={taskProjectCards}
+        collaborationProjectCards={[collabCard]}
+        applicationQueue={[]}
+      />,
+    );
+
+    // 顶部汇总：2 个项目 · 1 自有 · 1 协作。
+    expect(screen.getByText("自有")).toBeInTheDocument();
+    expect(screen.getByText("协作")).toBeInTheDocument();
+
+    // 表格视图下两个项目都在。
+    expect(screen.getAllByText("Fixture Project").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("协作项目").length).toBeGreaterThan(0);
+
+    // 切到「卡片」视图，项目卡片仍渲染。
+    fireEvent.click(screen.getByRole("button", { name: "卡片" }));
+    expect(screen.getAllByText("Fixture Project").length).toBeGreaterThan(0);
+
+    // 切到「看板」视图，按状态分列渲染。
+    fireEvent.click(screen.getByRole("button", { name: "看板" }));
+    expect(screen.getAllByText("Fixture Project").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("协作项目").length).toBeGreaterThan(0);
+
+    // 「自有」来源过滤后，协作项目被过滤掉。
+    fireEvent.click(screen.getByRole("button", { name: "自有" }));
+    expect(screen.getAllByText("Fixture Project").length).toBeGreaterThan(0);
+    expect(screen.queryByText("协作项目")).not.toBeInTheDocument();
+  });
+
   it("opens organization feature settings from the sidebar and syncs the switcher display", () => {
     render(<OpsReferenceApp initialRoute="warroom" />);
 
