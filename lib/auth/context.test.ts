@@ -17,11 +17,11 @@ describe("getAuthContext", () => {
       error: null;
     }>();
     const membershipResult = deferred<{
-      data: {
+      data: Array<{
         organization_id: string;
-        role: "streamer";
+        role: string;
         organizations: { name: string };
-      };
+      }>;
       error: null;
     }>();
 
@@ -32,8 +32,7 @@ describe("getAuthContext", () => {
     const membershipQuery = {
       eq: vi.fn(() => membershipQuery),
       order: vi.fn(() => membershipQuery),
-      limit: vi.fn(() => membershipQuery),
-      maybeSingle: vi.fn(() => membershipResult.promise),
+      returns: vi.fn(() => membershipResult.promise),
     };
     const from = vi.fn((table: string) => {
       if (table === "profiles") {
@@ -71,11 +70,13 @@ describe("getAuthContext", () => {
       error: null,
     });
     membershipResult.resolve({
-      data: {
-        organization_id: "org-1",
-        role: "streamer",
-        organizations: { name: "Org One" },
-      },
+      data: [
+        {
+          organization_id: "org-1",
+          role: "streamer",
+          organizations: { name: "Org One" },
+        },
+      ],
       error: null,
     });
 
@@ -89,5 +90,52 @@ describe("getAuthContext", () => {
       requiresOnboarding: true,
     });
     expect(membershipWasRequestedBeforeProfileResolved).toBe(true);
+  });
+
+  it("resolves the most privileged role when a user holds multiple roles in one org", async () => {
+    const membershipQuery = {
+      eq: vi.fn(() => membershipQuery),
+      order: vi.fn(() => membershipQuery),
+      returns: vi.fn(async () => ({
+        // Same org, both active — streamer row returned first.
+        data: [
+          {
+            organization_id: "org-9",
+            role: "streamer",
+            organizations: { name: "Org Nine" },
+          },
+          {
+            organization_id: "org-9",
+            role: "owner",
+            organizations: { name: "Org Nine" },
+          },
+        ],
+        error: null,
+      })),
+    };
+    const profileQuery = {
+      eq: vi.fn(() => profileQuery),
+      maybeSingle: vi.fn(async () => ({
+        data: { full_name: "Boss", requires_onboarding: false },
+        error: null,
+      })),
+    };
+    const client = {
+      auth: {
+        getUser: vi.fn(async () => ({
+          data: { user: { id: "user-9", email: "boss@example.cn" } },
+        })),
+      },
+      from: vi.fn((table: string) =>
+        table === "profiles"
+          ? { select: vi.fn(() => profileQuery) }
+          : { select: vi.fn(() => membershipQuery) },
+      ),
+    };
+
+    await expect(getAuthContext(client as never)).resolves.toMatchObject({
+      organizationId: "org-9",
+      role: "owner",
+    });
   });
 });
