@@ -1,7 +1,12 @@
 ﻿"use client";
 /* eslint-disable */
 import React from "react";
-import { Button as HeroButton, Chip as HeroChip } from "@heroui/react";
+import {
+  Button as HeroButton,
+  Card as HeroCard,
+  Chip as HeroChip,
+  InputGroup as HeroInputGroup,
+} from "@heroui/react";
 
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
 import {
@@ -95,15 +100,11 @@ function Button({
   );
 }
 
-// Card — base container
+// Card — HeroUI surface container (keeps the title/extra/padded API).
 function Card({ children, title, extra, padded = true, style, bodyStyle }) {
   return (
-    <div
+    <HeroCard
       style={{
-        background: "#fff",
-        border: "1px solid var(--line)",
-        borderRadius: 10,
-        boxShadow: "var(--shadow-card)",
         display: "flex",
         flexDirection: "column",
         ...style,
@@ -135,7 +136,7 @@ function Card({ children, title, extra, padded = true, style, bodyStyle }) {
       <div style={{ padding: padded ? 16 : 0, flex: 1, ...bodyStyle }}>
         {children}
       </div>
-    </div>
+    </HeroCard>
   );
 }
 
@@ -414,37 +415,19 @@ function Metric({
   );
 }
 
-// Search input
+// Search input — HeroUI input group with a leading search icon.
 function SearchInput({ placeholder = "搜索…", value, onChange, width = 280 }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        height: 32,
-        padding: "0 10px",
-        width,
-        border: "1px solid var(--line-strong)",
-        borderRadius: 6,
-        background: "#fff",
-      }}
-    >
-      <Icon.Search size={14} stroke="var(--ink-400)" />
-      <input
+    <HeroInputGroup style={{ width }}>
+      <HeroInputGroup.Prefix>
+        <Icon.Search size={14} stroke="var(--ink-400)" />
+      </HeroInputGroup.Prefix>
+      <HeroInputGroup.Input
         value={value || ""}
         onChange={(e) => onChange?.(e.target.value)}
         placeholder={placeholder}
-        style={{
-          flex: 1,
-          border: "none",
-          outline: "none",
-          background: "transparent",
-          fontSize: 13,
-          color: "var(--ink-700)",
-        }}
       />
-    </div>
+    </HeroInputGroup>
   );
 }
 
