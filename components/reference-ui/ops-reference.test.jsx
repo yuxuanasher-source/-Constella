@@ -5857,13 +5857,13 @@ describe("OpsReferenceApp settlement smoke", () => {
 
   it("exports report settlement details from the export settings panel", async () => {
     const fetchMock = vi.fn(async (url) => {
-      if (String(url) === "/api/exports") {
+      if (String(url) === "/api/exports/report-settlement-xlsx") {
         return {
           ok: true,
           json: async () => ({
             export: {
-              filename: "report_settlement_details-2026-06-25.csv",
-              content: "header\nrow",
+              filename: "report_settlement_details-2026-06-25.xlsx",
+              base64: "AAEC",
             },
           }),
         };
@@ -5919,13 +5919,13 @@ describe("OpsReferenceApp settlement smoke", () => {
 
     await waitFor(() => {
       const exportCall = fetchMock.mock.calls.find(
-        (call) => call[0] === "/api/exports",
+        (call) => call[0] === "/api/exports/report-settlement-xlsx",
       );
       expect(exportCall).toBeTruthy();
       expect(JSON.parse(exportCall[1].body)).toEqual({
-        kind: "report_settlement_details",
         rows: [
           {
+            reportId: "report-export-one",
             guildOrIndividual: "星辰公会",
             gameProduct: "Project Export",
             streamerName: "Streamer Export",

@@ -12321,6 +12321,7 @@ function ScreenReports({ go }) {
         const hours = Number(r.systemDurationHours ?? r.duration ?? 0);
         const rate = Number(proj?.defaultHourlyRate ?? 0);
         return {
+          reportId: r.id,
           guildOrIndividual: guildName || "—",
           gameProduct: proj?.product || r.project || "—",
           streamerName: r.streamer,
@@ -12334,15 +12335,13 @@ function ScreenReports({ go }) {
           duration: `${hours} 小时`,
           hourlyRate: rate ? `¥${rate}` : "—",
           talentFee: rate ? `¥${(hours * rate).toFixed(2)}` : "—",
+          // 截图列由服务端真实嵌入图片；此处仅作无图回退文案。
           screenshot: `${r.screens ?? 0} 张`,
         };
       });
-      const result = await actions.createGovernedExport?.({
-        kind: "report_settlement_details",
-        rows,
-      });
+      const result = await actions.exportReportSettlementXlsx?.({ rows });
       if (result) {
-        downloadAdmissionExport(result);
+        downloadBase64Xlsx(result);
       }
       setExportPanelOpen(false);
       setExportMessage(`已导出 ${rows.length} 条报数明细`);
@@ -13745,6 +13744,38 @@ function downloadAdmissionExport(result) {
 
   const blob = new Blob(["\uFEFF", result.content], {
     type: "text/csv;charset=utf-8",
+  });
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = result.filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL?.(href);
+}
+
+// 把服务端返回的 base64 xlsx 解码后触发下载（含真实嵌入的下播截图）。
+function downloadBase64Xlsx(result) {
+  if (
+    !result?.base64 ||
+    !result?.filename ||
+    typeof document === "undefined" ||
+    typeof atob !== "function" ||
+    typeof URL === "undefined" ||
+    typeof URL.createObjectURL !== "function"
+  ) {
+    return;
+  }
+
+  const binary = atob(result.base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  const blob = new Blob([bytes], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   });
   const href = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -24849,6 +24880,18 @@ function OpsReferenceInner({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(input),
         });
+        return body.export;
+      },
+      exportReportSettlementXlsx: async (input) => {
+        const body = await fetchJson(
+          "/api/exports/report-settlement-xlsx",
+          "export report settlement xlsx failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
         return body.export;
       },
     };
