@@ -5,10 +5,11 @@
 // 仅用于「智能作战台 / 经营闭环看板」总览页，其余页面不受影响。
 // 数据全部为真实业务数据：服务端 dashboard（kpis/panels/queue/risks，按角色计算）
 // + 实时 projects/tasks/reports/batches。缺数据的区块自动隐藏。
-// 按用户确认：只展示当前登录角色的看板；无历史时序，故不编造走势线/环比。
+// 按用户确认：只展示当前登录角色的看板；无历史时序，故走势线只画能算出的真实曲线
+//（如「今日排班按小时累计」），算不出的就不画/不编造环比。
 
 import * as React from "react";
-import { Card, Chip, Button } from "@heroui/react";
+import { Card, Button } from "@heroui/react";
 import "@heroui/react/styles";
 
 // ——— 设计稿调色板 ———
@@ -47,6 +48,10 @@ const TONE = {
   red: { color: C.danger, bg: C.dangerBg },
 };
 const tone = (t) => TONE[t] || TONE.neutral;
+const toneColor = (t) => {
+  const c = tone(t).color;
+  return c === C.ink2 ? C.ink : c;
+};
 
 const ROUTE_LABELS = {
   project: "项目",
@@ -66,7 +71,6 @@ const money = (n) => {
   if (Math.abs(v) >= 10000) return `¥${(v / 10000).toFixed(1)}万`;
   return `¥${v.toLocaleString("zh-CN")}`;
 };
-// KPI 值按口径格式化（大额元 → 万），不改变真实数值含义。
 function fmtKpi(value, unit) {
   if (unit === "元") {
     const v = Number(value) || 0;
@@ -78,19 +82,46 @@ function fmtKpi(value, unit) {
 const cnt = (arr, fn) => (arr || []).filter(fn).length;
 const pStatus = (p, s) => p?.status === s;
 const margin = (p) => Number(p?.metrics?.margin);
+const isLive = (t) => t?.status === "live" || t?.statusLabel === "直播中";
+const isNotStarted = (t) => ["pending_live", "not_started", "scheduled"].includes(t?.status);
+const isDone = (t) => t?.status === "completed" || t?.status === "done" || t?.status === "已完成";
+const isAnomaly = (t) => t?.anomaly || t?.status === "abnormal";
 
-// 按角色计算「项目/结算/审计…待办」分组（真实计数；无则为 0）。
+// 今日直播任务按小时的累计场次（真实曲线，对应设计稿 Hero 走势）。
+function scheduleSeries(tasks) {
+  const byHour = Array(24).fill(0);
+  let any = false;
+  (tasks || []).forEach((t) => {
+    const h = Number(t?.startHour);
+    if (Number.isFinite(h)) {
+      byHour[Math.max(0, Math.min(23, Math.round(h)))] += 1;
+      any = true;
+    }
+  });
+  if (!any) return null;
+  const out = [];
+  let acc = 0;
+  for (let h = 6; h <= 23; h += 1) {
+    acc += byHour[h];
+    out.push(acc);
+  }
+  return out.length >= 2 ? out : null;
+}
+
+// 按角色计算「待办」分组（真实计数；无则为 0）。
 function computeTodoGroups(role, { projects = [], tasks = [], reports = [], batches = [] }) {
   const bs = (s) => cnt(batches, (b) => b.status === s || b.statusKey === s);
   const pendReports = cnt(reports, (r) => r.status === "pending_review");
-  const anomalies = cnt(tasks, (t) => t.anomaly || t.status === "abnormal");
-  const notStarted = cnt(tasks, (t) => ["pending_live", "not_started", "scheduled", "未开播"].includes(t.status));
+  const anomalies = cnt(tasks, isAnomaly);
+  const notStarted = cnt(tasks, isNotStarted);
+  const recordingPending = (projects || []).reduce((s, p) => s + (p?.streamers?.pendingReview ?? 0), 0);
+  const gapProjects = cnt(projects, (p) => (p?.streamers?.candidate ?? 0) > 0);
   const G = (title, items) => ({ title, items });
   const I = (label, value, t, route) => ({ label, value: String(value), tone: t, target: route ? { route } : undefined });
 
   if (role.includes("operator")) {
     return [
-      G("今日任务", [I("待处理", cnt(tasks, (t) => t.status !== "done" && t.status !== "已完成"), "primary", "tasks"), I("已完成", cnt(tasks, (t) => t.status === "done" || t.status === "已完成"), "ok", "tasks")]),
+      G("今日任务", [I("待处理", cnt(tasks, (t) => !isDone(t)), "primary", "tasks"), I("已完成", cnt(tasks, isDone), "ok", "tasks")]),
       G("直播待办", [I("未开播", notStarted, notStarted ? "bad" : "neutral", "tasks"), I("异常", anomalies, anomalies ? "bad" : "neutral", "tasks")]),
       G("报数待办", [I("待审核", pendReports, pendReports ? "warn" : "neutral", "reports"), I("总报数", reports.length, "neutral", "reports")]),
     ];
@@ -105,9 +136,10 @@ function computeTodoGroups(role, { projects = [], tasks = [], reports = [], batc
   if (role.includes("ops")) {
     return [
       G("项目待办", [I("执行中", cnt(projects, (p) => pStatus(p, "active")), "primary", "projects"), I("招募中", cnt(projects, (p) => pStatus(p, "recruiting")), "neutral", "projects")]),
-      G("准入待办", [I("录屏待审", projects.reduce((s, p) => s + (p?.streamers?.pendingReview ?? 0), 0), "warn", "projects"), I("主播缺口", cnt(projects, (p) => (p?.streamers?.candidate ?? 0) > 0), "warn", "projects")]),
+      G("准入待办", [I("录屏待审", recordingPending, "warn", "projects"), I("主播缺口", gapProjects, gapProjects ? "bad" : "neutral", "projects")]),
       G("直播待办", [I("今日排班", tasks.length, "ok", "tasks"), I("异常", anomalies, anomalies ? "bad" : "neutral", "tasks")]),
       G("报数待办", [I("待审核", pendReports, pendReports ? "warn" : "neutral", "reports"), I("未开播", notStarted, notStarted ? "bad" : "neutral", "tasks")]),
+      G("结算待办", [I("待生成", bs("draft"), "neutral", "settle"), I("待确认", bs("pending_confirm") + bs("generated"), "warn", "settle")]),
     ];
   }
   // owner / 默认
@@ -117,6 +149,32 @@ function computeTodoGroups(role, { projects = [], tasks = [], reports = [], batc
     G("结算待办", [I("待生成", bs("draft"), "neutral", "settle"), I("待确认", bs("pending_confirm") + bs("generated"), "warn", "settle")]),
     G("审计待办", [I("高风险", cnt(projects, (p) => p.risk === "high"), "bad", "audit"), I("重开", bs("reopened"), bs("reopened") ? "bad" : "neutral", "settle")]),
   ];
+}
+
+// ——— 真实数据走势线（仅用于能算出的曲线，如排班累计） ———
+function Spark({ series, color = C.primary, w = 300, h = 60, pad = 8 }) {
+  if (!series || series.length < 2) return null;
+  const mn = Math.min(...series);
+  const mx = Math.max(...series);
+  const rng = mx - mn || 1;
+  const pts = series.map((v, i) => {
+    const x = (i / (series.length - 1)) * w;
+    const y = h - pad - ((v - mn) / rng) * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const id = `sk-${color.replace(/[^a-z0-9]/gi, "")}-${series.length}`;
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} preserveAspectRatio="none" style={{ display: "block" }} aria-hidden>
+      <defs>
+        <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.28" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <polygon points={`0,${h} ${pts.join(" ")} ${w},${h}`} fill={`url(#${id})`} />
+      <polyline points={pts.join(" ")} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 // ——— 通用区块卡片 ———
@@ -149,44 +207,106 @@ function RowButton({ onClick, children }) {
   );
 }
 
-// ——— 项目待办分组 ———
-function TodoGroups({ groups, go }) {
+// ——— 待办分组：一整行平铺，组间分隔（对应设计稿顶部待办条，精确样式） ———
+const TODO_BAD = (t) => t === "bad" || t === "danger" || t === "red";
+function TodoStrip({ groups, go }) {
   if (!groups?.length) return null;
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 12 }}>
-      {groups.map((g) => (
-        <Card key={g.title} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 16, padding: 14 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600, color: C.ink2, marginBottom: 10 }}>{g.title}</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            {g.items.map((it) => {
-              const c = tone(it.tone);
-              return (
-                <button key={it.label} type="button" onClick={() => it.target?.route && go?.(it.target.route, it.target.id)} style={{ border: `1px solid ${C.line}`, background: C.soft, borderRadius: 12, padding: "8px 10px", cursor: it.target ? "pointer" : "default", textAlign: "left" }}>
-                  <div style={{ fontSize: 20, fontWeight: 800, color: c.color }}>{it.value}</div>
-                  <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{it.label}</div>
-                </button>
-              );
-            })}
+    <div style={{ background: "#fff", border: "1px solid #ebedf2", borderRadius: 16, padding: "18px 8px", display: "flex", alignItems: "stretch", boxShadow: "0 1px 2px rgba(20,24,40,.04)" }}>
+      {groups.map((g, gi) => (
+        <div key={g.title} style={{ flex: 1, minWidth: 0, padding: "0 16px", borderRight: gi === groups.length - 1 ? "none" : "1px solid #f0f1f5", display: "flex", flexDirection: "column", gap: 11 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 800, color: "#6b7180" }}>{g.title}</div>
+          <div style={{ display: "flex", gap: 18 }}>
+            {g.items.map((it) => (
+              <button key={it.label} type="button" onClick={() => it.target?.route && go?.(it.target.route, it.target.id)} style={{ border: 0, background: "transparent", padding: 0, cursor: it.target ? "pointer" : "default", textAlign: "left" }}>
+                <div style={{ fontSize: 23, fontWeight: 800, lineHeight: 1, fontVariantNumeric: "tabular-nums", color: TODO_BAD(it.tone) ? "#d3705f" : "#2b2f3a" }}>{it.value}</div>
+                <div style={{ fontSize: 11, color: "#9aa0ad", fontWeight: 600, marginTop: 6 }}>{it.label}</div>
+              </button>
+            ))}
           </div>
-        </Card>
+        </div>
       ))}
     </div>
   );
 }
 
-// ——— KPI 卡（经营数据） ———
-const KPI_ACCENTS = [C.primary, "#7b54ec", C.ok, C.warn, C.danger, "#3b82f6"];
-function KpiCard({ item, accent }) {
-  const f = fmtKpi(item.value, item.unit);
+// ——— 经营数据卡：标题栏 + 指标条（对应设计稿「经营数据」面板，精确样式） ———
+function BizDataCard({ metrics, updatedAt, liveLabel }) {
+  if (!metrics?.length) return null;
   return (
-    <Card style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 16, borderTop: `3px solid ${accent}`, padding: 16 }}>
-      <div style={{ fontSize: 12.5, color: C.ink2, marginBottom: 8 }}>{item.label}</div>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
-        <span style={{ fontSize: 25, fontWeight: 800, color: tone(item.tone).color === C.ink2 ? C.ink : tone(item.tone).color }}>{f.value}</span>
-        {f.unit ? <span style={{ fontSize: 12, color: C.muted }}>{f.unit}</span> : null}
+    <div style={{ background: "#fff", border: "1px solid #ebedf2", borderRadius: 16, padding: "18px 22px", boxShadow: "0 1px 2px rgba(20,24,40,.04)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: C.ink }}>经营数据</h3>
+        <span style={{ fontSize: 11, color: "#aeb3c0", fontWeight: 700, border: "1px solid #ebedf2", borderRadius: 6, padding: "2px 8px" }}>自定义数据</span>
+        {updatedAt ? <span style={{ fontSize: 11.5, color: "#aeb3c0", fontWeight: 600 }}>更新时间 {updatedAt}</span> : null}
+        {liveLabel ? (
+          <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 800, color: "#ef5b46" }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#ef5b46", animation: "livepulse 1.6s ease-in-out infinite" }} />
+            {liveLabel}
+          </span>
+        ) : null}
       </div>
-      {item.hint ? <div style={{ marginTop: 6, fontSize: 11.5, color: C.muted }}>{item.hint}</div> : null}
-    </Card>
+      <div style={{ display: "flex", gap: 8 }}>
+        {metrics.map((m, i) => {
+          const f = fmtKpi(m.value, m.unit);
+          return (
+            <div key={m.key} style={{ flex: 1, minWidth: 0, padding: "0 16px", borderRight: i === metrics.length - 1 ? "none" : "1px solid #f0f1f5" }}>
+              <div style={{ fontSize: 12, color: "#9aa0ad", fontWeight: 700 }}>{m.label}</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginTop: 9 }}>
+                <span style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-.4px", fontVariantNumeric: "tabular-nums", color: toneColor(m.tone) }}>{f.value}</span>
+                {f.unit ? <span style={{ fontSize: 12, fontWeight: 700, color: "#9aa0ad" }}>{f.unit}</span> : null}
+              </div>
+              {m.hint ? <div style={{ fontSize: 11.5, fontWeight: 700, color: tone(m.tone).color, marginTop: 8 }}>{m.hint}</div> : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ——— Hero（真实排班累计走势）+ 两张趋势卡（真实漏斗走势），精确样式 ———
+function HeroRow({ hero, sparkCards }) {
+  if (!hero) return null;
+  const f = fmtKpi(hero.value, hero.unit);
+  return (
+    <div style={{ display: "flex", gap: 16 }}>
+      <div style={{ flex: 1.5, minWidth: 0, background: "linear-gradient(125deg,#515da8 0%,#62568f 100%)", borderRadius: 16, padding: "20px 22px", color: "#fff", position: "relative", overflow: "hidden", boxShadow: "0 6px 18px rgba(70,70,130,.16)" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.9 }}>{hero.label}</div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 7, marginTop: 10 }}>
+          <span style={{ fontSize: 38, fontWeight: 800, letterSpacing: "-1px", fontVariantNumeric: "tabular-nums" }}>{f.value}</span>
+          {f.unit ? <span style={{ fontSize: 15, fontWeight: 700, opacity: 0.85 }}>{f.unit}</span> : null}
+        </div>
+        {hero.sub ? <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.82, marginTop: 6 }}>{hero.sub}</div> : null}
+        {hero.series ? (
+          <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, opacity: 0.9, pointerEvents: "none" }}>
+            <Spark series={hero.series} color="#ffffff" w={360} h={64} pad={6} />
+          </div>
+        ) : null}
+        {hero.stats?.length ? (
+          <div style={{ position: "relative", display: "flex", gap: 26, marginTop: 18 }}>
+            {hero.stats.map((s) => (
+              <div key={s.k}>
+                <div style={{ fontSize: 18, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{s.v}</div>
+                <div style={{ fontSize: 11, fontWeight: 600, opacity: 0.82, marginTop: 3 }}>{s.k}</div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      {(sparkCards || []).map((c) => (
+        <div key={c.label} style={{ flex: 1, minWidth: 0, background: "#fff", border: "1px solid #ebedf2", borderRadius: 16, padding: "18px 18px 0", display: "flex", flexDirection: "column" }}>
+          <div style={{ fontSize: 12.5, color: "#9aa0ad", fontWeight: 700 }}>{c.label}</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 5, marginTop: 9 }}>
+            <span style={{ fontSize: 25, fontWeight: 800, fontVariantNumeric: "tabular-nums", color: C.ink }}>{c.value}</span>
+            {c.delta ? <span style={{ fontSize: 11.5, fontWeight: 800, color: tone(c.tone).color }}>{c.delta}</span> : null}
+          </div>
+          <div style={{ marginTop: "auto" }}>
+            {c.series ? <Spark series={c.series} color={tone(c.tone).color} w={240} h={56} /> : null}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -324,7 +444,7 @@ function TimelinePanel({ tasks, onPick }) {
               <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: C.ink }}>{t.streamer || t.anchor || "未指派主播"}</span>
               <span style={{ fontSize: 11.5, color: C.muted }}>{t.project || t.projectName || t.title || "—"}</span>
             </span>
-            <StatusChip label={t.anomaly ? "异常" : t.statusLabel || t.status || "待开播"} t={t.anomaly ? "danger" : t.status === "live" ? "ok" : "neutral"} />
+            <StatusChip label={isAnomaly(t) ? "异常" : t.statusLabel || t.status || "待开播"} t={isAnomaly(t) ? "danger" : isLive(t) ? "ok" : "neutral"} />
           </RowButton>
         ))}
       </div>
@@ -475,7 +595,6 @@ function DetailDrawer({ open, data, onClose, go }) {
   );
 }
 
-// 实时「N 秒前更新」计时器（基于 generatedAt，真实时间）。
 function useUpdatedLabel(generatedAt) {
   const [, force] = React.useReducer((x) => x + 1, 0);
   React.useEffect(() => {
@@ -487,6 +606,16 @@ function useUpdatedLabel(generatedAt) {
   return diff < 60 ? `${diff} 秒前更新` : `${Math.floor(diff / 60)} 分钟前更新`;
 }
 
+// 由真实漏斗算「准入通过率 / 结算转化率」（末段 / 首段），无则不展示。
+function funnelRate(funnel) {
+  const st = funnel?.stages;
+  if (!st?.length) return null;
+  const first = Number(st[0]?.value) || 0;
+  const last = Number(st[st.length - 1]?.value) || 0;
+  if (first <= 0) return null;
+  return Math.round((last / first) * 100);
+}
+
 export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches }) {
   const [pick, setPick] = React.useState(null);
   const d = dashboard || {};
@@ -494,14 +623,104 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
   const role = String(profile.role || "owner");
   const panels = d.panels || {};
   const kpis = d.kpis || [];
-  const hero = kpis[0] || null;
-  const restKpis = kpis.slice(1);
+  const heroKpi = kpis[0] || null;
   const riskCount = (d.risks || []).length;
+
+  // 给经营数据每个指标补一条真实的二级信息（设计稿第三行），均由实时数据算出。
+  const bizMetrics = React.useMemo(() => {
+    const recruiting = cnt(projects, (p) => pStatus(p, "recruiting"));
+    const active = cnt(projects, (p) => pStatus(p, "active"));
+    const live = cnt(tasks, isLive);
+    const notStarted = cnt(tasks, isNotStarted);
+    const anomalies = cnt(tasks, isAnomaly);
+    const gap = cnt(projects, (p) => (p?.streamers?.candidate ?? 0) > 0);
+    const recPending = (projects || []).reduce((s, p) => s + (p?.streamers?.pendingReview ?? 0), 0);
+    const pendReports = cnt(reports, (r) => r?.status === "pending_review");
+    const bs = (s) => cnt(batches, (b) => b.status === s);
+    const HINT = {
+      activeProjects: active || recruiting ? `招募 ${recruiting}` : "",
+      vendorReceivable: active ? `${active} 个项目` : "",
+      estimatedGross: "",
+      grossMarginRate: "",
+      highRiskItems: bs("reopened") ? `重开 ${bs("reopened")}` : "",
+      deliveryProgress: "",
+      streamerGapProjects: gap ? `${gap} 项告急` : "",
+      recordingsPending: recPending ? `录屏待审 ${recPending}` : "",
+      pendingReports: pendReports ? `待审 ${pendReports}` : "",
+      anomalyTasks: notStarted ? `未开播 ${notStarted}` : "",
+      myTodayTasks: `进行中 ${live}`,
+      notStartedTasks: anomalies ? `异常 ${anomalies}` : "",
+      streamerReminders: "",
+      settlementPoolAmount: "",
+      settlementPoolCount: "",
+      draftBatches: bs("pending_confirm") ? `待确认 ${bs("pending_confirm")}` : "",
+      weakEvidenceAmount: "",
+      reopenedBatches: "",
+    };
+    return kpis.slice(1).map((k) => ({ ...k, hint: k.hint || HINT[k.key] || "" }));
+  }, [kpis, projects, tasks, reports, batches]);
   const updatedLabel = useUpdatedLabel(d.generatedAt);
+  const updatedAt = d.generatedAt ? new Date(d.generatedAt).toLocaleString("zh-CN") : "";
+  const isOperator = role.includes("operator");
+
   const todoGroups = React.useMemo(
     () => computeTodoGroups(role, { projects, tasks, reports, batches }),
     [role, projects, tasks, reports, batches],
   );
+
+  // Hero：用首个真实 KPI 作为大数；为直播相关角色补「按小时排班累计」真实走势与实时分解。
+  const hero = React.useMemo(() => {
+    if (!heroKpi) return null;
+    const series = scheduleSeries(tasks);
+    const live = cnt(tasks, isLive);
+    const notStarted = cnt(tasks, isNotStarted);
+    const done = cnt(tasks, isDone);
+    const anomalies = cnt(tasks, isAnomaly);
+    const pendingReports = cnt(reports, (r) => r?.status === "pending_review");
+    const taskish = (tasks || []).length > 0;
+    return {
+      label: heroKpi.label,
+      value: heroKpi.value,
+      unit: heroKpi.unit,
+      sub: taskish ? `进行中 ${live} · 待开播 ${notStarted} · 已完成 ${done} · 异常 ${anomalies}` : heroKpi.hint || "",
+      stats: taskish
+        ? [
+            { k: "进行中", v: String(live) },
+            { k: "待报数", v: String(pendingReports) },
+            { k: "异常", v: String(anomalies) },
+          ]
+        : null,
+      series: isOperator || role.includes("ops") ? series : null,
+    };
+  }, [heroKpi, tasks, reports, role, isOperator]);
+
+  // 两张趋势卡：用真实漏斗算通过率/转化率，走势线用漏斗各阶段真实数值（非编造）。
+  const sparkCards = React.useMemo(() => {
+    const cards = [];
+    const af = panels.admissionFunnel;
+    const ar = funnelRate(af);
+    if (ar != null) {
+      cards.push({
+        label: "准入通过率",
+        value: `${ar}%`,
+        tone: ar >= 70 ? "ok" : "warn",
+        series: (af.stages || []).map((s) => Number(s.value) || 0),
+      });
+    }
+    const sf = panels.settlementFunnel;
+    const sr = funnelRate(sf);
+    if (sr != null) {
+      cards.push({
+        label: "结算池转化率",
+        value: `${sr}%`,
+        tone: sr >= 70 ? "ok" : "warn",
+        series: (sf.stages || []).map((s) => Number(s.value) || 0),
+      });
+    }
+    return cards;
+  }, [panels.admissionFunnel, panels.settlementFunnel]);
+
+  const liveLabel = isOperator ? "任务实时刷新" : role.includes("finance") ? "结算池实时变动" : "直播执行实时盘";
   const onPick = React.useCallback((p) => setPick({ ...p, sub: p.tag, fields: fieldsFor(p) }), []);
 
   return (
@@ -542,45 +761,21 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
           </SectionCard>
         ) : null}
 
-        {/* 项目/结算/审计…待办分组（真实计数） */}
-        <TodoGroups groups={todoGroups} go={go} />
+        {/* 待办分组（平铺一行，真实计数） */}
+        <TodoStrip groups={todoGroups} go={go} />
 
-        {/* 经营数据：Hero 大数（首个 KPI）+ 其余 KPI 卡 */}
-        {hero ? (
-          (() => {
-            const f = fmtKpi(hero.value, hero.unit);
-            return (
-              <Card style={{ background: C.heroGrad, border: "1px solid transparent", borderRadius: 20, padding: 20, color: "#fff", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-                <div>
-                  <div style={{ fontSize: 12.5, color: "rgba(255,255,255,.82)" }}>{hero.label}</div>
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 6 }}>
-                    <span style={{ fontSize: 34, fontWeight: 800 }}>{f.value}</span>
-                    {f.unit ? <span style={{ fontSize: 14, opacity: 0.85 }}>{f.unit}</span> : null}
-                  </div>
-                  {hero.hint ? <div style={{ fontSize: 12, color: "rgba(255,255,255,.78)", marginTop: 6 }}>{hero.hint}</div> : null}
-                </div>
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "rgba(255,255,255,.85)", background: "rgba(255,255,255,.14)", padding: "4px 10px", borderRadius: 999 }}>
-                  <span style={{ width: 6, height: 6, borderRadius: 999, background: "#fff", animation: "livepulse 1.6s infinite" }} />经营闭环 · 实时
-                </span>
-              </Card>
-            );
-          })()
-        ) : null}
+        {/* 经营数据卡（标题栏 + 指标条，真实 KPI） */}
+        <BizDataCard metrics={bizMetrics} updatedAt={updatedAt} liveLabel={liveLabel} />
 
-        {restKpis.length ? (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12 }}>
-            {restKpis.map((it, i) => (
-              <KpiCard key={it.key} item={it} accent={KPI_ACCENTS[i % KPI_ACCENTS.length]} />
-            ))}
-          </div>
-        ) : null}
+        {/* Hero（真实排班累计走势）+ 两张趋势卡（真实通过率/转化率） */}
+        <HeroRow hero={hero} sparkCards={sparkCards} />
 
         {/* 深度分析区块（按角色/数据门控，缺数据自动隐藏） */}
         <FunnelPanel funnel={panels.admissionFunnel} go={go} onPick={onPick} />
         <FunnelPanel funnel={panels.settlementFunnel} go={go} onPick={onPick} />
         <TimelinePanel tasks={tasks} onPick={onPick} />
         <QueuePanel title="项目卡点队列" hint="按卡住时长" items={d.queue} go={go} />
-        {role.includes("operator") ? <TaskStreamPanel tasks={tasks} onPick={onPick} /> : null}
+        {isOperator ? <TaskStreamPanel tasks={tasks} onPick={onPick} /> : null}
         <ReviewQueuePanel reports={reports} onPick={onPick} />
         <LanesPanel data={panels.batchLanes} onPick={onPick} />
         <AmountRiskPanel data={panels.amountRisks} go={go} onPick={onPick} />
@@ -589,7 +784,7 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
         <QueuePanel title="风险告警流" hint={`${riskCount} 未处理`} items={d.risks} go={go} />
         <QueuePanel title="常用入口" hint="一键进入对应闭环阶段" items={d.drilldowns} go={go} />
 
-        {updatedLabel ? <div style={{ fontSize: 12, color: C.muted }}>数据更新时间：{d.generatedAt ? new Date(d.generatedAt).toLocaleString("zh-CN") : "—"}</div> : null}
+        {updatedAt ? <div style={{ fontSize: 12, color: C.muted }}>数据更新时间：{updatedAt}</div> : null}
       </div>
 
       <DetailDrawer open={!!pick} data={pick} onClose={() => setPick(null)} go={go} />
