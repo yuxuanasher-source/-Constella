@@ -5868,6 +5868,22 @@ describe("OpsReferenceApp settlement smoke", () => {
           }),
         };
       }
+      if (String(url) === "/api/projects") {
+        return {
+          ok: true,
+          json: async () => ({
+            // 项目默认小时单价即厂家单价，导出的小时单价/达人费用都应取这个值。
+            projects: [
+              {
+                id: "project-export-one",
+                name: "Project Export",
+                product: "Game X",
+                defaultHourlyRate: 80,
+              },
+            ],
+          }),
+        };
+      }
       return {
         ok: true,
         json: async () => ({
@@ -5896,6 +5912,7 @@ describe("OpsReferenceApp settlement smoke", () => {
             streamer: "Streamer Export",
             streamerId: "streamer-export-one",
             project: "Project Export",
+            projectId: "project-export-one",
             taskId: "task-export-one",
             duration: 2,
             systemDurationHours: 2,
@@ -5927,13 +5944,14 @@ describe("OpsReferenceApp settlement smoke", () => {
           {
             reportId: "report-export-one",
             guildOrIndividual: "星辰公会",
-            gameProduct: "Project Export",
+            gameProduct: "Game X",
             streamerName: "Streamer Export",
             liveDate: "2026-06-02",
             liveTime: "—",
             duration: "2 小时",
-            hourlyRate: "—",
-            talentFee: "—",
+            // 小时单价 = 厂家单价（项目默认小时单价）；达人费用 = 厂家单价 × 时长。
+            hourlyRate: "¥80",
+            talentFee: "¥160.00",
             screenshot: "1 张",
           },
         ],
