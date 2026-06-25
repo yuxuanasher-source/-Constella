@@ -1,5 +1,6 @@
 import type { AuthContext } from "@/lib/auth/context";
 import type { AppRole } from "@/lib/rbac/roles";
+import type { AiTier } from "./tiers";
 
 export type AiToolScope =
   | "mcn_staff"
@@ -28,6 +29,8 @@ export type AiTool<I, O> = {
   scopes: AiToolScope[];
   masking: AiToolMasking;
   readOnly: true;
+  // AI 能力分层（方案第 2 节）。只读工具默认 L1_PERCEIVE；L4_FORBIDDEN 永不注册。
+  tier?: AiTier;
   handler(input: I, ctx: AiToolContext): Promise<O> | O;
 };
 
