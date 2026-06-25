@@ -61,6 +61,12 @@ export const STATE_MACHINE_META: readonly StateMeta[] = [
   meta("onboarding", "recording_submitted", "L1_PERCEIVE"),
   meta("onboarding", "recording_approved", "L4_FORBIDDEN", true, true, true, false),
   meta("onboarding", "joined", "L4_FORBIDDEN", true, true, true, false),
+  // 任务 / 异常处置（L3 受限执行）
+  meta("task", "abnormal_ticket", "L3_BOUNDED"), // 创建异常工单：可逆，执行
+  meta("task", "cancelled", "L3_BOUNDED", true), // 转取消终态：人工确认
+  // 通知（L3 受限执行）
+  meta("notification", "queued", "L3_BOUNDED"), // 低风险通知：执行
+  meta("notification", "high_risk_sent", "L3_BOUNDED", true), // 高风险通知：人工确认
 ];
 
 export function findStateMeta(
