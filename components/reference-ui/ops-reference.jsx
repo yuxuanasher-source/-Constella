@@ -5470,6 +5470,16 @@ function ProjectList({ go }) {
   const projects = useOpsProjects();
   const collaborationProjects = useOpsCollaborationProjects();
   const actions = useOpsLiveActions();
+  // 进入项目列表时若尚无项目数据（例如从未携带 projectCards 的首页路由切过来），
+  // 主动拉一次，避免列表一直空白、必须先去别的模块才把数据带出来。
+  const { projects: projectData } = React.useContext(OpsLiveDataContext);
+  React.useEffect(() => {
+    if (projectData == null && actions.refreshProjects) {
+      actions
+        .refreshProjects()
+        .catch((error) => warnBackgroundRefreshFailure("projects", error));
+    }
+  }, [actions, projectData]);
   const [status, setStatus] = React.useState("all");
   const [sourceFilter, setSourceFilter] = React.useState("all");
   const [viewMode, setViewMode] = React.useState("table");

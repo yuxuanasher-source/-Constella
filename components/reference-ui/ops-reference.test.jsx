@@ -619,6 +619,29 @@ describe("OpsReferenceApp project smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  it("auto-loads projects when the list opens without injected project cards", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/projects") {
+        return {
+          ok: true,
+          json: async () => ({
+            projects: [{ ...taskProjectCards[0], name: "懒加载项目" }],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // 不注入 projectCards（模拟从首页路由切入项目列表）。
+    render(<OpsReferenceApp initialRoute="projects" applicationQueue={[]} />);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/projects", undefined),
+    );
+    expect(await screen.findByText("懒加载项目")).toBeInTheDocument();
+  });
+
   it("supports source filter and table/board/cards views on the project list", () => {
     const collabCard = {
       ...taskProjectCards[0],
