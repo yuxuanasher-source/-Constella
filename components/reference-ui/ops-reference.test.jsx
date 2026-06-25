@@ -5813,11 +5813,29 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(screen.queryByText("¥73,200")).not.toBeInTheDocument();
   });
 
-  it("exports filtered report details through governed export", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ export: { id: "export-reports" } }),
-    }));
+  it("exports report settlement details from the export settings panel", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/exports") {
+        return {
+          ok: true,
+          json: async () => ({
+            export: {
+              filename: "report_settlement_details-2026-06-25.csv",
+              content: "header\nrow",
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          projects: [],
+          streamers: [],
+          tasks: [],
+          reports: [],
+        }),
+      };
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     render(
@@ -5828,9 +5846,11 @@ describe("OpsReferenceApp settlement smoke", () => {
             id: "report-export-one",
             date: "2026-06-02",
             streamer: "Streamer Export",
+            streamerId: "streamer-export-one",
             project: "Project Export",
             taskId: "task-export-one",
             duration: 2,
+            systemDurationHours: 2,
             audience: 900,
             status: "pending_review",
             screens: 1,
@@ -5840,27 +5860,38 @@ describe("OpsReferenceApp settlement smoke", () => {
       />,
     );
 
+    // 点击按钮弹出导出设置面板（不直接导出）。
     fireEvent.click(screen.getByRole("button", { name: "导出报数明细" }));
+    expect(
+      await screen.findByRole("dialog", { name: "导出报数明细" }),
+    ).toBeInTheDocument();
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/exports",
-      expect.objectContaining({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      kind: "report_details",
-      rows: [
-        {
-          streamerName: "Streamer Export",
-          settlementDuration: 2,
-          evidenceLevel: "OCR · pending_review",
-        },
-      ],
+    // 默认全选，点击「确认导出」。
+    fireEvent.click(screen.getByRole("button", { name: "确认导出" }));
+
+    await waitFor(() => {
+      const exportCall = fetchMock.mock.calls.find(
+        (call) => call[0] === "/api/exports",
+      );
+      expect(exportCall).toBeTruthy();
+      expect(JSON.parse(exportCall[1].body)).toEqual({
+        kind: "report_settlement_details",
+        rows: [
+          {
+            guildOrIndividual: "个人",
+            gameProduct: "Project Export",
+            streamerName: "Streamer Export",
+            liveDate: "2026-06-02",
+            liveTime: "—",
+            duration: "2 小时",
+            hourlyRate: "—",
+            talentFee: "—",
+            screenshot: "1 张",
+          },
+        ],
+      });
     });
-    expect(await screen.findByText("报数明细导出已生成")).toBeInTheDocument();
+    expect(await screen.findByText("已导出 1 条报数明细")).toBeInTheDocument();
   });
 
   it("polls streamer-submitted reports into the pending review queue with task details", async () => {
