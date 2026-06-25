@@ -1,6 +1,15 @@
 ﻿"use client";
 /* eslint-disable */
 import React from "react";
+import {
+  Avatar as HeroAvatar,
+  Button as HeroButton,
+  Card as HeroCard,
+  Chip as HeroChip,
+  InputGroup as HeroInputGroup,
+  TabList as HeroTabList,
+  Tabs as HeroTabs,
+} from "@heroui/react";
 
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
 import {
@@ -14,6 +23,18 @@ import {
 // ——— Reusable UI atoms ——————————————————————————————————————
 
 // Status badge — color via tone prop
+// Maps the legacy `tone` palette onto HeroUI Chip colors.
+const CHIP_COLOR_BY_TONE = {
+  neutral: "default",
+  ink: "default",
+  blue: "accent",
+  violet: "accent",
+  teal: "accent",
+  green: "success",
+  amber: "warning",
+  red: "danger",
+};
+
 function Badge({
   tone = "neutral",
   children,
@@ -21,80 +42,41 @@ function Badge({
   soft = true,
   style,
 }) {
-  const tones = {
-    neutral: ["#EEF2F7", "#475569", "#94A3B8"],
-    blue: ["#EEF3FF", "#1842A6", "#3B6BE6"],
-    green: ["#E6F6EE", "#0E8A4D", "#22B86C"],
-    amber: ["#FFF3DC", "#A86A00", "#E5A33A"],
-    red: ["#FDECEC", "#C0303A", "#E66670"],
-    violet: ["#EFEBFF", "#5B4BD1", "#8C7DEB"],
-    teal: ["#DEF3F0", "#0E7C77", "#3CB1AB"],
-    ink: ["#E2E8F0", "#1E2A47", "#475569"],
-  };
-  const [bg, fg, dotC] = tones[tone] || tones.neutral;
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "2px 8px",
-        borderRadius: 999,
-        background: soft ? bg : "transparent",
-        color: fg,
-        fontSize: 12,
-        lineHeight: "18px",
-        fontWeight: 500,
-        whiteSpace: "nowrap",
-        border: soft ? "none" : `1px solid ${dotC}`,
-        ...style,
-      }}
+    <HeroChip
+      color={CHIP_COLOR_BY_TONE[tone] || "default"}
+      variant={soft ? "soft" : "tertiary"}
+      size="sm"
+      style={style}
     >
-      {dot && (
-        <span
-          style={{ width: 6, height: 6, borderRadius: 999, background: dotC }}
-        />
-      )}
       {children}
-    </span>
+    </HeroChip>
   );
 }
 
-// Solid Status pill with vertical line accent — for table status columns
+// Status pill for table status columns — HeroUI soft chip.
 function StatusPill({ tone = "neutral", children }) {
-  const tones = {
-    neutral: ["#64748B"],
-    blue: ["#1E50C8"],
-    green: ["#0E8A4D"],
-    amber: ["#C58A1A"],
-    red: ["#C0303A"],
-    violet: ["#5B4BD1"],
-    teal: ["#0E7C77"],
-  };
-  const [c] = tones[tone] || tones.neutral;
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        fontSize: 13,
-        color: "var(--ink-700)",
-      }}
+    <HeroChip
+      color={CHIP_COLOR_BY_TONE[tone] || "default"}
+      variant="soft"
+      size="sm"
     >
-      <span
-        style={{
-          width: 6,
-          height: 6,
-          borderRadius: 999,
-          background: c,
-          boxShadow: `0 0 0 3px ${c}22`,
-        }}
-      />
       {children}
-    </span>
+    </HeroChip>
   );
 }
+
+// HeroUI-backed button. Keeps the original `kind` API by mapping it onto
+// HeroUI `variant`s. `onClick` is passed through (react-aria Button forwards
+// the native click, so existing `e.stopPropagation()` handlers keep working).
+const BUTTON_VARIANT_BY_KIND = {
+  primary: "primary",
+  default: "outline",
+  ghost: "ghost",
+  danger: "danger-soft",
+  link: "tertiary",
+};
 
 function Button({
   kind = "default",
@@ -106,87 +88,26 @@ function Button({
   style,
   type = "button",
 }) {
-  const sizes = {
-    sm: { h: 26, px: 10, fs: 12, gap: 4 },
-    md: { h: 32, px: 12, fs: 13, gap: 6 },
-    lg: { h: 38, px: 16, fs: 14, gap: 8 },
-  };
-  const s = sizes[size];
-  const kinds = {
-    primary: {
-      bg: "var(--blue-600)",
-      color: "#fff",
-      border: "1px solid var(--blue-600)",
-      hover: "var(--blue-700)",
-    },
-    default: {
-      bg: "#fff",
-      color: "var(--ink-700)",
-      border: "1px solid var(--line-strong)",
-      hover: "#F4F6FB",
-    },
-    ghost: {
-      bg: "transparent",
-      color: "var(--ink-500)",
-      border: "1px solid transparent",
-      hover: "#EEF2F7",
-    },
-    danger: {
-      bg: "#fff",
-      color: "var(--danger-600)",
-      border: "1px solid #F3C4C9",
-      hover: "#FDECEC",
-    },
-    link: {
-      bg: "transparent",
-      color: "var(--blue-600)",
-      border: "none",
-      hover: "transparent",
-    },
-  };
-  const k = kinds[kind];
-  const [hover, setHover] = React.useState(false);
   return (
-    <button
+    <HeroButton
       type={type}
+      variant={BUTTON_VARIANT_BY_KIND[kind] || "outline"}
+      size={size}
+      isDisabled={disabled}
       onClick={onClick}
-      disabled={disabled}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        height: s.h,
-        padding: `0 ${s.px}px`,
-        fontSize: s.fs,
-        background: hover && !disabled ? k.hover : k.bg,
-        color: k.color,
-        border: k.border,
-        borderRadius: 6,
-        cursor: disabled ? "not-allowed" : "pointer",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: s.gap,
-        fontWeight: 500,
-        opacity: disabled ? 0.55 : 1,
-        transition: "background 100ms ease",
-        whiteSpace: "nowrap",
-        ...style,
-      }}
+      style={style}
     >
       {icon}
       {children}
-    </button>
+    </HeroButton>
   );
 }
 
-// Card — base container
+// Card — HeroUI surface container (keeps the title/extra/padded API).
 function Card({ children, title, extra, padded = true, style, bodyStyle }) {
   return (
-    <div
+    <HeroCard
       style={{
-        background: "#fff",
-        border: "1px solid var(--line)",
-        borderRadius: 10,
-        boxShadow: "var(--shadow-card)",
         display: "flex",
         flexDirection: "column",
         ...style,
@@ -218,7 +139,7 @@ function Card({ children, title, extra, padded = true, style, bodyStyle }) {
       <div style={{ padding: padded ? 16 : 0, flex: 1, ...bodyStyle }}>
         {children}
       </div>
-    </div>
+    </HeroCard>
   );
 }
 
@@ -266,37 +187,22 @@ function KV({ label, children, w = 96 }) {
   );
 }
 
-// Avatar — initials disc
+// Avatar — HeroUI avatar with initials fallback. Exact pixel sizing is kept
+// via inline style so dense table/detail layouts stay aligned.
 function Avatar({ name, size = 28, tone }) {
-  const palette = [
-    "#1E50C8",
-    "#5B4BD1",
-    "#0E7C77",
-    "#A86A00",
-    "#C0303A",
-    "#0E8A4D",
-  ];
-  const code = (name || "?").split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-  const bg = tone || palette[code % palette.length];
   const initials = (name || "?").slice(0, 1);
   return (
-    <span
+    <HeroAvatar
+      size="sm"
       style={{
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
         width: size,
         height: size,
-        borderRadius: 999,
-        background: `${bg}18`,
-        color: bg,
         fontSize: size * 0.42,
-        fontWeight: 600,
         flexShrink: 0,
       }}
     >
-      {initials}
-    </span>
+      <HeroAvatar.Fallback>{initials}</HeroAvatar.Fallback>
+    </HeroAvatar>
   );
 }
 
@@ -497,91 +403,57 @@ function Metric({
   );
 }
 
-// Search input
+// Search input — HeroUI input group with a leading search icon.
 function SearchInput({ placeholder = "搜索…", value, onChange, width = 280 }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        height: 32,
-        padding: "0 10px",
-        width,
-        border: "1px solid var(--line-strong)",
-        borderRadius: 6,
-        background: "#fff",
-      }}
-    >
-      <Icon.Search size={14} stroke="var(--ink-400)" />
-      <input
+    <HeroInputGroup style={{ width }}>
+      <HeroInputGroup.Prefix>
+        <Icon.Search size={14} stroke="var(--ink-400)" />
+      </HeroInputGroup.Prefix>
+      <HeroInputGroup.Input
         value={value || ""}
         onChange={(e) => onChange?.(e.target.value)}
         placeholder={placeholder}
-        style={{
-          flex: 1,
-          border: "none",
-          outline: "none",
-          background: "transparent",
-          fontSize: 13,
-          color: "var(--ink-700)",
-        }}
       />
-    </div>
+    </HeroInputGroup>
   );
 }
 
-// Tab control — pill underline style
+// Tab control — HeroUI tabs (tab bar only; screens render their own panels).
 function Tabs({ items, value, onChange, size = "md" }) {
-  const fs = size === "lg" ? 14 : 13;
   return (
-    <div
-      style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--line)" }}
+    <HeroTabs
+      selectedKey={value}
+      onSelectionChange={(key) => onChange?.(key)}
     >
-      {items.map((it) => {
-        const active = it.key === value;
-        return (
-          <button
-            key={it.key}
-            onClick={() => onChange?.(it.key)}
-            style={{
-              padding: "10px 14px",
-              background: "transparent",
-              border: "none",
-              borderBottom: active
-                ? "2px solid var(--blue-600)"
-                : "2px solid transparent",
-              marginBottom: -1,
-              cursor: "pointer",
-              color: active ? "var(--blue-700)" : "var(--ink-500)",
-              fontWeight: active ? 600 : 500,
-              fontSize: fs,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            {it.label}
-            {it.count != null && (
-              <span
-                style={{
-                  background: active ? "var(--blue-50)" : "var(--ink-50)",
-                  color: active ? "var(--blue-700)" : "var(--ink-400)",
-                  borderRadius: 999,
-                  padding: "0 6px",
-                  fontSize: 11,
-                  fontWeight: 500,
-                  minWidth: 18,
-                  textAlign: "center",
-                }}
-              >
-                {it.count}
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </div>
+      <HeroTabList>
+        {items.map((it) => (
+          <HeroTabs.Tab key={it.key} id={it.key}>
+            <span
+              style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+            >
+              {it.label}
+              {it.count != null && (
+                <span
+                  style={{
+                    background: "var(--ink-50)",
+                    color: "var(--ink-400)",
+                    borderRadius: 999,
+                    padding: "0 6px",
+                    fontSize: 11,
+                    fontWeight: 500,
+                    minWidth: 18,
+                    textAlign: "center",
+                  }}
+                >
+                  {it.count}
+                </span>
+              )}
+            </span>
+          </HeroTabs.Tab>
+        ))}
+      </HeroTabList>
+    </HeroTabs>
   );
 }
 
@@ -614,27 +486,19 @@ function MiniBar({ value, max = 100, tone = "blue", width = 80 }) {
   );
 }
 
-// Risk dot — single colored circle
+// Risk indicator — HeroUI soft chip colored by level.
 function RiskDot({ level }) {
   const map = {
-    low: ["var(--ok-600)", "低"],
-    medium: ["#C58A1A", "中"],
-    high: ["var(--danger-600)", "高"],
-    none: ["var(--ink-200)", "无"],
+    low: ["success", "低"],
+    medium: ["warning", "中"],
+    high: ["danger", "高"],
+    none: ["default", "无"],
   };
-  const [c, t] = map[level] || map.none;
+  const [color, label] = map[level] || map.none;
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        fontSize: 12,
-      }}
-    >
-      <span style={{ width: 8, height: 8, borderRadius: 999, background: c }} />
-      {t}
-    </span>
+    <HeroChip color={color} variant="soft" size="sm">
+      {label}
+    </HeroChip>
   );
 }
 // ===== src\data.jsx =====

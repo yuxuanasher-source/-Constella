@@ -354,7 +354,7 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("详情项目"));
-    fireEvent.click(screen.getByRole("button", { name: /主播阵容/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /主播阵容/ }));
     fireEvent.click(screen.getByRole("button", { name: "邀请主播" }));
     fireEvent.change(screen.getByLabelText("选择主播"), {
       target: { value: "streamer-one" },
@@ -1063,7 +1063,7 @@ describe("OpsReferenceApp live task smoke", () => {
     });
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/live-tasks", undefined);
 
-    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /任务列表\s*1/ }));
     expect(await screen.findByText("task-ui-created")).toBeInTheDocument();
   });
 
@@ -1131,7 +1131,7 @@ describe("OpsReferenceApp live task smoke", () => {
       title: "Mapped Project · Streamer One",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /任务列表\s*1/ }));
     fireEvent.click(await screen.findByText("task-project-mapped"));
     fireEvent.click(await screen.findByRole("button", { name: "查看项目" }));
 
@@ -1237,7 +1237,7 @@ describe("OpsReferenceApp live task smoke", () => {
     });
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/live-tasks", undefined);
 
-    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*2/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /任务列表\s*2/ }));
     expect(await screen.findByText("task-ui-batch-1")).toBeInTheDocument();
     expect(screen.getByText("task-ui-batch-2")).toBeInTheDocument();
   });
@@ -1281,7 +1281,7 @@ describe("OpsReferenceApp live task smoke", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*2/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /任务列表\s*2/ }));
     fireEvent.change(screen.getByLabelText("主播筛选"), {
       target: { value: "streamer-two" },
     });
@@ -1329,7 +1329,7 @@ describe("OpsReferenceApp live task smoke", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /异常任务\s*1/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /异常任务\s*1/ }));
     fireEvent.click(screen.getByRole("button", { name: "扫描历史" }));
     expect(screen.getByText("异常扫描历史后台暂未接入。")).toBeInTheDocument();
 
@@ -1376,7 +1376,7 @@ describe("OpsReferenceApp live task smoke", () => {
 
     render(<OpsReferenceApp initialRoute="tasks" liveTasks={[initialTask]} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /任务列表\s*1/ }));
     fireEvent.click(screen.getByText("task-ui-cancel"));
     fireEvent.click(await screen.findByRole("button", { name: "取消任务" }));
 
@@ -1392,7 +1392,7 @@ describe("OpsReferenceApp live task smoke", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/live-tasks", undefined);
 
-    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /任务列表\s*1/ }));
     expect((await screen.findAllByText("已取消")).length).toBeGreaterThan(0);
   });
 });
@@ -2224,7 +2224,7 @@ describe("OpsReferenceApp war room smoke", () => {
     expect(await screen.findByText("复盘结论：继续投入")).toBeInTheDocument();
     expect(screen.getByText("13,200.00 元")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /主播匹配引擎/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /主播匹配引擎/ }));
     fireEvent.click(screen.getByRole("button", { name: "导出厂家候选包" }));
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
@@ -2235,7 +2235,7 @@ describe("OpsReferenceApp war room smoke", () => {
     expect(await screen.findByText("接口主播")).toBeInTheDocument();
     expect(screen.getByText("接口供应商")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "报价 & 测算" }));
+    fireEvent.click(screen.getByRole("tab", { name: "报价 & 测算" }));
     fireEvent.click(screen.getByRole("button", { name: "生成立项申请" }));
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
@@ -2349,7 +2349,7 @@ describe("OpsReferenceApp org smoke", () => {
   it("filters members through a real role selector and marks org-only actions pending", () => {
     render(<OpsReferenceApp initialRoute="org" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /成员管理/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /成员管理/ }));
     fireEvent.change(screen.getByLabelText("角色筛选"), {
       target: { value: "finance" },
     });
