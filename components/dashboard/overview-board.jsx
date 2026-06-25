@@ -659,7 +659,103 @@ function updatedLabelFrom(generatedAt) {
   return diff < 60 ? `${diff} 秒前更新` : `${Math.floor(diff / 60)} 分钟前更新`;
 }
 
-export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches }) {
+// ——— 个人信息面板（右侧栏，参考钉钉/飞书首页个人卡） ———
+const ROLE_LABELS = { owner: "负责人", ops_manager: "运营负责人", operator_business: "次级运营", finance: "财务", streamer: "主播" };
+function greeting() {
+  const h = new Date().getHours();
+  return h < 6 ? "凌晨好" : h < 11 ? "早上好" : h < 13 ? "中午好" : h < 18 ? "下午好" : "晚上好";
+}
+
+function PanelCard({ title, extra, children, pad = true }) {
+  return (
+    <div style={{ background: "#fff", border: `1px solid ${C.border}`, borderRadius: 16, boxShadow: "0 1px 2px rgba(20,24,40,.04)", overflow: "hidden" }}>
+      {title ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "13px 16px", borderBottom: `1px solid ${C.divider}` }}>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: C.ink }}>{title}</h3>
+          {extra ? <span style={{ marginLeft: "auto", fontSize: 11.5, color: C.muted, fontWeight: 600 }}>{extra}</span> : null}
+        </div>
+      ) : null}
+      <div style={{ padding: pad ? 16 : 0 }}>{children}</div>
+    </div>
+  );
+}
+
+function PersonalPanel({ user, scopeLabel, summary, recos, todos, go }) {
+  const name = (user?.name && user.name !== "未登录用户" ? user.name : null) || "经营舱用户";
+  const roleLabel = ROLE_LABELS[user?.role] || "成员";
+  const org = user?.org || user?.dept || scopeLabel || "";
+  const [done, setDone] = React.useState({});
+  return (
+    <>
+      {/* 1. 问候 + 身份 */}
+      <div style={{ background: C.heroGrad, borderRadius: 16, padding: 18, color: "#fff", boxShadow: "0 6px 18px rgba(70,70,130,.16)" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.92 }}>{greeting()}，{name} 👋</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14 }}>
+          <span style={{ width: 46, height: 46, flex: "none", borderRadius: "50%", background: "rgba(255,255,255,.22)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 19, fontWeight: 800 }}>{name[0] || "U"}</span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 800 }}>{name}</div>
+            <div style={{ fontSize: 11.5, opacity: 0.82, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{roleLabel}{org ? ` · ${org}` : ""}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. 大盘总览 · 要点汇总 */}
+      <PanelCard title="大盘总览" extra="要点汇总">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          {summary.map((s) => (
+            <div key={s.label} style={{ background: C.soft, border: `1px solid ${C.divider}`, borderRadius: 12, padding: "10px 12px" }}>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 700 }}>{s.label}</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 3, marginTop: 6 }}>
+                <span style={{ fontSize: 20, fontWeight: 800, color: s.color || C.ink, fontVariantNumeric: "tabular-nums" }}>{s.value}</span>
+                {s.unit ? <span style={{ fontSize: 11, color: C.muted }}>{s.unit}</span> : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      </PanelCard>
+
+      {/* 3. 今日推荐 */}
+      {recos.length ? (
+        <PanelCard title="今日推荐" pad={false}>
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {recos.map((r) => (
+              <button key={r.text} type="button" onClick={() => r.route && go?.(r.route)} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", border: 0, background: "transparent", padding: "11px 16px", borderBottom: `1px solid ${C.divider2}`, cursor: "pointer" }}>
+                <span style={{ width: 30, height: 30, flex: "none", borderRadius: 9, background: tone(r.tone).bg, color: tone(r.tone).color, display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12.5 }}>{r.icon}</span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: "block", fontSize: 12.5, fontWeight: 700, color: C.ink }}>{r.text}</span>
+                  <span style={{ fontSize: 11, color: C.muted }}>{r.sub}</span>
+                </span>
+                <span style={{ fontSize: 13, color: C.primary, fontWeight: 700 }}>→</span>
+              </button>
+            ))}
+          </div>
+        </PanelCard>
+      ) : null}
+
+      {/* 4. 待办事项 */}
+      {todos.length ? (
+        <PanelCard title="待办事项" extra={`${todos.length} 项`} pad={false}>
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {todos.map((t) => {
+              const checked = !!done[t.key];
+              return (
+                <div key={t.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 16px", borderBottom: `1px solid ${C.divider2}` }}>
+                  <button type="button" aria-label="标记完成" onClick={() => setDone((dd) => ({ ...dd, [t.key]: !dd[t.key] }))} style={{ width: 18, height: 18, flex: "none", borderRadius: 6, border: `1.5px solid ${checked ? C.primary : "#cfd4e0"}`, background: checked ? C.primary : "#fff", color: "#fff", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, padding: 0 }}>{checked ? "✓" : ""}</button>
+                  <button type="button" onClick={() => t.route && go?.(t.route)} style={{ flex: 1, minWidth: 0, textAlign: "left", border: 0, background: "transparent", padding: 0, cursor: "pointer" }}>
+                    <span style={{ display: "block", fontSize: 12.5, fontWeight: 600, color: checked ? C.muted : C.ink, textDecoration: checked ? "line-through" : "none" }}>{t.text}</span>
+                  </button>
+                  {t.count != null ? <span style={{ flex: "none", fontSize: 11, fontWeight: 800, color: tone(t.tone).color, background: tone(t.tone).bg, padding: "1px 8px", borderRadius: 20 }}>{t.count}</span> : null}
+                </div>
+              );
+            })}
+          </div>
+        </PanelCard>
+      ) : null}
+    </>
+  );
+}
+
+export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches, currentUser }) {
   const [pick, setPick] = React.useState(null);
   useClock();
   const d = dashboard || {};
@@ -731,12 +827,43 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
     return cards;
   }, [panels.admissionFunnel, panels.settlementFunnel]);
 
+  // 个人面板：大盘要点 / 今日推荐 / 待办，均由真实数据派生（标签与看板区块不重复）。
+  const personal = React.useMemo(() => {
+    const active = cnt(projects, (p) => ["active", "recruiting", "settling"].includes(p?.status));
+    const pendingReports = cnt(reports, (r) => r?.status === "pending_review");
+    const anomalies = cnt(tasks, isAnomaly);
+    const recordingPending = (projects || []).reduce((s, p) => s + (p?.streamers?.pendingReview ?? 0), 0);
+    const lowMargin = cnt(projects, (p) => Number.isFinite(margin(p)) && margin(p) < 20);
+    const bs = (s) => cnt(batches, (b) => b.status === s);
+    const todoTotal = todoGroups.reduce((s, g) => s + g.items.reduce((a, i) => a + (Number(i.value) || 0), 0), 0);
+    const summary = [
+      { label: "在营项目", value: String(active), color: C.primary },
+      { label: "待办合计", value: String(todoTotal) },
+      { label: "风险数", value: String(riskCount), color: riskCount ? C.danger : C.ink },
+      { label: "今日场次", value: String((tasks || []).length) },
+    ];
+    const recos = [];
+    if (recordingPending > 0) recos.push({ icon: "录", text: "优先处理录屏审核", sub: `${recordingPending} 条待审`, tone: "warn", route: "projects" });
+    if (anomalies > 0) recos.push({ icon: "异", text: "跟进异常直播任务", sub: `${anomalies} 个异常`, tone: "danger", route: "tasks" });
+    if (lowMargin > 0) recos.push({ icon: "复", text: "复盘低毛利项目", sub: `${lowMargin} 个`, tone: "warn", route: "warroom" });
+    if (pendingReports > 0) recos.push({ icon: "审", text: "清理待审报数", sub: `${pendingReports} 条`, tone: "info", route: "reports" });
+    if (!recos.length) recos.push({ icon: "看", text: "查看项目经营排行", sub: "按毛利贡献", tone: "info", route: "warroom" });
+    const todos = [];
+    if (pendingReports > 0) todos.push({ key: "rev", text: "审核待审报数", count: pendingReports, tone: "warn", route: "reports" });
+    if (anomalies > 0) todos.push({ key: "ano", text: "处理异常直播任务", count: anomalies, tone: "danger", route: "tasks" });
+    if (bs("draft") > 0) todos.push({ key: "bat", text: "生成结算批次", count: bs("draft"), tone: "neutral", route: "settle" });
+    if (bs("pending_confirm") > 0) todos.push({ key: "cfm", text: "确认待确认批次", count: bs("pending_confirm"), tone: "warn", route: "settle" });
+    if (!todos.length) todos.push({ key: "none", text: "暂无紧急待办，保持关注经营总览", count: null, route: "warroom" });
+    return { summary, recos: recos.slice(0, 3), todos };
+  }, [projects, tasks, reports, batches, todoGroups, riskCount]);
+
   const liveLabel = isOperator ? "任务实时刷新" : role.includes("finance") ? "结算池实时变动" : "直播执行实时盘";
   const onPick = React.useCallback((p) => setPick({ ...p, sub: p.tag, fields: fieldsFor(p) }), []);
 
   return (
     <div style={{ background: C.page, minHeight: "100%" }}>
-      <div style={{ width: "100%", maxWidth: 1440, margin: "0 auto", padding: 20, display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box" }}>
+      <div style={{ display: "flex", gap: 16, padding: 20, alignItems: "flex-start", boxSizing: "border-box" }}>
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 16 }}>
         {/* 头部 */}
         <div style={{ display: "flex", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 240 }}>
@@ -799,6 +926,10 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
         </div>
 
         {updatedAt ? <div style={{ fontSize: 12, color: C.muted }}>数据更新时间：{updatedAt}</div> : null}
+        </div>
+        <aside style={{ width: 340, flex: "none", position: "sticky", top: 20, alignSelf: "flex-start", display: "flex", flexDirection: "column", gap: 16 }}>
+          <PersonalPanel user={currentUser} scopeLabel={profile.scopeLabel} summary={personal.summary} recos={personal.recos} todos={personal.todos} go={go} />
+        </aside>
       </div>
 
       <DetailDrawer open={!!pick} data={pick} onClose={() => setPick(null)} go={go} />

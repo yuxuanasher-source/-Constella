@@ -2955,6 +2955,7 @@ function ScreenWarRoom({ go }) {
   const tasks = useOpsTasks();
   const reports = useOpsReports();
   const batches = useOpsSettlementBatches();
+  const warRoomCurrentUser = useOpsCurrentUser();
   const ocrJobs = useOpsOcrJobs();
   const activeProjects = projects.filter((project) =>
     ["active", "recruiting", "settling"].includes(project.status),
@@ -2994,6 +2995,7 @@ function ScreenWarRoom({ go }) {
         tasks={tasks}
         reports={reports}
         batches={batches}
+        currentUser={warRoomCurrentUser}
       />
     );
   }
