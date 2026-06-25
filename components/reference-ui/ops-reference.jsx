@@ -6,6 +6,8 @@ import {
   Card as HeroCard,
   Chip as HeroChip,
   InputGroup as HeroInputGroup,
+  TabList as HeroTabList,
+  Tabs as HeroTabs,
 } from "@heroui/react";
 
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
@@ -431,57 +433,41 @@ function SearchInput({ placeholder = "搜索…", value, onChange, width = 280 }
   );
 }
 
-// Tab control — pill underline style
+// Tab control — HeroUI tabs (tab bar only; screens render their own panels).
 function Tabs({ items, value, onChange, size = "md" }) {
-  const fs = size === "lg" ? 14 : 13;
   return (
-    <div
-      style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--line)" }}
+    <HeroTabs
+      selectedKey={value}
+      onSelectionChange={(key) => onChange?.(key)}
     >
-      {items.map((it) => {
-        const active = it.key === value;
-        return (
-          <button
-            key={it.key}
-            onClick={() => onChange?.(it.key)}
-            style={{
-              padding: "10px 14px",
-              background: "transparent",
-              border: "none",
-              borderBottom: active
-                ? "2px solid var(--blue-600)"
-                : "2px solid transparent",
-              marginBottom: -1,
-              cursor: "pointer",
-              color: active ? "var(--blue-700)" : "var(--ink-500)",
-              fontWeight: active ? 600 : 500,
-              fontSize: fs,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            {it.label}
-            {it.count != null && (
-              <span
-                style={{
-                  background: active ? "var(--blue-50)" : "var(--ink-50)",
-                  color: active ? "var(--blue-700)" : "var(--ink-400)",
-                  borderRadius: 999,
-                  padding: "0 6px",
-                  fontSize: 11,
-                  fontWeight: 500,
-                  minWidth: 18,
-                  textAlign: "center",
-                }}
-              >
-                {it.count}
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </div>
+      <HeroTabList>
+        {items.map((it) => (
+          <HeroTabs.Tab key={it.key} id={it.key}>
+            <span
+              style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+            >
+              {it.label}
+              {it.count != null && (
+                <span
+                  style={{
+                    background: "var(--ink-50)",
+                    color: "var(--ink-400)",
+                    borderRadius: 999,
+                    padding: "0 6px",
+                    fontSize: 11,
+                    fontWeight: 500,
+                    minWidth: 18,
+                    textAlign: "center",
+                  }}
+                >
+                  {it.count}
+                </span>
+              )}
+            </span>
+          </HeroTabs.Tab>
+        ))}
+      </HeroTabList>
+    </HeroTabs>
   );
 }
 
