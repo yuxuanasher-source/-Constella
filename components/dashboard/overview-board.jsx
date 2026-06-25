@@ -290,7 +290,7 @@ function HeroRow({ hero, sparkCards }) {
             {c.delta ? <span style={{ fontSize: 11.5, fontWeight: 800, color: tone(c.tone).color }}>{c.delta}</span> : null}
           </div>
           <div style={{ marginTop: "auto" }}>
-            {c.series ? <Spark series={c.series} color={tone(c.tone).color} w={240} h={56} /> : null}
+            {c.series ? <Spark series={c.series} color="#8088d6" w={240} h={56} /> : null}
           </div>
         </div>
       ))}
@@ -301,14 +301,15 @@ function HeroRow({ hero, sparkCards }) {
 // ——— 漏斗（值显示在条内，右侧转化率） ———
 function FunnelPanel({ funnel, go, onPick, labelW = 118, fillMin = 42, rightW = 62, rightKey = "rate", warn }) {
   if (!funnel?.stages?.length) return null;
-  const base = Number(funnel.stages[0]?.value) || 1;
+  // 用各阶段最大值作分母，避免首段为 0 时后段撑爆（如 已审核进池 0 / 已生成批次 240）。
+  const base = Math.max(...funnel.stages.map((s) => Math.abs(Number(s.value) || 0)), 1);
   const n = funnel.stages.length;
   return (
     <Sec span={2}>
       <SecHead title={funnel.title} hint={funnel.subtitle} right={warn} />
       <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
         {funnel.stages.map((s, i) => {
-          const pct = Math.max(Math.round(((Number(s.value) || 0) / base) * 100), 8);
+          const pct = Math.min(Math.max(Math.round((Math.abs(Number(s.value) || 0) / base) * 100), 6), 100);
           const grad = i >= n - 2 ? GRAD_PRIMARY : GRAD_SOFT;
           const rightVal = rightKey === "count" ? s.count : s.rate != null ? `${s.rate}%` : "";
           const inner = rightKey === "count" ? moneyK(s.value) : num(s.value);
