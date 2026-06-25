@@ -7415,7 +7415,7 @@ function ProjectDetail({ id, go }) {
               <DetailSubHeading>默认结算</DetailSubHeading>
               <DetailKV label="结算方式" value={p.pricing} />
               <DetailKV
-                label="默认时薪"
+                label="厂家单价（时薪）"
                 value={`¥${Number(p.defaultHourlyRate ?? 0).toLocaleString()}/时`}
               />
               <DetailKV
@@ -15171,7 +15171,7 @@ function ScreenSettlement({ go }) {
                   ))}
                 </select>
               </TaskFormLabel>
-              <TaskFormLabel label="CPT 小时单价">
+              <TaskFormLabel label="厂家单价（CPT 小时单价）">
                 <input
                   type="number"
                   min="0"
