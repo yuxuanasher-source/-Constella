@@ -10,6 +10,12 @@ import {
   predictionSummary,
 } from "./evidence-prediction";
 import {
+  blacklistSummary,
+  matchBlacklist,
+  profileSummaryText,
+  summarizeStreamerProfile,
+} from "./profile-tools";
+import {
   scopeAllowsRole,
   type AiActor,
   type AiTool,
@@ -116,6 +122,42 @@ const registeredTools: Record<string, RegisteredAiTool> = {
         declaredMinutes: input.declaredMinutes ?? input.claimedMinutes,
       });
       return { answer: predictionSummary(prediction), output: { ...prediction } };
+    },
+  },
+  match_blacklist: {
+    name: "match_blacklist",
+    description:
+      "Deterministically checks a streamer's risk signals against the blacklist / high-risk gate for admission. Read-only.",
+    inputSchema: { type: "object" },
+    scopes: ["mcn_staff"],
+    masking: { input: [], output: [], streamerForbiddenKeys },
+    readOnly: true,
+    tier: "L1_PERCEIVE",
+    handler(input) {
+      const match = matchBlacklist({
+        riskLevel: input.riskLevel,
+        riskTags: input.riskTags,
+        blacklistReason: input.blacklistReason,
+        displayName: input.displayName,
+      });
+      return { answer: blacklistSummary(match), output: { ...match } };
+    },
+  },
+  query_streamer_profile: {
+    name: "query_streamer_profile",
+    description:
+      "Returns a role-masked streamer profile summary. Streamer-facing callers never see internal risk notes or operation notes.",
+    inputSchema: { type: "object", required: ["profile"] },
+    scopes: ["streamer", "mcn_staff"],
+    masking: { input: ["profile"], output: [], streamerForbiddenKeys },
+    readOnly: true,
+    tier: "L1_PERCEIVE",
+    handler(input, ctx) {
+      const summary = summarizeStreamerProfile(
+        objectValue(input.profile),
+        ctx.actor.role,
+      );
+      return { answer: profileSummaryText(summary), output: { ...summary } };
     },
   },
   streamer_diagnosis: {
