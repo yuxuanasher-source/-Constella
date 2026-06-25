@@ -6,6 +6,24 @@ import type { AiDraftEnvelope } from "./drafts";
 type InsertResult = { data: { id: string }[] | null; error: unknown };
 type MutateResult = { error: unknown };
 
+export type AiDraftRow = {
+  id: string;
+  draft_type: string;
+  target_state_machine: string | null;
+  target_state: string | null;
+  payload: Record<string, unknown>;
+  status: string;
+  acting_user_id: string;
+  confirmed_by: string | null;
+  created_at: string;
+};
+
+type ListQuery = {
+  eq(column: string, value: string): ListQuery;
+  order(column: string, options: { ascending: boolean }): ListQuery;
+  limit(count: number): PromiseLike<{ data: AiDraftRow[] | null; error: unknown }>;
+};
+
 export type DraftClient = {
   from(table: "ai_drafts"): {
     insert(
@@ -16,8 +34,47 @@ export type DraftClient = {
         eq(column: string, value: string): PromiseLike<MutateResult>;
       };
     };
+    select(columns: string): ListQuery;
   };
 };
+
+export type AiDraftListItem = {
+  id: string;
+  draftType: string;
+  targetStateMachine: string | null;
+  targetState: string | null;
+  status: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
+
+export async function listAiDrafts(
+  client: DraftClient,
+  input: { organizationId: string; status?: string; limit?: number },
+): Promise<AiDraftListItem[]> {
+  let query = client
+    .from("ai_drafts")
+    .select(
+      "id, draft_type, target_state_machine, target_state, payload, status, acting_user_id, confirmed_by, created_at",
+    )
+    .eq("organization_id", input.organizationId);
+  if (input.status) {
+    query = query.eq("status", input.status);
+  }
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .limit(input.limit ?? 50);
+  if (error || !data) return [];
+  return data.map((row) => ({
+    id: row.id,
+    draftType: row.draft_type,
+    targetStateMachine: row.target_state_machine,
+    targetState: row.target_state,
+    status: row.status,
+    payload: row.payload,
+    createdAt: row.created_at,
+  }));
+}
 
 export type CreateAiDraftInput = {
   organizationId: string;
