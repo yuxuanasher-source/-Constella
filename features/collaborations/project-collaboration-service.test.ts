@@ -535,7 +535,9 @@ async function repoWithShare() {
     repo,
     actor: ownerActor,
     projectId: "project-1",
-    input: {},
+    // 远期过期，避免依赖真实时钟：部分用例不注入 now（默认取真实时间），
+    // 若分享按 now+14 天过期，墙钟越过该日期后这些用例会误判为「已过期」。
+    input: { expiresAt: "2099-01-01T00:00:00.000Z" },
     now: "2026-06-10T00:00:00.000Z",
     tokenFactory: () => "raw-token",
   });
