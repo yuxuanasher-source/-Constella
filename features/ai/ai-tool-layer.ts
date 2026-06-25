@@ -4,6 +4,12 @@ import { createAiInvocationId, recordAiInvocation } from "./invocation-ledger";
 import { recordAiToolInvocation } from "./tool-ledger";
 import { assertRegistrableTool, type AiTier } from "./tiers";
 import {
+  computeDeviation,
+  deviationSummary,
+  predictEvidence,
+  predictionSummary,
+} from "./evidence-prediction";
+import {
   scopeAllowsRole,
   type AiActor,
   type AiTool,
@@ -75,6 +81,41 @@ const registeredTools: Record<string, RegisteredAiTool> = {
             : "raise_quote_or_pause",
         },
       };
+    },
+  },
+  compute_deviation: {
+    name: "compute_deviation",
+    description:
+      "Computes system-vs-screenshot duration deviation against the green/yellow threshold. Read-only, never persisted.",
+    inputSchema: {
+      type: "object",
+      required: ["systemMinutes", "screenMinutes"],
+    },
+    scopes: ["streamer", "mcn_staff"],
+    masking: { input: [], output: [], streamerForbiddenKeys },
+    readOnly: true,
+    tier: "L1_PERCEIVE",
+    handler(input) {
+      const result = computeDeviation(input.systemMinutes, input.screenMinutes);
+      return { answer: deviationSummary(result), output: { ...result } };
+    },
+  },
+  predict_evidence_color: {
+    name: "predict_evidence_color",
+    description:
+      "Predicts the green/yellow/red evidence color at submit time by reusing the deterministic rule engine. Prediction only — the authoritative color is decided and frozen by the rule engine, not by AI.",
+    inputSchema: { type: "object" },
+    scopes: ["streamer", "mcn_staff"],
+    masking: { input: [], output: [], streamerForbiddenKeys },
+    readOnly: true,
+    tier: "L1_PERCEIVE",
+    handler(input) {
+      const prediction = predictEvidence({
+        systemMinutes: input.systemMinutes,
+        screenMinutes: input.screenMinutes,
+        declaredMinutes: input.declaredMinutes ?? input.claimedMinutes,
+      });
+      return { answer: predictionSummary(prediction), output: { ...prediction } };
     },
   },
   streamer_diagnosis: {

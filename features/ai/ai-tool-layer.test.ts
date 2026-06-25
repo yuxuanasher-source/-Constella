@@ -85,23 +85,26 @@ describe("runAiToolQuery", () => {
     );
   });
 
-  it("registers every AI tool as read-only with a public contract", () => {
-    expect(listRegisteredAiTools()).toEqual([
-      expect.objectContaining({
-        name: "project_review_summary",
-        readOnly: true,
-        description: expect.any(String),
-        inputSchema: expect.any(Object),
-        scopes: expect.arrayContaining(["mcn_staff"]),
-      }),
-      expect.objectContaining({
-        name: "streamer_diagnosis",
-        readOnly: true,
-        masking: expect.objectContaining({
-          streamerForbiddenKeys: expect.arrayContaining(["grossMarginCents"]),
-        }),
-      }),
-    ]);
+  it("registers every AI tool as read-only L1 with a public contract", () => {
+    const tools = listRegisteredAiTools();
+    expect(tools.map((tool) => tool.name).sort()).toEqual(
+      [
+        "compute_deviation",
+        "predict_evidence_color",
+        "project_review_summary",
+        "streamer_diagnosis",
+      ].sort(),
+    );
+    for (const tool of tools) {
+      // 工具表里只允许只读 L1 工具；L2/L3/L4 不在此注册（L4 注册即抛错）。
+      expect(tool.readOnly).toBe(true);
+      expect(tool.tier).toBe("L1_PERCEIVE");
+      expect(typeof tool.description).toBe("string");
+      expect(typeof tool.inputSchema).toBe("object");
+      expect(Array.isArray(tool.scopes)).toBe(true);
+    }
+    const diagnosis = tools.find((tool) => tool.name === "streamer_diagnosis");
+    expect(diagnosis?.masking.streamerForbiddenKeys).toContain("grossMarginCents");
   });
 
   it("rejects arbitrary or unregistered tools", async () => {
