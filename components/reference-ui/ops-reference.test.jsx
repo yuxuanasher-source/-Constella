@@ -619,6 +619,48 @@ describe("OpsReferenceApp project smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  it("submits a collaboration join request from the 加入协作 panel", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/collaboration-projects/join") {
+        return { ok: true, json: async () => ({ ok: true }) };
+      }
+      return {
+        ok: true,
+        json: async () => ({ projects: [], collaborationProjects: [] }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={taskProjectCards}
+        applicationQueue={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "加入协作" }));
+    expect(
+      await screen.findByRole("dialog", { name: "加入 MCN 协作" }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/邀请链接/), {
+      target: { value: "https://app/share/project-collaboration/abc" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提交申请" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        (entry) => entry[0] === "/api/collaboration-projects/join",
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse(call[1].body)).toMatchObject({
+        inviteLink: "https://app/share/project-collaboration/abc",
+      });
+    });
+    expect(await screen.findByText(/协作申请已提交/)).toBeInTheDocument();
+  });
+
   it("auto-loads projects when the list opens without injected project cards", async () => {
     const fetchMock = vi.fn(async (url) => {
       if (String(url) === "/api/projects") {

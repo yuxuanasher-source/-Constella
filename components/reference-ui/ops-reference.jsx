@@ -5497,6 +5497,39 @@ function ProjectList({ go }) {
   const [draftSubmitting, setDraftSubmitting] = React.useState(false);
   const [exportMessage, setExportMessage] = React.useState("");
   const [exportSubmitting, setExportSubmitting] = React.useState(false);
+  const [joinOpen, setJoinOpen] = React.useState(false);
+  const [joinLink, setJoinLink] = React.useState("");
+  const [joinError, setJoinError] = React.useState("");
+  const [joinSubmitting, setJoinSubmitting] = React.useState(false);
+  const openJoinForm = () => {
+    setJoinLink("");
+    setJoinError("");
+    setDraftMessage("");
+    setJoinOpen(true);
+  };
+  const submitJoinCollaboration = async () => {
+    const link = joinLink.trim();
+    if (!link) {
+      setJoinError("请填写邀请链接");
+      return;
+    }
+    setJoinSubmitting(true);
+    setJoinError("");
+    try {
+      await actions.joinCollaborationProject?.({
+        inviteLink: link,
+        requestedRevenueShareBps: 0,
+        applicantNote: "",
+      });
+      setJoinOpen(false);
+      setJoinLink("");
+      setDraftMessage("协作申请已提交，等待项目方审核通过后即加入。");
+    } catch (error) {
+      setJoinError(error?.message || "协作申请提交失败，请稍后重试");
+    } finally {
+      setJoinSubmitting(false);
+    }
+  };
   const draftInputStyle = {
     width: "100%",
     height: 32,
@@ -5657,6 +5690,9 @@ function ProjectList({ go }) {
             >
               {exportSubmitting ? "导出中" : "导出项目表"}
             </Button>
+            <Button kind="default" onClick={openJoinForm}>
+              加入协作
+            </Button>
             <Button
               kind="primary"
               icon={<Icon.Plus size={14} stroke="#fff" />}
@@ -5667,6 +5703,41 @@ function ProjectList({ go }) {
           </>
         }
       />
+
+      {joinOpen ? (
+        <ExportSettingsModal
+          title="加入 MCN 协作"
+          submitting={joinSubmitting}
+          confirmLabel="提交申请"
+          busyLabel="提交中…"
+          confirmIcon={null}
+          onCancel={() => setJoinOpen(false)}
+          onConfirm={submitJoinCollaboration}
+        >
+          <ExportFilterSection title="邀请链接">
+            <input
+              value={joinLink}
+              onChange={(event) => setJoinLink(event.target.value)}
+              placeholder="粘贴 /share/project-collaboration/... 邀请链接"
+              style={draftInputStyle}
+            />
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--ink-400)",
+                lineHeight: 1.5,
+              }}
+            >
+              粘贴项目方提供的协作邀请链接，提交后等待项目方审核通过即加入；项目方保留项目设置与审核权限。
+            </div>
+            {joinError ? (
+              <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                {joinError}
+              </div>
+            ) : null}
+          </ExportFilterSection>
+        </ExportSettingsModal>
+      ) : null}
 
       <div
         style={{
@@ -11908,8 +11979,23 @@ const exportDateInputStyle = {
   outline: "none",
 };
 
-// 导出设置弹层：通用外壳，承载筛选项 + 取消/确认导出。
-function ExportSettingsModal({ title, submitting, onCancel, onConfirm, children }) {
+// 导出设置弹层：通用外壳，承载筛选项 + 取消/确认。
+function ExportSettingsModal({
+  title,
+  submitting,
+  onCancel,
+  onConfirm,
+  confirmLabel = "确认导出",
+  busyLabel = "导出中…",
+  confirmIcon,
+  children,
+}) {
+  const icon =
+    confirmIcon === undefined ? (
+      <Icon.Export size={14} stroke="#fff" />
+    ) : (
+      confirmIcon
+    );
   return (
     <div
       role="dialog"
@@ -11995,11 +12081,11 @@ function ExportSettingsModal({ title, submitting, onCancel, onConfirm, children 
           </Button>
           <Button
             kind="primary"
-            icon={<Icon.Export size={14} stroke="#fff" />}
+            icon={icon}
             onClick={onConfirm}
             disabled={submitting}
           >
-            {submitting ? "导出中…" : "确认导出"}
+            {submitting ? busyLabel : confirmLabel}
           </Button>
         </div>
       </div>
