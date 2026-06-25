@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import {
   actorFromContext,
   getLiveOperationsRouteContext,
@@ -17,6 +18,12 @@ export async function POST(
     const { taskId } = await params;
     const body = await readJsonBody(request);
     const context = await getLiveOperationsRouteContext();
+    await assertBillingWriteAllowed({
+      client: context.supabase,
+      organizationId: context.auth.organizationId,
+      featureKey: "project_management",
+    });
+
     const task = await startLiveTask({
       repo: context.repo,
       audit: (input) => context.audit(context.supabase, input),

@@ -92,19 +92,11 @@
   pnpm supabase db reset
   ```
 
-  Expected: migrations apply, seed loads five demo users, no SQL errors.
+  Expected: migrations apply, source-controlled seed remains empty, no SQL errors.
 
 - [ ] **Step 2: Login smoke test five roles**
 
-  Use:
-
-  ```text
-  owner@jy-demo.local / Password123!
-  ops@jy-demo.local / Password123!
-  operator@jy-demo.local / Password123!
-  finance@jy-demo.local / Password123!
-  streamer@jy-demo.local / Password123!
-  ```
+  Use the locally configured `SMOKE_*` role accounts created through Supabase Auth and the product flows.
 
   Expected:
   - owner and ops_manager can publish draft projects.

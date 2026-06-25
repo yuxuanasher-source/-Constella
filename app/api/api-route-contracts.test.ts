@@ -24,6 +24,7 @@ import {
   lockSettlementBatch,
   reopenSettlementBatch,
 } from "@/features/settlements/settlement-service";
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 
 vi.mock("@/features/live-operations/live-operations-route-utils", async () => {
   const actual = await vi.importActual<
@@ -59,6 +60,10 @@ vi.mock("@/features/settlements/settlement-service", () => ({
   generateSettlementBatch: vi.fn(),
   lockSettlementBatch: vi.fn(),
   reopenSettlementBatch: vi.fn(),
+}));
+
+vi.mock("@/features/billing/route-guard", () => ({
+  assertBillingWriteAllowed: vi.fn(),
 }));
 
 const supabase = { client: "supabase" };
@@ -115,6 +120,7 @@ describe("api route contracts", () => {
       audit: vi.fn(),
       notify: vi.fn(),
     } as never);
+    vi.mocked(assertBillingWriteAllowed).mockResolvedValue(undefined);
   });
 
   it("returns 403 when the live-task start service rejects a role permission", async () => {
@@ -188,7 +194,7 @@ describe("api route contracts", () => {
 
     const response = await settlementBatchPost(
       jsonRequest("http://localhost/api/settlement-batches", {
-        projectId: "project-1",
+        projectId: "2ba8b258-b9f6-4ac2-bd3e-b55f686ac608",
         batchType: "payable",
         periodStart: "2026-06-01",
         periodEnd: "2026-06-30",
@@ -208,13 +214,34 @@ describe("api route contracts", () => {
           organizationId: "org-1",
         },
         input: {
-          projectId: "project-1",
+          projectId: "2ba8b258-b9f6-4ac2-bd3e-b55f686ac608",
           batchType: "payable",
           periodStart: "2026-06-01",
           periodEnd: "2026-06-30",
         },
       }),
     );
+  });
+
+  it("blocks representative settlement writes while billing is read-only", async () => {
+    vi.mocked(assertBillingWriteAllowed).mockRejectedValueOnce(
+      new Error("Organization is read-only because billing is past due"),
+    );
+
+    const response = await settlementBatchPost(
+      jsonRequest("http://localhost/api/settlement-batches", {
+        projectId: "project-1",
+        batchType: "payable",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "Organization is read-only because billing is past due",
+    });
+    expect(generateSettlementBatch).not.toHaveBeenCalled();
   });
 
   it("maps the M5 review payload used by the ops UI into the report review service", async () => {
@@ -262,6 +289,25 @@ describe("api route contracts", () => {
     );
   });
 
+  it("blocks representative live-operation writes while billing is read-only", async () => {
+    vi.mocked(assertBillingWriteAllowed).mockRejectedValueOnce(
+      new Error("Organization is read-only because billing is past due"),
+    );
+
+    const response = await startLiveTaskPost(
+      jsonRequest("http://localhost/api/live-tasks/task-1/start", {
+        now: "2026-06-02T10:00:00.000Z",
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "Organization is read-only because billing is past due",
+    });
+    expect(startLiveTask).not.toHaveBeenCalled();
+  });
+
   it("maps the M6 create-batch payload and returns the batch plus generated items", async () => {
     vi.mocked(generateSettlementBatch).mockResolvedValueOnce({
       batch: {
@@ -274,7 +320,7 @@ describe("api route contracts", () => {
 
     const response = await settlementBatchPost(
       jsonRequest("http://localhost/api/settlement-batches", {
-        projectId: "project-1",
+        projectId: "2ba8b258-b9f6-4ac2-bd3e-b55f686ac608",
         periodStart: "2026-06-01",
         periodEnd: "2026-06-30",
         batchType: "payable",
@@ -293,7 +339,7 @@ describe("api route contracts", () => {
     expect(generateSettlementBatch).toHaveBeenCalledWith(
       expect.objectContaining({
         input: {
-          projectId: "project-1",
+          projectId: "2ba8b258-b9f6-4ac2-bd3e-b55f686ac608",
           periodStart: "2026-06-01",
           periodEnd: "2026-06-30",
           batchType: "payable",

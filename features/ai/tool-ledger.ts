@@ -2,7 +2,9 @@ import type { AiActor, AiToolInvocationRecordInput } from "./contracts";
 
 type AiToolLedgerClient = {
   from(table: "ai_tool_invocations"): {
-    insert(payload: Record<string, unknown>): PromiseLike<{ error: Error | null }>;
+    insert(
+      payload: Record<string, unknown>,
+    ): PromiseLike<{ error: Error | null }>;
   };
 };
 
@@ -28,7 +30,9 @@ export async function recordAiToolInvocation({
     allowed: input.allowed,
     status: input.status,
     latency_ms:
-      input.latencyMs === undefined ? undefined : nonnegativeInt(input.latencyMs),
+      input.latencyMs === undefined
+        ? undefined
+        : nonnegativeInt(input.latencyMs),
     error_summary: input.errorSummary,
     completed_at: new Date().toISOString(),
   });

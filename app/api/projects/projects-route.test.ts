@@ -6,7 +6,10 @@ import {
   createProjectDraft,
   createProjectAuditWriter,
   publishProject,
+  updateProjectBasics,
+  updateProjectSettlementRule,
 } from "@/features/projects/project-service";
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { listProjects } from "@/features/projects/project-queries";
 
 vi.mock("@/lib/auth/context", () => ({
@@ -30,8 +33,14 @@ vi.mock("@/features/projects/project-service", async () => {
     createProjectAuditWriter: vi.fn(),
     createProjectDraft: vi.fn(),
     publishProject: vi.fn(),
+    updateProjectBasics: vi.fn(),
+    updateProjectSettlementRule: vi.fn(),
   };
 });
+
+vi.mock("@/features/billing/route-guard", () => ({
+  assertBillingWriteAllowed: vi.fn(),
+}));
 
 const supabase = { client: "supabase" };
 const audit = vi.fn();
@@ -56,6 +65,7 @@ describe("project api routes", () => {
     vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
     vi.mocked(getAuthContext).mockResolvedValue(auth as never);
     vi.mocked(createProjectAuditWriter).mockReturnValue(audit);
+    vi.mocked(assertBillingWriteAllowed).mockResolvedValue(undefined);
   });
 
   it("GET /api/projects returns UI DTOs", async () => {
@@ -66,8 +76,19 @@ describe("project api routes", () => {
         name: "鸣潮暑期招募",
         status: "draft",
         sensitivity: "normal",
+        starts_at: "2026-06-03",
+        ends_at: "2026-06-20",
+        open_signup: true,
+        allow_direct_invite: true,
+        force_recording: true,
         force_system_timing: true,
         default_hourly_rate: 4500,
+        is_public_to_streamers: false,
+        public_summary: "",
+        game_download_url: null,
+        is_open_to_mcn_collaboration: false,
+        mcn_collaboration_summary: "",
+        mcn_collaboration_terms: {},
         published_at: null,
         created_at: "2026-06-01T09:00:00.000Z",
       },
@@ -113,6 +134,28 @@ describe("project api routes", () => {
         input: { name: "鸣潮暑期招募", code: "P2412", supplierId: undefined },
       }),
     );
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith({
+      client: supabase,
+      organizationId: "org-1",
+      featureKey: "project_management",
+    });
+  });
+
+  it("POST /api/projects blocks draft creation while billing is read-only", async () => {
+    vi.mocked(assertBillingWriteAllowed).mockRejectedValueOnce(
+      new Error("Organization is read-only because billing is past due"),
+    );
+
+    const { POST } = await import("./route");
+    const response = await POST(
+      jsonRequest({ name: "Read Only", code: "P-RO" }),
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "Organization is read-only because billing is past due",
+    });
+    expect(createProjectDraft).not.toHaveBeenCalled();
   });
 
   it("POST /api/projects/[projectId]/publish publishes through the audited service", async () => {
@@ -138,6 +181,176 @@ describe("project api routes", () => {
         audit,
         actor: auth,
         projectId: "p1",
+      }),
+    );
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith({
+      client: supabase,
+      organizationId: "org-1",
+      featureKey: "project_management",
+    });
+  });
+
+  it("PATCH /api/projects/[projectId] updates project status through the audited service", async () => {
+    vi.mocked(updateProjectBasics).mockResolvedValue({
+      id: "p1",
+      name: "鸣潮暑期招募",
+      code: "P2412",
+      status: "paused",
+      organization_id: "org-1",
+    } as never);
+
+    const { PATCH } = await import("./[projectId]/route");
+    const response = await PATCH(
+      jsonRequest(
+        {
+          name: "鸣潮暑期招募",
+          status: "paused",
+          startsAt: "2026-06-03",
+          endsAt: "2026-06-20",
+          openSignup: true,
+          allowDirectInvite: true,
+          forceRecording: true,
+          forceSystemTiming: true,
+          vendorName: "厂商 A",
+          productName: "产品 A",
+          agentName: "代理商 A",
+          supplierName: "供应商 A",
+          description: "项目说明 A",
+          ownerId: "user-ops",
+          isPublicToStreamers: true,
+          publicSummary: "Streamer card summary",
+          gameDownloadUrl: "https://download.example.com/game",
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ projectId: "p1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      project: expect.objectContaining({ id: "p1", status: "paused" }),
+    });
+    expect(updateProjectBasics).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audit,
+        actor: auth,
+        projectId: "p1",
+        input: expect.objectContaining({
+          name: "鸣潮暑期招募",
+          status: "paused",
+          startsAt: "2026-06-03",
+          endsAt: "2026-06-20",
+          openSignup: true,
+          allowDirectInvite: true,
+          forceRecording: true,
+          forceSystemTiming: true,
+          vendorName: "厂商 A",
+          productName: "产品 A",
+          agentName: "代理商 A",
+          supplierName: "供应商 A",
+          description: "项目说明 A",
+          ownerId: "user-ops",
+          isPublicToStreamers: true,
+          publicSummary: "Streamer card summary",
+          gameDownloadUrl: "https://download.example.com/game",
+        }),
+      }),
+    );
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith({
+      client: supabase,
+      organizationId: "org-1",
+      featureKey: "project_management",
+    });
+  });
+
+  it("PATCH /api/projects/[projectId] rejects oversized MCN collaboration terms", async () => {
+    const terms = Object.fromEntries(
+      Array.from({ length: 51 }, (_, index) => [`term_${index}`, index]),
+    );
+
+    const { PATCH } = await import("./[projectId]/route");
+    const response = await PATCH(
+      jsonRequest(
+        {
+          name: "Collaboration Project",
+          mcnCollaborationTerms: terms,
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ projectId: "p1" }) },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "MCN collaboration terms are too large",
+    });
+    expect(updateProjectBasics).not.toHaveBeenCalled();
+  });
+
+  it("PATCH /api/projects/[projectId]/settlement-rule saves project settlement rules with audit reason", async () => {
+    vi.mocked(updateProjectSettlementRule).mockResolvedValue({
+      id: "p1",
+      name: "Project Alpha",
+      code: "PA-001",
+      status: "active",
+      organization_id: "org-1",
+      default_settlement_method: "base_salary_cpt",
+      default_hourly_rate: 80,
+      default_base_salary: 6000,
+      default_settlement_rule: {
+        template: "game_live_complex",
+        cpsRateBps: 1500,
+        supplierFeeCents: 120000,
+      },
+    } as never);
+
+    const { PATCH } = await import("./[projectId]/settlement-rule/route");
+    const response = await PATCH(
+      jsonRequest(
+        {
+          defaultSettlementMethod: "base_salary_cpt",
+          defaultHourlyRate: 80,
+          defaultBaseSalary: 6000,
+          defaultSettlementRule: {
+            template: "game_live_complex",
+            cpsRateBps: 1500,
+            supplierFeeCents: 120000,
+          },
+          reason: "settlement center complex rule setup",
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ projectId: "p1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      project: expect.objectContaining({
+        id: "p1",
+        default_settlement_method: "base_salary_cpt",
+      }),
+    });
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith({
+      client: supabase,
+      organizationId: "org-1",
+      featureKey: "settlement",
+    });
+    expect(updateProjectSettlementRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audit,
+        actor: auth,
+        projectId: "p1",
+        reason: "settlement center complex rule setup",
+        input: {
+          defaultSettlementMethod: "base_salary_cpt",
+          defaultHourlyRate: 80,
+          defaultBaseSalary: 6000,
+          defaultSettlementRule: {
+            template: "game_live_complex",
+            cpsRateBps: 1500,
+            supplierFeeCents: 120000,
+          },
+        },
       }),
     );
   });

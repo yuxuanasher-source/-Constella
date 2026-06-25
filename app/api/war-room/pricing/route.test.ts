@@ -72,4 +72,22 @@ describe("war room pricing route", () => {
 
     expect(response.status).toBe(403);
   });
+
+  it("rejects invalid pricing request bodies before calculation", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/war-room/pricing", {
+        method: "POST",
+        body: JSON.stringify({
+          vendorSettlementMethod: "cpt",
+          streamerCount: "5",
+          estimatedMinutesPerStreamer: 1200,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Invalid request body",
+    });
+  });
 });

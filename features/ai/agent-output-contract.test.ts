@@ -68,4 +68,40 @@ describe("validateAgentOutput", () => {
       "recommendations[0] must require human approval",
     );
   });
+
+  it("rejects numeric claims in findings because numbers belong in sourced facts", () => {
+    const result = validateAgentOutput({
+      ...validOutput,
+      findings: [
+        {
+          summary: "Margin is 4167 bps and should be protected",
+          evidence: [
+            { sourceTool: "project_review_summary", sourceId: "tool-1" },
+          ],
+        },
+      ],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain(
+      "findings[0] must not include unsourced numeric claims",
+    );
+  });
+
+  it("rejects numeric claims in recommendations because recommendations only propose", () => {
+    const result = validateAgentOutput({
+      ...validOutput,
+      recommendations: [
+        {
+          proposal: "Increase the next quote by 20%",
+          requiresHumanApproval: true,
+        },
+      ],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain(
+      "recommendations[0] must not include unsourced numeric claims",
+    );
+  });
 });

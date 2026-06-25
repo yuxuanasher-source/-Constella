@@ -4,18 +4,23 @@ import { createOcrJob, listOcrJobs } from "@/features/ai/ocr-jobs";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
+import { canManageOcrJobs } from "@/lib/rbac/permissions";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
-export async function GET() {
+export async function GET(request?: Request) {
   try {
     const authResult = await requireMcnStaff();
     if (authResult.response) {
       return authResult.response;
     }
+    const status = request
+      ? new URL(request.url).searchParams.get("status") || undefined
+      : undefined;
 
     const jobs = await listOcrJobs({
       client: authResult.supabase as never,
       organizationId: authResult.auth.organizationId,
+      status,
     });
 
     return NextResponse.json({ jobs: jobs.map(toSafeJob) });
@@ -29,6 +34,12 @@ export async function POST(request: Request) {
     const authResult = await requireMcnStaff();
     if (authResult.response) {
       return authResult.response;
+    }
+    if (!canManageOcrJobs(authResult.auth.role)) {
+      return NextResponse.json(
+        { error: "Current role cannot manage OCR jobs" },
+        { status: 403 },
+      );
     }
 
     const body = (await request.json()) as Record<string, unknown>;
@@ -81,16 +92,39 @@ function toSafeJob(job: {
   id: string;
   status: string;
   attempt: number;
+  maxAttempts?: number;
   aiInvocationId?: string;
+  runAfter?: string;
+  nextRunAt?: string;
+  lockedAt?: string;
+  lockedBy?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  result?: Record<string, unknown>;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
   payload: { liveReportId?: string; screenshotId?: string };
 }) {
   return {
     id: job.id,
     status: job.status,
     attempt: job.attempt,
+    maxAttempts: job.maxAttempts ?? 3,
     aiInvocationId: job.aiInvocationId,
     liveReportId: job.payload.liveReportId,
     screenshotId: job.payload.screenshotId,
+    nextRunAt: job.nextRunAt ?? job.runAfter,
+    lockedAt: job.lockedAt,
+    lockedBy: job.lockedBy,
+    errorCode: job.errorCode,
+    errorMessage: job.errorMessage,
+    result: job.result,
+    reviewedBy: job.reviewedBy,
+    reviewedAt: job.reviewedAt,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
   };
 }
 
@@ -106,7 +140,9 @@ function optionalString(value: unknown): string | undefined {
 }
 
 function optionalNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function errorResponse(error: unknown) {

@@ -39,18 +39,23 @@ export type NotificationCenterItem = {
 
 export type NotificationQueryClient = {
   from(table: "notifications"): {
-    select(columns: string): NotificationQueryBuilder;
+    select(
+      columns: string,
+      options?: { count?: "exact"; head?: boolean },
+    ): NotificationQueryBuilder;
   };
 };
 
 type NotificationQueryBuilder = {
   eq(column: string, value: unknown): NotificationQueryBuilder;
   or(filter: string): NotificationQueryBuilder;
-  order(column: string, options: { ascending: boolean }): NotificationQueryBuilder;
-  limit(
-    count: number,
-  ): PromiseLike<{
+  order(
+    column: string,
+    options: { ascending: boolean },
+  ): NotificationQueryBuilder;
+  limit(count: number): PromiseLike<{
     data: unknown[] | null;
+    count?: number | null;
     error: { message: string } | null;
   }>;
 };
@@ -72,11 +77,10 @@ export async function listNotificationCenterItems(
   actor: NotificationCenterActor,
   filters: NotificationCenterFilters = {},
 ): Promise<NotificationCenterItem[]> {
-  let query = client
-    .from("notifications")
-    .select(notificationCenterSelect)
-    .eq("organization_id", actor.organizationId)
-    .or(`recipient_user_id.eq.${actor.userId},recipient_role.eq.${actor.role}`);
+  let query = scopeNotificationQuery(
+    client.from("notifications").select(notificationCenterSelect),
+    actor,
+  );
 
   if (filters.status) {
     query = query.eq("status", filters.status);
@@ -93,6 +97,24 @@ export async function listNotificationCenterItems(
   return ((data ?? []) as NotificationCenterRow[]).map(
     toNotificationCenterItem,
   );
+}
+
+export async function countUnreadNotificationCenterItems(
+  client: NotificationQueryClient,
+  actor: NotificationCenterActor,
+): Promise<number> {
+  const { count, error } = await scopeNotificationQuery(
+    client.from("notifications").select("id", { count: "exact", head: true }),
+    actor,
+  )
+    .eq("status", "unread")
+    .limit(1);
+
+  if (error) {
+    throw error;
+  }
+
+  return count ?? 0;
 }
 
 export function toNotificationCenterItem(
@@ -117,4 +139,13 @@ function safeLimit(limit?: number): number {
   }
 
   return Math.min(Math.max(Math.trunc(limit), 1), 100);
+}
+
+function scopeNotificationQuery(
+  query: NotificationQueryBuilder,
+  actor: NotificationCenterActor,
+): NotificationQueryBuilder {
+  return query
+    .eq("organization_id", actor.organizationId)
+    .or(`recipient_user_id.eq.${actor.userId},recipient_role.eq.${actor.role}`);
 }

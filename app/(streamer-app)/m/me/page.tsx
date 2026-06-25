@@ -1,37 +1,37 @@
 import StreamerMobileReferenceApp from "@/components/reference-ui/streamer-mobile-reference";
-import { getStreamerIdForUser } from "@/features/live-operations/live-operations-repository";
 import {
   listStreamerPayableItems,
   toStreamerEarningsSummary,
 } from "@/features/settlements/streamer-settlement-queries";
-import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+
+import {
+  getStreamerMobileContext,
+  type StreamerMobileContext,
+} from "../streamer-mobile-data";
 
 export default async function StreamerMePage() {
-  const liveEarnings = await loadStreamerEarnings();
+  const context = await getStreamerMobileContext();
+  const liveEarnings = await loadStreamerEarnings(context);
 
   return (
     <div className="mobile-prototype-stage">
       <StreamerMobileReferenceApp
         initialRoute="me"
+        profile={context?.profile ?? undefined}
         liveEarnings={liveEarnings}
       />
     </div>
   );
 }
 
-async function loadStreamerEarnings() {
-  const supabase = await createSupabaseServerClient();
-  const auth = await getAuthContext(supabase);
-  if (!supabase || !auth || auth.role !== "streamer") {
+async function loadStreamerEarnings(context: StreamerMobileContext | null) {
+  if (!context) {
     return null;
   }
 
-  const streamerId = await getStreamerIdForUser(supabase, auth.userId);
-  if (!streamerId) {
-    return null;
-  }
-
-  const items = await listStreamerPayableItems(supabase, streamerId);
+  const items = await listStreamerPayableItems(
+    context.supabase,
+    context.streamerId,
+  );
   return toStreamerEarningsSummary(items);
 }

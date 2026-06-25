@@ -10,7 +10,10 @@ import {
   requiredString,
   RouteError,
 } from "@/features/live-operations/live-operations-route-utils";
-import { createLiveTasks } from "@/features/live-operations/live-operations-service";
+import {
+  createLiveTasks,
+  type LiveTaskType,
+} from "@/features/live-operations/live-operations-service";
 
 export async function POST(request: Request) {
   try {
@@ -36,10 +39,12 @@ export async function POST(request: Request) {
           projectId: requiredString(taskBody, "projectId"),
           streamerId: requiredString(taskBody, "streamerId"),
           title: requiredString(taskBody, "title"),
+          taskType: optionalLiveTaskType(taskBody),
           plannedStartAt: optionalString(taskBody, "plannedStartAt"),
           plannedEndAt: optionalString(taskBody, "plannedEndAt"),
           plannedDuration: optionalNumber(taskBody, "plannedDuration"),
           note: optionalString(taskBody, "note"),
+          collaborationId: optionalString(taskBody, "collaborationId"),
         };
       }),
     });
@@ -48,4 +53,21 @@ export async function POST(request: Request) {
   } catch (error) {
     return jsonError(error);
   }
+}
+
+function optionalLiveTaskType(
+  body: Record<string, unknown>,
+): LiveTaskType | undefined {
+  const value =
+    optionalString(body, "type") ?? optionalString(body, "taskType");
+  if (!value) return undefined;
+  if (
+    value === "project" ||
+    value === "trial" ||
+    value === "training" ||
+    value === "temporary"
+  ) {
+    return value;
+  }
+  throw new RouteError("Invalid live task type", 400);
 }

@@ -13,6 +13,7 @@
 ## Stage 0: Plan And Design
 
 **Files:**
+
 - Create: `docs/superpowers/specs/2026-06-03-ops-console-closure-design.md`
 - Create: `docs/superpowers/plans/2026-06-03-ops-console-closure-plan.md`
 
@@ -40,6 +41,7 @@ git commit -m "docs: plan ops console closure"
 ## Stage 1: M2 Streamer Pool Core Closure
 
 **Files:**
+
 - Modify: `components/reference-ui/ops-reference.jsx`
 - Modify: `components/reference-ui/ops-reference.test.jsx`
 - Optionally modify: `features/ui-route-contracts/module-route-map.ts`
@@ -96,6 +98,7 @@ git commit -m "feat: close streamer pool ops actions"
 ## Stage 2: M1 Project Management Secondary Closure
 
 **Files:**
+
 - Modify: `components/reference-ui/ops-reference.jsx`
 - Modify: `components/reference-ui/ops-reference.test.jsx`
 
@@ -122,6 +125,7 @@ git commit -m "feat: close project management secondary actions"
 ## Stage 3: M4 Schedule And Task Secondary Closure
 
 **Files:**
+
 - Modify: `components/reference-ui/ops-reference.jsx`
 - Modify: `components/reference-ui/ops-reference.test.jsx`
 
@@ -148,6 +152,7 @@ git commit -m "feat: close schedule task secondary actions"
 ## Stage 4: M5/M6 Report And Settlement Enhancements
 
 **Files:**
+
 - Modify: `components/reference-ui/ops-reference.jsx`
 - Modify: `components/reference-ui/ops-reference.test.jsx`
 
@@ -178,6 +183,7 @@ git commit -m "feat: close report and settlement operations"
 ## Stage 5: Shell, War Room, Billing, Org Route Status
 
 **Files:**
+
 - Modify: `components/layouts/ops-shell.tsx`
 - Modify: `components/reference-ui/ops-reference.jsx`
 - Modify: `components/reference-ui/ops-reference.test.jsx`

@@ -1,16 +1,25 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = process.cwd();
 
-const productionFiles = [
-  "supabase/seed.sql",
-  "app/(auth)/login/page.tsx",
-  "components/reference-ui/ops-reference.jsx",
-  "components/reference-ui/streamer-mobile-reference.jsx",
-  "components/reference-ui/streamer-desktop-reference.jsx",
-  "README.md",
+const productionRoots = [
+  "app",
+  "components",
+  "features",
+  "lib",
+  "scripts",
+  "supabase",
+] as const;
+
+const additionalProductionFiles = ["README.md"] as const;
+
+const ignoredPathPatterns = [
+  /(^|\/)\.next\//,
+  /(^|\/)node_modules\//,
+  /\.test\.[cm]?[jt]sx?$/,
+  /features\/regression\/no-demo-data\.test\.ts$/,
 ] as const;
 
 const forbiddenDemoMarkers = [
@@ -33,12 +42,15 @@ const forbiddenDemoMarkers = [
   /P-2405/,
   /R-08831/,
   /B-2026/,
-  /PROJECT_ID/,
-  /2026-05/,
+  /\bPROJECT_ID\b/,
   /2025-08-12/,
   /org_galaxy/i,
   /B-001/,
   /P-TEST/i,
+  /99999999-9999-9999-9999-999999999999/,
+  /cccccccc-cccc-cccc-cccc-cccccccccccc/,
+  /95959595-9595-4959-9595-959595959595/,
+  /sampleExportRows/,
   /705235/,
   /b62b7e09/i,
 ] as const;
@@ -60,27 +72,67 @@ const forbiddenDemoText = [
   "\u6d4b\u8bd5\u65b0\u5efa\u9879\u76ee",
   "\u672c\u6279\u6b21\u672a\u786e\u8ba4",
   "\u672a\u547d\u540d\u9879\u76ee",
+  "\u963f\u6d1b",
+  "6\u6708\u5e94\u4ed8\u6279\u6b21",
   "\u5143\u68a6\u4e4b\u661f",
   "\u6c38\u52ab\u65e0\u95f4",
-  "KPL",
   "\u9ec4\u91d1\u6863",
-  "4.7",
   "\u51ef\u8587\u5a1c",
 ] as const;
 
 describe("production demo data guard", () => {
   it("keeps demo seed accounts and sample business entities out of production-facing files", () => {
+    const productionFiles = listProductionFiles();
     const violations = productionFiles.flatMap((file) => {
       const source = readFileSync(join(root, file), "utf8");
-      const regexViolations = forbiddenDemoMarkers
-        .filter((marker) => marker.test(source))
-        .map((marker) => `${file}: ${marker}`);
-      const textViolations = forbiddenDemoText
-        .filter((marker) => source.includes(marker))
-        .map((marker) => `${file}: ${marker}`);
-      return [...regexViolations, ...textViolations];
+      return findForbiddenDemoViolations(file, source);
     });
 
     expect(violations).toEqual([]);
   });
+
+  it("does not treat generic release dates versions or esports terms as demo data", () => {
+    expect(
+      findForbiddenDemoViolations(
+        "features/release-note.ts",
+        "2026-05 版本 4.7 支持 KPL 场景复盘",
+      ),
+    ).toEqual([]);
+  });
 });
+
+function listProductionFiles() {
+  const discovered = productionRoots.flatMap((dir) => walkProductionFiles(dir));
+  return [...discovered, ...additionalProductionFiles].sort();
+}
+
+function findForbiddenDemoViolations(file: string, source: string): string[] {
+  const regexViolations = forbiddenDemoMarkers
+    .filter((marker) => marker.test(source))
+    .map((marker) => `${file}: ${marker}`);
+  const textViolations = forbiddenDemoText
+    .filter((marker) => source.includes(marker))
+    .map((marker) => `${file}: ${marker}`);
+  return [...regexViolations, ...textViolations];
+}
+
+function walkProductionFiles(dir: string): string[] {
+  const fullDir = join(root, dir);
+  return readdirSync(fullDir, { withFileTypes: true }).flatMap((entry) => {
+    const fullPath = join(fullDir, entry.name);
+    const relativePath = relative(root, fullPath).replaceAll("\\", "/");
+    if (ignoredPathPatterns.some((pattern) => pattern.test(relativePath))) {
+      return [];
+    }
+
+    if (entry.isDirectory()) {
+      return walkProductionFiles(relativePath);
+    }
+
+    if (!/\.(css|jsx?|md|mjs|sql|tsx?)$/i.test(entry.name)) {
+      return [];
+    }
+
+    return [relativePath];
+  });
+}

@@ -82,4 +82,37 @@ describe("war room project review route", () => {
 
     expect(response.status).toBe(403);
   });
+
+  it("rejects invalid project review request bodies before report generation", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/war-room/project-review", {
+        method: "POST",
+        body: JSON.stringify({
+          project: {
+            id: "project-1",
+            name: "王者荣耀春节档",
+            category: "moba",
+            platform: "douyin",
+            periodStart: "2026-02-01",
+            periodEnd: "2026-02-07",
+          },
+          finance: {
+            receivableCents: "1200000",
+            payableCents: 600000,
+            supplierCostCents: 100000,
+            adjustmentCents: 0,
+            manualRevenueCents: 0,
+          },
+          streamers: [],
+          suppliers: [],
+          evidenceSummary: { green: 1, yellow: 0, red: 0, unknown: 0 },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Invalid request body",
+    });
+  });
 });

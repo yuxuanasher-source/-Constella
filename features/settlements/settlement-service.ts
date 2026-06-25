@@ -3,6 +3,7 @@ import type { NotificationInput } from "@/lib/notify/notify";
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
 
 import {
+  calculateCpsManualAmount,
   calculateSettlementItem,
   summarizeEvidence,
   type SettlementCalculatedItem,
@@ -38,6 +39,7 @@ export type SettlementPoolReport = {
   timeSource: "system" | "screenshot" | "claimed" | null;
   evidenceLevel: "green" | "yellow" | "red" | null;
   settledBatchItemId: string | null;
+  settledBatchTypes?: SettlementBatchType[];
   createdAt: string;
 };
 
@@ -86,10 +88,22 @@ export type SettlementBatchItemRecord = {
   createdAt?: string;
 };
 
+export type SettlementBatchAtomicItemInput = {
+  streamerId?: string | null;
+  liveReportId?: string | null;
+  itemType: string;
+  computedAmount: number;
+  manualAmount: number;
+  adjustmentAmount: number;
+  evidenceLevel?: "green" | "yellow" | "red" | null;
+  evidenceSnapshot: Record<string, unknown>;
+};
+
 export type SettlementRepository = {
   listSettlementPoolReports(input: {
     organizationId: string;
     projectId: string;
+    batchType: SettlementBatchType;
     periodStart: string;
     periodEnd: string;
   }): Promise<SettlementPoolReport[]>;
@@ -115,9 +129,23 @@ export type SettlementRepository = {
   createSettlementBatchItem(
     input: Omit<SettlementBatchItemRecord, "id" | "createdAt">,
   ): Promise<SettlementBatchItemRecord>;
+  createSettlementBatchAtomic(input: {
+    organizationId: string;
+    projectId: string;
+    batchType: SettlementBatchType;
+    periodStart: string;
+    periodEnd: string;
+    computedAmount: number;
+    manualAmount: number;
+    adjustmentAmount: number;
+    evidenceSummary: Record<string, unknown>;
+    createdBy: string;
+    items: SettlementBatchAtomicItemInput[];
+  }): Promise<{ batch: SettlementBatchRecord; items: SettlementBatchItemRecord[] }>;
   markReportSettled(input: {
     reportId: string;
     settlementBatchItemId: string;
+    batchType: SettlementBatchType;
   }): Promise<void>;
   getSettlementBatchById(
     batchId: string,
@@ -136,12 +164,14 @@ export async function listSettlementPool({
   repo,
   actor,
   projectId,
+  batchType = "payable",
   periodStart,
   periodEnd,
 }: {
   repo: Pick<SettlementRepository, "listSettlementPoolReports">;
   actor: SettlementActor;
   projectId: string;
+  batchType?: SettlementBatchType;
   periodStart: string;
   periodEnd: string;
 }): Promise<SettlementPoolReport[]> {
@@ -154,12 +184,15 @@ export async function listSettlementPool({
   const reports = await repo.listSettlementPoolReports({
     organizationId: actor.organizationId,
     projectId,
+    batchType,
     periodStart,
     periodEnd,
   });
 
   return reports.filter(
-    (report) => report.organizationId === actor.organizationId,
+    (report) =>
+      report.organizationId === actor.organizationId &&
+      !report.settledBatchTypes?.includes(batchType),
   );
 }
 
@@ -191,6 +224,7 @@ export async function generateSettlementBatch({
     await repo.listSettlementPoolReports({
       organizationId: actor.organizationId,
       projectId: input.projectId,
+      batchType: input.batchType,
       periodStart: input.periodStart,
       periodEnd: input.periodEnd,
     })
@@ -198,7 +232,7 @@ export async function generateSettlementBatch({
   const eligibleReports = reports.filter(
     (report) =>
       report.status === "approved" &&
-      !report.settledBatchItemId &&
+      !report.settledBatchTypes?.includes(input.batchType) &&
       report.settlementDuration !== null,
   );
   if (eligibleReports.length === 0) {
@@ -217,14 +251,24 @@ export async function generateSettlementBatch({
     rules.map((rule) => [rule.streamerId, rule] as const),
   );
   const baseSalaryApplied = new Set<string>();
+  let receivableBaseSalaryApplied = false;
   const calculations = eligibleReports.map((report) => {
     const rule =
       input.batchType === "receivable"
         ? (projectRule ?? fallbackRule())
         : (ruleByStreamer.get(report.streamerId) ?? fallbackRule());
-    const includeBaseSalary = !baseSalaryApplied.has(report.streamerId);
-    if (includeBaseSalary) {
-      baseSalaryApplied.add(report.streamerId);
+    // Receivable base salary is a project-level fee billed to the vendor once
+    // for the whole batch; applying it per streamer over-bills by (N-1) × base
+    // salary. Payable base salary stays per streamer (once per streamer).
+    let includeBaseSalary: boolean;
+    if (input.batchType === "receivable") {
+      includeBaseSalary = !receivableBaseSalaryApplied;
+      receivableBaseSalaryApplied = true;
+    } else {
+      includeBaseSalary = !baseSalaryApplied.has(report.streamerId);
+      if (includeBaseSalary) {
+        baseSalaryApplied.add(report.streamerId);
+      }
     }
 
     return {
@@ -238,7 +282,10 @@ export async function generateSettlementBatch({
   });
 
   const totals = totalItems(calculations.map(({ item }) => item));
-  const batch = await repo.createSettlementBatch({
+  // Persist the batch, its items and the per-report settled pointers in a single
+  // database transaction (see the generate_settlement_batch RPC) so a partial
+  // failure can never leave an orphaned batch with only some items/reports.
+  const { batch, items } = await repo.createSettlementBatchAtomic({
     organizationId: actor.organizationId,
     projectId: input.projectId,
     batchType: input.batchType,
@@ -253,29 +300,17 @@ export async function generateSettlementBatch({
       })),
     ),
     createdBy: actor.userId,
-  });
-
-  const items: SettlementBatchItemRecord[] = [];
-  for (const { report, item } of calculations) {
-    const createdItem = await repo.createSettlementBatchItem({
-      organizationId: actor.organizationId,
-      settlementBatchId: batch.id,
-      projectId: report.projectId,
+    items: calculations.map(({ report, item }) => ({
       streamerId: report.streamerId,
       liveReportId: report.id,
-      itemType: "live_report",
+      itemType: liveReportItemType(input.batchType),
       computedAmount: item.computedAmount,
       manualAmount: item.manualAmount,
       adjustmentAmount: item.adjustmentAmount,
       evidenceLevel: report.evidenceLevel,
       evidenceSnapshot: item.evidenceSnapshot,
-    });
-    await repo.markReportSettled({
-      reportId: report.id,
-      settlementBatchItemId: createdItem.id,
-    });
-    items.push(createdItem);
-  }
+    })),
+  });
 
   await audit({
     organizationId: actor.organizationId,
@@ -375,6 +410,7 @@ export async function addManualSettlementItem({
   repo: Pick<
     SettlementRepository,
     | "getSettlementBatchById"
+    | "getSettlementRules"
     | "createSettlementBatchItem"
     | "updateSettlementBatch"
   >;
@@ -386,7 +422,8 @@ export async function addManualSettlementItem({
     itemType: ManualSettlementItemType;
     projectId?: string;
     streamerId?: string | null;
-    manualAmount: number;
+    manualAmount?: number;
+    salesAmount?: number;
     adjustmentAmount?: number;
     evidenceLevel: "yellow" | "red";
     reason: string;
@@ -398,8 +435,13 @@ export async function addManualSettlementItem({
     input.reason,
     "Manual settlement amount changes require a reason",
   );
-  assertManualAmount(input.manualAmount);
   const before = await requireSettlementBatch(repo, batchId);
+  const manualSettlement = await resolveManualSettlementInput({
+    repo,
+    batch: before,
+    input,
+  });
+  assertManualAmount(manualSettlement.manualAmount);
   if (before.status === "locked" || before.status === "voided") {
     throw new Error("Locked or voided settlement batches cannot be edited");
   }
@@ -412,15 +454,10 @@ export async function addManualSettlementItem({
     liveReportId: null,
     itemType: input.itemType,
     computedAmount: 0,
-    manualAmount: input.manualAmount,
+    manualAmount: manualSettlement.manualAmount,
     adjustmentAmount: input.adjustmentAmount ?? 0,
     evidenceLevel: input.evidenceLevel,
-    evidenceSnapshot: {
-      source: "manual",
-      itemType: input.itemType,
-      reason: input.reason,
-      note: input.note,
-    },
+    evidenceSnapshot: manualSettlement.evidenceSnapshot,
   });
   const after = await repo.updateSettlementBatch(batchId, {
     manualAmount: before.manualAmount + item.manualAmount,
@@ -549,6 +586,64 @@ function assertManualAmount(manualAmount: number): void {
   }
 }
 
+async function resolveManualSettlementInput({
+  repo,
+  batch,
+  input,
+}: {
+  repo: Pick<SettlementRepository, "getSettlementRules">;
+  batch: SettlementBatchRecord;
+  input: {
+    itemType: ManualSettlementItemType;
+    streamerId?: string | null;
+    manualAmount?: number;
+    salesAmount?: number;
+    reason: string;
+    note?: string;
+  };
+}): Promise<{
+  manualAmount: number;
+  evidenceSnapshot: Record<string, unknown>;
+}> {
+  if (
+    input.itemType === "cps" &&
+    input.manualAmount === undefined &&
+    input.salesAmount !== undefined &&
+    input.streamerId
+  ) {
+    const [rule] = await repo.getSettlementRules({
+      projectId: batch.projectId,
+      streamerIds: [input.streamerId],
+    });
+    const cpsRateBps = rule?.cpsRateBps ?? 0;
+    return {
+      manualAmount: calculateCpsManualAmount({
+        salesAmount: input.salesAmount,
+        cpsRateBps,
+      }),
+      evidenceSnapshot: {
+        source: "manual_cps_import",
+        itemType: input.itemType,
+        reason: input.reason,
+        note: input.note,
+        salesAmount: input.salesAmount,
+        cpsRateBps,
+        settlementRuleSource: "project_streamer_snapshot",
+      },
+    };
+  }
+
+  return {
+    manualAmount: input.manualAmount ?? 0,
+    evidenceSnapshot: {
+      source: "manual",
+      itemType: input.itemType,
+      reason: input.reason,
+      note: input.note,
+    },
+  };
+}
+
 async function requireSettlementBatch(
   repo: Pick<SettlementRepository, "getSettlementBatchById">,
   batchId: string,
@@ -565,6 +660,10 @@ function fallbackRule(): SettlementRule & {
   settlementMethod: SettlementMethod;
 } {
   return { settlementMethod: "manual", hourlyRate: 0, baseSalary: 0 };
+}
+
+function liveReportItemType(batchType: SettlementBatchType): string {
+  return `live_report_${batchType}`;
 }
 
 function totalItems(items: SettlementCalculatedItem[]) {

@@ -16,6 +16,7 @@ import {
   generateSettlementBatch,
   listSettlementPool,
   type ProjectSettlementRuleRecord,
+  type SettlementBatchAtomicItemInput,
   type SettlementBatchItemRecord,
   type SettlementBatchRecord,
   type SettlementPoolReport,
@@ -197,6 +198,10 @@ class GoldenPathRepository
       : null;
   }
 
+  async getActiveCollaborationAgreement(): Promise<null> {
+    return null;
+  }
+
   async createLiveTask(input: {
     organizationId: string;
     projectId: string;
@@ -215,6 +220,7 @@ class GoldenPathRepository
       streamerId: input.streamerId,
       title: input.title,
       status: "pending_live",
+      taskType: "project",
       plannedStartAt: input.plannedStartAt,
       plannedEndAt: input.plannedEndAt,
       plannedDuration: input.plannedDuration,
@@ -286,6 +292,12 @@ class GoldenPathRepository
     return this.reports.get(reportId) ?? null;
   }
 
+  async listLiveReportsByTask(taskId: string): Promise<LiveReportRecord[]> {
+    return [...this.reports.values()].filter(
+      (report) => report.liveTaskId === taskId,
+    );
+  }
+
   async updateLiveReport(
     reportId: string,
     patch: Partial<LiveReportRecord>,
@@ -343,6 +355,7 @@ class GoldenPathRepository
       settlementMethod: "cpt",
       hourlyRate: 80,
       baseSalary: 0,
+      cpsRateBps: 0,
     }));
   }
 
@@ -354,6 +367,7 @@ class GoldenPathRepository
       settlementMethod: "cpt",
       hourlyRate: 100,
       baseSalary: 0,
+      cpsRateBps: 0,
     };
   }
 
@@ -402,6 +416,60 @@ class GoldenPathRepository
     };
     this.items.set(item.id, item);
     return item;
+  }
+
+  async createSettlementBatchAtomic(input: {
+    organizationId: string;
+    projectId: string;
+    batchType: SettlementBatchRecord["batchType"];
+    periodStart: string;
+    periodEnd: string;
+    computedAmount: number;
+    manualAmount: number;
+    adjustmentAmount: number;
+    evidenceSummary: Record<string, unknown>;
+    createdBy: string;
+    items: SettlementBatchAtomicItemInput[];
+  }): Promise<{
+    batch: SettlementBatchRecord;
+    items: SettlementBatchItemRecord[];
+  }> {
+    const batch = await this.createSettlementBatch({
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      batchType: input.batchType,
+      periodStart: input.periodStart,
+      periodEnd: input.periodEnd,
+      computedAmount: input.computedAmount,
+      manualAmount: input.manualAmount,
+      adjustmentAmount: input.adjustmentAmount,
+      evidenceSummary: input.evidenceSummary,
+      createdBy: input.createdBy,
+    });
+    const items: SettlementBatchItemRecord[] = [];
+    for (const item of input.items) {
+      const created = await this.createSettlementBatchItem({
+        organizationId: input.organizationId,
+        settlementBatchId: batch.id,
+        projectId: input.projectId,
+        streamerId: item.streamerId,
+        liveReportId: item.liveReportId,
+        itemType: item.itemType,
+        computedAmount: item.computedAmount,
+        manualAmount: item.manualAmount,
+        adjustmentAmount: item.adjustmentAmount,
+        evidenceLevel: item.evidenceLevel,
+        evidenceSnapshot: item.evidenceSnapshot,
+      });
+      if (item.liveReportId) {
+        await this.markReportSettled({
+          reportId: item.liveReportId,
+          settlementBatchItemId: created.id,
+        });
+      }
+      items.push(created);
+    }
+    return { batch, items };
   }
 
   async markReportSettled(input: {

@@ -1,5 +1,11 @@
-import type { SupplierQualityScore, StreamerMatchResult } from "./matching-engine";
-import type { ProjectPricingResult, PricingSettlementMethod } from "./pricing-calculator";
+import type {
+  SupplierQualityScore,
+  StreamerMatchResult,
+} from "./matching-engine";
+import type {
+  ProjectPricingResult,
+  PricingSettlementMethod,
+} from "./pricing-calculator";
 import type { ProjectReviewReport } from "./project-review-report";
 
 const settlementMethodLabels: Record<PricingSettlementMethod, string> = {

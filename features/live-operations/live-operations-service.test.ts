@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   cancelLiveTask,
+  confirmLiveReportOcrResult,
   createLiveTask,
   reviewLiveReport,
   startLiveTask,
   stopLiveTask,
   submitLiveReport,
+  submitLiveReportScreenshotForOcr,
   type LiveOperationsRepository,
 } from "./live-operations-service";
 
@@ -25,12 +27,34 @@ const streamerActor = {
   streamerId: "streamer-1",
 };
 
+const partnerOpsActor = {
+  userId: "user-partner-ops",
+  name: "Partner Ops",
+  role: "operator_business" as const,
+  organizationId: "org-partner",
+};
+
+const partnerStreamerActor = {
+  userId: "user-partner-streamer",
+  name: "Partner Streamer",
+  role: "streamer" as const,
+  organizationId: "org-partner",
+  streamerId: "streamer-1",
+};
+
+const ocrInput = {
+  screenshotStoragePath: "org/report-screenshots/task-1/end.png",
+  screenshotFileHash: "hash-1",
+  imageBucket: "evidence-private",
+};
+
 const task = {
   id: "task-1",
   organizationId: "org-1",
   projectId: "project-1",
   streamerId: "streamer-1",
   title: "Project A · Streamer 1",
+  taskType: "project" as const,
   status: "pending_live" as const,
   plannedStartAt: "2026-06-02T10:00:00.000Z",
   plannedEndAt: "2026-06-02T12:00:00.000Z",
@@ -41,6 +65,26 @@ const task = {
   systemDuration: 0,
 };
 
+const baseReport = {
+  id: "report-1",
+  organizationId: "org-1",
+  liveTaskId: "task-1",
+  projectId: "project-1",
+  streamerId: "streamer-1",
+  status: "pending_review" as const,
+  systemDuration: 120,
+  screenshotDuration: 124,
+  claimedDuration: 124,
+  settlementDuration: 120,
+  timeSource: "system" as const,
+  evidenceLevel: "green" as const,
+  divergencePct: 0.0333,
+  viewers: 800,
+  includeInTaskResult: true,
+  enterSettlementPool: true,
+  riskFlags: [],
+};
+
 function createRepo(): LiveOperationsRepository {
   return {
     getProjectStreamer: vi.fn(async () => ({
@@ -49,6 +93,7 @@ function createRepo(): LiveOperationsRepository {
       streamerId: "streamer-1",
       status: "joined" as const,
     })),
+    getActiveCollaborationAgreement: vi.fn(async () => null),
     createLiveTask: vi.fn(async (input) => ({
       ...task,
       id: "task-created",
@@ -56,10 +101,13 @@ function createRepo(): LiveOperationsRepository {
       projectId: input.projectId,
       streamerId: input.streamerId,
       title: input.title,
+      taskType: input.taskType,
       plannedStartAt: input.plannedStartAt,
       plannedEndAt: input.plannedEndAt,
       plannedDuration: input.plannedDuration,
       createdBy: input.createdBy,
+      collaborationId: input.collaborationId,
+      contributorOrganizationId: input.contributorOrganizationId,
     })),
     getLiveTaskById: vi.fn(async () => task),
     updateLiveTask: vi.fn(async (_taskId, patch) => ({
@@ -72,7 +120,7 @@ function createRepo(): LiveOperationsRepository {
       liveTaskId: input.liveTaskId,
       projectId: input.projectId,
       streamerId: input.streamerId,
-      status: "pending_review" as const,
+      status: input.status,
       systemDuration: input.systemDuration,
       screenshotDuration: input.screenshotDuration,
       claimedDuration: input.claimedDuration,
@@ -84,48 +132,32 @@ function createRepo(): LiveOperationsRepository {
       includeInTaskResult: true,
       enterSettlementPool: true,
       riskFlags: input.riskFlags,
+      collaborationId: input.collaborationId,
+      contributorOrganizationId: input.contributorOrganizationId,
     })),
-    getLiveReportById: vi.fn(async () => ({
-      id: "report-1",
-      organizationId: "org-1",
-      liveTaskId: "task-1",
-      projectId: "project-1",
-      streamerId: "streamer-1",
-      status: "pending_review" as const,
-      systemDuration: 120,
-      screenshotDuration: 124,
-      claimedDuration: 124,
-      settlementDuration: 120,
-      timeSource: "system" as const,
-      evidenceLevel: "green" as const,
-      divergencePct: 0.0333,
-      viewers: 800,
-      includeInTaskResult: true,
-      enterSettlementPool: true,
-      riskFlags: [],
-    })),
+    getLiveReportById: vi.fn(async () => ({ ...baseReport })),
+    listLiveReportsByTask: vi.fn(async () => []),
     updateLiveReport: vi.fn(async (_reportId, patch) => ({
-      id: "report-1",
-      organizationId: "org-1",
-      liveTaskId: "task-1",
-      projectId: "project-1",
-      streamerId: "streamer-1",
-      status: patch.status ?? ("pending_review" as const),
-      systemDuration: 120,
-      screenshotDuration: 124,
-      claimedDuration: 124,
-      settlementDuration: 120,
-      timeSource: "system" as const,
-      evidenceLevel: "green" as const,
-      divergencePct: 0.0333,
-      viewers: 800,
-      includeInTaskResult: patch.includeInTaskResult ?? true,
-      enterSettlementPool: patch.enterSettlementPool ?? true,
-      riskFlags: [],
+      ...baseReport,
+      ...patch,
     })),
     createReportScreenshot: vi.fn(async () => undefined),
     createReportChangeLog: vi.fn(async () => undefined),
   };
+}
+
+function createQueuedOcrJob() {
+  return vi.fn(async () => ({
+    id: "ocr-job-1",
+    organizationId: "org-1",
+    jobType: "ocr.extract_live_report",
+    status: "queued",
+    attempt: 0,
+    payload: {
+      liveReportId: "report-1",
+      imagePath: "org/report-screenshots/task-1/end.png",
+    },
+  }));
 }
 
 describe("live operations service", () => {
@@ -166,6 +198,89 @@ describe("live operations service", () => {
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "create", module: "live_task" }),
     );
+  });
+
+  it("persists the selected live task type", async () => {
+    await createLiveTask({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        title: "Project A · Streamer 1",
+        taskType: "training",
+        plannedStartAt: "2026-06-02T10:00:00.000Z",
+        plannedEndAt: "2026-06-02T12:00:00.000Z",
+        plannedDuration: 120,
+      },
+    });
+
+    expect(repo.createLiveTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskType: "training",
+      }),
+    );
+  });
+
+  it("validates active collaboration before creating an attributed task", async () => {
+    vi.mocked(repo.getActiveCollaborationAgreement).mockResolvedValueOnce({
+      id: "agreement-1",
+      projectId: "project-1",
+      partnerOrganizationId: "org-partner",
+      status: "active",
+    });
+
+    await createLiveTask({
+      repo,
+      audit,
+      notify,
+      actor: partnerOpsActor,
+      input: {
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        title: "Partner project task",
+        collaborationId: "agreement-1",
+        plannedStartAt: "2026-06-02T10:00:00.000Z",
+        plannedEndAt: "2026-06-02T12:00:00.000Z",
+        plannedDuration: 120,
+      },
+    });
+
+    expect(repo.getActiveCollaborationAgreement).toHaveBeenCalledWith({
+      projectId: "project-1",
+      collaborationId: "agreement-1",
+      contributorOrganizationId: "org-partner",
+    });
+    expect(repo.createLiveTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collaborationId: "agreement-1",
+        contributorOrganizationId: "org-partner",
+      }),
+    );
+  });
+
+  it("rejects live task collaboration attribution without an active agreement", async () => {
+    await expect(
+      createLiveTask({
+        repo,
+        audit,
+        notify,
+        actor: partnerOpsActor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          title: "Partner project task",
+          collaborationId: "agreement-1",
+          plannedStartAt: "2026-06-02T10:00:00.000Z",
+          plannedEndAt: "2026-06-02T12:00:00.000Z",
+          plannedDuration: 120,
+        },
+      }),
+    ).rejects.toThrow("Active collaboration agreement is required");
+
+    expect(repo.createLiveTask).not.toHaveBeenCalled();
   });
 
   it("lets a streamer start and stop their own task with system timing", async () => {
@@ -338,6 +453,716 @@ describe("live operations service", () => {
     );
   });
 
+  it("inherits collaboration attribution when submitting a report", async () => {
+    vi.mocked(repo.getActiveCollaborationAgreement).mockResolvedValueOnce({
+      id: "agreement-1",
+      projectId: "project-1",
+      partnerOrganizationId: "org-partner",
+      status: "active",
+    });
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      organizationId: "org-partner",
+      status: "pending_report",
+      systemStartedAt: "2026-06-02T10:00:00.000Z",
+      systemStoppedAt: "2026-06-02T12:00:00.000Z",
+      systemDuration: 120,
+      collaborationId: "agreement-1",
+      contributorOrganizationId: "org-partner",
+    });
+
+    await submitLiveReport({
+      repo,
+      audit,
+      notify,
+      actor: partnerStreamerActor,
+      taskId: "task-1",
+      input: {
+        screenshotStoragePath: "private/reports/task-1/end.png",
+        screenshotFileHash: "hash-1",
+        screenshotDuration: 122,
+        claimedDuration: 122,
+        viewers: 952,
+      },
+    });
+
+    expect(repo.createLiveReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collaborationId: "agreement-1",
+        contributorOrganizationId: "org-partner",
+      }),
+    );
+  });
+
+  it("queues OCR when a streamer submits a live report screenshot for OCR", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "pending_report",
+      systemStartedAt: "2026-06-02T10:00:00.000Z",
+      systemStoppedAt: "2026-06-02T11:20:00.000Z",
+      systemDuration: 80,
+    });
+    const createOcrJob = createQueuedOcrJob();
+
+    const result = await submitLiveReportScreenshotForOcr({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      taskId: "task-1",
+      input: ocrInput,
+      createOcrJob,
+    });
+
+    expect(result.report.status).toBe("ocr_ing");
+    expect(result.job.id).toBe("ocr-job-1");
+    expect(repo.createLiveReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "ocr_ing",
+        settlementDuration: 80,
+        timeSource: "system",
+        evidenceLevel: "yellow",
+        riskFlags: expect.arrayContaining([
+          "missing_screenshot_duration",
+          "ocr_pending",
+        ]),
+      }),
+    );
+    expect(repo.createReportScreenshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storagePath: "org/report-screenshots/task-1/end.png",
+        fileHash: "hash-1",
+        uploadedBy: "user-streamer",
+        metadata: { imageBucket: "evidence-private" },
+      }),
+    );
+    expect(createOcrJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        liveReportId: "report-1",
+        imageBucket: "evidence-private",
+        imagePath: "org/report-screenshots/task-1/end.png",
+        expectedDuration: 80,
+      }),
+    );
+    expect(repo.updateLiveTask).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ status: "report_pending_review" }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        module: "live_task",
+        objectId: "task-1",
+        changedFields: ["status"],
+      }),
+    );
+    expect(JSON.stringify(audit.mock.calls)).not.toContain(
+      "org/report-screenshots",
+    );
+    expect(JSON.stringify(audit.mock.calls)).not.toContain("hash-1");
+    expect(JSON.stringify(notify.mock.calls)).not.toContain(
+      "org/report-screenshots",
+    );
+    expect(JSON.stringify(notify.mock.calls)).not.toContain("hash-1");
+  });
+
+  it("queues OCR from a rejected report retry path", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "report_rejected",
+      systemStartedAt: "2026-06-02T10:00:00.000Z",
+      systemStoppedAt: "2026-06-02T11:20:00.000Z",
+      systemDuration: 80,
+    });
+    const createOcrJob = createQueuedOcrJob();
+
+    const result = await submitLiveReportScreenshotForOcr({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      taskId: "task-1",
+      input: ocrInput,
+      createOcrJob,
+    });
+
+    expect(result.report.status).toBe("ocr_ing");
+    expect(createOcrJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        liveReportId: "report-1",
+        expectedDuration: 80,
+      }),
+    );
+    expect(repo.updateLiveTask).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ status: "report_pending_review" }),
+    );
+  });
+
+  it("blocks OCR submission from another streamer's task", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "pending_report",
+      systemDuration: 80,
+    });
+    const createOcrJob = vi.fn(async () => ({
+      id: "ocr-job-1",
+      status: "queued",
+    }));
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: { ...streamerActor, streamerId: "streamer-2" },
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob,
+      }),
+    ).rejects.toThrow("Streamers can only operate their own live tasks");
+
+    expect(repo.createLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportScreenshot).not.toHaveBeenCalled();
+    expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
+  it("rejects OCR submission for invalid task status before report or job creation", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "live",
+      systemDuration: 80,
+    });
+    const createOcrJob = createQueuedOcrJob();
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob,
+      }),
+    ).rejects.toThrow(
+      "OCR reports can only be submitted from pending or rejected report tasks",
+    );
+
+    expect(repo.createLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportScreenshot).not.toHaveBeenCalled();
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
+    expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["zero", 0],
+    ["missing", undefined],
+  ])(
+    "rejects OCR submission with %s system duration before report or job creation",
+    async (_case, systemDuration) => {
+      vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+        ...task,
+        status: "pending_report",
+        systemDuration: systemDuration as number,
+      });
+      const createOcrJob = createQueuedOcrJob();
+
+      await expect(
+        submitLiveReportScreenshotForOcr({
+          repo,
+          audit,
+          notify,
+          actor: streamerActor,
+          taskId: "task-1",
+          input: ocrInput,
+          createOcrJob,
+        }),
+      ).rejects.toThrow("OCR report requires a recorded system duration");
+
+      expect(repo.createLiveReport).not.toHaveBeenCalled();
+      expect(repo.createReportScreenshot).not.toHaveBeenCalled();
+      expect(repo.updateLiveTask).not.toHaveBeenCalled();
+      expect(createOcrJob).not.toHaveBeenCalled();
+    },
+  );
+
+  it("blocks cross-organization OCR submission before report or job creation", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      organizationId: "org-2",
+      status: "pending_report",
+      systemDuration: 80,
+    });
+    const createOcrJob = createQueuedOcrJob();
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob,
+      }),
+    ).rejects.toThrow("Cross-organization access is not allowed");
+
+    expect(repo.createLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportScreenshot).not.toHaveBeenCalled();
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
+    expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
+  it("blocks unexpected non-streamer roles from OCR submission before report or job creation", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "pending_report",
+      systemDuration: 80,
+    });
+    const createOcrJob = createQueuedOcrJob();
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: {
+          ...streamerActor,
+          role: "guest" as typeof streamerActor.role,
+        },
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob,
+      }),
+    ).rejects.toThrow("Current role cannot operate live tasks");
+
+    expect(repo.createLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportScreenshot).not.toHaveBeenCalled();
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
+    expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
+  it("voids the report and does not advance the task when OCR queueing fails", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "pending_report",
+      systemDuration: 80,
+    });
+    const createOcrJob = vi.fn(async () => {
+      throw new Error("queue unavailable");
+    });
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob,
+      }),
+    ).rejects.toThrow("OCR 入队失败");
+
+    // The report is created but then voided, and the task is never advanced
+    // into review (so the streamer can simply re-upload).
+    expect(repo.createLiveReport).toHaveBeenCalled();
+    expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
+      status: "voided",
+    });
+    expect(repo.updateLiveTask).not.toHaveBeenCalledWith("task-1", {
+      status: "report_pending_review",
+    });
+  });
+
+  it("supersedes prior open reports for the task on resubmit", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "report_rejected",
+      systemDuration: 80,
+    });
+    vi.mocked(repo.listLiveReportsByTask).mockResolvedValueOnce([
+      { ...baseReport, id: "old-report", status: "rejected" },
+    ]);
+    const createOcrJob = vi.fn(async () => ({
+      id: "job-1",
+      status: "queued",
+    }));
+
+    await submitLiveReportScreenshotForOcr({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      taskId: "task-1",
+      input: ocrInput,
+      createOcrJob,
+    });
+
+    // The previously rejected report is voided before the new one is created.
+    expect(repo.updateLiveReport).toHaveBeenCalledWith("old-report", {
+      status: "voided",
+    });
+    expect(repo.createLiveReport).toHaveBeenCalled();
+    expect(repo.updateLiveTask).toHaveBeenCalledWith("task-1", {
+      status: "report_pending_review",
+    });
+  });
+
+  it("confirmLiveReportOcrResult confirms OCR result values and sends the report to review", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "ocr_ing",
+      streamerId: "streamer-1",
+      organizationId: "org-1",
+      systemDuration: 120,
+    });
+
+    const result = await confirmLiveReportOcrResult({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      reportId: "report-1",
+      input: {
+        ocrDuration: 78,
+        ocrViewers: 300,
+        confirmedDuration: 80,
+        confirmedViewers: 320,
+      },
+    });
+
+    expect(result.status).toBe("pending_review");
+    expect(repo.updateLiveReport).toHaveBeenCalledWith(
+      "report-1",
+      expect.objectContaining({
+        status: "pending_review",
+        screenshotDuration: 78,
+        claimedDuration: 80,
+        settlementDuration: 120,
+        timeSource: "system",
+        evidenceLevel: "yellow",
+        viewers: 320,
+        riskFlags: expect.arrayContaining(["duration_divergence"]),
+      }),
+    );
+    expect(repo.createReportChangeLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        liveReportId: "report-1",
+        changedFields: expect.arrayContaining([
+          "status",
+          "screenshot_duration",
+          "claimed_duration",
+          "settlement_duration",
+          "time_source",
+          "evidence_level",
+          "divergence_pct",
+          "viewers",
+          "risk_flags",
+        ]),
+      }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update",
+        module: "live_report",
+        objectId: "report-1",
+        changedFields: expect.arrayContaining([
+          "status",
+          "screenshot_duration",
+          "claimed_duration",
+          "settlement_duration",
+          "time_source",
+          "evidence_level",
+          "divergence_pct",
+          "viewers",
+          "risk_flags",
+        ]),
+      }),
+    );
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientRole: "operator_business",
+        title: "Live report values confirmed",
+        content: "A streamer confirmed OCR report values.",
+        source: "live_report.ocr.confirm",
+      }),
+    );
+  });
+
+  it("blocks another streamer from confirming an OCR report before side effects", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "ocr_ing",
+    });
+
+    await expect(
+      confirmLiveReportOcrResult({
+        repo,
+        audit,
+        notify,
+        actor: { ...streamerActor, streamerId: "streamer-2" },
+        reportId: "report-1",
+        input: {
+          ocrDuration: 78,
+          confirmedDuration: 80,
+        },
+      }),
+    ).rejects.toThrow("Streamers can only confirm their own reports");
+
+    expect(repo.updateLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportChangeLog).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("blocks finance from confirming OCR reports before side effects", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "ocr_ing",
+      organizationId: "org-1",
+    });
+
+    await expect(
+      confirmLiveReportOcrResult({
+        repo,
+        audit,
+        notify,
+        actor: {
+          userId: "user-finance",
+          name: "Finance",
+          role: "finance",
+          organizationId: "org-1",
+        },
+        reportId: "report-1",
+        input: {
+          ocrDuration: 78,
+          confirmedDuration: 80,
+        },
+      }),
+    ).rejects.toThrow("Current role cannot review live reports");
+
+    expect(repo.updateLiveReport).not.toHaveBeenCalled();
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
+    expect(repo.createReportChangeLog).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-OCR reports before confirmation side effects", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "approved",
+    });
+
+    await expect(
+      confirmLiveReportOcrResult({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        reportId: "report-1",
+        input: {
+          ocrDuration: 78,
+          confirmedDuration: 80,
+        },
+      }),
+    ).rejects.toThrow("Only OCR pending reports can be confirmed");
+
+    expect(repo.updateLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportChangeLog).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("lets same-organization staff confirm an OCR report", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "pending_confirm",
+    });
+
+    const result = await confirmLiveReportOcrResult({
+      repo,
+      audit,
+      notify,
+      actor,
+      reportId: "report-1",
+      input: {
+        ocrDuration: 118,
+        confirmedDuration: 119,
+        confirmedViewers: 410,
+      },
+    });
+
+    expect(result.status).toBe("pending_review");
+    expect(repo.updateLiveReport).toHaveBeenCalledWith(
+      "report-1",
+      expect.objectContaining({
+        status: "pending_review",
+        viewers: 410,
+      }),
+    );
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Live report values confirmed",
+        content: "A staff member confirmed OCR report values.",
+      }),
+    );
+  });
+
+  it("falls back to OCR viewers when confirmed viewers are omitted", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "pending_confirm",
+      viewers: 800,
+    });
+
+    await confirmLiveReportOcrResult({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      reportId: "report-1",
+      input: {
+        ocrDuration: 80,
+        ocrViewers: 305,
+        confirmedDuration: 80,
+      },
+    });
+
+    expect(repo.updateLiveReport).toHaveBeenCalledWith(
+      "report-1",
+      expect.objectContaining({
+        viewers: 305,
+      }),
+    );
+  });
+
+  it("moves need-more confirmation tasks back to pending review so approval can complete", async () => {
+    vi.mocked(repo.getLiveReportById)
+      .mockResolvedValueOnce({
+        ...baseReport,
+        status: "need_more",
+        viewers: 800,
+      })
+      .mockResolvedValueOnce({
+        ...baseReport,
+        status: "pending_review",
+        screenshotDuration: 80,
+        claimedDuration: 80,
+        settlementDuration: 120,
+        viewers: 305,
+      });
+    vi.mocked(repo.getLiveTaskById)
+      .mockResolvedValueOnce({
+        ...task,
+        status: "report_rejected",
+      })
+      .mockResolvedValueOnce({
+        ...task,
+        status: "report_pending_review",
+      });
+
+    await confirmLiveReportOcrResult({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      reportId: "report-1",
+      input: {
+        ocrDuration: 80,
+        ocrViewers: 305,
+        confirmedDuration: 80,
+      },
+    });
+
+    expect(repo.updateLiveTask).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ status: "report_pending_review" }),
+    );
+
+    await reviewLiveReport({
+      repo,
+      audit,
+      notify,
+      actor,
+      reportId: "report-1",
+      input: {
+        decision: "approve",
+        includeInTaskResult: true,
+        enterSettlementPool: true,
+        reviewNotes: "ok",
+      },
+    });
+
+    expect(repo.updateLiveTask).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ status: "completed" }),
+    );
+  });
+
+  it.each([
+    ["confirmedViewers", { confirmedViewers: -1 }],
+    ["ocrViewers", { ocrViewers: -1 }],
+  ])(
+    "rejects negative %s before confirmation side effects",
+    async (_field, viewerInput) => {
+      vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+        ...baseReport,
+        status: "ocr_ing",
+      });
+
+      await expect(
+        confirmLiveReportOcrResult({
+          repo,
+          audit,
+          notify,
+          actor: streamerActor,
+          reportId: "report-1",
+          input: {
+            ocrDuration: 80,
+            confirmedDuration: 80,
+            ...viewerInput,
+          },
+        }),
+      ).rejects.toThrow("Viewer count must be a non-negative number");
+
+      expect(repo.updateLiveReport).not.toHaveBeenCalled();
+      expect(repo.updateLiveTask).not.toHaveBeenCalled();
+      expect(repo.createReportChangeLog).not.toHaveBeenCalled();
+      expect(audit).not.toHaveBeenCalled();
+      expect(notify).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps existing viewers when confirmed and OCR viewers are omitted", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "ocr_ing",
+      viewers: 800,
+    });
+
+    await confirmLiveReportOcrResult({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      reportId: "report-1",
+      input: {
+        ocrDuration: 80,
+        confirmedDuration: 80,
+      },
+    });
+
+    expect(repo.updateLiveReport).toHaveBeenCalledWith(
+      "report-1",
+      expect.objectContaining({
+        viewers: 800,
+      }),
+    );
+  });
+
   it("approves a report into the settlement pool without creating settlement items", async () => {
     vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
       ...task,
@@ -370,6 +1195,87 @@ describe("live operations service", () => {
       expect.objectContaining({ action: "approve", module: "live_report" }),
     );
     expect("createSettlementBatchItem" in repo).toBe(false);
+  });
+
+  it("keeps rejected and needs-more reports out of task results and settlement", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "report_pending_review",
+    });
+
+    const rejected = await reviewLiveReport({
+      repo,
+      audit,
+      notify,
+      actor,
+      reportId: "report-1",
+      input: {
+        decision: "reject",
+        includeInTaskResult: true,
+        enterSettlementPool: true,
+        reviewNotes: "bad evidence",
+      },
+    });
+
+    expect(rejected).toMatchObject({
+      status: "rejected",
+      includeInTaskResult: false,
+      enterSettlementPool: false,
+    });
+    expect(repo.updateLiveReport).toHaveBeenCalledWith(
+      "report-1",
+      expect.objectContaining({
+        includeInTaskResult: false,
+        enterSettlementPool: false,
+      }),
+    );
+
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      id: "report-2",
+      organizationId: "org-1",
+      liveTaskId: "task-1",
+      projectId: "project-1",
+      streamerId: "streamer-1",
+      status: "pending_review",
+      systemDuration: 120,
+      screenshotDuration: 120,
+      claimedDuration: 120,
+      settlementDuration: 120,
+      timeSource: "system",
+      evidenceLevel: "green",
+      divergencePct: 0,
+      viewers: 800,
+      includeInTaskResult: true,
+      enterSettlementPool: true,
+      riskFlags: [],
+    });
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "report_pending_review",
+    });
+
+    await reviewLiveReport({
+      repo,
+      audit,
+      notify,
+      actor,
+      reportId: "report-2",
+      input: {
+        decision: "need_more",
+        includeInTaskResult: true,
+        enterSettlementPool: true,
+        reviewNotes: "need another screenshot",
+      },
+    });
+
+    expect(repo.updateLiveReport).toHaveBeenLastCalledWith(
+      "report-2",
+      expect.objectContaining({
+        status: "need_more",
+        includeInTaskResult: false,
+        enterSettlementPool: false,
+      }),
+    );
   });
 
   it("blocks cross-organization report reviews even if the repository returns a row", async () => {

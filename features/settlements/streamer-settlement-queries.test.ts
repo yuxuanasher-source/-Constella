@@ -71,7 +71,7 @@ describe("streamer settlement safe DTO", () => {
       manualAmount: 0,
       adjustmentAmount: 0,
       hours: 2,
-      evidence: "green 路 system",
+      evidence: "green · system",
       source: "live_report",
       createdAt: "2026-05-20T12:00:00.000Z",
     });

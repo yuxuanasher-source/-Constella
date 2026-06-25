@@ -29,6 +29,30 @@ describe("calculateUsageStatus", () => {
     });
   });
 
+  it("hard-blocks OCR overage but keeps other metrics soft", () => {
+    expect(
+      calculateUsageStatus({
+        metric: "ocr",
+        usedQuantity: 260,
+        includedQuantity: 200,
+        addonQuantity: 0,
+      }),
+    ).toMatchObject({
+      overageQuantity: 60,
+      softOverage: false,
+      shouldHardBlock: true,
+    });
+
+    expect(
+      calculateUsageStatus({
+        metric: "ai",
+        usedQuantity: 1300,
+        includedQuantity: 1000,
+        addonQuantity: 200,
+      }),
+    ).toMatchObject({ shouldHardBlock: false, softOverage: true });
+  });
+
   it("uses explicit nonnegative fallbacks for bad usage values", () => {
     expect(
       calculateUsageStatus({
@@ -44,13 +68,29 @@ describe("calculateUsageStatus", () => {
       billableOverageQuantity: 0,
     });
   });
+
+  it("calculates complex cost project usage as a soft overage metric", () => {
+    expect(
+      calculateUsageStatus({
+        metric: "complex_cost_project",
+        usedQuantity: 6,
+        includedQuantity: 5,
+        addonQuantity: 0,
+      }),
+    ).toMatchObject({
+      metric: "complex_cost_project",
+      remainingQuantity: 0,
+      overageQuantity: 1,
+      billableOverageQuantity: 1,
+      softOverage: true,
+      shouldHardBlock: false,
+    });
+  });
 });
 
 describe("getUsagePeriodMonth", () => {
   it("normalizes usage periods to the first day of the month", () => {
-    expect(getUsagePeriodMonth("2026-06-23T18:30:00.000Z")).toBe(
-      "2026-06-01",
-    );
+    expect(getUsagePeriodMonth("2026-06-23T18:30:00.000Z")).toBe("2026-06-01");
   });
 });
 

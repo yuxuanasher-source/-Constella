@@ -2,13 +2,47 @@
 /* eslint-disable */
 import React from "react";
 
+import { getAllowedProjectStatusTransitions } from "@/features/projects/project-state";
+import {
+  toCollaborationApplicationProjectCardDtos,
+  toCollaborationProjectCardDtos,
+} from "@/features/projects/project-ui-dto";
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
+import { resolvePaywall } from "@/features/funnel/paywall";
 import {
   toPricingResultDto,
   toProjectReviewDto,
   toStreamerMatchDtos,
   toSupplierQualityDtos,
 } from "@/features/war-room/war-room-ui-dto";
+
+import AiUsageDashboard from "./ai-usage-dashboard";
+import SettlementRuleBuilder, {
+  builderRuleFromStored,
+  serializeBuilderRule,
+} from "./settlement-rule-builder";
+import ProjectFinancialSettings, {
+  financialDraftFromProject,
+  serializeFinancialDraft,
+} from "./project-financial-settings";
+import {
+  buildReconciliationRows,
+  reconciliationBlockMessage,
+  reconciliationGate,
+  reconciliationSeverityTone,
+} from "./settlement-reconciliation-view";
+import {
+  buildCostItemPayload,
+  canConfirmCostItem,
+  canVoidCostItem,
+  costStatusLabel,
+  costStatusTone,
+  COST_DIRECTION_OPTIONS,
+  COST_EVIDENCE_OPTIONS,
+  COST_ITEM_TYPE_OPTIONS,
+  defaultCostDraft,
+  formatYuanFromCents,
+} from "./external-cost-view";
 
 // ===== src\ui.jsx =====
 // ——— Reusable UI atoms ——————————————————————————————————————
@@ -218,6 +252,69 @@ function Card({ children, title, extra, padded = true, style, bodyStyle }) {
       <div style={{ padding: padded ? 16 : 0, flex: 1, ...bodyStyle }}>
         {children}
       </div>
+    </div>
+  );
+}
+
+// Collapsible section — keeps advanced/secondary controls out of the way until
+// the operator opens them. Default collapsed.
+function CollapsibleSection({ title, hint, defaultOpen = false, children }) {
+  const [open, setOpen] = React.useState(defaultOpen);
+  return (
+    <div
+      style={{
+        border: "1px solid var(--line)",
+        borderRadius: 8,
+        background: "#fff",
+        overflow: "hidden",
+      }}
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          padding: "10px 14px",
+          background: open ? "var(--bg-soft)" : "#fff",
+          border: "none",
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span
+            style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}
+          >
+            {title}
+          </span>
+          {hint && (
+            <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              {hint}
+            </span>
+          )}
+        </span>
+        <span
+          aria-hidden="true"
+          style={{
+            fontSize: 12,
+            color: "var(--ink-400)",
+            transform: open ? "rotate(90deg)" : "none",
+            transition: "transform 0.15s",
+          }}
+        >
+          ▶
+        </span>
+      </button>
+      {open && (
+        <div style={{ padding: 14, borderTop: "1px solid var(--line)" }}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }
@@ -498,6 +595,117 @@ function Metric({
 }
 
 // Search input
+// Compact secondary stat for grouped KPI strips — one primary metric stays dominant
+// while supporting metrics ride alongside at a smaller weight.
+function MiniStat({ label, value, unit, hint, hintTone = "muted" }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 12, color: "var(--ink-400)" }}>{label}</div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          gap: 4,
+          marginTop: 4,
+        }}
+      >
+        <span
+          className="num"
+          style={{
+            fontSize: 18,
+            fontWeight: 600,
+            color: "var(--ink-900)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {value}
+        </span>
+        {unit && (
+          <span style={{ fontSize: 11, color: "var(--ink-400)" }}>{unit}</span>
+        )}
+      </div>
+      {hint && (
+        <div
+          style={{
+            fontSize: 11,
+            marginTop: 2,
+            color:
+              hintTone === "red"
+                ? "var(--danger-600)"
+                : hintTone === "green"
+                  ? "var(--ok-600)"
+                  : "var(--ink-400)",
+          }}
+        >
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Vertically clip a long block; reveal in full on demand. All children stay mounted.
+function ShowMore({
+  collapsedHeight = 168,
+  moreLabel = "查看全部",
+  lessLabel = "收起",
+  defaultExpanded = false,
+  children,
+}) {
+  const [expanded, setExpanded] = React.useState(defaultExpanded);
+  return (
+    <div>
+      <div
+        style={{
+          position: "relative",
+          maxHeight: expanded ? "none" : collapsedHeight,
+          overflow: "hidden",
+        }}
+      >
+        {children}
+        {!expanded && (
+          <div
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: 44,
+              background:
+                "linear-gradient(180deg, rgba(255,255,255,0), #fff 88%)",
+              pointerEvents: "none",
+            }}
+          />
+        )}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          borderTop: "1px solid var(--line)",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          style={{
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            color: "var(--blue-600)",
+            fontSize: 12,
+            fontWeight: 500,
+            padding: "8px 12px",
+          }}
+        >
+          {expanded ? lessLabel : moreLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SearchInput({ placeholder = "搜索…", value, onChange, width = 280 }) {
   return (
     <div
@@ -642,6 +850,96 @@ function RiskDot({ level }) {
 
 const ORG = { id: "", name: "未配置组织" };
 
+const ORGANIZATION_FEATURE_OPTIONS = [
+  {
+    key: "aiWarRoom",
+    label: "AI 智能作战台",
+    hint: "经营看板、复盘摘要、风险提醒与项目推荐能力。",
+  },
+  {
+    key: "dataExport",
+    label: "数据导出",
+    hint: "导出项目、主播、报数、结算与审计明细。",
+  },
+  {
+    key: "streamerDesktop",
+    label: "主播工作台",
+    hint: "主播任务、录屏、报数与结算确认入口。",
+  },
+  {
+    key: "vendorPortal",
+    label: "厂家门户",
+    hint: "向厂家开放候选主播、执行进度与交付包。",
+  },
+  {
+    key: "autoReview",
+    label: "自动审核正式模式",
+    hint: "OCR 与规则命中后自动推进报数审核流转。",
+  },
+];
+
+const DEFAULT_ORGANIZATION_SETTINGS = {
+  id: ORG.id,
+  name: ORG.name || "未配置组织",
+  logoText: "JY",
+  memberLimit: null,
+  plan: "",
+  verified: false,
+  features: {
+    aiWarRoom: true,
+    dataExport: true,
+    streamerDesktop: true,
+    vendorPortal: false,
+    autoReview: false,
+  },
+};
+
+function normalizeOrganizationSettings(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const rawLimit = Number(source.memberLimit ?? source.memberCount);
+  const memberLimit =
+    Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : null;
+  const features =
+    source.features && typeof source.features === "object"
+      ? source.features
+      : source.enabledFeatures && typeof source.enabledFeatures === "object"
+        ? source.enabledFeatures
+        : {};
+
+  return {
+    ...DEFAULT_ORGANIZATION_SETTINGS,
+    ...source,
+    name:
+      typeof source.name === "string" && source.name.trim()
+        ? source.name.trim()
+        : DEFAULT_ORGANIZATION_SETTINGS.name,
+    logoText:
+      typeof source.logoText === "string" && source.logoText.trim()
+        ? source.logoText.trim().slice(0, 4)
+        : DEFAULT_ORGANIZATION_SETTINGS.logoText,
+    memberLimit,
+    plan:
+      typeof source.plan === "string" && source.plan.trim()
+        ? source.plan.trim()
+        : DEFAULT_ORGANIZATION_SETTINGS.plan,
+    verified:
+      typeof source.verified === "boolean"
+        ? source.verified
+        : DEFAULT_ORGANIZATION_SETTINGS.verified,
+    features: {
+      ...DEFAULT_ORGANIZATION_SETTINGS.features,
+      ...features,
+    },
+  };
+}
+
+function countEnabledOrganizationFeatures(settings) {
+  const normalized = normalizeOrganizationSettings(settings);
+  return ORGANIZATION_FEATURE_OPTIONS.filter(
+    (feature) => normalized.features[feature.key],
+  ).length;
+}
+
 const ROLES = {
   owner: "负责人",
   ops_manager: "运营负责人",
@@ -650,13 +948,63 @@ const ROLES = {
   streamer: "主播",
 };
 
-const CURRENT_USER = {
+const DEFAULT_CURRENT_USER = {
   id: "",
   name: "未登录用户",
   role: "owner",
   org: "",
   dept: "",
 };
+
+function normalizeCurrentUser(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const role = ROLES[source.role] ? source.role : DEFAULT_CURRENT_USER.role;
+  const name =
+    typeof source.name === "string" && source.name.trim()
+      ? source.name.trim()
+      : DEFAULT_CURRENT_USER.name;
+  const dept = typeof source.dept === "string" ? source.dept.trim() : "";
+  const org = typeof source.org === "string" ? source.org.trim() : "";
+
+  return {
+    ...DEFAULT_CURRENT_USER,
+    ...source,
+    name,
+    role,
+    org,
+    dept,
+  };
+}
+
+function formatCurrentUserMeta(user) {
+  const roleLabel = ROLES[user.role] ?? ROLES[DEFAULT_CURRENT_USER.role];
+  const scope = user.dept || user.org;
+  return scope ? `${roleLabel} · ${scope}` : roleLabel;
+}
+
+const UUID_LIKE_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuidLikeId(value) {
+  return UUID_LIKE_ID.test(String(value || "").trim());
+}
+
+function displayRecordId(value, fallback = "内部记录") {
+  const text = String(value || "").trim();
+  if (!text || isUuidLikeId(text)) return fallback;
+  return text;
+}
+
+function displayTaskStreamerName(task, fallback = "未配置主播") {
+  const readableName = displayRecordId(task?.streamerName, "");
+  if (readableName) return readableName;
+  return displayRecordId(task?.streamerId, fallback);
+}
+
+function displayProjectCode(project) {
+  const code = String(project?.code || "").trim();
+  return code || "未设置编号";
+}
 
 // Projects ———————————————————————————————————
 const PROJECTS = [];
@@ -672,6 +1020,10 @@ const PROJECT_STATUS = {
   archived: { tone: "neutral", label: "已归档" },
 };
 
+const PROJECT_STATUS_OPTIONS = Object.entries(PROJECT_STATUS).map(
+  ([value, meta]) => ({ value, label: meta.label }),
+);
+
 // Streamers ———————————————————————————————————
 const STREAMERS = [];
 
@@ -680,10 +1032,15 @@ const REPORTS = [];
 
 const REPORT_STATUS = {
   pending_streamer: { tone: "neutral", label: "待主播确认" },
+  pending: { tone: "neutral", label: "待提交" },
+  ocr_ing: { tone: "violet", label: "OCR 识别中" },
+  pending_confirm: { tone: "amber", label: "待确认" },
   pending_review: { tone: "blue", label: "待审核" },
+  pending_adjudication: { tone: "violet", label: "待裁决" },
   need_supply: { tone: "amber", label: "需补充" },
   approved: { tone: "green", label: "审核通过" },
   rejected: { tone: "red", label: "审核驳回" },
+  voided: { tone: "neutral", label: "已作废" },
 };
 
 const OpsLiveDataContext = React.createContext({
@@ -695,15 +1052,29 @@ const OpsLiveDataContext = React.createContext({
   batches: null,
   batchDetails: null,
   settlementPool: null,
+  collaborationProjects: null,
   settlementScope: null,
   auditEntries: null,
+  ocrJobs: null,
   notificationItems: null,
+  organizationMembers: null,
+  organizationMemberPermissions: null,
+  organizationSettings: DEFAULT_ORGANIZATION_SETTINGS,
+  billingStatus: null,
+  complexCost: null,
+  dashboardHome: null,
+  currentUser: DEFAULT_CURRENT_USER,
   actions: {},
 });
 
 function useOpsProjects() {
   const { projects } = React.useContext(OpsLiveDataContext);
   return Array.isArray(projects) ? projects : PROJECTS;
+}
+
+function useOpsCollaborationProjects() {
+  const { collaborationProjects } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(collaborationProjects) ? collaborationProjects : [];
 }
 
 function useOpsStreamers() {
@@ -738,7 +1109,7 @@ function useOpsSettlementBatchDetails() {
 
 function useOpsSettlementPool() {
   const { settlementPool } = React.useContext(OpsLiveDataContext);
-  return Array.isArray(settlementPool) ? settlementPool : [];
+  return Array.isArray(settlementPool) ? settlementPool : SETTLEMENT_POOL;
 }
 
 function useOpsSettlementScope() {
@@ -751,9 +1122,57 @@ function useOpsAuditEntries() {
   return Array.isArray(auditEntries) ? auditEntries : [];
 }
 
+function useOpsOcrJobs() {
+  const { ocrJobs } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(ocrJobs) ? ocrJobs : [];
+}
+
 function useOpsNotifications() {
   const { notificationItems } = React.useContext(OpsLiveDataContext);
   return Array.isArray(notificationItems) ? notificationItems : [];
+}
+
+function useOpsOrganizationMembers() {
+  const { organizationMembers } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(organizationMembers) ? organizationMembers : MEMBERS;
+}
+
+function useOpsOrganizationMemberPermissions() {
+  const { organizationMemberPermissions } =
+    React.useContext(OpsLiveDataContext);
+  return organizationMemberPermissions &&
+    typeof organizationMemberPermissions === "object"
+    ? organizationMemberPermissions
+    : null;
+}
+
+function useOpsOrganizationSettings() {
+  const { organizationSettings } = React.useContext(OpsLiveDataContext);
+  return normalizeOrganizationSettings(organizationSettings);
+}
+
+function useOpsCurrentUser() {
+  const { currentUser } = React.useContext(OpsLiveDataContext);
+  return normalizeCurrentUser(currentUser);
+}
+
+function useOpsBillingStatus() {
+  const { billingStatus } = React.useContext(OpsLiveDataContext);
+  return billingStatus && typeof billingStatus === "object"
+    ? billingStatus
+    : null;
+}
+
+function useOpsComplexCost() {
+  const { complexCost } = React.useContext(OpsLiveDataContext);
+  return complexCost && typeof complexCost === "object" ? complexCost : null;
+}
+
+function useOpsDashboardHome() {
+  const { dashboardHome } = React.useContext(OpsLiveDataContext);
+  return dashboardHome && typeof dashboardHome === "object"
+    ? dashboardHome
+    : null;
 }
 
 function useOpsLiveActions() {
@@ -763,6 +1182,7 @@ function useOpsLiveActions() {
 
 // Settlement batches ———————————————————————————————————
 const BATCHES = [];
+const SETTLEMENT_POOL = [];
 
 const BATCH_STATUS = {
   draft: { tone: "neutral", label: "草稿" },
@@ -771,9 +1191,41 @@ const BATCH_STATUS = {
   confirmed: { tone: "green", label: "已确认" },
   locked: { tone: "teal", label: "已锁定" },
   reopened: { tone: "violet", label: "已重开" },
+  voided: { tone: "neutral", label: "已作废" },
 };
 
+function labelOf(map, status) {
+  return map[status] ?? { tone: "neutral", label: status || "未知状态" };
+}
+
+function reportStatusMeta(status) {
+  return labelOf(REPORT_STATUS, status);
+}
+
+const RISK_FLAG_LABELS = {
+  duration_divergence: "时长偏差超阈值",
+  missing_screenshot_duration: "未识别到截图时长",
+  missing_system_duration: "缺少系统时长",
+  ocr_needs_review: "OCR 待人工复核",
+  ocr_duration_conflict: "OCR 时长与系统冲突",
+  ocr_low_confidence: "OCR 置信度偏低",
+  ocr_low_provider_confidence: "识别服务置信度偏低",
+  ocr_no_live_report_fields: "未识别到有效报数字段",
+  ocr_pending: "OCR 处理中",
+};
+
+function riskFlagLabel(flag) {
+  return RISK_FLAG_LABELS[flag] ?? flag;
+}
+
+function batchStatusMeta(status) {
+  return labelOf(BATCH_STATUS, status);
+}
+
 const BATCH_DETAIL_ITEMS = [];
+
+const JOINED_STREAMER_REQUIRED_MESSAGE =
+  "该项目暂无已加入主播，请先在主播资源池邀请并确认加入后再排班。";
 
 // Recommended streamers (war room)
 const DEFAULT_MATCHING_ROWS = [];
@@ -830,14 +1282,16 @@ const AUDIT_LOG_RECENT = [];
 const SCHEDULE_WEEK = createScheduleWeek();
 
 function createScheduleWeek(today = new Date()) {
-  const start = new Date(today);
-  const day = today.getDay();
+  const start = new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
+  );
+  const day = today.getUTCDay();
   const todayIdx = day === 0 ? 6 : day - 1;
-  start.setDate(today.getDate() - todayIdx);
+  start.setUTCDate(start.getUTCDate() - todayIdx);
   const labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
   const days = labels.map((label, index) => {
     const current = new Date(start);
-    current.setDate(start.getDate() + index);
+    current.setUTCDate(start.getUTCDate() + index);
     return {
       label,
       date: formatScheduleDate(current),
@@ -845,7 +1299,7 @@ function createScheduleWeek(today = new Date()) {
     };
   });
   const end = new Date(start);
-  end.setDate(start.getDate() + 6);
+  end.setUTCDate(start.getUTCDate() + 6);
   return {
     start: formatDateKey(start),
     end: formatDateKey(end),
@@ -855,26 +1309,27 @@ function createScheduleWeek(today = new Date()) {
 }
 
 function formatDateKey(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
     2,
     "0",
-  )}-${String(date.getDate()).padStart(2, "0")}`;
+  )}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
 
 function formatScheduleDate(date) {
-  return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-    date.getDate(),
+  return `${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    date.getUTCDate(),
   ).padStart(2, "0")}`;
 }
 
 // Tasks: each row = one streamer, with tasks placed by day.
 // startHour / endHour are 0-24. status: 'completed' | 'live' | 'pending_report' | 'pending_review' | 'pending_live' | 'abnormal' | 'cancelled'
 // project: project id
-// type: 'project' | 'trial' | 'training' | 'temp'
+// type: 'project' | 'trial' | 'training' | 'temporary'
 const TASKS = [];
 
 const TASK_STATUS = {
   pending_live: { tone: "neutral", label: "待开播" },
+  missed_live: { tone: "red", label: "已延期未直播" },
   live: { tone: "blue", label: "直播中", pulse: true },
   pending_report: { tone: "violet", label: "待报数" },
   pending_review: { tone: "amber", label: "报数待审" },
@@ -885,13 +1340,26 @@ const TASK_STATUS = {
   abnormal: { tone: "red", label: "异常" },
 };
 
+const TASK_TYPE_OPTIONS = [
+  { value: "project", label: "项目任务" },
+  { value: "trial", label: "试播任务" },
+  { value: "training", label: "训练任务" },
+  { value: "temporary", label: "临时任务" },
+];
+
 const ANOMALY_TYPES = {
+  not_started: { tone: "red", label: "已延期未直播" },
+  not_reported: { tone: "amber", label: "未报数" },
+  report_overdue: { tone: "amber", label: "报数逾期" },
+  missing_checkout_screenshot: { tone: "amber", label: "缺少下播截图" },
+  live_over_48h: { tone: "red", label: "直播超过 48 小时" },
   unstopped: { tone: "red", label: "未停止 / 未报数" },
   late_report: { tone: "amber", label: "报数逾期" },
   unstart: { tone: "amber", label: "未开播" },
   short: { tone: "amber", label: "时长不足" },
   rejected: { tone: "red", label: "审核驳回未重提" },
   conflict: { tone: "red", label: "时间冲突" },
+  abnormal: { tone: "red", label: "异常" },
 };
 // ===== src\icons.jsx =====
 // Inline stroke-icons — 16/18/20 sizing. All paths from scratch (simple geometry).
@@ -1044,6 +1512,15 @@ const Icon = {
         <path d="m19 16 .8 1.7L21.5 18l-1.7.3L19 20l-.3-1.7L17 18l1.7-.3z" />
       </>,
     ),
+  Logout: (p) =>
+    ic(
+      p,
+      <>
+        <path d="M10 6H6.5A1.5 1.5 0 0 0 5 7.5v9A1.5 1.5 0 0 0 6.5 18H10" />
+        <path d="M14 8l4 4-4 4" />
+        <path d="M18 12H9" />
+      </>,
+    ),
   Calendar: (p) =>
     ic(
       p,
@@ -1053,6 +1530,14 @@ const Icon = {
       </>,
     ),
   Check: (p) => ic(p, <path d="m5 12 4.5 4.5L19 7" />),
+  Copy: (p) =>
+    ic(
+      p,
+      <>
+        <rect x="8" y="8" width="11" height="11" rx="1.8" />
+        <path d="M5 15.5V6.8A1.8 1.8 0 0 1 6.8 5h8.7" />
+      </>,
+    ),
   X: (p) => ic(p, <path d="m6 6 12 12M18 6 6 18" />),
   Eye: (p) =>
     ic(
@@ -1163,13 +1648,44 @@ const NAV = [
   { key: "reports", label: "报数审核", icon: "Reports" },
   { key: "settle", label: "结算中心", icon: "Money" },
   { key: "billing", label: "商业化与套餐", icon: "Money" },
+  { key: "aiusage", label: "AI 用量与成本", icon: "Sparkles" },
+  { key: "funnel", label: "转化漏斗", icon: "Sparkles" },
   { divider: true },
   { key: "export", label: "数据导出", icon: "Export" },
   { key: "audit", label: "操作日志", icon: "Audit" },
   { key: "org", label: "组织与权限", icon: "Settings" },
+  { divider: true },
+  {
+    key: "ext-account-library",
+    label: "账号库",
+    icon: "Settings",
+    href: "/console/account-library",
+  },
 ];
 
-function Sidebar({ route, onNav, navCounts = {} }) {
+export function Sidebar({
+  route,
+  onNav,
+  navCounts = {},
+  currentUser,
+  organizationSettings,
+  organizationMembers,
+  onOpenOrganizationSettings,
+}) {
+  const displayUser = normalizeCurrentUser(currentUser);
+  const orgSettings = normalizeOrganizationSettings(organizationSettings);
+  const enabledFeatureCount = countEnabledOrganizationFeatures(orgSettings);
+  const memberCount = Array.isArray(organizationMembers)
+    ? organizationMembers.length
+    : null;
+  const [accountPanel, setAccountPanel] = React.useState(null);
+  const switcherMemberText =
+    memberCount != null
+      ? `当前组织 · ${memberCount} 名成员`
+      : orgSettings.memberLimit != null
+        ? `当前组织 · 配额 ${orgSettings.memberLimit}`
+        : "当前组织 · 设置与权限";
+
   return (
     <aside
       style={{
@@ -1196,6 +1712,7 @@ function Sidebar({ route, onNav, navCounts = {} }) {
         }}
       >
         <div
+          aria-label="组织 LOGO"
           style={{
             width: 26,
             height: 26,
@@ -1211,7 +1728,7 @@ function Sidebar({ route, onNav, navCounts = {} }) {
             boxShadow: "0 2px 6px rgba(30,80,200,0.35)",
           }}
         >
-          JY
+          {orgSettings.logoText}
         </div>
         <div
           style={{ display: "flex", flexDirection: "column", lineHeight: 1.15 }}
@@ -1240,52 +1757,101 @@ function Sidebar({ route, onNav, navCounts = {} }) {
 
       {/* Org switcher */}
       <button
+        type="button"
+        onClick={onOpenOrganizationSettings}
         style={{
           margin: "12px 12px 8px",
-          padding: "8px 10px",
+          padding: "10px 12px",
+          minWidth: 0,
           background: "var(--bg-soft)",
           border: "1px solid var(--line)",
           borderRadius: 8,
           display: "flex",
           alignItems: "center",
-          gap: 8,
+          gap: 10,
           cursor: "pointer",
         }}
       >
         <span
+          data-org-switcher-mark="true"
           style={{
-            width: 22,
-            height: 22,
-            borderRadius: 5,
+            width: 28,
+            height: 28,
+            flexShrink: 0,
+            borderRadius: 7,
             background: "var(--blue-50)",
             color: "var(--blue-700)",
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
             fontWeight: 700,
-            fontSize: 11,
+            fontSize: 12,
           }}
         >
           星
         </span>
-        <div style={{ flex: 1, textAlign: "left" }}>
+        <div
+          data-org-switcher-content="true"
+          style={{
+            flex: "1 1 auto",
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
+            rowGap: 2,
+            textAlign: "left",
+          }}
+        >
           <div
             style={{
               fontSize: 13,
               fontWeight: 600,
               color: "var(--ink-900)",
-              lineHeight: 1.1,
+              lineHeight: 1.2,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
           >
-            未配置组织
+            {orgSettings.name}
           </div>
           <div
-            style={{ fontSize: 10.5, color: "var(--ink-400)", lineHeight: 1.2 }}
+            style={{
+              fontSize: 10.5,
+              color: "var(--ink-400)",
+              lineHeight: 1.25,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
           >
-            当前组织 · 32 名成员
+            {switcherMemberText}
+          </div>
+          <div
+            style={{
+              fontSize: 10.5,
+              color: "var(--blue-600)",
+              lineHeight: 1.25,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            已启用 {enabledFeatureCount} 项功能
           </div>
         </div>
-        <Icon.ChevDown size={14} stroke="var(--ink-400)" />
+        <span
+          data-org-switcher-chevron="true"
+          style={{
+            width: 18,
+            height: 18,
+            flexShrink: 0,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Icon.ChevDown size={14} stroke="var(--ink-400)" />
+        </span>
       </button>
 
       {/* Nav */}
@@ -1309,7 +1875,9 @@ function Sidebar({ route, onNav, navCounts = {} }) {
           return (
             <button
               key={it.key}
-              onClick={() => onNav(it.key)}
+              onClick={() =>
+                it.href ? window.location.assign(it.href) : onNav(it.key)
+              }
               style={{
                 width: "100%",
                 padding: "0 10px",
@@ -1394,46 +1962,295 @@ function Sidebar({ route, onNav, navCounts = {} }) {
       {/* User */}
       <div
         style={{
+          position: "relative",
           padding: "10px 12px",
           borderTop: "1px solid var(--line)",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
         }}
       >
-        <Avatar name={CURRENT_USER.name} size={32} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}
-          >
-            {CURRENT_USER.name}
-          </div>
-          <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
-            {ROLES[CURRENT_USER.role]} · {CURRENT_USER.dept}
-          </div>
-        </div>
-        <button
-          style={{
-            width: 28,
-            height: 28,
-            border: "none",
-            background: "transparent",
-            borderRadius: 6,
-            cursor: "pointer",
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "var(--ink-400)",
+        <details
+          style={{ position: "relative" }}
+          onClick={(event) => {
+            if (event.target?.closest?.("[data-account-menu-close]")) {
+              event.currentTarget.removeAttribute("open");
+            }
           }}
         >
-          <Icon.Settings size={16} />
-        </button>
+          <summary
+            role="button"
+            aria-haspopup="menu"
+            aria-label={`${displayUser.name} ${formatCurrentUserMeta(displayUser)} 账号菜单`}
+            style={{
+              listStyle: "none",
+              width: "100%",
+              border: "1px solid transparent",
+              background: "transparent",
+              borderRadius: 8,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "8px 6px",
+              textAlign: "left",
+            }}
+          >
+            <Avatar name={displayUser.name} size={32} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {displayUser.name}
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--ink-400)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {formatCurrentUserMeta(displayUser)}
+              </div>
+            </div>
+            <Icon.ChevDown
+              size={14}
+              stroke="var(--ink-400)"
+              style={{
+                transition: "transform 120ms ease",
+              }}
+            />
+          </summary>
+
+          <div
+            role="menu"
+            aria-label="账号菜单"
+            style={{
+              position: "absolute",
+              left: 12,
+              right: 12,
+              bottom: 66,
+              zIndex: 30,
+              padding: 6,
+              borderRadius: 8,
+              border: "1px solid var(--line)",
+              background: "#fff",
+              boxShadow: "0 16px 40px rgba(15,23,42,0.14)",
+            }}
+          >
+            <AccountMenuItem
+              icon={<Icon.Streamer size={14} />}
+              label="个人资料"
+              closeMenu
+              onClick={() => {
+                setAccountPanel("profile");
+              }}
+            />
+            <AccountMenuItem
+              icon={<Icon.Lock size={14} />}
+              label="账号安全"
+              closeMenu
+              onClick={() => {
+                setAccountPanel("security");
+              }}
+            />
+            <AccountMenuItem
+              icon={<Icon.Settings size={14} />}
+              label="组织设置"
+              closeMenu
+              onClick={() => {
+                onOpenOrganizationSettings?.();
+              }}
+            />
+            <div
+              style={{
+                height: 1,
+                background: "var(--line)",
+                margin: "6px 4px",
+              }}
+            />
+            <form action="/api/auth/signout" method="post">
+              <AccountMenuItem
+                icon={<Icon.Logout size={14} stroke="var(--danger-600)" />}
+                label="退出登录"
+                danger
+                submit
+              />
+            </form>
+          </div>
+        </details>
       </div>
+
+      {accountPanel ? (
+        <AccountPanelDialog
+          mode={accountPanel}
+          currentUser={displayUser}
+          onClose={() => setAccountPanel(null)}
+        />
+      ) : null}
     </aside>
   );
 }
 
-function TopBar({ breadcrumbs = [], notificationCount = 0, extra }) {
+function AccountMenuItem({
+  icon,
+  label,
+  onClick,
+  danger = false,
+  submit = false,
+  closeMenu = false,
+}) {
+  return (
+    <button
+      type={submit ? "submit" : "button"}
+      role="menuitem"
+      data-account-menu-close={closeMenu ? "true" : undefined}
+      onClick={onClick}
+      style={{
+        width: "100%",
+        minHeight: 34,
+        border: "none",
+        borderRadius: 6,
+        background: "transparent",
+        color: danger ? "var(--danger-600)" : "var(--ink-700)",
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        gap: 9,
+        padding: "0 9px",
+        fontSize: 13,
+        fontWeight: 500,
+        textAlign: "left",
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = danger ? "#FDECEC" : "var(--ink-50)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "transparent";
+      }}
+    >
+      <span
+        style={{
+          width: 16,
+          height: 16,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: danger ? "var(--danger-600)" : "var(--ink-400)",
+        }}
+      >
+        {icon}
+      </span>
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function AccountPanelDialog({ mode, currentUser, onClose }) {
+  const title = mode === "security" ? "账号安全" : "个人资料";
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 80,
+        background: "rgba(15,23,42,0.24)",
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          width: 420,
+          maxWidth: "100%",
+          borderRadius: 8,
+          background: "#fff",
+          boxShadow: "0 24px 60px rgba(15,23,42,0.22)",
+          border: "1px solid var(--line)",
+          overflow: "hidden",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div
+          style={{
+            padding: "16px 18px",
+            borderBottom: "1px solid var(--line)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Avatar name={currentUser.name} size={34} />
+            <div>
+              <div
+                style={{
+                  fontSize: 15,
+                  fontWeight: 700,
+                  color: "var(--ink-900)",
+                }}
+              >
+                {title}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                {currentUser.name}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭"
+            onClick={onClose}
+            style={{
+              width: 30,
+              height: 30,
+              border: "1px solid var(--line)",
+              borderRadius: 6,
+              background: "#fff",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Icon.X size={14} />
+          </button>
+        </div>
+        <div style={{ padding: 18, display: "grid", gap: 12 }}>
+          {mode === "security" ? (
+            <>
+              <KV label="登录密码">已启用</KV>
+              <KV label="双因素认证">待接入账号系统</KV>
+              <KV label="登录设备">当前浏览器会话</KV>
+            </>
+          ) : (
+            <>
+              <KV label="姓名">{currentUser.name}</KV>
+              <KV label="角色">
+                {ROLES[currentUser.role] ?? ROLES[DEFAULT_CURRENT_USER.role]}
+              </KV>
+              <KV label="组织">{currentUser.dept || "未配置组织"}</KV>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function TopBar({ breadcrumbs = [], notificationCount = 0, extra }) {
   const hasUnreadNotifications = notificationCount > 0;
   return (
     <div
@@ -1598,17 +2415,545 @@ function PageHeader({ title, subtitle, status, actions }) {
   );
 }
 
+// KPI 卡片左上角色条配色，按阶段循环。
+const WAR_ROOM_KPI_ACCENTS = [
+  "var(--blue-500)",
+  "var(--ok-600)",
+  "var(--amber-500)",
+  "var(--danger-600)",
+  "var(--violet-600)",
+];
+
+const PANEL_TONE_COLOR = {
+  blue: "var(--blue-500)",
+  green: "var(--ok-600)",
+  amber: "var(--amber-500)",
+  red: "var(--danger-600)",
+  violet: "var(--violet-600)",
+  neutral: "var(--ink-300)",
+};
+
+function warRoomFmtAmount(value, unit) {
+  if (unit === "元") return `¥${Number(value).toLocaleString("zh-CN")}`;
+  return `${Number(value).toLocaleString("zh-CN")}${unit ? ` ${unit}` : ""}`;
+}
+
+function WarRoomPanelHeaderExtra({ subtitle }) {
+  return subtitle ? (
+    <span style={{ fontSize: 12, color: "var(--ink-400)" }}>{subtitle}</span>
+  ) : null;
+}
+
+// 漏斗面板：阶段横向条，宽度按量级、文本含金额/人数与转化率，可钻取。
+function WarRoomFunnel({ funnel, go }) {
+  const max = Math.max(1, ...funnel.stages.map((s) => s.value));
+  return (
+    <Card
+      title={funnel.title}
+      extra={<WarRoomPanelHeaderExtra subtitle={funnel.subtitle} />}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {funnel.stages.map((s) => (
+          <button
+            key={s.key}
+            type="button"
+            onClick={() =>
+              funnel.target && go(funnel.target.route, funnel.target.id)
+            }
+            style={{
+              border: "none",
+              background: "transparent",
+              cursor: funnel.target ? "pointer" : "default",
+              textAlign: "left",
+              padding: 0,
+              width: "100%",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 12,
+                marginBottom: 4,
+              }}
+            >
+              <span style={{ color: "var(--ink-700)" }}>{s.label}</span>
+              <span
+                className="num"
+                style={{ color: "var(--ink-900)", fontWeight: 600 }}
+              >
+                {warRoomFmtAmount(s.value, funnel.unit)}
+                {typeof s.rate === "number" ? ` · ${s.rate}%` : ""}
+              </span>
+            </div>
+            <div
+              style={{
+                height: 8,
+                borderRadius: 999,
+                background: "var(--bg-soft)",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${Math.max(4, (s.value / max) * 100)}%`,
+                  background: PANEL_TONE_COLOR[s.tone] || "var(--blue-500)",
+                  borderRadius: 999,
+                }}
+              />
+            </div>
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// 批次泳道：按状态分列的统计瓦片，点击进入结算中心。
+function WarRoomLanes({ data, go }) {
+  return (
+    <Card
+      title={data.title}
+      extra={<WarRoomPanelHeaderExtra subtitle={data.subtitle} />}
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${data.lanes.length}, minmax(0, 1fr))`,
+          gap: 10,
+        }}
+      >
+        {data.lanes.map((l) => (
+          <button
+            key={l.key}
+            type="button"
+            onClick={() => go(data.target?.route || "settle")}
+            style={{
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              padding: "10px 12px",
+              cursor: "pointer",
+              textAlign: "left",
+            }}
+          >
+            <Badge tone={l.tone || "neutral"}>{l.label}</Badge>
+            <div
+              className="num"
+              style={{ fontSize: 18, fontWeight: 600, marginTop: 6 }}
+            >
+              {l.count}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+              ¥{Number(l.amount).toLocaleString("zh-CN")}
+            </div>
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// 金额风险榜：弱证据 / 人工承载 / 重开批次，按金额降序，可钻取。
+function WarRoomAmountRisks({ data, go }) {
+  return (
+    <Card
+      title={data.title}
+      extra={<WarRoomPanelHeaderExtra subtitle={data.subtitle} />}
+    >
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {data.rows.map((r, i) => (
+          <button
+            key={r.key}
+            type="button"
+            onClick={() => go(r.target?.route || "settle", r.target?.id)}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+              padding: "11px 0",
+              borderBottom:
+                i < data.rows.length - 1 ? "1px solid var(--line)" : "none",
+              border: 0,
+              background: "transparent",
+              cursor: "pointer",
+              width: "100%",
+              textAlign: "left",
+            }}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Badge tone={r.tone || "neutral"} dot>
+                {r.label}
+              </Badge>
+              {r.hint ? (
+                <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                  {r.hint}
+                </span>
+              ) : null}
+            </span>
+            <span
+              className="num"
+              style={{ fontWeight: 600, color: "var(--ink-900)" }}
+            >
+              ¥{Number(r.amount).toLocaleString("zh-CN")}
+            </span>
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// 项目经营排行：按毛利贡献，可点击进入项目复盘。
+function WarRoomRanking({ data, go }) {
+  return (
+    <Card
+      title={data.title}
+      extra={<WarRoomPanelHeaderExtra subtitle={data.subtitle} />}
+    >
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {data.rows.map((r, i) => (
+          <button
+            key={r.key}
+            type="button"
+            onClick={() => go(r.target?.route || "project", r.target?.id)}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+              padding: "11px 0",
+              borderBottom:
+                i < data.rows.length - 1 ? "1px solid var(--line)" : "none",
+              border: 0,
+              background: "transparent",
+              cursor: "pointer",
+              width: "100%",
+              textAlign: "left",
+            }}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span
+                className="num"
+                style={{
+                  width: 18,
+                  color: "var(--ink-400)",
+                  fontWeight: 600,
+                  fontSize: 12,
+                }}
+              >
+                {i + 1}
+              </span>
+              <span>
+                <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                  {r.title}
+                </div>
+                {r.hint ? (
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color:
+                        r.tone === "amber"
+                          ? "var(--amber-600)"
+                          : "var(--ink-400)",
+                    }}
+                  >
+                    {r.hint}
+                  </div>
+                ) : null}
+              </span>
+            </span>
+            <span
+              className="num"
+              style={{ fontWeight: 600, color: "var(--ink-900)" }}
+            >
+              ¥{Number(r.value).toLocaleString("zh-CN")}
+            </span>
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function ScreenRoleHome({ dashboard, go }) {
+  const generatedAt = dashboard.generatedAt
+    ? new Date(dashboard.generatedAt).toLocaleString("zh-CN")
+    : "";
+
+  return (
+    <>
+      <PageHeader
+        title={dashboard.profile?.title || "经营舱看板"}
+        subtitle={
+          dashboard.profile?.subtitle || "经营闭环 · 全链路实时盘"
+        }
+        status={
+          <>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "2px 10px",
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 600,
+                background: "linear-gradient(135deg, #EFEBFF, #DCE6FF)",
+                color: "var(--violet-600)",
+              }}
+            >
+              <Icon.Sparkles size={12} stroke="var(--violet-600)" /> 经营闭环
+            </span>
+            <Badge tone="neutral">
+              {dashboard.profile?.scopeLabel || "授权范围"}
+            </Badge>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 11,
+                color: "var(--ink-400)",
+              }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: 999,
+                  background: "var(--ok-600)",
+                }}
+              />
+              近实时
+            </span>
+          </>
+        }
+      />
+      <div
+        style={{
+          padding: 20,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+          width: "100%",
+          maxWidth: 1440,
+          marginInline: "auto",
+          boxSizing: "border-box",
+        }}
+      >
+        {dashboard.emptyState ? (
+          <EmptyHint
+            title={dashboard.emptyState.title}
+            hint={dashboard.emptyState.hint}
+          />
+        ) : null}
+        <RoleHomeKpis items={dashboard.kpis || []} />
+        {dashboard.panels?.admissionFunnel ? (
+          <WarRoomFunnel funnel={dashboard.panels.admissionFunnel} go={go} />
+        ) : null}
+        {dashboard.panels?.settlementFunnel ? (
+          <WarRoomFunnel funnel={dashboard.panels.settlementFunnel} go={go} />
+        ) : null}
+        {dashboard.panels?.batchLanes ? (
+          <WarRoomLanes data={dashboard.panels.batchLanes} go={go} />
+        ) : null}
+        {dashboard.panels?.amountRisks?.rows?.length ? (
+          <WarRoomAmountRisks data={dashboard.panels.amountRisks} go={go} />
+        ) : null}
+        {dashboard.panels?.projectRanking?.rows?.length ? (
+          <WarRoomRanking data={dashboard.panels.projectRanking} go={go} />
+        ) : null}
+        <RoleHomeSection
+          title="项目卡点队列"
+          subtitle="按卡住时长 · 点击钻取对应明细"
+          items={dashboard.queue || []}
+          go={go}
+        />
+        <RoleHomeSection
+          title="风险告警流"
+          subtitle="命中风险规则 · 待人工处理"
+          items={dashboard.risks || []}
+          go={go}
+        />
+        <RoleHomeSection
+          title="常用入口"
+          subtitle="一键进入对应闭环阶段"
+          items={dashboard.drilldowns || []}
+          go={go}
+        />
+        {generatedAt ? (
+          <div style={{ color: "var(--ink-500)", fontSize: 12 }}>
+            数据更新时间：{generatedAt}
+          </div>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+const DASHBOARD_TARGET_ROUTE_LABELS = {
+  project: "项目",
+  projects: "项目",
+  streamers: "主播",
+  tasks: "任务",
+  reports: "报数",
+  settle: "结算",
+  audit: "审计",
+  notifications: "通知",
+};
+
+const DASHBOARD_FOCUS_ROUTES = new Set([
+  "tasks",
+  "reports",
+  "settle",
+  "audit",
+  "notifications",
+]);
+
+function dashboardTargetRouteLabel(route) {
+  return DASHBOARD_TARGET_ROUTE_LABELS[route] || "查看";
+}
+
+function RoleHomeKpis({ items }) {
+  if (!items.length) {
+    return null;
+  }
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+        gap: 12,
+      }}
+    >
+      {items.map((item, i) => (
+        <Card
+          key={item.key}
+          style={{
+            borderTop: `3px solid ${
+              WAR_ROOM_KPI_ACCENTS[i % WAR_ROOM_KPI_ACCENTS.length]
+            }`,
+          }}
+        >
+          <Metric
+            label={item.label}
+            value={String(item.value)}
+            unit={item.unit}
+            hint={item.hint}
+          />
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function RoleHomeSection({ title, subtitle, items, go }) {
+  if (!items.length) {
+    return null;
+  }
+
+  return (
+    <Card padded={false}>
+      <div
+        style={{
+          padding: 16,
+          borderBottom: "1px solid var(--line)",
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: 12,
+        }}
+      >
+        <h3 style={{ margin: 0, fontSize: 15 }}>{title}</h3>
+        {subtitle ? (
+          <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+            {subtitle}
+          </span>
+        ) : null}
+      </div>
+      <div style={{ display: "grid", gap: 0 }}>
+        {items.map((item) => {
+          const targetRoute = item.target?.route || "warroom";
+          const targetId = item.target?.id;
+          const targetLabel = item.target?.route
+            ? dashboardTargetRouteLabel(targetRoute)
+            : "查看";
+
+          return (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => go(targetRoute, targetId)}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                padding: "12px 16px",
+                border: 0,
+                borderBottom: "1px solid var(--line)",
+                background: "#fff",
+                textAlign: "left",
+                cursor: "pointer",
+              }}
+            >
+              <span>
+                <b>{item.title}</b>
+                <br />
+                <span style={{ color: "var(--ink-500)", fontSize: 12 }}>
+                  {item.subtitle}
+                </span>
+              </span>
+              <Badge tone={item.tone || "neutral"}>{targetLabel}</Badge>
+            </button>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function DashboardTargetContextBanner({ target }) {
+  if (!target?.route || !target?.id) {
+    return null;
+  }
+
+  return (
+    <div style={{ padding: "10px 20px 0" }}>
+      <div
+        aria-live="polite"
+        style={{
+          border: "1px solid var(--line)",
+          borderRadius: 8,
+          background: "#fff",
+          color: "var(--ink-600)",
+          fontSize: 12,
+          padding: "8px 12px",
+        }}
+      >
+        {`已定位：${dashboardTargetRouteLabel(target.route)} ${target.id}`}
+      </div>
+    </div>
+  );
+}
+
 // ===== src\screen-warroom.jsx =====
 // ——— Screen: 智能项目作战台 ————————————————————————————
 
 function ScreenWarRoom({ go }) {
   const actions = useOpsLiveActions();
+  const dashboardHome = useOpsDashboardHome();
   const [tab, setTab] = React.useState("overview");
+  const [ocrOpen, setOcrOpen] = React.useState(false);
   const [warRoomMessage, setWarRoomMessage] = React.useState("");
   const [warRoomExporting, setWarRoomExporting] = React.useState(false);
+  const [complexPreviewing, setComplexPreviewing] = React.useState(false);
   const projects = useOpsProjects();
   const tasks = useOpsTasks();
   const reports = useOpsReports();
+  const ocrJobs = useOpsOcrJobs();
   const activeProjects = projects.filter((project) =>
     ["active", "recruiting", "settling"].includes(project.status),
   );
@@ -1637,6 +2982,11 @@ function ScreenWarRoom({ go }) {
       0,
     );
   const pendingActionCount = pendingReportCount + anomalyCount;
+
+  if (dashboardHome) {
+    return <ScreenRoleHome dashboard={dashboardHome} go={go} />;
+  }
+
   const exportDailyBrief = async () => {
     if (warRoomExporting) return;
     setWarRoomMessage("");
@@ -1663,12 +3013,60 @@ function ScreenWarRoom({ go }) {
       setWarRoomExporting(false);
     }
   };
+  const previewComplexCost = async () => {
+    if (complexPreviewing) return;
+    const project = activeProjects[0] || projects[0];
+    if (!project?.id) {
+      setWarRoomMessage("复杂成本测算需要先选择项目。");
+      return;
+    }
+    setWarRoomMessage("");
+    setComplexPreviewing(true);
+    try {
+      const preview = await actions.previewComplexCost?.(project.id, {
+        expectedReceivableCents: Math.round(
+          Number(project.metrics?.receivable ?? 10000) * 100,
+        ),
+        streamerCount: Number(project.streamers?.active ?? 1),
+        estimatedMinutesPerStreamer: Math.round(
+          Number(project.metrics?.plannedHours ?? 1) * 60,
+        ),
+        streamerHourlyCostCents: 8000,
+        supplierCostCents: Math.round(
+          Number(project.metrics?.payable ?? 0) * 20,
+        ),
+        trafficCostCents: 0,
+        platformFeeBps: 500,
+      });
+      const marginRate =
+        typeof preview?.marginRateBps === "number"
+          ? (preview.marginRateBps / 100).toFixed(1)
+          : "0.0";
+      setWarRoomMessage(`毛利率 ${marginRate}%`);
+    } catch (error) {
+      setWarRoomMessage(
+        error instanceof Error ? error.message : "复杂成本测算失败",
+      );
+    } finally {
+      setComplexPreviewing(false);
+    }
+  };
+  const openOcrPanel = async () => {
+    setWarRoomMessage("");
+    setOcrOpen(true);
+    try {
+      await actions.refreshOcrJobs?.();
+    } catch (error) {
+      setWarRoomMessage(
+        error instanceof Error ? error.message : "OCR 作业刷新失败",
+      );
+    }
+  };
 
   return (
     <>
       <PageHeader
         title="智能项目作战台"
-        subtitle="覆盖立项前 → 招募中 → 执行中 → 结算中 → 结项复盘的项目经营决策面板"
         status={
           <span
             style={{
@@ -1689,6 +3087,9 @@ function ScreenWarRoom({ go }) {
         }
         actions={
           <>
+            <Button kind="default" onClick={openOcrPanel}>
+              OCR 作业
+            </Button>
             <Button
               kind="default"
               icon={<Icon.Export size={14} />}
@@ -1696,6 +3097,13 @@ function ScreenWarRoom({ go }) {
               disabled={warRoomExporting}
             >
               {warRoomExporting ? "导出中…" : "导出当日简报"}
+            </Button>
+            <Button
+              kind="default"
+              onClick={previewComplexCost}
+              disabled={complexPreviewing}
+            >
+              {complexPreviewing ? "测算中…" : "复杂成本测算"}
             </Button>
             <Button
               kind="primary"
@@ -1716,81 +3124,164 @@ function ScreenWarRoom({ go }) {
           gap: 20,
         }}
       >
-        {/* Top metrics strip */}
+        {/* KPI strip — one primary metric + compact secondaries + a separated action zone */}
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(5, 1fr)",
+            gridTemplateColumns: "minmax(0, 1fr) 220px",
             gap: 16,
+            alignItems: "stretch",
           }}
         >
-          <Card style={{ position: "relative", overflow: "hidden" }}>
+          <Card
+            padded={false}
+            bodyStyle={{
+              display: "flex",
+              alignItems: "center",
+              gap: 24,
+              padding: "16px 18px",
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
             <div
               style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                right: 0,
-                height: 3,
-                background: "var(--blue-600)",
+                paddingRight: 24,
+                borderRight: "1px solid var(--line)",
+                minWidth: 168,
               }}
-            />
-            <Metric
-              label="进行中项目"
-              value={String(activeProjects.length)}
-              unit="个"
-              hint={
-                highRiskProjects.length > 0
-                  ? `${highRiskProjects.length} 个高风险`
-                  : "暂无高风险项目"
-              }
-            />
+            >
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                本周厂家应收
+              </div>
+              <div
+                className="num"
+                style={{
+                  fontSize: 28,
+                  fontWeight: 600,
+                  color: "var(--blue-600)",
+                  letterSpacing: "-0.02em",
+                  marginTop: 4,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                ¥{totalReceivable.toLocaleString("zh-CN")}
+              </div>
+              <div
+                style={{
+                  fontSize: 12,
+                  marginTop: 4,
+                  color:
+                    totalReceivable > 0 ? "var(--ok-600)" : "var(--ink-400)",
+                }}
+              >
+                {totalReceivable > 0
+                  ? `预估毛利率 ${grossMargin.toFixed(1)}%`
+                  : "暂无应收数据"}
+              </div>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                gap: 28,
+                flex: 1,
+                flexWrap: "wrap",
+                rowGap: 12,
+              }}
+            >
+              <MiniStat
+                label="进行中项目"
+                value={activeProjects.length}
+                unit="个"
+                hint={
+                  highRiskProjects.length > 0
+                    ? `${highRiskProjects.length} 个高风险`
+                    : "无高风险"
+                }
+                hintTone={highRiskProjects.length > 0 ? "red" : "muted"}
+              />
+              <MiniStat
+                label="本周直播时长"
+                value={totalDoneHours.toFixed(1)}
+                unit="h"
+                hint="本周累计"
+              />
+            </div>
           </Card>
-          <Card>
-            <Metric
-              label="本周直播时长"
-              value={totalDoneHours.toFixed(1)}
-              unit="h"
-              hint="按当前项目数据汇总"
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="本周厂家应收"
-              value={`¥${totalReceivable.toLocaleString("zh-CN")}`}
-              hint="按当前项目数据汇总"
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="预估毛利率"
-              value={grossMargin.toFixed(1)}
-              unit="%"
-              hint={totalReceivable > 0 ? "毛利率" : "暂无应收数据"}
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="待处理事项"
-              value={String(pendingActionCount)}
-              unit="项"
-              hint={
-                pendingActionCount > 0
-                  ? `审核 ${pendingReportCount} · 异常 ${anomalyCount}`
-                  : "暂无待处理事项"
-              }
-              accent={
-                <span
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 999,
-                    background: "var(--danger-600)",
-                  }}
-                />
-              }
-            />
-          </Card>
+          <button
+            type="button"
+            onClick={() => go(pendingReportCount > 0 ? "reports" : "tasks")}
+            style={{
+              textAlign: "left",
+              cursor: "pointer",
+              background: pendingActionCount > 0 ? "var(--danger-50)" : "#fff",
+              border: `1px solid ${
+                pendingActionCount > 0 ? "#f3c9cc" : "var(--line)"
+              }`,
+              borderRadius: 10,
+              boxShadow: "var(--shadow-card)",
+              padding: "16px 18px",
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "center",
+              gap: 6,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                color:
+                  pendingActionCount > 0
+                    ? "var(--danger-600)"
+                    : "var(--ink-400)",
+              }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: 999,
+                  background:
+                    pendingActionCount > 0
+                      ? "var(--danger-600)"
+                      : "var(--ink-300)",
+                }}
+              />
+              待处理事项
+            </div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color:
+                    pendingActionCount > 0
+                      ? "var(--danger-600)"
+                      : "var(--ink-900)",
+                }}
+              >
+                {pendingActionCount}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--ink-400)" }}>项</span>
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                color:
+                  pendingActionCount > 0
+                    ? "var(--danger-600)"
+                    : "var(--ink-400)",
+              }}
+            >
+              {pendingActionCount > 0
+                ? `审核 ${pendingReportCount} · 异常 ${anomalyCount} →`
+                : "暂无待处理"}
+            </div>
+          </button>
         </div>
         {warRoomMessage ? (
           <div
@@ -1799,6 +3290,17 @@ function ScreenWarRoom({ go }) {
           >
             {warRoomMessage}
           </div>
+        ) : null}
+
+        {ocrOpen ? (
+          <OcrOperationsPanel
+            jobs={ocrJobs}
+            onRefresh={actions.refreshOcrJobs}
+            onRunNext={actions.runNextOcrJob}
+            onRetry={actions.retryOcrJob}
+            onMarkNeedsReview={actions.markOcrJobNeedsReview}
+            onConfirm={actions.confirmOcrJob}
+          />
         ) : null}
 
         {/* Tabs */}
@@ -1814,6 +3316,7 @@ function ScreenWarRoom({ go }) {
                 { key: "matching", label: "主播匹配引擎" },
                 { key: "supplier", label: "供应商质量" },
                 { key: "pricing", label: "报价 & 测算" },
+                { key: "ai", label: "AI Copilot" },
               ]}
             />
           </div>
@@ -1823,10 +3326,382 @@ function ScreenWarRoom({ go }) {
             {tab === "matching" && <Matching go={go} />}
             {tab === "supplier" && <Supplier />}
             {tab === "pricing" && <Pricing />}
+            {tab === "ai" && <AICopilot />}
           </div>
         </Card>
       </div>
     </>
+  );
+}
+
+function OcrOperationsPanel({
+  jobs = [],
+  onRefresh,
+  onRunNext,
+  onRetry,
+  onMarkNeedsReview,
+  onConfirm,
+}) {
+  const [busy, setBusy] = React.useState("");
+  const [message, setMessage] = React.useState("");
+  const [statusFilter, setStatusFilter] = React.useState("all");
+  const [manualResults, setManualResults] = React.useState({});
+  const runAction = async (key, action) => {
+    if (busy) return;
+    setBusy(key);
+    setMessage("");
+    try {
+      await action?.();
+      setMessage("OCR 作业已更新");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "OCR 作业操作失败");
+    } finally {
+      setBusy("");
+    }
+  };
+  const updateManualResult = (jobId, field, value) => {
+    setManualResults((current) => ({
+      ...current,
+      [jobId]: {
+        ...(current[jobId] ?? {}),
+        [field]: value,
+      },
+    }));
+  };
+  const manualResultFor = (jobId) => {
+    const value = manualResults[jobId] ?? {};
+    return {
+      duration: Number(value.duration || 0),
+      viewers: Number(value.viewers || 0),
+    };
+  };
+  const safeJobs = jobs.map(toSafeOcrJobView);
+
+  return (
+    <Card
+      title="OCR 作业"
+      extra={
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button
+            kind="default"
+            onClick={() => runAction("refresh", onRefresh)}
+            disabled={Boolean(busy)}
+          >
+            刷新 OCR 作业
+          </Button>
+          <Button
+            kind="primary"
+            onClick={() => runAction("run", () => onRunNext?.())}
+            disabled={Boolean(busy)}
+          >
+            运行下一条 OCR
+          </Button>
+        </div>
+      }
+    >
+      {message ? (
+        <div
+          style={{ fontSize: 12, color: "var(--ink-500)", marginBottom: 10 }}
+        >
+          {message}
+        </div>
+      ) : null}
+      <div
+        style={{
+          display: "flex",
+          gap: 6,
+          flexWrap: "wrap",
+          marginBottom: 10,
+        }}
+      >
+        {OCR_STATUS_FILTERS.map((item) => (
+          <Button
+            key={item.value}
+            kind={statusFilter === item.value ? "primary" : "default"}
+            size="sm"
+            onClick={() => {
+              setStatusFilter(item.value);
+              runAction(`filter-${item.value}`, () => onRefresh?.(item.value));
+            }}
+            disabled={Boolean(busy)}
+          >
+            {item.label}
+          </Button>
+        ))}
+      </div>
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "collapse",
+          fontSize: 12,
+          color: "var(--ink-700)",
+        }}
+      >
+        <thead>
+          <tr>
+            {[
+              "作业",
+              "状态",
+              "尝试",
+              "错误",
+              "报数",
+              "截图",
+              "OCR 结果",
+              "操作",
+            ].map((heading) => (
+              <th
+                key={heading}
+                style={{
+                  textAlign: "left",
+                  padding: "8px 6px",
+                  borderBottom: "1px solid var(--line)",
+                  color: "var(--ink-400)",
+                  fontWeight: 500,
+                }}
+              >
+                {heading}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {safeJobs.length ? (
+            safeJobs.map((job) => (
+              <tr key={job.id}>
+                <td style={ocrCellStyle}>
+                  {displayRecordId(job.id, "OCR 任务")}
+                </td>
+                <td style={ocrCellStyle}>
+                  <Badge tone={ocrStatusTone(job.status)}>
+                    {ocrStatusLabel(job.status)}
+                  </Badge>
+                </td>
+                <td style={ocrCellStyle}>
+                  {job.attempt ?? 0}/{job.maxAttempts ?? 3}
+                </td>
+                <td style={ocrCellStyle}>
+                  <div>
+                    {job.errorCode ? ocrErrorLabel(job.errorCode) : "无"}
+                  </div>
+                  {job.errorMessage ? (
+                    <div style={{ color: "var(--ink-400)", marginTop: 2 }}>
+                      {ocrErrorLabel(job.errorMessage)}
+                    </div>
+                  ) : null}
+                </td>
+                <td style={ocrCellStyle}>
+                  {displayRecordId(job.liveReportId, "报数记录")}
+                </td>
+                <td style={ocrCellStyle}>
+                  {displayRecordId(job.screenshotId, "未记录")}
+                </td>
+                <td style={ocrCellStyle}>
+                  <div>
+                    时长 {formatOcrResultNumber(job.result.extractedDuration)}
+                  </div>
+                  <div style={{ color: "var(--ink-400)", marginTop: 2 }}>
+                    场观 {formatOcrResultNumber(job.result.extractedViewers)}
+                  </div>
+                </td>
+                <td style={ocrCellStyle}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <label
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        fontSize: 12,
+                        color: "var(--ink-400)",
+                      }}
+                    >
+                      时长
+                      <input
+                        aria-label={`修正时长 ${displayRecordId(job.id, "OCR 任务")}`}
+                        type="number"
+                        min="0"
+                        value={manualResults[job.id]?.duration ?? ""}
+                        onChange={(event) =>
+                          updateManualResult(
+                            job.id,
+                            "duration",
+                            event.target.value,
+                          )
+                        }
+                        style={ocrNumberInputStyle}
+                      />
+                    </label>
+                    <label
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        fontSize: 12,
+                        color: "var(--ink-400)",
+                      }}
+                    >
+                      人数
+                      <input
+                        aria-label={`修正观看人数 ${displayRecordId(job.id, "OCR 任务")}`}
+                        type="number"
+                        min="0"
+                        value={manualResults[job.id]?.viewers ?? ""}
+                        onChange={(event) =>
+                          updateManualResult(
+                            job.id,
+                            "viewers",
+                            event.target.value,
+                          )
+                        }
+                        style={ocrNumberInputStyle}
+                      />
+                    </label>
+                    <Button
+                      kind="default"
+                      onClick={() =>
+                        runAction(`retry-${job.id}`, () => onRetry?.(job.id))
+                      }
+                      disabled={Boolean(busy)}
+                    >
+                      手动重试
+                    </Button>
+                    <Button
+                      kind="default"
+                      onClick={() =>
+                        runAction(`review-${job.id}`, () =>
+                          onMarkNeedsReview?.(job.id),
+                        )
+                      }
+                      disabled={Boolean(busy)}
+                    >
+                      标记需复核
+                    </Button>
+                    <Button
+                      kind="default"
+                      onClick={() =>
+                        runAction(`confirm-${job.id}`, () =>
+                          onConfirm?.(job.id, manualResultFor(job.id)),
+                        )
+                      }
+                      disabled={Boolean(busy)}
+                    >
+                      人工确认
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ))
+          ) : (
+            <tr>
+              <td
+                colSpan={8}
+                style={{ ...ocrCellStyle, color: "var(--ink-400)" }}
+              >
+                暂无 OCR 作业
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
+
+function toSafeOcrJobView(job) {
+  const result =
+    job?.result && typeof job.result === "object" ? job.result : {};
+  return {
+    id: job?.id,
+    status: job?.status,
+    attempt: job?.attempt,
+    maxAttempts: job?.maxAttempts,
+    liveReportId: job?.liveReportId,
+    screenshotId: job?.screenshotId,
+    errorCode: job?.errorCode,
+    errorMessage: job?.errorMessage,
+    result: {
+      extractedDuration: result.extractedDuration,
+      extractedViewers: result.extractedViewers,
+    },
+  };
+}
+
+function formatOcrResultNumber(value) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value.toLocaleString()
+    : "未识别";
+}
+
+const ocrCellStyle = {
+  padding: "9px 6px",
+  borderBottom: "1px solid var(--line)",
+  verticalAlign: "top",
+};
+
+const ocrNumberInputStyle = {
+  width: 64,
+  height: 26,
+  border: "1px solid var(--line-strong)",
+  borderRadius: 6,
+  padding: "0 6px",
+  fontSize: 12,
+  color: "var(--ink-700)",
+};
+
+const OCR_STATUS_FILTERS = [
+  { value: "all", label: "全部" },
+  { value: "failed", label: "失败" },
+  { value: "needs_review", label: "需复核" },
+  { value: "queued", label: "排队中" },
+  { value: "running", label: "处理中" },
+  { value: "succeeded", label: "成功" },
+];
+
+function ocrStatusTone(status) {
+  return (
+    {
+      queued: "blue",
+      pending: "blue",
+      running: "violet",
+      processing: "violet",
+      succeeded: "green",
+      failed: "red",
+      needs_confirmation: "amber",
+      needs_review: "amber",
+      cancelled: "neutral",
+    }[status] ?? "neutral"
+  );
+}
+
+function ocrStatusLabel(status) {
+  return (
+    {
+      queued: "排队中",
+      pending: "排队中",
+      running: "处理中",
+      processing: "处理中",
+      succeeded: "成功",
+      failed: "失败",
+      needs_confirmation: "待确认",
+      needs_review: "需复核",
+      cancelled: "已取消",
+    }[status] ?? status
+  );
+}
+
+function ocrErrorLabel(code) {
+  return (
+    {
+      needs_review: "需复核",
+      duration_conflict: "时长冲突",
+      low_confidence: "置信度低",
+      low_provider_confidence: "识别置信度低",
+      provider_failed: "识别服务失败",
+      no_live_report_fields: "未识别到有效字段",
+      ocr_pending: "等待识别",
+      ocr_queue_failed: "排队失败",
+      runner_failed: "执行失败",
+      missing_screenshot_duration: "缺少截图时长",
+    }[code] ?? code
   );
 }
 
@@ -1869,7 +3744,7 @@ function Overview({ go }) {
       {/* Left: active projects + AI insights */}
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <div>
-          <SectionTitle hint="按风险与履约进度排序">活跃项目</SectionTitle>
+          <SectionTitle>活跃项目</SectionTitle>
           <Card padded={false}>
             <DataTable
               columns={[
@@ -1911,7 +3786,7 @@ function Overview({ go }) {
                           style={{ fontSize: 11, color: "var(--ink-400)" }}
                           className="mono"
                         >
-                          {r.id} · {r.vendor}
+                          {displayRecordId(r.id, "项目")} · {r.vendor}
                         </div>
                       </div>
                     </div>
@@ -2042,14 +3917,8 @@ function Overview({ go }) {
                 >
                   AI 经营简报
                 </span>
-                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
-                  基于近 14 天数据
-                </span>
               </div>
-              <EmptyHint
-                title="暂无经营简报"
-                hint="接入真实项目复盘结果后会展示可执行建议。"
-              />
+              <EmptyHint title="暂无经营简报" />
               <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
                 <Button
                   size="sm"
@@ -2265,9 +4134,12 @@ function Overview({ go }) {
 // ——— Matching tab ————————————————————————
 function Matching({ go }) {
   const streamers = useOpsStreamers();
+  const projects = useOpsProjects();
+  const actions = useOpsLiveActions();
   const [matchRows, setMatchRows] = React.useState(null);
   const [supplierRows, setSupplierRows] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
+  const [inviteBusyId, setInviteBusyId] = React.useState("");
   const [error, setError] = React.useState("");
   const [actionMessage, setActionMessage] = React.useState("");
   const rows = matchRows ?? DEFAULT_MATCHING_ROWS;
@@ -2290,6 +4162,25 @@ function Matching({ go }) {
       setError(error instanceof Error ? error.message : "matching failed");
     } finally {
       setBusy(false);
+    }
+  };
+  const inviteMatch = async (row) => {
+    const projectId = projects[0]?.id;
+    if (!projectId) {
+      setActionMessage("请先创建或选择项目后再发起邀约。");
+      return;
+    }
+
+    setInviteBusyId(row.id);
+    setError("");
+    setActionMessage("");
+    try {
+      await actions.inviteStreamerToProject?.(projectId, row.id);
+      setActionMessage("已发起邀约");
+    } catch (error) {
+      setActionMessage(error?.message || "邀约失败，请稍后重试。");
+    } finally {
+      setInviteBusyId("");
     }
   };
 
@@ -2393,7 +4284,7 @@ function Matching({ go }) {
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {s?.id ?? r.id}
+                      {displayRecordId(s?.id ?? r.id, "主播档案")}
                     </span>
                     <span style={{ flex: 1 }} />
                     <Badge
@@ -2523,11 +4414,10 @@ function Matching({ go }) {
                 <Button
                   size="sm"
                   kind="primary"
-                  onClick={() =>
-                    setActionMessage(`${r.name} 的项目邀约后台暂未接入。`)
-                  }
+                  onClick={() => inviteMatch(r)}
+                  disabled={inviteBusyId === r.id}
                 >
-                  发起邀约
+                  {inviteBusyId === r.id ? "邀约中" : "发起邀约"}
                 </Button>
               </div>
             </Card>
@@ -2557,7 +4447,7 @@ function Matching({ go }) {
                           className="mono"
                           style={{ fontSize: 11, color: "var(--ink-400)" }}
                         >
-                          {r.id}
+                          {displayRecordId(r.id, "供应商")}
                         </div>
                       </div>
                     </div>
@@ -2588,6 +4478,270 @@ function Matching({ go }) {
       ) : null}
     </div>
   );
+}
+
+function AICopilot() {
+  const projects = useOpsProjects();
+  const streamers = useOpsStreamers();
+  const [busyKey, setBusyKey] = React.useState("");
+  const [message, setMessage] = React.useState("");
+  const [results, setResults] = React.useState({});
+
+  const runAiAction = async (key, url, payload, formatter, fallbackMessage) => {
+    if (busyKey) return;
+    setBusyKey(key);
+    setMessage("");
+    try {
+      const body = await postWarRoomJson(url, payload, fallbackMessage);
+      setResults((current) => ({ ...current, [key]: formatter(body) }));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : fallbackMessage);
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const matchingInput = React.useMemo(
+    () => buildWarRoomMatchingInput(streamers),
+    [streamers],
+  );
+  const reviewInput = React.useMemo(
+    () => buildWarRoomReviewInput(projects, streamers),
+    [projects, streamers],
+  );
+  const scriptInput = React.useMemo(
+    () => buildAiScriptOptimizationInput(projects, streamers),
+    [projects, streamers],
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+          gap: 12,
+        }}
+      >
+        <AiActionPanel
+          title="候选简报"
+          hint="基于匹配快照生成可邀约候选解释"
+          buttonLabel={busyKey === "brief" ? "生成中" : "生成 AI Brief"}
+          disabled={Boolean(busyKey)}
+          onClick={() =>
+            runAiAction(
+              "brief",
+              "/api/ai/briefs",
+              {
+                kind: "casting",
+                project: matchingInput.project,
+                candidates: matchingInput.candidates,
+                maxRecommendations: 3,
+              },
+              formatAiBriefResult,
+              "AI brief failed",
+            )
+          }
+        />
+        <AiActionPanel
+          title="项目复盘"
+          hint="读取经营复盘代理输出"
+          buttonLabel={busyKey === "review" ? "复盘中" : "AI 项目复盘"}
+          disabled={Boolean(busyKey)}
+          onClick={() =>
+            runAiAction(
+              "review",
+              "/api/ai/project-reviews",
+              reviewInput,
+              formatAiProjectReviewResult,
+              "AI project review failed",
+            )
+          }
+        />
+        <AiActionPanel
+          title="Copilot 路由"
+          hint="通过 M10 Copilot 统一调度脚本优化"
+          buttonLabel={busyKey === "copilot" ? "运行中" : "运行 Copilot"}
+          disabled={Boolean(busyKey)}
+          onClick={() =>
+            runAiAction(
+              "copilot",
+              "/api/ai/copilot",
+              {
+                intent: "script_optimization",
+                payload: scriptInput,
+              },
+              formatAiCopilotResult,
+              "AI copilot failed",
+            )
+          }
+        />
+        <AiActionPanel
+          title="脚本草稿"
+          hint="生成待人工复核的话术版本"
+          buttonLabel={busyKey === "script" ? "生成中" : "生成脚本草稿"}
+          disabled={Boolean(busyKey)}
+          onClick={() =>
+            runAiAction(
+              "script",
+              "/api/ai/scripts",
+              scriptInput,
+              formatAiScriptResult,
+              "AI script draft failed",
+            )
+          }
+        />
+      </div>
+
+      {message ? (
+        <div
+          aria-live="polite"
+          style={{ fontSize: 12, color: "var(--danger-600)" }}
+        >
+          {message}
+        </div>
+      ) : null}
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+          gap: 12,
+        }}
+      >
+        {[
+          ["brief", "AI Brief"],
+          ["review", "AI 项目复盘"],
+          ["copilot", "Copilot 摘要"],
+          ["script", "脚本草稿"],
+        ].map(([key, title]) => (
+          <div
+            key={key}
+            style={{
+              minHeight: 86,
+              padding: 14,
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "#fff",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 13,
+                fontWeight: 700,
+                color: "var(--ink-900)",
+              }}
+            >
+              <Icon.Sparkles size={14} stroke="var(--violet-600)" />
+              {title}
+            </div>
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 12.5,
+                color: results[key] ? "var(--ink-700)" : "var(--ink-400)",
+                lineHeight: 1.6,
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {results[key] || "等待生成"}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AiActionPanel({ title, hint, buttonLabel, disabled, onClick }) {
+  return (
+    <div
+      style={{
+        padding: 14,
+        border: "1px solid var(--line)",
+        borderRadius: 8,
+        background: "var(--bg-soft)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+      }}
+    >
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-900)" }}>
+          {title}
+        </div>
+        <div
+          style={{
+            marginTop: 4,
+            fontSize: 12,
+            color: "var(--ink-500)",
+            lineHeight: 1.5,
+          }}
+        >
+          {hint}
+        </div>
+      </div>
+      <Button kind="primary" onClick={onClick} disabled={disabled}>
+        {buttonLabel}
+      </Button>
+    </div>
+  );
+}
+
+function buildAiScriptOptimizationInput(
+  projects = PROJECTS,
+  streamers = STREAMERS,
+) {
+  const project = projects[0] ?? WAR_ROOM_FALLBACK_PROJECT;
+  const streamer = streamers[0] ?? WAR_ROOM_FALLBACK_STREAMERS[0];
+
+  return {
+    scriptKey: "opening-hook",
+    version: 1,
+    currentScript: `${project.name} 开场钩子：先说明福利，再引导观众提问。`,
+    diagnosisType: "content_rhythm",
+    feedback: ["强化前三十秒的互动提问。"],
+    replayNotes: ["复盘最近一场直播，保留高转化话术。"],
+    streamerId: streamer?.id,
+    projectId: project?.id,
+  };
+}
+
+function formatAiBriefResult(body) {
+  const advice = body.candidateAdvice?.[0];
+  if (advice) {
+    return `${advice.streamerName} · ${advice.recommendation}`;
+  }
+  const tradeoff = body.tradeoffAdvice;
+  if (tradeoff) {
+    return `${tradeoff.decision || "pricing"} · ${tradeoff.summary || ""}`;
+  }
+  return "AI Brief 已生成";
+}
+
+function formatAiProjectReviewResult(body) {
+  const report = body.report ?? {};
+  const quote = report.nextSuggestedQuoteCents
+    ? ` · 下轮报价 ${(report.nextSuggestedQuoteCents / 100).toLocaleString("zh-CN")} 元`
+    : "";
+  return `${report.projectName || report.projectId || "项目复盘"} · ${
+    report.shouldContinue ? "建议继续" : "需要复核"
+  }${quote}`;
+}
+
+function formatAiCopilotResult(body) {
+  const summary = body.copilotSummary ?? {};
+  return [summary.title, summary.status, summary.nextStep]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function formatAiScriptResult(body) {
+  const draft = body.scriptVersionDraft ?? {};
+  return draft.content || `${draft.scriptKey || "脚本"} v${draft.version || 1}`;
 }
 
 // ——— Supplier tab ————————————————————————
@@ -2631,7 +4785,7 @@ function Supplier() {
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {r.id} · 推荐主播 {r.streamers}
+                      {displayRecordId(r.id, "供应商")} · 推荐主播 {r.streamers}
                     </div>
                   </div>
                 </div>
@@ -3037,6 +5191,15 @@ async function postWarRoomJson(url, body, fallbackMessage) {
   return payload;
 }
 
+async function getOpsJson(url, fallbackMessage) {
+  const response = await globalThis.fetch(url, { method: "GET" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || fallbackMessage);
+  }
+  return payload;
+}
+
 function buildWarRoomPricingInput({
   model,
   streamers,
@@ -3157,6 +5320,42 @@ function buildWarRoomReviewInput(projects = PROJECTS, streamers = STREAMERS) {
   };
 }
 
+function buildAutoReviewReportSnapshot(report) {
+  const settlementDuration =
+    report.systemDuration ??
+    report.plannedDuration ??
+    report.settlementDuration ??
+    Math.round((report.duration ?? 0) * 60);
+
+  return {
+    id: report.id,
+    taskId: report.taskId,
+    status: report.status,
+    evidenceLevel: report.evidenceLevel || evidenceLevelFromReport(report),
+    timeSource: report.timeSource || "manual",
+    settlementDuration,
+    screenshotCount: report.screens ?? report.screenshotCount ?? 0,
+    viewers: report.audience ?? report.viewers ?? 0,
+  };
+}
+
+function evidenceLevelFromReport(report) {
+  const text = `${report.note ?? ""} ${report.source ?? ""}`.toLowerCase();
+  if (text.includes("green")) return "green";
+  if (text.includes("yellow")) return "yellow";
+  if (text.includes("red")) return "red";
+  return "unknown";
+}
+
+function buildAutoReviewRuleSnapshot() {
+  return {
+    mode: "shadow",
+    requireSystemTiming: true,
+    minimumEvidenceLevel: "green",
+    maximumDurationDeltaRateBps: 1000,
+  };
+}
+
 function toWarRoomCategory(game) {
   if (game.includes("moba") || game.includes("party")) return "moba";
   if (game.includes("rpg") || game.includes("story")) return "rpg";
@@ -3269,19 +5468,68 @@ function ScreenProjects({ go, projectId }) {
 
 function ProjectList({ go }) {
   const projects = useOpsProjects();
+  const collaborationProjects = useOpsCollaborationProjects();
   const actions = useOpsLiveActions();
+  // 进入项目列表时若尚无项目数据（例如从未携带 projectCards 的首页路由切过来），
+  // 主动拉一次，避免列表一直空白、必须先去别的模块才把数据带出来。
+  const { projects: projectData } = React.useContext(OpsLiveDataContext);
+  React.useEffect(() => {
+    if (projectData == null && actions.refreshProjects) {
+      actions
+        .refreshProjects()
+        .catch((error) => warnBackgroundRefreshFailure("projects", error));
+    }
+  }, [actions, projectData]);
   const [status, setStatus] = React.useState("all");
+  const [sourceFilter, setSourceFilter] = React.useState("all");
+  const [viewMode, setViewMode] = React.useState("table");
   const [query, setQuery] = React.useState("");
   const [vendorFilter, setVendorFilter] = React.useState("all");
   const [ownerFilter, setOwnerFilter] = React.useState("all");
   const [scheduleFilter, setScheduleFilter] = React.useState("all");
   const [draftOpen, setDraftOpen] = React.useState(false);
+  const [draftMode, setDraftMode] = React.useState("owned");
   const [draftName, setDraftName] = React.useState("");
   const [draftCode, setDraftCode] = React.useState("");
+  const [inviteLink, setInviteLink] = React.useState("");
   const [draftError, setDraftError] = React.useState("");
+  const [draftMessage, setDraftMessage] = React.useState("");
   const [draftSubmitting, setDraftSubmitting] = React.useState(false);
   const [exportMessage, setExportMessage] = React.useState("");
   const [exportSubmitting, setExportSubmitting] = React.useState(false);
+  const [joinOpen, setJoinOpen] = React.useState(false);
+  const [joinLink, setJoinLink] = React.useState("");
+  const [joinError, setJoinError] = React.useState("");
+  const [joinSubmitting, setJoinSubmitting] = React.useState(false);
+  const openJoinForm = () => {
+    setJoinLink("");
+    setJoinError("");
+    setDraftMessage("");
+    setJoinOpen(true);
+  };
+  const submitJoinCollaboration = async () => {
+    const link = joinLink.trim();
+    if (!link) {
+      setJoinError("请填写邀请链接");
+      return;
+    }
+    setJoinSubmitting(true);
+    setJoinError("");
+    try {
+      await actions.joinCollaborationProject?.({
+        inviteLink: link,
+        requestedRevenueShareBps: 0,
+        applicantNote: "",
+      });
+      setJoinOpen(false);
+      setJoinLink("");
+      setDraftMessage("协作申请已提交，等待项目方审核通过后即加入。");
+    } catch (error) {
+      setJoinError(error?.message || "协作申请提交失败，请稍后重试");
+    } finally {
+      setJoinSubmitting(false);
+    }
+  };
   const draftInputStyle = {
     width: "100%",
     height: 32,
@@ -3296,12 +5544,39 @@ function ProjectList({ go }) {
   const openDraftForm = () => {
     setDraftOpen(true);
     setDraftError("");
+    setDraftMessage("");
+    setDraftMode("owned");
     setDraftName((value) => value || "新项目草稿");
     setDraftCode((value) => value || `P-${Date.now()}`);
   };
   const closeDraftForm = () => {
     setDraftOpen(false);
     setDraftError("");
+  };
+  const submitCollaborationInvite = async (event) => {
+    event.preventDefault();
+    const trimmedLink = inviteLink.trim();
+    if (!trimmedLink) {
+      setDraftError("请填写邀请链接");
+      return;
+    }
+    setDraftSubmitting(true);
+    setDraftError("");
+    setDraftMessage("");
+    try {
+      await actions.joinCollaborationProject?.({
+        inviteLink: trimmedLink,
+        requestedRevenueShareBps: 0,
+        applicantNote: "",
+      });
+      setDraftOpen(false);
+      setInviteLink("");
+      setDraftMessage("协作申请已提交，等待项目方审核");
+    } catch (error) {
+      setDraftError(error?.message || "协作申请提交失败，请稍后重试");
+    } finally {
+      setDraftSubmitting(false);
+    }
   };
   const submitProjectDraft = async (event) => {
     event.preventDefault();
@@ -3313,6 +5588,7 @@ function ProjectList({ go }) {
     }
     setDraftSubmitting(true);
     setDraftError("");
+    setDraftMessage("");
     try {
       await actions.createProjectDraft?.({ name, code });
       setDraftOpen(false);
@@ -3343,16 +5619,33 @@ function ProjectList({ go }) {
       setExportSubmitting(false);
     }
   };
-  const counts = {
-    all: projects.length,
-    active: projects.filter((p) => p.status === "active").length,
-    recruiting: projects.filter((p) => p.status === "recruiting").length,
-    settling: projects.filter((p) => p.status === "settling").length,
-    paused: projects.filter((p) => p.status === "paused").length,
-    ended: projects.filter((p) => p.status === "ended").length,
-  };
+  const displayProjects = [...projects, ...collaborationProjects];
+  const ownedCount = projects.length;
+  const collabCount = collaborationProjects.length;
+  const isCollabProject = (p) => Boolean(p.collaborationRole);
+  // 先按「自有/协作」来源过滤，状态页签计数基于该结果（不含状态筛选本身）。
+  const sourceFiltered = displayProjects.filter((p) => {
+    if (sourceFilter === "owned") return !isCollabProject(p);
+    if (sourceFilter === "collab") return isCollabProject(p);
+    return true;
+  });
+  const countByStatus = (key) =>
+    key === "all"
+      ? sourceFiltered.length
+      : sourceFiltered.filter((p) => p.status === key).length;
+  const statusTabs = [
+    { key: "all", label: "全部" },
+    { key: "draft", label: "草稿" },
+    { key: "recruiting", label: "招募中" },
+    { key: "pending_start", label: "待开始" },
+    { key: "active", label: "进行中" },
+    { key: "paused", label: "已暂停" },
+    { key: "ended", label: "已结束" },
+    { key: "settling", label: "结算中" },
+    { key: "archived", label: "已归档" },
+  ].map((tab) => ({ ...tab, count: countByStatus(tab.key) }));
   const normalizedQuery = query.trim().toLowerCase();
-  const filtered = projects.filter((p) => {
+  const filtered = sourceFiltered.filter((p) => {
     const matchesStatus = status === "all" || p.status === status;
     const matchesSearch =
       !normalizedQuery ||
@@ -3380,7 +5673,13 @@ function ProjectList({ go }) {
     <>
       <PageHeader
         title="项目管理"
-        subtitle="厂商 → 产品 → 项目；同时管理报名、录屏、排班、报数与结算"
+        subtitle={
+          <span>
+            共 <b className="num">{displayProjects.length}</b> 个项目 ·{" "}
+            <b className="num">{ownedCount}</b> 自有 ·{" "}
+            <b className="num">{collabCount}</b> 协作
+          </span>
+        }
         actions={
           <>
             <Button
@@ -3390,6 +5689,9 @@ function ProjectList({ go }) {
               disabled={exportSubmitting}
             >
               {exportSubmitting ? "导出中" : "导出项目表"}
+            </Button>
+            <Button kind="default" onClick={openJoinForm}>
+              加入协作
             </Button>
             <Button
               kind="primary"
@@ -3401,6 +5703,41 @@ function ProjectList({ go }) {
           </>
         }
       />
+
+      {joinOpen ? (
+        <ExportSettingsModal
+          title="加入 MCN 协作"
+          submitting={joinSubmitting}
+          confirmLabel="提交申请"
+          busyLabel="提交中…"
+          confirmIcon={null}
+          onCancel={() => setJoinOpen(false)}
+          onConfirm={submitJoinCollaboration}
+        >
+          <ExportFilterSection title="邀请链接">
+            <input
+              value={joinLink}
+              onChange={(event) => setJoinLink(event.target.value)}
+              placeholder="粘贴 /share/project-collaboration/... 邀请链接"
+              style={draftInputStyle}
+            />
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--ink-400)",
+                lineHeight: 1.5,
+              }}
+            >
+              粘贴项目方提供的协作邀请链接，提交后等待项目方审核通过即加入；项目方保留项目设置与审核权限。
+            </div>
+            {joinError ? (
+              <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                {joinError}
+              </div>
+            ) : null}
+          </ExportFilterSection>
+        </ExportSettingsModal>
+      ) : null}
 
       <div
         style={{
@@ -3414,22 +5751,7 @@ function ProjectList({ go }) {
           <div
             style={{ padding: "0 12px", borderBottom: "1px solid var(--line)" }}
           >
-            <Tabs
-              value={status}
-              onChange={setStatus}
-              items={[
-                { key: "all", label: "全部", count: counts.all },
-                { key: "active", label: "进行中", count: counts.active },
-                {
-                  key: "recruiting",
-                  label: "招募中",
-                  count: counts.recruiting,
-                },
-                { key: "settling", label: "结算中", count: counts.settling },
-                { key: "paused", label: "已暂停", count: counts.paused },
-                { key: "ended", label: "已结束", count: counts.ended },
-              ]}
-            />
+            <Tabs value={status} onChange={setStatus} items={statusTabs} />
           </div>
 
           {/* Toolbar */}
@@ -3442,23 +5764,32 @@ function ProjectList({ go }) {
               borderBottom: "1px solid var(--line)",
             }}
           >
+            <ProjectSegmented
+              value={sourceFilter}
+              onChange={setSourceFilter}
+              options={[
+                { value: "all", label: "全部" },
+                { value: "owned", label: "自有" },
+                { value: "collab", label: "协作" },
+              ]}
+            />
             <SearchInput
               placeholder="项目名 / 编号 / 厂商"
               value={query}
               onChange={setQuery}
-              width={260}
+              width={240}
             />
             <ProjectInlineFilter
               label="厂商筛选"
               value={vendorFilter}
               onChange={setVendorFilter}
-              options={uniqueProjectOptions(projects, "vendor")}
+              options={uniqueProjectOptions(displayProjects, "vendor")}
             />
             <ProjectInlineFilter
               label="负责人筛选"
               value={ownerFilter}
               onChange={setOwnerFilter}
-              options={uniqueProjectOptions(projects, "leadOps")}
+              options={uniqueProjectOptions(displayProjects, "leadOps")}
             />
             <ProjectInlineFilter
               label="时间范围筛选"
@@ -3477,6 +5808,15 @@ function ProjectList({ go }) {
               </b>{" "}
               个项目
             </span>
+            <ProjectSegmented
+              value={viewMode}
+              onChange={setViewMode}
+              options={[
+                { value: "table", label: "表格" },
+                { value: "board", label: "看板" },
+                { value: "cards", label: "卡片" },
+              ]}
+            />
           </div>
           {exportMessage ? (
             <div
@@ -3496,7 +5836,11 @@ function ProjectList({ go }) {
 
           {draftOpen ? (
             <form
-              onSubmit={submitProjectDraft}
+              onSubmit={
+                draftMode === "owned"
+                  ? submitProjectDraft
+                  : submitCollaborationInvite
+              }
               style={{
                 display: "grid",
                 gridTemplateColumns:
@@ -3508,42 +5852,133 @@ function ProjectList({ go }) {
                 background: "var(--bg-soft)",
               }}
             >
-              <label
+              <div
                 style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
-                  fontSize: 12,
-                  color: "var(--ink-500)",
-                  fontWeight: 600,
+                  gridColumn: "1 / -1",
+                  display: "inline-flex",
+                  width: "fit-content",
+                  gap: 4,
+                  padding: 3,
+                  border: "1px solid var(--line)",
+                  borderRadius: 8,
+                  background: "#fff",
                 }}
               >
-                项目名称
-                <input
-                  value={draftName}
-                  onChange={(event) => setDraftName(event.target.value)}
-                  placeholder="例如：品牌直播专项"
-                  style={draftInputStyle}
-                />
-              </label>
-              <label
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
-                  fontSize: 12,
-                  color: "var(--ink-500)",
-                  fontWeight: 600,
-                }}
-              >
-                项目编号
-                <input
-                  value={draftCode}
-                  onChange={(event) => setDraftCode(event.target.value)}
-                  placeholder="例如：项目编号"
-                  style={draftInputStyle}
-                />
-              </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftMode("owned");
+                    setDraftError("");
+                    setDraftMessage("");
+                  }}
+                  style={{
+                    height: 28,
+                    padding: "0 10px",
+                    border: "none",
+                    borderRadius: 6,
+                    background:
+                      draftMode === "owned" ? "var(--blue-50)" : "transparent",
+                    color:
+                      draftMode === "owned"
+                        ? "var(--blue-700)"
+                        : "var(--ink-500)",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  自有项目
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftMode("collaboration");
+                    setDraftError("");
+                    setDraftMessage("");
+                  }}
+                  style={{
+                    height: 28,
+                    padding: "0 10px",
+                    border: "none",
+                    borderRadius: 6,
+                    background:
+                      draftMode === "collaboration"
+                        ? "var(--blue-50)"
+                        : "transparent",
+                    color:
+                      draftMode === "collaboration"
+                        ? "var(--blue-700)"
+                        : "var(--ink-500)",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  外部合作
+                </button>
+              </div>
+
+              {draftMode === "owned" ? (
+                <>
+                  <label
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                      fontSize: 12,
+                      color: "var(--ink-500)",
+                      fontWeight: 600,
+                    }}
+                  >
+                    项目名称
+                    <input
+                      value={draftName}
+                      onChange={(event) => setDraftName(event.target.value)}
+                      placeholder="例如：品牌直播专项"
+                      style={draftInputStyle}
+                    />
+                  </label>
+                  <label
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                      fontSize: 12,
+                      color: "var(--ink-500)",
+                      fontWeight: 600,
+                    }}
+                  >
+                    项目编号
+                    <input
+                      value={draftCode}
+                      onChange={(event) => setDraftCode(event.target.value)}
+                      placeholder="例如：项目编号"
+                      style={draftInputStyle}
+                    />
+                  </label>
+                </>
+              ) : (
+                <label
+                  style={{
+                    gridColumn: "1 / 3",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    fontSize: 12,
+                    color: "var(--ink-500)",
+                    fontWeight: 600,
+                  }}
+                >
+                  邀请链接
+                  <input
+                    value={inviteLink}
+                    onChange={(event) => setInviteLink(event.target.value)}
+                    placeholder="粘贴 /share/project-collaboration/... 邀请链接"
+                    style={draftInputStyle}
+                  />
+                </label>
+              )}
+
               <div
                 style={{
                   display: "flex",
@@ -3566,7 +6001,13 @@ function ProjectList({ go }) {
                   disabled={draftSubmitting}
                   icon={<Icon.Plus size={14} stroke="#fff" />}
                 >
-                  {draftSubmitting ? "创建中" : "创建草稿"}
+                  {draftSubmitting
+                    ? draftMode === "owned"
+                      ? "创建中"
+                      : "提交中"
+                    : draftMode === "owned"
+                      ? "创建草稿"
+                      : "提交申请"}
                 </Button>
               </div>
               {draftError ? (
@@ -3585,7 +6026,22 @@ function ProjectList({ go }) {
             </form>
           ) : null}
 
-          <DataTable
+          {draftMessage ? (
+            <div
+              aria-live="polite"
+              style={{
+                padding: "8px 16px",
+                borderBottom: "1px solid var(--line)",
+                color: "var(--green-700)",
+                fontSize: 12,
+              }}
+            >
+              {draftMessage}
+            </div>
+          ) : null}
+
+          {viewMode === "table" ? (
+            <DataTable
             columns={[
               {
                 title: "项目",
@@ -3610,12 +6066,21 @@ function ProjectList({ go }) {
                     <div>
                       <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
                         {r.name}
+                        {r.collaborationRole === "partner" ? (
+                          <Badge
+                            tone="teal"
+                            dot
+                            style={{ marginLeft: 8, verticalAlign: "middle" }}
+                          >
+                            外部合作
+                          </Badge>
+                        ) : null}
                       </div>
                       <div
                         className="mono"
                         style={{ fontSize: 11, color: "var(--ink-400)" }}
                       >
-                        {r.id} · {r.code}
+                        {r.code || "未设置编号"}
                       </div>
                     </div>
                   </div>
@@ -3736,7 +6201,12 @@ function ProjectList({ go }) {
             ]}
             rows={filtered}
             onRowClick={(r) => go("project", r.id)}
-          />
+            />
+          ) : viewMode === "cards" ? (
+            <ProjectCardsGrid rows={filtered} go={go} />
+          ) : (
+            <ProjectBoard rows={filtered} go={go} />
+          )}
         </Card>
       </div>
     </>
@@ -3781,15 +6251,444 @@ function ProjectInlineFilter({ label, value, onChange, options }) {
   );
 }
 
+// 紧凑分段控件：用于「自有/协作」来源筛选与「表格/看板/卡片」视图切换。
+function ProjectSegmented({ value, onChange, options }) {
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        gap: 4,
+        padding: 3,
+        border: "1px solid var(--line)",
+        borderRadius: 8,
+        background: "#fff",
+        flexShrink: 0,
+      }}
+    >
+      {options.map((opt) => {
+        const active = opt.value === value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onChange?.(opt.value)}
+            style={{
+              height: 26,
+              padding: "0 12px",
+              border: "none",
+              borderRadius: 6,
+              background: active ? "var(--blue-50)" : "transparent",
+              color: active ? "var(--blue-700)" : "var(--ink-500)",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// 项目卡片：卡片视图与看板视图共用。compact 用于看板列内的紧凑形态。
+function ProjectCardTile({ p, go, compact = false }) {
+  const status = PROJECT_STATUS[p.status] || PROJECT_STATUS.draft;
+  return (
+    <button
+      type="button"
+      onClick={() => go("project", p.id)}
+      style={{
+        textAlign: "left",
+        width: "100%",
+        background: "#fff",
+        border: "1px solid var(--line)",
+        borderRadius: 10,
+        padding: 14,
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+        boxShadow: "var(--shadow-card)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              fontWeight: 600,
+              color: "var(--ink-900)",
+              fontSize: 14,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <span
+              style={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {p.name}
+            </span>
+            {p.collaborationRole === "partner" ? (
+              <Badge tone="teal" dot>
+                外部合作
+              </Badge>
+            ) : null}
+          </div>
+          <div
+            className="mono"
+            style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 2 }}
+          >
+            {p.code || "未设置编号"}
+          </div>
+        </div>
+        <RiskDot level={p.risk} />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <Badge tone={status.tone} dot>
+          {status.label}
+        </Badge>
+        <Badge tone="neutral">{p.pricing}</Badge>
+      </div>
+      {!compact && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 8,
+            fontSize: 12,
+            color: "var(--ink-500)",
+          }}
+        >
+          <div>
+            厂商 ·{" "}
+            <span style={{ color: "var(--ink-700)" }}>{p.vendor}</span>
+          </div>
+          <div>
+            在播主播 ·{" "}
+            <span className="num" style={{ color: "var(--ink-700)" }}>
+              {p.streamers.active}
+            </span>
+          </div>
+          <div>
+            负责人 ·{" "}
+            <span style={{ color: "var(--ink-700)" }}>{p.leadOps}</span>
+          </div>
+          <div>
+            预估毛利 ·{" "}
+            <span className="num" style={{ color: "var(--ink-900)" }}>
+              ¥{p.metrics.gross.toLocaleString()}
+            </span>
+          </div>
+        </div>
+      )}
+    </button>
+  );
+}
+
+function ProjectCardsGrid({ rows, go }) {
+  if (!rows.length) {
+    return (
+      <div style={{ padding: 20 }}>
+        <EmptyHint title="暂无项目" hint="当前筛选条件下没有项目。" />
+      </div>
+    );
+  }
+  return (
+    <div
+      style={{
+        padding: 16,
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+        gap: 14,
+      }}
+    >
+      {rows.map((p) => (
+        <ProjectCardTile key={p.id} p={p} go={go} />
+      ))}
+    </div>
+  );
+}
+
+const PROJECT_BOARD_COLUMNS = [
+  "draft",
+  "recruiting",
+  "pending_start",
+  "active",
+  "paused",
+  "ended",
+  "settling",
+  "archived",
+];
+
+// 看板视图：按项目状态分列，仅展示有项目的列。
+function ProjectBoard({ rows, go }) {
+  const columns = PROJECT_BOARD_COLUMNS.map((key) => ({
+    key,
+    meta: PROJECT_STATUS[key] || { tone: "neutral", label: key },
+    items: rows.filter((p) => p.status === key),
+  })).filter((col) => col.items.length > 0);
+
+  if (!columns.length) {
+    return (
+      <div style={{ padding: 20 }}>
+        <EmptyHint title="暂无项目" hint="当前筛选条件下没有项目。" />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        padding: 16,
+        display: "flex",
+        gap: 12,
+        overflowX: "auto",
+        alignItems: "flex-start",
+      }}
+    >
+      {columns.map((col) => (
+        <div
+          key={col.key}
+          style={{
+            flex: "0 0 260px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "0 2px",
+            }}
+          >
+            <Badge tone={col.meta.tone} dot>
+              {col.meta.label}
+            </Badge>
+            <span
+              className="num"
+              style={{ fontSize: 12, color: "var(--ink-400)" }}
+            >
+              {col.items.length}
+            </span>
+          </div>
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: 10 }}
+          >
+            {col.items.map((p) => (
+              <ProjectCardTile key={p.id} p={p} go={go} compact />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function warnBackgroundRefreshFailure(scope, error) {
+  globalThis.console?.warn?.(`${scope} background refresh failed`, error);
+}
+
+// 只读键值行：label 左、value 右，用于详情页财务/协作等只读区块。
+function DetailKV({ label, value, tone, last = false }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "9px 0",
+        borderBottom: last ? "none" : "1px solid var(--line)",
+        fontSize: 13,
+      }}
+    >
+      <span style={{ color: "var(--ink-500)" }}>{label}</span>
+      <span style={{ color: tone || "var(--ink-900)", fontWeight: 600 }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function DetailSubHeading({ children }) {
+  return (
+    <div
+      style={{
+        fontSize: 12,
+        fontWeight: 700,
+        color: "var(--ink-400)",
+        letterSpacing: "0.02em",
+        marginBottom: 4,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// bps（基点）→ 百分比文本：600 → "6%"，120 → "1.2%"。
+function formatRateBps(bps) {
+  const value = Number(bps) || 0;
+  return `${value / 100}%`;
+}
+
+// 详情页列表区块每块最多显示的行数；超出时底部出现「查看全部」入口。
+const PROJECT_BLOCK_ROW_LIMIT = 6;
+
+// 封顶表格：只渲染前 limit 行，总数超出时展示跳转完整模块的页脚。
+function CappedTable({
+  columns,
+  rows,
+  limit = PROJECT_BLOCK_ROW_LIMIT,
+  onRowClick,
+  onMore,
+  moreLabel,
+}) {
+  return (
+    <>
+      <DataTable
+        columns={columns}
+        rows={rows.slice(0, limit)}
+        onRowClick={onRowClick}
+      />
+      {rows.length > limit ? (
+        <div style={{ padding: "10px 16px 0", textAlign: "center" }}>
+          <button
+            type="button"
+            onClick={onMore}
+            style={{
+              border: "none",
+              background: "transparent",
+              color: "var(--blue-600)",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {moreLabel || `查看全部 ${rows.length} 条 →`}
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 // ——— Project detail ———————————————————————
 
 function ProjectDetail({ id, go }) {
   const projects = useOpsProjects();
+  const collaborationProjects = useOpsCollaborationProjects();
+  const streamers = useOpsStreamers();
+  const applications = useOpsApplications();
+  const tasks = useOpsTasks();
+  const settlementBatches = useOpsSettlementBatches();
+  const reports = useOpsReports();
+  const auditEntries = useOpsAuditEntries();
   const actions = useOpsLiveActions();
-  const p = projects.find((x) => x.id === id) || projects[0] || PROJECTS[0];
-  const [tab, setTab] = React.useState("overview");
+  const members = useOpsOrganizationMembers();
+  const currentUser = useOpsCurrentUser();
+  const {
+    organizationMembers,
+    streamers: streamerData,
+    applications: applicationData,
+  } = React.useContext(OpsLiveDataContext);
+  const allProjects = [...projects, ...collaborationProjects];
+  const p =
+    allProjects.find((x) => x.id === id) || allProjects[0] || PROJECTS[0];
   const [detailMessage, setDetailMessage] = React.useState("");
   const [detailSubmitting, setDetailSubmitting] = React.useState("");
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [settingsDraft, setSettingsDraft] = React.useState(() =>
+    projectSettingsInitialDraft(p),
+  );
+  const [settingsError, setSettingsError] = React.useState("");
+  const [settingsSubmitting, setSettingsSubmitting] = React.useState(false);
+  const [collaborationDraft, setCollaborationDraft] = React.useState(() =>
+    projectCollaborationInitialDraft(p),
+  );
+  const [collaborationMessage, setCollaborationMessage] = React.useState("");
+  const [collaborationError, setCollaborationError] = React.useState("");
+  const [collaborationSubmitting, setCollaborationSubmitting] =
+    React.useState("");
+  const [collaborationShareUrl, setCollaborationShareUrl] = React.useState("");
+  const [collaborationApplications, setCollaborationApplications] =
+    React.useState([]);
+
+  React.useEffect(() => {
+    setSettingsDraft(projectSettingsInitialDraft(p));
+    setSettingsOpen(false);
+    setSettingsError("");
+    // Reset only when switching to a different project — not on every data
+    // refresh (otherwise saving collaboration would close 项目设置 mid-flow).
+  }, [p.id]);
+
+  React.useEffect(() => {
+    setCollaborationDraft(projectCollaborationInitialDraft(p));
+  }, [
+    p.id,
+    p.isOpenToMcnCollaboration,
+    p.mcnCollaborationSummary,
+    p.mcnCollaborationTerms?.revenueShareHint,
+  ]);
+
+  React.useEffect(() => {
+    setCollaborationMessage("");
+    setCollaborationError("");
+    setCollaborationSubmitting("");
+    setCollaborationShareUrl("");
+    setCollaborationApplications([]);
+  }, [p.id]);
+
+  React.useEffect(() => {
+    if (
+      settingsOpen &&
+      !Array.isArray(organizationMembers) &&
+      actions.refreshOrganizationMembers
+    ) {
+      actions
+        .refreshOrganizationMembers()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("project detail", error),
+        );
+    }
+  }, [actions, organizationMembers, settingsOpen]);
+
+  React.useEffect(() => {
+    if (streamerData == null && actions.refreshStreamers) {
+      actions
+        .refreshStreamers()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("project detail", error),
+        );
+    }
+  }, [actions, streamerData]);
+
+  React.useEffect(() => {
+    if (applicationData == null && actions.refreshApplications) {
+      actions
+        .refreshApplications()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("project detail", error),
+        );
+    }
+  }, [actions, applicationData]);
+
   if (!p) {
     return (
       <>
@@ -3819,28 +6718,272 @@ function ProjectDetail({ id, go }) {
   }
 
   const status = PROJECT_STATUS[p.status] || PROJECT_STATUS.draft;
+  const isPartnerCollaboration = p.collaborationRole === "partner";
+  const canAssignOwner = canAssignProjectOwnerInUi(currentUser.role);
+  const ownerOptions = projectOwnerOptions(members, p, currentUser);
   const donePct =
     Math.round((p.metrics.doneHours / p.metrics.plannedHours) * 100) || 0;
+  const projectApplicationRoster = mergeRosterRows(
+    projectApplicationRosterRows(p, applications, streamers),
+  );
+  const projectRosterCount = Math.max(
+    (p.streamers?.active ?? 0) + (p.streamers?.candidate ?? 0),
+    projectApplicationRoster.length,
+  );
+  const projectTasks = tasks.filter((task) => taskBelongsToProject(task, p));
+  const projectBatches = settlementBatches.filter(
+    (batch) => batch.projectId === p.id,
+  );
+  const projectReports = reports.filter(
+    (r) => r.projectId === p.id || r.project === p.name,
+  );
+  const screeningReports = projectReports.filter(
+    (r) => r.status === "pending_review" || r.status === "need_supply",
+  );
+  const projectAudit = auditEntries.filter(
+    (e) =>
+      e.projectId === p.id ||
+      (e.objectType === "project" && e.objectId === p.id) ||
+      (e.objectName && e.objectName === p.name),
+  );
+  const hasCustomSettlementRule =
+    p.defaultSettlementRule &&
+    typeof p.defaultSettlementRule === "object" &&
+    Object.keys(p.defaultSettlementRule).length > 0;
   const exportVendorDelivery = async () => {
     setDetailSubmitting("delivery");
     setDetailMessage("");
     try {
-      await actions.createGovernedExport?.({
+      const packageRows = await actions.readVendorDeliveryPackage?.(p.id);
+      const result = await actions.createGovernedExport?.({
         kind: "vendor_delivery",
-        rows: [
-          {
-            projectName: p.name,
-            streamerName: `${p.streamers.active} 位已入选主播`,
-            settlementDuration: p.metrics.doneHours,
-            evidenceLevel: `待审录屏 ${p.streamers.pendingReview} 条`,
-          },
-        ],
+        rows: Array.isArray(packageRows) ? packageRows : [],
       });
-      setDetailMessage("厂家交付包已生成");
+      setDetailMessage(
+        result?.filename
+          ? `厂家交付包已生成：${result.filename}`
+          : "厂家交付包已生成",
+      );
     } catch (error) {
       setDetailMessage(error?.message || "厂家交付包导出失败，请稍后重试");
     } finally {
       setDetailSubmitting("");
+    }
+  };
+  const openProjectSettings = () => {
+    setSettingsDraft(projectSettingsInitialDraft(p));
+    setSettingsError("");
+    setDetailMessage("");
+    setSettingsOpen(true);
+  };
+  const handleSettingsChange = (field, value) => {
+    setSettingsDraft((current) => ({ ...current, [field]: value }));
+  };
+  const handleProjectSettingsSubmit = async (event) => {
+    event.preventDefault();
+    const name = settingsDraft.name.trim();
+    if (!name) {
+      setSettingsError("项目名称不能为空");
+      return;
+    }
+    if (
+      settingsDraft.startsAt &&
+      settingsDraft.endsAt &&
+      settingsDraft.endsAt < settingsDraft.startsAt
+    ) {
+      setSettingsError("结束日期不能早于开始日期");
+      return;
+    }
+    setSettingsSubmitting(true);
+    setSettingsError("");
+    setDetailMessage("");
+    try {
+      if (!actions.updateProjectBasics) {
+        throw new Error("项目设置接口不可用");
+      }
+      const shouldPublishFromSettings = isProjectPublishFromSettings(
+        p.status,
+        settingsDraft.status,
+      );
+      await actions.updateProjectBasics(p.id, {
+        name,
+        vendorName: settingsDraft.vendorName.trim(),
+        productName: settingsDraft.productName.trim(),
+        agentName: settingsDraft.agentName.trim(),
+        supplierName: settingsDraft.supplierName.trim(),
+        description: settingsDraft.description.trim(),
+        ...(canAssignOwner ? { ownerId: settingsDraft.ownerId || null } : {}),
+        status: shouldPublishFromSettings ? undefined : settingsDraft.status,
+        startsAt: settingsDraft.startsAt || null,
+        endsAt: settingsDraft.endsAt || null,
+        openSignup: settingsDraft.openSignup,
+        allowDirectInvite: settingsDraft.allowDirectInvite,
+        forceRecording: settingsDraft.forceRecording,
+        forceSystemTiming: settingsDraft.forceSystemTiming,
+        isPublicToStreamers: settingsDraft.isPublicToStreamers,
+        publicSummary: settingsDraft.publicSummary.trim(),
+        gameDownloadUrl: settingsDraft.gameDownloadUrl.trim(),
+      });
+      if (shouldPublishFromSettings) {
+        if (!actions.publishProject) {
+          throw new Error("项目发布接口不可用");
+        }
+        await actions.publishProject(p.id);
+      }
+      setDetailMessage(
+        shouldPublishFromSettings
+          ? "项目设置已更新，已发布招募"
+          : "项目设置已更新",
+      );
+      setSettingsOpen(false);
+    } catch (error) {
+      setSettingsError(error?.message || "项目设置更新失败，请稍后重试");
+    } finally {
+      setSettingsSubmitting(false);
+    }
+  };
+  const handleCollaborationChange = (field, value) => {
+    setCollaborationDraft((current) => ({ ...current, [field]: value }));
+  };
+  const persistProjectCollaborationSettings = async () => {
+    if (!actions.updateProjectBasics) {
+      throw new Error("项目协作设置接口不可用");
+    }
+    const revenueShareHint = collaborationDraft.revenueShareHint.trim();
+    await actions.updateProjectBasics(p.id, {
+      isOpenToMcnCollaboration: collaborationDraft.enabled,
+      mcnCollaborationSummary: collaborationDraft.summary.trim(),
+      mcnCollaborationTerms: revenueShareHint ? { revenueShareHint } : {},
+    });
+  };
+  const handleSaveProjectCollaboration = async (event) => {
+    event.preventDefault();
+    setCollaborationSubmitting("settings");
+    setCollaborationError("");
+    setCollaborationMessage("");
+    try {
+      await persistProjectCollaborationSettings();
+      setCollaborationMessage("协作设置已保存");
+    } catch (error) {
+      setCollaborationError(error?.message || "协作设置保存失败，请稍后重试");
+    } finally {
+      setCollaborationSubmitting("");
+    }
+  };
+  const handleCreateProjectCollaborationShare = async () => {
+    if (!collaborationDraft.enabled) {
+      setCollaborationError("请先开启外部 MCN 协作");
+      return;
+    }
+    setCollaborationSubmitting("share");
+    setCollaborationError("");
+    setCollaborationMessage("");
+    try {
+      if (!actions.createProjectCollaborationShare) {
+        throw new Error("协作链接接口不可用");
+      }
+      const result = await actions.createProjectCollaborationShare(p.id);
+      const url =
+        result?.shareUrl ||
+        result?.url ||
+        result?.share?.url ||
+        result?.share?.shareUrl ||
+        "";
+      setCollaborationShareUrl(url);
+      setCollaborationMessage(
+        url ? "协作链接已生成" : "协作链接已生成，请刷新查看",
+      );
+    } catch (error) {
+      setCollaborationError(error?.message || "协作链接生成失败，请稍后重试");
+    } finally {
+      setCollaborationSubmitting("");
+    }
+  };
+  const handleRefreshProjectCollaborationApplications = async () => {
+    setCollaborationSubmitting("applications");
+    setCollaborationError("");
+    setCollaborationMessage("");
+    try {
+      if (!actions.listProjectCollaborationApplications) {
+        throw new Error("协作申请接口不可用");
+      }
+      const items = await actions.listProjectCollaborationApplications(p.id);
+      setCollaborationApplications(Array.isArray(items) ? items : []);
+      setCollaborationMessage(
+        items?.length ? `已加载 ${items.length} 条协作申请` : "暂无协作申请",
+      );
+    } catch (error) {
+      setCollaborationError(error?.message || "协作申请刷新失败，请稍后重试");
+    } finally {
+      setCollaborationSubmitting("");
+    }
+  };
+  const handleReviewProjectCollaborationApplication = async (
+    application,
+    input = { action: "accept", ownerReviewNote: "" },
+  ) => {
+    setCollaborationSubmitting(`review:${application.id}`);
+    setCollaborationError("");
+    setCollaborationMessage("");
+    try {
+      if (!actions.reviewProjectCollaborationApplication) {
+        throw new Error("协作申请审核接口不可用");
+      }
+      const result = await actions.reviewProjectCollaborationApplication(
+        p.id,
+        application.id,
+        input,
+      );
+      const reviewedApplication = result?.application || {};
+      const nextStatus =
+        reviewedApplication.status ||
+        (input.action === "counter"
+          ? "owner_countered"
+          : input.action === "reject"
+            ? "rejected"
+            : "approved");
+      setCollaborationApplications((current) =>
+        current.map((item) =>
+          item.id === application.id
+            ? { ...item, ...reviewedApplication, status: nextStatus }
+            : item,
+        ),
+      );
+      setCollaborationMessage(
+        input.action === "counter"
+          ? "反报价已提交，等待对方确认"
+          : input.action === "reject"
+            ? "协作申请已拒绝"
+            : "协作申请已通过",
+      );
+    } catch (error) {
+      setCollaborationError(error?.message || "协作申请审核失败，请稍后重试");
+    } finally {
+      setCollaborationSubmitting("");
+    }
+  };
+  const handleConfirmProjectCollaborationCounter = async () => {
+    if (!p.collaborationApplicationId) return;
+    setCollaborationSubmitting(`confirm:${p.collaborationApplicationId}`);
+    setCollaborationError("");
+    setCollaborationMessage("");
+    setDetailMessage("");
+    try {
+      if (!actions.confirmProjectCollaborationCounter) {
+        throw new Error("协作反报价确认接口不可用");
+      }
+      await actions.confirmProjectCollaborationCounter(
+        p.id,
+        p.collaborationApplicationId,
+      );
+      setCollaborationMessage("反报价已确认，协作已生效");
+      setDetailMessage("反报价已确认，协作已生效");
+    } catch (error) {
+      const message = error?.message || "反报价确认失败，请稍后重试";
+      setCollaborationError(message);
+      setDetailMessage(message);
+    } finally {
+      setCollaborationSubmitting("");
     }
   };
 
@@ -3850,8 +6993,9 @@ function ProjectDetail({ id, go }) {
         title={p.name}
         subtitle={
           <span>
-            <span className="mono">{p.id}</span> · {p.vendor} · {p.product} · 由{" "}
-            {p.leadOps}（运营负责人）/ {p.bizOwner}（商务）共同负责
+            <span className="mono">{displayProjectCode(p)}</span> · {p.vendor} ·{" "}
+            {p.product} · 由 {p.leadOps}（运营负责人）/ {p.bizOwner}
+            （商务）共同负责
           </span>
         }
         status={
@@ -3875,22 +7019,26 @@ function ProjectDetail({ id, go }) {
             >
               返回列表
             </Button>
-            <Button
-              kind="default"
-              icon={<Icon.Export size={14} />}
-              onClick={exportVendorDelivery}
-              disabled={detailSubmitting === "delivery"}
-            >
-              {detailSubmitting === "delivery" ? "生成中" : "厂家交付包"}
-            </Button>
-            <Button
-              kind="default"
-              icon={<Icon.Settings size={14} />}
-              onClick={() => setDetailMessage("项目设置后台暂未接入")}
-            >
-              项目设置
-            </Button>
-            {p.status === "draft" && (
+            {!isPartnerCollaboration ? (
+              <>
+                <Button
+                  kind="default"
+                  icon={<Icon.Export size={14} />}
+                  onClick={exportVendorDelivery}
+                  disabled={detailSubmitting === "delivery"}
+                >
+                  {detailSubmitting === "delivery" ? "生成中" : "厂家交付包"}
+                </Button>
+                <Button
+                  kind="default"
+                  icon={<Icon.Settings size={14} />}
+                  onClick={openProjectSettings}
+                >
+                  项目设置
+                </Button>
+              </>
+            ) : null}
+            {!isPartnerCollaboration && p.status === "draft" && (
               <Button
                 kind="default"
                 icon={<Icon.Play size={14} />}
@@ -3938,132 +7086,2053 @@ function ProjectDetail({ id, go }) {
             {detailMessage}
           </div>
         ) : null}
-        {/* Top metric strip (owner view) */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(6, 1fr)",
-            gap: 12,
+        {settingsOpen ? (
+          <Card
+            title="项目设置"
+            extra={
+              <Badge tone="blue" dot>
+                后端实时保存
+              </Badge>
+            }
+            padded={true}
+          >
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "flex-start",
+                gap: 28,
+              }}
+            >
+              <div style={{ flex: "2 1 520px", minWidth: 0 }}>
+                <ProjectSettingsPanel
+                  draft={settingsDraft}
+                  baseStatus={p.status}
+                  ownerOptions={ownerOptions}
+                  canAssignOwner={canAssignOwner}
+                  error={settingsError}
+                  submitting={settingsSubmitting}
+                  onChange={handleSettingsChange}
+                  onSubmit={handleProjectSettingsSubmit}
+                  onCancel={() => {
+                    setSettingsOpen(false);
+                    setSettingsError("");
+                    setSettingsDraft(projectSettingsInitialDraft(p));
+                  }}
+                />
+              </div>
+              {!isPartnerCollaboration ? (
+                <div style={{ flex: "1 1 340px", minWidth: 0 }}>
+                  <ProjectCollaborationPanel
+                    project={p}
+                    draft={collaborationDraft}
+                    message={collaborationMessage}
+                    error={collaborationError}
+                    submitting={collaborationSubmitting}
+                    shareUrl={collaborationShareUrl}
+                    applications={collaborationApplications}
+                    onChange={handleCollaborationChange}
+                    onSave={handleSaveProjectCollaboration}
+                    onCreateShare={handleCreateProjectCollaborationShare}
+                    onRefreshApplications={
+                      handleRefreshProjectCollaborationApplications
+                    }
+                    onReviewApplication={
+                      handleReviewProjectCollaborationApplication
+                    }
+                  />
+                </div>
+              ) : null}
+            </div>
+          </Card>
+        ) : null}
+        {isPartnerCollaboration && p.collaborationApplicationId ? (
+          <PartnerCollaborationApplicationPanel
+            project={p}
+            message={collaborationMessage}
+            error={collaborationError}
+            submitting={collaborationSubmitting}
+            onConfirmCounter={handleConfirmProjectCollaborationCounter}
+          />
+        ) : null}
+        {/* Grouped exec strip — primary 毛利 + compact secondaries */}
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="项目周期"
-              value={`${p.start.slice(5)} → ${p.end.slice(5)}`}
-              hint={`共 ${diffDays(p.start, p.end)} 天`}
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 160,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>预估毛利</div>
+            <div
+              className="num"
+              style={{
+                fontSize: 26,
+                fontWeight: 600,
+                color: "var(--blue-600)",
+                letterSpacing: "-0.02em",
+                marginTop: 4,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ¥{(p.metrics.gross / 10000).toFixed(1)}万
+            </div>
+            <div style={{ fontSize: 12, marginTop: 4, color: "var(--ok-600)" }}>
+              毛利率 {p.metrics.margin}%
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="累计直播时长"
               value={p.metrics.doneHours.toFixed(1)}
               unit="h"
-              delta={`${donePct}% 达成`}
-              deltaTone={
-                donePct >= 90 ? "green" : donePct >= 50 ? "neutral" : "red"
-              }
+              hint={`${donePct}% 达成`}
+              hintTone={donePct >= 90 ? "green" : donePct >= 50 ? "muted" : "red"}
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="累计场观"
               value={(p.metrics.audience / 10000).toFixed(1)}
               unit="万人次"
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="预计厂家应收"
               value={`¥${(p.metrics.receivable / 10000).toFixed(1)}万`}
-              hint="按当前项目数据汇总"
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="主播应付"
               value={`¥${(p.metrics.payable / 10000).toFixed(1)}万`}
-              hint="按当前项目数据汇总"
             />
-          </Card>
-          <Card style={{ borderColor: "var(--blue-200)" }}>
-            <Metric
-              label="预估毛利"
-              value={`¥${(p.metrics.gross / 10000).toFixed(1)}万`}
-              delta={`${p.metrics.margin}%`}
-              hint="毛利率"
+            <MiniStat
+              label="项目周期"
+              value={`${p.start.slice(5)} → ${p.end.slice(5)}`}
+              hint={`共 ${diffDays(p.start, p.end)} 天`}
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
-        <Card padded={false}>
-          <div
-            style={{ padding: "0 16px", borderBottom: "1px solid var(--line)" }}
-          >
-            <Tabs
-              value={tab}
-              onChange={setTab}
-              items={[
-                { key: "overview", label: "项目总览" },
+        {/* 单页连续区块：原页签内容纵向堆叠，去掉页签切换，功能全保留 */}
+        <Card title="项目总览">
+          <ProjectOverview p={p} />
+        </Card>
+
+        <Card
+          title="主播阵容"
+          extra={
+            projectRosterCount > 0 ? (
+              <Badge tone="blue">{projectRosterCount}</Badge>
+            ) : null
+          }
+        >
+          <ProjectRoster p={p} go={go} />
+        </Card>
+
+        <Card
+          title="录屏审核"
+          extra={
+            screeningReports.length > 0 ? (
+              <Badge tone="amber">{screeningReports.length}</Badge>
+            ) : null
+          }
+        >
+          {screeningReports.length ? (
+            <CappedTable
+              onMore={() => go("reports")}
+              columns={[
                 {
-                  key: "roster",
-                  label: "主播阵容",
-                  count: p.streamers.active + p.streamers.candidate,
+                  title: "任务 / 主播",
+                  render: (r) => (
+                    <div>
+                      <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                        {r.streamer}
+                      </div>
+                      <div
+                        className="mono"
+                        style={{ fontSize: 11, color: "var(--ink-400)" }}
+                      >
+                        {displayRecordId(r.taskId || r.id, "任务")}
+                      </div>
+                    </div>
+                  ),
+                },
+                { title: "日期", render: (r) => r.date || "—" },
+                {
+                  title: "录屏",
+                  align: "right",
+                  render: (r) => (
+                    <span className="num">{r.screens ?? 0} 段</span>
+                  ),
                 },
                 {
-                  key: "screening",
-                  label: "录屏审核",
-                  count: p.streamers.pendingReview,
+                  title: "状态",
+                  render: (r) => {
+                    const meta = REPORT_STATUS[r.status] || REPORT_STATUS.pending;
+                    return (
+                      <Badge tone={meta.tone} dot>
+                        {meta.label}
+                      </Badge>
+                    );
+                  },
                 },
-                { key: "schedule", label: "排班 & 任务" },
-                {
-                  key: "reports",
-                  label: "报数",
-                  count: p.metrics.reportedPending,
-                },
-                { key: "rules", label: "结算规则" },
-                { key: "audit", label: "操作日志" },
               ]}
+              rows={screeningReports}
+              onRowClick={() => go("reports")}
+            />
+          ) : (
+            <EmptyHint
+              title="暂无待审录屏"
+              hint="该项目当前没有待审核的下播截图 / 录屏证据。"
+              actionLabel="前往报数审核"
+              onAction={() => go("reports")}
+            />
+          )}
+        </Card>
+
+        <Card
+          title="排班 & 任务"
+          extra={
+            projectTasks.length > 0 ? (
+              <Badge tone="blue">{projectTasks.length}</Badge>
+            ) : null
+          }
+        >
+          <ProjectScheduleTasks
+            p={p}
+            tasks={projectTasks}
+            streamers={streamers}
+            go={go}
+          />
+        </Card>
+
+        <Card
+          title="报数审核"
+          extra={
+            projectReports.length > 0 ? (
+              <Badge tone="blue">{projectReports.length}</Badge>
+            ) : null
+          }
+        >
+          {projectReports.length ? (
+            <CappedTable
+              onMore={() => go("reports")}
+              columns={[
+                {
+                  title: "主播",
+                  render: (r) => (
+                    <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                      {r.streamer}
+                    </span>
+                  ),
+                },
+                { title: "日期", render: (r) => r.date || "—" },
+                {
+                  title: "系统时长",
+                  align: "right",
+                  render: (r) => (
+                    <span className="num">
+                      {Number(r.systemDurationHours ?? r.duration ?? 0).toFixed(
+                        1,
+                      )}{" "}
+                      h
+                    </span>
+                  ),
+                },
+                {
+                  title: "场观",
+                  align: "right",
+                  render: (r) => (
+                    <span className="num">
+                      {Number(r.audience ?? 0).toLocaleString()}
+                    </span>
+                  ),
+                },
+                {
+                  title: "状态",
+                  render: (r) => {
+                    const meta = REPORT_STATUS[r.status] || REPORT_STATUS.pending;
+                    return (
+                      <Badge tone={meta.tone} dot>
+                        {meta.label}
+                      </Badge>
+                    );
+                  },
+                },
+              ]}
+              rows={projectReports}
+              onRowClick={() => go("reports")}
+            />
+          ) : (
+            <EmptyHint
+              title="暂无报数"
+              hint="该项目当前没有报数记录。"
+              actionLabel="前往报数审核"
+              onAction={() => go("reports")}
+            />
+          )}
+        </Card>
+
+        <Card
+          title="结算规则"
+          extra={
+            <button
+              type="button"
+              onClick={() => go("settle")}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: "var(--blue-600)",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              前往结算中心 →
+            </button>
+          }
+        >
+          <div
+            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}
+          >
+            <div>
+              <DetailSubHeading>默认结算</DetailSubHeading>
+              <DetailKV label="结算方式" value={p.pricing} />
+              <DetailKV
+                label="厂家单价（时薪）"
+                value={`¥${Number(p.defaultHourlyRate ?? 0).toLocaleString()}/时`}
+              />
+              <DetailKV
+                label="默认底薪"
+                value={`¥${Number(p.defaultBaseSalary ?? 0).toLocaleString()}`}
+                last
+              />
+            </div>
+            <div>
+              <DetailSubHeading>规则配置</DetailSubHeading>
+              <DetailKV
+                label="自定义规则"
+                value={hasCustomSettlementRule ? "已配置" : "未配置"}
+                tone={
+                  hasCustomSettlementRule
+                    ? "var(--ok-600)"
+                    : "var(--ink-400)"
+                }
+              />
+              <DetailKV
+                label="规则项"
+                value={
+                  hasCustomSettlementRule
+                    ? `${Object.keys(p.defaultSettlementRule).length} 项`
+                    : "—"
+                }
+                last
+              />
+            </div>
+          </div>
+        </Card>
+
+        <Card
+          title="结算明细"
+          extra={
+            projectBatches.length > 0 ? (
+              <Badge tone="blue">{projectBatches.length}</Badge>
+            ) : null
+          }
+        >
+          {projectBatches.length ? (
+            <CappedTable
+              onMore={() => go("settle")}
+              columns={[
+                {
+                  title: "结算批次",
+                  render: (b) => (
+                    <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                      {b.name}
+                    </span>
+                  ),
+                },
+                { title: "周期", render: (b) => b.period || "—" },
+                {
+                  title: "金额",
+                  align: "right",
+                  render: (b) => (
+                    <span className="num">¥{b.amount.toLocaleString()}</span>
+                  ),
+                },
+                {
+                  title: "状态",
+                  render: (b) => {
+                    const meta = batchStatusMeta(b.status);
+                    return (
+                      <Badge tone={meta.tone} dot>
+                        {meta.label}
+                      </Badge>
+                    );
+                  },
+                },
+              ]}
+              rows={projectBatches}
+              onRowClick={() => go("settle")}
+            />
+          ) : (
+            <EmptyHint
+              title="暂无结算批次"
+              hint="该项目尚未生成结算批次，可前往结算中心查看与生成。"
+              actionLabel="前往结算中心"
+              onAction={() => go("settle")}
+            />
+          )}
+        </Card>
+
+        <Card title="财务">
+          <div
+            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}
+          >
+            <div>
+              <DetailSubHeading>财务设置</DetailSubHeading>
+              <DetailKV label="是否开票" value={p.isInvoiced ? "是" : "否"} />
+              <DetailKV
+                label="销项税率"
+                value={formatRateBps(p.outputVatRateBps)}
+              />
+              <DetailKV
+                label="附加税率"
+                value={formatRateBps(p.surtaxRateBps)}
+              />
+              <DetailKV
+                label="采购成本"
+                value={`¥${(p.procurementCostCents / 100).toLocaleString()}`}
+              />
+              <DetailKV label="结算方式" value={p.pricing} last />
+            </div>
+            <div>
+              <DetailSubHeading>收益拆解</DetailSubHeading>
+              <DetailKV
+                label="应收(含税)"
+                value={`¥${p.metrics.receivable.toLocaleString()}`}
+              />
+              <DetailKV
+                label="应付主播"
+                value={`-¥${p.metrics.payable.toLocaleString()}`}
+                tone="var(--danger-600)"
+              />
+              <DetailKV
+                label="预估毛利"
+                value={`¥${p.metrics.gross.toLocaleString()}`}
+                tone="var(--blue-600)"
+              />
+              <DetailKV
+                label="毛利率"
+                value={`${p.metrics.margin.toFixed(1)}%`}
+                tone="var(--ok-600)"
+                last
+              />
+            </div>
+          </div>
+        </Card>
+
+        <Card title="协作">
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 24,
+            }}
+          >
+            <DetailKV
+              label="对外协作"
+              value={p.isOpenToMcnCollaboration ? "已开启" : "未开启"}
+              tone={
+                p.isOpenToMcnCollaboration ? "var(--ok-600)" : "var(--ink-400)"
+              }
+              last
+            />
+            <DetailKV
+              label="分成比例"
+              value={p.mcnCollaborationTerms?.revenueShareHint || "—"}
+              last
             />
           </div>
-
-          <div style={{ padding: 20 }}>
-            {tab === "overview" && <ProjectOverview p={p} />}
-            {tab === "roster" && <ProjectRoster p={p} go={go} />}
-            {tab !== "overview" && tab !== "roster" && (
-              <EmptyHint
-                title={tabLabel(tab) + " · 数据视图"}
-                hint="此标签页与对应一级模块共享数据，仅做过滤展示。点击下方按钮跳转至完整模块。"
-                actionLabel={"前往" + tabLabel(tab)}
-                onAction={() => go(tabRoute(tab))}
-              />
-            )}
+          <div
+            style={{
+              marginTop: 12,
+              paddingTop: 12,
+              borderTop: "1px solid var(--line)",
+              fontSize: 13,
+              color: "var(--ink-500)",
+              lineHeight: 1.6,
+            }}
+          >
+            {p.isOpenToMcnCollaboration
+              ? p.mcnCollaborationSummary || "已开启 MCN 协作，暂无补充说明。"
+              : "本项目未开启对外 MCN 协作。可在「项目设置」中开启并配置分成与说明。"}
           </div>
+        </Card>
+
+        <Card
+          title="操作日志"
+          extra={
+            projectAudit.length > 0 ? (
+              <Badge tone="neutral">{projectAudit.length}</Badge>
+            ) : null
+          }
+        >
+          {projectAudit.length ? (
+            <CappedTable
+              onMore={() => go("audit")}
+              columns={[
+                {
+                  title: "时间",
+                  render: (e) => (
+                    <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                      {e.createdAt || "—"}
+                    </span>
+                  ),
+                },
+                {
+                  title: "操作人",
+                  render: (e) => (
+                    <div>
+                      <div style={{ color: "var(--ink-900)" }}>
+                        {e.actorName || "—"}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                        {ROLES[e.actorRole] || e.actorRole || ""}
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "动作 / 对象",
+                  render: (e) => (
+                    <div>
+                      <div style={{ color: "var(--ink-900)" }}>
+                        {e.action || e.module || "—"}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                        {e.objectName || e.objectType || ""}
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "风险",
+                  render: (e) =>
+                    e.isHighRisk ? (
+                      <Badge tone="red" dot>
+                        高风险
+                      </Badge>
+                    ) : (
+                      <Badge tone="neutral">常规</Badge>
+                    ),
+                },
+              ]}
+              rows={projectAudit}
+              onRowClick={() => go("audit")}
+            />
+          ) : (
+            <EmptyHint
+              title="暂无操作日志"
+              hint="该项目当前没有可展示的操作日志。"
+              actionLabel="前往操作日志"
+              onAction={() => go("audit")}
+            />
+          )}
         </Card>
       </div>
     </>
   );
 }
 
-function tabLabel(k) {
+function normalizeProjectSettingDate(value) {
+  return value ? String(value).slice(0, 10) : "";
+}
+
+function projectSettingsInitialDraft(project) {
+  return {
+    name: project?.name || "",
+    vendorName: normalizeProjectTextDraft(project?.vendor, ["未填写"]),
+    productName: normalizeProjectTextDraft(project?.product, ["未填写"]),
+    agentName: normalizeProjectTextDraft(project?.agent, ["—", "未填写"]),
+    supplierName: normalizeProjectTextDraft(project?.supplier, [
+      "未填写",
+      "未绑定",
+    ]),
+    description: normalizeProjectTextDraft(
+      project?.description || project?.note || project?.brief,
+      ["暂无项目说明"],
+    ),
+    status: project?.status || "draft",
+    ownerId: project?.ownerId || "",
+    startsAt: normalizeProjectSettingDate(project?.start || project?.startsAt),
+    endsAt: normalizeProjectSettingDate(project?.end || project?.endsAt),
+    openSignup: project?.openSignup ?? true,
+    allowDirectInvite: project?.allowDirectInvite ?? true,
+    forceRecording: project?.forceRecording ?? project?.needScreening ?? true,
+    forceSystemTiming:
+      project?.forceSystemTiming ?? project?.needStartStop ?? true,
+    isPublicToStreamers: project?.isPublicToStreamers ?? false,
+    publicSummary: normalizeProjectTextDraft(project?.publicSummary),
+    gameDownloadUrl: normalizeProjectTextDraft(project?.gameDownloadUrl),
+  };
+}
+
+function projectCollaborationInitialDraft(project) {
+  return {
+    enabled: project?.isOpenToMcnCollaboration ?? false,
+    summary: normalizeProjectTextDraft(project?.mcnCollaborationSummary),
+    revenueShareHint: normalizeProjectTextDraft(
+      project?.mcnCollaborationTerms?.revenueShareHint,
+    ),
+  };
+}
+
+function normalizeProjectTextDraft(value, placeholders = []) {
+  if (!value || placeholders.includes(value)) return "";
+  return String(value);
+}
+
+const PROJECT_OWNER_ASSIGNABLE_ROLES = new Set([
+  "owner",
+  "ops_manager",
+  "operator_business",
+]);
+
+function canAssignProjectOwnerInUi(role) {
+  return role === "owner" || role === "ops_manager";
+}
+
+function projectOwnerOptions(members = [], project, currentUser) {
+  const options = [];
+  const seen = new Set();
+  const pushOption = (value, label, role) => {
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    const roleLabel = role && ROLES[role] ? ` · ${ROLES[role]}` : "";
+    options.push({ value, label: `${label || value}${roleLabel}` });
+  };
+
+  if (currentUser?.id && PROJECT_OWNER_ASSIGNABLE_ROLES.has(currentUser.role)) {
+    pushOption(currentUser.id, currentUser.name, currentUser.role);
+  }
+
+  members
+    .filter((member) => member?.status !== "suspended")
+    .filter((member) => PROJECT_OWNER_ASSIGNABLE_ROLES.has(member?.role))
+    .forEach((member) => {
+      pushOption(
+        member.userId || member.user_id || member.id,
+        member.name,
+        member.role,
+      );
+    });
+
+  if (project?.ownerId) {
+    pushOption(project.ownerId, project.leadOps || project.ownerName, null);
+  }
+
+  return [{ value: "", label: "未分配" }, ...options];
+}
+
+const projectSettingsInputStyle = {
+  height: 34,
+  border: "1px solid var(--line-strong)",
+  borderRadius: 6,
+  padding: "0 10px",
+  fontSize: 13,
+  color: "var(--ink-900)",
+  background: "#fff",
+  outline: "none",
+};
+
+const projectStatusPickerTones = {
+  neutral: ["#EEF2F7", "#475569", "#94A3B8"],
+  blue: ["#EEF3FF", "#1842A6", "#3B6BE6"],
+  green: ["#E6F6EE", "#0E8A4D", "#22B86C"],
+  amber: ["#FFF3DC", "#A86A00", "#E5A33A"],
+  red: ["#FDECEC", "#C0303A", "#E66670"],
+  violet: ["#EFEBFF", "#5B4BD1", "#8C7DEB"],
+  teal: ["#DEF3F0", "#0E7C77", "#3CB1AB"],
+  ink: ["#E2E8F0", "#1E2A47", "#475569"],
+};
+
+function projectStatusPickerColors(statusValue) {
+  const tone = PROJECT_STATUS[statusValue]?.tone || "neutral";
+  const [bg, fg, dot] =
+    projectStatusPickerTones[tone] || projectStatusPickerTones.neutral;
+  return { bg, fg, dot };
+}
+
+function ProjectSettingsField({ label, children }) {
   return (
-    {
-      screening: "录屏审核",
-      schedule: "排班 & 任务",
-      reports: "报数审核",
-      rules: "结算规则",
-      audit: "操作日志",
-    }[k] || k
+    <label
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        fontSize: 12,
+        color: "var(--ink-500)",
+      }}
+    >
+      <span>{label}</span>
+      {children}
+    </label>
   );
 }
-function tabRoute(k) {
+
+// One consistent section shell for the project-settings surface: a title +
+// optional hint, separated from the previous section by a hairline. Keeps every
+// group (status, basics, rules, collaboration) on the same visual rhythm.
+function ProjectSettingsSection({ title, desc, extra, first = false, children }) {
   return (
-    {
-      screening: "streamers",
-      schedule: "tasks",
-      reports: "reports",
-      rules: "settle",
-      audit: "audit",
-    }[k] || "projects"
+    <section
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+        paddingTop: first ? 0 : 18,
+        marginTop: first ? 0 : 18,
+        borderTop: first ? "none" : "1px solid var(--line)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: 12,
+        }}
+      >
+        <div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 13,
+              fontWeight: 700,
+              color: "var(--ink-900)",
+              letterSpacing: "-0.005em",
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                width: 3,
+                height: 13,
+                borderRadius: 999,
+                background: "var(--blue-500)",
+                flex: "0 0 auto",
+              }}
+            />
+            {title}
+          </div>
+          {desc ? (
+            <div
+              style={{
+                marginTop: 4,
+                marginLeft: 11,
+                fontSize: 12,
+                color: "var(--ink-500)",
+                lineHeight: 1.5,
+              }}
+            >
+              {desc}
+            </div>
+          ) : null}
+        </div>
+        {extra}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function projectStatusOptionsForTransition(fromStatus, currentValue) {
+  const baseStatus = PROJECT_STATUS[fromStatus] ? fromStatus : currentValue;
+  const nextStatuses = PROJECT_STATUS[baseStatus]
+    ? getAllowedProjectStatusTransitions(baseStatus)
+    : [];
+  const visibleValues = new Set([baseStatus, currentValue, ...nextStatuses]);
+  return PROJECT_STATUS_OPTIONS.filter((option) =>
+    visibleValues.has(option.value),
+  );
+}
+
+function projectStatusNextLabels(fromStatus) {
+  if (!PROJECT_STATUS[fromStatus]) return "暂无可流转状态";
+  const nextOptions = getAllowedProjectStatusTransitions(fromStatus)
+    .map((status) => PROJECT_STATUS[status]?.label)
+    .filter(Boolean);
+  return nextOptions.length > 0 ? nextOptions.join("、") : "暂无可流转状态";
+}
+
+function isProjectPublishFromSettings(fromStatus, nextStatus) {
+  return fromStatus === "draft" && nextStatus === "recruiting";
+}
+
+function ProjectSettingsStatusPicker({ value, fromStatus, onChange }) {
+  const [open, setOpen] = React.useState(false);
+  const statusOptions = projectStatusOptionsForTransition(fromStatus, value);
+  const current =
+    statusOptions.find((option) => option.value === value) ||
+    PROJECT_STATUS_OPTIONS.find((option) => option.value === value) ||
+    statusOptions[0] ||
+    PROJECT_STATUS_OPTIONS[0];
+  const currentColors = projectStatusPickerColors(current.value);
+  const listboxId = "project-settings-status-options";
+
+  const selectOption = (option) => {
+    onChange(option.value);
+    setOpen(false);
+  };
+
+  return (
+    <div
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setOpen(false);
+        }
+      }}
+      style={{ position: "relative" }}
+    >
+      <button
+        type="button"
+        role="combobox"
+        aria-label="项目状态"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-controls={listboxId}
+        onClick={() => setOpen((next) => !next)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            setOpen(false);
+          }
+          if (event.key === "ArrowDown" || event.key === "Enter") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+        style={{
+          ...projectSettingsInputStyle,
+          width: "100%",
+          padding: "0 10px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          borderColor: open ? "var(--blue-300)" : "var(--line-strong)",
+          background: "linear-gradient(180deg, #fff 0%, #F8FAFF 100%)",
+          boxShadow: open
+            ? "0 0 0 3px rgba(37, 99, 235, 0.12), inset 0 1px 0 rgba(255,255,255,0.8)"
+            : "inset 0 1px 0 rgba(255,255,255,0.8)",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          textAlign: "left",
+        }}
+      >
+        <span
+          style={{
+            minWidth: 0,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+            color: "var(--ink-900)",
+            fontWeight: 600,
+          }}
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 999,
+              background: currentColors.dot,
+              boxShadow: `0 0 0 4px ${currentColors.bg}`,
+              flex: "0 0 auto",
+            }}
+          />
+          <span
+            style={{
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {current.label}
+          </span>
+        </span>
+        <Icon.ChevDown
+          aria-hidden="true"
+          size={14}
+          stroke={open ? "var(--blue-700)" : "var(--ink-400)"}
+        />
+      </button>
+      {open && (
+        <div
+          id={listboxId}
+          role="listbox"
+          aria-label="项目状态选项"
+          style={{
+            position: "absolute",
+            zIndex: 40,
+            top: 40,
+            left: 0,
+            right: 0,
+            padding: 6,
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            background: "#fff",
+            boxShadow:
+              "0 16px 32px rgba(15, 23, 42, 0.14), 0 4px 10px rgba(15, 23, 42, 0.08)",
+          }}
+        >
+          {statusOptions.map((option) => {
+            const colors = projectStatusPickerColors(option.value);
+            const selected = option.value === current.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => selectOption(option)}
+                style={{
+                  width: "100%",
+                  height: 32,
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "0 8px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  background: selected ? "var(--blue-50)" : "transparent",
+                  color: selected ? "var(--blue-700)" : "var(--ink-700)",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: selected ? 700 : 600,
+                  fontFamily: "inherit",
+                  textAlign: "left",
+                }}
+              >
+                <span
+                  style={{
+                    minWidth: 0,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 999,
+                      background: colors.dot,
+                      boxShadow: `0 0 0 4px ${colors.bg}`,
+                      flex: "0 0 auto",
+                    }}
+                  />
+                  <span>{option.label}</span>
+                </span>
+                {selected && (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      color: "var(--blue-700)",
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    已选
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectSettingsDateField({ label, value, onChange }) {
+  const inputRef = React.useRef(null);
+  const [focused, setFocused] = React.useState(false);
+  const openPicker = () => {
+    const input = inputRef.current;
+    if (!input) return;
+    if (typeof input.showPicker === "function") {
+      input.showPicker();
+      return;
+    }
+    input.focus();
+  };
+
+  return (
+    <ProjectSettingsField label={label}>
+      <div
+        onClick={openPicker}
+        style={{
+          ...projectSettingsInputStyle,
+          borderColor: focused ? "var(--blue-300)" : "var(--line-strong)",
+          padding: 0,
+          display: "flex",
+          alignItems: "center",
+          position: "relative",
+          cursor: "pointer",
+          background: "linear-gradient(180deg, #fff 0%, #F8FAFF 100%)",
+          boxShadow: focused
+            ? "0 0 0 3px rgba(37, 99, 235, 0.12), inset 0 1px 0 rgba(255,255,255,0.8)"
+            : "inset 0 1px 0 rgba(255,255,255,0.8)",
+        }}
+      >
+        <input
+          className="project-settings-date-input"
+          ref={inputRef}
+          type="date"
+          value={value}
+          onClick={(event) => {
+            event.stopPropagation();
+            openPicker();
+          }}
+          onChange={(event) => onChange(event.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          style={{
+            width: "100%",
+            height: "100%",
+            border: "none",
+            background: "transparent",
+            outline: "none",
+            color: "var(--ink-900)",
+            fontSize: 13,
+            padding: "0 34px 0 10px",
+            cursor: "pointer",
+            fontFamily: "inherit",
+          }}
+        />
+        <span
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            right: 10,
+            top: "50%",
+            transform: "translateY(-50%)",
+            width: 18,
+            height: 18,
+            borderRadius: 5,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "var(--blue-50)",
+            color: "var(--blue-700)",
+            pointerEvents: "none",
+          }}
+        >
+          <Icon.Calendar size={13} stroke="var(--blue-700)" />
+        </span>
+      </div>
+    </ProjectSettingsField>
+  );
+}
+
+function projectCollaborationApplicationStatusLabel(status) {
+  const labels = {
+    submitted: "待审核",
+    owner_countered: "待对方确认",
+    approved: "已通过",
+    rejected: "已拒绝",
+    active: "已生效",
+  };
+  return labels[status] || status || "未知";
+}
+
+function projectCollaborationShareLabel(value) {
+  const bps = Number(value);
+  if (!Number.isFinite(bps) || bps <= 0) return "未填写";
+  return `${(bps / 100).toFixed(2)}%`;
+}
+
+function projectCollaborationPercentToBps(value) {
+  const percent = Number.parseFloat(String(value ?? "").trim());
+  if (!Number.isFinite(percent)) return null;
+  const bps = Math.round(percent * 100);
+  if (bps < 0 || bps > 10000) return null;
+  return bps;
+}
+
+function projectCollaborationApplicantLabel(application) {
+  return (
+    application?.applicantOrganizationName ||
+    application?.organizationName ||
+    application?.applicantOrganizationId ||
+    "外部 MCN"
+  );
+}
+
+function ProjectCollaborationPanel({
+  project,
+  draft,
+  message,
+  error,
+  submitting,
+  shareUrl,
+  applications = [],
+  onChange,
+  onSave,
+  onCreateShare,
+  onRefreshApplications,
+  onReviewApplication,
+}) {
+  const isBusy = Boolean(submitting);
+  const enabled = Boolean(draft.enabled);
+  const persisted = Boolean(project?.isOpenToMcnCollaboration);
+  const [copyState, setCopyState] = React.useState("");
+  const [applicationDrafts, setApplicationDrafts] = React.useState({});
+
+  const updateApplicationDraft = (applicationId, patch) => {
+    setApplicationDrafts((current) => ({
+      ...current,
+      [applicationId]: {
+        counterSharePercent: "",
+        rejectionReason: "",
+        ...(current[applicationId] || {}),
+        ...patch,
+      },
+    }));
+  };
+
+  const copyShareUrl = async () => {
+    if (!shareUrl) return;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareUrl);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = shareUrl;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCopyState("已复制");
+    } catch {
+      setCopyState("复制失败，请手动复制");
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      <form
+        onSubmit={onSave}
+        style={{ display: "flex", flexDirection: "column", gap: 14 }}
+      >
+        <ProjectSettingsSection
+          first
+          title="外部 MCN 协作"
+          desc="开启后，其他 MCN 可通过邀请链接加入本项目；项目方保留项目设置与审核权限。"
+          extra={
+            <Badge
+              tone={persisted ? "green" : enabled ? "blue" : "neutral"}
+              dot
+            >
+              {persisted ? "已开启" : enabled ? "待保存" : "未开启"}
+            </Badge>
+          }
+        >
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 10,
+              alignItems: "center",
+            }}
+          >
+            <ProjectSettingsCheck
+              label="开放外部 MCN 协作"
+              checked={enabled}
+              onChange={(checked) => onChange("enabled", checked)}
+            />
+            <Button
+              kind="default"
+              icon={<Icon.Plus size={14} />}
+              onClick={onCreateShare}
+              disabled={isBusy}
+            >
+              {submitting === "share" ? "生成中" : "生成协作链接"}
+            </Button>
+            <Button
+              kind="default"
+              icon={<Icon.Search size={14} />}
+              onClick={onRefreshApplications}
+              disabled={isBusy}
+            >
+              {submitting === "applications" ? "刷新中" : "刷新申请"}
+            </Button>
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+              gap: 12,
+              alignItems: "start",
+            }}
+          >
+            <ProjectSettingsField label="协作摘要">
+              <textarea
+                className="psf-control"
+                value={draft.summary}
+                onChange={(event) => onChange("summary", event.target.value)}
+                rows={3}
+                placeholder="给外部 MCN 看的项目亮点、主播要求和交付口径"
+                style={{ minHeight: 84 }}
+              />
+            </ProjectSettingsField>
+            <ProjectSettingsField label="分成建议">
+              <input
+                className="psf-control"
+                value={draft.revenueShareHint}
+                onChange={(event) =>
+                  onChange("revenueShareHint", event.target.value)
+                }
+                placeholder="例如 8-12%"
+              />
+            </ProjectSettingsField>
+          </div>
+        </ProjectSettingsSection>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "flex-end",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <div
+            style={{
+              marginRight: "auto",
+              minHeight: 18,
+              fontSize: 12,
+              color: error ? "var(--danger-600)" : "var(--ink-500)",
+            }}
+          >
+            {error || message}
+          </div>
+          <Button kind="primary" type="submit" disabled={isBusy}>
+            {submitting === "settings" ? "保存中" : "保存协作设置"}
+          </Button>
+        </div>
+      </form>
+
+      {shareUrl ? (
+        <div
+          style={{
+            marginTop: 14,
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            background: "#FAFBFD",
+            padding: 12,
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1fr) auto",
+            gap: 10,
+            alignItems: "end",
+          }}
+        >
+          <label
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              minWidth: 0,
+              fontSize: 12,
+              color: "var(--ink-500)",
+              fontWeight: 600,
+            }}
+          >
+            协作链接
+            <input
+              readOnly
+              className="psf-control"
+              value={shareUrl}
+              style={{
+                color: "var(--blue-700)",
+                fontFamily:
+                  "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            />
+          </label>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {copyState ? (
+              <span
+                aria-live="polite"
+                style={{
+                  fontSize: 12,
+                  color:
+                    copyState === "已复制"
+                      ? "var(--green-700)"
+                      : "var(--danger-600)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {copyState}
+              </span>
+            ) : null}
+            <Button
+              kind="default"
+              icon={<Icon.Copy size={14} />}
+              onClick={copyShareUrl}
+            >
+              复制链接
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      <div
+        style={{
+          marginTop: 14,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+        }}
+      >
+        {applications.length ? (
+          applications.map((application) => {
+            const canReview = application.status === "submitted";
+            const applicationDraft = applicationDrafts[application.id] || {
+              counterSharePercent: "",
+              rejectionReason: "",
+            };
+            const counterShareBps = projectCollaborationPercentToBps(
+              applicationDraft.counterSharePercent,
+            );
+            const canSubmitCounter = canReview && counterShareBps !== null;
+            const canReject =
+              canReview && applicationDraft.rejectionReason.trim().length > 0;
+            const isReviewing = submitting === `review:${application.id}`;
+            return (
+              <div
+                key={application.id}
+                style={{
+                  border: "1px solid var(--line)",
+                  borderRadius: 8,
+                  padding: 12,
+                  display: "grid",
+                  gridTemplateColumns: "minmax(0, 1fr)",
+                  gap: 12,
+                  background: "var(--bg-soft)",
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <strong style={{ fontSize: 13, color: "var(--ink-900)" }}>
+                      {projectCollaborationApplicantLabel(application)}
+                    </strong>
+                    <Badge tone={canReview ? "blue" : "neutral"} dot>
+                      {projectCollaborationApplicationStatusLabel(
+                        application.status,
+                      )}
+                    </Badge>
+                    <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                      分成{" "}
+                      {projectCollaborationShareLabel(
+                        application.requestedRevenueShareBps,
+                      )}
+                    </span>
+                    {application.ownerCounterRevenueShareBps ? (
+                      <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                        反报价{" "}
+                        {projectCollaborationShareLabel(
+                          application.ownerCounterRevenueShareBps,
+                        )}
+                      </span>
+                    ) : null}
+                  </div>
+                  {application.applicantNote ? (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        fontSize: 12,
+                        color: "var(--ink-500)",
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {application.applicantNote}
+                    </div>
+                  ) : null}
+                  {application.rejectionReason ? (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        fontSize: 12,
+                        color: "var(--danger-600)",
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {application.rejectionReason}
+                    </div>
+                  ) : null}
+                </div>
+                {canReview ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 10,
+                      flexWrap: "wrap",
+                      alignItems: "end",
+                    }}
+                  >
+                    <Button
+                      kind="primary"
+                      size="sm"
+                      icon={<Icon.Check size={13} stroke="#fff" />}
+                      disabled={isReviewing}
+                      onClick={() =>
+                        onReviewApplication(application, {
+                          action: "accept",
+                          ownerReviewNote: "",
+                        })
+                      }
+                    >
+                      通过申请
+                    </Button>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        flexWrap: "wrap",
+                        alignItems: "end",
+                      }}
+                    >
+                      <ProjectSettingsField label="反报价比例">
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.01"
+                          value={applicationDraft.counterSharePercent}
+                          onChange={(event) =>
+                            updateApplicationDraft(application.id, {
+                              counterSharePercent: event.target.value,
+                            })
+                          }
+                          placeholder="8"
+                          className="psf-control"
+                          style={{ width: 120 }}
+                        />
+                      </ProjectSettingsField>
+                      <Button
+                        kind="default"
+                        size="sm"
+                        disabled={isReviewing || !canSubmitCounter}
+                        onClick={() =>
+                          onReviewApplication(application, {
+                            action: "counter",
+                            ownerCounterRevenueShareBps: counterShareBps,
+                            ownerReviewNote: "",
+                          })
+                        }
+                      >
+                        提交反报价
+                      </Button>
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        flexWrap: "wrap",
+                        alignItems: "end",
+                      }}
+                    >
+                      <ProjectSettingsField label="拒绝原因">
+                        <input
+                          value={applicationDraft.rejectionReason}
+                          onChange={(event) =>
+                            updateApplicationDraft(application.id, {
+                              rejectionReason: event.target.value,
+                            })
+                          }
+                          placeholder="例如 档期不匹配"
+                          className="psf-control"
+                          style={{ width: 180 }}
+                        />
+                      </ProjectSettingsField>
+                      <Button
+                        kind="danger"
+                        size="sm"
+                        icon={<Icon.X size={13} />}
+                        disabled={isReviewing || !canReject}
+                        onClick={() =>
+                          onReviewApplication(application, {
+                            action: "reject",
+                            ownerReviewNote: "",
+                            rejectionReason:
+                              applicationDraft.rejectionReason.trim(),
+                          })
+                        }
+                      >
+                        确认拒绝
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })
+        ) : (
+          <div
+            style={{
+              padding: "12px 0 0",
+              fontSize: 12,
+              color: "var(--ink-400)",
+            }}
+          >
+            暂无外部 MCN 申请
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PartnerCollaborationApplicationPanel({
+  project,
+  message,
+  error,
+  submitting,
+  onConfirmCounter,
+}) {
+  const isCountered =
+    project.collaborationApplicationStatus === "owner_countered";
+  const isBusy = submitting === `confirm:${project.collaborationApplicationId}`;
+
+  return (
+    <Card
+      title={isCountered ? "协作反报价待确认" : "协作申请待审核"}
+      extra={
+        <Badge tone={isCountered ? "amber" : "blue"} dot>
+          {isCountered ? "待确认" : "待项目方审核"}
+        </Badge>
+      }
+      padded={true}
+    >
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            flexWrap: "wrap",
+            alignItems: "center",
+          }}
+        >
+          <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+            申请分成{" "}
+            {projectCollaborationShareLabel(project.requestedRevenueShareBps)}
+          </span>
+          {project.ownerCounterRevenueShareBps ? (
+            <span style={{ fontSize: 13, color: "var(--ink-900)" }}>
+              项目方反报价{" "}
+              {projectCollaborationShareLabel(
+                project.ownerCounterRevenueShareBps,
+              )}
+            </span>
+          ) : null}
+          {project.ownerOrganizationName ? (
+            <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+              项目方 {project.ownerOrganizationName}
+            </span>
+          ) : null}
+        </div>
+        {project.collaborationSummary ? (
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--ink-500)",
+              lineHeight: 1.5,
+            }}
+          >
+            {project.collaborationSummary}
+          </div>
+        ) : null}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <div
+            aria-live="polite"
+            style={{
+              minHeight: 18,
+              fontSize: 12,
+              color: error ? "var(--danger-600)" : "var(--ink-500)",
+            }}
+          >
+            {error || message}
+          </div>
+          {isCountered ? (
+            <Button
+              kind="primary"
+              icon={<Icon.Check size={14} stroke="#fff" />}
+              disabled={isBusy}
+              onClick={onConfirmCounter}
+            >
+              {isBusy ? "确认中" : "确认反报价"}
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function ProjectSettingsPanel({
+  draft,
+  baseStatus,
+  ownerOptions = [],
+  canAssignOwner = false,
+  error,
+  submitting,
+  onChange,
+  onSubmit,
+  onCancel,
+}) {
+  return (
+    <form
+      onSubmit={onSubmit}
+      style={{ display: "flex", flexDirection: "column" }}
+    >
+      <style>
+        {`
+          .project-settings-date-input::-webkit-calendar-picker-indicator {
+            opacity: 0;
+            cursor: pointer;
+          }
+          .psf-control {
+            height: 34px;
+            width: 100%;
+            border: 1px solid var(--line-strong);
+            border-radius: 6px;
+            padding: 0 10px;
+            font-size: 13px;
+            color: var(--ink-900);
+            background: linear-gradient(180deg, #fff 0%, #f8faff 100%);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+            outline: none;
+            font-family: inherit;
+            transition: box-shadow 120ms ease, border-color 120ms ease;
+          }
+          .psf-control::placeholder { color: var(--ink-300); }
+          .psf-control:hover:not(:disabled) { border-color: #b9c6e6; }
+          .psf-control:focus {
+            border-color: var(--blue-300);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+          }
+          .psf-control:disabled {
+            color: var(--ink-400);
+            background: var(--bg-soft);
+            cursor: not-allowed;
+            box-shadow: none;
+          }
+          select.psf-control { cursor: pointer; }
+          textarea.psf-control {
+            height: auto;
+            min-height: 76px;
+            padding: 8px 10px;
+            line-height: 1.5;
+            resize: vertical;
+          }
+        `}
+      </style>
+
+      <ProjectSettingsSection
+        first
+        title="状态设置"
+        desc="状态保存后同步刷新项目列表与详情"
+      >
+        <div style={{ maxWidth: 360 }}>
+          <ProjectSettingsField label="项目状态">
+            <ProjectSettingsStatusPicker
+              value={draft.status}
+              fromStatus={baseStatus}
+              onChange={(value) => onChange("status", value)}
+            />
+            <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+              当前可流转：{projectStatusNextLabels(baseStatus)}
+            </span>
+          </ProjectSettingsField>
+        </div>
+      </ProjectSettingsSection>
+
+      <ProjectSettingsSection title="基础信息">
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+            gap: 12,
+            alignItems: "end",
+          }}
+        >
+          <ProjectSettingsField label="项目名称">
+            <input
+              className="psf-control"
+              value={draft.name}
+              onChange={(event) => onChange("name", event.target.value)}
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsField label="负责人">
+            <select
+              className="psf-control"
+              value={draft.ownerId || ""}
+              onChange={(event) => onChange("ownerId", event.target.value)}
+              disabled={!canAssignOwner}
+            >
+              {ownerOptions.map((option) => (
+                <option key={option.value || "unassigned"} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </ProjectSettingsField>
+          <ProjectSettingsField label="厂商">
+            <input
+              className="psf-control"
+              value={draft.vendorName}
+              onChange={(event) => onChange("vendorName", event.target.value)}
+              placeholder="未填写"
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsField label="产品">
+            <input
+              className="psf-control"
+              value={draft.productName}
+              onChange={(event) => onChange("productName", event.target.value)}
+              placeholder="默认使用项目名称"
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsField label="代理商">
+            <input
+              className="psf-control"
+              value={draft.agentName}
+              onChange={(event) => onChange("agentName", event.target.value)}
+              placeholder="未填写"
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsField label="供应商">
+            <input
+              className="psf-control"
+              value={draft.supplierName}
+              onChange={(event) => onChange("supplierName", event.target.value)}
+              placeholder="未填写"
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsDateField
+            label="开始日期"
+            value={draft.startsAt}
+            onChange={(value) => onChange("startsAt", value)}
+          />
+          <ProjectSettingsDateField
+            label="结束日期"
+            value={draft.endsAt}
+            onChange={(value) => onChange("endsAt", value)}
+          />
+          <div style={{ gridColumn: "1 / -1" }}>
+            <ProjectSettingsField label="项目说明">
+              <textarea
+                className="psf-control"
+                value={draft.description}
+                onChange={(event) =>
+                  onChange("description", event.target.value)
+                }
+                placeholder="补充厂家关注角色、素材要求、转化口径等项目说明"
+                style={{ minHeight: 68 }}
+              />
+            </ProjectSettingsField>
+          </div>
+        </div>
+      </ProjectSettingsSection>
+
+      <ProjectSettingsSection
+        title="报名与录制"
+        desc="控制主播报名、定向邀约与开播录制要求"
+      >
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+          <ProjectSettingsCheck
+            label="开放报名"
+            checked={draft.openSignup}
+            onChange={(checked) => onChange("openSignup", checked)}
+          />
+          <ProjectSettingsCheck
+            label="允许定向邀约"
+            checked={draft.allowDirectInvite}
+            onChange={(checked) => onChange("allowDirectInvite", checked)}
+          />
+          <ProjectSettingsCheck
+            label="强制录屏"
+            checked={draft.forceRecording}
+            onChange={(checked) => onChange("forceRecording", checked)}
+          />
+          <ProjectSettingsCheck
+            label="主播需点击开播/停止"
+            checked={draft.forceSystemTiming}
+            onChange={(checked) => onChange("forceSystemTiming", checked)}
+          />
+        </div>
+      </ProjectSettingsSection>
+
+      <ProjectSettingsSection
+        title="组织内公开"
+        desc="公开后组织内主播可在主播端看到该项目公告与下载链接"
+      >
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+          <ProjectSettingsCheck
+            label="公开给组织内主播"
+            checked={draft.isPublicToStreamers}
+            onChange={(checked) => onChange("isPublicToStreamers", checked)}
+          />
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+            gap: 12,
+            alignItems: "start",
+          }}
+        >
+          <ProjectSettingsField label="主播公告概括">
+            <textarea
+              className="psf-control"
+              value={draft.publicSummary}
+              onChange={(event) =>
+                onChange("publicSummary", event.target.value)
+              }
+              placeholder="给组织内主播看的项目概括、录播要求和注意事项"
+              rows={3}
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsField label="游戏下载链接">
+            <input
+              className="psf-control"
+              value={draft.gameDownloadUrl}
+              onChange={(event) =>
+                onChange("gameDownloadUrl", event.target.value)
+              }
+              placeholder="https://..."
+            />
+          </ProjectSettingsField>
+        </div>
+      </ProjectSettingsSection>
+
+      {error ? (
+        <div
+          style={{ marginTop: 14, fontSize: 12, color: "var(--danger-600)" }}
+        >
+          {error}
+        </div>
+      ) : null}
+
+      <div
+        style={{
+          marginTop: 18,
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 8,
+        }}
+      >
+        <Button kind="ghost" onClick={onCancel} disabled={submitting}>
+          取消
+        </Button>
+        <Button kind="primary" type="submit" disabled={submitting}>
+          {submitting ? "保存中" : "保存设置"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function ProjectSettingsCheck({ label, checked, onChange }) {
+  return (
+    <label
+      style={{
+        height: 34,
+        border: `1px solid ${checked ? "var(--blue-300)" : "var(--line-strong)"}`,
+        borderRadius: 6,
+        padding: "0 12px",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        fontSize: 13,
+        fontWeight: 500,
+        color: checked ? "var(--blue-700)" : "var(--ink-700)",
+        background: checked
+          ? "linear-gradient(180deg, #fff 0%, #eef3ff 100%)"
+          : "linear-gradient(180deg, #fff 0%, #f8faff 100%)",
+        boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.8)",
+        cursor: "pointer",
+        userSelect: "none",
+        transition: "border-color 120ms ease, background 120ms ease",
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          opacity: 0,
+          pointerEvents: "none",
+        }}
+      />
+      <span
+        aria-hidden="true"
+        style={{
+          width: 16,
+          height: 16,
+          flex: "0 0 auto",
+          borderRadius: 5,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          border: `1px solid ${checked ? "var(--blue-600)" : "var(--line-strong)"}`,
+          background: checked ? "var(--blue-600)" : "#fff",
+          boxShadow: checked
+            ? "0 1px 2px rgba(30, 80, 200, 0.35)"
+            : "inset 0 1px 0 rgba(255, 255, 255, 0.8)",
+          transition: "all 120ms ease",
+        }}
+      >
+        {checked ? <Icon.Check size={11} stroke="#fff" /> : null}
+      </span>
+      {label}
+    </label>
+  );
+}
+
+function ProjectScheduleTasks({ p, tasks = [], streamers = [], go }) {
+  const liveCount = tasks.filter((task) => task.status === "live").length;
+  const waitingCount = tasks.filter((task) =>
+    ["pending_live", "pending_report", "pending_review"].includes(task.status),
+  ).length;
+  const anomalyCount = tasks.filter(isTaskOperationalAnomaly).length;
+  const plannedHours = tasks.reduce((total, task) => {
+    const plannedMinutes = Number(task.plannedDuration);
+    if (Number.isFinite(plannedMinutes) && plannedMinutes > 0) {
+      return total + plannedMinutes / 60;
+    }
+    const startHour = Number(task.startHour);
+    const endHour = Number(task.endHour);
+    if (Number.isFinite(startHour) && Number.isFinite(endHour)) {
+      return total + Math.max(0, endHour - startHour);
+    }
+    return total;
+  }, 0);
+  const openTasks = () => go("tasks");
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+          gap: 12,
+        }}
+      >
+        <Card padded={true}>
+          <Metric label="项目任务" value={tasks.length} unit="项" />
+        </Card>
+        <Card padded={true}>
+          <Metric label="待执行 / 待处理" value={waitingCount} unit="项" />
+        </Card>
+        <Card padded={true}>
+          <Metric label="正在直播" value={liveCount} unit="项" />
+        </Card>
+        <Card padded={true}>
+          <Metric
+            label="计划时长"
+            value={plannedHours.toFixed(1)}
+            unit="h"
+            delta={anomalyCount ? `${anomalyCount} 个异常` : "无异常"}
+            deltaTone={anomalyCount ? "red" : "green"}
+          />
+        </Card>
+      </div>
+
+      <Card
+        title="项目排班任务明细"
+        extra={
+          <Button size="sm" kind="default" onClick={openTasks}>
+            前往排班与任务
+          </Button>
+        }
+        padded={false}
+      >
+        {tasks.length ? (
+          <TaskList
+            tasks={tasks}
+            projects={[p]}
+            streamers={streamers}
+            onSelectTask={openTasks}
+          />
+        ) : (
+          <div style={{ padding: 20 }}>
+            <EmptyHint
+              title="暂无项目排班任务"
+              hint="从排班与任务创建或批量排班后，会同步展示在这里。"
+              actionLabel="前往排班与任务"
+              onAction={openTasks}
+            />
+          </div>
+        )}
+      </Card>
+    </div>
   );
 }
 
@@ -4089,9 +9158,7 @@ function ProjectOverview({ p }) {
           >
             <div>
               <KV label="项目编号">
-                <span className="mono">
-                  {p.id} · {p.code}
-                </span>
+                <span className="mono">{p.code || "未设置编号"}</span>
               </KV>
               <KV label="厂商">{p.vendor}</KV>
               <KV label="产品">{p.product}</KV>
@@ -4108,6 +9175,38 @@ function ProjectOverview({ p }) {
               <KV label="强制录屏">{p.needScreening ? "是" : "否"}</KV>
               <KV label="主播需点击开播 / 停止">
                 {p.needStartStop ? "是" : "否"}
+              </KV>
+              <KV label="主播可见性">
+                {p.isPublicToStreamers ? (
+                  <Badge tone="green" dot>
+                    组织内公开
+                  </Badge>
+                ) : (
+                  <Badge tone="neutral">未公开</Badge>
+                )}
+              </KV>
+              <KV label="主播公告概括" w={120}>
+                <span style={{ color: "var(--ink-500)" }}>
+                  {p.publicSummary || "暂无主播公告"}
+                </span>
+              </KV>
+              <KV label="游戏下载链接" w={120}>
+                {p.gameDownloadUrl ? (
+                  <a
+                    href={p.gameDownloadUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{
+                      color: "var(--blue-700)",
+                      fontWeight: 700,
+                      textDecoration: "none",
+                    }}
+                  >
+                    游戏下载已配置
+                  </a>
+                ) : (
+                  <span style={{ color: "var(--ink-500)" }}>未配置</span>
+                )}
               </KV>
               <KV label="项目说明" w={120}>
                 <span style={{ color: "var(--ink-500)" }}>
@@ -4287,18 +9386,21 @@ function ProjectRoster({ p, go }) {
   const streamers = useOpsStreamers();
   const applications = useOpsApplications();
   const actions = useOpsLiveActions();
+  const { streamers: streamerData, applications: applicationData } =
+    React.useContext(OpsLiveDataContext);
   const [inviteOpen, setInviteOpen] = React.useState(false);
   const [selectedStreamerId, setSelectedStreamerId] = React.useState("");
   const [inviteSubmitting, setInviteSubmitting] = React.useState(false);
   const [inviteError, setInviteError] = React.useState("");
   const [inviteMessage, setInviteMessage] = React.useState("");
+  const [rosterActionError, setRosterActionError] = React.useState("");
+  const [joiningApplicationId, setJoiningApplicationId] = React.useState("");
   const [localInvites, setLocalInvites] = React.useState([]);
-  const applicationRoster = applications
-    .filter((application) => applicationBelongsToProject(application, p))
-    .map((application) =>
-      applicationToRosterRow(application, streamers, "application"),
-    )
-    .filter(Boolean);
+  const applicationRoster = projectApplicationRosterRows(
+    p,
+    applications,
+    streamers,
+  );
   const roster = mergeRosterRows(applicationRoster, localInvites);
   const availableStreamers = streamers.filter(
     (streamer) => !roster.some((row) => row.id === streamer.id),
@@ -4319,6 +9421,27 @@ function ProjectRoster({ p, go }) {
   const selectedStreamer = availableStreamers.find(
     (streamer) => streamer.id === selectedStreamerId,
   );
+
+  React.useEffect(() => {
+    if (streamerData == null && actions.refreshStreamers) {
+      actions
+        .refreshStreamers()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("project roster", error),
+        );
+    }
+  }, [actions, streamerData]);
+
+  React.useEffect(() => {
+    if (applicationData == null && actions.refreshApplications) {
+      actions
+        .refreshApplications()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("project roster", error),
+        );
+    }
+  }, [actions, applicationData]);
+
   const submitInvitation = async (event) => {
     event.preventDefault();
     if (!selectedStreamer) {
@@ -4329,7 +9452,11 @@ function ProjectRoster({ p, go }) {
     setInviteSubmitting(true);
     setInviteError("");
     try {
-      await actions.inviteStreamerToProject?.(p.id, selectedStreamer.id);
+      await actions.inviteStreamerToProject?.(
+        p.id,
+        selectedStreamer.id,
+        p.collaborationId ?? p.collaborationAgreementId,
+      );
       const row = {
         ...selectedStreamer,
         projectStatus: "邀约中",
@@ -4342,6 +9469,21 @@ function ProjectRoster({ p, go }) {
       setInviteError(error?.message || "邀请主播失败，请稍后重试");
     } finally {
       setInviteSubmitting(false);
+    }
+  };
+  const confirmRosterJoin = async (row) => {
+    if (!row.applicationId || !actions.confirmApplicationJoin) return;
+
+    setJoiningApplicationId(row.applicationId);
+    setRosterActionError("");
+    setInviteMessage("");
+    try {
+      await actions.confirmApplicationJoin(row.applicationId);
+      setInviteMessage(`已确认 ${row.alias} 加入项目`);
+    } catch (error) {
+      setRosterActionError(error?.message || "确认加入失败，请稍后重试");
+    } finally {
+      setJoiningApplicationId("");
     }
   };
 
@@ -4473,6 +9615,23 @@ function ProjectRoster({ p, go }) {
         </div>
       ) : null}
 
+      {rosterActionError ? (
+        <div
+          aria-live="polite"
+          style={{
+            padding: "8px 12px",
+            border: "1px solid #FAD1D1",
+            borderRadius: 8,
+            background: "#FEF2F2",
+            color: "var(--danger-600)",
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          {rosterActionError}
+        </div>
+      ) : null}
+
       <DataTable
         columns={[
           {
@@ -4488,7 +9647,7 @@ function ProjectRoster({ p, go }) {
                     className="mono"
                     style={{ fontSize: 11, color: "var(--ink-400)" }}
                   >
-                    {r.id} · {r.real}
+                    {displayRecordId(r.id, "主播")} · {r.real}
                   </div>
                 </div>
               </div>
@@ -4553,6 +9712,22 @@ function ProjectRoster({ p, go }) {
                   justifyContent: "flex-end",
                 }}
               >
+                {isConfirmableRosterApplication(r.applicationStatus) &&
+                r.applicationId ? (
+                  <Button
+                    size="sm"
+                    kind="primary"
+                    disabled={joiningApplicationId === r.applicationId}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      confirmRosterJoin(r);
+                    }}
+                  >
+                    {joiningApplicationId === r.applicationId
+                      ? "确认中"
+                      : "确认加入"}
+                  </Button>
+                ) : null}
                 <Button
                   size="sm"
                   kind="default"
@@ -4592,6 +9767,16 @@ function ProjectRoster({ p, go }) {
   );
 }
 
+function projectApplicationRosterRows(project, applications, streamers) {
+  if (!project) return [];
+  return applications
+    .filter((application) => applicationBelongsToProject(application, project))
+    .map((application) =>
+      applicationToRosterRow(application, streamers, "application"),
+    )
+    .filter(Boolean);
+}
+
 function applicationBelongsToProject(application, project) {
   const applicationProject = application.project || {};
   const applicationKeys = [
@@ -4614,6 +9799,8 @@ function applicationToRosterRow(application, streamers, rosterSource) {
   const projectStatus = applicationRosterStatus(application.status);
   return {
     id: streamerId,
+    applicationId: application.id,
+    applicationStatus: application.status,
     alias: card?.alias || streamer.displayName || streamer.name || streamerId,
     real: card?.real || streamer.realName || streamer.displayName || "未填写",
     source: card?.source || "项目邀约",
@@ -4649,6 +9836,10 @@ function applicationRosterStatus(status) {
     rejected_join: { label: "已拒绝", tone: "red" },
   };
   return map[status] || { label: "邀约中", tone: "blue" };
+}
+
+function isConfirmableRosterApplication(status) {
+  return status === "invited" || status === "recording_approved";
 }
 
 function GanttPreview({ tasks = [] }) {
@@ -4780,7 +9971,7 @@ function taskGanttRows(tasks) {
   tasks.forEach((task) => {
     const key = task.streamerId || task.streamerName || "unassigned";
     const current = grouped.get(key) || {
-      name: task.streamerName || task.streamerId || "未配置主播",
+      name: displayTaskStreamerName(task),
       bars: [],
     };
     current.bars.push([
@@ -4818,18 +10009,20 @@ function EmptyHint({ title, hint, actionLabel, onAction }) {
       <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ink-700)" }}>
         {title}
       </div>
-      <div
-        style={{
-          fontSize: 12,
-          color: "var(--ink-400)",
-          marginTop: 6,
-          maxWidth: 420,
-          marginLeft: "auto",
-          marginRight: "auto",
-        }}
-      >
-        {hint}
-      </div>
+      {hint ? (
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--ink-400)",
+            marginTop: 6,
+            maxWidth: 420,
+            marginLeft: "auto",
+            marginRight: "auto",
+          }}
+        >
+          {hint}
+        </div>
+      ) : null}
       {actionLabel && (
         <div style={{ marginTop: 14 }}>
           <Button kind="primary" onClick={onAction}>
@@ -4852,12 +10045,68 @@ function splitDraftList(value) {
     .filter(Boolean);
 }
 
+function draftNumber(value) {
+  const trimmed = String(value || "").trim();
+  return trimmed ? Number(trimmed) : 0;
+}
+
+function draftPercentToBps(value) {
+  const trimmed = String(value || "").trim();
+  return trimmed ? Math.round(Number(trimmed) * 100) : 0;
+}
+
+function buildStreamerSubaccountCandidates(members) {
+  if (!Array.isArray(members)) return [];
+
+  return members
+    .filter(
+      (member) =>
+        member?.role === "streamer" &&
+        member?.status !== "suspended" &&
+        typeof member?.userId === "string" &&
+        member.userId.trim(),
+    )
+    .map((member) => {
+      const email = typeof member.email === "string" ? member.email.trim() : "";
+      const name =
+        typeof member.name === "string" && member.name.trim()
+          ? member.name.trim()
+          : email || member.userId;
+      const account = accountFromLocalSubaccountEmail(email);
+      const searchText = [name, email, account, member.userId]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return {
+        userId: member.userId.trim(),
+        name,
+        email,
+        account,
+        status: member.status,
+        searchText,
+      };
+    });
+}
+
+function streamerSubaccountLabel(candidate) {
+  if (!candidate) return "";
+
+  const account = candidate.account
+    ? `默认账号 ${candidate.account}`
+    : candidate.email || candidate.userId;
+
+  return `${candidate.name} · ${account}`;
+}
+
 // ===== src\screen-streamers.jsx =====
 // ——— Screen: 主播资源池 ————————————————————————————
 
 function ScreenStreamers({ go, initialActiveId }) {
   const streamers = useOpsStreamers();
   const actions = useOpsLiveActions();
+  const { organizationMembers, streamers: streamerData } =
+    React.useContext(OpsLiveDataContext);
   const emptyDraft = {
     displayName: "",
     realName: "",
@@ -4867,6 +10116,9 @@ function ScreenStreamers({ go, initialActiveId }) {
     platforms: "",
     styles: "",
     defaultSettlementMethod: "cpt",
+    defaultHourlyRate: "",
+    defaultBaseSalary: "",
+    defaultCpsRatePercent: "",
     userId: "",
   };
   const [active, setActive] = React.useState(
@@ -4876,6 +10128,9 @@ function ScreenStreamers({ go, initialActiveId }) {
   const [draft, setDraft] = React.useState(emptyDraft);
   const [draftError, setDraftError] = React.useState("");
   const [draftSubmitting, setDraftSubmitting] = React.useState(false);
+  const [memberLoading, setMemberLoading] = React.useState(false);
+  const [memberLoadError, setMemberLoadError] = React.useState("");
+  const [userSearch, setUserSearch] = React.useState("");
   const [search, setSearch] = React.useState("");
   const [categoryFilter, setCategoryFilter] = React.useState("all");
   const [sourceFilter, setSourceFilter] = React.useState("all");
@@ -4907,19 +10162,73 @@ function ScreenStreamers({ go, initialActiveId }) {
   const updateDraft = (field) => (event) => {
     setDraft((value) => ({ ...value, [field]: event.target.value }));
   };
+  const streamerSubaccountCandidates = React.useMemo(
+    () => buildStreamerSubaccountCandidates(organizationMembers),
+    [organizationMembers],
+  );
+  const selectedSubaccount = streamerSubaccountCandidates.find(
+    (candidate) => candidate.userId === draft.userId.trim(),
+  );
+  const userQuery = userSearch.trim().toLowerCase();
+  const filteredSubaccountCandidates = userQuery
+    ? streamerSubaccountCandidates
+        .filter((candidate) => candidate.searchText.includes(userQuery))
+        .slice(0, 6)
+    : streamerSubaccountCandidates.slice(0, 6);
+  const refreshStreamerSubaccounts = () => {
+    if (organizationMembers != null || !actions.refreshOrganizationMembers) {
+      return;
+    }
+
+    setMemberLoading(true);
+    setMemberLoadError("");
+    actions
+      .refreshOrganizationMembers()
+      .catch((error) =>
+        setMemberLoadError(formatOrganizationMemberError(error)),
+      )
+      .finally(() => setMemberLoading(false));
+  };
+  const updateUserSearch = (event) => {
+    const nextValue = event.target.value;
+    setUserSearch(nextValue);
+    setDraft((value) => (value.userId ? { ...value, userId: "" } : value));
+  };
+  const selectStreamerSubaccount = (candidate) => {
+    setDraft((value) => ({ ...value, userId: candidate.userId }));
+    setUserSearch(streamerSubaccountLabel(candidate));
+  };
+  React.useEffect(() => {
+    if (streamerData == null && actions.refreshStreamers) {
+      actions
+        .refreshStreamers()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("organization members", error),
+        );
+    }
+  }, [actions, streamerData]);
   const openDraftForm = () => {
     setDraftOpen(true);
     setDraftError("");
+    setMemberLoadError("");
+    setUserSearch(streamerSubaccountLabel(selectedSubaccount));
+    refreshStreamerSubaccounts();
   };
   const closeDraftForm = () => {
     setDraftOpen(false);
     setDraftError("");
+    setMemberLoadError("");
+    setUserSearch("");
   };
   const submitStreamerDraft = async (event) => {
     event.preventDefault();
     const displayName = draft.displayName.trim();
     if (!displayName) {
       setDraftError("请填写主播昵称");
+      return;
+    }
+    if (userSearch.trim() && !selectedSubaccount) {
+      setDraftError("请从候选列表选择主播子账号，或清空后不绑定");
       return;
     }
 
@@ -4935,10 +10244,14 @@ function ScreenStreamers({ go, initialActiveId }) {
         platforms: splitDraftList(draft.platforms),
         styles: splitDraftList(draft.styles),
         defaultSettlementMethod: draft.defaultSettlementMethod,
+        defaultHourlyRate: draftNumber(draft.defaultHourlyRate),
+        defaultBaseSalary: draftNumber(draft.defaultBaseSalary),
+        defaultCpsRateBps: draftPercentToBps(draft.defaultCpsRatePercent),
         userId: draft.userId.trim(),
       });
       setDraftOpen(false);
       setDraft(emptyDraft);
+      setUserSearch("");
       if (body?.streamer?.id) {
         setActive(body.streamer.id);
       }
@@ -5012,7 +10325,6 @@ function ScreenStreamers({ go, initialActiveId }) {
     <>
       <PageHeader
         title="主播资源池"
-        subtitle="不是通讯录 · 用于回答：能不能接？适合接什么？历史表现如何？值不值得继续合作？"
         actions={
           <>
             <Button
@@ -5242,15 +10554,163 @@ function ScreenStreamers({ go, initialActiveId }) {
                   <option value="manual">手动结算</option>
                 </select>
               </label>
-              <label style={draftLabelStyle}>
-                用户 ID
-                <input
-                  value={draft.userId}
-                  onChange={updateDraft("userId")}
-                  placeholder="可选绑定登录用户"
-                  style={draftFieldStyle}
-                />
-              </label>
+              {["cpt", "base_salary_cpt"].includes(
+                draft.defaultSettlementMethod,
+              ) ? (
+                <label style={draftLabelStyle}>
+                  CPT 小时单价
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={draft.defaultHourlyRate}
+                    onChange={updateDraft("defaultHourlyRate")}
+                    placeholder="80"
+                    style={draftFieldStyle}
+                  />
+                </label>
+              ) : null}
+              {draft.defaultSettlementMethod === "cps" ? (
+                <label style={draftLabelStyle}>
+                  CPS 分成比例
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    value={draft.defaultCpsRatePercent}
+                    onChange={updateDraft("defaultCpsRatePercent")}
+                    placeholder="15"
+                    style={draftFieldStyle}
+                  />
+                </label>
+              ) : null}
+              {["base_salary", "base_salary_cpt"].includes(
+                draft.defaultSettlementMethod,
+              ) ? (
+                <label style={draftLabelStyle}>
+                  底薪
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={draft.defaultBaseSalary}
+                    onChange={updateDraft("defaultBaseSalary")}
+                    placeholder="6000"
+                    style={draftFieldStyle}
+                  />
+                </label>
+              ) : null}
+              <div style={{ position: "relative", minWidth: 0 }}>
+                <label style={draftLabelStyle}>
+                  绑定主播子账号
+                  <input
+                    value={userSearch}
+                    onChange={updateUserSearch}
+                    onFocus={refreshStreamerSubaccounts}
+                    placeholder={
+                      memberLoading
+                        ? "正在加载主播子账号"
+                        : "搜索姓名 / 邮箱 / 默认账号"
+                    }
+                    aria-autocomplete="list"
+                    aria-expanded={
+                      Boolean(userSearch.trim()) && !selectedSubaccount
+                    }
+                    style={draftFieldStyle}
+                  />
+                </label>
+                {userSearch.trim() && !selectedSubaccount ? (
+                  <div
+                    role="listbox"
+                    aria-label="主播子账号候选"
+                    style={{
+                      position: "absolute",
+                      zIndex: 20,
+                      top: 56,
+                      left: 0,
+                      right: 0,
+                      overflow: "hidden",
+                      border: "1px solid var(--line-strong)",
+                      borderRadius: 8,
+                      background: "#fff",
+                      boxShadow: "var(--shadow-pop)",
+                    }}
+                  >
+                    {filteredSubaccountCandidates.length > 0 ? (
+                      filteredSubaccountCandidates.map((candidate) => (
+                        <button
+                          key={candidate.userId}
+                          type="button"
+                          role="option"
+                          onClick={() => selectStreamerSubaccount(candidate)}
+                          style={{
+                            width: "100%",
+                            border: 0,
+                            borderBottom: "1px solid var(--line)",
+                            background: "#fff",
+                            padding: "8px 10px",
+                            textAlign: "left",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: "block",
+                              color: "var(--ink-900)",
+                              fontSize: 13,
+                              fontWeight: 700,
+                            }}
+                          >
+                            {candidate.name}
+                          </span>
+                          <span
+                            style={{
+                              display: "block",
+                              marginTop: 2,
+                              color: "var(--ink-400)",
+                              fontSize: 11,
+                              fontWeight: 600,
+                            }}
+                          >
+                            {candidate.account
+                              ? `默认账号 ${candidate.account}`
+                              : candidate.email || candidate.userId}
+                          </span>
+                        </button>
+                      ))
+                    ) : (
+                      <div
+                        style={{
+                          padding: "9px 10px",
+                          color: "var(--ink-400)",
+                          fontSize: 12,
+                          fontWeight: 600,
+                        }}
+                      >
+                        暂无匹配主播子账号
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+                {memberLoadError || selectedSubaccount ? (
+                  <div
+                    aria-live="polite"
+                    style={{
+                      marginTop: 4,
+                      color: memberLoadError
+                        ? "var(--danger-600)"
+                        : "var(--ink-300)",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      lineHeight: 1.3,
+                    }}
+                  >
+                    {memberLoadError ||
+                      `已绑定 ${streamerSubaccountLabel(selectedSubaccount)}`}
+                  </div>
+                ) : null}
+              </div>
               <div
                 style={{
                   display: "flex",
@@ -5323,7 +10783,7 @@ function ScreenStreamers({ go, initialActiveId }) {
                         className="mono"
                         style={{ fontSize: 11, color: "var(--ink-400)" }}
                       >
-                        {r.id} · {r.real}
+                        {displayRecordId(r.id, "主播")} · {r.real}
                       </div>
                     </div>
                   </div>
@@ -5372,45 +10832,55 @@ function ScreenStreamers({ go, initialActiveId }) {
               {
                 title: "完成率",
                 align: "right",
-                render: (r) => (
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      justifyContent: "flex-end",
-                    }}
-                  >
-                    <MiniBar
-                      value={r.metrics.projectFinish}
-                      tone={r.metrics.projectFinish >= 90 ? "green" : "blue"}
-                      width={56}
-                    />
-                    <span className="num" style={{ minWidth: 32 }}>
-                      {r.metrics.projectFinish}%
-                    </span>
-                  </div>
-                ),
+                render: (r) => {
+                  if (!hasStreamerPerformanceData(r)) {
+                    return (
+                      <span style={{ color: "var(--ink-300)" }}>暂无</span>
+                    );
+                  }
+                  return (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        justifyContent: "flex-end",
+                      }}
+                    >
+                      <MiniBar
+                        value={r.metrics.projectFinish}
+                        tone={r.metrics.projectFinish >= 90 ? "green" : "blue"}
+                        width={56}
+                      />
+                      <span className="num" style={{ minWidth: 32 }}>
+                        {r.metrics.projectFinish}%
+                      </span>
+                    </div>
+                  );
+                },
               },
               {
                 title: "ROI",
                 align: "right",
-                render: (r) => (
-                  <span
-                    className="num"
-                    style={{
-                      color:
-                        r.metrics.roi >= 1.3
-                          ? "var(--ok-600)"
-                          : r.metrics.roi >= 1
-                            ? "var(--ink-900)"
-                            : "var(--danger-600)",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {r.metrics.roi.toFixed(2)}
-                  </span>
-                ),
+                render: (r) =>
+                  hasStreamerPerformanceData(r) ? (
+                    <span
+                      className="num"
+                      style={{
+                        color:
+                          r.metrics.roi >= 1.3
+                            ? "var(--ok-600)"
+                            : r.metrics.roi >= 1
+                              ? "var(--ink-900)"
+                              : "var(--danger-600)",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {r.metrics.roi.toFixed(2)}
+                    </span>
+                  ) : (
+                    <span style={{ color: "var(--ink-300)" }}>暂无</span>
+                  ),
               },
               {
                 title: "默认结算",
@@ -5491,6 +10961,10 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
   const actions = useOpsLiveActions();
   const projects = useOpsProjects();
   const s = streamers.find((x) => x.id === id);
+  const [profileOpen, setProfileOpen] = React.useState(false);
+  const [profileDraft, setProfileDraft] = React.useState(null);
+  const [profileError, setProfileError] = React.useState("");
+  const [profileSubmitting, setProfileSubmitting] = React.useState(false);
   const [riskOpen, setRiskOpen] = React.useState(false);
   const [riskLevel, setRiskLevel] = React.useState("low");
   const [riskReason, setRiskReason] = React.useState("");
@@ -5506,6 +10980,9 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
     setRiskLevel(s.risk || "low");
     setRiskReason("");
     setRiskError("");
+    setProfileOpen(false);
+    setProfileError("");
+    setProfileDraft(streamerProfileDraftFromCard(s));
     setRiskOpen(false);
     setInviteOpen(false);
     setInviteError("");
@@ -5554,6 +11031,73 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
     fontSize: 12,
     color: "var(--ink-500)",
     fontWeight: 600,
+  };
+  const streamerProjects = Array.isArray(s.projects) ? s.projects : [];
+  const hasPerformanceData = hasStreamerPerformanceData(s);
+  const updateProfileDraft = (field) => (event) => {
+    setProfileDraft((value) => ({
+      ...(value || streamerProfileDraftFromCard(s)),
+      [field]: event.target.value,
+    }));
+  };
+  const openProfileForm = () => {
+    setProfileDraft(streamerProfileDraftFromCard(s));
+    setProfileError("");
+    setProfileOpen(true);
+  };
+  const closeProfileForm = () => {
+    setProfileOpen(false);
+    setProfileError("");
+    setProfileDraft(streamerProfileDraftFromCard(s));
+  };
+  const submitProfileUpdate = async (event) => {
+    event.preventDefault();
+    const draft = profileDraft || streamerProfileDraftFromCard(s);
+    const displayName = draft.displayName.trim();
+    const reason = draft.reason.trim();
+    if (!displayName) {
+      setProfileError("请填写主播昵称");
+      return;
+    }
+    if (!reason) {
+      setProfileError("请填写变更原因");
+      return;
+    }
+
+    setProfileSubmitting(true);
+    setProfileError("");
+    try {
+      const settlementMethod = draft.defaultSettlementMethod;
+      await actions.updateStreamerProfile?.(s.id, {
+        displayName,
+        realName: draft.realName.trim(),
+        gender: draft.gender.trim(),
+        sourceType: draft.sourceType,
+        cooperationStatus: draft.cooperationStatus,
+        categories: splitDraftList(draft.categories),
+        platforms: splitDraftList(draft.platforms),
+        styles: splitDraftList(draft.styles),
+        defaultSettlementMethod: settlementMethod,
+        defaultHourlyRate: ["cpt", "base_salary_cpt"].includes(settlementMethod)
+          ? draftNumber(draft.defaultHourlyRate)
+          : 0,
+        defaultBaseSalary: ["base_salary", "base_salary_cpt"].includes(
+          settlementMethod,
+        )
+          ? draftNumber(draft.defaultBaseSalary)
+          : 0,
+        defaultCpsRateBps:
+          settlementMethod === "cps"
+            ? draftPercentToBps(draft.defaultCpsRatePercent)
+            : 0,
+        reason,
+      });
+      setProfileOpen(false);
+    } catch (error) {
+      setProfileError(error?.message || "档案更新失败，请稍后重试");
+    } finally {
+      setProfileSubmitting(false);
+    }
   };
   const openRiskForm = () => {
     setRiskOpen(true);
@@ -5637,12 +11181,14 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
                   {s.alias}
                 </div>
                 <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
-                  {s.real} · {s.gender} · <span className="mono">{s.id}</span>
+                  {s.real} · {s.gender} ·{" "}
+                  <span className="mono">{displayRecordId(s.id, "主播")}</span>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 4 }}>
                 <button
                   title="编辑档案"
+                  onClick={openProfileForm}
                   style={{
                     width: 28,
                     height: 28,
@@ -5746,53 +11292,281 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
           <KV label="默认结算">
             <Badge tone="blue">{s.defaultRule}</Badge>
           </KV>
+          {s.settlement ? (
+            <>
+              <KV label="CPT 单价">
+                {s.settlement.cptHourlyRate > 0
+                  ? `¥${s.settlement.cptHourlyRate}/h`
+                  : "未配置"}
+              </KV>
+              <KV label="CPS 分成">
+                {s.settlement.cpsRateBps > 0
+                  ? `${s.settlement.cpsRateBps / 100}%`
+                  : "未配置"}
+              </KV>
+              <KV label="底薪">
+                {s.settlement.baseSalary > 0
+                  ? `¥${s.settlement.baseSalary}`
+                  : "未配置"}
+              </KV>
+            </>
+          ) : null}
         </div>
       </Card>
 
-      <Card title="经营画像 · 近 90 天" padded={true}>
-        <div
-          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}
-        >
-          <RingMetric
-            label="录屏通过率"
-            value={s.metrics.screenPass}
-            max={100}
-            suffix="%"
-          />
-          <RingMetric
-            label="项目完成率"
-            value={s.metrics.projectFinish}
-            max={100}
-            suffix="%"
-          />
-          <RingMetric
-            label="ROI"
-            value={s.metrics.roi}
-            max={2}
-            dp={2}
-            highlight
-          />
-          <RingMetric
-            label="毛利贡献"
-            value={`¥${(s.metrics.grossContrib / 1000).toFixed(1)}k`}
-            raw
-          />
-        </div>
-
-        <div
-          style={{
-            marginTop: 14,
-            paddingTop: 12,
-            borderTop: "1px dashed var(--line)",
-          }}
-        >
-          <div
-            style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 6 }}
+      {profileOpen ? (
+        <Card title="编辑主播档案" padded={true}>
+          <form
+            onSubmit={submitProfileUpdate}
+            style={{ display: "flex", flexDirection: "column", gap: 10 }}
           >
-            近 6 周匹配分趋势
-          </div>
-          <Sparkline data={[78, 81, 83, 86, 90, s.matchScore]} />
-        </div>
+            <label style={panelLabelStyle}>
+              主播昵称
+              <input
+                value={profileDraft?.displayName ?? ""}
+                onChange={updateProfileDraft("displayName")}
+                style={panelFieldStyle}
+              />
+            </label>
+            <label style={panelLabelStyle}>
+              真实姓名
+              <input
+                value={profileDraft?.realName ?? ""}
+                onChange={updateProfileDraft("realName")}
+                style={panelFieldStyle}
+              />
+            </label>
+            <label style={panelLabelStyle}>
+              性别
+              <input
+                value={profileDraft?.gender ?? ""}
+                onChange={updateProfileDraft("gender")}
+                placeholder="女 / 男 / 其他"
+                style={panelFieldStyle}
+              />
+            </label>
+            <label style={panelLabelStyle}>
+              来源
+              <select
+                value={profileDraft?.sourceType ?? "external"}
+                onChange={updateProfileDraft("sourceType")}
+                style={panelFieldStyle}
+              >
+                <option value="external">外部</option>
+                <option value="signed">签约</option>
+                <option value="self_incubated">自孵化</option>
+                <option value="supplier_recommended">供应商</option>
+                <option value="account_managed">代运营</option>
+              </select>
+            </label>
+            <label style={panelLabelStyle}>
+              合作状态
+              <select
+                value={profileDraft?.cooperationStatus ?? "not_started"}
+                onChange={updateProfileDraft("cooperationStatus")}
+                style={panelFieldStyle}
+              >
+                <option value="not_started">未填写</option>
+                <option value="active">合作中</option>
+                <option value="paused">暂停</option>
+                <option value="ended">已结束</option>
+              </select>
+            </label>
+            <label style={panelLabelStyle}>
+              擅长品类
+              <input
+                value={profileDraft?.categories ?? ""}
+                onChange={updateProfileDraft("categories")}
+                placeholder="RPG, SLG"
+                style={panelFieldStyle}
+              />
+            </label>
+            <label style={panelLabelStyle}>
+              平台
+              <input
+                value={profileDraft?.platforms ?? ""}
+                onChange={updateProfileDraft("platforms")}
+                placeholder="抖音, 快手"
+                style={panelFieldStyle}
+              />
+            </label>
+            <label style={panelLabelStyle}>
+              直播风格
+              <input
+                value={profileDraft?.styles ?? ""}
+                onChange={updateProfileDraft("styles")}
+                placeholder="高能整活"
+                style={panelFieldStyle}
+              />
+            </label>
+            <label style={panelLabelStyle}>
+              默认结算
+              <select
+                value={profileDraft?.defaultSettlementMethod ?? "cpt"}
+                onChange={updateProfileDraft("defaultSettlementMethod")}
+                style={panelFieldStyle}
+              >
+                <option value="cpt">CPT</option>
+                <option value="cpa">CPA</option>
+                <option value="cps">CPS</option>
+                <option value="gift">礼物流水</option>
+                <option value="base_salary">保底</option>
+                <option value="base_salary_cpt">保底 + CPT</option>
+                <option value="manual">手动结算</option>
+              </select>
+            </label>
+            {["cpt", "base_salary_cpt"].includes(
+              profileDraft?.defaultSettlementMethod,
+            ) ? (
+              <label style={panelLabelStyle}>
+                CPT 小时单价
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={profileDraft?.defaultHourlyRate ?? ""}
+                  onChange={updateProfileDraft("defaultHourlyRate")}
+                  style={panelFieldStyle}
+                />
+              </label>
+            ) : null}
+            {profileDraft?.defaultSettlementMethod === "cps" ? (
+              <label style={panelLabelStyle}>
+                CPS 分成比例
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  value={profileDraft?.defaultCpsRatePercent ?? ""}
+                  onChange={updateProfileDraft("defaultCpsRatePercent")}
+                  style={panelFieldStyle}
+                />
+              </label>
+            ) : null}
+            {["base_salary", "base_salary_cpt"].includes(
+              profileDraft?.defaultSettlementMethod,
+            ) ? (
+              <label style={panelLabelStyle}>
+                底薪
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={profileDraft?.defaultBaseSalary ?? ""}
+                  onChange={updateProfileDraft("defaultBaseSalary")}
+                  style={panelFieldStyle}
+                />
+              </label>
+            ) : null}
+            <label style={panelLabelStyle}>
+              变更原因
+              <textarea
+                value={profileDraft?.reason ?? ""}
+                onChange={updateProfileDraft("reason")}
+                rows={3}
+                placeholder="例如：同步主播资源池主档案"
+                style={{ ...panelFieldStyle, padding: 10, lineHeight: 1.5 }}
+              />
+            </label>
+            {profileError ? (
+              <div
+                aria-live="polite"
+                style={{
+                  color: "var(--danger-600)",
+                  fontSize: 12,
+                  lineHeight: 1.4,
+                }}
+              >
+                {profileError}
+              </div>
+            ) : null}
+            <div
+              style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}
+            >
+              <Button
+                kind="default"
+                type="button"
+                disabled={profileSubmitting}
+                onClick={closeProfileForm}
+              >
+                取消
+              </Button>
+              <Button kind="primary" type="submit" disabled={profileSubmitting}>
+                {profileSubmitting ? "保存中" : "保存档案"}
+              </Button>
+            </div>
+          </form>
+        </Card>
+      ) : null}
+
+      <Card title="经营画像 · 近 90 天" padded={true}>
+        {hasPerformanceData ? (
+          <>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 16,
+              }}
+            >
+              <RingMetric
+                label="录屏通过率"
+                value={s.metrics.screenPass}
+                max={100}
+                suffix="%"
+              />
+              <RingMetric
+                label="项目完成率"
+                value={s.metrics.projectFinish}
+                max={100}
+                suffix="%"
+              />
+              <RingMetric
+                label="ROI"
+                value={s.metrics.roi}
+                max={2}
+                dp={2}
+                highlight
+              />
+              <RingMetric
+                label="毛利贡献"
+                value={formatStreamerMoneyK(s.metrics.grossContrib)}
+                raw
+              />
+            </div>
+
+            <div
+              style={{
+                marginTop: 14,
+                paddingTop: 12,
+                borderTop: "1px dashed var(--line)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--ink-400)",
+                  marginBottom: 6,
+                }}
+              >
+                近 6 周匹配分趋势
+              </div>
+              <Sparkline
+                data={
+                  Array.isArray(s.matchTrend) && s.matchTrend.length > 1
+                    ? s.matchTrend
+                    : Array(6).fill(s.matchScore)
+                }
+              />
+            </div>
+          </>
+        ) : (
+          <EmptyHint
+            title="暂无经营画像数据"
+            hint="完成录屏、排班任务或报数审核后，这里会展示近 90 天真实表现。"
+          />
+        )}
       </Card>
 
       <Card
@@ -5804,10 +11578,69 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
         }
         padded={false}
       >
-        <EmptyHint
-          title="暂无参与项目"
-          hint="接入真实主播履约记录后会展示项目贡献。"
-        />
+        {streamerProjects.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {streamerProjects.slice(0, 5).map((project, index) => (
+              <div
+                key={project.id || project.name}
+                style={{
+                  padding: "12px 14px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  borderBottom:
+                    index < Math.min(streamerProjects.length, 5) - 1
+                      ? "1px solid var(--line)"
+                      : "none",
+                }}
+              >
+                <span
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 7,
+                    background: "var(--blue-50)",
+                    color: "var(--blue-700)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Icon.Project size={15} stroke="var(--blue-700)" />
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--ink-900)",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {project.name}
+                  </div>
+                  <div
+                    className="mono"
+                    style={{ fontSize: 11, color: "var(--ink-400)" }}
+                  >
+                    {formatStreamerHours(project.settlementHours)} ·{" "}
+                    {formatStreamerMoney(project.grossContrib)}
+                  </div>
+                </div>
+                <Badge tone={project.status === "joined" ? "green" : "blue"}>
+                  {project.status === "joined" ? "已加入" : project.status}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyHint
+            title="暂无参与项目"
+            hint="后端返回项目履约记录后会展示项目贡献。"
+          />
+        )}
       </Card>
 
       {riskOpen ? (
@@ -5954,6 +11787,67 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
   );
 }
 
+function streamerProfileDraftFromCard(streamer) {
+  const settlement = streamer?.settlement || {};
+  return {
+    displayName: streamer?.alias || "",
+    realName: streamer?.real || "",
+    gender: streamer?.gender || "",
+    sourceType: streamerSourceValue(streamer?.source),
+    cooperationStatus: streamer?.cooperation || "not_started",
+    categories: editableListText(streamer?.games),
+    platforms: editableListText(streamer?.platforms),
+    styles: editableListText([streamer?.style]),
+    defaultSettlementMethod: settlement.method || "cpt",
+    defaultHourlyRate:
+      settlement.cptHourlyRate > 0 ? String(settlement.cptHourlyRate) : "",
+    defaultBaseSalary:
+      settlement.baseSalary > 0 ? String(settlement.baseSalary) : "",
+    defaultCpsRatePercent:
+      settlement.cpsRateBps > 0 ? String(settlement.cpsRateBps / 100) : "",
+    reason: "",
+  };
+}
+
+function streamerSourceValue(source) {
+  const values = {
+    外部: "external",
+    签约: "signed",
+    自孵化: "self_incubated",
+    供应商: "supplier_recommended",
+    代运营: "account_managed",
+    external: "external",
+    signed: "signed",
+    self_incubated: "self_incubated",
+    supplier_recommended: "supplier_recommended",
+    account_managed: "account_managed",
+  };
+  return values[source] || "external";
+}
+
+function editableListText(values) {
+  return (values || [])
+    .map((value) => String(value || "").trim())
+    .filter((value) => value && value !== "未填写")
+    .join(", ");
+}
+
+function formatStreamerMoneyK(value) {
+  return `¥${(Math.round((Number(value) || 0) / 100) / 10).toFixed(1)}k`;
+}
+
+function hasStreamerPerformanceData(streamer) {
+  return streamer?.hasPerformanceData !== false;
+}
+
+function formatStreamerMoney(value) {
+  return `¥${(Number(value) || 0).toFixed(1)}`;
+}
+
+function formatStreamerHours(value) {
+  return `${(Number(value) || 0).toFixed(1)} h`;
+}
+
 function RingMetric({
   label,
   value,
@@ -6074,6 +11968,239 @@ function Sparkline({ data, w = 280, h = 40 }) {
 // ===== src\screen-reports.jsx =====
 // ——— Screen: 报数审核 ————————————————————————————
 
+const exportDateInputStyle = {
+  height: 32,
+  border: "1px solid var(--line-strong)",
+  borderRadius: 6,
+  padding: "0 10px",
+  fontSize: 13,
+  color: "var(--ink-900)",
+  background: "#fff",
+  outline: "none",
+};
+
+// 导出设置弹层：通用外壳，承载筛选项 + 取消/确认。
+function ExportSettingsModal({
+  title,
+  submitting,
+  onCancel,
+  onConfirm,
+  confirmLabel = "确认导出",
+  busyLabel = "导出中…",
+  confirmIcon,
+  children,
+}) {
+  const icon =
+    confirmIcon === undefined ? (
+      <Icon.Export size={14} stroke="#fff" />
+    ) : (
+      confirmIcon
+    );
+  return (
+    <div
+      role="dialog"
+      aria-label={title}
+      onClick={onCancel}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 50,
+        background: "rgba(15,23,42,0.45)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(event) => event.stopPropagation()}
+        style={{
+          width: "min(560px, 100%)",
+          maxHeight: "85vh",
+          display: "flex",
+          flexDirection: "column",
+          background: "#fff",
+          border: "1px solid var(--line)",
+          borderRadius: 12,
+          boxShadow: "var(--shadow-card)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "14px 18px",
+            borderBottom: "1px solid var(--line)",
+          }}
+        >
+          <div
+            style={{ fontSize: 15, fontWeight: 600, color: "var(--ink-900)" }}
+          >
+            {title}
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label="关闭"
+            style={{
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              color: "var(--ink-400)",
+              fontSize: 18,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <div
+          style={{
+            padding: 18,
+            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
+            gap: 16,
+          }}
+        >
+          {children}
+        </div>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: 8,
+            padding: "12px 18px",
+            borderTop: "1px solid var(--line)",
+          }}
+        >
+          <Button kind="default" onClick={onCancel} disabled={submitting}>
+            取消
+          </Button>
+          <Button
+            kind="primary"
+            icon={icon}
+            onClick={onConfirm}
+            disabled={submitting}
+          >
+            {submitting ? busyLabel : confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExportFilterSection({ title, children }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-700)" }}>
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// 可全选的多选清单，用于导出按项目 / 主播筛选。
+function ExportChecklist({
+  title,
+  options,
+  selected,
+  allSelected,
+  onToggle,
+  onToggleAll,
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <span
+          style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-700)" }}
+        >
+          {title}
+          <span
+            style={{
+              marginLeft: 8,
+              fontSize: 12,
+              fontWeight: 400,
+              color: "var(--ink-400)",
+            }}
+          >
+            已选 {selected.size}/{options.length}
+          </span>
+        </span>
+        <label
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 12,
+            color: "var(--ink-600)",
+            cursor: "pointer",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={allSelected}
+            onChange={onToggleAll}
+          />
+          全选
+        </label>
+      </div>
+      <div
+        style={{
+          maxHeight: 160,
+          overflowY: "auto",
+          border: "1px solid var(--line)",
+          borderRadius: 8,
+          padding: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+        }}
+      >
+        {options.length === 0 ? (
+          <span
+            style={{ fontSize: 12, color: "var(--ink-400)", padding: "4px 2px" }}
+          >
+            暂无可选项
+          </span>
+        ) : (
+          options.map((opt) => (
+            <label
+              key={opt.value}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 13,
+                color: "var(--ink-700)",
+                cursor: "pointer",
+                padding: "2px 2px",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(opt.value)}
+                onChange={() => onToggle(opt.value)}
+              />
+              {opt.label}
+            </label>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ScreenReports({ go }) {
   const reports = useOpsReports();
   const actions = useOpsLiveActions();
@@ -6081,15 +12208,38 @@ function ScreenReports({ go }) {
   const [activeId, setActiveId] = React.useState(reports[0]?.id ?? null);
   const [exportMessage, setExportMessage] = React.useState("");
   const [exportSubmitting, setExportSubmitting] = React.useState(false);
+  const [batchSubmitting, setBatchSubmitting] = React.useState(false);
+  const [autoReviewSubmitting, setAutoReviewSubmitting] = React.useState("");
 
-  React.useEffect(() => {
-    if (
-      reports.length > 0 &&
-      !reports.some((report) => report.id === activeId)
-    ) {
-      setActiveId(reports[0].id);
-    }
-  }, [activeId, reports]);
+  // 报数明细导出需要项目（产品/小时单价）与任务（直播时间）；公会列取当前组织名。
+  const projects = useOpsProjects();
+  const tasks = useOpsTasks();
+  const currentUser = useOpsCurrentUser();
+  const { projects: projectData, tasks: taskData } =
+    React.useContext(OpsLiveDataContext);
+
+  const [exportPanelOpen, setExportPanelOpen] = React.useState(false);
+  const [exportProjectSel, setExportProjectSel] = React.useState(
+    () => new Set(),
+  );
+  const [exportStreamerSel, setExportStreamerSel] = React.useState(
+    () => new Set(),
+  );
+  const [exportFrom, setExportFrom] = React.useState("");
+  const [exportTo, setExportTo] = React.useState("");
+  const reportProjectOptions = React.useMemo(
+    () => Array.from(new Set(reports.map((r) => r.project).filter(Boolean))),
+    [reports],
+  );
+  const reportStreamerOptions = React.useMemo(() => {
+    const map = new Map();
+    reports.forEach((r) => {
+      if (r.streamerId && !map.has(r.streamerId)) {
+        map.set(r.streamerId, r.streamer);
+      }
+    });
+    return Array.from(map, ([id, name]) => ({ value: id, label: name }));
+  }, [reports]);
 
   const counts = {
     all: reports.length,
@@ -6098,49 +12248,283 @@ function ScreenReports({ go }) {
     approved: reports.filter((r) => r.status === "approved").length,
     rejected: reports.filter((r) => r.status === "rejected").length,
   };
-  const filtered =
-    filter === "all" ? reports : reports.filter((r) => r.status === filter);
-  const exportReportDetails = async () => {
+  const filtered = React.useMemo(
+    () =>
+      filter === "all" ? reports : reports.filter((r) => r.status === filter),
+    [filter, reports],
+  );
+
+  React.useEffect(() => {
+    if (filtered.length === 0) {
+      if (activeId !== null) {
+        setActiveId(null);
+      }
+      return;
+    }
+
+    if (!filtered.some((report) => report.id === activeId)) {
+      setActiveId(filtered[0].id);
+    }
+  }, [activeId, filtered]);
+
+  const activeReport =
+    filtered.find((report) => report.id === activeId) || filtered[0] || null;
+  const openExportPanel = () => {
+    // 仅在打开导出面板时按需补齐项目/主播/任务数据（供导出列拼装），
+    // 避免在报数审核页常驻拉取。
+    if (projectData == null) actions.refreshProjects?.().catch(() => {});
+    if (taskData == null) actions.refreshOpsTasks?.().catch(() => {});
+    setExportProjectSel(new Set(reportProjectOptions));
+    setExportStreamerSel(new Set(reportStreamerOptions.map((s) => s.value)));
+    setExportFrom("");
+    setExportTo("");
+    setExportMessage("");
+    setExportPanelOpen(true);
+  };
+  const toggleExportValue = (setter, value) =>
+    setter((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) {
+        next.delete(value);
+      } else {
+        next.add(value);
+      }
+      return next;
+    });
+  const toggleExportAll = (setter, options, allSelected) =>
+    setter(allSelected ? new Set() : new Set(options.map((o) => o.value)));
+  const runReportExport = async () => {
     setExportSubmitting(true);
     setExportMessage("");
     try {
-      await actions.createGovernedExport?.({
-        kind: "report_details",
-        rows: filtered.map((report) => ({
-          streamerName: report.streamer,
-          settlementDuration: report.duration,
-          evidenceLevel: `${report.source} · ${report.status}`,
-        })),
+      const projectByName = new Map(projects.map((p) => [p.name, p]));
+      const projectById = new Map(projects.map((p) => [p.id, p]));
+      const taskById = new Map(tasks.map((t) => [t.id, t]));
+      // 公会列默认取当前组织名（工会 = 组织）。
+      const guildName = (currentUser?.org || "").trim();
+      const selected = reports.filter((r) => {
+        const inProject = exportProjectSel.has(r.project);
+        const inStreamer = exportStreamerSel.has(r.streamerId);
+        const date = r.date || "";
+        const inPeriod =
+          (!exportFrom || date >= exportFrom) &&
+          (!exportTo || date <= exportTo);
+        return inProject && inStreamer && inPeriod;
       });
-      setExportMessage("报数明细导出已生成");
+      if (selected.length === 0) {
+        setExportMessage("当前筛选下没有可导出的报数。");
+        setExportSubmitting(false);
+        return;
+      }
+      const rows = selected.map((r) => {
+        const proj =
+          (r.projectId && projectById.get(r.projectId)) ||
+          projectByName.get(r.project);
+        const task = taskById.get(r.taskId);
+        const hours = Number(r.systemDurationHours ?? r.duration ?? 0);
+        // 小时单价取项目默认小时单价（即厂家给的单价）；达人费用 = 厂家单价 × 时长。
+        const rate = Number(proj?.defaultHourlyRate ?? 0);
+        return {
+          reportId: r.id,
+          guildOrIndividual: guildName || "—",
+          gameProduct: proj?.product || r.project || "—",
+          streamerName: r.streamer,
+          liveDate: r.date || "—",
+          liveTime:
+            task &&
+            Number.isFinite(task.startHour) &&
+            Number.isFinite(task.endHour)
+              ? `${task.startHour}:00-${task.endHour}:00`
+              : "—",
+          duration: `${hours} 小时`,
+          hourlyRate: rate ? `¥${rate}` : "—",
+          talentFee: rate ? `¥${(hours * rate).toFixed(2)}` : "—",
+          // 截图列由服务端真实嵌入图片；此处仅作无图回退文案。
+          screenshot: `${r.screens ?? 0} 张`,
+        };
+      });
+      const result = await actions.exportReportSettlementXlsx?.({ rows });
+      if (result) {
+        downloadBase64Xlsx(result);
+      }
+      setExportPanelOpen(false);
+      setExportMessage(`已导出 ${rows.length} 条报数明细`);
     } catch (error) {
       setExportMessage(error?.message || "报数明细导出失败，请稍后重试");
     } finally {
       setExportSubmitting(false);
     }
   };
+  const batchApproveReports = async () => {
+    if (batchSubmitting) return;
+    const targetReports = filtered.filter(
+      (report) => report.status === "pending_review",
+    );
+    if (targetReports.length === 0) {
+      setExportMessage("当前筛选下没有可批量通过的待审核报数。");
+      return;
+    }
+
+    setBatchSubmitting(true);
+    setExportMessage("");
+    try {
+      for (const report of targetReports) {
+        await actions.reviewReport?.(report.id, "approve");
+      }
+      setExportMessage(`批量审核已通过 ${targetReports.length} 条`);
+    } catch (error) {
+      setExportMessage(error?.message || "批量审核失败，请稍后重试");
+    } finally {
+      setBatchSubmitting(false);
+    }
+  };
+  const evaluateAutoReview = async () => {
+    if (!activeReport || autoReviewSubmitting) return;
+    setAutoReviewSubmitting("evaluate");
+    setExportMessage("");
+    try {
+      const body = await postWarRoomJson(
+        "/api/auto-review/evaluate",
+        {
+          report: buildAutoReviewReportSnapshot(activeReport),
+          rule: buildAutoReviewRuleSnapshot(),
+        },
+        "auto review evaluation failed",
+      );
+      const result = body.result ?? {};
+      setExportMessage(
+        `自动审核评估完成：${result.decision || "已返回结果"} · ${result.mode || "shadow"}`,
+      );
+    } catch (error) {
+      setExportMessage(error?.message || "自动审核评估失败，请稍后重试");
+    } finally {
+      setAutoReviewSubmitting("");
+    }
+  };
+  const readAutoReviewGate = async () => {
+    if (autoReviewSubmitting) return;
+    setAutoReviewSubmitting("gate");
+    setExportMessage("");
+    try {
+      const body = await getOpsJson(
+        "/api/auto-review/rollout-metrics?targetMode=active&explicitActiveRequest=false",
+        "auto review rollout metrics failed",
+      );
+      const gate = body.result?.gate ?? {};
+      const summary = body.result?.metrics?.summary ?? {};
+      setExportMessage(
+        `审核门槛：${gate.effectiveMode || gate.targetMode || "shadow"} · shadow ${summary.shadowSampleCount ?? 0} · audit ${summary.auditSampleCount ?? 0}`,
+      );
+    } catch (error) {
+      setExportMessage(error?.message || "审核门槛读取失败，请稍后重试");
+    } finally {
+      setAutoReviewSubmitting("");
+    }
+  };
+
+  const allProjectsSelected =
+    reportProjectOptions.length > 0 &&
+    exportProjectSel.size === reportProjectOptions.length;
+  const allStreamersSelected =
+    reportStreamerOptions.length > 0 &&
+    exportStreamerSel.size === reportStreamerOptions.length;
 
   return (
     <>
+      {exportPanelOpen ? (
+        <ExportSettingsModal
+          title="导出报数明细"
+          submitting={exportSubmitting}
+          onCancel={() => setExportPanelOpen(false)}
+          onConfirm={runReportExport}
+        >
+          <ExportFilterSection title="周期">
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="date"
+                aria-label="开始日期"
+                value={exportFrom}
+                onChange={(e) => setExportFrom(e.target.value)}
+                style={exportDateInputStyle}
+              />
+              <span style={{ color: "var(--ink-400)" }}>至</span>
+              <input
+                type="date"
+                aria-label="结束日期"
+                value={exportTo}
+                onChange={(e) => setExportTo(e.target.value)}
+                style={exportDateInputStyle}
+              />
+            </div>
+          </ExportFilterSection>
+          <ExportChecklist
+            title="项目"
+            options={reportProjectOptions.map((name) => ({
+              value: name,
+              label: name,
+            }))}
+            selected={exportProjectSel}
+            allSelected={allProjectsSelected}
+            onToggle={(v) => toggleExportValue(setExportProjectSel, v)}
+            onToggleAll={() =>
+              toggleExportAll(
+                setExportProjectSel,
+                reportProjectOptions.map((name) => ({ value: name })),
+                allProjectsSelected,
+              )
+            }
+          />
+          <ExportChecklist
+            title="主播"
+            options={reportStreamerOptions}
+            selected={exportStreamerSel}
+            allSelected={allStreamersSelected}
+            onToggle={(v) => toggleExportValue(setExportStreamerSel, v)}
+            onToggleAll={() =>
+              toggleExportAll(
+                setExportStreamerSel,
+                reportStreamerOptions,
+                allStreamersSelected,
+              )
+            }
+          />
+        </ExportSettingsModal>
+      ) : null}
       <PageHeader
         title="下播截图报数 · 审核"
-        subtitle="一条任务可能对应多条报数。审核通过的报数将进入可结算池，但不自动生成结算。"
         actions={
           <>
             <Button
               kind="default"
               icon={<Icon.Export size={14} />}
-              onClick={exportReportDetails}
+              onClick={openExportPanel}
               disabled={exportSubmitting}
             >
               {exportSubmitting ? "导出中" : "导出报数明细"}
             </Button>
             <Button
+              kind="default"
+              icon={<Icon.Sparkles size={14} />}
+              onClick={evaluateAutoReview}
+              disabled={!activeReport || Boolean(autoReviewSubmitting)}
+            >
+              {autoReviewSubmitting === "evaluate" ? "评估中" : "自动审核评估"}
+            </Button>
+            <Button
+              kind="default"
+              icon={<Icon.Audit size={14} />}
+              onClick={readAutoReviewGate}
+              disabled={Boolean(autoReviewSubmitting)}
+            >
+              {autoReviewSubmitting === "gate" ? "读取中" : "审核门槛"}
+            </Button>
+            <Button
               kind="primary"
               icon={<Icon.Check size={14} stroke="#fff" />}
-              onClick={() => setExportMessage("批量审核后台暂未接入")}
+              onClick={batchApproveReports}
+              disabled={batchSubmitting}
             >
-              批量审核通过
+              {batchSubmitting ? "批量审核中" : "批量审核通过"}
             </Button>
           </>
         }
@@ -6235,13 +12619,13 @@ function ScreenReports({ go }) {
                         fontSize: 12.5,
                       }}
                     >
-                      {r.id}
+                      {displayRecordId(r.id, "报数记录")}
                     </div>
                     <div
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {r.taskId}
+                      {displayRecordId(r.taskId, "任务")}
                     </div>
                   </div>
                 ),
@@ -6314,11 +12698,14 @@ function ScreenReports({ go }) {
               },
               {
                 title: "状态",
-                render: (r) => (
-                  <Badge tone={REPORT_STATUS[r.status].tone} dot>
-                    {REPORT_STATUS[r.status].label}
-                  </Badge>
-                ),
+                render: (r) => {
+                  const status = reportStatusMeta(r.status);
+                  return (
+                    <Badge tone={status.tone} dot>
+                      {status.label}
+                    </Badge>
+                  );
+                },
               },
             ]}
             rows={filtered}
@@ -6326,16 +12713,44 @@ function ScreenReports({ go }) {
         </Card>
 
         {/* Detail */}
-        <ReportDetail id={activeId} reports={reports} />
+        <ReportDetail id={activeId} reports={filtered} />
       </div>
     </>
+  );
+}
+
+function ReportScreenshot({ reportId, streamer, fallback }) {
+  const [failed, setFailed] = React.useState(false);
+  if (failed) {
+    return fallback;
+  }
+  const src = `/api/live-reports/${reportId}/screenshot`;
+  return (
+    <a
+      href={src}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{ display: "block" }}
+    >
+      <img
+        src={src}
+        alt={`${streamer} 下播截图`}
+        onError={() => setFailed(true)}
+        style={{
+          width: "100%",
+          borderRadius: 10,
+          border: "1px solid var(--line)",
+          display: "block",
+        }}
+      />
+    </a>
   );
 }
 
 function ReportDetail({ id, reports }) {
   const actions = useOpsLiveActions();
   const [busyDecision, setBusyDecision] = React.useState(null);
-  const r = reports.find((x) => x.id === id) || reports[0] || REPORTS[0];
+  const r = reports.find((x) => x.id === id) || reports[0] || null;
   if (!r) {
     return (
       <div
@@ -6360,9 +12775,10 @@ function ReportDetail({ id, reports }) {
   const s = STREAMERS.find((s) => s.alias === r.streamer);
   const p = PROJECTS.find((p) => p.id === r.project);
   const projectName = p?.name || r.project;
+  const isReviewable = r.status === "pending_review";
 
   const review = async (decision) => {
-    if (!actions.reviewReport) return;
+    if (!actions.reviewReport || !isReviewable) return;
     setBusyDecision(decision);
     try {
       await actions.reviewReport(r.id, decision);
@@ -6371,28 +12787,35 @@ function ReportDetail({ id, reports }) {
     }
   };
 
-  // OCR-vs-manual side-by-side
+  // OCR (screenshot) vs system/platform, built from real report data.
+  const systemHours = (r.systemDurationHours ?? r.duration ?? 0).toFixed(1);
+  const ocrHours =
+    r.ocrDurationHours != null
+      ? r.ocrDurationHours.toFixed(1) + " h"
+      : "未识别";
+  const durationDiff =
+    r.ocrDurationHours != null &&
+    Math.abs(r.ocrDurationHours - (r.systemDurationHours ?? r.duration ?? 0)) >=
+      0.05;
   const ocrFields = [
     { label: "直播日期", ocr: r.date, manual: r.date, diff: false },
     {
       label: "直播时长",
-      ocr: (r.duration + 0.3).toFixed(1) + " h",
-      manual: r.duration.toFixed(1) + " h",
-      diff: true,
+      ocr: ocrHours,
+      manual: systemHours + " h",
+      diff: durationDiff,
     },
     {
       label: "场观",
-      ocr: (r.audience + 240).toLocaleString(),
-      manual: r.audience.toLocaleString(),
-      diff: true,
-    },
-    {
-      label: "直播账号",
-      ocr: "live_account",
-      manual: "live_account",
+      ocr: (r.audience ?? 0).toLocaleString(),
+      manual: <span style={{ color: "var(--ink-300)" }}>—</span>,
       diff: false,
     },
   ];
+  const diffCount = ocrFields.filter((f) => f.diff).length;
+  const riskFlags = Array.isArray(r.riskFlags) ? r.riskFlags : [];
+  const divergencePct =
+    typeof r.divergencePct === "number" ? r.divergencePct : null;
 
   return (
     <div
@@ -6419,7 +12842,8 @@ function ReportDetail({ id, reports }) {
               className="mono"
               style={{ fontSize: 11, color: "var(--ink-400)" }}
             >
-              {r.id} · 任务 {r.taskId}
+              {displayRecordId(r.id, "报数记录")} · 任务{" "}
+              {displayRecordId(r.taskId, "任务")}
             </div>
             <div
               style={{
@@ -6432,19 +12856,31 @@ function ReportDetail({ id, reports }) {
               {r.streamer} · {projectName}
             </div>
           </div>
-          <Badge tone={REPORT_STATUS[r.status].tone} dot>
-            {REPORT_STATUS[r.status].label}
-          </Badge>
+          {(() => {
+            const status = reportStatusMeta(r.status);
+            return (
+              <Badge tone={status.tone} dot>
+                {status.label}
+              </Badge>
+            );
+          })()}
         </div>
 
         {/* Screenshot preview */}
         <div style={{ padding: 16 }}>
-          <ScreenshotPreview
-            platform={s?.platforms?.[0] || "抖音"}
+          <ReportScreenshot
+            key={r.id}
+            reportId={r.id}
             streamer={r.streamer}
-            date={r.date}
-            duration={r.duration}
-            audience={r.audience}
+            fallback={
+              <ScreenshotPreview
+                platform={s?.platforms?.[0] || "抖音"}
+                streamer={r.streamer}
+                date={r.date}
+                duration={r.duration}
+                audience={r.audience}
+              />
+            }
           />
         </div>
 
@@ -6461,10 +12897,16 @@ function ReportDetail({ id, reports }) {
               gap: 8,
             }}
           >
-            OCR 识别 vs 主播确认
-            <Badge tone="violet" dot>
-              差异 2 项
-            </Badge>
+            OCR 识别 vs 系统/平台
+            {diffCount > 0 ? (
+              <Badge tone="violet" dot>
+                差异 {diffCount} 项
+              </Badge>
+            ) : (
+              <Badge tone="green" dot>
+                一致
+              </Badge>
+            )}
           </div>
           <table
             style={{
@@ -6509,7 +12951,7 @@ function ReportDetail({ id, reports }) {
                     color: "var(--ink-400)",
                   }}
                 >
-                  主播确认
+                  系统/平台
                 </th>
               </tr>
             </thead>
@@ -6565,85 +13007,124 @@ function ReportDetail({ id, reports }) {
           </KV>
           <KV label="风控提示">
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span
-                style={{
-                  fontSize: 12,
-                  color: "var(--ok-600)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <Icon.Check size={12} stroke="var(--ok-600)" />
-                图片哈希无重复
-              </span>
-              <span
-                style={{
-                  fontSize: 12,
-                  color: "var(--warn-600)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <Icon.Warn size={12} stroke="var(--warn-600)" />
-                时长字段偏差 8.6%，已标记复核
-              </span>
+              {divergencePct != null && divergencePct > 0 ? (
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: "var(--warn-600)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <Icon.Warn size={12} stroke="var(--warn-600)" />
+                  时长偏差 {(divergencePct * 100).toFixed(1)}%
+                </span>
+              ) : null}
+              {riskFlags.map((flag) => (
+                <span
+                  key={flag}
+                  style={{
+                    fontSize: 12,
+                    color: "var(--warn-600)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <Icon.Warn size={12} stroke="var(--warn-600)" />
+                  {riskFlagLabel(flag)}
+                </span>
+              ))}
+              {divergencePct == null && riskFlags.length === 0 ? (
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: "var(--ok-600)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <Icon.Check size={12} stroke="var(--ok-600)" />
+                  无风险提示
+                </span>
+              ) : null}
             </div>
           </KV>
         </div>
 
-        {/* Action bar */}
-        <div
-          style={{
-            padding: 12,
-            borderTop: "1px solid var(--line)",
-            background: "var(--bg-soft)",
-            display: "flex",
-            gap: 8,
-          }}
-        >
-          <Button
-            kind="danger"
-            icon={<Icon.X size={14} />}
-            disabled={Boolean(busyDecision)}
-            onClick={() => review("reject")}
-          >
-            {busyDecision === "reject" ? "处理中…" : "驳回"}
-          </Button>
-          <Button
-            kind="default"
-            disabled={Boolean(busyDecision)}
-            onClick={() => review("need_more")}
-          >
-            {busyDecision === "need_more" ? "处理中…" : "需补充截图"}
-          </Button>
-          <div style={{ flex: 1 }} />
-          <label
+        {isReviewable ? (
+          <div
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              fontSize: 12,
-              color: "var(--ink-500)",
+              padding: 12,
+              borderTop: "1px solid var(--line)",
+              background: "var(--bg-soft)",
+              display: "flex",
+              gap: 8,
             }}
           >
-            <input
-              type="checkbox"
-              defaultChecked
-              style={{ accentColor: "var(--blue-600)" }}
-            />{" "}
-            计入任务结果
-          </label>
-          <Button
-            kind="primary"
-            icon={<Icon.Check size={14} stroke="#fff" />}
-            disabled={Boolean(busyDecision)}
-            onClick={() => review("approve")}
+            <Button
+              kind="danger"
+              icon={<Icon.X size={14} />}
+              disabled={Boolean(busyDecision)}
+              onClick={() => review("reject")}
+            >
+              {busyDecision === "reject" ? "处理中…" : "驳回"}
+            </Button>
+            <Button
+              kind="default"
+              disabled={Boolean(busyDecision)}
+              onClick={() => review("need_more")}
+            >
+              {busyDecision === "need_more" ? "处理中…" : "需补充截图"}
+            </Button>
+            <div style={{ flex: 1 }} />
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                color: "var(--ink-500)",
+              }}
+            >
+              <input
+                type="checkbox"
+                defaultChecked
+                style={{ accentColor: "var(--blue-600)" }}
+              />{" "}
+              计入任务结果
+            </label>
+            <Button
+              kind="primary"
+              icon={<Icon.Check size={14} stroke="#fff" />}
+              disabled={Boolean(busyDecision)}
+              onClick={() => review("approve")}
+            >
+              {busyDecision === "approve" ? "处理中…" : "审核通过"}
+            </Button>
+          </div>
+        ) : (
+          <div
+            style={{
+              padding: 12,
+              borderTop: "1px solid var(--line)",
+              background: "var(--bg-soft)",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: "var(--ink-500)",
+              fontSize: 12,
+            }}
           >
-            {busyDecision === "approve" ? "处理中…" : "审核通过"}
-          </Button>
-        </div>
+            {(() => {
+              const status = reportStatusMeta(r.status);
+              return <Badge tone={status.tone}>{status.label}</Badge>;
+            })()}
+            该报数已完成当前审核流转。
+          </div>
+        )}
       </Card>
     </div>
   );
@@ -6705,7 +13186,29 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
           <span style={{ flex: 1 }} />
           <span style={{ fontSize: 10, color: "#7C8AB0" }}>{date}</span>
         </div>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>本场直播已结束</div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          本场直播已结束
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 500,
+              padding: "1px 6px",
+              borderRadius: 4,
+              color: "#B8C2DB",
+              border: "1px solid rgba(184,194,219,0.4)",
+            }}
+          >
+            示意图 · 真实截图待接入
+          </span>
+        </div>
 
         <div
           style={{
@@ -6785,21 +13288,176 @@ function ShotMetric({ label, value }) {
 function ScreenAdmission() {
   const applications = useOpsApplications();
   const actions = useOpsLiveActions();
+  const [projectBoards, setProjectBoards] = React.useState(null);
+  const [selectedProjectId, setSelectedProjectId] = React.useState("");
+  const [admissionMessage, setAdmissionMessage] = React.useState("");
+  const [busyAction, setBusyAction] = React.useState("");
+
+  const syncAdmissionProjectBoards = async () => {
+    if (!actions.refreshAdmissionProjectBoards) {
+      return;
+    }
+    const projects = await actions.refreshAdmissionProjectBoards();
+    if (!Array.isArray(projects)) {
+      return;
+    }
+    setProjectBoards(projects);
+    setSelectedProjectId(
+      (current) => current || projects[0]?.project?.id || "",
+    );
+  };
+
   const review = async (applicationId, decision) => {
-    await actions.reviewApplicationRecording?.(applicationId, {
-      decision,
-      note: "经营端选播准入审核",
-    });
+    if (!actions.reviewApplicationRecording) {
+      setAdmissionMessage("录屏审核后台暂未接入。");
+      return;
+    }
+    setBusyAction(`review:${applicationId}:${decision}`);
+    setAdmissionMessage("");
+    try {
+      await actions.reviewApplicationRecording(applicationId, {
+        decision,
+        note: "经营端选播准入审核",
+      });
+      await syncAdmissionProjectBoards();
+      setAdmissionMessage(recordingDecisionSuccessMessage(decision));
+    } catch (error) {
+      setAdmissionMessage(error?.message || "录屏审核失败，请稍后重试");
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const confirmJoin = async (applicationId) => {
+    if (!actions.confirmApplicationJoin) {
+      setAdmissionMessage("二次确认后台暂未接入。");
+      return;
+    }
+    setBusyAction(`confirm:${applicationId}`);
+    setAdmissionMessage("");
+    try {
+      await actions.confirmApplicationJoin(applicationId);
+      await syncAdmissionProjectBoards();
+      setAdmissionMessage("二次确认已完成");
+    } catch (error) {
+      setAdmissionMessage(error?.message || "二次确认失败，请稍后重试");
+    } finally {
+      setBusyAction("");
+    }
+  };
+  const boards = projectBoards ?? buildAdmissionProjectBoards(applications);
+  const selectedBoard =
+    boards.find((board) => board.project.id === selectedProjectId) ??
+    boards[0] ??
+    null;
+  const selectedApplications = selectedBoard
+    ? applications.filter(
+        (application) =>
+          admissionProjectId(application) === selectedBoard.project.id,
+      )
+    : [];
+
+  React.useEffect(() => {
+    let active = true;
+    if (!actions.refreshAdmissionProjectBoards) {
+      return () => {
+        active = false;
+      };
+    }
+    actions
+      .refreshAdmissionProjectBoards()
+      .then((projects) => {
+        if (!active || !Array.isArray(projects)) return;
+        setProjectBoards(projects);
+        setSelectedProjectId(
+          (current) => current || projects[0]?.project?.id || "",
+        );
+      })
+      .catch((error) =>
+        warnBackgroundRefreshFailure("admission project board", error),
+      );
+    return () => {
+      active = false;
+    };
+  }, [actions]);
+
+  const viewProject = (board) => {
+    setSelectedProjectId(board.project.id);
+    setAdmissionMessage("");
+  };
+
+  const exportAdmissionRecordings = async (board) => {
+    if (!actions.exportAdmissionRecordings) {
+      setAdmissionMessage("录屏表导出后台暂未接入。");
+      return;
+    }
+    setBusyAction(`export:${board.project.id}`);
+    setAdmissionMessage("");
+    try {
+      const result = await actions.exportAdmissionRecordings(board.project.id);
+      downloadAdmissionExport(result);
+      setAdmissionMessage(
+        result?.filename
+          ? `录屏表导出已生成：${result.filename}`
+          : "录屏表导出已生成",
+      );
+    } catch (error) {
+      setAdmissionMessage(error?.message || "录屏表导出失败，请稍后重试");
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const createShareBoard = async (board) => {
+    if (!actions.createAdmissionShareBoard) {
+      setAdmissionMessage("分享链接后台暂未接入。");
+      return;
+    }
+    const projectApplications = applications.filter(
+      (application) => admissionProjectId(application) === board.project.id,
+    );
+    const shareableApplications = projectApplications.filter((application) =>
+      isMcnApprovedAdmissionRecording(application),
+    );
+    const applicationIds = shareableApplications
+      .map((application) => application.id)
+      .filter(Boolean);
+    if (applicationIds.length === 0 && board.counts.mcnApproved === 0) {
+      setAdmissionMessage("当前项目暂无 MCN 已通过的可分享录屏");
+      return;
+    }
+    const skippedNotApproved = applicationIds.length
+      ? projectApplications.length - shareableApplications.length
+      : 0;
+    const skippedMessage =
+      skippedNotApproved > 0
+        ? `（已跳过 ${skippedNotApproved} 条未通过 MCN 初审或暂无录屏）`
+        : "";
+    setBusyAction(`share:${board.project.id}`);
+    setAdmissionMessage("");
+    try {
+      const result = await actions.createAdmissionShareBoard(board.project.id, {
+        title: `${board.project.name || board.project.code || "项目"} 录屏复核`,
+        ...(applicationIds.length ? { applicationIds } : {}),
+        allowVendorSubmit: true,
+      });
+      setAdmissionMessage(
+        result?.shareUrl
+          ? `分享链接已生成：${result.shareUrl}${skippedMessage}`
+          : `分享链接已生成${skippedMessage}`,
+      );
+    } catch (error) {
+      setAdmissionMessage(error?.message || "分享链接创建失败，请稍后重试");
+    } finally {
+      setBusyAction("");
+    }
   };
 
   return (
     <>
-      <PageHeader
-        title="选播准入"
-        subtitle="主播报名 → 试播录屏 → 运营审核 → 二次确认加入项目"
-      />
+      <PageHeader title="选播准入" />
       <div style={{ padding: 20 }}>
-        <Card padded={false}>
+        <Card title="项目准入板" padded={false}>
           <div
             style={{
               display: "flex",
@@ -6810,99 +13468,94 @@ function ScreenAdmission() {
             }}
           >
             <SearchInput placeholder="项目 / 主播 / 报名编号" width={260} />
-            <Badge tone="blue">{applications.length} 条准入记录</Badge>
+            <Badge tone="blue">{boards.length} 个项目</Badge>
+            <Badge tone="violet">{applications.length} 条准入记录</Badge>
           </div>
           <DataTable
-            rows={applications}
+            rows={boards}
             columns={[
               {
-                title: "报名编号",
-                render: (r) => (
-                  <span className="mono" style={{ fontSize: 12 }}>
-                    {r.id}
-                  </span>
-                ),
-              },
-              {
                 title: "项目",
-                render: (r) => (
+                render: (board) => (
                   <div>
-                    <div style={{ fontWeight: 600 }}>{r.project?.name}</div>
+                    <div style={{ fontWeight: 600 }}>{board.project.name}</div>
                     <div
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {r.project?.code}
+                      {board.project.code || displayRecordId(board.project.id)}
                     </div>
                   </div>
                 ),
               },
               {
-                title: "主播",
-                render: (r) => (
-                  <div
-                    style={{ display: "flex", alignItems: "center", gap: 8 }}
-                  >
-                    <Avatar name={r.streamer?.displayName} size={24} />
-                    <span>{r.streamer?.displayName}</span>
-                  </div>
-                ),
-              },
-              {
-                title: "录屏",
-                render: (r) => (
-                  <div>
-                    <Badge tone={r.latestRecording ? "violet" : "amber"}>
-                      {r.latestRecording ? r.latestRecording.status : "待上传"}
+                title: "MCN 进度",
+                render: (board) => (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <Badge tone="blue">
+                      录屏 {board.counts.recordingCount}/
+                      {board.counts.totalApplications}
                     </Badge>
-                    <div
-                      className="mono"
-                      style={{
-                        fontSize: 11,
-                        color: "var(--ink-400)",
-                        marginTop: 4,
-                      }}
-                    >
-                      {r.latestRecording?.id ?? "暂无录屏"}
-                    </div>
+                    <Badge tone="amber">
+                      待审 {board.counts.mcnPendingReview}
+                    </Badge>
+                    <Badge tone="teal">
+                      待确认 {board.counts.pendingFinalConfirm}
+                    </Badge>
                   </div>
                 ),
               },
               {
-                title: "状态",
-                render: (r) => <Badge tone="neutral">{r.status}</Badge>,
+                title: "厂家反馈",
+                render: (board) => (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <Badge tone="teal">
+                      厂家已选 {board.counts.vendorSelected}
+                    </Badge>
+                    <Badge tone="amber">备选 {board.counts.vendorBackup}</Badge>
+                    <Badge tone="red">拒绝 {board.counts.vendorRejected}</Badge>
+                  </div>
+                ),
+              },
+              {
+                title: "分享状态",
+                render: (board) => (
+                  <Badge
+                    tone={board.share.status === "active" ? "green" : "neutral"}
+                  >
+                    {admissionShareStatusLabel(board.share.status)}
+                  </Badge>
+                ),
               },
               {
                 title: "操作",
-                render: (r) => (
+                render: (board) => (
                   <div style={{ display: "flex", gap: 6 }}>
                     <Button
                       size="sm"
                       kind="default"
-                      onClick={() => review(r.id, "needs_changes")}
+                      onClick={() => viewProject(board)}
                     >
-                      需补充
+                      查看录屏
                     </Button>
                     <Button
                       size="sm"
                       kind="default"
-                      onClick={() => review(r.id, "rejected")}
+                      onClick={() => exportAdmissionRecordings(board)}
+                      disabled={busyAction === `export:${board.project.id}`}
                     >
-                      驳回
+                      导出录屏表
                     </Button>
                     <Button
                       size="sm"
                       kind="primary"
-                      onClick={() => review(r.id, "approved")}
+                      onClick={() => createShareBoard(board)}
+                      disabled={
+                        busyAction === `share:${board.project.id}` ||
+                        board.counts.recordingCount === 0
+                      }
                     >
-                      通过
-                    </Button>
-                    <Button
-                      size="sm"
-                      kind="default"
-                      onClick={() => actions.confirmApplicationJoin?.(r.id)}
-                    >
-                      二次确认
+                      创建分享链接
                     </Button>
                   </div>
                 ),
@@ -6910,9 +13563,401 @@ function ScreenAdmission() {
             ]}
           />
         </Card>
+        {admissionMessage ? (
+          <div
+            aria-live="polite"
+            style={{
+              marginTop: 12,
+              fontSize: 12,
+              color: admissionMessage.includes("失败")
+                ? "var(--danger-600)"
+                : "var(--ink-600)",
+            }}
+          >
+            {admissionMessage}
+          </div>
+        ) : null}
+        {selectedBoard ? (
+          <Card
+            title={`${selectedBoard.project.name || "项目"} · 录屏明细`}
+            padded={false}
+            style={{ marginTop: 16 }}
+          >
+            <DataTable
+              rows={selectedApplications}
+              columns={[
+                {
+                  title: "报名编号",
+                  render: (r) => (
+                    <span className="mono" style={{ fontSize: 12 }}>
+                      {displayRecordId(r.id, "报名记录")}
+                    </span>
+                  ),
+                },
+                {
+                  title: "主播",
+                  render: (r) => (
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 8 }}
+                    >
+                      <Avatar name={r.streamer?.displayName} size={24} />
+                      <div>
+                        <div>{r.streamer?.displayName}</div>
+                        <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                          {admissionAccountLabel(r)}
+                        </div>
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "录屏",
+                  render: (r) => (
+                    <div>
+                      <Badge tone={r.latestRecording ? "violet" : "amber"}>
+                        {r.latestRecording
+                          ? r.latestRecording.status
+                          : "待上传"}
+                      </Badge>
+                      <div
+                        className="mono"
+                        style={{
+                          fontSize: 11,
+                          color: "var(--ink-400)",
+                          marginTop: 4,
+                        }}
+                      >
+                        {displayRecordId(r.latestRecording?.id, "暂无录屏")}
+                        {r.latestRecording?.version
+                          ? ` · v${r.latestRecording.version}`
+                          : ""}
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "厂家决策",
+                  render: (r) => (
+                    <div>
+                      <Badge
+                        tone={vendorDecisionTone(r.vendorReview?.decision)}
+                      >
+                        {vendorDecisionLabel(r.vendorReview?.decision)}
+                      </Badge>
+                      {r.vendorReview?.remark ? (
+                        <div
+                          style={{
+                            marginTop: 4,
+                            fontSize: 11,
+                            color: "var(--ink-500)",
+                          }}
+                        >
+                          {r.vendorReview.remark}
+                        </div>
+                      ) : null}
+                    </div>
+                  ),
+                },
+                {
+                  title: "状态",
+                  render: (r) => <Badge tone="neutral">{r.status}</Badge>,
+                },
+                {
+                  title: "操作",
+                  render: (r) => {
+                    const reviewable = isAdmissionRecordingReviewable(r);
+                    const confirmable =
+                      r.status === "recording_approved" &&
+                      r.vendorReview?.decision === "selected";
+                    if (!reviewable && !confirmable) {
+                      return (
+                        <span style={{ color: "var(--ink-400)" }}>
+                          {admissionNextActionLabel(r)}
+                        </span>
+                      );
+                    }
+                    return (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        {reviewable ? (
+                          <>
+                            <Button
+                              size="sm"
+                              kind="default"
+                              onClick={() => review(r.id, "needs_changes")}
+                              disabled={
+                                busyAction === `review:${r.id}:needs_changes`
+                              }
+                            >
+                              需补充
+                            </Button>
+                            <Button
+                              size="sm"
+                              kind="default"
+                              onClick={() => review(r.id, "rejected")}
+                              disabled={
+                                busyAction === `review:${r.id}:rejected`
+                              }
+                            >
+                              驳回
+                            </Button>
+                            <Button
+                              size="sm"
+                              kind="primary"
+                              onClick={() => review(r.id, "approved")}
+                              disabled={
+                                busyAction === `review:${r.id}:approved`
+                              }
+                            >
+                              通过
+                            </Button>
+                          </>
+                        ) : null}
+                        {confirmable ? (
+                          <Button
+                            size="sm"
+                            kind="default"
+                            onClick={() => confirmJoin(r.id)}
+                            disabled={busyAction === `confirm:${r.id}`}
+                          >
+                            二次确认
+                          </Button>
+                        ) : null}
+                      </div>
+                    );
+                  },
+                },
+              ]}
+            />
+          </Card>
+        ) : null}
       </div>
     </>
   );
+}
+
+function downloadAdmissionExport(result) {
+  if (
+    !result?.content ||
+    !result?.filename ||
+    typeof document === "undefined" ||
+    typeof URL === "undefined" ||
+    typeof URL.createObjectURL !== "function"
+  ) {
+    return;
+  }
+
+  const blob = new Blob(["\uFEFF", result.content], {
+    type: "text/csv;charset=utf-8",
+  });
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = result.filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL?.(href);
+}
+
+// 把服务端返回的 base64 xlsx 解码后触发下载（含真实嵌入的下播截图）。
+function downloadBase64Xlsx(result) {
+  if (
+    !result?.base64 ||
+    !result?.filename ||
+    typeof document === "undefined" ||
+    typeof atob !== "function" ||
+    typeof URL === "undefined" ||
+    typeof URL.createObjectURL !== "function"
+  ) {
+    return;
+  }
+
+  const binary = atob(result.base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  const blob = new Blob([bytes], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = result.filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL?.(href);
+}
+
+function buildAdmissionProjectBoards(applications = []) {
+  const boards = new Map();
+  for (const application of applications) {
+    const project = admissionProject(application);
+    const current = boards.get(project.id) ?? {
+      project,
+      counts: {
+        totalApplications: 0,
+        recordingCount: 0,
+        mcnPendingReview: 0,
+        mcnApproved: 0,
+        mcnRejected: 0,
+        needsChanges: 0,
+        vendorPending: 0,
+        vendorSelected: 0,
+        vendorBackup: 0,
+        vendorRejected: 0,
+        vendorNeedsChanges: 0,
+        pendingFinalConfirm: 0,
+      },
+      share: {
+        id: null,
+        status: "unshared",
+        expiresAt: null,
+        lastSubmittedAt: null,
+      },
+      lastActivityAt: application.submittedAt ?? null,
+    };
+    incrementAdmissionCounts(current, application);
+    boards.set(project.id, current);
+  }
+  return [...boards.values()];
+}
+
+function incrementAdmissionCounts(board, application) {
+  const status = application.status;
+  const recordingStatus = application.latestRecording?.status;
+  const decision = application.vendorReview?.decision || "pending";
+  board.counts.totalApplications += 1;
+  if (application.latestRecording) board.counts.recordingCount += 1;
+  if (
+    [
+      "recording_reviewing",
+      "pending_recording_review",
+      "pending_review",
+    ].includes(status) ||
+    ["submitted", "reviewing", "pending_review"].includes(recordingStatus)
+  ) {
+    board.counts.mcnPendingReview += 1;
+  }
+  if (status === "recording_approved" || status === "joined") {
+    board.counts.mcnApproved += 1;
+  }
+  if (status === "recording_rejected" || recordingStatus === "rejected") {
+    board.counts.mcnRejected += 1;
+  }
+  if (status === "recording_required" || recordingStatus === "needs_changes") {
+    board.counts.needsChanges += 1;
+  }
+  if (status === "recording_approved") {
+    board.counts.pendingFinalConfirm += 1;
+  }
+  if (decision === "pending") board.counts.vendorPending += 1;
+  if (decision === "selected") board.counts.vendorSelected += 1;
+  if (decision === "backup") board.counts.vendorBackup += 1;
+  if (decision === "rejected") board.counts.vendorRejected += 1;
+  if (decision === "needs_changes") board.counts.vendorNeedsChanges += 1;
+}
+
+function isAdmissionRecordingReviewable(application) {
+  const status = application.status;
+  const recordingStatus = application.latestRecording?.status;
+  return (
+    Boolean(application.latestRecording) &&
+    ([
+      "recording_reviewing",
+      "pending_recording_review",
+      "pending_review",
+    ].includes(status) ||
+      ["submitted", "reviewing", "pending_review"].includes(recordingStatus))
+  );
+}
+
+function isMcnApprovedAdmissionRecording(application) {
+  return (
+    application.status === "recording_approved" &&
+    application.latestRecording?.status === "approved"
+  );
+}
+
+function admissionNextActionLabel(application) {
+  const decision = application.vendorReview?.decision;
+  if (decision === "selected" && application.status === "recording_approved") {
+    return "邀请进入项目";
+  }
+  if (decision === "backup") return "厂家备选，等待最终名额";
+  if (decision === "rejected") return "等待主播重新上传";
+  if (decision === "needs_changes") return "等待主播补充录屏";
+  if (isAdmissionRecordingReviewable(application)) return "MCN 初审";
+  if (!application.latestRecording) return "等待录屏";
+  return "无需操作";
+}
+
+function recordingDecisionSuccessMessage(decision) {
+  if (decision === "approved") return "录屏已通过";
+  if (decision === "rejected") return "录屏已驳回";
+  return "已要求补充录屏";
+}
+
+function admissionProject(application) {
+  const project = application.project ?? {};
+  return {
+    id: admissionProjectId(application),
+    code: project.code || application.projectCode || "",
+    name:
+      project.name ||
+      application.projectName ||
+      displayRecordId(admissionProjectId(application), "项目记录"),
+    status: project.status || application.projectStatus || "",
+    vendor: project.vendor || application.vendor || "",
+    product: project.product || application.product || "",
+  };
+}
+
+function admissionProjectId(application) {
+  return application.project?.id || application.projectId || "unknown-project";
+}
+
+function admissionAccountLabel(application) {
+  return (
+    application.streamer?.accountLabel ||
+    application.streamer?.account ||
+    application.streamer?.platformAccount ||
+    "未配置账号"
+  );
+}
+
+function admissionShareStatusLabel(status) {
+  const labels = {
+    unshared: "未分享",
+    active: "已分享",
+    expired: "已过期",
+    revoked: "已撤销",
+  };
+  return labels[status] || status;
+}
+
+function vendorDecisionLabel(decision) {
+  const labels = {
+    pending: "待厂家反馈",
+    selected: "厂家已选",
+    backup: "厂家备选",
+    rejected: "厂家拒绝",
+    needs_changes: "需修改",
+  };
+  return labels[decision || "pending"] || decision;
+}
+
+function vendorDecisionTone(decision) {
+  const tones = {
+    selected: "teal",
+    backup: "amber",
+    rejected: "red",
+    needs_changes: "violet",
+  };
+  return tones[decision] || "neutral";
 }
 
 function askText(label, defaultValue = "") {
@@ -6953,15 +13998,18 @@ function toReferenceReportFromApi(report) {
     id: report.id,
     date: String(report.submittedAt || "").slice(0, 10),
     streamer: report.streamerName || "Unknown streamer",
-    streamerId: report.streamerName || "Unknown streamer",
+    streamerId: report.streamerId || report.streamerName || "Unknown streamer",
     project: report.projectName || "Unknown project",
-    taskId: report.taskTitle || "Unknown task",
+    projectId: report.projectId || "",
+    taskId: report.taskId || report.taskTitle || "Unknown task",
     duration: Math.round(((report.settlementDuration ?? 0) / 60) * 10) / 10,
     audience: report.viewers ?? 0,
     status:
-      report.status === "need_more"
-        ? "need_supply"
-        : report.status || "pending_review",
+      report.status === "pending_adjudication"
+        ? "pending_review"
+        : report.status === "need_more"
+          ? "need_supply"
+          : report.status || "pending_review",
     screens: 1,
     source: report.timeSource === "claimed" ? "manual" : "OCR",
     note: `${report.timeSource ?? "unknown"} · ${report.evidenceLevel ?? "unknown"}`,
@@ -6974,8 +14022,7 @@ function toReferenceBatchFromApi(batch, items, context = {}) {
     batch.projectName ||
     context.pool?.find((row) => row.project)?.project ||
     context.activeBatch?.project ||
-    batch.projectId ||
-    "项目";
+    displayRecordId(batch.projectId, "项目");
   const amount =
     Number(batch.totalAmount ?? 0) ||
     Number(batch.computedAmount ?? 0) +
@@ -7031,8 +14078,7 @@ function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {
     streamer:
       item.streamerName ||
       sourceReport?.streamer ||
-      item.streamerId ||
-      `主播 ${index + 1}`,
+      displayRecordId(item.streamerId, `主播 ${index + 1}`),
     id: item.id,
     rule:
       item.itemType === "live_report"
@@ -7050,6 +14096,7 @@ function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {
 function toReferenceSettlementPoolFromApi(item) {
   return {
     id: item.id,
+    projectId: item.projectId,
     streamer: item.streamerName || "Unknown streamer",
     project: item.projectName || "Unknown project",
     hours: Math.round(((item.settlementDuration ?? 0) / 60) * 10) / 10,
@@ -7069,8 +14116,10 @@ function toSettlementPoolFromReviewedReport(report, sourceReport) {
 
   return {
     id: report.id || sourceReport?.id,
-    streamer: sourceReport?.streamer || report.streamerId || "主播",
-    project: sourceReport?.project || report.projectId || "项目",
+    projectId: report.projectId || sourceReport?.projectId,
+    streamer:
+      sourceReport?.streamer || displayRecordId(report.streamerId, "主播"),
+    project: sourceReport?.project || displayRecordId(report.projectId, "项目"),
     hours: Math.round((settlementDuration / 60) * 10) / 10,
     evidence: `${evidenceLevel} · ${timeSource}`,
     rule: "cpt",
@@ -7081,21 +14130,193 @@ function toSettlementPoolFromReviewedReport(report, sourceReport) {
   };
 }
 
+const SETTLEMENT_METHOD_OPTIONS = [
+  { value: "cpt", label: "CPT" },
+  { value: "cpa", label: "CPA" },
+  { value: "cps", label: "CPS" },
+  { value: "gift", label: "礼物流水" },
+  { value: "base_salary", label: "保底" },
+  { value: "base_salary_cpt", label: "保底 + CPT" },
+  { value: "manual", label: "手动结算" },
+];
+
+function settlementProjectOptions({
+  projects = [],
+  batches = [],
+  settlementPool = [],
+  settlementScope = null,
+}) {
+  const options = new Map();
+  const upsert = (projectId, projectName, source = {}) => {
+    const id = cleanSettlementText(projectId);
+    if (!id) return;
+
+    const existing = options.get(id) || {};
+    // A "name" that is empty, UUID-like, or equal to the project id itself is
+    // not a real label — a manually-entered project id flows through here as
+    // the name. Ignore it so an already-resolved real name (or the formatted
+    // displayRecordId fallback) wins instead of showing a raw UUID.
+    const resolveName = (value) => {
+      const text = cleanSettlementText(value);
+      return text && text !== id && !isUuidLikeId(text) ? text : "";
+    };
+    const name =
+      resolveName(source.name) ||
+      resolveName(projectName) ||
+      cleanSettlementText(existing.name) ||
+      displayRecordId(id, "项目记录");
+
+    options.set(id, {
+      id,
+      name,
+      code: cleanSettlementText(source.code) || existing.code || "",
+      pricing: cleanSettlementText(source.pricing) || existing.pricing || "",
+      start: cleanSettlementText(source.start) || existing.start || "",
+      end: cleanSettlementText(source.end) || existing.end || "",
+      metrics: source.metrics || existing.metrics || {},
+      defaultSettlementMethod:
+        source.defaultSettlementMethod ?? existing.defaultSettlementMethod,
+      defaultHourlyRate:
+        source.defaultHourlyRate ?? existing.defaultHourlyRate ?? "",
+      defaultBaseSalary:
+        source.defaultBaseSalary ?? existing.defaultBaseSalary ?? "",
+      defaultSettlementRule:
+        source.defaultSettlementRule ?? existing.defaultSettlementRule ?? {},
+    });
+  };
+
+  projects.forEach((project) => {
+    upsert(project.id || project.projectId || project.name, project.name, {
+      name: project.name,
+      code: project.code,
+      pricing: project.pricing,
+      start: project.start,
+      end: project.end,
+      metrics: project.metrics,
+      defaultSettlementMethod: project.defaultSettlementMethod,
+      defaultHourlyRate: project.defaultHourlyRate,
+      defaultBaseSalary: project.defaultBaseSalary,
+      defaultSettlementRule: project.defaultSettlementRule,
+    });
+  });
+  batches.forEach((batch) => {
+    upsert(batch.projectId || batch.project, batch.project);
+  });
+  settlementPool.forEach((row) => {
+    upsert(row.projectId || row.project, row.project);
+  });
+  if (settlementScope?.projectId) {
+    const scopeName =
+      settlementScope.projectName ||
+      settlementScope.project ||
+      (settlementPool.length === 1 ? settlementPool[0]?.project : "") ||
+      "";
+    upsert(settlementScope.projectId, scopeName);
+  }
+
+  return Array.from(options.values());
+}
+
+function filterSettlementRowsByProject(rows, projectId, projectName) {
+  const id = cleanSettlementText(projectId);
+  const name = cleanSettlementText(projectName);
+  if (!id && !name) return rows;
+
+  return rows.filter((row) => {
+    const rowProjectId = cleanSettlementText(row.projectId || row.project_id);
+    const rowProjectName = cleanSettlementText(row.project || row.projectName);
+    return (
+      (id && rowProjectId === id) ||
+      (id && rowProjectName === id) ||
+      (name && rowProjectName === name)
+    );
+  });
+}
+
+function settlementRuleDraft(project) {
+  const rule = settlementRuleObject(project?.defaultSettlementRule);
+  return {
+    defaultSettlementMethod:
+      project?.defaultSettlementMethod ||
+      settlementMethodFromPricing(project?.pricing),
+    defaultHourlyRate:
+      project?.defaultHourlyRate || project?.defaultHourlyRate === 0
+        ? String(project.defaultHourlyRate)
+        : "",
+    defaultBaseSalary:
+      project?.defaultBaseSalary || project?.defaultBaseSalary === 0
+        ? String(project.defaultBaseSalary)
+        : "",
+    defaultSettlementRule: builderRuleFromStored(rule),
+  };
+}
+
+function settlementRuleObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value;
+}
+
+function settlementMethodFromPricing(value) {
+  const text = String(value || "").toLowerCase();
+  if (text.includes("base_salary_cpt") || text.includes("保底 + cpt")) {
+    return "base_salary_cpt";
+  }
+  if (text.includes("base_salary") || text.includes("保底")) {
+    return "base_salary";
+  }
+  if (text.includes("cps")) return "cps";
+  if (text.includes("cpa")) return "cpa";
+  if (text.includes("gift") || text.includes("礼物")) return "gift";
+  if (text.includes("manual") || text.includes("手动")) return "manual";
+  return "cpt";
+}
+
+function cleanSettlementText(value) {
+  return String(value || "").trim();
+}
+
 // ===== src\screen-settlement.jsx =====
 // ——— Screen: 结算中心 ————————————————————————————
 
 function ScreenSettlement({ go }) {
+  const projects = useOpsProjects();
   const batches = useOpsSettlementBatches();
   const batchDetails = useOpsSettlementBatchDetails();
   const settlementPool = useOpsSettlementPool();
   const settlementScope = useOpsSettlementScope();
+  const complexCost = useOpsComplexCost();
   const actions = useOpsLiveActions();
+  const streamers = useOpsStreamers();
+  const projectOptions = React.useMemo(
+    () =>
+      settlementProjectOptions({
+        projects,
+        batches,
+        settlementPool,
+        settlementScope,
+      }),
+    [projects, batches, settlementPool, settlementScope],
+  );
+  const [selectedProjectId, setSelectedProjectId] = React.useState(
+    settlementScope?.projectId || projectOptions[0]?.id || "",
+  );
   const [type, setType] = React.useState("all");
   const [busyAction, setBusyAction] = React.useState(null);
   const [activeId, setActiveId] = React.useState(batches[0]?.id ?? null);
+  const [detailTab, setDetailTab] = React.useState("summary");
   const [batchFormOpen, setBatchFormOpen] = React.useState(false);
   const [manualFormOpen, setManualFormOpen] = React.useState(false);
   const [settlementMessage, setSettlementMessage] = React.useState("");
+  const [streamerRuleDraft, setStreamerRuleDraft] = React.useState({
+    streamerId: "",
+    settlementMethod: "cpt",
+    hourlyRate: "",
+    baseSalary: "",
+    cpsRatePercent: "",
+    reason: "",
+  });
   const [batchDraft, setBatchDraft] = React.useState({
     projectId: settlementScope?.projectId || "",
     periodStart: settlementScope?.periodStart || "",
@@ -7108,21 +14329,103 @@ function ScreenSettlement({ go }) {
     evidenceLevel: "red",
     reason: "人工录入 CPA/CPS/礼物金额",
   });
+  const [ruleDraft, setRuleDraft] = React.useState(() =>
+    settlementRuleDraft(projectOptions[0]),
+  );
+  const [financialDraft, setFinancialDraft] = React.useState(() =>
+    financialDraftFromProject(projectOptions[0]),
+  );
+  const [reconciliation, setReconciliation] = React.useState(null);
+  // Identifies the project + period the current reconciliation verdict was run
+  // for, so a stale verdict from a different period (same project) never gates
+  // another batch's lock.
+  const [reconciliationKey, setReconciliationKey] = React.useState(null);
+  const [costItems, setCostItems] = React.useState([]);
+  const [costItemsLoadedFor, setCostItemsLoadedFor] = React.useState(null);
+  const [costDraft, setCostDraft] = React.useState(() => defaultCostDraft());
 
   React.useEffect(() => {
-    if (!batches.some((b) => b.id === activeId)) {
-      setActiveId(batches[0]?.id ?? null);
+    if (!projectOptions.length) return;
+    if (!selectedProjectId) {
+      setSelectedProjectId(projectOptions[0].id);
+      return;
     }
-  }, [activeId, batches]);
+    if (!projectOptions.some((project) => project.id === selectedProjectId)) {
+      setSelectedProjectId(projectOptions[0].id);
+    }
+  }, [projectOptions, selectedProjectId]);
+
+  const selectedProject =
+    projectOptions.find((project) => project.id === selectedProjectId) ||
+    projectOptions[0] ||
+    null;
+  const selectedProjectName = selectedProject?.name || "";
+  const projectBatches = React.useMemo(
+    () =>
+      filterSettlementRowsByProject(
+        batches,
+        selectedProjectId,
+        selectedProjectName,
+      ),
+    [batches, selectedProjectId, selectedProjectName],
+  );
+  const projectSettlementPool = React.useMemo(
+    () =>
+      filterSettlementRowsByProject(
+        settlementPool,
+        selectedProjectId,
+        selectedProjectName,
+      ),
+    [settlementPool, selectedProjectId, selectedProjectName],
+  );
+
+  React.useEffect(() => {
+    if (!projectBatches.some((b) => b.id === activeId)) {
+      setActiveId(projectBatches[0]?.id ?? null);
+    }
+  }, [activeId, projectBatches]);
+
+  React.useEffect(() => {
+    setRuleDraft(settlementRuleDraft(selectedProject));
+    setFinancialDraft(financialDraftFromProject(selectedProject));
+  }, [selectedProject]);
 
   const filtered =
-    type === "all" ? batches : batches.filter((b) => b.type === type);
+    type === "all"
+      ? projectBatches
+      : projectBatches.filter((b) => b.type === type);
   const activeBatch =
-    batches.find((batch) => batch.id === activeId) || batches[0] || null;
+    projectBatches.find((batch) => batch.id === activeId) ||
+    projectBatches[0] ||
+    null;
   const poolCount =
-    settlementPool.length > 0
-      ? settlementPool.length
-      : (settlementScope?.poolCount ?? 0);
+    projectSettlementPool.length > 0
+      ? projectSettlementPool.length
+      : selectedProjectId === settlementScope?.projectId
+        ? (settlementScope?.poolCount ?? 0)
+        : 0;
+  const settlementSummary = React.useMemo(() => {
+    const vendorBatches = projectBatches.filter((batch) => {
+      return batch.type === "vendor_receivable";
+    });
+    const lockedPayableBatches = projectBatches.filter((batch) => {
+      return batch.type === "streamer_payable" && batch.status === "locked";
+    });
+    const vendorReceivable = sumSettlementBatchAmounts(vendorBatches);
+    const lockedPayable = sumSettlementBatchAmounts(lockedPayableBatches);
+    const gross = vendorReceivable - lockedPayable;
+    const marginRate =
+      vendorReceivable > 0 ? (gross / vendorReceivable) * 100 : 0;
+
+    return {
+      vendorReceivable,
+      vendorBatchCount: vendorBatches.length,
+      lockedPayable,
+      lockedPayableBatchCount: lockedPayableBatches.length,
+      gross,
+      marginRate,
+    };
+  }, [projectBatches]);
 
   const runSettlementAction = async (actionName, fn) => {
     if (busyAction) return;
@@ -7145,6 +14448,7 @@ function ScreenSettlement({ go }) {
     setBatchDraft((draft) => ({
       ...draft,
       projectId:
+        selectedProjectId ||
         draft.projectId ||
         settlementScope?.projectId ||
         activeBatch?.projectId ||
@@ -7152,13 +14456,131 @@ function ScreenSettlement({ go }) {
       periodStart: draft.periodStart || settlementScope?.periodStart || "",
       periodEnd: draft.periodEnd || settlementScope?.periodEnd || "",
     }));
-  }, [activeBatch, settlementScope]);
+  }, [activeBatch, selectedProjectId, settlementScope]);
+
+  const selectProject = (event) => {
+    const projectId = event.target.value;
+    setSelectedProjectId(projectId);
+    setActiveId(null);
+    setBatchDraft((draft) => ({ ...draft, projectId }));
+    setSettlementMessage("");
+    setReconciliation(null);
+    setReconciliationKey(null);
+    setCostItems([]);
+    setCostItemsLoadedFor(null);
+  };
+
+  const updateCostDraft = (field) => (event) =>
+    setCostDraft((draft) => ({ ...draft, [field]: event.target.value }));
+
+  const reloadCostItems = async (projectId) => {
+    const items = await actions.fetchProjectCostItems?.(projectId);
+    setCostItems(Array.isArray(items) ? items : []);
+    setCostItemsLoadedFor(projectId);
+  };
+
+  const loadCostItems = () =>
+    runSettlementAction("cost-load", async () => {
+      if (!selectedProjectId) {
+        setSettlementMessage("请先选择结算项目");
+        return false;
+      }
+      await reloadCostItems(selectedProjectId);
+      setSettlementMessage("");
+      return false;
+    });
+
+  const submitCostItem = (event) => {
+    event?.preventDefault?.();
+    return runSettlementAction("cost-create", async () => {
+      if (!selectedProjectId) {
+        setSettlementMessage("请先选择结算项目");
+        return false;
+      }
+      const built = buildCostItemPayload(costDraft);
+      if (built.error) {
+        setSettlementMessage(built.error);
+        return false;
+      }
+      await actions.createProjectCostItem?.(selectedProjectId, built.payload);
+      await reloadCostItems(selectedProjectId);
+      setCostDraft(defaultCostDraft());
+      setSettlementMessage("外部成本已录入（待确认）");
+      return false;
+    });
+  };
+
+  const reviewCostItem = (itemId, status) =>
+    runSettlementAction(`cost-review-${itemId}`, async () => {
+      if (!selectedProjectId) return false;
+      const reason = globalThis.prompt?.(
+        status === "confirmed" ? "确认入账原因" : "作废原因",
+      );
+      if (!reason || !reason.trim()) {
+        setSettlementMessage("操作已取消：需填写原因");
+        return false;
+      }
+      await actions.reviewProjectCostItem?.(selectedProjectId, itemId, {
+        status,
+        reason: reason.trim(),
+      });
+      await reloadCostItems(selectedProjectId);
+      setSettlementMessage("");
+      return false;
+    });
+
+  const reconciliationKeyOf = (projectId, periodStart, periodEnd) =>
+    `${projectId}|${periodStart}|${periodEnd}`;
+
+  const reconciliationPeriod = () => ({
+    projectId: selectedProjectId || activeBatch?.projectId || "",
+    periodStart:
+      activeBatch?.periodStart || batchDraft.periodStart || "",
+    periodEnd: activeBatch?.periodEnd || batchDraft.periodEnd || "",
+  });
+
+  const runReconciliation = () =>
+    runSettlementAction("reconcile", async () => {
+      const { projectId, periodStart, periodEnd } = reconciliationPeriod();
+      if (!projectId || !periodStart || !periodEnd) {
+        setSettlementMessage("请先选择项目并设置结算周期再运行校验");
+        return false;
+      }
+      const result = await actions.fetchSettlementReconciliation?.({
+        projectId,
+        periodStart,
+        periodEnd,
+      });
+      setReconciliation(result ?? null);
+      setReconciliationKey(reconciliationKeyOf(projectId, periodStart, periodEnd));
+      setSettlementMessage("");
+      return false;
+    });
+
+  // Gate the active batch's lock on the §3.4 reconciliation verdict: the check
+  // must have been run for this batch's exact project + period and must not be
+  // blocking. Keying on project + period prevents a stale verdict from another
+  // period of the same project from gating this batch.
+  const activeReconciliation =
+    activeBatch &&
+    reconciliationKey ===
+      reconciliationKeyOf(
+        activeBatch.projectId,
+        activeBatch.periodStart,
+        activeBatch.periodEnd,
+      )
+      ? reconciliation
+      : null;
+  const activeGate = reconciliationGate(activeReconciliation);
 
   const updateBatchDraft = (field) => (event) => {
     setBatchDraft((draft) => ({ ...draft, [field]: event.target.value }));
   };
   const updateManualDraft = (field) => (event) => {
     setManualDraft((draft) => ({ ...draft, [field]: event.target.value }));
+  };
+  const updateRuleDraft = (field) => (event) => {
+    setRuleDraft((draft) => ({ ...draft, [field]: event.target.value }));
   };
 
   const createBatch = (event) => {
@@ -7209,6 +14631,16 @@ function ScreenSettlement({ go }) {
   const lockBatch = () =>
     runSettlementAction("lock", async () => {
       if (!activeBatch) return false;
+      if (!activeGate.evaluated) {
+        setSettlementMessage(
+          "锁定前请先为本批次周期运行「单项目结算校验」",
+        );
+        return false;
+      }
+      if (!activeGate.canLock) {
+        setSettlementMessage(reconciliationBlockMessage(activeReconciliation));
+        return false;
+      }
       await actions.lockSettlementBatch?.(activeBatch.id, {
         reason: "财务核对无误",
       });
@@ -7223,6 +14655,88 @@ function ScreenSettlement({ go }) {
       });
       return false;
     });
+  const saveProjectRule = (event) => {
+    event?.preventDefault?.();
+    return runSettlementAction("project-rule", async () => {
+      if (!selectedProjectId) {
+        setSettlementMessage("请选择结算项目");
+        return false;
+      }
+      await actions.updateProjectSettlementRule?.(selectedProjectId, {
+        defaultSettlementMethod: ruleDraft.defaultSettlementMethod,
+        defaultHourlyRate: draftNumber(ruleDraft.defaultHourlyRate),
+        defaultBaseSalary: draftNumber(ruleDraft.defaultBaseSalary),
+        defaultSettlementRule: serializeBuilderRule(
+          ruleDraft.defaultSettlementRule,
+        ),
+        reason: "结算中心项目规则调整",
+      });
+      setSettlementMessage("项目结算规则已保存");
+      return false;
+    });
+  };
+  const updateStreamerRuleDraft = (field) => (event) => {
+    setStreamerRuleDraft((draft) => ({
+      ...draft,
+      [field]: event.target.value,
+    }));
+  };
+  const streamerRuleOptions = React.useMemo(
+    () =>
+      (Array.isArray(streamers) ? streamers : [])
+        .map((streamer) => ({
+          id: streamer?.id,
+          name:
+            streamer?.alias ||
+            streamer?.name ||
+            streamer?.displayName ||
+            streamer?.id,
+        }))
+        .filter((option) => option.id),
+    [streamers],
+  );
+  const saveStreamerRule = (event) => {
+    event?.preventDefault?.();
+    return runSettlementAction("streamer-rule", async () => {
+      if (!selectedProjectId) {
+        setSettlementMessage("请选择结算项目");
+        return false;
+      }
+      if (!streamerRuleDraft.streamerId) {
+        setSettlementMessage("请选择主播");
+        return false;
+      }
+      await actions.updateProjectStreamerSettlementRule?.(
+        selectedProjectId,
+        streamerRuleDraft.streamerId,
+        {
+          settlementMethod: streamerRuleDraft.settlementMethod,
+          hourlyRate: draftNumber(streamerRuleDraft.hourlyRate),
+          baseSalary: draftNumber(streamerRuleDraft.baseSalary),
+          cpsRateBps: draftPercentToBps(streamerRuleDraft.cpsRatePercent),
+          reason:
+            streamerRuleDraft.reason?.trim() || "结算中心主播应付规则调整",
+        },
+      );
+      setSettlementMessage("主播应付规则已保存");
+      return false;
+    });
+  };
+  const saveProjectFinancials = (event) => {
+    event?.preventDefault?.();
+    return runSettlementAction("project-financials", async () => {
+      if (!selectedProjectId) {
+        setSettlementMessage("请选择结算项目");
+        return false;
+      }
+      await actions.updateProjectFinancialSettings?.(selectedProjectId, {
+        ...serializeFinancialDraft(financialDraft),
+        reason: "结算中心项目财务设置调整",
+      });
+      setSettlementMessage("项目财务设置已保存");
+      return false;
+    });
+  };
   const exportBatches = () =>
     runSettlementAction("export", async () => {
       await actions.createGovernedExport?.({
@@ -7243,7 +14757,6 @@ function ScreenSettlement({ go }) {
     <>
       <PageHeader
         title="结算中心"
-        subtitle="厂家应收与主播应付分别开批次 · 锁定批次只允许负责人重新打开 · 全程审计"
         actions={
           <>
             <Button
@@ -7288,41 +14801,749 @@ function ScreenSettlement({ go }) {
           gap: 20,
         }}
       >
-        {/* Top metrics */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 16,
+        {/* Grouped settlement strip — primary 预估毛利 + compact secondaries */}
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="可结算池 · 报数条数"
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 160,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              本月预估毛利
+            </div>
+            <div
+              className="num"
+              style={{
+                fontSize: 26,
+                fontWeight: 600,
+                color: "var(--blue-600)",
+                letterSpacing: "-0.02em",
+                marginTop: 4,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {formatSettlementCurrency(settlementSummary.gross)}
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                marginTop: 4,
+                color:
+                  settlementSummary.gross >= 0
+                    ? "var(--ok-600)"
+                    : "var(--danger-600)",
+              }}
+            >
+              毛利率 {settlementSummary.marginRate.toFixed(1)}%
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
+              label="本月厂家应收 (草稿)"
+              value={formatSettlementCurrency(settlementSummary.vendorReceivable)}
+              hint={settlementBatchHint(settlementSummary.vendorBatchCount, "应收")}
+            />
+            <MiniStat
+              label="本月主播应付 (锁定)"
+              value={formatSettlementCurrency(settlementSummary.lockedPayable)}
+              hint={settlementBatchHint(
+                settlementSummary.lockedPayableBatchCount,
+                "锁定",
+              )}
+            />
+            <MiniStat
+              label="可结算池 · 报数"
               value={String(poolCount)}
               unit="条"
               hint="审核通过 · 待入批次"
             />
+          </div>
+        </Card>
+
+        <Card
+          title="单项目结算校验 · §3.4"
+          extra={
+            reconciliation ? (
+              <Badge
+                tone={
+                  reconciliationGate(reconciliation).hasBlocking
+                    ? "red"
+                    : reconciliationGate(reconciliation).warnings.length > 0
+                      ? "amber"
+                      : "green"
+                }
+              >
+                {reconciliationGate(reconciliation).hasBlocking
+                  ? "校验未通过"
+                  : reconciliationGate(reconciliation).warnings.length > 0
+                    ? "通过 · 有告警"
+                    : "校验通过"}
+              </Badge>
+            ) : (
+              <Badge tone="neutral">未运行</Badge>
+            )
+          }
+          padded={true}
+        >
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: 12 }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                合并 应收 / 成本 / 税费，输出毛利与可结判定（锁定前必须通过）
+              </div>
+              <Button
+                kind="default"
+                onClick={runReconciliation}
+                disabled={!!busyAction}
+              >
+                {busyAction === "reconcile" ? "校验中…" : "运行校验"}
+              </Button>
+            </div>
+
+            {reconciliation ? (
+              <>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, 1fr)",
+                    gap: 10,
+                  }}
+                >
+                  {buildReconciliationRows(reconciliation).map((row) => (
+                    <div
+                      key={row.key}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 8,
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        background: "var(--ink-50, #f6f7f9)",
+                      }}
+                    >
+                      <span
+                        style={{ fontSize: 12, color: "var(--ink-500)" }}
+                      >
+                        {row.label}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color:
+                            row.tone === "red"
+                              ? "var(--red-600, #d92d20)"
+                              : "var(--ink-800)",
+                        }}
+                      >
+                        {row.value}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {reconciliation.checks?.length ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                    }}
+                  >
+                    {reconciliation.checks.map((check) => (
+                      <div
+                        key={check.key}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          fontSize: 12,
+                        }}
+                      >
+                        <Badge tone={reconciliationSeverityTone(check.severity)}>
+                          {check.severity === "block" ? "阻断" : "告警"}
+                        </Badge>
+                        <span style={{ color: "var(--ink-700)" }}>
+                          {check.message}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: "var(--green-600, #079455)" }}>
+                    无阻断或告警项
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                点击「运行校验」生成本期对账单与可结判定
+              </div>
+            )}
+          </div>
+        </Card>
+
+        {complexCost?.enabled ? (
+          <Card
+            title="复杂成本规则"
+            extra={<Badge tone="green">已开通</Badge>}
+            padded={true}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 13, color: "var(--ink-700)" }}>
+                  已用 {Number(complexCost.usedProjects ?? 0)} /{" "}
+                  {Number(complexCost.includedProjects ?? 0)} 个项目额度
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "var(--ink-400)",
+                    marginTop: 4,
+                  }}
+                >
+                  CPA/CPS/礼物/投流/供应商费用需导入或人工确认后进入批次
+                </div>
+              </div>
+              <Button
+                kind="default"
+                onClick={() =>
+                  setSettlementMessage("复杂成本规则配置请在项目设置中维护。")
+                }
+              >
+                成本规则设置
+              </Button>
+            </div>
           </Card>
-          <Card>
-            <Metric
-              label="本月厂家应收 (草稿)"
-              value="¥286,400"
-              delta="+¥120k"
-              hint="2 个待确认批次"
+        ) : null}
+
+        <Card padded={false}>
+          <div
+            style={{
+              padding: "12px 16px",
+              borderBottom: "1px solid var(--line)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  fontSize: 14,
+                  fontWeight: 700,
+                  color: "var(--ink-900)",
+                }}
+              >
+                项目结算详情
+              </div>
+              <div
+                className="mono"
+                style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 3 }}
+              >
+                {selectedProjectId || "no-project-selected"}
+              </div>
+            </div>
+            <select
+              aria-label="结算项目"
+              value={selectedProjectId}
+              onChange={selectProject}
+              style={{ ...taskInputStyle, width: 260 }}
+            >
+              {projectOptions.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div
+            style={{
+              padding: "0 16px",
+              borderBottom: "1px solid var(--line)",
+            }}
+          >
+            <Tabs
+              value={detailTab}
+              onChange={setDetailTab}
+              items={[
+                { key: "summary", label: "结算详情" },
+                { key: "finance", label: "项目财务设置" },
+                { key: "payable", label: "主播应付规则" },
+                { key: "cost", label: "项目开支" },
+              ]}
             />
-          </Card>
-          <Card>
-            <Metric
-              label="本月主播应付 (锁定)"
-              value="¥92,400"
-              hint="已发送至财务"
+          </div>
+          {detailTab === "summary" && (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "0.85fr 1.35fr",
+              gap: 16,
+              padding: 16,
+            }}
+          >
+            <div>
+              <KV label="项目名称">{selectedProject?.name || "暂无项目"}</KV>
+              <KV label="项目编号">
+                <span className="mono">
+                  {selectedProject?.code || selectedProjectId || "未设置"}
+                </span>
+              </KV>
+              <KV label="结算方式">
+                <Badge tone="blue">
+                  {SETTLEMENT_METHOD_OPTIONS.find(
+                    (option) =>
+                      option.value === ruleDraft.defaultSettlementMethod,
+                  )?.label || ruleDraft.defaultSettlementMethod}
+                </Badge>
+              </KV>
+              <KV label="项目周期">
+                {selectedProject?.start || selectedProject?.end
+                  ? `${selectedProject?.start || "未设置"} → ${
+                      selectedProject?.end || "未设置"
+                    }`
+                  : "未设置"}
+              </KV>
+              <KV label="待入池">
+                <span className="num">{projectSettlementPool.length}</span> 条
+              </KV>
+              <KV label="批次数">
+                <span className="num">{projectBatches.length}</span> 个
+              </KV>
+            </div>
+            <form
+              onSubmit={saveProjectRule}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, minmax(120px, 1fr)) auto",
+                gap: 10,
+                alignItems: "end",
+                minWidth: 0,
+              }}
+            >
+              <TaskFormLabel label="默认结算">
+                <select
+                  value={ruleDraft.defaultSettlementMethod}
+                  onChange={updateRuleDraft("defaultSettlementMethod")}
+                  style={taskInputStyle}
+                >
+                  {SETTLEMENT_METHOD_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </TaskFormLabel>
+              <TaskFormLabel label="厂家单价（CPT 小时单价）">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={ruleDraft.defaultHourlyRate}
+                  onChange={updateRuleDraft("defaultHourlyRate")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="底薪">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={ruleDraft.defaultBaseSalary}
+                  onChange={updateRuleDraft("defaultBaseSalary")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <Button
+                kind="primary"
+                type="submit"
+                disabled={!!busyAction || !selectedProjectId}
+              >
+                {busyAction === "project-rule" ? "保存中…" : "保存项目规则"}
+              </Button>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <CollapsibleSection
+                  title="进阶结算规则"
+                  hint="阶梯小时单价 / 扣罚 / 保底封顶"
+                >
+                  <SettlementRuleBuilder
+                    value={ruleDraft.defaultSettlementRule}
+                    onChange={(next) =>
+                      setRuleDraft((draft) => ({
+                        ...draft,
+                        defaultSettlementRule: next,
+                      }))
+                    }
+                    flatHourlyRate={
+                      draftNumber(ruleDraft.defaultHourlyRate) || 0
+                    }
+                    method={ruleDraft.defaultSettlementMethod}
+                  />
+                  <div
+                    style={{
+                      marginTop: 8,
+                      fontSize: 12,
+                      color: "var(--ink-400)",
+                    }}
+                  >
+                    进阶规则随上方「保存项目规则」一并保存。
+                  </div>
+                </CollapsibleSection>
+              </div>
+            </form>
+          </div>
+          )}
+
+          {detailTab === "finance" && (
+          <div style={{ padding: 16 }}>
+          <form
+            onSubmit={saveProjectFinancials}
+            style={{ display: "flex", flexDirection: "column", gap: 12 }}
+          >
+            <ProjectFinancialSettings
+              value={financialDraft}
+              onChange={setFinancialDraft}
+              expectedReceivableCents={Math.round(
+                (settlementSummary.vendorReceivable || 0) * 100,
+              )}
             />
-          </Card>
-          <Card style={{ borderColor: "var(--blue-200)" }}>
-            <Metric label="本月预估毛利" value="¥73,200" delta="34.2% 毛利率" />
-          </Card>
-        </div>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <Button
+                kind="primary"
+                type="submit"
+                disabled={!!busyAction || !selectedProjectId}
+              >
+                {busyAction === "project-financials"
+                  ? "保存中…"
+                  : "保存财务设置"}
+              </Button>
+            </div>
+          </form>
+          </div>
+          )}
+
+          {detailTab === "payable" && (
+          <div style={{ padding: 16 }}>
+          <form
+            onSubmit={saveStreamerRule}
+            style={{ display: "flex", flexDirection: "column", gap: 12 }}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                gap: 10,
+                alignItems: "end",
+                minWidth: 0,
+              }}
+            >
+              <TaskFormLabel label="主播">
+                <select
+                  value={streamerRuleDraft.streamerId}
+                  onChange={updateStreamerRuleDraft("streamerId")}
+                  style={taskInputStyle}
+                >
+                  <option value="">选择主播</option>
+                  {streamerRuleOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.name}
+                    </option>
+                  ))}
+                </select>
+              </TaskFormLabel>
+              <TaskFormLabel label="结算方式">
+                <select
+                  value={streamerRuleDraft.settlementMethod}
+                  onChange={updateStreamerRuleDraft("settlementMethod")}
+                  style={taskInputStyle}
+                >
+                  {SETTLEMENT_METHOD_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </TaskFormLabel>
+              <TaskFormLabel label="小时单价">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={streamerRuleDraft.hourlyRate}
+                  onChange={updateStreamerRuleDraft("hourlyRate")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="底薪">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={streamerRuleDraft.baseSalary}
+                  onChange={updateStreamerRuleDraft("baseSalary")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="CPS 比例(%)">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={streamerRuleDraft.cpsRatePercent}
+                  onChange={updateStreamerRuleDraft("cpsRatePercent")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="原因">
+                <input
+                  type="text"
+                  value={streamerRuleDraft.reason}
+                  onChange={updateStreamerRuleDraft("reason")}
+                  style={taskInputStyle}
+                  placeholder="可选，默认记为规则调整"
+                />
+              </TaskFormLabel>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <Button
+                kind="primary"
+                type="submit"
+                disabled={
+                  !!busyAction ||
+                  !selectedProjectId ||
+                  !streamerRuleDraft.streamerId
+                }
+              >
+                {busyAction === "streamer-rule"
+                  ? "保存中…"
+                  : "保存主播应付规则"}
+              </Button>
+            </div>
+          </form>
+          </div>
+          )}
+
+          {detailTab === "cost" && (
+          <div style={{ padding: 16 }}>
+          <form
+            onSubmit={submitCostItem}
+            style={{ display: "flex", flexDirection: "column", gap: 12 }}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                gap: 10,
+                alignItems: "end",
+                minWidth: 0,
+              }}
+            >
+              <TaskFormLabel label="成本类型">
+                <select
+                  value={costDraft.itemType}
+                  onChange={updateCostDraft("itemType")}
+                  style={taskInputStyle}
+                >
+                  {COST_ITEM_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </TaskFormLabel>
+              <TaskFormLabel label="金额(元)">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={costDraft.amountYuan}
+                  onChange={updateCostDraft("amountYuan")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="方向">
+                <select
+                  value={costDraft.direction}
+                  onChange={updateCostDraft("direction")}
+                  style={taskInputStyle}
+                >
+                  {COST_DIRECTION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </TaskFormLabel>
+              <TaskFormLabel label="证据等级">
+                <select
+                  value={costDraft.evidenceLevel}
+                  onChange={updateCostDraft("evidenceLevel")}
+                  style={taskInputStyle}
+                >
+                  {COST_EVIDENCE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </TaskFormLabel>
+              <TaskFormLabel label="原因">
+                <input
+                  type="text"
+                  value={costDraft.reason}
+                  onChange={updateCostDraft("reason")}
+                  style={taskInputStyle}
+                  placeholder="必填，记入审计"
+                />
+              </TaskFormLabel>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+              }}
+            >
+              <Button
+                kind="default"
+                onClick={loadCostItems}
+                disabled={!!busyAction || !selectedProjectId}
+              >
+                {busyAction === "cost-load" ? "加载中…" : "加载/刷新"}
+              </Button>
+              <Button
+                kind="primary"
+                type="submit"
+                disabled={!!busyAction || !selectedProjectId}
+              >
+                {busyAction === "cost-create" ? "录入中…" : "录入外部成本"}
+              </Button>
+            </div>
+          </form>
+
+          {costItemsLoadedFor === selectedProjectId ? (
+            costItems.length ? (
+              <div
+                style={{
+                  marginTop: 12,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                }}
+              >
+                {costItems.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      padding: "6px 10px",
+                      borderRadius: 8,
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        fontSize: 12,
+                      }}
+                    >
+                      <Badge tone={costStatusTone(item.status)}>
+                        {costStatusLabel(item.status)}
+                      </Badge>
+                      <span style={{ color: "var(--ink-700)" }}>
+                        {item.itemType} · {item.direction} ·{" "}
+                        {formatYuanFromCents(item.amountCents)}
+                      </span>
+                      <span style={{ color: "var(--ink-400)" }}>
+                        {item.reason}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {canConfirmCostItem(item.status) ? (
+                        <Button
+                          kind="default"
+                          onClick={() => reviewCostItem(item.id, "confirmed")}
+                          disabled={!!busyAction}
+                        >
+                          确认
+                        </Button>
+                      ) : null}
+                      {canVoidCostItem(item.status) ? (
+                        <Button
+                          kind="ghost"
+                          onClick={() => reviewCostItem(item.id, "voided")}
+                          disabled={!!busyAction}
+                        >
+                          作废
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                style={{
+                  marginTop: 12,
+                  fontSize: 12,
+                  color: "var(--ink-400)",
+                }}
+              >
+                本项目暂无外部成本记录
+              </div>
+            )
+          ) : (
+            <div
+              style={{ marginTop: 12, fontSize: 12, color: "var(--ink-400)" }}
+            >
+              点击「加载/刷新」查看本项目已录入的外部成本
+            </div>
+          )}
+          </div>
+          )}
+        </Card>
 
         {settlementMessage ? (
           <div
@@ -7452,7 +15673,7 @@ function ScreenSettlement({ go }) {
         ) : null}
 
         <SettlementPoolPreview
-          rows={settlementPool}
+          rows={projectSettlementPool}
           settlementScope={settlementScope}
         />
 
@@ -7475,18 +15696,20 @@ function ScreenSettlement({ go }) {
                 value={type}
                 onChange={setType}
                 items={[
-                  { key: "all", label: "全部", count: batches.length },
+                  { key: "all", label: "全部", count: projectBatches.length },
                   {
                     key: "vendor_receivable",
                     label: "厂家应收",
-                    count: batches.filter((b) => b.type === "vendor_receivable")
-                      .length,
+                    count: projectBatches.filter(
+                      (b) => b.type === "vendor_receivable",
+                    ).length,
                   },
                   {
                     key: "streamer_payable",
                     label: "主播应付",
-                    count: batches.filter((b) => b.type === "streamer_payable")
-                      .length,
+                    count: projectBatches.filter(
+                      (b) => b.type === "streamer_payable",
+                    ).length,
                   },
                 ]}
               />
@@ -7504,7 +15727,7 @@ function ScreenSettlement({ go }) {
                         className="mono"
                         style={{ fontSize: 11, color: "var(--ink-400)" }}
                       >
-                        {r.id}
+                        {displayRecordId(r.id, "结算批次")}
                       </div>
                       <div
                         style={{
@@ -7556,11 +15779,14 @@ function ScreenSettlement({ go }) {
                 },
                 {
                   title: "状态",
-                  render: (r) => (
-                    <Badge tone={BATCH_STATUS[r.status].tone} dot>
-                      {BATCH_STATUS[r.status].label}
-                    </Badge>
-                  ),
+                  render: (r) => {
+                    const status = batchStatusMeta(r.status);
+                    return (
+                      <Badge tone={status.tone} dot>
+                        {status.label}
+                      </Badge>
+                    );
+                  },
                 },
               ]}
               rows={filtered}
@@ -7570,7 +15796,7 @@ function ScreenSettlement({ go }) {
           {/* Batch detail */}
           <BatchDetail
             id={activeId}
-            batches={batches}
+            batches={projectBatches}
             batchDetails={batchDetails}
             onAddManualItem={() => {
               setManualFormOpen(true);
@@ -7578,12 +15804,28 @@ function ScreenSettlement({ go }) {
             }}
             onLockBatch={lockBatch}
             onReopenBatch={reopenBatch}
+            lockGate={activeGate}
+            lockBlockMessage={reconciliationBlockMessage(activeReconciliation)}
             busyAction={busyAction}
           />
         </div>
       </div>
     </>
   );
+}
+
+function sumSettlementBatchAmounts(batches) {
+  return batches.reduce((sum, batch) => sum + Number(batch.amount ?? 0), 0);
+}
+
+function formatSettlementCurrency(value) {
+  const amount = Math.round(Number(value) || 0);
+  const prefix = amount < 0 ? "-¥" : "¥";
+  return `${prefix}${Math.abs(amount).toLocaleString()}`;
+}
+
+function settlementBatchHint(count, label) {
+  return count > 0 ? `${count} 个${label}批次` : `暂无${label}批次`;
 }
 
 function SettlementPoolPreview({ rows, settlementScope }) {
@@ -7641,7 +15883,7 @@ function SettlementPoolPreview({ rows, settlementScope }) {
                     className="mono"
                     style={{ fontSize: 10.5, color: "var(--ink-400)" }}
                   >
-                    {r.id}
+                    {displayRecordId(r.id, "结算项")}
                   </div>
                 </div>
               </div>
@@ -7713,9 +15955,14 @@ function BatchDetail({
   onAddManualItem,
   onLockBatch,
   onReopenBatch,
+  lockGate = { evaluated: false, hasBlocking: false },
+  lockBlockMessage = "",
   busyAction,
 }) {
   const [detailMessage, setDetailMessage] = React.useState("");
+  const [auditBusy, setAuditBusy] = React.useState(false);
+  const auditEntries = useOpsAuditEntries();
+  const actions = useOpsLiveActions();
   const b = batches.find((x) => x.id === id) || batches[0] || BATCHES[1];
   if (!b) {
     return (
@@ -7767,6 +16014,28 @@ function BatchDetail({
   const showPendingDetail = (message) => {
     setDetailMessage(message);
   };
+  const batchAudit = auditEntries.filter(
+    (entry) =>
+      entry.objectId === b.id ||
+      (entry.module === "settlement" && entry.objectName === b.name),
+  );
+  const loadBatchAudit = async () => {
+    if (auditBusy) return;
+    setDetailMessage("");
+    if (!actions.refreshAuditEntries) {
+      setDetailMessage("审计明细需要登录后台后查看。");
+      return;
+    }
+    setAuditBusy(true);
+    try {
+      await actions.refreshAuditEntries();
+      setDetailMessage("批次审计明细已刷新，见下方审计轨迹。");
+    } catch (error) {
+      setDetailMessage(error?.message || "审计明细刷新失败，请稍后重试。");
+    } finally {
+      setAuditBusy(false);
+    }
+  };
 
   return (
     <div
@@ -7792,7 +16061,7 @@ function BatchDetail({
                 className="mono"
                 style={{ fontSize: 11, color: "var(--ink-400)" }}
               >
-                {b.id}
+                {displayRecordId(b.id, "结算批次")}
               </div>
               <div
                 style={{
@@ -7950,7 +16219,7 @@ function BatchDetail({
                       className="mono"
                       style={{ fontSize: 10.5, color: "var(--ink-400)" }}
                     >
-                      {r.id}
+                      {displayRecordId(r.id, "结算项")}
                     </div>
                   </div>
                 </div>
@@ -8070,13 +16339,10 @@ function BatchDetail({
               <Button
                 kind="ghost"
                 icon={<Icon.History size={14} />}
-                onClick={() =>
-                  showPendingDetail(
-                    "批次审计明细后台暂未接入，请查看下方审计轨迹。",
-                  )
-                }
+                onClick={loadBatchAudit}
+                disabled={auditBusy}
               >
-                查看审计
+                {auditBusy ? "刷新中…" : "查看审计"}
               </Button>
               <Button
                 kind="default"
@@ -8114,6 +16380,16 @@ function BatchDetail({
               </Button>
               <Button
                 kind="default"
+                onClick={() =>
+                  showPendingDetail(
+                    "复杂成本项需导入或人工确认后，再附加到结算批次。",
+                  )
+                }
+              >
+                添加复杂成本项
+              </Button>
+              <Button
+                kind="default"
                 onClick={() => showPendingDetail("批次草稿保存后台暂未接入。")}
               >
                 保存为草稿
@@ -8122,9 +16398,20 @@ function BatchDetail({
                 kind="primary"
                 icon={<Icon.Lock size={14} stroke="#fff" />}
                 onClick={onLockBatch}
-                disabled={!!busyAction}
+                disabled={!!busyAction || lockGate?.hasBlocking}
+                title={
+                  lockGate?.hasBlocking
+                    ? lockBlockMessage
+                    : lockGate?.evaluated
+                      ? undefined
+                      : "锁定前请先运行「单项目结算校验」"
+                }
               >
-                {busyAction === "lock" ? "处理中…" : "确认并锁定"}
+                {busyAction === "lock"
+                  ? "处理中…"
+                  : lockGate?.hasBlocking
+                    ? "校验未通过 · 不可锁定"
+                    : "确认并锁定"}
               </Button>
             </>
           )}
@@ -8132,11 +16419,77 @@ function BatchDetail({
       </Card>
 
       {/* Audit timeline */}
-      <Card title="批次审计轨迹" padded={true}>
-        <EmptyHint
-          title="暂无审计轨迹"
-          hint="批次操作日志会在后端返回后展示。"
-        />
+      <Card
+        title="批次审计轨迹"
+        extra={
+          batchAudit.length ? (
+            <Badge tone="neutral">{batchAudit.length} 条</Badge>
+          ) : null
+        }
+        padded={true}
+      >
+        {batchAudit.length ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {batchAudit.map((entry) => (
+              <div
+                key={entry.id}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  paddingBottom: 10,
+                  borderBottom: "1px solid var(--line)",
+                }}
+              >
+                <Avatar
+                  name={entry.actorName || entry.actorRole || "系统"}
+                  size={26}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "baseline",
+                      gap: 8,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12.5,
+                        fontWeight: 600,
+                        color: "var(--ink-900)",
+                      }}
+                    >
+                      {entry.actorName || "系统"}
+                    </span>
+                    <Badge tone={auditModuleTone(entry.module)}>
+                      {auditModuleLabel(entry.module)} / {entry.action}
+                    </Badge>
+                    <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                      {formatOpsMinute(entry.createdAt)}
+                    </span>
+                  </div>
+                  {entry.reason ? (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "var(--ink-500)",
+                        marginTop: 2,
+                      }}
+                    >
+                      原因：{entry.reason}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyHint
+            title="暂无审计轨迹"
+            hint="对该批次执行锁定/解锁/调整后，操作会记录在这里。点击上方「查看审计」可刷新。"
+          />
+        )}
       </Card>
     </div>
   );
@@ -8147,9 +16500,27 @@ function BatchDetail({
 
 function ScreenTasks({ go }) {
   const tasks = useOpsTasks();
-  const projects = useOpsProjects();
+  const ownerProjects = useOpsProjects();
+  const collaborationProjects = useOpsCollaborationProjects();
   const streamers = useOpsStreamers();
+  const applications = useOpsApplications();
   const actions = useOpsLiveActions();
+  const {
+    projects: projectData,
+    streamers: streamerData,
+    applications: applicationData,
+  } = React.useContext(OpsLiveDataContext);
+  const projects = React.useMemo(
+    () => [
+      ...ownerProjects,
+      ...collaborationProjects.filter(
+        (project) =>
+          !project.collaborationApplicationId &&
+          (project.collaborationId || project.collaborationAgreementId),
+      ),
+    ],
+    [collaborationProjects, ownerProjects],
+  );
   const [view, setView] = React.useState("board");
   const [project, setProject] = React.useState("all");
   const [streamerFilter, setStreamerFilter] = React.useState("all");
@@ -8173,9 +16544,7 @@ function ScreenTasks({ go }) {
   const pendingReviewCount = tasks.filter(
     (t) => t.status === "pending_review",
   ).length;
-  const anomalyCount = tasks.filter(
-    (t) => t.status === "abnormal" || t.anomaly,
-  ).length;
+  const anomalyCount = tasks.filter(isTaskOperationalAnomaly).length;
   const todayCount = tasks.filter(
     (t) => t.dayIdx === SCHEDULE_WEEK.todayIdx,
   ).length;
@@ -8191,13 +16560,50 @@ function ScreenTasks({ go }) {
     project === "all" ? null : projects.find((item) => item.id === project);
 
   React.useEffect(() => {
-    setBatchDraft((draft) => ({
-      ...draft,
-      projectId: draft.projectId || projects[0]?.id || "",
-      streamerIds:
-        draft.streamerIds || streamers.map((streamer) => streamer.id).join(","),
-    }));
-  }, [projects, streamers]);
+    if (projectData == null && actions.refreshProjects) {
+      actions
+        .refreshProjects()
+        .catch((error) => warnBackgroundRefreshFailure("tasks", error));
+    }
+  }, [actions, projectData]);
+
+  React.useEffect(() => {
+    if (streamerData == null && actions.refreshStreamers) {
+      actions
+        .refreshStreamers()
+        .catch((error) => warnBackgroundRefreshFailure("tasks", error));
+    }
+  }, [actions, streamerData]);
+
+  React.useEffect(() => {
+    setBatchDraft((draft) => {
+      const nextProjectId = draft.projectId || projects[0]?.id || "";
+      const nextStreamerIds =
+        draft.streamerIds ||
+        joinedStreamersForProject(nextProjectId, streamers, applications)
+          .map((streamer) => streamer.id)
+          .join(",");
+      if (
+        draft.projectId === nextProjectId &&
+        draft.streamerIds === nextStreamerIds
+      ) {
+        return draft;
+      }
+      return {
+        ...draft,
+        projectId: nextProjectId,
+        streamerIds: nextStreamerIds,
+      };
+    });
+  }, [applications, projects, streamers]);
+
+  React.useEffect(() => {
+    if (applicationData == null && actions.refreshApplications) {
+      actions
+        .refreshApplications()
+        .catch((error) => warnBackgroundRefreshFailure("tasks", error));
+    }
+  }, [actions, applicationData]);
 
   React.useEffect(() => {
     if (project === "all") return;
@@ -8212,9 +16618,7 @@ function ScreenTasks({ go }) {
     try {
       await fn();
     } catch (error) {
-      globalThis.alert?.(
-        error instanceof Error ? error.message : "任务操作失败",
-      );
+      setTaskMessage(formatTaskActionError(error));
     } finally {
       setBusyAction(null);
     }
@@ -8225,29 +16629,41 @@ function ScreenTasks({ go }) {
       project === "all"
         ? projects[0]
         : projects.find((item) => item.id === project);
-    const defaultStreamer =
-      streamerFilter === "all"
-        ? streamers[0]
-        : streamers.find((item) => item.id === streamerFilter);
-    if (!defaultProject || !defaultStreamer) {
+    if (!defaultProject) {
       globalThis.alert?.("请先创建项目和主播档案。");
       return;
     }
+    const eligibleStreamers = joinedStreamersForProject(
+      defaultProject.id,
+      streamers,
+      applications,
+    );
+    const defaultStreamer =
+      streamerFilter === "all"
+        ? eligibleStreamers[0]
+        : eligibleStreamers.find((item) => item.id === streamerFilter);
 
     setSelectedTask({
       _new: true,
       dayIdx: SCHEDULE_WEEK.todayIdx,
       projectId: defaultProject.id,
-      streamerId: defaultStreamer.id,
+      streamerId: defaultStreamer?.id || "",
     });
   };
 
   const createTask = async (input) => {
     await runTaskAction("create", async () => {
-      await actions.createLiveTask?.(input);
       const taskProject = projects.find((item) => item.id === input.projectId);
+      const collaborationId =
+        taskProject?.collaborationId ?? taskProject?.collaborationAgreementId;
+      await actions.createLiveTask?.({
+        ...input,
+        ...(collaborationId ? { collaborationId } : {}),
+      });
       setTaskMessage(
-        `已创建任务并绑定项目：${taskProject?.name || input.projectId}`,
+        `已创建任务并绑定项目：${
+          taskProject?.name || displayRecordId(input.projectId, "项目")
+        }`,
       );
       setSelectedTask(null);
     });
@@ -8284,13 +16700,22 @@ function ScreenTasks({ go }) {
         batchDraft.endTime,
       );
       const plannedDuration = scheduleMinutes(plannedStartAt, plannedEndAt);
+      const eligibleStreamers = joinedStreamersForProject(
+        project.id,
+        streamers,
+        applications,
+      );
       const batchTasks = batchDraft.streamerIds
         .split(",")
         .map((id) => id.trim())
         .filter(Boolean)
         .map((streamerId) => {
-          const streamer = streamerById(streamerId, streamers);
-          if (!streamer) return null;
+          const streamer = eligibleStreamers.find(
+            (item) => item.id === streamerId,
+          );
+          if (!streamer) {
+            return null;
+          }
           return {
             projectId: project.id,
             streamerId: streamer.id,
@@ -8299,12 +16724,18 @@ function ScreenTasks({ go }) {
             plannedEndAt,
             plannedDuration,
             note: "经营端批量排班创建",
+            ...(project.collaborationId || project.collaborationAgreementId
+              ? {
+                  collaborationId:
+                    project.collaborationId ?? project.collaborationAgreementId,
+                }
+              : {}),
           };
         })
         .filter(Boolean);
 
       if (batchTasks.length === 0) {
-        setTaskMessage("请至少选择一个有效主播");
+        setTaskMessage(JOINED_STREAMER_REQUIRED_MESSAGE);
         return;
       }
 
@@ -8321,7 +16752,6 @@ function ScreenTasks({ go }) {
     <>
       <PageHeader
         title="排班与任务"
-        subtitle="项目维度排班看板 + 任务表格 · 任务完成依据为报数审核通过"
         actions={
           <>
             <Button
@@ -8362,28 +16792,70 @@ function ScreenTasks({ go }) {
           gap: 16,
         }}
       >
-        {/* Top metrics */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(5, 1fr)",
-            gap: 14,
+        {/* Grouped task strip — primary 今日任务 + compact secondaries */}
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="今日任务"
-              value={todayCount}
-              unit="个"
-              hint={SCHEDULE_WEEK.days[SCHEDULE_WEEK.todayIdx]?.date ?? "本周"}
-            />
-          </Card>
-          <Card>
-            <Metric
-              label="正在直播"
-              value={liveCount}
-              unit="个"
-              accent={
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 140,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>今日任务</div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 6,
+                marginTop: 4,
+              }}
+            >
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                  letterSpacing: "-0.02em",
+                }}
+              >
+                {todayCount}
+              </span>
+              <span style={{ fontSize: 12, color: "var(--ink-400)" }}>个</span>
+            </div>
+            <div style={{ fontSize: 12, marginTop: 4, color: "var(--ink-400)" }}>
+              {SCHEDULE_WEEK.days[SCHEDULE_WEEK.todayIdx]?.date ?? "本周"}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--ink-400)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
                 <span
                   style={{
                     width: 6,
@@ -8393,44 +16865,77 @@ function ScreenTasks({ go }) {
                     boxShadow: "0 0 0 3px rgba(30,80,200,0.25)",
                   }}
                 />
-              }
-            />
-          </Card>
-          <Card>
-            <Metric
+                正在直播
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 4,
+                  marginTop: 4,
+                }}
+              >
+                <span
+                  className="num"
+                  style={{
+                    fontSize: 18,
+                    fontWeight: 600,
+                    color: "var(--ink-900)",
+                  }}
+                >
+                  {liveCount}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>个</span>
+              </div>
+            </div>
+            <MiniStat
               label="待报数 / 待审核"
               value={`${pendingReportCount} / ${pendingReviewCount}`}
             />
-          </Card>
-          <Card
-            style={{ borderColor: anomalyCount > 0 ? "#F3C4C9" : undefined }}
-          >
-            <Metric
-              label="异常任务"
-              value={anomalyCount}
-              unit="项"
-              deltaTone="red"
-              accent={
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>异常任务</div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 4,
+                  marginTop: 4,
+                }}
+              >
                 <span
+                  className="num"
                   style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 999,
-                    background: "var(--danger-600)",
+                    fontSize: 18,
+                    fontWeight: 600,
+                    color:
+                      anomalyCount > 0
+                        ? "var(--danger-600)"
+                        : "var(--ink-900)",
                   }}
-                />
-              }
-            />
-          </Card>
-          <Card>
-            <Metric
+                >
+                  {anomalyCount}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>项</span>
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  marginTop: 2,
+                  color:
+                    anomalyCount > 0 ? "var(--danger-600)" : "var(--ink-400)",
+                }}
+              >
+                {anomalyCount > 0 ? "需复核" : "正常"}
+              </div>
+            </div>
+            <MiniStat
               label="本周已排"
               value={tasks.length}
               unit="个"
               hint={`共 ${streamers.length} 位主播`}
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
         <TaskProjectMappingStrip
           project={selectedProject}
@@ -8607,6 +17112,7 @@ function ScreenTasks({ go }) {
           task={selectedTask}
           projects={projects}
           streamers={streamers}
+          applications={applications}
           onClose={() => setSelectedTask(null)}
           onCreateTask={createTask}
           onCancelTask={cancelTask}
@@ -8692,9 +17198,7 @@ function TaskProjectMappingStrip({
   totalTasks = 0,
   onOpenProject,
 }) {
-  const anomalyCount = tasks.filter(
-    (task) => task.anomaly || task.status === "abnormal",
-  ).length;
+  const anomalyCount = tasks.filter(isTaskOperationalAnomaly).length;
   const pendingCount = tasks.filter((task) =>
     ["pending_live", "live", "pending_report", "pending_review"].includes(
       task.status,
@@ -8746,7 +17250,7 @@ function TaskProjectMappingStrip({
         {project.name}
       </span>
       <span className="mono" style={{ color: "var(--ink-400)" }}>
-        {project.code || project.id}
+        {project.code || "未设置编号"}
       </span>
       <span>负责人：{project.leadOps || "未分配"}</span>
       <span>
@@ -8787,10 +17291,64 @@ function taskMatchesTaskFilters(task, filters, projects = []) {
     [task.streamerId, task.streamerName]
       .filter(Boolean)
       .includes(filters.streamer);
-  const statusKey = task.anomaly ? "abnormal" : task.status;
+  const statusKey = getTaskDisplayStatusKey(task);
   const matchesStatus =
     filters.status === "all" || statusKey === filters.status;
   return matchesProject && matchesStreamer && matchesStatus;
+}
+
+function getTaskDisplayStatusKey(task) {
+  const baseStatus = task?.anomaly
+    ? "abnormal"
+    : task?.status || "pending_live";
+  if (
+    baseStatus === "pending_live" &&
+    hasTaskPlannedWindowEnded(task?.plannedEndAt)
+  ) {
+    return "missed_live";
+  }
+  return baseStatus;
+}
+
+function hasTaskPlannedWindowEnded(plannedEndAt) {
+  if (!plannedEndAt) return false;
+  const plannedEnd = new Date(plannedEndAt);
+  return (
+    !Number.isNaN(plannedEnd.getTime()) && Date.now() > plannedEnd.getTime()
+  );
+}
+
+function getTaskOperationalAnomalyKey(task) {
+  if (task?.anomaly) return task.anomaly;
+  if (task?.status === "abnormal") return "abnormal";
+  if (getTaskDisplayStatusKey(task) === "missed_live") return "not_started";
+  return "";
+}
+
+function isTaskOperationalAnomaly(task) {
+  return Boolean(getTaskOperationalAnomalyKey(task));
+}
+
+function taskOperationalAnomalyDescription(anomalyKey) {
+  const descriptions = {
+    not_started:
+      "计划窗口已结束但系统未记录开播，建议联系主播补充未直播原因或重新排班。",
+    unstart:
+      "计划窗口已结束但系统未记录开播，建议联系主播补充未直播原因或重新排班。",
+    not_reported: "直播任务已结束但尚未提交报数，建议提醒主播尽快补报。",
+    report_overdue: "已超过项目上传期限，建议运营提示主播尽快补传截图。",
+    late_report: "已超过项目上传期限，建议运营提示主播尽快补传截图。",
+    missing_checkout_screenshot: "任务缺少下播截图，建议提醒主播补充履约证据。",
+    live_over_48h:
+      "直播持续超过 48 小时未上传下播截图，建议主动联系主播并提示截图上传。",
+    unstopped:
+      "直播持续超过 48 小时未上传下播截图，建议主动联系主播并提示截图上传。",
+    short: "实际直播时长低于计划时长 75%，触发时长不足异常。",
+    rejected: "报数审核被驳回后尚未重新提交，建议跟进主播补充材料。",
+    conflict: "该任务与同主播其他排班存在时间冲突，请调整排班窗口。",
+    abnormal: "任务已进入异常状态，请运营跟进处理并记录原因。",
+  };
+  return descriptions[anomalyKey] || descriptions.abnormal;
 }
 
 function resolveTaskProject(task, projects = []) {
@@ -8829,14 +17387,31 @@ function ScheduleBoard({ filters, onSelectTask }) {
   const knownStreamers = useOpsStreamers();
   const [unit, setUnit] = React.useState("day"); // 'day' | 'hour'
   const [toolbarMessage, setToolbarMessage] = React.useState("");
+  const [weekOffset, setWeekOffset] = React.useState(0);
+
+  const weekMeta = React.useMemo(() => {
+    if (weekOffset === 0) {
+      return { label: "本周排班", days: SCHEDULE_WEEK.days };
+    }
+    const base = new Date();
+    base.setDate(base.getDate() + weekOffset * 7);
+    const week = createScheduleWeek(base);
+    return {
+      label: `${week.days[0].date} - ${week.days[6].date}`,
+      days: week.days.map((day) => ({ ...day, today: false })),
+    };
+  }, [weekOffset]);
 
   // Filter tasks
   const visibleTasks = tasks.filter((task) =>
     taskMatchesTaskFilters(task, filters, projects),
   );
+  // Sample tasks use a relative day index within the current week, so only the
+  // current week carries schedule data; other weeks render an empty board.
+  const boardTasks = weekOffset === 0 ? visibleTasks : [];
   const streamerIds = Array.from(
     new Set(
-      visibleTasks
+      boardTasks
         .map((task) => task.streamerId || task.streamerName)
         .filter(Boolean),
     ),
@@ -8844,16 +17419,16 @@ function ScheduleBoard({ filters, onSelectTask }) {
   const streamers = streamerIds.map((id) => {
     const fromKnown = knownStreamers.find((streamer) => streamer.id === id);
     if (fromKnown) return fromKnown;
-    const task = visibleTasks.find(
+    const task = boardTasks.find(
       (item) => item.streamerId === id || item.streamerName === id,
     );
-    return { id, alias: task?.streamerName || id };
+    return { id, alias: displayTaskStreamerName(task) };
   });
   const dayWidth = "minmax(140px, 1fr)";
   const HOUR_START = 12; // visible window: 12:00 - 24:00 (used in hour view)
   const HOUR_END = 24;
 
-  if (!visibleTasks.length) {
+  if (weekOffset === 0 && !visibleTasks.length) {
     return (
       <div style={{ padding: 16 }}>
         <EmptyHint title="暂无排班数据" hint="创建排班或任务后会展示周视图。" />
@@ -8877,24 +17452,43 @@ function ScheduleBoard({ filters, onSelectTask }) {
         <button
           type="button"
           style={iconBtn}
-          onClick={() => setToolbarMessage("上一周排班后台暂未接入。")}
+          aria-label="上一周"
+          onClick={() => {
+            setToolbarMessage("");
+            setWeekOffset((value) => value - 1);
+          }}
         >
           <Icon.ChevLeft size={14} />
         </button>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}>
-          本周排班
+        <div
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: "var(--ink-900)",
+            minWidth: 96,
+            textAlign: "center",
+          }}
+        >
+          {weekMeta.label}
         </div>
         <button
           type="button"
           style={iconBtn}
-          onClick={() => setToolbarMessage("下一周排班后台暂未接入。")}
+          aria-label="下一周"
+          onClick={() => {
+            setToolbarMessage("");
+            setWeekOffset((value) => value + 1);
+          }}
         >
           <Icon.ChevRight size={14} />
         </button>
         <Button
           size="sm"
           kind="default"
-          onClick={() => setToolbarMessage("已定位到本周排班。")}
+          onClick={() => {
+            setWeekOffset(0);
+            setToolbarMessage("");
+          }}
         >
           今天
         </Button>
@@ -8986,7 +17580,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
         >
           主播 / 日期
         </div>
-        {SCHEDULE_WEEK.days.map((d, i) => (
+        {weekMeta.days.map((d, i) => (
           <div
             key={i}
             style={{
@@ -9027,6 +17621,19 @@ function ScheduleBoard({ filters, onSelectTask }) {
           </div>
         ))}
       </div>
+
+      {streamers.length === 0 ? (
+        <div
+          style={{
+            padding: 32,
+            textAlign: "center",
+            color: "var(--ink-400)",
+            fontSize: 13,
+          }}
+        >
+          {weekMeta.label} 暂无排班记录。
+        </div>
+      ) : null}
 
       {/* Rows */}
       {streamers.map((s, ri) => {
@@ -9082,7 +17689,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
             </div>
 
             {/* Day cells */}
-            {SCHEDULE_WEEK.days.map((d, di) => {
+            {weekMeta.days.map((d, di) => {
               const dayTasks = sTasks.filter((t) => t.dayIdx === di);
               return (
                 <div
@@ -9190,7 +17797,7 @@ function ScheduleBoard({ filters, onSelectTask }) {
 
 // Day-unit block — full width within its day cell
 function DayTaskBlock({ task, projects = [], onClick }) {
-  const statusKey = task.anomaly ? "abnormal" : task.status;
+  const statusKey = getTaskDisplayStatusKey(task);
   const st = TASK_STATUS[statusKey] || TASK_STATUS.pending_live;
   const tones = {
     blue: {
@@ -9262,7 +17869,20 @@ function DayTaskBlock({ task, projects = [], onClick }) {
         >
           {formatHour(task.startHour)} – {formatHour(task.endHour)}
         </span>
-        <span style={{ flex: 1 }} />
+        <span style={{ flex: 1, minWidth: 4 }} />
+        <span
+          style={{
+            fontSize: 10,
+            color: c.text,
+            opacity: 0.9,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            maxWidth: 82,
+          }}
+        >
+          {st.label}
+        </span>
         <span
           className="num"
           style={{ fontSize: 10, color: c.text, opacity: 0.75 }}
@@ -9308,7 +17928,7 @@ function HourTaskBar({ task, projects = [], hourStart, hourEnd, onClick }) {
     100 - leftPct,
     ((task.endHour - task.startHour) / span) * 100,
   );
-  const statusKey = task.anomaly ? "abnormal" : task.status;
+  const statusKey = getTaskDisplayStatusKey(task);
   const st = TASK_STATUS[statusKey] || TASK_STATUS.pending_live;
 
   const tones = {
@@ -9353,7 +17973,8 @@ function HourTaskBar({ task, projects = [], hourStart, hourEnd, onClick }) {
         padding: 0,
         cursor: "pointer",
       }}
-      title={`${task.name} · ${formatHour(task.startHour)} - ${formatHour(task.endHour)}`}
+      aria-label={`${task.name} · ${st.label} · ${formatHour(task.startHour)} - ${formatHour(task.endHour)}`}
+      title={`${task.name} · ${st.label} · ${formatHour(task.startHour)} - ${formatHour(task.endHour)}`}
     >
       <div
         style={{
@@ -9393,9 +18014,26 @@ function HourTaskBar({ task, projects = [], hourStart, hourEnd, onClick }) {
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
+            flex: "1 1 auto",
+            minWidth: 0,
           }}
         >
           {projectName} · {task.name.replace(/^.+·\s*/, "")}
+        </span>
+        <span
+          style={{
+            marginLeft: 6,
+            maxWidth: 72,
+            fontSize: 9.5,
+            color: c.text,
+            opacity: 0.8,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            flexShrink: 1,
+          }}
+        >
+          {st.label}
         </span>
         <span
           style={{
@@ -9464,9 +18102,133 @@ function projectById(projectId, projects = PROJECTS) {
   return projects.find((item) => item.id === projectId) || projects[0] || null;
 }
 
+function joinedStreamersForProject(
+  projectId,
+  streamers = STREAMERS,
+  applications = [],
+) {
+  if (!projectId) return [];
+  const project = { id: projectId };
+  const joinedFromStreamers = streamers.filter((streamer) =>
+    isStreamerJoinedProject(streamer, projectId),
+  );
+  const joinedFromApplications = applications
+    .filter(
+      (application) =>
+        application.status === "joined" &&
+        applicationBelongsToProject(application, project),
+    )
+    .map((application) =>
+      applicationToScheduledStreamer(application, streamers, projectId),
+    )
+    .filter(Boolean);
+
+  return mergeRosterRows(joinedFromStreamers, joinedFromApplications);
+}
+
+function applicationToScheduledStreamer(application, streamers, projectId) {
+  const streamer = application.streamer || {};
+  const streamerId =
+    application.streamerId || application.streamer_id || streamer.id;
+  if (!streamerId) return null;
+  const card = streamers.find((item) => item.id === streamerId);
+  const joinedProject = applicationJoinedProjectRecord(application, projectId);
+  const base = card || {
+    id: streamerId,
+    alias: streamer.displayName || streamer.name || streamerId,
+    real: streamer.realName || streamer.displayName || "未填写",
+    gender: "",
+    source: "项目邀约",
+    supplier: "未绑定",
+    games: [],
+    platforms: [],
+    style: "",
+    cooperation: streamer.cooperationStatus || "active",
+    risk: streamer.riskLevel || "low",
+    metrics: {},
+    matchScore: 65,
+    defaultRule: "CPT",
+    completedProjects: 0,
+    projects: [],
+  };
+
+  return {
+    ...base,
+    projects: ensureJoinedProject(base.projects, joinedProject),
+  };
+}
+
+function applicationJoinedProjectRecord(application, fallbackProjectId) {
+  const project = application.project || {};
+  return {
+    id:
+      application.projectId ||
+      application.project_id ||
+      project.id ||
+      fallbackProjectId,
+    code: project.code,
+    name: project.name,
+    status: "joined",
+    settlementHours: 0,
+    grossContrib: 0,
+  };
+}
+
+function ensureJoinedProject(projects = [], joinedProject) {
+  const existingProjects = Array.isArray(projects) ? projects : [];
+  if (!joinedProject.id) return existingProjects;
+  const hasProject = existingProjects.some(
+    (project) =>
+      project.id === joinedProject.id ||
+      (joinedProject.code && project.code === joinedProject.code) ||
+      (joinedProject.name && project.name === joinedProject.name),
+  );
+  if (hasProject) {
+    return existingProjects.map((project) =>
+      project.id === joinedProject.id ||
+      (joinedProject.code && project.code === joinedProject.code) ||
+      (joinedProject.name && project.name === joinedProject.name)
+        ? { ...project, status: "joined" }
+        : project,
+    );
+  }
+  return [...existingProjects, joinedProject];
+}
+
+function isStreamerJoinedProject(streamer, projectId) {
+  if (!streamer || !projectId || !Array.isArray(streamer.projects)) {
+    return false;
+  }
+  return streamer.projects.some(
+    (project) => project.id === projectId && project.status === "joined",
+  );
+}
+
 function streamerById(streamerId, streamers = STREAMERS) {
   return (
     streamers.find((item) => item.id === streamerId) || streamers[0] || null
+  );
+}
+
+function formatTaskActionError(error) {
+  const message = error instanceof Error ? error.message : "任务操作失败";
+  if (message.includes("Only joined project streamers can be scheduled")) {
+    return JOINED_STREAMER_REQUIRED_MESSAGE;
+  }
+  return message;
+}
+
+function normalizeTaskType(type) {
+  return TASK_TYPE_OPTIONS.some((option) => option.value === type)
+    ? type
+    : "project";
+}
+
+function taskTypeLabel(type) {
+  const normalizedType = normalizeTaskType(type);
+  return (
+    TASK_TYPE_OPTIONS.find((option) => option.value === normalizedType)
+      ?.label || "项目任务"
   );
 }
 
@@ -9476,6 +18238,7 @@ function opsLiveTaskInput({
   dayIdx = SCHEDULE_WEEK.todayIdx,
   startHour = 20,
   endHour = 23.5,
+  type = "project",
   note = "经营端页面创建任务",
   projects = PROJECTS,
   streamers = STREAMERS,
@@ -9492,6 +18255,7 @@ function opsLiveTaskInput({
     projectId: project.id,
     streamerId: streamer.id,
     title: `${project.name} · ${streamer.alias}`,
+    type: normalizeTaskType(type),
     plannedStartAt,
     plannedEndAt,
     plannedDuration: scheduleMinutes(plannedStartAt, plannedEndAt),
@@ -9536,7 +18300,7 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
               className="mono"
               style={{ fontWeight: 600, color: "var(--ink-900)" }}
             >
-              {r.id}
+              {displayRecordId(r.id, "任务")}
             </span>
           ),
         },
@@ -9545,7 +18309,7 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
           render: (r) => {
             const project = resolveTaskProject(r, projects);
             const projectName = project?.name || r.projectName || r.project;
-            const projectCode = project?.code || r.projectId || r.project;
+            const projectCode = project?.code || r.project || "未设置编号";
             return (
               <div>
                 <div style={{ fontWeight: 500, color: "var(--ink-900)" }}>
@@ -9555,14 +18319,7 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
                   className="mono"
                   style={{ fontSize: 11, color: "var(--ink-400)" }}
                 >
-                  {projectName} · {projectCode} ·{" "}
-                  {r.type === "project"
-                    ? "项目任务"
-                    : r.type === "trial"
-                      ? "试播任务"
-                      : r.type === "training"
-                        ? "训练任务"
-                        : "临时任务"}
+                  {projectName} · {projectCode} · {taskTypeLabel(r.type)}
                 </div>
               </div>
             );
@@ -9572,10 +18329,11 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
           title: "主播",
           render: (r) => {
             const s = resolveTaskStreamer(r, streamers);
+            const streamerLabel = s?.alias || displayTaskStreamerName(r);
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Avatar name={s?.alias || r.streamerName} size={24} />
-                <span>{s?.alias || r.streamerName || r.streamerId}</span>
+                <Avatar name={streamerLabel} size={24} />
+                <span>{streamerLabel}</span>
               </div>
             );
           },
@@ -9603,7 +18361,7 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
         {
           title: "状态",
           render: (r) => {
-            const k = r.anomaly ? "abnormal" : r.status;
+            const k = getTaskDisplayStatusKey(r);
             const st = TASK_STATUS[k] || TASK_STATUS.pending_live;
             return (
               <Badge tone={st.tone} dot>
@@ -9614,14 +18372,16 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
         },
         {
           title: "异常",
-          render: (r) =>
-            r.anomaly ? (
-              <Badge tone={ANOMALY_TYPES[r.anomaly].tone}>
-                {ANOMALY_TYPES[r.anomaly].label}
-              </Badge>
+          render: (r) => {
+            const anomalyKey = getTaskOperationalAnomalyKey(r);
+            const anomalyMeta =
+              ANOMALY_TYPES[anomalyKey] || ANOMALY_TYPES.abnormal;
+            return anomalyKey ? (
+              <Badge tone={anomalyMeta.tone}>{anomalyMeta.label}</Badge>
             ) : (
               <span style={{ color: "var(--ink-300)" }}>—</span>
-            ),
+            );
+          },
         },
         {
           title: "",
@@ -9651,25 +18411,60 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
 // ——— Anomaly List ———————————————————
 
 function AnomalyList({ tasks, projects = [], streamers = [] }) {
+  const actions = useOpsLiveActions();
   const [actionMessage, setActionMessage] = React.useState("");
-  const anomalies = tasks
-    .filter((t) => t.anomaly)
-    .map((t) => {
-      const project = resolveTaskProject(t, projects);
-      const streamer = resolveTaskStreamer(t, streamers);
-      return {
-        ...t,
-        projectDisplay: project?.name || t.projectName || t.project,
-        streamer: streamer?.alias || t.streamerName,
-        typeKey: t.anomaly,
-      };
-    });
+  const [scanBusy, setScanBusy] = React.useState("");
+  const [resolvingId, setResolvingId] = React.useState("");
+  const resolveOne = async (a) => {
+    if (resolvingId) return;
+    setResolvingId(a.id);
+    setActionMessage("");
+    try {
+      await actions.resolveTaskAnomaly?.(a.id);
+      setActionMessage(`已标记处理：${a.streamer} · ${a.name}`);
+    } catch (error) {
+      setActionMessage(error?.message || "标记处理失败，请稍后重试。");
+    } finally {
+      setResolvingId("");
+    }
+  };
+  const anomalies = tasks.filter(isTaskOperationalAnomaly).map((t) => {
+    const anomalyKey = getTaskOperationalAnomalyKey(t);
+    const project = resolveTaskProject(t, projects);
+    const streamer = resolveTaskStreamer(t, streamers);
+    return {
+      ...t,
+      projectDisplay: project?.name || t.projectName || t.project,
+      streamer: streamer?.alias || t.streamerName,
+      typeKey: anomalyKey,
+    };
+  });
 
   // Group by type
   const groups = {};
   anomalies.forEach((a) => {
     (groups[a.typeKey] = groups[a.typeKey] || []).push(a);
   });
+
+  const runAnomalyScan = async (mode) => {
+    if (scanBusy) return;
+    setScanBusy(mode);
+    setActionMessage("");
+    try {
+      const result = await actions.scanAnomalies?.();
+      const detectedCount = result?.detectedCount ?? 0;
+      const sentCount = result?.sentCount ?? 0;
+      setActionMessage(
+        mode === "dispatch"
+          ? `异常批量分派完成：发现 ${detectedCount} 项，已分派 ${sentCount} 条通知。`
+          : `异常扫描完成：发现 ${detectedCount} 项，已分派 ${sentCount} 条通知。`,
+      );
+    } catch (error) {
+      setActionMessage(error?.message || "异常扫描失败，请稍后重试。");
+    } finally {
+      setScanBusy("");
+    }
+  };
 
   return (
     <div
@@ -9698,16 +18493,18 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
         <Button
           size="sm"
           kind="default"
-          onClick={() => setActionMessage("异常扫描历史后台暂未接入。")}
+          onClick={() => runAnomalyScan("history")}
+          disabled={Boolean(scanBusy)}
         >
-          扫描历史
+          {scanBusy === "history" ? "扫描中" : "扫描历史"}
         </Button>
         <Button
           size="sm"
           kind="primary"
-          onClick={() => setActionMessage("异常批量分派后台暂未接入。")}
+          onClick={() => runAnomalyScan("dispatch")}
+          disabled={Boolean(scanBusy)}
         >
-          批量分派处理
+          {scanBusy === "dispatch" ? "分派中" : "批量分派处理"}
         </Button>
       </div>
       {actionMessage ? (
@@ -9729,8 +18526,11 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
               marginBottom: 8,
             }}
           >
-            <Badge tone={ANOMALY_TYPES[type].tone} dot>
-              {ANOMALY_TYPES[type].label}
+            <Badge
+              tone={(ANOMALY_TYPES[type] || ANOMALY_TYPES.abnormal).tone}
+              dot
+            >
+              {(ANOMALY_TYPES[type] || ANOMALY_TYPES.abnormal).label}
             </Badge>
             <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
               {items.length} 项
@@ -9767,7 +18567,7 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {a.id} · {a.projectDisplay}
+                      {displayRecordId(a.id, "异常任务")} · {a.projectDisplay}
                     </span>
                   </div>
                   <div
@@ -9808,7 +18608,9 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
                       size="sm"
                       kind="default"
                       onClick={() =>
-                        setActionMessage(`已定位异常任务：${a.id}`)
+                        setActionMessage(
+                          `已定位异常任务：${displayRecordId(a.id, "任务")}`,
+                        )
                       }
                     >
                       查看任务
@@ -9816,11 +18618,10 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
                     <Button
                       size="sm"
                       kind="primary"
-                      onClick={() =>
-                        setActionMessage("异常处理状态后台暂未接入。")
-                      }
+                      onClick={() => resolveOne(a)}
+                      disabled={resolvingId === a.id}
                     >
-                      标记处理
+                      {resolvingId === a.id ? "处理中…" : "标记处理"}
                     </Button>
                   </div>
                 </div>
@@ -9895,6 +18696,7 @@ function TaskDrawer({
   task,
   projects,
   streamers,
+  applications,
   onClose,
   onCreateTask,
   onCancelTask,
@@ -9902,12 +18704,60 @@ function TaskDrawer({
   go,
 }) {
   const [drawerMessage, setDrawerMessage] = React.useState("");
+  const actions = useOpsLiveActions();
+  const [editing, setEditing] = React.useState(false);
+  const [editForm, setEditForm] = React.useState({
+    title: "",
+    startHour: 20,
+    endHour: 23,
+  });
+  const [editBusy, setEditBusy] = React.useState(false);
+  const [editError, setEditError] = React.useState("");
+  const openEdit = () => {
+    setEditForm({
+      title: task.name || "",
+      startHour: task.startHour ?? 20,
+      endHour: task.endHour ?? 23,
+    });
+    setEditError("");
+    setDrawerMessage("");
+    setEditing(true);
+  };
+  const submitEdit = async (event) => {
+    event.preventDefault();
+    if (editBusy) return;
+    const startHour = Number(editForm.startHour);
+    const endHour = Number(editForm.endHour);
+    if (!(endHour > startHour)) {
+      setEditError("结束时间需晚于开始时间。");
+      return;
+    }
+    setEditBusy(true);
+    setEditError("");
+    try {
+      const startIso = dayScheduleTimeToIso(task.dayIdx, startHour);
+      const endIso = dayScheduleTimeToIso(task.dayIdx, endHour);
+      await actions.updateLiveTask?.(task.id, {
+        title: editForm.title.trim() || undefined,
+        plannedStartAt: startIso,
+        plannedEndAt: endIso,
+        plannedDuration: scheduleMinutes(startIso, endIso),
+      });
+      setEditing(false);
+      setDrawerMessage("排班已更新。");
+    } catch (error) {
+      setEditError(error?.message || "更新失败，请稍后重试。");
+    } finally {
+      setEditBusy(false);
+    }
+  };
   if (task._new) {
     return (
       <NewTaskDrawer
         task={task}
         projects={projects}
         streamers={streamers}
+        applications={applications}
         onClose={onClose}
         onCreateTask={onCreateTask}
       />
@@ -9916,10 +18766,16 @@ function TaskDrawer({
 
   const s = resolveTaskStreamer(task, streamers);
   const p = resolveTaskProject(task, projects);
-  const streamerName = s?.alias || task.streamerName || task.streamerId;
+  const streamerName = s?.alias || displayTaskStreamerName(task);
   const projectName = p?.name || task.projectName || task.project;
-  const statusKey = task.anomaly ? "abnormal" : task.status;
-  const st = TASK_STATUS[statusKey];
+  const statusKey = getTaskDisplayStatusKey(task);
+  const flowStatusKey = task.status || "pending_live";
+  const taskAnomalyKey = getTaskOperationalAnomalyKey(task);
+  const taskAnomalyMeta =
+    ANOMALY_TYPES[taskAnomalyKey] || ANOMALY_TYPES.abnormal;
+  const st = TASK_STATUS[statusKey] || TASK_STATUS.pending_live;
+  const showHeaderAnomalyBadge =
+    taskAnomalyKey && taskAnomalyMeta.label !== st.label;
 
   return (
     <Drawer
@@ -9930,15 +18786,13 @@ function TaskDrawer({
             className="mono"
             style={{ fontSize: 13, color: "var(--ink-400)" }}
           >
-            {task.id}
+            {displayRecordId(task.id, "任务")}
           </span>
           <Badge tone={st.tone} dot>
             {st.label}
           </Badge>
-          {task.anomaly && (
-            <Badge tone={ANOMALY_TYPES[task.anomaly].tone}>
-              {ANOMALY_TYPES[task.anomaly].label}
-            </Badge>
+          {showHeaderAnomalyBadge && (
+            <Badge tone={taskAnomalyMeta.tone}>{taskAnomalyMeta.label}</Badge>
           )}
         </div>
       }
@@ -9977,18 +18831,7 @@ function TaskDrawer({
             label="计划时长"
             value={`${(task.endHour - task.startHour).toFixed(1)} h`}
           />
-          <DrawerStat
-            label="任务类型"
-            value={
-              task.type === "project"
-                ? "项目任务"
-                : task.type === "trial"
-                  ? "试播任务"
-                  : task.type === "training"
-                    ? "训练任务"
-                    : "临时任务"
-            }
-          />
+          <DrawerStat label="任务类型" value={taskTypeLabel(task.type)} />
         </div>
 
         <div
@@ -10016,7 +18859,7 @@ function TaskDrawer({
                 className="mono"
                 style={{ fontSize: 11, color: "var(--ink-400)" }}
               >
-                {s?.id || task.streamerId} ·{" "}
+                {displayRecordId(s?.id || task.streamerId, "主播")} ·{" "}
                 {s?.platforms?.join(" / ") || "直播账号"}
               </div>
             </div>
@@ -10030,7 +18873,7 @@ function TaskDrawer({
             {(p?.needScreening ?? true) ? "本项目强制录屏" : "不强制"}
           </KV>
           <KV label="项目编号">
-            <span className="mono">{p?.code || task.projectId || "—"}</span>
+            <span className="mono">{p?.code || "未设置编号"}</span>
           </KV>
           <KV label="项目负责人">{p?.leadOps || "未分配"}</KV>
           <KV label="项目周期">
@@ -10050,13 +18893,13 @@ function TaskDrawer({
                 done: true,
               },
               {
-                time: statusKey === "pending_live" ? "待开播" : "已开播",
+                time: flowStatusKey === "pending_live" ? "待开播" : "已开播",
                 who: streamerName,
                 action: "点击开始直播",
-                done: statusKey !== "pending_live",
+                done: flowStatusKey !== "pending_live",
               },
               {
-                time: statusKey === "live" ? "进行中…" : "已结束",
+                time: flowStatusKey === "live" ? "进行中…" : "已结束",
                 who: streamerName,
                 action: "点击停止 + 上传下播截图",
                 done: [
@@ -10064,28 +18907,28 @@ function TaskDrawer({
                   "pending_review",
                   "completed",
                   "approved",
-                ].includes(statusKey),
-                current: statusKey === "live",
+                ].includes(flowStatusKey),
+                current: flowStatusKey === "live",
               },
               {
                 time: "—",
                 who: streamerName,
                 action: "主播确认 OCR 结果",
                 done: ["pending_review", "completed", "approved"].includes(
-                  statusKey,
+                  flowStatusKey,
                 ),
               },
               {
                 time: "—",
                 who: "运营审核",
                 action: "报数审核",
-                done: ["completed", "approved"].includes(statusKey),
+                done: ["completed", "approved"].includes(flowStatusKey),
               },
             ]}
           />
         </div>
 
-        {task.anomaly && (
+        {taskAnomalyKey && (
           <div
             style={{
               padding: 14,
@@ -10119,17 +18962,12 @@ function TaskDrawer({
                   color: "var(--danger-600)",
                 }}
               >
-                {ANOMALY_TYPES[task.anomaly].label}
+                {taskAnomalyMeta.label}
               </div>
               <div
                 style={{ fontSize: 12, color: "var(--ink-700)", marginTop: 4 }}
               >
-                {task.anomaly === "unstopped" &&
-                  "直播持续超过 48 小时未上传下播截图，建议主动联系主播并提示截图上传。"}
-                {task.anomaly === "late_report" &&
-                  "已超过项目上传期限，建议运营提示主播尽快补传截图。"}
-                {task.anomaly === "short" &&
-                  "实际直播时长低于计划时长 75%，触发时长不足异常。"}
+                {taskOperationalAnomalyDescription(taskAnomalyKey)}
               </div>
             </div>
           </div>
@@ -10148,6 +18986,145 @@ function TaskDrawer({
           >
             {drawerMessage}
           </div>
+        ) : null}
+
+        {editing ? (
+          <form
+            onSubmit={submitEdit}
+            style={{
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              padding: 14,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              background: "var(--bg-soft)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--ink-900)",
+              }}
+            >
+              编辑排班
+            </div>
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                fontSize: 12,
+                color: "var(--ink-500)",
+                fontWeight: 600,
+              }}
+            >
+              任务标题
+              <input
+                value={editForm.title}
+                onChange={(event) =>
+                  setEditForm((form) => ({ ...form, title: event.target.value }))
+                }
+                style={{
+                  height: 32,
+                  border: "1px solid var(--line-strong)",
+                  borderRadius: 6,
+                  padding: "0 10px",
+                  fontSize: 13,
+                  outline: "none",
+                }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 10 }}>
+              <label
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                  fontWeight: 600,
+                }}
+              >
+                开始 (时)
+                <input
+                  type="number"
+                  min={0}
+                  max={23}
+                  value={editForm.startHour}
+                  onChange={(event) =>
+                    setEditForm((form) => ({
+                      ...form,
+                      startHour: event.target.value,
+                    }))
+                  }
+                  style={{
+                    height: 32,
+                    border: "1px solid var(--line-strong)",
+                    borderRadius: 6,
+                    padding: "0 10px",
+                    fontSize: 13,
+                    outline: "none",
+                  }}
+                />
+              </label>
+              <label
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                  fontWeight: 600,
+                }}
+              >
+                结束 (时)
+                <input
+                  type="number"
+                  min={1}
+                  max={24}
+                  value={editForm.endHour}
+                  onChange={(event) =>
+                    setEditForm((form) => ({
+                      ...form,
+                      endHour: event.target.value,
+                    }))
+                  }
+                  style={{
+                    height: 32,
+                    border: "1px solid var(--line-strong)",
+                    borderRadius: 6,
+                    padding: "0 10px",
+                    fontSize: 13,
+                    outline: "none",
+                  }}
+                />
+              </label>
+            </div>
+            {editError ? (
+              <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                {editError}
+              </div>
+            ) : null}
+            <div
+              style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}
+            >
+              <Button
+                kind="default"
+                type="button"
+                disabled={editBusy}
+                onClick={() => setEditing(false)}
+              >
+                取消
+              </Button>
+              <Button kind="primary" type="submit" disabled={editBusy}>
+                {editBusy ? "保存中…" : "保存排班"}
+              </Button>
+            </div>
+          </form>
         ) : null}
       </div>
 
@@ -10169,10 +19146,7 @@ function TaskDrawer({
           {busyAction === "cancel" ? "取消中…" : "取消任务"}
         </Button>
         <div style={{ flex: 1 }} />
-        <Button
-          kind="default"
-          onClick={() => setDrawerMessage("编辑排班后台暂未接入")}
-        >
+        <Button kind="default" onClick={openEdit}>
           编辑排班
         </Button>
         <Button
@@ -10194,6 +19168,7 @@ function NewTaskDrawer({
   task,
   projects = [],
   streamers = [],
+  applications = [],
   onClose,
   onCreateTask,
 }) {
@@ -10209,15 +19184,56 @@ function NewTaskDrawer({
   const [endTime, setEndTime] = React.useState(
     decimalHourToTime(task.endHour ?? 23.5),
   );
+  const [taskType, setTaskType] = React.useState(
+    normalizeTaskType(task.type || "project"),
+  );
   const [note, setNote] = React.useState("");
-  const s = streamers.find((x) => x.id === selectedStreamerId);
   const p = projects.find((x) => x.id === selectedProjectId) || projects[0];
+  const eligibleStreamers = p
+    ? joinedStreamersForProject(p.id, streamers, applications)
+    : [];
+  const pendingConfirmApplications = p
+    ? applications.filter(
+        (application) =>
+          isConfirmableRosterApplication(application.status) &&
+          applicationBelongsToProject(application, p),
+      )
+    : [];
+  const joinedRequirementMessage =
+    pendingConfirmApplications.length > 0
+      ? `该项目有 ${pendingConfirmApplications.length} 位待确认主播，请先到项目详情的主播阵容点击确认加入后再排班。`
+      : JOINED_STREAMER_REQUIRED_MESSAGE;
+  const s = eligibleStreamers.find((x) => x.id === selectedStreamerId) || null;
   const projectName = p?.name || task.projectName || task.project || "";
   const [busy, setBusy] = React.useState(false);
   const [draftMessage, setDraftMessage] = React.useState("");
+  React.useEffect(() => {
+    const project =
+      projects.find((x) => x.id === selectedProjectId) || projects[0];
+    const nextEligibleStreamers = project
+      ? joinedStreamersForProject(project.id, streamers, applications)
+      : [];
+    if (
+      !nextEligibleStreamers.some(
+        (streamer) => streamer.id === selectedStreamerId,
+      )
+    ) {
+      setSelectedStreamerId(nextEligibleStreamers[0]?.id || "");
+    }
+  }, [
+    applications,
+    projects,
+    selectedProjectId,
+    selectedStreamerId,
+    streamers,
+  ]);
   const handleCreate = async () => {
-    if (!onCreateTask || !p || !s) {
-      setDraftMessage("请先选择项目和主播。");
+    if (!onCreateTask || !p) {
+      setDraftMessage("请先选择项目。");
+      return;
+    }
+    if (!s) {
+      setDraftMessage("");
       return;
     }
     const startHour = timeValueToDecimalHour(startTime, 20);
@@ -10236,9 +19252,10 @@ function NewTaskDrawer({
           dayIdx: task.dayIdx,
           startHour,
           endHour,
+          type: taskType,
           note: note.trim() || "经营端页面创建任务",
           projects,
-          streamers,
+          streamers: eligibleStreamers,
         }),
       );
     } finally {
@@ -10274,18 +19291,32 @@ function NewTaskDrawer({
             value={s?.id || ""}
             onChange={(event) => setSelectedStreamerId(event.target.value)}
             style={taskInputStyle}
+            disabled={eligibleStreamers.length === 0}
           >
-            {streamers.map((streamer) => (
-              <option key={streamer.id} value={streamer.id}>
-                {streamer.alias}
-              </option>
-            ))}
+            {eligibleStreamers.length > 0 ? (
+              eligibleStreamers.map((streamer) => (
+                <option key={streamer.id} value={streamer.id}>
+                  {streamer.alias}
+                </option>
+              ))
+            ) : (
+              <option value="">暂无已加入主播</option>
+            )}
           </select>
         </TaskFormLabel>
+        {eligibleStreamers.length === 0 ? (
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--danger-600)" }}
+          >
+            {joinedRequirementMessage}
+          </div>
+        ) : null}
         <FormField label="任务类型">
           <SegmentedControl
-            options={["项目任务", "试播任务", "训练任务", "临时任务"]}
-            value="项目任务"
+            options={TASK_TYPE_OPTIONS}
+            value={taskType}
+            onChange={setTaskType}
           />
         </FormField>
         <div
@@ -10302,7 +19333,7 @@ function NewTaskDrawer({
           }}
         >
           <span>
-            项目映射：{projectName || "未选择项目"} · {p?.code || p?.id || "—"}
+            项目映射：{projectName || "未选择项目"} · {p?.code || "未设置编号"}
           </span>
           <span>
             负责人：{p?.leadOps || "未分配"} · 周期：{p?.start || "未配置"} →{" "}
@@ -10401,25 +19432,34 @@ function FormField({ label, children }) {
   );
 }
 
-function SegmentedControl({ options, value }) {
+function SegmentedControl({ options, value, onChange }) {
+  const normalizedOptions = options.map((option) =>
+    typeof option === "string" ? { value: option, label: option } : option,
+  );
   return (
     <div style={{ display: "flex", gap: 6 }}>
-      {options.map((o) => (
+      {normalizedOptions.map((option) => (
         <button
-          key={o}
+          key={option.value}
+          type="button"
+          aria-pressed={option.value === value}
+          onClick={() => onChange?.(option.value)}
           style={{
             flex: 1,
             height: 30,
             fontSize: 12,
-            background: o === value ? "var(--blue-50)" : "#fff",
-            border: `1px solid ${o === value ? "var(--blue-500)" : "var(--line-strong)"}`,
-            color: o === value ? "var(--blue-700)" : "var(--ink-500)",
+            background: option.value === value ? "var(--blue-50)" : "#fff",
+            border: `1px solid ${
+              option.value === value ? "var(--blue-500)" : "var(--line-strong)"
+            }`,
+            color:
+              option.value === value ? "var(--blue-700)" : "var(--ink-500)",
             borderRadius: 6,
             cursor: "pointer",
-            fontWeight: o === value ? 600 : 500,
+            fontWeight: option.value === value ? 600 : 500,
           }}
         >
-          {o}
+          {option.label}
         </button>
       ))}
     </div>
@@ -10537,6 +19577,8 @@ function Timeline({ events }) {
 function Drawer({ children, onClose, title }) {
   return (
     <div
+      role="dialog"
+      aria-label={typeof title === "string" ? title : undefined}
       style={{
         position: "fixed",
         top: 0,
@@ -10856,18 +19898,142 @@ const SENSITIVE_FIELDS = [
   },
 ];
 
-function ScreenOrg({ go }) {
+function ScreenOrg({ go, onOpenOrganizationSettings }) {
   const [tab, setTab] = React.useState("overview");
   const [orgMessage, setOrgMessage] = React.useState("");
+  const [memberDrawerOpen, setMemberDrawerOpen] = React.useState(false);
+  const [editingMember, setEditingMember] = React.useState(null);
+  const [statusMember, setStatusMember] = React.useState(null);
+  const members = useOpsOrganizationMembers();
+  const memberPermissions = useOpsOrganizationMemberPermissions();
+  const orgSettings = useOpsOrganizationSettings();
+  const projects = useOpsProjects();
+  const streamers = useOpsStreamers();
+  const billingStatus = useOpsBillingStatus();
+  const actions = useOpsLiveActions();
+  const {
+    organizationMembers,
+    projects: projectData,
+    streamers: streamerData,
+    billingStatus: billingStatusData,
+  } = React.useContext(OpsLiveDataContext);
   const showOrgPending = (message) => {
     setOrgMessage(message);
+  };
+  const canViewMembers = memberPermissions?.canViewMembers !== false;
+  const creatableRoles = Array.isArray(memberPermissions?.creatableRoles)
+    ? memberPermissions.creatableRoles
+    : null;
+  const canCreateMembers =
+    memberPermissions?.canCreateMembers === false
+      ? false
+      : creatableRoles == null
+        ? true
+        : creatableRoles.length > 0;
+  const openMemberDrawer = () => {
+    if (!canCreateMembers) {
+      setOrgMessage("当前角色无权创建组织成员。");
+      return;
+    }
+    setMemberDrawerOpen(true);
+  };
+
+  React.useEffect(() => {
+    if (organizationMembers == null && actions.refreshOrganizationMembers) {
+      actions
+        .refreshOrganizationMembers()
+        .catch((error) => setOrgMessage(formatOrganizationMemberError(error)));
+    }
+  }, [actions, organizationMembers]);
+
+  React.useEffect(() => {
+    if (projectData == null && actions.refreshProjects) {
+      actions
+        .refreshProjects()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("organization overview", error),
+        );
+    }
+    if (streamerData == null && actions.refreshStreamers) {
+      actions
+        .refreshStreamers()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("organization overview", error),
+        );
+    }
+    if (billingStatusData == null && actions.refreshBillingStatus) {
+      actions
+        .refreshBillingStatus()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("organization overview", error),
+        );
+    }
+  }, [actions, billingStatusData, projectData, streamerData]);
+
+  const organizationStats = buildOrganizationOverviewStats({
+    members,
+    canViewMembers,
+    memberLimit: orgSettings.memberLimit,
+    projects,
+    projectsLoaded: Array.isArray(projectData),
+    streamers,
+    streamersLoaded: Array.isArray(streamerData),
+    billingStatus,
+  });
+  const orgPlanName = billingStatus
+    ? billingPlanName(billingStatus.plan)
+    : orgSettings.plan;
+
+  const handleCreateMember = async (input) => {
+    if (!actions.createOrganizationMember) {
+      setOrgMessage("成员管理接口暂未配置。");
+      return;
+    }
+    const result = await actions.createOrganizationMember(input);
+    setOrgMessage(
+      input.mode === "subaccount"
+        ? "子账号已创建并加入当前组织。"
+        : "成员邀请已发送，并已写入当前组织成员列表。",
+    );
+    if (input.mode !== "subaccount") {
+      setMemberDrawerOpen(false);
+    }
+    return result;
+  };
+
+  const handleUpdateRole = async (memberId, input) => {
+    if (!actions.updateOrganizationMemberRole) {
+      setOrgMessage("角色设置接口暂未配置。");
+      return;
+    }
+    const result = await actions.updateOrganizationMemberRole(memberId, input);
+    setOrgMessage("成员角色已更新，权限变更已进入审计日志。");
+    setEditingMember(null);
+    return result;
+  };
+
+  const handleUpdateStatus = async (memberId, input) => {
+    if (!actions.updateOrganizationMemberStatus) {
+      setOrgMessage("成员状态接口暂未配置。");
+      return;
+    }
+    const result = await actions.updateOrganizationMemberStatus(
+      memberId,
+      input,
+    );
+    setOrgMessage(
+      input.status === "suspended"
+        ? "成员已停用，权限变更已进入审计日志。"
+        : "成员已恢复，权限变更已进入审计日志。",
+    );
+    setStatusMember(null);
+    return result;
   };
 
   return (
     <>
       <PageHeader
         title="组织与权限"
-        subtitle="多组织数据隔离 · 字段级脱敏 · AI 查询继承用户权限"
         actions={
           <>
             <Button
@@ -10877,13 +20043,15 @@ function ScreenOrg({ go }) {
             >
               权限变更日志
             </Button>
-            <Button
-              kind="primary"
-              icon={<Icon.Plus size={14} stroke="#fff" />}
-              onClick={() => showOrgPending("邀请成员后台暂未接入。")}
-            >
-              邀请成员
-            </Button>
+            {canCreateMembers ? (
+              <Button
+                kind="primary"
+                icon={<Icon.Plus size={14} stroke="#fff" />}
+                onClick={openMemberDrawer}
+              >
+                邀请成员
+              </Button>
+            ) : null}
           </>
         }
       />
@@ -10936,26 +20104,32 @@ function ScreenOrg({ go }) {
                     color: "var(--ink-900)",
                   }}
                 >
-                  未配置组织
+                  {orgSettings.name}
                 </h2>
-                <Badge tone="blue" dot>
-                  专业版
-                </Badge>
-                <Badge tone="green" dot>
-                  已认证
-                </Badge>
+                {orgPlanName ? (
+                  <Badge tone="blue" dot>
+                    {orgPlanName}
+                  </Badge>
+                ) : null}
+                {orgSettings.verified ? (
+                  <Badge tone="green" dot>
+                    已认证
+                  </Badge>
+                ) : null}
               </div>
               <div
                 style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 4 }}
               >
-                <span className="mono">{ORG.id || "组织编号待配置"}</span> ·{" "}
-                {ORG.name || "组织名称待配置"} · MCN 经营舱
+                <span className="mono">
+                  {displayRecordId(orgSettings.id, "组织编号待配置")}
+                </span>{" "}
+                · {orgSettings.name} · MCN 经营舱
               </div>
             </div>
             <Button
               kind="default"
               icon={<Icon.Settings size={14} />}
-              onClick={() => showOrgPending("组织设置后台暂未接入。")}
+              onClick={onOpenOrganizationSettings}
             >
               组织设置
             </Button>
@@ -10966,19 +20140,36 @@ function ScreenOrg({ go }) {
               marginTop: 16,
               paddingTop: 16,
               borderTop: "1px solid var(--line)",
-              display: "grid",
-              gridTemplateColumns: "repeat(5, 1fr)",
-              gap: 24,
+              display: "flex",
+              flexWrap: "wrap",
+              columnGap: 40,
+              rowGap: 14,
             }}
           >
-            <StatCell label="活跃成员" value="32" detail="本月 +3" />
-            <StatCell label="主播档案" value="187" detail="48 位签约" />
-            <StatCell label="进行中项目" value="4" detail="2 个高优先级" />
-            <StatCell label="存储用量" value="84.2 GB" detail="配额 500 GB" />
+            <StatCell
+              label="活跃成员"
+              value={organizationStats.members.value}
+              detail={organizationStats.members.detail}
+            />
+            <StatCell
+              label="主播档案"
+              value={organizationStats.streamers.value}
+              detail={organizationStats.streamers.detail}
+            />
+            <StatCell
+              label="进行中项目"
+              value={organizationStats.projects.value}
+              detail={organizationStats.projects.detail}
+            />
+            <StatCell
+              label="存储用量"
+              value={organizationStats.storage.value}
+              detail={organizationStats.storage.detail}
+            />
             <StatCell
               label="API 调用 (本月)"
-              value="14.6k"
-              detail="OCR · AI · 导出"
+              value={organizationStats.api.value}
+              detail={organizationStats.api.detail}
             />
           </div>
         </Card>
@@ -10992,7 +20183,7 @@ function ScreenOrg({ go }) {
               onChange={setTab}
               items={[
                 { key: "overview", label: "角色总览" },
-                { key: "members", label: "成员管理", count: MEMBERS.length },
+                { key: "members", label: "成员管理", count: members.length },
                 { key: "matrix", label: "权限矩阵" },
                 {
                   key: "sensitive",
@@ -11004,9 +20195,16 @@ function ScreenOrg({ go }) {
             />
           </div>
           <div style={{ padding: 20 }}>
-            {tab === "overview" && <RoleOverview />}
+            {tab === "overview" && <RoleOverview members={members} />}
             {tab === "members" && (
-              <MemberList onPendingAction={showOrgPending} />
+              <MemberList
+                members={members}
+                creatableRoles={creatableRoles}
+                onPendingAction={showOrgPending}
+                onInvite={openMemberDrawer}
+                onEditRole={(member) => setEditingMember(member)}
+                onChangeStatus={(member) => setStatusMember(member)}
+              />
             )}
             {tab === "matrix" && <PermMatrix />}
             {tab === "sensitive" && <SensitiveFields />}
@@ -11014,6 +20212,27 @@ function ScreenOrg({ go }) {
           </div>
         </Card>
       </div>
+      {memberDrawerOpen ? (
+        <OrganizationMemberDrawer
+          creatableRoles={creatableRoles}
+          onClose={() => setMemberDrawerOpen(false)}
+          onSubmit={handleCreateMember}
+        />
+      ) : null}
+      {editingMember ? (
+        <RoleEditDrawer
+          member={editingMember}
+          onClose={() => setEditingMember(null)}
+          onSubmit={handleUpdateRole}
+        />
+      ) : null}
+      {statusMember ? (
+        <StatusEditDrawer
+          member={statusMember}
+          onClose={() => setStatusMember(null)}
+          onSubmit={handleUpdateStatus}
+        />
+      ) : null}
     </>
   );
 }
@@ -11043,11 +20262,110 @@ function StatCell({ label, value, detail }) {
   );
 }
 
+function buildOrganizationOverviewStats({
+  members,
+  canViewMembers,
+  memberLimit,
+  projects,
+  projectsLoaded,
+  streamers,
+  streamersLoaded,
+  billingStatus,
+}) {
+  const activeMembers = members.filter((member) => member.status === "active");
+  const invitedMembers = members.filter(
+    (member) => member.status === "invited",
+  );
+  const activeProjects = projects.filter((project) =>
+    ["active", "recruiting", "pending_start", "settling"].includes(
+      project.status,
+    ),
+  );
+  const cooperatingStreamers = streamers.filter((streamer) =>
+    ["active", "signed", "cooperating"].includes(streamer.cooperation),
+  );
+  const storageUsage = usageByMetric(billingStatus, "storage_mb");
+  const apiUsage = ["ocr", "ai", "export"].reduce(
+    (sum, metric) =>
+      sum + (usageByMetric(billingStatus, metric)?.usedQuantity ?? 0),
+    0,
+  );
+
+  return {
+    members: canViewMembers
+      ? {
+          value: String(activeMembers.length),
+          detail: [
+            memberLimit != null ? `配额 ${memberLimit}` : null,
+            `邀请中 ${invitedMembers.length}`,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        }
+      : {
+          value: "暂无权限",
+          detail: "当前角色不可查看成员明细",
+        },
+    streamers: streamersLoaded
+      ? {
+          value: String(streamers.length),
+          detail: `${cooperatingStreamers.length} 位合作中`,
+        }
+      : {
+          value: "暂无数据",
+          detail: "等待主播资源池同步",
+        },
+    projects: projectsLoaded
+      ? {
+          value: String(activeProjects.length),
+          detail: `共 ${projects.length} 个项目`,
+        }
+      : {
+          value: "暂无数据",
+          detail: "等待项目列表同步",
+        },
+    storage: billingStatus
+      ? {
+          value: formatStorageUsage(storageUsage?.usedQuantity ?? 0),
+          detail:
+            storageUsage?.allowanceQuantity > 0
+              ? `配额 ${formatStorageUsage(storageUsage.allowanceQuantity)}`
+              : "按本月用量表汇总",
+        }
+      : {
+          value: "暂无数据",
+          detail: "等待账务用量同步",
+        },
+    api: billingStatus
+      ? {
+          value: apiUsage.toLocaleString("zh-CN"),
+          detail: "OCR · AI · 导出",
+        }
+      : {
+          value: "暂无数据",
+          detail: "等待账务用量同步",
+        },
+  };
+}
+
+function usageByMetric(billingStatus, metric) {
+  return billingStatus?.usage?.find((item) => item.metric === metric) ?? null;
+}
+
+function formatStorageUsage(value) {
+  const mb = Math.max(0, Number(value) || 0);
+  if (mb >= 1024) {
+    return `${(mb / 1024).toFixed(1)} GB`;
+  }
+
+  return `${Math.trunc(mb)} MB`;
+}
+
 // ——— Role Overview ————————————————————————
 
-function RoleOverview() {
+function RoleOverview({ members = MEMBERS }) {
   const counts = {};
-  MEMBERS.forEach((m) => {
+  members.forEach((m) => {
     counts[m.role] = (counts[m.role] || 0) + 1;
   });
 
@@ -11250,11 +20568,20 @@ function RoleCard({ title, code, tone, desc, perms, count }) {
 
 // ——— Members table ———————————————————————
 
-function MemberList({ onPendingAction }) {
+function MemberList({
+  members = MEMBERS,
+  creatableRoles,
+  onPendingAction,
+  onInvite,
+  onEditRole,
+  onChangeStatus,
+}) {
   const [filter, setFilter] = React.useState("all");
   const rows =
-    filter === "all" ? MEMBERS : MEMBERS.filter((m) => m.role === filter);
+    filter === "all" ? members : members.filter((m) => m.role === filter);
   const notify = (message) => onPendingAction?.(message);
+  const canCreateMembers =
+    !Array.isArray(creatableRoles) || creatableRoles.length > 0;
 
   return (
     <div>
@@ -11290,13 +20617,17 @@ function MemberList({ onPendingAction }) {
         >
           导出成员表
         </Button>
-        <Button
-          kind="primary"
-          icon={<Icon.Plus size={13} stroke="#fff" />}
-          onClick={() => notify("邀请成员后台暂未接入。")}
-        >
-          邀请成员
-        </Button>
+        {canCreateMembers ? (
+          <Button
+            kind="primary"
+            icon={<Icon.Plus size={13} stroke="#fff" />}
+            onClick={onInvite}
+          >
+            邀请成员
+          </Button>
+        ) : (
+          <Badge tone="neutral">当前角色无创建权限</Badge>
+        )}
       </div>
 
       <Card padded={false}>
@@ -11316,15 +20647,18 @@ function MemberList({ onPendingAction }) {
                       >
                         {m.name}
                       </span>
-                      {m.status === "inactive" && (
+                      {m.status === "suspended" && (
                         <Badge tone="neutral">已停用</Badge>
+                      )}
+                      {m.status === "invited" && (
+                        <Badge tone="amber">邀请中</Badge>
                       )}
                     </div>
                     <div
                       className="mono"
                       style={{ fontSize: 11, color: "var(--ink-400)" }}
                     >
-                      {m.id} · {m.email}
+                      {memberIdentityText(m)}
                     </div>
                   </div>
                 </div>
@@ -11335,7 +20669,7 @@ function MemberList({ onPendingAction }) {
               title: "部门",
               render: (m) => (
                 <span style={{ fontSize: 12, color: "var(--ink-700)" }}>
-                  {m.dept}
+                  {m.dept || "未分组"}
                 </span>
               ),
             },
@@ -11353,7 +20687,7 @@ function MemberList({ onPendingAction }) {
               title: "手机",
               render: (m) => (
                 <span className="mono" style={{ fontSize: 12 }}>
-                  {m.phone}
+                  {m.phone || "—"}
                 </span>
               ),
             },
@@ -11377,7 +20711,7 @@ function MemberList({ onPendingAction }) {
                   className="num"
                   style={{ fontSize: 12, color: "var(--ink-500)" }}
                 >
-                  {m.lastSeen}
+                  {m.lastSeen || "—"}
                 </span>
               ),
             },
@@ -11388,7 +20722,7 @@ function MemberList({ onPendingAction }) {
                   className="num"
                   style={{ fontSize: 12, color: "var(--ink-400)" }}
                 >
-                  {m.joined}
+                  {m.joined || formatMemberDate(m.createdAt)}
                 </span>
               ),
             },
@@ -11400,30 +20734,17 @@ function MemberList({ onPendingAction }) {
                   <Button
                     size="sm"
                     kind="default"
-                    onClick={() => notify(`${m.name} 的角色编辑后台暂未接入。`)}
+                    onClick={() => onEditRole?.(m)}
                   >
                     编辑角色
                   </Button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      notify(`${m.name} 的更多成员操作后台暂未接入。`)
-                    }
-                    style={{
-                      width: 26,
-                      height: 26,
-                      border: "1px solid var(--line-strong)",
-                      background: "#fff",
-                      borderRadius: 6,
-                      cursor: "pointer",
-                      color: "var(--ink-400)",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                    }}
+                  <Button
+                    size="sm"
+                    kind={m.status === "suspended" ? "default" : "danger"}
+                    onClick={() => onChangeStatus?.(m)}
                   >
-                    <Icon.More size={14} />
-                  </button>
+                    {m.status === "suspended" ? "恢复成员" : "停用成员"}
+                  </Button>
                 </div>
               ),
             },
@@ -11433,6 +20754,688 @@ function MemberList({ onPendingAction }) {
       </Card>
     </div>
   );
+}
+
+function memberIdentityText(member) {
+  const email = typeof member?.email === "string" ? member.email.trim() : "";
+  const phone = typeof member?.phone === "string" ? member.phone.trim() : "";
+  const loginAccount =
+    typeof member?.loginAccount === "string" ? member.loginAccount.trim() : "";
+  const localAccount = accountFromLocalSubaccountEmail(email);
+  const account = loginAccount || localAccount;
+
+  if (account && (localAccount || member?.requiresOnboarding)) {
+    return `默认账号 ${account} · 首次登录待激活`;
+  }
+
+  const contacts = [];
+  if (email) contacts.push(`邮箱 ${email}`);
+  if (phone) contacts.push(`手机 ${phone}`);
+
+  return contacts.length ? contacts.join(" · ") : "暂无联系方式";
+}
+
+function accountFromLocalSubaccountEmail(email) {
+  const normalized = email.trim().toLowerCase();
+  const suffix = "@subaccount.local";
+  if (!normalized.endsWith(suffix)) {
+    return "";
+  }
+
+  return email.slice(0, email.length - suffix.length);
+}
+
+const ORG_MEMBER_ROLE_OPTIONS = [
+  { key: "ops_manager", label: "运营负责人" },
+  { key: "operator_business", label: "次级运营 / 商务" },
+  { key: "finance", label: "财务" },
+  { key: "streamer", label: "主播" },
+  { key: "owner", label: "负责人" },
+];
+
+function organizationMemberRoleOptionsFor(creatableRoles) {
+  if (!Array.isArray(creatableRoles)) {
+    return ORG_MEMBER_ROLE_OPTIONS;
+  }
+
+  const allowed = new Set(creatableRoles);
+  return ORG_MEMBER_ROLE_OPTIONS.filter((option) => allowed.has(option.key));
+}
+
+function formatOrganizationMemberError(error) {
+  const message = error?.message || "成员操作失败。";
+  if (/Current role cannot create (.+) accounts/i.test(message)) {
+    return "当前角色无权创建该类型账号，请切换负责人或运营账号后重试。";
+  }
+
+  return message;
+}
+
+function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
+  const normalized = normalizeOrganizationSettings(settings);
+  const [name, setName] = React.useState(normalized.name);
+  const [logoText, setLogoText] = React.useState(normalized.logoText);
+  const [memberLimit, setMemberLimit] = React.useState(
+    normalized.memberLimit == null ? "" : String(normalized.memberLimit),
+  );
+  const [features, setFeatures] = React.useState(normalized.features);
+  const [message, setMessage] = React.useState("");
+  const enabledCount = countEnabledOrganizationFeatures({ features });
+
+  const toggleFeature = (key) => {
+    setFeatures((current) => ({ ...current, [key]: !current[key] }));
+  };
+
+  const submit = () => {
+    const nextName = name.trim();
+    const nextMemberLimit = memberLimit.trim() ? Number(memberLimit) : null;
+    if (!nextName) {
+      setMessage("组织名称不能为空。");
+      return;
+    }
+    if (
+      nextMemberLimit != null &&
+      (!Number.isFinite(nextMemberLimit) || nextMemberLimit <= 0)
+    ) {
+      setMessage("成员规模需要大于 0。");
+      return;
+    }
+    setMessage("");
+    onSubmit?.({
+      name: nextName,
+      logoText: logoText.trim().slice(0, 4) || normalized.logoText,
+      memberLimit: nextMemberLimit,
+      features,
+    });
+  };
+
+  return (
+    <Drawer title="组织功能设置" onClose={onClose}>
+      <div
+        style={{
+          padding: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+      >
+        <div
+          style={{
+            padding: 12,
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            background: "var(--blue-50)",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <span
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              background: "var(--blue-600)",
+              color: "#fff",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontWeight: 700,
+              fontSize: 13,
+            }}
+          >
+            星
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--ink-900)",
+              }}
+            >
+              {normalized.plan || "套餐以账务后台为准"}
+            </div>
+            <div
+              style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 2 }}
+            >
+              {enabledCount} / {ORGANIZATION_FEATURE_OPTIONS.length}{" "}
+              项功能已启用
+            </div>
+          </div>
+          {normalized.verified ? (
+            <Badge tone="green" dot>
+              已认证
+            </Badge>
+          ) : null}
+        </div>
+
+        <OrgMemberField label="组织名称">
+          <input
+            aria-label="组织名称"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="请输入组织名称"
+            style={orgMemberInputStyle}
+          />
+        </OrgMemberField>
+
+        <OrgMemberField label="LOGO 字标">
+          <input
+            aria-label="LOGO 字标"
+            value={logoText}
+            maxLength={4}
+            onChange={(event) => setLogoText(event.target.value)}
+            placeholder="JY"
+            style={orgMemberInputStyle}
+          />
+        </OrgMemberField>
+
+        <OrgMemberField label="成员规模">
+          <input
+            aria-label="成员规模"
+            type="number"
+            min="1"
+            value={memberLimit}
+            onChange={(event) => setMemberLimit(event.target.value)}
+            placeholder="按组织合同配置"
+            style={orgMemberInputStyle}
+          />
+        </OrgMemberField>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div
+            style={{ fontSize: 12, color: "var(--ink-500)", fontWeight: 500 }}
+          >
+            功能开关
+          </div>
+          {ORGANIZATION_FEATURE_OPTIONS.map((feature) => {
+            const checked = Boolean(features[feature.key]);
+            return (
+              <label
+                key={feature.key}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  padding: 12,
+                  border: "1px solid var(--line)",
+                  borderRadius: 8,
+                  background: checked ? "var(--blue-50)" : "#fff",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  aria-label={feature.label}
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleFeature(feature.key)}
+                  style={{ marginTop: 2, accentColor: "var(--blue-600)" }}
+                />
+                <span
+                  style={{ display: "flex", flexDirection: "column", gap: 4 }}
+                >
+                  <span
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--ink-900)",
+                    }}
+                  >
+                    {feature.label}
+                  </span>
+                  <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                    {feature.hint}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+
+        {message ? (
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--danger-600)" }}
+          >
+            {message}
+          </div>
+        ) : null}
+      </div>
+      <div
+        style={{
+          padding: 12,
+          borderTop: "1px solid var(--line)",
+          background: "var(--bg-soft)",
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 8,
+        }}
+      >
+        <Button kind="default" onClick={onClose}>
+          取消
+        </Button>
+        <Button kind="primary" onClick={submit}>
+          保存功能设置
+        </Button>
+      </div>
+    </Drawer>
+  );
+}
+
+function OrganizationMemberDrawer({ creatableRoles, onClose, onSubmit }) {
+  const [mode, setMode] = React.useState("invite");
+  const [email, setEmail] = React.useState("");
+  const [name, setName] = React.useState("");
+  const roleOptions = organizationMemberRoleOptionsFor(creatableRoles);
+  const [role, setRole] = React.useState(
+    roleOptions[0]?.key || "operator_business",
+  );
+  const [busy, setBusy] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+  const [generatedCredentials, setGeneratedCredentials] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!roleOptions.some((option) => option.key === role)) {
+      setRole(roleOptions[0]?.key || "streamer");
+    }
+  }, [role, roleOptions]);
+
+  React.useEffect(() => {
+    setMessage("");
+    setGeneratedCredentials(null);
+  }, [mode]);
+
+  const submit = async () => {
+    setBusy(true);
+    setMessage("");
+    if (roleOptions.length === 0) {
+      setMessage("当前角色无权创建组织成员。");
+      setBusy(false);
+      return;
+    }
+
+    try {
+      const result = await onSubmit?.({
+        mode,
+        ...(mode === "invite" ? { email } : {}),
+        name,
+        role,
+      });
+      if (result?.credentials) {
+        setGeneratedCredentials(result.credentials);
+      }
+    } catch (error) {
+      setMessage(formatOrganizationMemberError(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Drawer
+      title={mode === "subaccount" ? "创建子账号" : "邀请成员"}
+      onClose={onClose}
+    >
+      <div
+        style={{
+          padding: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+      >
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}
+        >
+          <Button
+            kind={mode === "invite" ? "primary" : "default"}
+            onClick={() => setMode("invite")}
+          >
+            邀请成员
+          </Button>
+          <Button
+            kind={mode === "subaccount" ? "primary" : "default"}
+            onClick={() => setMode("subaccount")}
+          >
+            创建子账号
+          </Button>
+        </div>
+
+        {mode === "invite" ? (
+          <OrgMemberField label="成员邮箱">
+            <input
+              aria-label="成员邮箱"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="name@example.com"
+              style={orgMemberInputStyle}
+            />
+          </OrgMemberField>
+        ) : (
+          <div
+            style={{
+              padding: 12,
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--blue-50)",
+              fontSize: 12,
+              color: "var(--ink-500)",
+              lineHeight: 1.6,
+            }}
+          >
+            系统将生成默认账号和 8
+            位默认密码。首次登录需补充邮箱、电话并设置新密码。
+          </div>
+        )}
+        <OrgMemberField label="成员姓名">
+          <input
+            aria-label="成员姓名"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="成员真实姓名"
+            style={orgMemberInputStyle}
+          />
+        </OrgMemberField>
+        <OrgMemberField label="成员角色">
+          <select
+            aria-label="成员角色"
+            value={role}
+            onChange={(event) => setRole(event.target.value)}
+            style={orgMemberInputStyle}
+          >
+            {roleOptions.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </OrgMemberField>
+        {generatedCredentials ? (
+          <div
+            style={{
+              padding: 12,
+              border: "1px solid var(--line-strong)",
+              borderRadius: 8,
+              background: "#fff",
+              display: "grid",
+              gridTemplateColumns: "1fr",
+              gap: 8,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
+              首次登录凭据，仅展示本次创建结果
+            </div>
+            <div
+              className="mono"
+              style={{ fontSize: 13, color: "var(--ink-900)" }}
+            >
+              默认账号：{generatedCredentials.account}
+            </div>
+            <div
+              className="mono"
+              style={{ fontSize: 13, color: "var(--ink-900)" }}
+            >
+              默认密码：{generatedCredentials.password}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              用户首次登录后必须填写邮箱、电话和新密码，后续可用邮箱或电话 +
+              密码登录。
+            </div>
+          </div>
+        ) : null}
+        {message ? (
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--danger-600)" }}
+          >
+            {message}
+          </div>
+        ) : null}
+      </div>
+      <div
+        style={{
+          padding: 12,
+          borderTop: "1px solid var(--line)",
+          background: "var(--bg-soft)",
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 8,
+        }}
+      >
+        <Button kind="default" onClick={onClose}>
+          {generatedCredentials ? "关闭" : "取消"}
+        </Button>
+        <Button
+          kind="primary"
+          onClick={submit}
+          disabled={busy || generatedCredentials || roleOptions.length === 0}
+        >
+          {busy ? "提交中…" : mode === "subaccount" ? "确认创建" : "发送邀请"}
+        </Button>
+      </div>
+    </Drawer>
+  );
+}
+
+function RoleEditDrawer({ member, onClose, onSubmit }) {
+  const [role, setRole] = React.useState(member.role);
+  const [reason, setReason] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+
+  const submit = async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      await onSubmit?.(member.id, { role, reason });
+    } catch (error) {
+      setMessage(error?.message || "角色保存失败。");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Drawer title={`编辑角色 · ${member.name}`} onClose={onClose}>
+      <div
+        style={{
+          padding: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+      >
+        <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
+          {memberIdentityText(member)}
+        </div>
+        <OrgMemberField label="新角色">
+          <select
+            aria-label="新角色"
+            value={role}
+            onChange={(event) => setRole(event.target.value)}
+            style={orgMemberInputStyle}
+          >
+            {ORG_MEMBER_ROLE_OPTIONS.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </OrgMemberField>
+        <OrgMemberField label="变更原因">
+          <textarea
+            aria-label="变更原因"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="记录角色变更原因，写入权限审计日志"
+            style={{
+              ...orgMemberInputStyle,
+              minHeight: 84,
+              resize: "vertical",
+            }}
+          />
+        </OrgMemberField>
+        {message ? (
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--danger-600)" }}
+          >
+            {message}
+          </div>
+        ) : null}
+      </div>
+      <div
+        style={{
+          padding: 12,
+          borderTop: "1px solid var(--line)",
+          background: "var(--bg-soft)",
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 8,
+        }}
+      >
+        <Button kind="default" onClick={onClose}>
+          取消
+        </Button>
+        <Button kind="primary" onClick={submit} disabled={busy}>
+          {busy ? "保存中…" : "保存角色"}
+        </Button>
+      </div>
+    </Drawer>
+  );
+}
+
+function StatusEditDrawer({ member, onClose, onSubmit }) {
+  const nextStatus = member.status === "suspended" ? "active" : "suspended";
+  const isSuspending = nextStatus === "suspended";
+  const [reason, setReason] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+
+  const submit = async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      await onSubmit?.(member.id, { status: nextStatus, reason });
+    } catch (error) {
+      setMessage(error?.message || "成员状态保存失败。");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Drawer
+      title={`${isSuspending ? "停用成员" : "恢复成员"} · ${member.name}`}
+      onClose={onClose}
+    >
+      <div
+        style={{
+          padding: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+      >
+        <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
+          {memberIdentityText(member)}
+        </div>
+        <div
+          style={{
+            padding: 12,
+            borderRadius: 8,
+            border: "1px solid var(--line)",
+            background: isSuspending ? "#FDECEC" : "var(--ok-50)",
+            color: isSuspending ? "var(--danger-600)" : "var(--ok-600)",
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          {isSuspending
+            ? "停用后该成员无法继续访问当前组织数据。"
+            : "恢复后该成员将按当前角色重新获得组织访问权限。"}
+        </div>
+        <OrgMemberField label="状态变更原因">
+          <textarea
+            aria-label="状态变更原因"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="记录停用或恢复原因，写入权限审计日志"
+            style={{
+              ...orgMemberInputStyle,
+              minHeight: 84,
+              resize: "vertical",
+            }}
+          />
+        </OrgMemberField>
+        {message ? (
+          <div
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--danger-600)" }}
+          >
+            {message}
+          </div>
+        ) : null}
+      </div>
+      <div
+        style={{
+          padding: 12,
+          borderTop: "1px solid var(--line)",
+          background: "var(--bg-soft)",
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 8,
+        }}
+      >
+        <Button kind="default" onClick={onClose}>
+          取消
+        </Button>
+        <Button
+          kind={isSuspending ? "danger" : "primary"}
+          onClick={submit}
+          disabled={busy}
+        >
+          {busy ? "保存中…" : isSuspending ? "确认停用" : "确认恢复"}
+        </Button>
+      </div>
+    </Drawer>
+  );
+}
+
+function OrgMemberField({ label, children }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <span style={{ fontSize: 12, color: "var(--ink-500)", fontWeight: 500 }}>
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+const orgMemberInputStyle = {
+  width: "100%",
+  height: 34,
+  padding: "0 10px",
+  border: "1px solid var(--line-strong)",
+  borderRadius: 6,
+  fontSize: 13,
+  color: "var(--ink-700)",
+  background: "#fff",
+  fontFamily: "inherit",
+};
+
+function formatMemberDate(value) {
+  if (!value) {
+    return "—";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return formatDateKey(date);
 }
 
 function RoleFilter({ value, onChange }) {
@@ -11982,6 +21985,15 @@ function PolicyCard({ title, icon, items, accent }) {
   );
 }
 
+function ScreenAiUsage() {
+  return (
+    <>
+      <PageHeader title="AI 用量与成本" />
+      <AiUsageDashboard />
+    </>
+  );
+}
+
 function ScreenAudit() {
   const entries = useOpsAuditEntries();
   const actions = useOpsLiveActions();
@@ -12034,7 +22046,6 @@ function ScreenAudit() {
     <>
       <PageHeader
         title="操作日志 & 审计"
-        subtitle="差异日志、角色可见范围、高风险原因与导出留痕统一进入审计中心"
         actions={
           <>
             <Button
@@ -12064,47 +22075,74 @@ function ScreenAudit() {
           gap: 20,
         }}
       >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 16,
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="审计日志"
-              value={String(entries.length)}
-              unit="条"
-              hint="仅展示当前角色可见范围"
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 130,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>审计日志</div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 4,
+                marginTop: 4,
+              }}
+            >
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                }}
+              >
+                {String(entries.length)}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--ink-400)" }}>条</span>
+            </div>
+            <div style={{ fontSize: 11, marginTop: 2, color: "var(--ink-400)" }}>
+              当前角色可见范围
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="高风险操作"
               value={String(highRiskCount)}
               unit="条"
-              delta={highRiskCount > 0 ? "需复核原因" : "无待复核"}
-              deltaTone={highRiskCount > 0 ? "amber" : "green"}
+              hint={highRiskCount > 0 ? "需复核原因" : "无待复核"}
+              hintTone={highRiskCount > 0 ? "red" : "green"}
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="失败操作"
               value={String(failureCount)}
               unit="条"
-              hint="失败原因只显示错误摘要"
+              hint="仅显示错误摘要"
             />
-          </Card>
-          <Card style={{ borderColor: "var(--blue-200)" }}>
-            <Metric
-              label="覆盖模块"
-              value={String(moduleCount)}
-              unit="个"
-              hint="权限过滤在服务端完成"
-            />
-          </Card>
-        </div>
+            <MiniStat label="覆盖模块" value={String(moduleCount)} unit="个" />
+          </div>
+        </Card>
 
         <div
           style={{
@@ -12156,7 +22194,7 @@ function ScreenAudit() {
                         className="mono"
                         style={{ fontSize: 11, color: "var(--ink-400)" }}
                       >
-                        {entry.id}
+                        {displayRecordId(entry.id, "审计日志")}
                       </div>
                       <div
                         className="mono"
@@ -12246,7 +22284,7 @@ function ScreenAudit() {
                           marginTop: 3,
                         }}
                       >
-                        {entry.objectId || "—"}
+                        {displayRecordId(entry.objectId, "业务对象")}
                       </div>
                     </div>
                   ),
@@ -12335,7 +22373,7 @@ function AuditEntryDetail({ entry }) {
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <KV label="日志 ID">
-          <span className="mono">{entry.id}</span>
+          <span className="mono">{displayRecordId(entry.id, "审计日志")}</span>
         </KV>
         <KV label="发生时间">
           <span className="mono">{formatOpsMinute(entry.createdAt)}</span>
@@ -12350,10 +22388,14 @@ function AuditEntryDetail({ entry }) {
         </KV>
         <KV label="对象">
           {entry.objectType} ·{" "}
-          <span className="mono">{entry.objectId || "—"}</span>
+          <span className="mono">
+            {displayRecordId(entry.objectId, "业务对象")}
+          </span>
         </KV>
         <KV label="项目">
-          <span className="mono">{entry.projectId || "—"}</span>
+          <span className="mono">
+            {displayRecordId(entry.projectId, "项目")}
+          </span>
         </KV>
         <KV label="变更字段">
           <span className="mono">{auditChangedFields(entry)}</span>
@@ -12431,7 +22473,6 @@ function ScreenNotifications() {
     <>
       <PageHeader
         title="通知待办"
-        subtitle="站内提醒、待办状态与高风险动作通知统一在这里处理"
         actions={
           <Button
             kind="primary"
@@ -12452,48 +22493,80 @@ function ScreenNotifications() {
           gap: 20,
         }}
       >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 16,
+        <Card
+          padded={false}
+          bodyStyle={{
+            display: "flex",
+            alignItems: "center",
+            gap: 24,
+            padding: "16px 18px",
+            flexWrap: "wrap",
+            rowGap: 12,
           }}
         >
-          <Card>
-            <Metric
-              label="通知总数"
-              value={String(notifications.length)}
-              unit="条"
-              hint="仅展示当前用户或角色可见范围"
-            />
-          </Card>
-          <Card>
-            <Metric
+          <div
+            style={{
+              paddingRight: 24,
+              borderRight: "1px solid var(--line)",
+              minWidth: 130,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>通知总数</div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 4,
+                marginTop: 4,
+              }}
+            >
+              <span
+                className="num"
+                style={{
+                  fontSize: 26,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                }}
+              >
+                {String(notifications.length)}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--ink-400)" }}>条</span>
+            </div>
+            <div style={{ fontSize: 11, marginTop: 2, color: "var(--ink-400)" }}>
+              当前可见范围
+            </div>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 28,
+              flex: 1,
+              flexWrap: "wrap",
+              rowGap: 12,
+            }}
+          >
+            <MiniStat
               label="未读"
               value={String(unreadCount)}
               unit="条"
-              delta={unreadCount > 0 ? "需要查看" : "已清空"}
-              deltaTone={unreadCount > 0 ? "amber" : "green"}
+              hint={unreadCount > 0 ? "需要查看" : "已清空"}
+              hintTone={unreadCount > 0 ? "red" : "green"}
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="待处理"
               value={String(openCount)}
               unit="条"
               hint="未读与已读未处理"
             />
-          </Card>
-          <Card>
-            <Metric
+            <MiniStat
               label="高风险"
               value={String(highRiskCount)}
               unit="条"
-              delta={highRiskCount > 0 ? "需复核" : "无风险提醒"}
-              deltaTone={highRiskCount > 0 ? "red" : "green"}
+              hint={highRiskCount > 0 ? "需复核" : "无风险提醒"}
+              hintTone={highRiskCount > 0 ? "red" : "green"}
             />
-          </Card>
-        </div>
+          </div>
+        </Card>
 
         <Card padded={false}>
           <div
@@ -12554,7 +22627,8 @@ function ScreenNotifications() {
                         color: "var(--ink-400)",
                       }}
                     >
-                      {item.id} · {formatOpsMinute(item.createdAt)}
+                      {displayRecordId(item.id, "通知")} ·{" "}
+                      {formatOpsMinute(item.createdAt)}
                     </div>
                   </div>
                 ),
@@ -12588,7 +22662,7 @@ function ScreenNotifications() {
                       className="mono"
                       style={{ fontSize: 10.5, color: "var(--ink-400)" }}
                     >
-                      {item.objectId || "—"}
+                      {displayRecordId(item.objectId, "业务对象")}
                     </div>
                   </div>
                 ),
@@ -12650,25 +22724,50 @@ function ScreenNotifications() {
 
 function ScreenExport() {
   const actions = useOpsLiveActions();
+  const projects = useOpsProjects();
   const [kind, setKind] = React.useState("audit_logs");
+  const [projectId, setProjectId] = React.useState(projects[0]?.id ?? "");
   const [busy, setBusy] = React.useState(false);
   const [result, setResult] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!projectId && projects[0]?.id) {
+      setProjectId(projects[0].id);
+      return;
+    }
+    if (projectId && !projects.some((project) => project.id === projectId)) {
+      setProjectId(projects[0]?.id ?? "");
+    }
+  }, [projectId, projects]);
 
   const exportKinds = [
     { key: "audit_logs", label: "审计日志" },
     { key: "vendor_delivery", label: "厂家交付包" },
     { key: "settlement_batch", label: "结算批次" },
     { key: "report_details", label: "报数明细" },
+    { key: "project_costs", label: "项目成本明细" },
+    { key: "supplier_reconcile", label: "供应商对账" },
   ];
 
   const submit = async () => {
     if (!actions.createGovernedExport || busy) return;
     setBusy(true);
     try {
-      const exportResult = await actions.createGovernedExport({
-        kind,
-        rows: sampleExportRows(kind),
-      });
+      const rows =
+        kind === "vendor_delivery"
+          ? await actions.readVendorDeliveryPackage?.(projectId)
+          : [];
+      const costExport =
+        kind === "project_costs" || kind === "supplier_reconcile";
+      const exportResult = costExport
+        ? await actions.createProjectCostExport?.(projectId, {
+            kind,
+            rows: Array.isArray(rows) ? rows : [],
+          })
+        : await actions.createGovernedExport({
+            kind,
+            rows: Array.isArray(rows) ? rows : [],
+          });
       setResult(exportResult);
     } catch (error) {
       globalThis.alert?.(
@@ -12683,7 +22782,6 @@ function ScreenExport() {
     <>
       <PageHeader
         title="数据导出中心"
-        subtitle="按角色字段白名单生成导出预览，导出动作统一写入审计日志"
         actions={
           <Button
             kind="primary"
@@ -12717,6 +22815,43 @@ function ScreenExport() {
           </div>
           <div style={{ padding: "0 16px 16px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {kind === "vendor_delivery" ||
+              kind === "project_costs" ||
+              kind === "supplier_reconcile" ? (
+                <label
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    fontSize: 12,
+                    color: "var(--ink-500)",
+                    fontWeight: 600,
+                  }}
+                >
+                  {kind === "vendor_delivery" ? "交付包项目" : "成本项目"}
+                  <select
+                    aria-label="交付包项目"
+                    value={projectId}
+                    onChange={(event) => setProjectId(event.target.value)}
+                    style={{
+                      height: 34,
+                      border: "1px solid var(--line-strong)",
+                      borderRadius: 6,
+                      background: "#fff",
+                      color: "var(--ink-700)",
+                      fontSize: 13,
+                      outline: "none",
+                      padding: "0 10px",
+                    }}
+                  >
+                    {projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <SectionTitle>治理规则</SectionTitle>
               {[
                 { label: "字段控制", val: "服务端白名单", tone: "blue" },
@@ -12868,7 +23003,337 @@ function notificationStatusTone(status) {
   return "amber";
 }
 
-function ScreenBilling({ billingStatus, onRefresh }) {
+const BILLING_PLAN_CATALOG = [
+  { code: "basic", label: "基础版", monthlyCents: 29900 },
+  { code: "pro", label: "专业版", monthlyCents: 99900 },
+  { code: "enterprise", label: "企业版", monthlyCents: 299900 },
+];
+
+const BILLING_PURCHASABLE_FEATURES = [
+  "export_center",
+  "war_room",
+  "ai_diagnosis",
+  "auto_review_active",
+  "vendor_portal",
+];
+
+const USAGE_ADDON_PACK = {
+  ocr: 1000,
+  ai: 2000,
+  active_streamer: 1,
+  seat: 1,
+  storage_mb: 1024,
+  export: 50,
+};
+
+function yuanFromCents(cents) {
+  const value = Number.isFinite(cents) ? cents : 0;
+  return `¥${(value / 100).toLocaleString("zh-CN")}`;
+}
+
+function paywallReasonLabel(reason) {
+  const labels = {
+    feature_not_entitled: "当前套餐未授权",
+    usage_near_limit: "用量接近额度",
+    usage_hard_block: "用量已超额，需加量",
+    trial_ending: "试用即将到期",
+    trial_expired: "试用到期 / 订阅只读",
+  };
+  return labels[reason] ?? reason;
+}
+
+// 付费墙体验层：只渲染后端 getBillingStatus + resolvePaywall 的结论，
+// CTA 统一走 P6 /api/billing/checkout。真正的权限与额度由后端兜底。
+function BillingPaywall({
+  billingStatus,
+  onCheckout,
+  onRefresh,
+  onRefreshOrder,
+  onEvent,
+}) {
+  const [busyKey, setBusyKey] = React.useState("");
+  const [error, setError] = React.useState("");
+  const [pay, setPay] = React.useState(null);
+  const [orderStatus, setOrderStatus] = React.useState("");
+
+  const decide = (context) => {
+    if (!billingStatus) return null;
+    try {
+      return resolvePaywall(billingStatus, context);
+    } catch {
+      return null;
+    }
+  };
+  const global = decide({});
+  const globalReason = global?.reason;
+
+  const emitEvent = React.useCallback(
+    (payload) => {
+      if (!onEvent) return;
+      Promise.resolve(onEvent(payload)).catch(() => {});
+    },
+    [onEvent],
+  );
+
+  React.useEffect(() => {
+    if (globalReason) {
+      emitEvent({ event: "paywall_shown", reason: globalReason });
+    }
+  }, [globalReason, emitEvent]);
+
+  if (!billingStatus) return null;
+
+  const runCheckout = async (intent, key) => {
+    if (!onCheckout || busyKey) return;
+    setBusyKey(key);
+    setError("");
+    emitEvent({ event: "paywall_cta_clicked", reason: intent.kind });
+    try {
+      const result = await onCheckout(intent);
+      setPay(result ?? null);
+      setOrderStatus(result?.order?.status ?? "pending");
+    } catch (checkoutError) {
+      setError(
+        checkoutError instanceof Error ? checkoutError.message : "下单失败",
+      );
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const refreshOrder = async () => {
+    if (!pay?.order?.id || !onRefreshOrder) return;
+    setError("");
+    try {
+      const order = await onRefreshOrder(pay.order.id);
+      if (order?.status) setOrderStatus(order.status);
+      if (order?.status === "paid" && onRefresh) await onRefresh();
+    } catch (refreshError) {
+      setError(
+        refreshError instanceof Error ? refreshError.message : "刷新订单失败",
+      );
+    }
+  };
+
+  const currentCode = billingStatus.plan?.code;
+  const currentIndex = BILLING_PLAN_CATALOG.findIndex(
+    (plan) => plan.code === currentCode,
+  );
+
+  const usageRows = (billingStatus.usage ?? []).map((row) => ({
+    row,
+    decision: decide({ metric: row.metric }),
+  }));
+  const purchasableRows = BILLING_PURCHASABLE_FEATURES.filter(
+    (key) => billingStatus.entitlements?.[key] === false,
+  );
+
+  return (
+    <Card title="升级 · 续费 · 加量">
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {global && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "10px 12px",
+              borderRadius: 8,
+              background: global.blocking ? "#FDECEC" : "#FFF7E6",
+              color: global.blocking ? "var(--danger-700)" : "#9A6700",
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
+            <Icon.Warn
+              size={16}
+              stroke={global.blocking ? "var(--danger-600)" : "#B7791F"}
+            />
+            {global.reason === "trial_expired"
+              ? "订阅已到期或处于只读，续费后立即恢复写入能力。"
+              : "试用即将到期，请尽快选择套餐完成转化。"}
+          </div>
+        )}
+
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 16,
+            fontSize: 12,
+            color: "var(--ink-500)",
+          }}
+        >
+          <span>自动续费：{billingStatus.autoRenew === false ? "关闭" : "开启"}</span>
+          <span>试用到期：{formatBillingDate(billingStatus.trialEndsAt)}</span>
+          <span>宽限截止：{formatBillingDate(billingStatus.graceUntil)}</span>
+          <span>
+            排期降级：
+            {billingStatus.pendingPlan ? billingStatus.pendingPlan.name : "无"}
+          </span>
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {BILLING_PLAN_CATALOG.map((plan, index) => {
+            if (currentIndex >= 0 && index < currentIndex) return null;
+            const isCurrent = index === currentIndex;
+            const isRenewal = isCurrent;
+            const kind = isRenewal
+              ? "subscription_renewal"
+              : currentIndex < 0
+                ? "subscription_new"
+                : "subscription_upgrade";
+            const action = isRenewal ? "续费" : currentIndex < 0 ? "订阅" : "升级";
+            const key = `plan:${plan.code}`;
+            return (
+              <Button
+                key={plan.code}
+                kind={isRenewal ? "default" : "primary"}
+                disabled={Boolean(busyKey)}
+                onClick={() =>
+                  runCheckout(
+                    {
+                      kind,
+                      target: { planCode: plan.code, billingCycle: "monthly" },
+                    },
+                    key,
+                  )
+                }
+              >
+                {`${action}「${plan.label}」 · ${yuanFromCents(plan.monthlyCents)}/月`}
+              </Button>
+            );
+          })}
+        </div>
+
+        {usageRows.some(
+          ({ decision }) =>
+            decision &&
+            (decision.reason === "usage_near_limit" ||
+              decision.reason === "usage_hard_block"),
+        ) && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {usageRows.map(({ row, decision }) => {
+              if (
+                !decision ||
+                (decision.reason !== "usage_near_limit" &&
+                  decision.reason !== "usage_hard_block")
+              ) {
+                return null;
+              }
+              const pack = USAGE_ADDON_PACK[row.metric] ?? 1;
+              return (
+                <div
+                  key={row.metric}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 10,
+                  }}
+                >
+                  <Badge
+                    tone={decision.reason === "usage_hard_block" ? "red" : "amber"}
+                    dot
+                  >
+                    {`${BILLING_METRIC_LABELS[row.metric] ?? row.metric}：${paywallReasonLabel(decision.reason)}`}
+                  </Badge>
+                  <Button
+                    size="sm"
+                    kind="primary"
+                    disabled={Boolean(busyKey)}
+                    onClick={() =>
+                      runCheckout(
+                        {
+                          kind: "usage_addon",
+                          target: { metric: row.metric, quantity: pack },
+                        },
+                        `addon:${row.metric}`,
+                      )
+                    }
+                  >
+                    {`加量包 ${pack}`}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {purchasableRows.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {purchasableRows.map((key) => (
+              <Button
+                key={key}
+                size="sm"
+                kind="default"
+                disabled={Boolean(busyKey)}
+                onClick={() =>
+                  runCheckout(
+                    { kind: "feature_addon", target: { featureKey: key } },
+                    `feature:${key}`,
+                  )
+                }
+              >
+                {`加购：${BILLING_FEATURE_LABELS[key] ?? key}`}
+              </Button>
+            ))}
+          </div>
+        )}
+
+        {error && (
+          <div style={{ color: "var(--danger-600)", fontSize: 12 }}>{error}</div>
+        )}
+
+        {pay?.order && (
+          <div
+            style={{
+              borderTop: "1px solid var(--line)",
+              paddingTop: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              fontSize: 12,
+              color: "var(--ink-600)",
+            }}
+          >
+            <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+              待支付订单：{yuanFromCents(pay.order.amountCents)}（{orderStatus}）
+            </div>
+            <div className="mono" style={{ color: "var(--ink-400)" }}>
+              订单号 {pay.order.id}
+            </div>
+            {pay.pay?.params?.value && (
+              <div className="mono" style={{ wordBreak: "break-all" }}>
+                支付凭据：{pay.pay.params.value}
+              </div>
+            )}
+            <div>
+              <Button size="sm" kind="default" onClick={refreshOrder}>
+                刷新订单状态
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function formatBillingDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toISOString().slice(0, 10);
+}
+
+function ScreenBilling({
+  billingStatus,
+  onRefresh,
+  onCheckout,
+  onRefreshOrder,
+  onEvent,
+}) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const usageRows = billingStatus?.usage ?? [];
@@ -12901,7 +23366,6 @@ function ScreenBilling({ billingStatus, onRefresh }) {
     <>
       <PageHeader
         title="商业化与套餐"
-        subtitle="组织套餐、功能权益与用量状态统一由账务服务返回"
         actions={
           <Button kind="primary" onClick={refresh} disabled={busy}>
             {busy ? "刷新中…" : "刷新账务状态"}
@@ -12989,6 +23453,14 @@ function ScreenBilling({ billingStatus, onRefresh }) {
                 </div>
               </Card>
             )}
+
+            <BillingPaywall
+              billingStatus={billingStatus}
+              onCheckout={onCheckout}
+              onRefresh={onRefresh}
+              onRefreshOrder={onRefreshOrder}
+              onEvent={onEvent}
+            />
 
             <Card title="功能权益" padded={false}>
               <DataTable
@@ -13119,31 +23591,188 @@ function billingModeLabel(mode) {
   return mode === "read_only" ? "只读模式" : "活跃";
 }
 
-function sampleExportRows(kind) {
-  if (kind === "audit_logs") {
-    return [{ module: "settlement", action: "lock" }];
-  }
-  if (kind === "vendor_delivery") {
-    return [
-      {
-        projectName: "项目名称",
-        streamerName: "主播名称",
-        settlementDuration: 0,
-        evidenceLevel: "system",
-        grossMarginCents: 0,
-      },
-    ];
-  }
-  if (kind === "settlement_batch") {
-    return [{ batchName: "6月应付批次", payableAmountCents: 120000 }];
-  }
-  return [
-    {
-      streamerName: "阿洛",
-      settlementDuration: 120,
-      evidenceLevel: "system",
-    },
-  ];
+function upsertReferenceTasks(currentTasks, nextTasks) {
+  const base = Array.isArray(currentTasks) ? currentTasks : [];
+  const normalizedNext = nextTasks.filter(Boolean);
+  const nextIds = new Set(normalizedNext.map((task) => task.id));
+  return [...base.filter((task) => !nextIds.has(task.id)), ...normalizedNext];
+}
+
+function toOpsReferenceTaskFromMutation(task, fallback = {}) {
+  if (!task?.id) return null;
+  return toOpsReferenceTask({
+    id: task.id,
+    title: task.title || fallback.title || "排班任务",
+    status: task.status || "pending_live",
+    taskType:
+      task.taskType ||
+      task.type ||
+      fallback.taskType ||
+      fallback.type ||
+      "project",
+    projectId: task.projectId || fallback.projectId || null,
+    projectName:
+      task.projectName ||
+      fallback.projectName ||
+      fallback.projectId ||
+      "Unknown project",
+    streamerId: task.streamerId || fallback.streamerId || "",
+    streamerName: task.streamerName || fallback.streamerName || "",
+    plannedStartAt: task.plannedStartAt ?? fallback.plannedStartAt ?? null,
+    plannedEndAt: task.plannedEndAt ?? fallback.plannedEndAt ?? null,
+    plannedDuration: task.plannedDuration ?? fallback.plannedDuration ?? null,
+    systemDuration: task.systemDuration ?? 0,
+  });
+}
+
+function formatFunnelPercent(rate) {
+  const value = Number.isFinite(rate) ? rate : 0;
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+const FUNNEL_RATE_LABELS = {
+  activationRate: "激活率",
+  paywallCtr: "付费墙点击率",
+  checkoutConversion: "结账转化率",
+  trialToPaid: "Trial → Paid",
+};
+
+// 转化漏斗看板：读 GET /api/funnel/metrics（按当前组织聚合）。
+function ScreenFunnel({ onLoad }) {
+  const [metrics, setMetrics] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  const load = React.useCallback(async () => {
+    if (!onLoad) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await onLoad();
+      setMetrics(result ?? null);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error ? loadError.message : "加载漏斗数据失败",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [onLoad]);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  const rateRows = metrics
+    ? Object.keys(FUNNEL_RATE_LABELS).map((key) => ({
+        key,
+        label: FUNNEL_RATE_LABELS[key],
+        value: formatFunnelPercent(metrics.rates?.[key]),
+      }))
+    : [];
+  const reasonRows = metrics
+    ? Object.entries(metrics.paywallReasons ?? {}).map(([reason, count]) => ({
+        reason,
+        label: paywallReasonLabel(reason),
+        count,
+      }))
+    : [];
+
+  return (
+    <>
+      <PageHeader
+        title="转化漏斗"
+        subtitle="注册 → 激活 → 付费 全链路转化（按当前组织聚合）"
+        actions={
+          <Button kind="primary" onClick={load} disabled={busy}>
+            {busy ? "加载中…" : "刷新数据"}
+          </Button>
+        }
+      />
+      <div
+        style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}
+      >
+        {error && (
+          <div style={{ color: "var(--danger-600)", fontSize: 12 }}>{error}</div>
+        )}
+        {!metrics ? (
+          <Card>
+            <EmptyHint
+              title="暂无漏斗数据"
+              hint="点击刷新后从埋点服务读取当前组织的转化漏斗。"
+              actionLabel="刷新数据"
+              onAction={load}
+            />
+          </Card>
+        ) : (
+          <>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+                gap: 12,
+              }}
+            >
+              <Card>
+                <Metric
+                  label="注册完成"
+                  value={String(metrics.totals.signupCompleted)}
+                  hint="signup_completed"
+                />
+              </Card>
+              <Card>
+                <Metric
+                  label="激活"
+                  value={String(metrics.totals.activated)}
+                  hint="activated"
+                />
+              </Card>
+              <Card>
+                <Metric
+                  label="首结算批次"
+                  value={String(metrics.totals.firstSettlementBatch)}
+                  hint="first_settlement_batch"
+                />
+              </Card>
+              <Card>
+                <Metric
+                  label="付费转化"
+                  value={String(metrics.totals.subscriptionActivated)}
+                  hint="subscription_activated"
+                />
+              </Card>
+            </div>
+
+            <Card title="转化率" padded={false}>
+              <DataTable
+                columns={[
+                  { title: "指标", render: (row) => row.label },
+                  { title: "数值", render: (row) => row.value },
+                ]}
+                rows={rateRows}
+              />
+            </Card>
+
+            <Card title="付费墙触发原因" padded={false}>
+              {reasonRows.length === 0 ? (
+                <div style={{ padding: 16, color: "var(--ink-400)", fontSize: 12 }}>
+                  暂无付费墙曝光记录。
+                </div>
+              ) : (
+                <DataTable
+                  columns={[
+                    { title: "原因", render: (row) => row.label },
+                    { title: "次数", render: (row) => String(row.count) },
+                  ]}
+                  rows={reasonRows}
+                />
+              )}
+            </Card>
+          </>
+        )}
+      </div>
+    </>
+  );
 }
 
 // ===== src\app.jsx =====
@@ -13159,15 +23788,24 @@ function OpsReferenceInner({
   settlementScope,
   auditEntries,
   notificationItems,
+  ocrJobs,
+  organizationMembers,
+  organizationMemberPermissions,
+  organizationSettings,
   billingStatus,
+  complexCost,
+  dashboardHome,
   projectCards,
+  collaborationProjectCards,
   streamerCards,
   applicationQueue,
+  currentUser,
 }) {
   // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'billing' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
+  const [dashboardTarget, setDashboardTarget] = React.useState(null);
   const [tasksState, setTasksState] = React.useState(liveTasks ?? null);
   const [reportsState, setReportsState] = React.useState(liveReports ?? null);
   const [batchesState, setBatchesState] = React.useState(liveBatches ?? null);
@@ -13180,15 +23818,34 @@ function OpsReferenceInner({
   const [auditEntriesState, setAuditEntriesState] = React.useState(
     auditEntries ?? null,
   );
+  const [ocrJobsState, setOcrJobsState] = React.useState(ocrJobs ?? null);
   const [notificationItemsState, setNotificationItemsState] = React.useState(
     notificationItems ?? null,
   );
+  const [organizationMembersState, setOrganizationMembersState] =
+    React.useState(organizationMembers ?? null);
+  const [
+    organizationMemberPermissionsState,
+    setOrganizationMemberPermissionsState,
+  ] = React.useState(organizationMemberPermissions ?? null);
+  const [organizationSettingsState, setOrganizationSettingsState] =
+    React.useState(() => normalizeOrganizationSettings(organizationSettings));
+  const [organizationSettingsOpen, setOrganizationSettingsOpen] =
+    React.useState(false);
   const [billingStatusState, setBillingStatusState] = React.useState(
     billingStatus ?? null,
+  );
+  const [complexCostState, setComplexCostState] = React.useState(
+    complexCost ?? null,
+  );
+  const [dashboardHomeState, setDashboardHomeState] = React.useState(
+    dashboardHome ?? null,
   );
   const [projectsState, setProjectsState] = React.useState(
     projectCards ?? null,
   );
+  const [collaborationProjectsState, setCollaborationProjectsState] =
+    React.useState(collaborationProjectCards ?? null);
   const [streamersState, setStreamersState] = React.useState(
     streamerCards ?? null,
   );
@@ -13221,16 +23878,48 @@ function OpsReferenceInner({
   }, [auditEntries]);
 
   React.useEffect(() => {
+    setOcrJobsState(ocrJobs ?? null);
+  }, [ocrJobs]);
+
+  React.useEffect(() => {
     setNotificationItemsState(notificationItems ?? null);
   }, [notificationItems]);
+
+  React.useEffect(() => {
+    setOrganizationMembersState(organizationMembers ?? null);
+  }, [organizationMembers]);
+
+  React.useEffect(() => {
+    setOrganizationMemberPermissionsState(
+      organizationMemberPermissions ?? null,
+    );
+  }, [organizationMemberPermissions]);
+
+  React.useEffect(() => {
+    setOrganizationSettingsState(
+      normalizeOrganizationSettings(organizationSettings),
+    );
+  }, [organizationSettings]);
 
   React.useEffect(() => {
     setBillingStatusState(billingStatus ?? null);
   }, [billingStatus]);
 
   React.useEffect(() => {
+    setComplexCostState(complexCost ?? null);
+  }, [complexCost]);
+
+  React.useEffect(() => {
+    setDashboardHomeState(dashboardHome ?? null);
+  }, [dashboardHome]);
+
+  React.useEffect(() => {
     setProjectsState(projectCards ?? null);
   }, [projectCards]);
+
+  React.useEffect(() => {
+    setCollaborationProjectsState(collaborationProjectCards ?? null);
+  }, [collaborationProjectCards]);
 
   React.useEffect(() => {
     setStreamersState(streamerCards ?? null);
@@ -13265,14 +23954,19 @@ function OpsReferenceInner({
     };
 
     const settlementPoolUrl = (scope) => {
-      if (!scope?.projectId || !scope?.periodStart || !scope?.periodEnd) {
+      if (!scope?.periodStart || !scope?.periodEnd) {
         return null;
       }
       const params = new URLSearchParams({
-        projectId: scope.projectId,
         periodStart: scope.periodStart,
         periodEnd: scope.periodEnd,
       });
+      if (scope.projectId) {
+        params.set("projectId", scope.projectId);
+      }
+      if (scope.batchType && scope.batchType !== "payable") {
+        params.set("batchType", scope.batchType);
+      }
       return `/api/settlement-pool?${params.toString()}`;
     };
 
@@ -13340,6 +24034,85 @@ function OpsReferenceInner({
       }
     };
 
+    const upsertOcrJob = (job) => {
+      if (!job) return;
+      setOcrJobsState((current) => [
+        job,
+        ...(Array.isArray(current)
+          ? current.filter((item) => item.id !== job.id)
+          : []),
+      ]);
+    };
+
+    const refreshOcrJobs = async (status) => {
+      const query =
+        status && status !== "all"
+          ? `?status=${encodeURIComponent(status)}`
+          : "";
+      const body = await fetchJson(
+        `/api/ocr/jobs${query}`,
+        "refresh OCR jobs failed",
+      );
+      if (Array.isArray(body.jobs)) {
+        setOcrJobsState(body.jobs);
+      }
+      return body.jobs;
+    };
+
+    const runNextOcrJob = async () => {
+      const body = await fetchJson("/api/ocr/jobs/run", "run OCR job failed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 1 }),
+      });
+      if (Array.isArray(body.jobs)) {
+        body.jobs.forEach(upsertOcrJob);
+      }
+      return body.jobs;
+    };
+
+    const retryOcrJob = async (id) => {
+      const body = await fetchJson(
+        `/api/ocr/jobs/${id}`,
+        "retry OCR job failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "retry" }),
+        },
+      );
+      upsertOcrJob(body.job);
+      return body.job;
+    };
+
+    const markOcrJobNeedsReview = async (id) => {
+      const body = await fetchJson(
+        `/api/ocr/jobs/${id}`,
+        "mark OCR job failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "needs_review" }),
+        },
+      );
+      upsertOcrJob(body.job);
+      return body.job;
+    };
+
+    const confirmOcrJob = async (id, manualResult) => {
+      const body = await fetchJson(
+        `/api/ocr/jobs/${id}`,
+        "confirm OCR job failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "confirm", manualResult }),
+        },
+      );
+      upsertOcrJob(body.job);
+      return body.job;
+    };
+
     const refreshNotifications = async () => {
       const body = await fetchJson(
         "/api/notifications",
@@ -13348,6 +24121,29 @@ function OpsReferenceInner({
       if (Array.isArray(body.items)) {
         setNotificationItemsState(body.items);
       }
+    };
+
+    const refreshOrganizationMembers = async () => {
+      const body = await fetchJson(
+        "/api/organization/members",
+        "refresh organization members failed",
+      );
+      if (Array.isArray(body.members)) {
+        setOrganizationMembersState(body.members);
+      }
+      if (body.permissions && typeof body.permissions === "object") {
+        setOrganizationMemberPermissionsState(body.permissions);
+      }
+      if (body.organization && typeof body.organization === "object") {
+        setOrganizationSettingsState((current) =>
+          normalizeOrganizationSettings({
+            ...normalizeOrganizationSettings(current),
+            id: body.organization.id,
+            name: body.organization.name,
+          }),
+        );
+      }
+      return body.members;
     };
 
     const refreshBillingStatus = async () => {
@@ -13371,6 +24167,21 @@ function OpsReferenceInner({
       }
     };
 
+    const refreshCollaborationProjects = async () => {
+      const body = await fetchJson(
+        "/api/collaboration-projects",
+        "refresh collaboration projects failed",
+      );
+      const projectCards = Array.isArray(body.projects)
+        ? toCollaborationProjectCardDtos(body.projects)
+        : [];
+      const applicationCards = Array.isArray(body.applications)
+        ? toCollaborationApplicationProjectCardDtos(body.applications)
+        : [];
+      setCollaborationProjectsState([...projectCards, ...applicationCards]);
+      return { projects: body.projects, applications: body.applications };
+    };
+
     const refreshStreamers = async () => {
       const body = await fetchJson(
         "/api/streamers",
@@ -13391,7 +24202,133 @@ function OpsReferenceInner({
       }
     };
 
+    const refreshAdmissionProjectBoards = async () => {
+      const body = await fetchJson(
+        "/api/applications/admission-board",
+        "refresh admission project board failed",
+        { method: "GET" },
+      );
+      return Array.isArray(body.projects) ? body.projects : [];
+    };
+
+    const exportAdmissionRecordings = async (projectId) => {
+      const body = await fetchJson(
+        "/api/exports/admission-recordings",
+        "export admission recordings failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId }),
+        },
+      );
+      return body.export;
+    };
+
+    const createAdmissionShareBoard = async (projectId, input) => {
+      return fetchJson(
+        `/api/projects/${projectId}/admission-share-boards`,
+        "create admission share board failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+      );
+    };
+
+    const createProjectCollaborationShare = async (projectId) => {
+      const body = await fetchJson(
+        `/api/projects/${projectId}/collaboration-shares`,
+        "create project collaboration share failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
+      await refreshProjects();
+      return body;
+    };
+
+    const listProjectCollaborationApplications = async (projectId) => {
+      const body = await fetchJson(
+        `/api/projects/${projectId}/collaboration-applications`,
+        "list project collaboration applications failed",
+        { method: "GET" },
+      );
+      return Array.isArray(body.applications) ? body.applications : [];
+    };
+
+    const reviewProjectCollaborationApplication = async (
+      projectId,
+      applicationId,
+      input,
+    ) => {
+      return fetchJson(
+        `/api/projects/${projectId}/collaboration-applications/${applicationId}/review`,
+        "review project collaboration application failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+      );
+    };
+
+    const confirmProjectCollaborationCounter = async (
+      projectId,
+      applicationId,
+    ) => {
+      const body = await fetchJson(
+        `/api/projects/${projectId}/collaboration-applications/${applicationId}/confirm`,
+        "confirm project collaboration counter failed",
+        {
+          method: "POST",
+        },
+      );
+      await refreshCollaborationProjects();
+      return body;
+    };
+
+    const readVendorDeliveryPackage = async (projectId) => {
+      const trimmedProjectId = String(projectId || "").trim();
+      if (!trimmedProjectId) {
+        return [];
+      }
+      const params = new URLSearchParams({ projectId: trimmedProjectId });
+      const body = await fetchJson(
+        `/api/delivery-packages?${params.toString()}`,
+        "read delivery package failed",
+        { method: "GET" },
+      );
+      return Array.isArray(body.items) ? body.items : [];
+    };
+
+    const scanAnomalies = async () => {
+      const body = await fetchJson(
+        "/api/anomalies/scan",
+        "scan anomalies failed",
+        { method: "POST" },
+      );
+      return body.result ?? {};
+    };
+
     return {
+      refreshProjects,
+      refreshCollaborationProjects,
+      refreshStreamers,
+      refreshApplications,
+      refreshAdmissionProjectBoards,
+      refreshOpsTasks,
+      refreshReports,
+      readVendorDeliveryPackage,
+      exportAdmissionRecordings,
+      createAdmissionShareBoard,
+      createProjectCollaborationShare,
+      listProjectCollaborationApplications,
+      reviewProjectCollaborationApplication,
+      confirmProjectCollaborationCounter,
+      scanAnomalies,
       createProjectDraft: async (input) => {
         const body = await fetchJson("/api/projects", "create project failed", {
           method: "POST",
@@ -13401,11 +24338,80 @@ function OpsReferenceInner({
         await refreshProjects();
         return body;
       },
+      joinCollaborationProject: async (input) => {
+        const body = await fetchJson(
+          "/api/collaboration-projects/join",
+          "join collaboration project failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshCollaborationProjects();
+        return body;
+      },
       publishProject: async (id) => {
         const body = await fetchJson(
           `/api/projects/${id}/publish`,
           "publish project failed",
           { method: "POST" },
+        );
+        await refreshProjects();
+        return body;
+      },
+      updateProjectBasics: async (id, input) => {
+        const body = await fetchJson(
+          `/api/projects/${id}`,
+          "update project failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshProjects();
+        return body;
+      },
+      updateProjectSettlementRule: async (id, input) => {
+        const body = await fetchJson(
+          `/api/projects/${id}/settlement-rule`,
+          "update project settlement rule failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshProjects();
+        return body;
+      },
+      updateProjectStreamerSettlementRule: async (
+        projectId,
+        streamerId,
+        input,
+      ) => {
+        const body = await fetchJson(
+          `/api/projects/${projectId}/streamers/${streamerId}/settlement-rule`,
+          "update project streamer settlement rule failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshProjects();
+        return body;
+      },
+      updateProjectFinancialSettings: async (id, input) => {
+        const body = await fetchJson(
+          `/api/projects/${id}/financial-settings`,
+          "update project financial settings failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
         );
         await refreshProjects();
         return body;
@@ -13423,6 +24429,26 @@ function OpsReferenceInner({
         await refreshStreamers();
         return body;
       },
+      updateStreamerProfile: async (id, input) => {
+        const body = await fetchJson(
+          `/api/streamers/${id}`,
+          "update streamer profile failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await Promise.all([
+          refreshStreamers(),
+          refreshProjects(),
+          refreshApplications(),
+          refreshOpsTasks(),
+          refreshReports(),
+          refreshSettlementPool(),
+        ]);
+        return body;
+      },
       updateStreamerRisk: async (id, input) => {
         const body = await fetchJson(
           `/api/streamers/${id}/risk`,
@@ -13436,16 +24462,26 @@ function OpsReferenceInner({
         await refreshStreamers();
         return body;
       },
-      inviteStreamerToProject: async (projectId, streamerId) => {
-        return fetchJson(
+      inviteStreamerToProject: async (
+        projectId,
+        streamerId,
+        collaborationId,
+      ) => {
+        const requestBody = { streamerId };
+        if (collaborationId) {
+          requestBody.collaborationId = collaborationId;
+        }
+        const body = await fetchJson(
           `/api/projects/${projectId}/invitations`,
           "invite streamer failed",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ streamerId }),
+            body: JSON.stringify(requestBody),
           },
         );
+        await refreshApplications();
+        return body;
       },
       reviewApplicationRecording: async (id, input) => {
         const body = await fetchJson(
@@ -13467,6 +24503,14 @@ function OpsReferenceInner({
           { method: "POST" },
         );
         await refreshApplications();
+        await Promise.all([
+          refreshStreamers().catch((error) =>
+            warnBackgroundRefreshFailure("confirm application join", error),
+          ),
+          refreshProjects().catch((error) =>
+            warnBackgroundRefreshFailure("confirm application join", error),
+          ),
+        ]);
         return body;
       },
       createLiveTask: async (input) => {
@@ -13479,7 +24523,12 @@ function OpsReferenceInner({
             body: JSON.stringify(input),
           },
         );
-        await refreshOpsTasks();
+        const createdTask = toOpsReferenceTaskFromMutation(body.task, input);
+        if (createdTask) {
+          setTasksState((current) =>
+            upsertReferenceTasks(current, [createdTask]),
+          );
+        }
         return body;
       },
       createLiveTasks: async (input) => {
@@ -13492,7 +24541,16 @@ function OpsReferenceInner({
             body: JSON.stringify(input),
           },
         );
-        await refreshOpsTasks();
+        const createdTasks = Array.isArray(body.tasks)
+          ? body.tasks.map((task, index) =>
+              toOpsReferenceTaskFromMutation(task, input?.tasks?.[index] ?? {}),
+            )
+          : [];
+        if (createdTasks.length > 0) {
+          setTasksState((current) =>
+            upsertReferenceTasks(current, createdTasks),
+          );
+        }
         return body;
       },
       cancelLiveTask: async (id, input) => {
@@ -13508,8 +24566,31 @@ function OpsReferenceInner({
         await refreshOpsTasks();
         return body;
       },
+      updateLiveTask: async (id, input) => {
+        const body = await fetchJson(
+          `/api/live-tasks/${id}`,
+          "update live task failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshOpsTasks();
+        return body;
+      },
+      resolveTaskAnomaly: async (id) => {
+        const body = await fetchJson(
+          `/api/live-tasks/${id}/resolve-anomaly`,
+          "resolve anomaly failed",
+          { method: "POST" },
+        );
+        await refreshOpsTasks();
+        return body;
+      },
       reviewReport: async (id, decision) => {
-        await fetchJson(
+        const approved = decision === "approve";
+        const body = await fetchJson(
           `/api/live-reports/${id}/review`,
           "review report failed",
           {
@@ -13517,14 +24598,42 @@ function OpsReferenceInner({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               decision,
-              includeInTaskResult: true,
-              enterSettlementPool: true,
+              includeInTaskResult: approved,
+              enterSettlementPool: approved,
               reviewNotes: "经营端页面审核",
             }),
           },
         );
-        await refreshReports();
-        await refreshSettlementPool();
+        const nextStatus = approved
+          ? "approved"
+          : decision === "need_more"
+            ? "need_supply"
+            : "rejected";
+        const applyReviewedStatus = () => {
+          setReportsState((current) =>
+            Array.isArray(current)
+              ? current.map((report) =>
+                  report.id === id
+                    ? {
+                        ...report,
+                        status:
+                          body.report?.status === "need_more"
+                            ? "need_supply"
+                            : body.report?.status || nextStatus,
+                      }
+                    : report,
+                )
+              : current,
+          );
+        };
+        applyReviewedStatus();
+        await Promise.all([
+          refreshProjects(),
+          refreshReports(),
+          refreshOpsTasks(),
+          refreshSettlementPool(),
+        ]);
+        applyReviewedStatus();
       },
       createSettlementBatch: async (input) => {
         const body = await fetchJson(
@@ -13544,7 +24653,9 @@ function OpsReferenceInner({
           projectId: input.projectId,
           periodStart: input.periodStart,
           periodEnd: input.periodEnd,
+          batchType: input.batchType,
         });
+        await refreshProjects();
         return body;
       },
       addManualSettlementItem: async (batchId, input) => {
@@ -13586,9 +24697,144 @@ function OpsReferenceInner({
         await refreshSettlementBatchDetail(batchId);
         await refreshSettlementBatches();
       },
+      fetchSettlementReconciliation: async ({
+        projectId,
+        periodStart,
+        periodEnd,
+      }) => {
+        const params = new URLSearchParams({ periodStart, periodEnd });
+        const body = await fetchJson(
+          `/api/projects/${projectId}/settlement-reconciliation?${params.toString()}`,
+          "load settlement reconciliation failed",
+        );
+        return body.reconciliation ?? null;
+      },
+      fetchProjectCostItems: async (projectId) => {
+        const body = await fetchJson(
+          `/api/projects/${projectId}/cost-items`,
+          "load project cost items failed",
+        );
+        return body.items ?? [];
+      },
+      createProjectCostItem: async (projectId, input) => {
+        const body = await fetchJson(
+          `/api/projects/${projectId}/cost-items`,
+          "create project cost item failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        return body.item ?? null;
+      },
+      reviewProjectCostItem: async (projectId, itemId, input) => {
+        const body = await fetchJson(
+          `/api/projects/${projectId}/cost-items/${itemId}`,
+          "review project cost item failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        return body.item ?? null;
+      },
       refreshAuditEntries,
+      refreshOcrJobs,
+      runNextOcrJob,
+      retryOcrJob,
+      markOcrJobNeedsReview,
+      confirmOcrJob,
       refreshNotifications,
+      refreshOrganizationMembers,
+      createOrganizationMember: async (input) => {
+        const body = await fetchJson(
+          "/api/organization/members",
+          "create organization member failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        if (body.member && input.mode !== "subaccount") {
+          setOrganizationMembersState((current) => [
+            body.member,
+            ...(Array.isArray(current)
+              ? current.filter((item) => item.id !== body.member.id)
+              : []),
+          ]);
+        }
+        if (body.permissions && typeof body.permissions === "object") {
+          setOrganizationMemberPermissionsState(body.permissions);
+        }
+        if (body.organization && typeof body.organization === "object") {
+          setOrganizationSettingsState((current) =>
+            normalizeOrganizationSettings({
+              ...normalizeOrganizationSettings(current),
+              id: body.organization.id,
+              name: body.organization.name,
+            }),
+          );
+        }
+        return body;
+      },
+      updateOrganizationMemberRole: async (memberId, input) => {
+        const body = await fetchJson(
+          `/api/organization/members/${memberId}`,
+          "update organization member role failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshOrganizationMembers();
+        return body.member;
+      },
+      updateOrganizationMemberStatus: async (memberId, input) => {
+        const body = await fetchJson(
+          `/api/organization/members/${memberId}`,
+          "update organization member status failed",
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshOrganizationMembers();
+        return body.member;
+      },
       refreshBillingStatus,
+      startCheckout: async (intent) => {
+        return fetchJson("/api/billing/checkout", "create checkout order failed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(intent),
+        });
+      },
+      refreshBillingOrder: async (orderId) => {
+        const body = await fetchJson(
+          `/api/billing/orders/${orderId}`,
+          "refresh billing order failed",
+        );
+        return body.order;
+      },
+      recordFunnelEvent: async (payload) => {
+        await fetchJson("/api/funnel/events", "record funnel event failed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      },
+      refreshFunnelMetrics: async () => {
+        const body = await fetchJson(
+          "/api/funnel/metrics",
+          "refresh funnel metrics failed",
+        );
+        return body.metrics;
+      },
       updateNotificationStatus: async (id, action) => {
         await fetchJson(
           `/api/notifications/${id}`,
@@ -13601,6 +24847,38 @@ function OpsReferenceInner({
         );
         await refreshNotifications();
       },
+      previewComplexCost: async (projectId, input) => {
+        const trimmedProjectId = String(projectId || "").trim();
+        if (!trimmedProjectId) {
+          throw new Error("complex cost project is required");
+        }
+        const body = await fetchJson(
+          `/api/projects/${trimmedProjectId}/complex-cost-rule/preview`,
+          "complex cost preview failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input ?? {}),
+          },
+        );
+        return body.preview;
+      },
+      createProjectCostExport: async (projectId, input) => {
+        const trimmedProjectId = String(projectId || "").trim();
+        if (!trimmedProjectId) {
+          throw new Error("complex cost export project is required");
+        }
+        const body = await fetchJson(
+          `/api/projects/${trimmedProjectId}/cost-export`,
+          "create complex cost export failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input ?? {}),
+          },
+        );
+        return body.export;
+      },
       createGovernedExport: async (input) => {
         const body = await fetchJson("/api/exports", "create export failed", {
           method: "POST",
@@ -13609,19 +24887,82 @@ function OpsReferenceInner({
         });
         return body.export;
       },
+      exportReportSettlementXlsx: async (input) => {
+        const body = await fetchJson(
+          "/api/exports/report-settlement-xlsx",
+          "export report settlement xlsx failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        return body.export;
+      },
     };
   }, [settlementScope]);
+
+  React.useEffect(() => {
+    if (!["project", "tasks", "reports"].includes(route)) {
+      return undefined;
+    }
+
+    const refreshLiveQueue = () => {
+      const request =
+        route === "reports"
+          ? actions.refreshReports()
+          : actions.refreshOpsTasks();
+      request?.catch?.((error) =>
+        warnBackgroundRefreshFailure(`${route} live queue`, error),
+      );
+    };
+
+    const shouldRefreshImmediately =
+      (route === "tasks" && tasksState == null) ||
+      (route === "reports" && reportsState == null);
+    if (shouldRefreshImmediately) {
+      refreshLiveQueue();
+    }
+    const intervalId = globalThis.setInterval?.(refreshLiveQueue, 15000);
+    const refreshWhenVisible = () => {
+      if (globalThis.document?.visibilityState !== "hidden") {
+        refreshLiveQueue();
+      }
+    };
+
+    globalThis.addEventListener?.("focus", refreshLiveQueue);
+    globalThis.document?.addEventListener?.(
+      "visibilitychange",
+      refreshWhenVisible,
+    );
+
+    return () => {
+      if (intervalId) {
+        globalThis.clearInterval?.(intervalId);
+      }
+      globalThis.removeEventListener?.("focus", refreshLiveQueue);
+      globalThis.document?.removeEventListener?.(
+        "visibilitychange",
+        refreshWhenVisible,
+      );
+    };
+  }, [actions, reportsState, route, tasksState]);
 
   const go = (r, arg) => {
     if (r === "project") {
       setRoute("project");
       setProjectId(arg || null);
+      setDashboardTarget(null);
     } else if (r === "streamers") {
       setRoute("streamers");
       if (arg) setStreamerId(arg);
+      setDashboardTarget(null);
     } else {
       setRoute(r);
       if (r === "projects") setProjectId(null);
+      setDashboardTarget(
+        arg && DASHBOARD_FOCUS_ROUTES.has(r) ? { route: r, id: arg } : null,
+      );
     }
     // Scroll content to top
     const content = globalThis.document?.getElementById("content-scroll");
@@ -13676,6 +25017,20 @@ function OpsReferenceInner({
     Array.isArray(notificationItemsState) ? notificationItemsState : [],
   );
 
+  const saveOrganizationSettings = (input) => {
+    setOrganizationSettingsState((current) =>
+      normalizeOrganizationSettings({
+        ...normalizeOrganizationSettings(current),
+        ...input,
+        features: {
+          ...normalizeOrganizationSettings(current).features,
+          ...(input?.features ?? {}),
+        },
+      }),
+    );
+    setOrganizationSettingsOpen(false);
+  };
+
   return (
     <OpsLiveDataContext.Provider
       value={{
@@ -13687,16 +25042,33 @@ function OpsReferenceInner({
         batches: batchesState,
         batchDetails: batchDetailsState,
         settlementPool: settlementPoolState,
+        collaborationProjects: collaborationProjectsState,
         settlementScope,
         auditEntries: auditEntriesState,
+        ocrJobs: ocrJobsState,
         notificationItems: notificationItemsState,
+        organizationMembers: organizationMembersState,
+        organizationMemberPermissions: organizationMemberPermissionsState,
+        organizationSettings: organizationSettingsState,
+        billingStatus: billingStatusState,
+        complexCost: complexCostState,
+        dashboardHome: dashboardHomeState,
+        currentUser: normalizeCurrentUser(currentUser),
         actions,
       }}
     >
       <div
         style={{ display: "flex", minHeight: "100vh", background: "var(--bg)" }}
       >
-        <Sidebar route={navKey} onNav={go} navCounts={navCounts} />
+        <Sidebar
+          route={navKey}
+          onNav={go}
+          navCounts={navCounts}
+          currentUser={currentUser}
+          organizationSettings={organizationSettingsState}
+          organizationMembers={organizationMembersState}
+          onOpenOrganizationSettings={() => setOrganizationSettingsOpen(true)}
+        />
         <main
           style={{
             flex: 1,
@@ -13711,6 +25083,9 @@ function OpsReferenceInner({
             notificationCount={unreadNotificationCount}
           />
           <div id="content-scroll" style={{ flex: 1, overflowY: "auto" }}>
+            {dashboardTarget?.route === route ? (
+              <DashboardTargetContextBanner target={dashboardTarget} />
+            ) : null}
             {route === "warroom" && <ScreenWarRoom go={go} />}
             {(route === "projects" || route === "project") && (
               <ScreenProjects go={go} projectId={projectId} />
@@ -13726,14 +25101,35 @@ function OpsReferenceInner({
               <ScreenBilling
                 billingStatus={billingStatusState}
                 onRefresh={actions.refreshBillingStatus}
+                onCheckout={actions.startCheckout}
+                onRefreshOrder={actions.refreshBillingOrder}
+                onEvent={actions.recordFunnelEvent}
               />
+            )}
+            {route === "aiusage" && <ScreenAiUsage />}
+            {route === "funnel" && (
+              <ScreenFunnel onLoad={actions.refreshFunnelMetrics} />
             )}
             {route === "audit" && <ScreenAudit go={go} />}
             {route === "notifications" && <ScreenNotifications go={go} />}
-            {route === "org" && <ScreenOrg go={go} />}
+            {route === "org" && (
+              <ScreenOrg
+                go={go}
+                onOpenOrganizationSettings={() =>
+                  setOrganizationSettingsOpen(true)
+                }
+              />
+            )}
             {route === "export" && <ScreenExport go={go} />}
           </div>
         </main>
+        {organizationSettingsOpen ? (
+          <OrganizationSettingsDrawer
+            settings={organizationSettingsState}
+            onClose={() => setOrganizationSettingsOpen(false)}
+            onSubmit={saveOrganizationSettings}
+          />
+        ) : null}
       </div>
     </OpsLiveDataContext.Provider>
   );
@@ -13934,7 +25330,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; billingStatus?: any }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; currentUser?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -13946,10 +25342,17 @@ export default function OpsReferenceApp({
   settlementScope,
   auditEntries,
   notificationItems,
+  organizationMembers,
+  organizationMemberPermissions,
+  organizationSettings,
   billingStatus,
+  complexCost,
+  dashboardHome,
   projectCards,
+  collaborationProjectCards,
   streamerCards,
   applicationQueue,
+  currentUser,
 }) {
   return (
     <OpsReferenceInner
@@ -13962,10 +25365,17 @@ export default function OpsReferenceApp({
       settlementScope={settlementScope}
       auditEntries={auditEntries}
       notificationItems={notificationItems}
+      organizationMembers={organizationMembers}
+      organizationMemberPermissions={organizationMemberPermissions}
+      organizationSettings={organizationSettings}
       billingStatus={billingStatus}
+      complexCost={complexCost}
+      dashboardHome={dashboardHome}
       projectCards={projectCards}
+      collaborationProjectCards={collaborationProjectCards}
       streamerCards={streamerCards}
       applicationQueue={applicationQueue}
+      currentUser={currentUser}
     />
   );
 }

@@ -30,6 +30,7 @@ export async function POST(
         screenshotDuration: optionalNumber(body, "screenshotDuration"),
         claimedDuration: optionalNumber(body, "claimedDuration"),
         viewers: optionalNumber(body, "viewers"),
+        collaborationId: optionalString(body, "collaborationId"),
       },
     });
 

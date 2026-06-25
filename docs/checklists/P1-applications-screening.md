@@ -11,7 +11,7 @@
 - [x] Final rejection records a not-joined reason.
 - [x] REST endpoints exist for signup, invitation, recording submission, review, confirm join, and reject join.
 - [x] Frontend-safe DTO queries exist for ops queue and streamer application cards.
-- [x] Seed data includes one application and one screening recording for non-empty local UI/API reads.
+- [x] Local acceptance records are created outside source-controlled seed files for non-empty UI/API reads.
 
 ## Scope Out
 

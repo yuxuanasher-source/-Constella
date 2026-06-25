@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { listProjects } from "@/features/projects/project-queries";
 import { SupabaseProjectRepository } from "@/features/projects/project-repository";
 import {
@@ -7,6 +8,7 @@ import {
   createProjectDraft,
 } from "@/features/projects/project-service";
 import { toProjectCardDtos } from "@/features/projects/project-ui-dto";
+import { recordOnboardingProgress } from "@/features/funnel/onboarding";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
@@ -48,6 +50,12 @@ export async function POST(request: Request) {
       );
     }
 
+    await assertBillingWriteAllowed({
+      client: supabase,
+      organizationId: auth.organizationId,
+      featureKey: "project_management",
+    });
+
     const project = await createProjectDraft({
       repo: new SupabaseProjectRepository(supabase),
       audit: createProjectAuditWriter(supabase),
@@ -58,6 +66,12 @@ export async function POST(request: Request) {
         supplierId: body.supplierId?.trim() || undefined,
       },
     });
+
+    await recordOnboardingProgress({
+      client: supabase,
+      actor: auth,
+      step: "create_project",
+    }).catch(() => undefined);
 
     return NextResponse.json({ project }, { status: 201 });
   } catch (error) {
@@ -73,5 +87,19 @@ function jsonServiceError(error: unknown) {
     );
   }
 
+  const message = messageFromUnknownError(error);
+  if (message) {
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+
   return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
+}
+
+function messageFromUnknownError(error: unknown): string | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" && message.trim() ? message : null;
 }

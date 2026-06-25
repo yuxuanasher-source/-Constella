@@ -157,4 +157,73 @@ describe("evaluateAutoReviewActive", () => {
       }),
     ]);
   });
+
+  it("blocks active approval when rollout gate is not allowed", async () => {
+    const { client, auditInserts } = createClient();
+    const approveReport = vi.fn();
+
+    await expect(
+      evaluateAutoReviewActive({
+        client,
+        actor: {
+          userId: "user-ops",
+          name: "Ops Manager",
+          role: "ops_manager",
+          organizationId: "org-1",
+        },
+        report,
+        rule: activeRule,
+        approveReport,
+        rolloutGate: {
+          allowed: false,
+          targetMode: "active",
+          effectiveMode: "shadow",
+          reasons: [],
+          failedGates: ["kill_switch_enabled"],
+        },
+      }),
+    ).rejects.toThrow("Active auto review blocked by rollout gate");
+
+    expect(approveReport).not.toHaveBeenCalled();
+    expect(auditInserts).toEqual([]);
+  });
+
+  it("keeps active approval when rollout gate allows active", async () => {
+    const { client } = createClient();
+    const approveReport = vi.fn(async (input: unknown) => {
+      void input;
+      return {
+        id: "report-1",
+        status: "approved",
+        enterSettlementPool: true,
+      };
+    });
+
+    const result = await evaluateAutoReviewActive({
+      client,
+      actor: {
+        userId: "user-ops",
+        name: "Ops Manager",
+        role: "ops_manager",
+        organizationId: "org-1",
+      },
+      report,
+      rule: activeRule,
+      approveReport,
+      rolloutGate: {
+        allowed: true,
+        targetMode: "active",
+        effectiveMode: "active",
+        reasons: ["shadow_far_within_threshold"],
+        failedGates: [],
+      },
+    });
+
+    expect(result).toMatchObject({
+      decision: "auto_pass_candidate",
+      mode: "active",
+      applied: true,
+    });
+    expect(approveReport).toHaveBeenCalledTimes(1);
+  });
 });

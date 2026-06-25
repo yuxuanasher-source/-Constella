@@ -32,6 +32,7 @@
 ### Task 0: AI-0 Baseline Gate
 
 **Files:**
+
 - Read: `package.json`
 - Read: `pnpm-lock.yaml`
 
@@ -100,6 +101,7 @@ Expected: no package metadata changes from install. If only intentional plan doc
 ### Task 1: Runtime Schema Contracts
 
 **Files:**
+
 - Create: `lib/db/ai-schema-contract.test.ts`
 - Create: `supabase/migrations/20260604103000_ai_runtime_foundation.sql`
 - Modify: `package.json`
@@ -150,15 +152,25 @@ describe("AI runtime schema contract", () => {
   it("links OCR jobs and results to the AI invocation ledger", () => {
     expect(allMigrations).toContain("job_type text not null");
     expect(allMigrations).toContain("ocr.extract_live_report");
-    expect(allMigrations).toContain("ai_invocation_id uuid references public.ai_invocations(id)");
-    expect(allMigrations).toContain("alter table public.ocr_results add column if not exists ai_invocation_id");
-    expect(allMigrations).toContain("alter table public.ocr_results add column if not exists background_job_id");
-    expect(allMigrations).toContain("alter table public.ocr_results add column if not exists raw_response");
+    expect(allMigrations).toContain(
+      "ai_invocation_id uuid references public.ai_invocations(id)",
+    );
+    expect(allMigrations).toContain(
+      "alter table public.ocr_results add column if not exists ai_invocation_id",
+    );
+    expect(allMigrations).toContain(
+      "alter table public.ocr_results add column if not exists background_job_id",
+    );
+    expect(allMigrations).toContain(
+      "alter table public.ocr_results add column if not exists raw_response",
+    );
   });
 
   it("uses integer-safe AI costs and token counters", () => {
     expect(allMigrations).toContain("prompt_tokens integer not null default 0");
-    expect(allMigrations).toContain("completion_tokens integer not null default 0");
+    expect(allMigrations).toContain(
+      "completion_tokens integer not null default 0",
+    );
     expect(allMigrations).toContain("cost_cents integer not null default 0");
     expect(allMigrations).not.toContain(" double precision");
     expect(allMigrations).not.toContain(" real");
@@ -212,6 +224,7 @@ git commit -m "feat: add AI runtime schema foundation"
 ### Task 2: AI Contracts, Gateway, and Grounding Guards
 
 **Files:**
+
 - Create: `features/ai/contracts.ts`
 - Create: `features/ai/agent-output-contract.ts`
 - Create: `features/ai/agent-output-contract.test.ts`
@@ -276,6 +289,7 @@ git commit -m "feat: add AI provider gateway contracts"
 ### Task 3: Invocation and Tool Ledgers
 
 **Files:**
+
 - Create: `features/ai/invocation-ledger.ts`
 - Create: `features/ai/invocation-ledger.test.ts`
 - Create: `features/ai/tool-ledger.ts`
@@ -325,6 +339,7 @@ git commit -m "feat: record AI tool invocations"
 ### Task 4: Tencent OCR Provider and OCR Job Pipeline
 
 **Files:**
+
 - Create: `features/ai/ocr-template-parser.ts`
 - Create: `features/ai/ocr-template-parser.test.ts`
 - Create: `features/ai/providers/tencent-ocr-provider.ts`
@@ -337,12 +352,16 @@ git commit -m "feat: record AI tool invocations"
 Tests cover:
 
 ```ts
-expect(parseLiveReportOcrText(["直播时长 1小时20分钟", "观看人数 320"])).toMatchObject({
+expect(
+  parseLiveReportOcrText(["直播时长 1小时20分钟", "观看人数 320"]),
+).toMatchObject({
   extractedDuration: 80,
   extractedViewers: 320,
   status: "trusted",
 });
-expect(parseLiveReportOcrText(["时长 20分钟"], { expectedDuration: 120 })).toMatchObject({
+expect(
+  parseLiveReportOcrText(["时长 20分钟"], { expectedDuration: 120 }),
+).toMatchObject({
   status: "needs_confirmation",
 });
 ```
@@ -413,6 +432,7 @@ git commit -m "feat: add Tencent OCR job pipeline"
 ### Task 5: OCR Job API and Regression Gates
 
 **Files:**
+
 - Create: `app/api/ocr/jobs/route.ts`
 - Create: `app/api/ocr/jobs/route.test.ts`
 - Create: `app/api/ocr/jobs/[jobId]/route.ts`

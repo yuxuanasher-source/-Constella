@@ -18,6 +18,12 @@ describe("application admission state", () => {
     ).not.toThrow();
   });
 
+  it("allows staff to confirm a direct invitation as joined", () => {
+    expect(() =>
+      assertApplicationTransition("invited", "joined"),
+    ).not.toThrow();
+  });
+
   it("does not treat recording approval as project join", () => {
     expect(() =>
       assertApplicationTransition("recording_reviewing", "joined"),

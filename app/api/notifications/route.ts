@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  countUnreadNotificationCenterItems,
   listNotificationCenterItems,
   type NotificationQueryClient,
   type NotificationStatus,
@@ -22,21 +23,22 @@ export async function GET(request: Request) {
     }
 
     const params = new URL(request.url).searchParams;
-    const items = await listNotificationCenterItems(
-      supabase as unknown as NotificationQueryClient,
-      {
-        userId: auth.userId,
-        role: auth.role,
-        organizationId: auth.organizationId,
-      },
-      {
+    const actor = {
+      userId: auth.userId,
+      role: auth.role,
+      organizationId: auth.organizationId,
+    };
+    const notificationClient = supabase as unknown as NotificationQueryClient;
+    const [items, unreadCount] = await Promise.all([
+      listNotificationCenterItems(notificationClient, actor, {
         status: parseStatus(params.get("status")),
-      },
-    );
+      }),
+      countUnreadNotificationCenterItems(notificationClient, actor),
+    ]);
 
     return NextResponse.json({
       items,
-      unreadCount: items.filter((item) => item.status === "unread").length,
+      unreadCount,
     });
   } catch (error) {
     if (error instanceof Error) {

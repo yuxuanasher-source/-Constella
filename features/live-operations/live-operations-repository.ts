@@ -1,9 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type {
+  ActiveLiveCollaborationAgreementRecord,
   LiveOperationsRepository,
   LiveReportRecord,
   LiveTaskRecord,
+  LiveTaskType,
   ProjectStreamerForTask,
   ReportStatus,
 } from "./live-operations-service";
@@ -23,6 +25,7 @@ type LiveTaskRow = {
   project_id: string | null;
   streamer_id: string;
   title: string;
+  task_type: LiveTaskType;
   status: LiveTaskStatus;
   planned_start_at: string | null;
   planned_end_at: string | null;
@@ -32,6 +35,9 @@ type LiveTaskRow = {
   system_stopped_at: string | null;
   system_duration: number;
   created_by: string | null;
+  collaboration_id: string | null;
+  contributor_organization_id: string | null;
+  anomaly_flags: string[] | null;
 };
 
 type LiveReportRow = {
@@ -52,6 +58,15 @@ type LiveReportRow = {
   include_in_task_result: boolean;
   enter_settlement_pool: boolean;
   risk_flags: string[];
+  collaboration_id: string | null;
+  contributor_organization_id: string | null;
+};
+
+type CollaborationAgreementRow = {
+  id: string;
+  project_id: string;
+  partner_organization_id: string;
+  status: "active";
 };
 
 const liveTaskSelect = `
@@ -60,6 +75,7 @@ const liveTaskSelect = `
   project_id,
   streamer_id,
   title,
+  task_type,
   status,
   planned_start_at,
   planned_end_at,
@@ -68,7 +84,10 @@ const liveTaskSelect = `
   system_started_at,
   system_stopped_at,
   system_duration,
-  created_by
+  created_by,
+  collaboration_id,
+  contributor_organization_id,
+  anomaly_flags
 `;
 
 const liveReportSelect = `
@@ -88,7 +107,9 @@ const liveReportSelect = `
   viewers,
   include_in_task_result,
   enter_settlement_pool,
-  risk_flags
+  risk_flags,
+  collaboration_id,
+  contributor_organization_id
 `;
 
 export class SupabaseLiveOperationsRepository implements LiveOperationsRepository {
@@ -112,17 +133,48 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     return data ? toProjectStreamer(data) : null;
   }
 
+  async getActiveCollaborationAgreement(input: {
+    projectId: string;
+    collaborationId: string;
+    contributorOrganizationId: string;
+  }): Promise<ActiveLiveCollaborationAgreementRecord | null> {
+    const { data, error } = await this.client
+      .from("project_collaboration_agreements")
+      .select("id, project_id, partner_organization_id, status")
+      .eq("id", input.collaborationId)
+      .eq("project_id", input.projectId)
+      .eq("partner_organization_id", input.contributorOrganizationId)
+      .eq("status", "active")
+      .maybeSingle<CollaborationAgreementRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return data
+      ? {
+          id: data.id,
+          projectId: data.project_id,
+          partnerOrganizationId: data.partner_organization_id,
+          status: data.status,
+        }
+      : null;
+  }
+
   async createLiveTask(input: {
     organizationId: string;
     projectId: string;
     streamerId: string;
     title: string;
+    taskType: LiveTaskType;
     plannedStartAt?: string | null;
     plannedEndAt?: string | null;
     plannedDuration?: number | null;
     requiresTiming: boolean;
     createdBy: string;
     note?: string;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<LiveTaskRecord> {
     const { data, error } = await this.client
       .from("live_tasks")
@@ -131,12 +183,15 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
         project_id: input.projectId,
         streamer_id: input.streamerId,
         title: input.title,
+        task_type: input.taskType,
         planned_start_at: input.plannedStartAt,
         planned_end_at: input.plannedEndAt,
         planned_duration: input.plannedDuration,
         requires_timing: input.requiresTiming,
         created_by: input.createdBy,
         note: input.note,
+        collaboration_id: input.collaborationId,
+        contributor_organization_id: input.contributorOrganizationId,
       })
       .select(liveTaskSelect)
       .single<LiveTaskRow>();
@@ -196,6 +251,8 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     viewers?: number | null;
     riskFlags: string[];
     createdBy: string;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<LiveReportRecord> {
     const { data, error } = await this.client
       .from("live_reports")
@@ -215,6 +272,8 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
         viewers: input.viewers,
         risk_flags: input.riskFlags,
         created_by: input.createdBy,
+        collaboration_id: input.collaborationId,
+        contributor_organization_id: input.contributorOrganizationId,
       })
       .select(liveReportSelect)
       .single<LiveReportRow>();
@@ -238,6 +297,21 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     }
 
     return data ? toLiveReportRecord(data) : null;
+  }
+
+  async listLiveReportsByTask(taskId: string): Promise<LiveReportRecord[]> {
+    const { data, error } = await this.client
+      .from("live_reports")
+      .select(liveReportSelect)
+      .eq("live_task_id", taskId)
+      .order("created_at", { ascending: false })
+      .returns<LiveReportRow[]>();
+
+    if (error) {
+      throw error;
+    }
+
+    return (data ?? []).map(toLiveReportRecord);
   }
 
   async updateLiveReport(
@@ -316,18 +390,24 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
 export async function getStreamerIdForUser(
   client: SupabaseClient,
   userId: string,
+  organizationId?: string,
 ): Promise<string | null> {
-  const { data, error } = await client
-    .from("streamers")
-    .select("id")
-    .eq("user_id", userId)
-    .maybeSingle<{ id: string }>();
+  let query = client.from("streamers").select("id").eq("user_id", userId);
+
+  if (organizationId) {
+    query = query.eq("organization_id", organizationId);
+  }
+
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1);
 
   if (error) {
     throw error;
   }
 
-  return data?.id ?? null;
+  return data?.[0]?.id ?? null;
 }
 
 function toProjectStreamer(row: ProjectStreamerRow): ProjectStreamerForTask {
@@ -346,6 +426,7 @@ function toLiveTaskRecord(row: LiveTaskRow): LiveTaskRecord {
     projectId: row.project_id,
     streamerId: row.streamer_id,
     title: row.title,
+    taskType: row.task_type,
     status: row.status,
     plannedStartAt: row.planned_start_at,
     plannedEndAt: row.planned_end_at,
@@ -355,6 +436,9 @@ function toLiveTaskRecord(row: LiveTaskRow): LiveTaskRecord {
     systemStoppedAt: row.system_stopped_at,
     systemDuration: row.system_duration,
     createdBy: row.created_by,
+    collaborationId: row.collaboration_id,
+    contributorOrganizationId: row.contributor_organization_id,
+    anomalyFlags: row.anomaly_flags ?? [],
   };
 }
 
@@ -377,6 +461,8 @@ function toLiveReportRecord(row: LiveReportRow): LiveReportRecord {
     includeInTaskResult: row.include_in_task_result,
     enterSettlementPool: row.enter_settlement_pool,
     riskFlags: row.risk_flags,
+    collaborationId: row.collaboration_id,
+    contributorOrganizationId: row.contributor_organization_id,
   };
 }
 
@@ -385,6 +471,8 @@ function toLiveTaskPatch(
 ): Record<string, unknown> {
   return removeUndefined({
     status: patch.status,
+    title: patch.title,
+    task_type: patch.taskType,
     planned_start_at: patch.plannedStartAt,
     planned_end_at: patch.plannedEndAt,
     planned_duration: patch.plannedDuration,
@@ -392,6 +480,9 @@ function toLiveTaskPatch(
     system_started_at: patch.systemStartedAt,
     system_stopped_at: patch.systemStoppedAt,
     system_duration: patch.systemDuration,
+    collaboration_id: patch.collaborationId,
+    contributor_organization_id: patch.contributorOrganizationId,
+    anomaly_flags: patch.anomalyFlags,
   });
 }
 
@@ -418,6 +509,8 @@ function toLiveReportPatch(
     reviewed_by: patch.reviewedBy,
     reviewed_at: patch.reviewedAt,
     review_notes: patch.reviewNotes,
+    collaboration_id: patch.collaborationId,
+    contributor_organization_id: patch.contributorOrganizationId,
   });
 }
 

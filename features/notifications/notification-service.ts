@@ -33,8 +33,14 @@ export async function updateNotificationStatus({
 
   const notificationQuery = client.from("notifications") as {
     update(payload: Record<string, unknown>): {
-      eq(column: string, value: unknown): {
-        eq(column: string, value: unknown): {
+      eq(
+        column: string,
+        value: unknown,
+      ): {
+        eq(
+          column: string,
+          value: unknown,
+        ): {
           select(columns: string): {
             single(): PromiseLike<{
               data: { id: string; title: string; status: NotificationStatus };

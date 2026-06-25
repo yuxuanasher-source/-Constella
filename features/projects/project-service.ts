@@ -1,5 +1,6 @@
 import { writeAuditLog, type AuditLogInput } from "@/lib/audit/audit";
 import {
+  canAssignProjectOwner,
   canCreateProjectDraft,
   canPublishProject,
 } from "@/lib/rbac/permissions";
@@ -19,10 +20,28 @@ export type ProjectRecord = {
   allow_direct_invite?: boolean;
   force_recording?: boolean;
   force_system_timing?: boolean;
+  vendor_name?: string | null;
+  product_name?: string | null;
+  agent_name?: string | null;
+  supplier_name?: string | null;
+  description?: string | null;
+  is_public_to_streamers?: boolean;
+  public_summary?: string | null;
+  game_download_url?: string | null;
+  is_open_to_mcn_collaboration?: boolean;
+  mcn_collaboration_summary?: string | null;
+  mcn_collaboration_terms?: Record<string, unknown>;
+  created_by?: string | null;
+  owner_id?: string | null;
+  ops_manager_id?: string | null;
   default_settlement_method?: string;
   default_hourly_rate?: number;
   default_base_salary?: number;
   default_settlement_rule?: unknown;
+  is_invoiced?: boolean;
+  output_vat_rate_bps?: number;
+  surtax_rate_bps?: number;
+  procurement_cost_cents?: number;
 };
 
 export type ProjectActor = {
@@ -40,12 +59,25 @@ export type CreateProjectDraftInput = {
 
 export type UpdateProjectBasicsInput = {
   name?: string;
+  status?: ProjectStatus;
   startsAt?: string | null;
   endsAt?: string | null;
   openSignup?: boolean;
   allowDirectInvite?: boolean;
   forceRecording?: boolean;
   forceSystemTiming?: boolean;
+  vendorName?: string;
+  productName?: string;
+  agentName?: string;
+  supplierName?: string;
+  description?: string;
+  isPublicToStreamers?: boolean;
+  publicSummary?: string;
+  gameDownloadUrl?: string | null;
+  ownerId?: string | null;
+  isOpenToMcnCollaboration?: boolean;
+  mcnCollaborationSummary?: string;
+  mcnCollaborationTerms?: Record<string, unknown>;
 };
 
 export type UpdateProjectSettlementRuleInput = {
@@ -55,10 +87,18 @@ export type UpdateProjectSettlementRuleInput = {
   defaultSettlementRule?: Record<string, unknown>;
 };
 
+export type UpdateProjectFinancialSettingsInput = {
+  isInvoiced?: boolean;
+  outputVatRateBps?: number;
+  surtaxRateBps?: number;
+  procurementCostCents?: number;
+};
+
 export type ProjectRepository = {
   createDraft(input: {
     organizationId: string;
     actorUserId: string;
+    ownerUserId: string;
     name: string;
     code: string;
     supplierId?: string;
@@ -70,6 +110,10 @@ export type ProjectRepository = {
     input: Partial<ProjectRecord>,
   ): Promise<ProjectRecord>;
   updateSettlementRule(
+    projectId: string,
+    input: Partial<ProjectRecord>,
+  ): Promise<ProjectRecord>;
+  updateFinancialSettings(
     projectId: string,
     input: Partial<ProjectRecord>,
   ): Promise<ProjectRecord>;
@@ -95,6 +139,7 @@ export async function createProjectDraft({
   const project = await repo.createDraft({
     organizationId: actor.organizationId,
     actorUserId: actor.userId,
+    ownerUserId: actor.userId,
     name: input.name,
     code: input.code,
     supplierId: input.supplierId,
@@ -174,8 +219,17 @@ export async function updateProjectBasics({
   if (!canCreateProjectDraft(actor.role)) {
     throw new Error("Current role cannot update project basics");
   }
+  if (input.ownerId !== undefined && !canAssignProjectOwner(actor.role)) {
+    throw new Error("Only owner and ops_manager can assign project owners");
+  }
 
   const before = await requireProject(repo, projectId);
+  if (before.status === "draft" && input.status === "recruiting") {
+    throw new Error("Draft projects must be published with the publish action");
+  }
+  if (input.status) {
+    assertProjectTransition(before.status, input.status);
+  }
   const patch = mapBasicProjectPatch(input);
   const changedFields = Object.keys(patch);
   const project = await repo.updateBasics(projectId, patch);
@@ -247,6 +301,65 @@ export async function updateProjectSettlementRule({
   return project;
 }
 
+export async function updateProjectFinancialSettings({
+  repo,
+  audit,
+  actor,
+  projectId,
+  input,
+  reason,
+}: {
+  repo: ProjectRepository;
+  audit: ProjectAuditWriter;
+  actor: ProjectActor;
+  projectId: string;
+  input: UpdateProjectFinancialSettingsInput;
+  reason: string;
+}): Promise<ProjectRecord> {
+  if (!canPublishProject(actor.role)) {
+    throw new Error("Only owner and ops_manager can update financial settings");
+  }
+
+  if (!reason.trim()) {
+    throw new Error("Financial settings changes require a reason");
+  }
+
+  const before = await requireProject(repo, projectId);
+  const patch = mapFinancialProjectPatch(input);
+  const changedFields = Object.keys(patch);
+  const project = await repo.updateFinancialSettings(projectId, patch);
+
+  await audit({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action: "update",
+    module: "project",
+    objectType: "project",
+    objectId: project.id,
+    objectName: project.name,
+    before,
+    after: project,
+    changedFields,
+    isHighRisk: true,
+    reason: reason.trim(),
+  });
+
+  return project;
+}
+
+function mapFinancialProjectPatch(
+  input: UpdateProjectFinancialSettingsInput,
+): Partial<ProjectRecord> {
+  return removeUndefined({
+    is_invoiced: input.isInvoiced,
+    output_vat_rate_bps: input.outputVatRateBps,
+    surtax_rate_bps: input.surtaxRateBps,
+    procurement_cost_cents: input.procurementCostCents,
+  });
+}
+
 export function createProjectAuditWriter(
   client: Parameters<typeof writeAuditLog>[0],
 ) {
@@ -270,12 +383,25 @@ function mapBasicProjectPatch(
 ): Partial<ProjectRecord> {
   return removeUndefined({
     name: input.name,
+    status: input.status,
     starts_at: input.startsAt,
     ends_at: input.endsAt,
     open_signup: input.openSignup,
     allow_direct_invite: input.allowDirectInvite,
     force_recording: input.forceRecording,
     force_system_timing: input.forceSystemTiming,
+    vendor_name: input.vendorName,
+    product_name: input.productName,
+    agent_name: input.agentName,
+    supplier_name: input.supplierName,
+    description: input.description,
+    is_public_to_streamers: input.isPublicToStreamers,
+    public_summary: input.publicSummary,
+    game_download_url: normalizeOptionalHttpUrl(input.gameDownloadUrl),
+    is_open_to_mcn_collaboration: input.isOpenToMcnCollaboration,
+    mcn_collaboration_summary: input.mcnCollaborationSummary,
+    mcn_collaboration_terms: input.mcnCollaborationTerms,
+    owner_id: input.ownerId,
   });
 }
 
@@ -294,4 +420,32 @@ function removeUndefined<T extends Record<string, unknown>>(input: T): T {
   return Object.fromEntries(
     Object.entries(input).filter(([, value]) => value !== undefined),
   ) as T;
+}
+
+function normalizeOptionalHttpUrl(
+  value: string | null | undefined,
+): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("Game download URL must be an http(s) URL");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("Game download URL must be an http(s) URL");
+  }
+
+  return trimmed;
 }

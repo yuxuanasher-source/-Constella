@@ -70,7 +70,13 @@ function toCsv(
 }
 
 function csvCell(value: unknown): string {
-  const text = value == null ? "" : String(value);
+  let text = value == null ? "" : String(value);
+  // Neutralize spreadsheet formula injection: a leading =, +, -, @, tab or CR
+  // makes Excel/Sheets evaluate the cell as a formula when the export is opened.
+  // Prefix such values with a single quote so they are treated as plain text.
+  if (/^[=+\-@\t\r]/.test(text)) {
+    text = `'${text}`;
+  }
   if (text.includes(",") || text.includes("\n") || text.includes('"')) {
     return `"${text.replaceAll('"', '""')}"`;
   }

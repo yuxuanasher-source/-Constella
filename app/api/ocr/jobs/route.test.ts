@@ -122,4 +122,25 @@ describe("/api/ocr/jobs", () => {
 
     expect(response.status).toBe(403);
   });
+
+  it("allows finance staff to list but not create OCR jobs", async () => {
+    vi.mocked(getAuthContext).mockResolvedValue({ ...auth, role: "finance" });
+    vi.mocked(listOcrJobs).mockResolvedValue([]);
+
+    const listResponse = await GET();
+    expect(listResponse.status).toBe(200);
+
+    const createResponse = await POST(
+      new Request("http://localhost/api/ocr/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          liveReportId: "report-1",
+          imageBase64: "ZmFrZQ==",
+        }),
+      }),
+    );
+
+    expect(createResponse.status).toBe(403);
+    expect(createOcrJob).not.toHaveBeenCalled();
+  });
 });

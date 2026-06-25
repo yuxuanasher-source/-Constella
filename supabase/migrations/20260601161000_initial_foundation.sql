@@ -375,6 +375,13 @@ create table public.settlement_batches (
   constraint settlement_batches_period_valid check (period_end >= period_start),
   constraint settlement_batches_reopen_reason_required check (
     status <> 'reopened' or nullif(trim(reopen_reason), '') is not null
+  ),
+  constraint settlement_batches_unique_period_type unique (
+    organization_id,
+    project_id,
+    batch_type,
+    period_start,
+    period_end
   )
 );
 

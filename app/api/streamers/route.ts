@@ -10,6 +10,7 @@ import {
   type StreamerSourceType,
 } from "@/features/streamers/streamer-service";
 import { toStreamerCardDtos } from "@/features/streamers/streamer-ui-dto";
+import { recordOnboardingProgress } from "@/features/funnel/onboarding";
 import { writeAuditLog } from "@/lib/audit/audit";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
@@ -78,9 +79,27 @@ export async function POST(request: Request) {
         defaultSettlementMethod: defaultSettlementMethod as
           | StreamerSettlementMethod
           | undefined,
+        defaultHourlyRate: optionalNumber(
+          body.defaultHourlyRate,
+          "defaultHourlyRate",
+        ),
+        defaultBaseSalary: optionalNumber(
+          body.defaultBaseSalary,
+          "defaultBaseSalary",
+        ),
+        defaultCpsRateBps: optionalInteger(
+          body.defaultCpsRateBps,
+          "defaultCpsRateBps",
+        ),
         userId: normalizeOptionalText(body.userId),
       },
     });
+
+    await recordOnboardingProgress({
+      client: supabase,
+      actor: auth,
+      step: "add_streamer",
+    }).catch(() => undefined);
 
     return NextResponse.json({ streamer }, { status: 201 });
   } catch (error) {
@@ -98,6 +117,9 @@ type StreamerPostBody = {
   platforms?: unknown;
   styles?: unknown;
   defaultSettlementMethod?: unknown;
+  defaultHourlyRate?: unknown;
+  defaultBaseSalary?: unknown;
+  defaultCpsRateBps?: unknown;
 };
 
 function normalizeOptionalText(value: unknown) {
@@ -122,6 +144,31 @@ function normalizeTextList(value: unknown) {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function optionalNumber(value: unknown, fieldName: string) {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${fieldName} must be a number`);
+  }
+  if (parsed < 0) {
+    throw new Error(`${fieldName} must be non-negative`);
+  }
+  return parsed;
+}
+
+function optionalInteger(value: unknown, fieldName: string) {
+  const parsed = optionalNumber(value, fieldName);
+  if (parsed === undefined) {
+    return undefined;
+  }
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`${fieldName} must be an integer`);
+  }
+  return parsed;
+}
+
 function normalizeEnum<T extends string>(
   value: unknown,
   allowedValues: readonly T[],
@@ -143,12 +190,27 @@ function normalizeEnum<T extends string>(
 }
 
 function jsonServiceError(error: unknown) {
+  const message = serviceErrorMessage(error);
   if (error instanceof Error) {
     return NextResponse.json(
-      { error: error.message },
+      { error: message },
       { status: statusForServiceError(error) },
     );
   }
 
-  return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
+  return NextResponse.json({ error: message }, { status: 500 });
+}
+
+function serviceErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (isRecord(error) && typeof error.message === "string") {
+    return error.message;
+  }
+  return "Unexpected error";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

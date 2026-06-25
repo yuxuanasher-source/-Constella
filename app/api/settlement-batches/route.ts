@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { listOpsSettlementBatches } from "@/features/settlements/settlement-queries";
 import {
   getSettlementRouteContext,
   jsonError,
   readJsonBody,
   requiredString,
+  requiredUuid,
   RouteError,
   settlementActorFromContext,
 } from "@/features/settlements/settlement-route-utils";
@@ -24,7 +26,10 @@ export async function GET() {
       throw new RouteError("Only MCN staff can view settlement batches", 403);
     }
 
-    const batches = await listOpsSettlementBatches(context.supabase);
+    const batches = await listOpsSettlementBatches(
+      context.supabase,
+      context.auth.organizationId,
+    );
     return NextResponse.json({ batches });
   } catch (error) {
     return jsonError(error);
@@ -40,13 +45,19 @@ export async function POST(request: Request) {
     }
 
     const context = await getSettlementRouteContext();
+    await assertBillingWriteAllowed({
+      client: context.supabase,
+      organizationId: context.auth.organizationId,
+      featureKey: "settlement",
+    });
+
     const result = await generateSettlementBatch({
       repo: context.repo,
       audit: (input) => context.audit(context.supabase, input),
       notify: (input) => context.notify(context.supabase, input),
       actor: settlementActorFromContext(context),
       input: {
-        projectId: requiredString(body, "projectId"),
+        projectId: requiredUuid(body, "projectId"),
         batchType: batchType as SettlementBatchType,
         periodStart: requiredString(body, "periodStart"),
         periodEnd: requiredString(body, "periodEnd"),

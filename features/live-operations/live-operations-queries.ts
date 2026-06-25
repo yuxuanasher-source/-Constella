@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { EvidenceLevel, TimeSource } from "./live-report-evidence";
 import type { LiveTaskStatus } from "./live-task-state";
-import type { ReportStatus } from "./live-operations-service";
+import type { LiveTaskType, ReportStatus } from "./live-operations-service";
 
 export type StreamerTaskCard = {
   id: string;
@@ -17,14 +17,21 @@ export type StreamerTaskCard = {
 
 export type OpsLiveReportQueueItem = {
   id: string;
+  taskId: string;
+  projectId: string;
+  streamerId: string;
   status: ReportStatus;
   taskTitle: string;
   projectName: string;
   streamerName: string;
   settlementDuration: number | null;
+  systemDuration: number | null;
+  screenshotDuration: number | null;
+  divergencePct: number | null;
   timeSource: TimeSource | null;
   evidenceLevel: EvidenceLevel | null;
   viewers: number | null;
+  riskFlags: string[];
   submittedAt: string;
 };
 
@@ -32,6 +39,7 @@ export type OpsLiveTaskQueueItem = {
   id: string;
   title: string;
   status: LiveTaskStatus;
+  taskType: LiveTaskType;
   projectId: string | null;
   projectName: string;
   streamerId: string;
@@ -40,6 +48,7 @@ export type OpsLiveTaskQueueItem = {
   plannedEndAt: string | null;
   plannedDuration: number | null;
   systemDuration: number;
+  anomalyFlags?: string[];
 };
 
 type StreamerTaskRow = {
@@ -55,11 +64,18 @@ type StreamerTaskRow = {
 
 type OpsLiveReportRow = {
   id: string;
+  live_task_id: string;
+  project_id: string;
+  streamer_id: string;
   status: ReportStatus;
   settlement_duration: number | null;
+  system_duration: number | null;
+  screenshot_duration: number | null;
+  divergence_pct: number | null;
   time_source: TimeSource | null;
   evidence_level: EvidenceLevel | null;
   viewers: number | null;
+  risk_flags: string[] | null;
   created_at: string;
   live_tasks: { title: string } | { title: string }[] | null;
   projects: { name: string } | { name: string }[] | null;
@@ -70,12 +86,14 @@ type OpsLiveTaskRow = {
   id: string;
   title: string;
   status: LiveTaskStatus;
+  task_type: LiveTaskType;
   project_id: string | null;
   streamer_id: string;
   planned_start_at: string | null;
   planned_end_at: string | null;
   planned_duration: number | null;
   system_duration: number;
+  anomaly_flags?: string[] | null;
   projects: { name: string } | { name: string }[] | null;
   streamers: { display_name: string } | { display_name: string }[] | null;
 };
@@ -102,13 +120,26 @@ export async function listStreamerTaskCards(
 
 export async function listOpsLiveReportQueue(
   client: SupabaseClient,
+  organizationId?: string,
 ): Promise<OpsLiveReportQueueItem[]> {
-  const { data, error } = await client
+  let query = client
     .from("live_reports")
     .select(
-      "id, status, settlement_duration, time_source, evidence_level, viewers, created_at, live_tasks(title), projects(name), streamers(display_name)",
+      "id, live_task_id, project_id, streamer_id, status, settlement_duration, system_duration, screenshot_duration, divergence_pct, time_source, evidence_level, viewers, risk_flags, created_at, live_tasks(title), projects(name), streamers(display_name)",
     )
-    .in("status", ["pending_review", "pending_adjudication"])
+    .in("status", [
+      "pending_review",
+      "pending_adjudication",
+      "approved",
+      "rejected",
+      "need_more",
+    ]);
+
+  if (organizationId) {
+    query = query.eq("organization_id", organizationId);
+  }
+
+  const { data, error } = await query
     .order("created_at", { ascending: false })
     .returns<OpsLiveReportRow[]>();
 
@@ -121,12 +152,19 @@ export async function listOpsLiveReportQueue(
 
 export async function listOpsLiveTaskQueue(
   client: SupabaseClient,
+  organizationId?: string,
 ): Promise<OpsLiveTaskQueueItem[]> {
-  const { data, error } = await client
+  let query = client
     .from("live_tasks")
     .select(
-      "id, title, status, project_id, streamer_id, planned_start_at, planned_end_at, planned_duration, system_duration, projects(name), streamers(display_name)",
-    )
+      "id, title, status, task_type, project_id, streamer_id, planned_start_at, planned_end_at, planned_duration, system_duration, anomaly_flags, projects(name), streamers(display_name)",
+    );
+
+  if (organizationId) {
+    query = query.eq("organization_id", organizationId);
+  }
+
+  const { data, error } = await query
     .order("planned_start_at", { ascending: true })
     .returns<OpsLiveTaskRow[]>();
 
@@ -161,14 +199,21 @@ export function toOpsLiveReportQueueItem(
 
   return {
     id: row.id,
+    taskId: row.live_task_id,
+    projectId: row.project_id,
+    streamerId: row.streamer_id,
     status: row.status,
     taskTitle: task?.title ?? "Unknown task",
     projectName: project?.name ?? "Unknown project",
     streamerName: streamer?.display_name ?? "Unknown streamer",
     settlementDuration: row.settlement_duration,
+    systemDuration: row.system_duration,
+    screenshotDuration: row.screenshot_duration,
+    divergencePct: row.divergence_pct,
     timeSource: row.time_source,
     evidenceLevel: row.evidence_level,
     viewers: row.viewers,
+    riskFlags: row.risk_flags ?? [],
     submittedAt: row.created_at,
   };
 }
@@ -183,6 +228,7 @@ export function toOpsLiveTaskQueueItem(
     id: row.id,
     title: row.title,
     status: row.status,
+    taskType: row.task_type,
     projectId: row.project_id,
     projectName: project?.name ?? "Unknown project",
     streamerId: row.streamer_id,
@@ -191,6 +237,7 @@ export function toOpsLiveTaskQueueItem(
     plannedEndAt: row.planned_end_at,
     plannedDuration: row.planned_duration,
     systemDuration: row.system_duration,
+    anomalyFlags: row.anomaly_flags ?? [],
   };
 }
 

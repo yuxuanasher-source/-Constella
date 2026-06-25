@@ -25,9 +25,10 @@ describe("manual acceptance smoke case mapping", () => {
 
     expect(manualCaseIds.size).toBeGreaterThan(80);
     for (const caseId of automatedCaseIds) {
-      expect(manualCaseIds.has(caseId), `${caseId} must exist in manual doc`).toBe(
-        true,
-      );
+      expect(
+        manualCaseIds.has(caseId),
+        `${caseId} must exist in manual doc`,
+      ).toBe(true);
     }
 
     expect(Array.from(automatedCaseIds)).toEqual(
@@ -91,7 +92,7 @@ describe("manual acceptance smoke notification selection", () => {
       },
       {
         id: "user-notification",
-        title: "Demo data loaded",
+        title: "Workspace settings changed",
         objectType: "organization",
       },
     ]);

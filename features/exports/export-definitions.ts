@@ -3,9 +3,13 @@ import type { AppRole } from "@/lib/rbac/roles";
 export type ExportKind =
   | "project_execution"
   | "report_details"
+  | "report_settlement_details"
   | "settlement_batch"
   | "audit_logs"
-  | "vendor_delivery";
+  | "vendor_delivery"
+  | "admission_recordings"
+  | "project_costs"
+  | "supplier_reconcile";
 
 export type ExportField = {
   key: string;
@@ -14,6 +18,61 @@ export type ExportField = {
 };
 
 export const exportDefinitions: Record<ExportKind, ExportField[]> = {
+  project_costs: [
+    { key: "projectName", label: "Project Name", sensitivity: "public" },
+    { key: "itemType", label: "Cost Type", sensitivity: "internal" },
+    {
+      key: "amountCents",
+      label: "Cost Amount",
+      sensitivity: "finance_sensitive",
+    },
+    { key: "source", label: "Source", sensitivity: "internal" },
+    { key: "reason", label: "Reason", sensitivity: "internal" },
+  ],
+  supplier_reconcile: [
+    { key: "projectName", label: "Project Name", sensitivity: "public" },
+    { key: "supplierName", label: "Supplier", sensitivity: "public" },
+    { key: "itemType", label: "Cost Type", sensitivity: "public" },
+    {
+      key: "amountCents",
+      label: "Reconcile Amount",
+      sensitivity: "finance_sensitive",
+    },
+    {
+      key: "evidenceLevel",
+      label: "Evidence Level",
+      sensitivity: "internal",
+    },
+  ],
+  admission_recordings: [
+    { key: "projectCode", label: "项目编号", sensitivity: "public" },
+    { key: "projectName", label: "项目名称", sensitivity: "public" },
+    { key: "vendorProduct", label: "厂商/产品", sensitivity: "public" },
+    { key: "streamerName", label: "主播", sensitivity: "public" },
+    {
+      key: "streamerAccount",
+      label: "主播账号",
+      sensitivity: "public",
+    },
+    { key: "recordingUrl", label: "录屏链接", sensitivity: "public" },
+    {
+      key: "recordingVersion",
+      label: "录屏版本",
+      sensitivity: "public",
+    },
+    {
+      key: "recordingSubmittedAt",
+      label: "录屏提交时间",
+      sensitivity: "public",
+    },
+    {
+      key: "mcnReviewStatus",
+      label: "MCN审核状态",
+      sensitivity: "public",
+    },
+    { key: "vendorDecision", label: "厂商决策", sensitivity: "public" },
+    { key: "vendorRemark", label: "厂商备注", sensitivity: "public" },
+  ],
   vendor_delivery: [
     { key: "projectName", label: "项目名称", sensitivity: "public" },
     { key: "streamerName", label: "主播", sensitivity: "public" },
@@ -30,9 +89,24 @@ export const exportDefinitions: Record<ExportKind, ExportField[]> = {
     { key: "settlementDuration", label: "结算时长", sensitivity: "public" },
     { key: "evidenceLevel", label: "证据等级", sensitivity: "public" },
   ],
+  report_settlement_details: [
+    { key: "guildOrIndividual", label: "公会/个人", sensitivity: "public" },
+    { key: "gameProduct", label: "游戏产品", sensitivity: "public" },
+    { key: "streamerName", label: "主播名称", sensitivity: "public" },
+    { key: "liveDate", label: "直播日期", sensitivity: "public" },
+    { key: "liveTime", label: "直播时间", sensitivity: "public" },
+    { key: "duration", label: "时长", sensitivity: "public" },
+    { key: "hourlyRate", label: "小时单价", sensitivity: "finance_sensitive" },
+    { key: "talentFee", label: "达人费用", sensitivity: "finance_sensitive" },
+    { key: "screenshot", label: "下播截图", sensitivity: "public" },
+  ],
   settlement_batch: [
     { key: "batchName", label: "批次", sensitivity: "internal" },
-    { key: "payableAmountCents", label: "应付金额", sensitivity: "finance_sensitive" },
+    {
+      key: "payableAmountCents",
+      label: "应付金额",
+      sensitivity: "finance_sensitive",
+    },
     {
       key: "vendorReceivableCents",
       label: "厂家应收",
@@ -66,8 +140,12 @@ export function isExportKind(value: unknown): value is ExportKind {
   return (
     value === "project_execution" ||
     value === "report_details" ||
+    value === "report_settlement_details" ||
     value === "settlement_batch" ||
     value === "audit_logs" ||
-    value === "vendor_delivery"
+    value === "vendor_delivery" ||
+    value === "admission_recordings" ||
+    value === "project_costs" ||
+    value === "supplier_reconcile"
   );
 }

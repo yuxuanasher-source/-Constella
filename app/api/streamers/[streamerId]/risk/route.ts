@@ -36,7 +36,10 @@ export async function PATCH(
       );
     }
     if (!body.reason?.trim()) {
-      return NextResponse.json({ error: "reason is required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "reason is required" },
+        { status: 400 },
+      );
     }
 
     const { streamerId } = await params;

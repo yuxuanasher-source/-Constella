@@ -18,6 +18,41 @@ function createClient() {
 }
 
 describe("createGovernedExport", () => {
+  it("generates admission recording exports with Chinese headers", async () => {
+    const { client } = createClient();
+
+    const result = await createGovernedExport({
+      client,
+      actor: {
+        userId: "user-ops",
+        name: "运营经理",
+        role: "ops_manager",
+        organizationId: "org-1",
+      },
+      kind: "admission_recordings",
+      rows: [
+        {
+          projectCode: "P-001",
+          projectName: "Alpha",
+          vendorProduct: "Vendor / Game",
+          streamerName: "主播一",
+          streamerAccount: "Douyin / one-live",
+          recordingUrl: "https://video.example/rec-1",
+          recordingVersion: 1,
+          recordingSubmittedAt: "2026-06-07T01:10:00.000Z",
+          mcnReviewStatus: "recording_reviewing",
+          vendorDecision: "pending",
+          vendorRemark: "",
+        },
+      ],
+      now: "2026-06-07T10:00:00.000Z",
+    });
+
+    expect(result.content.split("\n")[0]).toBe(
+      "项目编号,项目名称,厂商/产品,主播,主播账号,录屏链接,录屏版本,录屏提交时间,MCN审核状态,厂商决策,厂商备注",
+    );
+  });
+
   it("generates CSV using server-side field whitelist and writes export audit", async () => {
     const { client, auditInserts } = createClient();
 
@@ -37,6 +72,9 @@ describe("createGovernedExport", () => {
           settlementDuration: 120,
           evidenceLevel: "system",
           grossMarginCents: 3000,
+          supplierCostCents: 271828,
+          internalRiskNote: "内部风险-只读",
+          vendorReceivableCents: 424242,
         },
       ],
       now: "2026-06-02T10:00:00.000Z",
@@ -46,6 +84,9 @@ describe("createGovernedExport", () => {
     expect(result.content).toContain("项目名称,主播,结算时长,证据等级");
     expect(result.content).toContain("王者荣耀暑期冲榜,阿洛,120,system");
     expect(result.content).not.toContain("grossMarginCents");
+    expect(result.content).not.toContain("271828");
+    expect(result.content).not.toContain("内部风险-只读");
+    expect(result.content).not.toContain("424242");
     expect(auditInserts).toEqual([
       expect.objectContaining({
         organization_id: "org-1",
@@ -55,5 +96,38 @@ describe("createGovernedExport", () => {
         changed_fields: ["export_kind", "row_count"],
       }),
     ]);
+  });
+
+  it("neutralizes spreadsheet formula injection in cell values", async () => {
+    const { client } = createClient();
+
+    const result = await createGovernedExport({
+      client,
+      actor: {
+        userId: "user-ops",
+        name: "运营经理",
+        role: "operator_business",
+        organizationId: "org-1",
+      },
+      kind: "vendor_delivery",
+      rows: [
+        {
+          projectName: '=HYPERLINK("http://evil.example","x")',
+          streamerName: "+1234",
+          settlementDuration: 120,
+          evidenceLevel: "system",
+        },
+      ],
+      now: "2026-06-02T10:00:00.000Z",
+    });
+
+    // Formula-triggering values are prefixed with a single quote (and quoted
+    // because they now contain a comma / quote) so spreadsheets treat them as
+    // text rather than evaluating them.
+    expect(result.content).toContain(
+      `"'=HYPERLINK(""http://evil.example"",""x"")"`,
+    );
+    expect(result.content).toContain("'+1234");
+    expect(result.content).not.toMatch(/(^|,)=HYPERLINK/);
   });
 });

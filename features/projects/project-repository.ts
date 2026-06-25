@@ -14,10 +14,28 @@ type ProjectRow = {
   allow_direct_invite: boolean;
   force_recording: boolean;
   force_system_timing: boolean;
+  vendor_name: string | null;
+  product_name: string | null;
+  agent_name: string | null;
+  supplier_name: string | null;
+  description: string | null;
+  is_public_to_streamers: boolean;
+  public_summary: string;
+  game_download_url: string | null;
+  is_open_to_mcn_collaboration: boolean;
+  mcn_collaboration_summary: string;
+  mcn_collaboration_terms: Record<string, unknown>;
+  created_by: string | null;
+  owner_id: string | null;
+  ops_manager_id: string | null;
   default_settlement_method: string;
   default_hourly_rate: number;
   default_base_salary: number;
   default_settlement_rule: unknown;
+  is_invoiced: boolean | null;
+  output_vat_rate_bps: number | null;
+  surtax_rate_bps: number | null;
+  procurement_cost_cents: number | null;
 };
 
 const projectSelect = `
@@ -32,10 +50,28 @@ const projectSelect = `
   allow_direct_invite,
   force_recording,
   force_system_timing,
+  vendor_name,
+  product_name,
+  agent_name,
+  supplier_name,
+  description,
+  is_public_to_streamers,
+  public_summary,
+  game_download_url,
+  is_open_to_mcn_collaboration,
+  mcn_collaboration_summary,
+  mcn_collaboration_terms,
+  created_by,
+  owner_id,
+  ops_manager_id,
   default_settlement_method,
   default_hourly_rate,
   default_base_salary,
-  default_settlement_rule
+  default_settlement_rule,
+  is_invoiced,
+  output_vat_rate_bps,
+  surtax_rate_bps,
+  procurement_cost_cents
 `;
 
 export class SupabaseProjectRepository implements ProjectRepository {
@@ -44,6 +80,7 @@ export class SupabaseProjectRepository implements ProjectRepository {
   async createDraft(input: {
     organizationId: string;
     actorUserId: string;
+    ownerUserId: string;
     name: string;
     code: string;
     supplierId?: string;
@@ -53,6 +90,7 @@ export class SupabaseProjectRepository implements ProjectRepository {
       .insert({
         organization_id: input.organizationId,
         created_by: input.actorUserId,
+        owner_id: input.ownerUserId,
         name: input.name,
         code: input.code,
         supplier_id: input.supplierId,
@@ -135,6 +173,24 @@ export class SupabaseProjectRepository implements ProjectRepository {
 
     return toProjectRecord(data);
   }
+
+  async updateFinancialSettings(
+    projectId: string,
+    input: Partial<ProjectRecord>,
+  ): Promise<ProjectRecord> {
+    const { data, error } = await this.client
+      .from("projects")
+      .update(input)
+      .eq("id", projectId)
+      .select(projectSelect)
+      .single<ProjectRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return toProjectRecord(data);
+  }
 }
 
 function toProjectRecord(row: ProjectRow): ProjectRecord {
@@ -150,9 +206,27 @@ function toProjectRecord(row: ProjectRow): ProjectRecord {
     allow_direct_invite: row.allow_direct_invite,
     force_recording: row.force_recording,
     force_system_timing: row.force_system_timing,
+    vendor_name: row.vendor_name,
+    product_name: row.product_name,
+    agent_name: row.agent_name,
+    supplier_name: row.supplier_name,
+    description: row.description,
+    is_public_to_streamers: row.is_public_to_streamers,
+    public_summary: row.public_summary,
+    game_download_url: row.game_download_url,
+    is_open_to_mcn_collaboration: row.is_open_to_mcn_collaboration,
+    mcn_collaboration_summary: row.mcn_collaboration_summary,
+    mcn_collaboration_terms: row.mcn_collaboration_terms,
+    created_by: row.created_by,
+    owner_id: row.owner_id,
+    ops_manager_id: row.ops_manager_id,
     default_settlement_method: row.default_settlement_method,
     default_hourly_rate: row.default_hourly_rate,
     default_base_salary: row.default_base_salary,
     default_settlement_rule: row.default_settlement_rule,
+    is_invoiced: row.is_invoiced ?? false,
+    output_vat_rate_bps: row.output_vat_rate_bps ?? 0,
+    surtax_rate_bps: row.surtax_rate_bps ?? 0,
+    procurement_cost_cents: row.procurement_cost_cents ?? 0,
   };
 }

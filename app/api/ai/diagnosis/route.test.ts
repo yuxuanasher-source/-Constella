@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
 
 import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import {
+  createSupabaseAdminClient,
+  createSupabaseServerClient,
+} from "@/lib/db/supabase-server";
 
 vi.mock("@/lib/auth/context", () => ({
   getAuthContext: vi.fn(),
@@ -11,6 +14,7 @@ vi.mock("@/lib/auth/context", () => ({
 
 vi.mock("@/lib/db/supabase-server", () => ({
   createSupabaseServerClient: vi.fn(),
+  createSupabaseAdminClient: vi.fn(),
 }));
 
 const auth = {
@@ -36,6 +40,7 @@ describe("AI diagnosis route", () => {
     vi.mocked(createSupabaseServerClient).mockResolvedValue(
       createClient() as never,
     );
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(null);
     vi.mocked(getAuthContext).mockResolvedValue(auth);
   });
 
@@ -57,7 +62,31 @@ describe("AI diagnosis route", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.result.output.scriptSuggestions.length).toBeGreaterThan(0);
+    expect(body.agentOutput.facts.length).toBeGreaterThan(0);
+    expect(body.validation).toEqual({ valid: true, errors: [] });
     expect(JSON.stringify(body)).not.toContain("grossMarginCents");
+  });
+
+  it("records telemetry through the service client so streamer RLS does not block it", async () => {
+    const userClient = createClient();
+    const adminClient = createClient();
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(
+      userClient as never,
+    );
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(adminClient as never);
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/diagnosis", {
+        method: "POST",
+        body: JSON.stringify({ feedback: ["互动断层"] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    // The append-only AI ledger writes must go through the admin client,
+    // not the streamer's RLS-scoped session.
+    expect(adminClient.from).toHaveBeenCalledWith("ai_invocations");
+    expect(userClient.from).not.toHaveBeenCalledWith("ai_invocations");
   });
 
   it("requires authentication", async () => {

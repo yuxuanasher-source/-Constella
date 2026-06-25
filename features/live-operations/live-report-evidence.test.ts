@@ -36,6 +36,22 @@ describe("live report evidence resolver", () => {
     });
   });
 
+  it("treats a zero screenshot duration as missing, not a 100% divergence", () => {
+    expect(
+      resolveReportEvidence({
+        systemDuration: 180,
+        screenshotDuration: 0,
+        claimedDuration: null,
+      }),
+    ).toEqual({
+      settlementDuration: 180,
+      timeSource: "system",
+      evidenceLevel: "yellow",
+      divergencePct: null,
+      riskFlags: ["missing_screenshot_duration"],
+    });
+  });
+
   it("marks claimed-only reports as red evidence", () => {
     expect(
       resolveReportEvidence({

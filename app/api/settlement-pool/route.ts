@@ -3,12 +3,15 @@ import { NextResponse } from "next/server";
 import { listOpsSettlementPool } from "@/features/settlements/settlement-queries";
 import {
   getSettlementRouteContext,
+  isUuid,
   jsonError,
   requiredQueryParam,
   RouteError,
 } from "@/features/settlements/settlement-route-utils";
 import { listSettlementPool } from "@/features/settlements/settlement-service";
 import { isMcnStaff } from "@/lib/rbac/roles";
+
+const batchTypes = new Set(["receivable", "payable"]);
 
 export async function GET(request: Request) {
   try {
@@ -17,25 +20,38 @@ export async function GET(request: Request) {
       throw new RouteError("Only MCN staff can view settlement pool", 403);
     }
 
-    const projectId = requiredQueryParam(request.url, "projectId");
+    const url = new URL(request.url);
+    const projectId = url.searchParams.get("projectId")?.trim() || null;
+    if (projectId && !isUuid(projectId)) {
+      throw new RouteError("projectId must be a valid UUID", 400);
+    }
     const periodStart = requiredQueryParam(request.url, "periodStart");
     const periodEnd = requiredQueryParam(request.url, "periodEnd");
+    const batchType = url.searchParams.get("batchType")?.trim() || "payable";
+    if (!batchTypes.has(batchType)) {
+      throw new RouteError("batchType must be receivable or payable", 400);
+    }
 
-    await listSettlementPool({
-      repo: context.repo,
-      actor: {
-        userId: context.auth.userId,
-        name: context.auth.name,
-        role: context.auth.role,
-        organizationId: context.auth.organizationId,
-      },
-      projectId,
-      periodStart,
-      periodEnd,
-    });
+    if (projectId) {
+      await listSettlementPool({
+        repo: context.repo,
+        actor: {
+          userId: context.auth.userId,
+          name: context.auth.name,
+          role: context.auth.role,
+          organizationId: context.auth.organizationId,
+        },
+        projectId,
+        batchType: batchType as "receivable" | "payable",
+        periodStart,
+        periodEnd,
+      });
+    }
 
     const reports = await listOpsSettlementPool(context.supabase, {
+      organizationId: context.auth.organizationId,
       projectId,
+      batchType: batchType as "receivable" | "payable",
       periodStart,
       periodEnd,
     });

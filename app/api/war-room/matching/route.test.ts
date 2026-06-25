@@ -96,4 +96,27 @@ describe("war room matching route", () => {
 
     expect(response.status).toBe(403);
   });
+
+  it("rejects invalid matching request bodies before scoring", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/war-room/matching", {
+        method: "POST",
+        body: JSON.stringify({
+          project: {
+            category: 123,
+            platform: "douyin",
+            preferredStyles: ["高互动"],
+            requiredMinutes: 600,
+          },
+          candidates: [],
+          suppliers: [],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Invalid request body",
+    });
+  });
 });

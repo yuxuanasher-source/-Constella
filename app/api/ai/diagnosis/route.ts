@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 
-import { runAiToolQuery } from "@/features/ai/ai-tool-layer";
+import {
+  gatherStreamerDiagnosisContext,
+  runStreamerDiagnosisAgent,
+} from "@/features/ai/streamer-diagnosis-agent";
 import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import {
+  createSupabaseAdminClient,
+  createSupabaseServerClient,
+} from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 
 export async function POST(request: Request) {
@@ -18,14 +24,35 @@ export async function POST(request: Request) {
     }
 
     const body = (await request.json()) as Record<string, unknown>;
-    const result = await runAiToolQuery({
-      client: supabase,
+    // The AI ledger tables (ai_invocations / ai_tool_invocations) only allow
+    // MCN-staff inserts under RLS, but this tool is streamer-facing. Record the
+    // append-only telemetry with the service client; the organization id is
+    // taken from the authenticated context, not from the caller's input.
+    const ledgerClient = createSupabaseAdminClient() ?? supabase;
+
+    // Ground the diagnosis in the streamer's real recent report data unless the
+    // caller already supplied it.
+    const context = await gatherStreamerDiagnosisContext({
+      client: ledgerClient,
       actor: auth,
-      toolName: "streamer_diagnosis",
-      input: body,
+    });
+    const input = {
+      ...body,
+      report: body.report ?? context.report,
+      feedback: Array.isArray(body.feedback) ? body.feedback : context.feedback,
+    };
+
+    const result = await runStreamerDiagnosisAgent({
+      client: ledgerClient,
+      actor: auth,
+      input,
     });
 
-    return NextResponse.json({ result });
+    return NextResponse.json({
+      result: result.result,
+      agentOutput: result.agentOutput,
+      validation: result.validation,
+    });
   } catch (error) {
     if (error instanceof Error) {
       return NextResponse.json(

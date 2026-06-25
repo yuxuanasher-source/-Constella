@@ -1,8 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type {
+  ApplicationSource,
   ApplicationRecord,
   ApplicationRepository,
+  ActiveCollaborationAgreementRecord,
   ProjectAdmissionConfig,
   ProjectStreamerRecord,
   RecordingSubmissionRecord,
@@ -21,12 +23,24 @@ type ProjectAdmissionRow = {
   default_settlement_rule: Record<string, unknown>;
 };
 
+type PublicProjectForRecordingRow = {
+  id: string;
+  name: string;
+  organization_id: string;
+  status: string;
+};
+
 type StreamerAdmissionRow = {
   id: string;
+  organization_id: string;
   display_name: string;
   user_id: string | null;
   risk_level: "low" | "medium" | "high";
   cooperation_status: string;
+  default_settlement_method: string;
+  default_price: number | null;
+  default_base_salary: number | null;
+  default_cps_rate_bps: number | null;
 };
 
 type ApplicationRow = {
@@ -37,6 +51,8 @@ type ApplicationRow = {
   source: ApplicationRecord["source"];
   status: ApplicationRecord["status"];
   decision_reason: string | null;
+  collaboration_id: string | null;
+  contributor_organization_id: string | null;
 };
 
 type RecordingSubmissionRow = {
@@ -44,6 +60,8 @@ type RecordingSubmissionRow = {
   application_id: string;
   version: number;
   status: RecordingSubmissionRecord["status"];
+  collaboration_id: string | null;
+  contributor_organization_id: string | null;
 };
 
 type ProjectStreamerRow = {
@@ -51,6 +69,15 @@ type ProjectStreamerRow = {
   project_id: string;
   streamer_id: string;
   status: ProjectStreamerRecord["status"];
+  collaboration_id: string | null;
+  contributor_organization_id: string | null;
+};
+
+type ActiveCollaborationAgreementRow = {
+  id: string;
+  project_id: string;
+  partner_organization_id: string;
+  status: "active";
 };
 
 const applicationSelect = `
@@ -60,7 +87,9 @@ const applicationSelect = `
   streamer_id,
   source,
   status,
-  decision_reason
+  decision_reason,
+  collaboration_id,
+  contributor_organization_id
 `;
 
 export class SupabaseApplicationRepository implements ApplicationRepository {
@@ -84,12 +113,36 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     return data ? toProjectAdmissionConfig(data) : null;
   }
 
+  async getPublicProjectForRecording(projectId: string) {
+    const { data, error } = await this.client
+      .from("streamer_public_project_announcements")
+      .select("id, name, organization_id, status")
+      .eq("id", projectId)
+      .maybeSingle<PublicProjectForRecordingRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return data
+      ? {
+          id: data.id,
+          name: data.name,
+          organizationId: data.organization_id,
+          status: data.status,
+          isPublicToStreamers: true,
+        }
+      : null;
+  }
+
   async getStreamerForAdmission(
     streamerId: string,
   ): Promise<StreamerAdmissionRecord | null> {
     const { data, error } = await this.client
       .from("streamers")
-      .select("id, display_name, user_id, risk_level, cooperation_status")
+      .select(
+        "id, organization_id, display_name, user_id, risk_level, cooperation_status, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps",
+      )
       .eq("id", streamerId)
       .maybeSingle<StreamerAdmissionRow>();
 
@@ -116,6 +169,59 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     return data ? toApplicationRecord(data) : null;
   }
 
+  async getApplicationByProjectAndStreamer(
+    projectId: string,
+    streamerId: string,
+    source?: ApplicationSource,
+  ): Promise<ApplicationRecord | null> {
+    let query = this.client
+      .from("project_applications")
+      .select(applicationSelect)
+      .eq("project_id", projectId)
+      .eq("streamer_id", streamerId)
+      .order("submitted_at", { ascending: false });
+
+    if (source) {
+      query = query.eq("source", source);
+    }
+
+    const { data, error } = await query.limit(1).maybeSingle<ApplicationRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return data ? toApplicationRecord(data) : null;
+  }
+
+  async getActiveCollaborationAgreement(input: {
+    projectId: string;
+    collaborationId: string;
+    contributorOrganizationId: string;
+  }): Promise<ActiveCollaborationAgreementRecord | null> {
+    const { data, error } = await this.client
+      .from("project_collaboration_agreements")
+      .select("id, project_id, partner_organization_id, status")
+      .eq("id", input.collaborationId)
+      .eq("project_id", input.projectId)
+      .eq("partner_organization_id", input.contributorOrganizationId)
+      .eq("status", "active")
+      .maybeSingle<ActiveCollaborationAgreementRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return data
+      ? {
+          id: data.id,
+          projectId: data.project_id,
+          partnerOrganizationId: data.partner_organization_id,
+          status: data.status,
+        }
+      : null;
+  }
+
   async createApplication(input: {
     organizationId: string;
     projectId: string;
@@ -123,6 +229,8 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     source: ApplicationRecord["source"];
     status: ApplicationRecord["status"];
     invitedBy?: string;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<ApplicationRecord> {
     const { data, error } = await this.client
       .from("project_applications")
@@ -133,6 +241,8 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
         source: input.source,
         status: input.status,
         invited_by: input.invitedBy,
+        collaboration_id: input.collaborationId,
+        contributor_organization_id: input.contributorOrganizationId,
       })
       .select(applicationSelect)
       .single<ApplicationRow>();
@@ -172,6 +282,22 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     return toApplicationRecord(data);
   }
 
+  async markApplicationRecordingReviewing(
+    applicationId: string,
+  ): Promise<ApplicationRecord> {
+    const { data, error } = await this.client
+      .rpc("mark_application_recording_reviewing", {
+        target_application_id: applicationId,
+      })
+      .single<ApplicationRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return toApplicationRecord(data);
+  }
+
   async createRecordingSubmission(input: {
     organizationId: string;
     applicationId: string;
@@ -181,6 +307,8 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     storagePath?: string;
     externalUrl?: string;
     durationSeconds?: number;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<RecordingSubmissionRecord> {
     const { data, error } = await this.client
       .from("recording_submissions")
@@ -193,8 +321,12 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
         storage_path: input.storagePath,
         external_url: input.externalUrl,
         duration_seconds: input.durationSeconds,
+        collaboration_id: input.collaborationId,
+        contributor_organization_id: input.contributorOrganizationId,
       })
-      .select("id, application_id, version, status")
+      .select(
+        "id, application_id, version, status, collaboration_id, contributor_organization_id",
+      )
       .single<RecordingSubmissionRow>();
 
     if (error) {
@@ -209,7 +341,9 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
   ): Promise<RecordingSubmissionRecord | null> {
     const { data, error } = await this.client
       .from("recording_submissions")
-      .select("id, application_id, version, status")
+      .select(
+        "id, application_id, version, status, collaboration_id, contributor_organization_id",
+      )
       .eq("application_id", applicationId)
       .order("version", { ascending: false })
       .limit(1)
@@ -240,7 +374,9 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
         review_note: input.reviewNote,
       })
       .eq("id", recordingId)
-      .select("id, application_id, version, status")
+      .select(
+        "id, application_id, version, status, collaboration_id, contributor_organization_id",
+      )
       .single<RecordingSubmissionRow>();
 
     if (error) {
@@ -258,8 +394,11 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     settlementMethod: string;
     hourlyRate: number;
     baseSalary: number;
+    cpsRateBps: number;
     settlementRule: Record<string, unknown>;
     createdBy: string;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<ProjectStreamerRecord> {
     const { data, error } = await this.client
       .from("project_streamers")
@@ -273,12 +412,17 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
           settlement_method: input.settlementMethod,
           hourly_rate: input.hourlyRate,
           base_salary: input.baseSalary,
+          cps_rate_bps: input.cpsRateBps,
           settlement_rule: input.settlementRule,
           created_by: input.createdBy,
+          collaboration_id: input.collaborationId,
+          contributor_organization_id: input.contributorOrganizationId,
         },
         { onConflict: "project_id,streamer_id" },
       )
-      .select("id, project_id, streamer_id, status")
+      .select(
+        "id, project_id, streamer_id, status, collaboration_id, contributor_organization_id",
+      )
       .single<ProjectStreamerRow>();
 
     if (error) {
@@ -290,6 +434,8 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
       projectId: data.project_id,
       streamerId: data.streamer_id,
       status: data.status,
+      collaborationId: data.collaboration_id,
+      contributorOrganizationId: data.contributor_organization_id,
     };
   }
 }
@@ -297,18 +443,24 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
 export async function getStreamerIdForUser(
   client: SupabaseClient,
   userId: string,
+  organizationId?: string,
 ): Promise<string | null> {
-  const { data, error } = await client
-    .from("streamers")
-    .select("id")
-    .eq("user_id", userId)
-    .maybeSingle<{ id: string }>();
+  let query = client.from("streamers").select("id").eq("user_id", userId);
+
+  if (organizationId) {
+    query = query.eq("organization_id", organizationId);
+  }
+
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1);
 
   if (error) {
     throw error;
   }
 
-  return data?.id ?? null;
+  return data?.[0]?.id ?? null;
 }
 
 function toProjectAdmissionConfig(
@@ -333,9 +485,14 @@ function toStreamerAdmissionRecord(
   return {
     id: row.id,
     displayName: row.display_name,
+    organizationId: row.organization_id,
     userId: row.user_id,
     riskLevel:
       row.cooperation_status === "blacklisted" ? "blacklisted" : row.risk_level,
+    defaultSettlementMethod: row.default_settlement_method,
+    defaultHourlyRate: Number(row.default_price ?? 0),
+    defaultBaseSalary: Number(row.default_base_salary ?? 0),
+    defaultCpsRateBps: Number(row.default_cps_rate_bps ?? 0),
   };
 }
 
@@ -348,6 +505,8 @@ function toApplicationRecord(row: ApplicationRow): ApplicationRecord {
     source: row.source,
     status: row.status,
     decisionReason: row.decision_reason,
+    collaborationId: row.collaboration_id,
+    contributorOrganizationId: row.contributor_organization_id,
   };
 }
 
@@ -359,5 +518,7 @@ function toRecordingSubmissionRecord(
     applicationId: row.application_id,
     version: row.version,
     status: row.status,
+    collaborationId: row.collaboration_id,
+    contributorOrganizationId: row.contributor_organization_id,
   };
 }

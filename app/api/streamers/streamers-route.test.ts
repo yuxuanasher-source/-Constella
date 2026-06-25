@@ -1,15 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { listStreamerPool } from "@/features/streamers/streamer-queries";
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import {
   createStreamerProfile,
+  updateStreamerProfile,
   updateStreamerRisk,
+  updateStreamerSettlementRule,
 } from "@/features/streamers/streamer-service";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/streamers/streamer-queries", () => ({
   listStreamerPool: vi.fn(),
+}));
+
+vi.mock("@/features/billing/route-guard", () => ({
+  assertBillingWriteAllowed: vi.fn(),
 }));
 
 vi.mock("@/features/streamers/streamer-service", async () => {
@@ -19,7 +26,9 @@ vi.mock("@/features/streamers/streamer-service", async () => {
   return {
     ...actual,
     createStreamerProfile: vi.fn(),
+    updateStreamerProfile: vi.fn(),
     updateStreamerRisk: vi.fn(),
+    updateStreamerSettlementRule: vi.fn(),
   };
 });
 
@@ -107,6 +116,9 @@ describe("streamer api routes", () => {
         platforms: "抖音, 小红书",
         styles: "高能整活,陪伴",
         defaultSettlementMethod: "cps",
+        defaultHourlyRate: 80,
+        defaultBaseSalary: 6000,
+        defaultCpsRateBps: 1500,
         userId: " streamer-user ",
       }),
     );
@@ -128,10 +140,44 @@ describe("streamer api routes", () => {
           platforms: ["抖音", "小红书"],
           styles: ["高能整活", "陪伴"],
           defaultSettlementMethod: "cps",
+          defaultHourlyRate: 80,
+          defaultBaseSalary: 6000,
+          defaultCpsRateBps: 1500,
           userId: "streamer-user",
         },
       }),
     );
+  });
+
+  it("POST /api/streamers rejects invalid settlement numbers", async () => {
+    const { POST } = await import("./route");
+    const response = await POST(
+      jsonRequest({
+        displayName: "Bad Streamer",
+        defaultHourlyRate: -1,
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "defaultHourlyRate must be non-negative",
+    });
+    expect(createStreamerProfile).not.toHaveBeenCalled();
+  });
+
+  it("surfaces Supabase query errors instead of hiding them as unexpected", async () => {
+    vi.mocked(listStreamerPool).mockRejectedValue({
+      code: "42703",
+      message: "column streamers.default_cps_rate_bps does not exist",
+    });
+
+    const { GET } = await import("./route");
+    const response = await GET();
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "column streamers.default_cps_rate_bps does not exist",
+    });
   });
 
   it("PATCH /api/streamers/[streamerId]/risk requires reason and calls risk service", async () => {
@@ -171,6 +217,166 @@ describe("streamer api routes", () => {
           blacklistReason: undefined,
         },
       }),
+    );
+  });
+
+  it("PATCH /api/streamers/[streamerId]/settlement-rule updates high-risk settlement defaults", async () => {
+    vi.mocked(updateStreamerSettlementRule).mockResolvedValue({
+      id: "s1",
+      displayName: "Price Streamer",
+      riskLevel: "low",
+      cooperationStatus: "active",
+    } as never);
+
+    const { PATCH } = await import("./[streamerId]/settlement-rule/route");
+    const response = await PATCH(
+      jsonRequest(
+        {
+          defaultSettlementMethod: "cps",
+          defaultHourlyRate: 0,
+          defaultBaseSalary: 0,
+          defaultCpsRateBps: 1500,
+          reason: "signed cps update",
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ streamerId: "s1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(updateStreamerSettlementRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audit: expect.any(Function),
+        actor: auth,
+        streamerId: "s1",
+        reason: "signed cps update",
+        input: {
+          defaultSettlementMethod: "cps",
+          defaultHourlyRate: 0,
+          defaultBaseSalary: 0,
+          defaultCpsRateBps: 1500,
+        },
+      }),
+    );
+  });
+
+  it("PATCH /api/streamers/[streamerId] updates profile and settlement fields through the audited service", async () => {
+    vi.mocked(updateStreamerProfile).mockResolvedValue({
+      id: "s1",
+      displayName: "Updated Streamer",
+      riskLevel: "low",
+      cooperationStatus: "active",
+    } as never);
+
+    const { PATCH } = await import("./[streamerId]/route");
+    const response = await PATCH(
+      jsonRequest(
+        {
+          displayName: " Updated Streamer ",
+          realName: " Updated Real ",
+          gender: "female",
+          sourceType: "signed",
+          cooperationStatus: "active",
+          categories: ["RPG", "Card", ""],
+          platforms: "Douyin, Kuaishou",
+          styles: "Story",
+          defaultSettlementMethod: "cps",
+          defaultHourlyRate: 80,
+          defaultBaseSalary: 6000,
+          defaultCpsRateBps: 1500,
+          reason: "business closure sync",
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ streamerId: "s1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      streamer: expect.objectContaining({
+        id: "s1",
+        displayName: "Updated Streamer",
+      }),
+    });
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: supabase,
+        organizationId: auth.organizationId,
+        featureKey: "project_management",
+      }),
+    );
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: supabase,
+        organizationId: auth.organizationId,
+        featureKey: "settlement",
+      }),
+    );
+    expect(updateStreamerProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audit: expect.any(Function),
+        actor: auth,
+        streamerId: "s1",
+        reason: "business closure sync",
+        input: {
+          displayName: "Updated Streamer",
+          realName: "Updated Real",
+          gender: "female",
+          sourceType: "signed",
+          cooperationStatus: "active",
+          categories: ["RPG", "Card"],
+          platforms: ["Douyin", "Kuaishou"],
+          styles: ["Story"],
+          defaultSettlementMethod: "cps",
+          defaultHourlyRate: 80,
+          defaultBaseSalary: 6000,
+          defaultCpsRateBps: 1500,
+        },
+      }),
+    );
+  });
+
+  it("PATCH /api/streamers/[streamerId] preserves explicit profile clear requests", async () => {
+    vi.mocked(updateStreamerProfile).mockResolvedValue({
+      id: "s-clear",
+      displayName: "Clearable Streamer",
+      riskLevel: "low",
+      cooperationStatus: "active",
+    } as never);
+
+    const { PATCH } = await import("./[streamerId]/route");
+    const response = await PATCH(
+      jsonRequest(
+        {
+          realName: "",
+          gender: "",
+          categories: "",
+          platforms: [],
+          styles: "   ",
+          reason: "clear stale profile fields",
+        },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ streamerId: "s-clear" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(updateStreamerProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        streamerId: "s-clear",
+        reason: "clear stale profile fields",
+        input: expect.objectContaining({
+          realName: null,
+          gender: null,
+          categories: [],
+          platforms: [],
+          styles: [],
+        }),
+      }),
+    );
+    expect(assertBillingWriteAllowed).toHaveBeenCalledTimes(1);
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith(
+      expect.objectContaining({ featureKey: "project_management" }),
     );
   });
 });

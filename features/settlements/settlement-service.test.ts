@@ -6,6 +6,7 @@ import {
   listSettlementPool,
   lockSettlementBatch,
   reopenSettlementBatch,
+  type SettlementBatchAtomicItemInput,
   type SettlementBatchRecord,
   type SettlementRepository,
 } from "./settlement-service";
@@ -49,6 +50,7 @@ const settlementRule = {
   settlementMethod: "cpt" as const,
   hourlyRate: 80,
   baseSalary: 0,
+  cpsRateBps: 1500,
 };
 
 function createBatch(
@@ -104,6 +106,28 @@ function createRepo(): SettlementRepository {
       id: "item-1",
       ...input,
       createdAt: "2026-06-02T12:11:00.000Z",
+    })),
+    createSettlementBatchAtomic: vi.fn(async (input) => ({
+      batch: createBatch({
+        id: "batch-created",
+        projectId: input.projectId,
+        batchType: input.batchType,
+        periodStart: input.periodStart,
+        periodEnd: input.periodEnd,
+        computedAmount: input.computedAmount,
+        manualAmount: input.manualAmount,
+        adjustmentAmount: input.adjustmentAmount,
+        evidenceSummary: input.evidenceSummary,
+        createdBy: input.createdBy,
+      }),
+      items: input.items.map((item: SettlementBatchAtomicItemInput, index: number) => ({
+        id: `item-${index + 1}`,
+        organizationId: input.organizationId,
+        settlementBatchId: "batch-created",
+        projectId: input.projectId,
+        ...item,
+        createdAt: "2026-06-02T12:11:00.000Z",
+      })),
     })),
     markReportSettled: vi.fn(async () => undefined),
     getSettlementBatchById: vi.fn(async () => createBatch()),
@@ -185,18 +209,25 @@ describe("settlement service", () => {
       status: "generated",
     });
     expect(result.items).toHaveLength(1);
-    expect(repo.createSettlementBatchItem).toHaveBeenCalledWith(
+    expect(repo.createSettlementBatchAtomic).toHaveBeenCalledWith(
       expect.objectContaining({
-        settlementBatchId: "batch-created",
-        liveReportId: "report-1",
+        organizationId: "org-1",
+        projectId: "project-1",
+        batchType: "payable",
         computedAmount: 160,
-        manualAmount: 0,
+        items: [
+          expect.objectContaining({
+            liveReportId: "report-1",
+            itemType: "live_report_payable",
+            computedAmount: 160,
+            manualAmount: 0,
+          }),
+        ],
       }),
     );
-    expect(repo.markReportSettled).toHaveBeenCalledWith({
-      reportId: "report-1",
-      settlementBatchItemId: "item-1",
-    });
+    // The legacy non-atomic persistence path is no longer used.
+    expect(repo.createSettlementBatchItem).not.toHaveBeenCalled();
+    expect(repo.markReportSettled).not.toHaveBeenCalled();
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "create",
@@ -226,6 +257,72 @@ describe("settlement service", () => {
     });
     expect(repo.getProjectSettlementRule).toHaveBeenCalledWith({
       projectId: "project-1",
+    });
+    expect(repo.createSettlementBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchType: "receivable",
+        items: [
+          expect.objectContaining({ itemType: "live_report_receivable" }),
+        ],
+      }),
+    );
+  });
+
+  it("bills receivable base salary once across multiple streamers", async () => {
+    vi.mocked(repo.listSettlementPoolReports).mockResolvedValueOnce([
+      { ...report, id: "report-a", streamerId: "streamer-1" },
+      { ...report, id: "report-b", streamerId: "streamer-2" },
+    ]);
+    vi.mocked(repo.getProjectSettlementRule).mockResolvedValueOnce({
+      projectId: "project-1",
+      settlementMethod: "base_salary_cpt",
+      hourlyRate: 60,
+      baseSalary: 500,
+    });
+
+    const result = await generateSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        batchType: "receivable",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      },
+    });
+
+    // 2 × CPT ((120 / 60) × 60 = 120) + the project base salary once (500) = 740,
+    // not 1240 (which would double-count the base salary per streamer).
+    expect(result.batch.computedAmount).toBe(740);
+  });
+
+  it("keeps receivable and payable settlement eligibility separate", async () => {
+    vi.mocked(repo.listSettlementPoolReports).mockResolvedValueOnce([
+      {
+        ...report,
+        settledBatchItemId: "payable-item-1",
+        settledBatchTypes: ["payable"],
+      },
+    ]);
+
+    await expect(
+      generateSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor,
+        input: {
+          projectId: "project-1",
+          batchType: "receivable",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+        },
+      }),
+    ).resolves.toMatchObject({
+      batch: expect.objectContaining({ batchType: "receivable" }),
+      items: [expect.objectContaining({ itemType: "live_report_receivable" })],
     });
   });
 
@@ -272,8 +369,29 @@ describe("settlement service", () => {
       }),
     ).rejects.toThrow("No unsettled approved reports found");
 
-    expect(repo.createSettlementBatch).not.toHaveBeenCalled();
+    expect(repo.createSettlementBatchAtomic).not.toHaveBeenCalled();
     expect(repo.createSettlementBatchItem).not.toHaveBeenCalled();
+  });
+
+  it("passes the target batch type when loading settlement pool reports", async () => {
+    await generateSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        batchType: "receivable",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      },
+    });
+
+    expect(repo.listSettlementPoolReports).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchType: "receivable",
+      }),
+    );
   });
 
   it("allows operator business to generate but blocks finance from mutating batches", async () => {
@@ -402,5 +520,35 @@ describe("settlement service", () => {
         reason: "Imported CPA claim sheet",
       }),
     );
+  });
+
+  it("calculates CPS manual rows from sales amount and frozen rate", async () => {
+    const item = await addManualSettlementItem({
+      repo,
+      audit,
+      notify,
+      actor: opsActor,
+      batchId: "batch-1",
+      input: {
+        itemType: "cps",
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        salesAmount: 12000,
+        evidenceLevel: "yellow",
+        reason: "Imported CPS sales sheet",
+      },
+    });
+
+    expect(item).toMatchObject({
+      itemType: "cps",
+      manualAmount: 1800,
+      computedAmount: 0,
+      evidenceSnapshot: expect.objectContaining({
+        source: "manual_cps_import",
+        salesAmount: 12000,
+        cpsRateBps: 1500,
+        settlementRuleSource: "project_streamer_snapshot",
+      }),
+    });
   });
 });

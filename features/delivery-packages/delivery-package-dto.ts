@@ -31,10 +31,22 @@ export type DeliveryPackageActor = {
 export type DeliveryPackageClient = {
   from(table: "live_reports"): {
     select(columns: string): {
-      eq(column: string, value: unknown): {
-        eq(column: string, value: unknown): {
-          eq(column: string, value: unknown): {
-            order(column: string, options: { ascending: boolean }): PromiseLike<{
+      eq(
+        column: string,
+        value: unknown,
+      ): {
+        eq(
+          column: string,
+          value: unknown,
+        ): {
+          eq(
+            column: string,
+            value: unknown,
+          ): {
+            order(
+              column: string,
+              options: { ascending: boolean },
+            ): PromiseLike<{
               data: unknown[] | null;
               error: Error | null;
             }>;

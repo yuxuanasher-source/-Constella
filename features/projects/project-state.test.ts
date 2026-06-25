@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { assertProjectTransition } from "./project-state";
+import {
+  assertProjectTransition,
+  getAllowedProjectStatusTransitions,
+} from "./project-state";
 
 describe("assertProjectTransition", () => {
   it("allows draft projects to become recruiting", () => {
@@ -21,6 +24,13 @@ describe("assertProjectTransition", () => {
     expect(() => assertProjectTransition("active", "settling")).toThrow(
       "Illegal project status transition: active -> settling",
     );
+  });
+
+  it("exposes only legal next statuses for active projects", () => {
+    expect(getAllowedProjectStatusTransitions("active")).toEqual([
+      "paused",
+      "ended",
+    ]);
   });
 
   it("allows ended projects to enter settlement", () => {

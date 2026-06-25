@@ -8,6 +8,10 @@ const allMigrations = readdirSync(migrationsDir)
   .filter((file) => file.endsWith(".sql"))
   .map((file) => readFileSync(join(migrationsDir, file), "utf8").toLowerCase())
   .join("\n");
+const ocrRunnerClaimMigration = readFileSync(
+  join(migrationsDir, "20260608215200_ocr_runner_service_role_claims.sql"),
+  "utf8",
+).toLowerCase();
 
 describe("AI runtime schema contract", () => {
   it("creates organization-scoped AI runtime tables", () => {
@@ -50,6 +54,49 @@ describe("AI runtime schema contract", () => {
     );
     expect(allMigrations).toMatch(
       /alter table public\.ocr_results[\s\S]*add column if not exists raw_response/,
+    );
+  });
+
+  it("adds production OCR job operation fields without exposing raw secrets", () => {
+    expect(allMigrations).toMatch(
+      /alter table public\.background_jobs[\s\S]*add column if not exists error_code/,
+    );
+    expect(allMigrations).toMatch(
+      /alter table public\.background_jobs[\s\S]*add column if not exists error_message/,
+    );
+    expect(allMigrations).toMatch(
+      /alter table public\.background_jobs[\s\S]*add column if not exists result/,
+    );
+    expect(allMigrations).toMatch(
+      /alter table public\.background_jobs[\s\S]*add column if not exists reviewed_by/,
+    );
+    expect(allMigrations).toMatch(
+      /alter table public\.background_jobs[\s\S]*add column if not exists reviewed_at/,
+    );
+    expect(allMigrations).toContain("pending");
+    expect(allMigrations).toContain("processing");
+    expect(allMigrations).toContain("needs_review");
+  });
+
+  it("adds OCR job claim and project-scoped operation policies", () => {
+    expect(allMigrations).toContain("function public.claim_ocr_jobs");
+    expect(allMigrations).toContain("for update skip locked");
+    expect(allMigrations).toContain("public.can_access_ocr_job");
+    expect(allMigrations).toContain("payload ->> 'livereportid'");
+    expect(allMigrations).toContain("create policy ocr_results_staff_insert");
+    expect(allMigrations).toContain("create policy ocr_results_staff_update");
+  });
+
+  it("preserves service-role OCR runner claims with live report organization checks", () => {
+    expect(ocrRunnerClaimMigration).toContain(
+      "create or replace function public.claim_ocr_jobs",
+    );
+    expect(ocrRunnerClaimMigration).toContain("auth.role() = 'service_role'");
+    expect(ocrRunnerClaimMigration).toMatch(
+      /lr\.id = public\.ocr_job_live_report_id\(bj\.payload\)[\s\S]*lr\.organization_id = p_organization_id/,
+    );
+    expect(ocrRunnerClaimMigration).toMatch(
+      /public\.can_access_ocr_job\(bj\.organization_id, bj\.payload\)[\s\S]*auth\.role\(\) = 'service_role'/,
     );
   });
 

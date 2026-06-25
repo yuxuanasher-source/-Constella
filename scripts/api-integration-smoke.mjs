@@ -2,11 +2,6 @@ import { existsSync, readFileSync } from "node:fs";
 
 import { createServerClient } from "@supabase/ssr";
 
-const projectId = "99999999-9999-9999-9999-999999999999";
-const streamerId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
-const seededBatchId = "95959595-9595-4959-9595-959595959595";
-const password = "Password123!";
-
 const forbiddenDtoKeyPatterns = [
   /_/,
   /receivable/i,
@@ -18,14 +13,23 @@ const forbiddenDtoKeyPatterns = [
 ];
 
 const env = loadEnv();
+const projectId = requireEnv("SMOKE_PROJECT_ID");
+const streamerId = requireEnv("SMOKE_STREAMER_ID");
+const smokeUserPassword = requireEnv("SMOKE_USER_PASSWORD");
+const smokeUserEmails = {
+  owner: requireEnv("SMOKE_OWNER_EMAIL"),
+  ops: requireEnv("SMOKE_OPS_EMAIL"),
+  finance: requireEnv("SMOKE_FINANCE_EMAIL"),
+  streamer: requireEnv("SMOKE_STREAMER_EMAIL"),
+};
 const appUrl = env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 const supabaseUrl = requireEnv("NEXT_PUBLIC_SUPABASE_URL");
 const supabaseAnonKey = requireEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
 
-const ownerCookie = await signIn("owner@jy-demo.local");
-const opsCookie = await signIn("ops@jy-demo.local");
-const financeCookie = await signIn("finance@jy-demo.local");
-const streamerCookie = await signIn("streamer@jy-demo.local");
+const ownerCookie = await signIn(smokeUserEmails.owner);
+const opsCookie = await signIn(smokeUserEmails.ops);
+const financeCookie = await signIn(smokeUserEmails.finance);
+const streamerCookie = await signIn(smokeUserEmails.streamer);
 const p1Flow = {};
 const p2Flow = {};
 
@@ -157,27 +161,6 @@ await check("ops can read the M6 settlement pool over HTTP", async () => {
 });
 
 await check(
-  "ops can read M6 settlement batches and details over HTTP",
-  async () => {
-    const listBody = await requestJson("/api/settlement-batches", {
-      cookie: opsCookie,
-    });
-    assertArray(listBody.batches, "settlement batches");
-    assertNonEmpty(listBody.batches, "settlement batches");
-    assertPublicDtoShape(listBody.batches, "settlement batches");
-
-    const detailBody = await requestJson(
-      `/api/settlement-batches/${seededBatchId}`,
-      { cookie: opsCookie },
-    );
-    assertObject(detailBody.batch, "settlement batch detail");
-    assertArray(detailBody.items, "settlement batch detail items");
-    assertNonEmpty(detailBody.items, "settlement batch detail items");
-    assertPublicDtoShape(detailBody, "settlement batch detail");
-  },
-);
-
-await check(
   "P2 authenticated flow generates batch, adds manual carry amount, locks, and owner reopens",
   async () => {
     if (!p1Flow.reportId) {
@@ -271,6 +254,25 @@ await check(
       "api integration smoke reopen",
       "reopened batch reason",
     );
+
+    const listBody = await requestJson("/api/settlement-batches", {
+      cookie: opsCookie,
+    });
+    assertArray(listBody.batches, "settlement batches");
+    assertNonEmpty(listBody.batches, "settlement batches");
+    assertPublicDtoShape(listBody.batches, "settlement batches");
+    assertObject(
+      listBody.batches.find((item) => item.id === batchId),
+      "generated settlement batch list row",
+    );
+
+    const detailBody = await requestJson(`/api/settlement-batches/${batchId}`, {
+      cookie: opsCookie,
+    });
+    assertObject(detailBody.batch, "settlement batch detail");
+    assertArray(detailBody.items, "settlement batch detail items");
+    assertNonEmpty(detailBody.items, "settlement batch detail items");
+    assertPublicDtoShape(detailBody, "settlement batch detail");
   },
 );
 
@@ -380,7 +382,7 @@ async function signIn(email) {
 
   const { error } = await supabase.auth.signInWithPassword({
     email,
-    password,
+    password: smokeUserPassword,
   });
   if (error) {
     throw new Error(`Could not sign in ${email}: ${error.message}`);

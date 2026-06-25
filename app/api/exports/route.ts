@@ -31,7 +31,10 @@ export async function POST(request: Request) {
 
     const body = await request.json();
     if (!isExportKind(body?.kind)) {
-      return NextResponse.json({ error: "Invalid export kind" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Invalid export kind" },
+        { status: 400 },
+      );
     }
 
     const rows = Array.isArray(body.rows)

@@ -154,7 +154,9 @@ export function buildProjectReviewReport(
   };
 }
 
-function scoreReviewedStreamer(streamer: ProjectReviewStreamer): ReviewedStreamer {
+function scoreReviewedStreamer(
+  streamer: ProjectReviewStreamer,
+): ReviewedStreamer {
   const score = clampScore(
     Math.round((safeBps(streamer.completionRateBps) / 10000) * 35) +
       Math.round((Math.min(20000, safeBps(streamer.roiBps)) / 20000) * 30) +

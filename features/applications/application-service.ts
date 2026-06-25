@@ -24,6 +24,7 @@ export type AdmissionActor = {
   name?: string;
   role: AppRole;
   organizationId: string;
+  streamerId?: string | null;
 };
 
 export type ProjectAdmissionConfig = {
@@ -41,8 +42,13 @@ export type ProjectAdmissionConfig = {
 export type StreamerAdmissionRecord = {
   id: string;
   displayName: string;
+  organizationId?: string | null;
   userId?: string | null;
   riskLevel: "low" | "medium" | "high" | "blacklisted";
+  defaultSettlementMethod?: string | null;
+  defaultHourlyRate?: number | null;
+  defaultBaseSalary?: number | null;
+  defaultCpsRateBps?: number | null;
 };
 
 export type ApplicationRecord = {
@@ -53,6 +59,8 @@ export type ApplicationRecord = {
   source: ApplicationSource;
   status: ApplicationStatus;
   decisionReason?: string | null;
+  collaborationId?: string | null;
+  contributorOrganizationId?: string | null;
 };
 
 export type RecordingSubmissionRecord = {
@@ -60,6 +68,8 @@ export type RecordingSubmissionRecord = {
   applicationId: string;
   version: number;
   status: RecordingReviewStatus;
+  collaborationId?: string | null;
+  contributorOrganizationId?: string | null;
 };
 
 export type ProjectStreamerRecord = {
@@ -67,6 +77,15 @@ export type ProjectStreamerRecord = {
   projectId: string;
   streamerId: string;
   status: ProjectStreamerStatus;
+  collaborationId?: string | null;
+  contributorOrganizationId?: string | null;
+};
+
+export type ActiveCollaborationAgreementRecord = {
+  id: string;
+  projectId: string;
+  partnerOrganizationId: string;
+  status: "active";
 };
 
 export type ApplicationRepository = {
@@ -77,6 +96,16 @@ export type ApplicationRepository = {
     streamerId: string,
   ): Promise<StreamerAdmissionRecord | null>;
   getApplicationById(applicationId: string): Promise<ApplicationRecord | null>;
+  getApplicationByProjectAndStreamer(
+    projectId: string,
+    streamerId: string,
+    source?: ApplicationSource,
+  ): Promise<ApplicationRecord | null>;
+  getActiveCollaborationAgreement(input: {
+    projectId: string;
+    collaborationId: string;
+    contributorOrganizationId: string;
+  }): Promise<ActiveCollaborationAgreementRecord | null>;
   createApplication(input: {
     organizationId: string;
     projectId: string;
@@ -84,6 +113,8 @@ export type ApplicationRepository = {
     source: ApplicationSource;
     status: ApplicationStatus;
     invitedBy?: string;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<ApplicationRecord>;
   updateApplicationStatus(
     applicationId: string,
@@ -94,6 +125,9 @@ export type ApplicationRepository = {
       decisionReason?: string | null;
     },
   ): Promise<ApplicationRecord>;
+  markApplicationRecordingReviewing(
+    applicationId: string,
+  ): Promise<ApplicationRecord>;
   createRecordingSubmission(input: {
     organizationId: string;
     applicationId: string;
@@ -103,6 +137,8 @@ export type ApplicationRepository = {
     storagePath?: string;
     externalUrl?: string;
     durationSeconds?: number;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<RecordingSubmissionRecord>;
   getLatestRecordingSubmission(
     applicationId: string,
@@ -124,8 +160,11 @@ export type ApplicationRepository = {
     settlementMethod: string;
     hourlyRate: number;
     baseSalary: number;
+    cpsRateBps: number;
     settlementRule: Record<string, unknown>;
     createdBy: string;
+    collaborationId?: string | null;
+    contributorOrganizationId?: string | null;
   }): Promise<ProjectStreamerRecord>;
 };
 
@@ -197,7 +236,7 @@ export async function inviteStreamerToProject({
   audit: ApplicationAuditWriter;
   notify: ApplicationNotifier;
   actor: AdmissionActor;
-  input: { projectId: string; streamerId: string };
+  input: { projectId: string; streamerId: string; collaborationId?: string };
 }): Promise<ApplicationRecord> {
   if (!canManageAdmission(actor.role)) {
     throw new Error("Current role cannot invite streamers");
@@ -211,13 +250,42 @@ export async function inviteStreamerToProject({
   const streamer = await requireStreamer(repo, input.streamerId);
   assertStreamerCanEnterAdmission(streamer, "invite");
 
+  const existingInvite = await repo.getApplicationByProjectAndStreamer(
+    project.id,
+    streamer.id,
+    "direct_invite",
+  );
+  if (existingInvite) {
+    return existingInvite;
+  }
+  const collaborationAttribution = await resolveCollaborationAttribution({
+    repo,
+    actor,
+    projectId: project.id,
+    collaborationId: input.collaborationId,
+  });
+  if (
+    collaborationAttribution &&
+    streamer.organizationId !==
+      collaborationAttribution.contributorOrganizationId
+  ) {
+    throw new Error(
+      "Collaboration invitations require a streamer from the partner organization",
+    );
+  }
+
   const application = await repo.createApplication({
-    organizationId: actor.organizationId,
+    organizationId:
+      collaborationAttribution?.contributorOrganizationId ??
+      actor.organizationId,
     projectId: project.id,
     streamerId: streamer.id,
     source: "direct_invite",
     status: project.forceRecording ? "invited" : "recording_approved",
     invitedBy: actor.userId,
+    collaborationId: collaborationAttribution?.collaborationId,
+    contributorOrganizationId:
+      collaborationAttribution?.contributorOrganizationId,
   });
 
   await auditApplicationCreate({
@@ -273,6 +341,11 @@ export async function submitRecording({
   }
 
   const application = await requireApplication(repo, input.applicationId);
+  if (actor.role === "streamer") {
+    if (!actor.streamerId || application.streamerId !== actor.streamerId) {
+      throw new Error("Application is not available for the current streamer");
+    }
+  }
   assertCanSubmitRecording(application.status);
 
   const nextStatus = "recording_reviewing";
@@ -280,7 +353,10 @@ export async function submitRecording({
 
   const latest = await repo.getLatestRecordingSubmission(application.id);
   const recording = await repo.createRecordingSubmission({
-    organizationId: actor.organizationId,
+    organizationId:
+      application.contributorOrganizationId ??
+      application.organizationId ??
+      actor.organizationId,
     applicationId: application.id,
     projectId: application.projectId,
     streamerId: application.streamerId,
@@ -288,9 +364,11 @@ export async function submitRecording({
     storagePath: input.storagePath,
     externalUrl: input.externalUrl,
     durationSeconds: input.durationSeconds,
+    collaborationId: application.collaborationId,
+    contributorOrganizationId: application.contributorOrganizationId,
   });
 
-  await repo.updateApplicationStatus(application.id, { status: nextStatus });
+  await repo.markApplicationRecordingReviewing(application.id);
   await audit({
     organizationId: actor.organizationId,
     actorUserId: actor.userId,
@@ -421,23 +499,36 @@ export async function confirmApplicationJoin({
 
   const application = await requireApplication(repo, input.applicationId);
   const project = await requireProject(repo, application.projectId);
+  const streamer = await requireStreamer(repo, application.streamerId);
   assertApplicationTransition(application.status, "joined");
+  const now = new Date().toISOString();
+  const settlementSnapshot = resolveProjectStreamerSettlementSnapshot({
+    project,
+    streamer,
+    now,
+  });
 
   const projectStreamer = await repo.createProjectStreamer({
-    organizationId: actor.organizationId,
+    organizationId:
+      application.contributorOrganizationId ??
+      application.organizationId ??
+      actor.organizationId,
     projectId: application.projectId,
     streamerId: application.streamerId,
     status: "joined",
-    settlementMethod: project.defaultSettlementMethod,
-    hourlyRate: project.defaultHourlyRate,
-    baseSalary: project.defaultBaseSalary,
-    settlementRule: project.defaultSettlementRule,
+    settlementMethod: settlementSnapshot.settlementMethod,
+    hourlyRate: settlementSnapshot.hourlyRate,
+    baseSalary: settlementSnapshot.baseSalary,
+    cpsRateBps: settlementSnapshot.cpsRateBps,
+    settlementRule: settlementSnapshot.settlementRule,
     createdBy: actor.userId,
+    collaborationId: application.collaborationId,
+    contributorOrganizationId: application.contributorOrganizationId,
   });
   const updated = await repo.updateApplicationStatus(application.id, {
     status: "joined",
     decidedBy: actor.userId,
-    decidedAt: new Date().toISOString(),
+    decidedAt: now,
   });
 
   await audit({
@@ -537,6 +628,64 @@ function canConfirmJoin(role: AppRole): boolean {
   return role === "owner" || role === "ops_manager";
 }
 
+function resolveProjectStreamerSettlementSnapshot({
+  project,
+  streamer,
+  now,
+}: {
+  project: ProjectAdmissionConfig;
+  streamer: StreamerAdmissionRecord;
+  now: string;
+}) {
+  if (streamerHasConfiguredSettlement(streamer)) {
+    const method = streamer.defaultSettlementMethod ?? "manual";
+    const hourlyRate = streamer.defaultHourlyRate ?? 0;
+    const baseSalary = streamer.defaultBaseSalary ?? 0;
+    const cpsRateBps = streamer.defaultCpsRateBps ?? 0;
+    return {
+      settlementMethod: method,
+      hourlyRate,
+      baseSalary,
+      cpsRateBps,
+      settlementRule: {
+        source: "streamer_default",
+        settlementMethod: method,
+        cptHourlyRate: hourlyRate,
+        baseSalary,
+        cpsRateBps,
+        snapshotAt: now,
+      },
+    };
+  }
+
+  return {
+    settlementMethod: project.defaultSettlementMethod,
+    hourlyRate: project.defaultHourlyRate,
+    baseSalary: project.defaultBaseSalary,
+    cpsRateBps: 0,
+    settlementRule: {
+      ...project.defaultSettlementRule,
+      source: "project_default",
+      settlementMethod: project.defaultSettlementMethod,
+      cptHourlyRate: project.defaultHourlyRate,
+      baseSalary: project.defaultBaseSalary,
+      cpsRateBps: 0,
+      snapshotAt: now,
+    },
+  };
+}
+
+function streamerHasConfiguredSettlement(streamer: StreamerAdmissionRecord) {
+  const method = streamer.defaultSettlementMethod ?? "manual";
+  return (
+    (["cpt", "base_salary_cpt"].includes(method) &&
+      (streamer.defaultHourlyRate ?? 0) > 0) ||
+    (["base_salary", "base_salary_cpt"].includes(method) &&
+      (streamer.defaultBaseSalary ?? 0) > 0) ||
+    (method === "cps" && (streamer.defaultCpsRateBps ?? 0) > 0)
+  );
+}
+
 function assertStreamerCanEnterAdmission(
   streamer: StreamerAdmissionRecord,
   action: "apply" | "invite",
@@ -582,6 +731,36 @@ async function requireApplication(
   }
 
   return application;
+}
+
+async function resolveCollaborationAttribution({
+  repo,
+  actor,
+  projectId,
+  collaborationId,
+}: {
+  repo: Pick<ApplicationRepository, "getActiveCollaborationAgreement">;
+  actor: AdmissionActor;
+  projectId: string;
+  collaborationId?: string;
+}) {
+  if (!collaborationId?.trim()) {
+    return null;
+  }
+
+  const agreement = await repo.getActiveCollaborationAgreement({
+    projectId,
+    collaborationId: collaborationId.trim(),
+    contributorOrganizationId: actor.organizationId,
+  });
+  if (!agreement) {
+    throw new Error("Active collaboration agreement is required");
+  }
+
+  return {
+    collaborationId: agreement.id,
+    contributorOrganizationId: agreement.partnerOrganizationId,
+  };
 }
 
 async function auditApplicationCreate({

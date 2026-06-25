@@ -20,6 +20,13 @@ pnpm dev
 
 本地库不再随源码写入演示账号或业务样例数据。请通过 Supabase Auth / 后台流程创建真实测试账号。
 
+`scripts/api-integration-smoke.mjs` 和 `scripts/manual-acceptance-smoke.mjs` 不读取源码 seed。运行前请在 `.env.local` 填写 `SMOKE_PROJECT_ID`、`SMOKE_STREAMER_ID`、`SMOKE_OWNER_EMAIL`、`SMOKE_OPS_EMAIL`、`SMOKE_FINANCE_EMAIL`、`SMOKE_STREAMER_EMAIL`、`SMOKE_USER_PASSWORD`，这些值应来自你在本地库中通过真实流程创建的验收数据。
+
+## 产品文档
+
+- [产品功能文档](docs/product-function-document.md)：按产品逻辑梳理经营舱的主闭环、状态机、权限、模块、API、数据模型和验收边界。
+- [产品使用教程](docs/product-usage-tutorial.md)：面向最终用户的操作手册，覆盖登录、项目、主播、排班报数、结算导出和常见问题。
+
 ## 常用命令
 
 ```bash

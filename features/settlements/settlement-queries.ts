@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { calculateSettlementItem } from "./settlement-engine";
+import { extractStructuredSettlementRule } from "./structured-settlement-rule";
 import type {
   SettlementBatchStatus,
   SettlementBatchType,
@@ -8,12 +9,14 @@ import type {
 
 export type OpsSettlementPoolItem = {
   id: string;
+  projectId: string;
   projectName: string;
   streamerName: string;
   settlementDuration: number | null;
   timeSource: "system" | "screenshot" | "claimed" | null;
   evidenceLevel: "green" | "yellow" | "red" | null;
   settlementMethod: string;
+  cpsRateBps: number;
   expectedAmount: number;
   approvedAt: string;
 };
@@ -48,6 +51,8 @@ export type OpsSettlementBatchDetailItem = {
   manualAmount: number;
   adjustmentAmount: number;
   totalAmount: number;
+  internalOnly?: boolean;
+  sourceKind?: "settlement" | "project_cost";
 };
 
 export type OpsSettlementDefaultScope = {
@@ -59,16 +64,21 @@ export type OpsSettlementDefaultScope = {
 
 export type SettlementPoolRow = {
   id: string;
+  project_id?: string;
   created_at: string;
   settlement_duration: number | null;
   time_source: "system" | "screenshot" | "claimed" | null;
   evidence_level: "green" | "yellow" | "red" | null;
-  projects: { name: string } | { name: string }[] | null;
+  projects:
+    | { name: string; default_settlement_rule?: unknown }
+    | { name: string; default_settlement_rule?: unknown }[]
+    | null;
   streamers: { display_name: string } | { display_name: string }[] | null;
   project_streamers?: Array<{
     settlement_method: string | null;
     hourly_rate: number | null;
     base_salary: number | null;
+    cps_rate_bps: number | null;
   }> | null;
 };
 
@@ -101,62 +111,117 @@ export type SettlementBatchDetailRow = {
   streamers: { display_name: string } | { display_name: string }[] | null;
 };
 
+export type SettlementBatchCostItemRow = {
+  id: string;
+  settlement_batch_id: string;
+  item_type: string;
+  amount_cents: number;
+  direction: "cost" | "revenue_offset" | "adjustment";
+  evidence_level: "green" | "yellow" | "red";
+  source: "system" | "import" | "manual";
+  reason: string;
+};
+
 type PoolQueryRow = Omit<SettlementPoolRow, "project_streamers"> & {
   project_id: string;
   streamer_id: string;
 };
 
 type ProjectStreamerRuleRow = {
+  project_id: string;
   streamer_id: string;
   settlement_method: string | null;
   hourly_rate: number | null;
   base_salary: number | null;
+  cps_rate_bps: number | null;
 };
 
 type SettlementScopeSeedRow = {
   project_id: string;
+  created_at?: string;
 };
 
 export async function listOpsSettlementPool(
   client: SupabaseClient,
-  input: { projectId: string; periodStart: string; periodEnd: string },
+  input: {
+    organizationId: string;
+    projectId?: string | null;
+    batchType?: SettlementBatchType;
+    periodStart: string;
+    periodEnd: string;
+  },
 ): Promise<OpsSettlementPoolItem[]> {
-  const { data, error } = await client
+  let query = client
     .from("live_reports")
     .select(
-      "id, project_id, streamer_id, created_at, settlement_duration, time_source, evidence_level, projects(name), streamers(display_name)",
+      "id, project_id, streamer_id, created_at, settlement_duration, time_source, evidence_level, projects(name, default_settlement_rule), streamers(display_name)",
     )
-    .eq("project_id", input.projectId)
+    .eq("organization_id", input.organizationId)
     .eq("status", "approved")
     .eq("enter_settlement_pool", true)
-    .is("settled_batch_item_id", null)
     .gte("created_at", `${input.periodStart}T00:00:00.000Z`)
     .lte("created_at", `${input.periodEnd}T23:59:59.999Z`)
-    .order("created_at", { ascending: true })
-    .returns<PoolQueryRow[]>();
+    .order("created_at", { ascending: true });
+
+  if (input.projectId) {
+    query = query.eq("project_id", input.projectId);
+  }
+
+  const { data, error } = await query.returns<PoolQueryRow[]>();
 
   if (error) {
     throw error;
   }
 
-  const streamerIds = Array.from(
-    new Set((data ?? []).map((row) => row.streamer_id)),
+  const batchType = input.batchType ?? "payable";
+  const reportIds = (data ?? []).map((row) => row.id);
+  const settledReportIds = reportIds.length
+    ? await listSettledReportIdsForBatchType(
+        client,
+        input.organizationId,
+        reportIds,
+        batchType,
+      )
+    : new Set<string>();
+  const unsettledRows = (data ?? []).filter(
+    (row) => !settledReportIds.has(row.id),
   );
-  const rules = streamerIds.length
-    ? await listProjectStreamerRules(client, input.projectId, streamerIds)
-    : [];
+  const streamerIds = Array.from(
+    new Set(unsettledRows.map((row) => row.streamer_id)),
+  );
+  const projectIds = Array.from(
+    new Set(unsettledRows.map((row) => row.project_id)),
+  );
+  const rules =
+    streamerIds.length && projectIds.length
+      ? await listProjectStreamerRules(
+          client,
+          input.organizationId,
+          projectIds,
+          streamerIds,
+        )
+      : [];
   const rulesByStreamer = new Map(
-    rules.map((rule) => [rule.streamer_id, rule] as const),
+    rules.map(
+      (rule) =>
+        [
+          projectStreamerRuleKey(rule.project_id, rule.streamer_id),
+          rule,
+        ] as const,
+    ),
   );
 
-  return (data ?? []).map((row) =>
+  return unsettledRows.map((row) =>
     toOpsSettlementPoolItem({
       ...row,
       project_streamers: [
-        rulesByStreamer.get(row.streamer_id) ?? {
+        rulesByStreamer.get(
+          projectStreamerRuleKey(row.project_id, row.streamer_id),
+        ) ?? {
           settlement_method: "manual",
           hourly_rate: 0,
           base_salary: 0,
+          cps_rate_bps: 0,
         },
       ],
     }),
@@ -165,12 +230,14 @@ export async function listOpsSettlementPool(
 
 export async function listOpsSettlementBatches(
   client: SupabaseClient,
+  organizationId: string,
 ): Promise<OpsSettlementBatchListItem[]> {
   const { data, error } = await client
     .from("settlement_batches")
     .select(
       "id, project_id, batch_type, status, period_start, period_end, computed_amount, manual_amount, adjustment_amount, evidence_summary, updated_at, created_by, projects(name), settlement_batch_items(id)",
     )
+    .eq("organization_id", organizationId)
     .order("updated_at", { ascending: false })
     .returns<SettlementBatchRow[]>();
 
@@ -183,17 +250,21 @@ export async function listOpsSettlementBatches(
 
 export async function listOpsSettlementBatchDetails(
   client: SupabaseClient,
-  batchId?: string,
+  input: {
+    organizationId: string;
+    batchId?: string;
+  },
 ): Promise<Record<string, OpsSettlementBatchDetailItem[]>> {
   let query = client
     .from("settlement_batch_items")
     .select(
       "id, settlement_batch_id, item_type, computed_amount, manual_amount, adjustment_amount, evidence_level, evidence_snapshot, streamers(display_name)",
     )
+    .eq("organization_id", input.organizationId)
     .order("created_at", { ascending: true });
 
-  if (batchId) {
-    query = query.eq("settlement_batch_id", batchId);
+  if (input.batchId) {
+    query = query.eq("settlement_batch_id", input.batchId);
   }
 
   const { data, error } = await query.returns<SettlementBatchDetailRow[]>();
@@ -202,10 +273,34 @@ export async function listOpsSettlementBatchDetails(
     throw error;
   }
 
-  return (data ?? []).reduce<Record<string, OpsSettlementBatchDetailItem[]>>(
+  let costQuery = client
+    .from("project_cost_items")
+    .select(
+      "id, settlement_batch_id, item_type, amount_cents, direction, evidence_level, source, reason",
+    )
+    .eq("organization_id", input.organizationId)
+    .not("settlement_batch_id", "is", null)
+    .order("created_at", { ascending: true });
+
+  if (input.batchId) {
+    costQuery = costQuery.eq("settlement_batch_id", input.batchId);
+  }
+
+  const { data: costRows, error: costError } =
+    await costQuery.returns<SettlementBatchCostItemRow[]>();
+
+  if (costError) {
+    throw costError;
+  }
+
+  const detailItems = [
+    ...(data ?? []).map(toOpsSettlementBatchDetailItem),
+    ...(costRows ?? []).map(toOpsSettlementBatchCostDetailItem),
+  ];
+
+  return detailItems.reduce<Record<string, OpsSettlementBatchDetailItem[]>>(
     (grouped, row) => {
-      const item = toOpsSettlementBatchDetailItem(row);
-      grouped[item.batchId] = [...(grouped[item.batchId] ?? []), item];
+      grouped[row.batchId] = [...(grouped[row.batchId] ?? []), row];
       return grouped;
     },
     {},
@@ -214,10 +309,12 @@ export async function listOpsSettlementBatchDetails(
 
 export async function getOpsSettlementDefaultScope(
   client: SupabaseClient,
+  organizationId: string,
 ): Promise<OpsSettlementDefaultScope | null> {
   const { data: poolRows, error } = await client
     .from("live_reports")
-    .select("project_id")
+    .select("project_id, created_at")
+    .eq("organization_id", organizationId)
     .eq("status", "approved")
     .eq("enter_settlement_pool", true)
     .is("settled_batch_item_id", null)
@@ -234,6 +331,7 @@ export async function getOpsSettlementDefaultScope(
     const { data: batchRows, error: batchError } = await client
       .from("settlement_batches")
       .select("project_id")
+      .eq("organization_id", organizationId)
       .order("updated_at", { ascending: false })
       .limit(1)
       .returns<SettlementScopeSeedRow[]>();
@@ -250,9 +348,11 @@ export async function getOpsSettlementDefaultScope(
   }
 
   const periodEnd = dateKey(new Date());
-  const periodStart = dateKey(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
+  const periodStart = poolRows?.[0]?.created_at
+    ? dateKey(new Date(poolRows[0].created_at))
+    : dateKey(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
   const poolCount = await countSettlementPoolReports(client, {
-    projectId,
+    organizationId,
     periodStart,
     periodEnd,
   });
@@ -266,6 +366,9 @@ export function toOpsSettlementPoolItem(
   const project = first(row.projects);
   const streamer = first(row.streamers);
   const rule = first(row.project_streamers ?? null);
+  const structured = extractStructuredSettlementRule(
+    project?.default_settlement_rule,
+  );
   const expected = calculateSettlementItem({
     report: {
       id: row.id,
@@ -280,17 +383,21 @@ export function toOpsSettlementPoolItem(
         >[0]["rule"]["settlementMethod"]) ?? "manual",
       hourlyRate: rule?.hourly_rate ?? 0,
       baseSalary: rule?.base_salary ?? 0,
+      cpsRateBps: rule?.cps_rate_bps ?? 0,
+      ...structured,
     },
   });
 
   return {
     id: row.id,
+    projectId: row.project_id ?? "unknown-project",
     projectName: project?.name ?? "Unknown project",
     streamerName: streamer?.display_name ?? "Unknown streamer",
     settlementDuration: row.settlement_duration,
     timeSource: row.time_source,
     evidenceLevel: row.evidence_level,
     settlementMethod: rule?.settlement_method ?? "manual",
+    cpsRateBps: rule?.cps_rate_bps ?? 0,
     expectedAmount: expected.computedAmount,
     approvedAt: row.created_at,
   };
@@ -354,18 +461,50 @@ export function toOpsSettlementBatchDetailItem(
     manualAmount,
     adjustmentAmount,
     totalAmount: systemAmount + manualAmount + adjustmentAmount,
+    sourceKind: "settlement",
   };
+}
+
+export function toOpsSettlementBatchCostDetailItem(
+  row: SettlementBatchCostItemRow,
+): OpsSettlementBatchDetailItem {
+  const amount = Number(row.amount_cents);
+  return {
+    id: row.id,
+    batchId: row.settlement_batch_id,
+    itemType: row.item_type,
+    streamerName: "Project cost",
+    settlementDuration: 0,
+    timeSource: row.source,
+    evidenceLevel: row.evidence_level,
+    systemAmount: 0,
+    manualAmount: amount,
+    adjustmentAmount: 0,
+    totalAmount: amount,
+    internalOnly: true,
+    sourceKind: "project_cost",
+  };
+}
+
+export function toStreamerSafeSettlementBatchDetailItems(
+  items: OpsSettlementBatchDetailItem[],
+): OpsSettlementBatchDetailItem[] {
+  return items.filter((item) => !item.internalOnly);
 }
 
 async function listProjectStreamerRules(
   client: SupabaseClient,
-  projectId: string,
+  organizationId: string,
+  projectIds: string[],
   streamerIds: string[],
 ): Promise<ProjectStreamerRuleRow[]> {
   const { data, error } = await client
     .from("project_streamers")
-    .select("streamer_id, settlement_method, hourly_rate, base_salary")
-    .eq("project_id", projectId)
+    .select(
+      "project_id, streamer_id, settlement_method, hourly_rate, base_salary, cps_rate_bps",
+    )
+    .eq("organization_id", organizationId)
+    .in("project_id", projectIds)
     .in("streamer_id", streamerIds)
     .returns<ProjectStreamerRuleRow[]>();
 
@@ -376,25 +515,71 @@ async function listProjectStreamerRules(
   return data ?? [];
 }
 
+function projectStreamerRuleKey(projectId: string, streamerId: string) {
+  return `${projectId}:${streamerId}`;
+}
+
 async function countSettlementPoolReports(
   client: SupabaseClient,
-  input: { projectId: string; periodStart: string; periodEnd: string },
+  input: {
+    organizationId: string;
+    projectId?: string | null;
+    batchType?: SettlementBatchType;
+    periodStart: string;
+    periodEnd: string;
+  },
 ): Promise<number> {
-  const { count, error } = await client
-    .from("live_reports")
-    .select("id", { count: "exact", head: true })
-    .eq("project_id", input.projectId)
-    .eq("status", "approved")
-    .eq("enter_settlement_pool", true)
-    .is("settled_batch_item_id", null)
-    .gte("created_at", `${input.periodStart}T00:00:00.000Z`)
-    .lte("created_at", `${input.periodEnd}T23:59:59.999Z`);
+  return (await listOpsSettlementPool(client, input)).length;
+}
+
+async function listSettledReportIdsForBatchType(
+  client: SupabaseClient,
+  organizationId: string,
+  reportIds: string[],
+  batchType: SettlementBatchType,
+): Promise<Set<string>> {
+  const { data, error } = await client
+    .from("settlement_batch_items")
+    .select("live_report_id, settlement_batches!inner(batch_type)")
+    .eq("organization_id", organizationId)
+    .in("live_report_id", reportIds)
+    .eq("settlement_batches.batch_type", batchType)
+    .returns<
+      Array<{
+        live_report_id: string | null;
+        settlement_batches:
+          | { batch_type: SettlementBatchType }
+          | Array<{ batch_type: SettlementBatchType }>
+          | null;
+      }>
+    >();
 
   if (error) {
     throw error;
   }
 
-  return count ?? 0;
+  return new Set(
+    (data ?? [])
+      .filter((row) => hasBatchType(row.settlement_batches, batchType))
+      .map((row) => row.live_report_id)
+      .filter((id): id is string => Boolean(id)),
+  );
+}
+
+function hasBatchType(
+  relation:
+    | { batch_type: SettlementBatchType }
+    | Array<{ batch_type: SettlementBatchType }>
+    | null,
+  batchType: SettlementBatchType,
+): boolean {
+  if (!relation) {
+    return false;
+  }
+
+  return Array.isArray(relation)
+    ? relation.some((item) => item.batch_type === batchType)
+    : relation.batch_type === batchType;
 }
 
 function dateKey(date: Date): string {

@@ -25,11 +25,18 @@ describe("api DTO contracts", () => {
   it("keeps the M5 ops report queue DTO camelCase and amount-free", () => {
     const item = toOpsLiveReportQueueItem({
       id: "report-1",
+      live_task_id: "task-1",
+      project_id: "project-1",
+      streamer_id: "streamer-1",
       status: "pending_review",
       settlement_duration: 120,
       time_source: "system",
       evidence_level: "green",
       viewers: 900,
+      system_duration: 120,
+      screenshot_duration: 118,
+      divergence_pct: 0.0167,
+      risk_flags: ["duration_divergence"],
       created_at: "2026-06-02T12:00:00.000Z",
       live_tasks: { title: "Launch Week 路 Streamer One" },
       projects: { name: "Launch Week" },
@@ -54,6 +61,7 @@ describe("api DTO contracts", () => {
           settlement_method: "cpt",
           hourly_rate: 80,
           base_salary: 0,
+          cps_rate_bps: 0,
         },
       ],
     });

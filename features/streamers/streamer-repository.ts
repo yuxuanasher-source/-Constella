@@ -4,7 +4,10 @@ import type {
   CreateStreamerProfileRepositoryInput,
   StreamerRecord,
   StreamerRepository,
+  StreamerCooperationStatus,
   StreamerRiskLevel,
+  StreamerSettlementMethod,
+  StreamerSourceType,
 } from "./streamer-service";
 
 type StreamerRow = {
@@ -51,6 +54,15 @@ export class SupabaseStreamerRepository implements StreamerRepository {
     if (input.defaultSettlementMethod !== undefined) {
       insertPayload.default_settlement_method = input.defaultSettlementMethod;
     }
+    if (input.defaultHourlyRate !== undefined) {
+      insertPayload.default_price = input.defaultHourlyRate;
+    }
+    if (input.defaultBaseSalary !== undefined) {
+      insertPayload.default_base_salary = input.defaultBaseSalary;
+    }
+    if (input.defaultCpsRateBps !== undefined) {
+      insertPayload.default_cps_rate_bps = input.defaultCpsRateBps;
+    }
 
     const { data, error } = await this.client
       .from("streamers")
@@ -85,6 +97,61 @@ export class SupabaseStreamerRepository implements StreamerRepository {
       risk_level: StreamerRiskLevel;
       risk_reason?: string | null;
       blacklist_reason?: string | null;
+    },
+  ): Promise<StreamerRecord> {
+    const { data, error } = await this.client
+      .from("streamers")
+      .update(input)
+      .eq("id", streamerId)
+      .select(streamerSelect)
+      .single<StreamerRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return toStreamerRecord(data);
+  }
+
+  async updateSettlementRule(
+    streamerId: string,
+    input: {
+      default_settlement_method?: StreamerSettlementMethod;
+      default_price?: number;
+      default_base_salary?: number;
+      default_cps_rate_bps?: number;
+    },
+  ): Promise<StreamerRecord> {
+    const { data, error } = await this.client
+      .from("streamers")
+      .update(input)
+      .eq("id", streamerId)
+      .select(streamerSelect)
+      .single<StreamerRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return toStreamerRecord(data);
+  }
+
+  async updateProfile(
+    streamerId: string,
+    input: {
+      display_name?: string;
+      user_id?: string | null;
+      real_name?: string | null;
+      gender?: string | null;
+      source_type?: StreamerSourceType;
+      cooperation_status?: StreamerCooperationStatus;
+      categories?: string[];
+      platforms?: string[];
+      styles?: string[];
+      default_settlement_method?: StreamerSettlementMethod;
+      default_price?: number;
+      default_base_salary?: number;
+      default_cps_rate_bps?: number;
     },
   ): Promise<StreamerRecord> {
     const { data, error } = await this.client

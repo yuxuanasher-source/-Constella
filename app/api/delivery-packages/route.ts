@@ -29,9 +29,14 @@ export async function GET(request: Request) {
       );
     }
 
-    const projectId = new URL(request.url).searchParams.get("projectId")?.trim();
+    const projectId = new URL(request.url).searchParams
+      .get("projectId")
+      ?.trim();
     if (!projectId) {
-      return NextResponse.json({ error: "projectId is required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "projectId is required" },
+        { status: 400 },
+      );
     }
 
     const actor: DeliveryPackageActor = {

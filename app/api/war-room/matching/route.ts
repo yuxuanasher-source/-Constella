@@ -1,16 +1,58 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 
 import {
   rankStreamerCandidates,
   scoreSupplierQuality,
-  type MatchingProjectContext,
-  type StreamerCandidateSnapshot,
-  type SupplierQualitySnapshot,
 } from "@/features/war-room/matching-engine";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-import { statusForServiceError } from "@/lib/http/route-error-status";
+import { toHttpError } from "@/lib/http/http-error";
+import { parseJsonBody } from "@/lib/http/parse-json-body";
 import { isMcnStaff } from "@/lib/rbac/roles";
+
+const referenceProjectSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  result: z.string(),
+});
+
+const streamerCandidateSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  categories: z.array(z.string()),
+  platforms: z.array(z.string()),
+  styles: z.array(z.string()),
+  completionRateBps: z.number(),
+  screeningPassRateBps: z.number(),
+  roiBps: z.number(),
+  grossMarginContributionCents: z.number(),
+  riskTags: z.array(z.string()),
+  availableMinutes: z.number(),
+  referenceProjects: z.array(referenceProjectSchema),
+});
+
+const supplierSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  screeningPassRateBps: z.number(),
+  completionRateBps: z.number(),
+  marginContributionCents: z.number(),
+  anomalyRateBps: z.number(),
+  blacklistRateBps: z.number(),
+  isBlacklisted: z.boolean(),
+});
+
+const matchingBodySchema = z.object({
+  project: z.object({
+    category: z.string(),
+    platform: z.string(),
+    preferredStyles: z.array(z.string()),
+    requiredMinutes: z.number(),
+  }),
+  candidates: z.array(streamerCandidateSchema).default([]),
+  suppliers: z.array(supplierSchema).default([]),
+});
 
 export async function POST(request: Request) {
   try {
@@ -31,26 +73,19 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = await request.json();
+    const body = await parseJsonBody(request, matchingBodySchema);
     const matches = rankStreamerCandidates({
-      project: body.project as MatchingProjectContext,
-      candidates: Array.isArray(body.candidates)
-        ? (body.candidates as StreamerCandidateSnapshot[])
-        : [],
+      project: body.project,
+      candidates: body.candidates,
     });
-    const suppliers = Array.isArray(body.suppliers)
-      ? (body.suppliers as SupplierQualitySnapshot[]).map(scoreSupplierQuality)
-      : [];
+    const suppliers = body.suppliers.map(scoreSupplierQuality);
 
     return NextResponse.json({ matches, suppliers });
   } catch (error) {
-    if (error instanceof Error) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: statusForServiceError(error) },
-      );
-    }
-
-    return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
+    const httpError = toHttpError(error);
+    return NextResponse.json(
+      { error: httpError.message },
+      { status: httpError.status },
+    );
   }
 }

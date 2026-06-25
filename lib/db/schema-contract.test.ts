@@ -77,9 +77,113 @@ describe("P0 database contract", () => {
     expect(allMigrations).toContain("public.can_access_project(lr.project_id)");
   });
 
+  it("allows MCN staff to read organization live queues after streamer updates", () => {
+    expect(allMigrations).toContain("mcn staff can read live tasks in org");
+    expect(allMigrations).toContain("mcn staff can read live reports in org");
+    expect(allMigrations).toContain("public.is_mcn_staff(organization_id)");
+    expect(allMigrations).toContain(
+      "streamer_id = public.current_streamer_id(organization_id)",
+    );
+  });
+
   it("allows business operators to read project drafts they created", () => {
     expect(allMigrations).toContain("function public.can_access_project");
     expect(allMigrations).toContain("project creators can read own projects");
     expect(allMigrations).toContain("created_by = auth.uid()");
+  });
+
+  it("allows project creators and owners to update accessible project drafts", () => {
+    expect(allMigrations).toContain("project creators can update own projects");
+    expect(allMigrations).toContain("public.can_access_project(id)");
+    expect(allMigrations).toContain("owner_id = auth.uid()");
+    expect(allMigrations).toContain("created_by = auth.uid()");
+  });
+
+  it("defaults project owners to the project creator", () => {
+    expect(allMigrations).toContain("function public.default_project_owner");
+    expect(allMigrations).toContain(
+      "new.owner_id := coalesce(new.owner_id, new.created_by)",
+    );
+    expect(allMigrations).toContain("update public.projects");
+    expect(allMigrations).toContain("set owner_id = created_by");
+  });
+
+  it("declares public streamer project announcement fields", () => {
+    expect(allMigrations).toContain(
+      "is_public_to_streamers boolean not null default false",
+    );
+    expect(allMigrations).toContain("public_summary text not null default ''");
+    expect(allMigrations).toContain("game_download_url text");
+    expect(allMigrations).toContain("projects_game_download_url_http");
+    expect(allMigrations).toContain("projects_org_public_streamer_idx");
+    expect(allMigrations).toContain(
+      "create or replace view public.streamer_public_project_announcements",
+    );
+    expect(allMigrations).toContain(
+      "grant select on public.streamer_public_project_announcements to authenticated",
+    );
+    expect(allMigrations).toContain(
+      "public.current_streamer_id(organization_id)",
+    );
+    expect(allMigrations).toContain(
+      "function public.mark_application_recording_reviewing",
+    );
+    expect(allMigrations).toContain(
+      "revoke all on function public.mark_application_recording_reviewing(uuid)",
+    );
+    expect(allMigrations).toContain("from public");
+    expect(allMigrations).toContain("status = 'recording_reviewing'");
+    expect(allMigrations).not.toContain(
+      'create policy "streamers can read public projects"',
+    );
+  });
+
+  it("keeps current streamer resolution deterministic for RLS checks", () => {
+    expect(allMigrations).toContain(
+      "create or replace function public.current_streamer_id(target_organization_id uuid)",
+    );
+    expect(allMigrations).toContain("order by s.created_at desc, s.id desc");
+  });
+
+  it("extends audit actions for admission recording share workflows", () => {
+    expect(allMigrations).toContain(
+      "add value if not exists 'create_share_board'",
+    );
+    expect(allMigrations).toContain(
+      "add value if not exists 'revoke_share_board'",
+    );
+    expect(allMigrations).toContain(
+      "add value if not exists 'vendor_review_submit'",
+    );
+    expect(allMigrations).toContain(
+      "add value if not exists 'vendor_review_sync'",
+    );
+  });
+
+  it("declares streamer default settlement cps snapshot fields", () => {
+    expect(allMigrations).toContain(
+      "default_cps_rate_bps integer not null default 0",
+    );
+    expect(allMigrations).toContain("streamers_default_cps_rate_bps_range");
+    expect(allMigrations).toContain("cps_rate_bps integer not null default 0");
+    expect(allMigrations).toContain("project_streamers_cps_rate_bps_range");
+    expect(allMigrations).toContain(
+      "default_cps_rate_bps >= 0 and default_cps_rate_bps <= 10000",
+    );
+    expect(allMigrations).toContain(
+      "cps_rate_bps >= 0 and cps_rate_bps <= 10000",
+    );
+  });
+
+  it("declares the public MCN onboarding request intake table", () => {
+    expect(allMigrations).toContain(
+      "create table public.mcn_onboarding_requests",
+    );
+    expect(allMigrations).toContain(
+      "alter table public.mcn_onboarding_requests enable row level security",
+    );
+    expect(allMigrations).toContain(
+      'create policy "public can submit mcn onboarding requests"',
+    );
   });
 });

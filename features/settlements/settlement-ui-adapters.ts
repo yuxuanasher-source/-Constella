@@ -12,6 +12,8 @@ export type OpsReferenceBatch = {
   project: string;
   vendor: string;
   period: string;
+  periodStart: string;
+  periodEnd: string;
   items: number;
   amount: number;
   status: string;
@@ -33,6 +35,7 @@ export type OpsReferenceBatchDetailItem = {
 
 export type OpsReferenceSettlementPoolItem = {
   id: string;
+  projectId: string;
   streamer: string;
   project: string;
   hours: number;
@@ -55,6 +58,8 @@ export function toOpsReferenceBatch(
     project: batch.projectName,
     vendor: isPayable ? "—" : batch.projectName,
     period: `${batch.periodStart} → ${batch.periodEnd}`,
+    periodStart: batch.periodStart,
+    periodEnd: batch.periodEnd,
     items: batch.itemCount,
     amount: batch.totalAmount,
     status: toReferenceStatus(batch.status),
@@ -87,10 +92,11 @@ export function toOpsReferenceSettlementPoolItem(
 ): OpsReferenceSettlementPoolItem {
   return {
     id: item.id,
+    projectId: item.projectId,
     streamer: item.streamerName,
     project: item.projectName,
     hours: Math.round(((item.settlementDuration ?? 0) / 60) * 10) / 10,
-    evidence: `${item.evidenceLevel ?? "unknown"} 路 ${
+    evidence: `${item.evidenceLevel ?? "unknown"} · ${
       item.timeSource ?? "unknown"
     }`,
     rule: item.settlementMethod,

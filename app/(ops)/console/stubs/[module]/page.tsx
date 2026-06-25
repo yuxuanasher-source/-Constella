@@ -1,4 +1,6 @@
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
+import type { AuthContext } from "@/lib/auth/context";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { listOpsApplicationQueue } from "@/features/applications/application-queries";
 import {
   listAuditCenterEntries,
@@ -23,6 +25,7 @@ import {
   listOpsSettlementBatchDetails,
   listOpsSettlementPool,
 } from "@/features/settlements/settlement-queries";
+import { getProjectComplexCostSettings } from "@/features/complex-cost/complex-cost-queries";
 import {
   toOpsReferenceBatch,
   toOpsReferenceBatchDetailItem,
@@ -31,9 +34,12 @@ import {
 import { listStreamerPool } from "@/features/streamers/streamer-queries";
 import { toStreamerCardDtos } from "@/features/streamers/streamer-ui-dto";
 import { routeForOpsModule } from "@/features/ui-route-contracts/module-route-map";
-import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-import { isMcnStaff } from "@/lib/rbac/roles";
+
+import {
+  currentUserFromAuth,
+  organizationSettingsFromAuth,
+  requireConsoleStaffAuth,
+} from "../../console-auth";
 
 export default async function StubPage({
   params,
@@ -41,6 +47,7 @@ export default async function StubPage({
   params: Promise<{ module: string }>;
 }) {
   const { module } = await params;
+  const { supabase, auth } = await requireConsoleStaffAuth();
   const {
     liveTasks,
     liveReports,
@@ -53,12 +60,15 @@ export default async function StubPage({
     auditEntries,
     notificationItems,
     billingStatus,
-  } = await loadLiveReferenceData(module);
+    complexCost,
+  } = await loadLiveReferenceData(module, supabase, auth);
   const route = routeForOpsModule(module);
 
   return (
     <OpsReferenceApp
       initialRoute={route?.routeKey ?? "warroom"}
+      currentUser={currentUserFromAuth(auth)}
+      organizationSettings={organizationSettingsFromAuth(auth)}
       liveTasks={liveTasks}
       liveReports={liveReports}
       liveBatches={liveBatches}
@@ -70,18 +80,16 @@ export default async function StubPage({
       auditEntries={auditEntries}
       notificationItems={notificationItems}
       billingStatus={billingStatus}
+      complexCost={complexCost}
     />
   );
 }
 
-async function loadLiveReferenceData(module: string) {
-  const supabase = await createSupabaseServerClient();
-  const auth = await getAuthContext(supabase);
-
-  if (!supabase || !auth || !isMcnStaff(auth.role)) {
-    return {};
-  }
-
+async function loadLiveReferenceData(
+  module: string,
+  supabase: SupabaseClient,
+  auth: AuthContext,
+) {
   if (module === "m2") {
     const streamers = await listStreamerPool(supabase);
     return { streamerCards: toStreamerCardDtos(streamers) };
@@ -93,12 +101,12 @@ async function loadLiveReferenceData(module: string) {
   }
 
   if (module === "m4") {
-    const tasks = await listOpsLiveTaskQueue(supabase);
+    const tasks = await listOpsLiveTaskQueue(supabase, auth.organizationId);
     return { liveTasks: tasks.map((task) => toOpsReferenceTask(task)) };
   }
 
   if (module === "m5") {
-    const reports = await listOpsLiveReportQueue(supabase);
+    const reports = await listOpsLiveReportQueue(supabase, auth.organizationId);
     return {
       liveReports: reports.map((report) => toOpsReferenceReport(report)),
     };
@@ -106,13 +114,27 @@ async function loadLiveReferenceData(module: string) {
 
   if (module === "m6") {
     const [batches, details, settlementScope] = await Promise.all([
-      listOpsSettlementBatches(supabase),
-      listOpsSettlementBatchDetails(supabase),
-      getOpsSettlementDefaultScope(supabase),
+      listOpsSettlementBatches(supabase, auth.organizationId),
+      listOpsSettlementBatchDetails(supabase, {
+        organizationId: auth.organizationId,
+      }),
+      getOpsSettlementDefaultScope(supabase, auth.organizationId),
     ]);
     const settlementPool = settlementScope
-      ? await listOpsSettlementPool(supabase, settlementScope)
+      ? await listOpsSettlementPool(supabase, {
+          organizationId: auth.organizationId,
+          projectId: settlementScope.projectId,
+          periodStart: settlementScope.periodStart,
+          periodEnd: settlementScope.periodEnd,
+        })
       : [];
+    const complexCost = settlementScope?.projectId
+      ? await loadComplexCostReferenceData(
+          supabase,
+          auth,
+          settlementScope.projectId,
+        )
+      : { enabled: false, includedProjects: 0, usedProjects: 0 };
     return {
       liveBatches: batches.map((batch) => toOpsReferenceBatch(batch)),
       liveBatchDetails: Object.fromEntries(
@@ -125,6 +147,7 @@ async function loadLiveReferenceData(module: string) {
         toOpsReferenceSettlementPoolItem(item),
       ),
       settlementScope,
+      complexCost,
     };
   }
 
@@ -143,7 +166,8 @@ async function loadLiveReferenceData(module: string) {
   }
 
   if (module === "m9") {
-    const notificationQueryClient = supabase as unknown as NotificationQueryClient;
+    const notificationQueryClient =
+      supabase as unknown as NotificationQueryClient;
     const items = await listNotificationCenterItems(notificationQueryClient, {
       userId: auth.userId,
       role: auth.role,
@@ -161,4 +185,21 @@ async function loadLiveReferenceData(module: string) {
   }
 
   return {};
+}
+
+async function loadComplexCostReferenceData(
+  supabase: SupabaseClient,
+  auth: AuthContext,
+  projectId: string,
+) {
+  const settings = await getProjectComplexCostSettings(supabase, {
+    organizationId: auth.organizationId,
+    projectId,
+  });
+  return {
+    enabled: Boolean(settings.entitlement),
+    includedProjects: 5,
+    usedProjects: settings.entitlement ? 1 : 0,
+    activeRuleVersion: settings.activeRule?.versionNo ?? null,
+  };
 }
