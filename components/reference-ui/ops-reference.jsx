@@ -11897,6 +11897,224 @@ function Sparkline({ data, w = 280, h = 40 }) {
 // ===== src\screen-reports.jsx =====
 // ——— Screen: 报数审核 ————————————————————————————
 
+const exportDateInputStyle = {
+  height: 32,
+  border: "1px solid var(--line-strong)",
+  borderRadius: 6,
+  padding: "0 10px",
+  fontSize: 13,
+  color: "var(--ink-900)",
+  background: "#fff",
+  outline: "none",
+};
+
+// 导出设置弹层：通用外壳，承载筛选项 + 取消/确认导出。
+function ExportSettingsModal({ title, submitting, onCancel, onConfirm, children }) {
+  return (
+    <div
+      role="dialog"
+      aria-label={title}
+      onClick={onCancel}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 50,
+        background: "rgba(15,23,42,0.45)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(event) => event.stopPropagation()}
+        style={{
+          width: "min(560px, 100%)",
+          maxHeight: "85vh",
+          display: "flex",
+          flexDirection: "column",
+          background: "#fff",
+          border: "1px solid var(--line)",
+          borderRadius: 12,
+          boxShadow: "var(--shadow-card)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "14px 18px",
+            borderBottom: "1px solid var(--line)",
+          }}
+        >
+          <div
+            style={{ fontSize: 15, fontWeight: 600, color: "var(--ink-900)" }}
+          >
+            {title}
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label="关闭"
+            style={{
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              color: "var(--ink-400)",
+              fontSize: 18,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <div
+          style={{
+            padding: 18,
+            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
+            gap: 16,
+          }}
+        >
+          {children}
+        </div>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: 8,
+            padding: "12px 18px",
+            borderTop: "1px solid var(--line)",
+          }}
+        >
+          <Button kind="default" onClick={onCancel} disabled={submitting}>
+            取消
+          </Button>
+          <Button
+            kind="primary"
+            icon={<Icon.Export size={14} stroke="#fff" />}
+            onClick={onConfirm}
+            disabled={submitting}
+          >
+            {submitting ? "导出中…" : "确认导出"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExportFilterSection({ title, children }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-700)" }}>
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// 可全选的多选清单，用于导出按项目 / 主播筛选。
+function ExportChecklist({
+  title,
+  options,
+  selected,
+  allSelected,
+  onToggle,
+  onToggleAll,
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <span
+          style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-700)" }}
+        >
+          {title}
+          <span
+            style={{
+              marginLeft: 8,
+              fontSize: 12,
+              fontWeight: 400,
+              color: "var(--ink-400)",
+            }}
+          >
+            已选 {selected.size}/{options.length}
+          </span>
+        </span>
+        <label
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 12,
+            color: "var(--ink-600)",
+            cursor: "pointer",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={allSelected}
+            onChange={onToggleAll}
+          />
+          全选
+        </label>
+      </div>
+      <div
+        style={{
+          maxHeight: 160,
+          overflowY: "auto",
+          border: "1px solid var(--line)",
+          borderRadius: 8,
+          padding: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+        }}
+      >
+        {options.length === 0 ? (
+          <span
+            style={{ fontSize: 12, color: "var(--ink-400)", padding: "4px 2px" }}
+          >
+            暂无可选项
+          </span>
+        ) : (
+          options.map((opt) => (
+            <label
+              key={opt.value}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 13,
+                color: "var(--ink-700)",
+                cursor: "pointer",
+                padding: "2px 2px",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(opt.value)}
+                onChange={() => onToggle(opt.value)}
+              />
+              {opt.label}
+            </label>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ScreenReports({ go }) {
   const reports = useOpsReports();
   const actions = useOpsLiveActions();
@@ -11906,6 +12124,36 @@ function ScreenReports({ go }) {
   const [exportSubmitting, setExportSubmitting] = React.useState(false);
   const [batchSubmitting, setBatchSubmitting] = React.useState(false);
   const [autoReviewSubmitting, setAutoReviewSubmitting] = React.useState("");
+
+  // 报数明细导出需要项目（产品/小时单价）与任务（直播时间）；公会列取当前组织名。
+  const projects = useOpsProjects();
+  const tasks = useOpsTasks();
+  const currentUser = useOpsCurrentUser();
+  const { projects: projectData, tasks: taskData } =
+    React.useContext(OpsLiveDataContext);
+
+  const [exportPanelOpen, setExportPanelOpen] = React.useState(false);
+  const [exportProjectSel, setExportProjectSel] = React.useState(
+    () => new Set(),
+  );
+  const [exportStreamerSel, setExportStreamerSel] = React.useState(
+    () => new Set(),
+  );
+  const [exportFrom, setExportFrom] = React.useState("");
+  const [exportTo, setExportTo] = React.useState("");
+  const reportProjectOptions = React.useMemo(
+    () => Array.from(new Set(reports.map((r) => r.project).filter(Boolean))),
+    [reports],
+  );
+  const reportStreamerOptions = React.useMemo(() => {
+    const map = new Map();
+    reports.forEach((r) => {
+      if (r.streamerId && !map.has(r.streamerId)) {
+        map.set(r.streamerId, r.streamer);
+      }
+    });
+    return Array.from(map, ([id, name]) => ({ value: id, label: name }));
+  }, [reports]);
 
   const counts = {
     all: reports.length,
@@ -11935,19 +12183,83 @@ function ScreenReports({ go }) {
 
   const activeReport =
     filtered.find((report) => report.id === activeId) || filtered[0] || null;
-  const exportReportDetails = async () => {
+  const openExportPanel = () => {
+    // 仅在打开导出面板时按需补齐项目/主播/任务数据（供导出列拼装），
+    // 避免在报数审核页常驻拉取。
+    if (projectData == null) actions.refreshProjects?.().catch(() => {});
+    if (taskData == null) actions.refreshOpsTasks?.().catch(() => {});
+    setExportProjectSel(new Set(reportProjectOptions));
+    setExportStreamerSel(new Set(reportStreamerOptions.map((s) => s.value)));
+    setExportFrom("");
+    setExportTo("");
+    setExportMessage("");
+    setExportPanelOpen(true);
+  };
+  const toggleExportValue = (setter, value) =>
+    setter((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) {
+        next.delete(value);
+      } else {
+        next.add(value);
+      }
+      return next;
+    });
+  const toggleExportAll = (setter, options, allSelected) =>
+    setter(allSelected ? new Set() : new Set(options.map((o) => o.value)));
+  const runReportExport = async () => {
     setExportSubmitting(true);
     setExportMessage("");
     try {
-      await actions.createGovernedExport?.({
-        kind: "report_details",
-        rows: filtered.map((report) => ({
-          streamerName: report.streamer,
-          settlementDuration: report.duration,
-          evidenceLevel: `${report.source} · ${report.status}`,
-        })),
+      const projectByName = new Map(projects.map((p) => [p.name, p]));
+      const taskById = new Map(tasks.map((t) => [t.id, t]));
+      // 公会列默认取当前组织名（工会 = 组织）。
+      const guildName = (currentUser?.org || "").trim();
+      const selected = reports.filter((r) => {
+        const inProject = exportProjectSel.has(r.project);
+        const inStreamer = exportStreamerSel.has(r.streamerId);
+        const date = r.date || "";
+        const inPeriod =
+          (!exportFrom || date >= exportFrom) &&
+          (!exportTo || date <= exportTo);
+        return inProject && inStreamer && inPeriod;
       });
-      setExportMessage("报数明细导出已生成");
+      if (selected.length === 0) {
+        setExportMessage("当前筛选下没有可导出的报数。");
+        setExportSubmitting(false);
+        return;
+      }
+      const rows = selected.map((r) => {
+        const proj = projectByName.get(r.project);
+        const task = taskById.get(r.taskId);
+        const hours = Number(r.systemDurationHours ?? r.duration ?? 0);
+        const rate = Number(proj?.defaultHourlyRate ?? 0);
+        return {
+          guildOrIndividual: guildName || "—",
+          gameProduct: proj?.product || r.project || "—",
+          streamerName: r.streamer,
+          liveDate: r.date || "—",
+          liveTime:
+            task &&
+            Number.isFinite(task.startHour) &&
+            Number.isFinite(task.endHour)
+              ? `${task.startHour}:00-${task.endHour}:00`
+              : "—",
+          duration: `${hours} 小时`,
+          hourlyRate: rate ? `¥${rate}` : "—",
+          talentFee: rate ? `¥${(hours * rate).toFixed(2)}` : "—",
+          screenshot: `${r.screens ?? 0} 张`,
+        };
+      });
+      const result = await actions.createGovernedExport?.({
+        kind: "report_settlement_details",
+        rows,
+      });
+      if (result) {
+        downloadAdmissionExport(result);
+      }
+      setExportPanelOpen(false);
+      setExportMessage(`已导出 ${rows.length} 条报数明细`);
     } catch (error) {
       setExportMessage(error?.message || "报数明细导出失败，请稍后重试");
     } finally {
@@ -12021,8 +12333,74 @@ function ScreenReports({ go }) {
     }
   };
 
+  const allProjectsSelected =
+    reportProjectOptions.length > 0 &&
+    exportProjectSel.size === reportProjectOptions.length;
+  const allStreamersSelected =
+    reportStreamerOptions.length > 0 &&
+    exportStreamerSel.size === reportStreamerOptions.length;
+
   return (
     <>
+      {exportPanelOpen ? (
+        <ExportSettingsModal
+          title="导出报数明细"
+          submitting={exportSubmitting}
+          onCancel={() => setExportPanelOpen(false)}
+          onConfirm={runReportExport}
+        >
+          <ExportFilterSection title="周期">
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="date"
+                aria-label="开始日期"
+                value={exportFrom}
+                onChange={(e) => setExportFrom(e.target.value)}
+                style={exportDateInputStyle}
+              />
+              <span style={{ color: "var(--ink-400)" }}>至</span>
+              <input
+                type="date"
+                aria-label="结束日期"
+                value={exportTo}
+                onChange={(e) => setExportTo(e.target.value)}
+                style={exportDateInputStyle}
+              />
+            </div>
+          </ExportFilterSection>
+          <ExportChecklist
+            title="项目"
+            options={reportProjectOptions.map((name) => ({
+              value: name,
+              label: name,
+            }))}
+            selected={exportProjectSel}
+            allSelected={allProjectsSelected}
+            onToggle={(v) => toggleExportValue(setExportProjectSel, v)}
+            onToggleAll={() =>
+              toggleExportAll(
+                setExportProjectSel,
+                reportProjectOptions.map((name) => ({ value: name })),
+                allProjectsSelected,
+              )
+            }
+          />
+          <ExportChecklist
+            title="主播"
+            options={reportStreamerOptions}
+            selected={exportStreamerSel}
+            allSelected={allStreamersSelected}
+            onToggle={(v) => toggleExportValue(setExportStreamerSel, v)}
+            onToggleAll={() =>
+              toggleExportAll(
+                setExportStreamerSel,
+                reportStreamerOptions,
+                allStreamersSelected,
+              )
+            }
+          />
+        </ExportSettingsModal>
+      ) : null}
       <PageHeader
         title="下播截图报数 · 审核"
         actions={
@@ -12030,7 +12408,7 @@ function ScreenReports({ go }) {
             <Button
               kind="default"
               icon={<Icon.Export size={14} />}
-              onClick={exportReportDetails}
+              onClick={openExportPanel}
               disabled={exportSubmitting}
             >
               {exportSubmitting ? "导出中" : "导出报数明细"}

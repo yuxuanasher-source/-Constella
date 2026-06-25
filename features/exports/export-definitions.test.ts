@@ -74,6 +74,25 @@ describe("export definitions", () => {
       expect.objectContaining({ sensitivity: "finance_sensitive" }),
     );
   });
+
+  it("gates report settlement detail rate/fee columns by finance role", () => {
+    expect(isExportKind("report_settlement_details")).toBe(true);
+
+    const ownerKeys = getAllowedExportFields(
+      "report_settlement_details",
+      "owner",
+    ).map((field) => field.key);
+    expect(ownerKeys).toContain("hourlyRate");
+    expect(ownerKeys).toContain("talentFee");
+    expect(ownerKeys).toContain("guildOrIndividual");
+
+    const operatorKeys = getAllowedExportFields(
+      "report_settlement_details",
+      "operator_business",
+    ).map((field) => field.key);
+    assertExportKeysExclude(operatorKeys, ["hourlyRate", "talentFee"]);
+    expect(operatorKeys).toContain("streamerName");
+  });
 });
 
 function assertExportKeysExclude(

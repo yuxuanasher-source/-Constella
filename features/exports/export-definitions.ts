@@ -3,6 +3,7 @@ import type { AppRole } from "@/lib/rbac/roles";
 export type ExportKind =
   | "project_execution"
   | "report_details"
+  | "report_settlement_details"
   | "settlement_batch"
   | "audit_logs"
   | "vendor_delivery"
@@ -88,6 +89,17 @@ export const exportDefinitions: Record<ExportKind, ExportField[]> = {
     { key: "settlementDuration", label: "结算时长", sensitivity: "public" },
     { key: "evidenceLevel", label: "证据等级", sensitivity: "public" },
   ],
+  report_settlement_details: [
+    { key: "guildOrIndividual", label: "公会/个人", sensitivity: "public" },
+    { key: "gameProduct", label: "游戏产品", sensitivity: "public" },
+    { key: "streamerName", label: "主播名称", sensitivity: "public" },
+    { key: "liveDate", label: "直播日期", sensitivity: "public" },
+    { key: "liveTime", label: "直播时间", sensitivity: "public" },
+    { key: "duration", label: "时长", sensitivity: "public" },
+    { key: "hourlyRate", label: "小时单价", sensitivity: "finance_sensitive" },
+    { key: "talentFee", label: "达人费用", sensitivity: "finance_sensitive" },
+    { key: "screenshot", label: "下播截图", sensitivity: "public" },
+  ],
   settlement_batch: [
     { key: "batchName", label: "批次", sensitivity: "internal" },
     {
@@ -128,6 +140,7 @@ export function isExportKind(value: unknown): value is ExportKind {
   return (
     value === "project_execution" ||
     value === "report_details" ||
+    value === "report_settlement_details" ||
     value === "settlement_batch" ||
     value === "audit_logs" ||
     value === "vendor_delivery" ||
