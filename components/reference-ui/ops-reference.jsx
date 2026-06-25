@@ -2,6 +2,7 @@
 /* eslint-disable */
 import React from "react";
 
+import { OverviewBoard } from "@/components/dashboard/overview-board";
 import { getAllowedProjectStatusTransitions } from "@/features/projects/project-state";
 import {
   toCollaborationApplicationProjectCardDtos,
@@ -2984,7 +2985,15 @@ function ScreenWarRoom({ go }) {
   const pendingActionCount = pendingReportCount + anomalyCount;
 
   if (dashboardHome) {
-    return <ScreenRoleHome dashboard={dashboardHome} go={go} />;
+    return (
+      <OverviewBoard
+        dashboard={dashboardHome}
+        go={go}
+        projects={projects}
+        tasks={tasks}
+        reports={reports}
+      />
+    );
   }
 
   const exportDailyBrief = async () => {
