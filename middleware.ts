@@ -6,7 +6,7 @@ import { getPublicEnv } from "@/lib/config/env";
 const protectedPrefixes = ["/console", "/m", "/desktop"];
 
 export async function middleware(request: NextRequest) {
-  const response = NextResponse.next({ request });
+  let response = NextResponse.next({ request });
   const isProtected = protectedPrefixes.some((prefix) =>
     request.nextUrl.pathname.startsWith(prefix),
   );
@@ -32,6 +32,14 @@ export async function middleware(request: NextRequest) {
             return request.cookies.getAll();
           },
           setAll(cookiesToSet) {
+            // 会话刷新后，必须把新 cookie 同时写回 request 与 response：
+            //   - 写回 request → 本次请求的服务端组件读到的是「已刷新」的 token，
+            //     不会再用已轮换失效的 refresh token 二次刷新（否则会话掉线、数据消失）。
+            //   - 写回 response → 浏览器存下新 cookie。
+            cookiesToSet.forEach(({ name, value }) => {
+              request.cookies.set(name, value);
+            });
+            response = NextResponse.next({ request });
             cookiesToSet.forEach(({ name, value, options }) => {
               response.cookies.set(name, value, options);
             });
