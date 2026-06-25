@@ -4,6 +4,7 @@ import React from "react";
 
 import { OverviewBoard } from "@/components/dashboard/overview-board";
 import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
+import { rankReportQueue } from "@/features/ai/bounded-actions";
 import { getAllowedProjectStatusTransitions } from "@/features/projects/project-state";
 import {
   toCollaborationApplicationProjectCardDtos,
@@ -12216,6 +12217,40 @@ function ExportChecklist({
   );
 }
 
+// L3 复核优先级标签：lane 来自确定性规则 rankReportQueue。title 显示理由（含权重）。
+const REVIEW_LANE_META = {
+  review: { tone: "red", label: "复核优先" },
+  normal: { tone: "neutral", label: "常规" },
+  fast: { tone: "green", label: "绿快车道" },
+};
+
+function ReviewLaneTag({ row }) {
+  const lane = row?._lane;
+  if (!lane) return <span style={{ color: "var(--ink-400)" }}>—</span>;
+  const meta = REVIEW_LANE_META[lane] || REVIEW_LANE_META.normal;
+  return (
+    <span
+      style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+      title={row?._reason || ""}
+    >
+      <span
+        className="num"
+        style={{
+          fontSize: 11,
+          color: "var(--ink-400)",
+          minWidth: 18,
+          textAlign: "right",
+        }}
+      >
+        #{row?._priority ?? "—"}
+      </span>
+      <Badge tone={meta.tone} dot>
+        {meta.label}
+      </Badge>
+    </span>
+  );
+}
+
 function ScreenReports({ go }) {
   const reports = useOpsReports();
   const actions = useOpsLiveActions();
@@ -12225,6 +12260,8 @@ function ScreenReports({ go }) {
   const [exportSubmitting, setExportSubmitting] = React.useState(false);
   const [batchSubmitting, setBatchSubmitting] = React.useState(false);
   const [autoReviewSubmitting, setAutoReviewSubmitting] = React.useState("");
+  // L3 智能排序：可疑置顶 / 绿灯快速通道。默认开启（确定性规则，非 AI 改状态）。
+  const [aiSort, setAiSort] = React.useState(true);
 
   // 报数明细导出需要项目（产品/小时单价）与任务（直播时间）；公会列取当前组织名。
   const projects = useOpsProjects();
@@ -12268,6 +12305,30 @@ function ScreenReports({ go }) {
       filter === "all" ? reports : reports.filter((r) => r.status === filter),
     [filter, reports],
   );
+
+  // 智能排序：把列表喂给确定性规则引擎 rankReportQueue（可疑置顶/绿快车道），
+  // 再按返回顺序重排，并把 lane / 优先级 / 理由挂回行对象供「复核优先级」列展示。
+  const displayRows = React.useMemo(() => {
+    if (!aiSort) return filtered;
+    const ranked = rankReportQueue(
+      filtered.map((r) => ({
+        id: r.id,
+        streamerName: r.streamer,
+        projectName: r.project,
+        evidenceLevel: r.evidenceLevel ?? null,
+        deviationPct: r.deviationPct ?? null,
+        submittedAt: r.submittedAt ?? r.date ?? null,
+      })),
+    );
+    const byId = new Map(filtered.map((r) => [r.id, r]));
+    return ranked
+      .map((rk) => {
+        const row = byId.get(rk.id);
+        if (!row) return null;
+        return { ...row, _lane: rk.lane, _priority: rk.priority, _reason: rk.reason };
+      })
+      .filter(Boolean);
+  }, [aiSort, filtered]);
 
   React.useEffect(() => {
     if (filtered.length === 0) {
@@ -12612,9 +12673,16 @@ function ScreenReports({ go }) {
             <Button kind="default" icon={<Icon.Filter size={14} />}>
               项目
             </Button>
+            <Button
+              kind={aiSort ? "primary" : "default"}
+              icon={<Icon.Sparkles size={14} stroke={aiSort ? "#fff" : undefined} />}
+              onClick={() => setAiSort((v) => !v)}
+            >
+              {aiSort ? "AI 智能排序：开" : "AI 智能排序：关"}
+            </Button>
             <div style={{ flex: 1 }} />
             <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
-              OCR 与手动偏差自动标红
+              {aiSort ? "可疑置顶 · 绿灯快速通道" : "OCR 与手动偏差自动标红"}
             </span>
           </div>
 
@@ -12622,6 +12690,14 @@ function ScreenReports({ go }) {
             activeRowId={activeId}
             onRowClick={(r) => setActiveId(r.id)}
             columns={[
+              ...(aiSort
+                ? [
+                    {
+                      title: "复核优先级",
+                      render: (r) => <ReviewLaneTag row={r} />,
+                    },
+                  ]
+                : []),
               {
                 title: "报数 / 任务",
                 render: (r) => (
@@ -12723,12 +12799,12 @@ function ScreenReports({ go }) {
                 },
               },
             ]}
-            rows={filtered}
+            rows={displayRows}
           />
         </Card>
 
         {/* Detail */}
-        <ReportDetail id={activeId} reports={filtered} />
+        <ReportDetail id={activeId} reports={displayRows} />
       </div>
     </>
   );
@@ -14028,6 +14104,12 @@ function toReferenceReportFromApi(report) {
     screens: 1,
     source: report.timeSource === "claimed" ? "manual" : "OCR",
     note: `${report.timeSource ?? "unknown"} · ${report.evidenceLevel ?? "unknown"}`,
+    // L3 智能排序所需的确定性证据信号（透传，不重算口径）。
+    evidenceLevel: report.evidenceLevel ?? null,
+    timeSource: report.timeSource ?? null,
+    deviationPct: report.divergencePct ?? null,
+    riskFlags: Array.isArray(report.riskFlags) ? report.riskFlags : [],
+    submittedAt: report.submittedAt ?? null,
   };
 }
 
