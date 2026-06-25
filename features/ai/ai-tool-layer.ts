@@ -2,6 +2,7 @@ import { writeAuditLog } from "@/lib/audit/audit";
 
 import { createAiInvocationId, recordAiInvocation } from "./invocation-ledger";
 import { recordAiToolInvocation } from "./tool-ledger";
+import { assertRegistrableTool, type AiTier } from "./tiers";
 import {
   scopeAllowsRole,
   type AiActor,
@@ -54,6 +55,7 @@ const registeredTools: Record<string, RegisteredAiTool> = {
     scopes: ["mcn_staff"],
     masking: { input: ["report"], output: [], streamerForbiddenKeys },
     readOnly: true,
+    tier: "L1_PERCEIVE",
     handler(input) {
       const report = objectValue(input.report);
       const projectName = stringValue(report.projectName, "项目信息缺失");
@@ -83,6 +85,7 @@ const registeredTools: Record<string, RegisteredAiTool> = {
     scopes: ["streamer", "mcn_staff"],
     masking: { input: [], output: [], streamerForbiddenKeys },
     readOnly: true,
+    tier: "L1_PERCEIVE",
     handler(input, ctx) {
       const sourceSnapshot =
         ctx.actor.role === "streamer"
@@ -118,6 +121,15 @@ const registeredTools: Record<string, RegisteredAiTool> = {
     },
   },
 };
+
+// 注册护栏（方案铁律 2 / 第 7.3 节）：只读工具默认 L1_PERCEIVE；任何声明 L4_FORBIDDEN
+// 的工具一律拒绝注册——L4 不是「调用被拒」，而是从工具表上根本不存在。
+function resolveTier(tool: RegisteredAiTool): AiTier {
+  return tool.tier ?? "L1_PERCEIVE";
+}
+for (const [toolName, tool] of Object.entries(registeredTools)) {
+  assertRegistrableTool(toolName, resolveTier(tool));
+}
 
 export function listRegisteredAiTools(): RegisteredAiTool[] {
   return Object.values(registeredTools);
