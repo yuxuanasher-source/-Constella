@@ -12125,15 +12125,12 @@ function ScreenReports({ go }) {
   const [batchSubmitting, setBatchSubmitting] = React.useState(false);
   const [autoReviewSubmitting, setAutoReviewSubmitting] = React.useState("");
 
-  // 报数明细导出需要项目（产品/小时单价）、主播（公会/个人）与任务（直播时间）。
+  // 报数明细导出需要项目（产品/小时单价）与任务（直播时间）；公会列取当前组织名。
   const projects = useOpsProjects();
-  const streamers = useOpsStreamers();
   const tasks = useOpsTasks();
-  const {
-    projects: projectData,
-    streamers: streamerData,
-    tasks: taskData,
-  } = React.useContext(OpsLiveDataContext);
+  const currentUser = useOpsCurrentUser();
+  const { projects: projectData, tasks: taskData } =
+    React.useContext(OpsLiveDataContext);
 
   const [exportPanelOpen, setExportPanelOpen] = React.useState(false);
   const [exportProjectSel, setExportProjectSel] = React.useState(
@@ -12190,7 +12187,6 @@ function ScreenReports({ go }) {
     // 仅在打开导出面板时按需补齐项目/主播/任务数据（供导出列拼装），
     // 避免在报数审核页常驻拉取。
     if (projectData == null) actions.refreshProjects?.().catch(() => {});
-    if (streamerData == null) actions.refreshStreamers?.().catch(() => {});
     if (taskData == null) actions.refreshOpsTasks?.().catch(() => {});
     setExportProjectSel(new Set(reportProjectOptions));
     setExportStreamerSel(new Set(reportStreamerOptions.map((s) => s.value)));
@@ -12216,8 +12212,9 @@ function ScreenReports({ go }) {
     setExportMessage("");
     try {
       const projectByName = new Map(projects.map((p) => [p.name, p]));
-      const streamerById = new Map(streamers.map((s) => [s.id, s]));
       const taskById = new Map(tasks.map((t) => [t.id, t]));
+      // 公会列默认取当前组织名（工会 = 组织）。
+      const guildName = (currentUser?.org || "").trim();
       const selected = reports.filter((r) => {
         const inProject = exportProjectSel.has(r.project);
         const inStreamer = exportStreamerSel.has(r.streamerId);
@@ -12234,13 +12231,11 @@ function ScreenReports({ go }) {
       }
       const rows = selected.map((r) => {
         const proj = projectByName.get(r.project);
-        const str = streamerById.get(r.streamerId);
         const task = taskById.get(r.taskId);
         const hours = Number(r.systemDurationHours ?? r.duration ?? 0);
         const rate = Number(proj?.defaultHourlyRate ?? 0);
         return {
-          guildOrIndividual:
-            str?.supplier && str.supplier !== "未绑定" ? "公会" : "个人",
+          guildOrIndividual: guildName || "—",
           gameProduct: proj?.product || r.project || "—",
           streamerName: r.streamer,
           liveDate: r.date || "—",

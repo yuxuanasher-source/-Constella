@@ -5841,6 +5841,12 @@ describe("OpsReferenceApp settlement smoke", () => {
     render(
       <OpsReferenceApp
         initialRoute="reports"
+        currentUser={{
+          id: "owner-1",
+          name: "Owner",
+          role: "owner",
+          org: "星辰公会",
+        }}
         liveReports={[
           {
             id: "report-export-one",
@@ -5878,7 +5884,7 @@ describe("OpsReferenceApp settlement smoke", () => {
         kind: "report_settlement_details",
         rows: [
           {
-            guildOrIndividual: "个人",
+            guildOrIndividual: "星辰公会",
             gameProduct: "Project Export",
             streamerName: "Streamer Export",
             liveDate: "2026-06-02",
