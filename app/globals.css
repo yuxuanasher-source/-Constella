@@ -143,3 +143,26 @@ a {
     box-shadow: none;
   }
 }
+
+/* 经营总览看板 v2：实时脉冲点 + 抽屉滑入 */
+@keyframes livepulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+}
+@keyframes drawerin {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
