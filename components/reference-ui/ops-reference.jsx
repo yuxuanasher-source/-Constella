@@ -3,6 +3,7 @@
 import React from "react";
 
 import { OverviewBoard } from "@/components/dashboard/overview-board";
+import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
 import { getAllowedProjectStatusTransitions } from "@/features/projects/project-state";
 import {
   toCollaborationApplicationProjectCardDtos,
@@ -1648,6 +1649,7 @@ const NAV = [
   { key: "tasks", label: "排班与任务", icon: "Tasks" },
   { key: "reports", label: "报数审核", icon: "Reports" },
   { key: "settle", label: "结算中心", icon: "Money" },
+  { key: "ai-drafts", label: "AI 草稿确认", icon: "Sparkles" },
   { key: "billing", label: "商业化与套餐", icon: "Money" },
   { key: "aiusage", label: "AI 用量与成本", icon: "Sparkles" },
   { key: "funnel", label: "转化漏斗", icon: "Sparkles" },
@@ -22007,6 +22009,18 @@ function ScreenAiUsage() {
   );
 }
 
+function ScreenAiDrafts() {
+  return (
+    <>
+      <PageHeader
+        title="AI 草稿确认"
+        subtitle="AI 仅按确定性口径生成草稿；确认是人的动作，确认后才进入正式流程。"
+      />
+      <AiDraftsPanel />
+    </>
+  );
+}
+
 function ScreenAudit() {
   const entries = useOpsAuditEntries();
   const actions = useOpsLiveActions();
@@ -25110,6 +25124,7 @@ function OpsReferenceInner({
             {route === "tasks" && <ScreenTasks go={go} />}
             {route === "reports" && <ScreenReports go={go} />}
             {route === "settle" && <ScreenSettlement go={go} />}
+            {route === "ai-drafts" && <ScreenAiDrafts />}
             {route === "billing" && (
               <ScreenBilling
                 billingStatus={billingStatusState}
