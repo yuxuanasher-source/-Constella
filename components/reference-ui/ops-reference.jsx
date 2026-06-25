@@ -12298,6 +12298,7 @@ function ScreenReports({ go }) {
     setExportMessage("");
     try {
       const projectByName = new Map(projects.map((p) => [p.name, p]));
+      const projectById = new Map(projects.map((p) => [p.id, p]));
       const taskById = new Map(tasks.map((t) => [t.id, t]));
       // 公会列默认取当前组织名（工会 = 组织）。
       const guildName = (currentUser?.org || "").trim();
@@ -12316,9 +12317,12 @@ function ScreenReports({ go }) {
         return;
       }
       const rows = selected.map((r) => {
-        const proj = projectByName.get(r.project);
+        const proj =
+          (r.projectId && projectById.get(r.projectId)) ||
+          projectByName.get(r.project);
         const task = taskById.get(r.taskId);
         const hours = Number(r.systemDurationHours ?? r.duration ?? 0);
+        // 小时单价取项目默认小时单价（即厂家给的单价）；达人费用 = 厂家单价 × 时长。
         const rate = Number(proj?.defaultHourlyRate ?? 0);
         return {
           reportId: r.id,
@@ -13996,6 +14000,7 @@ function toReferenceReportFromApi(report) {
     streamer: report.streamerName || "Unknown streamer",
     streamerId: report.streamerId || report.streamerName || "Unknown streamer",
     project: report.projectName || "Unknown project",
+    projectId: report.projectId || "",
     taskId: report.taskId || report.taskTitle || "Unknown task",
     duration: Math.round(((report.settlementDuration ?? 0) / 60) * 10) / 10,
     audience: report.viewers ?? 0,
