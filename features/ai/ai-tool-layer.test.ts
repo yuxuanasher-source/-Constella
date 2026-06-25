@@ -90,8 +90,10 @@ describe("runAiToolQuery", () => {
     expect(tools.map((tool) => tool.name).sort()).toEqual(
       [
         "compute_deviation",
+        "match_blacklist",
         "predict_evidence_color",
         "project_review_summary",
+        "query_streamer_profile",
         "streamer_diagnosis",
       ].sort(),
     );
