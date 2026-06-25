@@ -16,6 +16,10 @@ import {
   summarizeStreamerProfile,
 } from "./profile-tools";
 import {
+  assembleKnowledgeAnswer,
+  normalizePassage,
+} from "./knowledge-base";
+import {
   scopeAllowsRole,
   type AiActor,
   type AiTool,
@@ -158,6 +162,32 @@ const registeredTools: Record<string, RegisteredAiTool> = {
         ctx.actor.role,
       );
       return { answer: profileSummaryText(summary), output: { ...summary } };
+    },
+  },
+  kb_search: {
+    name: "kb_search",
+    description:
+      "Answers from knowledge-base passages with traceable citations. Never fabricates numbers — numeric facts must come from structured queries; returns 无数据 when nothing is retrieved.",
+    inputSchema: { type: "object", required: ["query"] },
+    scopes: ["mcn_staff"],
+    masking: { input: ["passages"], output: [], streamerForbiddenKeys },
+    readOnly: true,
+    tier: "L1_PERCEIVE",
+    handler(input) {
+      const passages = Array.isArray(input.passages)
+        ? input.passages
+            .map((item) => normalizePassage(item))
+            .filter((p): p is NonNullable<typeof p> => p !== null)
+        : [];
+      const result = assembleKnowledgeAnswer(String(input.query ?? ""), passages);
+      return {
+        answer: result.answer,
+        output: {
+          hasData: result.hasData,
+          citations: result.citations,
+          passageCount: passages.length,
+        },
+      };
     },
   },
   streamer_diagnosis: {
