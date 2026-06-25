@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import type { AppRole } from "@/lib/rbac/roles";
+import { appRoles, type AppRole } from "@/lib/rbac/roles";
 
 export type AuthContext = {
   userId: string;
@@ -16,12 +16,40 @@ type MembershipRow = {
   organization_id: string;
   role: AppRole;
   organizations: { name: string } | { name: string }[] | null;
+  created_at?: string | null;
 };
 
 type ProfileRow = {
   full_name: string;
   requires_onboarding: boolean;
 };
+
+// appRoles is declared most→least privileged, so its index is a priority rank
+// (owner = 0 … streamer = 4).
+function rolePriority(role: AppRole): number {
+  const index = appRoles.indexOf(role);
+  return index === -1 ? appRoles.length : index;
+}
+
+// A user can hold several active memberships — even multiple rows in the SAME
+// organization (e.g. both `owner` and `streamer`). Memberships arrive ordered
+// by created_at then organization_id, so the first row's org is the primary
+// (earliest-joined) one. Within that org pick the MOST privileged role:
+// otherwise the role resolves non-deterministically and the console flips
+// between staff and streamer views, making data appear to vanish on refresh.
+function pickPrimaryMembership(
+  memberships: MembershipRow[],
+): MembershipRow | null {
+  if (memberships.length === 0) {
+    return null;
+  }
+  const primaryOrganizationId = memberships[0].organization_id;
+  return memberships
+    .filter((m) => m.organization_id === primaryOrganizationId)
+    .reduce((best, current) =>
+      rolePriority(current.role) < rolePriority(best.role) ? current : best,
+    );
+}
 
 export async function getAuthContext(
   supabase: SupabaseClient | null,
@@ -46,21 +74,18 @@ export async function getAuthContext(
       .maybeSingle<ProfileRow>(),
     supabase
       .from("organization_members")
-      .select("organization_id, role, organizations(name)")
+      .select("organization_id, role, organizations(name), created_at")
       .eq("user_id", user.id)
       .eq("status", "active")
-      // A user can belong to more than one active organization. Until an
-      // explicit active-org switcher exists, pick deterministically (earliest
-      // joined, then a stable id tie-break) so the same user always resolves to
-      // the same organization instead of an arbitrary row.
+      // Deterministic primary-org selection: earliest joined, stable id
+      // tie-break. Role within the org is disambiguated in JS by privilege.
       .order("created_at", { ascending: true })
       .order("organization_id", { ascending: true })
-      .limit(1)
-      .maybeSingle<MembershipRow>(),
+      .returns<MembershipRow[]>(),
   ]);
 
   const profile = profileResult.data;
-  const membership = membershipResult.data;
+  const membership = pickPrimaryMembership(membershipResult.data ?? []);
 
   if (!membership) {
     return null;
