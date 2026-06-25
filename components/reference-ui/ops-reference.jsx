@@ -2,6 +2,7 @@
 /* eslint-disable */
 import React from "react";
 import {
+  Avatar as HeroAvatar,
   Button as HeroButton,
   Card as HeroCard,
   Chip as HeroChip,
@@ -186,37 +187,22 @@ function KV({ label, children, w = 96 }) {
   );
 }
 
-// Avatar — initials disc
+// Avatar — HeroUI avatar with initials fallback. Exact pixel sizing is kept
+// via inline style so dense table/detail layouts stay aligned.
 function Avatar({ name, size = 28, tone }) {
-  const palette = [
-    "#1E50C8",
-    "#5B4BD1",
-    "#0E7C77",
-    "#A86A00",
-    "#C0303A",
-    "#0E8A4D",
-  ];
-  const code = (name || "?").split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-  const bg = tone || palette[code % palette.length];
   const initials = (name || "?").slice(0, 1);
   return (
-    <span
+    <HeroAvatar
+      size="sm"
       style={{
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
         width: size,
         height: size,
-        borderRadius: 999,
-        background: `${bg}18`,
-        color: bg,
         fontSize: size * 0.42,
-        fontWeight: 600,
         flexShrink: 0,
       }}
     >
-      {initials}
-    </span>
+      <HeroAvatar.Fallback>{initials}</HeroAvatar.Fallback>
+    </HeroAvatar>
   );
 }
 
