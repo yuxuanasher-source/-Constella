@@ -19,6 +19,11 @@ import {
   toStreamerMatchDtos,
   toSupplierQualityDtos,
 } from "@/features/war-room/war-room-ui-dto";
+import { buildLiveReviewTemplate } from "@/features/live-review/live-review-template";
+import {
+  aggregateReviewKnowledge,
+  buildReviewAssist,
+} from "@/features/live-review/live-review-knowledge";
 
 import AiUsageDashboard from "./ai-usage-dashboard";
 import SettlementRuleBuilder, {
@@ -18801,6 +18806,7 @@ function TaskDrawer({
   go,
 }) {
   const [drawerMessage, setDrawerMessage] = React.useState("");
+  const [reviewOpen, setReviewOpen] = React.useState(false);
   const actions = useOpsLiveActions();
   const [editing, setEditing] = React.useState(false);
   const [editForm, setEditForm] = React.useState({
@@ -19231,6 +19237,7 @@ function TaskDrawer({
           borderTop: "1px solid var(--line)",
           background: "var(--bg-soft)",
           display: "flex",
+          flexWrap: "wrap",
           gap: 8,
         }}
       >
@@ -19241,6 +19248,13 @@ function TaskDrawer({
           disabled={busyAction === "cancel"}
         >
           {busyAction === "cancel" ? "取消中…" : "取消任务"}
+        </Button>
+        <Button
+          kind="primary"
+          icon={<Icon.Sparkles size={14} />}
+          onClick={() => setReviewOpen(true)}
+        >
+          直播复盘
         </Button>
         <div style={{ flex: 1 }} />
         <Button kind="default" onClick={openEdit}>
@@ -19253,11 +19267,583 @@ function TaskDrawer({
         >
           查看项目
         </Button>
-        <Button kind="primary" onClick={() => go?.("reports")}>
+        <Button kind="default" onClick={() => go?.("reports")}>
           查看报数
         </Button>
       </div>
+      {reviewOpen && (
+        <LiveReviewDrawer
+          task={task}
+          project={p}
+          streamer={s}
+          streamerName={streamerName}
+          projectName={projectName}
+          onClose={() => setReviewOpen(false)}
+        />
+      )}
     </Drawer>
+  );
+}
+
+// ——— Live Review (直播复盘) ——————————————————————————————————
+// 知识库本地兜底：线上走 /api/live-review，离线/未登录时落 localStorage，
+// 让原型也能演示「保存到组织知识库 + AI 接入知识库反哺」的完整闭环。
+
+const LIVE_REVIEW_LS_KEY = "jingying.liveReviewKB.v1";
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function readLocalReviewDocs() {
+  if (typeof window === "undefined" || !window.localStorage) return [];
+  try {
+    const raw = window.localStorage.getItem(LIVE_REVIEW_LS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalReviewDoc(doc) {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    const docs = readLocalReviewDocs();
+    docs.unshift(doc);
+    window.localStorage.setItem(
+      LIVE_REVIEW_LS_KEY,
+      JSON.stringify(docs.slice(0, 200)),
+    );
+  } catch {
+    /* ignore quota / serialization errors */
+  }
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function inlineMarkdown(value) {
+  return escapeHtml(value).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
+function splitMarkdownRow(line) {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+// Minimal markdown renderer (headings / tables / lists / blockquote / bold).
+function renderMarkdownToHtml(markdown) {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const isTableRow = /^\s*\|.*\|\s*$/.test(line);
+    const nextIsSep =
+      i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1]);
+    if (isTableRow && nextIsSep) {
+      const header = splitMarkdownRow(line);
+      i += 2;
+      const body = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        body.push(splitMarkdownRow(lines[i]));
+        i += 1;
+      }
+      const head = header
+        .map((cell) => `<th>${inlineMarkdown(cell)}</th>`)
+        .join("");
+      const rows = body
+        .map(
+          (row) =>
+            `<tr>${row.map((cell) => `<td>${inlineMarkdown(cell)}</td>`).join("")}</tr>`,
+        )
+        .join("");
+      out.push(
+        `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`,
+      );
+      continue;
+    }
+    const heading = line.match(/^(#{2,4})\s+(.*)$/);
+    if (heading) {
+      const level = heading[1].length;
+      out.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      i += 1;
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      out.push(
+        `<blockquote>${inlineMarkdown(line.replace(/^\s*>\s?/, ""))}</blockquote>`,
+      );
+      i += 1;
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(
+          `<li>${inlineMarkdown(lines[i].replace(/^\s*[-*]\s+/, ""))}</li>`,
+        );
+        i += 1;
+      }
+      out.push(`<ul>${items.join("")}</ul>`);
+      continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(
+          `<li>${inlineMarkdown(lines[i].replace(/^\s*\d+\.\s+/, ""))}</li>`,
+        );
+        i += 1;
+      }
+      out.push(`<ol>${items.join("")}</ol>`);
+      continue;
+    }
+    if (line.trim() === "") {
+      i += 1;
+      continue;
+    }
+    out.push(`<p>${inlineMarkdown(line)}</p>`);
+    i += 1;
+  }
+  return out.join("\n");
+}
+
+function LiveReviewDrawer({
+  task,
+  project,
+  streamer,
+  streamerName,
+  projectName,
+  onClose,
+}) {
+  const reviewContext = React.useMemo(() => {
+    const day = SCHEDULE_WEEK?.days?.[task.dayIdx];
+    return {
+      reviewDate: day?.date || "",
+      sessionLabel: task.name || "",
+      product: projectName || "",
+      server: project?.serverLabel || "",
+      streamer: streamerName || "",
+      platform: streamer?.platforms?.[0] || "",
+      liveWindow:
+        task.startHour != null && task.endHour != null
+          ? `${formatHour(task.startHour)} – ${formatHour(task.endHour)}`
+          : "",
+      goal: "",
+    };
+  }, [task, project, streamer, streamerName, projectName]);
+
+  const [content, setContent] = React.useState(() =>
+    buildLiveReviewTemplate(reviewContext),
+  );
+  const [mode, setMode] = React.useState("edit");
+  const [assist, setAssist] = React.useState(null);
+  const [assistBusy, setAssistBusy] = React.useState(false);
+  const [saveBusy, setSaveBusy] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+  const [error, setError] = React.useState("");
+
+  const assistInput = {
+    product: reviewContext.product,
+    platform: reviewContext.platform,
+    streamer: reviewContext.streamer,
+    goal: reviewContext.goal,
+  };
+
+  const runAssist = async () => {
+    if (assistBusy) return;
+    setAssistBusy(true);
+    setError("");
+    try {
+      const response = await globalThis.fetch("/api/live-review/assist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(assistInput),
+      });
+      if (!response.ok) throw new Error("server");
+      const payload = await response.json();
+      setAssist({ ...payload, source: "server" });
+    } catch {
+      // Offline / unauthenticated fallback: learn from the local knowledge base.
+      const docs = readLocalReviewDocs().map((doc) => ({
+        contentMd: doc.contentMd,
+      }));
+      const knowledge = aggregateReviewKnowledge(docs);
+      const built = buildReviewAssist(knowledge, assistInput);
+      setAssist({ knowledge, assist: built, source: "local" });
+    } finally {
+      setAssistBusy(false);
+    }
+  };
+
+  const insertAssist = () => {
+    const block = assist?.assist?.assistMarkdown;
+    if (!block) return;
+    setContent((prev) => `${block}\n${prev}`);
+    setMode("edit");
+    setMessage("已将 AI 复盘助手建议插入到复盘正文顶部。");
+  };
+
+  const save = async () => {
+    if (saveBusy) return;
+    if (!content.trim()) {
+      setError("复盘内容不能为空。");
+      return;
+    }
+    setSaveBusy(true);
+    setError("");
+    setMessage("");
+    const title =
+      `${projectName || "项目"} · ${reviewContext.reviewDate || "复盘"} · ${streamerName || ""}`.trim();
+    const body = {
+      title,
+      contentMd: content,
+      product: reviewContext.product || undefined,
+      platform: reviewContext.platform || undefined,
+    };
+    if (UUID_RE.test(task.projectId || "")) body.projectId = task.projectId;
+    if (UUID_RE.test(task.streamerId || "")) body.streamerId = task.streamerId;
+    if (UUID_RE.test(task.id || "")) body.liveTaskId = task.id;
+
+    try {
+      const response = await globalThis.fetch("/api/live-review/documents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) throw new Error("server");
+      setMessage("已保存到组织知识库，AI 将在后续复盘中学习并复用本场经验。");
+    } catch {
+      // Persist locally so the prototype knowledge base + AI assist keep working.
+      writeLocalReviewDoc({
+        id: `local-${task.id}-${content.length}`,
+        title,
+        contentMd: content,
+        product: reviewContext.product || null,
+        platform: reviewContext.platform || null,
+      });
+      setMessage(
+        "已保存到本地知识库（离线/未登录），AI 复盘助手将基于本地知识库学习。",
+      );
+    } finally {
+      setSaveBusy(false);
+    }
+  };
+
+  const knowledge = assist?.knowledge;
+  const built = assist?.assist;
+
+  return (
+    <div
+      role="dialog"
+      aria-label="直播复盘"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,23,42,0.45)",
+        zIndex: 60,
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "stretch",
+        padding: "32px 24px",
+      }}
+      onClick={onClose}
+    >
+      <style>{`
+        .md-preview { font-size: 13px; color: var(--ink-700); line-height: 1.7; }
+        .md-preview h2 { font-size: 18px; margin: 8px 0 12px; color: var(--ink-900); }
+        .md-preview h3 { font-size: 15px; margin: 16px 0 8px; color: var(--ink-900); }
+        .md-preview h4 { font-size: 13px; margin: 12px 0 6px; color: var(--ink-900); }
+        .md-preview ul, .md-preview ol { margin: 6px 0 6px 18px; }
+        .md-preview li { margin: 2px 0; }
+        .md-preview blockquote { margin: 10px 0; padding: 8px 12px; background: var(--bg-soft); border-left: 3px solid var(--blue-600); border-radius: 4px; color: var(--ink-700); }
+        .md-preview table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12.5px; }
+        .md-preview th, .md-preview td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+        .md-preview th { background: var(--bg-soft); font-weight: 600; color: var(--ink-900); }
+        .md-preview strong { color: var(--ink-900); }
+      `}</style>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(1040px, 100%)",
+          maxHeight: "100%",
+          background: "#fff",
+          borderRadius: 12,
+          boxShadow: "0 24px 60px rgba(15,23,42,0.25)",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            height: 56,
+            padding: "0 16px",
+            borderBottom: "1px solid var(--line)",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          <Icon.Sparkles size={16} stroke="var(--violet-600)" />
+          <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+            直播复盘
+          </div>
+          <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+            {projectName} · {streamerName}
+          </span>
+          <div style={{ flex: 1 }} />
+          <div
+            style={{
+              display: "inline-flex",
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              overflow: "hidden",
+            }}
+          >
+            {[
+              { key: "edit", label: "编辑 · MD" },
+              { key: "preview", label: "预览" },
+            ].map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setMode(tab.key)}
+                style={{
+                  border: "none",
+                  cursor: "pointer",
+                  padding: "6px 14px",
+                  fontSize: 12.5,
+                  background:
+                    mode === tab.key ? "var(--blue-600)" : "transparent",
+                  color: mode === tab.key ? "#fff" : "var(--ink-700)",
+                }}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 6,
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              color: "var(--ink-400)",
+            }}
+          >
+            <Icon.X size={16} />
+          </button>
+        </div>
+
+        {/* Body: editor/preview + AI sidebar */}
+        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              padding: 16,
+              overflowY: "auto",
+              borderRight: "1px solid var(--line)",
+            }}
+          >
+            {mode === "edit" ? (
+              <textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                spellCheck={false}
+                style={{
+                  width: "100%",
+                  minHeight: 460,
+                  height: "100%",
+                  resize: "vertical",
+                  border: "1px solid var(--line)",
+                  borderRadius: 8,
+                  padding: 12,
+                  fontSize: 12.5,
+                  lineHeight: 1.7,
+                  fontFamily:
+                    "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                  color: "var(--ink-900)",
+                  outline: "none",
+                }}
+              />
+            ) : (
+              <div
+                className="md-preview"
+                dangerouslySetInnerHTML={{
+                  __html: renderMarkdownToHtml(content),
+                }}
+              />
+            )}
+          </div>
+
+          {/* AI assistant sidebar */}
+          <div
+            style={{
+              width: 320,
+              flexShrink: 0,
+              padding: 16,
+              overflowY: "auto",
+              background: "var(--bg-soft)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <Icon.Sparkles size={14} stroke="var(--violet-600)" />
+              <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                AI 复盘助手
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              接入组织复盘知识库，汇聚复发问题与可复制打法，辅助本场复盘。
+            </div>
+            <Button
+              size="sm"
+              kind="primary"
+              icon={<Icon.Sparkles size={13} />}
+              onClick={runAssist}
+              disabled={assistBusy}
+            >
+              {assistBusy ? "学习中…" : "调用知识库辅助"}
+            </Button>
+
+            {built ? (
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 12 }}
+              >
+                <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                  已学习 {built.sampleSize} 份历史复盘
+                  {assist.source === "local"
+                    ? "（本地知识库）"
+                    : "（组织知识库）"}
+                </div>
+                {built.sampleSize > 0 ? (
+                  <>
+                    <ReviewAssistList
+                      title="⚠️ 复发问题预警"
+                      items={built.watchOuts}
+                      tone="var(--danger-600)"
+                    />
+                    <ReviewAssistList
+                      title="✅ 可复制打法"
+                      items={built.reusableWins}
+                      tone="var(--ok-600)"
+                    />
+                    <ReviewAssistList
+                      title="🎯 本场建议"
+                      items={built.suggestions}
+                      tone="var(--blue-700)"
+                    />
+                    <Button size="sm" kind="default" onClick={insertAssist}>
+                      插入到复盘正文
+                    </Button>
+                  </>
+                ) : (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "var(--ink-400)",
+                      padding: 10,
+                      border: "1px dashed var(--line)",
+                      borderRadius: 8,
+                    }}
+                  >
+                    知识库暂无历史复盘，本场保存后即可开始沉淀经验。
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div
+          style={{
+            padding: 12,
+            borderTop: "1px solid var(--line)",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          <div style={{ flex: 1, fontSize: 12 }}>
+            {error ? (
+              <span style={{ color: "var(--danger-600)" }}>{error}</span>
+            ) : message ? (
+              <span style={{ color: "var(--ok-600)" }}>{message}</span>
+            ) : (
+              <span style={{ color: "var(--ink-400)" }}>
+                编辑模式为 Markdown，保存后写入组织知识库。
+              </span>
+            )}
+          </div>
+          <Button kind="ghost" onClick={onClose}>
+            关闭
+          </Button>
+          <Button
+            kind="primary"
+            icon={<Icon.Upload size={14} />}
+            onClick={save}
+            disabled={saveBusy}
+          >
+            {saveBusy ? "保存中…" : "保存到组织知识库"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReviewAssistList({ title, items, tone }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div>
+      <div
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: tone || "var(--ink-900)",
+          marginBottom: 6,
+        }}
+      >
+        {title}
+      </div>
+      <ul style={{ margin: 0, paddingLeft: 16 }}>
+        {items.map((item, i) => (
+          <li
+            key={i}
+            style={{
+              fontSize: 12,
+              color: "var(--ink-700)",
+              lineHeight: 1.6,
+              marginBottom: 4,
+            }}
+          >
+            {item}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
