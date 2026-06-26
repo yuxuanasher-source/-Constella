@@ -19612,8 +19612,7 @@ function BlockEditor({ blocks, onChange }) {
   const rootRef = React.useRef(null);
   const pendingFocusRef = React.useRef(null);
 
-  // After an insert / convert that swaps the block's element type, restore focus
-  // to the affected block so typing continues seamlessly (Notion-like).
+  // Restore focus to a block after an insert/convert that swaps element type.
   React.useEffect(() => {
     const idx = pendingFocusRef.current;
     if (idx == null || !rootRef.current) return;
@@ -19633,7 +19632,6 @@ function BlockEditor({ blocks, onChange }) {
     next.splice(index, 0, block);
     onChange(next);
   };
-  const insertAfter = (i, block) => insertAt(i + 1, block);
   const removeAt = (i) => onChange(blocks.filter((_, j) => j !== i));
   const moveBlock = (i, dir) => {
     const j = i + dir;
@@ -19651,30 +19649,14 @@ function BlockEditor({ blocks, onChange }) {
       nb.text = text;
     } else if (nb.type === "list") {
       nb.items = text
-        ? text
-            .split(/[，,]/)
-            .map((s) => s.trim())
-            .filter(Boolean)
+        ? text.split(/[，,]/).map((x) => x.trim()).filter(Boolean)
         : [""];
       if (!nb.items.length) nb.items = [""];
     }
     onChange(blocks.map((b, j) => (j === i ? nb : b)));
     pendingFocusRef.current = i;
   };
-  const addBlock = (kind) => {
-    const at =
-      activeIndex >= 0 && activeIndex < blocks.length
-        ? activeIndex + 1
-        : blocks.length;
-    if (kind === "image") {
-      pendingInsertRef.current = at;
-      fileInputRef.current?.click();
-      return;
-    }
-    insertAt(at, makeEmptyBlock(kind));
-    setActiveIndex(at);
-    pendingFocusRef.current = at;
-  };
+
   const onPickImage = (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -19685,12 +19667,18 @@ function BlockEditor({ blocks, onChange }) {
     }
     const reader = new globalThis.FileReader();
     reader.onload = () => {
-      const at = pendingInsertRef.current ?? blocks.length;
-      insertAt(at, { type: "image", alt: file.name || "图片", src: reader.result });
+      const img = { type: "image", alt: file.name || "图片", src: reader.result };
+      const pend = pendingInsertRef.current;
       pendingInsertRef.current = null;
+      if (pend && pend.replace != null) {
+        onChange(blocks.map((b, j) => (j === pend.replace ? img : b)));
+      } else {
+        insertAt(pend?.at ?? blocks.length, img);
+      }
     };
     reader.readAsDataURL(file);
   };
+
   const insertColumn = (bi, at) => {
     const b = blocks[bi];
     const headers = [...b.headers];
@@ -19711,24 +19699,89 @@ function BlockEditor({ blocks, onChange }) {
       rows: b.rows.map((r) => r.filter((_, k) => k !== ci)),
     });
   };
+  const insertRow = (bi, at) => {
+    const b = blocks[bi];
+    const cols = b.headers.length || 1;
+    const rows = [...b.rows];
+    rows.splice(at, 0, Array.from({ length: cols }).map(() => ""));
+    setBlock(bi, { ...b, rows });
+  };
+  const deleteRow = (bi, ri) => {
+    const b = blocks[bi];
+    const cols = b.headers.length || 1;
+    if (b.rows.length <= 1) {
+      setBlock(bi, { ...b, rows: [Array.from({ length: cols }).map(() => "")] });
+      return;
+    }
+    setBlock(bi, { ...b, rows: b.rows.filter((_, j) => j !== ri) });
+  };
 
-  const openBlockMenu = (e, bi) => {
+  const closeMenu = () => setMenu(null);
+  const openActionsMenu = (e, bi) => {
     e.preventDefault();
     e.stopPropagation();
-    setMenu({ x: e.clientX, y: e.clientY, blockIndex: bi });
+    setMenu({ kind: "actions", x: e.clientX, y: e.clientY, blockIndex: bi });
+  };
+  const openInsertMenu = (e, bi, mode) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu({ kind: "insert", mode, x: e.clientX, y: e.clientY, blockIndex: bi });
   };
   const openColumnMenu = (e, bi, ci) => {
     e.preventDefault();
     e.stopPropagation();
-    setMenu({ x: e.clientX, y: e.clientY, blockIndex: bi, colIndex: ci });
+    setMenu({ kind: "column", x: e.clientX, y: e.clientY, blockIndex: bi, colIndex: ci });
   };
+  const openCellMenu = (e, bi, ri, ci) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu({
+      kind: "cell",
+      x: e.clientX,
+      y: e.clientY,
+      blockIndex: bi,
+      rowIndex: ri,
+      colIndex: ci,
+    });
+  };
+
+  const applyInsert = (kind) => {
+    const bi = menu?.blockIndex ?? blocks.length - 1;
+    const mode = menu?.mode || "after";
+    if (kind === "image") {
+      pendingInsertRef.current =
+        mode === "convert" ? { replace: bi } : { at: bi + 1 };
+      fileInputRef.current?.click();
+      return;
+    }
+    if (mode === "convert") {
+      turnInto(bi, kind);
+    } else {
+      const at = bi + 1;
+      insertAt(at, makeEmptyBlock(kind));
+      setActiveIndex(at);
+      pendingFocusRef.current = at;
+    }
+  };
+
+  const BLOCK_TYPES = [
+    { kind: "paragraph", label: "正文", hint: "Aa" },
+    { kind: "h1", label: "标题 1", hint: "H1" },
+    { kind: "h2", label: "标题 2", hint: "H2" },
+    { kind: "h3", label: "标题 3", hint: "H3" },
+    { kind: "bullet", label: "无序列表", hint: "•" },
+    { kind: "ordered", label: "有序列表", hint: "1." },
+    { kind: "quote", label: "引用", hint: "❝" },
+    { kind: "table", label: "表格", hint: "⊞" },
+    { kind: "image", label: "图片", hint: "🖼" },
+  ];
 
   const MenuLabel = ({ children }) => (
     <div style={{ fontSize: 11, color: "var(--ink-400)", padding: "6px 8px 2px" }}>
       {children}
     </div>
   );
-  const MenuItem = ({ onClick, children, danger }) => (
+  const MenuItem = ({ onClick, children, danger, hint }) => (
     <button
       type="button"
       onMouseDown={(e) => {
@@ -19736,8 +19789,12 @@ function BlockEditor({ blocks, onChange }) {
         onClick();
         setMenu(null);
       }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-soft)")}
+      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
       style={{
-        display: "block",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
         width: "100%",
         textAlign: "left",
         border: "none",
@@ -19749,10 +19806,45 @@ function BlockEditor({ blocks, onChange }) {
         fontSize: 13,
       }}
     >
-      {children}
+      {hint != null && (
+        <span
+          style={{
+            width: 22,
+            textAlign: "center",
+            color: "var(--ink-400)",
+            fontSize: 12,
+            flexShrink: 0,
+          }}
+        >
+          {hint}
+        </span>
+      )}
+      <span>{children}</span>
     </button>
   );
   const menuSep = { height: 1, background: "var(--line)", margin: "4px 0" };
+  const gutterBtn = {
+    border: "none",
+    background: "transparent",
+    color: "var(--ink-300, #c2c8d2)",
+    cursor: "pointer",
+    fontSize: 13,
+    lineHeight: "20px",
+    width: 18,
+    height: 22,
+    borderRadius: 4,
+    padding: 0,
+  };
+  const tAddBtn = {
+    border: "1px solid var(--line)",
+    borderRadius: 4,
+    background: "var(--bg-soft)",
+    color: "var(--ink-400)",
+    cursor: "pointer",
+    fontSize: 12,
+    lineHeight: 1,
+    padding: 0,
+  };
 
   const renderInner = (b, bi) => {
     if (b.type === "heading") {
@@ -19762,6 +19854,7 @@ function BlockEditor({ blocks, onChange }) {
           data-focus-bi={bi}
           value={b.text}
           onChange={(e) => setBlock(bi, { ...b, text: e.target.value })}
+          placeholder={`标题 ${b.level || 2}`}
           style={{
             ...REVIEW_CELL_STYLE,
             fontSize: sizes[b.level] || 14,
@@ -19874,17 +19967,11 @@ function BlockEditor({ blocks, onChange }) {
                     });
                   }
                 }}
+                placeholder="列表项"
                 style={REVIEW_CELL_STYLE}
               />
             </div>
           ))}
-          <button
-            type="button"
-            onClick={() => setBlock(bi, { ...b, items: [...b.items, ""] })}
-            style={REVIEW_ADD_BTN_STYLE}
-          >
-            + 添加一项
-          </button>
         </div>
       );
     }
@@ -19892,11 +19979,8 @@ function BlockEditor({ blocks, onChange }) {
       const cols = b.headers.length || 1;
       return (
         <div
-          style={{
-            border: "1px solid var(--line)",
-            borderRadius: 8,
-            overflow: "hidden",
-          }}
+          className="lr-table-wrap"
+          style={{ position: "relative", marginRight: 16, marginBottom: 16 }}
         >
           <table
             style={{
@@ -19910,7 +19994,7 @@ function BlockEditor({ blocks, onChange }) {
                 {b.headers.map((h, ci) => (
                   <th
                     key={ci}
-                    title="右键编辑列"
+                    title="右键：增 / 删列"
                     onContextMenu={(e) => openColumnMenu(e, bi, ci)}
                     style={{
                       border: "1px solid var(--line)",
@@ -19933,31 +20017,6 @@ function BlockEditor({ blocks, onChange }) {
                     />
                   </th>
                 ))}
-                <th
-                  style={{
-                    width: 34,
-                    border: "1px solid var(--line)",
-                    background: "var(--bg-soft)",
-                    padding: 0,
-                  }}
-                >
-                  <button
-                    type="button"
-                    title="新增一列"
-                    onClick={() => insertColumn(bi, b.headers.length)}
-                    style={{
-                      border: "none",
-                      background: "transparent",
-                      cursor: "pointer",
-                      color: "var(--ink-400)",
-                      fontSize: 14,
-                      width: "100%",
-                      lineHeight: "28px",
-                    }}
-                  >
-                    +
-                  </button>
-                </th>
               </tr>
             </thead>
             <tbody>
@@ -19966,6 +20025,8 @@ function BlockEditor({ blocks, onChange }) {
                   {Array.from({ length: cols }).map((_, ci) => (
                     <td
                       key={ci}
+                      title="右键：增 / 删行 · 列"
+                      onContextMenu={(e) => openCellMenu(e, bi, ri, ci)}
                       style={{
                         border: "1px solid var(--line)",
                         padding: 0,
@@ -19988,68 +20049,64 @@ function BlockEditor({ blocks, onChange }) {
                       />
                     </td>
                   ))}
-                  <td
-                    style={{
-                      width: 34,
-                      border: "1px solid var(--line)",
-                      textAlign: "center",
-                    }}
-                  >
-                    <button
-                      type="button"
-                      title="删除该行"
-                      onClick={() =>
-                        setBlock(bi, {
-                          ...b,
-                          rows: b.rows.filter((_, j) => j !== ri),
-                        })
-                      }
-                      style={{
-                        border: "none",
-                        background: "transparent",
-                        cursor: "pointer",
-                        color: "var(--ink-400)",
-                        fontSize: 15,
-                        lineHeight: "28px",
-                        width: "100%",
-                      }}
-                    >
-                      ×
-                    </button>
-                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
           <button
             type="button"
-            onClick={() =>
-              setBlock(bi, {
-                ...b,
-                rows: [...b.rows, Array.from({ length: cols }).map(() => "")],
-              })
-            }
+            className="lr-tadd"
+            title="添加一列"
+            onClick={() => insertColumn(bi, cols)}
             style={{
-              ...REVIEW_ADD_BTN_STYLE,
-              borderRadius: 0,
-              border: "none",
-              borderTop: "1px solid var(--line)",
-              width: "100%",
-              textAlign: "left",
+              ...tAddBtn,
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              right: -14,
+              width: 12,
             }}
           >
-            + 添加一行
+            +
+          </button>
+          <button
+            type="button"
+            className="lr-tadd"
+            title="添加一行"
+            onClick={() => insertRow(bi, b.rows.length)}
+            style={{
+              ...tAddBtn,
+              position: "absolute",
+              left: 0,
+              right: 0,
+              bottom: -14,
+              height: 12,
+            }}
+          >
+            +
           </button>
         </div>
       );
     }
-    // paragraph — with markdown shortcuts
+    // paragraph — slash menu + markdown shortcuts
     return (
       <textarea
         data-focus-bi={bi}
         value={b.text}
         onChange={(e) => {
           const v = e.target.value;
+          if (v === "/") {
+            const r = e.target.getBoundingClientRect();
+            setBlock(bi, { ...b, text: "" });
+            setMenu({
+              kind: "insert",
+              mode: "convert",
+              blockIndex: bi,
+              x: r.left,
+              y: r.bottom + 4,
+            });
+            return;
+          }
           const mH = v.match(/^(#{1,3})\s(.*)$/);
           if (mH) {
             pendingFocusRef.current = bi;
@@ -20082,7 +20139,7 @@ function BlockEditor({ blocks, onChange }) {
           setBlock(bi, { ...b, text: v });
         }}
         rows={Math.max(1, String(b.text || "").split("\n").length)}
-        placeholder="输入正文，或用 # 标题、- 列表、1. 序号、> 引用"
+        placeholder="输入正文，按 / 选择块类型"
         style={{
           ...REVIEW_CELL_STYLE,
           resize: "vertical",
@@ -20094,76 +20151,70 @@ function BlockEditor({ blocks, onChange }) {
     );
   };
 
-  const TOOLBAR = [
-    { k: "h1", label: "H1" },
-    { k: "h2", label: "H2" },
-    { k: "h3", label: "H3" },
-    { k: "paragraph", label: "正文" },
-    { k: "bullet", label: "• 列表" },
-    { k: "ordered", label: "1. 序号" },
-    { k: "quote", label: "❝ 引用" },
-    { k: "table", label: "⊞ 表格" },
-    { k: "image", label: "🖼 图片" },
-  ];
-
   return (
     <div ref={rootRef} style={{ display: "flex", flexDirection: "column" }}>
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 6,
-          marginBottom: 10,
-          paddingBottom: 10,
-          borderBottom: "1px solid var(--line)",
-          position: "sticky",
-          top: 0,
-          background: "#fff",
-          zIndex: 2,
-        }}
-      >
-        {TOOLBAR.map((t) => (
-          <button
-            key={t.k}
-            type="button"
-            onClick={() => addBlock(t.k)}
-            style={REVIEW_TOOL_BTN_STYLE}
-          >
-            {t.label}
-          </button>
-        ))}
-        <span
-          style={{
-            fontSize: 11,
-            color: "var(--ink-400)",
-            alignSelf: "center",
-            marginLeft: 4,
-          }}
-        >
-          右键块可转换 / 删除 · 输入 # - 1. {">"} 自动转换
-        </span>
+      <style>{`
+        .lr-block .lr-gutter { opacity: 0; transition: opacity .12s ease; }
+        .lr-block:hover .lr-gutter { opacity: 1; }
+        .lr-table-wrap .lr-tadd { opacity: 0; transition: opacity .12s ease; }
+        .lr-table-wrap:hover .lr-tadd { opacity: 1; }
+      `}</style>
+
+      <div style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 10 }}>
+        输入 <b>/</b> 选择块类型 · 悬停左侧 <b>+</b> 添加块 · 右键块 / 表格单元格更多操作
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {blocks.map((b, bi) => (
           <div
             key={bi}
+            className="lr-block"
             onFocusCapture={() => setActiveIndex(bi)}
-            onContextMenu={(e) => openBlockMenu(e, bi)}
-            style={{ display: "flex", gap: 6, alignItems: "flex-start" }}
+            onContextMenu={(e) => openActionsMenu(e, bi)}
+            style={{ display: "flex", gap: 2, alignItems: "flex-start" }}
           >
-            <button
-              type="button"
-              title="块操作（也可右键）"
-              onClick={(e) => openBlockMenu(e, bi)}
-              style={REVIEW_HANDLE_STYLE}
+            <div
+              className="lr-gutter"
+              style={{ display: "flex", flexShrink: 0, paddingTop: 3 }}
             >
-              ⋮⋮
-            </button>
+              <button
+                type="button"
+                title="在下方添加块"
+                onClick={(e) => openInsertMenu(e, bi, "after")}
+                style={gutterBtn}
+              >
+                +
+              </button>
+              <button
+                type="button"
+                title="块操作（也可右键）"
+                onClick={(e) => openActionsMenu(e, bi)}
+                style={gutterBtn}
+              >
+                ⋮⋮
+              </button>
+            </div>
             <div style={{ flex: 1, minWidth: 0 }}>{renderInner(b, bi)}</div>
           </div>
         ))}
       </div>
+
+      <button
+        type="button"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          setMenu({
+            kind: "insert",
+            mode: "after",
+            blockIndex: blocks.length - 1,
+            x: e.clientX,
+            y: e.clientY,
+          });
+        }}
+        style={{ ...REVIEW_ADD_BTN_STYLE, marginTop: 10 }}
+      >
+        + 添加内容
+      </button>
 
       <input
         ref={fileInputRef}
@@ -20176,10 +20227,10 @@ function BlockEditor({ blocks, onChange }) {
       {menu && (
         <>
           <div
-            onMouseDown={() => setMenu(null)}
+            onMouseDown={closeMenu}
             onContextMenu={(e) => {
               e.preventDefault();
-              setMenu(null);
+              closeMenu();
             }}
             style={{ position: "fixed", inset: 0, zIndex: 90 }}
           />
@@ -20188,11 +20239,11 @@ function BlockEditor({ blocks, onChange }) {
               position: "fixed",
               left: Math.min(
                 menu.x,
-                (typeof window !== "undefined" ? window.innerWidth : 1200) - 220,
+                (typeof window !== "undefined" ? window.innerWidth : 1200) - 230,
               ),
               top: Math.min(
                 menu.y,
-                (typeof window !== "undefined" ? window.innerHeight : 800) - 360,
+                (typeof window !== "undefined" ? window.innerHeight : 800) - 380,
               ),
               zIndex: 91,
               background: "#fff",
@@ -20200,10 +20251,56 @@ function BlockEditor({ blocks, onChange }) {
               borderRadius: 8,
               boxShadow: "0 12px 32px rgba(15,23,42,0.18)",
               padding: 6,
-              minWidth: 190,
+              minWidth: 200,
+              maxHeight: 360,
+              overflowY: "auto",
             }}
           >
-            {menu.colIndex != null ? (
+            {menu.kind === "insert" && (
+              <>
+                <MenuLabel>{menu.mode === "convert" ? "转为" : "插入块"}</MenuLabel>
+                {BLOCK_TYPES.map((t) => (
+                  <MenuItem key={t.kind} hint={t.hint} onClick={() => applyInsert(t.kind)}>
+                    {t.label}
+                  </MenuItem>
+                ))}
+              </>
+            )}
+            {menu.kind === "actions" && (
+              <>
+                <MenuLabel>转为</MenuLabel>
+                <MenuItem hint="Aa" onClick={() => turnInto(menu.blockIndex, "paragraph")}>
+                  正文
+                </MenuItem>
+                <MenuItem hint="H1" onClick={() => turnInto(menu.blockIndex, "h1")}>
+                  标题 1
+                </MenuItem>
+                <MenuItem hint="H2" onClick={() => turnInto(menu.blockIndex, "h2")}>
+                  标题 2
+                </MenuItem>
+                <MenuItem hint="H3" onClick={() => turnInto(menu.blockIndex, "h3")}>
+                  标题 3
+                </MenuItem>
+                <MenuItem hint="•" onClick={() => turnInto(menu.blockIndex, "bullet")}>
+                  无序列表
+                </MenuItem>
+                <MenuItem hint="1." onClick={() => turnInto(menu.blockIndex, "ordered")}>
+                  有序列表
+                </MenuItem>
+                <MenuItem hint="❝" onClick={() => turnInto(menu.blockIndex, "quote")}>
+                  引用
+                </MenuItem>
+                <div style={menuSep} />
+                <MenuItem onClick={() => moveBlock(menu.blockIndex, -1)}>上移</MenuItem>
+                <MenuItem onClick={() => moveBlock(menu.blockIndex, 1)}>下移</MenuItem>
+                <MenuItem onClick={() => duplicateAt(menu.blockIndex)}>复制</MenuItem>
+                <div style={menuSep} />
+                <MenuItem danger onClick={() => removeAt(menu.blockIndex)}>
+                  删除
+                </MenuItem>
+              </>
+            )}
+            {menu.kind === "column" && (
               <>
                 <MenuLabel>列操作</MenuLabel>
                 <MenuItem onClick={() => insertColumn(menu.blockIndex, menu.colIndex + 1)}>
@@ -20216,39 +20313,29 @@ function BlockEditor({ blocks, onChange }) {
                   删除本列
                 </MenuItem>
               </>
-            ) : (
+            )}
+            {menu.kind === "cell" && (
               <>
-                <MenuLabel>转为</MenuLabel>
-                <MenuItem onClick={() => turnInto(menu.blockIndex, "paragraph")}>
-                  正文
+                <MenuLabel>行操作</MenuLabel>
+                <MenuItem onClick={() => insertRow(menu.blockIndex, menu.rowIndex)}>
+                  在上方插入行
                 </MenuItem>
-                <MenuItem onClick={() => turnInto(menu.blockIndex, "h1")}>标题 1</MenuItem>
-                <MenuItem onClick={() => turnInto(menu.blockIndex, "h2")}>标题 2</MenuItem>
-                <MenuItem onClick={() => turnInto(menu.blockIndex, "h3")}>标题 3</MenuItem>
-                <MenuItem onClick={() => turnInto(menu.blockIndex, "bullet")}>
-                  无序列表
+                <MenuItem onClick={() => insertRow(menu.blockIndex, menu.rowIndex + 1)}>
+                  在下方插入行
                 </MenuItem>
-                <MenuItem onClick={() => turnInto(menu.blockIndex, "ordered")}>
-                  有序列表
+                <MenuItem danger onClick={() => deleteRow(menu.blockIndex, menu.rowIndex)}>
+                  删除本行
                 </MenuItem>
-                <MenuItem onClick={() => turnInto(menu.blockIndex, "quote")}>引用</MenuItem>
                 <div style={menuSep} />
-                <MenuItem
-                  onClick={() => insertAfter(menu.blockIndex, makeEmptyBlock("paragraph"))}
-                >
-                  在下方插入正文
+                <MenuLabel>列操作</MenuLabel>
+                <MenuItem onClick={() => insertColumn(menu.blockIndex, menu.colIndex + 1)}>
+                  在右侧插入列
                 </MenuItem>
-                <MenuItem
-                  onClick={() => insertAfter(menu.blockIndex, makeEmptyBlock("table"))}
-                >
-                  在下方插入表格
+                <MenuItem onClick={() => insertColumn(menu.blockIndex, menu.colIndex)}>
+                  在左侧插入列
                 </MenuItem>
-                <MenuItem onClick={() => moveBlock(menu.blockIndex, -1)}>上移</MenuItem>
-                <MenuItem onClick={() => moveBlock(menu.blockIndex, 1)}>下移</MenuItem>
-                <MenuItem onClick={() => duplicateAt(menu.blockIndex)}>复制</MenuItem>
-                <div style={menuSep} />
-                <MenuItem danger onClick={() => removeAt(menu.blockIndex)}>
-                  删除
+                <MenuItem danger onClick={() => deleteColumn(menu.blockIndex, menu.colIndex)}>
+                  删除本列
                 </MenuItem>
               </>
             )}
