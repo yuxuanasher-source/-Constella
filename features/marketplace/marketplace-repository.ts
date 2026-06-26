@@ -138,6 +138,24 @@ export class SupabaseMarketplaceRepository implements RepoPort {
     return data.map(toApplicationPublic);
   }
 
+  // 全平台公开投递（RLS 仅返回已投递及之后状态），供 AI 情报「接单画像 / 匹配」。
+  async listPublicApplications(limit = 500): Promise<ApplicationPublic[]> {
+    const { data, error } = await this.client
+      .from("marketplace_applications")
+      .select(APPLICATION_PUBLIC_COLUMNS)
+      .in("status", [
+        "submitted",
+        "under_review",
+        "need_more",
+        "approved",
+        "deal_confirmed",
+      ])
+      .order("created_at", { ascending: false })
+      .limit(Math.min(limit, 1000));
+    if (error || !data) return [];
+    return data.map(toApplicationPublic);
+  }
+
   async listMyApplications(
     organizationId: string,
   ): Promise<ApplicationPublic[]> {
