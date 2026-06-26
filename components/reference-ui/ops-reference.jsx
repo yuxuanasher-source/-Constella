@@ -1652,10 +1652,8 @@ const NAV = [
   { key: "tasks", label: "排班与任务", icon: "Tasks" },
   { key: "reports", label: "报数审核", icon: "Reports" },
   { key: "settle", label: "结算中心", icon: "Money" },
-  { key: "ai-drafts", label: "AI 草稿确认", icon: "Sparkles" },
-  { key: "billing", label: "商业化与套餐", icon: "Money" },
-  { key: "aiusage", label: "AI 用量与成本", icon: "Sparkles" },
-  { key: "funnel", label: "转化漏斗", icon: "Sparkles" },
+  // 以下入口按需隐藏（功能与路由保留，仅从侧边栏移除入口）：
+  // ai-drafts(AI 草稿确认) / billing(商业化与套餐) / aiusage(AI 用量与成本) / funnel(转化漏斗)。
   { divider: true },
   { key: "export", label: "数据导出", icon: "Export" },
   { key: "audit", label: "操作日志", icon: "Audit" },
