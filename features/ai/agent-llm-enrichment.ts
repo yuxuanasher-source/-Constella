@@ -77,7 +77,10 @@ export async function enrichAgentOutputWithLlm({
 }): Promise<AgentOutput> {
   const resolvedProviders = providers ?? createConfiguredAiProviders();
   const hasRealProvider = resolvedProviders.some(
-    (provider) => provider.name === "openai" || provider.name === "hunyuan",
+    (provider) =>
+      provider.name === "openai" ||
+      provider.name === "hunyuan" ||
+      provider.name === "deepseek",
   );
   if (!hasRealProvider || output.facts.length === 0) {
     return output;

@@ -22,6 +22,7 @@ const SCENE_LABELS = {
 const PROVIDER_LABELS = {
   hunyuan: "混元 Hunyuan",
   openai: "OpenAI",
+  deepseek: "DeepSeek",
   deterministic: "确定性回退",
   tencent_ocr: "腾讯 OCR",
   unknown: "未知",
