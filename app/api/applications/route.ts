@@ -6,9 +6,10 @@ import {
   jsonError,
   RouteError,
 } from "@/features/applications/application-route-utils";
+import { parseListPagination } from "@/lib/http/pagination";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const context = await getAdmissionRouteContext();
     if (!isMcnStaff(context.auth.role)) {
@@ -18,7 +19,10 @@ export async function GET() {
       );
     }
 
-    const applications = await listOpsApplicationQueue(context.supabase);
+    const applications = await listOpsApplicationQueue(
+      context.supabase,
+      parseListPagination(request.url),
+    );
     return NextResponse.json({ applications });
   } catch (error) {
     return jsonError(error);

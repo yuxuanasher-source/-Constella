@@ -13,18 +13,22 @@ import {
   generateSettlementBatch,
   type SettlementBatchType,
 } from "@/features/settlements/settlement-service";
+import { parseListPagination } from "@/lib/http/pagination";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
 const batchTypes = new Set(["receivable", "payable"]);
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const context = await getSettlementRouteContext();
     if (!isMcnStaff(context.auth.role)) {
       throw new RouteError("Only MCN staff can view settlement batches", 403);
     }
 
-    const batches = await listOpsSettlementBatches(context.supabase);
+    const batches = await listOpsSettlementBatches(
+      context.supabase,
+      parseListPagination(request.url),
+    );
     return NextResponse.json({ batches });
   } catch (error) {
     return jsonError(error);

@@ -8,6 +8,7 @@ import {
   RouteError,
 } from "@/features/settlements/settlement-route-utils";
 import { listSettlementPool } from "@/features/settlements/settlement-service";
+import { parseListPagination } from "@/lib/http/pagination";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
 export async function GET(request: Request) {
@@ -34,11 +35,11 @@ export async function GET(request: Request) {
       periodEnd,
     });
 
-    const reports = await listOpsSettlementPool(context.supabase, {
-      projectId,
-      periodStart,
-      periodEnd,
-    });
+    const reports = await listOpsSettlementPool(
+      context.supabase,
+      { projectId, periodStart, periodEnd },
+      parseListPagination(request.url),
+    );
     return NextResponse.json({ reports });
   } catch (error) {
     return jsonError(error);

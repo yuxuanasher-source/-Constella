@@ -11,10 +11,14 @@ import {
 } from "@/features/streamers/streamer-service";
 import { toStreamerCardDtos } from "@/features/streamers/streamer-ui-dto";
 import { writeAuditLog } from "@/lib/audit/audit";
+import { parseListPagination } from "@/lib/http/pagination";
 import { withAuth } from "@/lib/http/route-handler";
 
-export const GET = withAuth(async ({ supabase }) => {
-  const streamers = await listStreamerPool(supabase);
+export const GET = withAuth(async ({ supabase, request }) => {
+  const streamers = await listStreamerPool(
+    supabase,
+    parseListPagination(request.url),
+  );
   return NextResponse.json({ streamers: toStreamerCardDtos(streamers) });
 });
 

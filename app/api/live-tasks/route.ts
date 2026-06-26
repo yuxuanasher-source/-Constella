@@ -12,16 +12,20 @@ import {
   RouteError,
 } from "@/features/live-operations/live-operations-route-utils";
 import { createLiveTask } from "@/features/live-operations/live-operations-service";
+import { parseListPagination } from "@/lib/http/pagination";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const context = await getLiveOperationsRouteContext();
     if (!isMcnStaff(context.auth.role)) {
       throw new RouteError("Only MCN staff can view live tasks", 403);
     }
 
-    const tasks = await listOpsLiveTaskQueue(context.supabase);
+    const tasks = await listOpsLiveTaskQueue(
+      context.supabase,
+      parseListPagination(request.url),
+    );
     return NextResponse.json({ tasks });
   } catch (error) {
     return jsonError(error);

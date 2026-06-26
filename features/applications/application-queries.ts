@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { resolveListRange, type ListPagination } from "@/lib/http/pagination";
+
 import type {
   ApplicationStatus,
   RecordingReviewStatus,
@@ -102,15 +104,18 @@ const applicationSelect = `
 
 export async function listOpsApplicationQueue(
   supabase: SupabaseClient | null,
+  pagination?: ListPagination,
 ): Promise<OpsApplicationQueueItem[]> {
   if (!supabase) {
     return [];
   }
 
+  const { from, to } = resolveListRange(pagination);
   const { data, error } = await supabase
     .from("project_applications")
     .select(applicationSelect)
-    .order("submitted_at", { ascending: false });
+    .order("submitted_at", { ascending: false })
+    .range(from, to);
 
   if (error) {
     throw error;
@@ -132,15 +137,18 @@ export async function listOpsApplicationQueue(
 
 export async function listStreamerApplicationCards(
   supabase: SupabaseClient | null,
+  pagination?: ListPagination,
 ): Promise<StreamerApplicationCard[]> {
   if (!supabase) {
     return [];
   }
 
+  const { from, to } = resolveListRange(pagination);
   const { data, error } = await supabase
     .from("project_applications")
     .select(applicationSelect)
-    .order("submitted_at", { ascending: false });
+    .order("submitted_at", { ascending: false })
+    .range(from, to);
 
   if (error) {
     throw error;

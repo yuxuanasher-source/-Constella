@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { resolveListRange, type ListPagination } from "@/lib/http/pagination";
+
 export type ProjectListItem = {
   id: string;
   code: string;
@@ -14,17 +16,20 @@ export type ProjectListItem = {
 
 export async function listProjects(
   supabase: SupabaseClient | null,
+  pagination?: ListPagination,
 ): Promise<ProjectListItem[]> {
   if (!supabase) {
     return [];
   }
 
+  const { from, to } = resolveListRange(pagination);
   const { data, error } = await supabase
     .from("projects")
     .select(
       "id, code, name, status, sensitivity, force_system_timing, default_hourly_rate, published_at, created_at",
     )
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .range(from, to);
 
   if (error) {
     throw error;

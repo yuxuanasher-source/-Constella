@@ -7,10 +7,14 @@ import {
   createProjectDraft,
 } from "@/features/projects/project-service";
 import { toProjectCardDtos } from "@/features/projects/project-ui-dto";
+import { parseListPagination } from "@/lib/http/pagination";
 import { withAuth } from "@/lib/http/route-handler";
 
-export const GET = withAuth(async ({ supabase }) => {
-  const projects = await listProjects(supabase);
+export const GET = withAuth(async ({ supabase, request }) => {
+  const projects = await listProjects(
+    supabase,
+    parseListPagination(request.url),
+  );
   return NextResponse.json({ projects: toProjectCardDtos(projects) });
 });
 
