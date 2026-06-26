@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { DEFAULT_LIST_LIMIT } from "@/lib/http/pagination";
+
 type ProjectPersonRelation =
   | { full_name: string | null }
   | { full_name: string | null }[]
@@ -83,7 +85,9 @@ export async function listProjects(
     query = query.eq("organization_id", options.organizationId);
   }
 
-  const { data, error } = await query.order("created_at", { ascending: false });
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .range(0, DEFAULT_LIST_LIMIT - 1);
 
   if (error) {
     throw error;

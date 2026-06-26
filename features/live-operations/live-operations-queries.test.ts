@@ -116,6 +116,10 @@ describe("live operations queue queries", () => {
         calls.push(["order", args]);
         return this;
       },
+      range(...args: unknown[]) {
+        calls.push(["range", args]);
+        return this;
+      },
       returns() {
         calls.push(["returns", []]);
         return Promise.resolve({ data: [], error: null });
@@ -151,6 +155,10 @@ describe("live operations queue queries", () => {
       },
       order(...args: unknown[]) {
         calls.push(["order", args]);
+        return this;
+      },
+      range(...args: unknown[]) {
+        calls.push(["range", args]);
         return this;
       },
       returns() {

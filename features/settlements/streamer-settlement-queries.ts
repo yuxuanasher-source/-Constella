@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { DEFAULT_LIST_LIMIT } from "@/lib/http/pagination";
+
 export type StreamerPayableSafeRow = {
   id: string;
   project_name: string;
@@ -52,6 +54,7 @@ export async function listStreamerPayableItems(
     .eq("streamer_id", streamerId)
     .order("period_start", { ascending: false })
     .order("created_at", { ascending: false })
+    .range(0, DEFAULT_LIST_LIMIT - 1)
     .returns<StreamerPayableSafeRow[]>();
 
   if (error) {
