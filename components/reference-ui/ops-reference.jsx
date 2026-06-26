@@ -19996,7 +19996,9 @@ const SENSITIVE_FIELDS = [
 ];
 
 function ScreenOrg({ go, onOpenOrganizationSettings }) {
-  const [tab, setTab] = React.useState("overview");
+  // 仅保留「成员管理」页签；角色总览/权限矩阵/敏感字段脱敏/安全策略按需隐藏
+  // （对应渲染分支保留，仅从页签入口移除，故默认页签改为 members）。
+  const [tab, setTab] = React.useState("members");
   const [orgMessage, setOrgMessage] = React.useState("");
   const [memberDrawerOpen, setMemberDrawerOpen] = React.useState(false);
   const [editingMember, setEditingMember] = React.useState(null);
@@ -20279,15 +20281,9 @@ function ScreenOrg({ go, onOpenOrganizationSettings }) {
               value={tab}
               onChange={setTab}
               items={[
-                { key: "overview", label: "角色总览" },
+                // 仅展示「成员管理」；其余页签（角色总览/权限矩阵/敏感字段脱敏/
+                // 安全策略）按需隐藏，功能渲染分支保留。
                 { key: "members", label: "成员管理", count: members.length },
-                { key: "matrix", label: "权限矩阵" },
-                {
-                  key: "sensitive",
-                  label: "敏感字段脱敏",
-                  count: SENSITIVE_FIELDS.length,
-                },
-                { key: "security", label: "安全策略" },
               ]}
             />
           </div>
