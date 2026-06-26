@@ -4551,7 +4551,7 @@ function AICopilot() {
   );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div
         style={{
           display: "grid",
@@ -4560,9 +4560,12 @@ function AICopilot() {
         }}
       >
         <AiActionPanel
+          actionKey="brief"
           title="候选简报"
           hint="基于匹配快照生成可邀约候选解释"
-          buttonLabel={busyKey === "brief" ? "生成中" : "生成 AI Brief"}
+          buttonLabel="生成 AI Brief"
+          loading={busyKey === "brief"}
+          done={Boolean(results.brief)}
           disabled={Boolean(busyKey)}
           onClick={() =>
             runAiAction(
@@ -4580,9 +4583,12 @@ function AICopilot() {
           }
         />
         <AiActionPanel
+          actionKey="review"
           title="项目复盘"
           hint="读取经营复盘代理输出"
-          buttonLabel={busyKey === "review" ? "复盘中" : "AI 项目复盘"}
+          buttonLabel="AI 项目复盘"
+          loading={busyKey === "review"}
+          done={Boolean(results.review)}
           disabled={Boolean(busyKey)}
           onClick={() =>
             runAiAction(
@@ -4595,9 +4601,12 @@ function AICopilot() {
           }
         />
         <AiActionPanel
+          actionKey="copilot"
           title="Copilot 路由"
           hint="通过 M10 Copilot 统一调度脚本优化"
-          buttonLabel={busyKey === "copilot" ? "运行中" : "运行 Copilot"}
+          buttonLabel="运行 Copilot"
+          loading={busyKey === "copilot"}
+          done={Boolean(results.copilot)}
           disabled={Boolean(busyKey)}
           onClick={() =>
             runAiAction(
@@ -4613,9 +4622,12 @@ function AICopilot() {
           }
         />
         <AiActionPanel
+          actionKey="script"
           title="脚本草稿"
           hint="生成待人工复核的话术版本"
-          buttonLabel={busyKey === "script" ? "生成中" : "生成脚本草稿"}
+          buttonLabel="生成脚本草稿"
+          loading={busyKey === "script"}
+          done={Boolean(results.script)}
           disabled={Boolean(busyKey)}
           onClick={() =>
             runAiAction(
@@ -4632,97 +4644,220 @@ function AICopilot() {
       {message ? (
         <div
           aria-live="polite"
-          style={{ fontSize: 12, color: "var(--danger-600)" }}
+          style={{
+            fontSize: 12.5,
+            color: "#c0303a",
+            background: "#fdecec",
+            border: "1px solid #f3c4c9",
+            borderRadius: 10,
+            padding: "8px 12px",
+          }}
         >
           {message}
         </div>
       ) : null}
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-          gap: 12,
-        }}
-      >
-        {[
-          ["brief", "AI Brief"],
-          ["review", "AI 项目复盘"],
-          ["copilot", "Copilot 摘要"],
-          ["script", "脚本草稿"],
-        ].map(([key, title]) => (
+      {(() => {
+        const RESULT_TITLES = {
+          brief: "AI Brief",
+          review: "AI 项目复盘",
+          copilot: "Copilot 摘要",
+          script: "脚本草稿",
+        };
+        const done = Object.keys(RESULT_TITLES).filter((k) => results[k]);
+        if (done.length === 0) {
+          return (
+            <div
+              style={{
+                fontSize: 12.5,
+                color: AICP.muted,
+                background: AICP.soft,
+                border: `1px dashed ${AICP.line}`,
+                borderRadius: 12,
+                padding: "14px 16px",
+                lineHeight: 1.6,
+              }}
+            >
+              点击上方任一能力生成结果；所有 AI 产出均为草稿，需人工确认后采用。
+            </div>
+          );
+        }
+        return (
           <div
-            key={key}
             style={{
-              minHeight: 86,
-              padding: 14,
-              border: "1px solid var(--line)",
-              borderRadius: 8,
-              background: "#fff",
+              display: "grid",
+              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+              gap: 12,
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                fontSize: 13,
-                fontWeight: 700,
-                color: "var(--ink-900)",
-              }}
-            >
-              <Icon.Sparkles size={14} stroke="var(--violet-600)" />
-              {title}
-            </div>
-            <div
-              style={{
-                marginTop: 8,
-                fontSize: 12.5,
-                color: results[key] ? "var(--ink-700)" : "var(--ink-400)",
-                lineHeight: 1.6,
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {results[key] || "等待生成"}
-            </div>
+            {done.map((key) => (
+              <div
+                key={key}
+                style={{
+                  border: `1px solid ${AICP.line}`,
+                  borderRadius: 14,
+                  background: "#fff",
+                  boxShadow: "0 1px 2px rgba(20,22,40,.04)",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "10px 14px",
+                    borderBottom: `1px solid ${AICP.divider}`,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: AICP.ink,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 22,
+                      height: 22,
+                      borderRadius: 7,
+                      background: AICP.indigoSoft,
+                      color: AICP.indigo,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 12,
+                    }}
+                  >
+                    ✦
+                  </span>
+                  {RESULT_TITLES[key]}
+                </div>
+                <div
+                  style={{
+                    padding: "12px 14px",
+                    fontSize: 12.5,
+                    color: "var(--ink-700)",
+                    lineHeight: 1.7,
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {results[key]}
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        );
+      })()}
     </div>
   );
 }
 
-function AiActionPanel({ title, hint, buttonLabel, disabled, onClick }) {
+// AI Copilot 面板配色：与经营总览看板一致（柔和边框 + 靛蓝点缀）。
+const AICP = {
+  ink: "#0b1733",
+  muted: "#8a90a6",
+  line: "#ebedf2",
+  divider: "#f0f1f5",
+  soft: "#f7f8fb",
+  indigo: "#5566e6",
+  indigoSoft: "#eef0fd",
+};
+
+const AICP_ICONS = {
+  brief: "📝",
+  review: "📊",
+  copilot: "🤖",
+  script: "🎬",
+};
+
+function AiActionPanel({ actionKey, title, hint, buttonLabel, loading, disabled, done, onClick }) {
   return (
     <div
       style={{
-        padding: 14,
-        border: "1px solid var(--line)",
-        borderRadius: 8,
-        background: "var(--bg-soft)",
+        padding: 16,
+        border: `1px solid ${AICP.line}`,
+        borderRadius: 14,
+        background: "#fff",
+        boxShadow: "0 1px 2px rgba(20,22,40,.04)",
         display: "flex",
         flexDirection: "column",
         gap: 12,
+        minHeight: 132,
       }}
     >
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-900)" }}>
-          {title}
-        </div>
-        <div
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <span
           style={{
-            marginTop: 4,
-            fontSize: 12,
-            color: "var(--ink-500)",
-            lineHeight: 1.5,
+            width: 30,
+            height: 30,
+            flex: "none",
+            borderRadius: 9,
+            background: AICP.indigoSoft,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 15,
           }}
         >
-          {hint}
+          {AICP_ICONS[actionKey] || "✦"}
+        </span>
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 13.5,
+              fontWeight: 700,
+              color: AICP.ink,
+            }}
+          >
+            {title}
+            {done ? (
+              <span
+                style={{
+                  fontSize: 10.5,
+                  fontWeight: 600,
+                  color: "#0e8a4d",
+                  background: "#e7f5ee",
+                  borderRadius: 999,
+                  padding: "1px 6px",
+                }}
+              >
+                已生成
+              </span>
+            ) : null}
+          </div>
+          <div
+            style={{
+              marginTop: 4,
+              fontSize: 12,
+              color: AICP.muted,
+              lineHeight: 1.5,
+            }}
+          >
+            {hint}
+          </div>
         </div>
       </div>
-      <Button kind="primary" onClick={onClick} disabled={disabled}>
-        {buttonLabel}
-      </Button>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        style={{
+          marginTop: "auto",
+          height: 34,
+          borderRadius: 9,
+          border: "none",
+          cursor: disabled ? "not-allowed" : "pointer",
+          background: disabled && !loading ? "#c7ccef" : AICP.indigo,
+          color: "#fff",
+          fontSize: 13,
+          fontWeight: 600,
+          opacity: disabled && !loading ? 0.85 : 1,
+          transition: "background .15s",
+        }}
+      >
+        {loading ? "生成中…" : buttonLabel}
+      </button>
     </div>
   );
 }
