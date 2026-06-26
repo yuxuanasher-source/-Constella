@@ -1,35 +1,75 @@
+import { z } from "zod";
+
 import { writeAuditLog } from "@/lib/audit/audit";
 
-import {
-  createAiInvocationId,
-  recordAiInvocation,
-} from "./invocation-ledger";
+import { runAiGateway } from "./llm-gateway";
+import { createAiInvocationId, recordAiInvocation } from "./invocation-ledger";
 import { recordAiToolInvocation } from "./tool-ledger";
 import {
   scopeAllowsRole,
   type AiActor,
+  type AiProvider,
+  type AiProviderName,
   type AiTool,
   type AiToolScope,
+  type AiUsage,
 } from "./contracts";
 
 type AiClient = {
   from(
-    table: "audit_logs" | "ai_invocations" | "ai_tool_invocations" | "usage_events",
+    table:
+      | "audit_logs"
+      | "ai_invocations"
+      | "ai_tool_invocations"
+      | "usage_events",
   ): {
-    insert(payload: Record<string, unknown>): PromiseLike<{ error: Error | null }>;
+    insert(
+      payload: Record<string, unknown>,
+    ): PromiseLike<{ error: Error | null }>;
   };
 };
 
 export type AiToolResult = {
   toolName: string;
   invocationId: string;
-  mode: "deterministic";
+  mode: "deterministic" | "llm";
   answer: string;
   output: Record<string, unknown>;
 };
 
 type AiToolOutput = Omit<AiToolResult, "toolName" | "mode" | "invocationId">;
-type RegisteredAiTool = AiTool<Record<string, unknown>, AiToolOutput>;
+
+type AiToolLlmConfig = {
+  promptKey: string;
+  promptVersion: number;
+  systemPrompt: string;
+  responseSchema: unknown;
+  buildUserContent?(
+    safeInput: Record<string, unknown>,
+    baseline: Record<string, unknown>,
+  ): string;
+};
+
+type RegisteredAiTool = AiTool<Record<string, unknown>, AiToolOutput> & {
+  llm?: AiToolLlmConfig;
+};
+
+export type AiToolGateway = {
+  providers: AiProvider[];
+  primaryProvider?: AiProviderName;
+};
+
+type LlmOutcome = {
+  mode: "deterministic" | "llm";
+  answer: string;
+  output: Record<string, unknown>;
+  providerName: AiProviderName | "tencent_ocr";
+  promptKey?: string;
+  promptVersion?: number;
+  usage: AiUsage;
+  costCents: number;
+  degradedReason?: string;
+};
 
 const streamerForbiddenKeys = [
   "receivableCents",
@@ -45,7 +85,8 @@ const streamerForbiddenKeys = [
 const registeredTools: Record<string, RegisteredAiTool> = {
   project_review_summary: {
     name: "project_review_summary",
-    description: "Summarizes a project review report into a safe recommendation.",
+    description:
+      "Summarizes a project review report into a safe recommendation.",
     inputSchema: { type: "object", required: ["report"] },
     scopes: ["mcn_staff"],
     masking: { input: ["report"], output: [], streamerForbiddenKeys },
@@ -64,14 +105,17 @@ const registeredTools: Record<string, RegisteredAiTool> = {
           projectName,
           marginRateBps,
           shouldContinue,
-          recommendation: shouldContinue ? "continue_project" : "raise_quote_or_pause",
+          recommendation: shouldContinue
+            ? "continue_project"
+            : "raise_quote_or_pause",
         },
       };
     },
   },
   streamer_diagnosis: {
     name: "streamer_diagnosis",
-    description: "Creates a read-only streamer-safe diagnosis from visible task data.",
+    description:
+      "Creates a read-only streamer-safe diagnosis from visible task data.",
     inputSchema: { type: "object" },
     scopes: ["streamer", "mcn_staff"],
     masking: { input: [], output: [], streamerForbiddenKeys },
@@ -85,7 +129,8 @@ const registeredTools: Record<string, RegisteredAiTool> = {
         ? input.feedback.map(String)
         : [];
       const diagnosisType = feedback.some(
-        (item) => item.includes("互动") || item.toLowerCase().includes("interaction"),
+        (item) =>
+          item.includes("互动") || item.toLowerCase().includes("interaction"),
       )
         ? "traffic_drop"
         : "content_rhythm";
@@ -108,6 +153,21 @@ const registeredTools: Record<string, RegisteredAiTool> = {
         },
       };
     },
+    llm: {
+      promptKey: "streamer_diagnosis",
+      promptVersion: 1,
+      systemPrompt:
+        "你是经营舱的主播诊断助手。只能基于用户提供的已脱敏数据，产出对主播安全、可执行的开播复盘建议。" +
+        "严格输出 JSON，字段：diagnosisType（traffic_drop 或 content_rhythm）、answer（一句话中文结论）、" +
+        "followUpQuestions（字符串数组）、scriptSuggestions（字符串数组）。" +
+        "禁止输出任何厂家应收、毛利、成本等内部财务字段。",
+      responseSchema: z.object({
+        diagnosisType: z.string(),
+        answer: z.string(),
+        followUpQuestions: z.array(z.string()).min(1),
+        scriptSuggestions: z.array(z.string()).min(1),
+      }),
+    },
   },
 };
 
@@ -120,11 +180,13 @@ export async function runAiToolQuery({
   actor,
   toolName,
   input,
+  gateway,
 }: {
   client: AiClient;
   actor: AiActor;
   toolName: string;
   input: Record<string, unknown>;
+  gateway?: AiToolGateway;
 }): Promise<AiToolResult> {
   const tool = registeredTools[toolName];
   if (!tool) {
@@ -169,16 +231,24 @@ export async function runAiToolQuery({
   }
 
   try {
-    const output = await tool.handler(input, {
+    const baseline = await tool.handler(input, {
       actor,
       invocationId,
+    });
+    const llmOutcome = await maybeRunLlm({
+      tool,
+      gateway,
+      actor,
+      input,
+      baseline,
     });
     const latencyMs = Date.now() - startedAt;
     const result: AiToolResult = {
       toolName,
       invocationId,
-      mode: "deterministic",
-      ...output,
+      mode: llmOutcome.mode,
+      answer: llmOutcome.answer,
+      output: llmOutcome.output,
     };
 
     await recordAiInvocation({
@@ -189,11 +259,16 @@ export async function runAiToolQuery({
         scene: "ai_tool_query",
         objectType: "ai_tool",
         objectId: toolName,
-        providerName: "deterministic",
+        providerName: llmOutcome.providerName,
+        primaryProvider: gateway?.primaryProvider,
         status: "succeeded",
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        promptKey: llmOutcome.promptKey,
+        promptVersion: llmOutcome.promptVersion,
+        usage: llmOutcome.usage,
+        costCents: llmOutcome.costCents,
         latencyMs,
-        metadata: { toolName },
+        degradedReason: llmOutcome.degradedReason,
+        metadata: { toolName, mode: llmOutcome.mode },
       },
     });
     await recordAiToolInvocation({
@@ -268,6 +343,96 @@ export async function runAiToolQuery({
   }
 }
 
+async function maybeRunLlm({
+  tool,
+  gateway,
+  actor,
+  input,
+  baseline,
+}: {
+  tool: RegisteredAiTool;
+  gateway?: AiToolGateway;
+  actor: AiActor;
+  input: Record<string, unknown>;
+  baseline: AiToolOutput;
+}): Promise<LlmOutcome> {
+  const fallback: LlmOutcome = {
+    mode: "deterministic",
+    answer: baseline.answer,
+    output: baseline.output,
+    providerName: "deterministic",
+    usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    costCents: 0,
+  };
+
+  if (!gateway || !tool.llm) {
+    return fallback;
+  }
+
+  // 脱敏后才喂给 LLM：主播端绝不把厂家应收/毛利/成本带进 prompt。
+  const safeInput = summarizeForActor(input, actor, tool);
+  const userContent = tool.llm.buildUserContent
+    ? tool.llm.buildUserContent(safeInput, baseline.output)
+    : JSON.stringify({ input: safeInput, baseline: baseline.output });
+
+  const gatewayResult = await runAiGateway({
+    providers: gateway.providers,
+    primaryProvider: gateway.primaryProvider,
+    request: {
+      kind: "structured",
+      promptKey: tool.llm.promptKey,
+      promptVersion: tool.llm.promptVersion,
+      responseSchema: tool.llm.responseSchema,
+      messages: [
+        { role: "system", content: tool.llm.systemPrompt },
+        { role: "user", content: userContent },
+      ],
+    },
+  });
+
+  // 只有真实 LLM provider 成功才升级为 llm 模式；其余一律回退确定性兜底，接口不因 LLM 故障而失败。
+  if (
+    gatewayResult.status !== "succeeded" ||
+    !gatewayResult.providerName ||
+    gatewayResult.providerName === "deterministic" ||
+    !isRecord(gatewayResult.structuredOutput)
+  ) {
+    return {
+      ...fallback,
+      degradedReason:
+        gatewayResult.degradedReason ??
+        gatewayResult.errorSummary ??
+        "llm_unavailable",
+    };
+  }
+
+  const { answer: llmAnswer, ...rest } = gatewayResult.structuredOutput;
+  // LLM 输出再过一次脱敏，防止模型回吐敏感字段。
+  const mergedOutput = summarizeForActor(
+    { ...baseline.output, ...rest },
+    actor,
+    tool,
+  );
+
+  return {
+    mode: "llm",
+    answer:
+      typeof llmAnswer === "string" && llmAnswer.trim()
+        ? llmAnswer
+        : baseline.answer,
+    output: mergedOutput,
+    providerName: gatewayResult.providerName,
+    promptKey: tool.llm.promptKey,
+    promptVersion: tool.llm.promptVersion,
+    usage: gatewayResult.usage,
+    costCents: gatewayResult.costCents,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function canRunTool(scopes: AiToolScope[], actor: AiActor): boolean {
   return scopes.some((scope) => scopeAllowsRole(scope, actor.role));
 }
@@ -287,7 +452,10 @@ function summarizeForActor(
   ) as Record<string, unknown>;
 }
 
-function stripForbiddenFields(value: unknown, forbiddenKeys: string[]): unknown {
+function stripForbiddenFields(
+  value: unknown,
+  forbiddenKeys: string[],
+): unknown {
   const forbidden = new Set(forbiddenKeys);
 
   if (Array.isArray(value)) {

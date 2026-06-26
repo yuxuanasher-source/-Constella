@@ -181,6 +181,18 @@ DeepSeek 作为 `features/ai` LLM 网关的一个 `AiProvider`：
   - `readDeepSeekConfigFromEnv(process.env)` 读取上述变量。
 - 接入网关：把 Provider 加入 `runAiGateway({ providers, primaryProvider: "deepseek", request })` 的 `providers` 列表即可；多 Provider 时按 `primaryProvider` 优先、其余作为兜底。
 
+### 已接入：`/api/ai/diagnosis`
+
+`streamer_diagnosis` 工具已打通 LLM 链路：
+
+- `ai-tool-layer.ts` 的 `runAiToolQuery` 新增可选 `gateway` 参数。工具声明了 `llm` 配置（`promptKey` / `systemPrompt` / `responseSchema`）后，会先跑确定性 `handler` 作为兜底与脱敏基线，再尝试 DeepSeek：
+  - LLM 成功 → `mode: "llm"`，输出由 DeepSeek 生成，台账记录真实 `providerName` / `usage` / `costCents` / `promptKey`；
+  - LLM 未配置 / 失败 / JSON 不合规 → 回退确定性输出，`mode: "deterministic"`，台账带 `degradedReason`，**接口不会因 LLM 故障而 500**。
+- `app/api/ai/diagnosis/route.ts` 仅在 `DEEPSEEK_API_KEY` 存在时组装网关；未配置时 `gateway` 为 `undefined`，纯确定性，本地/测试零影响。
+- 脱敏双保险：发往 DeepSeek 的 `messages` 先经 `summarizeForActor` 脱敏；LLM 返回后再脱敏一次，防止模型回吐敏感字段。
+
+要扩展到其它工具（如 `project_review_summary`）：给该工具加 `llm` 配置，并在对应 route 传入 `gateway` 即可。
+
 ### 安全约定（与仓库既有约束一致）
 
 - Provider 为只读推理，不直接落库；审计 / 调用台账走 `features/ai/invocation-ledger.ts`。
