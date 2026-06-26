@@ -3000,16 +3000,25 @@ function ScreenWarRoom({ go }) {
   const pendingActionCount = pendingReportCount + anomalyCount;
 
   if (dashboardHome) {
+    // 看板为主视图；下方挂回 AI Copilot 面板（候选简报/项目复盘/Copilot/脚本草稿），
+    // 否则这些大模型入口会被本提前 return 跳过而无法触达。
     return (
-      <OverviewBoard
-        dashboard={dashboardHome}
-        go={go}
-        projects={projects}
-        tasks={tasks}
-        reports={reports}
-        batches={batches}
-        currentUser={warRoomCurrentUser}
-      />
+      <>
+        <OverviewBoard
+          dashboard={dashboardHome}
+          go={go}
+          projects={projects}
+          tasks={tasks}
+          reports={reports}
+          batches={batches}
+          currentUser={warRoomCurrentUser}
+        />
+        <div style={{ padding: "0 20px 24px" }}>
+          <Card title="AI Copilot" extra="大模型能力（需人工确认）">
+            <AICopilot />
+          </Card>
+        </div>
+      </>
     );
   }
 
