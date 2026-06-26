@@ -20,6 +20,7 @@ export class MarketplaceHttpError extends Error {
 
 export type MarketplaceContext = {
   auth: AuthContext;
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
   repo: SupabaseMarketplaceRepository;
   audit: AuditFn;
   actor: MarketplaceActor;
@@ -52,7 +53,7 @@ export async function getMarketplaceContext(): Promise<MarketplaceContext> {
       changedFields: input.changedFields,
     });
 
-  return { auth, repo, audit, actor };
+  return { auth, supabase, repo, audit, actor };
 }
 
 export function marketplaceError(error: unknown): NextResponse {

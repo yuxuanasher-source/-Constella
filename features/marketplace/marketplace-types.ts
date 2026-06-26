@@ -47,6 +47,8 @@ export type DealRecord = {
   status: "pending_collaboration" | "collaboration_active" | "cancelled";
   collaborationApplicationId: string | null;
   collaborationAgreementId: string | null;
+  collaborationShareId: string | null;
+  collaborationShareToken: string | null;
   createdAt: string;
 };
 
