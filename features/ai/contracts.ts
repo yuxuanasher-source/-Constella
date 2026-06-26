@@ -50,7 +50,11 @@ export type AiMessage = {
 
 export type AiCapability = "text" | "structured" | "tools" | "shadow";
 
-export type AiProviderName = "openai" | "hunyuan" | "deterministic";
+export type AiProviderName =
+  | "openai"
+  | "hunyuan"
+  | "deepseek"
+  | "deterministic";
 
 export type AiUsage = {
   promptTokens: number;
