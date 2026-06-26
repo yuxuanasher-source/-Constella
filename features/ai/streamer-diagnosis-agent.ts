@@ -190,7 +190,10 @@ async function enrichDiagnosisWithLlm({
   recordInvocation: typeof recordAiInvocation;
 }): Promise<AgentOutput | null> {
   const hasRealProvider = providers.some(
-    (provider) => provider.name === "openai" || provider.name === "hunyuan",
+    (provider) =>
+      provider.name === "openai" ||
+      provider.name === "hunyuan" ||
+      provider.name === "deepseek",
   );
   if (!hasRealProvider) {
     return null;

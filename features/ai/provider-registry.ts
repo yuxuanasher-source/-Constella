@@ -1,4 +1,5 @@
 import type { AiProvider, AiProviderName } from "./contracts";
+import { createDeepseekProvider } from "./providers/deepseek-provider";
 import { createDeterministicProvider } from "./providers/deterministic-provider";
 import { createHunyuanProvider } from "./providers/hunyuan-provider";
 import { createOpenAiProvider } from "./providers/openai-provider";
@@ -31,6 +32,17 @@ export function createConfiguredAiProviders({
     );
   }
 
+  // DeepSeek（OpenAI 兼容）：base/model 有默认值，只需 DEEPSEEK_API_KEY。
+  if (env.DEEPSEEK_API_KEY?.trim()) {
+    providers.push(
+      createDeepseekProvider({
+        apiKey: env.DEEPSEEK_API_KEY,
+        baseUrl: env.DEEPSEEK_BASE_URL,
+        model: env.DEEPSEEK_MODEL,
+      }),
+    );
+  }
+
   providers.push(createDeterministicProvider());
 
   return providers;
@@ -52,7 +64,12 @@ export function resolveAiProviderRouting(env: AiProviderEnv = process.env): {
 function parseProviderName(
   value: string | undefined,
 ): AiProviderName | undefined {
-  if (value === "openai" || value === "hunyuan" || value === "deterministic") {
+  if (
+    value === "openai" ||
+    value === "hunyuan" ||
+    value === "deepseek" ||
+    value === "deterministic"
+  ) {
     return value;
   }
   return undefined;
