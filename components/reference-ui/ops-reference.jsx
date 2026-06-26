@@ -1656,6 +1656,7 @@ const NAV = [
   { key: "marketplace", label: "供需撮合论坛", icon: "Sparkles" },
   { key: "tasks", label: "排班与任务", icon: "Tasks" },
   { key: "reports", label: "报数审核", icon: "Reports" },
+  { key: "knowledge", label: "知识库", icon: "Audit" },
   { key: "settle", label: "结算中心", icon: "Money" },
   // 以下入口按需隐藏（功能与路由保留，仅从侧边栏移除入口）：
   // ai-drafts(AI 草稿确认) / billing(商业化与套餐) / aiusage(AI 用量与成本) / funnel(转化漏斗)。
@@ -20346,6 +20347,771 @@ function BlockEditor({ blocks, onChange }) {
   );
 }
 
+// ——— 知识库（Notion 式层级文档库）———————————————————————————
+// 直属库 → 复盘 → 项目 → 主播 → 复盘文件（日期+主播+产品复盘）；任务复盘自动归档，
+// 同时支持自定义文件夹/页面、重命名、移动、删除，层级任意嵌套。
+
+const KB_LS_KEY = "jingying.knowledgeBase.v1";
+const KB_ROOT_ID = "kb-root";
+const KB_REVIEW_FOLDER_ID = "kb-folder-review";
+
+function kbGenId() {
+  return `kb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function kbDefaultStore() {
+  return {
+    version: 1,
+    nodes: {
+      [KB_ROOT_ID]: {
+        id: KB_ROOT_ID,
+        type: "folder",
+        name: "直属库",
+        parentId: null,
+        createdAt: 0,
+        order: 0,
+        system: true,
+      },
+      [KB_REVIEW_FOLDER_ID]: {
+        id: KB_REVIEW_FOLDER_ID,
+        type: "folder",
+        name: "复盘",
+        parentId: KB_ROOT_ID,
+        createdAt: 0,
+        order: 0,
+        system: true,
+      },
+    },
+  };
+}
+
+function loadKnowledgeStore() {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return kbDefaultStore();
+  }
+  try {
+    const raw = window.localStorage.getItem(KB_LS_KEY);
+    if (!raw) return kbDefaultStore();
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.nodes || !parsed.nodes[KB_ROOT_ID]) {
+      return kbDefaultStore();
+    }
+    if (!parsed.nodes[KB_REVIEW_FOLDER_ID]) {
+      parsed.nodes[KB_REVIEW_FOLDER_ID] = {
+        id: KB_REVIEW_FOLDER_ID,
+        type: "folder",
+        name: "复盘",
+        parentId: KB_ROOT_ID,
+        createdAt: 0,
+        order: 0,
+        system: true,
+      };
+    }
+    return parsed;
+  } catch {
+    return kbDefaultStore();
+  }
+}
+
+function saveKnowledgeStore(store) {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(KB_LS_KEY, JSON.stringify(store));
+  } catch {
+    /* ignore quota errors */
+  }
+}
+
+function kbChildren(store, parentId) {
+  return Object.values(store.nodes)
+    .filter((n) => n.parentId === parentId)
+    .sort(
+      (a, b) =>
+        (a.order ?? 0) - (b.order ?? 0) ||
+        (a.createdAt ?? 0) - (b.createdAt ?? 0) ||
+        String(a.name).localeCompare(String(b.name)),
+    );
+}
+
+function kbNextOrder(store, parentId) {
+  const kids = kbChildren(store, parentId);
+  return kids.length ? (kids[kids.length - 1].order ?? 0) + 1 : 0;
+}
+
+function kbAddNode(store, { type, name, parentId, contentMd, meta }) {
+  const id = kbGenId();
+  const node = {
+    id,
+    type,
+    name,
+    parentId,
+    createdAt: Date.now(),
+    order: kbNextOrder(store, parentId),
+  };
+  if (type === "doc") node.contentMd = contentMd ?? "";
+  if (meta) node.meta = meta;
+  return { store: { ...store, nodes: { ...store.nodes, [id]: node } }, id };
+}
+
+function kbDescendants(store, id) {
+  const out = [];
+  const stack = [id];
+  while (stack.length) {
+    const cur = stack.pop();
+    for (const n of Object.values(store.nodes)) {
+      if (n.parentId === cur) {
+        out.push(n.id);
+        stack.push(n.id);
+      }
+    }
+  }
+  return out;
+}
+
+function kbDeleteNode(store, id) {
+  if (store.nodes[id]?.system) return store;
+  const ids = new Set([id, ...kbDescendants(store, id)]);
+  const nodes = {};
+  for (const [k, v] of Object.entries(store.nodes)) {
+    if (!ids.has(k)) nodes[k] = v;
+  }
+  return { ...store, nodes };
+}
+
+function kbRenameNode(store, id, name) {
+  const n = store.nodes[id];
+  if (!n) return store;
+  return { ...store, nodes: { ...store.nodes, [id]: { ...n, name } } };
+}
+
+function kbSetContent(store, id, contentMd) {
+  const n = store.nodes[id];
+  if (!n) return store;
+  return {
+    ...store,
+    nodes: {
+      ...store.nodes,
+      [id]: { ...n, contentMd, updatedAt: Date.now() },
+    },
+  };
+}
+
+function kbMoveNode(store, id, newParentId) {
+  const n = store.nodes[id];
+  if (!n || n.system) return store;
+  if (id === newParentId) return store;
+  if (kbDescendants(store, id).includes(newParentId)) return store;
+  return {
+    ...store,
+    nodes: {
+      ...store.nodes,
+      [id]: { ...n, parentId: newParentId, order: kbNextOrder(store, newParentId) },
+    },
+  };
+}
+
+function kbFindChildByName(store, parentId, name, type) {
+  return kbChildren(store, parentId).find(
+    (n) => n.name === name && (!type || n.type === type),
+  );
+}
+
+function kbPath(store, id) {
+  const path = [];
+  let cur = store.nodes[id];
+  while (cur) {
+    path.unshift(cur);
+    cur = cur.parentId ? store.nodes[cur.parentId] : null;
+  }
+  return path;
+}
+
+// 任务复盘自动归档：直属库 / 复盘 / {项目} / {主播} / {日期 主播 产品复盘}
+function archiveReviewToKnowledgeBase({
+  date,
+  streamer,
+  product,
+  contentMd,
+  projectId,
+  streamerId,
+}) {
+  let store = loadKnowledgeStore();
+  const projName = product || projectId || "未命名项目";
+  const strName = streamer || streamerId || "未知主播";
+
+  let proj = kbFindChildByName(store, KB_REVIEW_FOLDER_ID, projName, "folder");
+  if (!proj) {
+    const r = kbAddNode(store, {
+      type: "folder",
+      name: projName,
+      parentId: KB_REVIEW_FOLDER_ID,
+    });
+    store = r.store;
+    proj = store.nodes[r.id];
+  }
+
+  let str = kbFindChildByName(store, proj.id, strName, "folder");
+  if (!str) {
+    const r = kbAddNode(store, {
+      type: "folder",
+      name: strName,
+      parentId: proj.id,
+    });
+    store = r.store;
+    str = store.nodes[r.id];
+  }
+
+  const docName = `${date || ""} ${strName} ${product || ""}复盘`
+    .replace(/\s+/g, " ")
+    .trim();
+  const meta = { date, streamer: strName, product, projectId, streamerId };
+  const existing = kbFindChildByName(store, str.id, docName, "doc");
+  if (existing) {
+    store = {
+      ...store,
+      nodes: {
+        ...store.nodes,
+        [existing.id]: {
+          ...existing,
+          contentMd,
+          meta,
+          updatedAt: Date.now(),
+        },
+      },
+    };
+  } else {
+    const r = kbAddNode(store, {
+      type: "doc",
+      name: docName,
+      parentId: str.id,
+      contentMd,
+      meta,
+    });
+    store = r.store;
+  }
+  saveKnowledgeStore(store);
+}
+
+function KnowledgeDocEditor({ doc, onChange }) {
+  const [blocks, setBlocks] = React.useState(() => {
+    const parsed = parseMarkdownToBlocks(doc.contentMd || "");
+    return parsed.length ? parsed : [{ type: "paragraph", text: "" }];
+  });
+  const handle = (next) => {
+    setBlocks(next);
+    onChange(serializeBlocksToMarkdown(next));
+  };
+  return <BlockEditor blocks={blocks} onChange={handle} />;
+}
+
+function ScreenKnowledge() {
+  const [store, setStore] = React.useState(loadKnowledgeStore);
+  const [selectedId, setSelectedId] = React.useState(KB_REVIEW_FOLDER_ID);
+  const [expanded, setExpanded] = React.useState(
+    () => new Set([KB_ROOT_ID, KB_REVIEW_FOLDER_ID]),
+  );
+  const [renamingId, setRenamingId] = React.useState(null);
+  const [menu, setMenu] = React.useState(null);
+  const [moveId, setMoveId] = React.useState(null);
+
+  React.useEffect(() => {
+    saveKnowledgeStore(store);
+  }, [store]);
+
+  const selected = store.nodes[selectedId] || store.nodes[KB_ROOT_ID];
+
+  const toggle = (id) =>
+    setExpanded((e) => {
+      const n = new Set(e);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+
+  const addChild = (parentId, type) => {
+    const name = type === "folder" ? "新建文件夹" : "新建页面";
+    let newId = null;
+    setStore((s) => {
+      const r = kbAddNode(s, { type, name, parentId });
+      newId = r.id;
+      return r.store;
+    });
+    setExpanded((e) => new Set(e).add(parentId));
+    setTimeout(() => {
+      if (newId) {
+        setSelectedId(newId);
+        setRenamingId(newId);
+      }
+    }, 0);
+  };
+
+  const selectNode = (node) => {
+    setSelectedId(node.id);
+    if (node.type === "folder") setExpanded((e) => new Set(e).add(node.id));
+  };
+
+  const folderOptions = Object.values(store.nodes).filter(
+    (n) => n.type === "folder",
+  );
+
+  const renderRow = (node, depth) => {
+    const isFolder = node.type === "folder";
+    const open = expanded.has(node.id);
+    const kids = isFolder ? kbChildren(store, node.id) : [];
+    return (
+      <div key={node.id}>
+        <div
+          className="kb-row"
+          onClick={() => selectNode(node)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setMenu({ id: node.id, x: e.clientX, y: e.clientY });
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            padding: "4px 6px",
+            paddingLeft: 6 + depth * 14,
+            borderRadius: 6,
+            cursor: "pointer",
+            fontSize: 13,
+            color: "var(--ink-800, #1f2733)",
+            background: selectedId === node.id ? "var(--blue-50)" : "transparent",
+          }}
+        >
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              if (isFolder) toggle(node.id);
+            }}
+            style={{
+              width: 14,
+              flexShrink: 0,
+              color: "var(--ink-400)",
+              fontSize: 10,
+              textAlign: "center",
+              visibility: isFolder && kids.length ? "visible" : "hidden",
+            }}
+          >
+            {open ? "▾" : "▸"}
+          </span>
+          <span style={{ flexShrink: 0 }}>{isFolder ? "📁" : "📄"}</span>
+          {renamingId === node.id ? (
+            <input
+              autoFocus
+              defaultValue={node.name}
+              onClick={(e) => e.stopPropagation()}
+              onBlur={(e) => {
+                setStore((s) => kbRenameNode(s, node.id, e.target.value.trim() || node.name));
+                setRenamingId(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+                if (e.key === "Escape") setRenamingId(null);
+              }}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                border: "1px solid var(--blue-600)",
+                borderRadius: 4,
+                padding: "1px 4px",
+                fontSize: 13,
+                outline: "none",
+              }}
+            />
+          ) : (
+            <span
+              style={{
+                flex: 1,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {node.name}
+            </span>
+          )}
+          <span className="kb-actions" style={{ display: "flex", gap: 2, flexShrink: 0 }}>
+            {isFolder && (
+              <button
+                type="button"
+                title="新建页面"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  addChild(node.id, "doc");
+                }}
+                style={kbIconBtn}
+              >
+                +
+              </button>
+            )}
+            <button
+              type="button"
+              title="更多"
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenu({ id: node.id, x: e.clientX, y: e.clientY });
+              }}
+              style={kbIconBtn}
+            >
+              ⋯
+            </button>
+          </span>
+        </div>
+        {isFolder && open && kids.map((k) => renderRow(k, depth + 1))}
+      </div>
+    );
+  };
+
+  const menuNode = menu ? store.nodes[menu.id] : null;
+
+  return (
+    <>
+      <PageHeader
+        title="知识库"
+        subtitle="任务复盘自动归档（直属库 / 复盘 / 项目 / 主播），支持自定义层级，像 Notion 一样组织文档"
+      />
+      <style>{`
+        .kb-row .kb-actions { opacity: 0; transition: opacity .12s ease; }
+        .kb-row:hover .kb-actions { opacity: 1; }
+        .kb-row:hover { background: var(--bg-soft); }
+      `}</style>
+      <div
+        style={{
+          display: "flex",
+          height: "calc(100vh - 168px)",
+          background: "#fff",
+        }}
+      >
+        {/* Tree */}
+        <div
+          style={{
+            width: 290,
+            flexShrink: 0,
+            borderRight: "1px solid var(--line)",
+            overflowY: "auto",
+            padding: 10,
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
+          <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
+            <Button size="sm" kind="default" onClick={() => addChild(KB_ROOT_ID, "doc")}>
+              + 页面
+            </Button>
+            <Button
+              size="sm"
+              kind="default"
+              onClick={() => addChild(KB_ROOT_ID, "folder")}
+            >
+              + 文件夹
+            </Button>
+          </div>
+          {renderRow(store.nodes[KB_ROOT_ID], 0)}
+        </div>
+
+        {/* Content */}
+        <div style={{ flex: 1, minWidth: 0, overflowY: "auto", padding: "18px 24px" }}>
+          {selected ? (
+            <>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--ink-400)",
+                  marginBottom: 8,
+                  display: "flex",
+                  gap: 4,
+                  flexWrap: "wrap",
+                }}
+              >
+                {kbPath(store, selected.id).map((p, i, arr) => (
+                  <span key={p.id}>
+                    {p.name}
+                    {i < arr.length - 1 ? " / " : ""}
+                  </span>
+                ))}
+              </div>
+              <input
+                value={selected.name}
+                onChange={(e) =>
+                  setStore((s) => kbRenameNode(s, selected.id, e.target.value))
+                }
+                style={{
+                  width: "100%",
+                  border: "none",
+                  outline: "none",
+                  fontSize: 24,
+                  fontWeight: 700,
+                  color: "var(--ink-900)",
+                  marginBottom: 14,
+                  background: "transparent",
+                }}
+              />
+              {selected.type === "doc" ? (
+                <KnowledgeDocEditor
+                  key={selected.id}
+                  doc={selected}
+                  onChange={(md) => setStore((s) => kbSetContent(s, selected.id, md))}
+                />
+              ) : (
+                <KnowledgeFolderView
+                  store={store}
+                  folder={selected}
+                  onOpen={(n) => selectNode(n)}
+                  onAdd={(type) => addChild(selected.id, type)}
+                />
+              )}
+            </>
+          ) : (
+            <EmptyHint title="选择左侧文档" hint="或新建页面 / 文件夹组织你的知识库。" />
+          )}
+        </div>
+      </div>
+
+      {/* Node context menu */}
+      {menu && menuNode && (
+        <>
+          <div
+            onMouseDown={() => setMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMenu(null);
+            }}
+            style={{ position: "fixed", inset: 0, zIndex: 90 }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              left: Math.min(menu.x, (typeof window !== "undefined" ? window.innerWidth : 1200) - 200),
+              top: Math.min(menu.y, (typeof window !== "undefined" ? window.innerHeight : 800) - 240),
+              zIndex: 91,
+              background: "#fff",
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              boxShadow: "0 12px 32px rgba(15,23,42,0.18)",
+              padding: 6,
+              minWidth: 168,
+            }}
+          >
+            {menuNode.type === "folder" && (
+              <>
+                <KbMenuItem
+                  onClick={() => addChild(menuNode.id, "doc")}
+                  close={() => setMenu(null)}
+                >
+                  新建页面
+                </KbMenuItem>
+                <KbMenuItem
+                  onClick={() => addChild(menuNode.id, "folder")}
+                  close={() => setMenu(null)}
+                >
+                  新建文件夹
+                </KbMenuItem>
+              </>
+            )}
+            <KbMenuItem
+              onClick={() => setRenamingId(menuNode.id)}
+              close={() => setMenu(null)}
+            >
+              重命名
+            </KbMenuItem>
+            {!menuNode.system && (
+              <KbMenuItem onClick={() => setMoveId(menuNode.id)} close={() => setMenu(null)}>
+                移动到…
+              </KbMenuItem>
+            )}
+            {!menuNode.system && (
+              <KbMenuItem
+                danger
+                onClick={() => {
+                  setStore((s) => kbDeleteNode(s, menuNode.id));
+                  if (selectedId === menuNode.id) setSelectedId(KB_REVIEW_FOLDER_ID);
+                }}
+                close={() => setMenu(null)}
+              >
+                删除
+              </KbMenuItem>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Move picker */}
+      {moveId && (
+        <div
+          onMouseDown={() => setMoveId(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15,23,42,0.4)",
+            zIndex: 95,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              width: 360,
+              maxHeight: "70vh",
+              overflowY: "auto",
+              background: "#fff",
+              borderRadius: 10,
+              padding: 14,
+              boxShadow: "0 20px 50px rgba(15,23,42,0.25)",
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 10 }}>移动到…</div>
+            {folderOptions
+              .filter(
+                (f) =>
+                  f.id !== moveId &&
+                  !kbDescendants(store, moveId).includes(f.id) &&
+                  store.nodes[moveId]?.parentId !== f.id,
+              )
+              .map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => {
+                    setStore((s) => kbMoveNode(s, moveId, f.id));
+                    setMoveId(null);
+                  }}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    textAlign: "left",
+                    border: "none",
+                    background: "transparent",
+                    padding: "8px 10px",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 13,
+                    color: "var(--ink-700)",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-soft)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  {kbPath(store, f.id).map((p) => p.name).join(" / ")}
+                </button>
+              ))}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+const kbIconBtn = {
+  border: "none",
+  background: "transparent",
+  color: "var(--ink-400)",
+  cursor: "pointer",
+  fontSize: 13,
+  width: 20,
+  height: 20,
+  borderRadius: 4,
+  padding: 0,
+  lineHeight: 1,
+};
+
+function KbMenuItem({ children, onClick, close, danger }) {
+  return (
+    <button
+      type="button"
+      onMouseDown={(e) => {
+        e.preventDefault();
+        onClick();
+        close?.();
+      }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-soft)")}
+      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+      style={{
+        display: "block",
+        width: "100%",
+        textAlign: "left",
+        border: "none",
+        background: "transparent",
+        padding: "7px 8px",
+        borderRadius: 6,
+        cursor: "pointer",
+        fontSize: 13,
+        color: danger ? "var(--danger-600)" : "var(--ink-700)",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function KnowledgeFolderView({ store, folder, onOpen, onAdd }) {
+  const kids = kbChildren(store, folder.id);
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <Button size="sm" kind="default" onClick={() => onAdd("doc")}>
+          + 新建页面
+        </Button>
+        <Button size="sm" kind="default" onClick={() => onAdd("folder")}>
+          + 新建文件夹
+        </Button>
+      </div>
+      {kids.length === 0 ? (
+        <EmptyHint title="空文件夹" hint="新建页面或文件夹，或在任务详情完成复盘后自动归档到这里。" />
+      ) : (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+            gap: 10,
+          }}
+        >
+          {kids.map((k) => (
+            <button
+              key={k.id}
+              type="button"
+              onClick={() => onOpen(k)}
+              style={{
+                textAlign: "left",
+                border: "1px solid var(--line)",
+                borderRadius: 8,
+                padding: 12,
+                background: "#fff",
+                cursor: "pointer",
+              }}
+            >
+              <div style={{ fontSize: 18, marginBottom: 6 }}>
+                {k.type === "folder" ? "📁" : "📄"}
+              </div>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {k.name}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 4 }}>
+                {k.type === "folder"
+                  ? `${kbChildren(store, k.id).length} 项`
+                  : "复盘文档"}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LiveReviewDrawer({
   task,
   project,
@@ -20462,6 +21228,16 @@ function LiveReviewDrawer({
     if (UUID_RE.test(task.streamerId || "")) body.streamerId = task.streamerId;
     if (UUID_RE.test(task.id || "")) body.liveTaskId = task.id;
 
+    // 自动归档到「知识库 → 直属库 / 复盘 / 项目 / 主播 / 复盘文件」。
+    archiveReviewToKnowledgeBase({
+      date: reviewContext.reviewDate,
+      streamer: streamerName,
+      product: reviewContext.product || projectName,
+      contentMd: content,
+      projectId: task.projectId,
+      streamerId: task.streamerId,
+    });
+
     try {
       const response = await globalThis.fetch("/api/live-review/documents", {
         method: "POST",
@@ -20469,7 +21245,9 @@ function LiveReviewDrawer({
         body: JSON.stringify(body),
       });
       if (!response.ok) throw new Error("server");
-      setMessage("已保存到组织知识库，AI 将在后续复盘中学习并复用本场经验。");
+      setMessage(
+        "已保存并归档到知识库（复盘 / 项目 / 主播），AI 将在后续复盘中学习复用。",
+      );
     } catch {
       // Persist locally so the prototype knowledge base + AI assist keep working.
       writeLocalReviewDoc({
@@ -20480,7 +21258,7 @@ function LiveReviewDrawer({
         platform: reviewContext.platform || null,
       });
       setMessage(
-        "已保存到本地知识库（离线/未登录），AI 复盘助手将基于本地知识库学习。",
+        "已归档到知识库（离线/未登录），AI 复盘助手将基于本地知识库学习。",
       );
     } finally {
       setSaveBusy(false);
@@ -26637,6 +27415,8 @@ function OpsReferenceInner({
         return ["执行", "排班与任务"];
       case "reports":
         return ["执行", "报数审核"];
+      case "knowledge":
+        return ["知识", "知识库"];
       case "settle":
         return ["财务", "结算中心"];
       case "billing":
@@ -26744,6 +27524,7 @@ function OpsReferenceInner({
             {route === "admission" && <ScreenAdmission go={go} />}
             {route === "tasks" && <ScreenTasks go={go} />}
             {route === "reports" && <ScreenReports go={go} />}
+            {route === "knowledge" && <ScreenKnowledge />}
             {route === "settle" && <ScreenSettlement go={go} />}
             {route === "marketplace" && <ScreenMarketplace />}
             {route === "ai-drafts" && <ScreenAiDrafts />}
