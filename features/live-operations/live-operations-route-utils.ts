@@ -1,16 +1,25 @@
-import { NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getAuthContext, type AuthContext } from "@/lib/auth/context";
 import { writeAuditLog } from "@/lib/audit/audit";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-import { statusForServiceError } from "@/lib/http/route-error-status";
+import { RouteError } from "@/lib/http/route-input";
 import { sendNotification } from "@/lib/notify/notify";
 
 import {
   getStreamerIdForUser,
   SupabaseLiveOperationsRepository,
 } from "./live-operations-repository";
+
+export {
+  RouteError,
+  jsonError,
+  readJsonBody,
+  optionalString,
+  requiredString,
+  optionalNumber,
+  optionalBoolean,
+} from "@/lib/http/route-input";
 
 export type LiveOperationsRouteContext = {
   supabase: SupabaseClient;
@@ -50,77 +59,4 @@ export async function actorFromContext(
       ? await getStreamerIdForUser(context.supabase, context.auth.userId)
       : null,
   };
-}
-
-export async function readJsonBody(request: Request) {
-  try {
-    return (await request.json()) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}
-
-export function optionalString(
-  body: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  const value = body[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-export function requiredString(
-  body: Record<string, unknown>,
-  key: string,
-): string {
-  const value = optionalString(body, key);
-  if (!value) {
-    throw new RouteError(`${key} is required`, 400);
-  }
-
-  return value;
-}
-
-export function optionalNumber(
-  body: Record<string, unknown>,
-  key: string,
-): number | undefined {
-  const value = body[key];
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
-}
-
-export function optionalBoolean(
-  body: Record<string, unknown>,
-  key: string,
-): boolean | undefined {
-  const value = body[key];
-  return typeof value === "boolean" ? value : undefined;
-}
-
-export function jsonError(error: unknown) {
-  if (error instanceof RouteError) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: error.statusCode },
-    );
-  }
-
-  if (error instanceof Error) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: statusForServiceError(error) },
-    );
-  }
-
-  return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
-}
-
-export class RouteError extends Error {
-  constructor(
-    message: string,
-    public readonly statusCode: number,
-  ) {
-    super(message);
-  }
 }

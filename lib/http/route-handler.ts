@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getAuthContext, type AuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-import { statusForServiceError } from "@/lib/http/route-error-status";
+import { jsonError } from "@/lib/http/route-input";
 
 export type AuthedContext<P> = {
   supabase: SupabaseClient;
@@ -25,7 +25,7 @@ type NextRouteContext<P> = { params: Promise<P> };
  * Wraps an authenticated route handler so every route shares one copy of the
  * session bootstrap (Supabase client + auth context), the 401 gate, and the
  * service-error mapping. RBAC checks stay inside the handler: return a Response
- * directly, or throw an Error whose message is mapped by statusForServiceError.
+ * directly, or throw a RouteError / Error mapped by {@link jsonError}.
  */
 export function withAuth<P = EmptyParams>(handler: AuthedHandler<P>) {
   return async (
@@ -42,18 +42,7 @@ export function withAuth<P = EmptyParams>(handler: AuthedHandler<P>) {
       const params = (context ? await context.params : undefined) as P;
       return await handler({ supabase, auth, request, params });
     } catch (error) {
-      return jsonServiceError(error);
+      return jsonError(error);
     }
   };
-}
-
-export function jsonServiceError(error: unknown): NextResponse {
-  if (error instanceof Error) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: statusForServiceError(error) },
-    );
-  }
-
-  return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
 }

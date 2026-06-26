@@ -36,19 +36,23 @@ export async function getAuthContext(
     return null;
   }
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("full_name")
-    .eq("id", user.id)
-    .maybeSingle<ProfileRow>();
-
-  const { data: membership } = await supabase
-    .from("organization_members")
-    .select("organization_id, role, organizations(name)")
-    .eq("user_id", user.id)
-    .eq("status", "active")
-    .limit(1)
-    .maybeSingle<MembershipRow>();
+  // The profile and membership lookups both depend only on user.id and are
+  // independent of each other, so resolve them in parallel to save a round trip
+  // on the hot path every authenticated request goes through.
+  const [{ data: profile }, { data: membership }] = await Promise.all([
+    supabase
+      .from("profiles")
+      .select("full_name")
+      .eq("id", user.id)
+      .maybeSingle<ProfileRow>(),
+    supabase
+      .from("organization_members")
+      .select("organization_id, role, organizations(name)")
+      .eq("user_id", user.id)
+      .eq("status", "active")
+      .limit(1)
+      .maybeSingle<MembershipRow>(),
+  ]);
 
   if (!membership) {
     return null;
