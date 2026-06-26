@@ -20422,6 +20422,31 @@ function saveKnowledgeStore(store) {
   }
 }
 
+// 远端（腾讯云 COS）读写：线上为共享真源，离线/未登录回退本地缓存。
+async function loadKnowledgeStoreRemote() {
+  try {
+    const res = await globalThis.fetch("/api/knowledge-base");
+    if (!res.ok) return null;
+    const payload = await res.json();
+    return payload?.store ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveKnowledgeStoreRemote(store) {
+  try {
+    const res = await globalThis.fetch("/api/knowledge-base", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ store }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 function kbChildren(store, parentId) {
   return Object.values(store.nodes)
     .filter((n) => n.parentId === parentId)
@@ -20527,7 +20552,8 @@ function kbPath(store, id) {
 }
 
 // 任务复盘自动归档：直属库 / 复盘 / {项目} / {主播} / {日期 主播 产品复盘}
-function archiveReviewToKnowledgeBase({
+// 先读 COS 真源（拿不到则用本地缓存），归档后写回 COS + 本地缓存。
+async function archiveReviewToKnowledgeBase({
   date,
   streamer,
   product,
@@ -20535,7 +20561,7 @@ function archiveReviewToKnowledgeBase({
   projectId,
   streamerId,
 }) {
-  let store = loadKnowledgeStore();
+  let store = (await loadKnowledgeStoreRemote()) || loadKnowledgeStore();
   const projName = product || projectId || "未命名项目";
   const strName = streamer || streamerId || "未知主播";
 
@@ -20590,6 +20616,7 @@ function archiveReviewToKnowledgeBase({
     store = r.store;
   }
   saveKnowledgeStore(store);
+  await saveKnowledgeStoreRemote(store);
 }
 
 function KnowledgeDocEditor({ doc, onChange }) {
@@ -20613,9 +20640,39 @@ function ScreenKnowledge() {
   const [renamingId, setRenamingId] = React.useState(null);
   const [menu, setMenu] = React.useState(null);
   const [moveId, setMoveId] = React.useState(null);
+  const [syncState, setSyncState] = React.useState("loading"); // loading|synced|local
+  const hydratedRef = React.useRef(false);
+  const remoteTimerRef = React.useRef(null);
 
+  // 加载：优先腾讯云 COS 真源，拿不到则用本地缓存。
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      const remote = await loadKnowledgeStoreRemote();
+      if (!alive) return;
+      if (remote && remote.nodes && remote.nodes[KB_ROOT_ID]) {
+        setStore(remote);
+        setSyncState("synced");
+      } else {
+        setSyncState(remote === null ? "local" : "synced");
+      }
+      hydratedRef.current = true;
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // 保存：本地缓存即时写，COS 防抖写（仅在完成首次加载后）。
   React.useEffect(() => {
     saveKnowledgeStore(store);
+    if (!hydratedRef.current) return;
+    if (remoteTimerRef.current) clearTimeout(remoteTimerRef.current);
+    remoteTimerRef.current = setTimeout(() => {
+      saveKnowledgeStoreRemote(store).then((ok) =>
+        setSyncState(ok ? "synced" : "local"),
+      );
+    }, 600);
   }, [store]);
 
   const selected = store.nodes[selectedId] || store.nodes[KB_ROOT_ID];
@@ -20809,6 +20866,20 @@ function ScreenKnowledge() {
             >
               + 文件夹
             </Button>
+          </div>
+          <div
+            style={{
+              fontSize: 11,
+              color: syncState === "synced" ? "var(--ok-600)" : "var(--ink-400)",
+              marginBottom: 6,
+              paddingLeft: 2,
+            }}
+          >
+            {syncState === "loading"
+              ? "正在从腾讯云读取…"
+              : syncState === "synced"
+                ? "● 已同步至腾讯云存储桶"
+                : "○ 本地缓存（未连接云端存储）"}
           </div>
           {renderRow(store.nodes[KB_ROOT_ID], 0)}
         </div>
@@ -21228,15 +21299,19 @@ function LiveReviewDrawer({
     if (UUID_RE.test(task.streamerId || "")) body.streamerId = task.streamerId;
     if (UUID_RE.test(task.id || "")) body.liveTaskId = task.id;
 
-    // 自动归档到「知识库 → 直属库 / 复盘 / 项目 / 主播 / 复盘文件」。
-    archiveReviewToKnowledgeBase({
-      date: reviewContext.reviewDate,
-      streamer: streamerName,
-      product: reviewContext.product || projectName,
-      contentMd: content,
-      projectId: task.projectId,
-      streamerId: task.streamerId,
-    });
+    // 自动归档到「知识库 → 直属库 / 复盘 / 项目 / 主播 / 复盘文件」（腾讯云 COS）。
+    try {
+      await archiveReviewToKnowledgeBase({
+        date: reviewContext.reviewDate,
+        streamer: streamerName,
+        product: reviewContext.product || projectName,
+        contentMd: content,
+        projectId: task.projectId,
+        streamerId: task.streamerId,
+      });
+    } catch {
+      /* 归档失败不阻断保存主流程 */
+    }
 
     try {
       const response = await globalThis.fetch("/api/live-review/documents", {
