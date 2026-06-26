@@ -5,6 +5,7 @@ import React from "react";
 import { OverviewBoard } from "@/components/dashboard/overview-board";
 import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
 import { MarketplaceBoard } from "@/components/marketplace/marketplace-board";
+import { USAGE_TUTORIAL_MD } from "./usage-tutorial-md";
 import { rankReportQueue } from "@/features/ai/bounded-actions";
 import { getAllowedProjectStatusTransitions } from "@/features/projects/project-state";
 import {
@@ -20358,6 +20359,49 @@ function BlockEditor({ blocks, onChange }) {
 const KB_LS_KEY = "jingying.knowledgeBase.v1";
 const KB_ROOT_ID = "kb-root";
 const KB_REVIEW_FOLDER_ID = "kb-folder-review";
+// 默认内置文档：产品使用教程。system=true → 不可删除，加载时缺了自动补，人人可见。
+const KB_TUTORIAL_DOC_ID = "kb-doc-usage-tutorial";
+
+function kbTutorialNode() {
+  return {
+    id: KB_TUTORIAL_DOC_ID,
+    type: "doc",
+    name: "📖 使用教程",
+    parentId: KB_ROOT_ID,
+    contentMd: USAGE_TUTORIAL_MD,
+    createdAt: 0,
+    updatedAt: 0,
+    order: -1, // 置顶
+    system: true,
+  };
+}
+
+function kbReviewFolderNode() {
+  return {
+    id: KB_REVIEW_FOLDER_ID,
+    type: "folder",
+    name: "复盘",
+    parentId: KB_ROOT_ID,
+    createdAt: 0,
+    order: 0,
+    system: true,
+  };
+}
+
+// 保证系统节点（复盘文件夹、使用教程文档）始终存在；老用户的存量库加载时自动补齐。
+// 教程内容随版本更新——若已存在则刷新其 contentMd，确保看到最新版。
+function kbEnsureSystemNodes(store) {
+  if (!store || !store.nodes || !store.nodes[KB_ROOT_ID]) return store;
+  const nodes = { ...store.nodes };
+  if (!nodes[KB_REVIEW_FOLDER_ID]) {
+    nodes[KB_REVIEW_FOLDER_ID] = kbReviewFolderNode();
+  }
+  const tutorial = kbTutorialNode();
+  nodes[KB_TUTORIAL_DOC_ID] = nodes[KB_TUTORIAL_DOC_ID]
+    ? { ...nodes[KB_TUTORIAL_DOC_ID], contentMd: tutorial.contentMd, system: true }
+    : tutorial;
+  return { ...store, nodes };
+}
 
 function kbGenId() {
   return `kb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -20376,15 +20420,8 @@ function kbDefaultStore() {
         order: 0,
         system: true,
       },
-      [KB_REVIEW_FOLDER_ID]: {
-        id: KB_REVIEW_FOLDER_ID,
-        type: "folder",
-        name: "复盘",
-        parentId: KB_ROOT_ID,
-        createdAt: 0,
-        order: 0,
-        system: true,
-      },
+      [KB_REVIEW_FOLDER_ID]: kbReviewFolderNode(),
+      [KB_TUTORIAL_DOC_ID]: kbTutorialNode(),
     },
   };
 }
@@ -20400,18 +20437,7 @@ function loadKnowledgeStore() {
     if (!parsed || !parsed.nodes || !parsed.nodes[KB_ROOT_ID]) {
       return kbDefaultStore();
     }
-    if (!parsed.nodes[KB_REVIEW_FOLDER_ID]) {
-      parsed.nodes[KB_REVIEW_FOLDER_ID] = {
-        id: KB_REVIEW_FOLDER_ID,
-        type: "folder",
-        name: "复盘",
-        parentId: KB_ROOT_ID,
-        createdAt: 0,
-        order: 0,
-        system: true,
-      };
-    }
-    return parsed;
+    return kbEnsureSystemNodes(parsed);
   } catch {
     return kbDefaultStore();
   }
@@ -20565,7 +20591,9 @@ async function archiveReviewToKnowledgeBase({
   projectId,
   streamerId,
 }) {
-  let store = (await loadKnowledgeStoreRemote()) || loadKnowledgeStore();
+  let store = kbEnsureSystemNodes(
+    (await loadKnowledgeStoreRemote()) || loadKnowledgeStore(),
+  );
   const projName = product || projectId || "未标注项目";
   const strName = streamer || streamerId || "未知主播";
 
@@ -20740,7 +20768,7 @@ function ScreenKnowledge() {
       const remote = await loadKnowledgeStoreRemote();
       if (!alive) return;
       if (remote && remote.nodes && remote.nodes[KB_ROOT_ID]) {
-        setStore(remote);
+        setStore(kbEnsureSystemNodes(remote));
         setSyncState("synced");
       } else {
         setSyncState(remote === null ? "local" : "synced");
