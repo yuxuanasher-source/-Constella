@@ -321,6 +321,81 @@ function PublishForm({ onPublished }) {
   );
 }
 
+// ── 论坛首页信息流：AI 撮合情报(市场动态 / 供给热度 / 智能推荐) ──
+// 数字均来自 /api/marketplace/intel 的确定性聚合(带 sourceRef),不编造。
+function IntelStrip({ onOpenPosting }) {
+  const [intel, setIntel] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(async () => {
+      try {
+        const json = await api("/api/marketplace/intel");
+        if (!cancelled) setIntel(json);
+      } catch {
+        if (!cancelled) setIntel(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (loading) return <div style={{ ...cardStyle, padding: 14, fontSize: 13, color: "var(--ink-400)" }}>撮合情报加载中…</div>;
+  if (!intel) return null;
+  const { marketDynamics: md, supplyHeat: sh, matches } = intel;
+  const recs = (matches?.recommendations || []).slice(0, 4);
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.2fr", gap: 12 }}>
+      <div style={{ ...cardStyle, padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>市场动态 · 近{md.windowDays}天</span>
+        <span style={{ fontSize: 22, fontWeight: 700, color: "var(--blue-600)" }}>{md.newPostings}<span style={{ fontSize: 12, fontWeight: 400, color: "var(--ink-400)", marginLeft: 4 }}>条新需求</span></span>
+        <div style={{ fontSize: 12, color: "var(--ink-500)", display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {md.newProducts.slice(0, 6).map((p) => (
+            <span key={p} style={{ padding: "1px 8px", borderRadius: 999, background: "#eef3ff", color: "#1842a6" }}>{p}</span>
+          ))}
+          {md.newProducts.length === 0 && <span style={{ color: "var(--ink-400)" }}>暂无新产品</span>}
+        </div>
+      </div>
+
+      <div style={{ ...cardStyle, padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>供给热度</span>
+        <div style={{ display: "flex", gap: 16, fontSize: 13 }}>
+          <span><b style={{ fontSize: 18 }}>{sh.totalOpen}</b> 公开需求</span>
+          <span><b style={{ fontSize: 18 }}>{sh.publishers}</b> 发布方</span>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--ink-500)", display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {sh.byCategory.slice(0, 4).map((c) => (
+            <span key={c.category} style={{ padding: "1px 8px", borderRadius: 999, background: "#f1f2f5" }}>{c.category}·{c.count}</span>
+          ))}
+          {sh.byCategory.length === 0 && <span style={{ color: "var(--ink-400)" }}>暂无公开需求</span>}
+        </div>
+      </div>
+
+      <div style={{ ...cardStyle, padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>为你智能匹配</span>
+        {recs.length === 0 ? (
+          <span style={{ fontSize: 12, color: "var(--ink-400)" }}>暂无匹配推荐</span>
+        ) : (
+          recs.map((r) => (
+            <button key={r.kind + r.refId} type="button"
+              onClick={() => r.kind === "posting" && onOpenPosting?.(r.refId)}
+              style={{ textAlign: "left", border: "none", background: "transparent", cursor: r.kind === "posting" ? "pointer" : "default", padding: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+              <span style={{ fontSize: 13, color: "var(--ink-900)", fontWeight: 500 }}>
+                {r.kind === "posting" ? "需求：" : "接单方："}{r.title}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--ink-400)" }}>{r.reasons.join(" · ")}</span>
+            </button>
+          ))
+        )}
+        <span style={{ fontSize: 10, color: "var(--ink-400)", marginTop: 2 }}>情报来自公开撮合数据的确定性聚合，数字以平台结构化数据为准。</span>
+      </div>
+    </div>
+  );
+}
+
 export function MarketplaceBoard({ organizationId }) {
   const [tab, setTab] = React.useState("square");
   const [postings, setPostings] = React.useState([]);
@@ -394,6 +469,9 @@ export function MarketplaceBoard({ organizationId }) {
         )
       ) : (
         <>
+          {tab === "square" && (
+            <IntelStrip onOpenPosting={(id) => setActive({ id, organizationId: "", title: "查看需求", status: "open", budgetCents: null })} />
+          )}
           {tab === "square" && (
             <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
               <Field label="品类"><input style={{ ...input, width: 160 }} value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })} /></Field>
