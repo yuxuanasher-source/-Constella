@@ -38,6 +38,7 @@ export function currentUserFromAuth(auth: AuthContext) {
     name: auth.name,
     role: auth.role,
     org: auth.organizationName,
+    organizationId: auth.organizationId,
     dept: auth.organizationName,
   };
 }

@@ -4,6 +4,7 @@ import React from "react";
 
 import { OverviewBoard } from "@/components/dashboard/overview-board";
 import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
+import { MarketplaceBoard } from "@/components/marketplace/marketplace-board";
 import { rankReportQueue } from "@/features/ai/bounded-actions";
 import { getAllowedProjectStatusTransitions } from "@/features/projects/project-state";
 import {
@@ -1647,6 +1648,7 @@ const NAV = [
   { key: "projects", label: "项目管理", icon: "Project" },
   { key: "streamers", label: "主播资源池", icon: "Streamer" },
   { key: "admission", label: "选播准入", icon: "Eye" },
+  { key: "marketplace", label: "供需撮合论坛", icon: "Sparkles" },
   { key: "tasks", label: "排班与任务", icon: "Tasks" },
   { key: "reports", label: "报数审核", icon: "Reports" },
   { key: "settle", label: "结算中心", icon: "Money" },
@@ -22103,6 +22105,19 @@ function ScreenAiDrafts() {
   );
 }
 
+function ScreenMarketplace() {
+  const currentUser = useOpsCurrentUser();
+  return (
+    <>
+      <PageHeader
+        title="供需撮合论坛"
+        subtitle="厂商释放分包需求（二手单），平台 MCN 公开发现并接单；信息默认公开，成交必须经平台。"
+      />
+      <MarketplaceBoard organizationId={currentUser?.organizationId} />
+    </>
+  );
+}
+
 function ScreenAudit() {
   const entries = useOpsAuditEntries();
   const actions = useOpsLiveActions();
@@ -25206,6 +25221,7 @@ function OpsReferenceInner({
             {route === "tasks" && <ScreenTasks go={go} />}
             {route === "reports" && <ScreenReports go={go} />}
             {route === "settle" && <ScreenSettlement go={go} />}
+            {route === "marketplace" && <ScreenMarketplace />}
             {route === "ai-drafts" && <ScreenAiDrafts />}
             {route === "billing" && (
               <ScreenBilling
