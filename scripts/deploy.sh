@@ -43,8 +43,10 @@ git fetch origin "$BRANCH"
 git reset --hard "origin/$BRANCH"
 
 # ── 2. 安装依赖 ──────────────────────────────────────────────────────────
-log "安装依赖（npm ci）"
-npm ci
+# 本项目使用 pnpm（packageManager: pnpm@*，锁文件 pnpm-lock.yaml）。
+command -v pnpm >/dev/null 2>&1 || die "未找到 pnpm，请先安装（npm i -g pnpm 或 corepack enable）"
+log "安装依赖（pnpm install --frozen-lockfile）"
+pnpm install --frozen-lockfile
 
 # ── 3. 幂等应用数据库迁移 ────────────────────────────────────────────────
 docker inspect "$DB_CONTAINER" >/dev/null 2>&1 || die "找不到 DB 容器：$DB_CONTAINER（用 DB_CONTAINER=... 覆盖）"
@@ -90,8 +92,8 @@ done
 log "迁移完成（本次新增应用 $applied 个）"
 
 # ── 4. 构建 ──────────────────────────────────────────────────────────────
-log "构建（npm run build）"
-npm run build
+log "构建（pnpm run build）"
+pnpm run build
 
 # ── 5. 重启应用 ──────────────────────────────────────────────────────────
 if command -v pm2 >/dev/null 2>&1 && pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
@@ -101,7 +103,7 @@ elif systemctl list-units --type=service --all 2>/dev/null | grep -q "${SYSTEMD_
   log "systemctl 重启 $SYSTEMD_UNIT"
   sudo systemctl restart "$SYSTEMD_UNIT"
 else
-  log "未检测到 pm2 进程或 systemd 服务，请手动重启应用（如 npm start）。"
+  log "未检测到 pm2 进程或 systemd 服务，请手动重启应用（如 pnpm start）。"
 fi
 
 log "部署完成 ✅"
