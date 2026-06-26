@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { resolveListRange, type ListPagination } from "@/lib/http/pagination";
+
 export type StreamerPayableSafeRow = {
   id: string;
   project_name: string;
@@ -43,7 +45,9 @@ export type StreamerEarningsSummary = {
 export async function listStreamerPayableItems(
   client: SupabaseClient,
   streamerId: string,
+  pagination?: ListPagination,
 ): Promise<StreamerPayableItem[]> {
+  const { from, to } = resolveListRange(pagination);
   const { data, error } = await client
     .from("streamer_payable_items_safe")
     .select(
@@ -52,6 +56,7 @@ export async function listStreamerPayableItems(
     .eq("streamer_id", streamerId)
     .order("period_start", { ascending: false })
     .order("created_at", { ascending: false })
+    .range(from, to)
     .returns<StreamerPayableSafeRow[]>();
 
   if (error) {

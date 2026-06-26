@@ -1,80 +1,53 @@
 import { NextResponse } from "next/server";
 
 import { createOcrJob, listOcrJobs } from "@/features/ai/ocr-jobs";
-import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-import { statusForServiceError } from "@/lib/http/route-error-status";
-import { isMcnStaff } from "@/lib/rbac/roles";
+import { withAuth } from "@/lib/http/route-handler";
+import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
 
-export async function GET() {
-  try {
-    const authResult = await requireMcnStaff();
-    if (authResult.response) {
-      return authResult.response;
-    }
-
-    const jobs = await listOcrJobs({
-      client: authResult.supabase as never,
-      organizationId: authResult.auth.organizationId,
-    });
-
-    return NextResponse.json({ jobs: jobs.map(toSafeJob) });
-  } catch (error) {
-    return errorResponse(error);
-  }
-}
-
-export async function POST(request: Request) {
-  try {
-    const authResult = await requireMcnStaff();
-    if (authResult.response) {
-      return authResult.response;
-    }
-
-    const body = (await request.json()) as Record<string, unknown>;
-    const job = await createOcrJob({
-      client: authResult.supabase as never,
-      actor: authResult.auth,
-      input: {
-        liveReportId: requiredString(body.liveReportId, "liveReportId"),
-        screenshotId: optionalString(body.screenshotId),
-        imageBase64: optionalString(body.imageBase64),
-        imageUrl: optionalString(body.imageUrl),
-        expectedDuration: optionalNumber(body.expectedDuration),
-      },
-    });
-
-    return NextResponse.json({ job: toSafeJob(job) });
-  } catch (error) {
-    return errorResponse(error);
-  }
-}
-
-async function requireMcnStaff() {
-  const supabase = await createSupabaseServerClient();
-  if (!supabase) {
-    return {
-      response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
-    };
+export const GET = withAuth(async ({ supabase, auth }) => {
+  const denied = requireMcnStaff(auth.role);
+  if (denied) {
+    return denied;
   }
 
-  const auth = await getAuthContext(supabase);
-  if (!auth) {
-    return {
-      response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
-    };
+  const jobs = await listOcrJobs({
+    client: supabase as never,
+    organizationId: auth.organizationId,
+  });
+
+  return NextResponse.json({ jobs: jobs.map(toSafeJob) });
+});
+
+export const POST = withAuth(async ({ supabase, auth, request }) => {
+  const denied = requireMcnStaff(auth.role);
+  if (denied) {
+    return denied;
   }
 
-  if (!isMcnStaff(auth.role)) {
-    return {
-      response: NextResponse.json(
-        { error: "Only MCN staff can manage OCR jobs" },
-        { status: 403 },
-      ),
-    };
-  }
+  const body = (await request.json()) as Record<string, unknown>;
+  const job = await createOcrJob({
+    client: supabase as never,
+    actor: auth,
+    input: {
+      liveReportId: requiredString(body.liveReportId, "liveReportId"),
+      screenshotId: optionalString(body.screenshotId),
+      imageBase64: optionalString(body.imageBase64),
+      imageUrl: optionalString(body.imageUrl),
+      expectedDuration: optionalNumber(body.expectedDuration),
+    },
+  });
 
-  return { auth, supabase };
+  return NextResponse.json({ job: toSafeJob(job) });
+});
+
+function requireMcnStaff(role: AppRole): NextResponse | null {
+  if (!isMcnStaff(role)) {
+    return NextResponse.json(
+      { error: "Only MCN staff can manage OCR jobs" },
+      { status: 403 },
+    );
+  }
+  return null;
 }
 
 function toSafeJob(job: {
@@ -106,16 +79,7 @@ function optionalString(value: unknown): string | undefined {
 }
 
 function optionalNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function errorResponse(error: unknown) {
-  if (error instanceof Error) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: statusForServiceError(error) },
-    );
-  }
-
-  return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }

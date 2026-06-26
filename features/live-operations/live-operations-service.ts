@@ -245,12 +245,13 @@ export async function createLiveTasks({
   actor: LiveOperationsActor;
   inputs: Array<Parameters<typeof createLiveTask>[0]["input"]>;
 }): Promise<LiveTaskRecord[]> {
-  const tasks: LiveTaskRecord[] = [];
-  for (const input of inputs) {
-    tasks.push(await createLiveTask({ repo, audit, notify, actor, input }));
-  }
-
-  return tasks;
+  // Each input creates an independent task, so schedule them concurrently
+  // instead of one round trip at a time. Promise.all preserves input order.
+  return Promise.all(
+    inputs.map((input) =>
+      createLiveTask({ repo, audit, notify, actor, input }),
+    ),
+  );
 }
 
 export async function startLiveTask({

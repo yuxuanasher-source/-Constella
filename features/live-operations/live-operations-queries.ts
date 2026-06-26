@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { resolveListRange, type ListPagination } from "@/lib/http/pagination";
+
 import type { EvidenceLevel, TimeSource } from "./live-report-evidence";
 import type { LiveTaskStatus } from "./live-task-state";
 import type { ReportStatus } from "./live-operations-service";
@@ -83,7 +85,9 @@ type OpsLiveTaskRow = {
 export async function listStreamerTaskCards(
   client: SupabaseClient,
   streamerId: string,
+  pagination?: ListPagination,
 ): Promise<StreamerTaskCard[]> {
+  const { from, to } = resolveListRange(pagination);
   const { data, error } = await client
     .from("live_tasks")
     .select(
@@ -91,6 +95,7 @@ export async function listStreamerTaskCards(
     )
     .eq("streamer_id", streamerId)
     .order("planned_start_at", { ascending: true })
+    .range(from, to)
     .returns<StreamerTaskRow[]>();
 
   if (error) {
@@ -102,7 +107,9 @@ export async function listStreamerTaskCards(
 
 export async function listOpsLiveReportQueue(
   client: SupabaseClient,
+  pagination?: ListPagination,
 ): Promise<OpsLiveReportQueueItem[]> {
+  const { from, to } = resolveListRange(pagination);
   const { data, error } = await client
     .from("live_reports")
     .select(
@@ -110,6 +117,7 @@ export async function listOpsLiveReportQueue(
     )
     .in("status", ["pending_review", "pending_adjudication"])
     .order("created_at", { ascending: false })
+    .range(from, to)
     .returns<OpsLiveReportRow[]>();
 
   if (error) {
@@ -121,13 +129,16 @@ export async function listOpsLiveReportQueue(
 
 export async function listOpsLiveTaskQueue(
   client: SupabaseClient,
+  pagination?: ListPagination,
 ): Promise<OpsLiveTaskQueueItem[]> {
+  const { from, to } = resolveListRange(pagination);
   const { data, error } = await client
     .from("live_tasks")
     .select(
       "id, title, status, project_id, streamer_id, planned_start_at, planned_end_at, planned_duration, system_duration, projects(name), streamers(display_name)",
     )
     .order("planned_start_at", { ascending: true })
+    .range(from, to)
     .returns<OpsLiveTaskRow[]>();
 
   if (error) {

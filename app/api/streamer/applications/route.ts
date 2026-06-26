@@ -6,8 +6,9 @@ import {
   jsonError,
   RouteError,
 } from "@/features/applications/application-route-utils";
+import { parseListPagination } from "@/lib/http/pagination";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const context = await getAdmissionRouteContext();
     if (context.auth.role !== "streamer") {
@@ -17,7 +18,10 @@ export async function GET() {
       );
     }
 
-    const applications = await listStreamerApplicationCards(context.supabase);
+    const applications = await listStreamerApplicationCards(
+      context.supabase,
+      parseListPagination(request.url),
+    );
     return NextResponse.json({ applications });
   } catch (error) {
     return jsonError(error);

@@ -7,8 +7,9 @@ import {
   jsonError,
   RouteError,
 } from "@/features/live-operations/live-operations-route-utils";
+import { parseListPagination } from "@/lib/http/pagination";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const context = await getLiveOperationsRouteContext();
     if (context.auth.role !== "streamer") {
@@ -23,7 +24,11 @@ export async function GET() {
       throw new RouteError("Current user is not bound to a streamer", 400);
     }
 
-    const tasks = await listStreamerTaskCards(context.supabase, streamerId);
+    const tasks = await listStreamerTaskCards(
+      context.supabase,
+      streamerId,
+      parseListPagination(request.url),
+    );
     return NextResponse.json({ tasks });
   } catch (error) {
     return jsonError(error);

@@ -5,21 +5,10 @@ import {
   createProjectAuditWriter,
   updateProjectBasics,
 } from "@/features/projects/project-service";
-import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-import { statusForServiceError } from "@/lib/http/route-error-status";
+import { withAuth } from "@/lib/http/route-handler";
 
-export async function PATCH(
-  request: Request,
-  { params }: { params: Promise<{ projectId: string }> },
-) {
-  try {
-    const supabase = await createSupabaseServerClient();
-    const auth = supabase ? await getAuthContext(supabase) : null;
-    if (!supabase || !auth) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
+export const PATCH = withAuth<{ projectId: string }>(
+  async ({ supabase, auth, request, params }) => {
     const body = (await request.json().catch(() => ({}))) as {
       name?: string;
       startsAt?: string | null;
@@ -29,7 +18,7 @@ export async function PATCH(
       forceRecording?: boolean;
       forceSystemTiming?: boolean;
     };
-    const { projectId } = await params;
+    const { projectId } = params;
     const project = await updateProjectBasics({
       repo: new SupabaseProjectRepository(supabase),
       audit: createProjectAuditWriter(supabase),
@@ -47,14 +36,5 @@ export async function PATCH(
     });
 
     return NextResponse.json({ project });
-  } catch (error) {
-    if (error instanceof Error) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: statusForServiceError(error) },
-      );
-    }
-
-    return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
-  }
-}
+  },
+);

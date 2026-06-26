@@ -44,7 +44,7 @@ describe("billing status route", () => {
   });
 
   it("returns safe billing status for MCN staff", async () => {
-    const response = await GET();
+    const response = await GET(new Request("http://localhost/api/billing/status"));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
@@ -68,7 +68,7 @@ describe("billing status route", () => {
       role: "streamer",
     });
 
-    const response = await GET();
+    const response = await GET(new Request("http://localhost/api/billing/status"));
 
     expect(response.status).toBe(403);
     expect(getBillingStatus).not.toHaveBeenCalled();

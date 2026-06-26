@@ -255,27 +255,32 @@ export async function generateSettlementBatch({
     createdBy: actor.userId,
   });
 
-  const items: SettlementBatchItemRecord[] = [];
-  for (const { report, item } of calculations) {
-    const createdItem = await repo.createSettlementBatchItem({
-      organizationId: actor.organizationId,
-      settlementBatchId: batch.id,
-      projectId: report.projectId,
-      streamerId: report.streamerId,
-      liveReportId: report.id,
-      itemType: "live_report",
-      computedAmount: item.computedAmount,
-      manualAmount: item.manualAmount,
-      adjustmentAmount: item.adjustmentAmount,
-      evidenceLevel: report.evidenceLevel,
-      evidenceSnapshot: item.evidenceSnapshot,
-    });
-    await repo.markReportSettled({
-      reportId: report.id,
-      settlementBatchItemId: createdItem.id,
-    });
-    items.push(createdItem);
-  }
+  // Items are independent across reports, so process them concurrently.
+  // Within a report the create -> markReportSettled pair stays sequential
+  // because the second call needs the created item id. Promise.all preserves
+  // the calculations order in the returned items.
+  const items: SettlementBatchItemRecord[] = await Promise.all(
+    calculations.map(async ({ report, item }) => {
+      const createdItem = await repo.createSettlementBatchItem({
+        organizationId: actor.organizationId,
+        settlementBatchId: batch.id,
+        projectId: report.projectId,
+        streamerId: report.streamerId,
+        liveReportId: report.id,
+        itemType: "live_report",
+        computedAmount: item.computedAmount,
+        manualAmount: item.manualAmount,
+        adjustmentAmount: item.adjustmentAmount,
+        evidenceLevel: report.evidenceLevel,
+        evidenceSnapshot: item.evidenceSnapshot,
+      });
+      await repo.markReportSettled({
+        reportId: report.id,
+        settlementBatchItemId: createdItem.id,
+      });
+      return createdItem;
+    }),
+  );
 
   await audit({
     organizationId: actor.organizationId,

@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { resolveListRange, type ListPagination } from "@/lib/http/pagination";
+
 import { calculateSettlementItem } from "./settlement-engine";
 import type {
   SettlementBatchStatus,
@@ -120,7 +122,9 @@ type SettlementScopeSeedRow = {
 export async function listOpsSettlementPool(
   client: SupabaseClient,
   input: { projectId: string; periodStart: string; periodEnd: string },
+  pagination?: ListPagination,
 ): Promise<OpsSettlementPoolItem[]> {
+  const { from, to } = resolveListRange(pagination);
   const { data, error } = await client
     .from("live_reports")
     .select(
@@ -133,6 +137,7 @@ export async function listOpsSettlementPool(
     .gte("created_at", `${input.periodStart}T00:00:00.000Z`)
     .lte("created_at", `${input.periodEnd}T23:59:59.999Z`)
     .order("created_at", { ascending: true })
+    .range(from, to)
     .returns<PoolQueryRow[]>();
 
   if (error) {
@@ -165,13 +170,16 @@ export async function listOpsSettlementPool(
 
 export async function listOpsSettlementBatches(
   client: SupabaseClient,
+  pagination?: ListPagination,
 ): Promise<OpsSettlementBatchListItem[]> {
+  const { from, to } = resolveListRange(pagination);
   const { data, error } = await client
     .from("settlement_batches")
     .select(
       "id, project_id, batch_type, status, period_start, period_end, computed_amount, manual_amount, adjustment_amount, evidence_summary, updated_at, created_by, projects(name), settlement_batch_items(id)",
     )
     .order("updated_at", { ascending: false })
+    .range(from, to)
     .returns<SettlementBatchRow[]>();
 
   if (error) {
@@ -184,7 +192,9 @@ export async function listOpsSettlementBatches(
 export async function listOpsSettlementBatchDetails(
   client: SupabaseClient,
   batchId?: string,
+  pagination?: ListPagination,
 ): Promise<Record<string, OpsSettlementBatchDetailItem[]>> {
+  const { from, to } = resolveListRange(pagination);
   let query = client
     .from("settlement_batch_items")
     .select(
@@ -196,7 +206,9 @@ export async function listOpsSettlementBatchDetails(
     query = query.eq("settlement_batch_id", batchId);
   }
 
-  const { data, error } = await query.returns<SettlementBatchDetailRow[]>();
+  const { data, error } = await query
+    .range(from, to)
+    .returns<SettlementBatchDetailRow[]>();
 
   if (error) {
     throw error;

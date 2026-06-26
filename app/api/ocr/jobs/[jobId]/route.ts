@@ -1,87 +1,63 @@
 import { NextResponse } from "next/server";
 
 import { getOcrJob, retryOcrJob } from "@/features/ai/ocr-jobs";
-import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-import { statusForServiceError } from "@/lib/http/route-error-status";
-import { isMcnStaff } from "@/lib/rbac/roles";
+import { withAuth } from "@/lib/http/route-handler";
+import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
 
-type RouteContext = {
-  params: Promise<{ jobId: string }>;
-};
-
-export async function GET(_request: Request, context: RouteContext) {
-  try {
-    const authResult = await requireMcnStaff();
-    if (authResult.response) {
-      return authResult.response;
+export const GET = withAuth<{ jobId: string }>(
+  async ({ supabase, auth, params }) => {
+    const denied = requireMcnStaff(auth.role);
+    if (denied) {
+      return denied;
     }
 
-    const { jobId } = await context.params;
-    const job = await getOcrJob({ client: authResult.supabase as never, jobId });
-    if (!job || job.organizationId !== authResult.auth.organizationId) {
+    const { jobId } = params;
+    const job = await getOcrJob({ client: supabase as never, jobId });
+    if (!job || job.organizationId !== auth.organizationId) {
       return NextResponse.json({ error: "OCR job not found" }, { status: 404 });
     }
 
     return NextResponse.json({ job: toSafeJob(job) });
-  } catch (error) {
-    return errorResponse(error);
-  }
-}
+  },
+);
 
-export async function POST(request: Request, context: RouteContext) {
-  try {
-    const authResult = await requireMcnStaff();
-    if (authResult.response) {
-      return authResult.response;
+export const POST = withAuth<{ jobId: string }>(
+  async ({ supabase, auth, request, params }) => {
+    const denied = requireMcnStaff(auth.role);
+    if (denied) {
+      return denied;
     }
 
     const body = (await request.json()) as Record<string, unknown>;
     if (body.action !== "retry") {
-      return NextResponse.json({ error: "Unsupported OCR job action" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Unsupported OCR job action" },
+        { status: 400 },
+      );
     }
 
-    const { jobId } = await context.params;
+    const { jobId } = params;
     const job = await retryOcrJob({
-      client: authResult.supabase as never,
-      actor: authResult.auth,
+      client: supabase as never,
+      actor: auth,
       jobId,
     });
-    if (job.organizationId !== authResult.auth.organizationId) {
+    if (job.organizationId !== auth.organizationId) {
       return NextResponse.json({ error: "OCR job not found" }, { status: 404 });
     }
 
     return NextResponse.json({ job: toSafeJob(job) });
-  } catch (error) {
-    return errorResponse(error);
-  }
-}
+  },
+);
 
-async function requireMcnStaff() {
-  const supabase = await createSupabaseServerClient();
-  if (!supabase) {
-    return {
-      response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
-    };
+function requireMcnStaff(role: AppRole): NextResponse | null {
+  if (!isMcnStaff(role)) {
+    return NextResponse.json(
+      { error: "Only MCN staff can manage OCR jobs" },
+      { status: 403 },
+    );
   }
-
-  const auth = await getAuthContext(supabase);
-  if (!auth) {
-    return {
-      response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
-    };
-  }
-
-  if (!isMcnStaff(auth.role)) {
-    return {
-      response: NextResponse.json(
-        { error: "Only MCN staff can manage OCR jobs" },
-        { status: 403 },
-      ),
-    };
-  }
-
-  return { auth, supabase };
+  return null;
 }
 
 function toSafeJob(job: {
@@ -99,15 +75,4 @@ function toSafeJob(job: {
     liveReportId: job.payload.liveReportId,
     screenshotId: job.payload.screenshotId,
   };
-}
-
-function errorResponse(error: unknown) {
-  if (error instanceof Error) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: statusForServiceError(error) },
-    );
-  }
-
-  return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
 }
