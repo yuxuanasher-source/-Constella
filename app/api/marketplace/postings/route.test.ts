@@ -101,6 +101,8 @@ function makeRepo() {
       status: "pending_collaboration" as const,
       collaborationApplicationId: null,
       collaborationAgreementId: null,
+      collaborationShareId: null,
+      collaborationShareToken: null,
       createdAt: NOW,
     }),
   };

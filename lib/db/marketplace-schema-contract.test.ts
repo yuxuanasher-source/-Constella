@@ -7,6 +7,10 @@ const migration = readFileSync(
   join(process.cwd(), "supabase/migrations/20260627100000_marketplace_foundation.sql"),
   "utf8",
 ).toLowerCase();
+const bridgeMigration = readFileSync(
+  join(process.cwd(), "supabase/migrations/20260627110000_marketplace_collaboration_bridge.sql"),
+  "utf8",
+).toLowerCase();
 
 describe("marketplace foundation schema contract", () => {
   it("creates the marketplace tables with organization anchors", () => {
@@ -66,5 +70,17 @@ describe("marketplace foundation schema contract", () => {
       "collaboration_agreement_id uuid references public.project_collaboration_agreements(id)",
     );
     expect(migration).toContain("status in ('pending_collaboration', 'collaboration_active', 'cancelled')");
+  });
+
+  it("bridge migration adds share reference columns to deals", () => {
+    expect(bridgeMigration).toContain(
+      "add column if not exists collaboration_share_id uuid",
+    );
+    expect(bridgeMigration).toContain(
+      "references public.project_collaboration_shares(id)",
+    );
+    expect(bridgeMigration).toContain(
+      "add column if not exists collaboration_share_token text",
+    );
   });
 });

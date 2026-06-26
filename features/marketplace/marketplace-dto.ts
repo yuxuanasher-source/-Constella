@@ -67,6 +67,8 @@ export function toDealRecord(row: Row): DealRecord {
     status: str(row.status) as DealRecord["status"],
     collaborationApplicationId: strOrNull(row.collaboration_application_id),
     collaborationAgreementId: strOrNull(row.collaboration_agreement_id),
+    collaborationShareId: strOrNull(row.collaboration_share_id),
+    collaborationShareToken: strOrNull(row.collaboration_share_token),
     createdAt: str(row.created_at),
   };
 }
@@ -79,4 +81,4 @@ export const APPLICATION_PUBLIC_COLUMNS =
   "id, posting_id, applicant_organization_id, status, streamer_lineup, past_cases, quote_cents, resources, message, review_note, submitted_at, reviewed_at, created_at, updated_at";
 
 export const DEAL_COLUMNS =
-  "id, posting_id, application_id, owner_organization_id, applicant_organization_id, status, collaboration_application_id, collaboration_agreement_id, created_at";
+  "id, posting_id, application_id, owner_organization_id, applicant_organization_id, status, collaboration_application_id, collaboration_agreement_id, collaboration_share_id, collaboration_share_token, created_at";

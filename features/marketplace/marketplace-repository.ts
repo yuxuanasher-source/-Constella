@@ -242,4 +242,29 @@ export class SupabaseMarketplaceRepository implements RepoPort {
     }
     return toDealRecord(data);
   }
+
+  async getDealById(id: string): Promise<DealRecord | null> {
+    const { data, error } = await this.client
+      .from("marketplace_deals")
+      .select(DEAL_COLUMNS)
+      .eq("id", id)
+      .maybeSingle();
+    if (error || !data) return null;
+    return toDealRecord(data);
+  }
+
+  // 仅发单方可更新撮合达成（RLS owner_manage）；接单方读取不更新。
+  async updateDeal(
+    id: string,
+    patch: Record<string, unknown>,
+  ): Promise<DealRecord | null> {
+    const { data, error } = await this.client
+      .from("marketplace_deals")
+      .update(patch)
+      .eq("id", id)
+      .select(DEAL_COLUMNS)
+      .maybeSingle();
+    if (error || !data) return null;
+    return toDealRecord(data);
+  }
 }
