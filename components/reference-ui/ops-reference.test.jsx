@@ -374,6 +374,135 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.getByText("streamer-one · Streamer One")).toBeInTheDocument();
     expect(screen.getAllByText("邀约中").length).toBeGreaterThan(0);
   });
+
+  it("manages cross-MCN collaboration from the project detail tab", async () => {
+    const collaborationProjectCard = {
+      id: "project-detail",
+      code: "P-DETAIL",
+      name: "详情项目",
+      vendor: "厂商",
+      product: "产品",
+      status: "recruiting",
+      pricing: "CPT",
+      leadOps: "Ops",
+      bizOwner: "Biz",
+      start: "2026-06-01",
+      end: "2026-06-30",
+      streamers: { active: 0, candidate: 0, pendingReview: 0 },
+      metrics: {
+        plannedHours: 0,
+        doneHours: 0,
+        audience: 0,
+        reportedPending: 0,
+        anomalies: 0,
+        receivable: 0,
+        payable: 0,
+        gross: 0,
+        margin: 0,
+      },
+      risk: "low",
+    };
+    const fetchMock = vi.fn(async (url, init) => {
+      const method = init?.method || "GET";
+      if (url.endsWith("/collaboration-shares") && method === "GET") {
+        return { ok: true, json: async () => ({ shares: [] }) };
+      }
+      if (url.endsWith("/collaboration-applications") && method === "GET") {
+        return {
+          ok: true,
+          json: async () => ({
+            applications: [
+              {
+                id: "app-1",
+                shareId: "share-1",
+                projectId: "project-detail",
+                ownerOrganizationId: "org-owner",
+                applicantOrganizationId: "org-partner",
+                requestedRevenueShareBps: 2000,
+                ownerCounterRevenueShareBps: null,
+                finalRevenueShareBps: null,
+                status: "submitted",
+                applicantNote: "希望参与本项目",
+                ownerReviewNote: "",
+                rejectionReason: "",
+                submittedBy: "user-partner",
+                reviewedBy: null,
+                reviewedAt: null,
+                applicantConfirmedBy: null,
+                applicantConfirmedAt: null,
+              },
+            ],
+          }),
+        };
+      }
+      if (url.endsWith("/collaboration-shares") && method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            share: {
+              id: "share-1",
+              status: "active",
+              expiresAt: "2026-07-05T00:00:00.000Z",
+              allowApplications: true,
+              visibleFields: [],
+            },
+            shareUrl: "http://localhost/share/project-collaboration/tok-123",
+          }),
+        };
+      }
+      if (url.includes("/review") && method === "POST") {
+        return { ok: true, json: async () => ({ ok: true }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="project"
+        projectCards={[collaborationProjectCard]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("详情项目"));
+    fireEvent.click(screen.getByRole("button", { name: /跨 MCN 协作/ }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/申请分成 20%/)).toBeInTheDocument(),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-detail/collaboration-applications",
+      undefined,
+    );
+    expect(screen.getByText("邀请其它 MCN 协作")).toBeInTheDocument();
+    expect(screen.getByText(/希望参与本项目/)).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /生成协作邀请链接/ }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText("http://localhost/share/project-collaboration/tok-123"),
+      ).toBeInTheDocument(),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-detail/collaboration-shares",
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "处理" }));
+    fireEvent.click(screen.getByRole("button", { name: "提交" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-detail/collaboration-applications/app-1/review",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ action: "accept" }),
+        }),
+      ),
+    );
+  });
+
   it("filters project rows by search, vendor, owner, and schedule state", () => {
     render(
       <OpsReferenceApp
