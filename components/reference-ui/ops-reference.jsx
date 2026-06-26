@@ -19416,6 +19416,390 @@ function renderMarkdownToHtml(markdown) {
   return out.join("\n");
 }
 
+// Markdown ⇄ block model, so the editor can render a clean Notion-like surface
+// (headings / tables / lists) while still persisting Markdown to the knowledge base.
+function parseMarkdownToBlocks(markdown) {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const blocks = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim() === "") {
+      i += 1;
+      continue;
+    }
+    const isTableRow = /^\s*\|.*\|\s*$/.test(line);
+    const nextIsSep =
+      i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1]);
+    if (isTableRow && nextIsSep) {
+      const headers = splitMarkdownRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        rows.push(splitMarkdownRow(lines[i]));
+        i += 1;
+      }
+      blocks.push({ type: "table", headers, rows });
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      blocks.push({ type: "heading", level: heading[1].length, text: heading[2] });
+      i += 1;
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*>\s?/, ""));
+        i += 1;
+      }
+      blocks.push({ type: "quote", text: buf.join("\n") });
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*]\s+/, "").trim());
+        i += 1;
+      }
+      blocks.push({ type: "list", ordered: false, items });
+      continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s+/, "").trim());
+        i += 1;
+      }
+      blocks.push({ type: "list", ordered: true, items });
+      continue;
+    }
+    blocks.push({ type: "paragraph", text: line.trim() });
+    i += 1;
+  }
+  return blocks;
+}
+
+function serializeBlocksToMarkdown(blocks) {
+  const out = [];
+  for (const b of blocks || []) {
+    if (b.type === "heading") {
+      out.push(`${"#".repeat(b.level || 2)} ${b.text || ""}`.trimEnd());
+    } else if (b.type === "table") {
+      const headers = b.headers && b.headers.length ? b.headers : [""];
+      out.push(`| ${headers.join(" | ")} |`);
+      out.push(`|${headers.map(() => "---").join("|")}|`);
+      for (const r of b.rows || []) {
+        const cells = headers.map((_, k) => (r[k] ?? "").toString());
+        out.push(`| ${cells.join(" | ")} |`);
+      }
+    } else if (b.type === "list") {
+      (b.items || []).forEach((it, idx) =>
+        out.push(`${b.ordered ? `${idx + 1}.` : "-"} ${it}`),
+      );
+    } else if (b.type === "quote") {
+      String(b.text || "")
+        .split("\n")
+        .forEach((l) => out.push(`> ${l}`));
+    } else {
+      out.push(b.text || "");
+    }
+    out.push("");
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
+
+const REVIEW_ADD_BTN_STYLE = {
+  alignSelf: "flex-start",
+  border: "1px dashed var(--line)",
+  background: "transparent",
+  color: "var(--ink-400)",
+  borderRadius: 6,
+  padding: "5px 10px",
+  fontSize: 12,
+  cursor: "pointer",
+};
+const REVIEW_CELL_STYLE = {
+  width: "100%",
+  border: "none",
+  outline: "none",
+  background: "transparent",
+  fontSize: 13,
+  color: "var(--ink-900)",
+  padding: "6px 8px",
+  fontFamily: "inherit",
+  boxSizing: "border-box",
+};
+
+// Notion-like block editor: edits rendered blocks in place; no raw markdown symbols.
+function BlockEditor({ blocks, onChange }) {
+  const setBlock = (bi, next) =>
+    onChange(blocks.map((b, i) => (i === bi ? next : b)));
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {blocks.map((b, bi) => {
+        if (b.type === "heading") {
+          const sizes = { 1: 22, 2: 19, 3: 15.5, 4: 13.5 };
+          return (
+            <input
+              key={bi}
+              value={b.text}
+              onChange={(e) => setBlock(bi, { ...b, text: e.target.value })}
+              style={{
+                ...REVIEW_CELL_STYLE,
+                fontSize: sizes[b.level] || 14,
+                fontWeight: (b.level || 2) <= 3 ? 700 : 600,
+                padding: "2px 0",
+                marginTop: (b.level || 2) <= 2 ? 6 : 2,
+              }}
+            />
+          );
+        }
+        if (b.type === "quote") {
+          return (
+            <div
+              key={bi}
+              style={{
+                borderLeft: "3px solid var(--blue-600)",
+                background: "var(--bg-soft)",
+                borderRadius: 6,
+                padding: "4px 10px",
+              }}
+            >
+              <textarea
+                value={b.text}
+                onChange={(e) => setBlock(bi, { ...b, text: e.target.value })}
+                rows={Math.max(1, String(b.text || "").split("\n").length)}
+                style={{
+                  ...REVIEW_CELL_STYLE,
+                  resize: "vertical",
+                  lineHeight: 1.6,
+                  color: "var(--ink-700)",
+                  padding: "4px 2px",
+                }}
+              />
+            </div>
+          );
+        }
+        if (b.type === "list") {
+          return (
+            <div key={bi} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              {b.items.map((it, ii) => (
+                <div
+                  key={ii}
+                  style={{ display: "flex", alignItems: "center", gap: 8 }}
+                >
+                  <span
+                    style={{
+                      color: "var(--ink-400)",
+                      fontSize: 13,
+                      minWidth: b.ordered ? 18 : 10,
+                      textAlign: "right",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {b.ordered ? `${ii + 1}.` : "•"}
+                  </span>
+                  <input
+                    value={it}
+                    onChange={(e) =>
+                      setBlock(bi, {
+                        ...b,
+                        items: b.items.map((x, j) => (j === ii ? e.target.value : x)),
+                      })
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        const items = [...b.items];
+                        items.splice(ii + 1, 0, "");
+                        setBlock(bi, { ...b, items });
+                      } else if (
+                        e.key === "Backspace" &&
+                        it === "" &&
+                        b.items.length > 1
+                      ) {
+                        e.preventDefault();
+                        setBlock(bi, {
+                          ...b,
+                          items: b.items.filter((_, j) => j !== ii),
+                        });
+                      }
+                    }}
+                    style={REVIEW_CELL_STYLE}
+                  />
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setBlock(bi, { ...b, items: [...b.items, ""] })}
+                style={REVIEW_ADD_BTN_STYLE}
+              >
+                + 添加一项
+              </button>
+            </div>
+          );
+        }
+        if (b.type === "table") {
+          const cols = b.headers.length || 1;
+          return (
+            <div
+              key={bi}
+              style={{
+                border: "1px solid var(--line)",
+                borderRadius: 8,
+                overflow: "hidden",
+              }}
+            >
+              <table
+                style={{
+                  borderCollapse: "collapse",
+                  width: "100%",
+                  tableLayout: "fixed",
+                }}
+              >
+                <thead>
+                  <tr>
+                    {b.headers.map((h, ci) => (
+                      <th
+                        key={ci}
+                        style={{
+                          border: "1px solid var(--line)",
+                          background: "var(--bg-soft)",
+                          padding: 0,
+                        }}
+                      >
+                        <input
+                          value={h}
+                          onChange={(e) =>
+                            setBlock(bi, {
+                              ...b,
+                              headers: b.headers.map((x, k) =>
+                                k === ci ? e.target.value : x,
+                              ),
+                            })
+                          }
+                          style={{
+                            ...REVIEW_CELL_STYLE,
+                            fontWeight: 600,
+                          }}
+                        />
+                      </th>
+                    ))}
+                    <th
+                      style={{
+                        width: 32,
+                        border: "1px solid var(--line)",
+                        background: "var(--bg-soft)",
+                      }}
+                    />
+                  </tr>
+                </thead>
+                <tbody>
+                  {b.rows.map((r, ri) => (
+                    <tr key={ri}>
+                      {Array.from({ length: cols }).map((_, ci) => (
+                        <td
+                          key={ci}
+                          style={{
+                            border: "1px solid var(--line)",
+                            padding: 0,
+                            verticalAlign: "top",
+                          }}
+                        >
+                          <input
+                            value={r[ci] ?? ""}
+                            onChange={(e) => {
+                              const rows = b.rows.map((row, j) =>
+                                j !== ri
+                                  ? row
+                                  : Array.from({ length: cols }).map((__, k) =>
+                                      k === ci ? e.target.value : row[k] ?? "",
+                                    ),
+                              );
+                              setBlock(bi, { ...b, rows });
+                            }}
+                            style={REVIEW_CELL_STYLE}
+                          />
+                        </td>
+                      ))}
+                      <td
+                        style={{
+                          width: 32,
+                          border: "1px solid var(--line)",
+                          textAlign: "center",
+                        }}
+                      >
+                        <button
+                          type="button"
+                          title="删除该行"
+                          onClick={() =>
+                            setBlock(bi, {
+                              ...b,
+                              rows: b.rows.filter((_, j) => j !== ri),
+                            })
+                          }
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            cursor: "pointer",
+                            color: "var(--ink-400)",
+                            fontSize: 15,
+                            lineHeight: "28px",
+                            width: "100%",
+                          }}
+                        >
+                          ×
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button
+                type="button"
+                onClick={() =>
+                  setBlock(bi, {
+                    ...b,
+                    rows: [...b.rows, Array.from({ length: cols }).map(() => "")],
+                  })
+                }
+                style={{
+                  ...REVIEW_ADD_BTN_STYLE,
+                  borderRadius: 0,
+                  border: "none",
+                  borderTop: "1px solid var(--line)",
+                  width: "100%",
+                  textAlign: "left",
+                }}
+              >
+                + 添加一行
+              </button>
+            </div>
+          );
+        }
+        return (
+          <textarea
+            key={bi}
+            value={b.text}
+            onChange={(e) => setBlock(bi, { ...b, text: e.target.value })}
+            rows={Math.max(1, String(b.text || "").split("\n").length)}
+            style={{
+              ...REVIEW_CELL_STYLE,
+              resize: "vertical",
+              lineHeight: 1.6,
+              color: "var(--ink-700)",
+              padding: "4px 2px",
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 function LiveReviewDrawer({
   task,
   project,
@@ -19441,11 +19825,26 @@ function LiveReviewDrawer({
     };
   }, [task, project, streamer, streamerName, projectName]);
 
-  const [content, setContent] = React.useState(() =>
-    buildLiveReviewTemplate(reviewContext),
+  const [blocks, setBlocks] = React.useState(() =>
+    parseMarkdownToBlocks(buildLiveReviewTemplate(reviewContext)),
   );
+  // mode: "edit" = block (Notion-like) editor, "source" = raw Markdown
   const [mode, setMode] = React.useState("edit");
+  const [rawDraft, setRawDraft] = React.useState("");
   const [assist, setAssist] = React.useState(null);
+
+  const currentMarkdown = () =>
+    mode === "source" ? rawDraft : serializeBlocksToMarkdown(blocks);
+
+  const switchMode = (next) => {
+    if (next === mode) return;
+    if (next === "source") {
+      setRawDraft(serializeBlocksToMarkdown(blocks));
+    } else {
+      setBlocks(parseMarkdownToBlocks(rawDraft));
+    }
+    setMode(next);
+  };
   const [assistBusy, setAssistBusy] = React.useState(false);
   const [saveBusy, setSaveBusy] = React.useState(false);
   const [message, setMessage] = React.useState("");
@@ -19485,15 +19884,19 @@ function LiveReviewDrawer({
   };
 
   const insertAssist = () => {
-    const block = assist?.assist?.assistMarkdown;
-    if (!block) return;
-    setContent((prev) => `${block}\n${prev}`);
-    setMode("edit");
-    setMessage("已将 AI 复盘助手建议插入到复盘正文顶部。");
+    const blockMd = assist?.assist?.assistMarkdown;
+    if (!blockMd) return;
+    if (mode === "source") {
+      setRawDraft((prev) => `${blockMd}\n${prev}`);
+    } else {
+      setBlocks((prev) => [...parseMarkdownToBlocks(blockMd), ...prev]);
+    }
+    setMessage("已将 AI 复盘助手建议插入到复盘顶部。");
   };
 
   const save = async () => {
     if (saveBusy) return;
+    const content = currentMarkdown();
     if (!content.trim()) {
       setError("复盘内容不能为空。");
       return;
@@ -19611,12 +20014,12 @@ function LiveReviewDrawer({
             }}
           >
             {[
-              { key: "edit", label: "编辑 · MD" },
-              { key: "preview", label: "预览" },
+              { key: "edit", label: "编辑" },
+              { key: "source", label: "Markdown" },
             ].map((tab) => (
               <button
                 key={tab.key}
-                onClick={() => setMode(tab.key)}
+                onClick={() => switchMode(tab.key)}
                 style={{
                   border: "none",
                   cursor: "pointer",
@@ -19658,10 +20061,10 @@ function LiveReviewDrawer({
               borderRight: "1px solid var(--line)",
             }}
           >
-            {mode === "edit" ? (
+            {mode === "source" ? (
               <textarea
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
+                value={rawDraft}
+                onChange={(e) => setRawDraft(e.target.value)}
                 spellCheck={false}
                 style={{
                   width: "100%",
@@ -19680,12 +20083,7 @@ function LiveReviewDrawer({
                 }}
               />
             ) : (
-              <div
-                className="md-preview"
-                dangerouslySetInnerHTML={{
-                  __html: renderMarkdownToHtml(content),
-                }}
-              />
+              <BlockEditor blocks={blocks} onChange={setBlocks} />
             )}
           </div>
 
