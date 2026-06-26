@@ -2343,6 +2343,120 @@ describe("OpsReferenceApp billing smoke", () => {
     expect(screen.getAllByText("活跃").length).toBeGreaterThan(0);
     expect(screen.getByText("AI 调用")).toBeInTheDocument();
   });
+
+  it("starts a checkout order from the paywall and renders the pay credential", async () => {
+    const activeBilling = {
+      subscriptionStatus: "active",
+      mode: "active",
+      autoRenew: true,
+      graceUntil: null,
+      trialEndsAt: null,
+      pendingPlan: null,
+      plan: { tier: "pro", code: "pro", name: "专业版" },
+      entitlements: {
+        project_management: true,
+        settlement: true,
+        export_center: true,
+        war_room: true,
+        auto_review_shadow: true,
+        auto_review_active: false,
+        ai_diagnosis: true,
+        vendor_portal: false,
+        private_deployment: false,
+      },
+      usage: [],
+    };
+    const fetchMock = vi.fn(async (url, init) => {
+      if (String(url) === "/api/billing/checkout") {
+        expect(init?.method).toBe("POST");
+        const body = JSON.parse(init.body);
+        expect(body).toEqual({
+          kind: "subscription_renewal",
+          target: { planCode: "pro", billingCycle: "monthly" },
+        });
+        return {
+          ok: true,
+          json: async () => ({
+            order: {
+              id: "order-paywall-1",
+              kind: "subscription_renewal",
+              status: "pending",
+              amountCents: 99900,
+              currency: "CNY",
+            },
+            pay: { provider: "mock", params: { type: "qrcode", value: "mock://pay/order-paywall-1" } },
+            reused: false,
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp initialRoute="billing" billingStatus={activeBilling} />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "续费「专业版」 · ¥999/月" }),
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/billing/checkout",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(await screen.findByText(/mock:\/\/pay\/order-paywall-1/)).toBeInTheDocument();
+    expect(screen.getByText(/订单号 order-paywall-1/)).toBeInTheDocument();
+  });
+});
+
+describe("OpsReferenceApp funnel smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("loads conversion funnel metrics from the funnel API", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/funnel/metrics") {
+        return {
+          ok: true,
+          json: async () => ({
+            metrics: {
+              counts: {},
+              totals: {
+                signupCompleted: 4,
+                activated: 2,
+                firstSettlementBatch: 1,
+                paywallShown: 2,
+                paywallClicked: 1,
+                checkoutStarted: 1,
+                subscriptionActivated: 1,
+              },
+              rates: {
+                activationRate: 0.5,
+                paywallCtr: 0.4,
+                checkoutConversion: 1,
+                trialToPaid: 0.25,
+              },
+              paywallReasons: { trial_ending: 2 },
+            },
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="funnel" />);
+
+    expect(await screen.findByText("激活率")).toBeInTheDocument();
+    expect(screen.getByText("50.0%")).toBeInTheDocument();
+    expect(screen.getByText("Trial → Paid")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalled();
+  });
 });
 
 describe("OpsReferenceApp org smoke", () => {

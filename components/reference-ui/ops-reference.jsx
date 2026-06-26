@@ -12,6 +12,7 @@ import {
 } from "@heroui/react";
 
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
+import { resolvePaywall } from "@/features/funnel/paywall";
 import {
   toPricingResultDto,
   toProjectReviewDto,
@@ -1029,6 +1030,7 @@ const NAV = [
   { key: "reports", label: "报数审核", icon: "Reports" },
   { key: "settle", label: "结算中心", icon: "Money" },
   { key: "billing", label: "商业化与套餐", icon: "Money" },
+  { key: "funnel", label: "转化漏斗", icon: "Sparkles" },
   { divider: true },
   { key: "export", label: "数据导出", icon: "Export" },
   { key: "audit", label: "操作日志", icon: "Audit" },
@@ -13315,7 +13317,337 @@ function notificationStatusTone(status) {
   return "amber";
 }
 
-function ScreenBilling({ billingStatus, onRefresh }) {
+const BILLING_PLAN_CATALOG = [
+  { code: "basic", label: "基础版", monthlyCents: 29900 },
+  { code: "pro", label: "专业版", monthlyCents: 99900 },
+  { code: "enterprise", label: "企业版", monthlyCents: 299900 },
+];
+
+const BILLING_PURCHASABLE_FEATURES = [
+  "export_center",
+  "war_room",
+  "ai_diagnosis",
+  "auto_review_active",
+  "vendor_portal",
+];
+
+const USAGE_ADDON_PACK = {
+  ocr: 1000,
+  ai: 2000,
+  active_streamer: 1,
+  seat: 1,
+  storage_mb: 1024,
+  export: 50,
+};
+
+function yuanFromCents(cents) {
+  const value = Number.isFinite(cents) ? cents : 0;
+  return `¥${(value / 100).toLocaleString("zh-CN")}`;
+}
+
+function paywallReasonLabel(reason) {
+  const labels = {
+    feature_not_entitled: "当前套餐未授权",
+    usage_near_limit: "用量接近额度",
+    usage_hard_block: "用量已超额，需加量",
+    trial_ending: "试用即将到期",
+    trial_expired: "试用到期 / 订阅只读",
+  };
+  return labels[reason] ?? reason;
+}
+
+// 付费墙体验层：只渲染后端 getBillingStatus + resolvePaywall 的结论，
+// CTA 统一走 P6 /api/billing/checkout。真正的权限与额度由后端兜底。
+function BillingPaywall({
+  billingStatus,
+  onCheckout,
+  onRefresh,
+  onRefreshOrder,
+  onEvent,
+}) {
+  const [busyKey, setBusyKey] = React.useState("");
+  const [error, setError] = React.useState("");
+  const [pay, setPay] = React.useState(null);
+  const [orderStatus, setOrderStatus] = React.useState("");
+
+  const decide = (context) => {
+    if (!billingStatus) return null;
+    try {
+      return resolvePaywall(billingStatus, context);
+    } catch {
+      return null;
+    }
+  };
+  const global = decide({});
+  const globalReason = global?.reason;
+
+  const emitEvent = React.useCallback(
+    (payload) => {
+      if (!onEvent) return;
+      Promise.resolve(onEvent(payload)).catch(() => {});
+    },
+    [onEvent],
+  );
+
+  React.useEffect(() => {
+    if (globalReason) {
+      emitEvent({ event: "paywall_shown", reason: globalReason });
+    }
+  }, [globalReason, emitEvent]);
+
+  if (!billingStatus) return null;
+
+  const runCheckout = async (intent, key) => {
+    if (!onCheckout || busyKey) return;
+    setBusyKey(key);
+    setError("");
+    emitEvent({ event: "paywall_cta_clicked", reason: intent.kind });
+    try {
+      const result = await onCheckout(intent);
+      setPay(result ?? null);
+      setOrderStatus(result?.order?.status ?? "pending");
+    } catch (checkoutError) {
+      setError(
+        checkoutError instanceof Error ? checkoutError.message : "下单失败",
+      );
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const refreshOrder = async () => {
+    if (!pay?.order?.id || !onRefreshOrder) return;
+    setError("");
+    try {
+      const order = await onRefreshOrder(pay.order.id);
+      if (order?.status) setOrderStatus(order.status);
+      if (order?.status === "paid" && onRefresh) await onRefresh();
+    } catch (refreshError) {
+      setError(
+        refreshError instanceof Error ? refreshError.message : "刷新订单失败",
+      );
+    }
+  };
+
+  const currentCode = billingStatus.plan?.code;
+  const currentIndex = BILLING_PLAN_CATALOG.findIndex(
+    (plan) => plan.code === currentCode,
+  );
+
+  const usageRows = (billingStatus.usage ?? []).map((row) => ({
+    row,
+    decision: decide({ metric: row.metric }),
+  }));
+  const purchasableRows = BILLING_PURCHASABLE_FEATURES.filter(
+    (key) => billingStatus.entitlements?.[key] === false,
+  );
+
+  return (
+    <Card title="升级 · 续费 · 加量">
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {global && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "10px 12px",
+              borderRadius: 8,
+              background: global.blocking ? "#FDECEC" : "#FFF7E6",
+              color: global.blocking ? "var(--danger-700)" : "#9A6700",
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
+            <Icon.Warn
+              size={16}
+              stroke={global.blocking ? "var(--danger-600)" : "#B7791F"}
+            />
+            {global.reason === "trial_expired"
+              ? "订阅已到期或处于只读，续费后立即恢复写入能力。"
+              : "试用即将到期，请尽快选择套餐完成转化。"}
+          </div>
+        )}
+
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 16,
+            fontSize: 12,
+            color: "var(--ink-500)",
+          }}
+        >
+          <span>自动续费：{billingStatus.autoRenew === false ? "关闭" : "开启"}</span>
+          <span>试用到期：{formatBillingDate(billingStatus.trialEndsAt)}</span>
+          <span>宽限截止：{formatBillingDate(billingStatus.graceUntil)}</span>
+          <span>
+            排期降级：
+            {billingStatus.pendingPlan ? billingStatus.pendingPlan.name : "无"}
+          </span>
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {BILLING_PLAN_CATALOG.map((plan, index) => {
+            if (currentIndex >= 0 && index < currentIndex) return null;
+            const isCurrent = index === currentIndex;
+            const isRenewal = isCurrent;
+            const kind = isRenewal
+              ? "subscription_renewal"
+              : currentIndex < 0
+                ? "subscription_new"
+                : "subscription_upgrade";
+            const action = isRenewal ? "续费" : currentIndex < 0 ? "订阅" : "升级";
+            const key = `plan:${plan.code}`;
+            return (
+              <Button
+                key={plan.code}
+                kind={isRenewal ? "default" : "primary"}
+                disabled={Boolean(busyKey)}
+                onClick={() =>
+                  runCheckout(
+                    {
+                      kind,
+                      target: { planCode: plan.code, billingCycle: "monthly" },
+                    },
+                    key,
+                  )
+                }
+              >
+                {`${action}「${plan.label}」 · ${yuanFromCents(plan.monthlyCents)}/月`}
+              </Button>
+            );
+          })}
+        </div>
+
+        {usageRows.some(
+          ({ decision }) =>
+            decision &&
+            (decision.reason === "usage_near_limit" ||
+              decision.reason === "usage_hard_block"),
+        ) && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {usageRows.map(({ row, decision }) => {
+              if (
+                !decision ||
+                (decision.reason !== "usage_near_limit" &&
+                  decision.reason !== "usage_hard_block")
+              ) {
+                return null;
+              }
+              const pack = USAGE_ADDON_PACK[row.metric] ?? 1;
+              return (
+                <div
+                  key={row.metric}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 10,
+                  }}
+                >
+                  <Badge
+                    tone={decision.reason === "usage_hard_block" ? "red" : "amber"}
+                    dot
+                  >
+                    {`${BILLING_METRIC_LABELS[row.metric] ?? row.metric}：${paywallReasonLabel(decision.reason)}`}
+                  </Badge>
+                  <Button
+                    size="sm"
+                    kind="primary"
+                    disabled={Boolean(busyKey)}
+                    onClick={() =>
+                      runCheckout(
+                        {
+                          kind: "usage_addon",
+                          target: { metric: row.metric, quantity: pack },
+                        },
+                        `addon:${row.metric}`,
+                      )
+                    }
+                  >
+                    {`加量包 ${pack}`}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {purchasableRows.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {purchasableRows.map((key) => (
+              <Button
+                key={key}
+                size="sm"
+                kind="default"
+                disabled={Boolean(busyKey)}
+                onClick={() =>
+                  runCheckout(
+                    { kind: "feature_addon", target: { featureKey: key } },
+                    `feature:${key}`,
+                  )
+                }
+              >
+                {`加购：${BILLING_FEATURE_LABELS[key] ?? key}`}
+              </Button>
+            ))}
+          </div>
+        )}
+
+        {error && (
+          <div style={{ color: "var(--danger-600)", fontSize: 12 }}>{error}</div>
+        )}
+
+        {pay?.order && (
+          <div
+            style={{
+              borderTop: "1px solid var(--line)",
+              paddingTop: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              fontSize: 12,
+              color: "var(--ink-600)",
+            }}
+          >
+            <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+              待支付订单：{yuanFromCents(pay.order.amountCents)}（{orderStatus}）
+            </div>
+            <div className="mono" style={{ color: "var(--ink-400)" }}>
+              订单号 {pay.order.id}
+            </div>
+            {pay.pay?.params?.value && (
+              <div className="mono" style={{ wordBreak: "break-all" }}>
+                支付凭据：{pay.pay.params.value}
+              </div>
+            )}
+            <div>
+              <Button size="sm" kind="default" onClick={refreshOrder}>
+                刷新订单状态
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function formatBillingDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toISOString().slice(0, 10);
+}
+
+function ScreenBilling({
+  billingStatus,
+  onRefresh,
+  onCheckout,
+  onRefreshOrder,
+  onEvent,
+}) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const usageRows = billingStatus?.usage ?? [];
@@ -13436,6 +13768,14 @@ function ScreenBilling({ billingStatus, onRefresh }) {
                 </div>
               </Card>
             )}
+
+            <BillingPaywall
+              billingStatus={billingStatus}
+              onCheckout={onCheckout}
+              onRefresh={onRefresh}
+              onRefreshOrder={onRefreshOrder}
+              onEvent={onEvent}
+            />
 
             <Card title="功能权益" padded={false}>
               <DataTable
@@ -13564,6 +13904,156 @@ function billingStatusLabel(status) {
 
 function billingModeLabel(mode) {
   return mode === "read_only" ? "只读模式" : "活跃";
+}
+
+function formatFunnelPercent(rate) {
+  const value = Number.isFinite(rate) ? rate : 0;
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+const FUNNEL_RATE_LABELS = {
+  activationRate: "激活率",
+  paywallCtr: "付费墙点击率",
+  checkoutConversion: "结账转化率",
+  trialToPaid: "Trial → Paid",
+};
+
+// 转化漏斗看板：读 GET /api/funnel/metrics（按当前组织聚合）。
+function ScreenFunnel({ onLoad }) {
+  const [metrics, setMetrics] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  const load = React.useCallback(async () => {
+    if (!onLoad) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await onLoad();
+      setMetrics(result ?? null);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error ? loadError.message : "加载漏斗数据失败",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [onLoad]);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  const rateRows = metrics
+    ? Object.keys(FUNNEL_RATE_LABELS).map((key) => ({
+        key,
+        label: FUNNEL_RATE_LABELS[key],
+        value: formatFunnelPercent(metrics.rates?.[key]),
+      }))
+    : [];
+  const reasonRows = metrics
+    ? Object.entries(metrics.paywallReasons ?? {}).map(([reason, count]) => ({
+        reason,
+        label: paywallReasonLabel(reason),
+        count,
+      }))
+    : [];
+
+  return (
+    <>
+      <PageHeader
+        title="转化漏斗"
+        subtitle="注册 → 激活 → 付费 全链路转化（按当前组织聚合）"
+        actions={
+          <Button kind="primary" onClick={load} disabled={busy}>
+            {busy ? "加载中…" : "刷新数据"}
+          </Button>
+        }
+      />
+      <div
+        style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}
+      >
+        {error && (
+          <div style={{ color: "var(--danger-600)", fontSize: 12 }}>{error}</div>
+        )}
+        {!metrics ? (
+          <Card>
+            <EmptyHint
+              title="暂无漏斗数据"
+              hint="点击刷新后从埋点服务读取当前组织的转化漏斗。"
+              actionLabel="刷新数据"
+              onAction={load}
+            />
+          </Card>
+        ) : (
+          <>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+                gap: 12,
+              }}
+            >
+              <Card>
+                <Metric
+                  label="注册完成"
+                  value={String(metrics.totals.signupCompleted)}
+                  hint="signup_completed"
+                />
+              </Card>
+              <Card>
+                <Metric
+                  label="激活"
+                  value={String(metrics.totals.activated)}
+                  hint="activated"
+                />
+              </Card>
+              <Card>
+                <Metric
+                  label="首结算批次"
+                  value={String(metrics.totals.firstSettlementBatch)}
+                  hint="first_settlement_batch"
+                />
+              </Card>
+              <Card>
+                <Metric
+                  label="付费转化"
+                  value={String(metrics.totals.subscriptionActivated)}
+                  hint="subscription_activated"
+                />
+              </Card>
+            </div>
+
+            <Card title="转化率" padded={false}>
+              <DataTable
+                columns={[
+                  { title: "指标", render: (row) => row.label },
+                  { title: "数值", render: (row) => row.value },
+                ]}
+                rows={rateRows}
+              />
+            </Card>
+
+            <Card title="付费墙触发原因" padded={false}>
+              {reasonRows.length === 0 ? (
+                <div style={{ padding: 16, color: "var(--ink-400)", fontSize: 12 }}>
+                  暂无付费墙曝光记录。
+                </div>
+              ) : (
+                <DataTable
+                  columns={[
+                    { title: "原因", render: (row) => row.label },
+                    { title: "次数", render: (row) => String(row.count) },
+                  ]}
+                  rows={reasonRows}
+                />
+              )}
+            </Card>
+          </>
+        )}
+      </div>
+    </>
+  );
 }
 
 function sampleExportRows(kind) {
@@ -14036,6 +14526,34 @@ function OpsReferenceInner({
       refreshAuditEntries,
       refreshNotifications,
       refreshBillingStatus,
+      startCheckout: async (intent) => {
+        return fetchJson("/api/billing/checkout", "create checkout order failed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(intent),
+        });
+      },
+      refreshBillingOrder: async (orderId) => {
+        const body = await fetchJson(
+          `/api/billing/orders/${orderId}`,
+          "refresh billing order failed",
+        );
+        return body.order;
+      },
+      recordFunnelEvent: async (payload) => {
+        await fetchJson("/api/funnel/events", "record funnel event failed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      },
+      refreshFunnelMetrics: async () => {
+        const body = await fetchJson(
+          "/api/funnel/metrics",
+          "refresh funnel metrics failed",
+        );
+        return body.metrics;
+      },
       updateNotificationStatus: async (id, action) => {
         await fetchJson(
           `/api/notifications/${id}`,
@@ -14173,7 +14691,13 @@ function OpsReferenceInner({
               <ScreenBilling
                 billingStatus={billingStatusState}
                 onRefresh={actions.refreshBillingStatus}
+                onCheckout={actions.startCheckout}
+                onRefreshOrder={actions.refreshBillingOrder}
+                onEvent={actions.recordFunnelEvent}
               />
+            )}
+            {route === "funnel" && (
+              <ScreenFunnel onLoad={actions.refreshFunnelMetrics} />
             )}
             {route === "audit" && <ScreenAudit go={go} />}
             {route === "notifications" && <ScreenNotifications go={go} />}

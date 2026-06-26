@@ -7,6 +7,7 @@ import {
   createProjectDraft,
 } from "@/features/projects/project-service";
 import { toProjectCardDtos } from "@/features/projects/project-ui-dto";
+import { recordOnboardingProgress } from "@/features/funnel/onboarding";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
@@ -58,6 +59,12 @@ export async function POST(request: Request) {
         supplierId: body.supplierId?.trim() || undefined,
       },
     });
+
+    await recordOnboardingProgress({
+      client: supabase,
+      actor: auth,
+      step: "create_project",
+    }).catch(() => undefined);
 
     return NextResponse.json({ project }, { status: 201 });
   } catch (error) {

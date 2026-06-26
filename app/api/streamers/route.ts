@@ -10,6 +10,7 @@ import {
   type StreamerSourceType,
 } from "@/features/streamers/streamer-service";
 import { toStreamerCardDtos } from "@/features/streamers/streamer-ui-dto";
+import { recordOnboardingProgress } from "@/features/funnel/onboarding";
 import { writeAuditLog } from "@/lib/audit/audit";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
@@ -81,6 +82,12 @@ export async function POST(request: Request) {
         userId: normalizeOptionalText(body.userId),
       },
     });
+
+    await recordOnboardingProgress({
+      client: supabase,
+      actor: auth,
+      step: "add_streamer",
+    }).catch(() => undefined);
 
     return NextResponse.json({ streamer }, { status: 201 });
   } catch (error) {
