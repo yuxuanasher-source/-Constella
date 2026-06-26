@@ -20566,7 +20566,7 @@ async function archiveReviewToKnowledgeBase({
   streamerId,
 }) {
   let store = (await loadKnowledgeStoreRemote()) || loadKnowledgeStore();
-  const projName = product || projectId || "未命名项目";
+  const projName = product || projectId || "未标注项目";
   const strName = streamer || streamerId || "未知主播";
 
   let proj = kbFindChildByName(store, KB_REVIEW_FOLDER_ID, projName, "folder");
