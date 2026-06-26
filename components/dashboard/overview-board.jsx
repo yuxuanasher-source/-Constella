@@ -680,6 +680,48 @@ function PanelCard({ title, extra, children, pad = true }) {
   );
 }
 
+// 撮合推荐卡片：AI 情报层第二处载体。拉 /api/marketplace/intel 的确定性智能匹配,
+// 在个人面板展示 Top 推荐 + 理由;点击进入供需撮合论坛。无推荐则不渲染。
+function MarketplaceRecoCard({ go }) {
+  const [recos, setRecos] = React.useState(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(async () => {
+      try {
+        const res = await fetch("/api/marketplace/intel", { cache: "no-store" });
+        const json = await res.json();
+        if (!cancelled && res.ok) {
+          setRecos((json?.matches?.recommendations || []).slice(0, 3));
+        } else if (!cancelled) {
+          setRecos([]);
+        }
+      } catch {
+        if (!cancelled) setRecos([]);
+      }
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (!recos || recos.length === 0) return null;
+  return (
+    <PanelCard title="撮合推荐" extra="供需广场" pad={false}>
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {recos.map((r) => (
+          <button key={r.kind + r.refId} type="button" onClick={() => go?.("marketplace")}
+            style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", border: 0, background: "transparent", padding: "11px 16px", borderBottom: `1px solid ${C.divider2}`, cursor: "pointer" }}>
+            <span style={{ width: 30, height: 30, flex: "none", borderRadius: 9, background: tone(r.kind === "posting" ? "blue" : "violet").bg, color: tone(r.kind === "posting" ? "blue" : "violet").color, display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 12.5 }}>{r.kind === "posting" ? "需" : "接"}</span>
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 12.5, fontWeight: 700, color: C.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.title}</span>
+              <span style={{ fontSize: 11, color: C.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{(r.reasons || []).join(" · ")}</span>
+            </span>
+            <span style={{ fontSize: 13, color: C.primary, fontWeight: 700 }}>→</span>
+          </button>
+        ))}
+      </div>
+    </PanelCard>
+  );
+}
+
 function PersonalPanel({ user, scopeLabel, summary, recos, todos, go }) {
   const name = (user?.name && user.name !== "未登录用户" ? user.name : null) || "经营舱用户";
   const roleLabel = ROLE_LABELS[user?.role] || "成员";
@@ -731,6 +773,9 @@ function PersonalPanel({ user, scopeLabel, summary, recos, todos, go }) {
           </div>
         </PanelCard>
       ) : null}
+
+      {/* 3.5 撮合推荐(AI 情报层第二处载体) */}
+      <MarketplaceRecoCard go={go} />
 
       {/* 4. 待办事项 */}
       {todos.length ? (
