@@ -24,6 +24,10 @@ import {
   aggregateReviewKnowledge,
   buildReviewAssist,
 } from "@/features/live-review/live-review-knowledge";
+import {
+  renderMarkdownToHtml as renderMarkdownDoc,
+  MARKDOWN_DOC_CSS,
+} from "@/lib/markdown/render-markdown";
 
 import AiUsageDashboard from "./ai-usage-dashboard";
 import SettlementRuleBuilder, {
@@ -20619,6 +20623,88 @@ async function archiveReviewToKnowledgeBase({
   await saveKnowledgeStoreRemote(store);
 }
 
+// ——— 知识库文档：分享 / 导出（MD / PDF / Word）———————————————
+function kbSafeFileName(name) {
+  return (
+    (name || "复盘文档")
+      .replace(/[\\/:*?"<>|]/g, "_")
+      .trim()
+      .slice(0, 120) || "复盘文档"
+  );
+}
+
+function kbEscapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function kbDocHtmlPage(title, contentMd, { autoPrint } = {}) {
+  const body = renderMarkdownDoc(contentMd || "");
+  const safeTitle = kbEscapeHtml(title || "复盘文档");
+  const printScript = autoPrint
+    ? "<script>window.onload=function(){setTimeout(function(){window.focus();window.print();},150);};</script>"
+    : "";
+  return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${safeTitle}</title><style>${MARKDOWN_DOC_CSS}</style>${printScript}</head><body><h1>${safeTitle}</h1>${body}</body></html>`;
+}
+
+function kbDownloadBlob(filename, mime, content) {
+  if (typeof window === "undefined") return;
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function kbExportMarkdown(doc) {
+  kbDownloadBlob(
+    `${kbSafeFileName(doc.name)}.md`,
+    "text/markdown;charset=utf-8",
+    doc.contentMd || "",
+  );
+}
+
+function kbExportWord(doc) {
+  kbDownloadBlob(
+    `${kbSafeFileName(doc.name)}.doc`,
+    "application/msword",
+    kbDocHtmlPage(doc.name, doc.contentMd),
+  );
+}
+
+function kbExportPdf(doc) {
+  if (typeof window === "undefined") return;
+  const w = window.open("", "_blank");
+  if (!w) {
+    globalThis.alert?.(
+      "请允许弹出窗口以导出 PDF（在打印对话框中选择「另存为 PDF」）。",
+    );
+    return;
+  }
+  w.document.write(kbDocHtmlPage(doc.name, doc.contentMd, { autoPrint: true }));
+  w.document.close();
+}
+
+async function kbShareDoc(doc) {
+  const res = await globalThis.fetch("/api/knowledge-base/share", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: doc.name, contentMd: doc.contentMd || "" }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || "分享失败");
+  }
+  const payload = await res.json();
+  return payload.url;
+}
+
 function KnowledgeDocEditor({ doc, onChange }) {
   const [blocks, setBlocks] = React.useState(() => {
     const parsed = parseMarkdownToBlocks(doc.contentMd || "");
@@ -20640,6 +20726,9 @@ function ScreenKnowledge() {
   const [renamingId, setRenamingId] = React.useState(null);
   const [menu, setMenu] = React.useState(null);
   const [moveId, setMoveId] = React.useState(null);
+  const [shareUrl, setShareUrl] = React.useState("");
+  const [docMsg, setDocMsg] = React.useState("");
+  const [shareBusy, setShareBusy] = React.useState(false);
   const [syncState, setSyncState] = React.useState("loading"); // loading|synced|local
   const hydratedRef = React.useRef(false);
   const remoteTimerRef = React.useRef(null);
@@ -20676,6 +20765,12 @@ function ScreenKnowledge() {
   }, [store]);
 
   const selected = store.nodes[selectedId] || store.nodes[KB_ROOT_ID];
+
+  // 切换文档时清空上一篇的分享链接 / 提示。
+  React.useEffect(() => {
+    setShareUrl("");
+    setDocMsg("");
+  }, [selectedId]);
 
   const toggle = (id) =>
     setExpanded((e) => {
@@ -20905,6 +21000,122 @@ function ScreenKnowledge() {
                   </span>
                 ))}
               </div>
+              {selected.type === "doc" && (
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 8,
+                    marginBottom: 12,
+                    alignItems: "center",
+                  }}
+                >
+                  <Button
+                    size="sm"
+                    kind="default"
+                    icon={<Icon.Upload size={13} />}
+                    disabled={shareBusy}
+                    onClick={async () => {
+                      setDocMsg("");
+                      setShareUrl("");
+                      setShareBusy(true);
+                      try {
+                        const url = await kbShareDoc(selected);
+                        setShareUrl(url);
+                        try {
+                          await navigator.clipboard?.writeText(url);
+                          setDocMsg("分享链接已生成并复制到剪贴板。");
+                        } catch {
+                          setDocMsg("分享链接已生成。");
+                        }
+                      } catch (e) {
+                        setDocMsg(
+                          e?.message === "Tencent COS is not configured"
+                            ? "未连接云端存储，暂不可生成分享链接。"
+                            : `分享失败：${e?.message || "请稍后重试"}`,
+                        );
+                      } finally {
+                        setShareBusy(false);
+                      }
+                    }}
+                  >
+                    {shareBusy ? "生成中…" : "分享链接"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    kind="default"
+                    onClick={() => kbExportMarkdown(selected)}
+                  >
+                    导出 MD
+                  </Button>
+                  <Button
+                    size="sm"
+                    kind="default"
+                    onClick={() => kbExportPdf(selected)}
+                  >
+                    导出 PDF
+                  </Button>
+                  <Button
+                    size="sm"
+                    kind="default"
+                    onClick={() => kbExportWord(selected)}
+                  >
+                    导出 Word
+                  </Button>
+                </div>
+              )}
+              {selected.type === "doc" && (shareUrl || docMsg) ? (
+                <div
+                  style={{
+                    marginBottom: 12,
+                    padding: "10px 12px",
+                    border: "1px solid var(--line)",
+                    borderRadius: 8,
+                    background: "var(--bg-soft)",
+                    fontSize: 12,
+                    color: "var(--ink-700)",
+                  }}
+                >
+                  {docMsg ? <div style={{ marginBottom: shareUrl ? 6 : 0 }}>{docMsg}</div> : null}
+                  {shareUrl ? (
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input
+                        readOnly
+                        value={shareUrl}
+                        onFocus={(e) => e.target.select()}
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          border: "1px solid var(--line)",
+                          borderRadius: 6,
+                          padding: "5px 8px",
+                          fontSize: 12,
+                          color: "var(--ink-700)",
+                          background: "#fff",
+                        }}
+                      />
+                      <Button
+                        size="sm"
+                        kind="default"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(shareUrl);
+                          setDocMsg("已复制到剪贴板。");
+                        }}
+                      >
+                        复制
+                      </Button>
+                      <a
+                        href={shareUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ fontSize: 12, color: "var(--blue-700)" }}
+                      >
+                        打开
+                      </a>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <input
                 value={selected.name}
                 onChange={(e) =>
