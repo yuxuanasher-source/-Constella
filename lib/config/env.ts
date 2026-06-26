@@ -60,17 +60,20 @@ export type TencentCosConfig = {
   region: string;
 };
 
-// 腾讯云 COS 配置（可选）。未配置时返回 null，调用方需优雅降级。
-// 复用 OCR 已有的 TENCENT_SECRET_ID / TENCENT_SECRET_KEY；
-// 单独配置桶名与地域：TENCENT_COS_BUCKET（形如 name-1250000000）、TENCENT_COS_REGION。
+// 腾讯云 COS 配置。复用 OCR 已有的 TENCENT_SECRET_ID / TENCENT_SECRET_KEY；
+// 桶名与地域默认指向本项目的 jy-private-1322741645 / ap-guangzhou，可用
+// TENCENT_COS_BUCKET / TENCENT_COS_REGION 覆盖。只要密钥就绪即自动启用。
+const DEFAULT_COS_BUCKET = "jy-private-1322741645";
+const DEFAULT_COS_REGION = "ap-guangzhou";
+
 export function getTencentCosConfig(
   env: Record<string, string | undefined> = process.env,
 ): TencentCosConfig | null {
   const secretId = env.TENCENT_COS_SECRET_ID || env.TENCENT_SECRET_ID;
   const secretKey = env.TENCENT_COS_SECRET_KEY || env.TENCENT_SECRET_KEY;
-  const bucket = env.TENCENT_COS_BUCKET;
+  const bucket = env.TENCENT_COS_BUCKET || DEFAULT_COS_BUCKET;
   const region =
-    env.TENCENT_COS_REGION || env.TENCENT_OCR_REGION || "ap-guangzhou";
+    env.TENCENT_COS_REGION || env.TENCENT_OCR_REGION || DEFAULT_COS_REGION;
   if (!secretId || !secretKey || !bucket) return null;
   return { secretId, secretKey, bucket, region };
 }
