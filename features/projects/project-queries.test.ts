@@ -7,7 +7,8 @@ describe("listProjects", () => {
     const query = {
       select: vi.fn(() => query),
       eq: vi.fn(() => query),
-      order: vi.fn(async () => ({ data: [], error: null })),
+      order: vi.fn(() => query),
+      range: vi.fn(async () => ({ data: [], error: null })),
     };
     const supabase = {
       from: vi.fn(() => query),

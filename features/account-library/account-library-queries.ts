@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { DEFAULT_LIST_LIMIT } from "@/lib/http/pagination";
+
 import type {
   PlatformAccountStatus,
   PlatformAccountType,
@@ -62,7 +64,7 @@ export async function listPlatformAccounts(
     query = query.eq("bound_streamer_id", filter.boundStreamerId);
   }
 
-  const { data, error } = await query;
+  const { data, error } = await query.range(0, DEFAULT_LIST_LIMIT - 1);
 
   if (error) {
     throw error;

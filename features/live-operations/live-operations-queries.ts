@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { DEFAULT_LIST_LIMIT } from "@/lib/http/pagination";
+
 import type { EvidenceLevel, TimeSource } from "./live-report-evidence";
 import type { LiveTaskStatus } from "./live-task-state";
 import type { LiveTaskType, ReportStatus } from "./live-operations-service";
@@ -109,6 +111,7 @@ export async function listStreamerTaskCards(
     )
     .eq("streamer_id", streamerId)
     .order("planned_start_at", { ascending: true })
+    .range(0, DEFAULT_LIST_LIMIT - 1)
     .returns<StreamerTaskRow[]>();
 
   if (error) {
@@ -141,6 +144,7 @@ export async function listOpsLiveReportQueue(
 
   const { data, error } = await query
     .order("created_at", { ascending: false })
+    .range(0, DEFAULT_LIST_LIMIT - 1)
     .returns<OpsLiveReportRow[]>();
 
   if (error) {
@@ -166,6 +170,7 @@ export async function listOpsLiveTaskQueue(
 
   const { data, error } = await query
     .order("planned_start_at", { ascending: true })
+    .range(0, DEFAULT_LIST_LIMIT - 1)
     .returns<OpsLiveTaskRow[]>();
 
   if (error) {

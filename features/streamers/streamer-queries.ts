@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { DEFAULT_LIST_LIMIT } from "@/lib/http/pagination";
+
 export type StreamerListRow = {
   id: string;
   display_name: string;
@@ -95,7 +97,8 @@ export async function listStreamerPool(
     .select(
       "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, recording_submissions(status, submitted_at), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
     )
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .range(0, DEFAULT_LIST_LIMIT - 1);
 
   if (error) {
     throw error;

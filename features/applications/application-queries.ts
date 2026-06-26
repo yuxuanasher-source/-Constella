@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { DEFAULT_LIST_LIMIT } from "@/lib/http/pagination";
+
 import type {
   ApplicationStatus,
   RecordingReviewStatus,
@@ -110,7 +112,8 @@ export async function listOpsApplicationQueue(
   const { data, error } = await supabase
     .from("project_applications")
     .select(applicationSelect)
-    .order("submitted_at", { ascending: false });
+    .order("submitted_at", { ascending: false })
+    .range(0, DEFAULT_LIST_LIMIT - 1);
 
   if (error) {
     throw error;
@@ -140,7 +143,8 @@ export async function listStreamerApplicationCards(
   const { data, error } = await supabase
     .from("project_applications")
     .select(applicationSelect)
-    .order("submitted_at", { ascending: false });
+    .order("submitted_at", { ascending: false })
+    .range(0, DEFAULT_LIST_LIMIT - 1);
 
   if (error) {
     throw error;
