@@ -5,22 +5,11 @@ import {
   createProjectAuditWriter,
   publishProject,
 } from "@/features/projects/project-service";
-import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-import { statusForServiceError } from "@/lib/http/route-error-status";
+import { withAuth } from "@/lib/http/route-handler";
 
-export async function POST(
-  _request: Request,
-  { params }: { params: Promise<{ projectId: string }> },
-) {
-  try {
-    const supabase = await createSupabaseServerClient();
-    const auth = supabase ? await getAuthContext(supabase) : null;
-    if (!supabase || !auth) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const { projectId } = await params;
+export const POST = withAuth<{ projectId: string }>(
+  async ({ supabase, auth, params }) => {
+    const { projectId } = params;
     const project = await publishProject({
       repo: new SupabaseProjectRepository(supabase),
       audit: createProjectAuditWriter(supabase),
@@ -29,14 +18,5 @@ export async function POST(
     });
 
     return NextResponse.json({ project });
-  } catch (error) {
-    if (error instanceof Error) {
-      return NextResponse.json(
-        { error: error.message },
-        { status: statusForServiceError(error) },
-      );
-    }
-
-    return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
-  }
-}
+  },
+);

@@ -89,7 +89,7 @@ describe("/api/ocr/jobs", () => {
       },
     ]);
 
-    const response = await GET();
+    const response = await GET(new Request("http://localhost/api/ocr/jobs"));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({

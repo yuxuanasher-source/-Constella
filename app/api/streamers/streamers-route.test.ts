@@ -74,7 +74,7 @@ describe("streamer api routes", () => {
     ]);
 
     const { GET } = await import("./route");
-    const response = await GET();
+    const response = await GET(new Request("http://localhost/api/streamers"));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({

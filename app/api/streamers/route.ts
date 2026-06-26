@@ -11,82 +11,60 @@ import {
 } from "@/features/streamers/streamer-service";
 import { toStreamerCardDtos } from "@/features/streamers/streamer-ui-dto";
 import { writeAuditLog } from "@/lib/audit/audit";
-import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-import { statusForServiceError } from "@/lib/http/route-error-status";
+import { withAuth } from "@/lib/http/route-handler";
 
-export async function GET() {
-  try {
-    const supabase = await createSupabaseServerClient();
-    const auth = supabase ? await getAuthContext(supabase) : null;
-    if (!supabase || !auth) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+export const GET = withAuth(async ({ supabase }) => {
+  const streamers = await listStreamerPool(supabase);
+  return NextResponse.json({ streamers: toStreamerCardDtos(streamers) });
+});
 
-    const streamers = await listStreamerPool(supabase);
-    return NextResponse.json({ streamers: toStreamerCardDtos(streamers) });
-  } catch (error) {
-    return jsonServiceError(error);
-  }
-}
-
-export async function POST(request: Request) {
-  try {
-    const supabase = await createSupabaseServerClient();
-    const auth = supabase ? await getAuthContext(supabase) : null;
-    if (!supabase || !auth) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const body = (await request.json().catch(() => ({}))) as StreamerPostBody;
-    const displayName = normalizeOptionalText(body.displayName);
-    if (!displayName) {
-      return NextResponse.json(
-        { error: "displayName is required" },
-        { status: 400 },
-      );
-    }
-    const sourceType = normalizeEnum(
-      body.sourceType,
-      STREAMER_SOURCE_TYPES,
-      "sourceType",
+export const POST = withAuth(async ({ supabase, auth, request }) => {
+  const body = (await request.json().catch(() => ({}))) as StreamerPostBody;
+  const displayName = normalizeOptionalText(body.displayName);
+  if (!displayName) {
+    return NextResponse.json(
+      { error: "displayName is required" },
+      { status: 400 },
     );
-    const defaultSettlementMethod = normalizeEnum(
-      body.defaultSettlementMethod,
-      STREAMER_SETTLEMENT_METHODS,
-      "defaultSettlementMethod",
-    );
-    if (sourceType instanceof Response) {
-      return sourceType;
-    }
-    if (defaultSettlementMethod instanceof Response) {
-      return defaultSettlementMethod;
-    }
-
-    const streamer = await createStreamerProfile({
-      repo: new SupabaseStreamerRepository(supabase),
-      audit: (input) => writeAuditLog(supabase, input),
-      actor: auth,
-      input: {
-        displayName,
-        realName: normalizeOptionalText(body.realName),
-        gender: normalizeOptionalText(body.gender),
-        sourceType: sourceType as StreamerSourceType | undefined,
-        categories: normalizeTextList(body.categories),
-        platforms: normalizeTextList(body.platforms),
-        styles: normalizeTextList(body.styles),
-        defaultSettlementMethod: defaultSettlementMethod as
-          | StreamerSettlementMethod
-          | undefined,
-        userId: normalizeOptionalText(body.userId),
-      },
-    });
-
-    return NextResponse.json({ streamer }, { status: 201 });
-  } catch (error) {
-    return jsonServiceError(error);
   }
-}
+  const sourceType = normalizeEnum(
+    body.sourceType,
+    STREAMER_SOURCE_TYPES,
+    "sourceType",
+  );
+  const defaultSettlementMethod = normalizeEnum(
+    body.defaultSettlementMethod,
+    STREAMER_SETTLEMENT_METHODS,
+    "defaultSettlementMethod",
+  );
+  if (sourceType instanceof Response) {
+    return sourceType;
+  }
+  if (defaultSettlementMethod instanceof Response) {
+    return defaultSettlementMethod;
+  }
+
+  const streamer = await createStreamerProfile({
+    repo: new SupabaseStreamerRepository(supabase),
+    audit: (input) => writeAuditLog(supabase, input),
+    actor: auth,
+    input: {
+      displayName,
+      realName: normalizeOptionalText(body.realName),
+      gender: normalizeOptionalText(body.gender),
+      sourceType: sourceType as StreamerSourceType | undefined,
+      categories: normalizeTextList(body.categories),
+      platforms: normalizeTextList(body.platforms),
+      styles: normalizeTextList(body.styles),
+      defaultSettlementMethod: defaultSettlementMethod as
+        | StreamerSettlementMethod
+        | undefined,
+      userId: normalizeOptionalText(body.userId),
+    },
+  });
+
+  return NextResponse.json({ streamer }, { status: 201 });
+});
 
 type StreamerPostBody = {
   displayName?: unknown;
@@ -140,15 +118,4 @@ function normalizeEnum<T extends string>(
     { error: `${fieldName} is invalid` },
     { status: 400 },
   );
-}
-
-function jsonServiceError(error: unknown) {
-  if (error instanceof Error) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: statusForServiceError(error) },
-    );
-  }
-
-  return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
 }
