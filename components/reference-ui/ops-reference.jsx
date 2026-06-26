@@ -19475,6 +19475,12 @@ function parseMarkdownToBlocks(markdown) {
       blocks.push({ type: "list", ordered: true, items });
       continue;
     }
+    const image = line.trim().match(/^!\[(.*?)\]\((.*)\)$/);
+    if (image) {
+      blocks.push({ type: "image", alt: image[1], src: image[2] });
+      i += 1;
+      continue;
+    }
     blocks.push({ type: "paragraph", text: line.trim() });
     i += 1;
   }
@@ -19502,6 +19508,8 @@ function serializeBlocksToMarkdown(blocks) {
       String(b.text || "")
         .split("\n")
         .forEach((l) => out.push(`> ${l}`));
+    } else if (b.type === "image") {
+      out.push(`![${b.alt || ""}](${b.src || ""})`);
     } else {
       out.push(b.text || "");
     }
@@ -19532,257 +19540,250 @@ const REVIEW_CELL_STYLE = {
   boxSizing: "border-box",
 };
 
-// Notion-like block editor: edits rendered blocks in place; no raw markdown symbols.
+const REVIEW_TOOL_BTN_STYLE = {
+  border: "1px solid var(--line)",
+  background: "#fff",
+  color: "var(--ink-700)",
+  borderRadius: 6,
+  padding: "4px 9px",
+  fontSize: 12,
+  cursor: "pointer",
+  lineHeight: 1.4,
+};
+const REVIEW_HANDLE_STYLE = {
+  border: "none",
+  background: "transparent",
+  color: "var(--ink-300, #c7ccd6)",
+  cursor: "pointer",
+  fontSize: 13,
+  lineHeight: "22px",
+  padding: "2px 2px",
+  flexShrink: 0,
+  userSelect: "none",
+};
+
+function makeEmptyBlock(kind) {
+  switch (kind) {
+    case "h1":
+      return { type: "heading", level: 1, text: "" };
+    case "h2":
+      return { type: "heading", level: 2, text: "" };
+    case "h3":
+      return { type: "heading", level: 3, text: "" };
+    case "bullet":
+      return { type: "list", ordered: false, items: [""] };
+    case "ordered":
+      return { type: "list", ordered: true, items: [""] };
+    case "quote":
+      return { type: "quote", text: "" };
+    case "table":
+      return {
+        type: "table",
+        headers: ["列 1", "列 2", "列 3"],
+        rows: [
+          ["", "", ""],
+          ["", "", ""],
+        ],
+      };
+    case "image":
+      return { type: "image", alt: "", src: "" };
+    default:
+      return { type: "paragraph", text: "" };
+  }
+}
+
+function blockToPlainText(b) {
+  if (!b) return "";
+  if (b.type === "list") return (b.items || []).join("，");
+  if (b.type === "table") return (b.headers || []).join(" / ");
+  if (b.type === "image") return b.alt || "";
+  return b.text || "";
+}
+
+// Notion-like block editor: rendered blocks edited in place, quick-insert toolbar,
+// markdown shortcuts (# / - / 1. / >), right-click context menu, table + image support.
 function BlockEditor({ blocks, onChange }) {
+  const [menu, setMenu] = React.useState(null);
+  const [activeIndex, setActiveIndex] = React.useState(
+    Math.max(0, blocks.length - 1),
+  );
+  const fileInputRef = React.useRef(null);
+  const pendingInsertRef = React.useRef(null);
+  const rootRef = React.useRef(null);
+  const pendingFocusRef = React.useRef(null);
+
+  // After an insert / convert that swaps the block's element type, restore focus
+  // to the affected block so typing continues seamlessly (Notion-like).
+  React.useEffect(() => {
+    const idx = pendingFocusRef.current;
+    if (idx == null || !rootRef.current) return;
+    pendingFocusRef.current = null;
+    const el = rootRef.current.querySelector(`[data-focus-bi="${idx}"]`);
+    if (el) {
+      el.focus();
+      const len = el.value?.length ?? 0;
+      el.setSelectionRange?.(len, len);
+    }
+  });
+
   const setBlock = (bi, next) =>
     onChange(blocks.map((b, i) => (i === bi ? next : b)));
+  const insertAt = (index, block) => {
+    const next = [...blocks];
+    next.splice(index, 0, block);
+    onChange(next);
+  };
+  const insertAfter = (i, block) => insertAt(i + 1, block);
+  const removeAt = (i) => onChange(blocks.filter((_, j) => j !== i));
+  const moveBlock = (i, dir) => {
+    const j = i + dir;
+    if (j < 0 || j >= blocks.length) return;
+    const next = [...blocks];
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  };
+  const duplicateAt = (i) =>
+    insertAt(i + 1, JSON.parse(JSON.stringify(blocks[i])));
+  const turnInto = (i, kind) => {
+    const text = blockToPlainText(blocks[i]);
+    const nb = makeEmptyBlock(kind);
+    if (nb.type === "heading" || nb.type === "quote" || nb.type === "paragraph") {
+      nb.text = text;
+    } else if (nb.type === "list") {
+      nb.items = text
+        ? text
+            .split(/[，,]/)
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [""];
+      if (!nb.items.length) nb.items = [""];
+    }
+    onChange(blocks.map((b, j) => (j === i ? nb : b)));
+    pendingFocusRef.current = i;
+  };
+  const addBlock = (kind) => {
+    const at =
+      activeIndex >= 0 && activeIndex < blocks.length
+        ? activeIndex + 1
+        : blocks.length;
+    if (kind === "image") {
+      pendingInsertRef.current = at;
+      fileInputRef.current?.click();
+      return;
+    }
+    insertAt(at, makeEmptyBlock(kind));
+    setActiveIndex(at);
+    pendingFocusRef.current = at;
+  };
+  const onPickImage = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (file.size > 3 * 1024 * 1024) {
+      globalThis.alert?.("图片过大（>3MB），请压缩后再插入。");
+      return;
+    }
+    const reader = new globalThis.FileReader();
+    reader.onload = () => {
+      const at = pendingInsertRef.current ?? blocks.length;
+      insertAt(at, { type: "image", alt: file.name || "图片", src: reader.result });
+      pendingInsertRef.current = null;
+    };
+    reader.readAsDataURL(file);
+  };
+  const insertColumn = (bi, at) => {
+    const b = blocks[bi];
+    const headers = [...b.headers];
+    headers.splice(at, 0, `列 ${headers.length + 1}`);
+    const rows = b.rows.map((r) => {
+      const nr = [...r];
+      nr.splice(at, 0, "");
+      return nr;
+    });
+    setBlock(bi, { ...b, headers, rows });
+  };
+  const deleteColumn = (bi, ci) => {
+    const b = blocks[bi];
+    if (b.headers.length <= 1) return;
+    setBlock(bi, {
+      ...b,
+      headers: b.headers.filter((_, k) => k !== ci),
+      rows: b.rows.map((r) => r.filter((_, k) => k !== ci)),
+    });
+  };
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {blocks.map((b, bi) => {
-        if (b.type === "heading") {
-          const sizes = { 1: 22, 2: 19, 3: 15.5, 4: 13.5 };
-          return (
-            <input
-              key={bi}
-              value={b.text}
-              onChange={(e) => setBlock(bi, { ...b, text: e.target.value })}
-              style={{
-                ...REVIEW_CELL_STYLE,
-                fontSize: sizes[b.level] || 14,
-                fontWeight: (b.level || 2) <= 3 ? 700 : 600,
-                padding: "2px 0",
-                marginTop: (b.level || 2) <= 2 ? 6 : 2,
-              }}
-            />
-          );
-        }
-        if (b.type === "quote") {
-          return (
-            <div
-              key={bi}
-              style={{
-                borderLeft: "3px solid var(--blue-600)",
-                background: "var(--bg-soft)",
-                borderRadius: 6,
-                padding: "4px 10px",
-              }}
-            >
-              <textarea
-                value={b.text}
-                onChange={(e) => setBlock(bi, { ...b, text: e.target.value })}
-                rows={Math.max(1, String(b.text || "").split("\n").length)}
-                style={{
-                  ...REVIEW_CELL_STYLE,
-                  resize: "vertical",
-                  lineHeight: 1.6,
-                  color: "var(--ink-700)",
-                  padding: "4px 2px",
-                }}
-              />
-            </div>
-          );
-        }
-        if (b.type === "list") {
-          return (
-            <div key={bi} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {b.items.map((it, ii) => (
-                <div
-                  key={ii}
-                  style={{ display: "flex", alignItems: "center", gap: 8 }}
-                >
-                  <span
-                    style={{
-                      color: "var(--ink-400)",
-                      fontSize: 13,
-                      minWidth: b.ordered ? 18 : 10,
-                      textAlign: "right",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {b.ordered ? `${ii + 1}.` : "•"}
-                  </span>
-                  <input
-                    value={it}
-                    onChange={(e) =>
-                      setBlock(bi, {
-                        ...b,
-                        items: b.items.map((x, j) => (j === ii ? e.target.value : x)),
-                      })
-                    }
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        const items = [...b.items];
-                        items.splice(ii + 1, 0, "");
-                        setBlock(bi, { ...b, items });
-                      } else if (
-                        e.key === "Backspace" &&
-                        it === "" &&
-                        b.items.length > 1
-                      ) {
-                        e.preventDefault();
-                        setBlock(bi, {
-                          ...b,
-                          items: b.items.filter((_, j) => j !== ii),
-                        });
-                      }
-                    }}
-                    style={REVIEW_CELL_STYLE}
-                  />
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={() => setBlock(bi, { ...b, items: [...b.items, ""] })}
-                style={REVIEW_ADD_BTN_STYLE}
-              >
-                + 添加一项
-              </button>
-            </div>
-          );
-        }
-        if (b.type === "table") {
-          const cols = b.headers.length || 1;
-          return (
-            <div
-              key={bi}
-              style={{
-                border: "1px solid var(--line)",
-                borderRadius: 8,
-                overflow: "hidden",
-              }}
-            >
-              <table
-                style={{
-                  borderCollapse: "collapse",
-                  width: "100%",
-                  tableLayout: "fixed",
-                }}
-              >
-                <thead>
-                  <tr>
-                    {b.headers.map((h, ci) => (
-                      <th
-                        key={ci}
-                        style={{
-                          border: "1px solid var(--line)",
-                          background: "var(--bg-soft)",
-                          padding: 0,
-                        }}
-                      >
-                        <input
-                          value={h}
-                          onChange={(e) =>
-                            setBlock(bi, {
-                              ...b,
-                              headers: b.headers.map((x, k) =>
-                                k === ci ? e.target.value : x,
-                              ),
-                            })
-                          }
-                          style={{
-                            ...REVIEW_CELL_STYLE,
-                            fontWeight: 600,
-                          }}
-                        />
-                      </th>
-                    ))}
-                    <th
-                      style={{
-                        width: 32,
-                        border: "1px solid var(--line)",
-                        background: "var(--bg-soft)",
-                      }}
-                    />
-                  </tr>
-                </thead>
-                <tbody>
-                  {b.rows.map((r, ri) => (
-                    <tr key={ri}>
-                      {Array.from({ length: cols }).map((_, ci) => (
-                        <td
-                          key={ci}
-                          style={{
-                            border: "1px solid var(--line)",
-                            padding: 0,
-                            verticalAlign: "top",
-                          }}
-                        >
-                          <input
-                            value={r[ci] ?? ""}
-                            onChange={(e) => {
-                              const rows = b.rows.map((row, j) =>
-                                j !== ri
-                                  ? row
-                                  : Array.from({ length: cols }).map((__, k) =>
-                                      k === ci ? e.target.value : row[k] ?? "",
-                                    ),
-                              );
-                              setBlock(bi, { ...b, rows });
-                            }}
-                            style={REVIEW_CELL_STYLE}
-                          />
-                        </td>
-                      ))}
-                      <td
-                        style={{
-                          width: 32,
-                          border: "1px solid var(--line)",
-                          textAlign: "center",
-                        }}
-                      >
-                        <button
-                          type="button"
-                          title="删除该行"
-                          onClick={() =>
-                            setBlock(bi, {
-                              ...b,
-                              rows: b.rows.filter((_, j) => j !== ri),
-                            })
-                          }
-                          style={{
-                            border: "none",
-                            background: "transparent",
-                            cursor: "pointer",
-                            color: "var(--ink-400)",
-                            fontSize: 15,
-                            lineHeight: "28px",
-                            width: "100%",
-                          }}
-                        >
-                          ×
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <button
-                type="button"
-                onClick={() =>
-                  setBlock(bi, {
-                    ...b,
-                    rows: [...b.rows, Array.from({ length: cols }).map(() => "")],
-                  })
-                }
-                style={{
-                  ...REVIEW_ADD_BTN_STYLE,
-                  borderRadius: 0,
-                  border: "none",
-                  borderTop: "1px solid var(--line)",
-                  width: "100%",
-                  textAlign: "left",
-                }}
-              >
-                + 添加一行
-              </button>
-            </div>
-          );
-        }
-        return (
+  const openBlockMenu = (e, bi) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu({ x: e.clientX, y: e.clientY, blockIndex: bi });
+  };
+  const openColumnMenu = (e, bi, ci) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu({ x: e.clientX, y: e.clientY, blockIndex: bi, colIndex: ci });
+  };
+
+  const MenuLabel = ({ children }) => (
+    <div style={{ fontSize: 11, color: "var(--ink-400)", padding: "6px 8px 2px" }}>
+      {children}
+    </div>
+  );
+  const MenuItem = ({ onClick, children, danger }) => (
+    <button
+      type="button"
+      onMouseDown={(e) => {
+        e.preventDefault();
+        onClick();
+        setMenu(null);
+      }}
+      style={{
+        display: "block",
+        width: "100%",
+        textAlign: "left",
+        border: "none",
+        background: "transparent",
+        padding: "7px 8px",
+        borderRadius: 6,
+        cursor: "pointer",
+        color: danger ? "var(--danger-600)" : "var(--ink-700)",
+        fontSize: 13,
+      }}
+    >
+      {children}
+    </button>
+  );
+  const menuSep = { height: 1, background: "var(--line)", margin: "4px 0" };
+
+  const renderInner = (b, bi) => {
+    if (b.type === "heading") {
+      const sizes = { 1: 22, 2: 19, 3: 15.5, 4: 13.5 };
+      return (
+        <input
+          data-focus-bi={bi}
+          value={b.text}
+          onChange={(e) => setBlock(bi, { ...b, text: e.target.value })}
+          style={{
+            ...REVIEW_CELL_STYLE,
+            fontSize: sizes[b.level] || 14,
+            fontWeight: (b.level || 2) <= 3 ? 700 : 600,
+            padding: "2px 0",
+            marginTop: (b.level || 2) <= 2 ? 6 : 2,
+          }}
+        />
+      );
+    }
+    if (b.type === "quote") {
+      return (
+        <div
+          style={{
+            borderLeft: "3px solid var(--blue-600)",
+            background: "var(--bg-soft)",
+            borderRadius: 6,
+            padding: "4px 10px",
+          }}
+        >
           <textarea
-            key={bi}
+            data-focus-bi={bi}
             value={b.text}
             onChange={(e) => setBlock(bi, { ...b, text: e.target.value })}
             rows={Math.max(1, String(b.text || "").split("\n").length)}
@@ -19794,8 +19795,466 @@ function BlockEditor({ blocks, onChange }) {
               padding: "4px 2px",
             }}
           />
-        );
-      })}
+        </div>
+      );
+    }
+    if (b.type === "image") {
+      return b.src ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <img
+            src={b.src}
+            alt={b.alt || ""}
+            style={{
+              maxWidth: "100%",
+              borderRadius: 8,
+              border: "1px solid var(--line)",
+            }}
+          />
+          <input
+            value={b.alt || ""}
+            placeholder="图片说明（alt）"
+            onChange={(e) => setBlock(bi, { ...b, alt: e.target.value })}
+            style={{ ...REVIEW_CELL_STYLE, fontSize: 12, color: "var(--ink-400)" }}
+          />
+        </div>
+      ) : (
+        <div
+          style={{
+            border: "1px dashed var(--line)",
+            borderRadius: 8,
+            padding: 16,
+            color: "var(--ink-400)",
+            fontSize: 12,
+          }}
+        >
+          图片未加载
+        </div>
+      );
+    }
+    if (b.type === "list") {
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {b.items.map((it, ii) => (
+            <div key={ii} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span
+                style={{
+                  color: "var(--ink-400)",
+                  fontSize: 13,
+                  minWidth: b.ordered ? 18 : 10,
+                  textAlign: "right",
+                  flexShrink: 0,
+                }}
+              >
+                {b.ordered ? `${ii + 1}.` : "•"}
+              </span>
+              <input
+                data-focus-bi={ii === 0 ? bi : undefined}
+                value={it}
+                onChange={(e) =>
+                  setBlock(bi, {
+                    ...b,
+                    items: b.items.map((x, j) => (j === ii ? e.target.value : x)),
+                  })
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    const items = [...b.items];
+                    items.splice(ii + 1, 0, "");
+                    setBlock(bi, { ...b, items });
+                  } else if (
+                    e.key === "Backspace" &&
+                    it === "" &&
+                    b.items.length > 1
+                  ) {
+                    e.preventDefault();
+                    setBlock(bi, {
+                      ...b,
+                      items: b.items.filter((_, j) => j !== ii),
+                    });
+                  }
+                }}
+                style={REVIEW_CELL_STYLE}
+              />
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => setBlock(bi, { ...b, items: [...b.items, ""] })}
+            style={REVIEW_ADD_BTN_STYLE}
+          >
+            + 添加一项
+          </button>
+        </div>
+      );
+    }
+    if (b.type === "table") {
+      const cols = b.headers.length || 1;
+      return (
+        <div
+          style={{
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            overflow: "hidden",
+          }}
+        >
+          <table
+            style={{
+              borderCollapse: "collapse",
+              width: "100%",
+              tableLayout: "fixed",
+            }}
+          >
+            <thead>
+              <tr>
+                {b.headers.map((h, ci) => (
+                  <th
+                    key={ci}
+                    title="右键编辑列"
+                    onContextMenu={(e) => openColumnMenu(e, bi, ci)}
+                    style={{
+                      border: "1px solid var(--line)",
+                      background: "var(--bg-soft)",
+                      padding: 0,
+                    }}
+                  >
+                    <input
+                      data-focus-bi={ci === 0 ? bi : undefined}
+                      value={h}
+                      onChange={(e) =>
+                        setBlock(bi, {
+                          ...b,
+                          headers: b.headers.map((x, k) =>
+                            k === ci ? e.target.value : x,
+                          ),
+                        })
+                      }
+                      style={{ ...REVIEW_CELL_STYLE, fontWeight: 600 }}
+                    />
+                  </th>
+                ))}
+                <th
+                  style={{
+                    width: 34,
+                    border: "1px solid var(--line)",
+                    background: "var(--bg-soft)",
+                    padding: 0,
+                  }}
+                >
+                  <button
+                    type="button"
+                    title="新增一列"
+                    onClick={() => insertColumn(bi, b.headers.length)}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      color: "var(--ink-400)",
+                      fontSize: 14,
+                      width: "100%",
+                      lineHeight: "28px",
+                    }}
+                  >
+                    +
+                  </button>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {b.rows.map((r, ri) => (
+                <tr key={ri}>
+                  {Array.from({ length: cols }).map((_, ci) => (
+                    <td
+                      key={ci}
+                      style={{
+                        border: "1px solid var(--line)",
+                        padding: 0,
+                        verticalAlign: "top",
+                      }}
+                    >
+                      <input
+                        value={r[ci] ?? ""}
+                        onChange={(e) => {
+                          const rows = b.rows.map((row, j) =>
+                            j !== ri
+                              ? row
+                              : Array.from({ length: cols }).map((__, k) =>
+                                  k === ci ? e.target.value : row[k] ?? "",
+                                ),
+                          );
+                          setBlock(bi, { ...b, rows });
+                        }}
+                        style={REVIEW_CELL_STYLE}
+                      />
+                    </td>
+                  ))}
+                  <td
+                    style={{
+                      width: 34,
+                      border: "1px solid var(--line)",
+                      textAlign: "center",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      title="删除该行"
+                      onClick={() =>
+                        setBlock(bi, {
+                          ...b,
+                          rows: b.rows.filter((_, j) => j !== ri),
+                        })
+                      }
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        cursor: "pointer",
+                        color: "var(--ink-400)",
+                        fontSize: 15,
+                        lineHeight: "28px",
+                        width: "100%",
+                      }}
+                    >
+                      ×
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button
+            type="button"
+            onClick={() =>
+              setBlock(bi, {
+                ...b,
+                rows: [...b.rows, Array.from({ length: cols }).map(() => "")],
+              })
+            }
+            style={{
+              ...REVIEW_ADD_BTN_STYLE,
+              borderRadius: 0,
+              border: "none",
+              borderTop: "1px solid var(--line)",
+              width: "100%",
+              textAlign: "left",
+            }}
+          >
+            + 添加一行
+          </button>
+        </div>
+      );
+    }
+    // paragraph — with markdown shortcuts
+    return (
+      <textarea
+        data-focus-bi={bi}
+        value={b.text}
+        onChange={(e) => {
+          const v = e.target.value;
+          const mH = v.match(/^(#{1,3})\s(.*)$/);
+          if (mH) {
+            pendingFocusRef.current = bi;
+            setBlock(bi, { type: "heading", level: mH[1].length, text: mH[2] });
+            return;
+          }
+          if (/^[-*]\s/.test(v)) {
+            pendingFocusRef.current = bi;
+            setBlock(bi, {
+              type: "list",
+              ordered: false,
+              items: [v.replace(/^[-*]\s/, "")],
+            });
+            return;
+          }
+          if (/^\d+\.\s/.test(v)) {
+            pendingFocusRef.current = bi;
+            setBlock(bi, {
+              type: "list",
+              ordered: true,
+              items: [v.replace(/^\d+\.\s/, "")],
+            });
+            return;
+          }
+          if (/^>\s/.test(v)) {
+            pendingFocusRef.current = bi;
+            setBlock(bi, { type: "quote", text: v.replace(/^>\s/, "") });
+            return;
+          }
+          setBlock(bi, { ...b, text: v });
+        }}
+        rows={Math.max(1, String(b.text || "").split("\n").length)}
+        placeholder="输入正文，或用 # 标题、- 列表、1. 序号、> 引用"
+        style={{
+          ...REVIEW_CELL_STYLE,
+          resize: "vertical",
+          lineHeight: 1.6,
+          color: "var(--ink-700)",
+          padding: "4px 2px",
+        }}
+      />
+    );
+  };
+
+  const TOOLBAR = [
+    { k: "h1", label: "H1" },
+    { k: "h2", label: "H2" },
+    { k: "h3", label: "H3" },
+    { k: "paragraph", label: "正文" },
+    { k: "bullet", label: "• 列表" },
+    { k: "ordered", label: "1. 序号" },
+    { k: "quote", label: "❝ 引用" },
+    { k: "table", label: "⊞ 表格" },
+    { k: "image", label: "🖼 图片" },
+  ];
+
+  return (
+    <div ref={rootRef} style={{ display: "flex", flexDirection: "column" }}>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 6,
+          marginBottom: 10,
+          paddingBottom: 10,
+          borderBottom: "1px solid var(--line)",
+          position: "sticky",
+          top: 0,
+          background: "#fff",
+          zIndex: 2,
+        }}
+      >
+        {TOOLBAR.map((t) => (
+          <button
+            key={t.k}
+            type="button"
+            onClick={() => addBlock(t.k)}
+            style={REVIEW_TOOL_BTN_STYLE}
+          >
+            {t.label}
+          </button>
+        ))}
+        <span
+          style={{
+            fontSize: 11,
+            color: "var(--ink-400)",
+            alignSelf: "center",
+            marginLeft: 4,
+          }}
+        >
+          右键块可转换 / 删除 · 输入 # - 1. {">"} 自动转换
+        </span>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {blocks.map((b, bi) => (
+          <div
+            key={bi}
+            onFocusCapture={() => setActiveIndex(bi)}
+            onContextMenu={(e) => openBlockMenu(e, bi)}
+            style={{ display: "flex", gap: 6, alignItems: "flex-start" }}
+          >
+            <button
+              type="button"
+              title="块操作（也可右键）"
+              onClick={(e) => openBlockMenu(e, bi)}
+              style={REVIEW_HANDLE_STYLE}
+            >
+              ⋮⋮
+            </button>
+            <div style={{ flex: 1, minWidth: 0 }}>{renderInner(b, bi)}</div>
+          </div>
+        ))}
+      </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={onPickImage}
+        style={{ display: "none" }}
+      />
+
+      {menu && (
+        <>
+          <div
+            onMouseDown={() => setMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMenu(null);
+            }}
+            style={{ position: "fixed", inset: 0, zIndex: 90 }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              left: Math.min(
+                menu.x,
+                (typeof window !== "undefined" ? window.innerWidth : 1200) - 220,
+              ),
+              top: Math.min(
+                menu.y,
+                (typeof window !== "undefined" ? window.innerHeight : 800) - 360,
+              ),
+              zIndex: 91,
+              background: "#fff",
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              boxShadow: "0 12px 32px rgba(15,23,42,0.18)",
+              padding: 6,
+              minWidth: 190,
+            }}
+          >
+            {menu.colIndex != null ? (
+              <>
+                <MenuLabel>列操作</MenuLabel>
+                <MenuItem onClick={() => insertColumn(menu.blockIndex, menu.colIndex + 1)}>
+                  在右侧插入列
+                </MenuItem>
+                <MenuItem onClick={() => insertColumn(menu.blockIndex, menu.colIndex)}>
+                  在左侧插入列
+                </MenuItem>
+                <MenuItem danger onClick={() => deleteColumn(menu.blockIndex, menu.colIndex)}>
+                  删除本列
+                </MenuItem>
+              </>
+            ) : (
+              <>
+                <MenuLabel>转为</MenuLabel>
+                <MenuItem onClick={() => turnInto(menu.blockIndex, "paragraph")}>
+                  正文
+                </MenuItem>
+                <MenuItem onClick={() => turnInto(menu.blockIndex, "h1")}>标题 1</MenuItem>
+                <MenuItem onClick={() => turnInto(menu.blockIndex, "h2")}>标题 2</MenuItem>
+                <MenuItem onClick={() => turnInto(menu.blockIndex, "h3")}>标题 3</MenuItem>
+                <MenuItem onClick={() => turnInto(menu.blockIndex, "bullet")}>
+                  无序列表
+                </MenuItem>
+                <MenuItem onClick={() => turnInto(menu.blockIndex, "ordered")}>
+                  有序列表
+                </MenuItem>
+                <MenuItem onClick={() => turnInto(menu.blockIndex, "quote")}>引用</MenuItem>
+                <div style={menuSep} />
+                <MenuItem
+                  onClick={() => insertAfter(menu.blockIndex, makeEmptyBlock("paragraph"))}
+                >
+                  在下方插入正文
+                </MenuItem>
+                <MenuItem
+                  onClick={() => insertAfter(menu.blockIndex, makeEmptyBlock("table"))}
+                >
+                  在下方插入表格
+                </MenuItem>
+                <MenuItem onClick={() => moveBlock(menu.blockIndex, -1)}>上移</MenuItem>
+                <MenuItem onClick={() => moveBlock(menu.blockIndex, 1)}>下移</MenuItem>
+                <MenuItem onClick={() => duplicateAt(menu.blockIndex)}>复制</MenuItem>
+                <div style={menuSep} />
+                <MenuItem danger onClick={() => removeAt(menu.blockIndex)}>
+                  删除
+                </MenuItem>
+              </>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
