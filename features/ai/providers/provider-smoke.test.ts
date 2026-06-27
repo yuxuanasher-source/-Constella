@@ -61,4 +61,33 @@ describe("env-gated LLM provider smoke tests", () => {
       expect(result.text?.length).toBeGreaterThan(0);
     },
   );
+
+  it.skipIf(!process.env.DEEPSEEK_API_KEY)(
+    "calls DeepSeek through runAiGateway when DEEPSEEK_API_KEY is configured",
+    async () => {
+      const routing = resolveAiProviderRouting({
+        AI_PRIMARY_PROVIDER: "deepseek",
+      });
+      const result = await runAiGateway({
+        providers: createConfiguredAiProviders({
+          env: {
+            DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+            DEEPSEEK_BASE_URL: process.env.DEEPSEEK_BASE_URL,
+            DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL,
+          },
+        }),
+        primaryProvider: routing.primaryProvider,
+        request: {
+          kind: "text",
+          promptKey: "smoke.deepseek",
+          promptVersion: 1,
+          messages: [{ role: "user", content: "请回复 OK。" }],
+        },
+      });
+
+      expect(result.providerName).toBe("deepseek");
+      expect(result.status).toBe("succeeded");
+      expect(result.text?.length).toBeGreaterThan(0);
+    },
+  );
 });

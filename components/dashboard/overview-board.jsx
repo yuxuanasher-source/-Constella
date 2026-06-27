@@ -323,6 +323,10 @@ function AiPanel({ user, projects, go }) {
   React.useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [msgs, busy]);
 
   const push = (role, text) => setMsgs((m) => m.concat([{ role, text }]));
+  const chatHistory = (userText) => (msgs || [])
+    .slice(-8)
+    .map((m) => ({ role: m.role === "ai" ? "assistant" : "user", content: m.text }))
+    .concat([{ role: "user", content: userText }]);
 
   async function run(kind, userText) {
     if (busy) return;
@@ -338,8 +342,16 @@ function AiPanel({ user, projects, go }) {
         text = recos.length
           ? "为当前供需匹配出以下高契合机会：\n" + recos.map((r) => `· ${r.title}（${(r.reasons || []).join("、")}）`).join("\n")
           : "当前暂无可撮合的高契合机会，待有新发单/接单意向后会自动出现。";
+      } else if (kind === "ask") {
+        const res = await fetch("/api/ai/chat", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: chatHistory(userText) }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || "AI 调用失败");
+        text = json?.message?.content || json?.text || "已生成回复（需人工确认）。";
       } else {
-        // review / risk / 自由提问 → 真实经营诊断代理
+        // review / risk → 真实经营诊断代理
         const res = await fetch("/api/ai/project-reviews", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(buildReviewInput(projects)),

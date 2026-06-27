@@ -46,12 +46,17 @@ describe("createDeepseekProvider", () => {
       usage: { promptTokens: 9, completionTokens: 4, totalTokens: 13 },
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.deepseek.com/v1/chat/completions",
+      "https://api.deepseek.com/chat/completions",
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({ Authorization: "Bearer secret" }),
       }),
     );
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(JSON.parse(String(requestInit.body)).model).toBe("deepseek-v4-flash");
   });
 
   it("requests json_object and parses structured output", async () => {
@@ -69,7 +74,7 @@ describe("createDeepseekProvider", () => {
     );
     const provider = createDeepseekProvider({
       apiKey: "secret",
-      model: "deepseek-chat",
+      model: "deepseek-v4-flash",
       fetch: fetchMock,
     });
 
