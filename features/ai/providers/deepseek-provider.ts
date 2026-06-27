@@ -11,7 +11,7 @@ import type {
 // DeepSeek 走 OpenAI 兼容的 chat/completions 接口（与混元同形态）。
 // 默认 base/model 已内置，故只需配置 DEEPSEEK_API_KEY 即可启用。
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
-const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
+const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
 
 type FetchLike = (
   input: string,
@@ -90,6 +90,7 @@ async function runDeepseekRequest({
           role: message.role === "tool" ? "user" : message.role,
           content: message.content,
         })),
+        stream: false,
         // DeepSeek 支持 OpenAI 的 JSON 模式，结构化时请求 json_object。
         ...(structured ? { response_format: { type: "json_object" } } : {}),
         metadata: input.metadata,
@@ -145,9 +146,10 @@ async function runDeepseekRequest({
 
 function toChatCompletionsUrl(baseUrl: string): string {
   const normalized = baseUrl.replace(/\/+$/, "");
-  return normalized.endsWith("/v1")
-    ? `${normalized}/chat/completions`
-    : `${normalized}/v1/chat/completions`;
+  if (normalized.endsWith("/chat/completions")) {
+    return normalized;
+  }
+  return `${normalized}/chat/completions`;
 }
 
 function withJsonInstruction<T extends AiStructuredInput>(input: T): T {

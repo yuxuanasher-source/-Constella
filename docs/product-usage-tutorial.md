@@ -793,7 +793,7 @@
 系统支持多家大模型，按 `.env.local` 配置启用，缺 key 时自动降级为「确定性回退」（返回模板文本、不计费）：
 - OpenAI：`OPENAI_API_KEY`、`OPENAI_MODEL`；
 - 腾讯混元：`HUNYUAN_API_KEY`、`HUNYUAN_BASE_URL`、`HUNYUAN_MODEL`；
-- **DeepSeek**：`DEEPSEEK_API_KEY`（OpenAI 兼容，base/model 已内置默认 `https://api.deepseek.com` / `deepseek-chat`）；
+- **DeepSeek**：`DEEPSEEK_API_KEY`（OpenAI 兼容，base/model 已内置默认 `https://api.deepseek.com` / `deepseek-v4-flash`）；
 - 主模型用 `AI_PRIMARY_PROVIDER` 指定（如 `deepseek`）；改完 `pm2 restart` 即生效。
 
 ### 22.4 怎么确认 AI 真在用某家模型
