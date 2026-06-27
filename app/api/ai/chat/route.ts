@@ -5,12 +5,14 @@ import type {
   AiInvocationStatus,
   AiMessage,
 } from "@/features/ai/contracts";
+import { buildDashboardChatGrounding } from "@/features/ai/dashboard-chat-grounding";
 import { recordAiInvocation } from "@/features/ai/invocation-ledger";
 import { runAiGateway } from "@/features/ai/llm-gateway";
 import {
   createConfiguredAiProviders,
   resolveAiProviderRouting,
 } from "@/features/ai/provider-registry";
+import { loadRoleHomeDashboard } from "@/features/dashboards/role-home-loader";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
@@ -73,10 +75,22 @@ export async function POST(request: Request) {
       );
     }
 
+    const dashboard = await loadRoleHomeDashboard({ supabase, auth }).catch(
+      () => null,
+    );
+    if (!dashboard) {
+      return NextResponse.json(
+        { error: "无法读取真实业务数据，已停止 AI 分析" },
+        { status: 503 },
+      );
+    }
+
+    const grounding = buildDashboardChatGrounding({ dashboard, auth });
     const routing = resolveAiProviderRouting();
     const primaryProvider = routing.primaryProvider ?? realProvider.name;
     const messages: AiMessage[] = [
       { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: grounding.promptText },
       ...chatMessages,
     ];
 
@@ -108,7 +122,11 @@ export async function POST(request: Request) {
         latencyMs: gatewayResult.latencyMs,
         degradedReason: gatewayResult.degradedReason,
         errorSummary: gatewayResult.errorSummary,
-        metadata: { fallbackUsed: gatewayResult.fallbackUsed },
+        metadata: {
+          fallbackUsed: gatewayResult.fallbackUsed,
+          groundingFactCount: grounding.facts.length,
+          groundingMissingDataCount: grounding.missingData.length,
+        },
       },
     }).catch(() => {});
 
@@ -135,6 +153,11 @@ export async function POST(request: Request) {
       status: gatewayResult.status,
       fallbackUsed: gatewayResult.fallbackUsed,
       usage: gatewayResult.usage,
+      grounding: {
+        generatedAt: grounding.generatedAt,
+        facts: grounding.facts,
+        missingData: grounding.missingData,
+      },
     });
   } catch (error) {
     if (error instanceof Error) {
