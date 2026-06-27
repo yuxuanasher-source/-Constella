@@ -1,7 +1,7 @@
 "use client";
 
 /* eslint-disable */
-// 经营总览看板 —— 1:1 还原设计稿（三栏：主看板 / 个人面板 / AI 助手）。
+// 经营总览看板 —— 主看板优先的三栏工作台（主看板 / 个人面板 / AI 助手）。
 // 数据全部为真实业务数据：服务端 dashboard（kpis/panels/queue/risks，按角色计算）
 // + 实时 projects/tasks/reports/batches + /api/marketplace/intel + /api/ai/*。
 // 「不做假」原则：算不出的真实时序就不画走势线、不编造环比；缺数据的区块自动隐藏；
@@ -61,7 +61,7 @@ const dotColor = (t) =>
     : t === "warn" || t === "amber"
       ? "#e0a82e"
       : t === "bad" || t === "danger" || t === "red"
-        ? C.danger
+        ? "#d7a02a"
         : t === "ok" || t === "green"
           ? C.ok
           : "#c9cdd6";
@@ -504,9 +504,9 @@ function PersonalPanel({ user, scopeLabel, summary, recos, todos, go }) {
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           {summary.map((s) => (
-            <div key={s.label} style={{ background: s.danger ? "linear-gradient(150deg,#fdf1f1,#fbe9e9)" : C.soft, border: `1px solid ${s.danger ? "#f6dada" : C.divider}`, borderRadius: 12, padding: 12 }}>
+            <div key={s.label} style={{ background: s.attention ? "linear-gradient(150deg,#fff8ea,#fffaf2)" : C.soft, border: `1px solid ${s.attention ? "#f1e4c4" : C.divider}`, borderRadius: 12, padding: 12 }}>
               <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-                <div style={{ fontSize: 22, fontWeight: 730, fontVariantNumeric: "tabular-nums", lineHeight: 1, color: s.danger ? C.danger : C.ink }}>{s.value}</div>
+                <div style={{ fontSize: 22, fontWeight: 730, fontVariantNumeric: "tabular-nums", lineHeight: 1, color: s.color || C.ink }}>{s.value}</div>
                 {s.series ? <MiniLine series={s.series} color={s.color || C.primary} /> : null}
               </div>
               <div style={{ fontSize: 11.5, color: C.muted, marginTop: 6 }}>{s.label}</div>
@@ -647,78 +647,12 @@ function RiskDrawer({ open, risks, onClose, go }) {
 }
 
 // ============================================================
-//  等比例缩放层 —— 把设计稿固定画布(1672 内容区)按实际宽度等比缩放，
-//  保证三栏比例 / 字号 / 间距与设计稿 1:1，不随容器宽度而漂移。
-// ============================================================
-const DESIGN_W = 1672;
-// 主区（左主看板 + 中个人面板）设计宽 = 1672 − AI 栏 346 − 栏间距 22。
-// AI 栏脱离缩放画布（见下），单独固定贴屏幕底。
-const DESIGN_MAIN = 1304;
-function ScaleToFit({ designWidth = DESIGN_W, children }) {
-  const wrapRef = React.useRef(null);
-  const innerRef = React.useRef(null);
-  const [scale, setScale] = React.useState(1);
-  const [h, setH] = React.useState(undefined);
-  React.useEffect(() => {
-    const wrap = wrapRef.current;
-    const inner = innerRef.current;
-    if (!wrap || !inner) return;
-    const update = () => {
-      const w = wrap.clientWidth || designWidth;
-      const s = w / designWidth;
-      setScale(s);
-      setH(inner.offsetHeight * s);
-    };
-    update();
-    // jsdom / 旧环境无 ResizeObserver 时降级为 window resize 监听，避免组件崩溃。
-    if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(update);
-      ro.observe(wrap);
-      ro.observe(inner);
-      return () => ro.disconnect();
-    }
-    if (typeof window !== "undefined") {
-      window.addEventListener("resize", update);
-      return () => window.removeEventListener("resize", update);
-    }
-    return undefined;
-  }, [designWidth]);
-  return (
-    <div ref={wrapRef} style={{ width: "100%", height: h, overflow: "hidden" }}>
-      <div ref={innerRef} style={{ width: designWidth, transform: `scale(${scale})`, transformOrigin: "top left" }}>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-// ============================================================
 //  主组件
 // ============================================================
 export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches, currentUser }) {
   const [drawer, setDrawer] = React.useState(false);
   const [period, setPeriod] = React.useState("实时");
   useClock();
-  // AI 栏高度 = 内容滚动容器(#content-scroll)的可视高度，使其刚好铺满视口可视区、
-  // 输入坞贴屏幕最下方。监听尺寸变化；测不到(如测试环境)时降级为整屏高度。
-  const [aiHeight, setAiHeight] = React.useState("100dvh");
-  React.useEffect(() => {
-    if (typeof document === "undefined") return undefined;
-    const sc = document.getElementById("content-scroll");
-    if (!sc) return undefined;
-    const upd = () => setAiHeight(`${sc.clientHeight}px`);
-    upd();
-    let ro;
-    if (typeof ResizeObserver !== "undefined") {
-      ro = new ResizeObserver(upd);
-      ro.observe(sc);
-    }
-    if (typeof window !== "undefined") window.addEventListener("resize", upd);
-    return () => {
-      if (ro) ro.disconnect();
-      if (typeof window !== "undefined") window.removeEventListener("resize", upd);
-    };
-  }, []);
   const d = dashboard || {};
   const profile = d.profile || {};
   const role = String(profile.role || "owner");
@@ -736,7 +670,7 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
     const series = scheduleSeries(tasks);
     return kpis.slice(0, 4).map((k, i) => {
       const f = fmtKpi(k.value, k.unit);
-      return { key: k.key || `kpi-${i}`, label: k.label, value: f.value, unit: f.unit, hint: k.hint || "", series: i === 0 ? series : null, color: i === 0 ? C.primary : i === 1 ? C.ok : i === 2 ? "#e0a82e" : C.danger };
+      return { key: k.key || `kpi-${i}`, label: k.label, value: f.value, unit: f.unit, hint: k.hint || "", series: i === 0 ? series : null, color: i === 0 ? C.primary : i === 1 ? C.ok : i === 2 ? "#e0a82e" : C.warn };
     });
   }, [kpis, tasks]);
 
@@ -763,18 +697,18 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
     const summary = [
       { label: "在营项目", value: String(active), color: C.primary, series: null },
       { label: "待办合计", value: String(todoGroups.reduce((s, g) => s + g.items.reduce((a, i) => a + (Number(i.value) || 0), 0), 0)), color: "#7b6ef0", series: null },
-      { label: "风险数", value: String(riskCount), color: C.danger, danger: riskCount > 0, series: null },
+      { label: "风险数", value: String(riskCount), color: riskCount > 0 ? C.warn : C.ink, attention: riskCount > 0, series: null },
       { label: "今日场次", value: String((tasks || []).length), color: C.ok, series: sched },
     ];
     const recos = [];
     if (recordingPending > 0) recos.push({ icon: "录", text: "优先处理录屏审核", sub: `${recordingPending} 条待审`, tone: "warn", cta: "去审核", route: "projects" });
-    if (anomalies > 0) recos.push({ icon: "异", text: "跟进异常直播任务", sub: `${anomalies} 个异常`, tone: "danger", cta: "去处理", route: "tasks" });
+    if (anomalies > 0) recos.push({ icon: "异", text: "跟进异常直播任务", sub: `${anomalies} 个异常`, tone: "warn", cta: "去处理", route: "tasks" });
     if (lowMargin > 0) recos.push({ icon: "复", text: "复盘低毛利项目", sub: `${lowMargin} 个低于阈值`, tone: "warn", cta: "去复盘", route: "warroom" });
     if (pendingReports > 0) recos.push({ icon: "审", text: "清理待审报数", sub: `${pendingReports} 条`, tone: "info", cta: "去审核", route: "reports" });
     if (!recos.length) recos.push({ icon: "看", text: "查看项目经营排行", sub: "按毛利贡献", tone: "info", cta: "查看", route: "warroom" });
     const todos = [];
     if (pendingReports > 0) todos.push({ key: "rev", text: "审核待审报数", count: pendingReports, tone: "warn", route: "reports" });
-    if (anomalies > 0) todos.push({ key: "ano", text: "处理异常直播任务", count: anomalies, tone: "danger", route: "tasks" });
+    if (anomalies > 0) todos.push({ key: "ano", text: "处理异常直播任务", count: anomalies, tone: "warn", route: "tasks" });
     if (recordingPending > 0) todos.push({ key: "rec", text: "核验录屏待审", count: recordingPending, tone: "warn", route: "projects" });
     if (bs("draft") > 0) todos.push({ key: "bat", text: "生成结算批次", count: bs("draft"), tone: "neutral", route: "settle" });
     if (bs("pending_confirm") > 0) todos.push({ key: "cfm", text: "确认待确认批次", count: bs("pending_confirm"), tone: "warn", route: "settle" });
@@ -785,16 +719,30 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
   const periodTabs = ["实时", "今日", "本周", "本月"];
 
   return (
-    <div style={{ background: C.page, minHeight: "100%" }}>
-      <style>{`@keyframes obpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.82)}}@keyframes obspin{to{transform:rotate(360deg)}}@keyframes obfade{from{opacity:0}to{opacity:1}}@keyframes obslide{from{transform:translateX(44px);opacity:0}to{transform:translateX(0);opacity:1}}.ob-card .lift,.lift{transition:box-shadow .2s,transform .2s}.lift:hover{box-shadow:0 2px 4px rgba(24,27,46,.05),0 12px 28px -12px rgba(24,27,46,.18);transform:translateY(-1px)}.scl::-webkit-scrollbar{width:8px;height:8px}.scl::-webkit-scrollbar-thumb{background:#dadde6;border-radius:4px}.scl::-webkit-scrollbar-track{background:transparent}`}</style>
+    <div className="ob-shell" style={{ background: C.page, minHeight: "100%" }}>
+      <style>{`
+        @keyframes obpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.82)}}
+        @keyframes obspin{to{transform:rotate(360deg)}}
+        @keyframes obfade{from{opacity:0}to{opacity:1}}
+        @keyframes obslide{from{transform:translateX(44px);opacity:0}to{transform:translateX(0);opacity:1}}
+        .ob-card .lift,.lift{transition:box-shadow .2s,transform .2s}
+        .lift:hover{box-shadow:0 2px 4px rgba(24,27,46,.05),0 12px 28px -12px rgba(24,27,46,.18);transform:translateY(-1px)}
+        .scl::-webkit-scrollbar{width:8px;height:8px}
+        .scl::-webkit-scrollbar-thumb{background:#dadde6;border-radius:4px}
+        .scl::-webkit-scrollbar-track{background:transparent}
+        .ob-shell{--ob-ai-width:320px;--ob-gap:16px;--ob-pad-r:20px;--ob-ai-top:76px;--ob-ai-bottom:20px}
+        .ob-layout{display:grid;grid-template-columns:minmax(760px,1fr) 300px;gap:var(--ob-gap);align-items:start;padding:20px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 40px 24px;box-sizing:border-box}
+        .ob-main{min-width:0;display:flex;flex-direction:column;gap:16px}
+        .ob-personal{min-width:0;display:flex;flex-direction:column;gap:16px}
+        .ob-ai{min-width:0;position:fixed;right:var(--ob-pad-r);top:var(--ob-ai-top);bottom:var(--ob-ai-bottom);width:var(--ob-ai-width);z-index:20;display:flex;flex-direction:column}
+        @media(max-width:1560px){.ob-shell{--ob-ai-width:300px;--ob-gap:14px;--ob-pad-r:18px}.ob-layout{grid-template-columns:minmax(720px,1fr) 280px;gap:var(--ob-gap);padding:18px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 36px 20px}}
+        @media(max-width:1360px){.ob-layout{grid-template-columns:minmax(0,1fr);padding:18px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 36px 20px}}
+        @media(max-width:1080px){.ob-layout{grid-template-columns:1fr;padding:18px 18px 36px 20px}.ob-ai{position:relative;right:auto;top:auto;bottom:auto;width:auto;height:540px;z-index:auto}}
+      `}</style>
 
-      <div style={{ display: "flex", alignItems: "flex-start" }}>
-      {/* 主区（左主看板 + 中个人面板）：等比缩放画布 */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-      <ScaleToFit designWidth={DESIGN_MAIN}>
-      <div style={{ display: "flex", gap: 22, alignItems: "flex-start", padding: "24px 24px 44px 32px", boxSizing: "border-box", width: DESIGN_MAIN }}>
+      <div className="ob-layout">
         {/* ===== 左：主看板 ===== */}
-        <section style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 16 }}>
+        <section className="ob-main">
           {/* 标题 */}
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, letterSpacing: ".2px", display: "flex", alignItems: "center", gap: 9, color: C.ink }}>
@@ -834,7 +782,7 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
                 <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#c2860a" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.3 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.3a2 2 0 0 0-3.4 0Z" /><path d="M12 9v4M12 17h.01" /></svg>
               </div>
               <div style={{ position: "relative", flex: 1, lineHeight: 1.4 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 650, color: "#6b5326" }}>命中风险规则的事项待人工核验处理<span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 20, height: 20, padding: "0 6px", marginLeft: 8, background: "linear-gradient(135deg,#ee5a5e,#e23a40)", color: "#fff", borderRadius: 7, fontSize: 12, fontVariantNumeric: "tabular-nums", verticalAlign: "middle", boxShadow: "0 1px 3px rgba(220,60,65,.35)" }}>{riskCount}</span></div>
+                <div style={{ fontSize: 13.5, fontWeight: 650, color: "#6b5326" }}>命中风险规则的事项待人工核验处理<span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 20, height: 20, padding: "0 6px", marginLeft: 8, background: "rgba(181,121,10,.12)", color: C.warn, border: "1px solid rgba(181,121,10,.22)", borderRadius: 7, fontSize: 12, fontVariantNumeric: "tabular-nums", verticalAlign: "middle" }}>{riskCount}</span></div>
                 <div style={{ fontSize: 12, color: "#9c8755", marginTop: 2 }}>含 {risks.filter((r) => toneToLevel(r.tone) === "high").length} 条高风险事项，建议优先处理</div>
               </div>
               <button type="button" onClick={() => setDrawer(true)} style={{ position: "relative", display: "flex", alignItems: "center", gap: 5, height: 34, border: "none", borderRadius: 9, padding: "0 14px", fontSize: 13, fontWeight: 600, color: "#fff", background: "linear-gradient(135deg,#edb52b 0%,#e2a314 52%,#d4940b 100%)", cursor: "pointer", flexShrink: 0, boxShadow: "0 3px 9px rgba(206,150,16,.3),inset 0 1px 0 rgba(255,255,255,.32)" }}>去处理
@@ -854,10 +802,10 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
           {bizCols.length ? (
             <div className="card" style={{ position: "relative", background: "#fff", border: `1px solid ${C.border}`, borderRadius: 16, padding: "18px 20px 20px", boxShadow: "0 1px 2px rgba(24,27,46,.04),0 8px 24px -16px rgba(24,27,46,.16)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 18 }}>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", background: C.danger, boxShadow: "0 0 0 3px rgba(229,72,77,.16)", animation: "obpulse 1.6s infinite" }} />
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: C.primary, boxShadow: "0 0 0 3px rgba(85,102,230,.14)", animation: "obpulse 1.6s infinite" }} />
                 <span style={{ fontSize: 14.5, fontWeight: 680, color: C.ink }}>直播执行实时盘</span>
                 <span style={{ fontSize: 11.5, color: C.muted }}>· 经营汇总</span>
-                {cnt(tasks, isLive) > 0 ? <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: C.danger, background: "#fdecec", borderRadius: 6, padding: "2px 7px", marginLeft: 2 }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: C.danger }} />{cnt(tasks, isLive)} 场直播中</span> : null}
+                {cnt(tasks, isLive) > 0 ? <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: C.ok, background: C.okBg, borderRadius: 6, padding: "2px 7px", marginLeft: 2 }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: C.ok }} />{cnt(tasks, isLive)} 场直播中</span> : null}
                 <div style={{ flex: 1 }} />
                 <span style={{ fontSize: 12, color: C.muted }}>{updatedLabel}</span>
               </div>
@@ -886,7 +834,7 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
               <div style={{ display: "flex", gap: 8, position: "relative" }}>
                 <div style={{ flex: 1, background: "rgba(255,255,255,.12)", borderRadius: 11, padding: "10px 12px", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.1)" }}><div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>{proj.running}</div><div style={{ fontSize: 11, opacity: 0.8, marginTop: 4 }}>进行中</div></div>
                 <div style={{ flex: 1, background: "rgba(255,255,255,.12)", borderRadius: 11, padding: "10px 12px", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.1)" }}><div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>{proj.pending}</div><div style={{ fontSize: 11, opacity: 0.8, marginTop: 4 }}>待报数</div></div>
-                <div style={{ flex: 1, background: "linear-gradient(135deg,rgba(206,126,118,.32),rgba(190,132,142,.22))", borderRadius: 11, padding: "10px 12px", boxShadow: "inset 0 0 0 1px rgba(228,170,164,.22)" }}><div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: "tabular-nums", lineHeight: 1, display: "flex", alignItems: "center", gap: 5 }}>{proj.abnormal}<span style={{ width: 5, height: 5, borderRadius: "50%", background: "#f3c2bc" }} /></div><div style={{ fontSize: 11, opacity: 0.9, marginTop: 4 }}>异常</div></div>
+                <div style={{ flex: 1, background: "linear-gradient(135deg,rgba(224,168,46,.22),rgba(181,121,10,.12))", borderRadius: 11, padding: "10px 12px", boxShadow: "inset 0 0 0 1px rgba(224,168,46,.2)" }}><div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: "tabular-nums", lineHeight: 1, display: "flex", alignItems: "center", gap: 5 }}>{proj.abnormal}<span style={{ width: 5, height: 5, borderRadius: "50%", background: "#e0a82e" }} /></div><div style={{ fontSize: 11, opacity: 0.9, marginTop: 4 }}>异常</div></div>
               </div>
             </div>
             {passRate != null ? (
@@ -954,16 +902,12 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
         </section>
 
         {/* ===== 中：个人面板 ===== */}
-        <aside style={{ width: 340, flexShrink: 0, display: "flex", flexDirection: "column", gap: 16 }}>
+        <aside className="ob-personal">
           <PersonalPanel user={currentUser} scopeLabel={profile.scopeLabel} summary={personal.summary} recos={personal.recos} todos={personal.todos} go={go} />
         </aside>
-      </div>
-      </ScaleToFit>
-      </div>
 
       {/* ===== 右：AI 助手 ===== */}
-      {/* 脱离缩放画布：sticky 固定，高度=可视区高度 → 对话框始终贴屏幕最下方、不随滚动 */}
-      <aside style={{ width: 346, flexShrink: 0, marginLeft: 8, marginRight: 28, paddingTop: 24, paddingBottom: 0, boxSizing: "border-box", position: "sticky", top: 0, alignSelf: "flex-start", height: aiHeight, display: "flex", flexDirection: "column" }}>
+      <aside className="ob-ai">
         <AiPanel user={currentUser} projects={projects} go={go} />
       </aside>
       </div>
