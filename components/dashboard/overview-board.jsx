@@ -587,7 +587,7 @@ function RiskDrawer({ open, risks, onClose, go }) {
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 50, animation: "obfade .18s" }}>
       <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(20,24,40,.34)" }} />
-      <div className="scl" style={{ position: "absolute", top: 0, right: 0, bottom: 0, width: 560, maxWidth: "94vw", background: "#fff", boxShadow: "-12px 0 44px rgba(20,24,40,.2)", display: "flex", flexDirection: "column", animation: "obslide .28s cubic-bezier(.2,.85,.25,1)" }}>
+      <div role="dialog" aria-label="风险事项核验" className="scl" style={{ position: "absolute", top: 0, right: 0, bottom: 0, width: 560, maxWidth: "94vw", background: "#fff", boxShadow: "-12px 0 44px rgba(20,24,40,.2)", display: "flex", flexDirection: "column", animation: "obslide .28s cubic-bezier(.2,.85,.25,1)" }}>
         <div style={{ padding: "20px 22px 16px", borderBottom: `1px solid ${C.divider}` }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ width: 34, height: 34, borderRadius: 10, background: "linear-gradient(145deg,#fde0e0,#fbd2d2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -667,10 +667,18 @@ function ScaleToFit({ designWidth = DESIGN_W, children }) {
       setH(inner.offsetHeight * s);
     };
     update();
-    const ro = new ResizeObserver(update);
-    ro.observe(wrap);
-    ro.observe(inner);
-    return () => ro.disconnect();
+    // jsdom / 旧环境无 ResizeObserver 时降级为 window resize 监听，避免组件崩溃。
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(update);
+      ro.observe(wrap);
+      ro.observe(inner);
+      return () => ro.disconnect();
+    }
+    if (typeof window !== "undefined") {
+      window.addEventListener("resize", update);
+      return () => window.removeEventListener("resize", update);
+    }
+    return undefined;
   }, [designWidth]);
   return (
     <div ref={wrapRef} style={{ width: "100%", height: h, overflow: "hidden" }}>
