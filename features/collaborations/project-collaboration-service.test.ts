@@ -536,7 +536,7 @@ async function repoWithShare() {
     actor: ownerActor,
     projectId: "project-1",
     input: {},
-    now: "2026-06-10T00:00:00.000Z",
+    now: "2026-06-20T00:00:00.000Z",
     tokenFactory: () => "raw-token",
   });
   return repo;
