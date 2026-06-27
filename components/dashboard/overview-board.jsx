@@ -651,6 +651,9 @@ function RiskDrawer({ open, risks, onClose, go }) {
 //  保证三栏比例 / 字号 / 间距与设计稿 1:1，不随容器宽度而漂移。
 // ============================================================
 const DESIGN_W = 1672;
+// 主区（左主看板 + 中个人面板）设计宽 = 1672 − AI 栏 346 − 栏间距 22。
+// AI 栏脱离缩放画布（见下），单独固定贴屏幕底。
+const DESIGN_MAIN = 1304;
 function ScaleToFit({ designWidth = DESIGN_W, children }) {
   const wrapRef = React.useRef(null);
   const innerRef = React.useRef(null);
@@ -696,6 +699,26 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
   const [drawer, setDrawer] = React.useState(false);
   const [period, setPeriod] = React.useState("实时");
   useClock();
+  // AI 栏高度 = 内容滚动容器(#content-scroll)的可视高度，使其刚好铺满视口可视区、
+  // 输入坞贴屏幕最下方。监听尺寸变化；测不到(如测试环境)时降级为整屏高度。
+  const [aiHeight, setAiHeight] = React.useState("100dvh");
+  React.useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const sc = document.getElementById("content-scroll");
+    if (!sc) return undefined;
+    const upd = () => setAiHeight(`${sc.clientHeight}px`);
+    upd();
+    let ro;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(upd);
+      ro.observe(sc);
+    }
+    if (typeof window !== "undefined") window.addEventListener("resize", upd);
+    return () => {
+      if (ro) ro.disconnect();
+      if (typeof window !== "undefined") window.removeEventListener("resize", upd);
+    };
+  }, []);
   const d = dashboard || {};
   const profile = d.profile || {};
   const role = String(profile.role || "owner");
@@ -765,8 +788,11 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
     <div style={{ background: C.page, minHeight: "100%" }}>
       <style>{`@keyframes obpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.82)}}@keyframes obspin{to{transform:rotate(360deg)}}@keyframes obfade{from{opacity:0}to{opacity:1}}@keyframes obslide{from{transform:translateX(44px);opacity:0}to{transform:translateX(0);opacity:1}}.ob-card .lift,.lift{transition:box-shadow .2s,transform .2s}.lift:hover{box-shadow:0 2px 4px rgba(24,27,46,.05),0 12px 28px -12px rgba(24,27,46,.18);transform:translateY(-1px)}.scl::-webkit-scrollbar{width:8px;height:8px}.scl::-webkit-scrollbar-thumb{background:#dadde6;border-radius:4px}.scl::-webkit-scrollbar-track{background:transparent}`}</style>
 
-      <ScaleToFit designWidth={DESIGN_W}>
-      <div style={{ display: "flex", gap: 22, alignItems: "flex-start", padding: "24px 32px 44px", boxSizing: "border-box", width: DESIGN_W }}>
+      <div style={{ display: "flex", alignItems: "flex-start" }}>
+      {/* 主区（左主看板 + 中个人面板）：等比缩放画布 */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+      <ScaleToFit designWidth={DESIGN_MAIN}>
+      <div style={{ display: "flex", gap: 22, alignItems: "flex-start", padding: "24px 24px 44px 32px", boxSizing: "border-box", width: DESIGN_MAIN }}>
         {/* ===== 左：主看板 ===== */}
         <section style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 16 }}>
           {/* 标题 */}
@@ -931,13 +957,16 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
         <aside style={{ width: 340, flexShrink: 0, display: "flex", flexDirection: "column", gap: 16 }}>
           <PersonalPanel user={currentUser} scopeLabel={profile.scopeLabel} summary={personal.summary} recos={personal.recos} todos={personal.todos} go={go} />
         </aside>
-
-        {/* ===== 右：AI 助手 ===== */}
-        <aside style={{ width: 346, flexShrink: 0, height: 944, display: "flex", flexDirection: "column" }}>
-          <AiPanel user={currentUser} projects={projects} go={go} />
-        </aside>
       </div>
       </ScaleToFit>
+      </div>
+
+      {/* ===== 右：AI 助手 ===== */}
+      {/* 脱离缩放画布：sticky 固定，高度=可视区高度 → 对话框始终贴屏幕最下方、不随滚动 */}
+      <aside style={{ width: 346, flexShrink: 0, marginLeft: 8, marginRight: 28, paddingTop: 24, paddingBottom: 0, boxSizing: "border-box", position: "sticky", top: 0, alignSelf: "flex-start", height: aiHeight, display: "flex", flexDirection: "column" }}>
+        <AiPanel user={currentUser} projects={projects} go={go} />
+      </aside>
+      </div>
 
       <RiskDrawer open={drawer} risks={risks} onClose={() => setDrawer(false)} go={go} />
     </div>
