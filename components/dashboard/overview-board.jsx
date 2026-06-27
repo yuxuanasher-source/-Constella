@@ -239,17 +239,36 @@ function greeting() {
 // ============================================================
 //  KPI 卡（设计稿主看板 4 张）
 // ============================================================
+// KPI 分组的主题图标/配色（按标题语义），让 4 张卡有辨识度与色彩层次。
+function kpiVisual(title) {
+  const t = title || "";
+  const I = (color, body) => ({
+    color,
+    icon: (
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{body}</svg>
+    ),
+  });
+  if (t.includes("复盘")) return I("#7b54ec", <><path d="M3 3v18h18" /><path d="m7 14 4-4 3 3 5-6" /></>);
+  if (t.includes("结算") || t.includes("批次") || t.includes("锁定")) return I("#1f9d55", <><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" /></>);
+  if (t.includes("审计") || t.includes("风险") || t.includes("风控")) return I("#e0a82e", <><path d="M12 3 5 6v5c0 4 3 7 7 9 4-2 7-5 7-9V6l-7-3Z" /></>);
+  if (t.includes("准入") || t.includes("报数")) return I("#2f9e6f", <><path d="M9 11l3 3L20 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></>);
+  if (t.includes("项目") || t.includes("任务") || t.includes("直播")) return I("#5566e6", <><path d="M12 3 3 8l9 5 9-5-9-5Z" /><path d="m3 16 9 5 9-5" /><path d="m3 12 9 5 9-5" /></>);
+  return I("#5566e6", <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>);
+}
 function KpiCard({ group }) {
+  const viz = kpiVisual(group.title);
   const a = group.items[0] || { label: "", value: 0, tone: "neutral" };
   const b = group.items[1] || { label: "", value: 0, tone: "neutral" };
   const t = (Number(a.value) || 0) + (Number(b.value) || 0) || 1;
   const aCol = dotColor(a.tone), bCol = dotColor(b.tone);
   const numCol = (it, col) => (it.tone === "neutral" ? C.ink : col);
   return (
-    <div className="lift" style={{ background: "#fff", border: `1px solid ${C.border}`, borderRadius: 14, padding: "15px 15px 13px", boxShadow: "0 1px 2px rgba(24,27,46,.04)", transition: "box-shadow .2s,transform .2s" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-        <div style={{ width: 26, height: 26, borderRadius: 8, background: `${C.primary}1f`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ width: 9, height: 9, borderRadius: 3, background: C.primary }} />
+    <div className="lift" style={{ position: "relative", overflow: "hidden", background: "#fff", border: `1px solid ${C.border}`, borderRadius: 14, padding: "15px 15px 13px", boxShadow: "0 1px 2px rgba(24,27,46,.04), inset 0 1px 0 rgba(255,255,255,.7)", transition: "box-shadow .2s,transform .2s" }}>
+      {/* 右上角同色极淡光晕，增加质感层次 */}
+      <div style={{ position: "absolute", right: -26, top: -30, width: 96, height: 96, borderRadius: "50%", background: `radial-gradient(circle, ${viz.color}14, transparent 68%)`, pointerEvents: "none" }} />
+      <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <div style={{ width: 28, height: 28, borderRadius: 9, background: `${viz.color}14`, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: `inset 0 0 0 1px ${viz.color}26` }}>
+          {viz.icon}
         </div>
         <span style={{ fontSize: 12.5, color: C.ink3, fontWeight: 600 }}>{group.title}</span>
       </div>
@@ -401,6 +420,15 @@ function AiPanel({ user, projects, go }) {
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#b5790a" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3 5 6v5c0 4 3 7 7 9 4-2 7-5 7-9V6l-7-3Z" /></svg>,
                 "linear-gradient(145deg,#fbeccb,#f7e1ac)", "#b5790a", "解读风险事项", "分析风险并给出处理优先级",
                 () => run("risk", "解读当前风险事项并按优先级给出处理建议"))}
+            </div>
+            {/* 试试这样问 —— 示例提问 chips，填充欢迎区空白；点击发送真实问题 */}
+            <div style={{ width: "100%", marginTop: 18 }}>
+              <div style={{ fontSize: 11, color: C.faint, fontWeight: 600, marginBottom: 9, textAlign: "left" }}>试试这样问</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+                {["哪些项目毛利偏低？", "本周有哪些异常要跟进？", "结算池有多少待确认？", "给我今天的优先级清单"].map((q) => (
+                  <button key={q} type="button" disabled={busy} onClick={() => run("ask", q)} style={{ fontSize: 11.5, color: C.ink4, background: "#fff", border: `1px solid ${C.border}`, borderRadius: 20, padding: "6px 11px", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>{q}</button>
+                ))}
+              </div>
             </div>
           </div>
         ) : null}
@@ -733,12 +761,13 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
   // 直播执行实时盘：真实 KPI（厂家应收 / 毛利 / 毛利率 / 风险等，按角色由服务端算）。
   // 走势线仅在能算出真实序列（今日排班累计）时绘制，否则不画、不编造环比。
   const bizCols = React.useMemo(() => {
-    const series = scheduleSeries(tasks);
     return kpis.slice(0, 4).map((k, i) => {
       const f = fmtKpi(k.value, k.unit);
-      return { key: k.key || `kpi-${i}`, label: k.label, value: f.value, unit: f.unit, hint: k.hint || "", series: i === 0 ? series : null, color: i === 0 ? C.primary : i === 1 ? C.ok : i === 2 ? "#e0a82e" : C.danger };
+      return { key: k.key || `kpi-${i}`, label: k.label, value: f.value, unit: f.unit, hint: k.hint || "", color: i === 0 ? C.primary : i === 1 ? C.ok : i === 2 ? "#e0a82e" : C.danger };
     });
-  }, [kpis, tasks]);
+  }, [kpis]);
+  // 今日场次按小时累计（真实可算时序）→ 实时盘底部节奏曲线；无则不画、不编造。
+  const bizPulse = React.useMemo(() => scheduleSeries(tasks), [tasks]);
 
   const proj = React.useMemo(() => ({
     total: (projects || []).length,
@@ -864,13 +893,18 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
               <div style={{ display: "grid", gridTemplateColumns: `repeat(${bizCols.length},1fr)` }}>
                 {bizCols.map((c, i) => (
                   <div key={c.key} style={{ padding: "0 18px", paddingLeft: i === 0 ? 0 : 18, borderLeft: i === 0 ? "none" : `1px solid ${C.divider}` }}>
-                    <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 9 }}>{c.label}</div>
+                    <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 9, display: "flex", alignItems: "center", gap: 6 }}><span style={{ width: 6, height: 6, borderRadius: 2, background: c.color, flex: "none" }} />{c.label}</div>
                     <div style={{ fontSize: 27, fontWeight: 720, fontVariantNumeric: "tabular-nums", letterSpacing: "-.6px", lineHeight: 1, display: "flex", alignItems: "baseline", gap: 1, color: C.ink }}>{c.value}{c.unit ? <span style={{ fontSize: 15, color: "#a3a8b4", fontWeight: 600, marginLeft: 2 }}>{c.unit}</span> : null}</div>
-                    {c.hint ? <div style={{ fontSize: 11.5, marginTop: 8, color: C.muted }}>{c.hint}</div> : <div style={{ height: 8 }} />}
-                    {c.series ? <AreaSpark series={c.series} color={c.color} gid={`biz-${c.key}`} /> : <div style={{ height: 45 }} />}
+                    {c.hint ? <div style={{ fontSize: 11.5, marginTop: 8, color: C.muted }}>{c.hint}</div> : null}
                   </div>
                 ))}
               </div>
+              {bizPulse ? (
+                <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.divider}` }}>
+                  <div style={{ fontSize: 11, color: C.faint, fontWeight: 600, marginBottom: 2 }}>今日场次节奏 · 按小时累计</div>
+                  <AreaSpark series={bizPulse} color={C.primary} w={100} h={28} gid="bizpulse" />
+                </div>
+              ) : null}
             </div>
           ) : null}
 
