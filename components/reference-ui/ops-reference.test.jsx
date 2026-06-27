@@ -268,9 +268,9 @@ describe("OpsReferenceApp role dashboard contract", () => {
     );
 
     expect(screen.getByText("经营总览看板")).toBeInTheDocument();
-    expect(screen.getByText("进行中项目")).toBeInTheDocument();
+    // KPI 进入「直播执行实时盘」列；毛利率为 owner 专属指标。
     expect(screen.getByText("预估毛利率")).toBeInTheDocument();
-    expect(screen.getByText("Alpha")).toBeInTheDocument();
+    expect(screen.getAllByText("进行中项目").length).toBeGreaterThan(0);
   });
 
   it("renders finance dashboard without owner margin cards", () => {
@@ -360,12 +360,11 @@ describe("OpsReferenceApp role dashboard contract", () => {
       />,
     );
 
+    // 设计稿主看板：准入漏斗 + 进行中项目卡（真实数据派生）。
     expect(screen.getByText("准入漏斗 · 录屏到入项")).toBeInTheDocument();
-    expect(screen.getByText("项目经营排行")).toBeInTheDocument();
-
-    // 点击经营排行行钻取到对应项目详情。
-    fireEvent.click(screen.getByText("Fixture Project"));
-    expect(screen.getByText("返回列表")).toBeInTheDocument();
+    expect(screen.getByText("报名/候选")).toBeInTheDocument();
+    expect(screen.getByText("最终入项")).toBeInTheDocument();
+    expect(screen.getAllByText("进行中项目").length).toBeGreaterThan(0);
   });
 
   it("does not render executive finance labels for operator dashboard", () => {
@@ -455,77 +454,27 @@ describe("OpsReferenceApp role dashboard contract", () => {
             scopeLabel: "授权项目",
           },
           kpis: [],
-          queue: [
-            {
-              key: "project:1",
-              title: "项目卡点",
-              target: { route: "project", id: "project-1" },
-            },
-            {
-              key: "task:1",
-              title: "任务卡点",
-              target: { route: "tasks", id: "task-1" },
-            },
-          ],
+          queue: [],
           risks: [
-            {
-              key: "report:1",
-              title: "报数卡点",
-              target: { route: "reports", id: "report-1" },
-            },
-            {
-              key: "settle:1",
-              title: "结算卡点",
-              target: { route: "settle", id: "batch-1" },
-            },
+            { key: "project:1", title: "项目卡点", tone: "red", target: { route: "project", id: "project-1" } },
+            { key: "task:1", title: "任务卡点", tone: "amber", target: { route: "tasks", id: "task-1" } },
+            { key: "report:1", title: "报数卡点", tone: "amber", target: { route: "reports", id: "report-1" } },
+            { key: "settle:1", title: "结算卡点", tone: "neutral", target: { route: "settle", id: "batch-1" } },
+            { key: "audit:1", title: "审计卡点", tone: "red", target: { route: "audit", id: "audit-1" } },
+            { key: "notification:1", title: "通知卡点", tone: "neutral", target: { route: "notifications", id: "notice-1" } },
           ],
-          drilldowns: [
-            {
-              key: "audit:1",
-              title: "审计卡点",
-              target: { route: "audit", id: "audit-1" },
-            },
-            {
-              key: "notification:1",
-              title: "通知卡点",
-              target: { route: "notifications", id: "notice-1" },
-            },
-          ],
+          drilldowns: [],
           generatedAt: "2026-06-16T09:30:00.000Z",
         }}
       />,
     );
 
-    expect(
-      within(screen.getByRole("button", { name: /项目卡点/ })).getByText(
-        "项目",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("button", { name: /任务卡点/ })).getByText(
-        "任务",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("button", { name: /报数卡点/ })).getByText(
-        "报数",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("button", { name: /结算卡点/ })).getByText(
-        "结算",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("button", { name: /审计卡点/ })).getByText(
-        "审计",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("button", { name: /通知卡点/ })).getByText(
-        "通知",
-      ),
-    ).toBeInTheDocument();
+    // 风险事项进入核验抽屉；点击横幅「去处理」打开抽屉，各事项显示中文路由标签。
+    fireEvent.click(screen.getByText("去处理"));
+    const dialog = screen.getByRole("dialog", { name: "风险事项核验" });
+    ["项目", "任务", "报数", "结算", "审计", "通知"].forEach((label) => {
+      expect(within(dialog).getByText(label)).toBeInTheDocument();
+    });
   });
 
   it("keeps project dashboard target navigation on the project detail route", () => {
@@ -543,7 +492,8 @@ describe("OpsReferenceApp role dashboard contract", () => {
             scopeLabel: "全组织",
           },
           kpis: [],
-          queue: [
+          queue: [],
+          risks: [
             {
               key: "project:live",
               title: "项目卡点",
@@ -552,15 +502,16 @@ describe("OpsReferenceApp role dashboard contract", () => {
               target: { route: "project", id: "project-live" },
             },
           ],
-          risks: [],
           drilldowns: [],
           generatedAt: "2026-06-16T09:30:00.000Z",
         }}
       />,
     );
 
-    const projectRow = screen.getByRole("button", { name: /项目卡点/ });
-    fireEvent.click(projectRow);
+    // 打开风险抽屉，点击事项的「去处理」钻取到对应项目详情。
+    fireEvent.click(screen.getByText("去处理"));
+    const dialog = screen.getByRole("dialog", { name: "风险事项核验" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /去处理/ }));
 
     expect(
       screen.getByRole("heading", { name: "Fixture Project" }),
@@ -583,7 +534,8 @@ describe("OpsReferenceApp role dashboard contract", () => {
             scopeLabel: "授权项目",
           },
           kpis: [],
-          queue: [
+          queue: [],
+          risks: [
             {
               key: "task:1",
               title: "任务卡点",
@@ -592,15 +544,16 @@ describe("OpsReferenceApp role dashboard contract", () => {
               target: { route: "tasks", id: "task-1" },
             },
           ],
-          risks: [],
           drilldowns: [],
           generatedAt: "2026-06-16T09:30:00.000Z",
         }}
       />,
     );
 
-    const taskRow = screen.getByRole("button", { name: /任务卡点/ });
-    fireEvent.click(taskRow);
+    // 打开风险抽屉，点击「去处理」保留非项目类目标 id。
+    fireEvent.click(screen.getByText("去处理"));
+    const dialog = screen.getByRole("dialog", { name: "风险事项核验" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /去处理/ }));
 
     expect(screen.getByText("已定位：任务 task-1")).toBeInTheDocument();
   });
