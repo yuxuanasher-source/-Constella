@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 
 import { createClient } from "@supabase/supabase-js";
+import WebSocket from "ws";
 
 import {
   assertShowcaseExecutionAllowed,
@@ -56,6 +57,9 @@ function createSupabaseAdapter(env) {
       auth: {
         autoRefreshToken: false,
         persistSession: false,
+      },
+      realtime: {
+        transport: WebSocket,
       },
     },
   );
