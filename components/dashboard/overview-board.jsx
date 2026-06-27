@@ -647,6 +647,41 @@ function RiskDrawer({ open, risks, onClose, go }) {
 }
 
 // ============================================================
+//  等比例缩放层 —— 把设计稿固定画布(1672 内容区)按实际宽度等比缩放，
+//  保证三栏比例 / 字号 / 间距与设计稿 1:1，不随容器宽度而漂移。
+// ============================================================
+const DESIGN_W = 1672;
+function ScaleToFit({ designWidth = DESIGN_W, children }) {
+  const wrapRef = React.useRef(null);
+  const innerRef = React.useRef(null);
+  const [scale, setScale] = React.useState(1);
+  const [h, setH] = React.useState(undefined);
+  React.useEffect(() => {
+    const wrap = wrapRef.current;
+    const inner = innerRef.current;
+    if (!wrap || !inner) return;
+    const update = () => {
+      const w = wrap.clientWidth || designWidth;
+      const s = w / designWidth;
+      setScale(s);
+      setH(inner.offsetHeight * s);
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(wrap);
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, [designWidth]);
+  return (
+    <div ref={wrapRef} style={{ width: "100%", height: h, overflow: "hidden" }}>
+      <div ref={innerRef} style={{ width: designWidth, transform: `scale(${scale})`, transformOrigin: "top left" }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 //  主组件
 // ============================================================
 export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches, currentUser }) {
@@ -722,7 +757,8 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
     <div style={{ background: C.page, minHeight: "100%" }}>
       <style>{`@keyframes obpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.82)}}@keyframes obspin{to{transform:rotate(360deg)}}@keyframes obfade{from{opacity:0}to{opacity:1}}@keyframes obslide{from{transform:translateX(44px);opacity:0}to{transform:translateX(0);opacity:1}}.ob-card .lift,.lift{transition:box-shadow .2s,transform .2s}.lift:hover{box-shadow:0 2px 4px rgba(24,27,46,.05),0 12px 28px -12px rgba(24,27,46,.18);transform:translateY(-1px)}.scl::-webkit-scrollbar{width:8px;height:8px}.scl::-webkit-scrollbar-thumb{background:#dadde6;border-radius:4px}.scl::-webkit-scrollbar-track{background:transparent}`}</style>
 
-      <div style={{ display: "flex", gap: 22, alignItems: "flex-start", padding: "24px 28px 44px", boxSizing: "border-box" }}>
+      <ScaleToFit designWidth={DESIGN_W}>
+      <div style={{ display: "flex", gap: 22, alignItems: "flex-start", padding: "24px 32px 44px", boxSizing: "border-box", width: DESIGN_W }}>
         {/* ===== 左：主看板 ===== */}
         <section style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 16 }}>
           {/* 标题 */}
@@ -889,10 +925,11 @@ export function OverviewBoard({ dashboard, go, projects, tasks, reports, batches
         </aside>
 
         {/* ===== 右：AI 助手 ===== */}
-        <aside style={{ width: 346, flexShrink: 0, position: "sticky", top: 24, alignSelf: "flex-start", height: "calc(100vh - 96px)", display: "flex", flexDirection: "column" }}>
+        <aside style={{ width: 346, flexShrink: 0, height: 944, display: "flex", flexDirection: "column" }}>
           <AiPanel user={currentUser} projects={projects} go={go} />
         </aside>
       </div>
+      </ScaleToFit>
 
       <RiskDrawer open={drawer} risks={risks} onClose={() => setDrawer(false)} go={go} />
     </div>
