@@ -17,6 +17,21 @@ export const DATASET = Object.freeze({
   ]),
 });
 
+const SHOWCASE_VOLUME = Object.freeze({
+  projects: 20,
+  streamers: 75,
+  projectStreamers: 75,
+  liveTasks: 180,
+  liveReports: 120,
+  settlementBatches: 20,
+  settlementBatchItems: 60,
+  projectApplications: 60,
+  recordingSubmissions: 20,
+  notifications: 50,
+});
+
+const BASE_SETTLEMENT_BATCH_ITEM_COUNT = 3;
+
 export function normalizeAccountIdentifier(value) {
   const trimmed = String(value ?? "").trim();
   if (!trimmed) {
@@ -83,57 +98,84 @@ export function buildShowcaseManifest({ accountId, organizationId }) {
     partnerOrganizationId: uuidFor("partner-organization"),
     partnerOrganizationCode: `product-showcase-${suffix}`,
     supplierIds: [uuidFor("supplier-primary")],
-    projectIds: [
-      uuidFor("project-live-growth"),
-      uuidFor("project-settlement-drill"),
-    ],
-    streamerIds: [
-      uuidFor("streamer-bound"),
-      uuidFor("streamer-audit"),
-      uuidFor("streamer-trial"),
-    ],
-    streamerAccountIds: [0, 1, 2].map((index) =>
+    projectIds: extendStableIds(
+      [uuidFor("project-live-growth"), uuidFor("project-settlement-drill")],
+      SHOWCASE_VOLUME.projects,
+      (index) => uuidFor(`project-bulk-${index}`),
+    ),
+    streamerIds: extendStableIds(
+      [
+        uuidFor("streamer-bound"),
+        uuidFor("streamer-audit"),
+        uuidFor("streamer-trial"),
+      ],
+      SHOWCASE_VOLUME.streamers,
+      (index) => uuidFor(`streamer-bulk-${index}`),
+    ),
+    streamerAccountIds: range(0, SHOWCASE_VOLUME.streamers).map((index) =>
       uuidFor(`streamer-account-${index}-douyin`),
     ),
-    streamerSupplierIds: [0, 1, 2].map((index) =>
+    streamerSupplierIds: range(0, SHOWCASE_VOLUME.streamers).map((index) =>
       uuidFor(`streamer-supplier-${index}`),
     ),
-    projectStreamerIds: [
-      uuidFor("project-streamer-bound"),
-      uuidFor("project-streamer-audit"),
-      uuidFor("project-streamer-trial"),
-    ],
-    liveTaskIds: [
-      uuidFor("task-bound-upcoming"),
-      uuidFor("task-bound-review"),
-      uuidFor("task-bound-approved"),
-      uuidFor("task-audit-live"),
-      uuidFor("task-audit-completed"),
-    ],
-    liveReportIds: [
-      uuidFor("report-bound-review"),
-      uuidFor("report-bound-approved"),
-      uuidFor("report-audit-approved"),
-      uuidFor("report-audit-need-more"),
-    ],
-    settlementBatchIds: [
-      uuidFor("settlement-payable"),
-      uuidFor("settlement-receivable"),
-    ],
-    settlementBatchItemIds: [
-      uuidFor("settlement-item-bound"),
-      uuidFor("settlement-item-audit"),
-      uuidFor("settlement-item-manual"),
-    ],
-    projectApplicationIds: [
-      uuidFor("application-recording"),
-      uuidFor("application-confirmed"),
-      uuidFor("application-rejected"),
-    ],
-    recordingSubmissionIds: [
-      uuidFor("recording-reviewing"),
-      uuidFor("recording-approved"),
-    ],
+    projectStreamerIds: extendStableIds(
+      [
+        uuidFor("project-streamer-bound"),
+        uuidFor("project-streamer-audit"),
+        uuidFor("project-streamer-trial"),
+      ],
+      SHOWCASE_VOLUME.projectStreamers,
+      (index) => uuidFor(`project-streamer-bulk-${index}`),
+    ),
+    liveTaskIds: extendStableIds(
+      [
+        uuidFor("task-bound-upcoming"),
+        uuidFor("task-bound-review"),
+        uuidFor("task-bound-approved"),
+        uuidFor("task-audit-live"),
+        uuidFor("task-audit-completed"),
+      ],
+      SHOWCASE_VOLUME.liveTasks,
+      (index) => uuidFor(`task-bulk-${index}`),
+    ),
+    liveReportIds: extendStableIds(
+      [
+        uuidFor("report-bound-review"),
+        uuidFor("report-bound-approved"),
+        uuidFor("report-audit-approved"),
+        uuidFor("report-audit-need-more"),
+      ],
+      SHOWCASE_VOLUME.liveReports,
+      (index) => uuidFor(`report-bulk-${index}`),
+    ),
+    settlementBatchIds: extendStableIds(
+      [uuidFor("settlement-payable"), uuidFor("settlement-receivable")],
+      SHOWCASE_VOLUME.settlementBatches,
+      (index) => uuidFor(`settlement-batch-bulk-${index}`),
+    ),
+    settlementBatchItemIds: extendStableIds(
+      [
+        uuidFor("settlement-item-bound"),
+        uuidFor("settlement-item-audit"),
+        uuidFor("settlement-item-manual"),
+      ],
+      SHOWCASE_VOLUME.settlementBatchItems,
+      (index) => uuidFor(`settlement-item-bulk-${index}`),
+    ),
+    projectApplicationIds: extendStableIds(
+      [
+        uuidFor("application-recording"),
+        uuidFor("application-confirmed"),
+        uuidFor("application-rejected"),
+      ],
+      SHOWCASE_VOLUME.projectApplications,
+      (index) => uuidFor(`application-bulk-${index}`),
+    ),
+    recordingSubmissionIds: extendStableIds(
+      [uuidFor("recording-reviewing"), uuidFor("recording-approved")],
+      SHOWCASE_VOLUME.recordingSubmissions,
+      (index) => uuidFor(`recording-bulk-${index}`),
+    ),
     collaborationShareIds: [uuidFor("collaboration-share")],
     collaborationApplicationIds: [uuidFor("collaboration-application")],
     collaborationAgreementIds: [uuidFor("collaboration-agreement")],
@@ -148,24 +190,36 @@ export function buildShowcaseManifest({ accountId, organizationId }) {
       uuidFor("collaboration-settlement-item-1"),
       uuidFor("collaboration-settlement-item-2"),
     ],
-    screenshotIds: [
-      uuidFor("screenshot-review"),
-      uuidFor("screenshot-bound"),
-      uuidFor("screenshot-audit"),
-      uuidFor("screenshot-need-more"),
-    ],
-    ocrResultIds: [
-      uuidFor("ocr-review"),
-      uuidFor("ocr-bound"),
-      uuidFor("ocr-audit"),
-      uuidFor("ocr-need-more"),
-    ],
-    notificationIds: [
-      uuidFor("notification-task"),
-      uuidFor("notification-review"),
-      uuidFor("notification-risk"),
-      uuidFor("notification-settlement"),
-    ],
+    screenshotIds: extendStableIds(
+      [
+        uuidFor("screenshot-review"),
+        uuidFor("screenshot-bound"),
+        uuidFor("screenshot-audit"),
+        uuidFor("screenshot-need-more"),
+      ],
+      SHOWCASE_VOLUME.liveReports,
+      (index) => uuidFor(`screenshot-bulk-${index}`),
+    ),
+    ocrResultIds: extendStableIds(
+      [
+        uuidFor("ocr-review"),
+        uuidFor("ocr-bound"),
+        uuidFor("ocr-audit"),
+        uuidFor("ocr-need-more"),
+      ],
+      SHOWCASE_VOLUME.liveReports,
+      (index) => uuidFor(`ocr-bulk-${index}`),
+    ),
+    notificationIds: extendStableIds(
+      [
+        uuidFor("notification-task"),
+        uuidFor("notification-review"),
+        uuidFor("notification-risk"),
+        uuidFor("notification-settlement"),
+      ],
+      SHOWCASE_VOLUME.notifications,
+      (index) => uuidFor(`notification-bulk-${index}`),
+    ),
     autoReviewRuleIds: [uuidFor("auto-review-rule")],
     reviewSampleIds: [uuidFor("review-sample")],
     reportChangeLogIds: [uuidFor("report-change-log")],
@@ -420,6 +474,145 @@ export function buildShowcaseRows({ account, organization }) {
     },
   ];
 
+  const extraProjects = manifest.projectIds
+    .slice(projects.length)
+    .map((projectId, offset) => {
+      const index = projects.length + offset;
+      const status = pick(
+        ["active", "recruiting", "pending_start", "settling", "ended"],
+        index,
+      );
+      const rate = 80 + (index % 6) * 12;
+      const monthDay = twoDigit(1 + (index % 24));
+
+      return {
+        id: projectId,
+        organization_id: organization.id,
+        code: `SHOWCASE-BULK-${String(index + 1).padStart(2, "0")}-${suffix
+          .slice(0, 4)
+          .toUpperCase()}`,
+        name: `Showcase Project ${String(index + 1).padStart(2, "0")}`,
+        status,
+        sensitivity: index % 5 === 0 ? "high" : "normal",
+        supplier_id: supplierId,
+        created_by: account.id,
+        owner_id: account.id,
+        ops_manager_id: account.id,
+        starts_at: `2026-06-${monthDay}T10:00:00.000Z`,
+        ends_at: `2026-07-${twoDigit(1 + (index % 20))}T10:00:00.000Z`,
+        recruiting_deadline: `2026-06-${twoDigit(1 + (index % 20))}`,
+        open_signup: index % 3 !== 0,
+        allow_direct_invite: true,
+        force_recording: index % 4 !== 0,
+        force_system_timing: true,
+        default_settlement_method:
+          index % 4 === 0 ? "base_salary_cpt" : index % 4 === 1 ? "cpt" : "cps",
+        default_hourly_rate: rate,
+        default_base_salary: index % 4 === 0 ? 1200 + index * 20 : 0,
+        default_settlement_rule: {
+          dataset: DATASET.code,
+          volume: "large_showcase",
+          cptHourlyRate: rate,
+          cpsRateBps: 500 + (index % 5) * 100,
+        },
+        published_at:
+          status === "draft"
+            ? null
+            : `2026-06-${twoDigit(1 + (index % 18))}T09:00:00.000Z`,
+        vendor_name: `Vendor ${String(index + 1).padStart(2, "0")}`,
+        product_name: `Product ${String(index + 1).padStart(2, "0")}`,
+        agent_name: "Product showcase operations",
+        supplier_name: "Showcase content supplier",
+        description: `Generated showcase project ${index + 1} for list, filter, and paging demos.`,
+        is_public_to_streamers: true,
+        public_summary: `Showcase public brief ${index + 1}`,
+        game_download_url: `https://example.cn/download/showcase-${index + 1}`,
+        is_open_to_mcn_collaboration: index % 3 === 0,
+        mcn_collaboration_summary:
+          index % 3 === 0 ? "Open for partner MCN revenue share." : "",
+        mcn_collaboration_terms:
+          index % 3 === 0
+            ? {
+                dataset: DATASET.code,
+                revenueShareBps: 1800 + (index % 5) * 100,
+                settlementBasis: "project_revenue",
+              }
+            : {},
+      };
+    });
+  const allProjects = [...projects, ...extraProjects];
+
+  const extraStreamers = manifest.streamerIds
+    .slice(streamers.length)
+    .map((streamerId, offset) => {
+      const index = streamers.length + offset;
+      const price = 72 + (index % 9) * 8;
+
+      return {
+        id: streamerId,
+        organization_id: organization.id,
+        user_id: null,
+        display_name: `Showcase Anchor ${String(index + 1).padStart(2, "0")}`,
+        real_name: `Demo Talent ${String(index + 1).padStart(2, "0")}`,
+        gender: index % 2 === 0 ? "female" : "male",
+        phone: `139${String(10000000 + index).slice(0, 8)}`,
+        wechat: `showcase_${suffix.slice(0, 6)}_${index + 1}`,
+        note: `Generated showcase streamer ${index + 1}`,
+        source_type: pick(
+          ["signed", "external", "supplier_recommended", "account_managed"],
+          index,
+        ),
+        primary_supplier_id: supplierId,
+        referrer:
+          index % 4 === 0
+            ? "public_signup"
+            : index % 4 === 1
+              ? "supplier_pool"
+              : "ops_invite",
+        cooperation_status: pick(
+          ["active", "key_development", "signed", "not_started", "paused"],
+          index,
+        ),
+        categories: [
+          pick(["new_release", "retention", "strategy", "casual"], index),
+          "showcase",
+        ],
+        platforms: index % 3 === 0 ? ["douyin", "bilibili"] : ["douyin"],
+        styles: [pick(["stable", "high_energy", "analysis", "trial"], index)],
+        skills: [pick(["conversion", "walkthrough", "retention"], index)],
+        availability: {
+          weekday: pick(["afternoon", "evening", "night"], index),
+          capacityPerWeek: 2 + (index % 5),
+        },
+        equipment: {
+          mobileMirror: index % 2 === 0,
+          pcStreaming: index % 3 === 0,
+          captureCard: index % 4 === 0,
+        },
+        risk_tags: index % 11 === 0 ? ["duration_review"] : [],
+        default_settlement_method: index % 4 === 0 ? "base_salary_cpt" : "cpt",
+        default_price: price,
+        default_base_salary: index % 4 === 0 ? 900 + index * 10 : 0,
+        default_cps_rate_bps: 300 + (index % 7) * 100,
+        risk_level:
+          index % 13 === 0 ? "high" : index % 5 === 0 ? "medium" : "low",
+        risk_reason:
+          index % 13 === 0
+            ? "Generated high-risk sample for review demos."
+            : null,
+        auto_trust:
+          index % 13 === 0
+            ? "restricted"
+            : index % 5 === 0
+              ? "probation"
+              : "trusted",
+        clean_report_count: index % 18,
+        duration_baseline: 90 + (index % 6) * 15,
+        created_by: account.id,
+      };
+    });
+  const allStreamers = [...streamers, ...extraStreamers];
+
   const liveTasks = [
     {
       id: taskUpcomingId,
@@ -514,6 +707,78 @@ export function buildShowcaseRows({ account, organization }) {
       note: DATASET.code,
     },
   ];
+
+  const extraLiveTasks = manifest.liveTaskIds
+    .slice(liveTasks.length)
+    .map((taskId, offset) => {
+      const index = liveTasks.length + offset;
+      const status = pick(
+        [
+          "pending_live",
+          "live",
+          "pending_report",
+          "report_pending_review",
+          "report_approved",
+          "completed",
+          "report_rejected",
+          "abnormal",
+        ],
+        index,
+      );
+      const plannedDuration = 90 + (index % 5) * 30;
+      const startHour = 10 + (index % 8);
+      const projectId = pick(manifest.projectIds, index);
+      const streamerId = pick(manifest.streamerIds, index + 3);
+      const hasStarted = !["pending_live", "cancelled"].includes(status);
+      const hasStopped = [
+        "pending_report",
+        "report_pending_review",
+        "report_approved",
+        "completed",
+        "report_rejected",
+        "abnormal",
+      ].includes(status);
+
+      return {
+        id: taskId,
+        organization_id: organization.id,
+        project_id: projectId,
+        streamer_id: streamerId,
+        title: `Showcase live task ${String(index + 1).padStart(3, "0")}`,
+        task_type: "project",
+        status,
+        planned_start_at: `2026-06-${twoDigit(1 + (index % 28))}T${twoDigit(
+          startHour,
+        )}:00:00.000Z`,
+        planned_end_at: `2026-06-${twoDigit(1 + (index % 28))}T${twoDigit(
+          startHour + 2,
+        )}:30:00.000Z`,
+        planned_duration: plannedDuration,
+        requires_timing: true,
+        system_started_at: hasStarted
+          ? `2026-06-${twoDigit(1 + (index % 28))}T${twoDigit(
+              startHour,
+            )}:03:00.000Z`
+          : null,
+        system_stopped_at: hasStopped
+          ? `2026-06-${twoDigit(1 + (index % 28))}T${twoDigit(
+              startHour + 2,
+            )}:18:00.000Z`
+          : null,
+        system_duration: hasStarted
+          ? Math.max(20, plannedDuration - 12 + (index % 17))
+          : 0,
+        anomaly_flags:
+          index % 17 === 0
+            ? ["duration_watch"]
+            : index % 19 === 0
+              ? ["screenshot_gap"]
+              : [],
+        created_by: account.id,
+        note: DATASET.code,
+      };
+    });
+  const allLiveTasks = [...liveTasks, ...extraLiveTasks];
 
   const liveReports = [
     {
@@ -636,6 +901,97 @@ export function buildShowcaseRows({ account, organization }) {
     },
   ];
 
+  const extraLiveReports = manifest.liveReportIds
+    .slice(liveReports.length)
+    .map((reportId, offset) => {
+      const index = liveReports.length + offset;
+      const isSettlementReport =
+        offset <
+        SHOWCASE_VOLUME.settlementBatchItems - BASE_SETTLEMENT_BATCH_ITEM_COUNT;
+      const status = isSettlementReport
+        ? "approved"
+        : pick(
+            [
+              "pending",
+              "ocr_ing",
+              "pending_confirm",
+              "pending_review",
+              "need_more",
+              "rejected",
+            ],
+            index,
+          );
+      const taskId = manifest.liveTaskIds[liveTasks.length + offset];
+      const projectId = pick(manifest.projectIds, index);
+      const streamerId = pick(manifest.streamerIds, index + 5);
+      const systemDuration = 80 + (index % 8) * 12;
+      const screenshotDuration = Math.max(
+        0,
+        systemDuration - (index % 9) + (index % 4),
+      );
+      const settlementDuration =
+        status === "approved"
+          ? Math.min(systemDuration, screenshotDuration)
+          : null;
+      const evidenceLevel =
+        status === "approved" ? (index % 6 === 0 ? "yellow" : "green") : null;
+
+      return {
+        id: reportId,
+        organization_id: organization.id,
+        live_task_id: taskId,
+        project_id: projectId,
+        streamer_id: streamerId,
+        status,
+        system_duration: systemDuration,
+        screenshot_duration: screenshotDuration,
+        claimed_duration: systemDuration + (index % 7) - 3,
+        settlement_duration: settlementDuration,
+        time_source:
+          status === "approved"
+            ? evidenceLevel === "yellow"
+              ? "screenshot"
+              : "system"
+            : null,
+        evidence_level: evidenceLevel,
+        divergence_pct:
+          status === "approved" ? Number(((index % 9) / 100).toFixed(4)) : null,
+        divergence_resolved_by: status === "approved" ? account.id : null,
+        divergence_reason:
+          status === "approved"
+            ? "Generated showcase report for settlement demos."
+            : null,
+        viewers: 700 + index * 37,
+        review_mode: index % 3 === 0 ? "auto" : "manual",
+        auto_rule_version: index % 3 === 0 ? 1 : null,
+        auto_gate_snapshot: { dataset: DATASET.code, bulkIndex: index },
+        sampled: index % 7 === 0,
+        reviewed_by: ["approved", "rejected", "need_more"].includes(status)
+          ? account.id
+          : null,
+        reviewed_at: ["approved", "rejected", "need_more"].includes(status)
+          ? `2026-06-${twoDigit(1 + (index % 28))}T15:00:00.000Z`
+          : null,
+        review_notes:
+          status === "approved"
+            ? "Approved generated showcase report."
+            : status === "rejected"
+              ? "Rejected generated showcase report."
+              : null,
+        include_in_task_result: status !== "rejected",
+        enter_settlement_pool: status === "approved",
+        risk_flags:
+          evidenceLevel === "yellow"
+            ? ["duration_review"]
+            : status === "need_more"
+              ? ["missing_evidence"]
+              : [],
+        created_by: account.id,
+        created_at: `2026-06-${twoDigit(1 + (index % 28))}T14:05:00.000Z`,
+      };
+    });
+  const allLiveReports = [...liveReports, ...extraLiveReports];
+
   const settlementBatches = [
     {
       id: payableBatchId,
@@ -733,6 +1089,75 @@ export function buildShowcaseRows({ account, organization }) {
     },
   ];
 
+  const extraSettlementBatches = manifest.settlementBatchIds
+    .slice(settlementBatches.length)
+    .map((batchId, offset) => {
+      const index = settlementBatches.length + offset;
+      const projectId = pick(manifest.projectIds.slice(2), offset);
+      const batchType = index % 2 === 0 ? "payable" : "receivable";
+      const computedAmount =
+        batchType === "payable" ? 1200 + index * 88 : 8800 + index * 420;
+
+      return {
+        id: batchId,
+        organization_id: organization.id,
+        project_id: projectId,
+        batch_type: batchType,
+        status: pick(["generated", "pending", "confirmed", "locked"], index),
+        period_start: DATASET.periodStart,
+        period_end: DATASET.periodEnd,
+        computed_amount: computedAmount,
+        manual_amount: 0,
+        adjustment_amount: index % 5 === 0 ? 80 : 0,
+        evidence_summary: {
+          dataset: DATASET.code,
+          volume: "large_showcase",
+          reportCount: 2 + (index % 6),
+        },
+        created_by: account.id,
+      };
+    });
+  const allSettlementBatches = [
+    ...settlementBatches,
+    ...extraSettlementBatches,
+  ];
+
+  const extraSettlementBatchItems = manifest.settlementBatchItemIds
+    .slice(settlementBatchItems.length)
+    .map((itemId, offset) => {
+      const index = settlementBatchItems.length + offset;
+      const report = extraLiveReports[offset];
+      const batch = pick(allSettlementBatches, index);
+      const settlementDuration = report?.settlement_duration ?? 90;
+      const hourlyRate = 70 + (index % 8) * 10;
+
+      return {
+        id: itemId,
+        organization_id: organization.id,
+        settlement_batch_id: batch.id,
+        project_id: report?.project_id ?? batch.project_id,
+        streamer_id: report?.streamer_id ?? null,
+        live_report_id: report?.id ?? null,
+        item_type: "live_report",
+        computed_amount: Number(
+          ((settlementDuration / 60) * hourlyRate).toFixed(2),
+        ),
+        manual_amount: 0,
+        adjustment_amount: index % 9 === 0 ? 30 : 0,
+        evidence_level: index % 6 === 0 ? "yellow" : "green",
+        evidence_snapshot: {
+          dataset: DATASET.code,
+          settlementDuration,
+          timeSource: index % 6 === 0 ? "screenshot" : "system",
+          volume: "large_showcase",
+        },
+      };
+    });
+  const allSettlementBatchItems = [
+    ...settlementBatchItems,
+    ...extraSettlementBatchItems,
+  ];
+
   const projectApplications = [
     {
       id: applicationRecordingId,
@@ -775,6 +1200,54 @@ export function buildShowcaseRows({ account, organization }) {
     },
   ];
 
+  const extraProjectApplications = manifest.projectApplicationIds
+    .slice(projectApplications.length)
+    .map((applicationId, offset) => {
+      const index = projectApplications.length + offset;
+      const status = pick(
+        [
+          "submitted",
+          "invited",
+          "recording_required",
+          "recording_reviewing",
+          "recording_approved",
+          "confirmed",
+          "joined",
+          "declined",
+        ],
+        index,
+      );
+      const source = index % 2 === 0 ? "signup" : "direct_invite";
+      const decided = [
+        "recording_approved",
+        "confirmed",
+        "joined",
+        "declined",
+      ].includes(status);
+
+      return {
+        id: applicationId,
+        organization_id: organization.id,
+        project_id: pick(manifest.projectIds, index + 2),
+        streamer_id: pick(manifest.streamerIds, index + 7),
+        source,
+        status,
+        invited_by: source === "direct_invite" ? account.id : null,
+        submitted_at: `2026-06-${twoDigit(1 + (index % 24))}T06:30:00.000Z`,
+        decided_by: decided ? account.id : null,
+        decided_at: decided
+          ? `2026-06-${twoDigit(2 + (index % 23))}T09:00:00.000Z`
+          : null,
+        decision_reason: decided
+          ? "Generated showcase application decision."
+          : null,
+      };
+    });
+  const allProjectApplications = [
+    ...projectApplications,
+    ...extraProjectApplications,
+  ];
+
   const recordingSubmissions = [
     {
       id: recordingReviewingId,
@@ -810,6 +1283,44 @@ export function buildShowcaseRows({ account, organization }) {
       reviewed_at: "2026-06-19T08:00:00.000Z",
       review_note: "节奏清晰，可以进入首发项目。",
     },
+  ];
+
+  const extraRecordingSubmissions = manifest.recordingSubmissionIds
+    .slice(recordingSubmissions.length)
+    .map((submissionId, offset) => {
+      const index = recordingSubmissions.length + offset;
+      const application = extraProjectApplications[offset];
+      const status = pick(
+        ["submitted", "reviewing", "approved", "rejected", "needs_changes"],
+        index,
+      );
+      const reviewed = ["approved", "rejected", "needs_changes"].includes(
+        status,
+      );
+
+      return {
+        id: submissionId,
+        organization_id: organization.id,
+        application_id: application.id,
+        project_id: application.project_id,
+        streamer_id: application.streamer_id,
+        version: 1,
+        storage_path: `product-showcase/${suffix}/recordings/${submissionId}.mp4`,
+        external_url: null,
+        file_hash: `showcase-recording-${suffix}-${index}`,
+        duration_seconds: 120 + (index % 7) * 18,
+        status,
+        submitted_at: `2026-06-${twoDigit(1 + (index % 24))}T07:00:00.000Z`,
+        reviewed_by: reviewed ? account.id : null,
+        reviewed_at: reviewed
+          ? `2026-06-${twoDigit(2 + (index % 23))}T08:00:00.000Z`
+          : null,
+        review_note: reviewed ? "Generated showcase recording review." : null,
+      };
+    });
+  const allRecordingSubmissions = [
+    ...recordingSubmissions,
+    ...extraRecordingSubmissions,
   ];
 
   const projectStreamers = [
@@ -860,7 +1371,39 @@ export function buildShowcaseRows({ account, organization }) {
     },
   ];
 
-  const streamerAccounts = streamers.flatMap((streamer, index) => [
+  const extraProjectStreamers = manifest.projectStreamerIds
+    .slice(projectStreamers.length)
+    .map((projectStreamerId, offset) => {
+      const index = projectStreamers.length + offset;
+      const status = pick(["joined", "joined", "screening", "approved"], index);
+      const hourlyRate = 72 + (index % 9) * 8;
+
+      return {
+        id: projectStreamerId,
+        organization_id: organization.id,
+        project_id: pick(manifest.projectIds, index + 2),
+        streamer_id: manifest.streamerIds[index],
+        status,
+        joined_at:
+          status === "joined"
+            ? `2026-06-${twoDigit(1 + (index % 24))}T08:00:00.000Z`
+            : null,
+        decision_reason: "Generated showcase assignment.",
+        settlement_method: index % 4 === 0 ? "base_salary_cpt" : "cpt",
+        hourly_rate: hourlyRate,
+        base_salary: index % 4 === 0 ? 900 + index * 10 : 0,
+        cps_rate_bps: 300 + (index % 7) * 100,
+        settlement_rule: {
+          dataset: DATASET.code,
+          volume: "large_showcase",
+          role: pick(["lead", "support", "trial"], index),
+        },
+        created_by: account.id,
+      };
+    });
+  const allProjectStreamers = [...projectStreamers, ...extraProjectStreamers];
+
+  const streamerAccounts = allStreamers.flatMap((streamer, index) => [
     {
       id: manifest.streamerAccountIds[index],
       organization_id: organization.id,
@@ -868,7 +1411,7 @@ export function buildShowcaseRows({ account, organization }) {
       platform: "douyin",
       account_handle: `showcase_${suffix}_${index + 1}`,
       account_url: `https://example.cn/showcase/${suffix}/${index + 1}`,
-      follower_count: [128000, 86000, 31000][index],
+      follower_count: [128000, 86000, 31000][index] ?? 22000 + index * 1300,
       is_primary: true,
       verified_at: "2026-06-18T08:00:00.000Z",
     },
@@ -953,6 +1496,67 @@ export function buildShowcaseRows({ account, organization }) {
     }),
   );
 
+  const extraReportScreenshots = extraLiveReports.map((report, offset) => {
+    const index = reportScreenshots.length + offset;
+
+    return {
+      id: manifest.screenshotIds[index],
+      organization_id: organization.id,
+      live_report_id: report.id,
+      project_id: report.project_id,
+      streamer_id: report.streamer_id,
+      storage_path: `product-showcase/${suffix}/reports/${report.id}.png`,
+      file_hash: `showcase-${suffix}-${report.id}`,
+      uploaded_by: account.id,
+      uploaded_at: `2026-06-${twoDigit(1 + (index % 28))}T14:00:00.000Z`,
+      metadata: {
+        dataset: DATASET.code,
+        duration: report.screenshot_duration,
+        viewers: report.viewers,
+        volume: "large_showcase",
+      },
+    };
+  });
+  const allReportScreenshots = [
+    ...reportScreenshots,
+    ...extraReportScreenshots,
+  ];
+
+  const extraOcrResults = extraLiveReports.map((report, offset) => {
+    const index = ocrResults.length + offset;
+    const status =
+      report.status === "need_more"
+        ? "needs_confirmation"
+        : report.status === "ocr_ing"
+          ? "processing"
+          : "succeeded";
+
+    return {
+      id: manifest.ocrResultIds[index],
+      organization_id: organization.id,
+      live_report_id: report.id,
+      screenshot_id: manifest.screenshotIds[index],
+      status,
+      raw_result: {
+        dataset: DATASET.code,
+        source: "scripted_ocr_result",
+        words: [
+          "duration",
+          String(report.screenshot_duration),
+          "viewers",
+          String(report.viewers),
+        ],
+      },
+      extracted_duration: report.screenshot_duration,
+      extracted_viewers: report.viewers,
+      provider: "scripted",
+      confidence: status === "needs_confirmation" ? 72 : 94,
+      needs_confirmation: status === "needs_confirmation",
+      raw_response: { dataset: DATASET.code, normalized: true },
+    };
+  });
+  const allOcrResults = [...ocrResults, ...extraOcrResults];
+
   const rows = {
     manifest,
     partnerOrganization: {
@@ -970,10 +1574,10 @@ export function buildShowcaseRows({ account, organization }) {
         note: DATASET.code,
       },
     ],
-    projects,
-    streamers,
+    projects: allProjects,
+    streamers: allStreamers,
     streamerAccounts,
-    streamerSuppliers: streamers.map((streamer, index) => ({
+    streamerSuppliers: allStreamers.map((streamer, index) => ({
       id: manifest.streamerSupplierIds[index],
       organization_id: organization.id,
       streamer_id: streamer.id,
@@ -981,13 +1585,13 @@ export function buildShowcaseRows({ account, organization }) {
       relation_type: index === 0 ? "signed" : "cooperation",
       is_primary: true,
     })),
-    projectStreamers,
-    projectApplications,
-    recordingSubmissions,
-    liveTasks,
-    liveReports,
-    reportScreenshots,
-    ocrResults,
+    projectStreamers: allProjectStreamers,
+    projectApplications: allProjectApplications,
+    recordingSubmissions: allRecordingSubmissions,
+    liveTasks: allLiveTasks,
+    liveReports: allLiveReports,
+    reportScreenshots: allReportScreenshots,
+    ocrResults: allOcrResults,
     reportChangeLogs: [
       {
         id: manifest.reportChangeLogIds[0],
@@ -1030,8 +1634,8 @@ export function buildShowcaseRows({ account, organization }) {
         notes: "抽样复核通过。",
       },
     ],
-    settlementBatches,
-    settlementBatchItems,
+    settlementBatches: allSettlementBatches,
+    settlementBatchItems: allSettlementBatchItems,
     projectCollaborationShares: [
       {
         id: collaborationShareId,
@@ -1243,6 +1847,48 @@ export function buildShowcaseRows({ account, organization }) {
         source: DATASET.source,
         is_high_risk: false,
       },
+      ...manifest.notificationIds.slice(4).map((notificationId, offset) => {
+        const index = 4 + offset;
+        const notificationType = pick(
+          ["task", "review", "anomaly", "settlement", "system"],
+          index,
+        );
+        const objectType =
+          notificationType === "task"
+            ? "live_task"
+            : notificationType === "settlement"
+              ? "settlement_batch"
+              : notificationType === "system"
+                ? "project"
+                : "live_report";
+        const objectId =
+          objectType === "live_task"
+            ? pick(allLiveTasks, index).id
+            : objectType === "settlement_batch"
+              ? pick(allSettlementBatches, index).id
+              : objectType === "project"
+                ? pick(allProjects, index).id
+                : pick(allLiveReports, index).id;
+
+        return {
+          id: notificationId,
+          organization_id: organization.id,
+          recipient_user_id: account.id,
+          recipient_role: null,
+          notification_type: notificationType,
+          status: pick(["unread", "unread", "read", "handled"], index),
+          title: `Showcase notification ${String(index + 1).padStart(2, "0")}`,
+          content: `Generated showcase notification ${index + 1}.`,
+          object_type: objectType,
+          object_id: objectId,
+          source: DATASET.source,
+          is_high_risk: notificationType === "anomaly",
+          handled_at:
+            notificationType === "anomaly"
+              ? `2026-06-${twoDigit(1 + (index % 28))}T16:10:00.000Z`
+              : null,
+        };
+      }),
     ],
     billingPlan: {
       id: manifest.billingPlanId,
@@ -1251,7 +1897,7 @@ export function buildShowcaseRows({ account, organization }) {
       name: "Product Showcase Growth",
       monthly_price_cents: 0,
       annual_price_cents: 0,
-      included_active_streamers: 30,
+      included_active_streamers: 100,
       included_seats: 8,
       included_ocr: 300,
       included_ai: 200,
@@ -1273,7 +1919,7 @@ export function buildShowcaseRows({ account, organization }) {
       id: manifest.usageEventIds[index],
       organization_id: organization.id,
       metric,
-      quantity: [3, 1, 4, 6, 512, 2][index],
+      quantity: [75, 8, 120, 64, 4096, 18][index],
       period_month: DATASET.periodMonth,
       source: DATASET.source,
       object_type: "product_showcase",
@@ -1285,8 +1931,8 @@ export function buildShowcaseRows({ account, organization }) {
       organization_id: organization.id,
       metric,
       period_month: DATASET.periodMonth,
-      used_quantity: [3, 1, 4, 6, 512, 2][index],
-      included_quantity: [30, 8, 300, 200, 2048, 50][index],
+      used_quantity: [75, 8, 120, 64, 4096, 18][index],
+      included_quantity: [100, 12, 500, 300, 8192, 80][index],
       addon_quantity: metric === "ocr" ? 100 : 0,
     })),
     usageAddons: [
@@ -1356,6 +2002,28 @@ export function createProductShowcaseRunner(adapter) {
 
 function resolveAccount(adapter, input) {
   return adapter.resolveTargetAccount(input?.account);
+}
+
+function extendStableIds(seedIds, totalCount, createId) {
+  return [
+    ...seedIds,
+    ...range(seedIds.length, totalCount).map((index) => createId(index)),
+  ];
+}
+
+function range(startInclusive, endExclusive) {
+  return Array.from(
+    { length: Math.max(0, endExclusive - startInclusive) },
+    (_, offset) => startInclusive + offset,
+  );
+}
+
+function pick(values, index) {
+  return values[index % values.length];
+}
+
+function twoDigit(value) {
+  return String(value).padStart(2, "0");
 }
 
 function stableUuid(input) {

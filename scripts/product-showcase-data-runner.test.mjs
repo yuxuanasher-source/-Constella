@@ -15,10 +15,10 @@ describe("product showcase runner", () => {
     expect(summary).toMatchObject({
       organizationId: adapter.organization.id,
       targetAccountId: adapter.account.id,
-      projects: 2,
-      streamers: 3,
-      liveTasks: 5,
-      liveReports: 4,
+      projects: 20,
+      streamers: 75,
+      liveTasks: 180,
+      liveReports: 120,
     });
     expect(adapter.calls.map((call) => call[0])).toEqual([
       "resolveTargetAccount",

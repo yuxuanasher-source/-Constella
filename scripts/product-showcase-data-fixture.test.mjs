@@ -79,8 +79,18 @@ describe("product showcase rows", () => {
     expect(manifest.organizationId).toBe(
       "22222222-2222-4222-8222-222222222222",
     );
-    expect(manifest.projectIds).toHaveLength(2);
-    expect(manifest.streamerIds).toHaveLength(3);
+    expect(manifest.projectIds).toHaveLength(20);
+    expect(manifest.streamerIds).toHaveLength(75);
+    expect(manifest.projectStreamerIds).toHaveLength(75);
+    expect(manifest.liveTaskIds).toHaveLength(180);
+    expect(manifest.liveReportIds).toHaveLength(120);
+    expect(manifest.screenshotIds).toHaveLength(120);
+    expect(manifest.ocrResultIds).toHaveLength(120);
+    expect(manifest.settlementBatchIds).toHaveLength(20);
+    expect(manifest.settlementBatchItemIds).toHaveLength(60);
+    expect(manifest.projectApplicationIds).toHaveLength(60);
+    expect(manifest.recordingSubmissionIds).toHaveLength(20);
+    expect(manifest.notificationIds).toHaveLength(50);
     expect(manifest.partnerOrganizationCode).toMatch(/^product-showcase-/);
   });
 
@@ -98,14 +108,15 @@ describe("product showcase rows", () => {
       },
     });
 
-    expect(rows.projects).toHaveLength(2);
-    expect(rows.streamers).toHaveLength(3);
-    expect(rows.liveTasks).toHaveLength(5);
-    expect(rows.liveReports).toHaveLength(4);
-    expect(rows.projectApplications).toHaveLength(3);
-    expect(rows.settlementBatches).toHaveLength(2);
-    expect(rows.settlementBatchItems.length).toBeGreaterThanOrEqual(3);
-    expect(rows.notifications).toHaveLength(4);
+    expect(rows.projects).toHaveLength(20);
+    expect(rows.streamers).toHaveLength(75);
+    expect(rows.liveTasks).toHaveLength(180);
+    expect(rows.liveReports).toHaveLength(120);
+    expect(rows.projectApplications).toHaveLength(60);
+    expect(rows.recordingSubmissions).toHaveLength(20);
+    expect(rows.settlementBatches).toHaveLength(20);
+    expect(rows.settlementBatchItems).toHaveLength(60);
+    expect(rows.notifications).toHaveLength(50);
     expect(rows.usageMonthlyCounters).toHaveLength(
       DATASET.requiredUsageMetrics.length,
     );
