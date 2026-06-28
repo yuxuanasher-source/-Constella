@@ -124,6 +124,53 @@ export type DashboardQueueItem = {
   target: DashboardTarget;
 };
 
+export type DashboardActionItem = {
+  key: string;
+  label: string;
+  value: number;
+  tone: DashboardTone;
+  target?: DashboardTarget;
+};
+
+export type DashboardActionGroup = {
+  key: string;
+  title: string;
+  items: DashboardActionItem[];
+};
+
+export type DashboardPersonalSummaryItem = {
+  key: string;
+  label: string;
+  value: number;
+  tone: DashboardTone;
+  attention?: boolean;
+  series?: number[];
+};
+
+export type DashboardPersonalRecommendation = {
+  key: string;
+  icon: string;
+  text: string;
+  sub: string;
+  tone: DashboardTone;
+  cta: string;
+  target?: DashboardTarget;
+};
+
+export type DashboardPersonalTodo = {
+  key: string;
+  text: string;
+  count?: number;
+  tone: DashboardTone;
+  target?: DashboardTarget;
+};
+
+export type DashboardPersonalPanel = {
+  summary: DashboardPersonalSummaryItem[];
+  recommendations: DashboardPersonalRecommendation[];
+  todos: DashboardPersonalTodo[];
+};
+
 export type DashboardFunnelStage = {
   key: string;
   label: string;
@@ -199,6 +246,8 @@ export type RoleHomeDashboardDto = {
   queue: DashboardQueueItem[];
   risks: DashboardQueueItem[];
   drilldowns: DashboardQueueItem[];
+  actionGroups?: DashboardActionGroup[];
+  personal?: DashboardPersonalPanel;
   panels?: RoleHomeDashboardPanels;
   emptyState?: {
     title: string;
@@ -227,7 +276,7 @@ export function buildRoleHomeDashboard(
   const facts = collectFacts(input.source);
   const dashboard = projectFactsForRole(input.role, facts, input.source.now);
 
-  return withEmptyState(dashboard);
+  return withOverviewWidgets(withEmptyState(dashboard), input.role, facts);
 }
 
 function collectFacts(source: DashboardSourceData) {
@@ -297,6 +346,7 @@ function collectFacts(source: DashboardSourceData) {
 
   return {
     allProjects: source.projects,
+    reports: source.reports,
     batches: source.batches,
     draftBatches,
     reopenedBatches,
@@ -353,6 +403,609 @@ function projectFactsForRole(
     default:
       return rejectUnsupportedRole(role);
   }
+}
+
+function withOverviewWidgets(
+  dashboard: RoleHomeDashboardDto,
+  role: DashboardStaffRole,
+  facts: ReturnType<typeof collectFacts>,
+): RoleHomeDashboardDto {
+  const actionGroups = buildActionGroups(role, facts);
+
+  return {
+    ...dashboard,
+    actionGroups,
+    personal: buildPersonalPanel(dashboard, facts, actionGroups),
+  };
+}
+
+function buildActionGroups(
+  role: DashboardStaffRole,
+  facts: ReturnType<typeof collectFacts>,
+): DashboardActionGroup[] {
+  const batchCount = (...statuses: string[]) =>
+    facts.batches.filter((batch) => statuses.includes(batch.status)).length;
+  const anomalyCount = facts.anomalyTasks.length + facts.projectAnomalyCount;
+  const recruitingCount = facts.activeProjects.filter(
+    (project) => project.status === "recruiting",
+  ).length;
+  const highRiskCount =
+    facts.highRiskNotices.length +
+    facts.allProjects.filter((project) => project.risk === "high").length;
+
+  if (role === "operator_business") {
+    return [
+      actionGroup("todayTasks", "今日任务", [
+        actionItem(
+          "open",
+          "待处理",
+          facts.todayTasks.filter((task) => task.status !== "completed").length,
+          "blue",
+          "tasks",
+        ),
+        actionItem(
+          "completed",
+          "已完成",
+          facts.todayTasks.filter((task) => task.status === "completed").length,
+          "green",
+          "tasks",
+        ),
+      ]),
+      actionGroup("liveTasks", "直播待办", [
+        actionItem(
+          "notStarted",
+          "未开播",
+          facts.notStartedTasks.length,
+          facts.notStartedTasks.length > 0 ? "red" : "neutral",
+          "tasks",
+        ),
+        actionItem(
+          "anomaly",
+          "异常",
+          anomalyCount,
+          anomalyCount > 0 ? "red" : "neutral",
+          "tasks",
+        ),
+      ]),
+      actionGroup("reports", "报数待办", [
+        actionItem(
+          "pendingReports",
+          "待审核",
+          facts.pendingReports.length,
+          facts.pendingReports.length > 0 ? "amber" : "neutral",
+          "reports",
+        ),
+        actionItem(
+          "allReports",
+          "总报数",
+          facts.reports.length,
+          "neutral",
+          "reports",
+        ),
+      ]),
+      actionGroup("admission", "准入待办", [
+        actionItem(
+          "recordings",
+          "录屏待审",
+          facts.recordingPendingCount,
+          facts.recordingPendingCount > 0 ? "amber" : "neutral",
+          "projects",
+        ),
+        actionItem(
+          "streamerGap",
+          "主播缺口",
+          facts.streamerGapProjectCount,
+          facts.streamerGapProjectCount > 0 ? "red" : "neutral",
+          "projects",
+        ),
+      ]),
+    ];
+  }
+
+  if (role === "finance") {
+    return [
+      actionGroup("batches", "批次待办", [
+        actionItem(
+          "draft",
+          "待生成",
+          facts.draftBatchCount,
+          "neutral",
+          "settle",
+        ),
+        actionItem(
+          "pendingConfirm",
+          "待确认",
+          batchCount("pending_confirm", "generated"),
+          batchCount("pending_confirm", "generated") > 0 ? "amber" : "neutral",
+          "settle",
+        ),
+      ]),
+      actionGroup("locked", "锁定待办", [
+        actionItem("locked", "已锁定", batchCount("locked"), "green", "settle"),
+        actionItem(
+          "exported",
+          "已导出",
+          batchCount("exported"),
+          "neutral",
+          "settle",
+        ),
+      ]),
+      actionGroup("risks", "风险待办", [
+        actionItem(
+          "reopened",
+          "重开",
+          facts.reopenedBatchCount,
+          facts.reopenedBatchCount > 0 ? "red" : "neutral",
+          "settle",
+        ),
+        actionItem(
+          "weakEvidence",
+          "弱证据",
+          facts.weakSettlementPool.length,
+          facts.weakSettlementPool.length > 0 ? "amber" : "neutral",
+          "settle",
+        ),
+      ]),
+      actionGroup("reports", "报数待办", [
+        actionItem(
+          "pendingReports",
+          "待审核",
+          facts.pendingReports.length,
+          facts.pendingReports.length > 0 ? "amber" : "neutral",
+          "reports",
+        ),
+        actionItem(
+          "pool",
+          "可结算",
+          facts.settlementPool.length,
+          "neutral",
+          "settle",
+        ),
+      ]),
+    ];
+  }
+
+  if (role === "ops_manager") {
+    return [
+      actionGroup("projects", "项目待办", [
+        actionItem(
+          "active",
+          "执行中",
+          facts.activeProjects.length,
+          "blue",
+          "projects",
+        ),
+        actionItem(
+          "recruiting",
+          "招募中",
+          recruitingCount,
+          "neutral",
+          "projects",
+        ),
+      ]),
+      actionGroup("admission", "准入待办", [
+        actionItem(
+          "recordings",
+          "录屏待审",
+          facts.recordingPendingCount,
+          facts.recordingPendingCount > 0 ? "amber" : "neutral",
+          "projects",
+        ),
+        actionItem(
+          "streamerGap",
+          "主播缺口",
+          facts.streamerGapProjectCount,
+          facts.streamerGapProjectCount > 0 ? "red" : "neutral",
+          "projects",
+        ),
+      ]),
+      actionGroup("liveTasks", "直播待办", [
+        actionItem(
+          "today",
+          "今日排班",
+          facts.todayTasks.length,
+          "green",
+          "tasks",
+        ),
+        actionItem(
+          "anomaly",
+          "异常",
+          anomalyCount,
+          anomalyCount > 0 ? "red" : "neutral",
+          "tasks",
+        ),
+      ]),
+      actionGroup("reports", "报数待办", [
+        actionItem(
+          "pendingReports",
+          "待审核",
+          facts.pendingReports.length,
+          facts.pendingReports.length > 0 ? "amber" : "neutral",
+          "reports",
+        ),
+        actionItem(
+          "notStarted",
+          "未开播",
+          facts.notStartedTasks.length,
+          facts.notStartedTasks.length > 0 ? "red" : "neutral",
+          "tasks",
+        ),
+      ]),
+    ];
+  }
+
+  return [
+    actionGroup("projects", "项目待办", [
+      actionItem(
+        "active",
+        "进行中",
+        facts.activeProjects.length,
+        "blue",
+        "projects",
+      ),
+      actionItem(
+        "recruiting",
+        "招募中",
+        recruitingCount,
+        "neutral",
+        "projects",
+      ),
+    ]),
+    actionGroup("reviews", "复盘待办", [
+      actionItem(
+        "lowMargin",
+        "低毛利",
+        facts.lowMarginProjects.filter((project) => {
+          const margin = project.metrics?.margin;
+          return typeof margin === "number" && margin >= 0;
+        }).length,
+        "amber",
+        "projects",
+      ),
+      actionItem(
+        "negativeMargin",
+        "负毛利",
+        facts.lowMarginProjects.filter((project) => {
+          const margin = project.metrics?.margin;
+          return typeof margin === "number" && margin < 0;
+        }).length,
+        "red",
+        "projects",
+      ),
+    ]),
+    actionGroup("settlement", "结算待办", [
+      actionItem("draft", "待生成", facts.draftBatchCount, "neutral", "settle"),
+      actionItem(
+        "pendingConfirm",
+        "待确认",
+        batchCount("pending_confirm", "generated"),
+        batchCount("pending_confirm", "generated") > 0 ? "amber" : "neutral",
+        "settle",
+      ),
+    ]),
+    actionGroup("audit", "审计待办", [
+      actionItem(
+        "highRisk",
+        "高风险",
+        highRiskCount,
+        highRiskCount > 0 ? "red" : "neutral",
+        "audit",
+      ),
+      actionItem(
+        "reopened",
+        "重开",
+        facts.reopenedBatchCount,
+        facts.reopenedBatchCount > 0 ? "red" : "neutral",
+        "settle",
+      ),
+    ]),
+  ];
+}
+
+function buildPersonalPanel(
+  dashboard: RoleHomeDashboardDto,
+  facts: ReturnType<typeof collectFacts>,
+  actionGroups: DashboardActionGroup[],
+): DashboardPersonalPanel {
+  const actionTotal = actionGroups.reduce(
+    (groupTotal, group) =>
+      groupTotal +
+      group.items.reduce((itemTotal, item) => itemTotal + item.value, 0),
+    0,
+  );
+  const riskCount = dashboard.risks.length + dashboard.drilldowns.length;
+  const anomalyCount = facts.anomalyTasks.length + facts.projectAnomalyCount;
+  const recommendations = buildPersonalRecommendations(
+    dashboard,
+    facts,
+    anomalyCount,
+  );
+  const todos = buildPersonalTodos(facts, anomalyCount);
+
+  return {
+    summary: [
+      personalSummary(
+        "activeProjects",
+        "在营项目",
+        facts.activeProjects.length,
+        "blue",
+      ),
+      personalSummary("todoTotal", "待办合计", actionTotal, "violet"),
+      personalSummary(
+        "risks",
+        "风险数",
+        riskCount,
+        riskCount > 0 ? "amber" : "neutral",
+        riskCount > 0,
+      ),
+      personalSummary(
+        "todayTasks",
+        "今日场次",
+        facts.todayTasks.length,
+        "green",
+      ),
+    ],
+    recommendations,
+    todos,
+  };
+}
+
+function buildPersonalRecommendations(
+  dashboard: RoleHomeDashboardDto,
+  facts: ReturnType<typeof collectFacts>,
+  anomalyCount: number,
+): DashboardPersonalRecommendation[] {
+  const recommendations: DashboardPersonalRecommendation[] = [];
+
+  if (facts.highRiskNotices.length > 0) {
+    recommendations.push(
+      personalRecommendation(
+        "highRiskNotices",
+        "险",
+        "处理高风险通知",
+        `${facts.highRiskNotices.length} 条待核验`,
+        "amber",
+        "去处理",
+        "audit",
+      ),
+    );
+  }
+  if (facts.recordingPendingCount > 0) {
+    recommendations.push(
+      personalRecommendation(
+        "recordings",
+        "录",
+        "优先处理录屏审核",
+        `${facts.recordingPendingCount} 条待审`,
+        "amber",
+        "去审核",
+        "projects",
+      ),
+    );
+  }
+  if (anomalyCount > 0) {
+    recommendations.push(
+      personalRecommendation(
+        "anomalies",
+        "异",
+        "跟进异常直播任务",
+        `${anomalyCount} 个异常`,
+        "amber",
+        "去处理",
+        "tasks",
+      ),
+    );
+  }
+  if (facts.lowMarginProjects.length > 0) {
+    recommendations.push(
+      personalRecommendation(
+        "lowMargin",
+        "复",
+        "复盘低毛利项目",
+        `${facts.lowMarginProjects.length} 个低于阈值`,
+        "amber",
+        "去复盘",
+        "projects",
+      ),
+    );
+  }
+  if (facts.pendingReports.length > 0) {
+    recommendations.push(
+      personalRecommendation(
+        "pendingReports",
+        "审",
+        "清理待审报数",
+        `${facts.pendingReports.length} 条`,
+        "blue",
+        "去审核",
+        "reports",
+      ),
+    );
+  }
+
+  const rankingCount = dashboard.panels?.projectRanking?.rows.length ?? 0;
+  if (recommendations.length === 0 && rankingCount > 0) {
+    recommendations.push(
+      personalRecommendation(
+        "projectRanking",
+        "看",
+        "查看项目经营排行",
+        `${rankingCount} 个项目有毛利数据`,
+        "blue",
+        "查看",
+        "projects",
+      ),
+    );
+  }
+  if (recommendations.length === 0) {
+    recommendations.push(
+      personalRecommendation(
+        "overview",
+        "稳",
+        "关注经营总览",
+        "暂无紧急风险",
+        "neutral",
+        "查看",
+        "projects",
+      ),
+    );
+  }
+
+  return recommendations.slice(0, 3);
+}
+
+function buildPersonalTodos(
+  facts: ReturnType<typeof collectFacts>,
+  anomalyCount: number,
+): DashboardPersonalTodo[] {
+  const pendingConfirmCount = facts.batches.filter((batch) =>
+    ["pending_confirm", "generated"].includes(batch.status),
+  ).length;
+  const todos: DashboardPersonalTodo[] = [];
+
+  if (facts.highRiskNotices.length > 0) {
+    todos.push(
+      personalTodo(
+        "highRiskNotices",
+        "核验高风险通知",
+        facts.highRiskNotices.length,
+        "amber",
+        "audit",
+      ),
+    );
+  }
+  if (facts.pendingReports.length > 0) {
+    todos.push(
+      personalTodo(
+        "pendingReports",
+        "审核待审报数",
+        facts.pendingReports.length,
+        "amber",
+        "reports",
+      ),
+    );
+  }
+  if (anomalyCount > 0) {
+    todos.push(
+      personalTodo(
+        "anomalies",
+        "处理异常直播任务",
+        anomalyCount,
+        "amber",
+        "tasks",
+      ),
+    );
+  }
+  if (facts.recordingPendingCount > 0) {
+    todos.push(
+      personalTodo(
+        "recordings",
+        "核验录屏待审",
+        facts.recordingPendingCount,
+        "amber",
+        "projects",
+      ),
+    );
+  }
+  if (facts.draftBatchCount > 0) {
+    todos.push(
+      personalTodo(
+        "draftBatches",
+        "生成结算批次",
+        facts.draftBatchCount,
+        "neutral",
+        "settle",
+      ),
+    );
+  }
+  if (pendingConfirmCount > 0) {
+    todos.push(
+      personalTodo(
+        "pendingConfirmBatches",
+        "确认待确认批次",
+        pendingConfirmCount,
+        "amber",
+        "settle",
+      ),
+    );
+  }
+  if (facts.reopenedBatchCount > 0) {
+    todos.push(
+      personalTodo(
+        "reopenedBatches",
+        "复核重开批次",
+        facts.reopenedBatchCount,
+        "red",
+        "settle",
+      ),
+    );
+  }
+  if (todos.length === 0) {
+    todos.push({
+      key: "none",
+      text: "暂无紧急待办，保持关注经营总览",
+      tone: "neutral",
+      target: { route: "projects" },
+    });
+  }
+
+  return todos.slice(0, 5);
+}
+
+function actionGroup(
+  key: string,
+  title: string,
+  items: DashboardActionItem[],
+): DashboardActionGroup {
+  return { key, title, items };
+}
+
+function actionItem(
+  key: string,
+  label: string,
+  value: number,
+  tone: DashboardTone,
+  route?: DashboardTarget["route"],
+): DashboardActionItem {
+  return {
+    key,
+    label,
+    value,
+    tone,
+    ...(route ? { target: { route } } : {}),
+  };
+}
+
+function personalSummary(
+  key: string,
+  label: string,
+  value: number,
+  tone: DashboardTone,
+  attention = false,
+): DashboardPersonalSummaryItem {
+  return { key, label, value, tone, ...(attention ? { attention } : {}) };
+}
+
+function personalRecommendation(
+  key: string,
+  icon: string,
+  text: string,
+  sub: string,
+  tone: DashboardTone,
+  cta: string,
+  route: DashboardTarget["route"],
+): DashboardPersonalRecommendation {
+  return { key, icon, text, sub, tone, cta, target: { route } };
+}
+
+function personalTodo(
+  key: string,
+  text: string,
+  count: number,
+  tone: DashboardTone,
+  route: DashboardTarget["route"],
+): DashboardPersonalTodo {
+  return { key, text, count, tone, target: { route } };
 }
 
 function ownerDashboard(
@@ -578,9 +1231,27 @@ function buildAdmissionFunnel(
     subtitle: "候选 → 录屏待审 → 最终入项",
     unit: "人",
     stages: [
-      { key: "applied", label: "报名/候选", value: applied, rate: 100, tone: "blue" },
-      { key: "review", label: "录屏待审", value: review, rate: rate(review), tone: "amber" },
-      { key: "admitted", label: "最终入项", value: active, rate: rate(active), tone: "green" },
+      {
+        key: "applied",
+        label: "报名/候选",
+        value: applied,
+        rate: 100,
+        tone: "blue",
+      },
+      {
+        key: "review",
+        label: "录屏待审",
+        value: review,
+        rate: rate(review),
+        tone: "amber",
+      },
+      {
+        key: "admitted",
+        label: "最终入项",
+        value: active,
+        rate: rate(active),
+        tone: "green",
+      },
     ],
     target: { route: "projects" },
   };
@@ -602,9 +1273,27 @@ function buildSettlementFunnel(
     subtitle: "已审核进池 → 待生成批次 → 已生成批次",
     unit: "元",
     stages: [
-      { key: "pool", label: "已审核进池", value: poolAmount, rate: 100, tone: "blue" },
-      { key: "draft", label: "待生成批次", value: draftAmount, rate: rate(draftAmount), tone: "amber" },
-      { key: "generated", label: "已生成批次", value: generatedAmount, rate: rate(generatedAmount), tone: "green" },
+      {
+        key: "pool",
+        label: "已审核进池",
+        value: poolAmount,
+        rate: 100,
+        tone: "blue",
+      },
+      {
+        key: "draft",
+        label: "待生成批次",
+        value: draftAmount,
+        rate: rate(draftAmount),
+        tone: "amber",
+      },
+      {
+        key: "generated",
+        label: "已生成批次",
+        value: generatedAmount,
+        rate: rate(generatedAmount),
+        tone: "green",
+      },
     ],
     target: { route: "settle" },
   };

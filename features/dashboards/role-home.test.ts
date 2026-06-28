@@ -123,6 +123,52 @@ describe("role home dashboard", () => {
     expect(riskKeys(dashboard)).toContain("reopenedBatches");
   });
 
+  it("exposes real action widgets for the operations overview shell", () => {
+    const dashboard = buildRoleHomeDashboard({
+      role: "owner",
+      userId: "user-owner",
+      organizationId: "org-1",
+      source,
+    });
+
+    expect(dashboard.actionGroups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: "项目待办",
+          items: expect.arrayContaining([
+            expect.objectContaining({ label: "进行中", value: 1 }),
+          ]),
+        }),
+        expect.objectContaining({
+          title: "审计待办",
+          items: expect.arrayContaining([
+            expect.objectContaining({ label: "重开", value: 1 }),
+          ]),
+        }),
+      ]),
+    );
+    expect(dashboard.personal?.summary).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "在营项目", value: 1 }),
+        expect.objectContaining({ label: "风险数", value: 2 }),
+        expect.objectContaining({ label: "今日场次", value: 1 }),
+      ]),
+    );
+    expect(dashboard.personal?.recommendations[0]).toMatchObject({
+      text: "处理高风险通知",
+      sub: "1 条待核验",
+    });
+    expect(dashboard.personal?.todos).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: "核验高风险通知",
+          count: 1,
+          target: { route: "audit" },
+        }),
+      ]),
+    );
+  });
+
   it("only adds owner low margin risk when a project is actually below threshold", () => {
     const dashboard = buildRoleHomeDashboard({
       role: "owner",
