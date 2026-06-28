@@ -3856,17 +3856,22 @@ export function OverviewBoard({
           {/* 准入漏斗 */}
           {admission?.stages?.length ? (
             <div
-              className="card ob-panel-card"
+              className="card ob-panel-card lift"
               style={{
                 borderRadius: 16,
-                padding: 20,
+                padding: 0,
+                overflow: "hidden",
               }}
             >
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  marginBottom: 18,
+                  gap: 12,
+                  padding: "18px 20px 14px",
+                  borderBottom: `1px solid ${C.divider2}`,
+                  background:
+                    "linear-gradient(180deg,rgba(247,249,253,.92) 0%,rgba(255,255,255,.72) 100%)",
                 }}
               >
                 <div style={{ fontSize: 14, fontWeight: 680, color: C.ink }}>
@@ -3881,7 +3886,11 @@ export function OverviewBoard({
                         color: C.ok,
                         fontWeight: 700,
                         fontVariantNumeric: "tabular-nums",
-                        fontSize: 13,
+                        fontSize: 13.5,
+                        background: C.okBg,
+                        border: "1px solid rgba(14,138,77,.16)",
+                        borderRadius: 999,
+                        padding: "3px 8px",
                       }}
                     >
                       {passRate}%
@@ -3889,7 +3898,14 @@ export function OverviewBoard({
                   </div>
                 ) : null}
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                  padding: "16px 18px 18px",
+                }}
+              >
                 {(() => {
                   const base = Math.max(
                     ...admission.stages.map((s) =>
@@ -3898,10 +3914,31 @@ export function OverviewBoard({
                     1,
                   );
                   const first = Number(admission.stages[0]?.value) || 0;
-                  const grads = [
-                    "linear-gradient(90deg,#5566e6,#6f5ce8)",
-                    "linear-gradient(90deg,#7b6ef0,#9a8ef4)",
-                    "linear-gradient(90deg,#1f9d55,#34b86a)",
+                  const tones = [
+                    {
+                      bg: "linear-gradient(180deg,#f7f9ff 0%,#ffffff 100%)",
+                      dot: "var(--blue-500)",
+                      fill:
+                        "linear-gradient(90deg,var(--blue-500) 0%,var(--violet-600) 100%)",
+                      soft: C.primarySoft,
+                      text: C.primaryDeep,
+                    },
+                    {
+                      bg: "linear-gradient(180deg,#faf8ff 0%,#ffffff 100%)",
+                      dot: "var(--violet-600)",
+                      fill:
+                        "linear-gradient(90deg,var(--violet-600) 0%,var(--blue-300) 100%)",
+                      soft: "var(--violet-50)",
+                      text: "var(--violet-600)",
+                    },
+                    {
+                      bg: "linear-gradient(180deg,#f6fbf8 0%,#ffffff 100%)",
+                      dot: "var(--ok-600)",
+                      fill:
+                        "linear-gradient(90deg,var(--ok-600) 0%,#34b86a 100%)",
+                      soft: C.okBg,
+                      text: C.ok,
+                    },
                   ];
                   return admission.stages.map((s, i) => {
                     const v = Math.abs(Number(s.value) || 0);
@@ -3916,94 +3953,153 @@ export function OverviewBoard({
                       next && v > 0
                         ? `${Math.round(((Number(next.value) || 0) / v) * 100)}%`
                         : null;
+                    const tone = tones[Math.min(i, tones.length - 1)];
                     return (
-                      <div key={s.key || i}>
+                      <div
+                        key={s.key || i}
+                        data-testid="admission-funnel-stage"
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "56px minmax(0,1fr) 132px",
+                          gap: 14,
+                          alignItems: "center",
+                          minHeight: 82,
+                          padding: "13px 14px",
+                          borderRadius: 14,
+                          background: tone.bg,
+                          border: `1px solid ${C.divider2}`,
+                          boxShadow:
+                            "inset 0 1px 0 rgba(255,255,255,.92)",
+                        }}
+                      >
                         <div
+                          data-testid="admission-funnel-stage-index"
                           style={{
+                            width: 42,
+                            height: 42,
+                            borderRadius: 12,
                             display: "flex",
+                            flexDirection: "column",
                             alignItems: "center",
-                            marginBottom: 6,
+                            justifyContent: "center",
+                            color: tone.text,
+                            background: tone.soft,
+                            boxShadow:
+                              "inset 0 1px 0 rgba(255,255,255,.85),0 0 0 1px rgba(15,23,42,.04)",
                           }}
                         >
                           <span
                             style={{
-                              width: 7,
-                              height: 7,
-                              borderRadius: 2,
-                              background:
-                                i >= admission.stages.length - 1
-                                  ? C.ok
-                                  : i === 0
-                                    ? C.primary
-                                    : "#8b7ef2",
-                              marginRight: 8,
+                              fontSize: 12,
+                              fontWeight: 760,
+                              lineHeight: 1,
+                              fontVariantNumeric: "tabular-nums",
+                            }}
+                          >
+                            {String(i + 1).padStart(2, "0")}
+                          </span>
+                          <span
+                            style={{
+                              marginTop: 4,
+                              width: 14,
+                              height: 4,
+                              borderRadius: 999,
+                              background: tone.dot,
                             }}
                           />
-                          <span
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div
                             style={{
-                              fontSize: 12.5,
-                              fontWeight: 600,
-                              color: "#3a4150",
-                              width: 116,
+                              display: "flex",
+                              alignItems: "baseline",
+                              gap: 10,
+                              marginBottom: 10,
                             }}
                           >
-                            {s.label}
-                          </span>
-                          <span
+                            <span
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 680,
+                                color: C.ink2,
+                              }}
+                            >
+                              {s.label}
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 18,
+                                fontWeight: 760,
+                                color: C.ink,
+                                fontVariantNumeric: "tabular-nums",
+                                lineHeight: 1,
+                              }}
+                            >
+                              {num(s.value)}
+                            </span>
+                          </div>
+                          <div
+                            data-testid="admission-funnel-meter"
                             style={{
-                              fontSize: 15,
-                              fontWeight: 720,
-                              fontVariantNumeric: "tabular-nums",
-                              color: C.ink,
+                              position: "relative",
+                              height: 16,
+                              borderRadius: 999,
+                              overflow: "hidden",
+                              background:
+                                "linear-gradient(180deg,#eef2f8 0%,#f8fafd 100%)",
+                              boxShadow:
+                                "inset 0 1px 2px rgba(15,23,42,.08),0 1px 0 rgba(255,255,255,.75)",
                             }}
                           >
-                            {num(s.value)}
-                          </span>
-                          <div style={{ flex: 1 }} />
+                            <div
+                              style={{
+                                width: `${pct}%`,
+                                height: "100%",
+                                borderRadius: 999,
+                                background: tone.fill,
+                                boxShadow:
+                                  "inset 0 1px 0 rgba(255,255,255,.34),0 5px 12px rgba(59,107,230,.12)",
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "flex-end",
+                            gap: 8,
+                            minWidth: 0,
+                          }}
+                        >
                           <span
                             style={{
                               fontSize: 11.5,
-                              color: "#7a818f",
+                              color: C.ink4,
                               fontVariantNumeric: "tabular-nums",
-                              background: "#f4f5f8",
-                              borderRadius: 6,
-                              padding: "2px 8px",
+                              background: "#f4f6fa",
+                              border: `1px solid ${C.divider2}`,
+                              borderRadius: 999,
+                              padding: "3px 9px",
+                              whiteSpace: "nowrap",
                             }}
                           >
                             占报名 {ofFirst}
                           </span>
-                        </div>
-                        <div
-                          style={{
-                            height: 15,
-                            background: "#f2f3f6",
-                            borderRadius: 8,
-                            overflow: "hidden",
-                            boxShadow: "inset 0 1px 2px rgba(24,27,46,.04)",
-                          }}
-                        >
+                          {conv ? (
                           <div
-                            style={{
-                              height: "100%",
-                              borderRadius: 8,
-                              background: grads[Math.min(i, 2)],
-                              width: `${pct}%`,
-                              boxShadow: "inset 0 1px 0 rgba(255,255,255,.25)",
-                            }}
-                          />
-                        </div>
-                        {conv ? (
-                          <div
+                            data-testid="admission-funnel-conversion"
                             style={{
                               display: "inline-flex",
                               alignItems: "center",
-                              gap: 3,
-                              fontSize: 11,
-                              color: "#b5790a",
-                              background: "#fef6e4",
-                              borderRadius: 6,
-                              padding: "2px 7px",
-                              margin: "7px 0 0 124px",
+                              gap: 5,
+                              fontSize: 11.5,
+                              color: C.warn,
+                              background: "var(--warn-50)",
+                              border: "1px solid rgba(168,106,0,.14)",
+                              borderRadius: 999,
+                              padding: "4px 9px",
+                              whiteSpace: "nowrap",
                             }}
                           >
                             <svg
@@ -4018,9 +4114,24 @@ export function OverviewBoard({
                             >
                               <path d="M12 5v14M6 13l6 6 6-6" />
                             </svg>
-                            转化 {conv}
+                            下一步 {conv}
                           </div>
-                        ) : null}
+                          ) : (
+                            <span
+                              style={{
+                                fontSize: 11.5,
+                                color: C.ok,
+                                background: C.okBg,
+                                border: "1px solid rgba(14,138,77,.14)",
+                                borderRadius: 999,
+                                padding: "4px 9px",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              最终入项
+                            </span>
+                          )}
+                        </div>
                       </div>
                     );
                   });
