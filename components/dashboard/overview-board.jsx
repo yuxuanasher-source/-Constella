@@ -744,7 +744,7 @@ function sp(arr, w, h, pad = 2) {
     lastY: last[1],
   };
 }
-function AreaSpark({ series, color, w = 100, h = 30, gid, testId }) {
+function AreaSpark({ series, color, w = 320, h = 54, gid, testId }) {
   const s = spp(series, w, h);
   if (!s) return null;
   const id = gid || `sk${color.replace(/[^a-z0-9]/gi, "")}${series.length}`;
@@ -752,13 +752,12 @@ function AreaSpark({ series, color, w = 100, h = 30, gid, testId }) {
     <svg
       data-testid={testId}
       width="100%"
-      height={h + 4}
+      height={h + 2}
       viewBox={`0 0 ${w} ${h}`}
       preserveAspectRatio="xMidYMid meet"
       style={{
         display: "block",
-        marginTop: 11,
-        maxWidth: 260,
+        marginTop: 10,
         overflow: "visible",
         width: "100%",
       }}
@@ -775,7 +774,7 @@ function AreaSpark({ series, color, w = 100, h = 30, gid, testId }) {
         points={s.line}
         fill="none"
         stroke={color}
-        strokeWidth="1.7"
+        strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
         vectorEffect="non-scaling-stroke"
@@ -783,16 +782,16 @@ function AreaSpark({ series, color, w = 100, h = 30, gid, testId }) {
       <circle
         cx={s.lastX}
         cy={s.lastY}
-        r="2.2"
+        r="2.6"
         fill={color}
         stroke="#fff"
-        strokeWidth="1.4"
+        strokeWidth="1.5"
       />
     </svg>
   );
 }
-function spp(arr, w, h, pad = 2) {
-  return spr(arr, w, h, pad, Math.max(3, pad * 2));
+function spp(arr, w, h, pad = 6) {
+  return spr(arr, w, h, pad, Math.max(10, pad * 2));
 }
 function spr(arr, w, h, pad, xPad = pad) {
   if (!arr || arr.length < 2) return null;
@@ -3837,15 +3836,15 @@ export function OverviewBoard({
                     display: "flex",
                     alignItems: "flex-end",
                     marginTop: 6,
-                    minHeight: 54,
+                    minHeight: 78,
                   }}
                 >
                   {passSeries && passSeries.length >= 2 ? (
                     <AreaSpark
                       series={passSeries}
                       color={C.primary}
-                      w={100}
-                      h={32}
+                      w={420}
+                      h={64}
                       gid="passrate"
                     />
                   ) : null}
