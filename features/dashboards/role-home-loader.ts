@@ -473,6 +473,7 @@ function toDashboardReport(
     source: dashboardReportSource(report.timeSource),
     duration: report.settlementDuration ?? 0,
     audience: report.viewers ?? 0,
+    submittedAt: report.submittedAt ?? null,
   };
 }
 
@@ -513,5 +514,8 @@ function toDashboardBatch(
     projectName: batch.projectName ?? null,
     totalAmount: batch.totalAmount ?? 0,
     itemCount: batch.itemCount ?? 0,
+    periodStart: batch.periodStart ?? null,
+    periodEnd: batch.periodEnd ?? null,
+    updatedAt: batch.updatedAt ?? null,
   };
 }

@@ -13,6 +13,10 @@ export type DashboardProjectInput = {
   id: string;
   name: string;
   status: string;
+  start?: string | null;
+  end?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
   leadOps?: string | null;
   ownerId?: string | null;
   metrics?: {
@@ -53,6 +57,9 @@ export type DashboardReportInput = {
   source?: string;
   duration?: number;
   audience?: number;
+  submittedAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
 
 export type DashboardSettlementPoolInput = {
@@ -70,6 +77,9 @@ export type DashboardBatchInput = {
   projectName?: string | null;
   totalAmount?: number;
   itemCount?: number;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  updatedAt?: string | null;
 };
 
 export type DashboardNotificationInput = {
