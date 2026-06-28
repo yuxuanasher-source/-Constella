@@ -5314,15 +5314,33 @@ describe("OpsReferenceApp live task smoke", () => {
     expect(screen.getByText("Excel 导入后台暂未接入")).toBeInTheDocument();
   });
 
-  it("renders day task blocks without a side-stripe border", () => {
+  it("renders day task blocks with a full border and no side-stripe border", () => {
     render(
       <OpsReferenceApp
         initialRoute="tasks"
         liveTasks={[
           {
             id: "task-side-stripe",
-            name: "Fixture Project · Side Stripe Check",
+            name: "Fixture Project - Side Stripe Check",
             status: "pending_live",
+            project: "project-live",
+            projectId: "project-live",
+            projectName: "Fixture Project",
+            streamerId: "streamer-one",
+            streamerName: "Streamer One",
+            dayIdx: 1,
+            startHour: 20,
+            endHour: 22,
+            plannedStartAt: "2026-06-04T12:00:00.000Z",
+            plannedEndAt: "2026-06-04T15:30:00.000Z",
+            plannedDuration: 210,
+            type: "project",
+          },
+          {
+            id: "task-side-stripe-anomaly",
+            name: "Fixture Project - Anomaly Border Check",
+            status: "abnormal",
+            anomaly: "not_started",
             project: "project-live",
             projectId: "project-live",
             projectName: "Fixture Project",
@@ -5344,10 +5362,37 @@ describe("OpsReferenceApp live task smoke", () => {
     );
 
     const dayTaskBlock = screen.getByTitle(
-      "Fixture Project · Side Stripe Check",
+      "Fixture Project - Side Stripe Check",
     );
+    const anomalyDayTaskBlock = screen.getByTitle(
+      "Fixture Project - Anomaly Border Check",
+    );
+    const assertFullBorderWithoutSideStripe = (element) => {
+      const { style } = element;
+      const fullBorder = style.border;
+      const fullBorderWidth = style.borderWidth || "1px";
+      const sideSpecificBorders = [
+        style.borderLeft,
+        style.borderInlineStart,
+      ].filter(Boolean);
+      const sideSpecificWidths = [
+        style.borderLeftWidth,
+        style.borderInlineStartWidth,
+      ].filter(Boolean);
+
+      expect(fullBorder).toContain("1px solid");
+      sideSpecificBorders.forEach((border) => expect(border).toBe(fullBorder));
+      sideSpecificWidths.forEach((width) =>
+        expect(width).toBe(fullBorderWidth),
+      );
+    };
+
     expect(dayTaskBlock.tagName).toBe("BUTTON");
-    expect(dayTaskBlock.style.borderLeft).not.toContain("3px");
+    assertFullBorderWithoutSideStripe(dayTaskBlock);
+    assertFullBorderWithoutSideStripe(anomalyDayTaskBlock);
+    expect(anomalyDayTaskBlock.style.boxShadow).toContain(
+      "inset 0 0 0 1px var(--danger-600)",
+    );
   });
 
   it("keeps overdue pending-live status synced between the schedule board and task drawer", async () => {
