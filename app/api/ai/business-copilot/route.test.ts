@@ -63,12 +63,31 @@ describe("AI business copilot route", () => {
         question: "这个月经营健康吗",
         intent: "executive_health",
         answer: "经营健康判断已基于当前角色看板生成。",
-        facts: [{ label: "毛利率", value: 30, sourceId: "kpi:grossMarginRate" }],
+        facts: [
+          {
+            label: "毛利率",
+            value: 30,
+            sourceTool: "role_home_dashboard",
+            sourceId: "kpi:grossMarginRate",
+          },
+        ],
         findings: [],
         recommendations: [],
         drilldowns: [],
         caveats: [],
         generatedAt: "2026-06-18T04:00:00.000Z",
+        sourceSummary: {
+          sourceTool: "role_home_dashboard",
+          scopeLabel: dashboard.profile.scopeLabel,
+          generatedAt: "2026-06-18T04:00:00.000Z",
+          readableAreas: ["kpis", "queue", "risks", "drilldowns"],
+        },
+        confidence: {
+          level: "medium",
+          label: "中等置信度",
+          reason: "回答引用了当前角色看板事实，但仍需要人工确认业务后果。",
+        },
+        requiresHumanConfirmation: true,
       },
     } as never);
   });
@@ -92,6 +111,18 @@ describe("AI business copilot route", () => {
           facts: expect.arrayContaining([
             expect.objectContaining({ sourceId: "kpi:grossMarginRate" }),
           ]),
+          sourceSummary: {
+            sourceTool: "role_home_dashboard",
+            scopeLabel: dashboard.profile.scopeLabel,
+            generatedAt: "2026-06-18T04:00:00.000Z",
+            readableAreas: ["kpis", "queue", "risks", "drilldowns"],
+          },
+          confidence: {
+            level: "medium",
+            label: "中等置信度",
+            reason: "回答引用了当前角色看板事实，但仍需要人工确认业务后果。",
+          },
+          requiresHumanConfirmation: true,
         },
       },
       dashboardProfile: {

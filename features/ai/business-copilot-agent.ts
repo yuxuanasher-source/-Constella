@@ -18,6 +18,19 @@ export type BusinessCopilotFact = {
   sourceId: string;
 };
 
+export type BusinessCopilotSourceSummary = {
+  sourceTool: "role_home_dashboard";
+  scopeLabel: string;
+  generatedAt: string;
+  readableAreas: Array<"kpis" | "queue" | "risks" | "drilldowns">;
+};
+
+export type BusinessCopilotConfidence = {
+  level: "low" | "medium" | "high";
+  label: string;
+  reason: string;
+};
+
 export type BusinessCopilotAnswer = {
   question: string;
   intent: BusinessCopilotIntent;
@@ -38,6 +51,9 @@ export type BusinessCopilotAnswer = {
   }>;
   caveats: string[];
   generatedAt: string;
+  sourceSummary: BusinessCopilotSourceSummary;
+  confidence: BusinessCopilotConfidence;
+  requiresHumanConfirmation: true;
 };
 
 export function classifyBusinessCopilotIntent(
@@ -79,17 +95,22 @@ export function runBusinessCopilotAgent(input: {
   dashboard: RoleHomeDashboardDto;
 }): BusinessCopilotAnswer {
   const intent = classifyBusinessCopilotIntent(input.question);
+  const sourceSummary = sourceSummaryForDashboard(input.dashboard);
   const base = {
     question: input.question.trim(),
     intent,
     generatedAt: input.dashboard.generatedAt,
+    sourceSummary,
+    requiresHumanConfirmation: true as const,
   };
 
   if (intent === "unsupported") {
+    const facts: BusinessCopilotFact[] = [];
+
     return {
       ...base,
       answer: "这个问题不在当前经营问答的安全范围内。",
-      facts: [],
+      facts,
       findings: [],
       recommendations: [
         {
@@ -99,6 +120,7 @@ export function runBusinessCopilotAgent(input: {
       ],
       drilldowns: [],
       caveats: ["经营问答不会执行 SQL、跨组织查询或生产写动作。"],
+      confidence: confidenceForAnswer({ intent, facts }),
     };
   }
 
@@ -122,6 +144,48 @@ export function runBusinessCopilotAgent(input: {
     recommendations: recommendationsForIntent(intent, input.dashboard),
     drilldowns: collectDrilldowns(input.dashboard),
     caveats: caveatsForDashboard(input.dashboard),
+    confidence: confidenceForAnswer({ intent, facts }),
+  };
+}
+
+export function sourceSummaryForDashboard(
+  dashboard: RoleHomeDashboardDto,
+): BusinessCopilotSourceSummary {
+  return {
+    sourceTool: "role_home_dashboard",
+    scopeLabel: dashboard.profile.scopeLabel,
+    generatedAt: dashboard.generatedAt,
+    readableAreas: ["kpis", "queue", "risks", "drilldowns"],
+  };
+}
+
+export function confidenceForAnswer({
+  intent,
+  facts,
+}: {
+  intent: BusinessCopilotIntent;
+  facts: BusinessCopilotFact[];
+}): BusinessCopilotConfidence {
+  if (intent === "unsupported" || facts.length === 0) {
+    return {
+      level: "low",
+      label: "低置信度",
+      reason: "问题不在当前经营问答范围内，或没有可引用的角色看板事实。",
+    };
+  }
+
+  if (facts.length >= 3) {
+    return {
+      level: "high",
+      label: "高置信度",
+      reason: "回答引用了三项以上当前角色看板事实。",
+    };
+  }
+
+  return {
+    level: "medium",
+    label: "中等置信度",
+    reason: "回答引用了当前角色看板事实，但仍需要人工确认业务后果。",
   };
 }
 

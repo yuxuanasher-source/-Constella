@@ -121,6 +121,18 @@ describe("business copilot agent", () => {
       intent: "executive_health",
       answer: "经营健康判断已基于当前角色看板生成。",
       generatedAt: "2026-06-18T04:00:00.000Z",
+      sourceSummary: {
+        sourceTool: "role_home_dashboard",
+        scopeLabel: ownerDashboard.profile.scopeLabel,
+        generatedAt: "2026-06-18T04:00:00.000Z",
+        readableAreas: ["kpis", "queue", "risks", "drilldowns"],
+      },
+      confidence: {
+        level: "high",
+        label: "高置信度",
+        reason: "回答引用了三项以上当前角色看板事实。",
+      },
+      requiresHumanConfirmation: true,
     });
     expect(result.facts).toEqual(
       expect.arrayContaining([
@@ -177,6 +189,18 @@ describe("business copilot agent", () => {
 
     expect(result.intent).toBe("unsupported");
     expect(result.facts).toEqual([]);
+    expect(result.sourceSummary).toEqual({
+      sourceTool: "role_home_dashboard",
+      scopeLabel: ownerDashboard.profile.scopeLabel,
+      generatedAt: "2026-06-18T04:00:00.000Z",
+      readableAreas: ["kpis", "queue", "risks", "drilldowns"],
+    });
+    expect(result.confidence).toEqual({
+      level: "low",
+      label: "低置信度",
+      reason: "问题不在当前经营问答范围内，或没有可引用的角色看板事实。",
+    });
+    expect(result.requiresHumanConfirmation).toBe(true);
     expect(JSON.stringify(result)).not.toContain("sql");
   });
 });
