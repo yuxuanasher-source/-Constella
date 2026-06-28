@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildSuggestedActionTodoDraft,
   buildRetrospectiveDraft,
   buildSettlementBatchDraft,
   draftConfirmationRequirement,
@@ -72,5 +73,48 @@ describe("buildRetrospectiveDraft", () => {
     const sections = draft.payload.sections as Array<{ prompt: string }>;
     expect(sections.length).toBeGreaterThan(0);
     expect(sections.every((s) => s.prompt.length > 0)).toBe(true);
+  });
+});
+
+describe("buildSuggestedActionTodoDraft", () => {
+  it("turns a copilot suggested action into a pending todo draft", () => {
+    const draft = buildSuggestedActionTodoDraft({
+      actionId: "p-low-margin:margin-review",
+      projectId: "p-low-margin",
+      projectName: "Nova Launch",
+      priority: "high",
+      title: "Review margin and cost assumptions",
+      rationale: "The project has margin signals that need a human review.",
+      evidence: [
+        {
+          sourceTool: "role_home_dashboard",
+          sourceId: "panel:projectRanking:rank:p-low-margin",
+        },
+      ],
+      target: { route: "project", id: "p-low-margin" },
+      requiresHumanApproval: true,
+    });
+
+    expect(draft).toMatchObject({
+      draftType: "suggested_action_todo",
+      status: "pending",
+      targetStateMachine: "operations_todo",
+      targetState: "created",
+    });
+    expect(draft.payload).toMatchObject({
+      sourceActionId: "p-low-margin:margin-review",
+      projectId: "p-low-margin",
+      projectName: "Nova Launch",
+      priority: "high",
+      title: "Review margin and cost assumptions",
+      route: "project",
+      targetId: "p-low-margin",
+    });
+    expect(draft.payload.evidence).toEqual([
+      {
+        sourceTool: "role_home_dashboard",
+        sourceId: "panel:projectRanking:rank:p-low-margin",
+      },
+    ]);
   });
 });

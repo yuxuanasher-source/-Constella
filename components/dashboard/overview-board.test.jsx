@@ -941,6 +941,145 @@ describe("OverviewBoard AI panel", () => {
     expect(screen.getAllByText("Nova Launch").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("creates a pending todo draft from an AI suggested action", async () => {
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/chat") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              message: { role: "assistant", content: "AI summary" },
+              providerName: "deepseek",
+              grounding: {
+                suggestedActions: [
+                  {
+                    actionId: "p-low-margin:margin-review",
+                    projectId: "p-low-margin",
+                    projectName: "Nova Launch",
+                    priority: "high",
+                    title: "Review margin and cost assumptions",
+                    rationale:
+                      "The project has margin signals that need a human review.",
+                    evidence: [
+                      {
+                        sourceTool: "role_home_dashboard",
+                        sourceId: "panel:projectRanking:rank:p-low-margin",
+                      },
+                    ],
+                    target: { route: "project", id: "p-low-margin" },
+                    requiresHumanApproval: true,
+                  },
+                ],
+              },
+            }),
+        });
+      }
+      if (url === "/api/ai/drafts?status=pending") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ drafts: [] }),
+        });
+      }
+      if (url === "/api/ai/drafts/suggested-action") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              todo: {
+                key: "ai-draft:draft-action-1",
+                text: "Review margin and cost assumptions",
+                count: "high",
+                tone: "danger",
+                route: "project",
+                targetId: "p-low-margin",
+                draftId: "draft-action-1",
+              },
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ matches: { recommendations: [] } }),
+      });
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-123", name: "123", role: "owner" }}
+      />,
+    );
+
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "What should we fix first?" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "创建待办草稿" }));
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/ai/drafts/suggested-action",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(await screen.findByText("待办草稿已创建")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getAllByText("high").length).toBeGreaterThanOrEqual(2),
+    );
+  });
+
+  it("hydrates pending AI todo drafts into the todo panel", async () => {
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/drafts?status=pending") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              drafts: [
+                {
+                  id: "draft-action-1",
+                  draftType: "suggested_action_todo",
+                  status: "pending",
+                  payload: {
+                    title: "Review margin and cost assumptions",
+                    priority: "high",
+                    route: "project",
+                    targetId: "p-low-margin",
+                  },
+                },
+              ],
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ matches: { recommendations: [] } }),
+      });
+    });
+
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-123", name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Review margin and cost assumptions"),
+    ).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith("/api/ai/drafts?status=pending", {
+      cache: "no-store",
+    });
+  });
+
   it("restores assistant conversation after the panel remounts", async () => {
     const { container, unmount } = render(
       <OverviewBoard
