@@ -72,6 +72,34 @@ describe("OverviewBoard AI panel", () => {
     expect(await screen.findByText("真实 DeepSeek 回复")).toBeInTheDocument();
   });
 
+  it("routes the recap quick action through the knowledge-grounded chat API", async () => {
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("生成复盘报告"));
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith("/api/ai/chat", expect.anything()),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(
+      "/api/ai/project-reviews",
+      expect.anything(),
+    );
+    const chatCall = fetch.mock.calls.find(([url]) => url === "/api/ai/chat");
+    expect(JSON.parse(chatCall[1].body).messages.at(-1)).toEqual({
+      role: "user",
+      content: "帮我生成本月经营复盘报告，并结合知识库沉淀可复用经验",
+    });
+  });
+
   it("renders markdown tables as readable stacked cards", async () => {
     const markdownTable = [
       "以下是系统中可见的具体项目信息：",
