@@ -19,6 +19,18 @@ export type AiDraftEnvelope = {
   note: string;
 };
 
+export type SuggestedActionTodoDraftInput = {
+  actionId: string;
+  projectId?: string;
+  projectName?: string;
+  priority: "high" | "medium" | "low";
+  title: string;
+  rationale?: string;
+  evidence?: Array<{ sourceTool: string; sourceId: string }>;
+  target?: { route?: string; id?: string };
+  requiresHumanApproval?: boolean;
+};
+
 // ===== 结算批次草稿（确定性聚合，按项目×周期、应付/应收分离）=====
 export type SettlementPoolItem = {
   id?: string;
@@ -119,6 +131,30 @@ export function buildSettlementBatchDraft(
 }
 
 // ===== 复盘初稿（结构化框架，数字溯源；叙述只给提示不编造）=====
+export function buildSuggestedActionTodoDraft(
+  action: SuggestedActionTodoDraftInput,
+): AiDraftEnvelope {
+  return {
+    draftType: "suggested_action_todo",
+    status: "pending",
+    targetStateMachine: "operations_todo",
+    targetState: "created",
+    payload: {
+      sourceActionId: String(action.actionId || ""),
+      ...(action.projectId ? { projectId: action.projectId } : {}),
+      ...(action.projectName ? { projectName: action.projectName } : {}),
+      priority: action.priority,
+      title: action.title,
+      rationale: action.rationale ?? "",
+      evidence: action.evidence ?? [],
+      route: action.target?.route ?? null,
+      targetId: action.target?.id ?? null,
+      requiresHumanApproval: action.requiresHumanApproval !== false,
+    },
+    note: "AI suggested action todo draft. Human confirmation is required before it becomes an operational task.",
+  };
+}
+
 export type RetrospectiveMetric = {
   label: string;
   value: string;

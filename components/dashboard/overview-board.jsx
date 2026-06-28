@@ -235,6 +235,73 @@ function normalizeSuggestedActions(value) {
   return actions.length ? actions : null;
 }
 
+function normalizeAiTodoDrafts(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((draft) =>
+      normalizeAiTodoDraft({
+        id: draft?.id,
+        ...(draft?.payload || {}),
+      }),
+    )
+    .filter(Boolean);
+}
+
+function normalizeAiTodoDraft(value) {
+  const title =
+    typeof value?.title === "string"
+      ? value.title.trim()
+      : typeof value?.text === "string"
+        ? value.text.trim()
+        : "";
+  const id =
+    typeof value?.draftId === "string"
+      ? value.draftId
+      : typeof value?.id === "string"
+        ? value.id
+        : typeof value?.key === "string" && value.key.startsWith("ai-draft:")
+          ? value.key.slice("ai-draft:".length)
+        : "";
+  if (!title || !id) return null;
+  const priority =
+    value?.priority === "high" ||
+    value?.priority === "medium" ||
+    value?.priority === "low"
+      ? value.priority
+      : value?.count === "high" ||
+          value?.count === "medium" ||
+          value?.count === "low"
+        ? value.count
+      : "medium";
+  return {
+    key: `ai-draft:${id}`,
+    text: title.slice(0, 160),
+    count: priority,
+    tone:
+      priority === "high" ? "danger" : priority === "medium" ? "warn" : "neutral",
+    route:
+      typeof value?.route === "string" && value.route ? value.route : undefined,
+    targetId:
+      typeof value?.targetId === "string" && value.targetId
+        ? value.targetId
+        : undefined,
+    draftId: id,
+  };
+}
+
+function mergeAiDraftTodos(personal, aiDraftTodos) {
+  if (!aiDraftTodos.length) return personal;
+  const existing = new Set((personal?.todos || []).map((todo) => todo.key));
+  const todos = [
+    ...aiDraftTodos.filter((todo) => !existing.has(todo.key)),
+    ...(personal?.todos || []),
+  ].slice(0, 5);
+  return {
+    ...(personal || { summary: [], recos: [] }),
+    todos,
+  };
+}
+
 function normalizeAiTarget(value) {
   if (!value || typeof value !== "object") return undefined;
   const route = typeof value.route === "string" ? value.route : "";
@@ -1883,14 +1950,28 @@ function AiProjectHealthCard({ projectHealth }) {
   );
 }
 
-function AiSuggestedActionCard({ actions }) {
+function AiSuggestedActionCard({ actions, onCreateDraft }) {
   const action = actions?.[0];
   if (!action) return null;
 
+  const [draftState, setDraftState] = React.useState("idle");
   const t = priorityTone(action.priority);
   const evidence = Array.isArray(action.evidence)
     ? action.evidence.slice(0, 2)
     : [];
+  const draftBusy = draftState === "pending";
+  const draftDone = draftState === "done";
+
+  const createDraft = async () => {
+    if (!onCreateDraft || draftBusy || draftDone) return;
+    setDraftState("pending");
+    try {
+      await onCreateDraft(action);
+      setDraftState("done");
+    } catch {
+      setDraftState("error");
+    }
+  };
 
   return (
     <div
@@ -2026,6 +2107,36 @@ function AiSuggestedActionCard({ actions }) {
               {entry.sourceId}
             </span>
           ))}
+        </div>
+      ) : null}
+      {onCreateDraft ? (
+        <div style={{ display: "grid", gap: 6 }}>
+          <button
+            type="button"
+            onClick={createDraft}
+            disabled={draftBusy || draftDone}
+            style={{
+              height: 30,
+              border: `1px solid ${draftDone ? C.border : t.solid}`,
+              borderRadius: 9,
+              background: draftDone ? C.soft : t.bg,
+              color: draftDone ? C.muted : t.color,
+              fontSize: 11.5,
+              fontWeight: 720,
+              cursor: draftBusy || draftDone ? "default" : "pointer",
+            }}
+          >
+            {draftBusy
+              ? "创建中..."
+              : draftDone
+                ? "待办草稿已创建"
+                : "创建待办草稿"}
+          </button>
+          {draftState === "error" ? (
+            <span style={{ color: C.danger, fontSize: 11 }}>
+              待办草稿创建失败
+            </span>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -2204,7 +2315,7 @@ function AiMarkdownTable({ table }) {
   );
 }
 
-function AiPanel({ user, projects, go }) {
+function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   const storageKey = aiPanelStorageKey(user);
   const [msgs, setMsgs] = React.useState(() =>
     loadStoredAiMessages(storageKey),
@@ -2285,6 +2396,18 @@ function AiPanel({ user, projects, go }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function createSuggestedActionDraft(action) {
+    const res = await fetch("/api/ai/drafts/suggested-action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json?.error || "Failed to create AI todo draft");
+    if (json?.todo) onTodoDraftCreated?.(json.todo);
+    return json?.todo;
   }
 
   const send = () => {
@@ -2612,7 +2735,10 @@ function AiPanel({ user, projects, go }) {
                 <div style={{ display: "grid", gap: 9 }}>
                   <AiMessageContent text={m.text} />
                   <AiProjectHealthCard projectHealth={m.meta?.projectHealth} />
-                  <AiSuggestedActionCard actions={m.meta?.suggestedActions} />
+                  <AiSuggestedActionCard
+                    actions={m.meta?.suggestedActions}
+                    onCreateDraft={createSuggestedActionDraft}
+                  />
                 </div>
               ) : (
                 m.text
@@ -3687,6 +3813,36 @@ export function OverviewBoard({
     () => normalizeDashboardPersonalPanel(d.personal),
     [d.personal],
   );
+  const [aiDraftTodos, setAiDraftTodos] = React.useState([]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    async function loadAiDraftTodos() {
+      try {
+        const res = await fetch("/api/ai/drafts?status=pending", {
+          cache: "no-store",
+        });
+        const json = await res.json();
+        if (!res.ok || cancelled) return;
+        setAiDraftTodos(normalizeAiTodoDrafts(json?.drafts));
+      } catch {
+        if (!cancelled) setAiDraftTodos([]);
+      }
+    }
+    loadAiDraftTodos();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id, currentUser?.role]);
+
+  const handleAiTodoDraftCreated = React.useCallback((todo) => {
+    const normalized = normalizeAiTodoDraft(todo);
+    if (!normalized) return;
+    setAiDraftTodos((items) => [
+      normalized,
+      ...items.filter((item) => item.key !== normalized.key),
+    ]);
+  }, []);
 
   const todoGroups = React.useMemo(
     () =>
@@ -3751,7 +3907,7 @@ export function OverviewBoard({
     : null;
 
   // 个人面板真实派生
-  const personal = React.useMemo(() => {
+  const basePersonal = React.useMemo(() => {
     if (isRealtimePeriod && dashboardPersonal) return dashboardPersonal;
 
     const active = cnt(scopedProjects, isOperatingProject);
@@ -3908,6 +4064,10 @@ export function OverviewBoard({
     todoGroups,
     riskCount,
   ]);
+  const personal = React.useMemo(
+    () => mergeAiDraftTodos(basePersonal, aiDraftTodos),
+    [basePersonal, aiDraftTodos],
+  );
 
   return (
     <div className="ob-shell ob-command-surface" style={{ minHeight: "100%" }}>
@@ -4677,7 +4837,12 @@ export function OverviewBoard({
 
         {/* ===== 右：AI 助手 ===== */}
         <aside className="ob-ai">
-          <AiPanel user={currentUser} projects={scopedProjects} go={go} />
+          <AiPanel
+            user={currentUser}
+            projects={scopedProjects}
+            go={go}
+            onTodoDraftCreated={handleAiTodoDraftCreated}
+          />
         </aside>
       </div>
 
