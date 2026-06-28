@@ -7,6 +7,9 @@ const resolveAiProviderRoutingMock = vi.fn();
 const runAiGatewayMock = vi.fn();
 const recordAiInvocationMock = vi.fn();
 const loadRoleHomeDashboardMock = vi.fn();
+const searchKnowledgeDocumentsMock = vi.fn();
+const listLiveReviewDocumentsMock = vi.fn();
+const createAiDraftMock = vi.fn();
 
 vi.mock("@/lib/db/supabase-server", () => ({
   createSupabaseServerClient: createSupabaseServerClientMock,
@@ -33,6 +36,18 @@ vi.mock("@/features/dashboards/role-home-loader", () => ({
   loadRoleHomeDashboard: loadRoleHomeDashboardMock,
 }));
 
+vi.mock("@/features/ai/knowledge-repository", () => ({
+  searchKnowledgeDocuments: searchKnowledgeDocumentsMock,
+}));
+
+vi.mock("@/features/live-review/live-review-service", () => ({
+  listLiveReviewDocuments: listLiveReviewDocumentsMock,
+}));
+
+vi.mock("@/features/ai/draft-repository", () => ({
+  createAiDraft: createAiDraftMock,
+}));
+
 describe("POST /api/ai/chat", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -43,6 +58,9 @@ describe("POST /api/ai/chat", () => {
     runAiGatewayMock.mockReset();
     recordAiInvocationMock.mockReset();
     loadRoleHomeDashboardMock.mockReset();
+    searchKnowledgeDocumentsMock.mockReset();
+    listLiveReviewDocumentsMock.mockReset();
+    createAiDraftMock.mockReset();
 
     createSupabaseServerClientMock.mockResolvedValue({ from: vi.fn() });
     getAuthContextMock.mockResolvedValue({
@@ -84,6 +102,37 @@ describe("POST /api/ai/chat", () => {
       drilldowns: [],
       generatedAt: "2026-06-28T01:20:00.000Z",
     });
+    searchKnowledgeDocumentsMock.mockResolvedValue([
+      {
+        id: "kb-retro-1",
+        docType: "retrospective",
+        title: "低转化复盘打法",
+        snippet:
+          "历史复盘显示，开场福利节点不清晰会造成互动断层，应提前准备福利钩子。",
+        sourceRef: "knowledge.retrospective:low-conversion",
+        tags: ["复盘", "低转化"],
+        score: 7,
+      },
+    ]);
+    listLiveReviewDocumentsMock.mockResolvedValue([
+      {
+        id: "live-review-1",
+        title: "低转化直播复盘",
+        contentMd: [
+          "## 一、基础信息",
+          "| 本场目标 | 提升转化 |",
+          "## 三、做对了什么",
+          "- 内容：开场福利节点能提升停留",
+          "## 四、问题与归因（这一段是复盘的核心）",
+          "| 问题现象 | 直接原因 | 根因 | 性质 |",
+          "| 互动下滑 | 福利节奏不清楚 | 开场福利节点缺少明确钩子 | 结构性 |",
+          "## 五、行动项",
+          "| 行动 | 负责人 | 截止 | 验证指标 |",
+          "| 开播前确认福利钩子 | 运营 | 下场前 | 3 分钟互动率 |",
+        ].join("\n"),
+        createdAt: "2026-06-20T10:00:00.000Z",
+      },
+    ]);
     runAiGatewayMock.mockResolvedValue({
       status: "succeeded",
       providerName: "deepseek",
@@ -94,6 +143,7 @@ describe("POST /api/ai/chat", () => {
       costCents: 0.01,
     });
     recordAiInvocationMock.mockResolvedValue("invocation-1");
+    createAiDraftMock.mockResolvedValue({ id: "draft-retro-1" });
   });
 
   it("forwards sanitized chat history plus grounded dashboard facts to the configured model", async () => {
@@ -165,6 +215,22 @@ describe("POST /api/ai/chat", () => {
     expect(groundedText).toContain("240 元");
     expect(groundedText).toContain("dashboard.kpis.receivable");
     expect(groundedText).toContain("不得编造 facts 中不存在的数字");
+    expect(groundedText).toContain("知识库引用包");
+    expect(groundedText).toContain("knowledge.retrospective:low-conversion");
+    expect(groundedText).toContain("AI 复盘助手 · 基于组织知识库");
+    expect(searchKnowledgeDocumentsMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        organizationId: "org-1",
+        query: "默认分析本月",
+        limit: 5,
+      }),
+    );
+    expect(listLiveReviewDocumentsMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ organizationId: "org-1", role: "ops_manager" }),
+      expect.objectContaining({ limit: 100 }),
+    );
     expect(recordAiInvocationMock).toHaveBeenCalledWith({
       client: expect.anything(),
       actor: expect.objectContaining({ userId: "user-1", role: "ops_manager" }),
@@ -175,9 +241,83 @@ describe("POST /api/ai/chat", () => {
         promptKey: "dashboard.ai.chat",
         metadata: expect.objectContaining({
           groundingFactCount: expect.any(Number),
+          knowledgePassageCount: 1,
+          reviewKnowledgeSampleSize: 1,
         }),
       }),
     });
+    expect(createAiDraftMock).not.toHaveBeenCalled();
+  });
+
+  it("returns cited knowledge context and a pending retrospective draft for human confirmation", async () => {
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "生成本月复盘并沉淀经验" }],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    expect(body.knowledge).toMatchObject({
+      passages: [
+        expect.objectContaining({
+          id: "kb-retro-1",
+          sourceRef: "knowledge.retrospective:low-conversion",
+        }),
+      ],
+      citations: [
+        expect.objectContaining({
+          docId: "kb-retro-1",
+          sourceRef: "knowledge.retrospective:low-conversion",
+        }),
+      ],
+      reviewAssist: expect.objectContaining({
+        sampleSize: 1,
+        assistMarkdown: expect.stringContaining("开场福利节点缺少明确钩子"),
+      }),
+    });
+    expect(body.retrospectiveDraft).toMatchObject({
+      draftType: "retrospective",
+      status: "pending",
+      targetStateMachine: "retrospective",
+      targetState: "published",
+      payload: {
+        periodLabel: "本月经营复盘",
+        metrics: expect.arrayContaining([
+          expect.objectContaining({
+            label: "本月厂家应收",
+            value: "240",
+            unit: "元",
+            sourceRef: "dashboard.kpis.receivable",
+          }),
+        ]),
+        references: [
+          expect.objectContaining({
+            docId: "kb-retro-1",
+            sourceRef: "knowledge.retrospective:low-conversion",
+          }),
+        ],
+      },
+    });
+    expect(body.retrospectiveDraft.note).toContain("需人工确认后发布");
+    expect(body.retrospectiveDraftId).toBe("draft-retro-1");
+    expect(createAiDraftMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        organizationId: "org-1",
+        actingUserId: "user-1",
+        envelope: expect.objectContaining({
+          draftType: "retrospective",
+          status: "pending",
+        }),
+      }),
+    );
   });
 
   it("stops instead of asking the model when real dashboard data cannot be loaded", async () => {

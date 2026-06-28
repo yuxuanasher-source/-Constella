@@ -6,17 +6,42 @@ import type {
   AiMessage,
 } from "@/features/ai/contracts";
 import { buildDashboardChatGrounding } from "@/features/ai/dashboard-chat-grounding";
+import {
+  buildRetrospectiveDraft,
+  type AiDraftEnvelope,
+  type RetrospectiveMetric,
+} from "@/features/ai/drafts";
+import {
+  createAiDraft,
+  type DraftClient,
+} from "@/features/ai/draft-repository";
 import { recordAiInvocation } from "@/features/ai/invocation-ledger";
+import type {
+  KnowledgeCitation,
+  KnowledgePassage,
+} from "@/features/ai/knowledge-base";
+import {
+  searchKnowledgeDocuments,
+  type KnowledgeClient,
+} from "@/features/ai/knowledge-repository";
 import { runAiGateway } from "@/features/ai/llm-gateway";
 import {
   createConfiguredAiProviders,
   resolveAiProviderRouting,
 } from "@/features/ai/provider-registry";
 import { loadRoleHomeDashboard } from "@/features/dashboards/role-home-loader";
+import {
+  aggregateReviewKnowledge,
+  buildReviewAssist,
+  type ReviewAssist,
+} from "@/features/live-review/live-review-knowledge";
+import { listLiveReviewDocuments } from "@/features/live-review/live-review-service";
 import { getAuthContext } from "@/lib/auth/context";
+import type { AuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 import { isMcnStaff } from "@/lib/rbac/roles";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 const PROMPT_KEY = "dashboard.ai.chat";
 const PROMPT_VERSION = 1;
@@ -86,11 +111,18 @@ export async function POST(request: Request) {
     }
 
     const grounding = buildDashboardChatGrounding({ dashboard, auth });
+    const knowledgeContext = await buildDashboardKnowledgeContext({
+      supabase,
+      auth,
+      query: lastMessage.content,
+      facts: grounding.facts,
+    });
     const routing = resolveAiProviderRouting();
     const primaryProvider = routing.primaryProvider ?? realProvider.name;
     const messages: AiMessage[] = [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "system", content: grounding.promptText },
+      { role: "system", content: knowledgeContext.promptText },
       ...chatMessages,
     ];
 
@@ -106,7 +138,7 @@ export async function POST(request: Request) {
       },
     });
 
-    await recordAiInvocation({
+    const invocationId = await recordAiInvocation({
       client: supabase,
       actor: auth as AiActor,
       input: {
@@ -126,9 +158,11 @@ export async function POST(request: Request) {
           fallbackUsed: gatewayResult.fallbackUsed,
           groundingFactCount: grounding.facts.length,
           groundingMissingDataCount: grounding.missingData.length,
+          knowledgePassageCount: knowledgeContext.passages.length,
+          reviewKnowledgeSampleSize: knowledgeContext.reviewAssist.sampleSize,
         },
       },
-    }).catch(() => {});
+    }).catch(() => null);
 
     if (
       gatewayResult.status !== "succeeded" ||
@@ -147,6 +181,19 @@ export async function POST(request: Request) {
       );
     }
 
+    const retrospectiveDraftId = shouldCreateRetrospectiveDraft(
+      lastMessage.content,
+    )
+      ? (
+          await createAiDraft(supabase as unknown as DraftClient, {
+            organizationId: auth.organizationId,
+            actingUserId: auth.userId,
+            aiInvocationId: invocationId,
+            envelope: knowledgeContext.retrospectiveDraft,
+          }).catch(() => null)
+        )?.id
+      : null;
+
     return NextResponse.json({
       message: { role: "assistant", content: gatewayResult.text },
       providerName: gatewayResult.providerName,
@@ -158,6 +205,13 @@ export async function POST(request: Request) {
         facts: grounding.facts,
         missingData: grounding.missingData,
       },
+      knowledge: {
+        passages: knowledgeContext.passages,
+        citations: knowledgeContext.citations,
+        reviewAssist: knowledgeContext.reviewAssist,
+      },
+      retrospectiveDraft: knowledgeContext.retrospectiveDraft,
+      retrospectiveDraftId,
     });
   } catch (error) {
     if (error instanceof Error) {
@@ -204,4 +258,164 @@ function sanitizeRole(value: unknown): AiMessage["role"] | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+type DashboardKnowledgeContext = {
+  passages: KnowledgePassage[];
+  citations: KnowledgeCitation[];
+  reviewAssist: ReviewAssist;
+  retrospectiveDraft: AiDraftEnvelope;
+  promptText: string;
+};
+
+async function buildDashboardKnowledgeContext({
+  supabase,
+  auth,
+  query,
+  facts,
+}: {
+  supabase: SupabaseClient;
+  auth: AuthContext;
+  query: string;
+  facts: Array<{ label: string; value?: string; source: string }>;
+}): Promise<DashboardKnowledgeContext> {
+  const passages = await searchKnowledgeDocuments(
+    supabase as unknown as KnowledgeClient,
+    {
+      organizationId: auth.organizationId,
+      query,
+      limit: 5,
+      candidateLimit: 200,
+    },
+  ).catch(() => []);
+
+  const citations = passages.map((passage, index) => ({
+    index: index + 1,
+    title: passage.title,
+    sourceRef: passage.sourceRef,
+    docId: passage.id,
+  }));
+
+  const reviewDocuments = await listLiveReviewDocuments(
+    supabase,
+    {
+      userId: auth.userId,
+      name: auth.name,
+      role: auth.role,
+      organizationId: auth.organizationId,
+    },
+    { limit: 100 },
+  ).catch(() => []);
+
+  const reviewKnowledge = aggregateReviewKnowledge(
+    reviewDocuments.map((doc) => ({
+      id: doc.id,
+      title: doc.title,
+      contentMd: doc.contentMd,
+      createdAt: doc.createdAt,
+    })),
+  );
+  const reviewAssist = buildReviewAssist(reviewKnowledge, { goal: query });
+  const retrospectiveDraft = buildRetrospectiveDraft({
+    periodLabel: inferPeriodLabel(query),
+    metrics: factsToRetrospectiveMetrics(facts),
+    references: citations,
+  });
+
+  return {
+    passages,
+    citations,
+    reviewAssist,
+    retrospectiveDraft,
+    promptText: buildKnowledgePromptText({
+      passages,
+      citations,
+      reviewAssist,
+      retrospectiveDraft,
+    }),
+  };
+}
+
+function buildKnowledgePromptText({
+  passages,
+  citations,
+  reviewAssist,
+  retrospectiveDraft,
+}: {
+  passages: KnowledgePassage[];
+  citations: KnowledgeCitation[];
+  reviewAssist: ReviewAssist;
+  retrospectiveDraft: AiDraftEnvelope;
+}): string {
+  return [
+    "知识库引用包：",
+    JSON.stringify(
+      {
+        passages: passages.map((passage) => ({
+          title: passage.title,
+          snippet: passage.snippet,
+          sourceRef: passage.sourceRef,
+          docId: passage.id,
+          tags: passage.tags,
+        })),
+        citations,
+        reviewAssist: {
+          sampleSize: reviewAssist.sampleSize,
+          suggestions: reviewAssist.suggestions,
+          watchOuts: reviewAssist.watchOuts,
+          reusableWins: reviewAssist.reusableWins,
+          assistMarkdown: reviewAssist.assistMarkdown,
+        },
+        retrospectiveDraft,
+      },
+      null,
+      2,
+    ),
+    "",
+    "知识库使用规则：",
+    "1. 用户询问复盘、沉淀、归因、SOP、历史打法或改进建议时，必须优先结合 passages 与 reviewAssist。",
+    "2. 引用知识库结论时必须标注 sourceRef 或 docId；没有命中时明确说明知识库暂无相关历史经验。",
+    "3. 知识库只用于解释、归因和经验复用；金额、时长、ROI、数量等数字仍以真实业务事实包为准。",
+    "4. retrospectiveDraft 只是待人工确认的复盘沉淀草稿，不代表已发布或已写入知识库。",
+    "5. 如果用户要求沉淀/学习，把建议表达为“可保存到知识库的草稿”，提醒人工确认后再入库。",
+  ].join("\n");
+}
+
+function factsToRetrospectiveMetrics(
+  facts: Array<{ label: string; value?: string; source: string }>,
+): RetrospectiveMetric[] {
+  return facts
+    .filter((fact) => fact.value)
+    .slice(0, 12)
+    .map((fact) => {
+      const parsed = splitValueAndUnit(fact.value ?? "");
+      return {
+        label: fact.label,
+        value: parsed.value,
+        ...(parsed.unit ? { unit: parsed.unit } : {}),
+        sourceRef: fact.source,
+      };
+    });
+}
+
+function splitValueAndUnit(value: string): { value: string; unit?: string } {
+  const text = String(value ?? "").trim();
+  const match = /^(.+?)\s+([^\s]+)$/.exec(text);
+  if (!match) {
+    return { value: text };
+  }
+  return { value: match[1], unit: match[2] };
+}
+
+function inferPeriodLabel(query: string): string {
+  const text = String(query ?? "");
+  if (text.includes("今日") || text.includes("今天")) return "今日经营复盘";
+  if (text.includes("本周")) return "本周经营复盘";
+  if (text.includes("本月")) return "本月经营复盘";
+  if (text.includes("上月")) return "上月经营复盘";
+  return "经营复盘";
+}
+
+function shouldCreateRetrospectiveDraft(query: string): boolean {
+  return /(复盘|沉淀|经验|报告|总结)/.test(String(query ?? ""));
 }
