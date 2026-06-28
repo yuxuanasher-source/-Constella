@@ -295,6 +295,109 @@ describe("OverviewBoard AI panel", () => {
     expect(screen.getAllByTestId("personal-summary-sparkline")).toHaveLength(4);
   });
 
+  it("applies command-center visual surfaces to the dashboard", () => {
+    const { container } = render(
+      <OverviewBoard
+        dashboard={{
+          ...dashboard,
+          actionGroups: [
+            {
+              key: "projects",
+              title: "Projects",
+              items: [
+                { key: "active", label: "Active", value: 19, tone: "blue" },
+                { key: "recruiting", label: "Recruiting", value: 2 },
+              ],
+            },
+            {
+              key: "review",
+              title: "Review",
+              items: [
+                { key: "low", label: "Low margin", value: 3, tone: "amber" },
+                { key: "negative", label: "Negative", value: 10, tone: "red" },
+              ],
+            },
+            {
+              key: "settle",
+              title: "Settlement",
+              items: [
+                { key: "draft", label: "Draft", value: 0 },
+                { key: "confirm", label: "Confirm", value: 5, tone: "amber" },
+              ],
+            },
+            {
+              key: "audit",
+              title: "Audit",
+              items: [
+                { key: "risk", label: "Risk", value: 8, tone: "red" },
+                { key: "reopen", label: "Reopen", value: 0 },
+              ],
+            },
+          ],
+          kpis: [
+            {
+              key: "vendorReceivable",
+              label: "Receivable",
+              value: 130.68,
+              unit: "w",
+              series: [20, 60, 90, 130.68],
+            },
+            {
+              key: "estimatedGross",
+              label: "Gross",
+              value: -1.9,
+              unit: "w",
+              series: [4, 2, 0, -1.9],
+            },
+            {
+              key: "grossMarginRate",
+              label: "Margin",
+              value: -14668.5,
+              unit: "%",
+              series: [12, -50, -8000, -14668.5],
+            },
+            {
+              key: "highRiskItems",
+              label: "Risks",
+              value: 52,
+              unit: "items",
+              tone: "red",
+              series: [5, 22, 52],
+            },
+          ],
+          personal: {
+            summary: [
+              { key: "active", label: "Active", value: 19, tone: "blue" },
+              { key: "todo", label: "Todo", value: 47, tone: "violet" },
+              { key: "risk", label: "Risks", value: 52, tone: "amber" },
+              { key: "today", label: "Today", value: 7, tone: "green" },
+            ],
+            recommendations: [],
+            todos: [],
+          },
+        }}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    const styleText = Array.from(document.querySelectorAll("style"))
+      .map((node) => node.textContent || "")
+      .join("\n");
+
+    expect(styleText).toContain("--ob-command-bg");
+    expect(styleText).toContain("--ob-panel-shadow");
+    expect(styleText).toContain(".ob-kpi-card");
+    expect(container.querySelector(".ob-command-surface")).toBeTruthy();
+    expect(container.querySelector(".ob-segmented")).toBeTruthy();
+    expect(container.querySelectorAll(".ob-kpi-card")).toHaveLength(4);
+    expect(container.querySelector(".ob-live-card")).toBeTruthy();
+    expect(container.querySelector(".ob-side-card")).toBeTruthy();
+  });
+
   it("filters dashboard widgets when switching the period tabs", () => {
     render(
       <OverviewBoard
