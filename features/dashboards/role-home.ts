@@ -102,6 +102,7 @@ export type DashboardKpi = {
   unit?: string;
   tone?: DashboardTone;
   hint?: string;
+  series?: number[];
 };
 
 export type DashboardTarget = {
@@ -345,6 +346,8 @@ function collectFacts(source: DashboardSourceData) {
   );
 
   return {
+    now: source.now,
+    timeZone,
     allProjects: source.projects,
     reports: source.reports,
     batches: source.batches,
@@ -383,6 +386,7 @@ function collectFacts(source: DashboardSourceData) {
     streamerGapProjectCount: source.projects.filter(
       (project) => (project.streamers?.candidate ?? 0) > 0,
     ).length,
+    todayTaskSeries: buildTodayTaskSeries(todayTasks, timeZone),
   };
 }
 
@@ -411,11 +415,13 @@ function withOverviewWidgets(
   facts: ReturnType<typeof collectFacts>,
 ): RoleHomeDashboardDto {
   const actionGroups = buildActionGroups(role, facts);
+  const kpis = withKpiSeries(dashboard.kpis, facts);
 
   return {
     ...dashboard,
+    kpis,
     actionGroups,
-    personal: buildPersonalPanel(dashboard, facts, actionGroups),
+    personal: buildPersonalPanel({ ...dashboard, kpis }, facts, actionGroups),
   };
 }
 
@@ -702,6 +708,204 @@ function buildActionGroups(
   ];
 }
 
+function withKpiSeries(
+  kpis: DashboardKpi[],
+  facts: ReturnType<typeof collectFacts>,
+): DashboardKpi[] {
+  return kpis.map((item) => ({
+    ...item,
+    series: seriesForKpi(item, facts),
+  }));
+}
+
+function seriesForKpi(
+  item: DashboardKpi,
+  facts: ReturnType<typeof collectFacts>,
+) {
+  switch (item.key) {
+    case "activeProjects":
+      return projectStatusSeries(facts.allProjects);
+    case "vendorReceivable":
+      return cumulativeSeries(
+        facts.allProjects.map((project) => project.metrics?.receivable),
+      );
+    case "estimatedGross":
+      return cumulativeSeries(
+        facts.allProjects.map((project) => project.metrics?.gross),
+      );
+    case "grossMarginRate":
+      return valueSeries(
+        facts.allProjects.map((project) => project.metrics?.margin),
+        Number(item.value) || 0,
+      );
+    case "highRiskItems":
+    case "anomalyTasks":
+    case "streamerReminders":
+      return riskSourceSeries(facts);
+    case "myTodayTasks":
+      return facts.todayTaskSeries;
+    case "notStartedTasks":
+      return valueSeries(
+        [facts.notStartedTasks.length],
+        Number(item.value) || 0,
+      );
+    case "pendingReports":
+      return valueSeries(
+        [facts.pendingReports.length],
+        Number(item.value) || 0,
+      );
+    case "recordingsPending":
+      return cumulativeSeries(
+        facts.allProjects.map((project) => project.streamers?.pendingReview),
+      );
+    case "streamerGapProjects":
+      return cumulativeSeries(
+        facts.allProjects.map((project) => project.streamers?.candidate),
+      );
+    case "deliveryProgress":
+      return valueSeries(
+        facts.allProjects.map((project) =>
+          progressRate(
+            project.metrics?.doneHours ?? 0,
+            project.metrics?.plannedHours ?? 0,
+          ),
+        ),
+        Number(item.value) || 0,
+      );
+    case "settlementPoolAmount":
+      return cumulativeSeries(
+        facts.settlementPool.map((item) => item.expectedAmount),
+      );
+    case "settlementPoolCount":
+      return valueSeries(
+        [
+          facts.settlementPool.filter((item) => item.evidenceLevel === "green")
+            .length,
+          facts.weakSettlementPool.length,
+          facts.settlementPool.filter((item) => item.evidenceLevel === "red")
+            .length,
+        ],
+        Number(item.value) || 0,
+      );
+    case "draftBatches":
+    case "reopenedBatches":
+      return batchStatusSeries(facts.batches);
+    case "weakEvidenceAmount":
+      return cumulativeSeries(
+        facts.weakSettlementPool.map((item) => item.expectedAmount),
+      );
+    default:
+      return valueSeries([Number(item.value) || 0], Number(item.value) || 0);
+  }
+}
+
+function normalizeSeries(values: Array<number | null | undefined>) {
+  const series = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+
+  if (series.length === 0) return undefined;
+  if (series.length === 1) return [0, series[0]];
+  return series;
+}
+
+function valueSeries(
+  values: Array<number | null | undefined>,
+  fallback?: number,
+) {
+  return normalizeSeries(values) ?? normalizeSeries([0, fallback ?? 0]);
+}
+
+function cumulativeSeries(values: Array<number | null | undefined>) {
+  const numeric = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+
+  if (!numeric.length) return [0, 0];
+
+  let total = 0;
+  return [0, ...numeric.map((value) => (total += value))];
+}
+
+function projectStatusSeries(projects: DashboardProjectInput[]) {
+  const statuses = [
+    "recruiting",
+    "pending_start",
+    "active",
+    "paused",
+    "settling",
+  ];
+  return statuses.map(
+    (status) => projects.filter((project) => project.status === status).length,
+  );
+}
+
+function batchStatusSeries(batches: DashboardBatchInput[]) {
+  return BATCH_LANE_DEFS.map(
+    (def) => batches.filter((batch) => batch.status === def.key).length,
+  );
+}
+
+function riskSourceSeries(facts: ReturnType<typeof collectFacts>) {
+  return [
+    facts.highRiskNotices.length,
+    facts.allProjects.filter((project) => project.risk === "high").length,
+    facts.anomalyTasks.length + facts.projectAnomalyCount,
+    facts.reopenedBatchCount,
+  ];
+}
+
+function seriesTotal(series: number[]) {
+  return series.reduce((total, value) => total + value, 0);
+}
+
+function actionGroupSeries(actionGroups: DashboardActionGroup[]) {
+  return actionGroups.map((group) =>
+    group.items.reduce((total, item) => total + item.value, 0),
+  );
+}
+
+function buildTodayTaskSeries(tasks: DashboardTaskInput[], timeZone: string) {
+  const byHour = Array(24).fill(0);
+  tasks.forEach((task) => {
+    const hour = task.plannedStartAt
+      ? hourKey(task.plannedStartAt, timeZone)
+      : null;
+    if (hour !== null) {
+      byHour[hour] += 1;
+    }
+  });
+
+  const series = [];
+  let total = 0;
+  for (let hour = 6; hour <= 23; hour += 1) {
+    total += byHour[hour];
+    series.push(total);
+  }
+
+  return series.length >= 2 ? series : [0, tasks.length];
+}
+
+function hourKey(value: string, timeZone: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    const hour = Number(value.slice(11, 13));
+    return Number.isInteger(hour) ? Math.max(0, Math.min(23, hour)) : null;
+  }
+
+  const hour = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    hour12: false,
+  }).format(date);
+
+  const normalized = Number(hour === "24" ? "0" : hour);
+  return Number.isInteger(normalized)
+    ? Math.max(0, Math.min(23, normalized))
+    : null;
+}
+
 function buildPersonalPanel(
   dashboard: RoleHomeDashboardDto,
   facts: ReturnType<typeof collectFacts>,
@@ -714,6 +918,8 @@ function buildPersonalPanel(
     0,
   );
   const riskCount = dashboard.risks.length + dashboard.drilldowns.length;
+  const riskSeries = riskSourceSeries(facts);
+  const riskTotal = seriesTotal(riskSeries);
   const anomalyCount = facts.anomalyTasks.length + facts.projectAnomalyCount;
   const recommendations = buildPersonalRecommendations(
     dashboard,
@@ -729,20 +935,32 @@ function buildPersonalPanel(
         "在营项目",
         facts.activeProjects.length,
         "blue",
+        false,
+        projectStatusSeries(facts.allProjects),
       ),
-      personalSummary("todoTotal", "待办合计", actionTotal, "violet"),
+      personalSummary(
+        "todoTotal",
+        "待办合计",
+        actionTotal,
+        "violet",
+        false,
+        actionGroupSeries(actionGroups),
+      ),
       personalSummary(
         "risks",
         "风险数",
-        riskCount,
-        riskCount > 0 ? "amber" : "neutral",
-        riskCount > 0,
+        riskTotal || riskCount,
+        riskTotal > 0 || riskCount > 0 ? "amber" : "neutral",
+        riskTotal > 0 || riskCount > 0,
+        riskSeries,
       ),
       personalSummary(
         "todayTasks",
         "今日场次",
         facts.todayTasks.length,
         "green",
+        false,
+        facts.todayTaskSeries,
       ),
     ],
     recommendations,
@@ -982,8 +1200,16 @@ function personalSummary(
   value: number,
   tone: DashboardTone,
   attention = false,
+  series?: number[],
 ): DashboardPersonalSummaryItem {
-  return { key, label, value, tone, ...(attention ? { attention } : {}) };
+  return {
+    key,
+    label,
+    value,
+    tone,
+    ...(attention ? { attention } : {}),
+    ...(series ? { series } : {}),
+  };
 }
 
 function personalRecommendation(
@@ -1013,6 +1239,8 @@ function ownerDashboard(
   facts: ReturnType<typeof collectFacts>,
   generatedAt: string,
 ): RoleHomeDashboardDto {
+  const highRiskTotal = seriesTotal(riskSourceSeries(facts));
+
   return {
     profile: {
       role,
@@ -1021,17 +1249,11 @@ function ownerDashboard(
       scopeLabel: "全组织",
     },
     kpis: [
-      kpi("activeProjects", "进行中项目", facts.activeProjects.length, "个"),
       kpi("vendorReceivable", "本月厂家应收", facts.totalReceivable, "元"),
       kpi("estimatedGross", "预计毛利", facts.totalGross, "元"),
       kpi("grossMarginRate", "预计毛利率", facts.grossMarginRate, "%"),
-      kpi(
-        "highRiskItems",
-        "高风险事项",
-        facts.highRiskNotices.length,
-        "项",
-        "red",
-      ),
+      kpi("highRiskItems", "高风险事项", highRiskTotal, "项", "red"),
+      kpi("activeProjects", "进行中项目", facts.activeProjects.length, "个"),
     ],
     queue: projectQueue(facts.activeProjects, "project"),
     risks: [

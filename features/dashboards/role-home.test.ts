@@ -106,17 +106,17 @@ describe("role home dashboard", () => {
       title: "经营总览看板",
     });
     expect(kpiKeys(dashboard)).toEqual([
-      "activeProjects",
       "vendorReceivable",
       "estimatedGross",
       "grossMarginRate",
       "highRiskItems",
+      "activeProjects",
     ]);
     expect(dashboard.kpis).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ key: "activeProjects", value: 1 }),
         expect.objectContaining({ key: "grossMarginRate", value: 30 }),
-        expect.objectContaining({ key: "highRiskItems", value: 1 }),
+        expect.objectContaining({ key: "highRiskItems", value: 5 }),
       ]),
     );
     expect(riskKeys(dashboard)).not.toContain("lowMarginProjects");
@@ -150,7 +150,7 @@ describe("role home dashboard", () => {
     expect(dashboard.personal?.summary).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ label: "在营项目", value: 1 }),
-        expect.objectContaining({ label: "风险数", value: 2 }),
+        expect.objectContaining({ label: "风险数", value: 5 }),
         expect.objectContaining({ label: "今日场次", value: 1 }),
       ]),
     );
@@ -164,6 +164,62 @@ describe("role home dashboard", () => {
           text: "核验高风险通知",
           count: 1,
           target: { route: "audit" },
+        }),
+      ]),
+    );
+  });
+
+  it("projects real metric series for live overview charts", () => {
+    const dashboard = buildRoleHomeDashboard({
+      role: "owner",
+      userId: "user-owner",
+      organizationId: "org-1",
+      source,
+    });
+
+    expect(kpiKeys(dashboard).slice(0, 4)).toEqual([
+      "vendorReceivable",
+      "estimatedGross",
+      "grossMarginRate",
+      "highRiskItems",
+    ]);
+    expect(dashboard.kpis.slice(0, 4)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "vendorReceivable",
+          series: [0, 100000],
+        }),
+        expect.objectContaining({
+          key: "estimatedGross",
+          series: [0, 30000],
+        }),
+        expect.objectContaining({
+          key: "grossMarginRate",
+          series: [0, 30],
+        }),
+        expect.objectContaining({
+          key: "highRiskItems",
+          series: [1, 1, 2, 1],
+        }),
+      ]),
+    );
+    expect(dashboard.personal?.summary).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "activeProjects",
+          series: [0, 0, 1, 0, 0],
+        }),
+        expect.objectContaining({
+          key: "todoTotal",
+          series: [1, 0, 0, 3],
+        }),
+        expect.objectContaining({
+          key: "risks",
+          series: [1, 1, 2, 1],
+        }),
+        expect.objectContaining({
+          key: "todayTasks",
+          series: expect.arrayContaining([1]),
         }),
       ]),
     );
