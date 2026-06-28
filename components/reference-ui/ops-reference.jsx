@@ -3182,12 +3182,13 @@ function ScreenWarRoom({ go }) {
               borderRadius: 999,
               fontSize: 11,
               fontWeight: 600,
-              background: "linear-gradient(135deg, #EFEBFF, #DCE6FF)",
+              background: "var(--violet-50)",
+              border: "1px solid var(--line)",
               color: "var(--violet-600)",
             }}
           >
-            <Icon.Sparkles size={12} stroke="var(--violet-600)" /> AI 增强 ·
-            基础版
+            <Icon.Sparkles size={12} stroke="var(--violet-600)" /> AI 辅助 ·
+            需确认
           </span>
         }
         actions={
@@ -13453,7 +13454,7 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
         border: "1px solid var(--line)",
         borderRadius: 10,
         overflow: "hidden",
-        background: "#0E1530",
+        background: "var(--blue-900)",
         position: "relative",
         aspectRatio: "16 / 9",
       }}
@@ -13466,16 +13467,16 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
           left: 12,
           right: 12,
           bottom: 12,
-          background:
-            "linear-gradient(180deg, rgba(20,25,55,0.85), rgba(8,12,30,0.9))",
-          border: "1px solid #233063",
+          background: "var(--ink-900)",
+          border: "1px solid var(--blue-700)",
           borderRadius: 8,
           padding: 14,
-          color: "#E5EAF6",
+          color: "var(--bg-soft)",
           display: "flex",
           flexDirection: "column",
           gap: 10,
-          fontFamily: '"IBM Plex Sans", "PingFang SC", sans-serif',
+          fontFamily:
+            'var(--font-sans-app), "PingFang SC", "Microsoft YaHei", Arial, sans-serif',
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -13484,22 +13485,24 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
               width: 22,
               height: 22,
               borderRadius: 999,
-              background: "#3B6BE6",
+              background: "var(--blue-500)",
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
               fontWeight: 700,
               fontSize: 11,
-              color: "#fff",
+              color: "var(--white)",
             }}
           >
             L
           </span>
-          <span style={{ fontSize: 11.5, color: "#B8C2DB" }}>
+          <span style={{ fontSize: 11.5, color: "var(--ink-200)" }}>
             {platform} · 直播后台 · 数据概览
           </span>
           <span style={{ flex: 1 }} />
-          <span style={{ fontSize: 10, color: "#7C8AB0" }}>{date}</span>
+          <span style={{ fontSize: 10, color: "var(--ink-300)" }}>
+            {date}
+          </span>
         </div>
         <div
           style={{
@@ -13547,10 +13550,10 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
             alignItems: "center",
             gap: 8,
             fontSize: 10.5,
-            color: "#7C8AB0",
+            color: "var(--ink-300)",
           }}
         >
-          <Icon.History size={11} stroke="#7C8AB0" />
+          <Icon.History size={11} stroke="var(--ink-300)" />
           {streamer} · 截图时间 {date} 22:48:21
         </div>
       </div>
@@ -13562,9 +13565,11 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
           right: 18,
           bottom: 18,
           fontSize: 10,
-          color: "rgba(255,255,255,0.16)",
-          fontFamily: "IBM Plex Mono, monospace",
-          letterSpacing: "0.1em",
+          color: "var(--ink-300)",
+          opacity: 0.35,
+          fontFamily:
+            'var(--font-sans-app), "PingFang SC", "Microsoft YaHei", Arial, sans-serif',
+          letterSpacing: 0,
         }}
       >
         SHA · 8A2E…F19C
@@ -13577,21 +13582,21 @@ function ShotMetric({ label, value }) {
   return (
     <div
       style={{
-        background: "rgba(255,255,255,0.04)",
-        border: "1px solid rgba(255,255,255,0.05)",
+        background: "var(--blue-800)",
+        border: "1px solid var(--blue-700)",
         borderRadius: 6,
         padding: "8px 10px",
       }}
     >
-      <div style={{ fontSize: 10, color: "#7C8AB0" }}>{label}</div>
+      <div style={{ fontSize: 10, color: "var(--ink-300)" }}>{label}</div>
       <div
         className="num"
         style={{
           fontSize: 16,
           fontWeight: 700,
-          color: "#fff",
+          color: "var(--white)",
           marginTop: 2,
-          letterSpacing: "-0.01em",
+          letterSpacing: 0,
         }}
       >
         {value}
@@ -18124,25 +18129,39 @@ function DayTaskBlock({ task, projects = [], onClick }) {
     blue: {
       bg: "var(--blue-50)",
       bar: "var(--blue-600)",
+      border: "var(--blue-200)",
       text: "var(--blue-800)",
     },
     violet: {
       bg: "var(--violet-50)",
       bar: "var(--violet-600)",
+      border: "var(--line-strong)",
       text: "var(--violet-600)",
     },
     amber: {
       bg: "var(--warn-50)",
       bar: "var(--warn-600)",
+      border: "var(--warn-600)",
       text: "var(--warn-600)",
     },
-    green: { bg: "var(--ok-50)", bar: "var(--ok-600)", text: "var(--ok-600)" },
+    green: {
+      bg: "var(--ok-50)",
+      bar: "var(--ok-600)",
+      border: "var(--ok-600)",
+      text: "var(--ok-600)",
+    },
     red: {
       bg: "var(--danger-50)",
       bar: "var(--danger-600)",
+      border: "var(--danger-600)",
       text: "var(--danger-600)",
     },
-    neutral: { bg: "#F1F4FA", bar: "var(--ink-300)", text: "var(--ink-500)" },
+    neutral: {
+      bg: "#F1F4FA",
+      bar: "var(--ink-300)",
+      border: "var(--line-strong)",
+      text: "var(--ink-500)",
+    },
   };
   const c = tones[st.tone] || tones.neutral;
   const projectShort =
@@ -18159,9 +18178,12 @@ function DayTaskBlock({ task, projects = [], onClick }) {
         width: "100%",
         textAlign: "left",
         background: c.bg,
-        border: "none",
-        borderLeft: `3px solid ${c.bar}`,
+        border: `1px solid ${c.border || "var(--line)"}`,
         borderRadius: 4,
+        boxShadow: task.anomaly
+          ? "inset 0 0 0 1px var(--danger-600)"
+          : "none",
+        boxSizing: "border-box",
         padding: "6px 8px",
         cursor: "pointer",
         display: "flex",

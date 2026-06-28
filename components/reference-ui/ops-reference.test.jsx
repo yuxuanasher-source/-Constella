@@ -5314,6 +5314,42 @@ describe("OpsReferenceApp live task smoke", () => {
     expect(screen.getByText("Excel 导入后台暂未接入")).toBeInTheDocument();
   });
 
+  it("renders day task blocks without a side-stripe border", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[
+          {
+            id: "task-side-stripe",
+            name: "Fixture Project · Side Stripe Check",
+            status: "pending_live",
+            project: "project-live",
+            projectId: "project-live",
+            projectName: "Fixture Project",
+            streamerId: "streamer-one",
+            streamerName: "Streamer One",
+            dayIdx: 1,
+            startHour: 20,
+            endHour: 22,
+            plannedStartAt: "2026-06-04T12:00:00.000Z",
+            plannedEndAt: "2026-06-04T15:30:00.000Z",
+            plannedDuration: 210,
+            type: "project",
+          },
+        ]}
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+        applicationQueue={[]}
+      />,
+    );
+
+    const dayTaskBlock = screen.getByTitle(
+      "Fixture Project · Side Stripe Check",
+    );
+    expect(dayTaskBlock.tagName).toBe("BUTTON");
+    expect(dayTaskBlock.style.borderLeft).not.toContain("3px");
+  });
+
   it("keeps overdue pending-live status synced between the schedule board and task drawer", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-07T13:12:00.000Z"));
