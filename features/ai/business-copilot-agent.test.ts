@@ -181,6 +181,116 @@ describe("business copilot agent", () => {
     expect(serialized).not.toContain("internalRisk");
   });
 
+  it("prioritizes unhealthy projects from ranking and risk evidence", () => {
+    const result = runBusinessCopilotAgent({
+      question: "what should operations handle first today",
+      dashboard: {
+        ...ownerDashboard,
+        kpis: [
+          ...ownerDashboard.kpis,
+          { key: "pendingReports", label: "Pending reports", value: 7 },
+        ],
+        risks: [
+          {
+            key: "risk:p-low-margin",
+            title: "Nova Launch",
+            subtitle: "High-risk notice requires manual validation",
+            tone: "red",
+            target: { route: "project", id: "p-low-margin" },
+          },
+        ],
+        queue: [
+          {
+            key: "queue:p-low-margin",
+            title: "Nova Launch",
+            subtitle: "Pending reports are blocking settlement",
+            tone: "amber",
+            target: { route: "project", id: "p-low-margin" },
+          },
+        ],
+        panels: {
+          projectRanking: {
+            title: "Project contribution ranking",
+            subtitle: "Sorted by gross profit",
+            rows: [
+              {
+                key: "rank:p-profitable",
+                title: "Echo Stable",
+                value: 58000,
+                hint: "margin 32.0%",
+                tone: "neutral",
+                target: { route: "project", id: "p-profitable" },
+              },
+              {
+                key: "rank:p-low-margin",
+                title: "Nova Launch",
+                value: -19000,
+                hint: "margin -12.5%",
+                tone: "amber",
+                target: { route: "project", id: "p-low-margin" },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(result.projectHealth.topProjects[0]).toMatchObject({
+      projectId: "p-low-margin",
+      projectName: "Nova Launch",
+      priority: "high",
+      reasons: expect.arrayContaining([
+        "Negative gross profit in project ranking",
+        "Matched current risk queue",
+        "Matched current operations queue",
+      ]),
+    });
+    expect(result.projectHealth.topProjects[0]?.evidence).toEqual(
+      expect.arrayContaining([
+        {
+          sourceTool: "role_home_dashboard",
+          sourceId: "panel:projectRanking:rank:p-low-margin",
+        },
+        {
+          sourceTool: "role_home_dashboard",
+          sourceId: "risk:risk:p-low-margin",
+        },
+        {
+          sourceTool: "role_home_dashboard",
+          sourceId: "queue:queue:p-low-margin",
+        },
+      ]),
+    );
+    expect(result.suggestedActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actionId: "p-low-margin:margin-review",
+          projectId: "p-low-margin",
+          projectName: "Nova Launch",
+          priority: "high",
+          title: "Review margin and cost assumptions",
+          requiresHumanApproval: true,
+          evidence: expect.arrayContaining([
+            {
+              sourceTool: "role_home_dashboard",
+              sourceId: "panel:projectRanking:rank:p-low-margin",
+            },
+          ]),
+        }),
+        expect.objectContaining({
+          actionId: "p-low-margin:risk-validation",
+          title: "Validate high-risk notice",
+          requiresHumanApproval: true,
+        }),
+        expect.objectContaining({
+          actionId: "p-low-margin:queue-clearance",
+          title: "Clear blocking operations queue",
+          requiresHumanApproval: true,
+        }),
+      ]),
+    );
+  });
+
   it("does not run SQL-looking questions and returns unsupported safely", () => {
     const result = runBusinessCopilotAgent({
       question: "select * from settlement_batches",

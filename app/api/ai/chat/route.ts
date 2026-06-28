@@ -158,6 +158,8 @@ export async function POST(request: Request) {
           fallbackUsed: gatewayResult.fallbackUsed,
           groundingFactCount: grounding.facts.length,
           groundingMissingDataCount: grounding.missingData.length,
+          groundingProjectHealthCount: grounding.projectHealth.topProjects.length,
+          groundingSuggestedActionCount: grounding.suggestedActions.length,
           knowledgePassageCount: knowledgeContext.passages.length,
           reviewKnowledgeSampleSize: knowledgeContext.reviewAssist.sampleSize,
         },
@@ -203,6 +205,8 @@ export async function POST(request: Request) {
       grounding: {
         generatedAt: grounding.generatedAt,
         facts: grounding.facts,
+        projectHealth: grounding.projectHealth,
+        suggestedActions: grounding.suggestedActions,
         missingData: grounding.missingData,
       },
       knowledge: {
