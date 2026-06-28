@@ -295,7 +295,7 @@ describe("OverviewBoard AI panel", () => {
     expect(screen.getAllByTestId("personal-summary-sparkline")).toHaveLength(4);
   });
 
-  it("keeps mini charts from stretching or pinning endpoints to the edge", () => {
+  it("renders live KPI sparklines as balanced full-width chart canvases", () => {
     render(
       <OverviewBoard
         dashboard={{
@@ -338,26 +338,26 @@ describe("OverviewBoard AI panel", () => {
       />,
     );
 
-    const charts = [
-      ...screen.getAllByTestId("live-kpi-sparkline"),
-      ...screen.getAllByTestId("personal-summary-sparkline"),
-    ];
-
+    const charts = screen.getAllByTestId("live-kpi-sparkline");
     expect(charts.length).toBeGreaterThan(0);
     for (const svg of charts) {
       expect(svg.getAttribute("preserveAspectRatio")).toBe("xMidYMid meet");
-      const [, , viewBoxWidth] = svg
+      expect(svg.style.maxWidth).toBe("");
+      expect(Number(svg.getAttribute("height"))).toBeGreaterThanOrEqual(52);
+      const [, , viewBoxWidth, viewBoxHeight] = svg
         .getAttribute("viewBox")
         .split(/\s+/)
         .map(Number);
+      expect(viewBoxWidth).toBeGreaterThanOrEqual(220);
+      expect(viewBoxHeight).toBeGreaterThanOrEqual(48);
       const polyline = svg.querySelector("polyline");
       const xs = polyline
         .getAttribute("points")
         .trim()
         .split(/\s+/)
         .map((point) => Number(point.split(",")[0]));
-      expect(Math.min(...xs)).toBeGreaterThan(0);
-      expect(Math.max(...xs)).toBeLessThan(viewBoxWidth);
+      expect(Math.min(...xs)).toBeGreaterThanOrEqual(10);
+      expect(Math.max(...xs)).toBeLessThanOrEqual(viewBoxWidth - 10);
     }
   });
 
