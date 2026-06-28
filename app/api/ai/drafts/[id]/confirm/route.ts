@@ -7,6 +7,11 @@ import {
   type DraftClient,
 } from "@/features/ai/draft-repository";
 import { draftConfirmationRequirement } from "@/features/ai/drafts";
+import {
+  captureConfirmedDraftKnowledgeDocument,
+  type CapturedKnowledgeDocument,
+  type KnowledgeCaptureClient,
+} from "@/features/ai/knowledge-capture";
 import type { AiTransitionDecision } from "@/features/ai/tiers";
 import { writeAuditLog } from "@/lib/audit/audit";
 import type { AppRole } from "@/lib/rbac/roles";
@@ -86,12 +91,19 @@ export async function POST(
       );
     }
 
+    const knowledgeCapture = await captureKnowledgeDocument(supabase, {
+      auth,
+      draft,
+    });
+
     await writeConfirmationAudit(supabase, {
       auth,
       draft,
       id,
       gatewayDecision,
       result: "success",
+      knowledgeDocumentId: knowledgeCapture.document?.id,
+      knowledgeCaptureError: knowledgeCapture.errorMessage,
     });
 
     return NextResponse.json({
@@ -99,6 +111,10 @@ export async function POST(
       id,
       status: "confirmed",
       gatewayDecision,
+      knowledgeDocument: knowledgeCapture.document,
+      ...(knowledgeCapture.errorMessage
+        ? { knowledgeCaptureError: knowledgeCapture.errorMessage }
+        : {}),
     });
   } catch (error) {
     return NextResponse.json(
@@ -135,6 +151,8 @@ async function writeConfirmationAudit(
     gatewayDecision: AiTransitionDecision;
     result: "success" | "failure";
     errorMessage?: string;
+    knowledgeDocumentId?: string;
+    knowledgeCaptureError?: string;
   },
 ) {
   await writeAuditLog(supabase, {
@@ -154,6 +172,8 @@ async function writeConfirmationAudit(
       draftType: input.draft.draftType,
       targetStateMachine: input.draft.targetStateMachine,
       targetState: input.draft.targetState,
+      knowledgeDocumentId: input.knowledgeDocumentId ?? null,
+      knowledgeCaptureError: input.knowledgeCaptureError,
       gatewayDecision: input.gatewayDecision,
     },
     changedFields:
@@ -163,4 +183,26 @@ async function writeConfirmationAudit(
     result: input.result,
     errorMessage: input.errorMessage,
   });
+}
+
+async function captureKnowledgeDocument(
+  supabase: KnowledgeCaptureClient,
+  input: { auth: ConfirmAuth; draft: AiDraftForConfirmation },
+): Promise<{ document: CapturedKnowledgeDocument | null; errorMessage?: string }> {
+  try {
+    const document = await captureConfirmedDraftKnowledgeDocument(supabase, {
+      organizationId: input.auth.organizationId,
+      confirmedBy: input.auth.userId,
+      draft: input.draft,
+    });
+    return { document };
+  } catch (error) {
+    return {
+      document: null,
+      errorMessage:
+        error instanceof Error
+          ? error.message
+          : "Failed to capture AI draft knowledge",
+    };
+  }
 }
