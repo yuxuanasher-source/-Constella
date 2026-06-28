@@ -110,13 +110,152 @@ function aiPanelStorageKey(user) {
   return `${AI_PANEL_STORAGE_PREFIX}.${identity}`;
 }
 
+function normalizeAiMessageMeta(value) {
+  const projectHealth = normalizeProjectHealth(
+    value?.projectHealth || value?.grounding?.projectHealth,
+  );
+  const suggestedActions = normalizeSuggestedActions(
+    value?.suggestedActions || value?.grounding?.suggestedActions,
+  );
+  const meta = {
+    ...(projectHealth ? { projectHealth } : {}),
+    ...(suggestedActions ? { suggestedActions } : {}),
+  };
+  return Object.keys(meta).length ? meta : undefined;
+}
+
+function normalizeProjectHealth(value) {
+  const rows = Array.isArray(value?.topProjects) ? value.topProjects : [];
+  const topProjects = rows
+    .map((item) => {
+      const projectName =
+        typeof item?.projectName === "string" ? item.projectName.trim() : "";
+      if (!projectName) return null;
+      const priority =
+        item?.priority === "high" ||
+        item?.priority === "medium" ||
+        item?.priority === "low"
+          ? item.priority
+          : "medium";
+      const reasons = Array.isArray(item?.reasons)
+        ? item.reasons
+            .map((reason) =>
+              typeof reason === "string" ? reason.trim().slice(0, 180) : "",
+            )
+            .filter(Boolean)
+            .slice(0, 3)
+        : [];
+      const evidence = Array.isArray(item?.evidence)
+        ? item.evidence
+            .map((entry) => ({
+              sourceTool:
+                typeof entry?.sourceTool === "string"
+                  ? entry.sourceTool.slice(0, 80)
+                  : "role_home_dashboard",
+              sourceId:
+                typeof entry?.sourceId === "string"
+                  ? entry.sourceId.slice(0, 180)
+                  : "",
+            }))
+            .filter((entry) => entry.sourceId)
+            .slice(0, 3)
+        : [];
+      const score = Number(item?.score);
+      return {
+        projectId:
+          typeof item?.projectId === "string"
+            ? item.projectId.slice(0, 120)
+            : undefined,
+        projectName: projectName.slice(0, 120),
+        priority,
+        score: Number.isFinite(score) ? score : undefined,
+        reasons,
+        evidence,
+        target: normalizeAiTarget(item?.target),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+  return topProjects.length ? { topProjects } : null;
+}
+
+function normalizeSuggestedActions(value) {
+  if (!Array.isArray(value)) return null;
+  const actions = value
+    .map((item) => {
+      const title = typeof item?.title === "string" ? item.title.trim() : "";
+      if (!title) return null;
+      const priority =
+        item?.priority === "high" ||
+        item?.priority === "medium" ||
+        item?.priority === "low"
+          ? item.priority
+          : "medium";
+      const evidence = Array.isArray(item?.evidence)
+        ? item.evidence
+            .map((entry) => ({
+              sourceTool:
+                typeof entry?.sourceTool === "string"
+                  ? entry.sourceTool.slice(0, 80)
+                  : "role_home_dashboard",
+              sourceId:
+                typeof entry?.sourceId === "string"
+                  ? entry.sourceId.slice(0, 180)
+                  : "",
+            }))
+            .filter((entry) => entry.sourceId)
+            .slice(0, 3)
+        : [];
+      return {
+        actionId:
+          typeof item?.actionId === "string"
+            ? item.actionId.slice(0, 160)
+            : title,
+        projectId:
+          typeof item?.projectId === "string"
+            ? item.projectId.slice(0, 120)
+            : undefined,
+        projectName:
+          typeof item?.projectName === "string"
+            ? item.projectName.slice(0, 120)
+            : "",
+        priority,
+        title: title.slice(0, 160),
+        rationale:
+          typeof item?.rationale === "string"
+            ? item.rationale.slice(0, 240)
+            : "",
+        evidence,
+        target: normalizeAiTarget(item?.target),
+        requiresHumanApproval: item?.requiresHumanApproval !== false,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+  return actions.length ? actions : null;
+}
+
+function normalizeAiTarget(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const route = typeof value.route === "string" ? value.route : "";
+  if (!route) return undefined;
+  return {
+    route,
+    ...(typeof value.id === "string" ? { id: value.id.slice(0, 120) } : {}),
+  };
+}
+
 function normalizeStoredAiMessages(value) {
   if (!Array.isArray(value)) return [];
   return value
-    .map((item) => ({
-      role: item?.role === "user" ? "user" : "ai",
-      text: typeof item?.text === "string" ? item.text.slice(0, 8000) : "",
-    }))
+    .map((item) => {
+      const meta = normalizeAiMessageMeta(item?.meta);
+      return {
+        role: item?.role === "user" ? "user" : "ai",
+        text: typeof item?.text === "string" ? item.text.slice(0, 8000) : "",
+        ...(meta ? { meta } : {}),
+      };
+    })
     .filter((item) => item.text.trim())
     .slice(-20);
 }
@@ -1623,6 +1762,276 @@ function AiMessageContent({ text }) {
   );
 }
 
+function priorityTone(priority) {
+  if (priority === "high") return tone("danger");
+  if (priority === "medium") return tone("warn");
+  return tone("ok");
+}
+
+function AiProjectHealthCard({ projectHealth }) {
+  const project = projectHealth?.topProjects?.[0];
+  if (!project) return null;
+
+  const t = priorityTone(project.priority);
+  const reasons = Array.isArray(project.reasons) ? project.reasons.slice(0, 3) : [];
+  const evidence = Array.isArray(project.evidence)
+    ? project.evidence.slice(0, 2)
+    : [];
+
+  return (
+    <div
+      data-testid="ai-project-health-card"
+      style={{
+        border: `1px solid ${C.border}`,
+        borderRadius: 12,
+        background: C.soft,
+        padding: "10px 11px",
+        display: "grid",
+        gap: 8,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          minWidth: 0,
+        }}
+      >
+        <span
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: 999,
+            background: t.solid,
+            flexShrink: 0,
+          }}
+        />
+        <span
+          style={{
+            minWidth: 0,
+            flex: 1,
+            fontSize: 12.5,
+            fontWeight: 730,
+            color: C.ink,
+            overflowWrap: "anywhere",
+          }}
+        >
+          {project.projectName}
+        </span>
+        <span
+          style={{
+            flexShrink: 0,
+            color: t.color,
+            background: t.bg,
+            borderRadius: 999,
+            padding: "2px 7px",
+            fontSize: 10.5,
+            fontWeight: 720,
+            lineHeight: 1.4,
+          }}
+        >
+          {project.priority}
+        </span>
+      </div>
+      {reasons.length ? (
+        <div style={{ display: "grid", gap: 5 }}>
+          {reasons.map((reason, index) => (
+            <div
+              key={`${reason}-${index}`}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "10px minmax(0, 1fr)",
+                gap: 6,
+                alignItems: "start",
+                fontSize: 11.5,
+                color: C.ink3,
+                lineHeight: 1.45,
+              }}
+            >
+              <span style={{ color: t.color, fontWeight: 740 }}>-</span>
+              <span style={{ overflowWrap: "anywhere" }}>{reason}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {evidence.length ? (
+        <div
+          style={{
+            display: "grid",
+            gap: 3,
+            paddingTop: 2,
+            borderTop: `1px solid ${C.divider}`,
+          }}
+        >
+          {evidence.map((entry, index) => (
+            <span
+              key={`${entry.sourceId}-${index}`}
+              style={{
+                fontSize: 10.5,
+                lineHeight: 1.45,
+                color: C.muted,
+                overflowWrap: "anywhere",
+              }}
+            >
+              {entry.sourceId}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AiSuggestedActionCard({ actions }) {
+  const action = actions?.[0];
+  if (!action) return null;
+
+  const t = priorityTone(action.priority);
+  const evidence = Array.isArray(action.evidence)
+    ? action.evidence.slice(0, 2)
+    : [];
+
+  return (
+    <div
+      data-testid="ai-suggested-action-card"
+      style={{
+        border: `1px solid ${C.border}`,
+        borderRadius: 12,
+        background: C.card,
+        padding: "10px 11px",
+        display: "grid",
+        gap: 8,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          gap: 8,
+          minWidth: 0,
+        }}
+      >
+        <span
+          style={{
+            width: 22,
+            height: 22,
+            borderRadius: 8,
+            background: t.bg,
+            color: t.color,
+            flexShrink: 0,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 12,
+            fontWeight: 760,
+          }}
+        >
+          !
+        </span>
+        <div style={{ minWidth: 0, flex: 1, display: "grid", gap: 3 }}>
+          <div
+            style={{
+              fontSize: 12.5,
+              fontWeight: 730,
+              color: C.ink,
+              lineHeight: 1.4,
+              overflowWrap: "anywhere",
+            }}
+          >
+            {action.title}
+          </div>
+          {action.projectName ? (
+            <div
+              style={{
+                fontSize: 11,
+                color: C.muted,
+                lineHeight: 1.45,
+                overflowWrap: "anywhere",
+              }}
+            >
+              {action.projectName}
+            </div>
+          ) : null}
+        </div>
+      </div>
+      {action.rationale ? (
+        <div
+          style={{
+            fontSize: 11.5,
+            lineHeight: 1.5,
+            color: C.ink3,
+            overflowWrap: "anywhere",
+          }}
+        >
+          {action.rationale}
+        </div>
+      ) : null}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          flexWrap: "wrap",
+        }}
+      >
+        <span
+          style={{
+            color: t.color,
+            background: t.bg,
+            borderRadius: 999,
+            padding: "2px 7px",
+            fontSize: 10.5,
+            fontWeight: 720,
+            lineHeight: 1.4,
+          }}
+        >
+          {action.priority}
+        </span>
+        {action.requiresHumanApproval ? (
+          <span
+            style={{
+              color: C.muted,
+              background: C.soft,
+              borderRadius: 999,
+              padding: "2px 7px",
+              fontSize: 10.5,
+              fontWeight: 650,
+              lineHeight: 1.4,
+            }}
+          >
+            Human approval required
+          </span>
+        ) : null}
+      </div>
+      {evidence.length ? (
+        <div
+          style={{
+            display: "grid",
+            gap: 3,
+            paddingTop: 2,
+            borderTop: `1px solid ${C.divider}`,
+          }}
+        >
+          {evidence.map((entry, index) => (
+            <span
+              key={`${entry.sourceId}-${index}`}
+              style={{
+                fontSize: 10.5,
+                lineHeight: 1.45,
+                color: C.muted,
+                overflowWrap: "anywhere",
+              }}
+            >
+              {entry.sourceId}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function AiHeadingBlock({ heading }) {
   const Tag = heading.level <= 2 ? "h3" : "h4";
   return (
@@ -1814,7 +2223,8 @@ function AiPanel({ user, projects, go }) {
     saveStoredAiMessages(storageKey, msgs);
   }, [storageKey, msgs]);
 
-  const push = (role, text) => setMsgs((m) => m.concat([{ role, text }]));
+  const push = (role, text, meta) =>
+    setMsgs((m) => m.concat([{ role, text, ...(meta ? { meta } : {}) }]));
   const chatHistory = (userText) =>
     (msgs || [])
       .slice(-8)
@@ -1830,6 +2240,7 @@ function AiPanel({ user, projects, go }) {
     setBusy(true);
     try {
       let text = "";
+      let meta;
       if (kind === "match") {
         const res = await fetch("/api/marketplace/intel", {
           cache: "no-store",
@@ -1850,6 +2261,7 @@ function AiPanel({ user, projects, go }) {
           body: JSON.stringify({ messages: chatHistory(userText) }),
         });
         const json = await res.json();
+        meta = normalizeAiMessageMeta(json);
         if (!res.ok) throw new Error(json?.error || "AI 调用失败");
         text =
           json?.message?.content || json?.text || "已生成回复（需人工确认）。";
@@ -1864,7 +2276,7 @@ function AiPanel({ user, projects, go }) {
         if (!res.ok) throw new Error(json?.error || "AI 诊断调用失败");
         text = extractAiText(json);
       }
-      push("ai", text);
+      push("ai", text, meta);
     } catch (e) {
       push(
         "ai",
@@ -2196,7 +2608,15 @@ function AiPanel({ user, projects, go }) {
                     }
               }
             >
-              {m.role === "ai" ? <AiMessageContent text={m.text} /> : m.text}
+              {m.role === "ai" ? (
+                <div style={{ display: "grid", gap: 9 }}>
+                  <AiMessageContent text={m.text} />
+                  <AiProjectHealthCard projectHealth={m.meta?.projectHealth} />
+                  <AiSuggestedActionCard actions={m.meta?.suggestedActions} />
+                </div>
+              ) : (
+                m.text
+              )}
             </div>
           </div>
         ))}

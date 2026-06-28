@@ -320,6 +320,96 @@ describe("POST /api/ai/chat", () => {
     );
   });
 
+  it("returns project health grounding for product workflows", async () => {
+    loadRoleHomeDashboardMock.mockResolvedValueOnce({
+      profile: {
+        role: "ops_manager",
+        title: "Operations overview",
+        subtitle: "Operational loop",
+        scopeLabel: "All org",
+      },
+      kpis: [
+        { key: "activeProjects", label: "Active projects", value: 2 },
+        { key: "pendingReports", label: "Pending reports", value: 7 },
+      ],
+      queue: [
+        {
+          key: "queue:p-low-margin",
+          title: "Nova Launch",
+          subtitle: "Pending reports are blocking settlement",
+          tone: "amber",
+          target: { route: "project", id: "p-low-margin" },
+        },
+      ],
+      risks: [
+        {
+          key: "risk:p-low-margin",
+          title: "Nova Launch",
+          subtitle: "High-risk notice requires manual validation",
+          tone: "red",
+          target: { route: "project", id: "p-low-margin" },
+        },
+      ],
+      drilldowns: [],
+      panels: {
+        projectRanking: {
+          title: "Project contribution ranking",
+          rows: [
+            {
+              key: "rank:p-low-margin",
+              title: "Nova Launch",
+              value: -19000,
+              hint: "margin -12.5%",
+              tone: "amber",
+              target: { route: "project", id: "p-low-margin" },
+            },
+          ],
+        },
+      },
+      generatedAt: "2026-06-28T01:20:00.000Z",
+    });
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "What should we fix first?" }],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    expect(body.grounding.projectHealth.topProjects[0]).toMatchObject({
+      projectId: "p-low-margin",
+      projectName: "Nova Launch",
+      priority: "high",
+    });
+    expect(body.grounding.suggestedActions[0]).toMatchObject({
+      actionId: "p-low-margin:margin-review",
+      projectName: "Nova Launch",
+      requiresHumanApproval: true,
+    });
+    expect(recordAiInvocationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          metadata: expect.objectContaining({
+            groundingProjectHealthCount: 1,
+            groundingSuggestedActionCount: 3,
+          }),
+        }),
+      }),
+    );
+    const messages = runAiGatewayMock.mock.calls[0][0].request.messages;
+    const groundedText = messages
+      .map((message: { content: string }) => message.content)
+      .join("\n");
+    expect(groundedText).toContain("projectHealth");
+    expect(groundedText).toContain("Nova Launch");
+  });
+
   it("stops instead of asking the model when real dashboard data cannot be loaded", async () => {
     loadRoleHomeDashboardMock.mockRejectedValue(
       new Error("dashboard unavailable"),

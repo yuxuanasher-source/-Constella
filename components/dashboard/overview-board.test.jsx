@@ -836,6 +836,111 @@ describe("OverviewBoard AI panel", () => {
     expect(styleText).toContain("width:var(--ob-ai-width)");
   });
 
+  it("renders and persists project health cards returned by the AI chat API", async () => {
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/chat") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              message: { role: "assistant", content: "AI summary" },
+              providerName: "deepseek",
+              grounding: {
+                projectHealth: {
+                  topProjects: [
+                    {
+                      projectId: "p-low-margin",
+                      projectName: "Nova Launch",
+                      priority: "high",
+                      score: 125,
+                      reasons: [
+                        "Negative gross profit in project ranking",
+                        "Matched current risk queue",
+                      ],
+                      evidence: [
+                        {
+                          sourceTool: "role_home_dashboard",
+                          sourceId: "panel:projectRanking:rank:p-low-margin",
+                        },
+                      ],
+                      target: { route: "project", id: "p-low-margin" },
+                    },
+                  ],
+                },
+                suggestedActions: [
+                  {
+                    actionId: "p-low-margin:margin-review",
+                    projectId: "p-low-margin",
+                    projectName: "Nova Launch",
+                    priority: "high",
+                    title: "Review margin and cost assumptions",
+                    rationale:
+                      "The project has margin signals that need a human review.",
+                    evidence: [
+                      {
+                        sourceTool: "role_home_dashboard",
+                        sourceId: "panel:projectRanking:rank:p-low-margin",
+                      },
+                    ],
+                    target: { route: "project", id: "p-low-margin" },
+                    requiresHumanApproval: true,
+                  },
+                ],
+              },
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ matches: { recommendations: [] } }),
+      });
+    });
+    const { container, unmount } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-123", name: "123", role: "owner" }}
+      />,
+    );
+
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "What should we fix first?" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("AI summary")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-project-health-card")).toBeInTheDocument();
+    expect(screen.getAllByText("Nova Launch").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("high").length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getByText("Negative gross profit in project ranking"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("ai-suggested-action-card")).toBeInTheDocument();
+    expect(
+      screen.getByText("Review margin and cost assumptions"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Human approval required")).toBeInTheDocument();
+
+    unmount();
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-123", name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(screen.getByText("AI summary")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-project-health-card")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-suggested-action-card")).toBeInTheDocument();
+    expect(screen.getAllByText("Nova Launch").length).toBeGreaterThanOrEqual(1);
+  });
+
   it("restores assistant conversation after the panel remounts", async () => {
     const { container, unmount } = render(
       <OverviewBoard

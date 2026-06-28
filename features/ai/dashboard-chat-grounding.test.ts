@@ -100,6 +100,75 @@ describe("dashboard chat grounding", () => {
     expect(grounding.promptText).toContain("不得编造 facts 中不存在的数字");
   });
 
+  it("adds project health priorities to the AI prompt grounding", () => {
+    const dashboard: RoleHomeDashboardDto = {
+      profile: {
+        role: "ops_manager",
+        title: "Operations overview",
+        subtitle: "Operational loop",
+        scopeLabel: "All org",
+      },
+      kpis: [
+        { key: "activeProjects", label: "Active projects", value: 2 },
+        { key: "pendingReports", label: "Pending reports", value: 7 },
+      ],
+      queue: [
+        {
+          key: "queue:p-low-margin",
+          title: "Nova Launch",
+          subtitle: "Pending reports are blocking settlement",
+          tone: "amber",
+          target: { route: "project", id: "p-low-margin" },
+        },
+      ],
+      risks: [
+        {
+          key: "risk:p-low-margin",
+          title: "Nova Launch",
+          subtitle: "High-risk notice requires manual validation",
+          tone: "red",
+          target: { route: "project", id: "p-low-margin" },
+        },
+      ],
+      drilldowns: [],
+      panels: {
+        projectRanking: {
+          title: "Project contribution ranking",
+          rows: [
+            {
+              key: "rank:p-low-margin",
+              title: "Nova Launch",
+              value: -19000,
+              hint: "margin -12.5%",
+              tone: "amber",
+              target: { route: "project", id: "p-low-margin" },
+            },
+          ],
+        },
+      },
+      generatedAt: "2026-06-28T01:20:00.000Z",
+    };
+
+    const grounding = buildDashboardChatGrounding({ dashboard, auth });
+
+    expect(grounding.projectHealth.topProjects[0]).toMatchObject({
+      projectId: "p-low-margin",
+      projectName: "Nova Launch",
+      priority: "high",
+    });
+    expect(grounding.suggestedActions[0]).toMatchObject({
+      actionId: "p-low-margin:margin-review",
+      projectName: "Nova Launch",
+      requiresHumanApproval: true,
+    });
+    expect(grounding.promptText).toContain("projectHealth");
+    expect(grounding.promptText).toContain("suggestedActions");
+    expect(grounding.promptText).toContain("Nova Launch");
+    expect(grounding.promptText).toContain(
+      "panel:projectRanking:rank:p-low-margin",
+    );
+  });
+
   it("marks missing data when the dashboard has no usable facts", () => {
     const dashboard: RoleHomeDashboardDto = {
       profile: {

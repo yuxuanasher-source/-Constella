@@ -1,5 +1,11 @@
 import type { RoleHomeDashboardDto } from "@/features/dashboards/role-home";
 import type { AuthContext } from "@/lib/auth/context";
+import {
+  buildProjectHealth,
+  buildSuggestedActions,
+  type BusinessCopilotProjectHealth,
+  type BusinessCopilotSuggestedAction,
+} from "./business-copilot-agent";
 
 export type DashboardChatFact = {
   label: string;
@@ -19,6 +25,8 @@ export type DashboardChatGrounding = {
   };
   generatedAt: string;
   facts: DashboardChatFact[];
+  projectHealth: BusinessCopilotProjectHealth;
+  suggestedActions: BusinessCopilotSuggestedAction[];
   missingData: string[];
   promptText: string;
 };
@@ -37,6 +45,8 @@ export function buildDashboardChatGrounding({
     ...queueFacts("drilldowns", dashboard.drilldowns),
     ...panelFacts(dashboard),
   ];
+  const projectHealth = buildProjectHealth(dashboard);
+  const suggestedActions = buildSuggestedActions(projectHealth);
   const missingData = missingDataNotes(dashboard, facts);
   const grounding: Omit<DashboardChatGrounding, "promptText"> = {
     profile: {
@@ -47,6 +57,8 @@ export function buildDashboardChatGrounding({
     },
     generatedAt: dashboard.generatedAt,
     facts,
+    projectHealth,
+    suggestedActions,
     missingData,
   };
 
@@ -202,6 +214,8 @@ function buildPromptText(
         profile: grounding.profile,
         generatedAt: grounding.generatedAt,
         facts: grounding.facts,
+        projectHealth: grounding.projectHealth,
+        suggestedActions: grounding.suggestedActions,
         missingData: grounding.missingData,
       },
       null,
