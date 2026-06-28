@@ -3036,6 +3036,7 @@ function DashboardTargetContextBanner({ target }) {
 
 function ScreenWarRoom({ go }) {
   const actions = useOpsLiveActions();
+  const dashboardHome = useOpsDashboardHome();
   const [tab, setTab] = React.useState("overview");
   const [ocrOpen, setOcrOpen] = React.useState(false);
   const [warRoomMessage, setWarRoomMessage] = React.useState("");
