@@ -4,6 +4,7 @@ import {
   confirmAiDraft,
   getAiDraftForConfirmation,
 } from "@/features/ai/draft-repository";
+import { captureConfirmedDraftKnowledgeDocument } from "@/features/ai/knowledge-capture";
 import { writeAuditLog } from "@/lib/audit/audit";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
@@ -13,6 +14,9 @@ vi.mock("@/lib/db/supabase-server", () => ({
 }));
 vi.mock("@/lib/auth/context", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/lib/audit/audit", () => ({ writeAuditLog: vi.fn() }));
+vi.mock("@/features/ai/knowledge-capture", () => ({
+  captureConfirmedDraftKnowledgeDocument: vi.fn(),
+}));
 vi.mock("@/features/ai/draft-repository", async () => {
   const actual = await vi.importActual<
     typeof import("@/features/ai/draft-repository")
@@ -54,6 +58,9 @@ describe("POST /api/ai/drafts/[id]/confirm", () => {
       pendingSettlementDraft as never,
     );
     vi.mocked(confirmAiDraft).mockResolvedValue(true);
+    vi.mocked(captureConfirmedDraftKnowledgeDocument).mockResolvedValue({
+      id: "kb-1",
+    });
     vi.mocked(writeAuditLog).mockResolvedValue(undefined as never);
   });
 
@@ -81,6 +88,15 @@ describe("POST /api/ai/drafts/[id]/confirm", () => {
       decision: "draft_only",
       tier: "L4_FORBIDDEN",
     });
+    expect(body.knowledgeDocument).toEqual({ id: "kb-1" });
+    expect(captureConfirmedDraftKnowledgeDocument).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        organizationId: "org-1",
+        confirmedBy: "user-owner",
+        draft: pendingSettlementDraft,
+      },
+    );
     expect(writeAuditLog).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -102,6 +118,7 @@ describe("POST /api/ai/drafts/[id]/confirm", () => {
           draftType: "settlement_batch",
           targetStateMachine: "settlement",
           targetState: "confirmed",
+          knowledgeDocumentId: "kb-1",
           gatewayDecision: expect.objectContaining({
             decision: "draft_only",
             tier: "L4_FORBIDDEN",
