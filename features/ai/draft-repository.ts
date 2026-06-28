@@ -5,6 +5,7 @@ import type { AiDraftEnvelope } from "./drafts";
 
 type InsertResult = { data: { id: string }[] | null; error: unknown };
 type MutateResult = { error: unknown };
+type UpdateSelectResult<T> = { data: T | null; error: unknown };
 
 export type AiDraftRow = {
   id: string;
@@ -18,10 +19,25 @@ export type AiDraftRow = {
   created_at: string;
 };
 
-type ListQuery = {
-  eq(column: string, value: string): ListQuery;
-  order(column: string, options: { ascending: boolean }): ListQuery;
+type OrderedListQuery = {
   limit(count: number): PromiseLike<{ data: AiDraftRow[] | null; error: unknown }>;
+};
+
+type SelectQuery = {
+  eq(column: string, value: string): SelectQuery;
+  order(column: string, options: { ascending: boolean }): OrderedListQuery;
+  maybeSingle(): PromiseLike<{ data: AiDraftRow | null; error: unknown }>;
+};
+
+type ListQuery = SelectQuery;
+
+type UpdateSelection = {
+  returns<T>(): PromiseLike<UpdateSelectResult<T>>;
+};
+
+type UpdateQuery = PromiseLike<MutateResult> & {
+  eq(column: string, value: string): UpdateQuery;
+  select(columns: string): UpdateSelection;
 };
 
 export type DraftClient = {
@@ -29,11 +45,7 @@ export type DraftClient = {
     insert(
       payload: Record<string, unknown>,
     ): { select(columns: string): PromiseLike<InsertResult> };
-    update(payload: Record<string, unknown>): {
-      eq(column: string, value: string): {
-        eq(column: string, value: string): PromiseLike<MutateResult>;
-      };
-    };
+    update(payload: Record<string, unknown>): UpdateQuery;
     select(columns: string): ListQuery;
   };
 };
@@ -46,6 +58,11 @@ export type AiDraftListItem = {
   status: string;
   payload: Record<string, unknown>;
   createdAt: string;
+};
+
+export type AiDraftForConfirmation = AiDraftListItem & {
+  actingUserId: string;
+  confirmedBy: string | null;
 };
 
 export async function listAiDrafts(
@@ -65,15 +82,27 @@ export async function listAiDrafts(
     .order("created_at", { ascending: false })
     .limit(input.limit ?? 50);
   if (error || !data) return [];
-  return data.map((row) => ({
-    id: row.id,
-    draftType: row.draft_type,
-    targetStateMachine: row.target_state_machine,
-    targetState: row.target_state,
-    status: row.status,
-    payload: row.payload,
-    createdAt: row.created_at,
-  }));
+  return data.map(toAiDraftListItem);
+}
+
+export async function getAiDraftForConfirmation(
+  client: DraftClient,
+  input: { organizationId: string; draftId: string },
+): Promise<AiDraftForConfirmation | null> {
+  const { data, error } = await client
+    .from("ai_drafts")
+    .select(
+      "id, draft_type, target_state_machine, target_state, payload, status, acting_user_id, confirmed_by, created_at",
+    )
+    .eq("id", input.draftId)
+    .eq("organization_id", input.organizationId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return {
+    ...toAiDraftListItem(data),
+    actingUserId: data.acting_user_id,
+    confirmedBy: data.confirmed_by,
+  };
 }
 
 export type CreateAiDraftInput = {
@@ -110,7 +139,7 @@ export async function confirmAiDraft(
   client: DraftClient,
   input: { organizationId: string; draftId: string; confirmedBy: string },
 ): Promise<boolean> {
-  const { error } = await client
+  const { data, error } = await client
     .from("ai_drafts")
     .update({
       status: "confirmed",
@@ -118,8 +147,11 @@ export async function confirmAiDraft(
       confirmed_at: new Date().toISOString(),
     })
     .eq("id", input.draftId)
-    .eq("organization_id", input.organizationId);
-  return !error;
+    .eq("organization_id", input.organizationId)
+    .eq("status", "pending")
+    .select("id")
+    .returns<{ id: string }[]>();
+  return !error && (data?.length ?? 0) > 0;
 }
 
 export async function discardAiDraft(
@@ -132,4 +164,16 @@ export async function discardAiDraft(
     .eq("id", input.draftId)
     .eq("organization_id", input.organizationId);
   return !error;
+}
+
+function toAiDraftListItem(row: AiDraftRow): AiDraftListItem {
+  return {
+    id: row.id,
+    draftType: row.draft_type,
+    targetStateMachine: row.target_state_machine,
+    targetState: row.target_state,
+    status: row.status,
+    payload: row.payload,
+    createdAt: row.created_at,
+  };
 }
