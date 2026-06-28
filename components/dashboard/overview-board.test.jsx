@@ -361,7 +361,7 @@ describe("OverviewBoard AI panel", () => {
     }
   });
 
-  it("renders the admission funnel as staged analysis rows", () => {
+  it("renders the admission funnel as a model with metrics, segments, and decisions", () => {
     render(
       <OverviewBoard
         dashboard={{
@@ -385,15 +385,13 @@ describe("OverviewBoard AI panel", () => {
       />,
     );
 
-    const stages = screen.getAllByTestId("admission-funnel-stage");
-    expect(stages).toHaveLength(3);
-    expect(screen.getAllByTestId("admission-funnel-stage-index")[0]).toHaveTextContent(
-      "01",
-    );
-    expect(screen.getAllByTestId("admission-funnel-meter")).toHaveLength(3);
-    expect(screen.getAllByTestId("admission-funnel-conversion")).toHaveLength(2);
-    expect(within(stages[0]).getByText("Signup")).toBeInTheDocument();
-    expect(within(stages[0]).getByText("278")).toBeInTheDocument();
+    const model = screen.getByTestId("admission-funnel-model");
+    expect(screen.getAllByTestId("admission-funnel-metric")).toHaveLength(3);
+    expect(screen.getAllByTestId("admission-funnel-segment")).toHaveLength(3);
+    expect(screen.getAllByTestId("admission-funnel-decision")).toHaveLength(3);
+    expect(within(model).getAllByText("Signup").length).toBeGreaterThan(0);
+    expect(within(model).getByText("278")).toBeInTheDocument();
+    expect(within(model).getByText("业务决策")).toBeInTheDocument();
   });
 
   it("applies command-center visual surfaces to the dashboard", () => {
