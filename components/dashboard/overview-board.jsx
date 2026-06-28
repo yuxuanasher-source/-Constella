@@ -713,6 +713,31 @@ function buildScopedLiveKpis(baseKpis, role, data) {
   });
 }
 
+function admissionDecision(stage, index, total) {
+  if (index === 0) {
+    return {
+      title: "报名入口",
+      detail: "候选量是否充足，来源质量是否稳定？",
+    };
+  }
+  if (index === total - 1) {
+    return {
+      title: "入项确认",
+      detail: "可排班人选是否稳定，是否满足项目节奏？",
+    };
+  }
+  if (String(stage?.key || "").includes("review")) {
+    return {
+      title: "录屏审核",
+      detail: "录屏证据是否达标，卡点集中在哪？",
+    };
+  }
+  return {
+    title: "筛选推进",
+    detail: "这一层的流失是否异常，是否需要运营介入？",
+  };
+}
+
 function funnelRate(funnel) {
   const st = funnel?.stages;
   if (!st?.length) return null;
@@ -837,6 +862,277 @@ function MiniLine({ series, color, w = 46, h = 20, testId }) {
         opacity=".85"
       />
     </svg>
+  );
+}
+
+function AdmissionFunnelModel({ admission }) {
+  const stages = admission?.stages || [];
+  const base = Math.max(
+    ...stages.map((stage) => Math.abs(Number(stage.value) || 0)),
+    1,
+  );
+  const first = Number(stages[0]?.value) || 0;
+  const shrinkStep = stages.length > 1 ? 42 / (stages.length - 1) : 0;
+
+  return (
+    <div
+      data-testid="admission-funnel-model"
+      style={{
+        padding: 0,
+      }}
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "190px minmax(260px,.86fr) minmax(260px,1fr)",
+          gap: 14,
+          alignItems: "stretch",
+        }}
+      >
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 680,
+            color: C.ink4,
+            padding: "0 8px 2px",
+          }}
+        >
+          转化指标
+        </div>
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 680,
+            color: C.ink4,
+            textAlign: "center",
+            paddingBottom: 2,
+          }}
+        >
+          阶段
+        </div>
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 680,
+            color: C.ink4,
+            padding: "0 8px 2px",
+          }}
+        >
+          业务决策
+        </div>
+
+        {stages.map((stage, index) => {
+          const value = Math.abs(Number(stage.value) || 0);
+          const pct = Math.min(Math.max(Math.round((value / base) * 100), 6), 100);
+          const ofFirst =
+            first > 0 ? `${Math.round((value / first) * 100)}%` : "—";
+          const next = stages[index + 1];
+          const conversion =
+            next && value > 0
+              ? `${Math.round(((Number(next.value) || 0) / value) * 100)}%`
+              : null;
+          const decision = admissionDecision(stage, index, stages.length);
+          const width = Math.max(44, 88 - index * shrinkStep);
+          const tone =
+            index === stages.length - 1
+              ? {
+                  fill:
+                    "linear-gradient(180deg,var(--violet-600) 0%,var(--blue-800) 100%)",
+                  metric: "var(--blue-50)",
+                  accent: "var(--violet-600)",
+                }
+              : {
+                  fill:
+                    "linear-gradient(180deg,var(--blue-500) 0%,var(--violet-600) 100%)",
+                  metric: "var(--violet-50)",
+                  accent: "var(--blue-600)",
+                };
+
+          return (
+            <React.Fragment key={stage.key || index}>
+              <div
+                data-testid="admission-funnel-metric"
+                style={{
+                  minHeight: 58,
+                  display: "grid",
+                  gridTemplateColumns: "minmax(0,1fr) 64px",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "9px 11px 9px 14px",
+                  background: tone.metric,
+                  border: `1px solid ${C.divider}`,
+                  clipPath:
+                    "polygon(0 0,calc(100% - 18px) 0,100% 50%,calc(100% - 18px) 100%,0 100%)",
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 12.5,
+                      fontWeight: 680,
+                      color: C.ink2,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {stage.label}
+                  </div>
+                  <div
+                    style={{
+                      marginTop: 3,
+                      fontSize: 11.5,
+                      color: C.ink4,
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    占报名 {ofFirst}
+                  </div>
+                </div>
+                <div
+                  style={{
+                    minHeight: 38,
+                    border: `1px dashed ${C.ink3}`,
+                    borderRadius: 6,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: tone.accent,
+                    background: "rgba(255,255,255,.62)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  <strong style={{ fontSize: 18, lineHeight: 1 }}>
+                    {num(stage.value)}
+                  </strong>
+                  <span style={{ fontSize: 10.5, color: C.ink4 }}>人</span>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  minHeight: 58,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  position: "relative",
+                }}
+              >
+                <div
+                  data-testid="admission-funnel-segment"
+                  style={{
+                    width: `${width}%`,
+                    height: 58,
+                    clipPath: "polygon(5% 0,95% 0,84% 100%,16% 100%)",
+                    background: tone.fill,
+                    boxShadow:
+                      "inset 0 1px 0 rgba(255,255,255,.26),0 8px 18px -14px rgba(91,75,209,.45)",
+                    color: "#fff",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    textAlign: "center",
+                  }}
+                >
+                  <span style={{ fontSize: 12.5, fontWeight: 720 }}>
+                    {stage.label}
+                  </span>
+                  <span
+                    style={{
+                      marginTop: 3,
+                      fontSize: 11,
+                      opacity: 0.86,
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {pct}% 阶段占比
+                  </span>
+                </div>
+              </div>
+
+              <div
+                data-testid="admission-funnel-decision"
+                style={{
+                  minHeight: 58,
+                  display: "grid",
+                  gridTemplateColumns: "38px minmax(0,1fr)",
+                  gap: 10,
+                  alignItems: "center",
+                  padding: "9px 12px",
+                  background: "linear-gradient(180deg,#f7f9fd 0%,#ffffff 100%)",
+                  border: `1px solid ${C.divider2}`,
+                  borderRadius: 10,
+                }}
+              >
+                <div
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 9,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: tone.accent,
+                    background: tone.metric,
+                    fontSize: 15,
+                    fontWeight: 780,
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {index + 1}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      marginBottom: 3,
+                    }}
+                  >
+                    <strong
+                      style={{
+                        fontSize: 12.5,
+                        color: C.ink2,
+                        fontWeight: 720,
+                      }}
+                    >
+                      {decision.title}
+                    </strong>
+                    {conversion ? (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: C.warn,
+                          background: "var(--warn-50)",
+                          borderRadius: 999,
+                          padding: "2px 7px",
+                          fontVariantNumeric: "tabular-nums",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        下一层 {conversion}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11.5,
+                      lineHeight: 1.45,
+                      color: C.ink4,
+                    }}
+                  >
+                    {decision.detail}
+                  </div>
+                </div>
+              </div>
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -3898,245 +4194,8 @@ export function OverviewBoard({
                   </div>
                 ) : null}
               </div>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 10,
-                  padding: "16px 18px 18px",
-                }}
-              >
-                {(() => {
-                  const base = Math.max(
-                    ...admission.stages.map((s) =>
-                      Math.abs(Number(s.value) || 0),
-                    ),
-                    1,
-                  );
-                  const first = Number(admission.stages[0]?.value) || 0;
-                  const tones = [
-                    {
-                      bg: "linear-gradient(180deg,#f7f9ff 0%,#ffffff 100%)",
-                      dot: "var(--blue-500)",
-                      fill:
-                        "linear-gradient(90deg,var(--blue-500) 0%,var(--violet-600) 100%)",
-                      soft: C.primarySoft,
-                      text: C.primaryDeep,
-                    },
-                    {
-                      bg: "linear-gradient(180deg,#faf8ff 0%,#ffffff 100%)",
-                      dot: "var(--violet-600)",
-                      fill:
-                        "linear-gradient(90deg,var(--violet-600) 0%,var(--blue-300) 100%)",
-                      soft: "var(--violet-50)",
-                      text: "var(--violet-600)",
-                    },
-                    {
-                      bg: "linear-gradient(180deg,#f6fbf8 0%,#ffffff 100%)",
-                      dot: "var(--ok-600)",
-                      fill:
-                        "linear-gradient(90deg,var(--ok-600) 0%,#34b86a 100%)",
-                      soft: C.okBg,
-                      text: C.ok,
-                    },
-                  ];
-                  return admission.stages.map((s, i) => {
-                    const v = Math.abs(Number(s.value) || 0);
-                    const pct = Math.min(
-                      Math.max(Math.round((v / base) * 100), 6),
-                      100,
-                    );
-                    const ofFirst =
-                      first > 0 ? `${Math.round((v / first) * 100)}%` : "—";
-                    const next = admission.stages[i + 1];
-                    const conv =
-                      next && v > 0
-                        ? `${Math.round(((Number(next.value) || 0) / v) * 100)}%`
-                        : null;
-                    const tone = tones[Math.min(i, tones.length - 1)];
-                    return (
-                      <div
-                        key={s.key || i}
-                        data-testid="admission-funnel-stage"
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "56px minmax(0,1fr) 132px",
-                          gap: 14,
-                          alignItems: "center",
-                          minHeight: 82,
-                          padding: "13px 14px",
-                          borderRadius: 14,
-                          background: tone.bg,
-                          border: `1px solid ${C.divider2}`,
-                          boxShadow:
-                            "inset 0 1px 0 rgba(255,255,255,.92)",
-                        }}
-                      >
-                        <div
-                          data-testid="admission-funnel-stage-index"
-                          style={{
-                            width: 42,
-                            height: 42,
-                            borderRadius: 12,
-                            display: "flex",
-                            flexDirection: "column",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            color: tone.text,
-                            background: tone.soft,
-                            boxShadow:
-                              "inset 0 1px 0 rgba(255,255,255,.85),0 0 0 1px rgba(15,23,42,.04)",
-                          }}
-                        >
-                          <span
-                            style={{
-                              fontSize: 12,
-                              fontWeight: 760,
-                              lineHeight: 1,
-                              fontVariantNumeric: "tabular-nums",
-                            }}
-                          >
-                            {String(i + 1).padStart(2, "0")}
-                          </span>
-                          <span
-                            style={{
-                              marginTop: 4,
-                              width: 14,
-                              height: 4,
-                              borderRadius: 999,
-                              background: tone.dot,
-                            }}
-                          />
-                        </div>
-                        <div style={{ minWidth: 0 }}>
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "baseline",
-                              gap: 10,
-                              marginBottom: 10,
-                            }}
-                          >
-                            <span
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 680,
-                                color: C.ink2,
-                              }}
-                            >
-                              {s.label}
-                            </span>
-                            <span
-                              style={{
-                                fontSize: 18,
-                                fontWeight: 760,
-                                color: C.ink,
-                                fontVariantNumeric: "tabular-nums",
-                                lineHeight: 1,
-                              }}
-                            >
-                              {num(s.value)}
-                            </span>
-                          </div>
-                          <div
-                            data-testid="admission-funnel-meter"
-                            style={{
-                              position: "relative",
-                              height: 16,
-                              borderRadius: 999,
-                              overflow: "hidden",
-                              background:
-                                "linear-gradient(180deg,#eef2f8 0%,#f8fafd 100%)",
-                              boxShadow:
-                                "inset 0 1px 2px rgba(15,23,42,.08),0 1px 0 rgba(255,255,255,.75)",
-                            }}
-                          >
-                            <div
-                              style={{
-                                width: `${pct}%`,
-                                height: "100%",
-                                borderRadius: 999,
-                                background: tone.fill,
-                                boxShadow:
-                                  "inset 0 1px 0 rgba(255,255,255,.34),0 5px 12px rgba(59,107,230,.12)",
-                              }}
-                            />
-                          </div>
-                        </div>
-                        <div
-                          style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            alignItems: "flex-end",
-                            gap: 8,
-                            minWidth: 0,
-                          }}
-                        >
-                          <span
-                            style={{
-                              fontSize: 11.5,
-                              color: C.ink4,
-                              fontVariantNumeric: "tabular-nums",
-                              background: "#f4f6fa",
-                              border: `1px solid ${C.divider2}`,
-                              borderRadius: 999,
-                              padding: "3px 9px",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            占报名 {ofFirst}
-                          </span>
-                          {conv ? (
-                          <div
-                            data-testid="admission-funnel-conversion"
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 5,
-                              fontSize: 11.5,
-                              color: C.warn,
-                              background: "var(--warn-50)",
-                              border: "1px solid rgba(168,106,0,.14)",
-                              borderRadius: 999,
-                              padding: "4px 9px",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            <svg
-                              width="11"
-                              height="11"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2.4"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            >
-                              <path d="M12 5v14M6 13l6 6 6-6" />
-                            </svg>
-                            下一步 {conv}
-                          </div>
-                          ) : (
-                            <span
-                              style={{
-                                fontSize: 11.5,
-                                color: C.ok,
-                                background: C.okBg,
-                                border: "1px solid rgba(14,138,77,.14)",
-                                borderRadius: 999,
-                                padding: "4px 9px",
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              最终入项
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  });
-                })()}
-              </div>
+              <AdmissionFunnelModel admission={admission} />
+
             </div>
           ) : null}
 
