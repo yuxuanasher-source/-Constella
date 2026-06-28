@@ -44,6 +44,10 @@
   --shadow-fab: 0 8px 24px rgba(30, 80, 200, 0.32);
   --background: var(--bg);
   --foreground: var(--ink-900);
+  --font-sans-app: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", Arial,
+    sans-serif;
+  --font-mono-app: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo,
+    Consolas, monospace;
 }
 
 @theme inline {
@@ -56,8 +60,7 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family:
-    var(--font-sans-app), "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  font-family: var(--font-sans-app);
   font-size: 13px;
   line-height: 1.5;
   letter-spacing: 0;
@@ -100,18 +103,17 @@ a {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #b6c0d2;
+  background: var(--ink-200);
 }
 
 .num,
 .mono {
-  font-family:
-    "IBM Plex Sans", "PingFang SC", var(--font-sans-app), system-ui, sans-serif;
+  font-family: var(--font-sans-app);
   font-variant-numeric: tabular-nums;
 }
 
 .mono-code {
-  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono-app);
 }
 
 .mobile-prototype-stage {

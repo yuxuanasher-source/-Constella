@@ -1077,6 +1077,7 @@ const OpsLiveDataContext = React.createContext({
   billingStatus: null,
   complexCost: null,
   dashboardHome: null,
+  dashboardHomeError: null,
   currentUser: DEFAULT_CURRENT_USER,
   actions: {},
 });
@@ -1186,6 +1187,13 @@ function useOpsDashboardHome() {
   const { dashboardHome } = React.useContext(OpsLiveDataContext);
   return dashboardHome && typeof dashboardHome === "object"
     ? dashboardHome
+    : null;
+}
+
+function useOpsDashboardHomeError() {
+  const { dashboardHomeError } = React.useContext(OpsLiveDataContext);
+  return typeof dashboardHomeError === "string" && dashboardHomeError
+    ? dashboardHomeError
     : null;
 }
 
@@ -2809,6 +2817,75 @@ function ScreenRoleHome({ dashboard, go }) {
   );
 }
 
+function ScreenConsoleHome({ go }) {
+  const dashboardHome = useOpsDashboardHome();
+  const dashboardHomeError = useOpsDashboardHomeError();
+  const projects = useOpsProjects();
+  const tasks = useOpsTasks();
+  const reports = useOpsReports();
+  const batches = useOpsSettlementBatches();
+  const currentUser = useOpsCurrentUser();
+
+  if (dashboardHome) {
+    return (
+      <OverviewBoard
+        dashboard={dashboardHome}
+        go={go}
+        projects={projects}
+        tasks={tasks}
+        reports={reports}
+        batches={batches}
+        currentUser={currentUser}
+      />
+    );
+  }
+
+  return (
+    <ScreenRoleHomeUnavailable
+      message={dashboardHomeError || "角色看板暂不可用"}
+      onOpenWarRoom={() => go("warroom")}
+    />
+  );
+}
+
+function ScreenRoleHomeUnavailable({ message, onOpenWarRoom }) {
+  const reload = () => {
+    globalThis.location?.reload?.();
+  };
+
+  return (
+    <>
+      <PageHeader
+        title="今日待办"
+        subtitle="角色看板会按当前账号展示需要优先处理的事项"
+        status={<Badge tone="amber">暂不可用</Badge>}
+      />
+      <div style={{ padding: 20 }}>
+        <Card title="今日待办">
+          <div
+            style={{
+              display: "grid",
+              gap: 12,
+              color: "var(--ink-600)",
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          >
+            <div>{message || "角色看板暂不可用"}</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Button kind="primary" onClick={reload}>
+                重新加载
+              </Button>
+              <Button kind="default" onClick={onOpenWarRoom}>
+                进入作战台
+              </Button>
+            </div>
+          </div>
+        </Card>
+      </div>
+    </>
+  );
+}
 const DASHBOARD_TARGET_ROUTE_LABELS = {
   project: "项目",
   projects: "项目",
@@ -3106,12 +3183,13 @@ function ScreenWarRoom({ go }) {
               borderRadius: 999,
               fontSize: 11,
               fontWeight: 600,
-              background: "linear-gradient(135deg, #EFEBFF, #DCE6FF)",
+              background: "var(--violet-50)",
+              border: "1px solid var(--line)",
               color: "var(--violet-600)",
             }}
           >
-            <Icon.Sparkles size={12} stroke="var(--violet-600)" /> AI 增强 ·
-            基础版
+            <Icon.Sparkles size={12} stroke="var(--violet-600)" /> AI 辅助 ·
+            需确认
           </span>
         }
         actions={
@@ -13377,7 +13455,7 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
         border: "1px solid var(--line)",
         borderRadius: 10,
         overflow: "hidden",
-        background: "#0E1530",
+        background: "var(--blue-900)",
         position: "relative",
         aspectRatio: "16 / 9",
       }}
@@ -13390,16 +13468,16 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
           left: 12,
           right: 12,
           bottom: 12,
-          background:
-            "linear-gradient(180deg, rgba(20,25,55,0.85), rgba(8,12,30,0.9))",
-          border: "1px solid #233063",
+          background: "var(--ink-900)",
+          border: "1px solid var(--blue-700)",
           borderRadius: 8,
           padding: 14,
-          color: "#E5EAF6",
+          color: "var(--bg-soft)",
           display: "flex",
           flexDirection: "column",
           gap: 10,
-          fontFamily: '"IBM Plex Sans", "PingFang SC", sans-serif',
+          fontFamily:
+            'var(--font-sans-app), "PingFang SC", "Microsoft YaHei", Arial, sans-serif',
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -13408,22 +13486,24 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
               width: 22,
               height: 22,
               borderRadius: 999,
-              background: "#3B6BE6",
+              background: "var(--blue-500)",
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
               fontWeight: 700,
               fontSize: 11,
-              color: "#fff",
+              color: "var(--white)",
             }}
           >
             L
           </span>
-          <span style={{ fontSize: 11.5, color: "#B8C2DB" }}>
+          <span style={{ fontSize: 11.5, color: "var(--ink-200)" }}>
             {platform} · 直播后台 · 数据概览
           </span>
           <span style={{ flex: 1 }} />
-          <span style={{ fontSize: 10, color: "#7C8AB0" }}>{date}</span>
+          <span style={{ fontSize: 10, color: "var(--ink-300)" }}>
+            {date}
+          </span>
         </div>
         <div
           style={{
@@ -13471,10 +13551,10 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
             alignItems: "center",
             gap: 8,
             fontSize: 10.5,
-            color: "#7C8AB0",
+            color: "var(--ink-300)",
           }}
         >
-          <Icon.History size={11} stroke="#7C8AB0" />
+          <Icon.History size={11} stroke="var(--ink-300)" />
           {streamer} · 截图时间 {date} 22:48:21
         </div>
       </div>
@@ -13486,9 +13566,11 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
           right: 18,
           bottom: 18,
           fontSize: 10,
-          color: "rgba(255,255,255,0.16)",
-          fontFamily: "IBM Plex Mono, monospace",
-          letterSpacing: "0.1em",
+          color: "var(--ink-300)",
+          opacity: 0.35,
+          fontFamily:
+            'var(--font-sans-app), "PingFang SC", "Microsoft YaHei", Arial, sans-serif',
+          letterSpacing: 0,
         }}
       >
         SHA · 8A2E…F19C
@@ -13501,21 +13583,21 @@ function ShotMetric({ label, value }) {
   return (
     <div
       style={{
-        background: "rgba(255,255,255,0.04)",
-        border: "1px solid rgba(255,255,255,0.05)",
+        background: "var(--blue-800)",
+        border: "1px solid var(--blue-700)",
         borderRadius: 6,
         padding: "8px 10px",
       }}
     >
-      <div style={{ fontSize: 10, color: "#7C8AB0" }}>{label}</div>
+      <div style={{ fontSize: 10, color: "var(--ink-300)" }}>{label}</div>
       <div
         className="num"
         style={{
           fontSize: 16,
           fontWeight: 700,
-          color: "#fff",
+          color: "var(--white)",
           marginTop: 2,
-          letterSpacing: "-0.01em",
+          letterSpacing: 0,
         }}
       >
         {value}
@@ -18048,25 +18130,39 @@ function DayTaskBlock({ task, projects = [], onClick }) {
     blue: {
       bg: "var(--blue-50)",
       bar: "var(--blue-600)",
+      border: "var(--blue-200)",
       text: "var(--blue-800)",
     },
     violet: {
       bg: "var(--violet-50)",
       bar: "var(--violet-600)",
+      border: "var(--line-strong)",
       text: "var(--violet-600)",
     },
     amber: {
       bg: "var(--warn-50)",
       bar: "var(--warn-600)",
+      border: "var(--warn-600)",
       text: "var(--warn-600)",
     },
-    green: { bg: "var(--ok-50)", bar: "var(--ok-600)", text: "var(--ok-600)" },
+    green: {
+      bg: "var(--ok-50)",
+      bar: "var(--ok-600)",
+      border: "var(--ok-600)",
+      text: "var(--ok-600)",
+    },
     red: {
       bg: "var(--danger-50)",
       bar: "var(--danger-600)",
+      border: "var(--danger-600)",
       text: "var(--danger-600)",
     },
-    neutral: { bg: "#F1F4FA", bar: "var(--ink-300)", text: "var(--ink-500)" },
+    neutral: {
+      bg: "#F1F4FA",
+      bar: "var(--ink-300)",
+      border: "var(--line-strong)",
+      text: "var(--ink-500)",
+    },
   };
   const c = tones[st.tone] || tones.neutral;
   const projectShort =
@@ -18083,9 +18179,12 @@ function DayTaskBlock({ task, projects = [], onClick }) {
         width: "100%",
         textAlign: "left",
         background: c.bg,
-        border: "none",
-        borderLeft: `3px solid ${c.bar}`,
+        border: `1px solid ${c.border || "var(--line)"}`,
         borderRadius: 4,
+        boxShadow: task.anomaly
+          ? "inset 0 0 0 1px var(--danger-600)"
+          : "none",
+        boxSizing: "border-box",
         padding: "6px 8px",
         cursor: "pointer",
         display: "flex",
@@ -26672,13 +26771,14 @@ function OpsReferenceInner({
   billingStatus,
   complexCost,
   dashboardHome,
+  dashboardHomeError,
   projectCards,
   collaborationProjectCards,
   streamerCards,
   applicationQueue,
   currentUser,
 }) {
-  // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'billing' | 'export' | 'audit' | 'org'
+  // route can be: 'home' | 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'billing' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
@@ -26717,6 +26817,9 @@ function OpsReferenceInner({
   );
   const [dashboardHomeState, setDashboardHomeState] = React.useState(
     dashboardHome ?? null,
+  );
+  const [dashboardHomeErrorState, setDashboardHomeErrorState] = React.useState(
+    dashboardHomeError ?? null,
   );
   const [projectsState, setProjectsState] = React.useState(
     projectCards ?? null,
@@ -26789,6 +26892,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setDashboardHomeState(dashboardHome ?? null);
   }, [dashboardHome]);
+
+  React.useEffect(() => {
+    setDashboardHomeErrorState(dashboardHomeError ?? null);
+  }, [dashboardHomeError]);
 
   React.useEffect(() => {
     setProjectsState(projectCards ?? null);
@@ -27849,6 +27956,8 @@ function OpsReferenceInner({
   // Breadcrumbs per route
   const crumbs = (() => {
     switch (route) {
+      case "home":
+        return ["工作台", "今日待办"];
       case "warroom":
         return ["工作台", "智能作战台"];
       case "projects":
@@ -27885,7 +27994,8 @@ function OpsReferenceInner({
     }
   })();
 
-  const navKey = route === "project" ? "projects" : route;
+  const navKey =
+    route === "project" ? "projects" : route === "home" ? "warroom" : route;
   const navCounts = {
     tasks: countActionableTasks(Array.isArray(tasksState) ? tasksState : TASKS),
     reports: countActionableReports(
@@ -27932,6 +28042,7 @@ function OpsReferenceInner({
         billingStatus: billingStatusState,
         complexCost: complexCostState,
         dashboardHome: dashboardHomeState,
+        dashboardHomeError: dashboardHomeErrorState,
         currentUser: normalizeCurrentUser(currentUser),
         actions,
       }}
@@ -27965,6 +28076,7 @@ function OpsReferenceInner({
             {dashboardTarget?.route === route ? (
               <DashboardTargetContextBanner target={dashboardTarget} />
             ) : null}
+            {route === "home" && <ScreenConsoleHome go={go} />}
             {route === "warroom" && <ScreenWarRoom go={go} />}
             {(route === "projects" || route === "project") && (
               <ScreenProjects go={go} projectId={projectId} />
@@ -28212,7 +28324,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; currentUser?: any }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; dashboardHomeError?: string | null; currentUser?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -28230,6 +28342,7 @@ export default function OpsReferenceApp({
   billingStatus,
   complexCost,
   dashboardHome,
+  dashboardHomeError,
   projectCards,
   collaborationProjectCards,
   streamerCards,
@@ -28253,6 +28366,7 @@ export default function OpsReferenceApp({
       billingStatus={billingStatus}
       complexCost={complexCost}
       dashboardHome={dashboardHome}
+      dashboardHomeError={dashboardHomeError}
       projectCards={projectCards}
       collaborationProjectCards={collaborationProjectCards}
       streamerCards={streamerCards}
