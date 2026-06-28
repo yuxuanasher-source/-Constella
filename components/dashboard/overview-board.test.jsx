@@ -295,6 +295,158 @@ describe("OverviewBoard AI panel", () => {
     expect(screen.getAllByTestId("personal-summary-sparkline")).toHaveLength(4);
   });
 
+  it("filters dashboard widgets when switching the period tabs", () => {
+    render(
+      <OverviewBoard
+        dashboard={{
+          ...dashboard,
+          generatedAt: "2026-06-16T03:00:00.000Z",
+        }}
+        projects={[
+          {
+            id: "project-today",
+            name: "今日项目",
+            status: "active",
+            start: "2026-06-16",
+            end: "2026-06-16",
+            metrics: {
+              receivable: 100,
+              gross: 40,
+              margin: 40,
+              reportedPending: 0,
+              anomalies: 0,
+            },
+            streamers: { active: 1, candidate: 0, pendingReview: 0 },
+            risk: "low",
+          },
+          {
+            id: "project-month",
+            name: "本月项目",
+            status: "recruiting",
+            start: "2026-06-10",
+            end: "2026-06-10",
+            metrics: {
+              receivable: 300,
+              gross: 30,
+              margin: 10,
+              reportedPending: 0,
+              anomalies: 0,
+            },
+            streamers: { active: 0, candidate: 1, pendingReview: 0 },
+            risk: "low",
+          },
+          {
+            id: "project-old",
+            name: "上月项目",
+            status: "active",
+            start: "2026-05-20",
+            end: "2026-05-20",
+            metrics: {
+              receivable: 500,
+              gross: -20,
+              margin: -4,
+              reportedPending: 0,
+              anomalies: 0,
+            },
+            streamers: { active: 1, candidate: 0, pendingReview: 0 },
+            risk: "high",
+          },
+        ]}
+        tasks={[
+          {
+            id: "task-today",
+            status: "live",
+            plannedStartAt: "2026-06-16T02:00:00.000Z",
+            plannedEndAt: "2026-06-16T03:00:00.000Z",
+          },
+          {
+            id: "task-month",
+            status: "pending_live",
+            plannedStartAt: "2026-06-10T02:00:00.000Z",
+            plannedEndAt: "2026-06-10T03:00:00.000Z",
+          },
+          {
+            id: "task-old",
+            status: "abnormal",
+            anomaly: true,
+            plannedStartAt: "2026-05-20T02:00:00.000Z",
+            plannedEndAt: "2026-05-20T03:00:00.000Z",
+          },
+        ]}
+        reports={[
+          {
+            id: "report-today",
+            status: "pending_review",
+            submittedAt: "2026-06-16T03:30:00.000Z",
+          },
+          {
+            id: "report-month",
+            status: "pending_review",
+            submittedAt: "2026-06-11T03:30:00.000Z",
+          },
+          {
+            id: "report-old",
+            status: "pending_review",
+            submittedAt: "2026-05-21T03:30:00.000Z",
+          },
+        ]}
+        batches={[
+          {
+            id: "batch-today",
+            status: "draft",
+            periodStart: "2026-06-16",
+            periodEnd: "2026-06-16",
+            updatedAt: "2026-06-16T04:00:00.000Z",
+          },
+          {
+            id: "batch-month",
+            status: "generated",
+            periodStart: "2026-06-01",
+            periodEnd: "2026-06-30",
+            updatedAt: "2026-06-16T04:00:00.000Z",
+          },
+          {
+            id: "batch-old",
+            status: "reopened",
+            periodStart: "2026-05-01",
+            periodEnd: "2026-05-31",
+            updatedAt: "2026-05-21T04:00:00.000Z",
+          },
+        ]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("今日"));
+
+    const todayProjectCard = screen.getByText("项目待办").closest(".lift");
+    expect(within(todayProjectCard).getByText("进行中")).toBeInTheDocument();
+    expect(within(todayProjectCard).getByText("1")).toBeInTheDocument();
+    expect(within(todayProjectCard).getByText("招募中")).toBeInTheDocument();
+    expect(within(todayProjectCard).getByText("0")).toBeInTheDocument();
+
+    const todayReceivable = screen.getByText("本月厂家应收").parentElement;
+    expect(within(todayReceivable).getByText("100")).toBeInTheDocument();
+    const todayGross = screen.getByText("预计毛利").parentElement;
+    expect(within(todayGross).getByText("40")).toBeInTheDocument();
+
+    const overview = screen.getByText("大盘总览").closest(".card");
+    expect(within(overview).getByText("今日")).toBeInTheDocument();
+    expect(within(overview).getByText("1")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("本月"));
+
+    const monthReceivable = screen.getByText("本月厂家应收").parentElement;
+    expect(within(monthReceivable).getByText("400")).toBeInTheDocument();
+    const monthGross = screen.getByText("预计毛利").parentElement;
+    expect(within(monthGross).getByText("70")).toBeInTheDocument();
+    const monthProjectCard = screen.getByText("项目待办").closest(".lift");
+    expect(within(monthProjectCard).getByText("进行中")).toBeInTheDocument();
+    expect(within(monthProjectCard).getByText("招募中")).toBeInTheDocument();
+    expect(within(monthProjectCard).getAllByText("1")).toHaveLength(2);
+    expect(within(overview).getByText("本月")).toBeInTheDocument();
+  });
+
   it("renders markdown tables as readable stacked cards", async () => {
     const markdownTable = [
       "以下是系统中可见的具体项目信息：",

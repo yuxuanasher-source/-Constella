@@ -79,6 +79,9 @@ const ROUTE_LABELS = {
 };
 const routeLabel = (r) => ROUTE_LABELS[r] || "查看";
 
+const DASHBOARD_TIME_ZONE = "Asia/Shanghai";
+const PERIOD_TABS = ["实时", "今日", "本周", "本月"];
+
 const num = (n) => (Number(n) || 0).toLocaleString("en-US");
 const money = (n) => {
   const v = Number(n) || 0;
@@ -391,6 +394,323 @@ function computeTodoGroups(
       I("重开", bs("reopened"), bs("reopened") ? "bad" : "neutral", "settle"),
     ]),
   ];
+}
+
+function localDateParts(value) {
+  const text = String(value || "");
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) {
+    const [year = "0", month = "0", day = "0"] = text.slice(0, 10).split("-");
+    return {
+      year: Number(year),
+      month: Number(month),
+      day: Number(day),
+    };
+  }
+
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: DASHBOARD_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const byType = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+
+  return {
+    year: Number(byType.year),
+    month: Number(byType.month),
+    day: Number(byType.day),
+  };
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function dateKeyFromParts(parts) {
+  if (!parts.year || !parts.month || !parts.day) return null;
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
+}
+
+function localDateKey(value) {
+  if (!value) return null;
+  return dateKeyFromParts(localDateParts(value));
+}
+
+function dateKeyToUtcDate(dateKey) {
+  const [year, month, day] = String(dateKey || "")
+    .split("-")
+    .map((part) => Number(part));
+  if (!year || !month || !day) return null;
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function addDaysToDateKey(dateKey, days) {
+  const date = dateKeyToUtcDate(dateKey);
+  if (!date) return dateKey;
+  date.setUTCDate(date.getUTCDate() + days);
+  return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(
+    date.getUTCDate(),
+  )}`;
+}
+
+function dashboardPeriodRange(period, generatedAt) {
+  if (period === "实时") return null;
+
+  const baseKey = localDateKey(generatedAt || new Date().toISOString());
+  if (!baseKey) return null;
+
+  if (period === "今日") {
+    return { start: baseKey, end: baseKey };
+  }
+
+  const baseDate = dateKeyToUtcDate(baseKey);
+  if (!baseDate) return { start: baseKey, end: baseKey };
+
+  if (period === "本周") {
+    const day = baseDate.getUTCDay() || 7;
+    const start = addDaysToDateKey(baseKey, 1 - day);
+    return { start, end: addDaysToDateKey(start, 6) };
+  }
+
+  const parts = localDateParts(baseKey);
+  const start = `${parts.year}-${pad2(parts.month)}-01`;
+  const end = `${parts.year}-${pad2(parts.month)}-${pad2(
+    new Date(Date.UTC(parts.year, parts.month, 0)).getUTCDate(),
+  )}`;
+  return { start, end };
+}
+
+function dateInRange(value, range) {
+  if (!range) return true;
+  const key = localDateKey(value);
+  return !!key && key >= range.start && key <= range.end;
+}
+
+function dateSpanOverlapsRange(startValue, endValue, range) {
+  if (!range) return true;
+  const start = localDateKey(startValue);
+  const end = localDateKey(endValue) || start;
+  if (!start && !end) return false;
+  const from = start || end;
+  const to = end || start;
+  return from <= range.end && to >= range.start;
+}
+
+function projectInPeriod(project, range) {
+  if (!range) return true;
+  return dateSpanOverlapsRange(
+    project?.start ||
+      project?.startDate ||
+      project?.startsAt ||
+      project?.createdAt ||
+      project?.updatedAt,
+    project?.end ||
+      project?.endDate ||
+      project?.endsAt ||
+      project?.updatedAt ||
+      project?.start,
+    range,
+  );
+}
+
+function taskInPeriod(task, range) {
+  if (!range) return true;
+  return dateSpanOverlapsRange(
+    task?.plannedStartAt || task?.startAt || task?.createdAt || task?.updatedAt,
+    task?.plannedEndAt || task?.endAt || task?.updatedAt,
+    range,
+  );
+}
+
+function reportInPeriod(report, range) {
+  if (!range) return true;
+  return dateInRange(
+    report?.submittedAt || report?.createdAt || report?.updatedAt,
+    range,
+  );
+}
+
+function batchInPeriod(batch, range) {
+  if (!range) return true;
+  return (
+    dateSpanOverlapsRange(batch?.periodStart, batch?.periodEnd, range) ||
+    dateInRange(batch?.updatedAt || batch?.createdAt, range)
+  );
+}
+
+function scopeDashboardDataByPeriod(
+  period,
+  generatedAt,
+  { projects = [], tasks = [], reports = [], batches = [] },
+) {
+  const range = dashboardPeriodRange(period, generatedAt);
+  if (!range) return { projects, tasks, reports, batches };
+
+  return {
+    projects: projects.filter((project) => projectInPeriod(project, range)),
+    tasks: tasks.filter((task) => taskInPeriod(task, range)),
+    reports: reports.filter((report) => reportInPeriod(report, range)),
+    batches: batches.filter((batch) => batchInPeriod(batch, range)),
+  };
+}
+
+function sumMetric(projects, key) {
+  return (projects || []).reduce(
+    (total, project) => total + (Number(project?.metrics?.[key]) || 0),
+    0,
+  );
+}
+
+function scopedRiskCount({ projects = [], tasks = [], batches = [] }) {
+  return (
+    cnt(projects, (project) => project?.risk === "high") +
+    cnt(tasks, isAnomaly) +
+    cnt(batches, (batch) => batch?.status === "reopened")
+  );
+}
+
+function scopedKpiValue(key, data) {
+  const projects = data.projects || [];
+  const tasks = data.tasks || [];
+  const reports = data.reports || [];
+  const batches = data.batches || [];
+  const receivable = sumMetric(projects, "receivable");
+  const gross = sumMetric(projects, "gross");
+  const plannedHours = sumMetric(projects, "plannedHours");
+  const doneHours = sumMetric(projects, "doneHours");
+  const recordingPending = projects.reduce(
+    (total, project) => total + (project?.streamers?.pendingReview ?? 0),
+    0,
+  );
+  const streamerGapProjects = cnt(
+    projects,
+    (project) => (project?.streamers?.candidate ?? 0) > 0,
+  );
+  const pendingReports = cnt(
+    reports,
+    (report) =>
+      report?.status === "pending_review" ||
+      report?.status === "pending_adjudication",
+  );
+
+  switch (key) {
+    case "vendorReceivable":
+      return receivable;
+    case "estimatedGross":
+      return gross;
+    case "grossMarginRate":
+      return receivable > 0 ? Math.round((gross / receivable) * 1000) / 10 : 0;
+    case "highRiskItems":
+      return scopedRiskCount(data);
+    case "activeProjects":
+      return cnt(projects, (project) =>
+        [
+          "recruiting",
+          "pending_start",
+          "active",
+          "paused",
+          "settling",
+        ].includes(project?.status),
+      );
+    case "deliveryProgress":
+      return plannedHours > 0
+        ? Math.round((doneHours / plannedHours) * 1000) / 10
+        : 0;
+    case "streamerGapProjects":
+      return streamerGapProjects;
+    case "recordingsPending":
+      return recordingPending;
+    case "pendingReports":
+      return pendingReports;
+    case "anomalyTasks":
+    case "streamerReminders":
+      return cnt(tasks, isAnomaly) + sumMetric(projects, "anomalies");
+    case "myTodayTasks":
+      return tasks.length;
+    case "notStartedTasks":
+      return cnt(tasks, isNotStarted);
+    case "draftBatches":
+      return cnt(batches, (batch) => batch?.status === "draft");
+    case "reopenedBatches":
+      return cnt(batches, (batch) => batch?.status === "reopened");
+    default:
+      return undefined;
+  }
+}
+
+function buildScopedLiveKpis(baseKpis, role, data) {
+  const defaults = role.includes("finance")
+    ? [
+        { key: "draftBatches", label: "待生成批次", unit: "个" },
+        { key: "pendingReports", label: "待审核报数", unit: "条" },
+        { key: "reopenedBatches", label: "重开批次", unit: "个", tone: "red" },
+        { key: "highRiskItems", label: "高风险事项", unit: "项", tone: "red" },
+      ]
+    : role.includes("operator")
+      ? [
+          { key: "myTodayTasks", label: "我的任务", unit: "项" },
+          {
+            key: "notStartedTasks",
+            label: "未开播",
+            unit: "项",
+            tone: "amber",
+          },
+          { key: "pendingReports", label: "待审核报数", unit: "条" },
+          {
+            key: "streamerReminders",
+            label: "需联系主播",
+            unit: "人",
+            tone: "red",
+          },
+        ]
+      : role.includes("ops")
+        ? [
+            { key: "activeProjects", label: "招募/执行项目", unit: "个" },
+            { key: "deliveryProgress", label: "履约进度", unit: "%" },
+            {
+              key: "streamerGapProjects",
+              label: "主播缺口项目",
+              unit: "个",
+              tone: "amber",
+            },
+            {
+              key: "recordingsPending",
+              label: "录屏待审",
+              unit: "条",
+              tone: "amber",
+            },
+          ]
+        : [
+            { key: "vendorReceivable", label: "本月厂家应收", unit: "元" },
+            { key: "estimatedGross", label: "预计毛利", unit: "元" },
+            { key: "grossMarginRate", label: "预计毛利率", unit: "%" },
+            {
+              key: "highRiskItems",
+              label: "高风险事项",
+              unit: "项",
+              tone: "red",
+            },
+          ];
+
+  const source = (baseKpis?.length ? baseKpis : defaults).slice(0, 4);
+  return source.map((item, index) => {
+    const fallback = defaults[index] || item;
+    const key = item.key || fallback.key;
+    const scopedValue = scopedKpiValue(key, data);
+    return {
+      ...fallback,
+      ...item,
+      key,
+      label: item.label || fallback.label,
+      unit: item.unit || fallback.unit,
+      value: scopedValue === undefined ? item.value : scopedValue,
+    };
+  });
 }
 
 function funnelRate(funnel) {
@@ -1823,7 +2143,15 @@ function MarketplaceRecos({ go }) {
   );
 }
 
-function PersonalPanel({ user, scopeLabel, summary, recos, todos, go }) {
+function PersonalPanel({
+  user,
+  scopeLabel,
+  periodLabel = "实时",
+  summary,
+  recos,
+  todos,
+  go,
+}) {
   const name =
     (user?.name && user.name !== "未登录用户" ? user.name : null) ||
     "经营舱用户";
@@ -1940,7 +2268,7 @@ function PersonalPanel({ user, scopeLabel, summary, recos, todos, go }) {
           <div style={{ fontSize: 13, fontWeight: 680, color: C.ink }}>
             大盘总览
           </div>
-          <span style={{ fontSize: 11, color: C.muted }}>实时</span>
+          <span style={{ fontSize: 11, color: C.muted }}>{periodLabel}</span>
         </div>
         <div
           style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}
@@ -2627,8 +2955,25 @@ export function OverviewBoard({
   const panels = d.panels || {};
   const kpis = d.kpis || [];
   const risks = d.risks || [];
-  const riskCount = risks.length;
   const updatedLabel = updatedLabelFrom(d.generatedAt);
+  const periodScopedData = React.useMemo(
+    () =>
+      scopeDashboardDataByPeriod(period, d.generatedAt, {
+        projects: projects || [],
+        tasks: tasks || [],
+        reports: reports || [],
+        batches: batches || [],
+      }),
+    [period, d.generatedAt, projects, tasks, reports, batches],
+  );
+  const scopedProjects = periodScopedData.projects;
+  const scopedTasks = periodScopedData.tasks;
+  const scopedReports = periodScopedData.reports;
+  const scopedBatches = periodScopedData.batches;
+  const isRealtimePeriod = period === "实时";
+  const riskCount = isRealtimePeriod
+    ? risks.length
+    : scopedRiskCount(periodScopedData);
   const dashboardActionGroups = React.useMemo(
     () => normalizeDashboardActionGroups(d.actionGroups),
     [d.actionGroups],
@@ -2640,17 +2985,34 @@ export function OverviewBoard({
 
   const todoGroups = React.useMemo(
     () =>
-      dashboardActionGroups.length
+      isRealtimePeriod && dashboardActionGroups.length
         ? dashboardActionGroups
-        : computeTodoGroups(role, { projects, tasks, reports, batches }),
-    [dashboardActionGroups, role, projects, tasks, reports, batches],
+        : computeTodoGroups(role, {
+            projects: scopedProjects,
+            tasks: scopedTasks,
+            reports: scopedReports,
+            batches: scopedBatches,
+          }),
+    [
+      isRealtimePeriod,
+      dashboardActionGroups,
+      role,
+      scopedProjects,
+      scopedTasks,
+      scopedReports,
+      scopedBatches,
+    ],
   );
 
   // 直播执行实时盘：真实 KPI（厂家应收 / 毛利 / 毛利率 / 风险等，按角色由服务端算）。
   // 走势线仅在能算出真实序列（今日排班累计）时绘制，否则不画、不编造环比。
   const bizCols = React.useMemo(() => {
-    const series = scheduleSeries(tasks);
-    return kpis.slice(0, 4).map((k, i) => {
+    const liveKpis =
+      isRealtimePeriod && kpis.length
+        ? kpis.slice(0, 4)
+        : buildScopedLiveKpis(kpis, role, periodScopedData);
+    const series = scheduleSeries(scopedTasks);
+    return liveKpis.map((k, i) => {
       const f = fmtKpi(k.value, k.unit);
       const fallbackColor =
         i === 0 ? C.primary : i === 1 ? C.ok : i === 2 ? "#e0a82e" : C.danger;
@@ -2665,16 +3027,16 @@ export function OverviewBoard({
           k.tone && k.tone !== "neutral" ? tone(k.tone).solid : fallbackColor,
       };
     });
-  }, [kpis, tasks]);
+  }, [isRealtimePeriod, kpis, role, periodScopedData, scopedTasks]);
 
   const proj = React.useMemo(
     () => ({
-      total: (projects || []).length,
-      running: cnt(projects, (p) => pStatus(p, "active")),
-      pending: cnt(reports, (r) => r?.status === "pending_review"),
-      abnormal: cnt(tasks, isAnomaly),
+      total: scopedProjects.length,
+      running: cnt(scopedProjects, (p) => pStatus(p, "active")),
+      pending: cnt(scopedReports, (r) => r?.status === "pending_review"),
+      abnormal: cnt(scopedTasks, isAnomaly),
     }),
-    [projects, reports, tasks],
+    [scopedProjects, scopedReports, scopedTasks],
   );
 
   const admission = panels.admissionFunnel;
@@ -2685,23 +3047,26 @@ export function OverviewBoard({
 
   // 个人面板真实派生
   const personal = React.useMemo(() => {
-    if (dashboardPersonal) return dashboardPersonal;
+    if (isRealtimePeriod && dashboardPersonal) return dashboardPersonal;
 
-    const active = cnt(projects, (p) =>
+    const active = cnt(scopedProjects, (p) =>
       ["active", "recruiting", "settling"].includes(p?.status),
     );
-    const pendingReports = cnt(reports, (r) => r?.status === "pending_review");
-    const anomalies = cnt(tasks, isAnomaly);
-    const recordingPending = (projects || []).reduce(
+    const pendingReports = cnt(
+      scopedReports,
+      (r) => r?.status === "pending_review",
+    );
+    const anomalies = cnt(scopedTasks, isAnomaly);
+    const recordingPending = (scopedProjects || []).reduce(
       (s, p) => s + (p?.streamers?.pendingReview ?? 0),
       0,
     );
     const lowMargin = cnt(
-      projects,
+      scopedProjects,
       (p) => Number.isFinite(margin(p)) && margin(p) < 20,
     );
-    const bs = (s) => cnt(batches, (b) => b.status === s);
-    const sched = scheduleSeries(tasks);
+    const bs = (s) => cnt(scopedBatches, (b) => b.status === s);
+    const sched = scheduleSeries(scopedTasks);
     const summary = [
       {
         label: "在营项目",
@@ -2831,16 +3196,15 @@ export function OverviewBoard({
       });
     return { summary, recos: recos.slice(0, 3), todos: todos.slice(0, 5) };
   }, [
+    isRealtimePeriod,
     dashboardPersonal,
-    projects,
-    tasks,
-    reports,
-    batches,
+    scopedProjects,
+    scopedTasks,
+    scopedReports,
+    scopedBatches,
     todoGroups,
     riskCount,
   ]);
-
-  const periodTabs = ["实时", "今日", "本周", "本月"];
 
   return (
     <div className="ob-shell" style={{ background: C.page, minHeight: "100%" }}>
@@ -2922,7 +3286,7 @@ export function OverviewBoard({
                 boxShadow: "inset 0 0 0 1px rgba(24,27,46,.04)",
               }}
             >
-              {periodTabs.map((p) => {
+              {PERIOD_TABS.map((p) => {
                 const active = period === p;
                 return (
                   <button
@@ -3198,7 +3562,7 @@ export function OverviewBoard({
                 <span style={{ fontSize: 11.5, color: C.muted }}>
                   · 经营汇总
                 </span>
-                {cnt(tasks, isLive) > 0 ? (
+                {cnt(scopedTasks, isLive) > 0 ? (
                   <span
                     style={{
                       display: "inline-flex",
@@ -3221,7 +3585,7 @@ export function OverviewBoard({
                         background: C.ok,
                       }}
                     />
-                    {cnt(tasks, isLive)} 场直播中
+                    {cnt(scopedTasks, isLive)} 场直播中
                   </span>
                 ) : null}
                 <div style={{ flex: 1 }} />
@@ -3787,6 +4151,7 @@ export function OverviewBoard({
           <PersonalPanel
             user={currentUser}
             scopeLabel={profile.scopeLabel}
+            periodLabel={period}
             summary={personal.summary}
             recos={personal.recos}
             todos={personal.todos}
@@ -3796,7 +4161,7 @@ export function OverviewBoard({
 
         {/* ===== 右：AI 助手 ===== */}
         <aside className="ob-ai">
-          <AiPanel user={currentUser} projects={projects} go={go} />
+          <AiPanel user={currentUser} projects={scopedProjects} go={go} />
         </aside>
       </div>
 

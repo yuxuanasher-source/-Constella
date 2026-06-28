@@ -188,6 +188,16 @@ describe("loadRoleHomeDashboard", () => {
         }),
       }),
     ]);
+    expect(
+      vi.mocked(buildRoleHomeDashboard).mock.calls[0]?.[0].source.reports,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "report-local-june",
+          submittedAt: "2026-05-31T18:30:00.000Z",
+        }),
+      ]),
+    );
     expect(dashboard.kpis).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ key: "vendorReceivable", value: 80 }),
@@ -442,6 +452,28 @@ describe("loadRoleHomeDashboard", () => {
         }),
       }),
     ]);
+    expect(
+      vi.mocked(buildRoleHomeDashboard).mock.calls[0]?.[0].source.reports,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "report-1",
+          submittedAt: "2026-06-16T10:00:00.000Z",
+        }),
+      ]),
+    );
+    expect(
+      vi.mocked(buildRoleHomeDashboard).mock.calls[0]?.[0].source.batches,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "batch-1",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+          updatedAt: "2026-06-16T14:00:00.000Z",
+        }),
+      ]),
+    );
     expect(dashboard.kpis).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ key: "vendorReceivable", value: 80 }),
