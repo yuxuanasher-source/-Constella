@@ -145,6 +145,62 @@ function fmtKpi(value, unit) {
   return { value: String(value), unit: unit || "" };
 }
 
+function normalizeDashboardActionGroups(groups) {
+  if (!Array.isArray(groups)) return [];
+  return groups
+    .map((group, groupIndex) => ({
+      title: group?.title || `待办组 ${groupIndex + 1}`,
+      items: (Array.isArray(group?.items) ? group.items : [])
+        .map((item, itemIndex) => ({
+          label: item?.label || `事项 ${itemIndex + 1}`,
+          value: Number(item?.value) || 0,
+          tone: item?.tone || "neutral",
+          target: item?.target,
+        }))
+        .slice(0, 2),
+    }))
+    .filter((group) => group.items.length > 0)
+    .slice(0, 4);
+}
+
+function normalizeDashboardPersonalPanel(panel) {
+  if (!panel || typeof panel !== "object") return null;
+  const summary = Array.isArray(panel.summary)
+    ? panel.summary.slice(0, 4).map((item) => ({
+        label: item?.label || "",
+        value: String(Number(item?.value) || 0),
+        color: tone(item?.tone).color,
+        attention: !!item?.attention,
+        series: Array.isArray(item?.series) ? item.series : null,
+      }))
+    : [];
+  const recos = Array.isArray(panel.recommendations)
+    ? panel.recommendations.slice(0, 3).map((item) => ({
+        icon: item?.icon || "看",
+        text: item?.text || "",
+        sub: item?.sub || "",
+        tone: item?.tone || "neutral",
+        cta: item?.cta || "查看",
+        route: item?.target?.route || item?.route,
+      }))
+    : [];
+  const todos = Array.isArray(panel.todos)
+    ? panel.todos.slice(0, 5).map((item, index) => ({
+        key: item?.key || `todo-${index}`,
+        text: item?.text || "",
+        count:
+          item?.count === null || item?.count === undefined
+            ? null
+            : Number(item.count) || 0,
+        tone: item?.tone || "neutral",
+        route: item?.target?.route || item?.route,
+      }))
+    : [];
+
+  if (!summary.length && !recos.length && !todos.length) return null;
+  return { summary, recos, todos };
+}
+
 const cnt = (arr, fn) => (arr || []).filter(fn).length;
 const pStatus = (p, s) => p?.status === s;
 const margin = (p) => Number(p?.metrics?.margin);
@@ -2558,10 +2614,21 @@ export function OverviewBoard({
   const risks = d.risks || [];
   const riskCount = risks.length;
   const updatedLabel = updatedLabelFrom(d.generatedAt);
+  const dashboardActionGroups = React.useMemo(
+    () => normalizeDashboardActionGroups(d.actionGroups),
+    [d.actionGroups],
+  );
+  const dashboardPersonal = React.useMemo(
+    () => normalizeDashboardPersonalPanel(d.personal),
+    [d.personal],
+  );
 
   const todoGroups = React.useMemo(
-    () => computeTodoGroups(role, { projects, tasks, reports, batches }),
-    [role, projects, tasks, reports, batches],
+    () =>
+      dashboardActionGroups.length
+        ? dashboardActionGroups
+        : computeTodoGroups(role, { projects, tasks, reports, batches }),
+    [dashboardActionGroups, role, projects, tasks, reports, batches],
   );
 
   // 直播执行实时盘：真实 KPI（厂家应收 / 毛利 / 毛利率 / 风险等，按角色由服务端算）。
@@ -2601,6 +2668,8 @@ export function OverviewBoard({
 
   // 个人面板真实派生
   const personal = React.useMemo(() => {
+    if (dashboardPersonal) return dashboardPersonal;
+
     const active = cnt(projects, (p) =>
       ["active", "recruiting", "settling"].includes(p?.status),
     );
@@ -2744,7 +2813,15 @@ export function OverviewBoard({
         route: "warroom",
       });
     return { summary, recos: recos.slice(0, 3), todos: todos.slice(0, 5) };
-  }, [projects, tasks, reports, batches, todoGroups, riskCount]);
+  }, [
+    dashboardPersonal,
+    projects,
+    tasks,
+    reports,
+    batches,
+    todoGroups,
+    riskCount,
+  ]);
 
   const periodTabs = ["实时", "今日", "本周", "本月"];
 

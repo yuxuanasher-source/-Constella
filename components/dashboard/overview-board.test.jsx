@@ -1,5 +1,11 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OverviewBoard } from "./overview-board";
@@ -98,6 +104,111 @@ describe("OverviewBoard AI panel", () => {
       role: "user",
       content: "帮我生成本月经营复盘报告，并结合知识库沉淀可复用经验",
     });
+  });
+
+  it("renders dashboard-provided action widgets instead of empty client fallbacks", () => {
+    render(
+      <OverviewBoard
+        dashboard={{
+          ...dashboard,
+          actionGroups: [
+            {
+              key: "projects",
+              title: "项目待办",
+              items: [
+                {
+                  key: "active",
+                  label: "进行中",
+                  value: 19,
+                  tone: "blue",
+                  target: { route: "projects" },
+                },
+                {
+                  key: "recruiting",
+                  label: "招募中",
+                  value: 6,
+                  tone: "neutral",
+                  target: { route: "projects" },
+                },
+              ],
+            },
+            {
+              key: "audit",
+              title: "审计待办",
+              items: [
+                {
+                  key: "risk",
+                  label: "高风险",
+                  value: 3,
+                  tone: "red",
+                  target: { route: "audit" },
+                },
+                {
+                  key: "reopened",
+                  label: "重开",
+                  value: 2,
+                  tone: "amber",
+                  target: { route: "settle" },
+                },
+              ],
+            },
+          ],
+          personal: {
+            summary: [
+              { key: "active", label: "在营项目", value: 19, tone: "blue" },
+              { key: "todo", label: "待办合计", value: 30, tone: "violet" },
+              {
+                key: "risk",
+                label: "风险数",
+                value: 3,
+                tone: "amber",
+                attention: true,
+              },
+              { key: "today", label: "今日场次", value: 8, tone: "green" },
+            ],
+            recommendations: [
+              {
+                key: "risk",
+                icon: "险",
+                text: "处理高风险通知",
+                sub: "3 条待核验",
+                tone: "warn",
+                cta: "去处理",
+                target: { route: "audit" },
+              },
+            ],
+            todos: [
+              {
+                key: "risk",
+                text: "核验高风险通知",
+                count: 3,
+                tone: "warn",
+                target: { route: "audit" },
+              },
+            ],
+          },
+        }}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    const projectCard = screen.getByText("项目待办").closest(".lift");
+    expect(projectCard).toBeTruthy();
+    expect(within(projectCard).getByText("19")).toBeInTheDocument();
+    expect(within(projectCard).getByText("6")).toBeInTheDocument();
+
+    const overview = screen.getByText("大盘总览").closest(".card");
+    expect(within(overview).getByText("30")).toBeInTheDocument();
+    expect(within(overview).getByText("8")).toBeInTheDocument();
+    expect(screen.getByText("处理高风险通知")).toBeInTheDocument();
+    expect(screen.getByText("核验高风险通知")).toBeInTheDocument();
+    expect(
+      screen.queryByText("暂无紧急待办，保持关注经营总览"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders markdown tables as readable stacked cards", async () => {
