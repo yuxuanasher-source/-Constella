@@ -11,28 +11,28 @@ import * as React from "react";
 
 // ——— 设计稿调色板（取自设计文件内联样式） ———
 const C = {
-  page: "#f3f4f8",
+  page: "#f4f6fb",
   card: "#ffffff",
-  border: "#ebedf2",
-  divider: "#f0f1f4",
-  divider2: "#f3f4f8",
-  track: "#f0f1f6",
-  soft: "#f7f8fa",
-  ink: "#181b24",
-  ink2: "#3a4150",
-  ink3: "#42485a",
-  ink4: "#5b626f",
-  muted: "#9aa0ad",
-  faint: "#aeb3c0",
-  primary: "#5566e6",
-  primaryDeep: "#4453d4",
-  primarySoft: "#eef0fe",
-  ok: "#1f9d55",
-  okBg: "#e8f6ee",
-  warn: "#b5790a",
-  warnText: "#c2860a",
-  danger: "#e5484d",
-  dangerDeep: "#d63c41",
+  border: "#dfe6f2",
+  divider: "#e7edf6",
+  divider2: "#edf2f8",
+  track: "#e8eef7",
+  soft: "#f7f9fd",
+  ink: "#0b1733",
+  ink2: "#1b2744",
+  ink3: "#2d3a58",
+  ink4: "#5e6a82",
+  muted: "#7b879c",
+  faint: "#a8b1c2",
+  primary: "#3b6be6",
+  primaryDeep: "#1e50c8",
+  primarySoft: "#eef3ff",
+  ok: "#0e8a4d",
+  okBg: "#e6f6ee",
+  warn: "#a86a00",
+  warnText: "#a86a00",
+  danger: "#d43d45",
+  dangerDeep: "#b9323b",
   dangerBg: "#fdecec",
 };
 
@@ -891,14 +891,10 @@ function KpiCard({ group }) {
   const numCol = (it, col) => (it.tone === "neutral" ? C.ink : col);
   return (
     <div
-      className="lift"
+      className="ob-kpi-card lift"
       style={{
-        background: "#fff",
-        border: `1px solid ${C.border}`,
         borderRadius: 14,
-        padding: "15px 15px 13px",
-        boxShadow: "0 1px 2px rgba(24,27,46,.04)",
-        transition: "box-shadow .2s,transform .2s",
+        padding: "16px 16px 14px",
       }}
     >
       <div
@@ -914,10 +910,12 @@ function KpiCard({ group }) {
             width: 26,
             height: 26,
             borderRadius: 8,
-            background: `${C.primary}1f`,
+            background: "linear-gradient(180deg,#eef3ff,#e4ebff)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
+            boxShadow:
+              "inset 0 1px 0 rgba(255,255,255,.72),0 0 0 1px rgba(59,107,230,.08)",
           }}
         >
           <div
@@ -971,7 +969,7 @@ function KpiCard({ group }) {
           style={{
             width: 1,
             height: 34,
-            background: C.divider,
+            background: "linear-gradient(180deg,transparent,#dfe6f2,transparent)",
             margin: "0 12px 4px",
           }}
         />
@@ -1011,12 +1009,13 @@ function KpiCard({ group }) {
       </div>
       <div
         style={{
-          height: 4,
+          height: 5,
           borderRadius: 3,
-          background: C.divider,
+          background: C.track,
           marginTop: 13,
           display: "flex",
           overflow: "hidden",
+          boxShadow: "inset 0 0 0 1px rgba(15,23,42,.03)",
         }}
       >
         <div
@@ -2046,13 +2045,10 @@ function MarketplaceRecos({ go }) {
   if (!recos || recos.length === 0) return null;
   return (
     <div
-      className="card"
+      className="card ob-side-card"
       style={{
-        background: "#fff",
-        border: `1px solid ${C.border}`,
         borderRadius: 16,
         padding: 16,
-        boxShadow: "0 1px 2px rgba(24,27,46,.04)",
       }}
     >
       <div
@@ -2164,41 +2160,20 @@ function PersonalPanel({
     <>
       {/* 问候卡 */}
       <div
+        className="ob-greeting-card"
         style={{
           background:
-            "linear-gradient(140deg,#20243440,#2c3145),radial-gradient(120% 120% at 100% 0%,#3a3470,#1e2230)",
+            "linear-gradient(135deg,#17233f 0%,#24294d 58%,#30345f 100%)",
+          border: "1px solid rgba(255,255,255,.1)",
           borderRadius: 16,
           padding: 18,
           color: "#fff",
           position: "relative",
           overflow: "hidden",
-          boxShadow: "0 8px 24px -12px rgba(30,34,60,.5)",
+          boxShadow:
+            "0 1px 2px rgba(15,23,42,.18),0 18px 34px -24px rgba(15,23,42,.52),inset 0 1px 0 rgba(255,255,255,.12)",
         }}
       >
-        <div
-          style={{
-            position: "absolute",
-            right: -10,
-            top: -30,
-            width: 130,
-            height: 130,
-            borderRadius: "50%",
-            background:
-              "radial-gradient(circle,rgba(126,111,242,.5),transparent 66%)",
-          }}
-        />
-        <div
-          style={{
-            position: "absolute",
-            left: -30,
-            bottom: -40,
-            width: 110,
-            height: 110,
-            borderRadius: "50%",
-            background:
-              "radial-gradient(circle,rgba(85,102,230,.3),transparent 70%)",
-          }}
-        />
         <div
           style={{
             display: "flex",
@@ -2248,13 +2223,10 @@ function PersonalPanel({
 
       {/* 大盘总览 2x2 */}
       <div
-        className="card"
+        className="card ob-side-card"
         style={{
-          background: "#fff",
-          border: `1px solid ${C.border}`,
           borderRadius: 16,
           padding: 16,
-          boxShadow: "0 1px 2px rgba(24,27,46,.04)",
         }}
       >
         <div
@@ -2322,13 +2294,10 @@ function PersonalPanel({
       {/* 今日推荐 */}
       {recos.length ? (
         <div
-          className="card"
+          className="card ob-side-card"
           style={{
-            background: "#fff",
-            border: `1px solid ${C.border}`,
             borderRadius: 16,
             padding: 16,
-            boxShadow: "0 1px 2px rgba(24,27,46,.04)",
           }}
         >
           <div
@@ -2428,13 +2397,10 @@ function PersonalPanel({
       {/* 待办事项 */}
       {todos.length ? (
         <div
-          className="card"
+          className="card ob-side-card"
           style={{
-            background: "#fff",
-            border: `1px solid ${C.border}`,
             borderRadius: 16,
             padding: 16,
-            boxShadow: "0 1px 2px rgba(24,27,46,.04)",
           }}
         >
           <div
@@ -2466,10 +2432,12 @@ function PersonalPanel({
             <div
               style={{
                 height: "100%",
-                background: "linear-gradient(90deg,#5566e6,#7e6ff2)",
+                background: "linear-gradient(90deg,#1e50c8,#3b6be6)",
                 borderRadius: 3,
-                width: `${((todoDone / todoTotal) * 100).toFixed(0)}%`,
-                transition: "width .3s",
+                width: "100%",
+                transform: `scaleX(${todoDone / todoTotal})`,
+                transformOrigin: "left center",
+                transition: "transform .3s",
               }}
             />
           </div>
@@ -3207,16 +3175,28 @@ export function OverviewBoard({
   ]);
 
   return (
-    <div className="ob-shell" style={{ background: C.page, minHeight: "100%" }}>
+    <div className="ob-shell ob-command-surface" style={{ minHeight: "100%" }}>
       <style>{`
         @keyframes obpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.82)}}
         @keyframes obspin{to{transform:rotate(360deg)}}
         @keyframes obfade{from{opacity:0}to{opacity:1}}
         @keyframes obslide{from{transform:translateX(44px);opacity:0}to{transform:translateX(0);opacity:1}}
-        .ob-card .lift,.lift{transition:box-shadow .2s,transform .2s}
-        .lift:hover{box-shadow:0 2px 4px rgba(24,27,46,.05),0 12px 28px -12px rgba(24,27,46,.18);transform:translateY(-1px)}
+        .ob-command-surface{--ob-command-bg:linear-gradient(180deg,#eef3fb 0%,#f4f6fb 260px,#f4f6fb 100%);--ob-panel-border:#dfe6f2;--ob-panel-shadow:0 1px 2px rgba(15,23,42,.05),0 12px 30px -22px rgba(15,23,42,.34);--ob-panel-highlight:inset 0 1px 0 rgba(255,255,255,.86);background:var(--ob-command-bg);color:#0b1733}
+        .ob-shell *{box-sizing:border-box}
+        .ob-card .lift,.lift{transition:box-shadow .2s ease,transform .2s ease,border-color .2s ease}
+        .lift:hover{box-shadow:0 1px 2px rgba(15,23,42,.06),0 18px 34px -24px rgba(15,23,42,.42);transform:translateY(-1px)}
+        .ob-panel-card,.ob-side-card,.ob-live-card,.ob-kpi-card{background:linear-gradient(180deg,#ffffff 0%,#fbfdff 100%);border:1px solid var(--ob-panel-border);box-shadow:var(--ob-panel-shadow),var(--ob-panel-highlight)}
+        .ob-kpi-card{position:relative;overflow:hidden}
+        .ob-kpi-card::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:linear-gradient(90deg,rgba(59,107,230,.28),rgba(14,138,77,.16),rgba(168,106,0,.18))}
+        .ob-live-card{box-shadow:0 1px 2px rgba(15,23,42,.05),0 18px 42px -30px rgba(15,23,42,.42),var(--ob-panel-highlight)}
+        .ob-critical-banner{background:linear-gradient(180deg,#fff8e7 0%,#fff3d6 100%);border:1px solid #efd89f;box-shadow:0 1px 2px rgba(121,80,0,.05),inset 0 1px 0 rgba(255,255,255,.74)}
+        .ob-segmented{display:flex;gap:2px;background:#e9eef7;border:1px solid #dce4f0;border-radius:11px;padding:3px;box-shadow:inset 0 1px 2px rgba(15,23,42,.04)}
+        .ob-segmented-button{min-width:54px;height:28px;padding:0 14px;border:none;border-radius:8px;font-size:12.5px;font-weight:650;cursor:pointer;transition:background-color .16s ease,color .16s ease,box-shadow .16s ease;line-height:28px}
+        .ob-segmented-button.is-active{background:#ffffff;color:#1e50c8;box-shadow:0 1px 2px rgba(15,23,42,.08),0 0 0 1px rgba(255,255,255,.8)}
+        .ob-segmented-button:not(.is-active){background:transparent;color:#66748a}
+        .ob-toolbar-pill{background:rgba(255,255,255,.76);border:1px solid var(--ob-panel-border);box-shadow:0 1px 2px rgba(15,23,42,.03),inset 0 1px 0 rgba(255,255,255,.82)}
         .scl::-webkit-scrollbar{width:8px;height:8px}
-        .scl::-webkit-scrollbar-thumb{background:#dadde6;border-radius:4px}
+        .scl::-webkit-scrollbar-thumb{background:#cfd7e6;border-radius:4px}
         .scl::-webkit-scrollbar-track{background:transparent}
         .ob-shell{--ob-ai-width:440px;--ob-gap:16px;--ob-pad-r:20px;--ob-ai-top:76px;--ob-ai-bottom:20px}
         .ob-layout{display:grid;grid-template-columns:minmax(760px,1fr) 300px;gap:var(--ob-gap);align-items:start;padding:20px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 40px 24px;box-sizing:border-box}
@@ -3238,7 +3218,7 @@ export function OverviewBoard({
                 margin: 0,
                 fontSize: 20,
                 fontWeight: 700,
-                letterSpacing: ".2px",
+                letterSpacing: 0,
                 display: "flex",
                 alignItems: "center",
                 gap: 9,
@@ -3276,38 +3256,17 @@ export function OverviewBoard({
 
           {/* tabs + meta */}
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div
-              style={{
-                display: "flex",
-                gap: 2,
-                background: "#eceef3",
-                borderRadius: 10,
-                padding: 3,
-                boxShadow: "inset 0 0 0 1px rgba(24,27,46,.04)",
-              }}
-            >
+            <div className="ob-segmented">
               {PERIOD_TABS.map((p) => {
                 const active = period === p;
                 return (
                   <button
                     key={p}
                     type="button"
+                    className={`ob-segmented-button${active ? " is-active" : ""}`}
                     onClick={() => setPeriod(p)}
                     style={{
-                      minWidth: 54,
-                      height: 28,
-                      padding: "0 14px",
-                      border: "none",
-                      borderRadius: 8,
-                      fontSize: 12.5,
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      transition: "all .15s",
-                      background: active ? "#fff" : "transparent",
-                      color: active ? C.primaryDeep : "#7a818f",
-                      boxShadow: active
-                        ? "0 1px 3px rgba(24,27,46,.1)"
-                        : "none",
+                      fontFamily: "inherit",
                     }}
                   >
                     {p}
@@ -3318,17 +3277,16 @@ export function OverviewBoard({
             <div style={{ flex: 1 }} />
             {profile.scopeLabel ? (
               <div
+                className="ob-toolbar-pill"
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: 6,
                   height: 32,
-                  border: `1px solid ${C.border}`,
                   borderRadius: 9,
                   padding: "0 11px",
                   fontSize: 12.5,
                   color: C.ink4,
-                  background: "#fff",
                 }}
               >
                 <svg
@@ -3347,17 +3305,16 @@ export function OverviewBoard({
               </div>
             ) : null}
             <div
+              className="ob-toolbar-pill"
               style={{
                 display: "flex",
                 alignItems: "center",
                 gap: 6,
                 height: 32,
-                border: `1px solid ${C.border}`,
                 borderRadius: 9,
                 padding: "0 11px",
                 fontSize: 12.5,
                 color: C.ink4,
-                background: "#fff",
               }}
             >
               <svg
@@ -3380,34 +3337,17 @@ export function OverviewBoard({
           {/* 风险横幅 */}
           {riskCount > 0 ? (
             <div
+              className="ob-critical-banner"
               style={{
                 position: "relative",
                 overflow: "hidden",
                 display: "flex",
                 alignItems: "center",
                 gap: 14,
-                background:
-                  "linear-gradient(102deg,#fbecc1 0%,#fdf3d8 30%,#fef9ec 58%,#fdfbfa 80%,#f7f6fd 100%)",
-                border: "1px solid #f1e3bb",
                 borderRadius: 14,
                 padding: "14px 16px",
-                boxShadow:
-                  "0 1px 2px rgba(180,140,20,.05),inset 0 1px 0 rgba(255,255,255,.55)",
               }}
             >
-              <div
-                style={{
-                  position: "absolute",
-                  left: -26,
-                  top: -44,
-                  width: 160,
-                  height: 160,
-                  borderRadius: "50%",
-                  background:
-                    "radial-gradient(circle,rgba(243,193,76,.32),transparent 66%)",
-                  pointerEvents: "none",
-                }}
-              />
               <div
                 style={{
                   position: "relative",
@@ -3527,15 +3467,11 @@ export function OverviewBoard({
           {/* 经营数据卡（直播执行实时盘） */}
           {bizCols.length ? (
             <div
-              className="card"
+              className="card ob-live-card"
               style={{
                 position: "relative",
-                background: "#fff",
-                border: `1px solid ${C.border}`,
                 borderRadius: 16,
                 padding: "18px 20px 20px",
-                boxShadow:
-                  "0 1px 2px rgba(24,27,46,.04),0 8px 24px -16px rgba(24,27,46,.16)",
               }}
             >
               <div
@@ -3622,7 +3558,7 @@ export function OverviewBoard({
                         fontSize: 27,
                         fontWeight: 720,
                         fontVariantNumeric: "tabular-nums",
-                        letterSpacing: "-.6px",
+                        letterSpacing: 0,
                         lineHeight: 1,
                         display: "flex",
                         alignItems: "baseline",
@@ -3678,43 +3614,20 @@ export function OverviewBoard({
             }}
           >
             <div
+              className="ob-project-card"
               style={{
                 background:
-                  "radial-gradient(135% 105% at 100% 0%,rgba(226,162,120,.20),transparent 52%),radial-gradient(120% 130% at 0% 100%,rgba(64,76,142,.42),transparent 68%),linear-gradient(140deg,#48487e 0%,#544d8a 42%,#665a93 76%,#73608f 100%)",
+                  "linear-gradient(135deg,#374475 0%,#4a4e82 52%,#665b83 100%)",
+                border: "1px solid rgba(255,255,255,.12)",
                 borderRadius: 16,
                 padding: "19px 20px",
                 color: "#fff",
                 position: "relative",
                 overflow: "hidden",
-                boxShadow: "0 10px 26px -10px rgba(58,54,104,.5)",
+                boxShadow:
+                  "0 1px 2px rgba(15,23,42,.12),0 22px 42px -30px rgba(58,54,104,.68),inset 0 1px 0 rgba(255,255,255,.13)",
               }}
             >
-              <div
-                style={{
-                  position: "absolute",
-                  right: -34,
-                  top: -34,
-                  width: 150,
-                  height: 150,
-                  borderRadius: "50%",
-                  background:
-                    "radial-gradient(circle,rgba(255,236,214,.12),transparent 66%)",
-                  pointerEvents: "none",
-                }}
-              />
-              <div
-                style={{
-                  position: "absolute",
-                  left: -30,
-                  bottom: -46,
-                  width: 130,
-                  height: 130,
-                  borderRadius: "50%",
-                  background:
-                    "radial-gradient(circle,rgba(120,132,210,.18),transparent 70%)",
-                  pointerEvents: "none",
-                }}
-              />
               <div
                 style={{
                   display: "flex",
@@ -3765,7 +3678,7 @@ export function OverviewBoard({
                     fontWeight: 760,
                     fontVariantNumeric: "tabular-nums",
                     lineHeight: 1,
-                    letterSpacing: "-1px",
+                    letterSpacing: 0,
                     textShadow: "0 2px 10px rgba(30,26,70,.3)",
                   }}
                 >
@@ -3859,13 +3772,10 @@ export function OverviewBoard({
             </div>
             {passRate != null ? (
               <div
-                className="card lift"
+                className="card ob-panel-card lift"
                 style={{
-                  background: "#fff",
-                  border: `1px solid ${C.border}`,
                   borderRadius: 16,
                   padding: 18,
-                  boxShadow: "0 1px 2px rgba(24,27,46,.04)",
                   display: "flex",
                   flexDirection: "column",
                 }}
@@ -3906,7 +3816,7 @@ export function OverviewBoard({
                       fontSize: 31,
                       fontWeight: 730,
                       fontVariantNumeric: "tabular-nums",
-                      letterSpacing: "-.6px",
+                      letterSpacing: 0,
                       color: C.ink,
                     }}
                   >
@@ -3944,13 +3854,10 @@ export function OverviewBoard({
           {/* 准入漏斗 */}
           {admission?.stages?.length ? (
             <div
-              className="card"
+              className="card ob-panel-card"
               style={{
-                background: "#fff",
-                border: `1px solid ${C.border}`,
                 borderRadius: 16,
                 padding: 20,
-                boxShadow: "0 1px 2px rgba(24,27,46,.04)",
               }}
             >
               <div
