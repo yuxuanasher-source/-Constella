@@ -215,7 +215,7 @@ describe("OpsReferenceApp role dashboard contract", () => {
 
     render(
       <InstrumentedOpsReferenceApp
-        initialRoute="warroom"
+        initialRoute="home"
         dashboardHome={dashboardHome}
       />,
     );
@@ -225,10 +225,10 @@ describe("OpsReferenceApp role dashboard contract", () => {
     );
   });
 
-  it("renders owner role dashboard cards on the warroom route", () => {
+  it("renders owner role dashboard cards on the home route", () => {
     render(
       <OpsReferenceApp
-        initialRoute="warroom"
+        initialRoute="home"
         currentUser={{ id: "owner-1", name: "Owner", role: "owner" }}
         dashboardHome={{
           profile: {
@@ -271,12 +271,13 @@ describe("OpsReferenceApp role dashboard contract", () => {
     // KPI 进入「直播执行实时盘」列；毛利率为 owner 专属指标。
     expect(screen.getByText("预估毛利率")).toBeInTheDocument();
     expect(screen.getAllByText("进行中项目").length).toBeGreaterThan(0);
+    expect(screen.queryByText("智能项目作战台")).not.toBeInTheDocument();
   });
 
   it("renders finance dashboard without owner margin cards", () => {
     render(
       <OpsReferenceApp
-        initialRoute="warroom"
+        initialRoute="home"
         currentUser={{ id: "finance-1", name: "Finance", role: "finance" }}
         dashboardHome={{
           profile: {
@@ -370,7 +371,7 @@ describe("OpsReferenceApp role dashboard contract", () => {
   it("does not render executive finance labels for operator dashboard", () => {
     render(
       <OpsReferenceApp
-        initialRoute="warroom"
+        initialRoute="home"
         currentUser={{
           id: "operator-1",
           name: "Operator",
@@ -412,10 +413,10 @@ describe("OpsReferenceApp role dashboard contract", () => {
     expect(screen.queryByText("预估毛利")).not.toBeInTheDocument();
   });
 
-  it("renders dashboard empty state on the warroom route", () => {
+  it("renders dashboard empty state on the home route", () => {
     render(
       <OpsReferenceApp
-        initialRoute="warroom"
+        initialRoute="home"
         dashboardHome={{
           profile: {
             role: "ops_manager",
@@ -445,7 +446,7 @@ describe("OpsReferenceApp role dashboard contract", () => {
   it("renders dashboard target badges with Chinese route labels", () => {
     render(
       <OpsReferenceApp
-        initialRoute="warroom"
+        initialRoute="home"
         dashboardHome={{
           profile: {
             role: "ops_manager",
@@ -480,7 +481,7 @@ describe("OpsReferenceApp role dashboard contract", () => {
   it("keeps project dashboard target navigation on the project detail route", () => {
     render(
       <OpsReferenceApp
-        initialRoute="warroom"
+        initialRoute="home"
         projectCards={taskProjectCards}
         streamerCards={[]}
         applicationQueue={[]}
@@ -521,7 +522,7 @@ describe("OpsReferenceApp role dashboard contract", () => {
   it("preserves non-project dashboard target ids after navigation", () => {
     render(
       <OpsReferenceApp
-        initialRoute="warroom"
+        initialRoute="home"
         projectCards={[]}
         streamerCards={[]}
         applicationQueue={[]}
@@ -558,6 +559,25 @@ describe("OpsReferenceApp role dashboard contract", () => {
     expect(screen.getByText("已定位：任务 task-1")).toBeInTheDocument();
   });
 
+  it("renders the home route unavailable state without falling back to the legacy war room", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="home"
+        dashboardHome={null}
+        dashboardHomeError="角色看板暂不可用"
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "今日待办" })).toBeInTheDocument();
+    expect(screen.getByText("角色看板暂不可用")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "重新加载" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "进入作战台" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("智能项目作战台")).not.toBeInTheDocument();
+  });
   it("uses the legacy war room fallback when dashboardHome is absent", () => {
     render(<OpsReferenceApp initialRoute="warroom" />);
 

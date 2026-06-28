@@ -1077,6 +1077,7 @@ const OpsLiveDataContext = React.createContext({
   billingStatus: null,
   complexCost: null,
   dashboardHome: null,
+  dashboardHomeError: null,
   currentUser: DEFAULT_CURRENT_USER,
   actions: {},
 });
@@ -1186,6 +1187,13 @@ function useOpsDashboardHome() {
   const { dashboardHome } = React.useContext(OpsLiveDataContext);
   return dashboardHome && typeof dashboardHome === "object"
     ? dashboardHome
+    : null;
+}
+
+function useOpsDashboardHomeError() {
+  const { dashboardHomeError } = React.useContext(OpsLiveDataContext);
+  return typeof dashboardHomeError === "string" && dashboardHomeError
+    ? dashboardHomeError
     : null;
 }
 
@@ -2809,6 +2817,75 @@ function ScreenRoleHome({ dashboard, go }) {
   );
 }
 
+function ScreenConsoleHome({ go }) {
+  const dashboardHome = useOpsDashboardHome();
+  const dashboardHomeError = useOpsDashboardHomeError();
+  const projects = useOpsProjects();
+  const tasks = useOpsTasks();
+  const reports = useOpsReports();
+  const batches = useOpsSettlementBatches();
+  const currentUser = useOpsCurrentUser();
+
+  if (dashboardHome) {
+    return (
+      <OverviewBoard
+        dashboard={dashboardHome}
+        go={go}
+        projects={projects}
+        tasks={tasks}
+        reports={reports}
+        batches={batches}
+        currentUser={currentUser}
+      />
+    );
+  }
+
+  return (
+    <ScreenRoleHomeUnavailable
+      message={dashboardHomeError || "角色看板暂不可用"}
+      onOpenWarRoom={() => go("warroom")}
+    />
+  );
+}
+
+function ScreenRoleHomeUnavailable({ message, onOpenWarRoom }) {
+  const reload = () => {
+    globalThis.location?.reload?.();
+  };
+
+  return (
+    <>
+      <PageHeader
+        title="今日待办"
+        subtitle="角色看板会按当前账号展示需要优先处理的事项"
+        status={<Badge tone="amber">暂不可用</Badge>}
+      />
+      <div style={{ padding: 20 }}>
+        <Card title="今日待办">
+          <div
+            style={{
+              display: "grid",
+              gap: 12,
+              color: "var(--ink-600)",
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          >
+            <div>{message || "角色看板暂不可用"}</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Button kind="primary" onClick={reload}>
+                重新加载
+              </Button>
+              <Button kind="default" onClick={onOpenWarRoom}>
+                进入作战台
+              </Button>
+            </div>
+          </div>
+        </Card>
+      </div>
+    </>
+  );
+}
 const DASHBOARD_TARGET_ROUTE_LABELS = {
   project: "项目",
   projects: "项目",
@@ -2959,7 +3036,6 @@ function DashboardTargetContextBanner({ target }) {
 
 function ScreenWarRoom({ go }) {
   const actions = useOpsLiveActions();
-  const dashboardHome = useOpsDashboardHome();
   const [tab, setTab] = React.useState("overview");
   const [ocrOpen, setOcrOpen] = React.useState(false);
   const [warRoomMessage, setWarRoomMessage] = React.useState("");
@@ -26672,13 +26748,14 @@ function OpsReferenceInner({
   billingStatus,
   complexCost,
   dashboardHome,
+  dashboardHomeError,
   projectCards,
   collaborationProjectCards,
   streamerCards,
   applicationQueue,
   currentUser,
 }) {
-  // route can be: 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'billing' | 'export' | 'audit' | 'org'
+  // route can be: 'home' | 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'billing' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
@@ -26717,6 +26794,9 @@ function OpsReferenceInner({
   );
   const [dashboardHomeState, setDashboardHomeState] = React.useState(
     dashboardHome ?? null,
+  );
+  const [dashboardHomeErrorState, setDashboardHomeErrorState] = React.useState(
+    dashboardHomeError ?? null,
   );
   const [projectsState, setProjectsState] = React.useState(
     projectCards ?? null,
@@ -26789,6 +26869,10 @@ function OpsReferenceInner({
   React.useEffect(() => {
     setDashboardHomeState(dashboardHome ?? null);
   }, [dashboardHome]);
+
+  React.useEffect(() => {
+    setDashboardHomeErrorState(dashboardHomeError ?? null);
+  }, [dashboardHomeError]);
 
   React.useEffect(() => {
     setProjectsState(projectCards ?? null);
@@ -27849,6 +27933,8 @@ function OpsReferenceInner({
   // Breadcrumbs per route
   const crumbs = (() => {
     switch (route) {
+      case "home":
+        return ["工作台", "今日待办"];
       case "warroom":
         return ["工作台", "智能作战台"];
       case "projects":
@@ -27885,7 +27971,8 @@ function OpsReferenceInner({
     }
   })();
 
-  const navKey = route === "project" ? "projects" : route;
+  const navKey =
+    route === "project" ? "projects" : route === "home" ? "warroom" : route;
   const navCounts = {
     tasks: countActionableTasks(Array.isArray(tasksState) ? tasksState : TASKS),
     reports: countActionableReports(
@@ -27932,6 +28019,7 @@ function OpsReferenceInner({
         billingStatus: billingStatusState,
         complexCost: complexCostState,
         dashboardHome: dashboardHomeState,
+        dashboardHomeError: dashboardHomeErrorState,
         currentUser: normalizeCurrentUser(currentUser),
         actions,
       }}
@@ -27965,6 +28053,7 @@ function OpsReferenceInner({
             {dashboardTarget?.route === route ? (
               <DashboardTargetContextBanner target={dashboardTarget} />
             ) : null}
+            {route === "home" && <ScreenConsoleHome go={go} />}
             {route === "warroom" && <ScreenWarRoom go={go} />}
             {(route === "projects" || route === "project") && (
               <ScreenProjects go={go} projectId={projectId} />
@@ -28212,7 +28301,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; currentUser?: any }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; dashboardHomeError?: string | null; currentUser?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -28230,6 +28319,7 @@ export default function OpsReferenceApp({
   billingStatus,
   complexCost,
   dashboardHome,
+  dashboardHomeError,
   projectCards,
   collaborationProjectCards,
   streamerCards,
@@ -28253,6 +28343,7 @@ export default function OpsReferenceApp({
       billingStatus={billingStatus}
       complexCost={complexCost}
       dashboardHome={dashboardHome}
+      dashboardHomeError={dashboardHomeError}
       projectCards={projectCards}
       collaborationProjectCards={collaborationProjectCards}
       streamerCards={streamerCards}

@@ -17,13 +17,19 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/components/reference-ui/ops-reference", () => ({
   default: vi.fn(
     (props: {
+      initialRoute?: string;
       currentUser?: { name?: string };
       dashboardHome?: { profile?: { title?: string } } | null;
+      dashboardHomeError?: string | null;
     }) => (
       <div data-testid="ops-reference-app">
-        {props.currentUser?.name ?? "missing-user"}
+        <span>{props.currentUser?.name ?? "missing-user"}</span>
+        <span>initialRoute: {props.initialRoute ?? "missing-route"}</span>
         <span>
           {props.dashboardHome?.profile?.title ?? "missing-dashboard"}
+        </span>
+        <span>
+          dashboardHomeError: {props.dashboardHomeError ?? "null"}
         </span>
       </div>
     ),
@@ -78,7 +84,13 @@ describe("console route", () => {
       "Alice Ops",
     );
     expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
+      "initialRoute: home",
+    );
+    expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
       "项目推进看板",
+    );
+    expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
+      "dashboardHomeError: null",
     );
     expect(loadRoleHomeDashboard).toHaveBeenCalledWith({
       supabase,
@@ -89,10 +101,11 @@ describe("console route", () => {
     });
     expect(OpsReferenceApp).toHaveBeenCalledWith(
       expect.objectContaining({
-        initialRoute: "warroom",
+        initialRoute: "home",
         dashboardHome: expect.objectContaining({
           profile: expect.objectContaining({ title: "项目推进看板" }),
         }),
+        dashboardHomeError: null,
         currentUser: expect.objectContaining({
           id: "user-ops",
           name: "Alice Ops",
@@ -107,7 +120,7 @@ describe("console route", () => {
     );
   });
 
-  it("falls back to the legacy war room when dashboard loading fails", async () => {
+  it("passes a visible dashboard error when dashboard loading fails", async () => {
     const supabase = {};
     const dashboardError = new Error("dashboard unavailable");
     const consoleErrorSpy = vi
@@ -131,12 +144,19 @@ describe("console route", () => {
         "Alice Ops",
       );
       expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
+        "initialRoute: home",
+      );
+      expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
         "missing-dashboard",
+      );
+      expect(screen.getByTestId("ops-reference-app")).toHaveTextContent(
+        "dashboardHomeError: 角色看板暂不可用",
       );
       expect(OpsReferenceApp).toHaveBeenCalledWith(
         expect.objectContaining({
-          initialRoute: "warroom",
+          initialRoute: "home",
           dashboardHome: null,
+          dashboardHomeError: "角色看板暂不可用",
           currentUser: expect.objectContaining({
             id: "user-ops",
             role: "ops_manager",
