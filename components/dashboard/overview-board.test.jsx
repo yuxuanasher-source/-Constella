@@ -361,6 +361,41 @@ describe("OverviewBoard AI panel", () => {
     }
   });
 
+  it("renders the admission funnel as staged analysis rows", () => {
+    render(
+      <OverviewBoard
+        dashboard={{
+          ...dashboard,
+          panels: {
+            admissionFunnel: {
+              title: "Admission funnel",
+              stages: [
+                { key: "signup", label: "Signup", value: 278 },
+                { key: "review", label: "Review", value: 276 },
+                { key: "approved", label: "Approved", value: 265 },
+              ],
+            },
+          },
+        }}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    const stages = screen.getAllByTestId("admission-funnel-stage");
+    expect(stages).toHaveLength(3);
+    expect(screen.getAllByTestId("admission-funnel-stage-index")[0]).toHaveTextContent(
+      "01",
+    );
+    expect(screen.getAllByTestId("admission-funnel-meter")).toHaveLength(3);
+    expect(screen.getAllByTestId("admission-funnel-conversion")).toHaveLength(2);
+    expect(within(stages[0]).getByText("Signup")).toBeInTheDocument();
+    expect(within(stages[0]).getByText("278")).toBeInTheDocument();
+  });
+
   it("applies command-center visual surfaces to the dashboard", () => {
     const { container } = render(
       <OverviewBoard
