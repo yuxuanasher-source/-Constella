@@ -215,6 +215,17 @@ function normalizeDashboardPersonalPanel(panel) {
 
 const cnt = (arr, fn) => (arr || []).filter(fn).length;
 const pStatus = (p, s) => p?.status === s;
+const OPERATING_PROJECT_STATUSES = new Set([
+  "recruiting",
+  "pending_start",
+  "active",
+  "paused",
+  "settling",
+]);
+const PENDING_REPORT_STATUSES = new Set([
+  "pending_review",
+  "pending_adjudication",
+]);
 const margin = (p) => Number(p?.metrics?.margin);
 const isLive = (t) => t?.status === "live" || t?.statusLabel === "直播中";
 const isNotStarted = (t) =>
@@ -222,6 +233,30 @@ const isNotStarted = (t) =>
 const isDone = (t) =>
   t?.status === "completed" || t?.status === "done" || t?.status === "已完成";
 const isAnomaly = (t) => t?.anomaly || t?.status === "abnormal";
+const isOperatingProject = (project) =>
+  OPERATING_PROJECT_STATUSES.has(project?.status);
+const isPendingReport = (report) => PENDING_REPORT_STATUSES.has(report?.status);
+
+function projectMetricTotal(projects, key) {
+  return (projects || []).reduce(
+    (total, project) => total + (Number(project?.metrics?.[key]) || 0),
+    0,
+  );
+}
+
+function scopedPendingReportCount(projects, reports) {
+  return Math.max(
+    projectMetricTotal(projects, "reportedPending"),
+    cnt(reports, isPendingReport),
+  );
+}
+
+function scopedAnomalyCount(projects, tasks) {
+  return Math.max(
+    projectMetricTotal(projects, "anomalies"),
+    cnt(tasks, isAnomaly),
+  );
+}
 
 // 今日排班按小时累计（真实可计算的时序；无则返回 null，不画线）。
 function scheduleSeries(tasks) {
@@ -560,10 +595,7 @@ function scopeDashboardDataByPeriod(
 }
 
 function sumMetric(projects, key) {
-  return (projects || []).reduce(
-    (total, project) => total + (Number(project?.metrics?.[key]) || 0),
-    0,
-  );
+  return projectMetricTotal(projects, key);
 }
 
 function scopedRiskCount({ projects = [], tasks = [], batches = [] }) {
@@ -591,12 +623,7 @@ function scopedKpiValue(key, data) {
     projects,
     (project) => (project?.streamers?.candidate ?? 0) > 0,
   );
-  const pendingReports = cnt(
-    reports,
-    (report) =>
-      report?.status === "pending_review" ||
-      report?.status === "pending_adjudication",
-  );
+  const pendingReports = scopedPendingReportCount(projects, reports);
 
   switch (key) {
     case "vendorReceivable":
@@ -608,15 +635,7 @@ function scopedKpiValue(key, data) {
     case "highRiskItems":
       return scopedRiskCount(data);
     case "activeProjects":
-      return cnt(projects, (project) =>
-        [
-          "recruiting",
-          "pending_start",
-          "active",
-          "paused",
-          "settling",
-        ].includes(project?.status),
-      );
+      return cnt(projects, isOperatingProject);
     case "deliveryProgress":
       return plannedHours > 0
         ? Math.round((doneHours / plannedHours) * 1000) / 10
@@ -629,7 +648,7 @@ function scopedKpiValue(key, data) {
       return pendingReports;
     case "anomalyTasks":
     case "streamerReminders":
-      return cnt(tasks, isAnomaly) + sumMetric(projects, "anomalies");
+      return scopedAnomalyCount(projects, tasks);
     case "myTodayTasks":
       return tasks.length;
     case "notStartedTasks":
@@ -3298,9 +3317,9 @@ export function OverviewBoard({
   const proj = React.useMemo(
     () => ({
       total: scopedProjects.length,
-      running: cnt(scopedProjects, (p) => pStatus(p, "active")),
-      pending: cnt(scopedReports, (r) => r?.status === "pending_review"),
-      abnormal: cnt(scopedTasks, isAnomaly),
+      running: cnt(scopedProjects, isOperatingProject),
+      pending: scopedPendingReportCount(scopedProjects, scopedReports),
+      abnormal: scopedAnomalyCount(scopedProjects, scopedTasks),
     }),
     [scopedProjects, scopedReports, scopedTasks],
   );
@@ -3315,14 +3334,12 @@ export function OverviewBoard({
   const personal = React.useMemo(() => {
     if (isRealtimePeriod && dashboardPersonal) return dashboardPersonal;
 
-    const active = cnt(scopedProjects, (p) =>
-      ["active", "recruiting", "settling"].includes(p?.status),
-    );
-    const pendingReports = cnt(
+    const active = cnt(scopedProjects, isOperatingProject);
+    const pendingReports = scopedPendingReportCount(
+      scopedProjects,
       scopedReports,
-      (r) => r?.status === "pending_review",
     );
-    const anomalies = cnt(scopedTasks, isAnomaly);
+    const anomalies = scopedAnomalyCount(scopedProjects, scopedTasks);
     const recordingPending = (scopedProjects || []).reduce(
       (s, p) => s + (p?.streamers?.pendingReview ?? 0),
       0,

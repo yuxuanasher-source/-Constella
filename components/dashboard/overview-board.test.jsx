@@ -361,6 +361,61 @@ describe("OverviewBoard AI panel", () => {
     }
   });
 
+  it("syncs the operating project card with project rollup metrics", () => {
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[
+          {
+            id: "project-active",
+            name: "Active project",
+            status: "active",
+            start: "2026-06-16",
+            end: "2026-06-16",
+            metrics: { reportedPending: 2, anomalies: 4 },
+          },
+          {
+            id: "project-recruiting",
+            name: "Recruiting project",
+            status: "recruiting",
+            start: "2026-06-16",
+            end: "2026-06-16",
+            metrics: { reportedPending: 5, anomalies: 5 },
+          },
+          {
+            id: "project-settling",
+            name: "Settling project",
+            status: "settling",
+            start: "2026-06-16",
+            end: "2026-06-16",
+            metrics: { reportedPending: 0, anomalies: 0 },
+          },
+          {
+            id: "project-finished",
+            name: "Finished project",
+            status: "done",
+            start: "2026-06-16",
+            end: "2026-06-16",
+            metrics: { reportedPending: 0, anomalies: 0 },
+          },
+        ]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    const projectCard = container.querySelector(".ob-project-card");
+    expect(projectCard).toBeTruthy();
+    expect((projectCard.textContent || "").match(/\d+/g)).toEqual([
+      "4",
+      "3",
+      "7",
+      "9",
+    ]);
+  });
+
   it("renders the admission funnel as a model with metrics, segments, and decisions", () => {
     render(
       <OverviewBoard
