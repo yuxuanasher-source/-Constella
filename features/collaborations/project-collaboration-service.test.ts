@@ -30,6 +30,8 @@ const partnerActor = {
   organizationId: "org-partner",
 };
 
+const activeShareNow = "2026-06-10T00:10:00.000Z";
+
 describe("project collaboration service", () => {
   it("creates an active share only for an open owner project and returns the raw token once", async () => {
     const repo = new MemoryCollaborationRepository([
@@ -214,6 +216,7 @@ describe("project collaboration service", () => {
         requestedRevenueShareBps: 1000,
         applicantNote: "We can bring five verified streamers.",
       },
+      now: activeShareNow,
     });
 
     await expect(
@@ -222,6 +225,7 @@ describe("project collaboration service", () => {
         actor: partnerActor,
         token: "raw-token",
         input: { requestedRevenueShareBps: 900 },
+        now: activeShareNow,
       }),
     ).rejects.toThrow("Applicant already has a pending application");
 
@@ -231,6 +235,7 @@ describe("project collaboration service", () => {
         actor: ownerActor,
         token: "raw-token",
         input: { requestedRevenueShareBps: 1000 },
+        now: activeShareNow,
       }),
     ).rejects.toThrow("Applicant organization cannot be the project owner");
   });
@@ -272,6 +277,7 @@ describe("project collaboration service", () => {
       actor: partnerActor,
       token: "raw-token",
       input: { requestedRevenueShareBps: 1000 },
+      now: activeShareNow,
     });
     repo.shares[0].status = "revoked";
 
@@ -296,6 +302,7 @@ describe("project collaboration service", () => {
       actor: partnerActor,
       token: "raw-token",
       input: { requestedRevenueShareBps: 1000 },
+      now: activeShareNow,
     });
     await reviewProjectCollaborationApplication({
       repo,
@@ -324,6 +331,7 @@ describe("project collaboration service", () => {
       actor: partnerActor,
       token: "raw-token",
       input: { requestedRevenueShareBps: 1200 },
+      now: activeShareNow,
     });
     await reviewProjectCollaborationApplication({
       repo,
@@ -355,6 +363,7 @@ describe("project collaboration service", () => {
       actor: partnerActor,
       token: "raw-token",
       input: { requestedRevenueShareBps: 1200 },
+      now: activeShareNow,
     });
 
     const countered = await reviewProjectCollaborationApplication({
@@ -398,6 +407,7 @@ describe("project collaboration service", () => {
       actor: partnerActor,
       token: "raw-token",
       input: { requestedRevenueShareBps: 1200 },
+      now: activeShareNow,
     });
 
     await expect(
@@ -417,6 +427,7 @@ describe("project collaboration service", () => {
       actor: partnerActor,
       token: "raw-token",
       input: { requestedRevenueShareBps: 1200 },
+      now: activeShareNow,
     });
     await reviewProjectCollaborationApplication({
       repo,
@@ -449,6 +460,7 @@ describe("project collaboration service", () => {
         requestedRevenueShareBps: 1200,
         applicantNote: "We can join.",
       },
+      now: activeShareNow,
     });
 
     await reviewProjectCollaborationApplication({
