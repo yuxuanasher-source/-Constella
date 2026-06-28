@@ -295,6 +295,72 @@ describe("OverviewBoard AI panel", () => {
     expect(screen.getAllByTestId("personal-summary-sparkline")).toHaveLength(4);
   });
 
+  it("keeps mini charts from stretching or pinning endpoints to the edge", () => {
+    render(
+      <OverviewBoard
+        dashboard={{
+          ...dashboard,
+          kpis: [
+            {
+              key: "vendorReceivable",
+              label: "Receivable",
+              value: 130.68,
+              unit: "w",
+              series: [10, 30, 70, 130],
+            },
+            {
+              key: "estimatedGross",
+              label: "Gross",
+              value: -1.9,
+              unit: "w",
+              series: [5, 1, -1, -1.9],
+            },
+          ],
+          personal: {
+            summary: [
+              {
+                key: "active",
+                label: "Active",
+                value: 19,
+                tone: "blue",
+                series: [95, 93, 88, 82],
+              },
+            ],
+            recommendations: [],
+            todos: [],
+          },
+        }}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    const charts = [
+      ...screen.getAllByTestId("live-kpi-sparkline"),
+      ...screen.getAllByTestId("personal-summary-sparkline"),
+    ];
+
+    expect(charts.length).toBeGreaterThan(0);
+    for (const svg of charts) {
+      expect(svg.getAttribute("preserveAspectRatio")).toBe("xMidYMid meet");
+      const [, , viewBoxWidth] = svg
+        .getAttribute("viewBox")
+        .split(/\s+/)
+        .map(Number);
+      const polyline = svg.querySelector("polyline");
+      const xs = polyline
+        .getAttribute("points")
+        .trim()
+        .split(/\s+/)
+        .map((point) => Number(point.split(",")[0]));
+      expect(Math.min(...xs)).toBeGreaterThan(0);
+      expect(Math.max(...xs)).toBeLessThan(viewBoxWidth);
+    }
+  });
+
   it("applies command-center visual surfaces to the dashboard", () => {
     const { container } = render(
       <OverviewBoard

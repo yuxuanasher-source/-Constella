@@ -728,15 +728,18 @@ function sp(arr, w, h, pad = 2) {
   const mn = Math.min(...arr),
     mx = Math.max(...arr),
     rng = mx - mn || 1;
+  const xPad = Math.max(3, pad * 2);
+  const drawableW = Math.max(1, w - xPad * 2);
   const pts = arr.map((v, i) => {
-    const x = (i / (arr.length - 1)) * w;
+    const x = xPad + (i / (arr.length - 1)) * drawableW;
     const y = h - pad - ((v - mn) / rng) * (h - pad * 2);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
   const last = pts[pts.length - 1].split(",");
+  const first = pts[0].split(",");
   return {
     line: pts.join(" "),
-    area: `0,${h} ${pts.join(" ")} ${w},${h}`,
+    area: `${first[0]},${h} ${pts.join(" ")} ${last[0]},${h}`,
     lastX: last[0],
     lastY: last[1],
   };
@@ -751,8 +754,14 @@ function AreaSpark({ series, color, w = 100, h = 30, gid, testId }) {
       width="100%"
       height={h + 4}
       viewBox={`0 0 ${w} ${h}`}
-      preserveAspectRatio="none"
-      style={{ marginTop: 11, overflow: "visible" }}
+      preserveAspectRatio="xMidYMid meet"
+      style={{
+        display: "block",
+        marginTop: 11,
+        maxWidth: 260,
+        overflow: "visible",
+        width: "100%",
+      }}
       aria-hidden
     >
       <defs>
@@ -783,49 +792,43 @@ function AreaSpark({ series, color, w = 100, h = 30, gid, testId }) {
   );
 }
 function spp(arr, w, h, pad = 2) {
-  return spr(arr, w, h, pad);
+  return spr(arr, w, h, pad, Math.max(3, pad * 2));
 }
-function spr(arr, w, h, pad) {
+function spr(arr, w, h, pad, xPad = pad) {
   if (!arr || arr.length < 2) return null;
   const mn = Math.min(...arr),
     mx = Math.max(...arr),
     rng = mx - mn || 1;
+  const drawableW = Math.max(1, w - xPad * 2);
   const pts = arr.map((v, i) => {
-    const x = (i / (arr.length - 1)) * w;
+    const x = xPad + (i / (arr.length - 1)) * drawableW;
     const y = h - pad - ((v - mn) / rng) * (h - pad * 2);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
   const last = pts[pts.length - 1].split(",");
+  const first = pts[0].split(",");
   return {
     line: pts.join(" "),
-    area: `0,${h} ${pts.join(" ")} ${w},${h}`,
+    area: `${first[0]},${h} ${pts.join(" ")} ${last[0]},${h}`,
     lastX: last[0],
     lastY: last[1],
   };
 }
 function MiniLine({ series, color, w = 46, h = 20, testId }) {
-  if (!series || series.length < 2) return null;
-  const mn = Math.min(...series),
-    mx = Math.max(...series),
-    rng = mx - mn || 1;
-  const pts = series
-    .map(
-      (v, i) =>
-        `${((i / (series.length - 1)) * w).toFixed(1)},${(h - 2 - ((v - mn) / rng) * (h - 4)).toFixed(1)}`,
-    )
-    .join(" ");
+  const spark = spr(series, w, h, 2, 3);
+  if (!spark) return null;
   return (
     <svg
       data-testid={testId}
       width={w}
       height={h}
       viewBox={`0 0 ${w} ${h}`}
-      preserveAspectRatio="none"
-      style={{ overflow: "visible" }}
+      preserveAspectRatio="xMidYMid meet"
+      style={{ display: "block", overflow: "visible" }}
       aria-hidden
     >
       <polyline
-        points={pts}
+        points={spark.line}
         fill="none"
         stroke={color}
         strokeWidth="1.6"
