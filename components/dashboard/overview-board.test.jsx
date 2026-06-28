@@ -211,6 +211,90 @@ describe("OverviewBoard AI panel", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("renders live metric and overview summary series as dynamic mini charts", () => {
+    render(
+      <OverviewBoard
+        dashboard={{
+          ...dashboard,
+          kpis: [
+            {
+              key: "vendorReceivable",
+              label: "本月厂家应收",
+              value: 2847500,
+              unit: "元",
+              series: [0, 1000000, 1900000, 2847500],
+            },
+            {
+              key: "estimatedGross",
+              label: "预计毛利",
+              value: 684200,
+              unit: "元",
+              series: [0, 210000, 510000, 684200],
+            },
+            {
+              key: "grossMarginRate",
+              label: "预计毛利率",
+              value: 24,
+              unit: "%",
+              series: [31, 27, 25, 24],
+            },
+            {
+              key: "highRiskItems",
+              label: "高风险事项",
+              value: 4,
+              unit: "项",
+              tone: "red",
+              series: [1, 2, 3, 4],
+            },
+          ],
+          personal: {
+            summary: [
+              {
+                key: "active",
+                label: "在营项目",
+                value: 19,
+                tone: "blue",
+                series: [3, 8, 12, 19],
+              },
+              {
+                key: "todo",
+                label: "待办合计",
+                value: 47,
+                tone: "violet",
+                series: [12, 22, 35, 47],
+              },
+              {
+                key: "risk",
+                label: "风险数",
+                value: 5,
+                tone: "amber",
+                attention: true,
+                series: [1, 2, 4, 5],
+              },
+              {
+                key: "today",
+                label: "今日场次",
+                value: 7,
+                tone: "green",
+                series: [0, 2, 4, 7],
+              },
+            ],
+            recommendations: [],
+            todos: [],
+          },
+        }}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(screen.getAllByTestId("live-kpi-sparkline")).toHaveLength(4);
+    expect(screen.getAllByTestId("personal-summary-sparkline")).toHaveLength(4);
+  });
+
   it("renders markdown tables as readable stacked cards", async () => {
     const markdownTable = [
       "以下是系统中可见的具体项目信息：",

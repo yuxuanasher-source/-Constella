@@ -91,6 +91,15 @@ const moneyK = (n) => {
     ? `¥${(v / 1000).toFixed(1)}K`
     : `¥${v.toLocaleString("en-US")}`;
 };
+
+function normalizeVisualSeries(value) {
+  if (!Array.isArray(value)) return null;
+  const series = value
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item));
+  return series.length >= 2 ? series : null;
+}
+
 const AI_PANEL_STORAGE_PREFIX = "jingying-cabin.dashboard.ai.messages.v1";
 
 function aiPanelStorageKey(user) {
@@ -171,7 +180,7 @@ function normalizeDashboardPersonalPanel(panel) {
         value: String(Number(item?.value) || 0),
         color: tone(item?.tone).color,
         attention: !!item?.attention,
-        series: Array.isArray(item?.series) ? item.series : null,
+        series: normalizeVisualSeries(item?.series),
       }))
     : [];
   const recos = Array.isArray(panel.recommendations)
@@ -412,12 +421,13 @@ function sp(arr, w, h, pad = 2) {
     lastY: last[1],
   };
 }
-function AreaSpark({ series, color, w = 100, h = 30, gid }) {
+function AreaSpark({ series, color, w = 100, h = 30, gid, testId }) {
   const s = spp(series, w, h);
   if (!s) return null;
   const id = gid || `sk${color.replace(/[^a-z0-9]/gi, "")}${series.length}`;
   return (
     <svg
+      data-testid={testId}
       width="100%"
       height={h + 4}
       viewBox={`0 0 ${w} ${h}`}
@@ -473,7 +483,7 @@ function spr(arr, w, h, pad) {
     lastY: last[1],
   };
 }
-function MiniLine({ series, color, w = 46, h = 20 }) {
+function MiniLine({ series, color, w = 46, h = 20, testId }) {
   if (!series || series.length < 2) return null;
   const mn = Math.min(...series),
     mx = Math.max(...series),
@@ -486,6 +496,7 @@ function MiniLine({ series, color, w = 46, h = 20 }) {
     .join(" ");
   return (
     <svg
+      data-testid={testId}
       width={w}
       height={h}
       viewBox={`0 0 ${w} ${h}`}
@@ -1965,7 +1976,11 @@ function PersonalPanel({ user, scopeLabel, summary, recos, todos, go }) {
                   {s.value}
                 </div>
                 {s.series ? (
-                  <MiniLine series={s.series} color={s.color || C.primary} />
+                  <MiniLine
+                    series={s.series}
+                    color={s.color || C.primary}
+                    testId="personal-summary-sparkline"
+                  />
                 ) : null}
               </div>
               <div style={{ fontSize: 11.5, color: C.muted, marginTop: 6 }}>
@@ -2637,15 +2652,17 @@ export function OverviewBoard({
     const series = scheduleSeries(tasks);
     return kpis.slice(0, 4).map((k, i) => {
       const f = fmtKpi(k.value, k.unit);
+      const fallbackColor =
+        i === 0 ? C.primary : i === 1 ? C.ok : i === 2 ? "#e0a82e" : C.danger;
       return {
         key: k.key || `kpi-${i}`,
         label: k.label,
         value: f.value,
         unit: f.unit,
         hint: k.hint || "",
-        series: i === 0 ? series : null,
+        series: normalizeVisualSeries(k.series) || (i === 0 ? series : null),
         color:
-          i === 0 ? C.primary : i === 1 ? C.ok : i === 2 ? "#e0a82e" : C.warn,
+          k.tone && k.tone !== "neutral" ? tone(k.tone).solid : fallbackColor,
       };
     });
   }, [kpis, tasks]);
@@ -3277,6 +3294,7 @@ export function OverviewBoard({
                         series={c.series}
                         color={c.color}
                         gid={`biz-${c.key}`}
+                        testId="live-kpi-sparkline"
                       />
                     ) : (
                       <div style={{ height: 45 }} />
