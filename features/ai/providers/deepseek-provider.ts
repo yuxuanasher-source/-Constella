@@ -22,6 +22,7 @@ type DeepseekProviderConfig = {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
+  reasoningModel?: string;
   fetch?: FetchLike;
 };
 
@@ -29,13 +30,24 @@ export function createDeepseekProvider({
   apiKey,
   baseUrl = process.env.DEEPSEEK_BASE_URL ?? DEFAULT_DEEPSEEK_BASE_URL,
   model = process.env.DEEPSEEK_MODEL ?? DEFAULT_DEEPSEEK_MODEL,
+  reasoningModel =
+    process.env.DEEPSEEK_REASONING_MODEL ??
+    process.env.DEEPSEEK_DEEP_MODEL ??
+    model,
   fetch: fetchImpl = fetch,
 }: DeepseekProviderConfig = {}): AiProvider {
   return {
     name: "deepseek",
     capabilities: ["text", "structured", "shadow"],
     runText(input: AiTextInput) {
-      return runDeepseekRequest({ apiKey, baseUrl, fetchImpl, input, model });
+      return runDeepseekRequest({
+        apiKey,
+        baseUrl,
+        fetchImpl,
+        input,
+        model,
+        reasoningModel,
+      });
     },
     runStructured(input: AiStructuredInput) {
       return runDeepseekRequest({
@@ -44,6 +56,7 @@ export function createDeepseekProvider({
         fetchImpl,
         input: withJsonInstruction(input),
         model,
+        reasoningModel,
         structured: true,
       });
     },
@@ -62,6 +75,7 @@ async function runDeepseekRequest({
   fetchImpl,
   input,
   model,
+  reasoningModel,
   structured = false,
 }: {
   apiKey?: string;
@@ -69,6 +83,7 @@ async function runDeepseekRequest({
   fetchImpl: FetchLike;
   input: AiTextInput;
   model: string;
+  reasoningModel: string;
   structured?: boolean;
 }): Promise<AiProviderResult> {
   if (!apiKey?.trim() || !baseUrl?.trim()) {
@@ -76,6 +91,7 @@ async function runDeepseekRequest({
   }
 
   const startedAt = Date.now();
+  const selectedModel = selectDeepseekModel({ input, model, reasoningModel });
 
   try {
     const response = await fetchImpl(toChatCompletionsUrl(baseUrl), {
@@ -85,15 +101,16 @@ async function runDeepseekRequest({
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model,
+        model: selectedModel,
         messages: input.messages.map((message) => ({
           role: message.role === "tool" ? "user" : message.role,
           content: message.content,
         })),
         stream: false,
+        ...toThinkingOptions(input),
         // DeepSeek 支持 OpenAI 的 JSON 模式，结构化时请求 json_object。
         ...(structured ? { response_format: { type: "json_object" } } : {}),
-        metadata: input.metadata,
+        metadata: toDeepseekMetadata(input),
       }),
     });
     const raw = (await response.json()) as Record<string, unknown>;
@@ -142,6 +159,46 @@ async function runDeepseekRequest({
       latencyMs: Date.now() - startedAt,
     });
   }
+}
+
+function toThinkingOptions(input: AiTextInput): Record<string, unknown> {
+  if (input.mode === "fast") {
+    return { thinking: { type: "disabled" } };
+  }
+
+  if (input.mode === "deep") {
+    return {
+      thinking: { type: "enabled" },
+      reasoning_effort: input.reasoning?.effort ?? "high",
+    };
+  }
+
+  return {};
+}
+
+function selectDeepseekModel({
+  input,
+  model,
+  reasoningModel,
+}: {
+  input: AiTextInput;
+  model: string;
+  reasoningModel: string;
+}): string {
+  if (input.mode === "deep" && reasoningModel.trim()) {
+    return reasoningModel;
+  }
+  return model;
+}
+
+function toDeepseekMetadata(input: AiTextInput): Record<string, unknown> | undefined {
+  const metadata = {
+    ...(input.metadata ?? {}),
+    ...(input.mode ? { chatMode: input.mode } : {}),
+    ...(input.reasoning ? { reasoningEffort: input.reasoning.effort } : {}),
+  };
+
+  return Object.keys(metadata).length ? metadata : undefined;
 }
 
 function toChatCompletionsUrl(baseUrl: string): string {

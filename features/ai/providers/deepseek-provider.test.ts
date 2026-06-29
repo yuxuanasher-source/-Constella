@@ -59,6 +59,75 @@ describe("createDeepseekProvider", () => {
     expect(JSON.parse(String(requestInit.body)).model).toBe("deepseek-v4-flash");
   });
 
+  it("uses thinking controls and the reasoning model override for deep chat requests", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "deep answer" } }],
+            usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 },
+          }),
+        ),
+    );
+    const provider = createDeepseekProvider({
+      apiKey: "secret",
+      model: "deepseek-v4-flash",
+      reasoningModel: "deepseek-v4-pro",
+      fetch: fetchMock,
+    });
+
+    await provider.runText({
+      promptKey: "ops.brief",
+      promptVersion: 1,
+      mode: "deep",
+      reasoning: { effort: "high", summary: "auto" },
+      messages: [{ role: "user", content: "analyze deeply" }],
+    });
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    const requestBody = JSON.parse(String(requestInit.body));
+    expect(requestBody.model).toBe("deepseek-v4-pro");
+    expect(requestBody.thinking).toEqual({ type: "enabled" });
+    expect(requestBody.reasoning_effort).toBe("high");
+    expect(requestBody.metadata.chatMode).toBe("deep");
+  });
+
+  it("disables thinking for fast chat requests", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "fast answer" } }],
+            usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 },
+          }),
+        ),
+    );
+    const provider = createDeepseekProvider({
+      apiKey: "secret",
+      model: "deepseek-v4-flash",
+      fetch: fetchMock,
+    });
+
+    await provider.runText({
+      promptKey: "ops.brief",
+      promptVersion: 1,
+      mode: "fast",
+      messages: [{ role: "user", content: "answer quickly" }],
+    });
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    const requestBody = JSON.parse(String(requestInit.body));
+    expect(requestBody.model).toBe("deepseek-v4-flash");
+    expect(requestBody.thinking).toEqual({ type: "disabled" });
+    expect(requestBody).not.toHaveProperty("reasoning_effort");
+  });
+
   it("requests json_object and parses structured output", async () => {
     let sentBody = "";
     const fetchMock = vi.fn(
