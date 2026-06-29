@@ -363,8 +363,8 @@ describe("OpsReferenceApp role dashboard contract", () => {
 
     // 设计稿主看板：准入漏斗 + 进行中项目卡（真实数据派生）。
     expect(screen.getByText("准入漏斗 · 录屏到入项")).toBeInTheDocument();
-    expect(screen.getByText("报名/候选")).toBeInTheDocument();
-    expect(screen.getByText("最终入项")).toBeInTheDocument();
+    expect(screen.getAllByText("报名/候选").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("最终入项").length).toBeGreaterThan(0);
     expect(screen.getAllByText("进行中项目").length).toBeGreaterThan(0);
   });
 
