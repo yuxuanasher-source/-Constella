@@ -471,6 +471,44 @@ describe("POST /api/ai/chat", () => {
     );
   });
 
+  it("adds distinct answer profiles for fast and deep chat modes", async () => {
+    const { POST } = await import("./route");
+
+    await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          mode: "fast",
+          messages: [{ role: "user", content: "Summarize current risks" }],
+        }),
+      }),
+    );
+    const fastMessages = runAiGatewayMock.mock.calls.at(-1)?.[0].request.messages;
+    const fastPrompt = fastMessages
+      .map((message: { content: string }) => message.content)
+      .join("\n");
+
+    await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          mode: "deep",
+          messages: [{ role: "user", content: "Summarize current risks" }],
+        }),
+      }),
+    );
+    const deepMessages = runAiGatewayMock.mock.calls.at(-1)?.[0].request.messages;
+    const deepPrompt = deepMessages
+      .map((message: { content: string }) => message.content)
+      .join("\n");
+
+    expect(fastPrompt).toContain("mode profile: fast");
+    expect(fastPrompt).toContain("answer in 3-5 concise bullets");
+    expect(deepPrompt).toContain("mode profile: deep");
+    expect(deepPrompt).toContain("evidence, uncertainty, risks, and next actions");
+    expect(deepPrompt).not.toEqual(fastPrompt);
+  });
+
   it("rejects chat requests with more than five attachments", async () => {
     const { POST } = await import("./route");
 

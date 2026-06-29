@@ -145,6 +145,7 @@ export async function POST(request: Request) {
     const reasoning = buildReasoningConfig(chatMode);
     const messages: AiMessage[] = [
       { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: buildModePromptText(chatMode) },
       { role: "system", content: grounding.promptText },
       { role: "system", content: knowledgeContext.promptText },
       ...(attachments.length
@@ -273,6 +274,27 @@ function sanitizeChatMode(value: unknown): AiChatMode {
 
 function buildReasoningConfig(mode: AiChatMode): AiReasoningConfig | undefined {
   return mode === "deep" ? { effort: "high", summary: "auto" } : undefined;
+}
+
+function buildModePromptText(mode: AiChatMode): string {
+  if (mode === "deep") {
+    return [
+      "mode profile: deep",
+      "Respond in Chinese with a deliberate business-analysis format.",
+      "Include evidence, uncertainty, risks, and next actions.",
+      "Use this structure when useful: conclusion, evidence, risk ranking, recommendations, next actions.",
+      "Do not reveal hidden chain-of-thought; provide a concise reasoning summary based on visible facts and cited sources.",
+      "If business data, attachments, or knowledge-base evidence is missing, state the gap before giving advice.",
+    ].join("\n");
+  }
+
+  return [
+    "mode profile: fast",
+    "Respond in Chinese with a short, result-first answer.",
+    "Prefer a direct conclusion and answer in 3-5 concise bullets.",
+    "Avoid broad frameworks unless the user asks for a deep analysis.",
+    "If key data is missing, name the missing item in one sentence and give the safest next step.",
+  ].join("\n");
 }
 
 function choosePrimaryProvider({
