@@ -2,8 +2,12 @@ import { NextResponse } from "next/server";
 
 import type {
   AiActor,
+  AiAttachment,
+  AiChatMode,
   AiInvocationStatus,
   AiMessage,
+  AiProviderName,
+  AiReasoningConfig,
 } from "@/features/ai/contracts";
 import { buildDashboardChatGrounding } from "@/features/ai/dashboard-chat-grounding";
 import {
@@ -47,6 +51,9 @@ const PROMPT_KEY = "dashboard.ai.chat";
 const PROMPT_VERSION = 1;
 const MAX_MESSAGES = 12;
 const MAX_MESSAGE_CHARS = 4000;
+const MAX_ATTACHMENTS = 5;
+const MAX_ATTACHMENT_TEXT_CHARS = 200_000;
+const MAX_ATTACHMENT_DATA_CHARS = 8_000_000;
 
 const SYSTEM_PROMPT = [
   "你是经营舱的星耀 AI 助手，服务 MCN 经营团队。",
@@ -76,8 +83,19 @@ export async function POST(request: Request) {
 
     const body = (await request.json().catch(() => ({}))) as {
       messages?: unknown;
+      mode?: unknown;
+      attachments?: unknown;
     };
     const chatMessages = sanitizeMessages(body.messages);
+    const chatMode = sanitizeChatMode(body.mode);
+    const attachmentResult = sanitizeAttachments(body.attachments);
+    if (!attachmentResult.ok) {
+      return NextResponse.json(
+        { error: attachmentResult.error },
+        { status: 400 },
+      );
+    }
+    const attachments = attachmentResult.attachments;
     const lastMessage = chatMessages[chatMessages.length - 1];
     if (!lastMessage || lastMessage.role !== "user") {
       return NextResponse.json(
@@ -118,11 +136,20 @@ export async function POST(request: Request) {
       facts: grounding.facts,
     });
     const routing = resolveAiProviderRouting();
-    const primaryProvider = routing.primaryProvider ?? realProvider.name;
+    const primaryProvider = choosePrimaryProvider({
+      providers,
+      requestedMode: chatMode,
+      configuredPrimary: routing.primaryProvider,
+      fallbackProvider: realProvider.name,
+    });
+    const reasoning = buildReasoningConfig(chatMode);
     const messages: AiMessage[] = [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "system", content: grounding.promptText },
       { role: "system", content: knowledgeContext.promptText },
+      ...(attachments.length
+        ? [{ role: "system" as const, content: buildAttachmentPromptText(attachments) }]
+        : []),
       ...chatMessages,
     ];
 
@@ -134,7 +161,14 @@ export async function POST(request: Request) {
         promptKey: PROMPT_KEY,
         promptVersion: PROMPT_VERSION,
         messages,
-        metadata: { source: "overview-board" },
+        metadata: {
+          source: "overview-board",
+          chatMode,
+          attachmentCount: attachments.length,
+        },
+        mode: chatMode,
+        ...(reasoning ? { reasoning } : {}),
+        ...(attachments.length ? { attachments } : {}),
       },
     });
 
@@ -162,6 +196,9 @@ export async function POST(request: Request) {
           groundingSuggestedActionCount: grounding.suggestedActions.length,
           knowledgePassageCount: knowledgeContext.passages.length,
           reviewKnowledgeSampleSize: knowledgeContext.reviewAssist.sampleSize,
+          chatMode,
+          attachmentCount: attachments.length,
+          attachmentNames: attachments.map((attachment) => attachment.name),
         },
       },
     }).catch(() => null);
@@ -201,6 +238,7 @@ export async function POST(request: Request) {
       providerName: gatewayResult.providerName,
       status: gatewayResult.status,
       fallbackUsed: gatewayResult.fallbackUsed,
+      mode: chatMode,
       usage: gatewayResult.usage,
       grounding: {
         generatedAt: grounding.generatedAt,
@@ -227,6 +265,170 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
   }
+}
+
+function sanitizeChatMode(value: unknown): AiChatMode {
+  return value === "deep" ? "deep" : "fast";
+}
+
+function buildReasoningConfig(mode: AiChatMode): AiReasoningConfig | undefined {
+  return mode === "deep" ? { effort: "high", summary: "auto" } : undefined;
+}
+
+function choosePrimaryProvider({
+  providers,
+  requestedMode,
+  configuredPrimary,
+  fallbackProvider,
+}: {
+  providers: Array<{ name: AiProviderName }>;
+  requestedMode: AiChatMode;
+  configuredPrimary?: AiProviderName;
+  fallbackProvider: AiProviderName;
+}): AiProviderName {
+  if (
+    requestedMode === "deep" &&
+    providers.some((provider) => provider.name === "openai")
+  ) {
+    return "openai";
+  }
+
+  return configuredPrimary ?? fallbackProvider;
+}
+
+function sanitizeAttachments(
+  value: unknown,
+):
+  | { ok: true; attachments: AiAttachment[] }
+  | { ok: false; error: string } {
+  if (value === undefined || value === null) {
+    return { ok: true, attachments: [] };
+  }
+  if (!Array.isArray(value)) {
+    return { ok: false, error: "Attachments must be an array" };
+  }
+  if (value.length > MAX_ATTACHMENTS) {
+    return {
+      ok: false,
+      error: "AI chat supports up to five attachments per message",
+    };
+  }
+
+  const attachments: AiAttachment[] = [];
+  for (const [index, item] of value.entries()) {
+    if (!isRecord(item)) {
+      return { ok: false, error: `Attachment ${index + 1} is invalid` };
+    }
+
+    const name = sanitizeAttachmentName(item.name, index);
+    const mimeType = sanitizeAttachmentMimeType(item.mimeType);
+    if (!mimeType) {
+      return {
+        ok: false,
+        error: `Attachment ${name} has an unsupported file type`,
+      };
+    }
+
+    const attachment: AiAttachment = {
+      name,
+      mimeType,
+      ...(typeof item.sizeBytes === "number" && Number.isFinite(item.sizeBytes)
+        ? { sizeBytes: Math.max(0, Math.trunc(item.sizeBytes)) }
+        : {}),
+    };
+
+    if (typeof item.text === "string" && item.text.trim()) {
+      if (item.text.length > MAX_ATTACHMENT_TEXT_CHARS) {
+        return { ok: false, error: `Attachment ${name} text is too large` };
+      }
+      attachment.text = item.text.trim();
+    }
+    if (typeof item.data === "string" && item.data.trim()) {
+      if (item.data.length > MAX_ATTACHMENT_DATA_CHARS) {
+        return { ok: false, error: `Attachment ${name} data is too large` };
+      }
+      attachment.data = item.data.trim();
+    }
+    if (typeof item.fileId === "string" && item.fileId.trim()) {
+      attachment.fileId = item.fileId.trim();
+    }
+    if (typeof item.url === "string" && item.url.trim()) {
+      attachment.url = item.url.trim();
+    }
+
+    if (
+      !attachment.text &&
+      !attachment.data &&
+      !attachment.fileId &&
+      !attachment.url
+    ) {
+      return { ok: false, error: `Attachment ${name} has no readable content` };
+    }
+
+    attachments.push(attachment);
+  }
+
+  return { ok: true, attachments };
+}
+
+function sanitizeAttachmentName(value: unknown, index: number): string {
+  const text = typeof value === "string" ? value.trim() : "";
+  const safe = text
+    .replace(/[\\/]/g, "_")
+    .replace(/[^\w.\-\u4e00-\u9fa5]/g, "_")
+    .slice(0, 120);
+  return safe || `attachment-${index + 1}`;
+}
+
+function sanitizeAttachmentMimeType(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const mimeType = value.trim().toLowerCase();
+  if (!mimeType) {
+    return null;
+  }
+
+  if (mimeType.startsWith("text/") || mimeType.startsWith("image/")) {
+    return mimeType;
+  }
+
+  const allowed = new Set([
+    "application/json",
+    "application/pdf",
+    "application/msword",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ]);
+
+  return allowed.has(mimeType) ? mimeType : null;
+}
+
+function buildAttachmentPromptText(attachments: AiAttachment[]): string {
+  return [
+    "Uploaded attachments:",
+    ...attachments.map((attachment, index) =>
+      [
+        `${index + 1}. ${attachment.name}`,
+        `type: ${attachment.mimeType}`,
+        attachment.sizeBytes === undefined
+          ? null
+          : `sizeBytes: ${attachment.sizeBytes}`,
+        attachment.text
+          ? `textPreview:\n${attachment.text.slice(0, 8000)}`
+          : "content: binary/file payload was provided to capable model providers",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    ),
+    "",
+    "Attachment rules:",
+    "1. Use attachments only as user-provided context for this answer.",
+    "2. If an attachment cannot be read by the selected model, say so clearly instead of guessing.",
+    "3. Do not treat attachments as saved knowledge-base content unless the user asks to save a human-confirmed draft.",
+  ].join("\n");
 }
 
 function sanitizeMessages(value: unknown): AiMessage[] {

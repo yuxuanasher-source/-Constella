@@ -78,6 +78,83 @@ describe("OverviewBoard AI panel", () => {
     expect(await screen.findByText("真实 DeepSeek 回复")).toBeInTheDocument();
   });
 
+  it("sends deep thinking mode and up to five attachments to the chat API", async () => {
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "深度思考" }));
+    const fileInput = screen.getByTestId("ai-attachment-input");
+    const files = Array.from(
+      { length: 5 },
+      (_, index) =>
+        new File([`attachment ${index + 1}`], `file-${index + 1}.txt`, {
+          type: "text/plain",
+        }),
+    );
+    fireEvent.change(fileInput, { target: { files } });
+
+    expect(await screen.findByText("file-5.txt")).toBeInTheDocument();
+
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "Analyze attachments" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith("/api/ai/chat", expect.anything()),
+    );
+    const chatCall = fetch.mock.calls.find(([url]) => url === "/api/ai/chat");
+    const payload = JSON.parse(chatCall[1].body);
+    expect(payload.mode).toBe("deep");
+    expect(payload.attachments).toHaveLength(5);
+    expect(payload.attachments[0]).toMatchObject({
+      name: "file-1.txt",
+      mimeType: "text/plain",
+      text: "attachment 1",
+    });
+    expect(payload.attachments[0].data).toContain("data:text/plain;base64");
+  });
+
+  it("keeps the assistant attachment list capped at five files", async () => {
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    const fileInput = screen.getByTestId("ai-attachment-input");
+    const fiveFiles = Array.from(
+      { length: 5 },
+      (_, index) =>
+        new File([`attachment ${index + 1}`], `file-${index + 1}.txt`, {
+          type: "text/plain",
+        }),
+    );
+    fireEvent.change(fileInput, { target: { files: fiveFiles } });
+    expect(await screen.findByText("file-5.txt")).toBeInTheDocument();
+
+    fireEvent.change(fileInput, {
+      target: {
+        files: [new File(["extra"], "file-6.txt", { type: "text/plain" })],
+      },
+    });
+
+    expect(await screen.findByText("最多支持 5 个附件")).toBeInTheDocument();
+    expect(screen.queryByText("file-6.txt")).not.toBeInTheDocument();
+  });
+
   it("routes the recap quick action through the knowledge-grounded chat API", async () => {
     render(
       <OverviewBoard

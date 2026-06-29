@@ -53,6 +53,23 @@ export type AiMessage = {
 
 export type AiCapability = "text" | "structured" | "tools" | "shadow";
 
+export type AiChatMode = "fast" | "deep";
+
+export type AiReasoningConfig = {
+  effort: "low" | "medium" | "high";
+  summary?: "auto" | "concise" | "detailed";
+};
+
+export type AiAttachment = {
+  name: string;
+  mimeType: string;
+  sizeBytes?: number;
+  text?: string;
+  data?: string;
+  fileId?: string;
+  url?: string;
+};
+
 export type AiProviderName =
   | "openai"
   | "hunyuan"
@@ -74,6 +91,9 @@ export type AiTextInput = {
   promptVersion: number;
   messages: AiMessage[];
   metadata?: Record<string, unknown>;
+  mode?: AiChatMode;
+  reasoning?: AiReasoningConfig;
+  attachments?: AiAttachment[];
 };
 
 export type AiStructuredInput = AiTextInput & {
