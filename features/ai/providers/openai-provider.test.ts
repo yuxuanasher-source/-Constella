@@ -60,6 +60,57 @@ describe("createOpenAiProvider", () => {
     );
   });
 
+  it("sends deep reasoning options and user file attachments to the Responses API", async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const fetchMock = vi.fn(async (_input: string, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          output_text: "attachment reviewed",
+          usage: { input_tokens: 20, output_tokens: 8, total_tokens: 28 },
+        }),
+      );
+    });
+    const provider = createOpenAiProvider({
+      apiKey: "secret",
+      model: "reasoning-model",
+      fetch: fetchMock,
+    });
+
+    const result = await provider.runText({
+      promptKey: "dashboard.ai.chat",
+      promptVersion: 1,
+      mode: "deep",
+      reasoning: { effort: "high", summary: "auto" },
+      messages: [{ role: "user", content: "read the attached finance sheet" }],
+      attachments: [
+        {
+          name: "finance.csv",
+          mimeType: "text/csv",
+          data: "data:text/csv;base64,cHJvamVjdCxyZXZlbnVlCg==",
+          sizeBytes: 128,
+        },
+      ],
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(requestBody?.reasoning).toEqual({ effort: "high", summary: "auto" });
+    const input = requestBody?.input as Array<Record<string, unknown>>;
+    expect(input.at(-1)?.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "input_text",
+          text: "read the attached finance sheet",
+        }),
+        expect.objectContaining({
+          type: "input_file",
+          filename: "finance.csv",
+          file_data: "data:text/csv;base64,cHJvamVjdCxyZXZlbnVlCg==",
+        }),
+      ]),
+    );
+  });
+
   it("parses structured JSON and never returns the API key in rawResponse", async () => {
     const provider = createOpenAiProvider({
       apiKey: "secret",

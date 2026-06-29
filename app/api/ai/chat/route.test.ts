@@ -410,6 +410,92 @@ describe("POST /api/ai/chat", () => {
     expect(groundedText).toContain("Nova Launch");
   });
 
+  it("forwards deep mode reasoning options and sanitized attachments to the gateway", async () => {
+    createConfiguredAiProvidersMock.mockReturnValueOnce([
+      { name: "openai", capabilities: ["text"] },
+      { name: "deepseek", capabilities: ["text"] },
+    ]);
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          mode: "deep",
+          messages: [{ role: "user", content: "Analyze the attached sheet" }],
+          attachments: [
+            {
+              name: "finance.csv",
+              mimeType: "text/csv",
+              sizeBytes: 128,
+              data: "data:text/csv;base64,cHJvamVjdCxyZXZlbnVlCg==",
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runAiGatewayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        primaryProvider: "openai",
+        request: expect.objectContaining({
+          kind: "text",
+          mode: "deep",
+          reasoning: { effort: "high", summary: "auto" },
+          attachments: [
+            expect.objectContaining({
+              name: "finance.csv",
+              mimeType: "text/csv",
+              data: "data:text/csv;base64,cHJvamVjdCxyZXZlbnVlCg==",
+            }),
+          ],
+        }),
+      }),
+    );
+    const messages = runAiGatewayMock.mock.calls[0][0].request.messages;
+    const promptText = messages
+      .map((message: { content: string }) => message.content)
+      .join("\n");
+    expect(promptText).toContain("Uploaded attachments");
+    expect(promptText).toContain("finance.csv");
+    expect(recordAiInvocationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          metadata: expect.objectContaining({
+            chatMode: "deep",
+            attachmentCount: 1,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("rejects chat requests with more than five attachments", async () => {
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "Analyze these files" }],
+          attachments: Array.from({ length: 6 }, (_, index) => ({
+            name: `file-${index + 1}.txt`,
+            mimeType: "text/plain",
+            sizeBytes: 10,
+            text: "hello",
+          })),
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("five attachments"),
+    });
+    expect(runAiGatewayMock).not.toHaveBeenCalled();
+  });
+
   it("stops instead of asking the model when real dashboard data cannot be loaded", async () => {
     loadRoleHomeDashboardMock.mockRejectedValue(
       new Error("dashboard unavailable"),

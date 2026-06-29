@@ -104,6 +104,24 @@ function normalizeVisualSeries(value) {
 }
 
 const AI_PANEL_STORAGE_PREFIX = "jingying-cabin.dashboard.ai.messages.v1";
+const AI_CHAT_ATTACHMENT_LIMIT = 5;
+const AI_CHAT_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024;
+const AI_CHAT_ATTACHMENT_ACCEPT = [
+  ".csv",
+  ".txt",
+  ".md",
+  ".json",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "text/*",
+  "application/pdf",
+].join(",");
 
 function aiPanelStorageKey(user) {
   const identity = user?.id || user?.name || user?.role || "anonymous";
@@ -350,6 +368,65 @@ function saveStoredAiMessages(storageKey, messages) {
   } catch {
     // Ignore storage quota or privacy-mode failures; chat still works in memory.
   }
+}
+
+function fileToAiAttachment(file) {
+  if (file.size > AI_CHAT_ATTACHMENT_MAX_BYTES) {
+    return Promise.reject(new Error(`附件 ${file.name} 超过 8MB`));
+  }
+
+  return Promise.all([
+    readFileAsDataUrl(file),
+    shouldReadAttachmentText(file) ? readFileAsText(file) : Promise.resolve(""),
+  ]).then(([data, text]) => ({
+    name: file.name || "attachment",
+    mimeType: inferAttachmentMimeType(file),
+    sizeBytes: file.size,
+    data,
+    ...(text ? { text: text.slice(0, 120_000) } : {}),
+  }));
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`附件 ${file.name} 读取失败`));
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.readAsDataURL(file);
+  });
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onerror = () => resolve("");
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.readAsText(file);
+  });
+}
+
+function shouldReadAttachmentText(file) {
+  const mimeType = inferAttachmentMimeType(file);
+  return (
+    mimeType.startsWith("text/") ||
+    /\.(csv|txt|md|markdown|json|log)$/i.test(file.name || "")
+  );
+}
+
+function inferAttachmentMimeType(file) {
+  if (file.type) return file.type;
+  if (/\.csv$/i.test(file.name || "")) return "text/csv";
+  if (/\.json$/i.test(file.name || "")) return "application/json";
+  if (/\.md|\.markdown$/i.test(file.name || "")) return "text/markdown";
+  if (/\.txt|\.log$/i.test(file.name || "")) return "text/plain";
+  if (/\.pdf$/i.test(file.name || "")) return "application/pdf";
+  if (/\.docx$/i.test(file.name || "")) {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  }
+  if (/\.xlsx$/i.test(file.name || "")) {
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  }
+  return "application/octet-stream";
 }
 
 function fmtKpi(value, unit) {
@@ -2322,10 +2399,14 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   );
   const [draft, setDraft] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [mode, setMode] = React.useState("fast");
+  const [attachments, setAttachments] = React.useState([]);
+  const [attachmentError, setAttachmentError] = React.useState("");
   const name =
     (user?.name && user.name !== "未登录用户" ? user.name : null) ||
     "经营舱用户";
   const bodyRef = React.useRef(null);
+  const fileInputRef = React.useRef(null);
   React.useEffect(() => {
     if (bodyRef.current)
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -2345,9 +2426,21 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       }))
       .concat([{ role: "user", content: userText }]);
 
-  async function run(kind, userText) {
+  async function run(kind, userText, options = {}) {
     if (busy) return;
-    push("user", userText);
+    const requestMode = options.mode || mode;
+    const requestAttachments = options.attachments || [];
+    push(
+      "user",
+      userText,
+      requestAttachments.length
+        ? {
+            attachmentNames: requestAttachments.map(
+              (attachment) => attachment.name,
+            ),
+          }
+        : undefined,
+    );
     setBusy(true);
     try {
       let text = "";
@@ -2369,7 +2462,11 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         const res = await fetch("/api/ai/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: chatHistory(userText) }),
+          body: JSON.stringify({
+            messages: chatHistory(userText),
+            mode: requestMode,
+            attachments: requestAttachments,
+          }),
         });
         const json = await res.json();
         meta = normalizeAiMessageMeta(json);
@@ -2386,6 +2483,10 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         const json = await res.json();
         if (!res.ok) throw new Error(json?.error || "AI 诊断调用失败");
         text = extractAiText(json);
+      }
+      if (kind === "ask") {
+        setAttachments([]);
+        setAttachmentError("");
       }
       push("ai", text, meta);
     } catch (e) {
@@ -2413,8 +2514,31 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   const send = () => {
     const t = draft.trim();
     if (!t) return;
+    const selectedAttachments = attachments;
     setDraft("");
-    run("ask", t);
+    run("ask", t, { mode, attachments: selectedAttachments });
+  };
+
+  const handleAttachmentChange = async (event) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (!files.length) return;
+    if (attachments.length + files.length > AI_CHAT_ATTACHMENT_LIMIT) {
+      setAttachmentError(`最多支持 ${AI_CHAT_ATTACHMENT_LIMIT} 个附件`);
+      return;
+    }
+
+    try {
+      setAttachmentError("");
+      const nextAttachments = await Promise.all(files.map(fileToAiAttachment));
+      setAttachments((current) =>
+        current.concat(nextAttachments).slice(0, AI_CHAT_ATTACHMENT_LIMIT),
+      );
+    } catch (error) {
+      setAttachmentError(
+        error instanceof Error ? error.message : "附件读取失败，请重新选择",
+      );
+    }
   };
   const quick = (icon, bg, stroke, title, sub, onClick) => (
     <button
@@ -2532,6 +2656,47 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         >
           Beta
         </span>
+      </div>
+      <div
+        aria-label="AI 回复模式"
+        role="group"
+        style={{
+          display: "flex",
+          gap: 6,
+          padding: "9px 12px 0",
+          background: "rgba(255,255,255,.55)",
+        }}
+      >
+        {[
+          ["fast", "快速"],
+          ["deep", "深度思考"],
+        ].map(([itemMode, label]) => {
+          const active = mode === itemMode;
+          return (
+            <button
+              key={itemMode}
+              type="button"
+              onClick={() => setMode(itemMode)}
+              disabled={busy}
+              style={{
+                flex: 1,
+                border: `1px solid ${active ? C.primary : C.border}`,
+                borderRadius: 9,
+                background: active ? C.primarySoft : "#fff",
+                color: active ? C.primaryDeep : C.muted,
+                fontSize: 12,
+                fontWeight: 700,
+                padding: "6px 8px",
+                cursor: busy ? "default" : "pointer",
+                boxShadow: active
+                  ? "inset 0 0 0 1px rgba(85,102,230,.08)"
+                  : "none",
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
       {/* 对话区 */}
       <div
@@ -2785,6 +2950,76 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           background: "#fff",
         }}
       >
+        {attachments.length || attachmentError ? (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              marginBottom: 8,
+            }}
+          >
+            {attachments.map((attachment, index) => (
+              <span
+                key={`${attachment.name}-${index}`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  maxWidth: "100%",
+                  borderRadius: 999,
+                  border: `1px solid ${C.border}`,
+                  background: C.primarySoft,
+                  color: C.ink2,
+                  fontSize: 11.5,
+                  padding: "4px 7px",
+                }}
+              >
+                <span
+                  style={{
+                    maxWidth: 150,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {attachment.name}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`移除 ${attachment.name}`}
+                  onClick={() =>
+                    setAttachments((current) =>
+                      current.filter((_, itemIndex) => itemIndex !== index),
+                    )
+                  }
+                  style={{
+                    border: 0,
+                    background: "transparent",
+                    color: C.muted,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    lineHeight: 1,
+                    padding: 0,
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            {attachmentError ? (
+              <span
+                style={{
+                  color: C.danger,
+                  fontSize: 11.5,
+                  padding: "4px 0",
+                }}
+              >
+                {attachmentError}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         <div
           style={{
             display: "flex",
@@ -2796,18 +3031,39 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
             padding: "7px 7px 7px 13px",
           }}
         >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="#aeb3bf"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+          <button
+            type="button"
+            aria-label="上传附件"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={busy}
+            style={{
+              width: 22,
+              height: 22,
+              borderRadius: 7,
+              border: 0,
+              background: "transparent",
+              color: "#aeb3bf",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: busy ? "default" : "pointer",
+              flexShrink: 0,
+              padding: 0,
+            }}
           >
-            <path d="M12 5v14M5 12h14" />
-          </svg>
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
           <input
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -2828,6 +3084,15 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
               fontFamily: "inherit",
               minWidth: 0,
             }}
+          />
+          <input
+            ref={fileInputRef}
+            data-testid="ai-attachment-input"
+            type="file"
+            multiple
+            accept={AI_CHAT_ATTACHMENT_ACCEPT}
+            onChange={handleAttachmentChange}
+            style={{ display: "none" }}
           />
           <button
             type="button"

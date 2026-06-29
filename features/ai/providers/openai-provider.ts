@@ -1,8 +1,10 @@
 import type {
+  AiAttachment,
   AiCostEstimate,
   AiMessage,
   AiProvider,
   AiProviderResult,
+  AiReasoningConfig,
   AiStructuredInput,
   AiTextInput,
   AiTool,
@@ -95,8 +97,9 @@ async function runOpenAiRequest({
       },
       body: JSON.stringify({
         model,
-        input: toResponsesInput(input.messages),
+        input: toResponsesInput(input.messages, input.attachments),
         metadata: input.metadata,
+        ...(input.reasoning ? { reasoning: toOpenAiReasoning(input.reasoning) } : {}),
         ...(tools?.length ? { tools: tools.map(toOpenAiTool) } : {}),
       }),
     });
@@ -152,11 +155,28 @@ async function runOpenAiRequest({
 
 function toResponsesInput(
   messages: AiMessage[],
-): Array<Record<string, string>> {
-  return messages.map((message) => ({
-    role: message.role === "tool" ? "user" : message.role,
-    content: message.content,
-  }));
+  attachments: AiAttachment[] = [],
+): Array<Record<string, unknown>> {
+  const lastUserMessageIndex = messages.reduce(
+    (lastIndex, message, index) => (message.role === "user" ? index : lastIndex),
+    -1,
+  );
+  const openAiAttachmentParts = attachments.flatMap(toOpenAiAttachmentPart);
+
+  return messages.map((message, index) => {
+    const role = message.role === "tool" ? "user" : message.role;
+    if (index !== lastUserMessageIndex || openAiAttachmentParts.length === 0) {
+      return { role, content: message.content };
+    }
+
+    return {
+      role,
+      content: [
+        { type: "input_text", text: message.content },
+        ...openAiAttachmentParts,
+      ],
+    };
+  });
 }
 
 function toOpenAiTool(tool: AiTool<unknown, unknown>): Record<string, unknown> {
@@ -166,6 +186,54 @@ function toOpenAiTool(tool: AiTool<unknown, unknown>): Record<string, unknown> {
     description: tool.description,
     parameters: normalizeSchemaObject(tool.inputSchema),
   };
+}
+
+function toOpenAiReasoning(
+  reasoning: AiReasoningConfig,
+): Record<string, string> {
+  return {
+    effort: reasoning.effort,
+    ...(reasoning.summary ? { summary: reasoning.summary } : {}),
+  };
+}
+
+function toOpenAiAttachmentPart(
+  attachment: AiAttachment,
+): Array<Record<string, string>> {
+  if (attachment.fileId?.trim()) {
+    return [{ type: "input_file", file_id: attachment.fileId.trim() }];
+  }
+
+  if (attachment.url?.trim()) {
+    return [
+      {
+        type: "input_file",
+        filename: attachment.name,
+        file_url: attachment.url.trim(),
+      },
+    ];
+  }
+
+  if (attachment.data?.trim()) {
+    return [
+      {
+        type: "input_file",
+        filename: attachment.name,
+        file_data: attachment.data.trim(),
+      },
+    ];
+  }
+
+  if (attachment.text?.trim()) {
+    return [
+      {
+        type: "input_text",
+        text: `Attachment ${attachment.name} (${attachment.mimeType}):\n${attachment.text.trim()}`,
+      },
+    ];
+  }
+
+  return [];
 }
 
 function withJsonInstruction<T extends AiStructuredInput>(input: T): T {
