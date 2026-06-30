@@ -2381,9 +2381,73 @@ function countActionableTasks(tasks) {
   }).length;
 }
 
+function normalizeReferenceReportStatus(report) {
+  const status = report?.status;
+  const reviewStatus = report?.reviewStatus || report?.review_status;
+
+  if (status === "pending_adjudication") return "pending_review";
+  if (status === "need_more") return "need_supply";
+
+  if (
+    status === "submitted" &&
+    ["pending", "pending_review", "submitted"].includes(reviewStatus)
+  ) {
+    return "pending_review";
+  }
+
+  return status || "pending_review";
+}
+
+function normalizeReferenceReports(reports) {
+  if (!Array.isArray(reports)) return reports ?? null;
+
+  return reports.map((report) => {
+    const timeSource = report.timeSource || report.time_source;
+    const settlementDuration =
+      report.settlementDuration ?? report.settlement_duration ?? 0;
+    return {
+      ...report,
+      date:
+        report.date ||
+        String(
+          report.submittedAt ||
+            report.submitted_at ||
+            report.createdAt ||
+            report.created_at ||
+            "",
+        ).slice(0, 10),
+      streamer: report.streamer || report.streamerName || "Unknown streamer",
+      streamerId:
+        report.streamerId ||
+        report.streamer_id ||
+        report.streamerName ||
+        report.streamer ||
+        "Unknown streamer",
+      project: report.project || report.projectName || "Unknown project",
+      taskId:
+        report.taskId || report.task_id || report.taskTitle || "Unknown task",
+      duration:
+        report.duration ?? Math.round((settlementDuration / 60) * 10) / 10,
+      audience: report.audience ?? report.viewers ?? 0,
+      status: normalizeReferenceReportStatus(report),
+      screens:
+        report.screens ??
+        report.screenshotCount ??
+        report.screenshot_count ??
+        1,
+      source: report.source || (timeSource === "claimed" ? "manual" : "OCR"),
+      note:
+        report.note ||
+        `${timeSource ?? "unknown"} · ${report.evidenceLevel ?? report.evidence_level ?? "unknown"}`,
+    };
+  });
+}
+
 function countActionableReports(reports) {
   return reports.filter((report) =>
-    ["pending_review", "need_supply"].includes(report?.status),
+    ["pending_review", "need_supply"].includes(
+      normalizeReferenceReportStatus(report),
+    ),
   ).length;
 }
 
@@ -26784,7 +26848,9 @@ function OpsReferenceInner({
   const [streamerId, setStreamerId] = React.useState(null);
   const [dashboardTarget, setDashboardTarget] = React.useState(null);
   const [tasksState, setTasksState] = React.useState(liveTasks ?? null);
-  const [reportsState, setReportsState] = React.useState(liveReports ?? null);
+  const [reportsState, setReportsState] = React.useState(() =>
+    normalizeReferenceReports(liveReports),
+  );
   const [batchesState, setBatchesState] = React.useState(liveBatches ?? null);
   const [batchDetailsState, setBatchDetailsState] = React.useState(
     liveBatchDetails ?? null,
@@ -26838,7 +26904,7 @@ function OpsReferenceInner({
   }, [liveTasks]);
 
   React.useEffect(() => {
-    setReportsState(liveReports ?? null);
+    setReportsState(normalizeReferenceReports(liveReports));
   }, [liveReports]);
 
   React.useEffect(() => {

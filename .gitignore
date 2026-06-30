@@ -37,6 +37,16 @@ outputs/
 ~$*
 *.tmp
 
+# local agent/editor workspaces
+/.agents/
+/.claude/
+/.codex/
+/.claudian/
+/.impeccable/
+/.obsidian/
+/.github/hooks/
+/.github/skills/
+
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example

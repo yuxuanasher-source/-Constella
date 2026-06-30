@@ -7137,6 +7137,44 @@ describe("OpsReferenceApp war room smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  it("normalizes submitted pending report props before opening the report review queue", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+        liveReports={[
+          {
+            id: "report-review",
+            taskId: "task-risk",
+            projectId: "project-live",
+            projectName: "Fixture Project",
+            streamerId: "streamer-one",
+            streamerName: "Streamer One",
+            reviewStatus: "pending",
+            status: "submitted",
+            evidenceLevel: "yellow",
+            settlementDuration: 90,
+            viewers: 1200,
+            timeSource: "claimed",
+            submittedAt: "2026-06-28T12:05:00.000Z",
+          },
+        ]}
+      />,
+    );
+
+    const pendingActionButton = screen.getByRole("button", {
+      name: /待处理事项[\s\S]*审核 1/,
+    });
+
+    fireEvent.click(pendingActionButton);
+
+    expect(screen.getAllByText("报数审核").length).toBeGreaterThan(0);
+    expect(screen.getByText("Streamer One")).toBeInTheDocument();
+    expect(screen.getByText("Fixture Project")).toBeInTheDocument();
+    expect(screen.getAllByText("待审核").length).toBeGreaterThan(0);
+  });
+
   it("keeps the war-room surface free of explanatory helper copy", () => {
     render(
       <OpsReferenceApp
