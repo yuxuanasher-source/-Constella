@@ -1,4 +1,10 @@
 import type { AiDraftForConfirmation } from "./draft-repository";
+import {
+  upsertKnowledgeAssetDocument,
+  type KnowledgeAssetDocType,
+  type KnowledgeAssetIndexClient,
+  type KnowledgeAssetMetadata,
+} from "./knowledge-asset-index";
 
 export type CapturedKnowledgeDocument = { id: string };
 
@@ -10,20 +16,10 @@ export type KnowledgeCaptureDocument = {
   sourceRef: string;
   tags: string[];
   createdBy: string;
+  metadata: KnowledgeAssetMetadata;
 };
 
-export type KnowledgeCaptureClient = {
-  from(table: "knowledge_documents"): {
-    insert(payload: Record<string, unknown>): {
-      select(columns: string): {
-        single(): PromiseLike<{
-          data: { id: string } | null;
-          error: { message?: string } | Error | null;
-        }>;
-      };
-    };
-  };
-};
+export type KnowledgeCaptureClient = KnowledgeAssetIndexClient;
 
 export function buildConfirmedDraftKnowledgeDocument(input: {
   draft: AiDraftForConfirmation;
@@ -46,6 +42,9 @@ export function buildConfirmedDraftKnowledgeDocument(input: {
     sourceRef,
     tags: tagsForDraft(input.draft, docType),
     createdBy: input.confirmedBy,
+    metadata: {
+      source: "ai_draft",
+    },
   };
 }
 
@@ -58,32 +57,24 @@ export async function captureConfirmedDraftKnowledgeDocument(
   },
 ): Promise<CapturedKnowledgeDocument> {
   const doc = buildConfirmedDraftKnowledgeDocument(input);
-  const { data, error } = await client
-    .from("knowledge_documents")
-    .insert({
-      organization_id: doc.organizationId,
-      doc_type: doc.docType,
-      title: doc.title,
-      body: doc.body,
-      source_ref: doc.sourceRef,
-      tags: doc.tags,
-      created_by: doc.createdBy,
-    })
-    .select("id")
-    .single();
-
-  if (error) {
-    throw new Error(error.message || "Failed to capture AI draft knowledge");
-  }
-  if (!data?.id) {
-    throw new Error("Failed to capture AI draft knowledge");
-  }
-  return { id: data.id };
+  return upsertKnowledgeAssetDocument(client, {
+    organizationId: doc.organizationId,
+    docType: doc.docType,
+    title: doc.title,
+    body: doc.body,
+    sourceRef: doc.sourceRef,
+    tags: doc.tags,
+    createdBy: doc.createdBy,
+    metadata: doc.metadata,
+  });
 }
 
 function docTypeForDraft(
   draftType: string,
-): KnowledgeCaptureDocument["docType"] {
+): Extract<
+  KnowledgeAssetDocType,
+  "retrospective" | "playbook" | "settlement_rule" | "manual"
+> {
   if (draftType === "retrospective") return "retrospective";
   if (draftType === "suggested_action_todo") return "playbook";
   if (draftType === "settlement_batch") return "settlement_rule";
@@ -156,7 +147,9 @@ function retrospectiveBody(payload: Record<string, unknown>): string[] {
     const value = stringValue(metric.value);
     const unit = stringValue(metric.unit);
     const source = stringValue(metric.sourceRef) || "unknown";
-    lines.push(`- ${label}: ${value}${unit ? ` ${unit}` : ""} (source: ${source})`);
+    lines.push(
+      `- ${label}: ${value}${unit ? ` ${unit}` : ""} (source: ${source})`,
+    );
   }
 
   lines.push("", "## Review prompts");
@@ -172,7 +165,9 @@ function retrospectiveBody(payload: Record<string, unknown>): string[] {
   }
 
   lines.push("", "## References");
-  const references = Array.isArray(payload.references) ? payload.references : [];
+  const references = Array.isArray(payload.references)
+    ? payload.references
+    : [];
   if (!references.length) {
     lines.push("- No knowledge references were attached.");
   }

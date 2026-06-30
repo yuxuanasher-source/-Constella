@@ -1,5 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import {
+  syncLiveReviewDocumentToIndex,
+  type KnowledgeAssetIndexClient,
+} from "@/features/ai/knowledge-asset-index";
 import { writeAuditLog } from "@/lib/audit/audit";
 import { isMcnStaff } from "@/lib/rbac/roles";
 import type { AppRole } from "@/lib/rbac/roles";
@@ -73,7 +77,17 @@ export async function saveLiveReviewDocument(
     after: { title: input.title },
   });
 
-  return toLiveReviewDocumentDto(data);
+  const document = toLiveReviewDocumentDto(data);
+  await syncLiveReviewDocumentToIndex(
+    client as unknown as KnowledgeAssetIndexClient,
+    {
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId,
+      document,
+    },
+  );
+
+  return document;
 }
 
 export async function listLiveReviewDocuments(

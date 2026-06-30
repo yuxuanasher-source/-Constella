@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 
+import {
+  syncKnowledgeStoreToIndex,
+  type KnowledgeAssetIndexClient,
+} from "@/features/ai/knowledge-asset-index";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import {
@@ -19,23 +23,32 @@ function cosKey(organizationId: string) {
   return `knowledge-base/${organizationId}/tree.json`;
 }
 
-async function resolveOrgId(): Promise<string | null> {
+async function resolveContext(): Promise<{
+  supabase: KnowledgeAssetIndexClient;
+  organizationId: string;
+  userId: string;
+} | null> {
   const supabase = await createSupabaseServerClient();
   if (!supabase) return null;
   const auth = await getAuthContext(supabase);
-  return auth?.organizationId ?? null;
+  if (!auth) return null;
+  return {
+    supabase: supabase as unknown as KnowledgeAssetIndexClient,
+    organizationId: auth.organizationId,
+    userId: auth.userId,
+  };
 }
 
 export async function GET() {
   try {
-    const organizationId = await resolveOrgId();
-    if (!organizationId) {
+    const context = await resolveContext();
+    if (!context) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     if (!isCosConfigured()) {
       return NextResponse.json({ store: null, configured: false });
     }
-    const store = await cosGetJson(cosKey(organizationId));
+    const store = await cosGetJson(cosKey(context.organizationId));
     return NextResponse.json({ store, configured: true });
   } catch (error) {
     return NextResponse.json(
@@ -47,8 +60,8 @@ export async function GET() {
 
 export async function PUT(request: Request) {
   try {
-    const organizationId = await resolveOrgId();
-    if (!organizationId) {
+    const context = await resolveContext();
+    if (!context) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     if (!isCosConfigured()) {
@@ -68,8 +81,16 @@ export async function PUT(request: Request) {
         { status: 413 },
       );
     }
-    await cosPutJson(cosKey(organizationId), store);
-    return NextResponse.json({ ok: true });
+    await cosPutJson(cosKey(context.organizationId), store);
+    const indexResult = await syncKnowledgeStoreToIndex(context.supabase, {
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      store,
+    });
+    return NextResponse.json({
+      ok: true,
+      indexedCount: indexResult.indexedCount,
+    });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unexpected error" },
