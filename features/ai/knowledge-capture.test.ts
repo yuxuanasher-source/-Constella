@@ -102,14 +102,14 @@ describe("buildConfirmedDraftKnowledgeDocument", () => {
 });
 
 describe("captureConfirmedDraftKnowledgeDocument", () => {
-  it("inserts the built document into knowledge_documents", async () => {
+  it("upserts the built document into knowledge_documents", async () => {
     const single = vi.fn().mockResolvedValue({
       data: { id: "kb-1" },
       error: null,
     });
     const select = vi.fn(() => ({ single }));
-    const insert = vi.fn(() => ({ select }));
-    const from = vi.fn(() => ({ insert }));
+    const upsert = vi.fn(() => ({ select }));
+    const from = vi.fn(() => ({ upsert }));
 
     const result = await captureConfirmedDraftKnowledgeDocument(
       { from } as unknown as KnowledgeCaptureClient,
@@ -121,13 +121,14 @@ describe("captureConfirmedDraftKnowledgeDocument", () => {
     );
 
     expect(from).toHaveBeenCalledWith("knowledge_documents");
-    expect(insert).toHaveBeenCalledWith(
+    expect(upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         organization_id: "org-1",
         doc_type: "retrospective",
         source_ref: "ai_draft:draft-review-1",
         created_by: "user-owner",
       }),
+      { onConflict: "organization_id,source_ref" },
     );
     expect(result).toEqual({ id: "kb-1" });
   });

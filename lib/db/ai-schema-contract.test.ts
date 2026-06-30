@@ -108,4 +108,13 @@ describe("AI runtime schema contract", () => {
     expect(allMigrations).toContain("cost_cents integer not null default 0");
     expect(allMigrations).not.toMatch(/\s(double precision|real)(\s|,|\))/);
   });
+
+  it("keeps knowledge documents upsertable and metadata rich", () => {
+    expect(allMigrations).toMatch(
+      /alter table public\.knowledge_documents[\s\S]*add column if not exists metadata jsonb not null default '\{\}'::jsonb/,
+    );
+    expect(allMigrations).toContain(
+      "on public.knowledge_documents (organization_id, source_ref)",
+    );
+  });
 });
