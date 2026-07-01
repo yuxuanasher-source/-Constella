@@ -6,6 +6,7 @@ import {
   countUnreadNotificationCenterItems,
   listNotificationCenterItems,
 } from "@/features/notifications/notification-center-queries";
+import { listStreamerRecordingAssets } from "@/features/recordings/recording-asset-library";
 import { listStreamerProjectAnnouncements } from "@/features/recordings/project-announcements";
 import { listStreamerRecordingLinks } from "@/features/recordings/streamer-recording-library";
 import { getStreamerProfileRow } from "@/features/streamers/streamer-queries";
@@ -34,6 +35,10 @@ vi.mock("@/features/notifications/notification-center-queries", () => ({
 
 vi.mock("@/features/recordings/project-announcements", () => ({
   listStreamerProjectAnnouncements: vi.fn(),
+}));
+
+vi.mock("@/features/recordings/recording-asset-library", () => ({
+  listStreamerRecordingAssets: vi.fn(),
 }));
 
 vi.mock("@/features/recordings/streamer-recording-library", () => ({
@@ -80,6 +85,7 @@ describe("StreamerDesktopPage data loading", () => {
       alias: "Streamer",
     } as never);
     vi.mocked(listStreamerRecordingLinks).mockResolvedValue([]);
+    vi.mocked(listStreamerRecordingAssets).mockResolvedValue([]);
     vi.mocked(listStreamerProjectAnnouncements).mockResolvedValue([]);
   });
 
@@ -93,6 +99,11 @@ describe("StreamerDesktopPage data loading", () => {
     expect(listStreamerRecordingLinks).toHaveBeenCalledWith(supabase, {
       organizationId: "org-1",
       streamerId: "streamer-1",
+    });
+    expect(listStreamerRecordingAssets).toHaveBeenCalledWith(supabase, {
+      organizationId: "org-1",
+      streamerId: "streamer-1",
+      bucket: "jy-private",
     });
     expect(listStreamerProjectAnnouncements).toHaveBeenCalledWith(supabase, {
       organizationId: "org-1",

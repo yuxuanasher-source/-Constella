@@ -1,6 +1,8 @@
 import StreamerMobileReferenceApp from "@/components/reference-ui/streamer-mobile-reference";
+import { listStreamerRecordingAssets } from "@/features/recordings/recording-asset-library";
 import { listStreamerProjectAnnouncements } from "@/features/recordings/project-announcements";
 import { listStreamerRecordingLinks } from "@/features/recordings/streamer-recording-library";
+import { getPrivateStorageBucket } from "@/lib/config/env";
 
 import {
   getStreamerMobileContext,
@@ -9,7 +11,7 @@ import {
 
 export default async function StreamerRecordingsPage() {
   const context = await getStreamerMobileContext();
-  const { recordings, projectAnnouncements } =
+  const { recordings, recordingAssets, projectAnnouncements } =
     await loadStreamerRecordingPageData(context);
 
   return (
@@ -18,6 +20,7 @@ export default async function StreamerRecordingsPage() {
         initialRoute="videos"
         profile={context?.profile ?? undefined}
         recordings={recordings}
+        recordingAssets={recordingAssets}
         projectAnnouncements={projectAnnouncements}
       />
     </div>
@@ -28,7 +31,11 @@ async function loadStreamerRecordingPageData(
   context: StreamerMobileContext | null,
 ) {
   if (!context) {
-    return { recordings: undefined, projectAnnouncements: undefined };
+    return {
+      recordings: undefined,
+      recordingAssets: undefined,
+      projectAnnouncements: undefined,
+    };
   }
 
   const input = {
@@ -36,10 +43,16 @@ async function loadStreamerRecordingPageData(
     streamerId: context.streamerId,
   };
 
-  const [recordings, projectAnnouncements] = await Promise.all([
-    listStreamerRecordingLinks(context.supabase, input),
-    listStreamerProjectAnnouncements(context.supabase, input),
-  ]);
+  const [recordings, recordingAssets, projectAnnouncements] = await Promise.all(
+    [
+      listStreamerRecordingLinks(context.supabase, input),
+      listStreamerRecordingAssets(context.supabase, {
+        ...input,
+        bucket: getPrivateStorageBucket(),
+      }),
+      listStreamerProjectAnnouncements(context.supabase, input),
+    ],
+  );
 
-  return { recordings, projectAnnouncements };
+  return { recordings, recordingAssets, projectAnnouncements };
 }

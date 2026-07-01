@@ -6,11 +6,13 @@ import {
   listNotificationCenterItems,
   type NotificationQueryClient,
 } from "@/features/notifications/notification-center-queries";
+import { listStreamerRecordingAssets } from "@/features/recordings/recording-asset-library";
 import { listStreamerProjectAnnouncements } from "@/features/recordings/project-announcements";
 import { listStreamerRecordingLinks } from "@/features/recordings/streamer-recording-library";
 import { getStreamerProfileRow } from "@/features/streamers/streamer-queries";
 import { toStreamerDesktopProfileDto } from "@/features/streamers/streamer-ui-dto";
 import { getAuthContext } from "@/lib/auth/context";
+import { getPrivateStorageBucket } from "@/lib/config/env";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
 export default async function StreamerDesktopPage() {
@@ -20,6 +22,7 @@ export default async function StreamerDesktopPage() {
     notificationData,
     profile,
     recordings,
+    recordingAssets,
     projectAnnouncements,
   ] = context
     ? await Promise.all([
@@ -27,9 +30,10 @@ export default async function StreamerDesktopPage() {
         loadStreamerNotifications(context),
         loadStreamerProfile(context),
         loadStreamerRecordings(context),
+        loadStreamerRecordingAssets(context),
         loadStreamerProjectAnnouncements(context),
       ])
-    : [null, null, null, null, null];
+    : [null, null, null, null, null, null];
 
   return (
     <StreamerDesktopReferenceApp
@@ -39,6 +43,7 @@ export default async function StreamerDesktopPage() {
       notificationUnreadCount={notificationData?.unreadCount}
       profile={profile}
       recordings={recordings}
+      recordingAssets={recordingAssets}
       projectAnnouncements={projectAnnouncements}
     />
   );
@@ -102,6 +107,14 @@ async function loadStreamerRecordings(context: StreamerDesktopContext) {
   return listStreamerRecordingLinks(context.supabase, {
     organizationId: context.auth.organizationId,
     streamerId: context.streamerId,
+  });
+}
+
+async function loadStreamerRecordingAssets(context: StreamerDesktopContext) {
+  return listStreamerRecordingAssets(context.supabase, {
+    organizationId: context.auth.organizationId,
+    streamerId: context.streamerId,
+    bucket: getPrivateStorageBucket(),
   });
 }
 

@@ -9,6 +9,7 @@ import {
   listStreamerRecordingLinks,
 } from "@/features/recordings/streamer-recording-library";
 import { submitProjectRecording } from "@/features/recordings/project-recording-delivery";
+import { listStreamerRecordingAssets } from "@/features/recordings/recording-asset-library";
 
 vi.mock("@/features/live-operations/live-operations-repository", () => ({
   getStreamerIdForUser: vi.fn(),
@@ -52,6 +53,10 @@ vi.mock("@/features/recordings/project-recording-delivery", () => ({
   submitProjectRecording: vi.fn(),
 }));
 
+vi.mock("@/features/recordings/recording-asset-library", () => ({
+  listStreamerRecordingAssets: vi.fn(),
+}));
+
 const context = {
   supabase: { client: "supabase" },
   auth: {
@@ -81,6 +86,35 @@ describe("streamer recordings route", () => {
         status: "submitted",
         statusLabel: "待审核",
         submittedAt: "2026-06-03T10:00:00.000Z",
+      },
+    ]);
+    vi.mocked(listStreamerRecordingAssets).mockResolvedValue([
+      {
+        id: "asset-1",
+        title: "项目录屏 v1",
+        assetKind: "project_submission",
+        reviewStatus: "submitted",
+        reviewStatusLabel: "待审核",
+        previewState: "private_file",
+        durationSeconds: 900,
+        projectId: "project-1",
+        applicationId: "application-1",
+        createdAt: "2026-07-01T09:00:00.000Z",
+        updatedAt: "2026-07-01T09:00:00.000Z",
+        primarySource: {
+          id: "source-1",
+          sourceKind: "storage_object",
+          previewState: "private_file",
+          previewMode: "private_file",
+          provider: "private_storage",
+          externalUrl: null,
+          storagePath: "org-1/recordings/project-1/demo.mp4",
+          openUrl: null,
+          embedUrl: null,
+          downloadUrl: "https://download.local/demo.mp4",
+          submittedAt: "2026-07-01T09:00:00.000Z",
+        },
+        sources: [],
       },
     ]);
     vi.mocked(createStreamerRecordingLink).mockResolvedValue({
@@ -119,10 +153,23 @@ describe("streamer recordings route", () => {
           month: "2026-06",
         }),
       ],
+      recordingAssets: [
+        expect.objectContaining({
+          id: "asset-1",
+          primarySource: expect.objectContaining({
+            previewMode: "private_file",
+          }),
+        }),
+      ],
     });
     expect(listStreamerRecordingLinks).toHaveBeenCalledWith(context.supabase, {
       organizationId: "org-1",
       streamerId: "streamer-1",
+    });
+    expect(listStreamerRecordingAssets).toHaveBeenCalledWith(context.supabase, {
+      organizationId: "org-1",
+      streamerId: "streamer-1",
+      bucket: "jy-private",
     });
   });
 
@@ -195,6 +242,32 @@ describe("streamer recordings route", () => {
       }),
     );
     expect(createStreamerRecordingLink).not.toHaveBeenCalled();
+  });
+
+  it("submits uploaded project recording files with the private storage path", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/streamer/recordings", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId: "project-1",
+          storagePath: "org-1/recordings/project-1/demo.mp4",
+          durationSeconds: 900,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(submitProjectRecording).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: undefined,
+          storagePath: "org-1/recordings/project-1/demo.mp4",
+          durationSeconds: 900,
+        },
+      }),
+    );
   });
 
   it("rejects non-streamer users", async () => {
