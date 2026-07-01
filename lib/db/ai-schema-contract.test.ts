@@ -117,4 +117,24 @@ describe("AI runtime schema contract", () => {
       "on public.knowledge_documents (organization_id, source_ref)",
     );
   });
+
+  it("stores retrievable knowledge chunks with business filters", () => {
+    expect(allMigrations).toContain(
+      "create table if not exists public.knowledge_document_chunks",
+    );
+    for (const column of [
+      "knowledge_document_id uuid not null references public.knowledge_documents(id) on delete cascade",
+      "project_id text",
+      "streamer_id text",
+      "product text",
+      "platform text",
+      "tags text[] not null default '{}'",
+    ]) {
+      expect(allMigrations).toContain(column);
+    }
+    expect(allMigrations).toContain(
+      "knowledge_document_chunks_org_filters_idx",
+    );
+    expect(allMigrations).toContain("knowledge_document_chunks_tags_idx");
+  });
 });

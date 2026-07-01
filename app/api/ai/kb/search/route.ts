@@ -36,6 +36,9 @@ export async function POST(request: Request) {
     const docTypes = Array.isArray(body?.docTypes)
       ? body.docTypes.filter((t: unknown) => typeof t === "string")
       : undefined;
+    const tags = Array.isArray(body?.tags)
+      ? body.tags.filter((t: unknown) => typeof t === "string")
+      : undefined;
     const limit =
       Number.isFinite(body?.limit) && body.limit > 0
         ? Math.min(Math.floor(body.limit), 20)
@@ -43,7 +46,18 @@ export async function POST(request: Request) {
 
     const passages = await searchKnowledgeDocuments(
       supabase as unknown as KnowledgeClient,
-      { organizationId: auth.organizationId, query, docTypes, limit },
+      {
+        organizationId: auth.organizationId,
+        query,
+        docTypes,
+        tags,
+        limit,
+        projectId: stringValue(body?.projectId),
+        streamerId: stringValue(body?.streamerId),
+        product: stringValue(body?.product),
+        platform: stringValue(body?.platform),
+        updatedAfter: stringValue(body?.updatedAfter),
+      },
     );
     const answer = assembleKnowledgeAnswer(query, passages);
 
@@ -60,4 +74,8 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
