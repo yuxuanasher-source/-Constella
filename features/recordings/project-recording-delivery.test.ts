@@ -128,6 +128,31 @@ describe("submitProjectRecording", () => {
     });
   });
 
+  it("submits an uploaded private recording file without requiring an external link", async () => {
+    const repo = baseRepo();
+
+    await submitProjectRecording({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor,
+      input: {
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        storagePath: "org-1/recordings/project-1/demo.mp4",
+        durationSeconds: 900,
+      },
+    });
+
+    expect(repo.createRecordingSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storagePath: "org-1/recordings/project-1/demo.mp4",
+        externalUrl: undefined,
+        durationSeconds: 900,
+      }),
+    );
+  });
+
   it("uses an existing submittable application and increments recording version", async () => {
     const repo = baseRepo();
     repo.getApplicationByProjectAndStreamer.mockResolvedValue({

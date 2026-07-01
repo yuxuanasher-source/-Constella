@@ -688,6 +688,43 @@ describe("StreamerDesktopReferenceApp recording library", () => {
     expect(screen.queryByText("支持 MP4 / MOV")).not.toBeInTheDocument();
   });
 
+  it("renders unified recording asset previews on desktop", () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ recordings: [], recordingAssets: [] }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerDesktopReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        recordingAssets={[
+          {
+            id: "asset-desktop-1",
+            title: "项目录屏 v1",
+            reviewStatus: "submitted",
+            reviewStatusLabel: "待审核",
+            primarySource: {
+              previewMode: "private_file",
+              downloadUrl: "https://download.local/desktop-demo.mp4",
+              openUrl: null,
+              embedUrl: null,
+              provider: "private_storage",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("项目录屏 v1")).toBeInTheDocument();
+    expect(screen.getByText("原始文件")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "下载原始文件" })).toHaveAttribute(
+      "href",
+      "https://download.local/desktop-demo.mp4",
+    );
+  });
+
   it("submits a recording URL row and appends it to the table", async () => {
     const fetchMock = vi.fn(async (url, init) => {
       if (
@@ -896,6 +933,147 @@ describe("StreamerDesktopReferenceApp recording library", () => {
       expect.objectContaining({
         projectId: "project-1",
         link: "https://videos.example.com/project-1",
+      }),
+    );
+  });
+
+  it("uploads a raw project recording file before submitting from desktop", async () => {
+    const recordingFile = new File(["desktop recording"], "desktop.mp4", {
+      type: "video/mp4",
+    });
+    const fetchMock = vi.fn(async (url, init) => {
+      if (
+        String(url) === "/api/streamer/project-announcements/project-upload"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            project: {
+              id: "project-upload",
+              code: "PUB-U",
+              name: "Upload Project",
+              status: "recruiting",
+              vendor: "Vendor A",
+              product: "Game A",
+              publicSummary: "Upload project summary",
+              gameDownloadUrl: "https://download.example.com/game-a",
+              openSignup: true,
+              forceRecording: true,
+              applicationId: null,
+              applicationStatus: null,
+              latestRecordingStatus: null,
+              latestRecordingVersion: null,
+              decisionReason: null,
+              reviewStatusLabel: "待投递",
+              canSubmitRecording: true,
+            },
+          }),
+        };
+      }
+      if (String(url) === "/api/uploads/signed") {
+        return {
+          ok: true,
+          json: async () => ({
+            bucket: "jy-private",
+            path: "org-1/recordings/project-upload/desktop.mp4",
+            signedUrl: "https://upload.local/desktop.mp4",
+          }),
+        };
+      }
+      if (String(url) === "https://upload.local/desktop.mp4") {
+        return { ok: true, json: async () => ({}) };
+      }
+      if (
+        String(url) === "/api/streamer/recordings" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            projectRecording: {
+              applicationId: "application-upload",
+              projectId: "project-upload",
+              recording: {
+                id: "recording-upload",
+                applicationId: "application-upload",
+                version: 1,
+                status: "submitted",
+              },
+              reviewStatusLabel: "审核中",
+            },
+          }),
+        };
+      }
+      if (String(url) === "/api/streamer/recordings") {
+        return { ok: true, json: async () => ({ recordings: [] }) };
+      }
+      if (String(url) === "/api/streamer/project-announcements") {
+        return { ok: true, json: async () => ({ announcements: [] }) };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerDesktopReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[
+          {
+            id: "project-upload",
+            code: "PUB-U",
+            name: "Upload Project",
+            status: "recruiting",
+            vendor: "Vendor A",
+            product: "Game A",
+            publicSummary: "Upload project summary",
+            gameDownloadUrl: "https://download.example.com/game-a",
+            openSignup: true,
+            forceRecording: true,
+            applicationId: null,
+            applicationStatus: null,
+            latestRecordingStatus: null,
+            latestRecordingVersion: null,
+            decisionReason: null,
+            reviewStatusLabel: "待投递",
+            canSubmitRecording: true,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+    await screen.findByText("项目详情");
+    fireEvent.change(screen.getByLabelText("上传原始录屏"), {
+      target: { files: [recordingFile] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提交项目录屏" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/streamer/recordings",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/uploads/signed",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          category: "recordings",
+          ownerId: "project-upload",
+          fileName: "desktop.mp4",
+        }),
+      }),
+    );
+    const submitCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/api/streamer/recordings" && init?.method === "POST",
+    );
+    expect(JSON.parse(submitCall[1].body)).toEqual(
+      expect.objectContaining({
+        projectId: "project-upload",
+        storagePath: "org-1/recordings/project-upload/desktop.mp4",
       }),
     );
   });

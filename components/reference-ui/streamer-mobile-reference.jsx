@@ -771,6 +771,11 @@ function useStreamerRecordings() {
   return Array.isArray(recordings) ? recordings : [];
 }
 
+function useStreamerRecordingAssets() {
+  const { recordingAssets } = React.useContext(StreamerLiveDataContext);
+  return Array.isArray(recordingAssets) ? recordingAssets : [];
+}
+
 function useStreamerApplications() {
   const { applications } = React.useContext(StreamerLiveDataContext);
   return Array.isArray(applications) ? applications : [];
@@ -1253,7 +1258,7 @@ function TaskCard({
             padding: "8px 10px",
             background: "var(--bg-soft)",
             borderRadius: 8,
-            borderLeft: "3px solid var(--blue-300)",
+            border: "1px solid var(--line)",
           }}
         >
           {task.note}
@@ -1550,7 +1555,7 @@ function StreamerTask({ taskId, go }) {
                     padding: "10px 12px",
                     background: "var(--bg-soft)",
                     borderRadius: 8,
-                    borderLeft: "3px solid var(--blue-300)",
+                    border: "1px solid var(--line)",
                   }}
                 >
                   {t.note}
@@ -2678,6 +2683,16 @@ function sanitizeReportScreenshotFileName(name) {
     .replace(/^-+|-+$/g, "");
   return safeName || "report-screenshot.png";
 }
+
+function sanitizeRecordingFileName(name) {
+  const safeName = String(name || "")
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/[^\w.\-()\u4e00-\u9fa5]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return safeName || "recording.mp4";
+}
+
 function ShotStat({ label, value }) {
   return (
     <div
@@ -4676,8 +4691,17 @@ function RangeRow({ label, value, tone }) {
 }
 
 // ——— Videos tab ———
-function VideosTab({ recordings, projectAnnouncements }) {
-  const recordingRows = Array.isArray(recordings) ? recordings : MY_VIDEOS;
+function VideosTab({ recordings, recordingAssets, projectAnnouncements }) {
+  const contextRecordings = useStreamerRecordings();
+  const contextRecordingAssets = useStreamerRecordingAssets();
+  const recordingRows = Array.isArray(recordings)
+    ? recordings
+    : contextRecordings.length
+      ? contextRecordings
+      : MY_VIDEOS;
+  const recordingAssetRows = Array.isArray(recordingAssets)
+    ? recordingAssets
+    : contextRecordingAssets;
   const announcementRows = Array.isArray(projectAnnouncements)
     ? projectAnnouncements
     : [];
@@ -4691,7 +4715,10 @@ function VideosTab({ recordings, projectAnnouncements }) {
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState("");
   const [selectedProject, setSelectedProject] = React.useState(null);
-  const [projectForm, setProjectForm] = React.useState({ link: "" });
+  const [projectForm, setProjectForm] = React.useState({
+    link: "",
+    file: null,
+  });
   const [projectSubmitting, setProjectSubmitting] = React.useState(false);
   const [projectError, setProjectError] = React.useState("");
   const [detailLoading, setDetailLoading] = React.useState(false);
@@ -4719,7 +4746,7 @@ function VideosTab({ recordings, projectAnnouncements }) {
 
   const closeProjectDetail = () => {
     setSelectedProject(null);
-    setProjectForm({ link: "" });
+    setProjectForm({ link: "", file: null });
     setProjectError("");
   };
 
@@ -4759,6 +4786,12 @@ function VideosTab({ recordings, projectAnnouncements }) {
       const result = await actions.submitRecordingLink?.({
         projectId: selectedProject.id,
         link: projectForm.link,
+        storagePath: projectForm.file
+          ? await uploadProjectRecordingFile(
+              selectedProject.id,
+              projectForm.file,
+            )
+          : undefined,
       });
       const reviewStatusLabel = result?.reviewStatusLabel || "审核中";
       setSelectedProject((current) =>
@@ -4775,12 +4808,38 @@ function VideosTab({ recordings, projectAnnouncements }) {
             }
           : current,
       );
-      setProjectForm({ link: "" });
+      setProjectForm({ link: "", file: null });
     } catch (submitError) {
       setProjectError(recordingLinkErrorMessage(submitError));
     } finally {
       setProjectSubmitting(false);
     }
+  };
+
+  const uploadProjectRecordingFile = async (projectId, file) => {
+    const fileName = sanitizeRecordingFileName(file.name || "recording.mp4");
+    const signedResponse = await fetch("/api/uploads/signed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        category: "recordings",
+        ownerId: projectId,
+        fileName,
+      }),
+    });
+    const signed = await signedResponse.json().catch(() => ({}));
+    if (!signedResponse.ok) {
+      throw new Error(signed.error || "创建录屏上传地址失败");
+    }
+    const uploadResponse = await fetch(signed.signedUrl, {
+      method: "PUT",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    if (!uploadResponse.ok) {
+      throw new Error("上传原始录屏失败");
+    }
+    return signed.path;
   };
 
   return (
@@ -4874,6 +4933,25 @@ function VideosTab({ recordings, projectAnnouncements }) {
             ) : null}
           </form>
         </MCard>
+      </MSection>
+
+      <MSection
+        title="录屏资产"
+        action={<MBadge tone="violet">{recordingAssetRows.length} 条</MBadge>}
+      >
+        {recordingAssetRows.length === 0 ? (
+          <MCard
+            style={{ background: "var(--bg-soft)", borderStyle: "dashed" }}
+          >
+            <div style={{ fontSize: 13, color: "var(--ink-500)" }}>
+              暂无统一录屏资产，提交项目录屏或历史 URL 后会自动归档。
+            </div>
+          </MCard>
+        ) : (
+          recordingAssetRows.map((asset) => (
+            <RecordingAssetCard key={asset.id} asset={asset} />
+          ))
+        )}
       </MSection>
 
       <MSection
@@ -5103,6 +5181,35 @@ function ProjectAnnouncementDetail({
               placeholder="https://..."
               onChange={(value) => onChange("link", value)}
             />
+            <label style={{ display: "grid", gap: 6 }}>
+              <span
+                style={{
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                  fontWeight: 600,
+                }}
+              >
+                上传原始录屏
+              </span>
+              <input
+                aria-label="上传原始录屏"
+                type="file"
+                accept="video/*"
+                onChange={(event) =>
+                  onChange("file", event.target.files?.[0] ?? null)
+                }
+                style={{
+                  width: "100%",
+                  fontSize: 12,
+                  color: "var(--ink-600)",
+                }}
+              />
+              {form.file ? (
+                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                  已选择：{form.file.name}
+                </span>
+              ) : null}
+            </label>
             <button
               type="submit"
               disabled={submitting || !project.canSubmitRecording}
@@ -5130,6 +5237,124 @@ function ProjectAnnouncementDetail({
         </div>
       </MCard>
     </MSection>
+  );
+}
+
+function RecordingAssetCard({ asset }) {
+  const source = asset.primarySource || {};
+  const label =
+    source.previewMode === "private_file"
+      ? "原始文件"
+      : source.previewMode === "embed"
+        ? "B站预览"
+        : source.previewMode === "external"
+          ? "外部链接"
+          : "待处理";
+  const href =
+    source.previewMode === "private_file"
+      ? source.downloadUrl
+      : source.openUrl || source.embedUrl;
+
+  return (
+    <MCard style={{ marginBottom: 10 }}>
+      <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+          <div
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 10,
+              background: "var(--violet-50)",
+              color: "var(--violet-600)",
+              display: "grid",
+              placeItems: "center",
+              flexShrink: 0,
+            }}
+          >
+            <Icon.Play size={18} stroke="var(--violet-600)" />
+          </div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 14,
+                  fontWeight: 800,
+                  color: "var(--ink-900)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {asset.title}
+              </div>
+              <MBadge tone={recordingStatusTone(asset.reviewStatus)} dot>
+                {asset.reviewStatusLabel || asset.reviewStatus}
+              </MBadge>
+            </div>
+            <div
+              style={{
+                marginTop: 6,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+                fontSize: 11,
+                color: "var(--ink-400)",
+              }}
+            >
+              <span>{label}</span>
+              {source.provider ? <span>{source.provider}</span> : null}
+            </div>
+          </div>
+        </div>
+        {source.previewMode === "embed" && source.embedUrl ? (
+          <iframe
+            title={`${asset.title} 预览`}
+            src={source.embedUrl}
+            loading="lazy"
+            allowFullScreen
+            style={{
+              width: "100%",
+              aspectRatio: "16 / 9",
+              border: "1px solid var(--line)",
+              borderRadius: 10,
+              background: "var(--ink-50)",
+            }}
+          />
+        ) : null}
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              height: 34,
+              borderRadius: 9,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "0 12px",
+              background: "var(--bg-soft)",
+              color: "var(--blue-700)",
+              fontSize: 12,
+              fontWeight: 800,
+              textDecoration: "none",
+            }}
+          >
+            {source.previewMode === "private_file"
+              ? "下载原始文件"
+              : "打开录屏"}
+          </a>
+        ) : null}
+      </div>
+    </MCard>
   );
 }
 
@@ -5436,6 +5661,7 @@ function StreamerMobileReferenceInner({
   liveTasks,
   liveEarnings,
   recordings,
+  recordingAssets,
   projectAnnouncements,
 }) {
   // route: 'home' | 'tasks' | 'task' | 'report' | 'ai' | 'me' | 'videos'
@@ -5446,6 +5672,9 @@ function StreamerMobileReferenceInner({
   const [earnings, setEarnings] = React.useState(liveEarnings ?? null);
   const [recordingRows, setRecordingRows] = React.useState(() =>
     normalizeStreamerRecordings(recordings),
+  );
+  const [recordingAssetRows, setRecordingAssetRows] = React.useState(() =>
+    Array.isArray(recordingAssets) ? recordingAssets : null,
   );
   const [applicationRows, setApplicationRows] = React.useState(null);
   const [announcementRows, setAnnouncementRows] = React.useState(() =>
@@ -5465,6 +5694,12 @@ function StreamerMobileReferenceInner({
   React.useEffect(() => {
     setRecordingRows(normalizeStreamerRecordings(recordings));
   }, [recordings]);
+
+  React.useEffect(() => {
+    setRecordingAssetRows(
+      Array.isArray(recordingAssets) ? recordingAssets : null,
+    );
+  }, [recordingAssets]);
 
   React.useEffect(() => {
     setAnnouncementRows(
@@ -5507,9 +5742,13 @@ function StreamerMobileReferenceInner({
         if (Array.isArray(body.recordings)) {
           setRecordingRows(normalizeStreamerRecordings(body.recordings));
         }
+        if (Array.isArray(body.recordingAssets)) {
+          setRecordingAssetRows(body.recordingAssets);
+        }
       } catch (error) {
         if (isStreamerAccountAccessError(error)) {
           setRecordingRows([]);
+          setRecordingAssetRows([]);
           return;
         }
         throw error;
@@ -5736,6 +5975,9 @@ function StreamerMobileReferenceInner({
 
   const visibleTasks = Array.isArray(tasks) ? tasks : MY_TASKS;
   const visibleRecordings = Array.isArray(recordingRows) ? recordingRows : [];
+  const visibleRecordingAssets = Array.isArray(recordingAssetRows)
+    ? recordingAssetRows
+    : [];
   const visibleAnnouncements = Array.isArray(announcementRows)
     ? announcementRows
     : [];
@@ -5779,6 +6021,7 @@ function StreamerMobileReferenceInner({
         earnings,
         applications: applicationRows,
         recordings: visibleRecordings,
+        recordingAssets: visibleRecordingAssets,
         projectAnnouncements: visibleAnnouncements,
         actions,
       }}
@@ -5800,6 +6043,7 @@ function StreamerMobileReferenceInner({
           <VideosOnlyPage
             go={go}
             recordings={visibleRecordings}
+            recordingAssets={visibleRecordingAssets}
             projectAnnouncements={visibleAnnouncements}
           />
         )}
@@ -5822,7 +6066,7 @@ function StreamerMobileReferenceInner({
 }
 
 // Small placeholder for 录屏 tab when accessed independently
-function VideosOnlyPage({ recordings, projectAnnouncements }) {
+function VideosOnlyPage({ recordings, recordingAssets, projectAnnouncements }) {
   return (
     <div style={{ paddingBottom: 96 }}>
       <MAppBar
@@ -5832,6 +6076,7 @@ function VideosOnlyPage({ recordings, projectAnnouncements }) {
       />
       <VideosTab
         recordings={recordings}
+        recordingAssets={recordingAssets}
         projectAnnouncements={projectAnnouncements}
       />
     </div>
@@ -5839,7 +6084,7 @@ function VideosOnlyPage({ recordings, projectAnnouncements }) {
 }
 
 /**
- * @param {{ initialRoute?: string; profile?: any; liveTasks?: any[]; liveEarnings?: any; recordings?: any[]; projectAnnouncements?: any[] }} props
+ * @param {{ initialRoute?: string; profile?: any; liveTasks?: any[]; liveEarnings?: any; recordings?: any[]; recordingAssets?: any[]; projectAnnouncements?: any[] }} props
  */
 export default function StreamerMobileReferenceApp({
   initialRoute = "home",
@@ -5847,6 +6092,7 @@ export default function StreamerMobileReferenceApp({
   liveTasks,
   liveEarnings,
   recordings,
+  recordingAssets,
   projectAnnouncements,
 }) {
   return (
@@ -5856,6 +6102,7 @@ export default function StreamerMobileReferenceApp({
       liveTasks={liveTasks}
       liveEarnings={liveEarnings}
       recordings={recordings}
+      recordingAssets={recordingAssets}
       projectAnnouncements={projectAnnouncements}
     />
   );

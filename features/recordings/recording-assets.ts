@@ -14,7 +14,8 @@ export type RecordingAssetPreviewState =
   | "pending"
   | "previewable"
   | "external_only"
-  | "private_file";
+  | "private_file"
+  | "failed";
 
 export type RecordingAssetDraft = {
   asset: {
@@ -44,6 +45,144 @@ export type RecordingAssetDraft = {
     metadata: Record<string, unknown>;
   };
 };
+
+export type RecordingAssetPreviewMode =
+  | "embed"
+  | "external"
+  | "private_file"
+  | "pending";
+
+export type RecordingAssetSourceDto = {
+  id: string;
+  sourceKind: RecordingAssetSourceKind;
+  previewState: RecordingAssetPreviewState;
+  previewMode: RecordingAssetPreviewMode;
+  provider: string;
+  externalUrl: string | null;
+  storagePath: string | null;
+  openUrl: string | null;
+  embedUrl: string | null;
+  downloadUrl: string | null;
+  submittedAt: string | null;
+};
+
+export type RecordingAssetDto = {
+  id: string;
+  title: string;
+  assetKind: RecordingAssetKind;
+  reviewStatus: RecordingReviewStatus;
+  reviewStatusLabel: string;
+  previewState: RecordingAssetPreviewState;
+  durationSeconds: number | null;
+  projectId: string | null;
+  applicationId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  primarySource: RecordingAssetSourceDto | null;
+  sources: RecordingAssetSourceDto[];
+};
+
+export type RecordingAssetDtoInput = {
+  asset: {
+    id: string;
+    title: string;
+    assetKind: RecordingAssetKind;
+    reviewStatus: RecordingReviewStatus;
+    previewState: RecordingAssetPreviewState;
+    durationSeconds: number | null;
+    projectId: string | null;
+    applicationId: string | null;
+    createdAt: string;
+    updatedAt: string;
+  };
+  sources: Array<{
+    id: string;
+    sourceKind: RecordingAssetSourceKind;
+    previewState: RecordingAssetPreviewState;
+    provider: string;
+    externalUrl: string | null;
+    storagePath: string | null;
+    submittedAt: string | null;
+    downloadUrl?: string | null;
+  }>;
+};
+
+const reviewStatusLabels: Record<RecordingReviewStatus, string> = {
+  submitted: "待审核",
+  reviewing: "审核中",
+  approved: "已通过",
+  rejected: "已驳回",
+  needs_changes: "需修改",
+};
+
+const sourcePriority: Record<RecordingAssetSourceKind, number> = {
+  storage_object: 3,
+  bilibili_url: 2,
+  external_url: 1,
+};
+
+export function toRecordingAssetDto(
+  input: RecordingAssetDtoInput,
+): RecordingAssetDto {
+  const sources = input.sources
+    .map(toRecordingAssetSourceDto)
+    .sort(
+      (left, right) =>
+        sourcePriority[right.sourceKind] - sourcePriority[left.sourceKind] ||
+        (right.submittedAt ?? "").localeCompare(left.submittedAt ?? ""),
+    );
+
+  return {
+    id: input.asset.id,
+    title: input.asset.title,
+    assetKind: input.asset.assetKind,
+    reviewStatus: input.asset.reviewStatus,
+    reviewStatusLabel:
+      reviewStatusLabels[input.asset.reviewStatus] ?? input.asset.reviewStatus,
+    previewState: input.asset.previewState,
+    durationSeconds: input.asset.durationSeconds,
+    projectId: input.asset.projectId,
+    applicationId: input.asset.applicationId,
+    createdAt: input.asset.createdAt,
+    updatedAt: input.asset.updatedAt,
+    primarySource: sources[0] ?? null,
+    sources,
+  };
+}
+
+function toRecordingAssetSourceDto(
+  input: RecordingAssetDtoInput["sources"][number],
+): RecordingAssetSourceDto {
+  const openUrl = input.externalUrl?.trim() || null;
+  const embedUrl =
+    input.sourceKind === "bilibili_url" && openUrl
+      ? buildBilibiliEmbedUrl(openUrl)
+      : null;
+  const hasPrivateFile =
+    input.sourceKind === "storage_object" ||
+    input.previewState === "private_file";
+  const previewMode: RecordingAssetPreviewMode = hasPrivateFile
+    ? "private_file"
+    : embedUrl
+      ? "embed"
+      : openUrl
+        ? "external"
+        : "pending";
+
+  return {
+    id: input.id,
+    sourceKind: input.sourceKind,
+    previewState: input.previewState,
+    previewMode,
+    provider: input.provider,
+    externalUrl: openUrl,
+    storagePath: input.storagePath?.trim() || null,
+    openUrl,
+    embedUrl,
+    downloadUrl: input.downloadUrl?.trim() || null,
+    submittedAt: input.submittedAt,
+  };
+}
 
 export function classifyRecordingAssetSource(input: {
   externalUrl?: string | null;
@@ -236,4 +375,25 @@ function isBilibiliHost(hostname: string): boolean {
 
 function normalizeProvider(hostname: string): string {
   return hostname.toLowerCase().replace(/^www\./, "");
+}
+
+function buildBilibiliEmbedUrl(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+
+  const bvid = url.pathname.match(/\/video\/(BV[0-9A-Za-z]+)/)?.[1];
+  if (!bvid) {
+    return null;
+  }
+
+  const embedUrl = new URL("https://player.bilibili.com/player.html");
+  embedUrl.searchParams.set("bvid", bvid);
+  embedUrl.searchParams.set("page", "1");
+  embedUrl.searchParams.set("high_quality", "1");
+  embedUrl.searchParams.set("danmaku", "0");
+  return embedUrl.toString();
 }

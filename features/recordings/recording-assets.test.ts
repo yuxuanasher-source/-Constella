@@ -4,6 +4,7 @@ import {
   buildRecordingAssetDraftFromLibraryLink,
   buildRecordingAssetDraftFromSubmission,
   classifyRecordingAssetSource,
+  toRecordingAssetDto,
 } from "./recording-assets";
 
 describe("recording asset normalization", () => {
@@ -104,6 +105,75 @@ describe("recording asset normalization", () => {
       sourceKind: "external_url",
       streamerRecordingLinkId: "link-1",
       previewState: "external_only",
+    });
+  });
+
+  it("builds UI preview metadata for Bilibili, external, and private sources", () => {
+    const dto = toRecordingAssetDto({
+      asset: {
+        id: "asset-1",
+        title: "项目录屏 v1",
+        assetKind: "project_submission",
+        reviewStatus: "submitted",
+        previewState: "previewable",
+        durationSeconds: 600,
+        projectId: "project-1",
+        applicationId: "application-1",
+        createdAt: "2026-07-01T09:00:00.000Z",
+        updatedAt: "2026-07-01T09:00:00.000Z",
+      },
+      sources: [
+        {
+          id: "source-bili",
+          sourceKind: "bilibili_url",
+          previewState: "previewable",
+          provider: "bilibili",
+          externalUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
+          storagePath: null,
+          submittedAt: "2026-07-01T09:00:00.000Z",
+          downloadUrl: null,
+        },
+        {
+          id: "source-external",
+          sourceKind: "external_url",
+          previewState: "external_only",
+          provider: "videos.example.com",
+          externalUrl: "https://videos.example.com/raw-recording",
+          storagePath: null,
+          submittedAt: "2026-07-01T09:01:00.000Z",
+          downloadUrl: null,
+        },
+        {
+          id: "source-private",
+          sourceKind: "storage_object",
+          previewState: "private_file",
+          provider: "private_storage",
+          externalUrl: null,
+          storagePath: "org-1/recordings/project-1/demo.mp4",
+          submittedAt: "2026-07-01T09:02:00.000Z",
+          downloadUrl: "https://download.local/demo.mp4",
+        },
+      ],
+    });
+
+    expect(dto.primarySource).toMatchObject({
+      id: "source-private",
+      previewMode: "private_file",
+      downloadUrl: "https://download.local/demo.mp4",
+    });
+    expect(
+      dto.sources.find((source) => source.id === "source-bili"),
+    ).toMatchObject({
+      previewMode: "embed",
+      embedUrl:
+        "https://player.bilibili.com/player.html?bvid=BV1xx411c7mD&page=1&high_quality=1&danmaku=0",
+      openUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
+    });
+    expect(
+      dto.sources.find((source) => source.id === "source-external"),
+    ).toMatchObject({
+      previewMode: "external",
+      openUrl: "https://videos.example.com/raw-recording",
     });
   });
 });

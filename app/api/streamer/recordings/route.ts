@@ -8,21 +8,30 @@ import {
   RouteError,
 } from "@/features/live-operations/live-operations-route-utils";
 import { SupabaseApplicationRepository } from "@/features/applications/application-repository";
+import { listStreamerRecordingAssets } from "@/features/recordings/recording-asset-library";
 import { submitProjectRecording } from "@/features/recordings/project-recording-delivery";
 import {
   createStreamerRecordingLink,
   listStreamerRecordingLinks,
 } from "@/features/recordings/streamer-recording-library";
+import { getPrivateStorageBucket } from "@/lib/config/env";
 
 export async function GET() {
   try {
     const { context, streamerId } = await getStreamerRecordingContext();
-    const recordings = await listStreamerRecordingLinks(context.supabase, {
+    const input = {
       organizationId: context.auth.organizationId,
       streamerId,
-    });
+    };
+    const [recordings, recordingAssets] = await Promise.all([
+      listStreamerRecordingLinks(context.supabase, input),
+      listStreamerRecordingAssets(context.supabase, {
+        ...input,
+        bucket: getPrivateStorageBucket(),
+      }),
+    ]);
 
-    return NextResponse.json({ recordings });
+    return NextResponse.json({ recordings, recordingAssets });
   } catch (error) {
     return jsonError(error);
   }
@@ -48,6 +57,10 @@ export async function POST(request: Request) {
           projectId: body.projectId,
           streamerId,
           link: body.link,
+          storagePath: normalizeRecordingStoragePath(
+            body.storagePath,
+            context.auth.organizationId,
+          ),
           durationSeconds:
             typeof body.durationSeconds === "number"
               ? body.durationSeconds
@@ -90,4 +103,21 @@ async function getStreamerRecordingContext() {
   }
 
   return { context, streamerId };
+}
+
+function normalizeRecordingStoragePath(
+  value: unknown,
+  organizationId: string,
+): string | undefined {
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+
+  const path = value.trim();
+  const expectedPrefix = `${organizationId}/recordings/`;
+  if (!path.startsWith(expectedPrefix) || path.includes("..")) {
+    throw new RouteError("Invalid recording storage path", 400);
+  }
+
+  return path;
 }

@@ -54,7 +54,8 @@ export async function submitProjectRecording({
   input: {
     projectId: unknown;
     streamerId: string;
-    link: unknown;
+    link?: unknown;
+    storagePath?: unknown;
     durationSeconds?: number;
   };
 }): Promise<ProjectRecordingDeliveryResult> {
@@ -99,6 +100,7 @@ export async function submitProjectRecording({
     input: {
       applicationId: application.id,
       externalUrl: normalized.link,
+      storagePath: normalized.storagePath,
       durationSeconds: normalized.durationSeconds,
     },
   });
@@ -113,30 +115,43 @@ export async function submitProjectRecording({
 
 function normalizeProjectRecordingInput(input: {
   projectId: unknown;
-  link: unknown;
+  link?: unknown;
+  storagePath?: unknown;
   durationSeconds?: number;
 }) {
   if (typeof input.projectId !== "string" || !input.projectId.trim()) {
     throw new Error("projectId is required");
   }
-  if (typeof input.link !== "string" || !input.link.trim()) {
-    throw new Error("Recording link is required");
+
+  const link =
+    typeof input.link === "string" && input.link.trim()
+      ? input.link.trim()
+      : undefined;
+  const storagePath =
+    typeof input.storagePath === "string" && input.storagePath.trim()
+      ? input.storagePath.trim()
+      : undefined;
+
+  if (!link && !storagePath) {
+    throw new Error("Recording submission requires a URL or uploaded file");
   }
 
-  const link = input.link.trim();
-  let parsed: URL;
-  try {
-    parsed = new URL(link);
-  } catch {
-    throw new Error("Recording link must be an http(s) URL");
-  }
-  if (!["http:", "https:"].includes(parsed.protocol)) {
-    throw new Error("Recording link must be an http(s) URL");
+  if (link) {
+    let parsed: URL;
+    try {
+      parsed = new URL(link);
+    } catch {
+      throw new Error("Recording link must be an http(s) URL");
+    }
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      throw new Error("Recording link must be an http(s) URL");
+    }
   }
 
   return {
     projectId: input.projectId.trim(),
     link,
+    storagePath,
     durationSeconds: input.durationSeconds,
   };
 }

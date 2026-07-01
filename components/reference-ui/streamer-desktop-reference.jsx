@@ -2568,7 +2568,7 @@ function DesktopTaskCard({ task, onClick, primary, compact }) {
                 padding: "10px 12px",
                 background: "var(--bg-soft)",
                 borderRadius: 8,
-                borderLeft: "3px solid var(--blue-300)",
+                border: "1px solid var(--line)",
               }}
             >
               {task.note}
@@ -3382,6 +3382,15 @@ function sanitizeReportScreenshotFileName(name) {
   return safeName || "report-screenshot.png";
 }
 
+function sanitizeRecordingFileName(name) {
+  const safeName = String(name || "")
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/[^\w.\-()一-龥]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return safeName || "recording.mp4";
+}
+
 function ScreenshotUploader({ task, go, actions = {}, confirmLabel }) {
   const fileInputRef = React.useRef(null);
   const pasteRef = React.useRef(null);
@@ -3835,6 +3844,7 @@ function Timeline({ events }) {
 
 function ScreenVideos({
   recordings = MY_RECORDINGS,
+  recordingAssets = [],
   projectAnnouncements = [],
   actions = {},
 }) {
@@ -3848,13 +3858,17 @@ function ScreenVideos({
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState("");
   const [selectedProject, setSelectedProject] = React.useState(null);
-  const [projectForm, setProjectForm] = React.useState({ link: "" });
+  const [projectForm, setProjectForm] = React.useState({
+    link: "",
+    file: null,
+  });
   const [projectSubmitting, setProjectSubmitting] = React.useState(false);
   const [projectError, setProjectError] = React.useState("");
   const [detailLoading, setDetailLoading] = React.useState(false);
   const announcementRows = Array.isArray(projectAnnouncements)
     ? projectAnnouncements
     : [];
+  const assetRows = Array.isArray(recordingAssets) ? recordingAssets : [];
   const counts = {
     all: recordings.length,
     submitted: recordings.filter((item) => item.status === "submitted").length,
@@ -3889,7 +3903,7 @@ function ScreenVideos({
 
   const closeProjectDetail = () => {
     setSelectedProject(null);
-    setProjectForm({ link: "" });
+    setProjectForm({ link: "", file: null });
     setProjectError("");
   };
 
@@ -3929,6 +3943,12 @@ function ScreenVideos({
       const result = await actions.submitRecordingLink?.({
         projectId: selectedProject.id,
         link: projectForm.link,
+        storagePath: projectForm.file
+          ? await uploadProjectRecordingFile(
+              selectedProject.id,
+              projectForm.file,
+            )
+          : undefined,
       });
       const reviewStatusLabel = result?.reviewStatusLabel || "审核中";
       setSelectedProject((current) =>
@@ -3945,12 +3965,38 @@ function ScreenVideos({
             }
           : current,
       );
-      setProjectForm({ link: "" });
+      setProjectForm({ link: "", file: null });
     } catch (submitError) {
       setProjectError(recordingLinkErrorMessage(submitError));
     } finally {
       setProjectSubmitting(false);
     }
+  };
+
+  const uploadProjectRecordingFile = async (projectId, file) => {
+    const fileName = sanitizeRecordingFileName(file.name || "recording.mp4");
+    const signedResponse = await fetch("/api/uploads/signed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        category: "recordings",
+        ownerId: projectId,
+        fileName,
+      }),
+    });
+    const signed = await signedResponse.json().catch(() => ({}));
+    if (!signedResponse.ok) {
+      throw new Error(signed.error || "创建录屏上传地址失败");
+    }
+    const uploadResponse = await fetch(signed.signedUrl, {
+      method: "PUT",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    if (!uploadResponse.ok) {
+      throw new Error("上传原始录屏失败");
+    }
+    return signed.path;
   };
 
   return (
@@ -4026,6 +4072,7 @@ function ScreenVideos({
         }}
       >
         <Card padded={false}>
+          <RecordingAssetPanel assets={assetRows} />
           <div
             style={{ padding: "0 12px", borderBottom: "1px solid var(--line)" }}
           >
@@ -4366,7 +4413,7 @@ function DesktopProjectAnnouncementDetail({
           onSubmit={onSubmit}
           style={{
             display: "grid",
-            gridTemplateColumns: "minmax(240px, 1fr) auto",
+            gridTemplateColumns: "minmax(240px, 1fr) minmax(220px, 0.7fr) auto",
             gap: 10,
             alignItems: "end",
           }}
@@ -4377,6 +4424,29 @@ function DesktopProjectAnnouncementDetail({
             placeholder="https://..."
             onChange={(value) => onChange("link", value)}
           />
+          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              上传原始录屏
+            </span>
+            <input
+              aria-label="上传原始录屏"
+              type="file"
+              accept="video/*"
+              onChange={(event) =>
+                onChange("file", event.target.files?.[0] ?? null)
+              }
+              style={{
+                height: 32,
+                fontSize: 12,
+                color: "var(--ink-600)",
+              }}
+            />
+            {form.file ? (
+              <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                已选择：{form.file.name}
+              </span>
+            ) : null}
+          </label>
           <Button
             kind="primary"
             type="submit"
@@ -4398,6 +4468,152 @@ function DesktopProjectAnnouncementDetail({
         </form>
       </div>
     </Card>
+  );
+}
+
+function RecordingAssetPanel({ assets }) {
+  return (
+    <div style={{ padding: 16, borderBottom: "1px solid var(--line)" }}>
+      <SectionTitle
+        hint="统一资产层"
+        extra={<Badge tone="violet">{assets.length} 条</Badge>}
+      >
+        录屏资产
+      </SectionTitle>
+      {assets.length === 0 ? (
+        <EmptyCard
+          title="暂无统一录屏资产"
+          hint="提交项目录屏或历史 URL 后会自动进入资产库。"
+        />
+      ) : (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {assets.map((asset) => (
+            <RecordingAssetCard key={asset.id} asset={asset} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecordingAssetCard({ asset }) {
+  const source = asset.primarySource || {};
+  const label =
+    source.previewMode === "private_file"
+      ? "原始文件"
+      : source.previewMode === "embed"
+        ? "B站预览"
+        : source.previewMode === "external"
+          ? "外部链接"
+          : "待处理";
+  const href =
+    source.previewMode === "private_file"
+      ? source.downloadUrl
+      : source.openUrl || source.embedUrl;
+
+  return (
+    <div
+      style={{
+        border: "1px solid var(--line)",
+        borderRadius: 8,
+        padding: 14,
+        background: "#fff",
+        display: "grid",
+        gap: 10,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <span
+          style={{
+            width: 34,
+            height: 34,
+            borderRadius: 8,
+            background: "var(--violet-50)",
+            color: "var(--violet-600)",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
+          <Icon.Play size={16} stroke="var(--violet-600)" />
+        </span>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div
+            style={{
+              fontSize: 14,
+              fontWeight: 700,
+              color: "var(--ink-900)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {asset.title}
+          </div>
+          <div
+            style={{
+              marginTop: 5,
+              display: "flex",
+              gap: 8,
+              flexWrap: "wrap",
+              alignItems: "center",
+              fontSize: 12,
+              color: "var(--ink-400)",
+            }}
+          >
+            <span>{label}</span>
+            {source.provider ? <span>{source.provider}</span> : null}
+          </div>
+        </div>
+        <Badge tone={recordingStatusTone(asset.reviewStatus)} dot>
+          {asset.reviewStatusLabel || asset.reviewStatus}
+        </Badge>
+      </div>
+      {source.previewMode === "embed" && source.embedUrl ? (
+        <iframe
+          title={`${asset.title} 预览`}
+          src={source.embedUrl}
+          loading="lazy"
+          allowFullScreen
+          style={{
+            width: "100%",
+            aspectRatio: "16 / 9",
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            background: "var(--ink-50)",
+          }}
+        />
+      ) : null}
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            height: 30,
+            padding: "0 10px",
+            borderRadius: 6,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "var(--bg-soft)",
+            color: "var(--blue-700)",
+            fontSize: 12,
+            fontWeight: 700,
+            textDecoration: "none",
+          }}
+        >
+          {source.previewMode === "private_file" ? "下载原始文件" : "打开录屏"}
+        </a>
+      ) : null}
+    </div>
   );
 }
 
@@ -6439,6 +6655,7 @@ function StreamerDesktopReferenceInner({
   notificationUnreadCount,
   profile,
   recordings,
+  recordingAssets,
   projectAnnouncements = [],
 }) {
   const [route, setRoute] = React.useState(initialRoute);
@@ -6461,6 +6678,9 @@ function StreamerDesktopReferenceInner({
   );
   const [recordingRows, setRecordingRows] = React.useState(() =>
     normalizeStreamerRecordings(recordings),
+  );
+  const [recordingAssetRows, setRecordingAssetRows] = React.useState(() =>
+    Array.isArray(recordingAssets) ? recordingAssets : [],
   );
   const [announcementRows, setAnnouncementRows] = React.useState(() =>
     normalizeProjectAnnouncements(projectAnnouncements),
@@ -6492,6 +6712,12 @@ function StreamerDesktopReferenceInner({
   }, [recordings]);
 
   React.useEffect(() => {
+    setRecordingAssetRows(
+      Array.isArray(recordingAssets) ? recordingAssets : [],
+    );
+  }, [recordingAssets]);
+
+  React.useEffect(() => {
     setAnnouncementRows(normalizeProjectAnnouncements(projectAnnouncements));
   }, [projectAnnouncements]);
 
@@ -6503,6 +6729,9 @@ function StreamerDesktopReferenceInner({
   const visibleRecordings = Array.isArray(recordingRows)
     ? recordingRows
     : MY_RECORDINGS;
+  const visibleRecordingAssets = Array.isArray(recordingAssetRows)
+    ? recordingAssetRows
+    : [];
   const visibleAnnouncements = Array.isArray(announcementRows)
     ? announcementRows
     : [];
@@ -6560,6 +6789,9 @@ function StreamerDesktopReferenceInner({
       );
       if (Array.isArray(body.recordings)) {
         setRecordingRows(normalizeStreamerRecordings(body.recordings));
+      }
+      if (Array.isArray(body.recordingAssets)) {
+        setRecordingAssetRows(body.recordingAssets);
       }
     };
 
@@ -6828,6 +7060,7 @@ function StreamerDesktopReferenceInner({
           {route === "videos" && (
             <ScreenVideos
               recordings={visibleRecordings}
+              recordingAssets={visibleRecordingAssets}
               projectAnnouncements={visibleAnnouncements}
               actions={actions}
             />
@@ -6846,7 +7079,7 @@ function StreamerDesktopReferenceInner({
 }
 
 /**
- * @param {{ initialRoute?: string; liveTasks?: any[] | null; notificationItems?: any[] | null; notificationUnreadCount?: number | null; profile?: any; recordings?: any[] | null; projectAnnouncements?: any[] | null }} props
+ * @param {{ initialRoute?: string; liveTasks?: any[] | null; notificationItems?: any[] | null; notificationUnreadCount?: number | null; profile?: any; recordings?: any[] | null; recordingAssets?: any[] | null; projectAnnouncements?: any[] | null }} props
  */
 export default function StreamerDesktopReferenceApp({
   initialRoute = "dashboard",
@@ -6855,6 +7088,7 @@ export default function StreamerDesktopReferenceApp({
   notificationUnreadCount,
   profile,
   recordings,
+  recordingAssets,
   projectAnnouncements = [],
 }) {
   return (
@@ -6865,6 +7099,7 @@ export default function StreamerDesktopReferenceApp({
       notificationUnreadCount={notificationUnreadCount}
       profile={profile}
       recordings={recordings}
+      recordingAssets={recordingAssets}
       projectAnnouncements={projectAnnouncements}
     />
   );
