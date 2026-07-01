@@ -5353,8 +5353,127 @@ function RecordingAssetCard({ asset }) {
               : "打开录屏"}
           </a>
         ) : null}
+        <RecordingAssetAiAnalysis analysis={asset.aiAnalysis} />
       </div>
     </MCard>
+  );
+}
+
+function RecordingAssetAiAnalysis({ analysis }) {
+  if (!analysis) {
+    return (
+      <div
+        style={{
+          borderTop: "1px solid var(--line)",
+          paddingTop: 10,
+          fontSize: 12,
+          color: "var(--ink-400)",
+          lineHeight: 1.5,
+        }}
+      >
+        AI 分析待排队，审核后会沉淀节奏、互动、音画和风险片段。
+      </div>
+    );
+  }
+
+  const dimensions = Array.isArray(analysis.dimensions)
+    ? analysis.dimensions
+    : [];
+  const segments = Array.isArray(analysis.segments) ? analysis.segments : [];
+
+  return (
+    <div
+      style={{
+        borderTop: "1px solid var(--line)",
+        paddingTop: 10,
+        display: "grid",
+        gap: 10,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 800, color: "var(--ink-900)" }}>
+          AI 分析报告
+        </div>
+        <MBadge tone={analysis.status === "succeeded" ? "green" : "violet"}>
+          {analysis.statusLabel || analysis.status}
+        </MBadge>
+      </div>
+      {analysis.summary ? (
+        <div style={{ fontSize: 12, color: "var(--ink-600)", lineHeight: 1.6 }}>
+          {analysis.summary}
+        </div>
+      ) : null}
+      {dimensions.length > 0 ? (
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}
+        >
+          {dimensions.slice(0, 4).map((dimension) => (
+            <div
+              key={dimension.key}
+              style={{
+                border: "1px solid var(--line)",
+                borderRadius: 10,
+                padding: "8px 9px",
+                background: "var(--bg-soft)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--ink-400)",
+                  marginBottom: 4,
+                }}
+              >
+                {dimension.label}
+              </div>
+              <div
+                style={{
+                  fontSize: 18,
+                  fontWeight: 800,
+                  color: "var(--blue-600)",
+                  lineHeight: 1,
+                }}
+              >
+                {dimension.score}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {segments.length > 0 ? (
+        <div style={{ display: "grid", gap: 7 }}>
+          {segments.slice(0, 3).map((segment) => (
+            <div
+              key={segment.id || `${segment.segmentKind}-${segment.sortOrder}`}
+              style={{
+                display: "grid",
+                gap: 2,
+                fontSize: 12,
+                color: "var(--ink-600)",
+                lineHeight: 1.45,
+              }}
+            >
+              <span style={{ color: "var(--ink-400)", fontWeight: 700 }}>
+                {segment.timeRangeLabel}
+              </span>
+              <span>
+                <strong style={{ color: "var(--ink-800)" }}>
+                  {segment.title}
+                </strong>
+                {segment.summary ? ` · ${segment.summary}` : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

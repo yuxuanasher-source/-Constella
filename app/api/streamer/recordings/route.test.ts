@@ -115,6 +115,7 @@ describe("streamer recordings route", () => {
           submittedAt: "2026-07-01T09:00:00.000Z",
         },
         sources: [],
+        aiAnalysis: null,
       },
     ]);
     vi.mocked(createStreamerRecordingLink).mockResolvedValue({

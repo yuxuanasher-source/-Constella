@@ -4613,6 +4613,135 @@ function RecordingAssetCard({ asset }) {
           {source.previewMode === "private_file" ? "下载原始文件" : "打开录屏"}
         </a>
       ) : null}
+      <RecordingAssetAiAnalysis analysis={asset.aiAnalysis} />
+    </div>
+  );
+}
+
+function RecordingAssetAiAnalysis({ analysis }) {
+  if (!analysis) {
+    return (
+      <div
+        style={{
+          borderTop: "1px solid var(--line)",
+          paddingTop: 10,
+          fontSize: 12,
+          color: "var(--ink-400)",
+        }}
+      >
+        AI 分析待排队，审核员发起后会沉淀节奏、互动、音画和风险片段。
+      </div>
+    );
+  }
+
+  const dimensions = Array.isArray(analysis.dimensions)
+    ? analysis.dimensions
+    : [];
+  const segments = Array.isArray(analysis.segments) ? analysis.segments : [];
+
+  return (
+    <div
+      style={{
+        borderTop: "1px solid var(--line)",
+        paddingTop: 10,
+        display: "grid",
+        gap: 10,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 800, color: "var(--ink-900)" }}>
+          AI 分析报告
+        </div>
+        <Badge tone={analysis.status === "succeeded" ? "green" : "violet"}>
+          {analysis.statusLabel || analysis.status}
+        </Badge>
+      </div>
+      {analysis.summary ? (
+        <div
+          style={{
+            fontSize: 12,
+            lineHeight: 1.6,
+            color: "var(--ink-600)",
+          }}
+        >
+          {analysis.summary}
+        </div>
+      ) : null}
+      {dimensions.length > 0 ? (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))",
+            gap: 8,
+          }}
+        >
+          {dimensions.slice(0, 4).map((dimension) => (
+            <div
+              key={dimension.key}
+              style={{
+                border: "1px solid var(--line)",
+                borderRadius: 8,
+                padding: "8px 9px",
+                background: "var(--bg-soft)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--ink-400)",
+                  marginBottom: 4,
+                }}
+              >
+                {dimension.label}
+              </div>
+              <div
+                style={{
+                  fontSize: 18,
+                  fontWeight: 800,
+                  color: "var(--blue-600)",
+                  lineHeight: 1,
+                }}
+              >
+                {dimension.score}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {segments.length > 0 ? (
+        <div style={{ display: "grid", gap: 6 }}>
+          {segments.slice(0, 3).map((segment) => (
+            <div
+              key={segment.id || `${segment.segmentKind}-${segment.sortOrder}`}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "76px 1fr",
+                gap: 8,
+                alignItems: "start",
+                fontSize: 12,
+                color: "var(--ink-600)",
+              }}
+            >
+              <span style={{ color: "var(--ink-400)", fontWeight: 700 }}>
+                {segment.timeRangeLabel}
+              </span>
+              <span>
+                <strong style={{ color: "var(--ink-800)" }}>
+                  {segment.title}
+                </strong>
+                {segment.summary ? ` · ${segment.summary}` : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

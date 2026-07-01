@@ -712,6 +712,29 @@ describe("StreamerDesktopReferenceApp recording library", () => {
               embedUrl: null,
               provider: "private_storage",
             },
+            aiAnalysis: {
+              status: "succeeded",
+              statusLabel: "已完成",
+              summary: "录屏节奏稳定，适合进入人工复核。",
+              scorecard: { rhythm: 82, interaction: 76 },
+              dimensions: [
+                {
+                  key: "rhythm",
+                  label: "直播节奏",
+                  score: 82,
+                  finding: "开场节奏稳定",
+                },
+              ],
+              segments: [
+                {
+                  id: "segment-1",
+                  title: "开场",
+                  timeRangeLabel: "00:00 - 02:00",
+                  summary: "开场说明清晰",
+                  riskLevel: "low",
+                },
+              ],
+            },
           },
         ]}
       />,
@@ -723,6 +746,13 @@ describe("StreamerDesktopReferenceApp recording library", () => {
       "href",
       "https://download.local/desktop-demo.mp4",
     );
+    expect(screen.getByText("AI 分析报告")).toBeInTheDocument();
+    expect(
+      screen.getByText("录屏节奏稳定，适合进入人工复核。"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("直播节奏")).toBeInTheDocument();
+    expect(screen.getByText("82")).toBeInTheDocument();
+    expect(screen.getByText("00:00 - 02:00")).toBeInTheDocument();
   });
 
   it("submits a recording URL row and appends it to the table", async () => {
