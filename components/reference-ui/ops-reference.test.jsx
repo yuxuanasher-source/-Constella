@@ -5976,6 +5976,14 @@ describe("OpsReferenceApp settlement smoke", () => {
             source: "OCR",
           },
         ]}
+        projectCards={[
+          {
+            id: "project-export-one",
+            name: "Project Export",
+            product: "Game X",
+            defaultHourlyRate: 80,
+          },
+        ]}
       />,
     );
 
