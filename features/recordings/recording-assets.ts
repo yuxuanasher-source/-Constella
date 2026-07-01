@@ -1,3 +1,5 @@
+import type { RecordingAiAnalysisDto } from "./recording-ai-analysis";
+
 export type RecordingReviewStatus =
   | "submitted"
   | "reviewing"
@@ -80,6 +82,7 @@ export type RecordingAssetDto = {
   updatedAt: string;
   primarySource: RecordingAssetSourceDto | null;
   sources: RecordingAssetSourceDto[];
+  aiAnalysis: RecordingAiAnalysisDto | null;
 };
 
 export type RecordingAssetDtoInput = {
@@ -105,6 +108,7 @@ export type RecordingAssetDtoInput = {
     submittedAt: string | null;
     downloadUrl?: string | null;
   }>;
+  aiAnalysis?: RecordingAiAnalysisDto | null;
 };
 
 const reviewStatusLabels: Record<RecordingReviewStatus, string> = {
@@ -147,6 +151,7 @@ export function toRecordingAssetDto(
     updatedAt: input.asset.updatedAt,
     primarySource: sources[0] ?? null,
     sources,
+    aiAnalysis: input.aiAnalysis ?? null,
   };
 }
 

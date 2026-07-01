@@ -36,6 +36,50 @@ describe("recording asset library", () => {
               submitted_at: "2026-07-01T09:00:00.000Z",
             },
           ],
+          recording_ai_analyses: [
+            {
+              id: "analysis-1",
+              asset_id: "asset-1",
+              status: "succeeded",
+              provider_name: "deterministic",
+              summary: "录屏节奏稳定，适合进入人工复核。",
+              scorecard: { rhythm: 82, interaction: 76 },
+              dimensions: [
+                {
+                  key: "rhythm",
+                  label: "直播节奏",
+                  score: 82,
+                  finding: "开场节奏稳定",
+                },
+              ],
+              risk_flags: [],
+              recommendations: [
+                {
+                  title: "人工复核高光片段",
+                  detail: "确认后进入主播画像。",
+                  requiresHumanApproval: true,
+                },
+              ],
+              error_summary: null,
+              ai_invocation_id: "invocation-1",
+              created_at: "2026-07-01T10:00:00.000Z",
+              updated_at: "2026-07-01T10:05:00.000Z",
+              completed_at: "2026-07-01T10:05:00.000Z",
+              recording_ai_segments: [
+                {
+                  id: "segment-1",
+                  segment_kind: "opening",
+                  start_seconds: 0,
+                  end_seconds: 120,
+                  title: "开场",
+                  summary: "开场说明清晰",
+                  risk_level: "low",
+                  evidence: { source: "asset:asset-1" },
+                  sort_order: 1,
+                },
+              ],
+            },
+          ],
         },
       ],
       error: null,
@@ -70,6 +114,17 @@ describe("recording asset library", () => {
           previewMode: "private_file",
           downloadUrl:
             "https://download.local/org-1/recordings/project-1/demo.mp4",
+        }),
+        aiAnalysis: expect.objectContaining({
+          id: "analysis-1",
+          status: "succeeded",
+          summary: "录屏节奏稳定，适合进入人工复核。",
+          segments: [
+            expect.objectContaining({
+              title: "开场",
+              timeRangeLabel: "00:00 - 02:00",
+            }),
+          ],
         }),
       }),
     ]);

@@ -3,6 +3,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSignedDownloadUrl } from "@/features/storage/private-upload";
 
 import {
+  toRecordingAiAnalysisDto,
+  type RecordingAiAnalysisRow,
+} from "./recording-ai-analysis";
+import {
   toRecordingAssetDto,
   type RecordingAssetDto,
   type RecordingAssetKind,
@@ -33,6 +37,7 @@ type RecordingAssetRow = {
   created_at: string;
   updated_at: string;
   recording_asset_sources?: RecordingAssetSourceRow[] | null;
+  recording_ai_analyses?: RecordingAiAnalysisRow[] | null;
 };
 
 export async function listStreamerRecordingAssets(
@@ -58,6 +63,7 @@ export async function listStreamerRecordingAssets(
         "created_at",
         "updated_at",
         "recording_asset_sources(id, source_kind, preview_state, provider, external_url, storage_path, submitted_at)",
+        "recording_ai_analyses(id, asset_id, status, provider_name, summary, scorecard, dimensions, risk_flags, recommendations, error_summary, ai_invocation_id, created_at, updated_at, completed_at, recording_ai_segments(id, segment_kind, start_seconds, end_seconds, title, summary, risk_level, evidence, sort_order))",
       ].join(", "),
     )
     .eq("organization_id", input.organizationId)
@@ -116,5 +122,15 @@ async function toRecordingAssetDtoFromRow(
       updatedAt: row.updated_at,
     },
     sources,
+    aiAnalysis: latestAnalysis(row.recording_ai_analyses),
   });
+}
+
+function latestAnalysis(
+  rows: RecordingAiAnalysisRow[] | null | undefined,
+): RecordingAssetDto["aiAnalysis"] {
+  const [row] = [...(rows ?? [])].sort((left, right) =>
+    (right.created_at ?? "").localeCompare(left.created_at ?? ""),
+  );
+  return row ? toRecordingAiAnalysisDto(row) : null;
 }
