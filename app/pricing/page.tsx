@@ -6,20 +6,12 @@ import {
   createSupabaseAdminClient,
   createSupabaseServerClient,
 } from "@/lib/db/supabase-server";
+import {
+  resolvePublicPricingPlans,
+  type PublicPricingPlan,
+} from "./pricing-data";
 
 export const dynamic = "force-dynamic";
-
-type PlanRow = {
-  id: string;
-  code: string;
-  name: string;
-  monthly_price_cents: number;
-  annual_price_cents: number;
-  included_active_streamers: number;
-  included_seats: number;
-  included_ocr: number;
-  included_ai: number;
-};
 
 function yuan(cents: number): string {
   return `¥${(cents / 100).toLocaleString("zh-CN")}`;
@@ -34,10 +26,10 @@ export default async function PricingPage() {
         .select(
           "id, code, name, monthly_price_cents, annual_price_cents, included_active_streamers, included_seats, included_ocr, included_ai",
         )
-        .neq("code", "trial")
         .order("monthly_price_cents", { ascending: true })
-        .returns<PlanRow[]>()
-    : { data: [] as PlanRow[] };
+        .returns<PublicPricingPlan[]>()
+    : { data: [] as PublicPricingPlan[] };
+  const publicPlans = resolvePublicPricingPlans(plans);
 
   return (
     <main className="min-h-screen bg-[var(--bg)] px-6 py-12">
@@ -57,7 +49,7 @@ export default async function PricingPage() {
         </p>
 
         <div className="mt-8 grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-          {(plans ?? []).map((plan) => (
+          {publicPlans.map((plan) => (
             <div
               key={plan.id}
               className="flex flex-col rounded-lg border border-[var(--line)] bg-white p-6 shadow-sm"

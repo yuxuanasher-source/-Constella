@@ -4,9 +4,14 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getPublicEnv } from "@/lib/config/env";
 
 const protectedPrefixes = ["/console", "/m", "/desktop"];
+const publicAuthPaths = new Set(["/m/login", "/m/login/"]);
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
+  if (publicAuthPaths.has(request.nextUrl.pathname)) {
+    return response;
+  }
+
   const isProtected = protectedPrefixes.some((prefix) =>
     request.nextUrl.pathname.startsWith(prefix),
   );
