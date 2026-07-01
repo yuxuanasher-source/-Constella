@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildKnowledgeDocumentChunks,
   buildIndexedDocumentsFromKnowledgeStore,
   buildLiveReviewKnowledgeDocument,
   syncKnowledgeStoreToIndex,
@@ -15,11 +16,22 @@ function mockIndexClient() {
   });
   const select = vi.fn(() => ({ single }));
   const upsert = vi.fn(() => ({ select }));
-  const from = vi.fn(() => ({ upsert }));
+  const deleteEq = vi.fn().mockResolvedValue({ error: null });
+  const deleteMatch = vi.fn(() => ({ eq: deleteEq }));
+  const deleteFn = vi.fn(() => ({ match: deleteMatch }));
+  const insert = vi.fn().mockResolvedValue({ error: null });
+  const from = vi.fn((table: string) => {
+    if (table === "knowledge_document_chunks") {
+      return { delete: deleteFn, insert };
+    }
+    return { upsert };
+  });
   return {
     client: { from } as unknown as KnowledgeAssetIndexClient,
     from,
     upsert,
+    insert,
+    deleteFn,
   };
 }
 
@@ -103,9 +115,55 @@ describe("buildIndexedDocumentsFromKnowledgeStore", () => {
   });
 });
 
+describe("buildKnowledgeDocumentChunks", () => {
+  it("splits indexed documents into traceable chunks with business metadata", () => {
+    const chunks = buildKnowledgeDocumentChunks(
+      {
+        organizationId: "org-1",
+        docType: "retrospective",
+        title: "低毛利复盘",
+        body: [
+          "# 低毛利复盘",
+          "Project: project-1",
+          "Product: 星图",
+          "",
+          "第一段：低毛利项目需要核对成本。",
+          "第二段：主播话术应改成福利节点前置。",
+        ].join("\n"),
+        sourceRef: "live_review:review-1",
+        tags: ["低毛利", "复盘"],
+        createdBy: "user-1",
+        metadata: {
+          source: "live_review",
+          projectId: "project-1",
+          product: "星图",
+          platform: "douyin",
+          updatedAt: "2026-06-28T02:00:00.000Z",
+        },
+      },
+      "kb-1",
+      { maxChunkChars: 42 },
+    );
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks[0]).toMatchObject({
+      organization_id: "org-1",
+      knowledge_document_id: "kb-1",
+      doc_type: "retrospective",
+      title: "低毛利复盘",
+      source_ref: "live_review:review-1#chunk-1",
+      project_id: "project-1",
+      product: "星图",
+      platform: "douyin",
+      tags: ["低毛利", "复盘"],
+    });
+    expect(chunks[0].body).toContain("低毛利复盘");
+  });
+});
+
 describe("syncKnowledgeStoreToIndex", () => {
-  it("upserts editable tree documents by organization and source ref", async () => {
-    const { client, from, upsert } = mockIndexClient();
+  it("upserts editable tree documents and refreshes their chunks", async () => {
+    const { client, from, upsert, insert, deleteFn } = mockIndexClient();
 
     const result = await syncKnowledgeStoreToIndex(client, {
       organizationId: "org-1",
@@ -133,6 +191,14 @@ describe("syncKnowledgeStoreToIndex", () => {
       }),
       { onConflict: "organization_id,source_ref" },
     );
+    expect(deleteFn).toHaveBeenCalled();
+    expect(insert).toHaveBeenCalledWith([
+      expect.objectContaining({
+        knowledge_document_id: "kb-1",
+        source_ref: "knowledge_base:doc1#chunk-1",
+        body: expect.stringContaining("复盘正文"),
+      }),
+    ]);
     expect(result).toEqual({ indexedCount: 1 });
   });
 });

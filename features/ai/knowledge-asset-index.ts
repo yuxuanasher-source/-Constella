@@ -33,6 +33,24 @@ export type KnowledgeAssetDocument = {
   metadata: KnowledgeAssetMetadata;
 };
 
+export type KnowledgeDocumentChunkInsert = {
+  organization_id: string;
+  knowledge_document_id: string;
+  chunk_index: number;
+  doc_type: KnowledgeAssetDocType;
+  title: string;
+  body: string;
+  source_ref: string;
+  tags: string[];
+  metadata: KnowledgeAssetMetadata;
+  project_id?: string;
+  streamer_id?: string;
+  live_task_id?: string;
+  product?: string;
+  platform?: string;
+  updated_at?: string;
+};
+
 export type KnowledgeAssetIndexClient = {
   from(table: "knowledge_documents"): {
     upsert(
@@ -46,6 +64,16 @@ export type KnowledgeAssetIndexClient = {
         }>;
       };
     };
+  };
+  from(table: "knowledge_document_chunks"): {
+    delete(): {
+      match(payload: Record<string, unknown>): PromiseLike<{
+        error: { message?: string } | Error | null;
+      }>;
+    };
+    insert(payload: KnowledgeDocumentChunkInsert[]): PromiseLike<{
+      error: { message?: string } | Error | null;
+    }>;
   };
 };
 
@@ -249,7 +277,68 @@ export async function upsertKnowledgeAssetDocument(
   if (!data?.id) {
     throw new Error("Failed to index knowledge document");
   }
+  await refreshKnowledgeDocumentChunks(client, doc, data.id);
   return { id: data.id };
+}
+
+export function buildKnowledgeDocumentChunks(
+  doc: KnowledgeAssetDocument,
+  knowledgeDocumentId: string,
+  options: { maxChunkChars?: number } = {},
+): KnowledgeDocumentChunkInsert[] {
+  const maxChunkChars = Math.max(40, options.maxChunkChars ?? 900);
+  const chunks = splitIntoChunks(doc.body, maxChunkChars);
+  return chunks.map((body, index) => {
+    const metadata = compactMetadata({
+      ...doc.metadata,
+      updatedAt: doc.metadata.updatedAt,
+    });
+    return compactChunk({
+      organization_id: doc.organizationId,
+      knowledge_document_id: knowledgeDocumentId,
+      chunk_index: index,
+      doc_type: doc.docType,
+      title: doc.title,
+      body,
+      source_ref: `${doc.sourceRef}#chunk-${index + 1}`,
+      tags: doc.tags,
+      metadata,
+      project_id: doc.metadata.projectId,
+      streamer_id: doc.metadata.streamerId,
+      live_task_id: doc.metadata.liveTaskId,
+      product: doc.metadata.product,
+      platform: doc.metadata.platform,
+      updated_at: doc.metadata.updatedAt,
+    });
+  });
+}
+
+async function refreshKnowledgeDocumentChunks(
+  client: KnowledgeAssetIndexClient,
+  doc: KnowledgeAssetDocument,
+  knowledgeDocumentId: string,
+): Promise<void> {
+  const { error: deleteError } = await client
+    .from("knowledge_document_chunks")
+    .delete()
+    .match({
+      organization_id: doc.organizationId,
+      knowledge_document_id: knowledgeDocumentId,
+    });
+  if (deleteError) {
+    throw new Error(
+      deleteError.message || "Failed to refresh knowledge chunks",
+    );
+  }
+
+  const chunks = buildKnowledgeDocumentChunks(doc, knowledgeDocumentId);
+  if (!chunks.length) return;
+  const { error: insertError } = await client
+    .from("knowledge_document_chunks")
+    .insert(chunks);
+  if (insertError) {
+    throw new Error(insertError.message || "Failed to index knowledge chunks");
+  }
 }
 
 function docTypeForKnowledgeNode(
@@ -361,6 +450,62 @@ function compactMetadata(
     compacted[key] = value;
   }
   return compacted as KnowledgeAssetMetadata;
+}
+
+function compactChunk(
+  chunk: KnowledgeDocumentChunkInsert,
+): KnowledgeDocumentChunkInsert {
+  const compacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(chunk)) {
+    if (value === undefined || value === null || value === "") continue;
+    compacted[key] = value;
+  }
+  return compacted as KnowledgeDocumentChunkInsert;
+}
+
+function splitIntoChunks(body: string, maxChunkChars: number): string[] {
+  const normalized = body.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+  const blocks = normalized
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const block of blocks) {
+    if (!current) {
+      if (block.length <= maxChunkChars) {
+        current = block;
+      } else {
+        chunks.push(...splitLongBlock(block, maxChunkChars));
+      }
+      continue;
+    }
+
+    if (`${current}\n\n${block}`.length <= maxChunkChars) {
+      current = `${current}\n\n${block}`;
+      continue;
+    }
+    chunks.push(current);
+    current = "";
+    if (block.length <= maxChunkChars) {
+      current = block;
+    } else {
+      chunks.push(...splitLongBlock(block, maxChunkChars));
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function splitLongBlock(block: string, maxChunkChars: number): string[] {
+  const chunks: string[] = [];
+  for (let start = 0; start < block.length; start += maxChunkChars) {
+    chunks.push(block.slice(start, start + maxChunkChars));
+  }
+  return chunks;
 }
 
 function normalizeTags(values: unknown[]): string[] {

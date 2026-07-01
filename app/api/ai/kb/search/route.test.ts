@@ -20,6 +20,8 @@ function makeClient(rows: Record<string, unknown>[]) {
   const builder: Record<string, unknown> = {};
   builder.eq = () => builder;
   builder.in = () => builder;
+  builder.contains = () => builder;
+  builder.gte = () => builder;
   builder.order = () => builder;
   builder.limit = () => Promise.resolve({ data: rows, error: null });
   return {
@@ -41,22 +43,31 @@ describe("POST /api/ai/kb/search", () => {
   }
 
   it("blocks non-staff callers", async () => {
-    vi.mocked(createSupabaseServerClient).mockResolvedValue(makeClient([]) as never);
-    vi.mocked(getAuthContext).mockResolvedValue({ ...auth, role: "streamer" } as never);
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(
+      makeClient([]) as never,
+    );
+    vi.mocked(getAuthContext).mockResolvedValue({
+      ...auth,
+      role: "streamer",
+    } as never);
     const { POST } = await import("./route");
     const res = await POST(post({ query: "结算口径" }));
     expect(res.status).toBe(403);
   });
 
   it("requires a query", async () => {
-    vi.mocked(createSupabaseServerClient).mockResolvedValue(makeClient([]) as never);
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(
+      makeClient([]) as never,
+    );
     const { POST } = await import("./route");
     const res = await POST(post({ query: "  " }));
     expect(res.status).toBe(400);
   });
 
   it("answers 无数据 when no passages match", async () => {
-    vi.mocked(createSupabaseServerClient).mockResolvedValue(makeClient([]) as never);
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(
+      makeClient([]) as never,
+    );
     const { POST } = await import("./route");
     const res = await POST(post({ query: "不存在的主题" }));
     expect(res.status).toBe(200);
@@ -69,15 +80,22 @@ describe("POST /api/ai/kb/search", () => {
   it("returns cited passages with the number disclaimer", async () => {
     const rows = [
       {
-        id: "kb-1",
+        id: "chunk-1",
+        knowledge_document_id: "kb-1",
         doc_type: "policy",
         title: "结算口径说明",
         body: "结算以系统计时为准，绿灯证据方可计入 CPT 结算口径。",
         source_ref: "doc:settlement-policy#1",
         tags: ["结算"],
+        project_id: null,
+        product: null,
+        platform: null,
+        updated_at: "2026-06-28T00:00:00.000Z",
       },
     ];
-    vi.mocked(createSupabaseServerClient).mockResolvedValue(makeClient(rows) as never);
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(
+      makeClient(rows) as never,
+    );
     const { POST } = await import("./route");
     const res = await POST(post({ query: "结算口径" }));
     expect(res.status).toBe(200);
@@ -86,5 +104,24 @@ describe("POST /api/ai/kb/search", () => {
     expect(json.citations.length).toBeGreaterThan(0);
     expect(json.citations[0].sourceRef).toBe("doc:settlement-policy#1");
     expect(json.answer).toContain("结构化数据查询为准");
+  });
+
+  it("accepts business filters for chunk retrieval", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(
+      makeClient([]) as never,
+    );
+    const { POST } = await import("./route");
+    const res = await POST(
+      post({
+        query: "低毛利复盘",
+        docTypes: ["retrospective"],
+        projectId: "project-1",
+        product: "星图",
+        platform: "douyin",
+        tags: ["低毛利"],
+        updatedAfter: "2026-06-01T00:00:00.000Z",
+      }),
+    );
+    expect(res.status).toBe(200);
   });
 });

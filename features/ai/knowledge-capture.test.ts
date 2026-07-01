@@ -109,7 +109,15 @@ describe("captureConfirmedDraftKnowledgeDocument", () => {
     });
     const select = vi.fn(() => ({ single }));
     const upsert = vi.fn(() => ({ select }));
-    const from = vi.fn(() => ({ upsert }));
+    const deleteMatch = vi.fn().mockResolvedValue({ error: null });
+    const deleteFn = vi.fn(() => ({ match: deleteMatch }));
+    const insert = vi.fn().mockResolvedValue({ error: null });
+    const from = vi.fn((table: string) => {
+      if (table === "knowledge_document_chunks") {
+        return { delete: deleteFn, insert };
+      }
+      return { upsert };
+    });
 
     const result = await captureConfirmedDraftKnowledgeDocument(
       { from } as unknown as KnowledgeCaptureClient,
@@ -130,6 +138,13 @@ describe("captureConfirmedDraftKnowledgeDocument", () => {
       }),
       { onConflict: "organization_id,source_ref" },
     );
+    expect(deleteFn).toHaveBeenCalled();
+    expect(insert).toHaveBeenCalledWith([
+      expect.objectContaining({
+        knowledge_document_id: "kb-1",
+        source_ref: "ai_draft:draft-review-1#chunk-1",
+      }),
+    ]);
     expect(result).toEqual({ id: "kb-1" });
   });
 });

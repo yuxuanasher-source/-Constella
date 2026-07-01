@@ -7,15 +7,22 @@
 
 export type KnowledgeDoc = {
   id: string;
+  docId?: string;
   docType: string;
   title: string;
   body: string;
   sourceRef: string;
   tags?: string[];
+  projectId?: string | null;
+  streamerId?: string | null;
+  product?: string | null;
+  platform?: string | null;
+  updatedAt?: string | null;
 };
 
 export type KnowledgePassage = {
   id: string;
+  docId?: string;
   docType: string;
   title: string;
   snippet: string;
@@ -24,9 +31,18 @@ export type KnowledgePassage = {
   score: number;
 };
 
+export type KnowledgeRankContext = {
+  projectId?: string;
+  streamerId?: string;
+  product?: string;
+  platform?: string;
+};
+
 // 查询分词：按空白/标点切分；对较长中文连续串补二元组以提升召回。
 export function tokenizeQuery(query: string): string[] {
-  const raw = String(query ?? "").trim().toLowerCase();
+  const raw = String(query ?? "")
+    .trim()
+    .toLowerCase();
   if (!raw) return [];
   const parts = raw
     .split(/[\s,，。、；;：:？?！!（）()【】[\]"'`/\\|]+/)
@@ -57,6 +73,7 @@ export function rankKnowledgePassages(
   query: string,
   docs: KnowledgeDoc[],
   limit = 5,
+  context: KnowledgeRankContext = {},
 ): KnowledgePassage[] {
   const terms = tokenizeQuery(query);
   if (!terms.length) return [];
@@ -77,8 +94,11 @@ export function rankKnowledgePassages(
       if (!firstHit && (inTitle || inBody)) firstHit = term;
     }
     if (score > 0) {
+      score += businessContextScore(doc, context);
+      score += recencyScore(doc.updatedAt);
       scored.push({
         id: doc.id,
+        docId: doc.docId,
         docType: doc.docType,
         title: doc.title,
         snippet: snippetAround(doc.body, firstHit),
@@ -91,6 +111,29 @@ export function rankKnowledgePassages(
   return scored
     .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
     .slice(0, Math.max(0, limit));
+}
+
+function businessContextScore(
+  doc: KnowledgeDoc,
+  context: KnowledgeRankContext,
+): number {
+  let score = 0;
+  if (context.projectId && doc.projectId === context.projectId) score += 8;
+  if (context.streamerId && doc.streamerId === context.streamerId) score += 5;
+  if (context.product && doc.product === context.product) score += 4;
+  if (context.platform && doc.platform === context.platform) score += 2;
+  if (doc.docType === "retrospective") score += 1;
+  return score;
+}
+
+function recencyScore(updatedAt?: string | null): number {
+  if (!updatedAt) return 0;
+  const updated = Date.parse(updatedAt);
+  if (!Number.isFinite(updated)) return 0;
+  const ageDays = (Date.now() - updated) / 86_400_000;
+  if (ageDays <= 14) return 2;
+  if (ageDays <= 60) return 1;
+  return 0;
 }
 
 export type KnowledgeCitation = {
@@ -126,7 +169,7 @@ export function assembleKnowledgeAnswer(
     index: i + 1,
     title: p.title,
     sourceRef: p.sourceRef,
-    docId: p.id,
+    docId: p.docId ?? p.id,
   }));
   const lines = passages.map(
     (p, i) => `[${i + 1}] ${p.title}：${p.snippet}（来源：${p.sourceRef}）`,
@@ -147,6 +190,7 @@ export function normalizePassage(raw: unknown): KnowledgePassage | null {
   if (!id || !title) return null;
   return {
     id,
+    docId: typeof r.docId === "string" ? r.docId : undefined,
     docType: String(r.docType ?? r.doc_type ?? "manual"),
     title,
     snippet: String(r.snippet ?? r.body ?? ""),
