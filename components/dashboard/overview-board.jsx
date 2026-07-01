@@ -1712,6 +1712,65 @@ function extractAiText(body) {
   return "已生成分析（需人工确认后采用）。";
 }
 
+function businessCopilotPayload(body) {
+  return body?.result?.output || body?.output || body || {};
+}
+
+function formatBusinessCopilotText(body) {
+  const answer = businessCopilotPayload(body);
+  const lines = [
+    typeof answer.answer === "string" && answer.answer.trim()
+      ? answer.answer.trim()
+      : "经营问答已生成。",
+  ];
+  const sourceSummary = answer.sourceSummary || {};
+  const confidence = answer.confidence || {};
+
+  if (sourceSummary.scopeLabel || confidence.label) {
+    lines.push(
+      `**来源**：${[sourceSummary.scopeLabel, confidence.label]
+        .filter(Boolean)
+        .join(" · ")}`,
+    );
+  }
+
+  if (Array.isArray(answer.facts) && answer.facts.length) {
+    lines.push(
+      "",
+      "### 事实",
+      ...answer.facts.slice(0, 6).map((fact) => {
+        const label = String(fact?.label || "事实");
+        const value = `${fact?.value ?? ""}${fact?.unit ?? ""}`;
+        return `- ${label}：${value}`;
+      }),
+    );
+  }
+
+  if (Array.isArray(answer.recommendations) && answer.recommendations.length) {
+    lines.push(
+      "",
+      "### 建议",
+      ...answer.recommendations
+        .slice(0, 4)
+        .map((item) => `- ${item?.proposal || "请人工复核后处理。"}`),
+    );
+  }
+
+  if (Array.isArray(answer.caveats) && answer.caveats.length) {
+    lines.push(
+      "",
+      "### 注意",
+      ...answer.caveats.slice(0, 3).map((item) => `- ${item}`),
+    );
+  }
+
+  if (answer.requiresHumanConfirmation) {
+    lines.push("", "需人工确认");
+  }
+
+  return lines.join("\n");
+}
+
 function cleanMarkdownText(value) {
   return String(value || "")
     .replace(/\*\*([^*]+)\*\*/g, "$1")
@@ -2473,6 +2532,17 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         if (!res.ok) throw new Error(json?.error || "AI 调用失败");
         text =
           json?.message?.content || json?.text || "已生成回复（需人工确认）。";
+      } else if (kind === "business") {
+        const res = await fetch("/api/ai/business-copilot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: userText }),
+        });
+        const json = await res.json();
+        const answer = businessCopilotPayload(json);
+        meta = normalizeAiMessageMeta(answer);
+        if (!res.ok) throw new Error(json?.error || "经营问答调用失败");
+        text = formatBusinessCopilotText(json);
       } else {
         // review / risk → 真实经营诊断代理
         const res = await fetch("/api/ai/project-reviews", {
@@ -2792,6 +2862,27 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
                 marginTop: 22,
               }}
             >
+              {quick(
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke={C.primaryDeep}
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M4 19V5" />
+                  <path d="M4 19h16" />
+                  <path d="m8 15 3-4 3 2 4-6" />
+                </svg>,
+                C.primarySoft,
+                C.primaryDeep,
+                "问经营数据",
+                "只读回答健康、优先级与结算风险",
+                () => run("business", "这个月经营健康吗"),
+              )}
               {quick(
                 <svg
                   width="16"

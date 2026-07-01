@@ -183,6 +183,92 @@ describe("OverviewBoard AI panel", () => {
     });
   });
 
+  it("routes the business question quick action through the controlled copilot API", async () => {
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/business-copilot") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              result: {
+                output: {
+                  question: "这个月经营健康吗",
+                  intent: "executive_health",
+                  answer: "经营健康判断已基于当前角色看板生成。",
+                  facts: [
+                    {
+                      label: "毛利率",
+                      value: 30,
+                      unit: "%",
+                      sourceTool: "role_home_dashboard",
+                      sourceId: "kpi:grossMarginRate",
+                    },
+                  ],
+                  recommendations: [
+                    {
+                      proposal: "先复核高风险项目和毛利拖累项。",
+                      requiresHumanApproval: true,
+                    },
+                  ],
+                  caveats: ["数据范围为当前账号授权组织和角色可见范围。"],
+                  generatedAt: "2026-06-18T04:00:00.000Z",
+                  sourceSummary: {
+                    sourceTool: "role_home_dashboard",
+                    scopeLabel: "全组织",
+                    generatedAt: "2026-06-18T04:00:00.000Z",
+                    readableAreas: ["kpis", "queue", "risks", "drilldowns"],
+                  },
+                  confidence: {
+                    level: "medium",
+                    label: "中等置信度",
+                    reason: "回答引用了当前角色看板事实。",
+                  },
+                  requiresHumanConfirmation: true,
+                },
+              },
+              dashboardProfile: { role: "owner", scopeLabel: "全组织" },
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ matches: { recommendations: [] } }),
+      });
+    });
+
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("问经营数据"));
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/ai/business-copilot",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const copilotCall = fetch.mock.calls.find(
+      ([url]) => url === "/api/ai/business-copilot",
+    );
+    expect(JSON.parse(copilotCall[1].body)).toEqual({
+      question: "这个月经营健康吗",
+    });
+    expect(
+      await screen.findByText("经营健康判断已基于当前角色看板生成。"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("毛利率：30%")).toBeInTheDocument();
+    expect(screen.getByText("先复核高风险项目和毛利拖累项。")).toBeInTheDocument();
+    expect(screen.getByText("需人工确认")).toBeInTheDocument();
+  });
+
   it("renders dashboard-provided action widgets instead of empty client fallbacks", () => {
     render(
       <OverviewBoard
