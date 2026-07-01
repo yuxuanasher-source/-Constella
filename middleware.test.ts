@@ -57,6 +57,13 @@ describe("middleware auth boundary", () => {
     expect(createServerClient).not.toHaveBeenCalled();
   });
 
+  it("allows the mobile login route itself without Supabase config", async () => {
+    const response = await middleware(createRequest("/m/login"));
+
+    expect(response.status).toBe(200);
+    expect(createServerClient).not.toHaveBeenCalled();
+  });
+
   it("redirects unauthenticated protected mobile routes to mobile login", async () => {
     process.env.NEXT_PUBLIC_SUPABASE_URL = "https://supabase.example.cn";
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon-key";
