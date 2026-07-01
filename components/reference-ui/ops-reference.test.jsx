@@ -4788,7 +4788,9 @@ describe("OpsReferenceApp live task smoke", () => {
       type: "project",
       note: "经营端页面创建任务",
     });
-    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /任务列表\s*1/ }),
+    );
     expect(await screen.findByText("task-ui-created")).toBeInTheDocument();
     expect(screen.queryByText("task-ui-historical")).not.toBeInTheDocument();
   });
