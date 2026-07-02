@@ -9,7 +9,10 @@ import type {
   AiProviderName,
   AiReasoningConfig,
 } from "@/features/ai/contracts";
-import { buildDashboardChatGrounding } from "@/features/ai/dashboard-chat-grounding";
+import {
+  buildDashboardChatGrounding,
+  type StreamerProfileInsightGrounding,
+} from "@/features/ai/dashboard-chat-grounding";
 import {
   buildRetrospectiveDraft,
   type AiDraftEnvelope,
@@ -128,7 +131,16 @@ export async function POST(request: Request) {
       );
     }
 
-    const grounding = buildDashboardChatGrounding({ dashboard, auth });
+    const streamerProfileInsights =
+      await loadStreamerProfileInsightsForGrounding({
+        supabase,
+        auth,
+      }).catch(() => []);
+    const grounding = buildDashboardChatGrounding({
+      dashboard,
+      auth,
+      streamerProfileInsights,
+    });
     const knowledgeContext = await buildDashboardKnowledgeContext({
       supabase,
       auth,
@@ -195,6 +207,7 @@ export async function POST(request: Request) {
           groundingMissingDataCount: grounding.missingData.length,
           groundingProjectHealthCount: grounding.projectHealth.topProjects.length,
           groundingSuggestedActionCount: grounding.suggestedActions.length,
+          streamerProfileInsightCount: streamerProfileInsights.length,
           knowledgePassageCount: knowledgeContext.passages.length,
           reviewKnowledgeSampleSize: knowledgeContext.reviewAssist.sampleSize,
           chatMode,
@@ -496,6 +509,58 @@ type DashboardKnowledgeContext = {
   promptText: string;
 };
 
+type StreamerProfileInsightGroundingRow = {
+  id: string;
+  streamer_id: string;
+  title: string;
+  summary: string | null;
+  strengths: string[] | null;
+  risks: string[] | null;
+  recommendations: string[] | null;
+  tags: string[] | null;
+  source_ref: string;
+  confirmed_at: string | null;
+  streamers?: { display_name: string | null } | { display_name: string | null }[] | null;
+};
+
+async function loadStreamerProfileInsightsForGrounding({
+  supabase,
+  auth,
+}: {
+  supabase: SupabaseClient;
+  auth: AuthContext;
+}): Promise<StreamerProfileInsightGrounding[]> {
+  const { data, error } = await supabase
+    .from("streamer_profile_insights")
+    .select(
+      "id, streamer_id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at, streamers(display_name)",
+    )
+    .eq("organization_id", auth.organizationId)
+    .order("confirmed_at", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    throw error;
+  }
+
+  return ((data ?? []) as StreamerProfileInsightGroundingRow[]).map((row) => {
+    const streamer = firstRelation(row.streamers);
+    return {
+      id: row.id,
+      streamerId: row.streamer_id,
+      streamerName: streamer?.display_name || row.streamer_id,
+      title: row.title,
+      summary: row.summary ?? "",
+      strengths: row.strengths ?? [],
+      risks: row.risks ?? [],
+      recommendations: row.recommendations ?? [],
+      tags: row.tags ?? [],
+      sourceRef: row.source_ref,
+      confirmedAt: row.confirmed_at,
+    };
+  });
+}
+
 async function buildDashboardKnowledgeContext({
   supabase,
   auth,
@@ -646,4 +711,8 @@ function inferPeriodLabel(query: string): string {
 
 function shouldCreateRetrospectiveDraft(query: string): boolean {
   return /(复盘|沉淀|经验|报告|总结)/.test(String(query ?? ""));
+}
+
+function firstRelation<T>(value: T | T[] | null | undefined): T | null {
+  return Array.isArray(value) ? (value[0] ?? null) : (value ?? null);
 }

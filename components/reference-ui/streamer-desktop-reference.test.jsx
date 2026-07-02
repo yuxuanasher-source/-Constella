@@ -641,6 +641,57 @@ describe("StreamerDesktopReferenceApp streamer profile", () => {
     });
     expect(fetchMock).toHaveBeenCalledWith("/api/streamer/profile", undefined);
   });
+
+  it("renders confirmed AI observations on the streamer profile screen", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        profile: profileFixture({
+          aiInsights: [
+            {
+              id: "insight-desktop",
+              title: "录屏 AI 观察 · 开场强",
+              summary: "开场福利点清晰，评论区回应快。",
+              strengths: ["开场钩子强"],
+              risks: ["口播节奏略快"],
+              recommendations: ["下次复盘重点观察福利点承接"],
+              sourceRef: "recording_ai_analyses:analysis-desktop",
+              confirmedAtLabel: "2026-06-03",
+            },
+          ],
+        }),
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerDesktopReferenceApp
+        initialRoute="profile"
+        profile={profileFixture({
+          aiInsights: [
+            {
+              id: "insight-desktop",
+              title: "录屏 AI 观察 · 开场强",
+              summary: "开场福利点清晰，评论区回应快。",
+              strengths: ["开场钩子强"],
+              risks: ["口播节奏略快"],
+              recommendations: ["下次复盘重点观察福利点承接"],
+              sourceRef: "recording_ai_analyses:analysis-desktop",
+              confirmedAtLabel: "2026-06-03",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(await screen.findByText("AI 观察与建议")).toBeInTheDocument();
+    expect(screen.getByText("录屏 AI 观察 · 开场强")).toBeInTheDocument();
+    expect(screen.getByText("开场福利点清晰，评论区回应快。")).toBeInTheDocument();
+    expect(screen.getByText("下次复盘重点观察福利点承接")).toBeInTheDocument();
+    expect(
+      screen.getByText("recording_ai_analyses:analysis-desktop"),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("StreamerDesktopReferenceApp recording library", () => {

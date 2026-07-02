@@ -40,6 +40,7 @@ export type StreamerCardDto = {
     grossContrib: number;
   };
   projects: StreamerProjectContributionDto[];
+  aiInsights: StreamerAiInsightDto[];
 };
 
 export type StreamerProjectContributionDto = {
@@ -49,6 +50,18 @@ export type StreamerProjectContributionDto = {
   status: string;
   settlementHours: number;
   grossContrib: number;
+};
+
+export type StreamerAiInsightDto = {
+  id: string;
+  title: string;
+  summary: string;
+  strengths: string[];
+  risks: string[];
+  recommendations: string[];
+  tags: string[];
+  sourceRef: string;
+  confirmedAtLabel: string;
 };
 
 export type StreamerDesktopProfileDto = {
@@ -94,6 +107,7 @@ export type StreamerDesktopProfileDto = {
     notifications: string;
     devices: string;
   };
+  aiInsights: StreamerAiInsightDto[];
 };
 
 export function toStreamerCardDto(
@@ -125,6 +139,7 @@ export function toStreamerCardDto(
     matchTrend: liveMetrics.matchTrend,
     metrics: liveMetrics.metrics,
     projects: liveMetrics.projects,
+    aiInsights: streamerAiInsights(row),
   };
 }
 
@@ -197,7 +212,41 @@ export function toStreamerDesktopProfileDto(
       notifications: "任务 / 审核 / AI",
       devices: "仅显示当前会话权限",
     },
+    aiInsights: streamerAiInsights(row),
   };
+}
+
+function streamerAiInsights(row: StreamerListRow): StreamerAiInsightDto[] {
+  return [...(row.streamer_profile_insights ?? [])]
+    .sort(
+      (a, b) =>
+        dateMs(b.confirmed_at ?? "") - dateMs(a.confirmed_at ?? ""),
+    )
+    .slice(0, 5)
+    .map((insight) => ({
+      id: insight.id,
+      title: insight.title || "AI 观察",
+      summary: insight.summary || "暂无摘要",
+      strengths: cleanStringList(insight.strengths),
+      risks: cleanStringList(insight.risks),
+      recommendations: cleanStringList(insight.recommendations),
+      tags: cleanStringList(insight.tags),
+      sourceRef: insight.source_ref || `streamer_profile_insights:${insight.id}`,
+      confirmedAtLabel: insight.confirmed_at
+        ? insight.confirmed_at.slice(0, 10)
+        : "未标注",
+    }));
+}
+
+function cleanStringList(values?: string[] | null): string[] {
+  return (values ?? [])
+    .map((value) => String(value).trim())
+    .filter(Boolean);
+}
+
+function dateMs(value: string): number {
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : 0;
 }
 
 function profileStatusLabel(status: string) {

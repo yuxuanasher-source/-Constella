@@ -11340,6 +11340,7 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
   };
   const streamerProjects = Array.isArray(s.projects) ? s.projects : [];
   const hasPerformanceData = hasStreamerPerformanceData(s);
+  const aiInsights = Array.isArray(s.aiInsights) ? s.aiInsights : [];
   const updateProfileDraft = (field) => (event) => {
     setProfileDraft((value) => ({
       ...(value || streamerProfileDraftFromCard(s)),
@@ -11871,6 +11872,125 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
           <EmptyHint
             title="暂无经营画像数据"
             hint="完成录屏、排班任务或报数审核后，这里会展示近 90 天真实表现。"
+          />
+        )}
+      </Card>
+
+      <Card
+        title="AI 观察"
+        extra={
+          aiInsights.length ? (
+            <Badge tone="violet">{aiInsights.length} 条</Badge>
+          ) : null
+        }
+        padded={true}
+      >
+        {aiInsights.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {aiInsights.slice(0, 3).map((insight) => (
+              <div
+                key={insight.id}
+                style={{
+                  padding: 12,
+                  borderRadius: 8,
+                  background:
+                    "linear-gradient(135deg, rgba(239,235,255,0.82), rgba(255,255,255,0.96))",
+                  border: "1px solid rgba(140,125,235,0.28)",
+                  boxShadow: "0 8px 18px rgba(91,75,209,0.08)",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 10,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: 8,
+                      background:
+                        "linear-gradient(135deg, var(--violet-600), #8C7DEB)",
+                      color: "#fff",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Icon.Sparkles size={14} stroke="#fff" />
+                  </span>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 700,
+                        color: "var(--ink-900)",
+                        lineHeight: 1.45,
+                      }}
+                    >
+                      {insight.title}
+                    </div>
+                    <div
+                      style={{
+                        marginTop: 4,
+                        fontSize: 12.5,
+                        color: "var(--ink-600)",
+                        lineHeight: 1.65,
+                      }}
+                    >
+                      {insight.summary}
+                    </div>
+                  </div>
+                </div>
+                {insight.recommendations?.length ? (
+                  <div
+                    style={{
+                      marginTop: 10,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                    }}
+                  >
+                    {insight.recommendations.slice(0, 2).map((item) => (
+                      <div
+                        key={item}
+                        style={{
+                          fontSize: 12,
+                          color: "var(--ink-700)",
+                          lineHeight: 1.55,
+                          display: "flex",
+                          gap: 6,
+                        }}
+                      >
+                        <span style={{ color: "var(--violet-600)" }}>建议</span>
+                        <span>{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <div
+                  className="mono"
+                  style={{
+                    marginTop: 10,
+                    paddingTop: 8,
+                    borderTop: "1px dashed rgba(140,125,235,0.28)",
+                    fontSize: 10.5,
+                    color: "var(--ink-400)",
+                    wordBreak: "break-all",
+                  }}
+                >
+                  {insight.sourceRef}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyHint
+            title="暂无 AI 观察"
+            hint="录屏 AI 结论经人工确认后会沉淀到这里。"
           />
         )}
       </Card>

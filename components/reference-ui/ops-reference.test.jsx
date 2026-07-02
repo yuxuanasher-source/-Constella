@@ -1696,6 +1696,41 @@ describe("OpsReferenceApp project smoke", () => {
     expect(await screen.findByText("后端主播 · CPT")).toBeInTheDocument();
   });
 
+  it("shows confirmed recording AI insights on the streamer profile panel", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        streamerCards={[
+          {
+            ...taskStreamerCards[0],
+            aiInsights: [
+              {
+                id: "insight-ops",
+                title: "录屏 AI 观察 · 开场强",
+                summary: "前三十秒福利点清晰，评论区回应快。",
+                strengths: ["开场钩子强"],
+                risks: ["口播节奏略快"],
+                recommendations: ["下次复盘重点观察福利点承接"],
+                sourceRef: "recording_ai_analyses:analysis-ops",
+                confirmedAtLabel: "2026-06-03",
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("AI 观察")).toBeInTheDocument();
+    expect(screen.getByText("录屏 AI 观察 · 开场强")).toBeInTheDocument();
+    expect(
+      screen.getByText("前三十秒福利点清晰，评论区回应快。"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("下次复盘重点观察福利点承接")).toBeInTheDocument();
+    expect(
+      screen.getByText("recording_ai_analyses:analysis-ops"),
+    ).toBeInTheDocument();
+  });
+
   it("warns when project-detail background roster refresh fails", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const projectCard = {

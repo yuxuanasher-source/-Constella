@@ -200,4 +200,55 @@ describe("dashboard chat grounding", () => {
     );
     expect(grounding.promptText).toContain("缺失数据");
   });
+
+  it("adds confirmed streamer profile insights as citeable AI facts", () => {
+    const dashboard: RoleHomeDashboardDto = {
+      profile: {
+        role: "ops_manager",
+        title: "经营总览看板",
+        subtitle: "经营闭环",
+        scopeLabel: "全组织",
+      },
+      kpis: [],
+      queue: [],
+      risks: [],
+      drilldowns: [],
+      generatedAt: "2026-06-28T01:20:00.000Z",
+    };
+
+    const grounding = buildDashboardChatGrounding({
+      dashboard,
+      auth,
+      streamerProfileInsights: [
+        {
+          id: "insight-1",
+          streamerId: "streamer-1",
+          streamerName: "Profile Streamer",
+          title: "录屏 AI 观察 · 开场强",
+          summary: "开场福利点清晰，评论区回应快。",
+          strengths: ["开场钩子强"],
+          risks: ["口播节奏略快"],
+          recommendations: ["下次复盘重点观察福利点承接"],
+          tags: ["recording_ai"],
+          sourceRef: "recording_ai_analyses:analysis-1",
+          confirmedAt: "2026-06-03T12:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(grounding.facts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "主播画像：Profile Streamer · 录屏 AI 观察 · 开场强",
+          detail:
+            "开场福利点清晰，评论区回应快。 优势：开场钩子强；风险：口播节奏略快；建议：下次复盘重点观察福利点承接；原始来源：recording_ai_analyses:analysis-1",
+          source: "streamer_profile_insights.insight-1",
+        }),
+      ]),
+    );
+    expect(grounding.promptText).toContain(
+      "streamer_profile_insights.insight-1",
+    );
+    expect(grounding.promptText).toContain("recording_ai_analyses:analysis-1");
+  });
 });
