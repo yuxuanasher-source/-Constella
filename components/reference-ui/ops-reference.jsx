@@ -1244,6 +1244,17 @@ function batchStatusMeta(status) {
   return labelOf(BATCH_STATUS, status);
 }
 
+// 财务确认（P0 财务闭环）：finance/owner 可在批次生成或重开后确认，
+// 与后端 POST /api/settlement-batches/{batchId}/confirm 的前置状态保持一致。
+const FINANCE_CONFIRMABLE_BATCH_STATUSES = new Set(["generated", "reopened"]);
+
+function canFinanceConfirmSettlementBatch(role, status) {
+  return (
+    (role === "finance" || role === "owner") &&
+    FINANCE_CONFIRMABLE_BATCH_STATUSES.has(status)
+  );
+}
+
 const BATCH_DETAIL_ITEMS = [];
 
 const JOINED_STREAMER_REQUIRED_MESSAGE =
@@ -1368,6 +1379,19 @@ const TASK_TYPE_OPTIONS = [
   { value: "training", label: "训练任务" },
   { value: "temporary", label: "临时任务" },
 ];
+
+// 代操作开播/下播：与服务层 assertCanOperateTask 保持一致，
+// MCN 员工（isMcnStaff）可代主播开播/下播，主播端走自己的任务视图。
+const LIVE_TASK_OPERATOR_ROLES = new Set([
+  "owner",
+  "ops_manager",
+  "operator_business",
+  "finance",
+]);
+
+function canOperateLiveTaskInUi(role) {
+  return LIVE_TASK_OPERATOR_ROLES.has(role);
+}
 
 const ANOMALY_TYPES = {
   not_started: { tone: "red", label: "已延期未直播" },
@@ -13793,6 +13817,10 @@ function ShotMetric({ label, value }) {
 function ScreenAdmission() {
   const applications = useOpsApplications();
   const actions = useOpsLiveActions();
+  const currentUser = useOpsCurrentUser();
+  // 与后端 rejectApplicationJoin 的角色门控一致：仅 owner / ops_manager 可最终拒绝入项。
+  const canRejectJoin =
+    currentUser.role === "owner" || currentUser.role === "ops_manager";
   const [projectBoards, setProjectBoards] = React.useState(null);
   const [selectedProjectId, setSelectedProjectId] = React.useState("");
   const [admissionMessage, setAdmissionMessage] = React.useState("");
@@ -13893,6 +13921,29 @@ function ScreenAdmission() {
       setAdmissionMessage("二次确认已完成");
     } catch (error) {
       setAdmissionMessage(error?.message || "二次确认失败，请稍后重试");
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const rejectJoin = async (applicationId) => {
+    if (!actions.rejectApplicationJoin) {
+      setAdmissionMessage("拒绝入项后台暂未接入。");
+      return;
+    }
+    const reason = askText("拒绝入项原因");
+    if (!reason) {
+      setAdmissionMessage("操作已取消：拒绝入项需填写原因");
+      return;
+    }
+    setBusyAction(`reject-join:${applicationId}`);
+    setAdmissionMessage("");
+    try {
+      await actions.rejectApplicationJoin(applicationId, { reason });
+      await syncAdmissionProjectBoards();
+      setAdmissionMessage("已拒绝入项");
+    } catch (error) {
+      setAdmissionMessage(error?.message || "拒绝入项失败，请稍后重试");
     } finally {
       setBusyAction("");
     }
@@ -14284,14 +14335,28 @@ function ScreenAdmission() {
                           </>
                         ) : null}
                         {confirmable ? (
-                          <Button
-                            size="sm"
-                            kind="default"
-                            onClick={() => confirmJoin(r.id)}
-                            disabled={busyAction === `confirm:${r.id}`}
-                          >
-                            二次确认
-                          </Button>
+                          <>
+                            <Button
+                              size="sm"
+                              kind="default"
+                              onClick={() => confirmJoin(r.id)}
+                              disabled={busyAction === `confirm:${r.id}`}
+                            >
+                              二次确认
+                            </Button>
+                            {canRejectJoin ? (
+                              <Button
+                                size="sm"
+                                kind="danger"
+                                onClick={() => rejectJoin(r.id)}
+                                disabled={
+                                  busyAction === `reject-join:${r.id}`
+                                }
+                              >
+                                拒绝入项
+                              </Button>
+                            ) : null}
+                          </>
                         ) : null}
                       </div>
                     );
@@ -15533,6 +15598,21 @@ function ScreenSettlement({ go }) {
       });
       return false;
     });
+
+  const confirmBatch = () =>
+    runSettlementAction("confirm", async () => {
+      if (!activeBatch) return false;
+      const reason = globalThis.prompt?.("财务确认原因");
+      if (!reason || !reason.trim()) {
+        setSettlementMessage("操作已取消：财务确认需填写原因");
+        return false;
+      }
+      await actions.confirmSettlementBatch?.(activeBatch.id, {
+        reason: reason.trim(),
+      });
+      setSettlementMessage("结算批次已财务确认");
+      return false;
+    });
   const saveProjectRule = (event) => {
     event?.preventDefault?.();
     return runSettlementAction("project-rule", async () => {
@@ -16682,6 +16762,7 @@ function ScreenSettlement({ go }) {
             }}
             onLockBatch={lockBatch}
             onReopenBatch={reopenBatch}
+            onConfirmBatch={confirmBatch}
             lockGate={activeGate}
             lockBlockMessage={reconciliationBlockMessage(activeReconciliation)}
             busyAction={busyAction}
@@ -16833,6 +16914,7 @@ function BatchDetail({
   onAddManualItem,
   onLockBatch,
   onReopenBatch,
+  onConfirmBatch,
   lockGate = { evaluated: false, hasBlocking: false },
   lockBlockMessage = "",
   busyAction,
@@ -16840,6 +16922,7 @@ function BatchDetail({
   const [detailMessage, setDetailMessage] = React.useState("");
   const [auditBusy, setAuditBusy] = React.useState(false);
   const auditEntries = useOpsAuditEntries();
+  const currentUser = useOpsCurrentUser();
   const actions = useOpsLiveActions();
   const b = batches.find((x) => x.id === id) || batches[0] || BATCHES[1];
   if (!b) {
@@ -17272,6 +17355,16 @@ function BatchDetail({
               >
                 保存为草稿
               </Button>
+              {canFinanceConfirmSettlementBatch(currentUser.role, b.status) ? (
+                <Button
+                  kind="default"
+                  icon={<Icon.Check size={14} />}
+                  onClick={onConfirmBatch}
+                  disabled={!!busyAction}
+                >
+                  {busyAction === "confirm" ? "处理中…" : "财务确认"}
+                </Button>
+              ) : null}
               <Button
                 kind="primary"
                 icon={<Icon.Lock size={14} stroke="#fff" />}
@@ -19601,6 +19694,11 @@ function TaskDrawer({
   const [drawerMessage, setDrawerMessage] = React.useState("");
   const [reviewOpen, setReviewOpen] = React.useState(false);
   const actions = useOpsLiveActions();
+  const currentUser = useOpsCurrentUser();
+  const [operateBusy, setOperateBusy] = React.useState(false);
+  // 代操作成功后本地推进状态：drawer 拿到的 task 是打开时的快照，
+  // 列表刷新不会回写进来，避免出现「已代开播仍显示代开播」的误导按钮。
+  const [operatedStatus, setOperatedStatus] = React.useState(null);
   const [editing, setEditing] = React.useState(false);
   const [editForm, setEditForm] = React.useState({
     title: "",
@@ -19665,7 +19763,33 @@ function TaskDrawer({
   const streamerName = s?.alias || displayTaskStreamerName(task);
   const projectName = p?.name || task.projectName || task.project;
   const statusKey = getTaskDisplayStatusKey(task);
-  const flowStatusKey = task.status || "pending_live";
+  const flowStatusKey = operatedStatus || task.status || "pending_live";
+  const canOperateTask = canOperateLiveTaskInUi(currentUser.role);
+  const operateLiveTask = async (mode) => {
+    const actionLabel = mode === "start" ? "代开播" : "代下播";
+    if (operateBusy) return;
+    const confirmed = globalThis.confirm?.(
+      `确认${actionLabel}「${task.name}」？该操作会立即变更任务状态。`,
+    );
+    if (!confirmed) return;
+    setOperateBusy(true);
+    setDrawerMessage("");
+    try {
+      if (mode === "start") {
+        await actions.startLiveTask?.(task.id);
+        setOperatedStatus("live");
+        setDrawerMessage("已代开播，任务进入「直播中」。");
+      } else {
+        await actions.stopLiveTask?.(task.id);
+        setOperatedStatus("pending_report");
+        setDrawerMessage("已代下播，任务进入「待报数」。");
+      }
+    } catch (error) {
+      setDrawerMessage(error?.message || `${actionLabel}失败，请稍后重试。`);
+    } finally {
+      setOperateBusy(false);
+    }
+  };
   const taskAnomalyKey = getTaskOperationalAnomalyKey(task);
   const taskAnomalyMeta =
     ANOMALY_TYPES[taskAnomalyKey] || ANOMALY_TYPES.abnormal;
@@ -20034,6 +20158,26 @@ function TaskDrawer({
           gap: 8,
         }}
       >
+        {canOperateTask && flowStatusKey === "pending_live" ? (
+          <Button
+            kind="primary"
+            icon={<Icon.Play size={14} stroke="#fff" />}
+            onClick={() => operateLiveTask("start")}
+            disabled={operateBusy || !!busyAction}
+          >
+            {operateBusy ? "处理中…" : "代开播"}
+          </Button>
+        ) : null}
+        {canOperateTask && flowStatusKey === "live" ? (
+          <Button
+            kind="primary"
+            icon={<Icon.Play size={14} stroke="#fff" />}
+            onClick={() => operateLiveTask("stop")}
+            disabled={operateBusy || !!busyAction}
+          >
+            {operateBusy ? "处理中…" : "代下播"}
+          </Button>
+        ) : null}
         <Button
           kind="danger"
           icon={<Icon.X size={14} />}
@@ -26252,6 +26396,7 @@ function ScreenNotifications() {
 function ScreenExport() {
   const actions = useOpsLiveActions();
   const projects = useOpsProjects();
+  const batches = useOpsSettlementBatches();
   const [kind, setKind] = React.useState("audit_logs");
   const [projectId, setProjectId] = React.useState(projects[0]?.id ?? "");
   const [busy, setBusy] = React.useState(false);
@@ -26276,24 +26421,62 @@ function ScreenExport() {
     { key: "supplier_reconcile", label: "供应商对账" },
   ];
 
+  const projectScopedKind =
+    kind === "vendor_delivery" ||
+    kind === "project_costs" ||
+    kind === "supplier_reconcile";
+  const selectedProjectName =
+    projects.find((project) => project.id === projectId)?.name ||
+    displayRecordId(projectId, "导出项目");
+
+  // 各导出 kind 的真实取数：优先用已注入的上下文数据（结算批次），
+  // 上下文没有的（审计日志 / 报数明细 / 成本明细）在导出前先取对应 /api，
+  // 再按 /api/exports 的「客户端提供 rows」契约传给治理导出。
+  const buildExportRows = async () => {
+    if (kind === "vendor_delivery") {
+      const items = await actions.readVendorDeliveryPackage?.(projectId);
+      return Array.isArray(items) ? items : [];
+    }
+    if (kind === "audit_logs") {
+      const entries = await actions.refreshAuditEntries?.();
+      return Array.isArray(entries) ? entries : [];
+    }
+    if (kind === "report_details") {
+      const reports = await actions.refreshReports?.();
+      return Array.isArray(reports) ? reports : [];
+    }
+    if (kind === "settlement_batch") {
+      return settlementBatchExportRows(batches);
+    }
+    if (kind === "project_costs" || kind === "supplier_reconcile") {
+      const items = await actions.fetchProjectCostItems?.(projectId);
+      const costItems = Array.isArray(items) ? items : [];
+      return kind === "project_costs"
+        ? projectCostExportRowsFromItems(costItems, selectedProjectName)
+        : supplierReconcileExportRowsFromItems(costItems, selectedProjectName);
+    }
+    return [];
+  };
+
   const submit = async () => {
     if (!actions.createGovernedExport || busy) return;
+    if (projectScopedKind && !projectId) {
+      globalThis.alert?.("请先选择导出项目");
+      return;
+    }
     setBusy(true);
     try {
-      const rows =
-        kind === "vendor_delivery"
-          ? await actions.readVendorDeliveryPackage?.(projectId)
-          : [];
+      const rows = await buildExportRows();
       const costExport =
         kind === "project_costs" || kind === "supplier_reconcile";
       const exportResult = costExport
         ? await actions.createProjectCostExport?.(projectId, {
             kind,
-            rows: Array.isArray(rows) ? rows : [],
+            rows,
           })
         : await actions.createGovernedExport({
             kind,
-            rows: Array.isArray(rows) ? rows : [],
+            rows,
           });
       setResult(exportResult);
     } catch (error) {
@@ -26450,6 +26633,43 @@ function ScreenExport() {
       </div>
     </>
   );
+}
+
+// 结算批次导出：批次上下文金额为元，导出契约字段为分（*AmountCents）。
+function settlementBatchExportRows(batches) {
+  return (Array.isArray(batches) ? batches : []).map((batch) => {
+    const amountCents = Math.round(Number(batch.amount ?? 0) * 100);
+    const isPayable = batch.type === "streamer_payable";
+    return {
+      batchName: batch.name || displayRecordId(batch.id, "结算批次"),
+      payableAmountCents: isPayable ? amountCents : 0,
+      vendorReceivableCents: isPayable ? 0 : amountCents,
+    };
+  });
+}
+
+// 项目成本明细导出：对齐 features/complex-cost/complex-cost-export-dto 的行结构。
+function projectCostExportRowsFromItems(items, projectName) {
+  return items.map((item) => ({
+    projectName,
+    itemType: item.itemType,
+    amountCents: item.amountCents,
+    source: item.source,
+    reason: item.reason,
+  }));
+}
+
+function supplierReconcileExportRowsFromItems(items, projectName) {
+  return items
+    .filter((item) => Boolean(item.supplierOrganizationId))
+    .map((item) => ({
+      projectName,
+      supplierName:
+        item.supplierName || item.supplierOrganizationId || "未知供应商",
+      itemType: item.itemType,
+      amountCents: item.amountCents,
+      evidenceLevel: item.evidenceLevel,
+    }));
 }
 
 function auditChangedFields(entry) {
@@ -27515,6 +27735,9 @@ function OpsReferenceInner({
       if (Array.isArray(body.reports)) {
         setReportsState(body.reports.map(toReferenceReportFromApi));
       }
+      // 返回后端原始 DTO（含 streamerName / settlementDuration / evidenceLevel），
+      // 供导出中心直接作为治理导出的 rows 使用。
+      return Array.isArray(body.reports) ? body.reports : [];
     };
 
     const refreshSettlementPool = async (scope = settlementScope) => {
@@ -27569,6 +27792,8 @@ function OpsReferenceInner({
       if (Array.isArray(body.entries)) {
         setAuditEntriesState(body.entries);
       }
+      // 返回审计 DTO（含 module / action / actorName），供导出中心取数。
+      return Array.isArray(body.entries) ? body.entries : [];
     };
 
     const upsertOcrJob = (job) => {
@@ -28072,6 +28297,19 @@ function OpsReferenceInner({
         ]);
         return body;
       },
+      rejectApplicationJoin: async (id, input) => {
+        const body = await fetchJson(
+          `/api/applications/${id}/reject-join`,
+          "reject application join failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshApplications();
+        return body;
+      },
       createLiveTask: async (input) => {
         const body = await fetchJson(
           "/api/live-tasks",
@@ -28120,6 +28358,32 @@ function OpsReferenceInner({
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(input ?? {}),
+          },
+        );
+        await refreshOpsTasks();
+        return body;
+      },
+      startLiveTask: async (id) => {
+        const body = await fetchJson(
+          `/api/live-tasks/${id}/start`,
+          "start live task failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          },
+        );
+        await refreshOpsTasks();
+        return body;
+      },
+      stopLiveTask: async (id) => {
+        const body = await fetchJson(
+          `/api/live-tasks/${id}/stop`,
+          "stop live task failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
           },
         );
         await refreshOpsTasks();
@@ -28242,6 +28506,20 @@ function OpsReferenceInner({
         );
         await refreshSettlementBatchDetail(batchId);
         await refreshSettlementBatches();
+      },
+      confirmSettlementBatch: async (batchId, input) => {
+        const body = await fetchJson(
+          `/api/settlement-batches/${batchId}/confirm`,
+          "confirm settlement batch failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        );
+        await refreshSettlementBatchDetail(batchId);
+        await refreshSettlementBatches();
+        return body;
       },
       reopenSettlementBatch: async (batchId, input) => {
         await fetchJson(

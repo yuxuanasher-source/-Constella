@@ -4996,6 +4996,185 @@ describe("OpsReferenceApp admission smoke", () => {
     ).toBeInTheDocument();
     expect(within(changeRow).getByText("等待主播补充录屏")).toBeInTheDocument();
   });
+
+  it("rejects a pending final-confirm application with a reason through the reject-join API", async () => {
+    const rejectQueue = [
+      {
+        id: "app-reject-join",
+        status: "recording_approved",
+        source: "signup",
+        submittedAt: "2026-06-07T01:00:00.000Z",
+        project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+        streamer: { id: "streamer-selected", displayName: "Selected Streamer" },
+        latestRecording: { id: "rec-selected", version: 1, status: "approved" },
+        vendorReview: {
+          decision: "selected",
+          remark: "Best fit.",
+          submittedAt: "2026-06-07T08:00:00.000Z",
+        },
+      },
+    ];
+    const admissionBoardResponse = {
+      projects: [
+        {
+          project: {
+            id: "project-1",
+            code: "P-001",
+            name: "Alpha Project",
+            vendor: "Vendor A",
+            product: "Game A",
+          },
+          counts: {
+            totalApplications: 1,
+            recordingCount: 1,
+            mcnPendingReview: 0,
+            mcnApproved: 1,
+            mcnRejected: 0,
+            needsChanges: 0,
+            vendorPending: 0,
+            vendorSelected: 1,
+            vendorBackup: 0,
+            vendorRejected: 0,
+            vendorNeedsChanges: 0,
+            pendingFinalConfirm: 1,
+          },
+          share: {
+            id: "share-1",
+            status: "active",
+            expiresAt: "2026-06-14T00:00:00.000Z",
+            lastSubmittedAt: "2026-06-07T08:00:00.000Z",
+          },
+          lastActivityAt: "2026-06-07T08:00:00.000Z",
+        },
+      ],
+    };
+    const fetchMock = vi.fn(async (url) => {
+      const target = String(url);
+      if (target === "/api/applications/admission-board") {
+        return { ok: true, json: async () => admissionBoardResponse };
+      }
+      if (target === "/api/applications/app-reject-join/reject-join") {
+        return {
+          ok: true,
+          json: async () => ({
+            application: { id: "app-reject-join", status: "declined" },
+          }),
+        };
+      }
+      if (target === "/api/applications") {
+        return { ok: true, json: async () => ({ applications: [] }) };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const promptMock = vi.fn(() => "厂家最终未通过该主播");
+    vi.stubGlobal("prompt", promptMock);
+
+    render(
+      <OpsReferenceApp initialRoute="admission" applicationQueue={rejectQueue} />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "拒绝入项" }));
+
+    expect(promptMock).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/app-reject-join/reject-join",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: "厂家最终未通过该主播" }),
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/applications", undefined),
+    );
+    expect(await screen.findByText("已拒绝入项")).toBeInTheDocument();
+  });
+
+  it("hides the reject-join entry for roles that cannot final-reject", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/applications/admission-board") {
+        return {
+          ok: true,
+          json: async () => ({
+            projects: [
+              {
+                project: {
+                  id: "project-1",
+                  code: "P-001",
+                  name: "Alpha Project",
+                  vendor: "Vendor A",
+                  product: "Game A",
+                },
+                counts: {
+                  totalApplications: 1,
+                  recordingCount: 1,
+                  mcnPendingReview: 0,
+                  mcnApproved: 1,
+                  mcnRejected: 0,
+                  needsChanges: 0,
+                  vendorPending: 0,
+                  vendorSelected: 1,
+                  vendorBackup: 0,
+                  vendorRejected: 0,
+                  vendorNeedsChanges: 0,
+                  pendingFinalConfirm: 1,
+                },
+                share: {
+                  id: "share-1",
+                  status: "active",
+                  expiresAt: "2026-06-14T00:00:00.000Z",
+                  lastSubmittedAt: "2026-06-07T08:00:00.000Z",
+                },
+                lastActivityAt: "2026-06-07T08:00:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        currentUser={{ id: "user-finance", name: "Finance A", role: "finance" }}
+        applicationQueue={[
+          {
+            id: "app-no-reject",
+            status: "recording_approved",
+            source: "signup",
+            submittedAt: "2026-06-07T01:00:00.000Z",
+            project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+            streamer: {
+              id: "streamer-selected",
+              displayName: "Selected Streamer",
+            },
+            latestRecording: {
+              id: "rec-selected",
+              version: 1,
+              status: "approved",
+            },
+            vendorReview: {
+              decision: "selected",
+              remark: "Best fit.",
+              submittedAt: "2026-06-07T08:00:00.000Z",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "二次确认" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "拒绝入项" }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe("OpsReferenceApp live task smoke", () => {
@@ -6047,6 +6226,189 @@ describe("OpsReferenceApp live task smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
     expect((await screen.findAllByText("已取消")).length).toBeGreaterThan(0);
   });
+
+  it("starts and stops a live task on behalf of the streamer after confirmation", async () => {
+    const initialTask = {
+      id: "task-proxy-operate",
+      name: "Proxy Operate Task",
+      status: "pending_live",
+      project: "project-live",
+      projectId: "project-live",
+      projectName: "Fixture Project",
+      streamerId: "streamer-one",
+      streamerName: "Streamer One",
+      dayIdx: 2,
+      startHour: 20,
+      endHour: 23,
+      type: "project",
+    };
+    const fetchMock = vi.fn(async (url) => {
+      const target = String(url);
+      if (target === "/api/live-tasks/task-proxy-operate/start") {
+        return {
+          ok: true,
+          json: async () => ({
+            task: { id: "task-proxy-operate", status: "live" },
+          }),
+        };
+      }
+      if (target === "/api/live-tasks/task-proxy-operate/stop") {
+        return {
+          ok: true,
+          json: async () => ({
+            task: { id: "task-proxy-operate", status: "pending_report" },
+          }),
+        };
+      }
+      if (target === "/api/live-tasks") {
+        return { ok: true, json: async () => ({ tasks: [] }) };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const confirmMock = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirmMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[initialTask]}
+        projectCards={[]}
+        streamerCards={[]}
+        applicationQueue={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
+    fireEvent.click(screen.getByText("task-proxy-operate"));
+    fireEvent.click(await screen.findByRole("button", { name: "代开播" }));
+
+    expect(confirmMock).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/live-tasks/task-proxy-operate/start",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/live-tasks", undefined),
+    );
+    expect(
+      await screen.findByText("已代开播，任务进入「直播中」。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "代开播" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "代下播" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/live-tasks/task-proxy-operate/stop",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }),
+      ),
+    );
+    expect(
+      await screen.findByText("已代下播，任务进入「待报数」。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "代下播" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the proxy operation cancelled when the confirm dialog is dismissed", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/live-tasks") {
+        return { ok: true, json: async () => ({ tasks: [] }) };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => false));
+
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[
+          {
+            id: "task-proxy-dismiss",
+            name: "Proxy Dismiss Task",
+            status: "pending_live",
+            project: "project-live",
+            projectId: "project-live",
+            projectName: "Fixture Project",
+            streamerId: "streamer-one",
+            streamerName: "Streamer One",
+            dayIdx: 2,
+            startHour: 20,
+            endHour: 23,
+            type: "project",
+          },
+        ]}
+        projectCards={[]}
+        streamerCards={[]}
+        applicationQueue={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
+    fireEvent.click(screen.getByText("task-proxy-dismiss"));
+    fireEvent.click(await screen.findByRole("button", { name: "代开播" }));
+
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/live-tasks/task-proxy-dismiss/start",
+      expect.anything(),
+    );
+  });
+
+  it("hides proxy start/stop controls from streamer accounts", async () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        currentUser={{ id: "user-streamer", name: "主播一号", role: "streamer" }}
+        liveTasks={[
+          {
+            id: "task-proxy-gated",
+            name: "Proxy Gated Task",
+            status: "pending_live",
+            project: "project-live",
+            projectId: "project-live",
+            projectName: "Fixture Project",
+            streamerId: "streamer-one",
+            streamerName: "Streamer One",
+            dayIdx: 2,
+            startHour: 20,
+            endHour: 23,
+            type: "project",
+          },
+        ]}
+        projectCards={[]}
+        streamerCards={[]}
+        applicationQueue={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /任务列表\s*1/ }));
+    fireEvent.click(screen.getByText("task-proxy-gated"));
+
+    expect(
+      await screen.findByRole("button", { name: "取消任务" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "代开播" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "代下播" }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe("OpsReferenceApp settlement smoke", () => {
@@ -6105,6 +6467,137 @@ describe("OpsReferenceApp settlement smoke", () => {
     );
 
     expect(screen.getAllByText("已作废").length).toBeGreaterThan(0);
+  });
+
+  it("lets finance confirm a generated batch with a reason through the confirm API", async () => {
+    const generatedBatch = {
+      id: "batch-confirmable",
+      projectId: "project-real",
+      type: "streamer_payable",
+      name: "Real Project · 主播应付",
+      project: "Real Project",
+      vendor: "-",
+      period: "2026-06-01 -> 2026-06-30",
+      items: 1,
+      amount: 5200,
+      status: "generated",
+      updated: "2026-06-03 10:00",
+      creator: "Finance",
+    };
+    const confirmedApiBatch = {
+      id: "batch-confirmable",
+      projectId: "project-real",
+      batchType: "payable",
+      status: "confirmed",
+      projectName: "Real Project",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+      computedAmount: 5200,
+      manualAmount: 0,
+      adjustmentAmount: 0,
+      totalAmount: 5200,
+      itemCount: 1,
+      createdBy: "Finance",
+      updatedAt: "2026-06-03T10:00:00.000Z",
+    };
+    const fetchMock = vi.fn(async (url) => {
+      const target = String(url);
+      if (target === "/api/settlement-batches/batch-confirmable/confirm") {
+        return { ok: true, json: async () => ({ batch: confirmedApiBatch }) };
+      }
+      if (target === "/api/settlement-batches/batch-confirmable") {
+        return {
+          ok: true,
+          json: async () => ({ batch: confirmedApiBatch, items: [] }),
+        };
+      }
+      if (target === "/api/settlement-batches") {
+        return {
+          ok: true,
+          json: async () => ({ batches: [confirmedApiBatch] }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const promptMock = vi.fn(() => "财务已核对流水");
+    vi.stubGlobal("prompt", promptMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        currentUser={{ id: "user-finance", name: "Finance A", role: "finance" }}
+        liveBatches={[generatedBatch]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "财务确认" }));
+
+    expect(promptMock).toHaveBeenCalledWith("财务确认原因");
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/settlement-batches/batch-confirmable/confirm",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: "财务已核对流水" }),
+        }),
+      ),
+    );
+    expect(
+      await screen.findByText("结算批次已财务确认"),
+    ).toBeInTheDocument();
+    expect((await screen.findAllByText("已确认")).length).toBeGreaterThan(0);
+    // confirmed 批次仍可直接锁定，锁定入口保持可见。
+    expect(
+      screen.getByRole("button", { name: "确认并锁定" }),
+    ).toBeInTheDocument();
+    // 已确认后不再重复展示财务确认入口。
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "财务确认" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("hides the finance confirm entry for roles or statuses outside the contract", () => {
+    const batchOf = (status) => ({
+      id: `batch-${status}`,
+      projectId: "project-real",
+      type: "streamer_payable",
+      name: "Real Project · 主播应付",
+      project: "Real Project",
+      vendor: "-",
+      period: "2026-06-01 -> 2026-06-30",
+      items: 1,
+      amount: 5200,
+      status,
+      updated: "2026-06-03 10:00",
+      creator: "Finance",
+    });
+
+    const opsView = render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        currentUser={{ id: "user-ops", name: "Ops A", role: "ops_manager" }}
+        liveBatches={[batchOf("generated")]}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "财务确认" }),
+    ).not.toBeInTheDocument();
+    opsView.unmount();
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        currentUser={{ id: "user-finance", name: "Finance A", role: "finance" }}
+        liveBatches={[batchOf("confirmed")]}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "财务确认" }),
+    ).not.toBeInTheDocument();
   });
 
   it("derives settlement summary metrics from live batches instead of fixed display amounts", () => {
@@ -7249,8 +7742,20 @@ describe("OpsReferenceApp export center smoke", () => {
     vi.unstubAllGlobals();
   });
 
-  it("submits a governed export request and renders the returned filename", async () => {
+  it("submits a governed audit export with rows fetched from the audit API", async () => {
+    const auditEntry = {
+      id: "audit-entry-1",
+      module: "settlement",
+      action: "lock",
+      actorName: "Finance A",
+    };
     const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/audit-logs?limit=50") {
+        return {
+          ok: true,
+          json: async () => ({ entries: [auditEntry] }),
+        };
+      }
       if (String(url) === "/api/exports") {
         return {
           ok: true,
@@ -7258,8 +7763,8 @@ describe("OpsReferenceApp export center smoke", () => {
             export: {
               kind: "audit_logs",
               filename: "audit_logs-2026-06-02.csv",
-              content: "模块,动作\nsettlement,lock",
-              fieldCount: 2,
+              content: "模块,动作,操作人\nsettlement,lock,Finance A",
+              fieldCount: 3,
               rowCount: 1,
             },
           }),
@@ -7278,6 +7783,12 @@ describe("OpsReferenceApp export center smoke", () => {
     expect(screen.getAllByText("数据导出中心").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "生成导出" }));
 
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/audit-logs?limit=50",
+        undefined,
+      ),
+    );
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/exports",
@@ -7286,7 +7797,7 @@ describe("OpsReferenceApp export center smoke", () => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             kind: "audit_logs",
-            rows: [],
+            rows: [auditEntry],
           }),
         }),
       );
@@ -7371,6 +7882,317 @@ describe("OpsReferenceApp export center smoke", () => {
     });
     expect(
       await screen.findByText("vendor_delivery-project-live.csv"),
+    ).toBeInTheDocument();
+  });
+
+  it("exports settlement batches from injected batch data with cent amounts", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/exports") {
+        return {
+          ok: true,
+          json: async () => ({
+            export: {
+              kind: "settlement_batch",
+              filename: "settlement_batch-2026-06-02.csv",
+              content: "批次,应付金额,厂家应收",
+              fieldCount: 3,
+              rowCount: 2,
+            },
+          }),
+        };
+      }
+
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="export"
+        liveBatches={[
+          {
+            id: "batch-payable",
+            projectId: "project-real",
+            type: "streamer_payable",
+            name: "Real Project · 主播应付",
+            project: "Real Project",
+            vendor: "-",
+            period: "2026-06-01 -> 2026-06-30",
+            items: 2,
+            amount: 5200,
+            status: "generated",
+            updated: "2026-06-03 10:00",
+            creator: "Finance",
+          },
+          {
+            id: "batch-receivable",
+            projectId: "project-real",
+            type: "vendor_receivable",
+            name: "Real Project · 厂家应收",
+            project: "Real Project",
+            vendor: "Vendor R",
+            period: "2026-06-01 -> 2026-06-30",
+            items: 1,
+            amount: 9000,
+            status: "locked",
+            updated: "2026-06-03 10:00",
+            creator: "Finance",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "结算批次" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成导出" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/exports",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const exportCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/exports",
+    );
+    expect(JSON.parse(exportCall[1].body)).toEqual({
+      kind: "settlement_batch",
+      rows: [
+        {
+          batchName: "Real Project · 主播应付",
+          payableAmountCents: 520000,
+          vendorReceivableCents: 0,
+        },
+        {
+          batchName: "Real Project · 厂家应收",
+          payableAmountCents: 0,
+          vendorReceivableCents: 900000,
+        },
+      ],
+    });
+    expect(
+      await screen.findByText("settlement_batch-2026-06-02.csv"),
+    ).toBeInTheDocument();
+  });
+
+  it("fetches live reports before exporting report details", async () => {
+    const reportRow = {
+      id: "report-export-1",
+      streamerName: "Streamer One",
+      settlementDuration: 95,
+      evidenceLevel: "green",
+      timeSource: "system",
+      status: "approved",
+      submittedAt: "2026-06-02T10:00:00.000Z",
+    };
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/live-reports") {
+        return { ok: true, json: async () => ({ reports: [reportRow] }) };
+      }
+      if (String(url) === "/api/exports") {
+        return {
+          ok: true,
+          json: async () => ({
+            export: {
+              kind: "report_details",
+              filename: "report_details-2026-06-02.csv",
+              content: "主播,结算时长,证据等级",
+              fieldCount: 3,
+              rowCount: 1,
+            },
+          }),
+        };
+      }
+
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="export" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "报数明细" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成导出" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/live-reports", undefined),
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/exports",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const exportCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/exports",
+    );
+    const parsedBody = JSON.parse(exportCall[1].body);
+    expect(parsedBody.kind).toBe("report_details");
+    expect(parsedBody.rows).toHaveLength(1);
+    expect(parsedBody.rows[0]).toMatchObject({
+      streamerName: "Streamer One",
+      settlementDuration: 95,
+      evidenceLevel: "green",
+    });
+    expect(
+      await screen.findByText("report_details-2026-06-02.csv"),
+    ).toBeInTheDocument();
+  });
+
+  it("exports project cost items fetched from the cost items API", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/projects/project-live/cost-items") {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: "cost-item-1",
+                itemType: "traffic",
+                amountCents: 5000,
+                source: "manual",
+                reason: "投放成本",
+                evidenceLevel: "yellow",
+                supplierOrganizationId: null,
+              },
+            ],
+          }),
+        };
+      }
+      if (String(url) === "/api/projects/project-live/cost-export") {
+        return {
+          ok: true,
+          json: async () => ({
+            export: {
+              kind: "project_costs",
+              filename: "project_costs-2026-06-02.csv",
+              content: "Project Name,Cost Type",
+              fieldCount: 5,
+              rowCount: 1,
+            },
+          }),
+        };
+      }
+
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp initialRoute="export" projectCards={taskProjectCards} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "项目成本明细" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成导出" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-live/cost-items",
+        undefined,
+      ),
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-live/cost-export",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const exportCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/projects/project-live/cost-export",
+    );
+    expect(JSON.parse(exportCall[1].body)).toEqual({
+      kind: "project_costs",
+      rows: [
+        {
+          projectName: "Fixture Project",
+          itemType: "traffic",
+          amountCents: 5000,
+          source: "manual",
+          reason: "投放成本",
+        },
+      ],
+    });
+    expect(
+      await screen.findByText("project_costs-2026-06-02.csv"),
+    ).toBeInTheDocument();
+  });
+
+  it("exports supplier reconcile rows only for supplier-linked cost items", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/projects/project-live/cost-items") {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: "cost-item-supplier",
+                itemType: "external_share",
+                amountCents: 8800,
+                source: "import",
+                reason: "外部机构分成",
+                evidenceLevel: "green",
+                supplierOrganizationId: "org-supplier-1",
+              },
+              {
+                id: "cost-item-internal",
+                itemType: "traffic",
+                amountCents: 5000,
+                source: "manual",
+                reason: "投放成本",
+                evidenceLevel: "yellow",
+                supplierOrganizationId: null,
+              },
+            ],
+          }),
+        };
+      }
+      if (String(url) === "/api/projects/project-live/cost-export") {
+        return {
+          ok: true,
+          json: async () => ({
+            export: {
+              kind: "supplier_reconcile",
+              filename: "supplier_reconcile-2026-06-02.csv",
+              content: "Project Name,Supplier",
+              fieldCount: 5,
+              rowCount: 1,
+            },
+          }),
+        };
+      }
+
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp initialRoute="export" projectCards={taskProjectCards} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "供应商对账" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成导出" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-live/cost-export",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const exportCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/projects/project-live/cost-export",
+    );
+    expect(JSON.parse(exportCall[1].body)).toEqual({
+      kind: "supplier_reconcile",
+      rows: [
+        {
+          projectName: "Fixture Project",
+          supplierName: "org-supplier-1",
+          itemType: "external_share",
+          amountCents: 8800,
+          evidenceLevel: "green",
+        },
+      ],
+    });
+    expect(
+      await screen.findByText("supplier_reconcile-2026-06-02.csv"),
     ).toBeInTheDocument();
   });
 });
