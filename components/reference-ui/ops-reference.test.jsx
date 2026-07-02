@@ -4131,9 +4131,11 @@ describe("OpsReferenceApp admission smoke", () => {
         },
         latestRecording: {
           id: "rec-1",
+          assetId: "asset-1",
           version: 2,
           status: "reviewing",
           url: "https://video.example/latest",
+          aiAnalysis: null,
         },
         vendorReview: null,
       },
@@ -4150,10 +4152,29 @@ describe("OpsReferenceApp admission smoke", () => {
         },
         latestRecording: {
           id: "rec-2",
+          assetId: "asset-2",
           version: 1,
           status: "approved",
           url: null,
           hasPrivateStorage: true,
+          aiAnalysis: {
+            id: "analysis-2",
+            assetId: "asset-2",
+            status: "succeeded",
+            statusLabel: "已完成",
+            providerName: "deterministic",
+            summary: "录屏节奏稳定",
+            scorecard: {},
+            dimensions: [],
+            riskFlags: [],
+            recommendations: [],
+            segments: [],
+            errorSummary: null,
+            aiInvocationId: "invocation-2",
+            createdAt: "2026-06-07T02:11:00.000Z",
+            updatedAt: "2026-06-07T02:12:00.000Z",
+            completedAt: "2026-06-07T02:12:00.000Z",
+          },
         },
         vendorReview: {
           decision: "selected",
@@ -4226,6 +4247,20 @@ describe("OpsReferenceApp admission smoke", () => {
         };
       }
 
+      if (String(url) === "/api/recording-assets/asset-1/ai-analysis") {
+        return {
+          ok: true,
+          json: async () => ({
+            analysis: {
+              id: "analysis-1",
+              assetId: "asset-1",
+              status: "queued",
+              statusLabel: "排队中",
+            },
+          }),
+        };
+      }
+
       if (String(url) === "/api/applications") {
         return {
           ok: true,
@@ -4284,6 +4319,7 @@ describe("OpsReferenceApp admission smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: "查看录屏" }));
     expect(await screen.findByText("Streamer Two")).toBeInTheDocument();
     expect(await screen.findByText("Good pacing.")).toBeInTheDocument();
+    expect(await screen.findByText("AI：已完成")).toBeInTheDocument();
     const reviewingRow = screen.getByText("Streamer One").closest("tr");
     const approvedRow = screen.getByText("Streamer Two").closest("tr");
 
@@ -4301,6 +4337,17 @@ describe("OpsReferenceApp admission smoke", () => {
     expect(
       within(approvedRow).getByRole("button", { name: "二次确认" }),
     ).toBeInTheDocument();
+
+    fireEvent.click(
+      within(reviewingRow).getByRole("button", { name: "发起 AI 分析" }),
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/recording-assets/asset-1/ai-analysis",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(await screen.findByText("AI 分析已排队")).toBeInTheDocument();
 
     fireEvent.click(within(reviewingRow).getByRole("button", { name: "通过" }));
     await waitFor(() =>

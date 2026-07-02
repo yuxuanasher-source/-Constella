@@ -13713,6 +13713,29 @@ function ScreenAdmission() {
     }
   };
 
+  const requestAiAnalysis = async (application) => {
+    const assetId = application.latestRecording?.assetId;
+    if (!assetId) {
+      setAdmissionMessage("该录屏尚未归档为统一资产，暂不能发起 AI 分析。");
+      return;
+    }
+    if (!actions.requestRecordingAiAnalysis) {
+      setAdmissionMessage("录屏 AI 分析后台暂未接入。");
+      return;
+    }
+    setBusyAction(`ai:${application.id}`);
+    setAdmissionMessage("");
+    try {
+      await actions.requestRecordingAiAnalysis(assetId);
+      await syncAdmissionProjectBoards();
+      setAdmissionMessage("AI 分析已排队");
+    } catch (error) {
+      setAdmissionMessage(error?.message || "AI 分析发起失败，请稍后重试");
+    } finally {
+      setBusyAction("");
+    }
+  };
+
   const confirmJoin = async (applicationId) => {
     if (!actions.confirmApplicationJoin) {
       setAdmissionMessage("二次确认后台暂未接入。");
@@ -14017,6 +14040,9 @@ function ScreenAdmission() {
                           ? ` · v${r.latestRecording.version}`
                           : ""}
                       </div>
+                      <RecordingAiAnalysisInline
+                        analysis={r.latestRecording?.aiAnalysis}
+                      />
                     </div>
                   ),
                 },
@@ -14065,6 +14091,19 @@ function ScreenAdmission() {
                       <div style={{ display: "flex", gap: 6 }}>
                         {reviewable ? (
                           <>
+                            {canRequestAdmissionRecordingAiAnalysis(r) ? (
+                              <Button
+                                size="sm"
+                                kind="default"
+                                onClick={() => requestAiAnalysis(r)}
+                                disabled={busyAction === `ai:${r.id}`}
+                              >
+                                {r.latestRecording?.aiAnalysis?.status ===
+                                "failed"
+                                  ? "重试 AI 分析"
+                                  : "发起 AI 分析"}
+                              </Button>
+                            ) : null}
                             <Button
                               size="sm"
                               kind="default"
@@ -14117,6 +14156,30 @@ function ScreenAdmission() {
         ) : null}
       </div>
     </>
+  );
+}
+
+function RecordingAiAnalysisInline({ analysis }) {
+  if (!analysis) {
+    return (
+      <div style={{ marginTop: 4, fontSize: 11, color: "var(--ink-400)" }}>
+        AI：未分析
+      </div>
+    );
+  }
+
+  const tone =
+    analysis.status === "succeeded"
+      ? "green"
+      : analysis.status === "failed"
+        ? "red"
+        : "violet";
+  return (
+    <div style={{ marginTop: 4 }}>
+      <Badge tone={tone} soft={false}>
+        AI：{analysis.statusLabel || analysis.status}
+      </Badge>
+    </div>
   );
 }
 
@@ -14257,6 +14320,16 @@ function isAdmissionRecordingReviewable(application) {
       "pending_review",
     ].includes(status) ||
       ["submitted", "reviewing", "pending_review"].includes(recordingStatus))
+  );
+}
+
+function canRequestAdmissionRecordingAiAnalysis(application) {
+  const assetId = application.latestRecording?.assetId;
+  const analysisStatus = application.latestRecording?.aiAnalysis?.status;
+  return (
+    Boolean(assetId) &&
+    (!analysisStatus || analysisStatus === "failed") &&
+    isAdmissionRecordingReviewable(application)
   );
 }
 
@@ -27274,6 +27347,16 @@ function OpsReferenceInner({
       return body.export;
     };
 
+    const requestRecordingAiAnalysis = async (assetId) => {
+      const body = await fetchJson(
+        `/api/recording-assets/${assetId}/ai-analysis`,
+        "request recording AI analysis failed",
+        { method: "POST" },
+      );
+      await refreshApplications();
+      return body.analysis ?? null;
+    };
+
     const createAdmissionShareBoard = async (projectId, input) => {
       return fetchJson(
         `/api/projects/${projectId}/admission-share-boards`,
@@ -27373,6 +27456,7 @@ function OpsReferenceInner({
       refreshReports,
       readVendorDeliveryPackage,
       exportAdmissionRecordings,
+      requestRecordingAiAnalysis,
       createAdmissionShareBoard,
       createProjectCollaborationShare,
       listProjectCollaborationApplications,

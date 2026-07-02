@@ -1,5 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import {
+  recordingAiAnalysisSelect,
+  toRecordingAiAnalysisDto,
+  type RecordingAiAnalysisDto,
+  type RecordingAiAnalysisRow,
+} from "@/features/recordings/recording-ai-analysis";
+
 import type {
   ApplicationStatus,
   RecordingReviewStatus,
@@ -35,10 +42,12 @@ export type ApplicationQueueRow = {
 export type RecordingQueueRow = {
   id: string;
   application_id: string;
+  asset_id?: string | null;
   version: number;
   status: RecordingReviewStatus;
   duration_seconds: number | null;
   created_at: string;
+  aiAnalysis?: RecordingAiAnalysisDto | null;
 };
 
 export type OpsApplicationQueueItem = {
@@ -60,10 +69,12 @@ export type OpsApplicationQueueItem = {
   };
   latestRecording: {
     id: string;
+    assetId: string | null;
     version: number;
     status: RecordingReviewStatus;
     durationSeconds: number | null;
     createdAt: string;
+    aiAnalysis: RecordingAiAnalysisDto | null;
   } | null;
 };
 
@@ -81,10 +92,12 @@ export type StreamerApplicationCard = {
   };
   latestRecording: {
     id: string;
+    assetId: string | null;
     version: number;
     status: RecordingReviewStatus;
     durationSeconds: number | null;
     createdAt: string;
+    aiAnalysis: RecordingAiAnalysisDto | null;
   } | null;
 };
 
@@ -220,7 +233,9 @@ async function latestRecordingsByApplication(
 
   const { data, error } = await supabase
     .from("recording_submissions")
-    .select("id, application_id, version, status, duration_seconds, created_at")
+    .select(
+      "id, application_id, asset_id, version, status, duration_seconds, created_at",
+    )
     .in("application_id", applicationIds)
     .order("version", { ascending: false });
 
@@ -235,7 +250,46 @@ async function latestRecordingsByApplication(
     }
   }
 
+  const latestAnalyses = await latestRecordingAiAnalysesByAsset(
+    supabase,
+    [...latestByApplication.values()]
+      .map((recording) => recording.asset_id)
+      .filter((assetId): assetId is string => Boolean(assetId)),
+  );
+  for (const recording of latestByApplication.values()) {
+    recording.aiAnalysis = recording.asset_id
+      ? (latestAnalyses.get(recording.asset_id) ?? null)
+      : null;
+  }
+
   return latestByApplication;
+}
+
+async function latestRecordingAiAnalysesByAsset(
+  supabase: SupabaseClient,
+  assetIds: string[],
+): Promise<Map<string, RecordingAiAnalysisDto>> {
+  if (assetIds.length === 0) {
+    return new Map();
+  }
+
+  const { data, error } = await supabase
+    .from("recording_ai_analyses")
+    .select(recordingAiAnalysisSelect)
+    .in("asset_id", [...new Set(assetIds)])
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw error;
+  }
+
+  const latestByAsset = new Map<string, RecordingAiAnalysisDto>();
+  for (const row of (data ?? []) as unknown as RecordingAiAnalysisRow[]) {
+    if (!latestByAsset.has(row.asset_id)) {
+      latestByAsset.set(row.asset_id, toRecordingAiAnalysisDto(row));
+    }
+  }
+  return latestByAsset;
 }
 
 function toRecordingDto(recording: RecordingQueueRow | null) {
@@ -245,10 +299,12 @@ function toRecordingDto(recording: RecordingQueueRow | null) {
 
   return {
     id: recording.id,
+    assetId: recording.asset_id ?? null,
     version: recording.version,
     status: recording.status,
     durationSeconds: recording.duration_seconds,
     createdAt: recording.created_at,
+    aiAnalysis: recording.aiAnalysis ?? null,
   };
 }
 
