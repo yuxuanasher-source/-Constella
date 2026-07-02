@@ -26,10 +26,29 @@ describe("application query DTO mappers", () => {
       {
         id: "recording-1",
         application_id: "app-1",
+        asset_id: "asset-1",
         version: 2,
         status: "submitted",
         duration_seconds: 3600,
         created_at: "2026-06-02T01:10:00.000Z",
+        aiAnalysis: {
+          id: "analysis-1",
+          assetId: "asset-1",
+          status: "succeeded",
+          statusLabel: "已完成",
+          providerName: "deterministic",
+          summary: "节奏稳定",
+          scorecard: {},
+          dimensions: [],
+          riskFlags: [],
+          recommendations: [],
+          segments: [],
+          errorSummary: null,
+          aiInvocationId: "invocation-1",
+          createdAt: "2026-06-02T01:11:00.000Z",
+          updatedAt: "2026-06-02T01:12:00.000Z",
+          completedAt: "2026-06-02T01:12:00.000Z",
+        },
       },
     );
 
@@ -48,10 +67,16 @@ describe("application query DTO mappers", () => {
       },
       latestRecording: {
         id: "recording-1",
+        assetId: "asset-1",
         version: 2,
         status: "submitted",
         durationSeconds: 3600,
         createdAt: "2026-06-02T01:10:00.000Z",
+        aiAnalysis: expect.objectContaining({
+          id: "analysis-1",
+          status: "succeeded",
+          statusLabel: "已完成",
+        }),
       },
     });
     expect(JSON.stringify(dto)).not.toContain("settlement");

@@ -206,7 +206,7 @@ const statusLabels: Record<RecordingAiAnalysisStatus, string> = {
   failed: "分析失败",
 };
 
-const analysisSelect = [
+export const recordingAiAnalysisSelect = [
   "id",
   "asset_id",
   "status",
@@ -431,7 +431,7 @@ export async function requestRecordingAiAnalysis({
       attempt: 0,
       max_attempts: 3,
     })
-    .select(analysisSelect)
+    .select(recordingAiAnalysisSelect)
     .single();
 
   if (error) {
