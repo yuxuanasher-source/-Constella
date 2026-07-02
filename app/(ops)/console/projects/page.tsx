@@ -39,6 +39,14 @@ export default async function ProjectsPage() {
   const collaborationRepo = new SupabaseProjectCollaborationRepository(
     createSupabaseAdminClient() ?? supabase,
   );
+  // 项目/任务/批次三份数据页面与角色看板都需要：只发起一次查询，把
+  // 进行中的 Promise 同时交给页面渲染与 loadConsoleDashboardHome，
+  // 避免看板内部再跑一遍同样的查询。
+  const projectsPromise = listProjects(supabase, {
+    organizationId: auth.organizationId,
+  });
+  const liveTasksPromise = listOpsLiveTaskQueue(supabase, auth.organizationId);
+  const batchesPromise = listOpsSettlementBatches(supabase, auth.organizationId);
   const [
     projects,
     collaborations,
@@ -46,11 +54,15 @@ export default async function ProjectsPage() {
     settlementData,
     dashboardHome,
   ] = await Promise.all([
-    listProjects(supabase),
+    projectsPromise,
     loadPartnerCollaborations(collaborationRepo, auth),
-    listOpsLiveTaskQueue(supabase, auth.organizationId),
-    loadSettlementReferenceData(supabase, auth.organizationId),
-    loadConsoleDashboardHome(supabase, auth),
+    liveTasksPromise,
+    loadSettlementReferenceData(supabase, auth.organizationId, batchesPromise),
+    loadConsoleDashboardHome(supabase, auth, {
+      projects: projectsPromise,
+      tasks: liveTasksPromise,
+      batches: batchesPromise,
+    }),
   ]);
 
   return (
@@ -106,9 +118,10 @@ async function loadPartnerCollaborations(
 async function loadSettlementReferenceData(
   supabase: SupabaseClient,
   organizationId: string,
+  batchesPromise: ReturnType<typeof listOpsSettlementBatches>,
 ) {
   const [batches, details, settlementScope] = await Promise.all([
-    listOpsSettlementBatches(supabase, organizationId),
+    batchesPromise,
     listOpsSettlementBatchDetails(supabase, { organizationId }),
     getOpsSettlementDefaultScope(supabase, organizationId),
   ]);

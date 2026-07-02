@@ -116,6 +116,10 @@ describe("live operations queue queries", () => {
         calls.push(["order", args]);
         return this;
       },
+      limit(...args: unknown[]) {
+        calls.push(["limit", args]);
+        return this;
+      },
       returns() {
         calls.push(["returns", []]);
         return Promise.resolve({ data: [], error: null });
@@ -132,6 +136,66 @@ describe("live operations queue queries", () => {
 
     expect(calls).toContainEqual(["from", ["live_tasks"]]);
     expect(calls).toContainEqual(["eq", ["organization_id", "org-1"]]);
+    expect(calls).toContainEqual(["limit", [200]]);
+  });
+
+  it("caps the task queue at the newest rows but keeps ascending planned order", async () => {
+    const taskRow = (id: string, plannedStartAt: string | null) => ({
+      id,
+      title: id,
+      status: "pending_live",
+      task_type: "project",
+      project_id: "project-1",
+      streamer_id: "streamer-1",
+      planned_start_at: plannedStartAt,
+      planned_end_at: null,
+      planned_duration: 120,
+      system_duration: 0,
+      projects: { name: "Project A" },
+      streamers: { display_name: "Streamer 1" },
+    });
+    const orderCalls: unknown[][] = [];
+    // 数据库按 planned_start_at desc 返回（NULL 在前）。
+    const rowsDesc = [
+      taskRow("task-unscheduled", null),
+      taskRow("task-new", "2026-06-17T08:00:00.000Z"),
+      taskRow("task-old", "2026-06-16T08:00:00.000Z"),
+    ];
+    const query = {
+      select() {
+        return this;
+      },
+      eq() {
+        return this;
+      },
+      order(...args: unknown[]) {
+        orderCalls.push(args);
+        return this;
+      },
+      limit() {
+        return this;
+      },
+      returns() {
+        return Promise.resolve({ data: rowsDesc, error: null });
+      },
+    };
+    const client = {
+      from() {
+        return query;
+      },
+    };
+
+    const items = await listOpsLiveTaskQueue(client as never, "org-1");
+
+    expect(orderCalls).toContainEqual([
+      "planned_start_at",
+      { ascending: false },
+    ]);
+    expect(items.map((item) => item.id)).toEqual([
+      "task-old",
+      "task-new",
+      "task-unscheduled",
+    ]);
   });
 
   it("scopes ops report queue refreshes to the current organization", async () => {
@@ -153,6 +217,10 @@ describe("live operations queue queries", () => {
         calls.push(["order", args]);
         return this;
       },
+      limit(...args: unknown[]) {
+        calls.push(["limit", args]);
+        return this;
+      },
       returns() {
         calls.push(["returns", []]);
         return Promise.resolve({ data: [], error: null });
@@ -168,6 +236,7 @@ describe("live operations queue queries", () => {
     await listOpsLiveReportQueue(client as never, "org-1");
 
     expect(calls).toContainEqual(["from", ["live_reports"]]);
+    expect(calls).toContainEqual(["limit", [200]]);
     expect(calls).toContainEqual([
       "in",
       [

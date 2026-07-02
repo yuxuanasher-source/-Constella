@@ -83,7 +83,11 @@ export async function listProjects(
     query = query.eq("organization_id", options.organizationId);
   }
 
-  const { data, error } = await query.order("created_at", { ascending: false });
+  // 防线：全量列表按创建时间倒序取最新 200 条，避免数据增长后单次
+  // 请求拖全表（含嵌套关联）。
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .limit(200);
 
   if (error) {
     throw error;

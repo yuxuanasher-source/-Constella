@@ -232,6 +232,7 @@ export async function listOpsSettlementBatches(
   client: SupabaseClient,
   organizationId: string,
 ): Promise<OpsSettlementBatchListItem[]> {
+  // 防线：批次列表按更新时间倒序取最新 200 条，避免历史批次增长后拖全表。
   const { data, error } = await client
     .from("settlement_batches")
     .select(
@@ -239,6 +240,7 @@ export async function listOpsSettlementBatches(
     )
     .eq("organization_id", organizationId)
     .order("updated_at", { ascending: false })
+    .limit(200)
     .returns<SettlementBatchRow[]>();
 
   if (error) {
@@ -267,12 +269,6 @@ export async function listOpsSettlementBatchDetails(
     query = query.eq("settlement_batch_id", input.batchId);
   }
 
-  const { data, error } = await query.returns<SettlementBatchDetailRow[]>();
-
-  if (error) {
-    throw error;
-  }
-
   let costQuery = client
     .from("project_cost_items")
     .select(
@@ -286,8 +282,16 @@ export async function listOpsSettlementBatchDetails(
     costQuery = costQuery.eq("settlement_batch_id", input.batchId);
   }
 
-  const { data: costRows, error: costError } =
-    await costQuery.returns<SettlementBatchCostItemRow[]>();
+  // 两条查询互不依赖，并行执行以缩短结算中心首屏耗时。
+  const [{ data, error }, { data: costRows, error: costError }] =
+    await Promise.all([
+      query.returns<SettlementBatchDetailRow[]>(),
+      costQuery.returns<SettlementBatchCostItemRow[]>(),
+    ]);
+
+  if (error) {
+    throw error;
+  }
 
   if (costError) {
     throw costError;
@@ -519,6 +523,10 @@ function projectStreamerRuleKey(projectId: string, streamerId: string) {
   return `${projectId}:${streamerId}`;
 }
 
+// 与 listOpsSettlementPool 同语义的计数：周期内已审核入池、且尚未进入
+// 对应类型批次的报告数。因为「排除已结算」需要报告 id 去 settlement_batch_items
+// 二次比对，无法用单条 head+count 查询表达；这里只取 id 列（不带
+// projects/streamers 关联、不查结算规则、不算金额），避免为计数拉全量宽行。
 async function countSettlementPoolReports(
   client: SupabaseClient,
   input: {
@@ -529,7 +537,39 @@ async function countSettlementPoolReports(
     periodEnd: string;
   },
 ): Promise<number> {
-  return (await listOpsSettlementPool(client, input)).length;
+  let query = client
+    .from("live_reports")
+    .select("id")
+    .eq("organization_id", input.organizationId)
+    .eq("status", "approved")
+    .eq("enter_settlement_pool", true)
+    .gte("created_at", `${input.periodStart}T00:00:00.000Z`)
+    .lte("created_at", `${input.periodEnd}T23:59:59.999Z`);
+
+  if (input.projectId) {
+    query = query.eq("project_id", input.projectId);
+  }
+
+  const { data, error } = await query.returns<Array<{ id: string }>>();
+
+  if (error) {
+    throw error;
+  }
+
+  const reportIds = (data ?? []).map((row) => row.id);
+
+  if (reportIds.length === 0) {
+    return 0;
+  }
+
+  const settledReportIds = await listSettledReportIdsForBatchType(
+    client,
+    input.organizationId,
+    reportIds,
+    input.batchType ?? "payable",
+  );
+
+  return reportIds.filter((id) => !settledReportIds.has(id)).length;
 }
 
 async function listSettledReportIdsForBatchType(

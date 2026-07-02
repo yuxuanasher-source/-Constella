@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { cache } from "react";
 
 import { appRoles, type AppRole } from "@/lib/rbac/roles";
 
@@ -51,7 +52,11 @@ function pickPrimaryMembership(
     );
 }
 
-export async function getAuthContext(
+// React.cache: 同一次 SSR 请求内以 client 实例为键去重。配合请求级缓存的
+// createSupabaseServerClient（同请求返回同一实例），layout 与 page 各自调用
+// getAuthContext 时只会真正执行一次 auth.getUser + profiles/memberships 查询。
+// 传入不同实例（如测试或 admin client）时各自独立执行，语义不变。
+export const getAuthContext = cache(async function getAuthContext(
   supabase: SupabaseClient | null,
 ): Promise<AuthContext | null> {
   if (!supabase) {
@@ -104,4 +109,4 @@ export async function getAuthContext(
     role: membership.role,
     requiresOnboarding: profile?.requires_onboarding ?? false,
   };
-}
+});

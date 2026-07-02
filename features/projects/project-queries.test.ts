@@ -7,7 +7,8 @@ describe("listProjects", () => {
     const query = {
       select: vi.fn(() => query),
       eq: vi.fn(() => query),
-      order: vi.fn(async () => ({ data: [], error: null })),
+      order: vi.fn(() => query),
+      limit: vi.fn(async () => ({ data: [], error: null })),
     };
     const supabase = {
       from: vi.fn(() => query),
@@ -20,5 +21,6 @@ describe("listProjects", () => {
     expect(query.order).toHaveBeenCalledWith("created_at", {
       ascending: false,
     });
+    expect(query.limit).toHaveBeenCalledWith(200);
   });
 });

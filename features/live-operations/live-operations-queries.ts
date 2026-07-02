@@ -139,8 +139,10 @@ export async function listOpsLiveReportQueue(
     query = query.eq("organization_id", organizationId);
   }
 
+  // 防线：按提交时间倒序取最新 200 条，避免报数历史增长后拖全表。
   const { data, error } = await query
     .order("created_at", { ascending: false })
+    .limit(200)
     .returns<OpsLiveReportRow[]>();
 
   if (error) {
@@ -164,15 +166,19 @@ export async function listOpsLiveTaskQueue(
     query = query.eq("organization_id", organizationId);
   }
 
+  // 防线：只保留计划开始时间最新的 200 条任务，避免历史任务增长后拖全表。
+  // 数据库按 planned_start_at 倒序截断（desc 时 NULL 在前，未排期任务视同
+  // 最新、不会被截掉），再在内存中反转，保持对外「时间正序」的既有语义。
   const { data, error } = await query
-    .order("planned_start_at", { ascending: true })
+    .order("planned_start_at", { ascending: false })
+    .limit(200)
     .returns<OpsLiveTaskRow[]>();
 
   if (error) {
     throw error;
   }
 
-  return (data ?? []).map(toOpsLiveTaskQueueItem);
+  return (data ?? []).map(toOpsLiveTaskQueueItem).reverse();
 }
 
 export function toStreamerTaskCard(row: StreamerTaskRow): StreamerTaskCard {

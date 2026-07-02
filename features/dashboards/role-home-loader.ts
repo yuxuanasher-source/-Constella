@@ -40,10 +40,22 @@ import {
 
 const DASHBOARD_TIME_ZONE = "Asia/Shanghai";
 
+type MaybePromise<T> = T | Promise<T>;
+
+// 页面若已经在拉取同一份组织级数据（项目列表 / 任务队列 / 结算批次），
+// 可以把结果（或进行中的 Promise）注入进来，避免看板加载时重复查询。
+// 注意注入数据必须与看板自身的查询同语义：按 auth.organizationId 过滤。
+export type RoleHomePreloadedSource = {
+  projects?: MaybePromise<ProjectListItem[]>;
+  tasks?: MaybePromise<OpsLiveTaskQueueItem[]>;
+  batches?: MaybePromise<OpsSettlementBatchListItem[]>;
+};
+
 export async function loadRoleHomeDashboard(input: {
   supabase: SupabaseClient;
   auth: AuthContext;
   now?: string;
+  preloaded?: RoleHomePreloadedSource;
 }): Promise<RoleHomeDashboardDto> {
   const role = input.auth.role;
   assertDashboardStaffRole(role);
@@ -61,8 +73,8 @@ export async function loadRoleHomeDashboard(input: {
     batchRows,
     notifications,
   ] = await Promise.all([
-    listProjects(input.supabase, { organizationId }),
-    listOpsLiveTaskQueue(input.supabase, organizationId),
+    input.preloaded?.projects ?? listProjects(input.supabase, { organizationId }),
+    input.preloaded?.tasks ?? listOpsLiveTaskQueue(input.supabase, organizationId),
     listOpsLiveReportQueue(input.supabase, organizationId),
     listOpsSettlementPool(input.supabase, {
       organizationId,
@@ -71,7 +83,8 @@ export async function loadRoleHomeDashboard(input: {
       periodStart,
       periodEnd,
     }),
-    listOpsSettlementBatches(input.supabase, organizationId),
+    input.preloaded?.batches ??
+      listOpsSettlementBatches(input.supabase, organizationId),
     listNotificationCenterItems(
       notificationClient,
       {

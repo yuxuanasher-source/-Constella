@@ -21,6 +21,7 @@ function createSettlementQueryClient(data: unknown[] = []) {
     eq: vi.fn(() => query),
     not: vi.fn(() => query),
     order: vi.fn(() => query),
+    limit: vi.fn(() => query),
     returns: vi.fn(async () => ({ data, error: null })),
   };
   const client = {
@@ -38,6 +39,7 @@ describe("settlement DTO mappers", () => {
 
     expect(client.from).toHaveBeenCalledWith("settlement_batches");
     expect(query.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(query.limit).toHaveBeenCalledWith(200);
   });
 
   it("scopes ops settlement batch details to the active organization and selected batch", async () => {
