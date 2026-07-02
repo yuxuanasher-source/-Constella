@@ -23,7 +23,7 @@ export type RecordAiInvocationInput = {
   scene: string;
   objectType?: string;
   objectId?: string;
-  providerName?: AiProviderName | "tencent_ocr";
+  providerName?: AiProviderName | "tencent_ocr" | "doubao_asr";
   primaryProvider?: AiProviderName;
   shadowProvider?: AiProviderName;
   providerRoute?: Record<string, unknown>;

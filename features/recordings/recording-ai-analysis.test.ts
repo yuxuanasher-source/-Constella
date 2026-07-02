@@ -6,10 +6,63 @@ import {
   runRecordingAiAnalysisOnce,
   toRecordingAiAnalysisDto,
 } from "./recording-ai-analysis";
+import type { RecordingAiPipelineResult } from "./recording-ai-pipeline";
 import type {
   RecordingAssetDto,
   RecordingAssetSourceDto,
 } from "./recording-assets";
+
+function pipelineResultFixture(): RecordingAiPipelineResult {
+  return {
+    providerName: "deepseek",
+    asrProvider: "doubao_asr",
+    transcriptText: "大家好，今天首播新品。",
+    transcriptUtterances: [
+      { text: "大家好，今天首播新品", startSeconds: 0, endSeconds: 4.5 },
+    ],
+    draft: {
+      summary: "开场直入主题，互动引导偏少。",
+      reviewBoundary:
+        "AI 分析仅作为审核辅助，不自动通过、不自动拒绝，也不自动修改主播画像；关键结论必须由人工审核确认。",
+      scorecard: {
+        rhythm: 82,
+        script: 74,
+        interaction: 61,
+        media_quality: 70,
+        compliance: 88,
+        project_match: 90,
+      },
+      dimensions: [
+        {
+          key: "rhythm",
+          label: "直播节奏",
+          score: 82,
+          finding: "开场即讲新品，节奏紧凑。",
+        },
+      ],
+      riskFlags: ["福利承诺未说明兑现时间"],
+      recommendations: [
+        {
+          title: "补充互动引导",
+          detail: "中段每十分钟安排一次评论提问。",
+          requiresHumanApproval: true,
+        },
+      ],
+      segments: [
+        {
+          segmentKind: "opening",
+          startSeconds: 0,
+          endSeconds: 60,
+          title: "开场承接",
+          summary: "快速交代新品与福利节点。",
+          riskLevel: "low",
+          evidence: { source: "asr_transcript", provider: "doubao_asr" },
+          sortOrder: 1,
+        },
+      ],
+    },
+  };
+}
 
 describe("recording AI analysis", () => {
   it("builds a human-in-the-loop analysis draft from a recording asset", () => {
@@ -162,6 +215,103 @@ describe("recording AI analysis", () => {
     expect(client.inserts.recording_ai_segments).toHaveLength(3);
   });
 
+  it("persists the ASR + LLM pipeline draft with transcript columns", async () => {
+    const client = createRecordingAiClient({
+      analysis: analysisFixture({ attempt: 0, max_attempts: 3 }),
+      asset: assetRowFixture(),
+    });
+
+    const result = await runRecordingAiAnalysisOnce({
+      client: client as never,
+      actor,
+      analysisId: "analysis-1",
+      now: () => new Date("2026-07-01T11:00:00.000Z"),
+      pipeline: () => Promise.resolve(pipelineResultFixture()),
+    });
+
+    expect(result).toMatchObject({
+      status: "succeeded",
+      providerName: "deepseek",
+      summary: "开场直入主题，互动引导偏少。",
+      transcriptText: "大家好，今天首播新品。",
+      asrProvider: "doubao_asr",
+    });
+    expect(client.updates.recording_ai_analyses.at(-1)).toEqual(
+      expect.objectContaining({
+        status: "succeeded",
+        provider_name: "deepseek",
+        transcript_text: "大家好，今天首播新品。",
+        transcript_utterances: [
+          { text: "大家好，今天首播新品", startSeconds: 0, endSeconds: 4.5 },
+        ],
+        asr_provider: "doubao_asr",
+      }),
+    );
+    expect(client.inserts.recording_ai_segments).toEqual([
+      expect.objectContaining({
+        segment_kind: "opening",
+        evidence: expect.objectContaining({ source: "asr_transcript" }),
+      }),
+    ]);
+  });
+
+  it("falls back to the deterministic draft when the pipeline throws", async () => {
+    const client = createRecordingAiClient({
+      analysis: analysisFixture({ attempt: 0, max_attempts: 3 }),
+      asset: assetRowFixture(),
+    });
+
+    const result = await runRecordingAiAnalysisOnce({
+      client: client as never,
+      actor,
+      analysisId: "analysis-1",
+      pipeline: () =>
+        Promise.reject(new Error("Doubao ASR failed with secret=abc")),
+    });
+
+    expect(result).toMatchObject({
+      status: "succeeded",
+      providerName: "deterministic",
+      transcriptText: null,
+      asrProvider: null,
+    });
+    expect(result.riskFlags).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          "AI 转写分析不可用，已回退基础分析：Doubao ASR failed with secret=[redacted]",
+        ),
+      ]),
+    );
+    expect(client.updates.recording_ai_analyses.at(-1)).toEqual(
+      expect.objectContaining({
+        status: "succeeded",
+        provider_name: "deterministic",
+        transcript_text: null,
+        asr_provider: null,
+      }),
+    );
+  });
+
+  it("skips the pipeline silently when it is not applicable", async () => {
+    const client = createRecordingAiClient({
+      analysis: analysisFixture({ attempt: 0, max_attempts: 3 }),
+      asset: assetRowFixture(),
+    });
+
+    const result = await runRecordingAiAnalysisOnce({
+      client: client as never,
+      actor,
+      analysisId: "analysis-1",
+      pipeline: () => Promise.resolve(null),
+    });
+
+    expect(result).toMatchObject({
+      status: "succeeded",
+      providerName: "deterministic",
+    });
+    expect(result.riskFlags.join(" ")).not.toContain("已回退基础分析");
+  });
+
   it("rejects a queued analysis outside the runner organization", async () => {
     const client = createRecordingAiClient({
       analysis: analysisFixture({
@@ -299,10 +449,12 @@ describe("claimAndRunRecordingAiAnalyses", () => {
       expect.objectContaining({
         status: "running",
         attempt: 1,
+        claimed_at: "2026-07-02T12:00:00.000Z",
         error_summary: null,
       }),
       expect.objectContaining({
         status: "succeeded",
+        claimed_at: null,
         completed_at: "2026-07-02T12:00:00.000Z",
       }),
     ]);
@@ -406,10 +558,140 @@ describe("claimAndRunRecordingAiAnalyses", () => {
       expect.objectContaining({
         status: "queued",
         attempt: 1,
+        claimed_at: null,
         error_summary: "provider failed with secret=[redacted]",
       }),
     );
     expect(client.statusOf("analysis-1")).toBe("queued");
+  });
+
+  it("reclaims running analyses whose claim exceeded the timeout", async () => {
+    const client = createRecordingAiQueueClient({
+      analyses: [
+        // Orphaned by a crashed runner 20 minutes ago (timeout is 15).
+        analysisFixture({
+          id: "analysis-1",
+          status: "running",
+          attempt: 1,
+          claimed_at: "2026-07-02T11:40:00.000Z",
+          created_at: "2026-07-01T10:00:00.000Z",
+        }),
+        analysisFixture({
+          id: "analysis-2",
+          created_at: "2026-07-01T10:05:00.000Z",
+        }),
+      ],
+      asset: assetRowFixture(),
+    });
+
+    const result = await claimAndRunRecordingAiAnalyses({
+      client: client as never,
+      actor,
+      now: () => new Date("2026-07-02T12:00:00.000Z"),
+    });
+
+    expect(result.failures).toEqual([]);
+    // The stale running row is reclaimed (consuming one more attempt) and
+    // interleaves with queued rows in FIFO order by created_at.
+    expect(result.analyses).toEqual([
+      { id: "analysis-1", status: "succeeded", attempt: 2 },
+      { id: "analysis-2", status: "succeeded", attempt: 1 },
+    ]);
+    expect(client.updates["analysis-1"]).toEqual([
+      expect.objectContaining({
+        status: "running",
+        attempt: 2,
+        claimed_at: "2026-07-02T12:00:00.000Z",
+        error_summary: null,
+      }),
+      expect.objectContaining({
+        status: "succeeded",
+        claimed_at: null,
+        completed_at: "2026-07-02T12:00:00.000Z",
+      }),
+    ]);
+    expect(client.statusOf("analysis-1")).toBe("succeeded");
+  });
+
+  it("leaves running analyses within the claim timeout to their runner", async () => {
+    const client = createRecordingAiQueueClient({
+      analyses: [
+        // Claimed 10 minutes ago: still within the 15-minute timeout.
+        analysisFixture({
+          id: "analysis-1",
+          status: "running",
+          attempt: 1,
+          claimed_at: "2026-07-02T11:50:00.000Z",
+        }),
+      ],
+      asset: assetRowFixture(),
+    });
+
+    const result = await claimAndRunRecordingAiAnalyses({
+      client: client as never,
+      actor,
+      now: () => new Date("2026-07-02T12:00:00.000Z"),
+    });
+
+    expect(result).toEqual({ analyses: [], failures: [] });
+    expect(client.updates["analysis-1"]).toBeUndefined();
+    expect(client.statusOf("analysis-1")).toBe("running");
+    expect(client.inserts.recording_ai_segments).toEqual([]);
+  });
+
+  it("does not reclaim stale running analyses that exhausted attempts", async () => {
+    const client = createRecordingAiQueueClient({
+      analyses: [
+        analysisFixture({
+          id: "analysis-1",
+          status: "running",
+          attempt: 3,
+          max_attempts: 3,
+          claimed_at: "2026-07-02T11:00:00.000Z",
+        }),
+      ],
+      asset: assetRowFixture(),
+    });
+
+    const result = await claimAndRunRecordingAiAnalyses({
+      client: client as never,
+      actor,
+      now: () => new Date("2026-07-02T12:00:00.000Z"),
+    });
+
+    expect(result).toEqual({ analyses: [], failures: [] });
+    expect(client.updates["analysis-1"]).toBeUndefined();
+    expect(client.statusOf("analysis-1")).toBe("running");
+  });
+
+  it("never steals a stale running analysis resolved between listing and reclaim", async () => {
+    const client = createRecordingAiQueueClient({
+      analyses: [
+        analysisFixture({
+          id: "analysis-1",
+          status: "running",
+          attempt: 1,
+          claimed_at: "2026-07-02T11:40:00.000Z",
+        }),
+      ],
+      asset: assetRowFixture(),
+      beforeClaim: () => {
+        // The original runner was slow, not dead: it finishes the analysis
+        // after we listed it but before our conditional reclaim runs.
+        client.setStatus("analysis-1", "succeeded");
+      },
+    });
+
+    const result = await claimAndRunRecordingAiAnalyses({
+      client: client as never,
+      actor,
+      now: () => new Date("2026-07-02T12:00:00.000Z"),
+    });
+
+    expect(result).toEqual({ analyses: [], failures: [] });
+    expect(client.updates["analysis-1"]).toBeUndefined();
+    expect(client.statusOf("analysis-1")).toBe("succeeded");
+    expect(client.inserts.recording_ai_segments).toEqual([]);
   });
 });
 
@@ -473,6 +755,7 @@ function analysisFixture(overrides: Record<string, unknown> = {}) {
     recommendations: [],
     attempt: 0,
     max_attempts: 3,
+    claimed_at: null,
     error_summary: null,
     ai_invocation_id: "invocation-1",
     created_at: "2026-07-01T10:00:00.000Z",
@@ -661,35 +944,54 @@ function createRecordingAiQueueClient({
     },
     from(table: string) {
       if (table === "recording_ai_analyses") {
+        // ISO timestamps compare correctly as strings, so the mock mirrors
+        // `claimed_at < cutoff` with a plain string comparison.
+        const claimedBefore = (
+          analysis: Record<string, unknown>,
+          cutoff: string | undefined,
+        ) =>
+          cutoff === undefined ||
+          (typeof analysis.claimed_at === "string" &&
+            analysis.claimed_at < cutoff);
+
         return {
           select: () => ({
             eq: (_column: string, value: string) => ({
               single: async () => ({ data: findById(value), error: null }),
-              // Candidate listing: .eq(org).eq(status).order(...).limit(n)
-              eq: (_statusColumn: string, statusValue: string) => ({
-                order: () => ({
-                  limit: async (count: number) => ({
-                    data: state.analyses
-                      .filter(
-                        (analysis) =>
-                          analysis.organization_id === value &&
-                          analysis.status === statusValue,
-                      )
-                      .sort((left, right) =>
-                        String(left.created_at).localeCompare(
-                          String(right.created_at),
-                        ),
-                      )
-                      .slice(0, count)
-                      .map((analysis) => ({
-                        id: analysis.id,
-                        attempt: analysis.attempt,
-                        max_attempts: analysis.max_attempts,
-                      })),
-                    error: null,
+              // Candidate listing:
+              // .eq(org).eq(status)[.lt(claimed_at)].order(...).limit(n)
+              eq: (_statusColumn: string, statusValue: string) => {
+                const list = (cutoff?: string) => ({
+                  order: () => ({
+                    limit: async (count: number) => ({
+                      data: state.analyses
+                        .filter(
+                          (analysis) =>
+                            analysis.organization_id === value &&
+                            analysis.status === statusValue &&
+                            claimedBefore(analysis, cutoff),
+                        )
+                        .sort((left, right) =>
+                          String(left.created_at).localeCompare(
+                            String(right.created_at),
+                          ),
+                        )
+                        .slice(0, count)
+                        .map((analysis) => ({
+                          id: analysis.id,
+                          attempt: analysis.attempt,
+                          max_attempts: analysis.max_attempts,
+                          created_at: analysis.created_at,
+                        })),
+                      error: null,
+                    }),
                   }),
-                }),
-              }),
+                });
+                return {
+                  ...list(),
+                  lt: (_claimedColumn: string, cutoff: string) => list(cutoff),
+                };
+              },
             }),
           }),
           update: (payload: Record<string, unknown>) => ({
@@ -708,21 +1010,32 @@ function createRecordingAiQueueClient({
                   return { data: { ...analysis }, error: null };
                 },
               }),
-              // Conditional claim: update ... where id = ? and status = ?
-              eq: (_statusColumn: string, expectedStatus: string) => ({
-                select: () => ({
-                  maybeSingle: async () => {
-                    beforeClaim?.(id);
-                    const analysis = findById(id);
-                    if (!analysis || analysis.status !== expectedStatus) {
-                      return { data: null, error: null };
-                    }
-                    (updates[id] ??= []).push(payload);
-                    Object.assign(analysis, payload);
-                    return { data: { ...analysis }, error: null };
-                  },
-                }),
-              }),
+              // Conditional claim:
+              // update ... where id = ? and status = ? [and claimed_at < ?]
+              eq: (_statusColumn: string, expectedStatus: string) => {
+                const claim = (cutoff?: string) => ({
+                  select: () => ({
+                    maybeSingle: async () => {
+                      beforeClaim?.(id);
+                      const analysis = findById(id);
+                      if (
+                        !analysis ||
+                        analysis.status !== expectedStatus ||
+                        !claimedBefore(analysis, cutoff)
+                      ) {
+                        return { data: null, error: null };
+                      }
+                      (updates[id] ??= []).push(payload);
+                      Object.assign(analysis, payload);
+                      return { data: { ...analysis }, error: null };
+                    },
+                  }),
+                });
+                return {
+                  ...claim(),
+                  lt: (_claimedColumn: string, cutoff: string) => claim(cutoff),
+                };
+              },
             }),
           }),
         };
