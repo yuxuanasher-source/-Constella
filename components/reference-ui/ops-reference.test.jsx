@@ -4407,6 +4407,180 @@ describe("OpsReferenceApp admission smoke", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows recording AI details and carries AI guidance into review notes", async () => {
+    const admissionApplications = [
+      {
+        id: "app-ai-guided",
+        status: "recording_reviewing",
+        source: "signup",
+        submittedAt: "2026-06-07T01:00:00.000Z",
+        project: { id: "project-ai", code: "AI-001", name: "AI Guided Project" },
+        streamer: {
+          id: "streamer-ai",
+          displayName: "AI Streamer",
+          accountLabel: "Douyin / ai-live",
+        },
+        latestRecording: {
+          id: "rec-ai",
+          assetId: "asset-ai",
+          version: 3,
+          status: "reviewing",
+          aiAnalysis: {
+            id: "analysis-ai",
+            assetId: "asset-ai",
+            status: "succeeded",
+            statusLabel: "已完成",
+            providerName: "deterministic",
+            summary: "建议补充互动亮点后再通过。",
+            scorecard: { rhythm: 82, interaction: 58 },
+            dimensions: [
+              {
+                key: "rhythm",
+                label: "节奏",
+                score: 82,
+                finding: "开场节奏稳定。",
+              },
+              {
+                key: "interaction",
+                label: "互动",
+                score: 58,
+                finding: "缺少评论区回应。",
+              },
+            ],
+            riskFlags: ["互动证明不足"],
+            recommendations: [
+              {
+                title: "补录互动片段",
+                detail: "补录 30 秒评论区回应，再进入厂家复核。",
+                requiresHumanApproval: true,
+              },
+            ],
+            segments: [
+              {
+                id: "segment-ai-1",
+                segmentKind: "highlight",
+                startSeconds: 30,
+                endSeconds: 75,
+                timeRangeLabel: "00:30-01:15",
+                title: "开场表现",
+                summary: "主播介绍卖点清楚。",
+                riskLevel: "low",
+                evidence: {},
+                sortOrder: 1,
+              },
+            ],
+            errorSummary: null,
+            aiInvocationId: "invocation-ai",
+            createdAt: "2026-06-07T02:11:00.000Z",
+            updatedAt: "2026-06-07T02:12:00.000Z",
+            completedAt: "2026-06-07T02:12:00.000Z",
+          },
+        },
+        vendorReview: null,
+      },
+    ];
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/applications/admission-board") {
+        return {
+          ok: true,
+          json: async () => ({
+            projects: [
+              {
+                project: {
+                  id: "project-ai",
+                  code: "AI-001",
+                  name: "AI Guided Project",
+                  vendor: "Vendor AI",
+                  product: "Game AI",
+                },
+                counts: {
+                  totalApplications: 1,
+                  recordingCount: 1,
+                  mcnPendingReview: 1,
+                  mcnApproved: 0,
+                  mcnRejected: 0,
+                  needsChanges: 0,
+                  vendorPending: 0,
+                  vendorSelected: 0,
+                  vendorBackup: 0,
+                  vendorRejected: 0,
+                  vendorNeedsChanges: 0,
+                  pendingFinalConfirm: 0,
+                },
+                share: {
+                  id: null,
+                  status: "not_created",
+                  expiresAt: null,
+                  lastSubmittedAt: null,
+                },
+                lastActivityAt: "2026-06-07T02:12:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+
+      if (String(url) === "/api/applications/app-ai-guided/review") {
+        return {
+          ok: true,
+          json: async () => ({
+            application: {
+              ...admissionApplications[0],
+              status: "recording_changes_requested",
+            },
+          }),
+        };
+      }
+
+      if (String(url) === "/api/applications") {
+        return {
+          ok: true,
+          json: async () => ({ applications: admissionApplications }),
+        };
+      }
+
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={admissionApplications}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看录屏" }));
+    expect(await screen.findByText("建议补充互动亮点后再通过。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "查看 AI 详情" }));
+    expect(
+      await screen.findByRole("dialog", { name: "录屏 AI 分析详情" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("节奏 82")).toBeInTheDocument();
+    expect(screen.getByText("互动证明不足")).toBeInTheDocument();
+    expect(screen.getByText("补录 30 秒评论区回应，再进入厂家复核。")).toBeInTheDocument();
+    expect(screen.getByText("00:30-01:15")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    fireEvent.click(screen.getByRole("button", { name: "需补充" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/app-ai-guided/review",
+        expect.objectContaining({ method: "PATCH" }),
+      ),
+    );
+    const reviewCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/api/applications/app-ai-guided/review" &&
+        init?.method === "PATCH",
+    );
+    const reviewBody = JSON.parse(reviewCall[1].body);
+    expect(reviewBody.decision).toBe("needs_changes");
+    expect(reviewBody.note).toContain("AI辅助摘要：建议补充互动亮点后再通过。");
+    expect(reviewBody.note).toContain("AI建议：补录互动片段 - 补录 30 秒评论区回应，再进入厂家复核。");
+  });
+
   it("creates a project-level share board when server board rows have recordings but the local queue is stale", async () => {
     const staleApplications = [
       {

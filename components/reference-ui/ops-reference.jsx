@@ -13677,6 +13677,7 @@ function ScreenAdmission() {
   const [selectedProjectId, setSelectedProjectId] = React.useState("");
   const [admissionMessage, setAdmissionMessage] = React.useState("");
   const [busyAction, setBusyAction] = React.useState("");
+  const [selectedAiAnalysis, setSelectedAiAnalysis] = React.useState(null);
 
   const syncAdmissionProjectBoards = async () => {
     if (!actions.refreshAdmissionProjectBoards) {
@@ -13692,17 +13693,18 @@ function ScreenAdmission() {
     );
   };
 
-  const review = async (applicationId, decision) => {
+  const review = async (application, decision) => {
     if (!actions.reviewApplicationRecording) {
       setAdmissionMessage("录屏审核后台暂未接入。");
       return;
     }
+    const applicationId = application.id;
     setBusyAction(`review:${applicationId}:${decision}`);
     setAdmissionMessage("");
     try {
       await actions.reviewApplicationRecording(applicationId, {
         decision,
-        note: "经营端选播准入审核",
+        note: admissionRecordingReviewNote(application, decision),
       });
       await syncAdmissionProjectBoards();
       setAdmissionMessage(recordingDecisionSuccessMessage(decision));
@@ -14042,6 +14044,9 @@ function ScreenAdmission() {
                       </div>
                       <RecordingAiAnalysisInline
                         analysis={r.latestRecording?.aiAnalysis}
+                        onOpen={() =>
+                          setSelectedAiAnalysis(r.latestRecording?.aiAnalysis)
+                        }
                       />
                     </div>
                   ),
@@ -14107,7 +14112,7 @@ function ScreenAdmission() {
                             <Button
                               size="sm"
                               kind="default"
-                              onClick={() => review(r.id, "needs_changes")}
+                              onClick={() => review(r, "needs_changes")}
                               disabled={
                                 busyAction === `review:${r.id}:needs_changes`
                               }
@@ -14117,7 +14122,7 @@ function ScreenAdmission() {
                             <Button
                               size="sm"
                               kind="default"
-                              onClick={() => review(r.id, "rejected")}
+                              onClick={() => review(r, "rejected")}
                               disabled={
                                 busyAction === `review:${r.id}:rejected`
                               }
@@ -14127,7 +14132,7 @@ function ScreenAdmission() {
                             <Button
                               size="sm"
                               kind="primary"
-                              onClick={() => review(r.id, "approved")}
+                              onClick={() => review(r, "approved")}
                               disabled={
                                 busyAction === `review:${r.id}:approved`
                               }
@@ -14154,12 +14159,18 @@ function ScreenAdmission() {
             />
           </Card>
         ) : null}
+        {selectedAiAnalysis ? (
+          <RecordingAiAnalysisDetailsPanel
+            analysis={selectedAiAnalysis}
+            onClose={() => setSelectedAiAnalysis(null)}
+          />
+        ) : null}
       </div>
     </>
   );
 }
 
-function RecordingAiAnalysisInline({ analysis }) {
+function RecordingAiAnalysisInline({ analysis, onOpen }) {
   if (!analysis) {
     return (
       <div style={{ marginTop: 4, fontSize: 11, color: "var(--ink-400)" }}>
@@ -14175,10 +14186,220 @@ function RecordingAiAnalysisInline({ analysis }) {
         ? "red"
         : "violet";
   return (
-    <div style={{ marginTop: 4 }}>
+    <div style={{ marginTop: 4, display: "grid", gap: 3 }}>
       <Badge tone={tone} soft={false}>
         AI：{analysis.statusLabel || analysis.status}
       </Badge>
+      {analysis.status === "succeeded" && analysis.summary ? (
+        <div style={{ maxWidth: 220, fontSize: 11, color: "var(--ink-500)" }}>
+          {analysis.summary}
+        </div>
+      ) : null}
+      {analysis.status === "succeeded" && onOpen ? (
+        <Button
+          size="sm"
+          kind="link"
+          onClick={onOpen}
+          style={{ justifySelf: "start", height: 22, padding: 0 }}
+        >
+          查看 AI 详情
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function RecordingAiAnalysisDetailsPanel({ analysis, onClose }) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="录屏 AI 分析详情"
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 100,
+        background: "rgba(15,23,42,0.28)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(event) => event.stopPropagation()}
+        style={{
+          width: "min(760px, 100%)",
+          maxHeight: "min(760px, 90vh)",
+          overflow: "auto",
+          background: "#fff",
+          borderRadius: 12,
+          border: "1px solid var(--line)",
+          boxShadow: "0 24px 70px rgba(15,23,42,0.22)",
+        }}
+      >
+        <div
+          style={{
+            padding: "18px 20px",
+            borderBottom: "1px solid var(--line)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>
+              录屏 AI 分析详情
+            </div>
+            <div style={{ marginTop: 4, fontSize: 12, color: "var(--ink-500)" }}>
+              {analysis.statusLabel || analysis.status}
+              {analysis.providerName ? ` · ${analysis.providerName}` : ""}
+            </div>
+          </div>
+          <Button size="sm" kind="default" onClick={onClose}>
+            关闭
+          </Button>
+        </div>
+        <div style={{ padding: 20, display: "grid", gap: 18 }}>
+          {analysis.summary ? (
+            <div>
+              <SectionKicker>摘要</SectionKicker>
+              <div style={{ fontSize: 14, color: "var(--ink-800)" }}>
+                {analysis.summary}
+              </div>
+            </div>
+          ) : null}
+          {analysis.dimensions?.length ? (
+            <div>
+              <SectionKicker>维度评分</SectionKicker>
+              <div style={{ display: "grid", gap: 8 }}>
+                {analysis.dimensions.map((dimension) => (
+                  <div
+                    key={dimension.key}
+                    style={{
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      padding: 10,
+                      background: "var(--bg-soft)",
+                    }}
+                  >
+                    <div style={{ fontWeight: 700 }}>
+                      {dimension.label} {dimension.score}
+                    </div>
+                    <div
+                      style={{
+                        marginTop: 4,
+                        fontSize: 12,
+                        color: "var(--ink-500)",
+                      }}
+                    >
+                      {dimension.finding}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {analysis.riskFlags?.length ? (
+            <div>
+              <SectionKicker>风险提示</SectionKicker>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {analysis.riskFlags.map((flag) => (
+                  <Badge key={flag} tone="amber">
+                    {flag}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {analysis.recommendations?.length ? (
+            <div>
+              <SectionKicker>处理建议</SectionKicker>
+              <div style={{ display: "grid", gap: 8 }}>
+                {analysis.recommendations.map((recommendation) => (
+                  <div
+                    key={`${recommendation.title}-${recommendation.detail}`}
+                    style={{
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      padding: 10,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700 }}>
+                      {recommendation.title}
+                    </div>
+                    <div
+                      style={{
+                        marginTop: 4,
+                        fontSize: 12,
+                        color: "var(--ink-600)",
+                      }}
+                    >
+                      {recommendation.detail}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {analysis.segments?.length ? (
+            <div>
+              <SectionKicker>分段点评</SectionKicker>
+              <div style={{ display: "grid", gap: 8 }}>
+                {analysis.segments.map((segment) => (
+                  <div
+                    key={segment.id}
+                    style={{
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      padding: 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 12,
+                      }}
+                    >
+                      <strong>{segment.title}</strong>
+                      <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                        {segment.timeRangeLabel}
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        marginTop: 4,
+                        fontSize: 12,
+                        color: "var(--ink-600)",
+                      }}
+                    >
+                      {segment.summary}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SectionKicker({ children }) {
+  return (
+    <div
+      style={{
+        marginBottom: 8,
+        fontSize: 12,
+        fontWeight: 700,
+        color: "var(--ink-500)",
+      }}
+    >
+      {children}
     </div>
   );
 }
@@ -14331,6 +14552,34 @@ function canRequestAdmissionRecordingAiAnalysis(application) {
     (!analysisStatus || analysisStatus === "failed") &&
     isAdmissionRecordingReviewable(application)
   );
+}
+
+function admissionRecordingReviewNote(application, decision) {
+  const base = "经营端选播准入审核";
+  const analysis = application.latestRecording?.aiAnalysis;
+  if (!analysis || analysis.status !== "succeeded") {
+    return base;
+  }
+
+  const parts = [base, `人工结论：${recordingReviewDecisionLabel(decision)}`];
+  if (analysis.summary) {
+    parts.push(`AI辅助摘要：${analysis.summary}`);
+  }
+  const recommendations = (analysis.recommendations ?? [])
+    .map((recommendation) =>
+      [recommendation.title, recommendation.detail].filter(Boolean).join(" - "),
+    )
+    .filter(Boolean);
+  if (recommendations.length > 0) {
+    parts.push(`AI建议：${recommendations.join("；")}`);
+  }
+  return parts.join("。");
+}
+
+function recordingReviewDecisionLabel(decision) {
+  if (decision === "approved") return "通过";
+  if (decision === "rejected") return "驳回";
+  return "需补充";
 }
 
 function isMcnApprovedAdmissionRecording(application) {
