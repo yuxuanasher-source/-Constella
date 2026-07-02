@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  confirmSettlementBatch,
   generateSettlementBatch,
   addManualSettlementItem,
   listSettlementPool,
@@ -483,6 +484,120 @@ describe("settlement service", () => {
         reopenReason: "Need correction",
       }),
     );
+  });
+
+  it("lets finance confirm generated batches through high-risk audited transitions", async () => {
+    const batch = await confirmSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor: financeActor,
+      batchId: "batch-1",
+      reason: "Finance verified the amounts",
+    });
+
+    expect(batch.status).toBe("confirmed");
+    expect(repo.updateSettlementBatch).toHaveBeenCalledWith(
+      "batch-1",
+      expect.objectContaining({ status: "confirmed" }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "approve",
+        module: "settlement",
+        objectType: "settlement_batch",
+        objectId: "batch-1",
+        changedFields: ["status"],
+        isHighRisk: true,
+        reason: "Finance verified the amounts",
+      }),
+    );
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Settlement batch confirmed",
+        objectId: "batch-1",
+        isHighRisk: true,
+      }),
+    );
+  });
+
+  it("lets owners confirm reopened batches", async () => {
+    vi.mocked(repo.getSettlementBatchById).mockResolvedValueOnce(
+      createBatch({ status: "reopened", reopenReason: "Need correction" }),
+    );
+
+    await confirmSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor,
+      batchId: "batch-1",
+      reason: "Recheck complete",
+    });
+
+    expect(repo.updateSettlementBatch).toHaveBeenCalledWith(
+      "batch-1",
+      expect.objectContaining({ status: "confirmed" }),
+    );
+  });
+
+  it("blocks non-finance non-owner roles from confirming batches", async () => {
+    const roles = ["ops_manager", "operator_business", "streamer"] as const;
+    for (const role of roles) {
+      await expect(
+        confirmSettlementBatch({
+          repo,
+          audit,
+          notify,
+          actor: { ...actor, userId: `user-${role}`, role },
+          batchId: "batch-1",
+          reason: "Should be rejected",
+        }),
+      ).rejects.toThrow("Current role cannot confirm settlement batches");
+    }
+
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("requires a reason to confirm a settlement batch", async () => {
+    await expect(
+      confirmSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor: financeActor,
+        batchId: "batch-1",
+        reason: "  ",
+      }),
+    ).rejects.toThrow("Confirming a settlement batch requires a reason");
+
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+  });
+
+  it("rejects confirming batches that are not generated or reopened", async () => {
+    const statuses = ["locked", "voided"] as const;
+    for (const status of statuses) {
+      vi.mocked(repo.getSettlementBatchById).mockResolvedValueOnce(
+        createBatch({ status }),
+      );
+
+      await expect(
+        confirmSettlementBatch({
+          repo,
+          audit,
+          notify,
+          actor: financeActor,
+          batchId: "batch-1",
+          reason: "Attempted confirm",
+        }),
+      ).rejects.toThrow(
+        "Only generated or reopened settlement batches can be confirmed",
+      );
+    }
+
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
   });
 
   it("adds CPA CPS or gift as manual carrying rows with audited amount changes", async () => {

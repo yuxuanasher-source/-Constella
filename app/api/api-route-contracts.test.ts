@@ -4,6 +4,7 @@ import { PATCH as reviewLiveReportPatch } from "./live-reports/[reportId]/review
 import { POST as cancelLiveTaskPost } from "./live-tasks/[taskId]/cancel/route";
 import { POST as startLiveTaskPost } from "./live-tasks/[taskId]/start/route";
 import { POST as settlementBatchPost } from "./settlement-batches/route";
+import { POST as confirmSettlementBatchPost } from "./settlement-batches/[batchId]/confirm/route";
 import { POST as lockSettlementBatchPost } from "./settlement-batches/[batchId]/lock/route";
 import { POST as manualSettlementItemPost } from "./settlement-batches/[batchId]/manual-items/route";
 import { POST as reopenSettlementBatchPost } from "./settlement-batches/[batchId]/reopen/route";
@@ -20,6 +21,7 @@ import {
 import { getSettlementRouteContext } from "@/features/settlements/settlement-route-utils";
 import {
   addManualSettlementItem,
+  confirmSettlementBatch,
   generateSettlementBatch,
   lockSettlementBatch,
   reopenSettlementBatch,
@@ -57,6 +59,7 @@ vi.mock("@/features/settlements/settlement-route-utils", async () => {
 
 vi.mock("@/features/settlements/settlement-service", () => ({
   addManualSettlementItem: vi.fn(),
+  confirmSettlementBatch: vi.fn(),
   generateSettlementBatch: vi.fn(),
   lockSettlementBatch: vi.fn(),
   reopenSettlementBatch: vi.fn(),
@@ -394,6 +397,68 @@ describe("api route contracts", () => {
         },
       }),
     );
+  });
+
+  it("maps the M6 confirm payload used by the ops UI", async () => {
+    vi.mocked(confirmSettlementBatch).mockResolvedValueOnce({
+      id: "batch-1",
+      status: "confirmed",
+    } as never);
+
+    const response = await confirmSettlementBatchPost(
+      jsonRequest("http://localhost/api/settlement-batches/batch-1/confirm", {
+        reason: "财务确认金额无误",
+      }),
+      { params: Promise.resolve({ batchId: "batch-1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      batch: { id: "batch-1", status: "confirmed" },
+    });
+    expect(confirmSettlementBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: {
+          userId: "user-finance",
+          name: "Finance",
+          role: "finance",
+          organizationId: "org-1",
+        },
+        batchId: "batch-1",
+        reason: "财务确认金额无误",
+      }),
+    );
+  });
+
+  it("returns 400 when the confirm payload is missing a reason", async () => {
+    const response = await confirmSettlementBatchPost(
+      jsonRequest("http://localhost/api/settlement-batches/batch-1/confirm", {}),
+      { params: Promise.resolve({ batchId: "batch-1" }) },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "reason is required",
+    });
+    expect(confirmSettlementBatch).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the confirm service rejects a role permission", async () => {
+    vi.mocked(confirmSettlementBatch).mockRejectedValueOnce(
+      new Error("Current role cannot confirm settlement batches"),
+    );
+
+    const response = await confirmSettlementBatchPost(
+      jsonRequest("http://localhost/api/settlement-batches/batch-1/confirm", {
+        reason: "尝试确认",
+      }),
+      { params: Promise.resolve({ batchId: "batch-1" }) },
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "Current role cannot confirm settlement batches",
+    });
   });
 
   it("maps the M6 lock payload used by the ops UI", async () => {

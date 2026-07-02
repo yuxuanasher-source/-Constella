@@ -346,6 +346,57 @@ export async function generateSettlementBatch({
   return { batch, items };
 }
 
+export async function confirmSettlementBatch({
+  repo,
+  audit,
+  notify,
+  actor,
+  batchId,
+  reason,
+}: {
+  repo: Pick<
+    SettlementRepository,
+    "getSettlementBatchById" | "updateSettlementBatch"
+  >;
+  audit: SettlementAuditWriter;
+  notify: SettlementNotifier;
+  actor: SettlementActor;
+  batchId: string;
+  reason: string;
+}): Promise<SettlementBatchRecord> {
+  assertCanConfirmSettlement(actor.role);
+  assertReason(reason, "Confirming a settlement batch requires a reason");
+  const before = await requireSettlementBatch(repo, batchId);
+  if (before.status !== "generated" && before.status !== "reopened") {
+    throw new Error(
+      "Only generated or reopened settlement batches can be confirmed",
+    );
+  }
+
+  const after = await repo.updateSettlementBatch(batchId, {
+    status: "confirmed",
+  });
+
+  await auditSettlementTransition({
+    audit,
+    actor,
+    before,
+    after,
+    action: "approve",
+    reason,
+    changedFields: ["status"],
+  });
+  await notifyHighRiskSettlement({
+    notify,
+    actor,
+    batch: after,
+    title: "Settlement batch confirmed",
+    content: `${after.id} was confirmed.`,
+  });
+
+  return after;
+}
+
 export async function lockSettlementBatch({
   repo,
   audit,
@@ -564,6 +615,12 @@ function assertCanLockSettlement(role: AppRole): void {
   }
 }
 
+function assertCanConfirmSettlement(role: AppRole): void {
+  if (role !== "owner" && role !== "finance") {
+    throw new Error("Current role cannot confirm settlement batches");
+  }
+}
+
 function assertPeriod(periodStart: string, periodEnd: string): void {
   if (!periodStart || !periodEnd) {
     throw new Error("Settlement period is required");
@@ -694,7 +751,7 @@ async function auditSettlementTransition({
   actor: SettlementActor;
   before: SettlementBatchRecord;
   after: SettlementBatchRecord;
-  action: "lock" | "reopen";
+  action: "approve" | "lock" | "reopen";
   reason: string;
   changedFields: string[];
 }) {
