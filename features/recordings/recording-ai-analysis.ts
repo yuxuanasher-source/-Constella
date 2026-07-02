@@ -564,6 +564,8 @@ export type RecordingAiClaimRunResult = {
 export const RECORDING_AI_CLAIM_DEFAULT_LIMIT = 5;
 export const RECORDING_AI_CLAIM_MAX_LIMIT = 10;
 export const RECORDING_AI_CLAIM_TIMEOUT_MS = 15 * 60 * 1000;
+export const RECORDING_AI_STALE_CLAIM_ERROR_SUMMARY =
+  "Recording AI claim timed out after the final attempt";
 
 /**
  * Claims the next batch of runnable recording AI analyses for the runner
@@ -578,7 +580,10 @@ export const RECORDING_AI_CLAIM_TIMEOUT_MS = 15 * 60 * 1000;
  *   freshly (re)claimed by a concurrent runner — which resets claimed_at to
  *   now — can not be stolen a second time.
  *
- * Both claim paths only consider rows with attempt < max_attempts.
+ * Both claim paths only consider rows with attempt < max_attempts. A stale
+ * running row whose attempts are already exhausted can never be reclaimed, so
+ * it is finalized as failed instead (reported under `failures`) rather than
+ * left stuck in running forever.
  */
 export async function claimAndRunRecordingAiAnalyses({
   client,
@@ -634,15 +639,15 @@ export async function claimAndRunRecordingAiAnalyses({
     throw staleError;
   }
 
+  const hasAttemptsLeft = (row: RecordingAiClaimCandidateRow) =>
+    Math.max(0, Math.trunc(row.attempt ?? 0)) <
+    Math.max(1, Math.trunc(row.max_attempts ?? 3));
+
   const candidates = [
     ...(queuedData ?? []).map((row) => ({ row, staleRunning: false })),
     ...(staleData ?? []).map((row) => ({ row, staleRunning: true })),
   ]
-    .filter(
-      ({ row }) =>
-        Math.max(0, Math.trunc(row.attempt ?? 0)) <
-        Math.max(1, Math.trunc(row.max_attempts ?? 3)),
-    )
+    .filter(({ row }) => hasAttemptsLeft(row))
     .sort((left, right) =>
       left.row.created_at.localeCompare(right.row.created_at),
     )
@@ -650,6 +655,30 @@ export async function claimAndRunRecordingAiAnalyses({
 
   const analyses: RecordingAiClaimRunResult["analyses"] = [];
   const failures: RecordingAiClaimRunResult["failures"] = [];
+
+  // A stale running row with no attempts left can never be reclaimed; finalize
+  // it as failed so it does not sit in running forever.
+  for (const row of (staleData ?? []).filter((row) => !hasAttemptsLeft(row))) {
+    try {
+      const finalized = await failStaleRunningRecordingAiAnalysis(
+        db,
+        row.id,
+        staleBefore,
+        now().toISOString(),
+      );
+      if (finalized) {
+        failures.push({
+          analysisId: row.id,
+          errorSummary: RECORDING_AI_STALE_CLAIM_ERROR_SUMMARY,
+        });
+      }
+    } catch (error) {
+      failures.push({
+        analysisId: row.id,
+        errorSummary: sanitizeErrorSummary(error),
+      });
+    }
+  }
 
   for (const { row: candidate, staleRunning } of candidates) {
     const attempt = Math.max(0, Math.trunc(candidate.attempt ?? 0)) + 1;
@@ -779,6 +808,39 @@ async function claimStaleRunningRecordingAiAnalysis(
   }
 
   return data ?? null;
+}
+
+/**
+ * Finalizes a stale running row whose attempts are exhausted: no runner may
+ * reclaim it, so failed is its only reachable terminal state. Guarded by the
+ * same `claimed_at < staleBefore` optimistic lock as reclaiming; returns false
+ * when the original runner resolved the row in the meantime.
+ */
+async function failStaleRunningRecordingAiAnalysis(
+  db: RecordingAiRunnerDb,
+  analysisId: string,
+  staleBefore: string,
+  completedAt: string,
+): Promise<boolean> {
+  const { data, error } = await db
+    .from("recording_ai_analyses")
+    .update({
+      status: "failed",
+      claimed_at: null,
+      error_summary: RECORDING_AI_STALE_CLAIM_ERROR_SUMMARY,
+      completed_at: completedAt,
+    })
+    .eq("id", analysisId)
+    .eq("status", "running")
+    .lt("claimed_at", staleBefore)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data !== null;
 }
 
 async function executeClaimedRecordingAiAnalysis({
