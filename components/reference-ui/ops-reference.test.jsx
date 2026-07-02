@@ -4532,6 +4532,28 @@ describe("OpsReferenceApp admission smoke", () => {
         };
       }
 
+      if (String(url) === "/api/recording-assets/asset-ai/profile-insight") {
+        return {
+          ok: true,
+          json: async () => ({
+            insight: {
+              id: "insight-ai",
+              streamerId: "streamer-ai",
+              sourceRef: "recording_ai_analyses:analysis-ai",
+              title: "录屏 AI 观察 · 项目录屏 v3",
+              summary: "建议补充互动亮点后再通过。",
+            },
+          }),
+        };
+      }
+
+      if (String(url) === "/api/streamers") {
+        return {
+          ok: true,
+          json: async () => ({ streamers: [] }),
+        };
+      }
+
       if (String(url) === "/api/applications") {
         return {
           ok: true,
@@ -4561,6 +4583,15 @@ describe("OpsReferenceApp admission smoke", () => {
     expect(screen.getByText("互动证明不足")).toBeInTheDocument();
     expect(screen.getByText("补录 30 秒评论区回应，再进入厂家复核。")).toBeInTheDocument();
     expect(screen.getByText("00:30-01:15")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认沉淀到主播画像" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/recording-assets/asset-ai/profile-insight",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(await screen.findByText("AI 观察已沉淀到主播画像")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     fireEvent.click(screen.getByRole("button", { name: "需补充" }));
