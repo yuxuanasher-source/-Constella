@@ -1,0 +1,88 @@
+name: Scheduled Runners
+
+# 定时触发内部 runner 端点，避免 OCR / 录屏 AI / 异常扫描任务只入队不执行。
+# 需要在仓库配置：
+#   - Variables: APP_BASE_URL（部署地址，如 https://example.com；未配置时所有 job 直接跳过）
+#   - Secrets:   OCR_RUNNER_TOKEN / RECORDING_AI_RUNNER_TOKEN / ANOMALY_RUNNER_TOKEN
+on:
+  schedule:
+    # 每 5 分钟：OCR runner
+    - cron: "*/5 * * * *"
+    # 每 30 分钟：recording-ai runner + 异常扫描 runner
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ocr-runner:
+    name: OCR runner (every 5 minutes)
+    runs-on: ubuntu-latest
+    # APP_BASE_URL 未配置时跳过，避免 CI 变红
+    if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '*/5 * * * *') }}
+    steps:
+      - name: Trigger OCR runner
+        env:
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          OCR_RUNNER_TOKEN: ${{ secrets.OCR_RUNNER_TOKEN }}
+        run: |
+          status=$(curl -sS -o response.json -w "%{http_code}" \
+            -X POST "${APP_BASE_URL%/}/api/internal/ocr/run" \
+            -H "Authorization: Bearer ${OCR_RUNNER_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"limit":10}')
+          cat response.json
+          echo
+          if [ "$status" != "200" ]; then
+            echo "OCR runner request failed with HTTP $status" >&2
+            exit 1
+          fi
+
+  recording-ai-runner:
+    name: Recording AI runner (every 30 minutes)
+    runs-on: ubuntu-latest
+    # APP_BASE_URL 未配置时跳过，避免 CI 变红
+    if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '*/30 * * * *') }}
+    steps:
+      - name: Trigger recording AI runner
+        env:
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          RECORDING_AI_RUNNER_TOKEN: ${{ secrets.RECORDING_AI_RUNNER_TOKEN }}
+        run: |
+          status=$(curl -sS -o response.json -w "%{http_code}" \
+            -X POST "${APP_BASE_URL%/}/api/internal/recording-ai/run" \
+            -H "Authorization: Bearer ${RECORDING_AI_RUNNER_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          cat response.json
+          echo
+          # 该端点按 analysisId 单次执行；定时触发不带 analysisId 时返回 400，
+          # 视为“当前没有待执行的分析”，不算失败。
+          if [ "$status" != "200" ] && [ "$status" != "400" ]; then
+            echo "Recording AI runner request failed with HTTP $status" >&2
+            exit 1
+          fi
+
+  anomaly-runner:
+    name: Anomaly scan runner (every 30 minutes)
+    runs-on: ubuntu-latest
+    # APP_BASE_URL 未配置时跳过，避免 CI 变红
+    if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '*/30 * * * *') }}
+    steps:
+      - name: Trigger anomaly scan runner
+        env:
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          ANOMALY_RUNNER_TOKEN: ${{ secrets.ANOMALY_RUNNER_TOKEN }}
+        run: |
+          status=$(curl -sS -o response.json -w "%{http_code}" \
+            -X POST "${APP_BASE_URL%/}/api/internal/anomalies/run" \
+            -H "Authorization: Bearer ${ANOMALY_RUNNER_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          cat response.json
+          echo
+          if [ "$status" != "200" ]; then
+            echo "Anomaly scan runner request failed with HTTP $status" >&2
+            exit 1
+          fi
