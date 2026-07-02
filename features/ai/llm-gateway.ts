@@ -80,7 +80,8 @@ function capabilityForRequest(kind: AiGatewayRequest["kind"]): AiCapability {
   return kind;
 }
 
-function orderProviders(
+// 也被 llm-gateway-stream.ts 复用，保证流式/非流式的 provider 优先级一致。
+export function orderProviders(
   providers: AiProvider[],
   primaryProvider?: AiProviderName,
 ): AiProvider[] {

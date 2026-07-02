@@ -2485,6 +2485,101 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       }))
       .concat([{ role: "user", content: userText }]);
 
+  // 消费 /api/ai/chat 的 SSE 流：delta 事件逐段追加到同一个 AI 气泡，
+  // done 事件带回完整 payload（含 grounding/suggestedActions meta）收尾。
+  // 流开始前的 error 事件向上抛，由 run() 的 catch 按原有交互渲染错误气泡。
+  async function consumeAiChatStream(res) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let streamedText = "";
+    let bubbleOpen = false;
+    let sawFinalEvent = false;
+
+    const renderAiBubble = (text, meta) => {
+      const message = { role: "ai", text, ...(meta ? { meta } : {}) };
+      const replaceLast = bubbleOpen;
+      setMsgs((m) => {
+        if (replaceLast && m.length && m[m.length - 1].role === "ai") {
+          return m.slice(0, -1).concat([message]);
+        }
+        return m.concat([message]);
+      });
+      bubbleOpen = true;
+    };
+
+    const handleEvent = (eventName, payload) => {
+      if (eventName === "delta") {
+        const chunk = typeof payload?.content === "string" ? payload.content : "";
+        if (!chunk) return;
+        streamedText += chunk;
+        renderAiBubble(streamedText);
+        return;
+      }
+      if (eventName === "done") {
+        sawFinalEvent = true;
+        renderAiBubble(
+          payload?.message?.content || streamedText || "已生成回复（需人工确认）。",
+          normalizeAiMessageMeta(payload),
+        );
+        return;
+      }
+      if (eventName === "error") {
+        sawFinalEvent = true;
+        const message = payload?.error || "AI 调用失败";
+        if (streamedText) {
+          // 已经流出部分内容：就地标注中断原因，不再额外弹错误气泡。
+          renderAiBubble(`${streamedText}\n\n⚠ 回复中断：${message}`);
+          return;
+        }
+        throw new Error(message);
+      }
+    };
+
+    const flushEventBlock = (block) => {
+      let eventName = "message";
+      const dataLines = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) eventName = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+      }
+      if (!dataLines.length) return;
+      let payload = null;
+      try {
+        payload = JSON.parse(dataLines.join("\n"));
+      } catch {
+        payload = null;
+      }
+      handleEvent(eventName, payload);
+    };
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let separatorIndex;
+        while ((separatorIndex = buffer.indexOf("\n\n")) >= 0) {
+          const block = buffer.slice(0, separatorIndex);
+          buffer = buffer.slice(separatorIndex + 2);
+          if (block.trim()) flushEventBlock(block);
+        }
+      }
+      if (buffer.trim()) flushEventBlock(buffer);
+    } catch (error) {
+      reader.cancel?.().catch?.(() => {});
+      throw error;
+    }
+
+    if (!sawFinalEvent) {
+      if (streamedText) {
+        renderAiBubble(`${streamedText}\n\n⚠ 回复中断：连接提前结束`);
+      } else {
+        throw new Error("AI 流式连接提前结束");
+      }
+    }
+  }
+
   async function run(kind, userText, options = {}) {
     if (busy) return;
     const requestMode = options.mode || mode;
@@ -2520,13 +2615,29 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       } else if (kind === "ask") {
         const res = await fetch("/api/ai/chat", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+          },
           body: JSON.stringify({
             messages: chatHistory(userText),
             mode: requestMode,
             attachments: requestAttachments,
+            stream: true,
           }),
         });
+        const contentType =
+          typeof res.headers?.get === "function"
+            ? res.headers.get("content-type") || ""
+            : "";
+        if (res.ok && res.body && contentType.includes("text/event-stream")) {
+          // 优先流式：消息气泡在流式过程中逐段渲染，无需最终 push。
+          await consumeAiChatStream(res);
+          setAttachments([]);
+          setAttachmentError("");
+          return;
+        }
+        // 非流式 fallback（老版本服务端 / 代理剥掉了 SSE）：按原 JSON 契约处理。
         const json = await res.json();
         meta = normalizeAiMessageMeta(json);
         if (!res.ok) throw new Error(json?.error || "AI 调用失败");

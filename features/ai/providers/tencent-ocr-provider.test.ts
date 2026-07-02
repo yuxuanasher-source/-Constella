@@ -129,6 +129,43 @@ describe("createTencentOcrProvider", () => {
       region: "ap-guangzhou",
     });
   });
+
+  it("aborts a hung OCR request after the timeout and reports failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(
+        (_url: string, init: { signal?: AbortSignal }) =>
+          new Promise<never>((_, reject) => {
+            init.signal?.addEventListener("abort", () =>
+              reject(init.signal?.reason ?? new Error("aborted")),
+            );
+          }),
+      );
+      const provider = createTencentOcrProvider({
+        secretId: "AKIDEXAMPLE",
+        secretKey: "SECRETEXAMPLE",
+        region: "ap-guangzhou",
+        fetchImpl: fetchImpl as never,
+        timeoutMs: 4_000,
+      });
+
+      const pending = provider.runGeneralBasicOcr({
+        imageBase64: "ZmFrZS1pbWFnZQ==",
+      });
+      await vi.advanceTimersByTimeAsync(4_000);
+      const result = await pending;
+
+      expect(result.status).toBe("failed");
+      expect(result.errorSummary).toContain("timed out after 4000ms");
+      const [, requestInit] = fetchImpl.mock.calls[0] as unknown as [
+        string,
+        { signal?: AbortSignal },
+      ];
+      expect(requestInit.signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 const realSmoke =

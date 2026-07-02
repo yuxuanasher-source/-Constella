@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { runAiGateway } from "./llm-gateway";
+import { createDeepseekProvider } from "./providers/deepseek-provider";
 import { createDeterministicProvider } from "./providers/deterministic-provider";
 import {
   createConfiguredAiProviders,
@@ -10,6 +11,51 @@ import {
 import type { AiProvider } from "./contracts";
 
 describe("runAiGateway", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("falls back to the next provider when the primary times out", async () => {
+    vi.useFakeTimers();
+    // 挂死的上游：永不 resolve，只尊重 AbortSignal —— 验证超时错误
+    // 能被 fallback 循环捕获并切到下一个 provider，而不是吊死路由。
+    const hangingFetch = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<never>((_, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(init.signal?.reason ?? new Error("aborted")),
+          );
+        }),
+    );
+
+    const pending = runAiGateway({
+      providers: [
+        createDeepseekProvider({
+          apiKey: "secret",
+          fetch: hangingFetch,
+          timeoutMs: 1_000,
+        }),
+        createDeterministicProvider(),
+      ],
+      primaryProvider: "deepseek",
+      request: {
+        kind: "text",
+        promptKey: "ops.brief",
+        promptVersion: 1,
+        messages: [{ role: "user", content: "summarize" }],
+      },
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await pending;
+
+    expect(result).toMatchObject({
+      status: "succeeded",
+      providerName: "deterministic",
+      fallbackUsed: true,
+      degradedReason: "primary_failed",
+    });
+  });
+
   it("returns degraded when no provider supports the request", async () => {
     await expect(
       runAiGateway({

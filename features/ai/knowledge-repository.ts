@@ -1,8 +1,12 @@
-// 知识库 DB 检索（走 RLS）。fetch 受组织隔离的候选语料，再用确定性打分排序。
+// 知识库 DB 检索（走 RLS）。候选集过滤已下推到数据库：pg_trgm + ilike 的 RPC 只回传
+// 「命中查询词」的前 N 条（见 supabase/migrations/20260702130000_knowledge_search_trgm.sql），
+// JS 端仅对小候选集做确定性精排，相关性语义与旧实现一致。
+// 查询词为空 / RPC 不可用（迁移未上线、旧测试桩）时回退旧的全量候选路径兜底。
 // 工具本身不碰库（见 ai-tool-layer 的 kb_search）；本仓库供 API 路由 / Agent 调用。
 
 import {
   rankKnowledgePassages,
+  tokenizeQuery,
   type KnowledgeDoc,
   type KnowledgePassage,
 } from "./knowledge-base";
@@ -35,10 +39,29 @@ type KnowledgeQuery = {
   ): PromiseLike<{ data: KnowledgeRow[] | null; error: unknown }>;
 };
 
+// 下推检索 RPC 的入参（与迁移里的函数签名一一对应；documents 表没有业务列，
+// 因此 project/streamer/product/platform 仅在 chunks RPC 上传递）。
+export type KnowledgeSearchRpcArgs = {
+  p_organization_id: string;
+  p_terms: string[];
+  p_limit: number;
+  p_doc_types: string[] | null;
+  p_tags: string[] | null;
+  p_updated_after: string | null;
+  p_project_id?: string | null;
+  p_streamer_id?: string | null;
+  p_product?: string | null;
+  p_platform?: string | null;
+};
+
 export type KnowledgeClient = {
   from(table: "knowledge_documents" | "knowledge_document_chunks"): {
     select(columns: string): KnowledgeQuery;
   };
+  rpc(
+    fn: "search_knowledge_document_chunks" | "search_knowledge_documents",
+    args: KnowledgeSearchRpcArgs,
+  ): PromiseLike<{ data: KnowledgeRow[] | null; error: unknown }>;
 };
 
 export type SearchKnowledgeInput = {
@@ -51,21 +74,30 @@ export type SearchKnowledgeInput = {
   platform?: string;
   tags?: string[];
   updatedAfter?: string;
-  // 候选拉取上限（先按组织/类型/时间取候选，再在内存里确定性打分）。
+  // 候选拉取上限。下推路径默认只取命中查询词的前 50 条；兜底路径保持 200。
   candidateLimit?: number;
   limit?: number;
 };
+
+// 下推路径：数据库已过滤出命中行，小候选集足够 JS 精排（精排只保留 score > 0 的行）。
+const MATCHED_CANDIDATE_LIMIT = 50;
+// 兜底路径（查询词为空 / RPC 不可用）：保持旧实现的全量候选上限。
+const FALLBACK_CANDIDATE_LIMIT = 200;
 
 export async function searchKnowledgeDocuments(
   client: KnowledgeClient,
   input: SearchKnowledgeInput,
 ): Promise<KnowledgePassage[]> {
+  // 与精排（rankKnowledgePassages）同一套分词，保证下推命中语义 = JS score > 0。
+  const terms = tokenizeQuery(input.query);
+
   const chunkRows = await fetchKnowledgeRows(client, input, {
     table: "knowledge_document_chunks",
     columns:
       "id, knowledge_document_id, doc_type, title, body, source_ref, tags, project_id, streamer_id, live_task_id, product, platform, updated_at",
     orderColumn: "updated_at",
     applyBusinessFilters: true,
+    terms,
   });
 
   if (chunkRows.length) {
@@ -78,21 +110,32 @@ export async function searchKnowledgeDocuments(
       "id, doc_type, title, body, source_ref, tags, metadata, updated_at",
     orderColumn: "updated_at",
     applyBusinessFilters: false,
+    terms,
   });
 
   return rankRows(input, documentRows, false);
 }
 
+type FetchKnowledgeRowsOptions = {
+  table: "knowledge_documents" | "knowledge_document_chunks";
+  columns: string;
+  orderColumn: string;
+  applyBusinessFilters: boolean;
+  terms: string[];
+};
+
 async function fetchKnowledgeRows(
   client: KnowledgeClient,
   input: SearchKnowledgeInput,
-  options: {
-    table: "knowledge_documents" | "knowledge_document_chunks";
-    columns: string;
-    orderColumn: string;
-    applyBusinessFilters: boolean;
-  },
+  options: FetchKnowledgeRowsOptions,
 ): Promise<KnowledgeRow[]> {
+  // 下推路径：有查询词且客户端支持 RPC 时，只让数据库回传命中候选。
+  if (options.terms.length && typeof client.rpc === "function") {
+    const matched = await fetchMatchedCandidates(client, input, options);
+    if (matched) return matched;
+  }
+
+  // 兜底路径（与旧实现一致）：按组织 / 类型 / 时间取候选，交给内存打分。
   let query = client
     .from(options.table)
     .select(options.columns)
@@ -122,9 +165,39 @@ async function fetchKnowledgeRows(
 
   const { data, error } = await query
     .order(options.orderColumn, { ascending: false })
-    .limit(input.candidateLimit ?? 200);
+    .limit(input.candidateLimit ?? FALLBACK_CANDIDATE_LIMIT);
 
   return error || !data ? [] : data;
+}
+
+async function fetchMatchedCandidates(
+  client: KnowledgeClient,
+  input: SearchKnowledgeInput,
+  options: FetchKnowledgeRowsOptions,
+): Promise<KnowledgeRow[] | null> {
+  const args: KnowledgeSearchRpcArgs = {
+    p_organization_id: input.organizationId,
+    p_terms: options.terms,
+    p_limit: input.candidateLimit ?? MATCHED_CANDIDATE_LIMIT,
+    p_doc_types: input.docTypes?.length ? input.docTypes : null,
+    p_tags: input.tags?.length ? input.tags : null,
+    p_updated_after: input.updatedAfter ?? null,
+  };
+
+  const { data, error } =
+    options.table === "knowledge_document_chunks"
+      ? await client.rpc("search_knowledge_document_chunks", {
+          ...args,
+          p_project_id: input.projectId ?? null,
+          p_streamer_id: input.streamerId ?? null,
+          p_product: input.product ?? null,
+          p_platform: input.platform ?? null,
+        })
+      : await client.rpc("search_knowledge_documents", args);
+
+  // RPC 失败（如迁移未上线）→ null，让调用方走旧全量路径兜底；
+  // 成功但空集是有效结果（无命中），直接采用。
+  return error || !data ? null : data;
 }
 
 function rankRows(

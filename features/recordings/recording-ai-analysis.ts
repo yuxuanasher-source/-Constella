@@ -145,6 +145,20 @@ type RecordingAiRunnerDb = {
           data: RecordingAiWorkItemRow | null;
           error: Error | null;
         }>;
+        eq(
+          column: string,
+          value: string,
+        ): {
+          order(
+            column: string,
+            options: { ascending: boolean },
+          ): {
+            limit(count: number): PromiseLike<{
+              data: RecordingAiClaimCandidateRow[] | null;
+              error: Error | null;
+            }>;
+          };
+        };
       };
     };
     update(payload: Record<string, unknown>): {
@@ -158,6 +172,17 @@ type RecordingAiRunnerDb = {
             error: Error | null;
           }>;
         };
+        eq(
+          column: string,
+          value: string,
+        ): {
+          select(columns: string): {
+            maybeSingle(): PromiseLike<{
+              data: RecordingAiWorkItemRow | null;
+              error: Error | null;
+            }>;
+          };
+        };
       };
     };
   };
@@ -166,6 +191,12 @@ type RecordingAiRunnerDb = {
       payload: Record<string, unknown>[],
     ): PromiseLike<{ error: Error | null }>;
   };
+};
+
+type RecordingAiClaimCandidateRow = {
+  id: string;
+  attempt: number | null;
+  max_attempts: number | null;
 };
 
 type RecordingAiWorkItemRow = RecordingAiAnalysisRow & {
@@ -474,12 +505,179 @@ export async function runRecordingAiAnalysisOnce({
   }
 
   const attempt = Math.max(0, Math.trunc(workItem.attempt ?? 0)) + 1;
-  await updateAnalysis(db, normalizedAnalysisId, {
-    status: "running",
+  const claimed = await claimQueuedRecordingAiAnalysis(
+    db,
+    normalizedAnalysisId,
     attempt,
-    error_summary: null,
-    completed_at: null,
+  );
+  if (!claimed) {
+    throw new Error(
+      "Recording AI analysis is not queued: claimed by another runner",
+    );
+  }
+
+  return executeClaimedRecordingAiAnalysis({
+    db,
+    workItem: claimed,
+    attempt,
+    now,
+    draftBuilder,
   });
+}
+
+export type RecordingAiClaimRunResult = {
+  analyses: Array<{
+    id: string;
+    status: RecordingAiAnalysisStatus;
+    attempt: number;
+  }>;
+  failures: Array<{ analysisId: string; errorSummary: string }>;
+};
+
+export const RECORDING_AI_CLAIM_DEFAULT_LIMIT = 5;
+export const RECORDING_AI_CLAIM_MAX_LIMIT = 10;
+
+/**
+ * Claims the next batch of queued recording AI analyses for the runner
+ * organization and executes them. Claiming uses an optimistic lock on the
+ * status column (`update ... where id = ? and status = 'queued'`), so two
+ * concurrent runners can never execute the same analysis twice: only one of
+ * them observes the queued -> running transition.
+ */
+export async function claimAndRunRecordingAiAnalyses({
+  client,
+  actor,
+  limit = RECORDING_AI_CLAIM_DEFAULT_LIMIT,
+  now = () => new Date(),
+  draftBuilder = buildRecordingAiAnalysisDraft,
+}: {
+  client: Parameters<typeof recordAiInvocation>[0]["client"];
+  actor: AiActor;
+  limit?: number;
+  now?: () => Date;
+  draftBuilder?: typeof buildRecordingAiAnalysisDraft;
+}): Promise<RecordingAiClaimRunResult> {
+  const db = client as unknown as RecordingAiRunnerDb;
+  const batchLimit = Number.isFinite(limit)
+    ? Math.max(1, Math.min(Math.trunc(limit), RECORDING_AI_CLAIM_MAX_LIMIT))
+    : RECORDING_AI_CLAIM_DEFAULT_LIMIT;
+
+  const { data, error } = await db
+    .from("recording_ai_analyses")
+    .select("id, attempt, max_attempts")
+    .eq("organization_id", actor.organizationId)
+    .eq("status", "queued")
+    .order("created_at", { ascending: true })
+    .limit(batchLimit);
+
+  if (error) {
+    throw error;
+  }
+
+  const candidates = (data ?? []).filter(
+    (row) =>
+      Math.max(0, Math.trunc(row.attempt ?? 0)) <
+      Math.max(1, Math.trunc(row.max_attempts ?? 3)),
+  );
+
+  const analyses: RecordingAiClaimRunResult["analyses"] = [];
+  const failures: RecordingAiClaimRunResult["failures"] = [];
+
+  for (const candidate of candidates) {
+    const attempt = Math.max(0, Math.trunc(candidate.attempt ?? 0)) + 1;
+
+    let claimed: RecordingAiWorkItemRow | null = null;
+    try {
+      claimed = await claimQueuedRecordingAiAnalysis(
+        db,
+        candidate.id,
+        attempt,
+      );
+    } catch (error) {
+      failures.push({
+        analysisId: candidate.id,
+        errorSummary: sanitizeErrorSummary(error),
+      });
+      continue;
+    }
+
+    // Another runner claimed the analysis between listing and the conditional
+    // update; skip it instead of double-running.
+    if (!claimed) {
+      continue;
+    }
+
+    if (claimed.organization_id !== actor.organizationId) {
+      failures.push({
+        analysisId: candidate.id,
+        errorSummary: "Recording AI analysis belongs to another organization",
+      });
+      continue;
+    }
+
+    try {
+      const result = await executeClaimedRecordingAiAnalysis({
+        db,
+        workItem: claimed,
+        attempt,
+        now,
+        draftBuilder,
+      });
+      analyses.push({ id: result.id, status: result.status, attempt });
+    } catch (error) {
+      failures.push({
+        analysisId: candidate.id,
+        errorSummary: sanitizeErrorSummary(error),
+      });
+    }
+  }
+
+  return { analyses, failures };
+}
+
+/**
+ * Optimistic-lock claim: transitions the analysis queued -> running only when
+ * it is still queued. Returns null when another runner already claimed it.
+ */
+async function claimQueuedRecordingAiAnalysis(
+  db: RecordingAiRunnerDb,
+  analysisId: string,
+  attempt: number,
+): Promise<RecordingAiWorkItemRow | null> {
+  const { data, error } = await db
+    .from("recording_ai_analyses")
+    .update({
+      status: "running",
+      attempt,
+      error_summary: null,
+      completed_at: null,
+    })
+    .eq("id", analysisId)
+    .eq("status", "queued")
+    .select(analysisWorkItemSelect)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ?? null;
+}
+
+async function executeClaimedRecordingAiAnalysis({
+  db,
+  workItem,
+  attempt,
+  now,
+  draftBuilder,
+}: {
+  db: RecordingAiRunnerDb;
+  workItem: RecordingAiWorkItemRow;
+  attempt: number;
+  now: () => Date;
+  draftBuilder: typeof buildRecordingAiAnalysisDraft;
+}): Promise<RecordingAiAnalysisDto> {
+  const analysisId = workItem.id;
 
   try {
     const asset = toRecordingAssetDtoFromWorkItem(workItem.recording_assets);
@@ -487,7 +685,7 @@ export async function runRecordingAiAnalysisOnce({
     const completedAt = now().toISOString();
     const segmentRows = draft.segments.map((segment) => ({
       organization_id: workItem.organization_id,
-      analysis_id: normalizedAnalysisId,
+      analysis_id: analysisId,
       asset_id: workItem.asset_id,
       segment_kind: segment.segmentKind,
       start_seconds: segment.startSeconds,
@@ -508,7 +706,7 @@ export async function runRecordingAiAnalysisOnce({
       }
     }
 
-    const updated = await updateAnalysis(db, normalizedAnalysisId, {
+    const updated = await updateAnalysis(db, analysisId, {
       status: "succeeded",
       provider_name: "deterministic",
       summary: draft.summary,
@@ -538,7 +736,7 @@ export async function runRecordingAiAnalysisOnce({
   } catch (error) {
     const finalFailure = attempt >= Math.max(1, workItem.max_attempts ?? 3);
     const completedAt = finalFailure ? now().toISOString() : null;
-    const updated = await updateAnalysis(db, normalizedAnalysisId, {
+    const updated = await updateAnalysis(db, analysisId, {
       status: finalFailure ? "failed" : "queued",
       attempt,
       error_summary: sanitizeErrorSummary(error),

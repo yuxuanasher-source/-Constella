@@ -54,12 +54,10 @@ jobs:
             -X POST "${APP_BASE_URL%/}/api/internal/recording-ai/run" \
             -H "Authorization: Bearer ${RECORDING_AI_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
-            -d '{}')
+            -d '{"limit":5}')
           cat response.json
           echo
-          # 该端点按 analysisId 单次执行；定时触发不带 analysisId 时返回 400，
-          # 视为“当前没有待执行的分析”，不算失败。
-          if [ "$status" != "200" ] && [ "$status" != "400" ]; then
+          if [ "$status" != "200" ]; then
             echo "Recording AI runner request failed with HTTP $status" >&2
             exit 1
           fi

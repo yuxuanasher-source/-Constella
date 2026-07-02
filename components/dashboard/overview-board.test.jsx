@@ -49,6 +49,67 @@ describe("OverviewBoard AI panel", () => {
     );
   });
 
+  it("consumes SSE streaming chat responses chunk by chunk into one bubble", async () => {
+    const encoder = new TextEncoder();
+    const sse = [
+      "event: delta",
+      'data: {"content":"流式"}',
+      "",
+      "event: delta",
+      'data: {"content":"回复"}',
+      "",
+      "event: done",
+      'data: {"message":{"role":"assistant","content":"流式回复完成"},"providerName":"deepseek","status":"succeeded"}',
+      "",
+      "",
+    ].join("\n");
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/chat") {
+        return Promise.resolve({
+          ok: true,
+          headers: {
+            get: (key) =>
+              key.toLowerCase() === "content-type"
+                ? "text/event-stream; charset=utf-8"
+                : null,
+          },
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode(sse));
+              controller.close();
+            },
+          }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ matches: { recommendations: [] } }),
+      });
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "流式测试" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    // done 事件用最终文本替换流式过程中的同一个气泡，而不是追加新气泡。
+    expect(await screen.findByText("流式回复完成")).toBeInTheDocument();
+    expect(screen.queryByText("流式回复")).not.toBeInTheDocument();
+    const chatCall = fetch.mock.calls.find(([url]) => url === "/api/ai/chat");
+    expect(chatCall[1].headers.Accept).toBe("text/event-stream");
+    expect(JSON.parse(chatCall[1].body).stream).toBe(true);
+  });
+
   it("sends free-form messages to the chat API", async () => {
     const { container } = render(
       <OverviewBoard

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildRecordingAiAnalysisDraft,
+  claimAndRunRecordingAiAnalyses,
   runRecordingAiAnalysisOnce,
   toRecordingAiAnalysisDto,
 } from "./recording-ai-analysis";
@@ -240,6 +241,176 @@ describe("recording AI analysis", () => {
       }),
     );
   });
+
+  it("refuses a single run when another runner claims the analysis first", async () => {
+    const client = createRecordingAiQueueClient({
+      analyses: [analysisFixture({ id: "analysis-1" })],
+      asset: assetRowFixture(),
+      beforeClaim: () => {
+        client.setStatus("analysis-1", "running");
+      },
+    });
+
+    await expect(
+      runRecordingAiAnalysisOnce({
+        client: client as never,
+        actor,
+        analysisId: "analysis-1",
+      }),
+    ).rejects.toThrow("claimed by another runner");
+    expect(client.updates["analysis-1"]).toBeUndefined();
+    expect(client.inserts.recording_ai_segments).toEqual([]);
+  });
+});
+
+describe("claimAndRunRecordingAiAnalyses", () => {
+  it("claims queued analyses in FIFO order up to the limit and executes them", async () => {
+    const client = createRecordingAiQueueClient({
+      analyses: [
+        analysisFixture({
+          id: "analysis-2",
+          created_at: "2026-07-01T10:05:00.000Z",
+        }),
+        analysisFixture({
+          id: "analysis-1",
+          created_at: "2026-07-01T10:00:00.000Z",
+        }),
+        analysisFixture({
+          id: "analysis-3",
+          created_at: "2026-07-01T10:10:00.000Z",
+        }),
+      ],
+      asset: assetRowFixture(),
+    });
+
+    const result = await claimAndRunRecordingAiAnalyses({
+      client: client as never,
+      actor,
+      limit: 2,
+      now: () => new Date("2026-07-02T12:00:00.000Z"),
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.analyses).toEqual([
+      { id: "analysis-1", status: "succeeded", attempt: 1 },
+      { id: "analysis-2", status: "succeeded", attempt: 1 },
+    ]);
+    expect(client.updates["analysis-1"]).toEqual([
+      expect.objectContaining({
+        status: "running",
+        attempt: 1,
+        error_summary: null,
+      }),
+      expect.objectContaining({
+        status: "succeeded",
+        completed_at: "2026-07-02T12:00:00.000Z",
+      }),
+    ]);
+    // The third analysis stays queued for the next scheduled run.
+    expect(client.updates["analysis-3"]).toBeUndefined();
+    expect(client.statusOf("analysis-3")).toBe("queued");
+    expect(client.inserts.recording_ai_segments).toHaveLength(6);
+  });
+
+  it("returns an empty result when no analyses are queued", async () => {
+    const client = createRecordingAiQueueClient({
+      analyses: [
+        analysisFixture({ id: "analysis-1", status: "succeeded" }),
+        analysisFixture({ id: "analysis-2", status: "failed" }),
+      ],
+      asset: assetRowFixture(),
+    });
+
+    const result = await claimAndRunRecordingAiAnalyses({
+      client: client as never,
+      actor,
+    });
+
+    expect(result).toEqual({ analyses: [], failures: [] });
+    expect(client.inserts.recording_ai_segments).toEqual([]);
+  });
+
+  it("never double-runs an analysis claimed by another runner between listing and claiming", async () => {
+    const client = createRecordingAiQueueClient({
+      analyses: [
+        analysisFixture({
+          id: "analysis-1",
+          created_at: "2026-07-01T10:00:00.000Z",
+        }),
+        analysisFixture({
+          id: "analysis-2",
+          created_at: "2026-07-01T10:05:00.000Z",
+        }),
+      ],
+      asset: assetRowFixture(),
+      beforeClaim: (analysisId) => {
+        // Simulate a concurrent runner winning the claim on analysis-2 after
+        // it was listed but before our conditional update runs.
+        if (analysisId === "analysis-2") {
+          client.setStatus("analysis-2", "running");
+        }
+      },
+    });
+
+    const result = await claimAndRunRecordingAiAnalyses({
+      client: client as never,
+      actor,
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.analyses).toEqual([
+      { id: "analysis-1", status: "succeeded", attempt: 1 },
+    ]);
+    expect(client.updates["analysis-2"]).toBeUndefined();
+    expect(client.statusOf("analysis-2")).toBe("running");
+    expect(client.inserts.recording_ai_segments).toHaveLength(3);
+  });
+
+  it("does not claim queued analyses that exhausted attempts", async () => {
+    const client = createRecordingAiQueueClient({
+      analyses: [
+        analysisFixture({ id: "analysis-1", attempt: 3, max_attempts: 3 }),
+      ],
+      asset: assetRowFixture(),
+    });
+
+    const result = await claimAndRunRecordingAiAnalyses({
+      client: client as never,
+      actor,
+    });
+
+    expect(result).toEqual({ analyses: [], failures: [] });
+    expect(client.updates["analysis-1"]).toBeUndefined();
+    expect(client.statusOf("analysis-1")).toBe("queued");
+  });
+
+  it("requeues a claimed analysis when execution fails and attempts remain", async () => {
+    const client = createRecordingAiQueueClient({
+      analyses: [analysisFixture({ id: "analysis-1" })],
+      asset: assetRowFixture(),
+    });
+
+    const result = await claimAndRunRecordingAiAnalyses({
+      client: client as never,
+      actor,
+      draftBuilder: () => {
+        throw new Error("provider failed with secret=abc123");
+      },
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.analyses).toEqual([
+      { id: "analysis-1", status: "queued", attempt: 1 },
+    ]);
+    expect(client.updates["analysis-1"]?.at(-1)).toEqual(
+      expect.objectContaining({
+        status: "queued",
+        attempt: 1,
+        error_summary: "provider failed with secret=[redacted]",
+      }),
+    );
+    expect(client.statusOf("analysis-1")).toBe("queued");
+  });
 });
 
 const actor = {
@@ -387,6 +558,23 @@ function createRecordingAiClient({
                   return { data: state.analysis, error: null };
                 },
               }),
+              // Conditional claim: update ... where id = ? and status = ?
+              eq: (_column: string, expectedStatus: string) => ({
+                select: () => ({
+                  maybeSingle: async () => {
+                    if (state.analysis.status !== expectedStatus) {
+                      return { data: null, error: null };
+                    }
+                    updates.recording_ai_analyses.push(payload);
+                    state.analysis = {
+                      ...state.analysis,
+                      ...payload,
+                      recording_ai_segments: state.segments,
+                    };
+                    return { data: state.analysis, error: null };
+                  },
+                }),
+              }),
             }),
           }),
           insert: (payload: Record<string, unknown>) => ({
@@ -427,6 +615,130 @@ function createRecordingAiClient({
           );
           return { error: null };
         },
+      };
+    },
+  };
+}
+
+// Mock Supabase client backed by a mutable multi-analysis queue. Supports the
+// candidate listing chain, the conditional (optimistic-lock) claim chain and
+// the unconditional per-id update chain used by the recording AI runner.
+function createRecordingAiQueueClient({
+  analyses,
+  asset,
+  beforeClaim,
+}: {
+  analyses: Record<string, unknown>[];
+  asset: Record<string, unknown>;
+  beforeClaim?: (analysisId: string) => void;
+}) {
+  const state = {
+    analyses: analyses.map((analysis) => ({
+      ...analysis,
+      recording_assets: asset,
+      recording_ai_segments: [],
+    })) as Record<string, unknown>[],
+  };
+  const updates: Record<string, Record<string, unknown>[]> = {};
+  const inserts = {
+    recording_ai_segments: [] as Record<string, unknown>[],
+  };
+
+  const findById = (id: string) =>
+    state.analyses.find((analysis) => analysis.id === id) ?? null;
+
+  return {
+    updates,
+    inserts,
+    setStatus(id: string, status: string) {
+      const analysis = findById(id);
+      if (analysis) {
+        analysis.status = status;
+      }
+    },
+    statusOf(id: string) {
+      return findById(id)?.status;
+    },
+    from(table: string) {
+      if (table === "recording_ai_analyses") {
+        return {
+          select: () => ({
+            eq: (_column: string, value: string) => ({
+              single: async () => ({ data: findById(value), error: null }),
+              // Candidate listing: .eq(org).eq(status).order(...).limit(n)
+              eq: (_statusColumn: string, statusValue: string) => ({
+                order: () => ({
+                  limit: async (count: number) => ({
+                    data: state.analyses
+                      .filter(
+                        (analysis) =>
+                          analysis.organization_id === value &&
+                          analysis.status === statusValue,
+                      )
+                      .sort((left, right) =>
+                        String(left.created_at).localeCompare(
+                          String(right.created_at),
+                        ),
+                      )
+                      .slice(0, count)
+                      .map((analysis) => ({
+                        id: analysis.id,
+                        attempt: analysis.attempt,
+                        max_attempts: analysis.max_attempts,
+                      })),
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          }),
+          update: (payload: Record<string, unknown>) => ({
+            eq: (_idColumn: string, id: string) => ({
+              select: () => ({
+                single: async () => {
+                  const analysis = findById(id);
+                  if (!analysis) {
+                    return {
+                      data: null,
+                      error: new Error("analysis not found"),
+                    };
+                  }
+                  (updates[id] ??= []).push(payload);
+                  Object.assign(analysis, payload);
+                  return { data: { ...analysis }, error: null };
+                },
+              }),
+              // Conditional claim: update ... where id = ? and status = ?
+              eq: (_statusColumn: string, expectedStatus: string) => ({
+                select: () => ({
+                  maybeSingle: async () => {
+                    beforeClaim?.(id);
+                    const analysis = findById(id);
+                    if (!analysis || analysis.status !== expectedStatus) {
+                      return { data: null, error: null };
+                    }
+                    (updates[id] ??= []).push(payload);
+                    Object.assign(analysis, payload);
+                    return { data: { ...analysis }, error: null };
+                  },
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+
+      if (table === "recording_ai_segments") {
+        return {
+          insert: async (payload: Record<string, unknown>[]) => {
+            inserts.recording_ai_segments.push(...payload);
+            return { error: null };
+          },
+        };
+      }
+
+      return {
+        insert: async () => ({ error: null }),
       };
     },
   };

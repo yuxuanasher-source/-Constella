@@ -1,13 +1,16 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 
 import type {
   AiActor,
   AiAttachment,
   AiChatMode,
+  AiGatewayResult,
   AiInvocationStatus,
   AiMessage,
+  AiProvider,
   AiProviderName,
   AiReasoningConfig,
+  AiTextInput,
 } from "@/features/ai/contracts";
 import {
   buildDashboardChatGrounding,
@@ -32,6 +35,7 @@ import {
   type KnowledgeClient,
 } from "@/features/ai/knowledge-repository";
 import { runAiGateway } from "@/features/ai/llm-gateway";
+import { runAiGatewayStream } from "@/features/ai/llm-gateway-stream";
 import {
   createConfiguredAiProviders,
   resolveAiProviderRouting,
@@ -65,6 +69,9 @@ const SYSTEM_PROMPT = [
   "高风险动作只能给建议和草稿，必须提醒用户由人工确认后执行。",
 ].join("\n");
 
+// 流式回答（SSE）可能超过默认的函数时长限制；只对本路由放宽到 60s。
+export const maxDuration = 60;
+
 export async function POST(request: Request) {
   try {
     const supabase = await createSupabaseServerClient();
@@ -88,7 +95,9 @@ export async function POST(request: Request) {
       messages?: unknown;
       mode?: unknown;
       attachments?: unknown;
+      stream?: unknown;
     };
+    const wantsStream = shouldStreamResponse(request, body.stream);
     const chatMessages = sanitizeMessages(body.messages);
     const chatMode = sanitizeChatMode(body.mode);
     const attachmentResult = sanitizeAttachments(body.attachments);
@@ -121,9 +130,33 @@ export async function POST(request: Request) {
       );
     }
 
-    const dashboard = await loadRoleHomeDashboard({ supabase, auth }).catch(
-      () => null,
-    );
+    // 三段 grounding 的数据源相互独立（角色看板、主播画像、知识库检索、复盘文档），
+    // 全部并行加载；只有后面的同步组装步骤存在依赖：
+    // buildDashboardChatGrounding 需要 dashboard + insights，
+    // composeDashboardKnowledgeContext 的 retrospectiveDraft 需要 grounding.facts。
+    const [dashboard, streamerProfileInsights, knowledgePassages, reviewDocuments] =
+      await Promise.all([
+        loadRoleHomeDashboard({ supabase, auth }).catch(() => null),
+        loadStreamerProfileInsightsForGrounding({ supabase, auth }).catch(
+          () => [],
+        ),
+        searchKnowledgeDocuments(supabase as unknown as KnowledgeClient, {
+          organizationId: auth.organizationId,
+          query: lastMessage.content,
+          limit: 5,
+          candidateLimit: 200,
+        }).catch(() => []),
+        listLiveReviewDocuments(
+          supabase,
+          {
+            userId: auth.userId,
+            name: auth.name,
+            role: auth.role,
+            organizationId: auth.organizationId,
+          },
+          { limit: 100 },
+        ).catch(() => []),
+      ]);
     if (!dashboard) {
       return NextResponse.json(
         { error: "无法读取真实业务数据，已停止 AI 分析" },
@@ -131,19 +164,14 @@ export async function POST(request: Request) {
       );
     }
 
-    const streamerProfileInsights =
-      await loadStreamerProfileInsightsForGrounding({
-        supabase,
-        auth,
-      }).catch(() => []);
     const grounding = buildDashboardChatGrounding({
       dashboard,
       auth,
       streamerProfileInsights,
     });
-    const knowledgeContext = await buildDashboardKnowledgeContext({
-      supabase,
-      auth,
+    const knowledgeContext = composeDashboardKnowledgeContext({
+      passages: knowledgePassages,
+      reviewDocuments,
       query: lastMessage.content,
       facts: grounding.facts,
     });
@@ -166,62 +194,61 @@ export async function POST(request: Request) {
       ...chatMessages,
     ];
 
+    const gatewayRequest: AiTextInput = {
+      promptKey: PROMPT_KEY,
+      promptVersion: PROMPT_VERSION,
+      messages,
+      metadata: {
+        source: "overview-board",
+        chatMode,
+        attachmentCount: attachments.length,
+      },
+      mode: chatMode,
+      ...(reasoning ? { reasoning } : {}),
+      ...(attachments.length ? { attachments } : {}),
+    };
+
+    const chatContext: ChatRequestContext = {
+      supabase,
+      auth,
+      chatMode,
+      attachments,
+      lastUserMessage: lastMessage.content,
+      primaryProvider,
+      shadowProvider: routing.shadowProvider,
+      grounding,
+      knowledgeContext,
+      streamerProfileInsightCount: streamerProfileInsights.length,
+    };
+
+    if (wantsStream) {
+      return streamChatResponse({
+        context: chatContext,
+        providers,
+        gatewayRequest,
+      });
+    }
+
     const gatewayResult = await runAiGateway({
       providers,
       primaryProvider,
-      request: {
-        kind: "text",
-        promptKey: PROMPT_KEY,
-        promptVersion: PROMPT_VERSION,
-        messages,
-        metadata: {
-          source: "overview-board",
-          chatMode,
-          attachmentCount: attachments.length,
-        },
-        mode: chatMode,
-        ...(reasoning ? { reasoning } : {}),
-        ...(attachments.length ? { attachments } : {}),
-      },
+      request: { kind: "text", ...gatewayRequest },
     });
 
-    const invocationId = await recordAiInvocation({
-      client: supabase,
-      actor: auth as AiActor,
-      input: {
-        scene: "dashboard_ai_chat",
-        providerName: gatewayResult.providerName,
-        primaryProvider,
-        shadowProvider: routing.shadowProvider,
-        status: gatewayResult.status as AiInvocationStatus,
-        promptKey: PROMPT_KEY,
-        promptVersion: PROMPT_VERSION,
-        usage: gatewayResult.usage,
-        costCents: gatewayResult.costCents,
-        latencyMs: gatewayResult.latencyMs,
-        degradedReason: gatewayResult.degradedReason,
-        errorSummary: gatewayResult.errorSummary,
-        metadata: {
-          fallbackUsed: gatewayResult.fallbackUsed,
-          groundingFactCount: grounding.facts.length,
-          groundingMissingDataCount: grounding.missingData.length,
-          groundingProjectHealthCount: grounding.projectHealth.topProjects.length,
-          groundingSuggestedActionCount: grounding.suggestedActions.length,
-          streamerProfileInsightCount: streamerProfileInsights.length,
-          knowledgePassageCount: knowledgeContext.passages.length,
-          reviewKnowledgeSampleSize: knowledgeContext.reviewAssist.sampleSize,
-          chatMode,
-          attachmentCount: attachments.length,
-          attachmentNames: attachments.map((attachment) => attachment.name),
-        },
-      },
-    }).catch(() => null);
+    // 记账（含 usage 计量与审计日志）不阻塞主响应：默认交给 next/server 的
+    // after() 在响应返回后完成；仅复盘草稿路径需要等待（外键依赖，见下）。
+    const invocationPromise = recordChatInvocation({
+      context: chatContext,
+      gatewayResult,
+      streamed: false,
+    });
 
     if (
       gatewayResult.status !== "succeeded" ||
       !gatewayResult.text?.trim() ||
       gatewayResult.providerName === "deterministic"
     ) {
+      scheduleAfterResponse(invocationPromise);
       return NextResponse.json(
         {
           error:
@@ -234,18 +261,22 @@ export async function POST(request: Request) {
       );
     }
 
-    const retrospectiveDraftId = shouldCreateRetrospectiveDraft(
-      lastMessage.content,
-    )
-      ? (
-          await createAiDraft(supabase as unknown as DraftClient, {
-            organizationId: auth.organizationId,
-            actingUserId: auth.userId,
-            aiInvocationId: invocationId,
-            envelope: knowledgeContext.retrospectiveDraft,
-          }).catch(() => null)
-        )?.id
-      : null;
+    let retrospectiveDraftId: string | null | undefined = null;
+    if (shouldCreateRetrospectiveDraft(lastMessage.content)) {
+      // ai_drafts.ai_invocation_id 外键指向 ai_invocations，
+      // 草稿路径必须等记账落库拿到 invocationId 后再建草稿。
+      const invocationId = await invocationPromise;
+      retrospectiveDraftId = (
+        await createAiDraft(supabase as unknown as DraftClient, {
+          organizationId: auth.organizationId,
+          actingUserId: auth.userId,
+          aiInvocationId: invocationId,
+          envelope: knowledgeContext.retrospectiveDraft,
+        }).catch(() => null)
+      )?.id;
+    } else {
+      scheduleAfterResponse(invocationPromise);
+    }
 
     return NextResponse.json({
       message: { role: "assistant", content: gatewayResult.text },
@@ -279,6 +310,250 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
   }
+}
+
+type ChatRequestContext = {
+  supabase: SupabaseClient;
+  auth: AuthContext;
+  chatMode: AiChatMode;
+  attachments: AiAttachment[];
+  lastUserMessage: string;
+  primaryProvider: AiProviderName;
+  shadowProvider?: AiProviderName;
+  grounding: ReturnType<typeof buildDashboardChatGrounding>;
+  knowledgeContext: DashboardKnowledgeContext;
+  streamerProfileInsightCount: number;
+};
+
+function shouldStreamResponse(request: Request, streamFlag: unknown): boolean {
+  if (streamFlag === true) {
+    return true;
+  }
+  const accept = request.headers.get("accept") ?? "";
+  return accept.includes("text/event-stream");
+}
+
+// 响应返回后再执行的任务（目前只有 AI 记账）。
+// Next 16 的 after() 必须在 request scope 内同步调用；单测里直接调用 POST 时
+// 没有 request scope，会同步抛错——此时退化为已 catch 的分离 promise，
+// 不会产生 unhandled rejection，也不会阻塞响应。
+function scheduleAfterResponse(work: Promise<unknown>): void {
+  try {
+    after(work);
+  } catch {
+    void work;
+  }
+}
+
+function recordChatInvocation({
+  context,
+  gatewayResult,
+  streamed,
+}: {
+  context: ChatRequestContext;
+  gatewayResult: AiGatewayResult;
+  streamed: boolean;
+}): Promise<string | null> {
+  const { grounding, knowledgeContext, attachments, chatMode } = context;
+  return recordAiInvocation({
+    client: context.supabase,
+    actor: context.auth as AiActor,
+    input: {
+      scene: "dashboard_ai_chat",
+      providerName: gatewayResult.providerName,
+      primaryProvider: context.primaryProvider,
+      shadowProvider: context.shadowProvider,
+      status: gatewayResult.status as AiInvocationStatus,
+      promptKey: PROMPT_KEY,
+      promptVersion: PROMPT_VERSION,
+      usage: gatewayResult.usage,
+      costCents: gatewayResult.costCents,
+      latencyMs: gatewayResult.latencyMs,
+      degradedReason: gatewayResult.degradedReason,
+      errorSummary: gatewayResult.errorSummary,
+      metadata: {
+        fallbackUsed: gatewayResult.fallbackUsed,
+        groundingFactCount: grounding.facts.length,
+        groundingMissingDataCount: grounding.missingData.length,
+        groundingProjectHealthCount: grounding.projectHealth.topProjects.length,
+        groundingSuggestedActionCount: grounding.suggestedActions.length,
+        streamerProfileInsightCount: context.streamerProfileInsightCount,
+        knowledgePassageCount: knowledgeContext.passages.length,
+        reviewKnowledgeSampleSize: knowledgeContext.reviewAssist.sampleSize,
+        chatMode,
+        attachmentCount: attachments.length,
+        attachmentNames: attachments.map((attachment) => attachment.name),
+        ...(streamed ? { stream: true } : {}),
+      },
+    },
+  }).catch((error) => {
+    console.error("[ai/chat] failed to record AI invocation", error);
+    return null;
+  });
+}
+
+// SSE 流式分支。事件契约（向后兼容：不带 Accept: text/event-stream 或
+// body.stream 的请求仍走上面的 JSON 契约）：
+// - event: delta → data: {"content": "...", "providerName": "..."}   增量文本
+// - event: done  → data: 与 JSON 契约同构的完整 payload（message/usage/grounding/knowledge/...）
+// - event: error → data: {"error": "...", "providerName"?, "status"?}
+function streamChatResponse({
+  context,
+  providers,
+  gatewayRequest,
+}: {
+  context: ChatRequestContext;
+  providers: AiProvider[];
+  gatewayRequest: AiTextInput;
+}): Response {
+  const encoder = new TextEncoder();
+
+  // after() 需要在 request scope 内同步注册；真正的记账 promise 要等流结束才知道，
+  // 用 deferred 占位，流的 finally 里 resolve。
+  const accounting = createDeferred<unknown>();
+  scheduleAfterResponse(accounting.promise);
+
+  // JSON 契约把 deterministic 兜底视为“真实模型不可用”（502），流式对齐：
+  // 只从真实 provider 流出，全部失败时发 error 事件而不是流出兜底文案。
+  const streamProviders = providers.filter(
+    (provider) => provider.name !== "deterministic",
+  );
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: string, data: unknown) => {
+        controller.enqueue(
+          encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
+        );
+      };
+      let accountingWork: Promise<unknown> | null = null;
+
+      try {
+        let finalEventSent = false;
+
+        for await (const event of runAiGatewayStream({
+          providers: streamProviders,
+          primaryProvider: context.primaryProvider,
+          request: gatewayRequest,
+        })) {
+          if (event.type === "delta") {
+            send("delta", {
+              content: event.text,
+              providerName: event.providerName,
+            });
+            continue;
+          }
+
+          const result = event.result;
+          const invocationPromise = recordChatInvocation({
+            context,
+            gatewayResult: result,
+            streamed: true,
+          });
+
+          if (
+            event.type === "done" &&
+            result.status === "succeeded" &&
+            result.text?.trim()
+          ) {
+            let retrospectiveDraftId: string | null | undefined = null;
+            if (shouldCreateRetrospectiveDraft(context.lastUserMessage)) {
+              // 与 JSON 分支相同：草稿的 ai_invocation_id 外键要求记账先落库。
+              const invocationId = await invocationPromise;
+              retrospectiveDraftId = (
+                await createAiDraft(
+                  context.supabase as unknown as DraftClient,
+                  {
+                    organizationId: context.auth.organizationId,
+                    actingUserId: context.auth.userId,
+                    aiInvocationId: invocationId,
+                    envelope: context.knowledgeContext.retrospectiveDraft,
+                  },
+                ).catch(() => null)
+              )?.id;
+            } else {
+              accountingWork = invocationPromise;
+            }
+
+            send("done", {
+              message: { role: "assistant", content: result.text },
+              providerName: result.providerName,
+              status: result.status,
+              fallbackUsed: result.fallbackUsed,
+              mode: context.chatMode,
+              usage: result.usage,
+              grounding: {
+                generatedAt: context.grounding.generatedAt,
+                facts: context.grounding.facts,
+                projectHealth: context.grounding.projectHealth,
+                suggestedActions: context.grounding.suggestedActions,
+                missingData: context.grounding.missingData,
+              },
+              knowledge: {
+                passages: context.knowledgeContext.passages,
+                citations: context.knowledgeContext.citations,
+                reviewAssist: context.knowledgeContext.reviewAssist,
+              },
+              retrospectiveDraft: context.knowledgeContext.retrospectiveDraft,
+              retrospectiveDraftId,
+            });
+          } else {
+            accountingWork = invocationPromise;
+            send("error", {
+              error:
+                result.errorSummary ||
+                "真实 AI 大模型调用失败，请检查 DeepSeek 配置或稍后重试",
+              providerName: result.providerName,
+              status: result.status,
+              streamStarted: event.type === "error" ? event.streamStarted : false,
+            });
+          }
+          finalEventSent = true;
+          break;
+        }
+
+        if (!finalEventSent) {
+          send("error", { error: "AI 流式响应提前结束" });
+        }
+      } catch (error) {
+        try {
+          send("error", {
+            error: error instanceof Error ? error.message : "Unexpected error",
+          });
+        } catch {
+          // controller 已经关闭/出错时忽略。
+        }
+      } finally {
+        accounting.resolve(accountingWork);
+        try {
+          controller.close();
+        } catch {
+          // controller 已关闭时忽略。
+        }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T | null>;
+  resolve: (value: T | null) => void;
+} {
+  let resolve!: (value: T | null) => void;
+  const promise = new Promise<T | null>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 function sanitizeChatMode(value: unknown): AiChatMode {
@@ -561,44 +836,26 @@ async function loadStreamerProfileInsightsForGrounding({
   });
 }
 
-async function buildDashboardKnowledgeContext({
-  supabase,
-  auth,
+// 知识库上下文的组装是纯同步的；两个数据源（知识库检索、复盘文档）已在
+// POST 里与其余 grounding 并行加载后传入。只有 retrospectiveDraft 依赖
+// grounding.facts，所以本函数必须在 buildDashboardChatGrounding 之后调用。
+function composeDashboardKnowledgeContext({
+  passages,
+  reviewDocuments,
   query,
   facts,
 }: {
-  supabase: SupabaseClient;
-  auth: AuthContext;
+  passages: KnowledgePassage[];
+  reviewDocuments: Awaited<ReturnType<typeof listLiveReviewDocuments>>;
   query: string;
   facts: Array<{ label: string; value?: string; source: string }>;
-}): Promise<DashboardKnowledgeContext> {
-  const passages = await searchKnowledgeDocuments(
-    supabase as unknown as KnowledgeClient,
-    {
-      organizationId: auth.organizationId,
-      query,
-      limit: 5,
-      candidateLimit: 200,
-    },
-  ).catch(() => []);
-
+}): DashboardKnowledgeContext {
   const citations = passages.map((passage, index) => ({
     index: index + 1,
     title: passage.title,
     sourceRef: passage.sourceRef,
     docId: passage.id,
   }));
-
-  const reviewDocuments = await listLiveReviewDocuments(
-    supabase,
-    {
-      userId: auth.userId,
-      name: auth.name,
-      role: auth.role,
-      organizationId: auth.organizationId,
-    },
-    { limit: 100 },
-  ).catch(() => []);
 
   const reviewKnowledge = aggregateReviewKnowledge(
     reviewDocuments.map((doc) => ({

@@ -2,7 +2,6 @@ import type {
   AiAttachment,
   AiCostEstimate,
   AiMessage,
-  AiProvider,
   AiProviderResult,
   AiReasoningConfig,
   AiStructuredInput,
@@ -12,26 +11,37 @@ import type {
   AiUsage,
   AiUsageEstimateInput,
 } from "../contracts";
+import {
+  createProviderTimeout,
+  resolveAiProviderTimeoutMs,
+  timeoutErrorSummary,
+} from "./provider-timeout";
+import { iterateSseData } from "./sse-stream";
+import type {
+  AiProviderStreamEvent,
+  AiStreamingProvider,
+  StreamableFetch,
+} from "./streaming-contracts";
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const DEFAULT_OPENAI_MODEL = "gpt-4.1-mini";
+const PROVIDER_LABEL = "OpenAI";
 
-type FetchLike = (
-  input: string,
-  init?: RequestInit,
-) => Promise<Pick<Response, "json" | "ok" | "status" | "statusText">>;
+type FetchLike = StreamableFetch;
 
 type OpenAiProviderConfig = {
   apiKey?: string;
   model?: string;
   fetch?: FetchLike;
+  timeoutMs?: number;
 };
 
 export function createOpenAiProvider({
   apiKey,
   model = process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL,
   fetch: fetchImpl = fetch,
-}: OpenAiProviderConfig = {}): AiProvider {
+  timeoutMs = resolveAiProviderTimeoutMs(),
+}: OpenAiProviderConfig = {}): AiStreamingProvider {
   return {
     name: "openai",
     capabilities: ["text", "structured", "tools", "shadow"],
@@ -41,6 +51,16 @@ export function createOpenAiProvider({
         fetchImpl,
         input,
         model,
+        timeoutMs,
+      });
+    },
+    runTextStream(input: AiTextInput) {
+      return streamOpenAiText({
+        apiKey,
+        fetchImpl,
+        input,
+        model,
+        timeoutMs,
       });
     },
     runStructured(input: AiStructuredInput) {
@@ -50,6 +70,7 @@ export function createOpenAiProvider({
         input: withJsonInstruction(input),
         model,
         structured: true,
+        timeoutMs,
       });
     },
     runWithTools(input: AiToolRunInput) {
@@ -59,12 +80,163 @@ export function createOpenAiProvider({
         input,
         model,
         tools: input.tools,
+        timeoutMs,
       });
     },
     estimateCost(input: AiUsageEstimateInput): AiCostEstimate {
       return { costCents: estimateCostCents(input) };
     },
   };
+}
+
+// OpenAI Responses API 的流式形态：SSE data 里的 JSON 事件带 type 字段，
+// response.output_text.delta 携带增量文本，response.completed 携带最终 usage。
+async function* streamOpenAiText({
+  apiKey,
+  fetchImpl,
+  input,
+  model,
+  timeoutMs,
+}: {
+  apiKey?: string;
+  fetchImpl: FetchLike;
+  input: AiTextInput;
+  model: string;
+  timeoutMs: number;
+}): AsyncGenerator<AiProviderStreamEvent, void, unknown> {
+  if (!apiKey?.trim()) {
+    yield { type: "error", errorSummary: "OpenAI provider is not configured" };
+    return;
+  }
+
+  const startedAt = Date.now();
+  const timeout = createProviderTimeout(timeoutMs, PROVIDER_LABEL);
+  let text = "";
+  let usage = emptyUsage();
+
+  try {
+    const response = await fetchImpl(OPENAI_RESPONSES_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify({
+        model,
+        input: toResponsesInput(input.messages, input.attachments),
+        metadata: input.metadata,
+        ...(input.reasoning
+          ? { reasoning: toOpenAiReasoning(input.reasoning) }
+          : {}),
+        stream: true,
+      }),
+      signal: timeout.signal,
+    });
+
+    if (!response.ok) {
+      const raw = (await response.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      yield { type: "error", errorSummary: providerError(raw, response) };
+      return;
+    }
+
+    if (!response.body) {
+      yield {
+        type: "error",
+        errorSummary: "OpenAI streaming response has no body",
+      };
+      return;
+    }
+
+    for await (const data of iterateSseData({
+      body: response.body,
+      onActivity: () => timeout.refresh(),
+    })) {
+      if (data === "[DONE]") {
+        break;
+      }
+      const parsed = parseJsonObject(data);
+      if (!parsed.ok || !isRecord(parsed.value)) {
+        continue;
+      }
+      const event = parsed.value;
+
+      if (
+        event.type === "response.output_text.delta" &&
+        typeof event.delta === "string" &&
+        event.delta
+      ) {
+        text += event.delta;
+        yield { type: "delta", text: event.delta };
+        continue;
+      }
+
+      if (event.type === "response.completed" && isRecord(event.response)) {
+        usage = mapOpenAiUsage(event.response.usage);
+        if (!text) {
+          text = extractOpenAiText(event.response);
+        }
+        continue;
+      }
+
+      if (event.type === "response.failed" || event.type === "error") {
+        yield {
+          type: "error",
+          errorSummary: extractOpenAiStreamError(event),
+        };
+        return;
+      }
+    }
+
+    yield {
+      type: "done",
+      result: {
+        status: "succeeded",
+        text,
+        toolCalls: [],
+        usage,
+        latencyMs: Date.now() - startedAt,
+        costCents: estimateCostCents({
+          kind: "text",
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+        }),
+      },
+    };
+  } catch (error) {
+    yield {
+      type: "error",
+      errorSummary: timeoutErrorSummary({
+        timeout,
+        timeoutMs,
+        label: PROVIDER_LABEL,
+        error,
+        fallbackMessage: "OpenAI stream failed",
+      }),
+    };
+  } finally {
+    timeout.clear();
+  }
+}
+
+function extractOpenAiStreamError(event: Record<string, unknown>): string {
+  if (isRecord(event.error) && typeof event.error.message === "string") {
+    return event.error.message;
+  }
+  if (typeof event.message === "string" && event.message.trim()) {
+    return event.message;
+  }
+  if (
+    isRecord(event.response) &&
+    isRecord(event.response.error) &&
+    typeof event.response.error.message === "string"
+  ) {
+    return event.response.error.message;
+  }
+  return "OpenAI stream failed";
 }
 
 async function runOpenAiRequest({
@@ -74,6 +246,7 @@ async function runOpenAiRequest({
   model,
   structured = false,
   tools,
+  timeoutMs,
 }: {
   apiKey?: string;
   fetchImpl: FetchLike;
@@ -81,12 +254,15 @@ async function runOpenAiRequest({
   model: string;
   structured?: boolean;
   tools?: Array<AiTool<unknown, unknown>>;
+  timeoutMs: number;
 }): Promise<AiProviderResult> {
   if (!apiKey?.trim()) {
     return degraded("provider_unconfigured");
   }
 
   const startedAt = Date.now();
+  // 超时中止后 fetch 会拒绝，走 catch 返回 failed → llm-gateway 顺序切换下一个 provider。
+  const timeout = createProviderTimeout(timeoutMs, PROVIDER_LABEL);
 
   try {
     const response = await fetchImpl(OPENAI_RESPONSES_URL, {
@@ -102,6 +278,7 @@ async function runOpenAiRequest({
         ...(input.reasoning ? { reasoning: toOpenAiReasoning(input.reasoning) } : {}),
         ...(tools?.length ? { tools: tools.map(toOpenAiTool) } : {}),
       }),
+      signal: timeout.signal,
     });
     const raw = (await response.json()) as Record<string, unknown>;
     const latencyMs = Date.now() - startedAt;
@@ -146,10 +323,17 @@ async function runOpenAiRequest({
     });
   } catch (error) {
     return failed({
-      errorSummary:
-        error instanceof Error ? error.message : "OpenAI request failed",
+      errorSummary: timeoutErrorSummary({
+        timeout,
+        timeoutMs,
+        label: PROVIDER_LABEL,
+        error,
+        fallbackMessage: "OpenAI request failed",
+      }),
       latencyMs: Date.now() - startedAt,
     });
+  } finally {
+    timeout.clear();
   }
 }
 

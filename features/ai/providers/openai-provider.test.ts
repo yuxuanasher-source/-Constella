@@ -178,4 +178,83 @@ describe("createOpenAiProvider", () => {
     expect(result.status).toBe("succeeded");
     expect(handler).not.toHaveBeenCalled();
   });
+
+  it("aborts a hung request after the timeout with a fallback-friendly failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<never>((_, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(init.signal?.reason ?? new Error("aborted")),
+            );
+          }),
+      );
+      const provider = createOpenAiProvider({
+        apiKey: "secret",
+        fetch: fetchMock,
+        timeoutMs: 3_000,
+      });
+
+      const pending = provider.runText({
+        promptKey: "ops.brief",
+        promptVersion: 1,
+        messages: [{ role: "user", content: "summarize" }],
+      });
+      await vi.advanceTimersByTimeAsync(3_000);
+      const result = await pending;
+
+      expect(result.status).toBe("failed");
+      expect(result.errorSummary).toContain("timed out after 3000ms");
+      const [, requestInit] = fetchMock.mock.calls[0] as unknown as [
+        string,
+        RequestInit,
+      ];
+      expect(requestInit.signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("streams Responses API output_text deltas through runTextStream", async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const fetchMock = vi.fn(async (_input: string, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(
+        [
+          'data: {"type":"response.output_text.delta","delta":"brief "}',
+          "",
+          'data: {"type":"response.output_text.delta","delta":"ready"}',
+          "",
+          'data: {"type":"response.completed","response":{"usage":{"input_tokens":6,"output_tokens":3,"total_tokens":9}}}',
+          "",
+        ].join("\n"),
+        { status: 200 },
+      );
+    });
+    const provider = createOpenAiProvider({ apiKey: "secret", fetch: fetchMock });
+
+    const events = [];
+    for await (const event of provider.runTextStream({
+      promptKey: "dashboard.ai.chat",
+      promptVersion: 1,
+      messages: [{ role: "user", content: "summarize" }],
+    })) {
+      events.push(event);
+    }
+
+    expect(requestBody?.stream).toBe(true);
+    expect(events).toEqual([
+      { type: "delta", text: "brief " },
+      { type: "delta", text: "ready" },
+      {
+        type: "done",
+        result: expect.objectContaining({
+          status: "succeeded",
+          text: "brief ready",
+          usage: { promptTokens: 6, completionTokens: 3, totalTokens: 9 },
+        }),
+      },
+    ]);
+  });
 });

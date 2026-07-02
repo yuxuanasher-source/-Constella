@@ -1,5 +1,11 @@
 import { createHash, createHmac } from "node:crypto";
 
+import {
+  createProviderTimeout,
+  resolveAiProviderTimeoutMs,
+  timeoutErrorSummary,
+} from "./provider-timeout";
+
 export type TencentOcrConfig = {
   secretId?: string;
   secretKey?: string;
@@ -41,6 +47,7 @@ type FetchImpl = (
     method: "POST";
     headers: Record<string, string>;
     body: string;
+    signal?: AbortSignal;
   },
 ) => Promise<FetchResponse>;
 
@@ -70,9 +77,11 @@ export function createTencentOcrProvider({
   region = "",
   fetchImpl = globalThis.fetch as unknown as FetchImpl,
   now = () => new Date(),
+  timeoutMs = resolveAiProviderTimeoutMs(),
 }: TencentOcrConfig & {
   fetchImpl?: FetchImpl;
   now?: () => Date;
+  timeoutMs?: number;
 }): TencentOcrProvider {
   return {
     async runGeneralBasicOcr(
@@ -99,11 +108,15 @@ export function createTencentOcrProvider({
         payload,
       });
 
+      // 超时中止后 fetch 会拒绝，走 catch 返回 failed（调用方按失败处理）。
+      const timeout = createProviderTimeout(timeoutMs, "Tencent OCR");
+
       try {
         const response = await fetchImpl(endpoint, {
           method: "POST",
           headers,
           body: payload,
+          signal: timeout.signal,
         });
         const rawResponse = await response.json();
         const parsed = parseTencentResponse(rawResponse);
@@ -146,11 +159,16 @@ export function createTencentOcrProvider({
           textLines: [],
           textItems: [],
           confidence: 0,
-          errorSummary:
-            error instanceof Error
-              ? error.message
-              : "Tencent OCR request failed",
+          errorSummary: timeoutErrorSummary({
+            timeout,
+            timeoutMs,
+            label: "Tencent OCR",
+            error,
+            fallbackMessage: "Tencent OCR request failed",
+          }),
         };
+      } finally {
+        timeout.clear();
       }
     },
   };
