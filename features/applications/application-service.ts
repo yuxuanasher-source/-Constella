@@ -423,12 +423,34 @@ export async function submitRecording({
   return recording;
 }
 
+// 卡点评估回写（features/admission-review）。可选注入：路由侧绑定 supabase，
+// 单元测试与旧调用方不传时行为不变。
+export type AdmissionEvaluationRecorder = (input: {
+  organizationId: string;
+  applicationId: string;
+  submissionId: string;
+  decision: Extract<
+    RecordingReviewStatus,
+    "approved" | "rejected" | "needs_changes"
+  >;
+  reviewerId: string;
+  note?: string;
+  noteSource: "human" | "needs_classification";
+  reasonCodes: string[];
+  checkpointResults?: Array<{
+    checkpointKey: string;
+    verdict: "pass" | "fail" | "not_applicable";
+    note?: string;
+  }>;
+}) => Promise<void>;
+
 export async function reviewRecordingSubmission({
   repo,
   audit,
   notify,
   actor,
   input,
+  recordEvaluation,
 }: {
   repo: ApplicationRepository;
   audit: ApplicationAuditWriter;
@@ -441,10 +463,29 @@ export async function reviewRecordingSubmission({
       "approved" | "rejected" | "needs_changes"
     >;
     note?: string;
+    reasonCodes?: string[];
+    checkpointResults?: Array<{
+      checkpointKey: string;
+      verdict: "pass" | "fail" | "not_applicable";
+      note?: string;
+    }>;
   };
+  recordEvaluation?: AdmissionEvaluationRecorder;
 }): Promise<ApplicationRecord> {
   if (!canManageAdmission(actor.role)) {
     throw new Error("Current role cannot review screening recordings");
+  }
+
+  const reasonCodes = (input.reasonCodes ?? [])
+    .map((code) => code.trim())
+    .filter(Boolean);
+  const note = input.note?.trim() || undefined;
+  // 驳回/需修改必须给出可沉淀的理由：理由码（结构化）或备注（老客户端，
+  // 标记 needs_classification 等待归一化）。
+  if (input.decision !== "approved" && !reasonCodes.length && !note) {
+    throw new Error(
+      "Rejection or change request requires reason codes or a note",
+    );
   }
 
   const application = await requireApplication(repo, input.applicationId);
@@ -460,14 +501,31 @@ export async function reviewRecordingSubmission({
     status: input.decision,
     reviewedBy: actor.userId,
     reviewedAt: now,
-    reviewNote: input.note,
+    reviewNote: note,
   });
   const updated = await repo.updateApplicationStatus(application.id, {
     status: nextStatus,
     decidedBy: actor.userId,
     decidedAt: now,
-    decisionReason: input.note,
+    decisionReason: note,
   });
+
+  if (recordEvaluation) {
+    await recordEvaluation({
+      organizationId:
+        application.contributorOrganizationId ??
+        application.organizationId ??
+        actor.organizationId,
+      applicationId: application.id,
+      submissionId: latest.id,
+      decision: input.decision,
+      reviewerId: actor.userId,
+      note,
+      noteSource: reasonCodes.length ? "human" : "needs_classification",
+      reasonCodes,
+      checkpointResults: input.checkpointResults,
+    });
+  }
 
   await audit({
     organizationId: actor.organizationId,

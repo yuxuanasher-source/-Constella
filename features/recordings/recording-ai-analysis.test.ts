@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildRecordingAiAnalysisDraft,
   claimAndRunRecordingAiAnalyses,
+  RECORDING_AI_STALE_CLAIM_ERROR_SUMMARY,
   runRecordingAiAnalysisOnce,
   toRecordingAiAnalysisDto,
 } from "./recording-ai-analysis";
@@ -639,7 +640,7 @@ describe("claimAndRunRecordingAiAnalyses", () => {
     expect(client.inserts.recording_ai_segments).toEqual([]);
   });
 
-  it("does not reclaim stale running analyses that exhausted attempts", async () => {
+  it("fails out stale running analyses that exhausted attempts instead of leaving them stuck", async () => {
     const client = createRecordingAiQueueClient({
       analyses: [
         analysisFixture({
@@ -659,9 +660,53 @@ describe("claimAndRunRecordingAiAnalyses", () => {
       now: () => new Date("2026-07-02T12:00:00.000Z"),
     });
 
+    expect(result.analyses).toEqual([]);
+    expect(result.failures).toEqual([
+      {
+        analysisId: "analysis-1",
+        errorSummary: RECORDING_AI_STALE_CLAIM_ERROR_SUMMARY,
+      },
+    ]);
+    expect(client.updates["analysis-1"]).toEqual([
+      {
+        status: "failed",
+        claimed_at: null,
+        error_summary: RECORDING_AI_STALE_CLAIM_ERROR_SUMMARY,
+        completed_at: "2026-07-02T12:00:00.000Z",
+      },
+    ]);
+    expect(client.statusOf("analysis-1")).toBe("failed");
+    expect(client.inserts.recording_ai_segments).toEqual([]);
+  });
+
+  it("does not fail out an exhausted running analysis resolved between listing and finalization", async () => {
+    const client = createRecordingAiQueueClient({
+      analyses: [
+        analysisFixture({
+          id: "analysis-1",
+          status: "running",
+          attempt: 3,
+          max_attempts: 3,
+          claimed_at: "2026-07-02T11:00:00.000Z",
+        }),
+      ],
+      asset: assetRowFixture(),
+      beforeClaim: () => {
+        // The original runner was slow, not dead: it finishes right before
+        // our conditional finalization runs.
+        client.setStatus("analysis-1", "succeeded");
+      },
+    });
+
+    const result = await claimAndRunRecordingAiAnalyses({
+      client: client as never,
+      actor,
+      now: () => new Date("2026-07-02T12:00:00.000Z"),
+    });
+
     expect(result).toEqual({ analyses: [], failures: [] });
     expect(client.updates["analysis-1"]).toBeUndefined();
-    expect(client.statusOf("analysis-1")).toBe("running");
+    expect(client.statusOf("analysis-1")).toBe("succeeded");
   });
 
   it("never steals a stale running analysis resolved between listing and reclaim", async () => {
