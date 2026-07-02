@@ -140,6 +140,158 @@ describe("application service", () => {
     );
   });
 
+  it("reuses an existing application when the streamer already signed up", async () => {
+    const existingApplication = {
+      ...baseApplication,
+      id: "app-existing-signup",
+      status: "recording_reviewing" as const,
+    };
+    const repo = makeRepo({
+      getApplicationByProjectAndStreamer: vi
+        .fn()
+        .mockResolvedValue(existingApplication),
+    });
+    const audit = vi.fn();
+    const notify = vi.fn();
+
+    const application = await applyToProject({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      input: { projectId: "project-1", streamerId: "streamer-1" },
+    });
+
+    expect(application).toEqual(existingApplication);
+    expect(repo.createApplication).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the streamer-visible announcement when the project row is hidden", async () => {
+    const repo = makeRepo({
+      getProjectAdmissionConfig: vi.fn().mockResolvedValue(null),
+    });
+    const getPublicProjectForRecording = vi.fn().mockResolvedValue({
+      id: "project-public-1",
+      name: "Public Signup Project",
+      organizationId: streamerActor.organizationId,
+      status: "recruiting",
+      isPublicToStreamers: true,
+    });
+    const audit = vi.fn().mockResolvedValue(undefined);
+    const notify = vi.fn().mockResolvedValue(undefined);
+
+    await applyToProject({
+      repo: { ...repo, getPublicProjectForRecording },
+      audit,
+      notify,
+      actor: streamerActor,
+      input: { projectId: "project-public-1", streamerId: "streamer-1" },
+    });
+
+    expect(getPublicProjectForRecording).toHaveBeenCalledWith(
+      "project-public-1",
+    );
+    expect(repo.createApplication).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "project-public-1",
+        streamerId: "streamer-1",
+        source: "signup",
+        status: "submitted",
+      }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "create", objectType: "application" }),
+    );
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ recipientRole: "operator_business" }),
+    );
+  });
+
+  it("rejects self signup when the hidden project is not visible to the streamer", async () => {
+    const repo = makeRepo({
+      getProjectAdmissionConfig: vi.fn().mockResolvedValue(null),
+    });
+
+    await expect(
+      applyToProject({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: streamerActor,
+        input: { projectId: "project-hidden", streamerId: "streamer-1" },
+      }),
+    ).rejects.toThrow("Project not found");
+
+    await expect(
+      applyToProject({
+        repo: {
+          ...repo,
+          getPublicProjectForRecording: vi.fn().mockResolvedValue({
+            id: "project-hidden",
+            name: "Other Org Project",
+            organizationId: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            status: "recruiting",
+            isPublicToStreamers: true,
+          }),
+        },
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: streamerActor,
+        input: { projectId: "project-hidden", streamerId: "streamer-1" },
+      }),
+    ).rejects.toThrow("Project not found");
+
+    await expect(
+      applyToProject({
+        repo: {
+          ...repo,
+          getPublicProjectForRecording: vi.fn().mockResolvedValue({
+            id: "project-hidden",
+            name: "Ended Project",
+            organizationId: streamerActor.organizationId,
+            status: "ended",
+            isPublicToStreamers: true,
+          }),
+        },
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: streamerActor,
+        input: { projectId: "project-hidden", streamerId: "streamer-1" },
+      }),
+    ).rejects.toThrow("Project not found");
+
+    expect(repo.createApplication).not.toHaveBeenCalled();
+  });
+
+  it("still blocks signup when the readable project has closed signup", async () => {
+    const repo = makeRepo({
+      getProjectAdmissionConfig: vi.fn().mockResolvedValue({
+        id: "project-1",
+        name: "Closed Project",
+        openSignup: false,
+        allowDirectInvite: true,
+        forceRecording: true,
+        defaultSettlementMethod: "cpt",
+        defaultHourlyRate: 80,
+        defaultBaseSalary: 0,
+        defaultSettlementRule: { method: "cpt", hourly_rate: 80 },
+      }),
+    });
+
+    await expect(
+      applyToProject({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: streamerActor,
+        input: { projectId: "project-1", streamerId: "streamer-1" },
+      }),
+    ).rejects.toThrow("Project is not open for signup");
+    expect(repo.createApplication).not.toHaveBeenCalled();
+  });
+
   it("blocks invitations for blacklisted streamers", async () => {
     const repo = makeRepo({
       getStreamerForAdmission: vi.fn().mockResolvedValue({

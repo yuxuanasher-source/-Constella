@@ -88,6 +88,20 @@ export type ActiveCollaborationAgreementRecord = {
   status: "active";
 };
 
+export type StreamerVisiblePublicProject = {
+  id: string;
+  name: string;
+  organizationId: string;
+  status: string;
+  isPublicToStreamers: boolean;
+};
+
+export type SelfSignupApplicationRepository = ApplicationRepository & {
+  getPublicProjectForRecording?(
+    projectId: string,
+  ): Promise<StreamerVisiblePublicProject | null>;
+};
+
 export type ApplicationRepository = {
   getProjectAdmissionConfig(
     projectId: string,
@@ -171,6 +185,13 @@ export type ApplicationRepository = {
 export type ApplicationAuditWriter = (input: AuditLogInput) => Promise<void>;
 export type ApplicationNotifier = (input: NotificationInput) => Promise<void>;
 
+const blockedSelfSignupProjectStatuses = new Set([
+  "draft",
+  "ended",
+  "closed",
+  "archived",
+]);
+
 export async function applyToProject({
   repo,
   audit,
@@ -178,7 +199,7 @@ export async function applyToProject({
   actor,
   input,
 }: {
-  repo: ApplicationRepository;
+  repo: SelfSignupApplicationRepository;
   audit: ApplicationAuditWriter;
   notify: ApplicationNotifier;
   actor: AdmissionActor;
@@ -188,13 +209,18 @@ export async function applyToProject({
     throw new Error("Only streamers can apply to projects");
   }
 
-  const project = await requireProject(repo, input.projectId);
-  if (!project.openSignup) {
-    throw new Error("Project is not open for signup");
-  }
+  const project = await resolveSelfSignupProject(repo, actor, input.projectId);
 
   const streamer = await requireStreamer(repo, input.streamerId);
   assertStreamerCanEnterAdmission(streamer, "apply");
+
+  const existingApplication = await repo.getApplicationByProjectAndStreamer(
+    project.id,
+    streamer.id,
+  );
+  if (existingApplication) {
+    return existingApplication;
+  }
 
   const application = await repo.createApplication({
     organizationId: actor.organizationId,
@@ -697,6 +723,41 @@ function assertStreamerCanEnterAdmission(
   }
 }
 
+async function resolveSelfSignupProject(
+  repo: SelfSignupApplicationRepository,
+  actor: AdmissionActor,
+  projectId: string,
+): Promise<Pick<ProjectAdmissionConfig, "id" | "name" | "forceRecording">> {
+  const project = await repo.getProjectAdmissionConfig(projectId);
+  if (project) {
+    if (!project.openSignup) {
+      throw new Error("Project is not open for signup");
+    }
+
+    return project;
+  }
+
+  // Streamers usually cannot read the raw project row before joining it, so
+  // self signup falls back to the same streamer-visible announcement source
+  // that project recording delivery uses to create implicit applications
+  // (see features/recordings/project-recording-delivery.ts).
+  const publicProject = await repo.getPublicProjectForRecording?.(projectId);
+  if (
+    !publicProject ||
+    publicProject.organizationId !== actor.organizationId ||
+    !publicProject.isPublicToStreamers ||
+    blockedSelfSignupProjectStatuses.has(publicProject.status)
+  ) {
+    throw new Error("Project not found");
+  }
+
+  return {
+    id: publicProject.id,
+    name: publicProject.name,
+    forceRecording: true,
+  };
+}
+
 async function requireProject(
   repo: Pick<ApplicationRepository, "getProjectAdmissionConfig">,
   projectId: string,
@@ -773,7 +834,7 @@ async function auditApplicationCreate({
   audit: ApplicationAuditWriter;
   actor: AdmissionActor;
   application: ApplicationRecord;
-  project: ProjectAdmissionConfig;
+  project: Pick<ProjectAdmissionConfig, "name">;
   streamer: StreamerAdmissionRecord;
 }): Promise<void> {
   await audit({

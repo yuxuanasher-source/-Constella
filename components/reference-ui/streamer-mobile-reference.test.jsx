@@ -1824,6 +1824,9 @@ describe("StreamerMobileReferenceApp profile actions smoke", () => {
           }),
         };
       }
+      if (String(url) === "/api/streamer/project-announcements") {
+        return { ok: true, json: async () => ({ announcements: [] }) };
+      }
 
       return { ok: false, json: async () => ({ error: "unexpected request" }) };
     });
@@ -1863,5 +1866,214 @@ describe("StreamerMobileReferenceApp profile actions smoke", () => {
     );
     expect(await screen.findByText("Application Project")).toBeInTheDocument();
     expect(screen.getByText("录屏审核中")).toBeInTheDocument();
+  });
+});
+
+describe("StreamerMobileReferenceApp project signup smoke", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const openProjectAnnouncement = (overrides = {}) => ({
+    id: "project-open-1",
+    code: "PUB-OPEN",
+    name: "Open Signup Project",
+    status: "recruiting",
+    vendor: "Vendor O",
+    product: "Game O",
+    publicSummary: "Open project summary",
+    gameDownloadUrl: null,
+    openSignup: true,
+    forceRecording: true,
+    applicationId: null,
+    applicationStatus: null,
+    latestRecordingStatus: null,
+    latestRecordingVersion: null,
+    decisionReason: null,
+    recordingFeedback: null,
+    reviewStatusLabel: "待投递",
+    canSubmitRecording: true,
+    ...overrides,
+  });
+
+  it("renders signup entries and disables projects that already applied or joined", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/streamer/applications") {
+        return { ok: true, json: async () => ({ applications: [] }) };
+      }
+      if (String(url) === "/api/streamer/project-announcements") {
+        return {
+          ok: true,
+          json: async () => ({
+            announcements: [
+              openProjectAnnouncement(),
+              openProjectAnnouncement({
+                id: "project-applied-1",
+                code: "PUB-APPLIED",
+                name: "Applied Project",
+                applicationId: "application-applied-1",
+                applicationStatus: "recording_reviewing",
+                reviewStatusLabel: "审核中",
+                canSubmitRecording: false,
+              }),
+              openProjectAnnouncement({
+                id: "project-joined-1",
+                code: "PUB-JOINED",
+                name: "Joined Project",
+                applicationId: "application-joined-1",
+                applicationStatus: "joined",
+                reviewStatusLabel: "已加入项目",
+                canSubmitRecording: false,
+              }),
+            ],
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<StreamerMobileReferenceApp initialRoute="me" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "报名" }));
+
+    expect(await screen.findByText("可报名项目")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "立即报名" }),
+    ).toBeEnabled();
+    expect(screen.getByRole("button", { name: "已报名" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "已加入项目" })).toBeDisabled();
+    expect(screen.getByText("录屏审核中")).toBeInTheDocument();
+  });
+
+  it("applies to an open project and refreshes the signup status", async () => {
+    let applied = false;
+    const fetchMock = vi.fn(async (url, init) => {
+      const href = String(url);
+      if (href === "/api/streamer/applications") {
+        return {
+          ok: true,
+          json: async () => ({
+            applications: applied
+              ? [
+                  {
+                    id: "application-new-1",
+                    projectId: "project-open-1",
+                    projectName: "Open Signup Project",
+                    status: "submitted",
+                    statusLabel: "待审核",
+                    source: "signup",
+                    submittedAt: "2026-07-02T10:00:00.000Z",
+                    latestRecordingStatus: null,
+                    reviewStatusLabel: "暂无录屏",
+                  },
+                ]
+              : [],
+          }),
+        };
+      }
+      if (href === "/api/streamer/project-announcements") {
+        return {
+          ok: true,
+          json: async () => ({
+            announcements: [
+              openProjectAnnouncement(
+                applied
+                  ? {
+                      applicationId: "application-new-1",
+                      applicationStatus: "submitted",
+                      reviewStatusLabel: "待投递",
+                    }
+                  : {},
+              ),
+            ],
+          }),
+        };
+      }
+      if (
+        href === "/api/projects/project-open-1/applications" &&
+        init?.method === "POST"
+      ) {
+        applied = true;
+        return {
+          ok: true,
+          json: async () => ({
+            application: {
+              id: "application-new-1",
+              projectId: "project-open-1",
+              streamerId: "streamer-1",
+              source: "signup",
+              status: "submitted",
+            },
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<StreamerMobileReferenceApp initialRoute="me" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "报名" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "立即报名" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-open-1/applications",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    expect(
+      await screen.findByText("报名成功：已提交「Open Signup Project」，等待运营审核。"),
+    ).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "已报名" })).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "立即报名" }),
+    ).not.toBeInTheDocument();
+    expect(await screen.findAllByText("Open Signup Project")).toHaveLength(2);
+    expect(screen.getAllByText("待审核").length).toBeGreaterThan(0);
+  });
+
+  it("keeps the signup entry usable when applying fails", async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      const href = String(url);
+      if (href === "/api/streamer/applications") {
+        return { ok: true, json: async () => ({ applications: [] }) };
+      }
+      if (href === "/api/streamer/project-announcements") {
+        return {
+          ok: true,
+          json: async () => ({ announcements: [openProjectAnnouncement()] }),
+        };
+      }
+      if (
+        href === "/api/projects/project-open-1/applications" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: false,
+          json: async () => ({ error: "Project is not open for signup" }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<StreamerMobileReferenceApp initialRoute="me" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "报名" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "立即报名" }));
+
+    expect(await screen.findByText("该项目暂未开放报名。")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "立即报名" }),
+    ).toBeEnabled();
   });
 });

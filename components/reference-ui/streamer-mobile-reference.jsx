@@ -4128,17 +4128,28 @@ function ToolRow({ icon, tone, title, detail, onClick, last }) {
 }
 
 function ApplicationsTab() {
-  const { applications, actions } = React.useContext(StreamerLiveDataContext);
+  const { applications, projectAnnouncements, actions } = React.useContext(
+    StreamerLiveDataContext,
+  );
   const rows = useStreamerApplications();
+  const signupProjects = Array.isArray(projectAnnouncements)
+    ? projectAnnouncements
+    : [];
   const [loading, setLoading] = React.useState(false);
   const [message, setMessage] = React.useState("");
+  const [applyingProjectId, setApplyingProjectId] = React.useState(null);
+  const [signupMessage, setSignupMessage] = React.useState("");
+  const [signupError, setSignupError] = React.useState("");
 
   const refresh = React.useCallback(async () => {
     if (!actions.refreshApplications || loading) return;
     setLoading(true);
     setMessage("");
     try {
-      await actions.refreshApplications();
+      await Promise.all([
+        actions.refreshApplications(),
+        actions.refreshProjectAnnouncements?.(),
+      ]);
     } catch (error) {
       setMessage(error?.message || "报名状态刷新失败，请稍后重试。");
     } finally {
@@ -4151,6 +4162,24 @@ function ApplicationsTab() {
       refresh();
     }
   }, [applications, refresh]);
+
+  const apply = React.useCallback(
+    async (project) => {
+      if (!actions.applyToProject || applyingProjectId) return;
+      setApplyingProjectId(project.id);
+      setSignupMessage("");
+      setSignupError("");
+      try {
+        await actions.applyToProject(project.id);
+        setSignupMessage(`报名成功：已提交「${project.name}」，等待运营审核。`);
+      } catch (error) {
+        setSignupError(applicationSignupErrorMessage(error));
+      } finally {
+        setApplyingProjectId(null);
+      }
+    },
+    [actions, applyingProjectId],
+  );
 
   return (
     <div>
@@ -4189,7 +4218,149 @@ function ApplicationsTab() {
           </MCard>
         )}
       </MSection>
+
+      <MSection
+        title="可报名项目"
+        action={<MBadge tone="blue">{signupProjects.length} 个</MBadge>}
+      >
+        {signupMessage ? (
+          <div
+            aria-live="polite"
+            style={{
+              marginBottom: 10,
+              fontSize: 12,
+              color: "var(--ok-600)",
+            }}
+          >
+            {signupMessage}
+          </div>
+        ) : null}
+        {signupError ? (
+          <div
+            aria-live="polite"
+            style={{
+              marginBottom: 10,
+              fontSize: 12,
+              color: "var(--danger-600)",
+            }}
+          >
+            {signupError}
+          </div>
+        ) : null}
+        {signupProjects.length ? (
+          signupProjects.map((project) => (
+            <ProjectSignupCard
+              key={project.id}
+              project={project}
+              applying={applyingProjectId === project.id}
+              onApply={() => apply(project)}
+            />
+          ))
+        ) : (
+          <MCard
+            style={{ background: "var(--bg-soft)", borderStyle: "dashed" }}
+          >
+            <div style={{ fontSize: 13, color: "var(--ink-500)" }}>
+              {loading
+                ? "正在读取可报名项目…"
+                : "暂无可报名项目，运营发布公开项目后会显示在这里。"}
+            </div>
+          </MCard>
+        )}
+      </MSection>
     </div>
+  );
+}
+
+function ProjectSignupCard({ project, applying, onApply }) {
+  const applied = Boolean(project.applicationId || project.applicationStatus);
+  const joined = project.applicationStatus === "joined";
+  const disabled = applied || applying;
+  const buttonLabel = applied
+    ? joined
+      ? "已加入项目"
+      : "已报名"
+    : applying
+      ? "报名中…"
+      : "立即报名";
+
+  return (
+    <MCard style={{ marginBottom: 10 }}>
+      <div style={{ display: "grid", gap: 8 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            justifyContent: "space-between",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 14,
+              fontWeight: 700,
+              color: "var(--ink-900)",
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {project.name}
+          </div>
+          {applied ? (
+            <MBadge tone={applicationStatusTone(project.applicationStatus)} dot>
+              {applicationStatusLabel(project.applicationStatus)}
+            </MBadge>
+          ) : (
+            <MBadge tone="blue">可报名</MBadge>
+          )}
+        </div>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+            fontSize: 11,
+            color: "var(--ink-400)",
+          }}
+        >
+          {project.code ? <span className="mono">{project.code}</span> : null}
+          {project.product ? <span>{project.product}</span> : null}
+        </div>
+        {project.publicSummary ? (
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--ink-600)",
+              lineHeight: 1.55,
+            }}
+          >
+            {project.publicSummary}
+          </div>
+        ) : null}
+        <button
+          type="button"
+          onClick={onApply}
+          disabled={disabled}
+          style={{
+            height: 34,
+            borderRadius: 8,
+            border: "none",
+            padding: "0 14px",
+            justifySelf: "start",
+            background: disabled ? "var(--bg-soft)" : "var(--blue-600)",
+            color: disabled ? "var(--ink-400)" : "#fff",
+            fontSize: 12,
+            fontWeight: 800,
+            cursor: disabled ? "default" : "pointer",
+            opacity: applying ? 0.7 : 1,
+          }}
+        >
+          {buttonLabel}
+        </button>
+      </div>
+    </MCard>
   );
 }
 
@@ -5699,8 +5870,11 @@ function applicationStatusLabel(status) {
   return (
     {
       submitted: "待审核",
+      invited: "已受邀",
       recording_required: "待提交录屏",
       recording_reviewing: "录屏审核中",
+      recording_approved: "录屏已通过",
+      recording_rejected: "录屏未通过",
       approved: "已通过",
       rejected: "已拒绝",
       joined: "已加入项目",
@@ -5715,14 +5889,37 @@ function applicationStatusTone(status) {
   return (
     {
       submitted: "amber",
+      invited: "blue",
       recording_required: "blue",
       recording_reviewing: "violet",
+      recording_approved: "green",
+      recording_rejected: "red",
       approved: "green",
       joined: "green",
       rejected: "red",
       cancelled: "neutral",
     }[status] ?? "neutral"
   );
+}
+
+function applicationSignupErrorMessage(error) {
+  const message = error?.message || "";
+  if (message.includes("Only streamers")) {
+    return "请先登录主播账号后再报名。";
+  }
+  if (message.includes("not bound to a streamer")) {
+    return "当前账号还未绑定主播档案，请先完成主播档案配置。";
+  }
+  if (message.includes("not open for signup")) {
+    return "该项目暂未开放报名。";
+  }
+  if (message.includes("Project not found")) {
+    return "项目不存在或暂不可报名。";
+  }
+  if (message.includes("Blacklisted")) {
+    return "当前账号暂时无法报名，请联系运营确认。";
+  }
+  return message || "报名失败，请稍后重试。";
 }
 
 function recordingLinkErrorMessage(error) {
@@ -5943,6 +6140,35 @@ function StreamerMobileReferenceInner({
       refreshProjectAnnouncements,
       getProjectAnnouncement,
       refreshApplications,
+      applyToProject: async (projectId) => {
+        if (!projectId) {
+          throw new Error("projectId is required");
+        }
+        const body = await fetchJson(
+          `/api/projects/${projectId}/applications`,
+          "apply to project failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          },
+        );
+        await Promise.all([
+          refreshApplications().catch((error) =>
+            warnStreamerBackgroundRefreshFailure(
+              "streamer applications",
+              error,
+            ),
+          ),
+          refreshProjectAnnouncements().catch((error) =>
+            warnStreamerBackgroundRefreshFailure(
+              "streamer project announcements",
+              error,
+            ),
+          ),
+        ]);
+        return body.application;
+      },
       submitRecordingLink: async (form) => {
         const payload = form.projectId
           ? form
