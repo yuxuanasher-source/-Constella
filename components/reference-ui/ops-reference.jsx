@@ -13738,6 +13738,28 @@ function ScreenAdmission() {
     }
   };
 
+  const confirmAiProfileInsight = async (analysis) => {
+    const assetId = analysis?.assetId;
+    if (!assetId) {
+      setAdmissionMessage("该录屏尚未归档为统一资产，暂不能沉淀画像。");
+      return;
+    }
+    if (!actions.confirmRecordingProfileInsight) {
+      setAdmissionMessage("主播画像沉淀后台暂未接入。");
+      return;
+    }
+    setBusyAction(`profile-insight:${assetId}`);
+    setAdmissionMessage("");
+    try {
+      await actions.confirmRecordingProfileInsight(assetId);
+      setAdmissionMessage("AI 观察已沉淀到主播画像");
+    } catch (error) {
+      setAdmissionMessage(error?.message || "主播画像沉淀失败，请稍后重试");
+    } finally {
+      setBusyAction("");
+    }
+  };
+
   const confirmJoin = async (applicationId) => {
     if (!actions.confirmApplicationJoin) {
       setAdmissionMessage("二次确认后台暂未接入。");
@@ -14163,6 +14185,12 @@ function ScreenAdmission() {
           <RecordingAiAnalysisDetailsPanel
             analysis={selectedAiAnalysis}
             onClose={() => setSelectedAiAnalysis(null)}
+            onConfirmProfileInsight={() =>
+              confirmAiProfileInsight(selectedAiAnalysis)
+            }
+            confirmProfileDisabled={
+              busyAction === `profile-insight:${selectedAiAnalysis.assetId}`
+            }
           />
         ) : null}
       </div>
@@ -14209,7 +14237,12 @@ function RecordingAiAnalysisInline({ analysis, onOpen }) {
   );
 }
 
-function RecordingAiAnalysisDetailsPanel({ analysis, onClose }) {
+function RecordingAiAnalysisDetailsPanel({
+  analysis,
+  onClose,
+  onConfirmProfileInsight,
+  confirmProfileDisabled,
+}) {
   return (
     <div
       role="dialog"
@@ -14258,9 +14291,21 @@ function RecordingAiAnalysisDetailsPanel({ analysis, onClose }) {
               {analysis.providerName ? ` · ${analysis.providerName}` : ""}
             </div>
           </div>
-          <Button size="sm" kind="default" onClick={onClose}>
-            关闭
-          </Button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {onConfirmProfileInsight ? (
+              <Button
+                size="sm"
+                kind="primary"
+                onClick={onConfirmProfileInsight}
+                disabled={confirmProfileDisabled}
+              >
+                确认沉淀到主播画像
+              </Button>
+            ) : null}
+            <Button size="sm" kind="default" onClick={onClose}>
+              关闭
+            </Button>
+          </div>
         </div>
         <div style={{ padding: 20, display: "grid", gap: 18 }}>
           {analysis.summary ? (
@@ -27606,6 +27651,16 @@ function OpsReferenceInner({
       return body.analysis ?? null;
     };
 
+    const confirmRecordingProfileInsight = async (assetId) => {
+      const body = await fetchJson(
+        `/api/recording-assets/${assetId}/profile-insight`,
+        "confirm recording profile insight failed",
+        { method: "POST" },
+      );
+      await refreshStreamers();
+      return body.insight ?? null;
+    };
+
     const createAdmissionShareBoard = async (projectId, input) => {
       return fetchJson(
         `/api/projects/${projectId}/admission-share-boards`,
@@ -27706,6 +27761,7 @@ function OpsReferenceInner({
       readVendorDeliveryPackage,
       exportAdmissionRecordings,
       requestRecordingAiAnalysis,
+      confirmRecordingProfileInsight,
       createAdmissionShareBoard,
       createProjectCollaborationShare,
       listProjectCollaborationApplications,
