@@ -939,6 +939,7 @@ const EMPTY_PROFILE = {
     notifications: "任务 / 审核 / AI",
     devices: "当前会话",
   },
+  aiInsights: [],
 };
 
 // Streamer's tasks — for today + upcoming + recent
@@ -1620,6 +1621,7 @@ function normalizeStreamerProfile(profile) {
       ...EMPTY_PROFILE.security,
       ...(profile.security || {}),
     },
+    aiInsights: Array.isArray(profile.aiInsights) ? profile.aiInsights : [],
   };
 }
 
@@ -6236,6 +6238,9 @@ function ScreenProfile({ go, profile = EMPTY_PROFILE }) {
   const profilePlatforms = Array.isArray(profile.platforms)
     ? profile.platforms
     : [];
+  const aiInsights = Array.isArray(profile.aiInsights)
+    ? profile.aiInsights
+    : [];
 
   return (
     <>
@@ -6486,6 +6491,132 @@ function ScreenProfile({ go, profile = EMPTY_PROFILE }) {
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          <Card
+            title="AI 观察与建议"
+            extra={
+              aiInsights.length ? (
+                <Badge tone="violet">{aiInsights.length} 条</Badge>
+              ) : null
+            }
+          >
+            {aiInsights.length > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {aiInsights.slice(0, 3).map((insight) => (
+                  <div
+                    key={insight.id}
+                    style={{
+                      padding: 14,
+                      borderRadius: 10,
+                      background:
+                        "linear-gradient(135deg, rgba(239,235,255,0.86), rgba(255,255,255,0.98))",
+                      border: "1px solid rgba(140,125,235,0.28)",
+                      boxShadow: "0 10px 22px rgba(91,75,209,0.08)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 10,
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 30,
+                          height: 30,
+                          borderRadius: 9,
+                          background:
+                            "linear-gradient(135deg, var(--violet-600), #8C7DEB)",
+                          color: "#fff",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexShrink: 0,
+                        }}
+                      >
+                        <Icon.Sparkles size={15} stroke="#fff" />
+                      </span>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div
+                          style={{
+                            fontSize: 14,
+                            fontWeight: 700,
+                            color: "var(--ink-900)",
+                            lineHeight: 1.45,
+                          }}
+                        >
+                          {insight.title}
+                        </div>
+                        <div
+                          style={{
+                            marginTop: 5,
+                            fontSize: 12.5,
+                            color: "var(--ink-600)",
+                            lineHeight: 1.7,
+                          }}
+                        >
+                          {insight.summary}
+                        </div>
+                      </div>
+                    </div>
+                    {insight.recommendations?.length ? (
+                      <div
+                        style={{
+                          marginTop: 10,
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 6,
+                        }}
+                      >
+                        {insight.recommendations.slice(0, 2).map((item) => (
+                          <div
+                            key={item}
+                            style={{
+                              display: "flex",
+                              gap: 6,
+                              fontSize: 12,
+                              color: "var(--ink-700)",
+                              lineHeight: 1.55,
+                            }}
+                          >
+                            <span style={{ color: "var(--violet-600)" }}>
+                              建议
+                            </span>
+                            <span>{item}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div
+                      className="mono"
+                      style={{
+                        marginTop: 10,
+                        paddingTop: 8,
+                        borderTop: "1px dashed rgba(140,125,235,0.28)",
+                        fontSize: 10.5,
+                        color: "var(--ink-400)",
+                        wordBreak: "break-all",
+                      }}
+                    >
+                      {insight.sourceRef}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                style={{
+                  padding: "8px 0",
+                  color: "var(--ink-400)",
+                  fontSize: 12.5,
+                  lineHeight: 1.7,
+                }}
+              >
+                暂无已确认 AI 观察。录屏分析经运营确认后，会沉淀为你的可复用改进建议。
+              </div>
+            )}
+          </Card>
+
           {/* Default settlement */}
           <Card
             title="默认结算规则"

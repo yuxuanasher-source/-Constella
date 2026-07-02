@@ -303,6 +303,30 @@ describe("toStreamerDesktopProfileDto", () => {
             },
           },
         ],
+        streamer_profile_insights: [
+          {
+            id: "insight-new",
+            title: "录屏 AI 观察 · 开场强",
+            summary: "前三十秒能快速抛出福利点并带动评论区回应。",
+            strengths: ["开场钩子强", "评论区承接快"],
+            risks: ["口播节奏略快"],
+            recommendations: ["下次复盘重点观察福利点承接"],
+            tags: ["recording_ai", "互动"],
+            source_ref: "recording_ai_analyses:analysis-new",
+            confirmed_at: "2026-06-03T12:00:00.000Z",
+          },
+          {
+            id: "insight-old",
+            title: "录屏 AI 观察 · 旧洞察",
+            summary: "旧录屏观察。",
+            strengths: [],
+            risks: [],
+            recommendations: [],
+            tags: [],
+            source_ref: "recording_ai_analyses:analysis-old",
+            confirmed_at: "2026-06-01T12:00:00.000Z",
+          },
+        ],
       },
       { organizationName: "Org One" },
     );
@@ -342,6 +366,16 @@ describe("toStreamerDesktopProfileDto", () => {
     expect(dto.settlement.baseSalary).toContain("6000");
     expect(dto.settlement.cpt).toContain("80");
     expect(dto.settlement.cpsShare).toContain("15%");
+    expect(dto.aiInsights[0]).toMatchObject({
+      id: "insight-new",
+      title: "录屏 AI 观察 · 开场强",
+      summary: "前三十秒能快速抛出福利点并带动评论区回应。",
+      strengths: ["开场钩子强", "评论区承接快"],
+      risks: ["口播节奏略快"],
+      recommendations: ["下次复盘重点观察福利点承接"],
+      sourceRef: "recording_ai_analyses:analysis-new",
+      confirmedAtLabel: "2026-06-03",
+    });
   });
 
   it("maps not_started cooperation status to a user-facing profile label", () => {

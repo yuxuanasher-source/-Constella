@@ -31,12 +31,28 @@ export type DashboardChatGrounding = {
   promptText: string;
 };
 
+export type StreamerProfileInsightGrounding = {
+  id: string;
+  streamerId: string;
+  streamerName: string;
+  title: string;
+  summary: string;
+  strengths?: string[];
+  risks?: string[];
+  recommendations?: string[];
+  tags?: string[];
+  sourceRef: string;
+  confirmedAt?: string | null;
+};
+
 export function buildDashboardChatGrounding({
   dashboard,
   auth,
+  streamerProfileInsights = [],
 }: {
   dashboard: RoleHomeDashboardDto;
   auth: AuthContext;
+  streamerProfileInsights?: StreamerProfileInsightGrounding[];
 }): DashboardChatGrounding {
   const facts = [
     ...kpiFacts(dashboard),
@@ -44,6 +60,7 @@ export function buildDashboardChatGrounding({
     ...queueFacts("risks", dashboard.risks),
     ...queueFacts("drilldowns", dashboard.drilldowns),
     ...panelFacts(dashboard),
+    ...profileInsightFacts(streamerProfileInsights),
   ];
   const projectHealth = buildProjectHealth(dashboard);
   const suggestedActions = buildSuggestedActions(projectHealth);
@@ -104,6 +121,51 @@ function panelFacts(dashboard: RoleHomeDashboardDto): DashboardChatFact[] {
     ...amountRiskFacts(panels.amountRisks),
     ...rankingFacts(panels.projectRanking),
   ];
+}
+
+function profileInsightFacts(
+  insights: StreamerProfileInsightGrounding[],
+): DashboardChatFact[] {
+  return insights.slice(0, 10).map((insight) => ({
+    label: `主播画像：${insight.streamerName || insight.streamerId} · ${
+      insight.title
+    }`,
+    detail: profileInsightDetail(insight),
+    source: `streamer_profile_insights.${insight.id}`,
+    tone: insight.risks?.length ? "amber" : "violet",
+    target: {
+      route: "streamers",
+      id: insight.streamerId,
+      sourceRef: insight.sourceRef,
+    },
+  }));
+}
+
+function profileInsightDetail(insight: StreamerProfileInsightGrounding) {
+  const summary = insight.summary.trim();
+  const parts: string[] = [];
+  const strengths = cleanInsightList(insight.strengths);
+  const risks = cleanInsightList(insight.risks);
+  const recommendations = cleanInsightList(insight.recommendations);
+
+  if (strengths.length) {
+    parts.push(`优势：${strengths.join("、")}`);
+  }
+  if (risks.length) {
+    parts.push(`风险：${risks.join("、")}`);
+  }
+  if (recommendations.length) {
+    parts.push(`建议：${recommendations.join("、")}`);
+  }
+  if (insight.sourceRef) {
+    parts.push(`原始来源：${insight.sourceRef}`);
+  }
+
+  return [summary, parts.join("；")].filter(Boolean).join(" ");
+}
+
+function cleanInsightList(values?: string[]) {
+  return (values ?? []).map((value) => value.trim()).filter(Boolean);
 }
 
 function funnelFacts(

@@ -22,6 +22,7 @@ export type StreamerListRow = {
   created_at: string;
   streamer_accounts?: StreamerAccountMetricRow[];
   recording_submissions?: StreamerRecordingMetricRow[];
+  streamer_profile_insights?: StreamerProfileInsightMetricRow[];
   live_tasks?: StreamerTaskMetricRow[];
   live_reports?: StreamerReportMetricRow[];
   project_streamers?: StreamerProjectMetricRow[];
@@ -39,6 +40,18 @@ export type StreamerAccountMetricRow = {
 export type StreamerRecordingMetricRow = {
   status: string;
   submitted_at: string | null;
+};
+
+export type StreamerProfileInsightMetricRow = {
+  id: string;
+  title: string;
+  summary: string;
+  strengths?: string[] | null;
+  risks?: string[] | null;
+  recommendations?: string[] | null;
+  tags?: string[] | null;
+  source_ref: string;
+  confirmed_at: string | null;
 };
 
 export type StreamerTaskMetricRow = {
@@ -93,7 +106,7 @@ export async function listStreamerPool(
   const { data, error } = await supabase
     .from("streamers")
     .select(
-      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, recording_submissions(status, submitted_at), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
+      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
     )
     .order("created_at", { ascending: false });
 
@@ -115,7 +128,7 @@ export async function getStreamerProfileRow(
   const { data, error } = await supabase
     .from("streamers")
     .select(
-      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, skills, availability, equipment, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, streamer_accounts(id, platform, account_handle, follower_count, is_primary, verified_at), recording_submissions(status, submitted_at), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
+      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, skills, availability, equipment, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, streamer_accounts(id, platform, account_handle, follower_count, is_primary, verified_at), recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
     )
     .eq("id", streamerId)
     .maybeSingle<StreamerListRow>();
