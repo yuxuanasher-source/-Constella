@@ -5,6 +5,7 @@ const getAuthContextMock = vi.fn();
 const createConfiguredAiProvidersMock = vi.fn();
 const resolveAiProviderRoutingMock = vi.fn();
 const runAiGatewayMock = vi.fn();
+const runAiGatewayStreamMock = vi.fn();
 const recordAiInvocationMock = vi.fn();
 const loadRoleHomeDashboardMock = vi.fn();
 const searchKnowledgeDocumentsMock = vi.fn();
@@ -28,6 +29,10 @@ vi.mock("@/features/ai/llm-gateway", () => ({
   runAiGateway: runAiGatewayMock,
 }));
 
+vi.mock("@/features/ai/llm-gateway-stream", () => ({
+  runAiGatewayStream: runAiGatewayStreamMock,
+}));
+
 vi.mock("@/features/ai/invocation-ledger", () => ({
   recordAiInvocation: recordAiInvocationMock,
 }));
@@ -48,6 +53,28 @@ vi.mock("@/features/ai/draft-repository", () => ({
   createAiDraft: createAiDraftMock,
 }));
 
+// 解析 SSE 响应体为 [{event, data}] 序列，便于断言事件顺序与 payload。
+function parseSseEvents(bodyText: string) {
+  return bodyText
+    .split("\n\n")
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => {
+      let event = "message";
+      const dataLines: string[] = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+      }
+      return {
+        event,
+        data: dataLines.length
+          ? (JSON.parse(dataLines.join("\n")) as Record<string, unknown>)
+          : null,
+      };
+    });
+}
+
 describe("POST /api/ai/chat", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -56,6 +83,7 @@ describe("POST /api/ai/chat", () => {
     createConfiguredAiProvidersMock.mockReset();
     resolveAiProviderRoutingMock.mockReset();
     runAiGatewayMock.mockReset();
+    runAiGatewayStreamMock.mockReset();
     recordAiInvocationMock.mockReset();
     loadRoleHomeDashboardMock.mockReset();
     searchKnowledgeDocumentsMock.mockReset();
@@ -141,6 +169,32 @@ describe("POST /api/ai/chat", () => {
       usage: { promptTokens: 12, completionTokens: 9, totalTokens: 21 },
       latencyMs: 123,
       costCents: 0.01,
+    });
+    runAiGatewayStreamMock.mockImplementation(async function* () {
+      yield {
+        type: "delta",
+        text: "流式",
+        providerName: "deepseek",
+        fallbackUsed: false,
+      };
+      yield {
+        type: "delta",
+        text: "回复",
+        providerName: "deepseek",
+        fallbackUsed: false,
+      };
+      yield {
+        type: "done",
+        result: {
+          status: "succeeded",
+          providerName: "deepseek",
+          text: "流式回复",
+          fallbackUsed: false,
+          usage: { promptTokens: 12, completionTokens: 9, totalTokens: 21 },
+          latencyMs: 88,
+          costCents: 0.01,
+        },
+      };
     });
     recordAiInvocationMock.mockResolvedValue("invocation-1");
     createAiDraftMock.mockResolvedValue({ id: "draft-retro-1" });
@@ -588,5 +642,184 @@ describe("POST /api/ai/chat", () => {
 
     expect(response.status).toBe(400);
     expect(runAiGatewayMock).not.toHaveBeenCalled();
+  });
+
+  it("streams SSE delta events and a done payload when the client accepts text/event-stream", async () => {
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        headers: { Accept: "text/event-stream" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "默认分析本月" }],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+
+    const events = parseSseEvents(await response.text());
+    expect(events.map((entry) => entry.event)).toEqual([
+      "delta",
+      "delta",
+      "done",
+    ]);
+    expect(events[0].data).toMatchObject({ content: "流式" });
+    expect(events[1].data).toMatchObject({ content: "回复" });
+    expect(events[2].data).toMatchObject({
+      message: { role: "assistant", content: "流式回复" },
+      providerName: "deepseek",
+      status: "succeeded",
+      usage: { promptTokens: 12, completionTokens: 9, totalTokens: 21 },
+      grounding: expect.objectContaining({
+        generatedAt: "2026-06-28T01:20:00.000Z",
+      }),
+      knowledge: expect.objectContaining({
+        passages: [expect.objectContaining({ id: "kb-retro-1" })],
+      }),
+    });
+
+    // 流式路径不给 deterministic 兜底 provider 机会（JSON 契约将其视为失败）。
+    const streamProviders =
+      runAiGatewayStreamMock.mock.calls[0][0].providers as Array<{
+        name: string;
+      }>;
+    expect(streamProviders.every((p) => p.name !== "deterministic")).toBe(true);
+
+    // 流式同样记账（done 时通过 after() 后置执行，但调用发生在流内）。
+    expect(recordAiInvocationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          scene: "dashboard_ai_chat",
+          providerName: "deepseek",
+          status: "succeeded",
+          metadata: expect.objectContaining({ stream: true }),
+        }),
+      }),
+    );
+    expect(runAiGatewayMock).not.toHaveBeenCalled();
+  });
+
+  it("also streams when the JSON body carries stream:true without an Accept header", async () => {
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          stream: true,
+          messages: [{ role: "user", content: "默认分析本月" }],
+        }),
+      }),
+    );
+
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const events = parseSseEvents(await response.text());
+    expect(events.at(-1)?.event).toBe("done");
+  });
+
+  it("emits an SSE error event and records the failure when all providers fail before streaming", async () => {
+    runAiGatewayStreamMock.mockImplementation(async function* () {
+      yield {
+        type: "error",
+        streamStarted: false,
+        result: {
+          status: "failed",
+          providerName: "deepseek",
+          fallbackUsed: false,
+          degradedReason: "all_providers_failed",
+          errorSummary: "DeepSeek request timed out after 30000ms",
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          latencyMs: 0,
+          costCents: 0,
+        },
+      };
+    });
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        headers: { Accept: "text/event-stream" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "默认分析本月" }],
+        }),
+      }),
+    );
+
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const events = parseSseEvents(await response.text());
+    expect(events).toEqual([
+      {
+        event: "error",
+        data: expect.objectContaining({
+          error: "DeepSeek request timed out after 30000ms",
+          providerName: "deepseek",
+          status: "failed",
+        }),
+      },
+    ]);
+    expect(recordAiInvocationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          status: "failed",
+          errorSummary: "DeepSeek request timed out after 30000ms",
+        }),
+      }),
+    );
+  });
+
+  it("creates the retrospective draft before emitting done on the streaming path", async () => {
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        headers: { Accept: "text/event-stream" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "生成本月复盘并沉淀经验" }],
+        }),
+      }),
+    );
+
+    const events = parseSseEvents(await response.text());
+    const doneEvent = events.find((entry) => entry.event === "done");
+    expect(doneEvent?.data).toMatchObject({
+      retrospectiveDraftId: "draft-retro-1",
+      retrospectiveDraft: expect.objectContaining({
+        draftType: "retrospective",
+        status: "pending",
+      }),
+    });
+    expect(createAiDraftMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        organizationId: "org-1",
+        aiInvocationId: "invocation-1",
+      }),
+    );
+  });
+
+  it("keeps the JSON contract untouched for requests without stream markers", async () => {
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "默认分析本月" }],
+        }),
+      }),
+    );
+
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(runAiGatewayStreamMock).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      message: expect.objectContaining({ role: "assistant" }),
+      providerName: "deepseek",
+      status: "succeeded",
+    });
   });
 });

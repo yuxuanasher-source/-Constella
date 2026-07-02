@@ -1,25 +1,34 @@
 import type {
   AiCostEstimate,
-  AiProvider,
   AiProviderResult,
   AiStructuredInput,
   AiTextInput,
   AiUsage,
   AiUsageEstimateInput,
 } from "../contracts";
+import { streamOpenAiCompatibleChat } from "./openai-compatible-stream";
+import {
+  createProviderTimeout,
+  resolveAiProviderTimeoutMs,
+  timeoutErrorSummary,
+} from "./provider-timeout";
+import type {
+  AiProviderStreamEvent,
+  AiStreamingProvider,
+  StreamableFetch,
+} from "./streaming-contracts";
 
 const DEFAULT_HUNYUAN_MODEL = "hunyuan-turbos-latest";
+const PROVIDER_LABEL = "Hunyuan";
 
-type FetchLike = (
-  input: string,
-  init?: RequestInit,
-) => Promise<Pick<Response, "json" | "ok" | "status" | "statusText">>;
+type FetchLike = StreamableFetch;
 
 type HunyuanProviderConfig = {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
   fetch?: FetchLike;
+  timeoutMs?: number;
 };
 
 export function createHunyuanProvider({
@@ -27,7 +36,8 @@ export function createHunyuanProvider({
   baseUrl,
   model = process.env.HUNYUAN_MODEL ?? DEFAULT_HUNYUAN_MODEL,
   fetch: fetchImpl = fetch,
-}: HunyuanProviderConfig = {}): AiProvider {
+  timeoutMs = resolveAiProviderTimeoutMs(),
+}: HunyuanProviderConfig = {}): AiStreamingProvider {
   return {
     name: "hunyuan",
     capabilities: ["text", "structured", "shadow"],
@@ -38,6 +48,17 @@ export function createHunyuanProvider({
         fetchImpl,
         input,
         model,
+        timeoutMs,
+      });
+    },
+    runTextStream(input: AiTextInput) {
+      return streamHunyuanText({
+        apiKey,
+        baseUrl,
+        fetchImpl,
+        input,
+        model,
+        timeoutMs,
       });
     },
     runStructured(input: AiStructuredInput) {
@@ -48,6 +69,7 @@ export function createHunyuanProvider({
         input: withJsonInstruction(input),
         model,
         structured: true,
+        timeoutMs,
       });
     },
     runWithTools() {
@@ -59,6 +81,47 @@ export function createHunyuanProvider({
   };
 }
 
+async function* streamHunyuanText({
+  apiKey,
+  baseUrl,
+  fetchImpl,
+  input,
+  model,
+  timeoutMs,
+}: {
+  apiKey?: string;
+  baseUrl?: string;
+  fetchImpl: FetchLike;
+  input: AiTextInput;
+  model: string;
+  timeoutMs: number;
+}): AsyncGenerator<AiProviderStreamEvent, void, unknown> {
+  if (!apiKey?.trim() || !baseUrl?.trim()) {
+    yield {
+      type: "error",
+      errorSummary: "Hunyuan provider is not configured",
+    };
+    return;
+  }
+
+  // 混元 OpenAI 兼容接口与 DeepSeek 同形态，直接复用共享流式解析。
+  yield* streamOpenAiCompatibleChat({
+    url: toChatCompletionsUrl(baseUrl),
+    apiKey,
+    fetchImpl,
+    timeoutMs,
+    providerLabel: PROVIDER_LABEL,
+    requestBody: {
+      model,
+      messages: input.messages.map((message) => ({
+        role: message.role === "tool" ? "user" : message.role,
+        content: message.content,
+      })),
+      metadata: input.metadata,
+    },
+  });
+}
+
 async function runHunyuanRequest({
   apiKey,
   baseUrl,
@@ -66,6 +129,7 @@ async function runHunyuanRequest({
   input,
   model,
   structured = false,
+  timeoutMs,
 }: {
   apiKey?: string;
   baseUrl?: string;
@@ -73,12 +137,15 @@ async function runHunyuanRequest({
   input: AiTextInput;
   model: string;
   structured?: boolean;
+  timeoutMs: number;
 }): Promise<AiProviderResult> {
   if (!apiKey?.trim() || !baseUrl?.trim()) {
     return degraded("provider_unconfigured");
   }
 
   const startedAt = Date.now();
+  // 超时中止后 fetch 会拒绝，走 catch 返回 failed → llm-gateway 顺序切换下一个 provider。
+  const timeout = createProviderTimeout(timeoutMs, PROVIDER_LABEL);
 
   try {
     const response = await fetchImpl(toChatCompletionsUrl(baseUrl), {
@@ -95,6 +162,7 @@ async function runHunyuanRequest({
         })),
         metadata: input.metadata,
       }),
+      signal: timeout.signal,
     });
     const raw = (await response.json()) as Record<string, unknown>;
     const latencyMs = Date.now() - startedAt;
@@ -137,10 +205,17 @@ async function runHunyuanRequest({
     });
   } catch (error) {
     return failed({
-      errorSummary:
-        error instanceof Error ? error.message : "Hunyuan request failed",
+      errorSummary: timeoutErrorSummary({
+        timeout,
+        timeoutMs,
+        label: PROVIDER_LABEL,
+        error,
+        fallbackMessage: "Hunyuan request failed",
+      }),
       latencyMs: Date.now() - startedAt,
     });
+  } finally {
+    timeout.clear();
   }
 }
 

@@ -1,9 +1,12 @@
 import { z } from "zod";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createHunyuanProvider } from "./hunyuan-provider";
 
 describe("createHunyuanProvider", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   it("returns degraded when key or base URL is missing", async () => {
     const fetchMock = vi.fn();
     const provider = createHunyuanProvider({
@@ -116,5 +119,83 @@ describe("createHunyuanProvider", () => {
       status: "degraded",
       degradedReason: "capability_unavailable",
     });
+  });
+
+  it("aborts a hung request after the timeout with a fallback-friendly failure", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<never>((_, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(init.signal?.reason ?? new Error("aborted")),
+          );
+        }),
+    );
+    const provider = createHunyuanProvider({
+      apiKey: "secret",
+      baseUrl: "https://api.hunyuan.cloud.tencent.com",
+      fetch: fetchMock,
+      timeoutMs: 2_000,
+    });
+
+    const pending = provider.runText({
+      promptKey: "ops.brief",
+      promptVersion: 1,
+      messages: [{ role: "user", content: "summarize" }],
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const result = await pending;
+
+    expect(result.status).toBe("failed");
+    expect(result.errorSummary).toContain("timed out after 2000ms");
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(requestInit.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("streams OpenAI-compatible deltas through runTextStream", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          [
+            'data: {"choices":[{"delta":{"content":"简报"}}]}',
+            "",
+            'data: {"choices":[{"delta":{"content":"就绪"}}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}',
+            "",
+            "data: [DONE]",
+            "",
+          ].join("\n"),
+          { status: 200 },
+        ),
+    );
+    const provider = createHunyuanProvider({
+      apiKey: "secret",
+      baseUrl: "https://api.hunyuan.cloud.tencent.com",
+      fetch: fetchMock,
+    });
+
+    const events = [];
+    for await (const event of provider.runTextStream({
+      promptKey: "dashboard.ai.chat",
+      promptVersion: 1,
+      messages: [{ role: "user", content: "summarize" }],
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { type: "delta", text: "简报" },
+      { type: "delta", text: "就绪" },
+      {
+        type: "done",
+        result: expect.objectContaining({
+          status: "succeeded",
+          text: "简报就绪",
+          usage: { promptTokens: 4, completionTokens: 2, totalTokens: 6 },
+        }),
+      },
+    ]);
   });
 });

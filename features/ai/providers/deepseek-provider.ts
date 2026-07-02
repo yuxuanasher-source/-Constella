@@ -1,22 +1,30 @@
 import type {
   AiCostEstimate,
-  AiProvider,
   AiProviderResult,
   AiStructuredInput,
   AiTextInput,
   AiUsage,
   AiUsageEstimateInput,
 } from "../contracts";
+import { streamOpenAiCompatibleChat } from "./openai-compatible-stream";
+import {
+  createProviderTimeout,
+  resolveAiProviderTimeoutMs,
+  timeoutErrorSummary,
+} from "./provider-timeout";
+import type {
+  AiProviderStreamEvent,
+  AiStreamingProvider,
+  StreamableFetch,
+} from "./streaming-contracts";
 
 // DeepSeek 走 OpenAI 兼容的 chat/completions 接口（与混元同形态）。
 // 默认 base/model 已内置，故只需配置 DEEPSEEK_API_KEY 即可启用。
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
+const PROVIDER_LABEL = "DeepSeek";
 
-type FetchLike = (
-  input: string,
-  init?: RequestInit,
-) => Promise<Pick<Response, "json" | "ok" | "status" | "statusText">>;
+type FetchLike = StreamableFetch;
 
 type DeepseekProviderConfig = {
   apiKey?: string;
@@ -24,6 +32,7 @@ type DeepseekProviderConfig = {
   model?: string;
   reasoningModel?: string;
   fetch?: FetchLike;
+  timeoutMs?: number;
 };
 
 export function createDeepseekProvider({
@@ -35,7 +44,8 @@ export function createDeepseekProvider({
     process.env.DEEPSEEK_DEEP_MODEL ??
     model,
   fetch: fetchImpl = fetch,
-}: DeepseekProviderConfig = {}): AiProvider {
+  timeoutMs = resolveAiProviderTimeoutMs(),
+}: DeepseekProviderConfig = {}): AiStreamingProvider {
   return {
     name: "deepseek",
     capabilities: ["text", "structured", "shadow"],
@@ -47,6 +57,18 @@ export function createDeepseekProvider({
         input,
         model,
         reasoningModel,
+        timeoutMs,
+      });
+    },
+    runTextStream(input: AiTextInput) {
+      return streamDeepseekText({
+        apiKey,
+        baseUrl,
+        fetchImpl,
+        input,
+        model,
+        reasoningModel,
+        timeoutMs,
       });
     },
     runStructured(input: AiStructuredInput) {
@@ -58,6 +80,7 @@ export function createDeepseekProvider({
         model,
         reasoningModel,
         structured: true,
+        timeoutMs,
       });
     },
     runWithTools() {
@@ -69,6 +92,49 @@ export function createDeepseekProvider({
   };
 }
 
+async function* streamDeepseekText({
+  apiKey,
+  baseUrl,
+  fetchImpl,
+  input,
+  model,
+  reasoningModel,
+  timeoutMs,
+}: {
+  apiKey?: string;
+  baseUrl?: string;
+  fetchImpl: FetchLike;
+  input: AiTextInput;
+  model: string;
+  reasoningModel: string;
+  timeoutMs: number;
+}): AsyncGenerator<AiProviderStreamEvent, void, unknown> {
+  if (!apiKey?.trim() || !baseUrl?.trim()) {
+    yield {
+      type: "error",
+      errorSummary: "DeepSeek provider is not configured",
+    };
+    return;
+  }
+
+  yield* streamOpenAiCompatibleChat({
+    url: toChatCompletionsUrl(baseUrl),
+    apiKey,
+    fetchImpl,
+    timeoutMs,
+    providerLabel: PROVIDER_LABEL,
+    requestBody: {
+      model: selectDeepseekModel({ input, model, reasoningModel }),
+      messages: input.messages.map((message) => ({
+        role: message.role === "tool" ? "user" : message.role,
+        content: message.content,
+      })),
+      ...toThinkingOptions(input),
+      metadata: toDeepseekMetadata(input),
+    },
+  });
+}
+
 async function runDeepseekRequest({
   apiKey,
   baseUrl,
@@ -77,6 +143,7 @@ async function runDeepseekRequest({
   model,
   reasoningModel,
   structured = false,
+  timeoutMs,
 }: {
   apiKey?: string;
   baseUrl?: string;
@@ -85,6 +152,7 @@ async function runDeepseekRequest({
   model: string;
   reasoningModel: string;
   structured?: boolean;
+  timeoutMs: number;
 }): Promise<AiProviderResult> {
   if (!apiKey?.trim() || !baseUrl?.trim()) {
     return degraded("provider_unconfigured");
@@ -92,6 +160,8 @@ async function runDeepseekRequest({
 
   const startedAt = Date.now();
   const selectedModel = selectDeepseekModel({ input, model, reasoningModel });
+  // 超时中止后 fetch 会拒绝，走 catch 返回 failed → llm-gateway 顺序切换下一个 provider。
+  const timeout = createProviderTimeout(timeoutMs, PROVIDER_LABEL);
 
   try {
     const response = await fetchImpl(toChatCompletionsUrl(baseUrl), {
@@ -112,6 +182,7 @@ async function runDeepseekRequest({
         ...(structured ? { response_format: { type: "json_object" } } : {}),
         metadata: toDeepseekMetadata(input),
       }),
+      signal: timeout.signal,
     });
     const raw = (await response.json()) as Record<string, unknown>;
     const latencyMs = Date.now() - startedAt;
@@ -154,10 +225,17 @@ async function runDeepseekRequest({
     });
   } catch (error) {
     return failed({
-      errorSummary:
-        error instanceof Error ? error.message : "DeepSeek request failed",
+      errorSummary: timeoutErrorSummary({
+        timeout,
+        timeoutMs,
+        label: PROVIDER_LABEL,
+        error,
+        fallbackMessage: "DeepSeek request failed",
+      }),
       latencyMs: Date.now() - startedAt,
     });
+  } finally {
+    timeout.clear();
   }
 }
 
