@@ -10,6 +10,8 @@ on:
     - cron: "*/5 * * * *"
     # 每 30 分钟：recording-ai runner + 异常扫描 runner
     - cron: "*/30 * * * *"
+    # 每天 02:00 UTC：录屏智能分析自学习校准 runner
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -59,6 +61,29 @@ jobs:
           echo
           if [ "$status" != "200" ]; then
             echo "Recording AI runner request failed with HTTP $status" >&2
+            exit 1
+          fi
+
+  recording-intelligence-learn:
+    name: Recording intelligence calibration (daily)
+    runs-on: ubuntu-latest
+    # APP_BASE_URL 未配置时跳过，避免 CI 变红
+    if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *') }}
+    steps:
+      - name: Trigger recording intelligence learning runner
+        env:
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          RECORDING_AI_RUNNER_TOKEN: ${{ secrets.RECORDING_AI_RUNNER_TOKEN }}
+        run: |
+          status=$(curl -sS -o response.json -w "%{http_code}" \
+            -X POST "${APP_BASE_URL%/}/api/internal/recording-intelligence/learn" \
+            -H "Authorization: Bearer ${RECORDING_AI_RUNNER_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          cat response.json
+          echo
+          if [ "$status" != "200" ]; then
+            echo "Recording intelligence learning request failed with HTTP $status" >&2
             exit 1
           fi
 
