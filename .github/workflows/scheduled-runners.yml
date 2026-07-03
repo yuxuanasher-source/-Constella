@@ -1,16 +1,18 @@
 name: Scheduled Runners
 
-# 定时触发内部 runner 端点，避免 OCR / 录屏 AI / 异常扫描任务只入队不执行。
+# 定时触发内部 runner 端点，避免 OCR / 录屏 AI / 异常扫描 / 账号库任务只入队不执行。
 # 需要在仓库配置：
 #   - Variables: APP_BASE_URL（部署地址，如 https://example.com；未配置时所有 job 直接跳过）
+#     PLATFORM_METRICS_SYNC_ENABLED=true（平台指标网关就绪后再开指标同步 job）
 #   - Secrets:   OCR_RUNNER_TOKEN / RECORDING_AI_RUNNER_TOKEN / ANOMALY_RUNNER_TOKEN
+#                / ACCOUNT_LIBRARY_RUNNER_TOKEN
 on:
   schedule:
     # 每 5 分钟：OCR runner
     - cron: "*/5 * * * *"
     # 每 30 分钟：recording-ai runner + 异常扫描 runner
     - cron: "*/30 * * * *"
-    # 每天 02:00 UTC：录屏智能分析自学习校准 runner
+    # 每日 02:00 UTC：账号库指标同步 + 闲置扫描 + 录屏智能分析自学习校准
     - cron: "0 2 * * *"
   workflow_dispatch:
 
@@ -107,5 +109,51 @@ jobs:
           echo
           if [ "$status" != "200" ]; then
             echo "Anomaly scan runner request failed with HTTP $status" >&2
+            exit 1
+          fi
+
+  account-metrics-sync-runner:
+    name: Account metrics sync runner (daily)
+    runs-on: ubuntu-latest
+    # 平台指标网关（PLATFORM_METRICS_ENDPOINT）就绪前保持关闭，避免 400 变红
+    if: ${{ vars.APP_BASE_URL != '' && vars.PLATFORM_METRICS_SYNC_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *') }}
+    steps:
+      - name: Trigger account metrics sync runner
+        env:
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          ACCOUNT_LIBRARY_RUNNER_TOKEN: ${{ secrets.ACCOUNT_LIBRARY_RUNNER_TOKEN }}
+        run: |
+          status=$(curl -sS -o response.json -w "%{http_code}" \
+            -X POST "${APP_BASE_URL%/}/api/internal/account-library/metrics-sync/run" \
+            -H "Authorization: Bearer ${ACCOUNT_LIBRARY_RUNNER_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          cat response.json
+          echo
+          if [ "$status" != "200" ]; then
+            echo "Account metrics sync runner request failed with HTTP $status" >&2
+            exit 1
+          fi
+
+  account-idle-scan-runner:
+    name: Account idle scan runner (daily)
+    runs-on: ubuntu-latest
+    # APP_BASE_URL 未配置时跳过，避免 CI 变红
+    if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *') }}
+    steps:
+      - name: Trigger account idle scan runner
+        env:
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          ACCOUNT_LIBRARY_RUNNER_TOKEN: ${{ secrets.ACCOUNT_LIBRARY_RUNNER_TOKEN }}
+        run: |
+          status=$(curl -sS -o response.json -w "%{http_code}" \
+            -X POST "${APP_BASE_URL%/}/api/internal/account-library/idle-scan/run" \
+            -H "Authorization: Bearer ${ACCOUNT_LIBRARY_RUNNER_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          cat response.json
+          echo
+          if [ "$status" != "200" ]; then
+            echo "Account idle scan runner request failed with HTTP $status" >&2
             exit 1
           fi

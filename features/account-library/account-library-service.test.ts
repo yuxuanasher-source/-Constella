@@ -158,7 +158,7 @@ describe("account library service", () => {
 
   it("does not flag non-sensitive updates as high risk", async () => {
     const before = accountRecord();
-    const after = accountRecord({ status: "idle" });
+    const after = accountRecord({ note: "签约主力号", followerCount: 12000 });
     const repo = {
       createAccount: vi.fn(),
       getById: vi.fn().mockResolvedValue(before),
@@ -171,11 +171,49 @@ describe("account library service", () => {
       audit,
       actor,
       accountId: before.id,
-      input: { status: "idle" },
+      input: { note: "签约主力号", followerCount: 12000 },
+    });
+
+    expect(repo.updateAccount).toHaveBeenCalledWith(before.id, {
+      note: "签约主力号",
+      follower_count: 12000,
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ isHighRisk: false }),
+    );
+  });
+
+  it("requires a reason when security credential fields change", async () => {
+    const before = accountRecord();
+    const after = accountRecord({ securityPhone: "13700003333" });
+    const repo = {
+      createAccount: vi.fn(),
+      getById: vi.fn().mockResolvedValue(before),
+      updateAccount: vi.fn().mockResolvedValue(after),
+    };
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      updatePlatformAccount({
+        repo,
+        audit,
+        actor,
+        accountId: before.id,
+        input: { securityPhone: "13700003333" },
+      }),
+    ).rejects.toThrow("Updating real-name fields requires a reason");
+
+    await updatePlatformAccount({
+      repo,
+      audit,
+      actor,
+      accountId: before.id,
+      input: { securityPhone: "13700003333" },
+      reason: "换绑密保手机",
     });
 
     expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({ isHighRisk: false }),
+      expect.objectContaining({ isHighRisk: true, reason: "换绑密保手机" }),
     );
   });
 
