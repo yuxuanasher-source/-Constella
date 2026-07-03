@@ -411,6 +411,84 @@ describe("admission share board service", () => {
     ).rejects.toThrow("Share link is expired or revoked");
   });
 
+  it("records human-tagged evaluations when vendors pick reason codes", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      upsertVendorReviews: vi.fn().mockResolvedValue([
+        { id: "vendor-review-1", recordingSubmissionId: "rec-1" },
+        { id: "vendor-review-2", recordingSubmissionId: "rec-2" },
+      ]),
+    });
+    const recordEvaluation = vi.fn().mockResolvedValue(undefined);
+
+    await submitVendorAdmissionReviews({
+      repo,
+      token: "plain-token",
+      input: {
+        items: [
+          {
+            recordingSubmissionId: "rec-1",
+            recordingVersion: 2,
+            decision: "rejected",
+            remark: "话术不贴卖点",
+            reasonCodes: ["script_fit"],
+          },
+          {
+            recordingSubmissionId: "rec-2",
+            recordingVersion: 1,
+            decision: "backup",
+            remark: "备选",
+          },
+        ],
+      },
+      now: "2026-06-07T05:00:00.000Z",
+      recordEvaluation,
+    });
+
+    // 只有带理由标签的项触发评估；无标签项交给 LLM 归一化 runner 兜底。
+    expect(recordEvaluation).toHaveBeenCalledTimes(1);
+    expect(recordEvaluation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org-1",
+        applicationId: "app-1",
+        recordingSubmissionId: "rec-1",
+        vendorReviewId: "vendor-review-1",
+        decision: "rejected",
+        remark: "话术不贴卖点",
+        reasonCodes: ["script_fit"],
+      }),
+    );
+  });
+
+  it("never fails a vendor submission because evaluation recording failed", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      upsertVendorReviews: vi.fn().mockResolvedValue([
+        { id: "vendor-review-1", recordingSubmissionId: "rec-1" },
+      ]),
+    });
+
+    const result = await submitVendorAdmissionReviews({
+      repo,
+      token: "plain-token",
+      input: {
+        items: [
+          {
+            recordingSubmissionId: "rec-1",
+            recordingVersion: 2,
+            decision: "rejected",
+            remark: "违规承诺",
+            reasonCodes: ["compliance_violation"],
+          },
+        ],
+      },
+      now: "2026-06-07T05:00:00.000Z",
+      recordEvaluation: vi.fn().mockRejectedValue(new Error("boom")),
+    });
+
+    expect(result.submittedCount).toBe(1);
+  });
+
   it("submits vendor reviews and syncs selected decisions", async () => {
     const repo = createRepo({
       getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),

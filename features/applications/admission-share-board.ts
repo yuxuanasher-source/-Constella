@@ -78,7 +78,9 @@ export type AdmissionShareBoardRepository = {
   getPublicShareBoardSnapshot(
     tokenHash: string,
   ): Promise<PublicAdmissionShareBoardSnapshot | null>;
-  upsertVendorReviews(rows: VendorReviewUpsertInput[]): Promise<void>;
+  upsertVendorReviews(
+    rows: VendorReviewUpsertInput[],
+  ): Promise<Array<{ id: string; recordingSubmissionId: string }>>;
   updateRecordingReviewForVendor(
     recordingSubmissionId: string,
     input: {
@@ -366,12 +368,14 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     };
   }
 
-  async upsertVendorReviews(rows: VendorReviewUpsertInput[]): Promise<void> {
+  async upsertVendorReviews(
+    rows: VendorReviewUpsertInput[],
+  ): Promise<Array<{ id: string; recordingSubmissionId: string }>> {
     if (rows.length === 0) {
-      return;
+      return [];
     }
 
-    const { error } = await this.client
+    const { data, error } = await this.client
       .from("project_recording_vendor_reviews")
       .upsert(
         rows.map((row) => ({
@@ -392,11 +396,19 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
           sync_error: row.syncError ?? null,
         })),
         { onConflict: "share_board_id,recording_submission_id" },
-      );
+      )
+      .select("id, recording_submission_id");
 
     if (error) {
       throw error;
     }
+
+    return (data ?? []).map((row) => ({
+      id: String((row as { id: unknown }).id),
+      recordingSubmissionId: String(
+        (row as { recording_submission_id: unknown }).recording_submission_id,
+      ),
+    }));
   }
 
   async updateRecordingReviewForVendor(
@@ -811,8 +823,21 @@ export type SubmitVendorAdmissionReviewsInput = {
     recordingVersion: number;
     decision: VendorAdmissionDecision;
     remark?: string;
+    /** 可选理由标签（卡点 key）。厂家不选时由 LLM 归一化兜底。 */
+    reasonCodes?: string[];
   }>;
 };
+
+/** 厂家带理由标签提交时的评估回写钩子（features/admission-review）。 */
+export type VendorEvaluationRecorder = (input: {
+  organizationId: string;
+  applicationId: string;
+  recordingSubmissionId: string;
+  vendorReviewId: string;
+  decision: VendorAdmissionDecision;
+  remark: string;
+  reasonCodes: string[];
+}) => Promise<void>;
 
 export async function submitVendorAdmissionReviews({
   repo,
@@ -820,12 +845,14 @@ export async function submitVendorAdmissionReviews({
   accessCode,
   input,
   now = new Date().toISOString(),
+  recordEvaluation,
 }: {
   repo: AdmissionShareBoardRepository;
   token: string;
   accessCode?: string;
   input: SubmitVendorAdmissionReviewsInput;
   now?: string;
+  recordEvaluation?: VendorEvaluationRecorder;
 }) {
   const snapshot = await requirePublicSnapshot({
     repo,
@@ -913,8 +940,44 @@ export async function submitVendorAdmissionReviews({
     });
   }
 
-  await repo.upsertVendorReviews(reviewRows);
+  const upserted = await repo.upsertVendorReviews(reviewRows);
   await repo.markShareBoardSubmitted(snapshot.id, now);
+
+  // 厂家勾选了理由标签的项，直接落人工评估（无需 LLM 归一化）。
+  // 评估失败不影响厂家提交结果——信号沉淀永不阻塞外部方操作。
+  if (recordEvaluation) {
+    const vendorReviewIdBySubmission = new Map(
+      upserted.map((row) => [row.recordingSubmissionId, row.id]),
+    );
+    for (const item of input.items) {
+      const reasonCodes = (item.reasonCodes ?? [])
+        .map((code) => code.trim())
+        .filter(Boolean);
+      const vendorReviewId = vendorReviewIdBySubmission.get(
+        item.recordingSubmissionId,
+      );
+      if (!reasonCodes.length || !vendorReviewId) {
+        continue;
+      }
+      const snapshotItem = itemsByRecording.get(item.recordingSubmissionId);
+      if (!snapshotItem) {
+        continue;
+      }
+      try {
+        await recordEvaluation({
+          organizationId: snapshot.organizationId,
+          applicationId: snapshotItem.applicationId,
+          recordingSubmissionId: item.recordingSubmissionId,
+          vendorReviewId,
+          decision: item.decision,
+          remark: item.remark?.trim() || "",
+          reasonCodes,
+        });
+      } catch {
+        // 忽略评估失败；归一化 runner 会兜底。
+      }
+    }
+  }
 
   return {
     submittedCount: reviewRows.length,
@@ -1028,6 +1091,8 @@ async function requirePublicSnapshot({
 function toPublicShareDto(snapshot: PublicAdmissionShareBoardSnapshot) {
   return {
     id: snapshot.id,
+    // 供服务端解析 rubric（理由标签）；路由返回前会剥离，不进公开 payload。
+    organizationId: snapshot.organizationId,
     title: snapshot.title,
     status: snapshot.status,
     expiresAt: snapshot.expiresAt,
