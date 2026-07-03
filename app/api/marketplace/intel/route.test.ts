@@ -13,6 +13,10 @@ vi.mock("@/features/marketplace/marketplace-route-utils", async () => {
   return { ...actual, getMarketplaceContext: vi.fn() };
 });
 
+// 路由按 Date.now() 的 7 天窗口统计"新增"，测试数据必须用相对时间，
+// 固定日期会随真实日期滑出窗口导致用例过期失败。
+const recentIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
 function posting(over: Partial<PostingPublic>): PostingPublic {
   return {
     id: "p1",
@@ -28,8 +32,8 @@ function posting(over: Partial<PostingPublic>): PostingPublic {
     description: null,
     deadlineAt: null,
     details: {},
-    createdAt: "2026-06-26T00:00:00.000Z",
-    updatedAt: "2026-06-26T00:00:00.000Z",
+    createdAt: recentIso,
+    updatedAt: recentIso,
     ...over,
   };
 }
@@ -45,10 +49,10 @@ function application(over: Partial<ApplicationPublic>): ApplicationPublic {
     resources: null,
     message: null,
     reviewNote: null,
-    submittedAt: "2026-06-26T00:00:00.000Z",
+    submittedAt: recentIso,
     reviewedAt: null,
-    createdAt: "2026-06-26T00:00:00.000Z",
-    updatedAt: "2026-06-26T00:00:00.000Z",
+    createdAt: recentIso,
+    updatedAt: recentIso,
     ...over,
   };
 }
