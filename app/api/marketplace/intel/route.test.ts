@@ -13,6 +13,10 @@ vi.mock("@/features/marketplace/marketplace-route-utils", async () => {
   return { ...actual, getMarketplaceContext: vi.fn() };
 });
 
+// 市场动态按「距 now 7 天」窗口过滤，夹具时间必须相对当前时间，
+// 否则用例会随日历自然过期（曾在 2026-07-03 因窗口滑出而失败）。
+const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
 function posting(over: Partial<PostingPublic>): PostingPublic {
   return {
     id: "p1",
@@ -28,8 +32,8 @@ function posting(over: Partial<PostingPublic>): PostingPublic {
     description: null,
     deadlineAt: null,
     details: {},
-    createdAt: "2026-06-26T00:00:00.000Z",
-    updatedAt: "2026-06-26T00:00:00.000Z",
+    createdAt: oneDayAgo,
+    updatedAt: oneDayAgo,
     ...over,
   };
 }
