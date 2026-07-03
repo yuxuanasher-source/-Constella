@@ -25,7 +25,9 @@ export type AdmissionEvaluationDecision =
   | "needs_changes"
   | "selected"
   | "backup"
-  | "pending";
+  | "pending"
+  // AI 预审专用：置信度不足时不给通过/驳回倾向，交人工全量审。
+  | "manual_review";
 
 export type AdmissionCheckpoint = {
   key: string;

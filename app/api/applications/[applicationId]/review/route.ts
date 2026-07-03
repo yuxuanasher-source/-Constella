@@ -9,6 +9,7 @@ import {
   resolveAdmissionRubric,
   type AdmissionReviewClient,
 } from "@/features/admission-review/evaluation-service";
+import { recordAiVsMcnSignal } from "@/features/admission-review/signals";
 import {
   actorFromContext,
   getAdmissionRouteContext,
@@ -83,6 +84,12 @@ export async function PATCH(
             })),
           },
         });
+        // AI 预审 vs 一审对齐信号；失败不阻塞审核。
+        await recordAiVsMcnSignal({
+          client: reviewClient as never,
+          organizationId: evaluation.organizationId,
+          submissionId: evaluation.submissionId,
+        }).catch(() => null);
       },
     });
 

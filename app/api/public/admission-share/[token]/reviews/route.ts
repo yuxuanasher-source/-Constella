@@ -9,6 +9,7 @@ import {
   resolveAdmissionRubric,
   type AdmissionReviewClient,
 } from "@/features/admission-review/evaluation-service";
+import { recordMcnVsVendorSignal } from "@/features/admission-review/signals";
 import {
   submitVendorAdmissionReviews,
   SupabaseAdmissionShareBoardRepository,
@@ -83,6 +84,12 @@ export async function POST(
             reasonCodes,
           },
         });
+        // 一审 vs 二审对齐信号（一审漏判监测）；失败不阻塞厂家提交。
+        await recordMcnVsVendorSignal({
+          client: reviewClient as never,
+          organizationId: evaluation.organizationId,
+          submissionId: evaluation.recordingSubmissionId,
+        }).catch(() => null);
       },
     });
 
