@@ -40,6 +40,19 @@ import {
   createConfiguredAiProviders,
   resolveAiProviderRouting,
 } from "@/features/ai/provider-registry";
+import {
+  buildXingyaoChatGrounding,
+  type XingyaoChatGrounding,
+} from "@/features/ai/xingyao-assistant";
+import {
+  loadXingyaoFeatureStore,
+  type XingyaoSnapshotClient,
+} from "@/features/ai/xingyao-snapshot-loader";
+import {
+  loadXingyaoRiskWeights,
+  type XingyaoWeightRepositoryClient,
+} from "@/features/ai/xingyao-weight-repository";
+import { DEFAULT_XINGYAO_RISK_WEIGHTS } from "@/features/ai/xingyao-risk-radar";
 import { loadRoleHomeDashboard } from "@/features/dashboards/role-home-loader";
 import {
   aggregateReviewKnowledge,
@@ -134,29 +147,43 @@ export async function POST(request: Request) {
     // 全部并行加载；只有后面的同步组装步骤存在依赖：
     // buildDashboardChatGrounding 需要 dashboard + insights，
     // composeDashboardKnowledgeContext 的 retrospectiveDraft 需要 grounding.facts。
-    const [dashboard, streamerProfileInsights, knowledgePassages, reviewDocuments] =
-      await Promise.all([
-        loadRoleHomeDashboard({ supabase, auth }).catch(() => null),
-        loadStreamerProfileInsightsForGrounding({ supabase, auth }).catch(
-          () => [],
-        ),
-        searchKnowledgeDocuments(supabase as unknown as KnowledgeClient, {
+    const [
+      dashboard,
+      streamerProfileInsights,
+      knowledgePassages,
+      reviewDocuments,
+      xingyaoStore,
+      xingyaoWeights,
+    ] = await Promise.all([
+      loadRoleHomeDashboard({ supabase, auth }).catch(() => null),
+      loadStreamerProfileInsightsForGrounding({ supabase, auth }).catch(
+        () => [],
+      ),
+      searchKnowledgeDocuments(supabase as unknown as KnowledgeClient, {
+        organizationId: auth.organizationId,
+        query: lastMessage.content,
+        limit: 5,
+        candidateLimit: 200,
+      }).catch(() => []),
+      listLiveReviewDocuments(
+        supabase,
+        {
+          userId: auth.userId,
+          name: auth.name,
+          role: auth.role,
           organizationId: auth.organizationId,
-          query: lastMessage.content,
-          limit: 5,
-          candidateLimit: 200,
-        }).catch(() => []),
-        listLiveReviewDocuments(
-          supabase,
-          {
-            userId: auth.userId,
-            name: auth.name,
-            role: auth.role,
-            organizationId: auth.organizationId,
-          },
-          { limit: 100 },
-        ).catch(() => []),
-      ]);
+        },
+        { limit: 100 },
+      ).catch(() => []),
+      loadXingyaoFeatureStore({
+        client: supabase as unknown as XingyaoSnapshotClient,
+        organizationId: auth.organizationId,
+      }).catch(() => null),
+      loadXingyaoRiskWeights(
+        supabase as unknown as XingyaoWeightRepositoryClient,
+        auth.organizationId,
+      ).catch(() => DEFAULT_XINGYAO_RISK_WEIGHTS),
+    ]);
     if (!dashboard) {
       return NextResponse.json(
         { error: "无法读取真实业务数据，已停止 AI 分析" },
@@ -169,6 +196,14 @@ export async function POST(request: Request) {
       auth,
       streamerProfileInsights,
     });
+    // 星耀组织级诊断事实包（ROI 归因 + 风险预警）；快照加载失败时静默降级，
+    // 聊天仍以看板 grounding 为底。
+    const xingyaoGrounding: XingyaoChatGrounding | null = xingyaoStore
+      ? buildXingyaoChatGrounding({
+          store: xingyaoStore,
+          weights: xingyaoWeights,
+        })
+      : null;
     const knowledgeContext = composeDashboardKnowledgeContext({
       passages: knowledgePassages,
       reviewDocuments,
@@ -187,6 +222,9 @@ export async function POST(request: Request) {
       { role: "system", content: SYSTEM_PROMPT },
       { role: "system", content: buildModePromptText(chatMode) },
       { role: "system", content: grounding.promptText },
+      ...(xingyaoGrounding && xingyaoGrounding.facts.length
+        ? [{ role: "system" as const, content: xingyaoGrounding.promptText }]
+        : []),
       { role: "system", content: knowledgeContext.promptText },
       ...(attachments.length
         ? [{ role: "system" as const, content: buildAttachmentPromptText(attachments) }]
