@@ -97,6 +97,7 @@ describe("runAiToolQuery", () => {
         "project_review_summary",
         "query_streamer_profile",
         "streamer_diagnosis",
+        "xingyao_org_diagnosis",
       ].sort(),
     );
     for (const tool of tools) {
