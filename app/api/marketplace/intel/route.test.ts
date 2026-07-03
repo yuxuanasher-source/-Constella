@@ -13,6 +13,10 @@ vi.mock("@/features/marketplace/marketplace-route-utils", async () => {
   return { ...actual, getMarketplaceContext: vi.fn() };
 });
 
+// 路由内部用 Date.now() 计算「近 7 天」窗口，夹具时间必须相对当前时间生成，
+// 固定日期会在一周后悄悄过期并把用例变成日期炸弹。
+const RECENT_AT = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
 function posting(over: Partial<PostingPublic>): PostingPublic {
   return {
     id: "p1",
@@ -28,8 +32,8 @@ function posting(over: Partial<PostingPublic>): PostingPublic {
     description: null,
     deadlineAt: null,
     details: {},
-    createdAt: "2026-06-26T00:00:00.000Z",
-    updatedAt: "2026-06-26T00:00:00.000Z",
+    createdAt: RECENT_AT,
+    updatedAt: RECENT_AT,
     ...over,
   };
 }
@@ -45,10 +49,10 @@ function application(over: Partial<ApplicationPublic>): ApplicationPublic {
     resources: null,
     message: null,
     reviewNote: null,
-    submittedAt: "2026-06-26T00:00:00.000Z",
+    submittedAt: RECENT_AT,
     reviewedAt: null,
-    createdAt: "2026-06-26T00:00:00.000Z",
-    updatedAt: "2026-06-26T00:00:00.000Z",
+    createdAt: RECENT_AT,
+    updatedAt: RECENT_AT,
     ...over,
   };
 }
