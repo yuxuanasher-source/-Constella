@@ -2,12 +2,11 @@ import { NextResponse } from "next/server";
 
 import { enrichAgentOutputWithLlm } from "@/features/ai/agent-llm-enrichment";
 import { validateAgentOutput } from "@/features/ai/agent-output-contract";
-import {
-  runScriptOptimizationAgent,
-  type ScriptOptimizationInput,
-} from "@/features/ai/script-optimization-agent";
+import { scriptOptimizationRequestSchema } from "@/features/ai/agent-request-schemas";
+import { runScriptOptimizationAgent } from "@/features/ai/script-optimization-agent";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import { parseJsonBody } from "@/lib/http/parse-json-body";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
@@ -38,7 +37,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const input = (await request.json()) as ScriptOptimizationInput;
+    // 脚本文本与反馈是被优化的用户素材(合法输入),但必须过 schema 校验。
+    const input = await parseJsonBody(request, scriptOptimizationRequestSchema);
     const result = runScriptOptimizationAgent(input);
     const draft = result.scriptVersionDraft;
     const { error } = await (supabase as ScriptVersionClient)
@@ -59,7 +59,7 @@ export async function POST(request: Request) {
       throw error;
     }
 
-    const agentOutput = await enrichAgentOutputWithLlm({
+    const { output: agentOutput, narrative } = await enrichAgentOutputWithLlm({
       output: result.agentOutput,
       scene: "script_optimization",
       role: "你是直播话术优化助手,基于脚本与直播事实给出话术优化诊断。",
@@ -70,6 +70,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       scriptVersionDraft: draft,
       agentOutput,
+      narrative,
       validation: validateAgentOutput(agentOutput),
     });
   } catch (error) {

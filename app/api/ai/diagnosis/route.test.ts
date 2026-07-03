@@ -34,6 +34,23 @@ function createClient() {
   };
 }
 
+// 支持 gatherStreamerDiagnosisContext 的链式查询,同时保留账本 insert。
+function createGroundedClient(tables: Record<string, unknown[]>) {
+  return {
+    from: vi.fn((table: string) => {
+      const rows = tables[table] ?? [];
+      const chain: Record<string, unknown> = {
+        insert: vi.fn(async () => ({ error: null })),
+      };
+      chain.select = () => chain;
+      chain.eq = () => chain;
+      chain.order = () => chain;
+      chain.limit = async () => ({ data: rows, error: null });
+      return chain;
+    }),
+  };
+}
+
 describe("AI diagnosis route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -87,6 +104,42 @@ describe("AI diagnosis route", () => {
     // not the streamer's RLS-scoped session.
     expect(adminClient.from).toHaveBeenCalledWith("ai_invocations");
     expect(userClient.from).not.toHaveBeenCalledWith("ai_invocations");
+  });
+
+  it("prefers server-grounded report data over caller-supplied numbers", async () => {
+    // 服务端能查到主播的真实报数时,客户端 POST 的 report 必须被覆盖
+    // (信任根收敛:客户端数据只是无绑定演示场景的兜底)。
+    const client = createGroundedClient({
+      streamers: [{ id: "streamer-1" }],
+      live_reports: [
+        {
+          viewers: 2488,
+          settlement_duration: 180,
+          evidence_level: "green",
+          risk_flags: ["duration_divergence"],
+        },
+      ],
+    });
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(client as never);
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(client as never);
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/diagnosis", {
+        method: "POST",
+        body: JSON.stringify({
+          report: { totalViews: 300, settlementDuration: 30 },
+          feedback: ["编造的反馈"],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const statements = body.agentOutput.facts.map(
+      (fact: { statement: string }) => fact.statement,
+    );
+    expect(statements).toContain("本场总观看数为 2488");
+    expect(statements).not.toContain("本场总观看数为 300");
   });
 
   it("requires authentication", async () => {

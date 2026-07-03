@@ -28,8 +28,33 @@ export type DashboardChatGrounding = {
   projectHealth: BusinessCopilotProjectHealth;
   suggestedActions: BusinessCopilotSuggestedAction[];
   missingData: string[];
+  droppedFactCount: number;
   promptText: string;
 };
+
+// 上下文预算(方案 WP5):事实包封顶,裁剪按组装顺序的优先级(KPI >
+// 待办/风险/下钻 > 面板 > 画像),被裁剪的数量写入 missingData 与 ledger,
+// 不允许静默截断。
+const MAX_GROUNDING_FACTS = 80;
+
+// UGC 截断(方案 WP3):画像 insight 的文本来自用户生成内容,进入 prompt
+// 前限制长度,降低注入面与 token 浪费。
+const MAX_INSIGHT_DETAIL_CHARS = 400;
+
+// 注入防御(方案 WP3):事实包以 user 角色数据块进入对话,回答规则保留在
+// system;数据块定界符让模型能区分"数据"与"指令"。
+export function wrapDataBlock(name: string, content: string): string {
+  return [`<<<DATA:${name}>>>`, content, `<<<END:${name}>>>`].join("\n");
+}
+
+export const DASHBOARD_FACTS_ANSWER_RULES = [
+  "business-facts 数据块(真实业务事实包)使用规则:",
+  "1. 只能基于 facts 中的真实业务事实回答。",
+  "2. 不得编造 facts 中不存在的数字、项目、达人、主播、收入、成本或环比。",
+  "3. 如果用户问到缺失指标,必须明确说明缺失数据,不能用行业常识补齐。",
+  "4. 每个关键结论都要引用 source,格式如(来源:dashboard.kpis.receivable)。",
+  "5. 高风险动作只能给建议和核对路径,必须由人工确认后执行。",
+].join("\n");
 
 export type StreamerProfileInsightGrounding = {
   id: string;
@@ -54,7 +79,7 @@ export function buildDashboardChatGrounding({
   auth: AuthContext;
   streamerProfileInsights?: StreamerProfileInsightGrounding[];
 }): DashboardChatGrounding {
-  const facts = [
+  const allFacts = [
     ...kpiFacts(dashboard),
     ...queueFacts("queue", dashboard.queue),
     ...queueFacts("risks", dashboard.risks),
@@ -62,9 +87,16 @@ export function buildDashboardChatGrounding({
     ...panelFacts(dashboard),
     ...profileInsightFacts(streamerProfileInsights),
   ];
+  const facts = allFacts.slice(0, MAX_GROUNDING_FACTS);
+  const droppedFactCount = allFacts.length - facts.length;
   const projectHealth = buildProjectHealth(dashboard);
   const suggestedActions = buildSuggestedActions(projectHealth);
   const missingData = missingDataNotes(dashboard, facts);
+  if (droppedFactCount > 0) {
+    missingData.push(
+      `因篇幅限制,业务事实包省略了 ${droppedFactCount} 条低优先级事实`,
+    );
+  }
   const grounding: Omit<DashboardChatGrounding, "promptText"> = {
     profile: {
       role: auth.role,
@@ -77,6 +109,7 @@ export function buildDashboardChatGrounding({
     projectHealth,
     suggestedActions,
     missingData,
+    droppedFactCount,
   };
 
   return {
@@ -161,7 +194,10 @@ function profileInsightDetail(insight: StreamerProfileInsightGrounding) {
     parts.push(`原始来源：${insight.sourceRef}`);
   }
 
-  return [summary, parts.join("；")].filter(Boolean).join(" ");
+  const detail = [summary, parts.join("；")].filter(Boolean).join(" ");
+  return detail.length > MAX_INSIGHT_DETAIL_CHARS
+    ? `${detail.slice(0, MAX_INSIGHT_DETAIL_CHARS)}…`
+    : detail;
 }
 
 function cleanInsightList(values?: string[]) {
@@ -266,31 +302,25 @@ function missingDataNotes(
   return notes;
 }
 
+// 数据块只含数据(紧凑序列化省 token,方案 WP5);回答规则在
+// DASHBOARD_FACTS_ANSWER_RULES 中随 system 消息下发(方案 WP3)。
 function buildPromptText(
   grounding: Omit<DashboardChatGrounding, "promptText">,
 ): string {
-  return [
-    "真实业务事实包：",
-    JSON.stringify(
-      {
+  return wrapDataBlock(
+    "business-facts",
+    [
+      "真实业务事实包：",
+      JSON.stringify({
         profile: grounding.profile,
         generatedAt: grounding.generatedAt,
         facts: grounding.facts,
         projectHealth: grounding.projectHealth,
         suggestedActions: grounding.suggestedActions,
         missingData: grounding.missingData,
-      },
-      null,
-      2,
-    ),
-    "",
-    "回答规则：",
-    "1. 只能基于 facts 中的真实业务事实回答。",
-    "2. 不得编造 facts 中不存在的数字、项目、达人、主播、收入、成本或环比。",
-    "3. 如果用户问到缺失指标，必须明确说明缺失数据，不能用行业常识补齐。",
-    "4. 每个关键结论都要引用 source，格式如（来源：dashboard.kpis.receivable）。",
-    "5. 高风险动作只能给建议和核对路径，必须由人工确认后执行。",
-  ].join("\n");
+      }),
+    ].join("\n"),
+  );
 }
 
 function formatValue(value: number | string, unit?: string): string {

@@ -244,6 +244,90 @@ describe("OverviewBoard AI panel", () => {
     });
   });
 
+  it("sends only the project id when the risk quick action calls project-reviews", async () => {
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/project-reviews") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              agentOutput: {
+                summary: "项目经营诊断已生成。",
+                recommendations: [{ text: "优先复核低毛利项目" }],
+                caveats: ["缺少最近一期结算数据，结论按现有数据给出。"],
+              },
+              dataGaps: ["缺少最近一期结算数据"],
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ matches: { recommendations: [] } }),
+      });
+    });
+
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[
+          {
+            id: "3f5a1f9c-8f61-4f7a-9a44-2b6d8f0c1e57",
+            name: "示例项目",
+            status: "active",
+            metrics: {},
+          },
+        ]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("解读风险事项"));
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/ai/project-reviews",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const reviewCall = fetch.mock.calls.find(
+      ([url]) => url === "/api/ai/project-reviews",
+    );
+    expect(JSON.parse(reviewCall[1].body)).toEqual({
+      projectId: "3f5a1f9c-8f61-4f7a-9a44-2b6d8f0c1e57",
+    });
+    expect(
+      await screen.findByText(/项目经营诊断已生成。/),
+    ).toBeInTheDocument();
+  });
+
+  it("hints instead of calling project-reviews when no project is loaded", async () => {
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("解读风险事项"));
+
+    expect(
+      await screen.findByText(
+        "当前范围内暂无可诊断的项目，请先创建项目或调整周期后再试。",
+      ),
+    ).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith(
+      "/api/ai/project-reviews",
+      expect.anything(),
+    );
+  });
+
   it("routes the business question quick action through the controlled copilot API", async () => {
     fetch.mockImplementation((url) => {
       if (url === "/api/ai/business-copilot") {

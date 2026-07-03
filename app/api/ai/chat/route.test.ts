@@ -251,9 +251,17 @@ describe("POST /api/ai/chat", () => {
           promptKey: "dashboard.ai.chat",
           messages: expect.arrayContaining([
             expect.objectContaining({ role: "system" }),
+            // 注入防御:事实包是 user 角色的数据块,不再拥有 system 权级;
+            // 回答规则仍留在 system 消息里。
+            expect.objectContaining({
+              role: "user",
+              content: expect.stringContaining("真实业务事实包"),
+            }),
             expect.objectContaining({
               role: "system",
-              content: expect.stringContaining("真实业务事实包"),
+              content: expect.stringContaining(
+                "不得编造 facts 中不存在的数字",
+              ),
             }),
             { role: "assistant", content: "上一轮回复" },
             { role: "user", content: "默认分析本月" },

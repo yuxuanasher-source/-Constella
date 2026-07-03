@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { RoleHomeDashboardDto } from "@/features/dashboards/role-home";
 import type { AuthContext } from "@/lib/auth/context";
-import { buildDashboardChatGrounding } from "./dashboard-chat-grounding";
+import {
+  DASHBOARD_FACTS_ANSWER_RULES,
+  buildDashboardChatGrounding,
+} from "./dashboard-chat-grounding";
 
 const auth: AuthContext = {
   userId: "user-1",
@@ -95,9 +98,16 @@ describe("dashboard chat grounding", () => {
       ]),
     );
     expect(grounding.missingData).not.toContain("当前看板没有可用 KPI 事实");
+    // promptText 是纯数据块(注入防御:回答规则随 system 消息下发)。
+    expect(grounding.promptText).toContain("<<<DATA:business-facts>>>");
     expect(grounding.promptText).toContain("真实业务事实包");
     expect(grounding.promptText).toContain("dashboard.kpis.receivable");
-    expect(grounding.promptText).toContain("不得编造 facts 中不存在的数字");
+    expect(grounding.promptText).not.toContain(
+      "不得编造 facts 中不存在的数字",
+    );
+    expect(DASHBOARD_FACTS_ANSWER_RULES).toContain(
+      "不得编造 facts 中不存在的数字",
+    );
   });
 
   it("adds project health priorities to the AI prompt grounding", () => {
@@ -198,7 +208,40 @@ describe("dashboard chat grounding", () => {
         "暂无经营数据：创建项目后会出现经营指标",
       ]),
     );
-    expect(grounding.promptText).toContain("缺失数据");
+    // 缺失说明作为数据随事实包下发;"缺失数据"规则文案在 system 规则里。
+    expect(grounding.promptText).toContain("当前看板没有可用 KPI 事实");
+    expect(DASHBOARD_FACTS_ANSWER_RULES).toContain("缺失数据");
+  });
+
+  it("caps the fact list and records the dropped count", () => {
+    const dashboard: RoleHomeDashboardDto = {
+      profile: {
+        role: "ops_manager",
+        title: "经营总览看板",
+        subtitle: "经营闭环",
+        scopeLabel: "全组织",
+      },
+      kpis: Array.from({ length: 90 }, (_, index) => ({
+        key: `kpi-${index}`,
+        label: `指标 ${index}`,
+        value: index,
+        unit: "个",
+      })),
+      queue: [],
+      risks: [],
+      drilldowns: [],
+      generatedAt: "2026-06-28T01:20:00.000Z",
+    };
+
+    const grounding = buildDashboardChatGrounding({ dashboard, auth });
+
+    expect(grounding.facts).toHaveLength(80);
+    expect(grounding.droppedFactCount).toBe(10);
+    expect(grounding.missingData).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("省略了 10 条低优先级事实"),
+      ]),
+    );
   });
 
   it("adds confirmed streamer profile insights as citeable AI facts", () => {

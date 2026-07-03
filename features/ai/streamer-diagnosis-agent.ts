@@ -1,24 +1,14 @@
-import { z } from "zod";
-
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import {
+  enrichAgentOutputWithLlm,
+  type AgentNarrativeMeta,
+} from "./agent-llm-enrichment";
 import { validateAgentOutput } from "./agent-output-contract";
 import { runAiToolQuery, type AiToolResult } from "./ai-tool-layer";
-import type {
-  AgentOutput,
-  AiActor,
-  AiGatewayResult,
-  AiMessage,
-  AiInvocationStatus,
-  AiProvider,
-  AiProviderName,
-} from "./contracts";
-import { runAiGateway } from "./llm-gateway";
+import type { AgentOutput, AiActor, AiProvider, AiProviderName } from "./contracts";
 import { recordAiInvocation } from "./invocation-ledger";
-import {
-  createConfiguredAiProviders,
-  resolveAiProviderRouting,
-} from "./provider-registry";
+import { runAiGateway } from "./llm-gateway";
 import { getStreamerIdForUser } from "@/features/live-operations/live-operations-repository";
 
 type StreamerDiagnosisClient = Parameters<typeof runAiToolQuery>[0]["client"];
@@ -90,35 +80,13 @@ export async function gatherStreamerDiagnosisContext({
   }
 }
 
-const STREAMER_DIAGNOSIS_PROMPT_KEY = "streamer_diagnosis";
-const STREAMER_DIAGNOSIS_PROMPT_VERSION = 1;
-
-const STREAMER_DIAGNOSIS_SYSTEM_PROMPT = [
-  "你是 MCN 直播运营的资深诊断助手,基于运营系统给出的「事实」为主播本场直播做诊断。",
-  "严格规则:",
-  "1. 只能依据下方提供的事实,不得编造任何数据、平台信息或外部因素。",
-  "2. findings(结论)、caveats(风险提示)、recommendations(建议)的文字中禁止出现任何阿拉伯数字(0-9);需要表达数值时用定性描述,例如「偏低」「明显下滑」「高于均值」。",
-  "3. 所有建议都必须经人工确认后才能执行,不要给出可直接自动执行的指令。",
-  "4. 使用简洁、专业、可执行的中文。",
-  '5. 只返回 JSON,结构为:{"findings":[{"summary":"..."}],"caveats":[{"summary":"..."}],"recommendations":[{"proposal":"...","expectedImpact":"..."}]}。',
-].join("\n");
-
-const diagnosisLlmSchema = z.object({
-  findings: z.array(z.object({ summary: z.string().trim().min(1) })).min(1),
-  caveats: z.array(z.object({ summary: z.string().trim().min(1) })).optional(),
-  recommendations: z
-    .array(
-      z.object({
-        proposal: z.string().trim().min(1),
-        expectedImpact: z.string().trim().min(1).optional(),
-      }),
-    )
-    .min(1),
-});
+const STREAMER_DIAGNOSIS_ROLE =
+  "你是 MCN 直播运营的资深诊断助手,基于运营系统给出的「事实」为主播本场直播做诊断。";
 
 export type StreamerDiagnosisAgentResult = {
   result: AiToolResult;
   agentOutput: AgentOutput;
+  narrative: AgentNarrativeMeta;
   validation: ReturnType<typeof validateAgentOutput>;
 };
 
@@ -146,173 +114,34 @@ export async function runStreamerDiagnosisAgent({
     input,
   });
 
-  // Deterministic, evidence-grounded output is always available as a fallback.
+  // Deterministic, evidence-grounded output is always available as a fallback;
+  // the shared enrichment returns it unchanged when no real model is
+  // configured or the model output fails the guardrails.
   const fallbackOutput = buildStreamerDiagnosisAgentOutput(result);
-
-  // When a real model is configured, let it write the narrative (in Chinese)
-  // while the facts, evidence links and human-approval flags stay deterministic.
-  const routing = resolveAiProviderRouting();
-  const enriched = await enrichDiagnosisWithLlm({
-    client,
-    actor,
-    result,
-    providers: providers ?? createConfiguredAiProviders(),
-    primaryProvider: primaryProvider ?? routing.primaryProvider,
-    shadowProvider: routing.shadowProvider,
-    runGateway,
-    recordInvocation,
-  });
-
-  const agentOutput =
-    enriched && validateAgentOutput(enriched).valid ? enriched : fallbackOutput;
-  const validation = validateAgentOutput(agentOutput);
-
-  return { result, agentOutput, validation };
-}
-
-async function enrichDiagnosisWithLlm({
-  client,
-  actor,
-  result,
-  providers,
-  primaryProvider,
-  shadowProvider,
-  runGateway,
-  recordInvocation,
-}: {
-  client: StreamerDiagnosisClient;
-  actor: AiActor;
-  result: AiToolResult;
-  providers: AiProvider[];
-  primaryProvider?: AiProviderName;
-  shadowProvider?: AiProviderName;
-  runGateway: typeof runAiGateway;
-  recordInvocation: typeof recordAiInvocation;
-}): Promise<AgentOutput | null> {
-  const hasRealProvider = providers.some(
-    (provider) =>
-      provider.name === "openai" ||
-      provider.name === "hunyuan" ||
-      provider.name === "deepseek",
-  );
-  if (!hasRealProvider) {
-    return null;
-  }
-
-  const facts = collectStreamerFacts(result);
   const diagnosisType = stringValue(
     result.output.diagnosisType,
     "content_rhythm",
   );
 
-  let gatewayResult: AiGatewayResult;
-  try {
-    gatewayResult = await runGateway({
-      providers,
-      primaryProvider,
-      request: {
-        kind: "structured",
-        promptKey: STREAMER_DIAGNOSIS_PROMPT_KEY,
-        promptVersion: STREAMER_DIAGNOSIS_PROMPT_VERSION,
-        messages: buildDiagnosisMessages(facts, diagnosisType),
-        responseSchema: diagnosisLlmSchema,
-      },
-    });
-  } catch {
-    return null;
-  }
-
-  // Record the model invocation for cost/usage tracking (best-effort).
-  await recordInvocation({
+  const { output: agentOutput, narrative } = await enrichAgentOutputWithLlm({
+    output: fallbackOutput,
+    scene: "streamer_diagnosis",
+    role: STREAMER_DIAGNOSIS_ROLE,
+    contextLines: [`诊断类型:${diagnosisType}`],
     client,
     actor,
-    input: {
-      scene: "streamer_diagnosis",
+    providers,
+    primaryProvider,
+    runGateway,
+    recordInvocation,
+    ledgerExtras: {
       objectType: "streamer",
-      providerName: gatewayResult.providerName,
-      primaryProvider,
-      shadowProvider,
-      status: gatewayResult.status as AiInvocationStatus,
-      promptKey: STREAMER_DIAGNOSIS_PROMPT_KEY,
-      promptVersion: STREAMER_DIAGNOSIS_PROMPT_VERSION,
-      usage: gatewayResult.usage,
-      costCents: gatewayResult.costCents,
-      latencyMs: gatewayResult.latencyMs,
-      degradedReason: gatewayResult.degradedReason,
-      errorSummary: gatewayResult.errorSummary,
       metadata: { diagnosisType },
     },
-  }).catch(() => {});
+  });
+  const validation = validateAgentOutput(agentOutput);
 
-  if (
-    gatewayResult.status !== "succeeded" ||
-    !gatewayResult.providerName ||
-    gatewayResult.providerName === "deterministic"
-  ) {
-    return null;
-  }
-
-  const parsed = diagnosisLlmSchema.safeParse(gatewayResult.structuredOutput);
-  if (!parsed.success) {
-    return null;
-  }
-
-  const evidence = diagnosisEvidence(result, facts);
-  return {
-    facts,
-    findings: parsed.data.findings.map((finding) => ({
-      summary: finding.summary,
-      evidence,
-    })),
-    caveats: (parsed.data.caveats ?? []).map((caveat) => ({
-      summary: caveat.summary,
-      unverifiedExternalFactor: true,
-    })),
-    recommendations: parsed.data.recommendations.map((recommendation) => ({
-      proposal: recommendation.proposal,
-      ...(recommendation.expectedImpact
-        ? { expectedImpact: recommendation.expectedImpact }
-        : {}),
-      requiresHumanApproval: true as const,
-    })),
-  };
-}
-
-function buildDiagnosisMessages(
-  facts: AgentOutput["facts"],
-  diagnosisType: string,
-): AiMessage[] {
-  const factLines = facts.map((fact) => `- ${fact.statement}`).join("\n");
-  return [
-    { role: "system", content: STREAMER_DIAGNOSIS_SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: [
-        `诊断类型:${diagnosisType}`,
-        "以下是本场直播的事实数据:",
-        factLines,
-        "",
-        "请基于以上事实输出诊断结论、风险提示与改进建议。",
-      ].join("\n"),
-    },
-  ];
-}
-
-function diagnosisEvidence(
-  result: AiToolResult,
-  facts: AgentOutput["facts"],
-): Array<{ sourceTool: string; sourceId: string }> {
-  const factsByPath = new Map(
-    facts.map((fact) => [fact.sourceId.split(":").at(-1), fact]),
-  );
-  const evidence = compactEvidence([
-    factSource(factsByPath, result.invocationId, "report.totalViews"),
-    factSource(factsByPath, result.invocationId, "output.diagnosisType"),
-  ]);
-  // Always reference at least one existing fact so findings stay grounded.
-  return evidence.length > 0
-    ? evidence
-    : [source(result.invocationId, "input.feedbackCount")];
+  return { result, agentOutput, narrative, validation };
 }
 
 function buildStreamerDiagnosisAgentOutput(result: AiToolResult): AgentOutput {
@@ -333,8 +162,8 @@ function buildStreamerDiagnosisAgentOutput(result: AiToolResult): AgentOutput {
     {
       summary:
         diagnosisType === "traffic_drop"
-          ? "Interaction pattern needs attention before the next live session"
-          : "Content rhythm needs attention before the next live session",
+          ? "互动模式需要在下一场直播前重点调整"
+          : "内容节奏需要在下一场直播前重点调整",
       evidence:
         rhythmEvidence.length > 0
           ? rhythmEvidence
@@ -347,8 +176,7 @@ function buildStreamerDiagnosisAgentOutput(result: AiToolResult): AgentOutput {
   );
   if (evidenceLevel && evidenceLevel !== "green") {
     findings.push({
-      summary:
-        "Evidence confidence needs manual review before relying on diagnosis",
+      summary: "证据置信度需人工复核后再采信本次诊断",
       evidence: [source(result.invocationId, "report.evidenceLevel")],
     });
   }
@@ -358,27 +186,23 @@ function buildStreamerDiagnosisAgentOutput(result: AiToolResult): AgentOutput {
     findings,
     caveats: [
       {
-        summary: "Platform traffic movement was not independently verified",
+        summary: "平台流量波动未经过独立核验",
         unverifiedExternalFactor: true,
       },
       {
-        summary:
-          "Historical baseline was not available in this diagnosis request",
+        summary: "本次诊断缺少历史基线数据",
         unverifiedExternalFactor: true,
       },
     ],
     recommendations: [
       {
-        proposal:
-          "Refine opening hook and interaction rhythm before the next session",
-        expectedImpact:
-          "Improve retention signals while preserving manual review",
+        proposal: "下一场开播前优化开场钩子与互动节奏",
+        expectedImpact: "在保留人工复核的前提下改善留存信号",
         requiresHumanApproval: true,
       },
       {
-        proposal:
-          "Review replay evidence before changing task or settlement records",
-        expectedImpact: "Avoid acting on incomplete operational evidence",
+        proposal: "调整任务或结算记录前先复核回放证据",
+        expectedImpact: "避免基于不完整的运营证据做决策",
         requiresHumanApproval: true,
       },
     ],
@@ -398,27 +222,25 @@ function collectStreamerFacts(result: AiToolResult): AgentOutput["facts"] {
     result.invocationId,
     "report.totalViews",
     report.totalViews,
-    "Total views",
-    "",
-    "are",
+    "本场总观看数",
   );
   pushNumberFact(
     facts,
     result.invocationId,
     "report.settlementDuration",
     report.settlementDuration,
-    "Settlement duration",
-    " minutes",
+    "结算时长",
+    " 分钟",
   );
   pushTextFact(
     facts,
     result.invocationId,
     "report.evidenceLevel",
     report.evidenceLevel,
-    "Evidence level",
+    "证据等级",
   );
   facts.push({
-    statement: `Feedback item count is ${feedback.length}`,
+    statement: `反馈条数为 ${feedback.length}`,
     ...source(result.invocationId, "input.feedbackCount"),
   });
   pushTextFact(
@@ -426,7 +248,7 @@ function collectStreamerFacts(result: AiToolResult): AgentOutput["facts"] {
     result.invocationId,
     "output.diagnosisType",
     result.output.diagnosisType,
-    "Diagnosis type",
+    "诊断类型",
   );
 
   return facts;
@@ -439,14 +261,13 @@ function pushNumberFact(
   value: unknown,
   label: string,
   suffix = "",
-  verb = "is",
 ): void {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return;
   }
 
   facts.push({
-    statement: `${label} ${verb} ${Math.trunc(value)}${suffix}`,
+    statement: `${label}为 ${Math.trunc(value)}${suffix}`,
     ...source(invocationId, fieldPath),
   });
 }
@@ -464,7 +285,7 @@ function pushTextFact(
   }
 
   facts.push({
-    statement: `${label} is ${text}`,
+    statement: `${label}为 ${text}`,
     ...source(invocationId, fieldPath),
   });
 }

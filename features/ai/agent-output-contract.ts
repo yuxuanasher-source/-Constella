@@ -5,12 +5,24 @@ export type AgentOutputValidation = {
   errors: string[];
 };
 
+// 数字护栏语义化(方案 WP4):叙事(findings/caveats/recommendations)中
+// 出现的数字必须能在事实语句中找到同一数字 token——finding 只能复述它
+// 引用的事实里的数字,caveat/recommendation 可复述任何事实里的数字。
+// 这替代了旧的 /\d/ 全禁:既允许「转化率 4167 bps 偏低」这类有溯源的
+// 复述,也继续拦截无中生有的数值声明。中文数字无法可靠判定,不做硬拦,
+// 由 prompt 规则约束。
 export function validateAgentOutput(
   output: AgentOutput,
 ): AgentOutputValidation {
   const errors: string[] = [];
-  const factSources = new Set(
-    output.facts.map((fact) => sourceKey(fact.sourceTool, fact.sourceId)),
+  const factsBySource = new Map(
+    output.facts.map((fact) => [
+      sourceKey(fact.sourceTool, fact.sourceId),
+      fact,
+    ]),
+  );
+  const allFactNumbers = collectNumberTokens(
+    output.facts.map((fact) => fact.statement),
   );
 
   output.facts.forEach((fact, index) => {
@@ -23,12 +35,6 @@ export function validateAgentOutput(
   });
 
   output.findings.forEach((finding, index) => {
-    if (containsNumericClaim(finding.summary)) {
-      errors.push(
-        `findings[${index}] must not include unsourced numeric claims`,
-      );
-    }
-
     if (!finding.evidence.length) {
       errors.push(
         `findings[${index}] must include at least one evidence reference`,
@@ -36,23 +42,37 @@ export function validateAgentOutput(
       return;
     }
 
+    const citedStatements: string[] = [];
     for (const evidence of finding.evidence) {
       if (!evidence.sourceTool.trim() || !evidence.sourceId.trim()) {
         errors.push(
           `findings[${index}] evidence must include sourceTool and sourceId`,
         );
-      } else if (
-        !factSources.has(sourceKey(evidence.sourceTool, evidence.sourceId))
-      ) {
+        continue;
+      }
+      const fact = factsBySource.get(
+        sourceKey(evidence.sourceTool, evidence.sourceId),
+      );
+      if (!fact) {
         errors.push(
           `findings[${index}] evidence must reference an existing fact`,
         );
+        continue;
       }
+      citedStatements.push(fact.statement);
+    }
+
+    if (
+      hasUnsourcedNumber(finding.summary, collectNumberTokens(citedStatements))
+    ) {
+      errors.push(
+        `findings[${index}] must not include unsourced numeric claims`,
+      );
     }
   });
 
   output.caveats.forEach((caveat, index) => {
-    if (containsNumericClaim(caveat.summary)) {
+    if (hasUnsourcedNumber(caveat.summary, allFactNumbers)) {
       errors.push(
         `caveats[${index}] must not include unsourced numeric claims`,
       );
@@ -65,8 +85,8 @@ export function validateAgentOutput(
 
   output.recommendations.forEach((recommendation, index) => {
     if (
-      containsNumericClaim(recommendation.proposal) ||
-      containsNumericClaim(recommendation.expectedImpact)
+      hasUnsourcedNumber(recommendation.proposal, allFactNumbers) ||
+      hasUnsourcedNumber(recommendation.expectedImpact, allFactNumbers)
     ) {
       errors.push(
         `recommendations[${index}] must not include unsourced numeric claims`,
@@ -98,6 +118,29 @@ function sourceKey(sourceTool: string, sourceId: string): string {
   return `${sourceTool}:${sourceId}`;
 }
 
-function containsNumericClaim(value: string | undefined): boolean {
-  return /\d/.test(value ?? "");
+const NUMBER_TOKEN_PATTERN = /\d+(?:\.\d+)?/g;
+
+export function collectNumberTokens(statements: string[]): Set<string> {
+  const tokens = new Set<string>();
+  for (const statement of statements) {
+    for (const match of statement.matchAll(NUMBER_TOKEN_PATTERN)) {
+      tokens.add(match[0]);
+    }
+  }
+  return tokens;
+}
+
+export function hasUnsourcedNumber(
+  value: string | undefined,
+  allowedNumbers: Set<string>,
+): boolean {
+  if (!value) {
+    return false;
+  }
+  for (const match of value.matchAll(NUMBER_TOKEN_PATTERN)) {
+    if (!allowedNumbers.has(match[0])) {
+      return true;
+    }
+  }
+  return false;
 }
