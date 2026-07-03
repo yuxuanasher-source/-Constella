@@ -13846,6 +13846,19 @@ function ScreenAdmission() {
       setAdmissionMessage("录屏审核后台暂未接入。");
       return;
     }
+    // 驳回/需修改时按卡点字典选择结构化理由码（沉淀审核信号）。
+    let reasonCodes = [];
+    if (decision === "rejected" || decision === "needs_changes") {
+      const checkpoints = await loadMcnReviewCheckpoints();
+      if (checkpoints.length > 0) {
+        const picked = askAdmissionReasonCodes(checkpoints, decision);
+        if (picked === null) {
+          setAdmissionMessage("操作已取消：驳回或需修改需选择理由卡点");
+          return;
+        }
+        reasonCodes = picked;
+      }
+    }
     const applicationId = application.id;
     setBusyAction(`review:${applicationId}:${decision}`);
     setAdmissionMessage("");
@@ -13853,6 +13866,7 @@ function ScreenAdmission() {
       await actions.reviewApplicationRecording(applicationId, {
         decision,
         note: admissionRecordingReviewNote(application, decision),
+        reasonCodes,
       });
       await syncAdmissionProjectBoards();
       setAdmissionMessage(recordingDecisionSuccessMessage(decision));
@@ -14895,6 +14909,45 @@ function vendorDecisionTone(decision) {
     needs_changes: "violet",
   };
   return tones[decision] || "neutral";
+}
+
+let cachedMcnReviewCheckpoints = null;
+
+async function loadMcnReviewCheckpoints() {
+  if (cachedMcnReviewCheckpoints) return cachedMcnReviewCheckpoints;
+  try {
+    const response = await fetch("/api/admission-review/rubric?stage=mcn_first");
+    if (!response.ok) return [];
+    const payload = await response.json();
+    cachedMcnReviewCheckpoints = Array.isArray(payload?.checkpoints)
+      ? payload.checkpoints
+      : [];
+    return cachedMcnReviewCheckpoints;
+  } catch {
+    return [];
+  }
+}
+
+// 编号多选：返回卡点 key 数组；取消或无有效选择返回 null（中止审核）。
+function askAdmissionReasonCodes(checkpoints, decision) {
+  const menu = checkpoints
+    .map((checkpoint, index) => `${index + 1}. ${checkpoint.label}`)
+    .join("\n");
+  const raw = globalThis.prompt?.(
+    `${recordingReviewDecisionLabel(decision)}理由（输入编号，逗号分隔可多选）：\n${menu}`,
+    "",
+  );
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const codes = [
+    ...new Set(
+      raw
+        .split(/[^0-9]+/)
+        .map((token) => parseInt(token, 10))
+        .filter((num) => num >= 1 && num <= checkpoints.length)
+        .map((num) => checkpoints[num - 1].key),
+    ),
+  ];
+  return codes.length ? codes : null;
 }
 
 function askText(label, defaultValue = "") {

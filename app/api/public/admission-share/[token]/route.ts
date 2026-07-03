@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 
 import {
+  checkpointsForStage,
+  defaultAdmissionRubric,
+} from "@/features/admission-review/contracts";
+import {
+  resolveAdmissionRubric,
+  type AdmissionReviewClient,
+} from "@/features/admission-review/evaluation-service";
+import {
   getPublicAdmissionShareBoard,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
@@ -25,13 +33,28 @@ export async function GET(
     }
 
     const repo = new SupabaseAdmissionShareBoardRepository(supabase);
-    const shareBoard = await getPublicAdmissionShareBoard({
-      repo,
-      token,
-      accessCode: optionalSearchParam(request, "accessCode"),
-    });
+    const { organizationId, ...shareBoard } =
+      await getPublicAdmissionShareBoard({
+        repo,
+        token,
+        accessCode: optionalSearchParam(request, "accessCode"),
+      });
 
-    return NextResponse.json({ shareBoard });
+    // 厂家端可选理由标签（仅 key/名称/说明，不泄漏内部配置）。
+    // 解析失败不影响看板本身，退回内置默认字典。
+    const rubric = await resolveAdmissionRubric({
+      client: supabase as unknown as AdmissionReviewClient,
+      organizationId: organizationId ?? "",
+    }).catch(() => defaultAdmissionRubric());
+    const vendorCheckpoints = checkpointsForStage(rubric, "vendor_second").map(
+      (checkpoint) => ({
+        key: checkpoint.key,
+        label: checkpoint.label,
+        description: checkpoint.description,
+      }),
+    );
+
+    return NextResponse.json({ shareBoard, vendorCheckpoints });
   } catch (error) {
     return jsonError(error);
   }

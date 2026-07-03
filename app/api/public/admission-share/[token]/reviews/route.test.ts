@@ -76,6 +76,7 @@ describe("public admission share review route", () => {
       repo: { repo: "share-repo" },
       token: "plain-token",
       accessCode: "2468",
+      recordEvaluation: expect.any(Function),
       input: expect.objectContaining({
         reviewerName: "Vendor Reviewer",
         reviewerContact: "reviewer@example.com",

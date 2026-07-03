@@ -4,6 +4,7 @@ import {
   claimAndRunRecordingAiAnalyses,
   runRecordingAiAnalysisOnce,
 } from "@/features/recordings/recording-ai-analysis";
+import { createRecordingAiAnalysisPipeline } from "@/features/recordings/recording-ai-pipeline";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 export async function POST(request: Request) {
@@ -43,6 +44,12 @@ export async function POST(request: Request) {
     organizationId,
   };
 
+  // 豆包 ASR + LLM 流水线；未配置（返回 null）时 runner 走确定性草稿。
+  const pipeline = createRecordingAiAnalysisPipeline({
+    client: supabase as never,
+    actor,
+  });
+
   // Single-run mode: an explicit analysisId keeps the original contract.
   if (body.analysisId !== undefined) {
     const analysisId =
@@ -59,6 +66,7 @@ export async function POST(request: Request) {
         client: supabase as never,
         actor,
         analysisId,
+        pipeline,
       });
 
       return NextResponse.json({ analysis });
@@ -86,6 +94,7 @@ export async function POST(request: Request) {
       client: supabase as never,
       actor,
       limit,
+      pipeline,
     });
   } catch {
     return NextResponse.json(

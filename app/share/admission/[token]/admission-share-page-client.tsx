@@ -51,6 +51,13 @@ type PublicAdmissionShareItem = {
 type ReviewDraft = {
   decision: VendorDecision;
   remark: string;
+  reasonCodes: string[];
+};
+
+type VendorCheckpointOption = {
+  key: string;
+  label: string;
+  description: string;
 };
 
 type SubmitResult = {
@@ -95,6 +102,9 @@ export default function AdmissionSharePageClient({
   const [accessCode, setAccessCode] = useState(initialAccessCode);
   const [shareBoard, setShareBoard] =
     useState<PublicAdmissionShareBoard | null>(null);
+  const [vendorCheckpoints, setVendorCheckpoints] = useState<
+    VendorCheckpointOption[]
+  >([]);
   const [drafts, setDrafts] = useState<Record<string, ReviewDraft>>({});
   const [reviewerName, setReviewerName] = useState("");
   const [reviewerContact, setReviewerContact] = useState("");
@@ -113,8 +123,12 @@ export default function AdmissionSharePageClient({
   }, [shareBoard]);
 
   const applyShareBoard = useCallback(
-    (nextShareBoard: PublicAdmissionShareBoard) => {
+    ({
+      shareBoard: nextShareBoard,
+      vendorCheckpoints: nextCheckpoints,
+    }: ShareBoardResponse) => {
       setShareBoard(nextShareBoard);
+      setVendorCheckpoints(nextCheckpoints);
       setDrafts(toDrafts(nextShareBoard.items));
       const firstReview = nextShareBoard.items.find(
         (item) => item.vendorReview,
@@ -188,6 +202,7 @@ export default function AdmissionSharePageClient({
       const existing = current[recordingSubmissionId] ?? {
         decision: "pending",
         remark: "",
+        reasonCodes: [],
       };
       return {
         ...current,
@@ -195,6 +210,23 @@ export default function AdmissionSharePageClient({
           ...existing,
           ...patch,
         },
+      };
+    });
+  };
+
+  const toggleReasonCode = (recordingSubmissionId: string, code: string) => {
+    setDrafts((current) => {
+      const existing = current[recordingSubmissionId] ?? {
+        decision: "pending" as VendorDecision,
+        remark: "",
+        reasonCodes: [] as string[],
+      };
+      const reasonCodes = existing.reasonCodes.includes(code)
+        ? existing.reasonCodes.filter((item) => item !== code)
+        : [...existing.reasonCodes, code];
+      return {
+        ...current,
+        [recordingSubmissionId]: { ...existing, reasonCodes },
       };
     });
   };
@@ -209,6 +241,7 @@ export default function AdmissionSharePageClient({
       recordingVersion: item.recordingVersion,
       decision: drafts[item.recordingSubmissionId]?.decision ?? "pending",
       remark: drafts[item.recordingSubmissionId]?.remark ?? "",
+      reasonCodes: drafts[item.recordingSubmissionId]?.reasonCodes ?? [],
     }));
     const missingRemark = payloadItems.some(
       (item) =>
@@ -429,6 +462,42 @@ export default function AdmissionSharePageClient({
                         ))}
                       </select>
                     </label>
+                    {vendorCheckpoints.length > 0 &&
+                    ["rejected", "needs_changes"].includes(
+                      drafts[item.recordingSubmissionId]?.decision ?? "",
+                    ) ? (
+                      <div className="grid gap-1 text-xs font-medium text-[var(--ink-700)]">
+                        问题标签（可多选，帮助主播针对性修改）
+                        <div className="flex flex-wrap gap-2">
+                          {vendorCheckpoints.map((checkpoint) => {
+                            const selected = (
+                              drafts[item.recordingSubmissionId]?.reasonCodes ??
+                              []
+                            ).includes(checkpoint.key);
+                            return (
+                              <button
+                                key={checkpoint.key}
+                                type="button"
+                                title={checkpoint.description}
+                                onClick={() =>
+                                  toggleReasonCode(
+                                    item.recordingSubmissionId,
+                                    checkpoint.key,
+                                  )
+                                }
+                                className={
+                                  selected
+                                    ? "rounded-full border border-[var(--blue-500)] bg-[var(--blue-50)] px-3 py-1 text-xs font-medium text-[var(--blue-600)]"
+                                    : "rounded-full border border-[var(--line)] bg-white px-3 py-1 text-xs text-[var(--ink-500)] hover:border-[var(--blue-300)]"
+                                }
+                              >
+                                {checkpoint.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
                     <label className="grid gap-1 text-xs font-medium text-[var(--ink-700)]">
                       {item.streamer.displayName || "主播"} 备注
                       <textarea
@@ -481,12 +550,21 @@ function toDrafts(items: PublicAdmissionShareItem[]) {
       {
         decision: item.vendorReview?.decision ?? "pending",
         remark: item.vendorReview?.remark ?? "",
+        reasonCodes: [],
       },
     ]),
   ) as Record<string, ReviewDraft>;
 }
 
-async function requestShareBoard(token: string, accessCode: string) {
+type ShareBoardResponse = {
+  shareBoard: PublicAdmissionShareBoard;
+  vendorCheckpoints: VendorCheckpointOption[];
+};
+
+async function requestShareBoard(
+  token: string,
+  accessCode: string,
+): Promise<ShareBoardResponse> {
   const response = await fetch(publicShareUrl(token, accessCode), {
     method: "GET",
   });
@@ -494,7 +572,12 @@ async function requestShareBoard(token: string, accessCode: string) {
   if (!response.ok) {
     throw new Error(errorText(payload, "无法读取复核链接"));
   }
-  return payload.shareBoard as PublicAdmissionShareBoard;
+  return {
+    shareBoard: payload.shareBoard as PublicAdmissionShareBoard,
+    vendorCheckpoints: Array.isArray(payload.vendorCheckpoints)
+      ? (payload.vendorCheckpoints as VendorCheckpointOption[])
+      : [],
+  };
 }
 
 function publicShareUrl(token: string, accessCode: string) {

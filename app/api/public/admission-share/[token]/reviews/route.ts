@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server";
 
 import {
+  checkpointsForStage,
+  type AdmissionRubric,
+} from "@/features/admission-review/contracts";
+import {
+  recordAdmissionEvaluation,
+  resolveAdmissionRubric,
+  type AdmissionReviewClient,
+} from "@/features/admission-review/evaluation-service";
+import { recordMcnVsVendorSignal } from "@/features/admission-review/signals";
+import {
   submitVendorAdmissionReviews,
   SupabaseAdmissionShareBoardRepository,
   type SubmitVendorAdmissionReviewsInput,
@@ -30,11 +40,57 @@ export async function POST(
 
     const body = await readJsonBody(request);
     const repo = new SupabaseAdmissionShareBoardRepository(supabase);
+    const reviewClient = supabase as unknown as AdmissionReviewClient;
+    const rubricCache = new Map<string, AdmissionRubric>();
+
     const result = await submitVendorAdmissionReviews({
       repo,
       token,
       accessCode: optionalSearchParam(request, "accessCode"),
       input: toVendorReviewInput(body),
+      // 厂家勾选理由标签时直接落人工评估；非法标签宽容过滤（外部输入）。
+      recordEvaluation: async (evaluation) => {
+        let rubric = rubricCache.get(evaluation.organizationId);
+        if (!rubric) {
+          rubric = await resolveAdmissionRubric({
+            client: reviewClient,
+            organizationId: evaluation.organizationId,
+          });
+          rubricCache.set(evaluation.organizationId, rubric);
+        }
+        const allowed = new Set(
+          checkpointsForStage(rubric, "vendor_second").map(
+            (checkpoint) => checkpoint.key,
+          ),
+        );
+        const reasonCodes = evaluation.reasonCodes.filter((code) =>
+          allowed.has(code),
+        );
+        if (!reasonCodes.length) {
+          return;
+        }
+        await recordAdmissionEvaluation({
+          client: reviewClient,
+          rubric,
+          input: {
+            organizationId: evaluation.organizationId,
+            applicationId: evaluation.applicationId,
+            submissionId: evaluation.recordingSubmissionId,
+            stage: "vendor_second",
+            decision: evaluation.decision,
+            vendorReviewId: evaluation.vendorReviewId,
+            note: evaluation.remark,
+            noteSource: "human",
+            reasonCodes,
+          },
+        });
+        // 一审 vs 二审对齐信号（一审漏判监测）；失败不阻塞厂家提交。
+        await recordMcnVsVendorSignal({
+          client: reviewClient as never,
+          organizationId: evaluation.organizationId,
+          submissionId: evaluation.recordingSubmissionId,
+        }).catch(() => null);
+      },
     });
 
     return NextResponse.json(result);
@@ -62,7 +118,18 @@ function toReviewItem(value: unknown) {
     decision: (optionalString(item, "decision") ??
       "pending") as VendorAdmissionDecision,
     remark: optionalString(item, "remark"),
+    reasonCodes: stringArrayValue(item.reasonCodes),
   };
+}
+
+function stringArrayValue(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function numberValue(value: unknown) {

@@ -44,6 +44,8 @@ describe("/api/internal/recording-ai/run", () => {
       recommendations: [],
       segments: [],
       errorSummary: null,
+      transcriptText: null,
+      asrProvider: null,
       aiInvocationId: "invocation-1",
       createdAt: "2026-07-01T10:00:00.000Z",
       updatedAt: "2026-07-01T10:05:00.000Z",
@@ -162,6 +164,8 @@ describe("/api/internal/recording-ai/run", () => {
         recommendations: [],
         segments: [],
         errorSummary: null,
+        transcriptText: null,
+        asrProvider: null,
         aiInvocationId: "invocation-1",
         createdAt: "2026-07-01T10:00:00.000Z",
         updatedAt: "2026-07-01T10:05:00.000Z",
@@ -177,6 +181,8 @@ describe("/api/internal/recording-ai/run", () => {
         organizationId: runnerOrganizationId,
       },
       analysisId: "analysis-1",
+      // 测试环境未配置豆包 ASR，流水线工厂返回 null，runner 走确定性草稿。
+      pipeline: null,
     });
   });
 
@@ -238,6 +244,7 @@ describe("/api/internal/recording-ai/run", () => {
         organizationId: runnerOrganizationId,
       },
       limit: 5,
+      pipeline: null,
     });
     expect(runRecordingAiAnalysisOnce).not.toHaveBeenCalled();
   });

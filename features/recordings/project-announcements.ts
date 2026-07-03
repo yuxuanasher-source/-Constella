@@ -1,5 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import {
+  listLatestRejectionFeedback,
+  type StructuredRejectionFeedback,
+} from "@/features/admission-review/rejection-feedback";
 import type {
   ApplicationStatus,
   RecordingReviewStatus,
@@ -54,6 +58,8 @@ export type StreamerProjectAnnouncementCard = {
   latestRecordingVersion: number | null;
   decisionReason: string | null;
   recordingFeedback: string | null;
+  // 结构化驳回理由（卡点名称 + 单项备注），来自 admission_review 评估。
+  rejectionReasons: Array<{ key: string; label: string; note: string | null }>;
   reviewStatusLabel: string;
   canSubmitRecording: boolean;
 };
@@ -108,6 +114,10 @@ export async function listStreamerProjectAnnouncements(
   const applicationByProject = new Map(
     applications.map((application) => [application.project_id, application]),
   );
+  const rejectionFeedback = await listRejectionFeedbackSafely(supabase, {
+    organizationId: input.organizationId,
+    applicationIds: applications.map((application) => application.id),
+  });
 
   return projects.map((project) => {
     const application = applicationByProject.get(project.id) ?? null;
@@ -115,7 +125,12 @@ export async function listStreamerProjectAnnouncements(
       ? (latestRecordings.get(application.id) ?? null)
       : null;
 
-    return toStreamerProjectAnnouncementCard(project, application, recording);
+    return toStreamerProjectAnnouncementCard(
+      project,
+      application,
+      recording,
+      application ? (rejectionFeedback.get(application.id) ?? null) : null,
+    );
   });
 }
 
@@ -157,14 +172,42 @@ export async function getStreamerProjectAnnouncement(
   const latestRecording = application
     ? (latestRecordings.get(application.id) ?? null)
     : null;
+  const rejectionFeedback = application
+    ? await listRejectionFeedbackSafely(supabase, {
+        organizationId: input.organizationId,
+        applicationIds: [application.id],
+      })
+    : new Map<string, StructuredRejectionFeedback>();
 
-  return toStreamerProjectAnnouncementCard(data, application, latestRecording);
+  return toStreamerProjectAnnouncementCard(
+    data,
+    application,
+    latestRecording,
+    application ? (rejectionFeedback.get(application.id) ?? null) : null,
+  );
+}
+
+// 结构化反馈获取失败不影响公告展示（自由文本 decisionReason 仍在）。
+async function listRejectionFeedbackSafely(
+  supabase: SupabaseClient,
+  input: { organizationId: string; applicationIds: string[] },
+): Promise<Map<string, StructuredRejectionFeedback>> {
+  try {
+    return await listLatestRejectionFeedback({
+      client: supabase as never,
+      organizationId: input.organizationId,
+      applicationIds: input.applicationIds,
+    });
+  } catch {
+    return new Map();
+  }
 }
 
 export function toStreamerProjectAnnouncementCard(
   project: StreamerProjectAnnouncementProjectRow,
   application: StreamerProjectAnnouncementApplicationRow | null,
   latestRecording: StreamerProjectAnnouncementRecordingRow | null,
+  rejectionFeedback?: StructuredRejectionFeedback | null,
 ): StreamerProjectAnnouncementCard {
   const applicationStatus = application?.status ?? null;
 
@@ -185,6 +228,7 @@ export function toStreamerProjectAnnouncementCard(
     latestRecordingVersion: latestRecording?.version ?? null,
     decisionReason: application?.decision_reason ?? null,
     recordingFeedback: application?.decision_reason?.trim() || null,
+    rejectionReasons: rejectionFeedback?.reasons ?? [],
     reviewStatusLabel: reviewStatusLabel(applicationStatus, latestRecording),
     canSubmitRecording:
       !applicationStatus ||

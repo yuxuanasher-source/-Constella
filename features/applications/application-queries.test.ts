@@ -44,6 +44,8 @@ describe("application query DTO mappers", () => {
           recommendations: [],
           segments: [],
           errorSummary: null,
+          transcriptText: null,
+          asrProvider: null,
           aiInvocationId: "invocation-1",
           createdAt: "2026-06-02T01:11:00.000Z",
           updatedAt: "2026-06-02T01:12:00.000Z",

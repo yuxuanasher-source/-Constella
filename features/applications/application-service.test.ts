@@ -593,6 +593,90 @@ describe("application service", () => {
     expect(repo.createProjectStreamer).not.toHaveBeenCalled();
   });
 
+  it("rejects a review that gives neither reason codes nor a note", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_reviewing",
+      }),
+    });
+
+    await expect(
+      reviewRecordingSubmission({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: operatorActor,
+        input: { applicationId: "app-1", decision: "rejected" },
+      }),
+    ).rejects.toThrow(/requires reason codes or a note/);
+    expect(repo.updateRecordingReview).not.toHaveBeenCalled();
+  });
+
+  it("records an admission evaluation with reason codes when a recorder is wired", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_reviewing",
+      }),
+    });
+    const recordEvaluation = vi.fn().mockResolvedValue(undefined);
+
+    await reviewRecordingSubmission({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor: operatorActor,
+      input: {
+        applicationId: "app-1",
+        decision: "rejected",
+        note: "话术不贴卖点",
+        reasonCodes: ["script_fit"],
+      },
+      recordEvaluation,
+    });
+
+    expect(recordEvaluation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        applicationId: "app-1",
+        decision: "rejected",
+        reviewerId: operatorActor.userId,
+        noteSource: "human",
+        reasonCodes: ["script_fit"],
+      }),
+    );
+  });
+
+  it("marks legacy note-only rejections for later classification", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_reviewing",
+      }),
+    });
+    const recordEvaluation = vi.fn().mockResolvedValue(undefined);
+
+    await reviewRecordingSubmission({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor: operatorActor,
+      input: {
+        applicationId: "app-1",
+        decision: "needs_changes",
+        note: "开场太拖沓",
+      },
+      recordEvaluation,
+    });
+
+    expect(recordEvaluation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        noteSource: "needs_classification",
+        reasonCodes: [],
+      }),
+    );
+  });
+
   it("requires owner or ops_manager for final join confirmation", async () => {
     const repo = makeRepo({
       getApplicationById: vi.fn().mockResolvedValue({

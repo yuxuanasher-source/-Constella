@@ -4,6 +4,10 @@ import {
 } from "@/features/ai/invocation-ledger";
 import type { AiActor } from "@/features/ai/contracts";
 
+import type {
+  RecordingAiDraftPipeline,
+  RecordingAiPipelineResult,
+} from "./recording-ai-pipeline";
 import {
   toRecordingAssetDto,
   type RecordingAssetDto,
@@ -65,6 +69,8 @@ export type RecordingAiAnalysisDto = {
   riskFlags: string[];
   recommendations: RecordingAiRecommendation[];
   segments: RecordingAiSegmentDto[];
+  transcriptText: string | null;
+  asrProvider: string | null;
   errorSummary: string | null;
   aiInvocationId: string | null;
   createdAt: string;
@@ -101,6 +107,8 @@ export type RecordingAiAnalysisRow = {
   dimensions: unknown;
   risk_flags: unknown;
   recommendations: unknown;
+  transcript_text?: string | null;
+  asr_provider?: string | null;
   error_summary: string | null;
   ai_invocation_id: string | null;
   created_at: string;
@@ -134,6 +142,27 @@ type RecordingAiClient = Parameters<typeof recordAiInvocation>[0]["client"] & {
   };
 };
 
+type RecordingAiCandidateListChain = {
+  order(
+    column: string,
+    options: { ascending: boolean },
+  ): {
+    limit(count: number): PromiseLike<{
+      data: RecordingAiClaimCandidateRow[] | null;
+      error: Error | null;
+    }>;
+  };
+};
+
+type RecordingAiClaimResultChain = {
+  select(columns: string): {
+    maybeSingle(): PromiseLike<{
+      data: RecordingAiWorkItemRow | null;
+      error: Error | null;
+    }>;
+  };
+};
+
 type RecordingAiRunnerDb = {
   from(table: "recording_ai_analyses"): {
     select(columns: string): {
@@ -148,16 +177,8 @@ type RecordingAiRunnerDb = {
         eq(
           column: string,
           value: string,
-        ): {
-          order(
-            column: string,
-            options: { ascending: boolean },
-          ): {
-            limit(count: number): PromiseLike<{
-              data: RecordingAiClaimCandidateRow[] | null;
-              error: Error | null;
-            }>;
-          };
+        ): RecordingAiCandidateListChain & {
+          lt(column: string, value: string): RecordingAiCandidateListChain;
         };
       };
     };
@@ -175,13 +196,8 @@ type RecordingAiRunnerDb = {
         eq(
           column: string,
           value: string,
-        ): {
-          select(columns: string): {
-            maybeSingle(): PromiseLike<{
-              data: RecordingAiWorkItemRow | null;
-              error: Error | null;
-            }>;
-          };
+        ): RecordingAiClaimResultChain & {
+          lt(column: string, value: string): RecordingAiClaimResultChain;
         };
       };
     };
@@ -197,6 +213,7 @@ type RecordingAiClaimCandidateRow = {
   id: string;
   attempt: number | null;
   max_attempts: number | null;
+  created_at: string;
 };
 
 type RecordingAiWorkItemRow = RecordingAiAnalysisRow & {
@@ -247,6 +264,8 @@ export const recordingAiAnalysisSelect = [
   "dimensions",
   "risk_flags",
   "recommendations",
+  "transcript_text",
+  "asr_provider",
   "error_summary",
   "ai_invocation_id",
   "created_at",
@@ -266,6 +285,8 @@ const analysisWorkItemSelect = [
   "dimensions",
   "risk_flags",
   "recommendations",
+  "transcript_text",
+  "asr_provider",
   "attempt",
   "max_attempts",
   "error_summary",
@@ -408,6 +429,8 @@ export function toRecordingAiAnalysisDto(
     segments: (row.recording_ai_segments ?? [])
       .map(toSegmentDto)
       .sort((left, right) => left.sortOrder - right.sortOrder),
+    transcriptText: row.transcript_text ?? null,
+    asrProvider: row.asr_provider ?? null,
     errorSummary: row.error_summary ?? null,
     aiInvocationId: row.ai_invocation_id ?? null,
     createdAt: row.created_at,
@@ -482,12 +505,14 @@ export async function runRecordingAiAnalysisOnce({
   analysisId,
   now = () => new Date(),
   draftBuilder = buildRecordingAiAnalysisDraft,
+  pipeline = null,
 }: {
   client: Parameters<typeof recordAiInvocation>[0]["client"];
   actor: AiActor;
   analysisId: string;
   now?: () => Date;
   draftBuilder?: typeof buildRecordingAiAnalysisDraft;
+  pipeline?: RecordingAiDraftPipeline | null;
 }): Promise<RecordingAiAnalysisDto> {
   const normalizedAnalysisId = analysisId.trim();
   if (!normalizedAnalysisId) {
@@ -509,6 +534,7 @@ export async function runRecordingAiAnalysisOnce({
     db,
     normalizedAnalysisId,
     attempt,
+    now().toISOString(),
   );
   if (!claimed) {
     throw new Error(
@@ -522,6 +548,7 @@ export async function runRecordingAiAnalysisOnce({
     attempt,
     now,
     draftBuilder,
+    pipeline,
   });
 }
 
@@ -536,63 +563,142 @@ export type RecordingAiClaimRunResult = {
 
 export const RECORDING_AI_CLAIM_DEFAULT_LIMIT = 5;
 export const RECORDING_AI_CLAIM_MAX_LIMIT = 10;
+export const RECORDING_AI_CLAIM_TIMEOUT_MS = 15 * 60 * 1000;
+export const RECORDING_AI_STALE_CLAIM_ERROR_SUMMARY =
+  "Recording AI claim timed out after the final attempt";
 
 /**
- * Claims the next batch of queued recording AI analyses for the runner
- * organization and executes them. Claiming uses an optimistic lock on the
- * status column (`update ... where id = ? and status = 'queued'`), so two
- * concurrent runners can never execute the same analysis twice: only one of
- * them observes the queued -> running transition.
+ * Claims the next batch of runnable recording AI analyses for the runner
+ * organization and executes them. Two kinds of rows are runnable:
+ *
+ * - queued rows, claimed with an optimistic lock on the status column
+ *   (`update ... where id = ? and status = 'queued'`), so two concurrent
+ *   runners can never execute the same analysis twice;
+ * - running rows whose claimed_at is older than `claimTimeoutMs`: the runner
+ *   that claimed them crashed mid-run and will never finish them. Reclaiming
+ *   re-checks `claimed_at < cutoff` inside the conditional update, so a row
+ *   freshly (re)claimed by a concurrent runner — which resets claimed_at to
+ *   now — can not be stolen a second time.
+ *
+ * Both claim paths only consider rows with attempt < max_attempts. A stale
+ * running row whose attempts are already exhausted can never be reclaimed, so
+ * it is finalized as failed instead (reported under `failures`) rather than
+ * left stuck in running forever.
  */
 export async function claimAndRunRecordingAiAnalyses({
   client,
   actor,
   limit = RECORDING_AI_CLAIM_DEFAULT_LIMIT,
+  claimTimeoutMs = RECORDING_AI_CLAIM_TIMEOUT_MS,
   now = () => new Date(),
   draftBuilder = buildRecordingAiAnalysisDraft,
+  pipeline = null,
 }: {
   client: Parameters<typeof recordAiInvocation>[0]["client"];
   actor: AiActor;
   limit?: number;
+  claimTimeoutMs?: number;
   now?: () => Date;
   draftBuilder?: typeof buildRecordingAiAnalysisDraft;
+  pipeline?: RecordingAiDraftPipeline | null;
 }): Promise<RecordingAiClaimRunResult> {
   const db = client as unknown as RecordingAiRunnerDb;
   const batchLimit = Number.isFinite(limit)
     ? Math.max(1, Math.min(Math.trunc(limit), RECORDING_AI_CLAIM_MAX_LIMIT))
     : RECORDING_AI_CLAIM_DEFAULT_LIMIT;
+  const staleBefore = new Date(
+    now().getTime() - Math.max(0, claimTimeoutMs),
+  ).toISOString();
 
-  const { data, error } = await db
+  const candidateSelect = "id, attempt, max_attempts, created_at";
+
+  const { data: queuedData, error: queuedError } = await db
     .from("recording_ai_analyses")
-    .select("id, attempt, max_attempts")
+    .select(candidateSelect)
     .eq("organization_id", actor.organizationId)
     .eq("status", "queued")
     .order("created_at", { ascending: true })
     .limit(batchLimit);
 
-  if (error) {
-    throw error;
+  if (queuedError) {
+    throw queuedError;
   }
 
-  const candidates = (data ?? []).filter(
-    (row) =>
-      Math.max(0, Math.trunc(row.attempt ?? 0)) <
-      Math.max(1, Math.trunc(row.max_attempts ?? 3)),
-  );
+  // Runner crash recovery: running rows whose claim outlived the timeout are
+  // orphaned (a live run would have finished or requeued them by now).
+  const { data: staleData, error: staleError } = await db
+    .from("recording_ai_analyses")
+    .select(candidateSelect)
+    .eq("organization_id", actor.organizationId)
+    .eq("status", "running")
+    .lt("claimed_at", staleBefore)
+    .order("created_at", { ascending: true })
+    .limit(batchLimit);
+
+  if (staleError) {
+    throw staleError;
+  }
+
+  const hasAttemptsLeft = (row: RecordingAiClaimCandidateRow) =>
+    Math.max(0, Math.trunc(row.attempt ?? 0)) <
+    Math.max(1, Math.trunc(row.max_attempts ?? 3));
+
+  const candidates = [
+    ...(queuedData ?? []).map((row) => ({ row, staleRunning: false })),
+    ...(staleData ?? []).map((row) => ({ row, staleRunning: true })),
+  ]
+    .filter(({ row }) => hasAttemptsLeft(row))
+    .sort((left, right) =>
+      left.row.created_at.localeCompare(right.row.created_at),
+    )
+    .slice(0, batchLimit);
 
   const analyses: RecordingAiClaimRunResult["analyses"] = [];
   const failures: RecordingAiClaimRunResult["failures"] = [];
 
-  for (const candidate of candidates) {
+  // A stale running row with no attempts left can never be reclaimed; finalize
+  // it as failed so it does not sit in running forever.
+  for (const row of (staleData ?? []).filter((row) => !hasAttemptsLeft(row))) {
+    try {
+      const finalized = await failStaleRunningRecordingAiAnalysis(
+        db,
+        row.id,
+        staleBefore,
+        now().toISOString(),
+      );
+      if (finalized) {
+        failures.push({
+          analysisId: row.id,
+          errorSummary: RECORDING_AI_STALE_CLAIM_ERROR_SUMMARY,
+        });
+      }
+    } catch (error) {
+      failures.push({
+        analysisId: row.id,
+        errorSummary: sanitizeErrorSummary(error),
+      });
+    }
+  }
+
+  for (const { row: candidate, staleRunning } of candidates) {
     const attempt = Math.max(0, Math.trunc(candidate.attempt ?? 0)) + 1;
 
     let claimed: RecordingAiWorkItemRow | null = null;
     try {
-      claimed = await claimQueuedRecordingAiAnalysis(
-        db,
-        candidate.id,
-        attempt,
-      );
+      claimed = staleRunning
+        ? await claimStaleRunningRecordingAiAnalysis(
+            db,
+            candidate.id,
+            attempt,
+            staleBefore,
+            now().toISOString(),
+          )
+        : await claimQueuedRecordingAiAnalysis(
+            db,
+            candidate.id,
+            attempt,
+            now().toISOString(),
+          );
     } catch (error) {
       failures.push({
         analysisId: candidate.id,
@@ -622,6 +728,7 @@ export async function claimAndRunRecordingAiAnalyses({
         attempt,
         now,
         draftBuilder,
+        pipeline,
       });
       analyses.push({ id: result.id, status: result.status, attempt });
     } catch (error) {
@@ -635,6 +742,19 @@ export async function claimAndRunRecordingAiAnalyses({
   return { analyses, failures };
 }
 
+function buildRecordingAiClaimPayload(
+  attempt: number,
+  claimedAt: string,
+): Record<string, unknown> {
+  return {
+    status: "running",
+    attempt,
+    claimed_at: claimedAt,
+    error_summary: null,
+    completed_at: null,
+  };
+}
+
 /**
  * Optimistic-lock claim: transitions the analysis queued -> running only when
  * it is still queued. Returns null when another runner already claimed it.
@@ -643,15 +763,11 @@ async function claimQueuedRecordingAiAnalysis(
   db: RecordingAiRunnerDb,
   analysisId: string,
   attempt: number,
+  claimedAt: string,
 ): Promise<RecordingAiWorkItemRow | null> {
   const { data, error } = await db
     .from("recording_ai_analyses")
-    .update({
-      status: "running",
-      attempt,
-      error_summary: null,
-      completed_at: null,
-    })
+    .update(buildRecordingAiClaimPayload(attempt, claimedAt))
     .eq("id", analysisId)
     .eq("status", "queued")
     .select(analysisWorkItemSelect)
@@ -664,24 +780,109 @@ async function claimQueuedRecordingAiAnalysis(
   return data ?? null;
 }
 
+/**
+ * Optimistic-lock reclaim of a running row orphaned by a crashed runner. The
+ * `claimed_at < staleBefore` condition doubles as the lock: any concurrent
+ * (re)claim resets claimed_at to a fresh timestamp, so at most one reclaimer
+ * observes a stale value. Returns null when the row was finished, requeued or
+ * reclaimed in the meantime.
+ */
+async function claimStaleRunningRecordingAiAnalysis(
+  db: RecordingAiRunnerDb,
+  analysisId: string,
+  attempt: number,
+  staleBefore: string,
+  claimedAt: string,
+): Promise<RecordingAiWorkItemRow | null> {
+  const { data, error } = await db
+    .from("recording_ai_analyses")
+    .update(buildRecordingAiClaimPayload(attempt, claimedAt))
+    .eq("id", analysisId)
+    .eq("status", "running")
+    .lt("claimed_at", staleBefore)
+    .select(analysisWorkItemSelect)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ?? null;
+}
+
+/**
+ * Finalizes a stale running row whose attempts are exhausted: no runner may
+ * reclaim it, so failed is its only reachable terminal state. Guarded by the
+ * same `claimed_at < staleBefore` optimistic lock as reclaiming; returns false
+ * when the original runner resolved the row in the meantime.
+ */
+async function failStaleRunningRecordingAiAnalysis(
+  db: RecordingAiRunnerDb,
+  analysisId: string,
+  staleBefore: string,
+  completedAt: string,
+): Promise<boolean> {
+  const { data, error } = await db
+    .from("recording_ai_analyses")
+    .update({
+      status: "failed",
+      claimed_at: null,
+      error_summary: RECORDING_AI_STALE_CLAIM_ERROR_SUMMARY,
+      completed_at: completedAt,
+    })
+    .eq("id", analysisId)
+    .eq("status", "running")
+    .lt("claimed_at", staleBefore)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data !== null;
+}
+
 async function executeClaimedRecordingAiAnalysis({
   db,
   workItem,
   attempt,
   now,
   draftBuilder,
+  pipeline = null,
 }: {
   db: RecordingAiRunnerDb;
   workItem: RecordingAiWorkItemRow;
   attempt: number;
   now: () => Date;
   draftBuilder: typeof buildRecordingAiAnalysisDraft;
+  pipeline?: RecordingAiDraftPipeline | null;
 }): Promise<RecordingAiAnalysisDto> {
   const analysisId = workItem.id;
 
   try {
     const asset = toRecordingAssetDtoFromWorkItem(workItem.recording_assets);
-    const draft = draftBuilder({ asset });
+
+    // 优先走「抽音频 -> 豆包 ASR 转写 -> DeepSeek 分析」流水线；流水线不可用
+    // （返回 null）或失败（抛错）时回退确定性草稿，分析任务本身不失败。
+    let pipelineResult: RecordingAiPipelineResult | null = null;
+    let pipelineError: string | null = null;
+    if (pipeline) {
+      try {
+        pipelineResult = await pipeline({ asset });
+      } catch (error) {
+        pipelineError = sanitizeErrorSummary(error);
+      }
+    }
+
+    const draft = pipelineResult?.draft ?? draftBuilder({ asset });
+    if (!pipelineResult && pipelineError) {
+      draft.riskFlags = [
+        ...draft.riskFlags,
+        `AI 转写分析不可用，已回退基础分析：${pipelineError}`,
+      ];
+    }
+
     const completedAt = now().toISOString();
     const segmentRows = draft.segments.map((segment) => ({
       organization_id: workItem.organization_id,
@@ -708,12 +909,16 @@ async function executeClaimedRecordingAiAnalysis({
 
     const updated = await updateAnalysis(db, analysisId, {
       status: "succeeded",
-      provider_name: "deterministic",
+      claimed_at: null,
+      provider_name: pipelineResult?.providerName ?? "deterministic",
       summary: draft.summary,
       scorecard: draft.scorecard,
       dimensions: draft.dimensions,
       risk_flags: draft.riskFlags,
       recommendations: draft.recommendations,
+      transcript_text: pipelineResult?.transcriptText ?? null,
+      transcript_utterances: pipelineResult?.transcriptUtterances ?? [],
+      asr_provider: pipelineResult?.asrProvider ?? null,
       error_summary: null,
       completed_at: completedAt,
     });
@@ -739,6 +944,7 @@ async function executeClaimedRecordingAiAnalysis({
     const updated = await updateAnalysis(db, analysisId, {
       status: finalFailure ? "failed" : "queued",
       attempt,
+      claimed_at: null,
       error_summary: sanitizeErrorSummary(error),
       completed_at: completedAt,
     });

@@ -58,6 +58,7 @@ describe("streamer project announcements", () => {
       latestRecordingVersion: 2,
       decisionReason: null,
       recordingFeedback: null,
+      rejectionReasons: [],
       reviewStatusLabel: "审核中",
       canSubmitRecording: false,
     });
