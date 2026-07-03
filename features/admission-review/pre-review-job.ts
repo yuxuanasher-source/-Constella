@@ -3,9 +3,11 @@ import type { recordAiInvocation } from "@/features/ai/invocation-ledger";
 
 import type { AdmissionReviewClient } from "./evaluation-service";
 import { resolveAdmissionRubric } from "./evaluation-service";
+import { findSimilarReviewExamples } from "./few-shot";
 import {
   findTranscriptForSubmission,
   generateAdmissionPreReview,
+  type AdmissionPreReviewExample,
 } from "./pre-review";
 
 // AI 预审批处理：扫描待审/审核中且尚无 ai_pre_review 评估的录屏提交，
@@ -83,6 +85,7 @@ export async function runAdmissionPreReviews({
   limit = PRE_REVIEW_CLAIM_DEFAULT_LIMIT,
   generate = generateAdmissionPreReview,
   findTranscript = findTranscriptForSubmission,
+  findExamples = findSimilarReviewExamples,
 }: {
   client: AdmissionReviewClient &
     PreReviewJobDb &
@@ -92,6 +95,7 @@ export async function runAdmissionPreReviews({
   limit?: number;
   generate?: typeof generateAdmissionPreReview;
   findTranscript?: typeof findTranscriptForSubmission;
+  findExamples?: typeof findSimilarReviewExamples;
 }): Promise<PreReviewRunResult> {
   const batchLimit = Number.isFinite(limit)
     ? Math.max(1, Math.min(Math.trunc(limit), PRE_REVIEW_CLAIM_MAX_LIMIT))
@@ -155,6 +159,8 @@ export async function runAdmissionPreReviews({
   const preReviews: PreReviewRunResult["preReviews"] = [];
   const failures: PreReviewRunResult["failures"] = [];
   let skippedNoTranscript = 0;
+  // few-shot 判例按项目缓存，一个批次同项目只查一次。
+  const exampleCache = new Map<string, AdmissionPreReviewExample[]>();
 
   for (const submission of pending) {
     try {
@@ -165,6 +171,16 @@ export async function runAdmissionPreReviews({
       if (!transcript) {
         skippedNoTranscript += 1;
         continue;
+      }
+
+      let examples = exampleCache.get(submission.project_id);
+      if (!examples) {
+        examples = await findExamples({
+          client: client as never,
+          organizationId: actor.organizationId,
+          projectId: submission.project_id,
+        }).catch(() => []);
+        exampleCache.set(submission.project_id, examples);
       }
 
       const result = await generate({
@@ -178,6 +194,7 @@ export async function runAdmissionPreReviews({
         },
         transcript,
         rubric,
+        examples,
       });
 
       preReviews.push({
