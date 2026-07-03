@@ -30,16 +30,19 @@ export async function POST(request: Request) {
     // taken from the authenticated context, not from the caller's input.
     const ledgerClient = createSupabaseAdminClient() ?? supabase;
 
-    // Ground the diagnosis in the streamer's real recent report data unless the
-    // caller already supplied it.
+    // Ground the diagnosis in the streamer's real recent report data. Server
+    // facts take precedence; the caller-supplied body is only a fallback for
+    // staff demo sessions with no bound streamer (信任根收敛,方案 WP1).
     const context = await gatherStreamerDiagnosisContext({
       client: ledgerClient,
       actor: auth,
     });
     const input = {
       ...body,
-      report: body.report ?? context.report,
-      feedback: Array.isArray(body.feedback) ? body.feedback : context.feedback,
+      report: context.report ?? body.report,
+      feedback:
+        context.feedback ??
+        (Array.isArray(body.feedback) ? body.feedback : undefined),
     };
 
     const result = await runStreamerDiagnosisAgent({
@@ -51,6 +54,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       result: result.result,
       agentOutput: result.agentOutput,
+      narrative: result.narrative,
       validation: result.validation,
     });
   } catch (error) {

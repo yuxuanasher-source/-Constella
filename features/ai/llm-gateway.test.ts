@@ -190,6 +190,72 @@ describe("runAiGateway", () => {
     });
   });
 
+  it("retries the same provider once with validation feedback before failing over", async () => {
+    const runStructured = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "succeeded",
+        structuredOutput: { summary: 123 },
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        latencyMs: 10,
+        costCents: 0,
+      })
+      .mockResolvedValueOnce({
+        status: "succeeded",
+        structuredOutput: { summary: "repaired summary" },
+        usage: { promptTokens: 2, completionTokens: 2, totalTokens: 4 },
+        latencyMs: 12,
+        costCents: 0,
+      });
+    const retryableProvider: AiProvider = {
+      name: "openai",
+      capabilities: ["structured"],
+      async runText() {
+        throw new Error("not used");
+      },
+      runStructured,
+      async runWithTools() {
+        throw new Error("not used");
+      },
+      estimateCost() {
+        return { costCents: 0 };
+      },
+    };
+
+    const result = await runAiGateway({
+      providers: [
+        retryableProvider,
+        createDeterministicProvider({
+          structuredOutput: { summary: "fallback summary" },
+        }),
+      ],
+      primaryProvider: "openai",
+      request: {
+        kind: "structured",
+        promptKey: "ops.brief",
+        promptVersion: 1,
+        messages: [{ role: "user", content: "summarize" }],
+        responseSchema: z.object({ summary: z.string() }),
+      },
+    });
+
+    // 同 provider 带错重试成功:没有 failover,主 provider 胜出。
+    expect(result).toMatchObject({
+      status: "succeeded",
+      providerName: "openai",
+      fallbackUsed: false,
+      structuredOutput: { summary: "repaired summary" },
+    });
+    expect(runStructured).toHaveBeenCalledTimes(2);
+    const retryRequest = runStructured.mock.calls[1][0] as {
+      messages: { role: string; content: string }[];
+    };
+    expect(retryRequest.messages.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("未通过结构化校验"),
+    });
+  });
+
   it("can run from environment-backed providers through the gateway", async () => {
     const routing = resolveAiProviderRouting({});
     const result = await runAiGateway({

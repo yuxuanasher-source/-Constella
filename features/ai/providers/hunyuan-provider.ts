@@ -7,6 +7,7 @@ import type {
   AiUsageEstimateInput,
 } from "../contracts";
 import { streamOpenAiCompatibleChat } from "./openai-compatible-stream";
+import { estimateProviderCostCents } from "./provider-pricing";
 import {
   createProviderTimeout,
   resolveAiProviderTimeoutMs,
@@ -355,9 +356,7 @@ function emptyUsage(): AiUsage {
 }
 
 function estimateCostCents(input: AiUsageEstimateInput): number {
-  const tokens =
-    nonnegativeInt(input.promptTokens) + nonnegativeInt(input.completionTokens);
-  return tokens > 0 ? Math.max(1, Math.ceil(tokens / 1000)) : 0;
+  return estimateProviderCostCents("hunyuan", input);
 }
 
 function nonnegativeInt(value: unknown): number {

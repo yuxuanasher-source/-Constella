@@ -352,9 +352,10 @@ export async function runAiToolQuery({
         objectId: toolName,
         providerName: "deterministic",
         status: "succeeded",
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        // 确定性工具没有真实 token 消耗;记 0 并打 mode 标,避免污染用量报表。
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
         latencyMs,
-        metadata: { toolName },
+        metadata: { toolName, mode: "deterministic" },
       },
     });
     await recordAiToolInvocation({
