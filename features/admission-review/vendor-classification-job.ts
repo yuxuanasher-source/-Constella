@@ -11,6 +11,7 @@ import {
   type AdmissionReviewClient,
 } from "./evaluation-service";
 import { classifyVendorRemark } from "./remark-classifier";
+import { recordMcnVsVendorSignal } from "./signals";
 
 // 厂家驳回备注归一化批处理：扫描尚无 vendor_second 评估的厂家驳回/需修改
 // 记录，LLM（或关键词兜底）分类到理由码后落评估。厂家端零新增填写负担。
@@ -200,6 +201,13 @@ export async function classifyPendingVendorRemarks({
           reasonCodes: classification.reasonCodes,
         },
       });
+
+      // 一审 vs 二审对齐信号；失败不影响归一化结果。
+      await recordMcnVsVendorSignal({
+        client: client as never,
+        organizationId: review.organization_id,
+        submissionId: review.recording_submission_id,
+      }).catch(() => null);
 
       classified.push({
         vendorReviewId: review.id,
