@@ -4399,6 +4399,7 @@ describe("OpsReferenceApp admission smoke", () => {
     expect(JSON.parse(reviewCall[1].body)).toEqual({
       decision: "approved",
       note: "经营端选播准入审核",
+      reasonCodes: [],
     });
     expect(await screen.findByText("录屏已通过")).toBeInTheDocument();
 

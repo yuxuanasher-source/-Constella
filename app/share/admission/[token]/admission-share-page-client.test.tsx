@@ -160,12 +160,14 @@ describe("AdmissionSharePageClient", () => {
           recordingVersion: 2,
           decision: "selected",
           remark: "Good fit.",
+          reasonCodes: [],
         },
         {
           recordingSubmissionId: "rec-2",
           recordingVersion: 1,
           decision: "backup",
           remark: "Can be backup.",
+          reasonCodes: [],
         },
       ],
     });

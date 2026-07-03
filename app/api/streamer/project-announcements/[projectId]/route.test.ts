@@ -74,6 +74,7 @@ describe("streamer project announcement detail route", () => {
       latestRecordingStatus: null,
       latestRecordingVersion: null,
       decisionReason: null,
+      rejectionReasons: [],
       recordingFeedback: null,
       reviewStatusLabel: "待投递",
       canSubmitRecording: true,
