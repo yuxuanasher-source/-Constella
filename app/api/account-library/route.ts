@@ -46,6 +46,8 @@ export async function GET(request: Request) {
       url.searchParams.get("boundStreamerId"),
     );
     if (boundStreamerId) filter.boundStreamerId = boundStreamerId;
+    const projectId = normalizeOptionalText(url.searchParams.get("projectId"));
+    if (projectId) filter.projectId = projectId;
 
     const rows = await listPlatformAccounts(supabase, filter);
     return NextResponse.json({
@@ -111,6 +113,10 @@ export async function POST(request: Request) {
         status: status as PlatformAccountStatus | undefined,
         realNameHolder: normalizeOptionalText(body.realNameHolder),
         realNamePhone: normalizeOptionalText(body.realNamePhone),
+        securityPhone: normalizeOptionalText(body.securityPhone),
+        securityEmail: normalizeOptionalText(body.securityEmail),
+        followerCount: normalizeOptionalNumber(body.followerCount),
+        projectId: normalizeOptionalText(body.projectId),
         operatorId: normalizeOptionalText(body.operatorId),
         boundStreamerId: normalizeOptionalText(body.boundStreamerId),
         note: normalizeOptionalText(body.note),
@@ -133,6 +139,10 @@ type AccountPostBody = {
   status?: unknown;
   realNameHolder?: unknown;
   realNamePhone?: unknown;
+  securityPhone?: unknown;
+  securityEmail?: unknown;
+  followerCount?: unknown;
+  projectId?: unknown;
   operatorId?: unknown;
   boundStreamerId?: unknown;
   note?: unknown;
@@ -144,6 +154,13 @@ function normalizeOptionalText(value: unknown) {
   }
   const trimmed = value.trim();
   return trimmed || undefined;
+}
+
+function normalizeOptionalNumber(value: unknown) {
+  if (typeof value !== "number") {
+    return undefined;
+  }
+  return value;
 }
 
 function normalizeEnum<T extends string>(
