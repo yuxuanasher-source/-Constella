@@ -765,6 +765,8 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("Fixture Project"));
+    // 报数审核区块位于「执行」页签。
+    fireEvent.click(screen.getByRole("button", { name: "执行" }));
 
     // 计数徽章显示总数 7，但表格仅渲染前 6 行，第 7 行被截断。
     expect(screen.getByText("报数主播0")).toBeInTheDocument();
@@ -1163,10 +1165,258 @@ describe("OpsReferenceApp project smoke", () => {
 
     fireEvent.click(screen.getByText("Fixture Project"));
 
-    // \u8be6\u60c5\u9875\u5df2\u5355\u9875\u5316\uff1a\u6392\u73ed & \u4efb\u52a1\u533a\u5757\u59cb\u7ec8\u6e32\u67d3\uff0c\u65e0\u9700\u5207\u6362\u9875\u7b7e\u3002
+    // \u8be6\u60c5\u9875\u5206 \u6982\u89c8 / \u6267\u884c / \u7ed3\u7b97 / \u8bbe\u7f6e \u9875\u7b7e\uff1a\u6392\u73ed & \u4efb\u52a1\u533a\u5757\u4f4d\u4e8e\u300c\u6267\u884c\u300d\u9875\u7b7e\u3002
+    fireEvent.click(screen.getByRole("button", { name: "\u6267\u884c" }));
     expect(screen.getAllByText("Project Live Task").length).toBeGreaterThan(0);
     expect(screen.getByText("task-detail-one")).toBeInTheDocument();
     expect(screen.queryByText("Other Project Task")).not.toBeInTheDocument();
+  });
+
+  it("switches project detail tabs with overview as the default tab", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={taskProjectCards}
+        applicationQueue={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Fixture Project"));
+
+    // 默认落在「概览」页签：经营概览卡可见，执行 / 结算内容未渲染。
+    expect(screen.getByText("经营概览")).toBeInTheDocument();
+    expect(screen.queryByText("主播阵容")).not.toBeInTheDocument();
+    expect(screen.queryByText("结算规则")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "执行" }));
+    expect(screen.getByText("主播阵容")).toBeInTheDocument();
+    expect(screen.queryByText("经营概览")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "结算" }));
+    expect(screen.getByText("结算规则")).toBeInTheDocument();
+    expect(screen.queryByText("主播阵容")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.getByText("状态设置")).toBeInTheDocument();
+    expect(screen.queryByText("结算规则")).not.toBeInTheDocument();
+  });
+
+  it("opens the tasks anomaly view with the project filter preset from the detail anomaly stat", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-07T13:12:00.000Z"));
+
+    try {
+      render(
+        <OpsReferenceApp
+          initialRoute="projects"
+          projectCards={taskProjectCards}
+          streamerCards={taskStreamerCards}
+          applicationQueue={[]}
+          liveTasks={[
+            {
+              id: "task-anomaly-jump",
+              name: "Overdue Detail Task",
+              status: "pending_live",
+              project: "project-live",
+              projectId: "project-live",
+              projectName: "Fixture Project",
+              streamerId: "streamer-one",
+              streamerName: "Streamer One",
+              dayIdx: 1,
+              startHour: 20,
+              endHour: 22,
+              plannedStartAt: "2026-06-04T12:00:00.000Z",
+              plannedEndAt: "2026-06-04T15:30:00.000Z",
+              plannedDuration: 210,
+              type: "project",
+            },
+            {
+              id: "task-anomaly-other",
+              name: "Other Overdue Task",
+              status: "pending_live",
+              project: "other-project",
+              projectId: "other-project",
+              projectName: "Other Project",
+              streamerId: "streamer-two",
+              streamerName: "Streamer Two",
+              dayIdx: 1,
+              startHour: 20,
+              endHour: 22,
+              plannedStartAt: "2026-06-04T12:00:00.000Z",
+              plannedEndAt: "2026-06-04T15:30:00.000Z",
+              plannedDuration: 210,
+              type: "project",
+            },
+          ]}
+        />,
+      );
+
+      fireEvent.click(screen.getByText("Fixture Project"));
+      // 顶部指标条的「异常任务」stat 可点击，跳到排班与任务页的异常视图。
+      fireEvent.click(
+        screen.getByRole("button", { name: "异常任务 1 项，点击查看" }),
+      );
+
+      // 已落在异常视图（批量分派入口可见），且项目筛选预置为当前项目。
+      expect(
+        screen.getByRole("button", { name: "批量分派处理" }),
+      ).toBeInTheDocument();
+      expect(screen.getByLabelText("项目筛选").value).toBe("project-live");
+      // 异常列表只保留本项目的异常行，其他项目的异常被筛掉。
+      expect(screen.getByText(/Overdue Detail Task/)).toBeInTheDocument();
+      expect(screen.queryByText(/Other Overdue Task/)).not.toBeInTheDocument();
+
+      // 「查看任务」真打开任务抽屉，而不再只是提示文案。
+      fireEvent.click(screen.getByRole("button", { name: "查看任务" }));
+      expect(
+        within(screen.getByRole("dialog")).getAllByText(/Overdue Detail Task/)
+          .length,
+      ).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("computes detail metrics from live tasks and reports when card metrics are zero", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        applicationQueue={[]}
+        projectCards={[
+          {
+            id: "project-metrics",
+            code: "PM-001",
+            name: "实算指标项目",
+            vendor: "厂商",
+            product: "产品",
+            status: "active",
+            pricing: "CPT",
+            leadOps: "Ops",
+            bizOwner: "Biz",
+            start: "2026-06-01",
+            end: "2026-06-30",
+            defaultHourlyRate: 120,
+            streamers: { active: 1, candidate: 0, pendingReview: 0 },
+            metrics: {
+              plannedHours: 0,
+              doneHours: 0,
+              audience: 0,
+              reportedPending: 0,
+              anomalies: 0,
+              receivable: 0,
+              payable: 0,
+              gross: 0,
+              margin: 0,
+            },
+            risk: "low",
+          },
+        ]}
+        liveTasks={[
+          {
+            id: "task-metrics-one",
+            name: "Metrics Task",
+            status: "done",
+            project: "project-metrics",
+            projectId: "project-metrics",
+            projectName: "实算指标项目",
+            streamerId: "streamer-one",
+            streamerName: "Streamer One",
+            dayIdx: 1,
+            startHour: 20,
+            endHour: 22,
+            plannedDuration: 600,
+            systemDuration: 300,
+            type: "project",
+          },
+        ]}
+        liveReports={[
+          {
+            id: "rep-metrics-one",
+            projectId: "project-metrics",
+            project: "实算指标项目",
+            streamer: "报数主播甲",
+            status: "approved",
+            date: "2026-06-01",
+            systemDurationHours: 10,
+            audience: 5000,
+            screens: 2,
+            taskId: "task-metrics-one",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("实算指标项目"));
+
+    // p.metrics 全 0 时顶部指标条改用实算值：
+    // 应收 = 10h（已审核报数）× ¥120 = ¥1200，应付 0 → 毛利率 100%。
+    expect(screen.getByText("毛利率 100%")).toBeInTheDocument();
+    // 完成率 = systemDuration 5h / plannedDuration 10h = 50%。
+    expect(screen.getByText("50% 达成")).toBeInTheDocument();
+    // 预估毛利与厂家应收均为 ¥0.1万（1200 元）。
+    expect(screen.getAllByText("¥0.1万").length).toBeGreaterThan(0);
+    // 经营概览「时长完成率」格读同一套实算口径。
+    expect(screen.getByText("计划 10.0 h · 依系统计时")).toBeInTheDocument();
+  });
+
+  it("hides the settings tab and downgrades settlement amounts for partner projects", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        applicationQueue={[]}
+        projectCards={[
+          {
+            id: "project-partner-tabs",
+            code: "PPT-001",
+            name: "协作详情项目",
+            vendor: "厂商",
+            product: "产品",
+            status: "active",
+            pricing: "CPT",
+            leadOps: "Ops",
+            bizOwner: "Biz",
+            start: "2026-06-01",
+            end: "2026-06-30",
+            streamers: { active: 0, candidate: 0, pendingReview: 0 },
+            collaborationRole: "partner",
+            collaborationId: "agreement-1",
+            collaborationAgreementId: "agreement-1",
+            metrics: {
+              plannedHours: 0,
+              doneHours: 0,
+              audience: 0,
+              reportedPending: 0,
+              anomalies: 0,
+              receivable: 0,
+              payable: 0,
+              gross: 0,
+              margin: 0,
+            },
+            risk: "low",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("协作详情项目"));
+
+    // partner 协作项目：页签只有 概览 / 执行 / 结算，不渲染「设置」，
+    // 表头也没有「项目设置」入口。
+    expect(screen.getByRole("button", { name: "概览" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "执行" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "结算" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "设置" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "项目设置" }),
+    ).not.toBeInTheDocument();
+
+    // 结算页签保留，但金额区显式空态降级。
+    fireEvent.click(screen.getByRole("button", { name: "结算" }));
+    expect(screen.getByText("协作项目不展示结算金额")).toBeInTheDocument();
+    expect(screen.getByText("协作项目不展示结算明细")).toBeInTheDocument();
+    expect(screen.getByText("协作项目不展示财务金额")).toBeInTheDocument();
   });
 
   it("masks uuid-like streamer identifiers in project execution rhythm", () => {
@@ -1521,6 +1771,8 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("详情项目"));
+    // 主播阵容区块位于「执行」页签。
+    fireEvent.click(screen.getByRole("button", { name: "执行" }));
     fireEvent.click(screen.getByRole("button", { name: "邀请主播" }));
     fireEvent.change(screen.getByLabelText("选择主播"), {
       target: { value: "streamer-one" },
@@ -1606,6 +1858,8 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("详情项目"));
+    // 主播阵容区块位于「执行」页签。
+    fireEvent.click(screen.getByRole("button", { name: "执行" }));
     fireEvent.click(screen.getByRole("button", { name: "邀请主播" }));
     fireEvent.change(screen.getByLabelText("选择主播"), {
       target: { value: "streamer-one" },
@@ -1621,6 +1875,8 @@ describe("OpsReferenceApp project smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
     fireEvent.click(screen.getByText("详情项目"));
+    // 重新进入详情默认回「概览」页签，需再切到「执行」查看主播阵容。
+    fireEvent.click(screen.getByRole("button", { name: "执行" }));
 
     expect(
       await screen.findByText("streamer-one · Streamer One"),
@@ -1692,6 +1948,8 @@ describe("OpsReferenceApp project smoke", () => {
       expect(fetchMock).toHaveBeenCalledWith("/api/streamers", undefined),
     );
 
+    // 主播阵容区块位于「执行」页签。
+    fireEvent.click(screen.getByRole("button", { name: "执行" }));
     fireEvent.click(screen.getByRole("button", { name: "邀请主播" }));
     expect(await screen.findByText("后端主播 · CPT")).toBeInTheDocument();
   });
@@ -1851,8 +2109,9 @@ describe("OpsReferenceApp project smoke", () => {
 
     fireEvent.click(screen.getByText("详情项目"));
 
-    // 详情页单页化后，主播阵容区块始终渲染，计数以 Badge 呈现；
-    // 下方对唯一主播行的断言即可验证阵容恢复为 1 人。
+    // 详情页分 概览 / 执行 / 结算 / 设置 页签：主播阵容区块位于「执行」页签，
+    // 计数以 Badge 呈现；下方对唯一主播行的断言即可验证阵容恢复为 1 人。
+    fireEvent.click(screen.getByRole("button", { name: "执行" }));
     expect(
       await screen.findByText("server-streamer · 后端主播"),
     ).toBeInTheDocument();
@@ -1954,6 +2213,8 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("Fixture Project"));
+    // 主播阵容区块位于「执行」页签。
+    fireEvent.click(screen.getByRole("button", { name: "执行" }));
     expect(await screen.findByText("待确认加入")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认加入" }));
 
@@ -2038,6 +2299,8 @@ describe("OpsReferenceApp project smoke", () => {
     );
 
     fireEvent.click(screen.getByText("Fixture Project"));
+    // 主播阵容区块位于「执行」页签。
+    fireEvent.click(screen.getByRole("button", { name: "执行" }));
     expect(await screen.findByText("邀约中")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认加入" }));
 
@@ -6013,6 +6276,40 @@ describe("OpsReferenceApp live task smoke", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps task ids visible after merging the id column into the task name cell", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+        applicationQueue={[]}
+        liveTasks={[
+          {
+            id: "task-detail-one",
+            name: "Project Live Task",
+            status: "pending_live",
+            project: "project-live",
+            projectId: "project-live",
+            projectName: "Fixture Project",
+            streamerId: "streamer-one",
+            streamerName: "Streamer One",
+            dayIdx: 1,
+            startHour: 20,
+            endHour: 22,
+            type: "project",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /任务列表/ }));
+
+    // 独立「任务 ID」列已删除，ID 併入「任务名 / 项目」单元格第三行仍然可见。
+    expect(screen.queryByText("任务 ID")).not.toBeInTheDocument();
+    expect(screen.getByText("任务名 / 项目")).toBeInTheDocument();
+    expect(screen.getByText("task-detail-one")).toBeInTheDocument();
   });
 
   it("marks anomaly actions and new task draft saves as explicit pending states", async () => {
