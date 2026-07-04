@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 
 import { runAiGateway } from "./llm-gateway";
 import { createDeterministicProvider } from "./providers/deterministic-provider";
+import {
+  createConfiguredAiProviders,
+  resolveAiProviderRouting,
+} from "./provider-registry";
 import type { AiProvider } from "./contracts";
 
 describe("runAiGateway", () => {
@@ -85,6 +89,26 @@ describe("runAiGateway", () => {
     expect(result).toMatchObject({
       status: "failed",
       degradedReason: "schema_validation_failed",
+    });
+  });
+
+  it("can run from environment-backed providers through the gateway", async () => {
+    const routing = resolveAiProviderRouting({});
+    const result = await runAiGateway({
+      providers: createConfiguredAiProviders({ env: {} }),
+      primaryProvider: routing.primaryProvider,
+      request: {
+        kind: "text",
+        promptKey: "ops.brief",
+        promptVersion: 1,
+        messages: [{ role: "user", content: "summarize" }],
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "succeeded",
+      providerName: "deterministic",
+      fallbackUsed: false,
     });
   });
 });
