@@ -92,8 +92,11 @@ done
 log "迁移完成（本次新增应用 $applied 个）"
 
 # ── 4. 构建 ──────────────────────────────────────────────────────────────
+# Node 默认堆上限约 1GB，本代码库的 TypeScript 检查在小内存服务器上会 OOM
+# （SIGABRT: JavaScript heap out of memory），故默认放宽到 3GB，可用
+# NODE_OPTIONS 覆盖。内存 < 4GB 的机器建议同时配置 swap。
 log "构建（pnpm run build）"
-pnpm run build
+NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=3072}" pnpm run build
 
 # ── 5. 重启应用 ──────────────────────────────────────────────────────────
 if command -v pm2 >/dev/null 2>&1 && pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
