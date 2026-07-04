@@ -83,7 +83,8 @@ export async function POST(request: Request) {
     });
 
     const deterministicOutput = result.output.agentOutput as AgentOutput;
-    const agentOutput = await enrichAgentOutputWithLlm({
+    // enrichment 返回 { output, narrative }(WP4 降级可见性契约)。
+    const { output: agentOutput, narrative } = await enrichAgentOutputWithLlm({
       output: deterministicOutput,
       scene: XINGYAO_SCENE,
       role: XINGYAO_ROLE,
@@ -105,6 +106,7 @@ export async function POST(request: Request) {
       coverage: store.coverage,
       missingData: store.missingData,
       agentOutput,
+      narrative,
       validation: validateAgentOutput(agentOutput),
     });
   } catch (error) {
