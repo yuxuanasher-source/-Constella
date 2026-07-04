@@ -1,0 +1,24 @@
+# Next.js 应用站点：app.your-domain.com → 127.0.0.1:3000
+# 放到 /etc/nginx/conf.d/app.conf，把 your-domain.com 改成你的域名后
+# 先只保留 80 段、用 certbot 自动补全 443 与证书。
+
+server {
+    listen 80;
+    server_name app.your-domain.com;
+
+    # certbot 会自动把这里改成 301 跳转到 https
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # 支持 WebSocket / HMR（Next 某些场景需要）
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300s;
+    }
+
+    client_max_body_size 20m;
+}
