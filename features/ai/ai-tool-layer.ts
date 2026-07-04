@@ -26,6 +26,9 @@ import {
   type AiTool,
   type AiToolScope,
 } from "./contracts";
+import { runXingyaoAssistant } from "./xingyao-assistant";
+import type { XingyaoFeatureStore } from "./xingyao-feature-store";
+import type { XingyaoRiskWeights } from "./xingyao-risk-radar";
 import type { RoleHomeDashboardDto } from "@/features/dashboards/role-home";
 
 type AiClient = {
@@ -215,6 +218,43 @@ const registeredTools: Record<string, RegisteredAiTool> = {
           question: stringValue(input.question, ""),
           dashboard: objectValue(input.dashboard) as RoleHomeDashboardDto,
         }),
+      };
+    },
+  },
+  xingyao_org_diagnosis: {
+    name: "xingyao_org_diagnosis",
+    description:
+      "Org-level business diagnosis: attributes ROI gaps and low show rates to concrete streamers/accounts/timeslots, and forecasts attainment/retention/ban/overdue risks from an injected feature store. Deterministic and read-only.",
+    inputSchema: {
+      type: "object",
+      required: ["question", "store"],
+      properties: {
+        question: { type: "string" },
+        store: { type: "object" },
+        weights: { type: "object" },
+      },
+    },
+    scopes: ["mcn_staff"],
+    masking: { input: ["store"], output: [], streamerForbiddenKeys },
+    readOnly: true,
+    tier: "L1_PERCEIVE",
+    handler(input) {
+      const result = runXingyaoAssistant({
+        question: stringValue(input.question, ""),
+        store: objectValue(input.store) as unknown as XingyaoFeatureStore,
+        weights: input.weights
+          ? (objectValue(input.weights) as unknown as XingyaoRiskWeights)
+          : undefined,
+      });
+      return {
+        answer: result.answer,
+        output: {
+          intent: result.intent,
+          entity: result.entity,
+          report: result.report,
+          agentOutput: result.output,
+          validation: result.validation,
+        },
       };
     },
   },

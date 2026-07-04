@@ -5,7 +5,7 @@ import {
   runRecordingAiAnalysisOnce,
 } from "@/features/recordings/recording-ai-analysis";
 import { createRecordingAiAnalysisPipeline } from "@/features/recordings/recording-ai-pipeline";
-import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
+import { resolveRecordingAiRunnerIdentity } from "@/features/recordings/recording-ai-runner-identity";
 
 export async function POST(request: Request) {
   const expected = process.env.RECORDING_AI_RUNNER_TOKEN;
@@ -16,32 +16,24 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const supabase = createSupabaseAdminClient();
-  if (!supabase) {
+  // runner 身份解析与入队路由的进程内即时执行共用（recording-ai-runner-identity）。
+  const identity = resolveRecordingAiRunnerIdentity();
+  if (!identity.ok) {
     return NextResponse.json(
-      { error: "Supabase admin client is unavailable" },
+      {
+        error:
+          identity.reason === "admin_client_unavailable"
+            ? "Supabase admin client is unavailable"
+            : "Recording AI runner organization and user are not configured",
+      },
       { status: 500 },
     );
   }
-
-  const organizationId = process.env.RECORDING_AI_RUNNER_ORGANIZATION_ID;
-  const userId = process.env.RECORDING_AI_RUNNER_USER_ID;
-  if (!isUuid(organizationId) || !isUuid(userId)) {
-    return NextResponse.json(
-      { error: "Recording AI runner organization and user are not configured" },
-      { status: 500 },
-    );
-  }
+  const { client: supabase, actor } = identity;
 
   const body = (await request.json().catch(() => ({}))) as {
     analysisId?: unknown;
     limit?: unknown;
-  };
-  const actor = {
-    userId,
-    name: process.env.RECORDING_AI_RUNNER_USER_NAME || "Recording AI Runner",
-    role: "ops_manager" as const,
-    organizationId,
   };
 
   // 豆包 ASR + LLM 流水线；未配置（返回 null）时 runner 走确定性草稿。
@@ -132,13 +124,4 @@ function sanitizeRunnerMessage(message: string): string {
     .replace(/secret=([^\s;]+)/gi, "secret=[redacted]")
     .replace(/\n[\s\S]*/g, "")
     .slice(0, 200);
-}
-
-function isUuid(value: string | undefined): value is string {
-  return (
-    typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      value,
-    )
-  );
 }

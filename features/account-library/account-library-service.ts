@@ -9,6 +9,7 @@ export const PLATFORM_ACCOUNT_TYPES = [
 export type PlatformAccountType = (typeof PLATFORM_ACCOUNT_TYPES)[number];
 
 export const PLATFORM_ACCOUNT_STATUSES = [
+  "nurturing",
   "active",
   "idle",
   "frozen",
@@ -28,9 +29,16 @@ export type PlatformAccountRecord = {
   status: PlatformAccountStatus;
   realNameHolder?: string | null;
   realNamePhone?: string | null;
+  securityPhone?: string | null;
+  securityEmail?: string | null;
+  followerCount?: number;
+  projectId?: string | null;
   operatorId?: string | null;
   boundStreamerId?: string | null;
   note?: string | null;
+  lastLiveAt?: string | null;
+  lastSyncedAt?: string | null;
+  createdAt?: string;
 };
 
 export type AccountLibraryActor = {
@@ -50,6 +58,10 @@ export type CreatePlatformAccountInput = {
   status?: PlatformAccountStatus;
   realNameHolder?: string | null;
   realNamePhone?: string | null;
+  securityPhone?: string | null;
+  securityEmail?: string | null;
+  followerCount?: number;
+  projectId?: string | null;
   operatorId?: string | null;
   boundStreamerId?: string | null;
   note?: string | null;
@@ -62,15 +74,20 @@ export type CreatePlatformAccountRepositoryInput = CreatePlatformAccountInput & 
   status: PlatformAccountStatus;
 };
 
+// 状态不在通用更新里改：生命周期流转走 transitionPlatformAccountStatus，
+// 保证 platform_account_status_logs 全程可追溯。
 export type UpdatePlatformAccountInput = {
   platform?: string;
   accountSource?: string | null;
   xingtuId?: string | null;
   cooperationCode?: string | null;
   accountType?: PlatformAccountType;
-  status?: PlatformAccountStatus;
   realNameHolder?: string | null;
   realNamePhone?: string | null;
+  securityPhone?: string | null;
+  securityEmail?: string | null;
+  followerCount?: number;
+  projectId?: string | null;
   operatorId?: string | null;
   note?: string | null;
 };
@@ -90,8 +107,13 @@ export type AccountLibraryAuditWriter = (
   input: AuditLogInput,
 ) => Promise<void>;
 
-// 实名手机号变更属于合规高风险操作，必须带 reason 写高风险审计
-const REAL_NAME_FIELDS = ["real_name_holder", "real_name_phone"] as const;
+// 实名与密保信息变更属于合规高风险操作，必须带 reason 写高风险审计
+const SENSITIVE_FIELDS = [
+  "real_name_holder",
+  "real_name_phone",
+  "security_phone",
+  "security_email",
+] as const;
 
 export function canManageAccounts(role: AppRole): boolean {
   return (
@@ -101,7 +123,7 @@ export function canManageAccounts(role: AppRole): boolean {
   );
 }
 
-function assertCanManageAccounts(role: AppRole): void {
+export function assertCanManageAccounts(role: AppRole): void {
   if (!canManageAccounts(role)) {
     throw new Error("Current role cannot manage platform accounts");
   }
@@ -171,8 +193,8 @@ export async function updatePlatformAccount({
     throw new Error("No account fields to update");
   }
 
-  const touchesRealName = REAL_NAME_FIELDS.some((field) => field in patch);
-  if (touchesRealName && !reason?.trim()) {
+  const touchesSensitive = SENSITIVE_FIELDS.some((field) => field in patch);
+  if (touchesSensitive && !reason?.trim()) {
     throw new Error("Updating real-name fields requires a reason");
   }
 
@@ -191,7 +213,7 @@ export async function updatePlatformAccount({
     before: before as unknown as Record<string, unknown>,
     after: account as unknown as Record<string, unknown>,
     changedFields: Object.keys(patch),
-    isHighRisk: touchesRealName,
+    isHighRisk: touchesSensitive,
     reason: reason?.trim(),
   });
 
@@ -272,6 +294,10 @@ function normalizeCreateInput(input: CreatePlatformAccountInput) {
     cooperationCode: normalizeOptionalText(input.cooperationCode) ?? null,
     realNameHolder: normalizeOptionalText(input.realNameHolder) ?? null,
     realNamePhone: normalizeOptionalText(input.realNamePhone) ?? null,
+    securityPhone: normalizeOptionalText(input.securityPhone) ?? null,
+    securityEmail: normalizeOptionalText(input.securityEmail) ?? null,
+    followerCount: normalizeFollowerCount(input.followerCount) ?? 0,
+    projectId: normalizeOptionalText(input.projectId) ?? null,
     operatorId: normalizeOptionalText(input.operatorId) ?? null,
     boundStreamerId,
     note: normalizeOptionalText(input.note) ?? null,
@@ -287,6 +313,10 @@ function getCreateChangedFields(
   if (normalized.cooperationCode !== null) fields.push("cooperation_code");
   if (normalized.realNameHolder !== null) fields.push("real_name_holder");
   if (normalized.realNamePhone !== null) fields.push("real_name_phone");
+  if (normalized.securityPhone !== null) fields.push("security_phone");
+  if (normalized.securityEmail !== null) fields.push("security_email");
+  if (normalized.followerCount !== 0) fields.push("follower_count");
+  if (normalized.projectId !== null) fields.push("project_id");
   if (normalized.operatorId !== null) fields.push("operator_id");
   if (normalized.boundStreamerId !== null) fields.push("bound_streamer_id");
   if (normalized.note !== null) fields.push("note");
@@ -306,7 +336,6 @@ function normalizeUpdatePatch(
     patch.platform = platform;
   }
   if (input.accountType !== undefined) patch.account_type = input.accountType;
-  if (input.status !== undefined) patch.status = input.status;
   if (input.accountSource !== undefined) {
     patch.account_source = normalizeOptionalText(input.accountSource) ?? null;
   }
@@ -323,6 +352,18 @@ function normalizeUpdatePatch(
   if (input.realNamePhone !== undefined) {
     patch.real_name_phone = normalizeOptionalText(input.realNamePhone) ?? null;
   }
+  if (input.securityPhone !== undefined) {
+    patch.security_phone = normalizeOptionalText(input.securityPhone) ?? null;
+  }
+  if (input.securityEmail !== undefined) {
+    patch.security_email = normalizeOptionalText(input.securityEmail) ?? null;
+  }
+  if (input.followerCount !== undefined) {
+    patch.follower_count = normalizeFollowerCount(input.followerCount);
+  }
+  if (input.projectId !== undefined) {
+    patch.project_id = normalizeOptionalText(input.projectId) ?? null;
+  }
   if (input.operatorId !== undefined) {
     patch.operator_id = normalizeOptionalText(input.operatorId) ?? null;
   }
@@ -331,6 +372,16 @@ function normalizeUpdatePatch(
   }
 
   return patch;
+}
+
+function normalizeFollowerCount(value: number | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error("followerCount must be a non-negative number");
+  }
+  return Math.floor(value);
 }
 
 function normalizeOptionalText(value: string | null | undefined) {

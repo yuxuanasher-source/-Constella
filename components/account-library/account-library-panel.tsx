@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 
+import { AccountLibraryDetail } from "@/components/account-library/account-library-detail";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { PlatformAccountDto } from "@/features/account-library/account-library-ui-adapters";
@@ -17,17 +18,22 @@ const TYPE_LABELS: Record<PlatformAccountType, string> = {
 };
 
 const STATUS_LABELS: Record<PlatformAccountStatus, string> = {
+  nurturing: "养号中",
   active: "在用",
   idle: "闲置",
-  frozen: "冻结",
+  frozen: "封禁",
   retired: "注销",
 };
 
-const STATUS_TONES: Record<PlatformAccountStatus, "green" | "neutral" | "amber" | "red"> = {
+const STATUS_TONES: Record<
+  PlatformAccountStatus,
+  "green" | "neutral" | "amber" | "red" | "blue"
+> = {
+  nurturing: "blue",
   active: "green",
-  idle: "neutral",
-  frozen: "amber",
-  retired: "red",
+  idle: "amber",
+  frozen: "red",
+  retired: "neutral",
 };
 
 type CreateForm = {
@@ -40,6 +46,9 @@ type CreateForm = {
   cooperationCode: string;
   realNameHolder: string;
   realNamePhone: string;
+  securityPhone: string;
+  securityEmail: string;
+  followerCount: string;
   note: string;
 };
 
@@ -53,6 +62,9 @@ const EMPTY_FORM: CreateForm = {
   cooperationCode: "",
   realNameHolder: "",
   realNamePhone: "",
+  securityPhone: "",
+  securityEmail: "",
+  followerCount: "",
   note: "",
 };
 
@@ -70,6 +82,7 @@ export function AccountLibraryPanel({
   const [form, setForm] = useState<CreateForm>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const filtered = useMemo(
     () =>
@@ -88,7 +101,12 @@ export function AccountLibraryPanel({
       const response = await fetch("/api/account-library", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          ...form,
+          followerCount: form.followerCount
+            ? Number(form.followerCount)
+            : undefined,
+        }),
       });
       const payload = await response.json();
       if (!response.ok) {
@@ -110,7 +128,8 @@ export function AccountLibraryPanel({
         <div>
           <h1 className="text-lg font-semibold">账号库</h1>
           <p className="text-sm text-[var(--ink-300)]">
-            组织级账号资产，独立于主播；实名手机号按权限脱敏。
+            组织级账号资产，独立于主播；实名与密保信息按权限脱敏，
+            生命周期流转、设备白名单与平台指标见行内详情。
           </p>
         </div>
         {canManage ? (
@@ -243,6 +262,35 @@ export function AccountLibraryPanel({
                 }
               />
             </Field>
+            <Field label="密保手机">
+              <input
+                className={inputClass}
+                value={form.securityPhone}
+                onChange={(event) =>
+                  setForm({ ...form, securityPhone: event.target.value })
+                }
+              />
+            </Field>
+            <Field label="密保邮箱">
+              <input
+                className={inputClass}
+                value={form.securityEmail}
+                onChange={(event) =>
+                  setForm({ ...form, securityEmail: event.target.value })
+                }
+              />
+            </Field>
+            <Field label="粉丝量">
+              <input
+                className={inputClass}
+                type="number"
+                min={0}
+                value={form.followerCount}
+                onChange={(event) =>
+                  setForm({ ...form, followerCount: event.target.value })
+                }
+              />
+            </Field>
           </div>
           {error ? (
             <p className="mt-3 text-sm text-[var(--danger-600)]">{error}</p>
@@ -268,75 +316,124 @@ export function AccountLibraryPanel({
       ) : null}
 
       <div className="overflow-x-auto rounded-lg border border-[var(--line)] bg-white">
-        <table className="w-full min-w-[860px] text-sm">
+        <table className="w-full min-w-[980px] text-sm">
           <thead>
             <tr className="border-b border-[var(--line)] text-left text-xs text-[var(--ink-300)]">
               <th className="px-4 py-3 font-medium">平台 / UID</th>
               <th className="px-4 py-3 font-medium">类型</th>
               <th className="px-4 py-3 font-medium">状态</th>
+              <th className="px-4 py-3 font-medium">粉丝量</th>
               <th className="px-4 py-3 font-medium">实名人</th>
               <th className="px-4 py-3 font-medium">实名手机号</th>
-              <th className="px-4 py-3 font-medium">星图 / 合作码</th>
+              <th className="px-4 py-3 font-medium">最近直播</th>
+              <th className="px-4 py-3 font-medium">操作</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 ? (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={8}
                   className="px-4 py-10 text-center text-[var(--ink-300)]"
                 >
                   暂无账号
                 </td>
               </tr>
             ) : (
-              filtered.map((account) => (
-                <tr
-                  key={account.id}
-                  className="border-b border-[var(--line)] last:border-0"
-                >
-                  <td className="px-4 py-3">
-                    <div className="font-medium">{account.platform}</div>
-                    <div className="text-xs text-[var(--ink-300)]">
-                      {account.accountUid}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <Badge tone="blue">
-                      {TYPE_LABELS[account.accountType]}
-                    </Badge>
-                  </td>
-                  <td className="px-4 py-3">
-                    <Badge tone={STATUS_TONES[account.status]}>
-                      {STATUS_LABELS[account.status]}
-                    </Badge>
-                  </td>
-                  <td className="px-4 py-3">
-                    {account.realNameHolder ?? "—"}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="font-mono text-xs">
-                      {account.realNamePhone ?? "—"}
-                    </span>
-                    {account.realNamePhoneMasked &&
-                    account.realNamePhone ? (
-                      <span className="ml-2 text-xs text-[var(--ink-300)]">
-                        已脱敏
+              filtered.flatMap((account) => {
+                const rows = [
+                  <tr
+                    key={account.id}
+                    className="border-b border-[var(--line)] last:border-0"
+                  >
+                    <td className="px-4 py-3">
+                      <div className="font-medium">{account.platform}</div>
+                      <div className="text-xs text-[var(--ink-300)]">
+                        {account.accountUid}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge tone="blue">
+                        {TYPE_LABELS[account.accountType]}
+                      </Badge>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge tone={STATUS_TONES[account.status]}>
+                        {STATUS_LABELS[account.status]}
+                      </Badge>
+                    </td>
+                    <td className="px-4 py-3">
+                      {account.followerCount.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3">
+                      {account.realNameHolder ?? "—"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="font-mono text-xs">
+                        {account.realNamePhone ?? "—"}
                       </span>
-                    ) : null}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-[var(--ink-500)]">
-                    <div>{account.xingtuId ?? "—"}</div>
-                    <div>{account.cooperationCode ?? ""}</div>
-                  </td>
-                </tr>
-              ))
+                      {account.realNamePhoneMasked &&
+                      account.realNamePhone ? (
+                        <span className="ml-2 text-xs text-[var(--ink-300)]">
+                          已脱敏
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-[var(--ink-500)]">
+                      {formatDate(account.lastLiveAt)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Button
+                        variant="secondary"
+                        onClick={() =>
+                          setExpandedId((current) =>
+                            current === account.id ? null : account.id,
+                          )
+                        }
+                      >
+                        {expandedId === account.id ? "收起" : "详情"}
+                      </Button>
+                    </td>
+                  </tr>,
+                ];
+                if (expandedId === account.id) {
+                  rows.push(
+                    <tr key={`${account.id}-detail`}>
+                      <td colSpan={8} className="px-4 py-3">
+                        <AccountLibraryDetail
+                          account={account}
+                          canManage={canManage}
+                          onAccountUpdated={(updated) =>
+                            setAccounts((prev) =>
+                              prev.map((item) =>
+                                item.id === updated.id ? updated : item,
+                              ),
+                            )
+                          }
+                        />
+                      </td>
+                    </tr>,
+                  );
+                }
+                return rows;
+              })
             )}
           </tbody>
         </table>
       </div>
     </div>
   );
+}
+
+function formatDate(value: string | null): string {
+  if (!value) {
+    return "—";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleDateString("zh-CN");
 }
 
 const inputClass =
@@ -403,13 +500,20 @@ function dtoFromAccount(account: {
   status: PlatformAccountStatus;
   realNameHolder: string | null;
   realNamePhone: string | null;
+  securityPhone: string | null;
+  securityEmail: string | null;
+  followerCount: number;
+  projectId: string | null;
   operatorId: string | null;
   boundStreamerId: string | null;
   note: string | null;
+  lastLiveAt: string | null;
+  lastSyncedAt: string | null;
 }): PlatformAccountDto {
   return {
     ...account,
     realNamePhoneMasked: false,
+    securityInfoMasked: false,
     createdAt: new Date().toISOString(),
   };
 }

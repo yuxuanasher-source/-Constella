@@ -2,10 +2,8 @@ import { NextResponse } from "next/server";
 
 import { SupabaseAccountLibraryRepository } from "@/features/account-library/account-library-repository";
 import {
-  PLATFORM_ACCOUNT_STATUSES,
   PLATFORM_ACCOUNT_TYPES,
   updatePlatformAccount,
-  type PlatformAccountStatus,
   type PlatformAccountType,
   type UpdatePlatformAccountInput,
 } from "@/features/account-library/account-library-service";
@@ -63,13 +61,12 @@ export async function PATCH(
     if (accountType instanceof Response) {
       return accountType;
     }
-    const status = normalizeEnumOrResponse(
-      body.status,
-      PLATFORM_ACCOUNT_STATUSES,
-      "status",
-    );
-    if (status instanceof Response) {
-      return status;
+    if (body.status !== undefined) {
+      // 生命周期状态必须走 /status 流转接口，保证全流程留痕
+      return NextResponse.json(
+        { error: "status must be changed via the status transition endpoint" },
+        { status: 400 },
+      );
     }
 
     const input: UpdatePlatformAccountInput = {};
@@ -77,7 +74,6 @@ export async function PATCH(
       input.platform = typeof body.platform === "string" ? body.platform : "";
     }
     if (accountType) input.accountType = accountType as PlatformAccountType;
-    if (status) input.status = status as PlatformAccountStatus;
     if (body.accountSource !== undefined) {
       input.accountSource = asNullableText(body.accountSource);
     }
@@ -92,6 +88,24 @@ export async function PATCH(
     }
     if (body.realNamePhone !== undefined) {
       input.realNamePhone = asNullableText(body.realNamePhone);
+    }
+    if (body.securityPhone !== undefined) {
+      input.securityPhone = asNullableText(body.securityPhone);
+    }
+    if (body.securityEmail !== undefined) {
+      input.securityEmail = asNullableText(body.securityEmail);
+    }
+    if (body.followerCount !== undefined) {
+      if (typeof body.followerCount !== "number") {
+        return NextResponse.json(
+          { error: "followerCount must be a number" },
+          { status: 400 },
+        );
+      }
+      input.followerCount = body.followerCount;
+    }
+    if (body.projectId !== undefined) {
+      input.projectId = asNullableText(body.projectId);
     }
     if (body.operatorId !== undefined) {
       input.operatorId = asNullableText(body.operatorId);
@@ -125,6 +139,10 @@ type AccountPatchBody = {
   status?: unknown;
   realNameHolder?: unknown;
   realNamePhone?: unknown;
+  securityPhone?: unknown;
+  securityEmail?: unknown;
+  followerCount?: unknown;
+  projectId?: unknown;
   operatorId?: unknown;
   note?: unknown;
   reason?: unknown;
