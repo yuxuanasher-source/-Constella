@@ -4129,8 +4129,11 @@ describe("OpsReferenceApp admission smoke", () => {
     );
 
     expect(screen.getAllByText("选播准入").length).toBeGreaterThan(0);
-    expect(screen.getByText("app-ui-1")).toBeInTheDocument();
     expect(screen.getByText("元梦之星")).toBeInTheDocument();
+    // 明细默认收起，点击「查看录屏」后在项目行下方抽屉式展开。
+    expect(screen.queryByText("app-ui-1")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看录屏" }));
+    expect(screen.getByText("app-ui-1")).toBeInTheDocument();
     expect(screen.getByText("小鹿")).toBeInTheDocument();
   });
   it("renders the project-first admission board and creates vendor share links", async () => {
@@ -5075,6 +5078,7 @@ describe("OpsReferenceApp admission smoke", () => {
       <OpsReferenceApp initialRoute="admission" applicationQueue={rejectQueue} />,
     );
 
+    fireEvent.click(await screen.findByRole("button", { name: "查看录屏" }));
     fireEvent.click(await screen.findByRole("button", { name: "拒绝入项" }));
 
     expect(promptMock).toHaveBeenCalled();
@@ -5169,6 +5173,7 @@ describe("OpsReferenceApp admission smoke", () => {
       />,
     );
 
+    fireEvent.click(await screen.findByRole("button", { name: "查看录屏" }));
     expect(
       await screen.findByRole("button", { name: "二次确认" }),
     ).toBeInTheDocument();
@@ -6444,6 +6449,72 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(screen.getAllByText("待确认").length).toBeGreaterThan(0);
   });
 
+  it("filters the report queue by project, date range, and keyword", () => {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    render(
+      <OpsReferenceApp
+        initialRoute="reports"
+        liveReports={[
+          {
+            id: "report-alpha",
+            taskId: "task-alpha",
+            date: "2026-06-02",
+            streamer: "主播甲",
+            project: "Alpha Project",
+            duration: 2,
+            audience: 900,
+            status: "pending_review",
+            screens: 1,
+            source: "OCR",
+          },
+          {
+            id: "report-beta",
+            taskId: "task-beta",
+            date: todayKey,
+            streamer: "主播乙",
+            project: "Beta Project",
+            duration: 1,
+            audience: 300,
+            status: "pending_review",
+            screens: 1,
+            source: "OCR",
+          },
+        ]}
+      />,
+    );
+
+    // 默认展示全部项目的报数。
+    expect(screen.getAllByText("主播甲").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("主播乙").length).toBeGreaterThan(0);
+
+    // 按项目筛选后仅剩所选项目的报数。
+    fireEvent.change(screen.getByLabelText("按项目筛选"), {
+      target: { value: "Alpha Project" },
+    });
+    expect(screen.getAllByText("主播甲").length).toBeGreaterThan(0);
+    expect(screen.queryByText("主播乙")).not.toBeInTheDocument();
+
+    // 日期筛选：近 7 天只保留今天提交的报数。
+    fireEvent.change(screen.getByLabelText("按项目筛选"), {
+      target: { value: "all" },
+    });
+    fireEvent.change(screen.getByLabelText("按日期筛选"), {
+      target: { value: "7" },
+    });
+    expect(screen.getAllByText("主播乙").length).toBeGreaterThan(0);
+    expect(screen.queryByText("主播甲")).not.toBeInTheDocument();
+
+    // 关键字搜索命中任务号。
+    fireEvent.change(screen.getByLabelText("按日期筛选"), {
+      target: { value: "all" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("任务号 / 主播 / 项目"), {
+      target: { value: "task-alpha" },
+    });
+    expect(screen.getAllByText("主播甲").length).toBeGreaterThan(0);
+    expect(screen.queryByText("主播乙")).not.toBeInTheDocument();
+  });
+
   it("renders settlement batch badges for voided batches", () => {
     render(
       <OpsReferenceApp
@@ -7469,6 +7540,143 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(await screen.findByText("项目结算规则已保存")).toBeInTheDocument();
   });
 
+  it("reloads the settlement pool for the newly selected project", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      const target = String(url);
+      if (target.startsWith("/api/settlement-pool")) {
+        const params = new URLSearchParams(target.split("?")[1] ?? "");
+        if (params.get("projectId") === "project-beta") {
+          return {
+            ok: true,
+            json: async () => ({
+              reports: [
+                {
+                  id: "pool-beta-live",
+                  projectId: "project-beta",
+                  projectName: "Beta Growth",
+                  streamerName: "Beta Streamer",
+                  settlementDuration: 120,
+                  evidenceLevel: "green",
+                  timeSource: "system",
+                  settlementMethod: "cpt",
+                  expectedAmount: 240,
+                  approvedAt: "2026-06-12T09:00:00.000Z",
+                },
+              ],
+            }),
+          };
+        }
+        return { ok: true, json: async () => ({ reports: [] }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        liveBatches={[
+          {
+            id: "batch-alpha-payable",
+            projectId: "project-alpha",
+            type: "streamer_payable",
+            name: "Alpha Launch · streamer payable",
+            project: "Alpha Launch",
+            vendor: "—",
+            period: "2026-06-01 → 2026-06-30",
+            items: 2,
+            amount: 15000,
+            status: "generated",
+            updated: "2026-06-12 10:00",
+            creator: "Ops A",
+          },
+          {
+            id: "batch-beta-payable",
+            projectId: "project-beta",
+            type: "streamer_payable",
+            name: "Beta Growth · streamer payable",
+            project: "Beta Growth",
+            vendor: "—",
+            period: "2026-06-01 → 2026-06-30",
+            items: 1,
+            amount: 3000,
+            status: "generated",
+            updated: "2026-06-12 11:00",
+            creator: "Ops B",
+          },
+        ]}
+        liveSettlementPool={[
+          {
+            id: "pool-alpha-one",
+            projectId: "project-alpha",
+            streamer: "Alpha Streamer",
+            project: "Alpha Launch",
+            hours: 2,
+            evidence: "green · system",
+            rule: "cpt",
+            expected: 160,
+            approvedAt: "2026-06-12 09:00",
+          },
+        ]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+          poolCount: 1,
+        }}
+      />,
+    );
+
+    // 默认项目的池子来自服务端预载数据。
+    expect(await screen.findByText("pool-alpha-one")).toBeInTheDocument();
+
+    // 切换项目后按新项目 + 默认周期重新拉取可结算池。
+    fireEvent.change(screen.getByLabelText("结算项目"), {
+      target: { value: "project-beta" },
+    });
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) => {
+          const target = String(url);
+          return (
+            target.startsWith("/api/settlement-pool") &&
+            target.includes("projectId=project-beta") &&
+            target.includes("periodStart=2026-06-01") &&
+            target.includes("periodEnd=2026-06-30")
+          );
+        }),
+      ).toBe(true),
+    );
+    expect(await screen.findByText("Beta Streamer")).toBeInTheDocument();
+    expect(screen.queryByText("pool-alpha-one")).not.toBeInTheDocument();
+
+    // 自选结算周期后，按「当前项目 + 新周期」再次拉取可结算池。
+    // 先改开始日期（此时开始晚于结束，不应发请求），补上结束日期后才请求。
+    const callsBeforePeriodChange = fetchMock.mock.calls.length;
+    fireEvent.change(screen.getByLabelText("结算周期开始"), {
+      target: { value: "2026-07-01" },
+    });
+    expect(fetchMock.mock.calls.length).toBe(callsBeforePeriodChange);
+    fireEvent.change(screen.getByLabelText("结算周期结束"), {
+      target: { value: "2026-07-31" },
+    });
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) => {
+          const target = String(url);
+          return (
+            target.startsWith("/api/settlement-pool") &&
+            target.includes("projectId=project-beta") &&
+            target.includes("periodStart=2026-07-01") &&
+            target.includes("periodEnd=2026-07-31")
+          );
+        }),
+      ).toBe(true),
+    );
+    // 池子预览的周期标题跟随所选周期。
+    expect(screen.getByText("2026-07-01 → 2026-07-31")).toBeInTheDocument();
+  });
+
   it("adds a manual settlement item then refreshes the active batch instead of reloading", async () => {
     const promptMock = vi.fn();
     vi.stubGlobal("prompt", promptMock);
@@ -8291,7 +8499,8 @@ describe("OpsReferenceApp war room smoke", () => {
 
     expect(screen.getAllByText("报数审核").length).toBeGreaterThan(0);
     expect(screen.getByText("Streamer One")).toBeInTheDocument();
-    expect(screen.getByText("Fixture Project")).toBeInTheDocument();
+    // 项目名同时出现在队列行与「按项目筛选」下拉选项里。
+    expect(screen.getAllByText("Fixture Project").length).toBeGreaterThan(0);
     expect(screen.getAllByText("待审核").length).toBeGreaterThan(0);
   });
 

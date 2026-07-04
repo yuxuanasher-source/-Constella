@@ -419,6 +419,12 @@ function DataTable({
   onRowClick,
   activeRowId,
   emptyText = "暂无数据",
+  // 行内抽屉：expandedRowId 命中的行会在其正下方渲染 renderExpanded(row)，
+  // 让明细跟随所点的行展开，而不是跳到页面其他位置。
+  renderExpanded,
+  expandedRowId,
+  // 行 id 默认取 row.id；行 id 藏在嵌套字段（如 board.project.id）时传入访问器。
+  rowId,
 }) {
   return (
     <div style={{ width: "100%", overflow: "auto" }}>
@@ -471,41 +477,64 @@ function DataTable({
               </td>
             </tr>
           )}
-          {rows.map((r, i) => (
-            <tr
-              key={r.id ?? i}
-              onClick={onRowClick ? () => onRowClick(r) : undefined}
-              style={{
-                background:
-                  activeRowId === r.id ? "var(--blue-50)" : "transparent",
-                cursor: onRowClick ? "pointer" : "default",
-              }}
-              onMouseEnter={(e) => {
-                if (onRowClick && activeRowId !== r.id)
-                  e.currentTarget.style.background = "#F7F9FD";
-              }}
-              onMouseLeave={(e) => {
-                if (onRowClick && activeRowId !== r.id)
-                  e.currentTarget.style.background = "transparent";
-              }}
-            >
-              {columns.map((c, j) => (
-                <td
-                  key={j}
+          {rows.map((r, i) => {
+            const rid = rowId ? rowId(r) : r.id;
+            const expanded =
+              Boolean(renderExpanded) && rid != null && expandedRowId === rid;
+            const highlighted =
+              (rid != null && activeRowId === rid) || expanded;
+            return (
+              <React.Fragment key={rid ?? i}>
+                <tr
+                  onClick={onRowClick ? () => onRowClick(r) : undefined}
                   style={{
-                    padding: dense ? "8px 12px" : "12px 14px",
-                    textAlign: c.align || "left",
-                    borderBottom: "1px solid var(--line)",
-                    verticalAlign: c.valign || "middle",
-                    whiteSpace: c.wrap ? "normal" : "nowrap",
-                    color: c.muted ? "var(--ink-400)" : "var(--ink-700)",
+                    background: highlighted ? "var(--blue-50)" : "transparent",
+                    cursor: onRowClick ? "pointer" : "default",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (onRowClick && !highlighted)
+                      e.currentTarget.style.background = "#F7F9FD";
+                  }}
+                  onMouseLeave={(e) => {
+                    if (onRowClick && !highlighted)
+                      e.currentTarget.style.background = "transparent";
                   }}
                 >
-                  {c.render ? c.render(r, i) : r[c.key]}
-                </td>
-              ))}
-            </tr>
-          ))}
+                  {columns.map((c, j) => (
+                    <td
+                      key={j}
+                      style={{
+                        padding: dense ? "8px 12px" : "12px 14px",
+                        textAlign: c.align || "left",
+                        borderBottom: expanded
+                          ? "none"
+                          : "1px solid var(--line)",
+                        verticalAlign: c.valign || "middle",
+                        whiteSpace: c.wrap ? "normal" : "nowrap",
+                        color: c.muted ? "var(--ink-400)" : "var(--ink-700)",
+                      }}
+                    >
+                      {c.render ? c.render(r, i) : r[c.key]}
+                    </td>
+                  ))}
+                </tr>
+                {expanded ? (
+                  <tr>
+                    <td
+                      colSpan={columns.length}
+                      style={{
+                        padding: 0,
+                        background: "var(--bg-soft)",
+                        borderBottom: "1px solid var(--line)",
+                      }}
+                    >
+                      {renderExpanded(r)}
+                    </td>
+                  </tr>
+                ) : null}
+              </React.Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -12689,6 +12718,10 @@ function ScreenReports({ go }) {
   const reports = useOpsReports();
   const actions = useOpsLiveActions();
   const [filter, setFilter] = React.useState("pending_review");
+  // 队列级筛选：项目 / 日期 / 关键字。状态 Tab 的计数基于筛选后的集合。
+  const [projectFilter, setProjectFilter] = React.useState("all");
+  const [dateRange, setDateRange] = React.useState("all");
+  const [searchQuery, setSearchQuery] = React.useState("");
   const [activeId, setActiveId] = React.useState(reports[0]?.id ?? null);
   const [exportMessage, setExportMessage] = React.useState("");
   const [exportSubmitting, setExportSubmitting] = React.useState(false);
@@ -12727,17 +12760,42 @@ function ScreenReports({ go }) {
     return Array.from(map, ([id, name]) => ({ value: id, label: name }));
   }, [reports]);
 
+  const scopedReports = React.useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const minDate =
+      dateRange === "all"
+        ? ""
+        : new Date(Date.now() - Number(dateRange) * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+    return reports.filter((r) => {
+      if (projectFilter !== "all" && r.project !== projectFilter) return false;
+      if (minDate && String(r.date || "") < minDate) return false;
+      if (query) {
+        const haystack = [r.id, r.taskId, r.streamer, r.project]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!haystack.includes(query)) return false;
+      }
+      return true;
+    });
+  }, [reports, projectFilter, dateRange, searchQuery]);
+
   const counts = {
-    all: reports.length,
-    pending_review: reports.filter((r) => r.status === "pending_review").length,
-    need_supply: reports.filter((r) => r.status === "need_supply").length,
-    approved: reports.filter((r) => r.status === "approved").length,
-    rejected: reports.filter((r) => r.status === "rejected").length,
+    all: scopedReports.length,
+    pending_review: scopedReports.filter((r) => r.status === "pending_review")
+      .length,
+    need_supply: scopedReports.filter((r) => r.status === "need_supply").length,
+    approved: scopedReports.filter((r) => r.status === "approved").length,
+    rejected: scopedReports.filter((r) => r.status === "rejected").length,
   };
   const filtered = React.useMemo(
     () =>
-      filter === "all" ? reports : reports.filter((r) => r.status === filter),
-    [filter, reports],
+      filter === "all"
+        ? scopedReports
+        : scopedReports.filter((r) => r.status === filter),
+    [filter, scopedReports],
   );
 
   // 智能排序：把列表喂给确定性规则引擎 rankReportQueue（可疑置顶/绿快车道），
@@ -13100,13 +13158,36 @@ function ScreenReports({ go }) {
               borderBottom: "1px solid var(--line)",
             }}
           >
-            <SearchInput placeholder="任务号 / 主播 / 项目" width={220} />
-            <Button kind="default" icon={<Icon.Calendar size={14} />}>
-              日期：近 7 天
-            </Button>
-            <Button kind="default" icon={<Icon.Filter size={14} />}>
-              项目
-            </Button>
+            <SearchInput
+              placeholder="任务号 / 主播 / 项目"
+              width={220}
+              value={searchQuery}
+              onChange={setSearchQuery}
+            />
+            <select
+              aria-label="按日期筛选"
+              value={dateRange}
+              onChange={(event) => setDateRange(event.target.value)}
+              style={{ ...taskInputStyle, width: 120 }}
+            >
+              <option value="all">全部日期</option>
+              <option value="7">近 7 天</option>
+              <option value="30">近 30 天</option>
+              <option value="90">近 90 天</option>
+            </select>
+            <select
+              aria-label="按项目筛选"
+              value={projectFilter}
+              onChange={(event) => setProjectFilter(event.target.value)}
+              style={{ ...taskInputStyle, width: 180 }}
+            >
+              <option value="all">全部项目</option>
+              {reportProjectOptions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
             <Button
               kind={aiSort ? "primary" : "default"}
               icon={<Icon.Sparkles size={14} stroke={aiSort ? "#fff" : undefined} />}
@@ -13123,6 +13204,7 @@ function ScreenReports({ go }) {
           <DataTable
             activeRowId={activeId}
             onRowClick={(r) => setActiveId(r.id)}
+            emptyText="当前筛选下暂无报数"
             columns={[
               ...(aiSort
                 ? [
@@ -13822,10 +13904,13 @@ function ScreenAdmission() {
   const canRejectJoin =
     currentUser.role === "owner" || currentUser.role === "ops_manager";
   const [projectBoards, setProjectBoards] = React.useState(null);
-  const [selectedProjectId, setSelectedProjectId] = React.useState("");
+  // 行内抽屉展开的项目：默认全部收起，点谁展开谁，明细跟随行出现。
+  const [expandedProjectId, setExpandedProjectId] = React.useState("");
+  const [searchQuery, setSearchQuery] = React.useState("");
   const [admissionMessage, setAdmissionMessage] = React.useState("");
   const [busyAction, setBusyAction] = React.useState("");
   const [selectedAiAnalysis, setSelectedAiAnalysis] = React.useState(null);
+  const [shareResult, setShareResult] = React.useState(null);
 
   const syncAdmissionProjectBoards = async () => {
     if (!actions.refreshAdmissionProjectBoards) {
@@ -13836,9 +13921,6 @@ function ScreenAdmission() {
       return;
     }
     setProjectBoards(projects);
-    setSelectedProjectId(
-      (current) => current || projects[0]?.project?.id || "",
-    );
   };
 
   const review = async (application, decision) => {
@@ -13963,16 +14045,32 @@ function ScreenAdmission() {
     }
   };
   const boards = projectBoards ?? buildAdmissionProjectBoards(applications);
-  const selectedBoard =
-    boards.find((board) => board.project.id === selectedProjectId) ??
-    boards[0] ??
-    null;
-  const selectedApplications = selectedBoard
-    ? applications.filter(
-        (application) =>
-          admissionProjectId(application) === selectedBoard.project.id,
-      )
-    : [];
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const visibleBoards = normalizedQuery
+    ? boards.filter((board) => {
+        const project = board.project ?? {};
+        const projectText = [
+          project.name,
+          project.code,
+          project.id,
+          project.vendor,
+          project.product,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (projectText.includes(normalizedQuery)) return true;
+        return applications.some(
+          (application) =>
+            admissionProjectId(application) === project.id &&
+            [application.streamer?.displayName, application.id]
+              .filter(Boolean)
+              .join(" ")
+              .toLowerCase()
+              .includes(normalizedQuery),
+        );
+      })
+    : boards;
 
   React.useEffect(() => {
     let active = true;
@@ -13986,9 +14084,6 @@ function ScreenAdmission() {
       .then((projects) => {
         if (!active || !Array.isArray(projects)) return;
         setProjectBoards(projects);
-        setSelectedProjectId(
-          (current) => current || projects[0]?.project?.id || "",
-        );
       })
       .catch((error) =>
         warnBackgroundRefreshFailure("admission project board", error),
@@ -13998,9 +14093,10 @@ function ScreenAdmission() {
     };
   }, [actions]);
 
-  const viewProject = (board) => {
-    setSelectedProjectId(board.project.id);
-    setAdmissionMessage("");
+  const toggleProject = (board) => {
+    setExpandedProjectId((current) =>
+      current === board.project.id ? "" : board.project.id,
+    );
   };
 
   const exportAdmissionRecordings = async (board) => {
@@ -14058,10 +14154,19 @@ function ScreenAdmission() {
         ...(applicationIds.length ? { applicationIds } : {}),
         allowVendorSubmit: true,
       });
-      setAdmissionMessage(
-        result?.shareUrl
-          ? `分享链接已生成：${result.shareUrl}${skippedMessage}`
-          : `分享链接已生成${skippedMessage}`,
+      if (result?.shareUrl) {
+        // 弹窗直达 + 可复制，避免链接淹没在页面消息里。
+        setShareResult({
+          projectName: board.project.name || board.project.code || "项目",
+          shareUrl: result.shareUrl,
+          skippedNotApproved,
+        });
+      } else {
+        setAdmissionMessage(`分享链接已生成${skippedMessage}`);
+      }
+      // 分享状态徽标（未分享 → 已分享）依赖看板数据，成功后刷新一次。
+      await syncAdmissionProjectBoards().catch((error) =>
+        warnBackgroundRefreshFailure("admission project board", error),
       );
     } catch (error) {
       setAdmissionMessage(error?.message || "分享链接创建失败，请稍后重试");
@@ -14070,9 +14175,225 @@ function ScreenAdmission() {
     }
   };
 
+  // 项目行下方的抽屉：该项目全部准入明细，展开即见，不再跳到页面底部。
+  const renderBoardDrawer = (board) => {
+    const boardApplications = applications.filter(
+      (application) => admissionProjectId(application) === board.project.id,
+    );
+    const projectMeta = [board.project.product, board.project.vendor]
+      .filter(Boolean)
+      .join(" · ");
+    return (
+      <div style={{ padding: "12px 16px 16px 36px" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 10,
+          }}
+        >
+          <span
+            style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}
+          >
+            {board.project.name || "项目"} · 录屏明细
+          </span>
+          {projectMeta ? (
+            <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              {projectMeta}
+            </span>
+          ) : null}
+          <Badge tone="blue">共 {boardApplications.length} 条</Badge>
+        </div>
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            overflow: "hidden",
+          }}
+        >
+          <DataTable
+            dense
+            rows={boardApplications}
+            emptyText="该项目暂无准入明细"
+            columns={[
+              {
+                title: "报名编号",
+                render: (r) => (
+                  <span className="mono" style={{ fontSize: 12 }}>
+                    {displayRecordId(r.id, "报名记录")}
+                  </span>
+                ),
+              },
+              {
+                title: "主播",
+                render: (r) => (
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 8 }}
+                  >
+                    <Avatar name={r.streamer?.displayName} size={24} />
+                    <div>
+                      <div>{r.streamer?.displayName}</div>
+                      <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                        {admissionAccountLabel(r)}
+                      </div>
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                title: "录屏",
+                render: (r) => (
+                  <div>
+                    <Badge tone={r.latestRecording ? "violet" : "amber"}>
+                      {r.latestRecording ? r.latestRecording.status : "待上传"}
+                    </Badge>
+                    <div
+                      className="mono"
+                      style={{
+                        fontSize: 11,
+                        color: "var(--ink-400)",
+                        marginTop: 4,
+                      }}
+                    >
+                      {displayRecordId(r.latestRecording?.id, "暂无录屏")}
+                      {r.latestRecording?.version
+                        ? ` · v${r.latestRecording.version}`
+                        : ""}
+                    </div>
+                    <RecordingAiAnalysisInline
+                      analysis={r.latestRecording?.aiAnalysis}
+                      onOpen={() =>
+                        setSelectedAiAnalysis(r.latestRecording?.aiAnalysis)
+                      }
+                    />
+                  </div>
+                ),
+              },
+              {
+                title: "厂家决策",
+                render: (r) => (
+                  <div>
+                    <Badge tone={vendorDecisionTone(r.vendorReview?.decision)}>
+                      {vendorDecisionLabel(r.vendorReview?.decision)}
+                    </Badge>
+                    {r.vendorReview?.remark ? (
+                      <div
+                        style={{
+                          marginTop: 4,
+                          fontSize: 11,
+                          color: "var(--ink-500)",
+                        }}
+                      >
+                        {r.vendorReview.remark}
+                      </div>
+                    ) : null}
+                  </div>
+                ),
+              },
+              {
+                title: "状态",
+                render: (r) => <Badge tone="neutral">{r.status}</Badge>,
+              },
+              {
+                title: "操作",
+                render: (r) => {
+                  const reviewable = isAdmissionRecordingReviewable(r);
+                  const confirmable =
+                    r.status === "recording_approved" &&
+                    r.vendorReview?.decision === "selected";
+                  if (!reviewable && !confirmable) {
+                    return (
+                      <span style={{ color: "var(--ink-400)" }}>
+                        {admissionNextActionLabel(r)}
+                      </span>
+                    );
+                  }
+                  return (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {reviewable ? (
+                        <>
+                          {canRequestAdmissionRecordingAiAnalysis(r) ? (
+                            <Button
+                              size="sm"
+                              kind="default"
+                              onClick={() => requestAiAnalysis(r)}
+                              disabled={busyAction === `ai:${r.id}`}
+                            >
+                              {r.latestRecording?.aiAnalysis?.status ===
+                              "failed"
+                                ? "重试 AI 分析"
+                                : "发起 AI 分析"}
+                            </Button>
+                          ) : null}
+                          <Button
+                            size="sm"
+                            kind="default"
+                            onClick={() => review(r, "needs_changes")}
+                            disabled={
+                              busyAction === `review:${r.id}:needs_changes`
+                            }
+                          >
+                            需补充
+                          </Button>
+                          <Button
+                            size="sm"
+                            kind="default"
+                            onClick={() => review(r, "rejected")}
+                            disabled={busyAction === `review:${r.id}:rejected`}
+                          >
+                            驳回
+                          </Button>
+                          <Button
+                            size="sm"
+                            kind="primary"
+                            onClick={() => review(r, "approved")}
+                            disabled={busyAction === `review:${r.id}:approved`}
+                          >
+                            通过
+                          </Button>
+                        </>
+                      ) : null}
+                      {confirmable ? (
+                        <>
+                          <Button
+                            size="sm"
+                            kind="default"
+                            onClick={() => confirmJoin(r.id)}
+                            disabled={busyAction === `confirm:${r.id}`}
+                          >
+                            二次确认
+                          </Button>
+                          {canRejectJoin ? (
+                            <Button
+                              size="sm"
+                              kind="danger"
+                              onClick={() => rejectJoin(r.id)}
+                              disabled={busyAction === `reject-join:${r.id}`}
+                            >
+                              拒绝入项
+                            </Button>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </div>
+                  );
+                },
+              },
+            ]}
+          />
+        </div>
+      </div>
+    );
+  };
+
   return (
     <>
-      <PageHeader title="选播准入" />
+      <PageHeader
+        title="选播准入"
+        subtitle="点击项目行即可展开该项目的录屏明细，审核完成后可创建厂家分享链接"
+      />
       <div style={{ padding: 20 }}>
         <Card title="项目准入板" padded={false}>
           <div
@@ -14084,23 +14405,77 @@ function ScreenAdmission() {
               borderBottom: "1px solid var(--line)",
             }}
           >
-            <SearchInput placeholder="项目 / 主播 / 报名编号" width={260} />
-            <Badge tone="blue">{boards.length} 个项目</Badge>
+            <SearchInput
+              placeholder="项目 / 主播 / 报名编号"
+              width={260}
+              value={searchQuery}
+              onChange={setSearchQuery}
+            />
+            <Badge tone="blue">
+              {normalizedQuery
+                ? `${visibleBoards.length}/${boards.length} 个项目`
+                : `${boards.length} 个项目`}
+            </Badge>
             <Badge tone="violet">{applications.length} 条准入记录</Badge>
           </div>
+          {admissionMessage ? (
+            <div
+              aria-live="polite"
+              style={{
+                padding: "10px 16px",
+                fontSize: 12,
+                borderBottom: "1px solid var(--line)",
+                background: admissionMessage.includes("失败")
+                  ? "#FDECEC"
+                  : "var(--bg-soft)",
+                color: admissionMessage.includes("失败")
+                  ? "var(--danger-600)"
+                  : "var(--ink-600)",
+              }}
+            >
+              {admissionMessage}
+            </div>
+          ) : null}
           <DataTable
-            rows={boards}
+            rows={visibleBoards}
+            rowId={(board) => board.project.id}
+            emptyText={normalizedQuery ? "没有匹配的项目" : "暂无准入项目"}
+            onRowClick={toggleProject}
+            expandedRowId={expandedProjectId}
+            renderExpanded={renderBoardDrawer}
             columns={[
               {
                 title: "项目",
                 render: (board) => (
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{board.project.name}</div>
-                    <div
-                      className="mono"
-                      style={{ fontSize: 11, color: "var(--ink-400)" }}
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 8 }}
+                  >
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        fontSize: 10,
+                        color: "var(--ink-400)",
+                        display: "inline-block",
+                        transition: "transform 120ms ease",
+                        transform:
+                          expandedProjectId === board.project.id
+                            ? "rotate(90deg)"
+                            : "none",
+                      }}
                     >
-                      {board.project.code || displayRecordId(board.project.id)}
+                      ▶
+                    </span>
+                    <div>
+                      <div style={{ fontWeight: 600 }}>
+                        {board.project.name}
+                      </div>
+                      <div
+                        className="mono"
+                        style={{ fontSize: 11, color: "var(--ink-400)" }}
+                      >
+                        {board.project.code ||
+                          displayRecordId(board.project.id)}
+                      </div>
                     </div>
                   </div>
                 ),
@@ -14147,13 +14522,18 @@ function ScreenAdmission() {
               {
                 title: "操作",
                 render: (board) => (
-                  <div style={{ display: "flex", gap: 6 }}>
+                  <div
+                    style={{ display: "flex", gap: 6 }}
+                    onClick={(event) => event.stopPropagation()}
+                  >
                     <Button
                       size="sm"
                       kind="default"
-                      onClick={() => viewProject(board)}
+                      onClick={() => toggleProject(board)}
                     >
-                      查看录屏
+                      {expandedProjectId === board.project.id
+                        ? "收起明细"
+                        : "查看录屏"}
                     </Button>
                     <Button
                       size="sm"
@@ -14165,7 +14545,7 @@ function ScreenAdmission() {
                     </Button>
                     <Button
                       size="sm"
-                      kind="primary"
+                      kind="default"
                       onClick={() => createShareBoard(board)}
                       disabled={
                         busyAction === `share:${board.project.id}` ||
@@ -14180,205 +14560,11 @@ function ScreenAdmission() {
             ]}
           />
         </Card>
-        {admissionMessage ? (
-          <div
-            aria-live="polite"
-            style={{
-              marginTop: 12,
-              fontSize: 12,
-              color: admissionMessage.includes("失败")
-                ? "var(--danger-600)"
-                : "var(--ink-600)",
-            }}
-          >
-            {admissionMessage}
-          </div>
-        ) : null}
-        {selectedBoard ? (
-          <Card
-            title={`${selectedBoard.project.name || "项目"} · 录屏明细`}
-            padded={false}
-            style={{ marginTop: 16 }}
-          >
-            <DataTable
-              rows={selectedApplications}
-              columns={[
-                {
-                  title: "报名编号",
-                  render: (r) => (
-                    <span className="mono" style={{ fontSize: 12 }}>
-                      {displayRecordId(r.id, "报名记录")}
-                    </span>
-                  ),
-                },
-                {
-                  title: "主播",
-                  render: (r) => (
-                    <div
-                      style={{ display: "flex", alignItems: "center", gap: 8 }}
-                    >
-                      <Avatar name={r.streamer?.displayName} size={24} />
-                      <div>
-                        <div>{r.streamer?.displayName}</div>
-                        <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
-                          {admissionAccountLabel(r)}
-                        </div>
-                      </div>
-                    </div>
-                  ),
-                },
-                {
-                  title: "录屏",
-                  render: (r) => (
-                    <div>
-                      <Badge tone={r.latestRecording ? "violet" : "amber"}>
-                        {r.latestRecording
-                          ? r.latestRecording.status
-                          : "待上传"}
-                      </Badge>
-                      <div
-                        className="mono"
-                        style={{
-                          fontSize: 11,
-                          color: "var(--ink-400)",
-                          marginTop: 4,
-                        }}
-                      >
-                        {displayRecordId(r.latestRecording?.id, "暂无录屏")}
-                        {r.latestRecording?.version
-                          ? ` · v${r.latestRecording.version}`
-                          : ""}
-                      </div>
-                      <RecordingAiAnalysisInline
-                        analysis={r.latestRecording?.aiAnalysis}
-                        onOpen={() =>
-                          setSelectedAiAnalysis(r.latestRecording?.aiAnalysis)
-                        }
-                      />
-                    </div>
-                  ),
-                },
-                {
-                  title: "厂家决策",
-                  render: (r) => (
-                    <div>
-                      <Badge
-                        tone={vendorDecisionTone(r.vendorReview?.decision)}
-                      >
-                        {vendorDecisionLabel(r.vendorReview?.decision)}
-                      </Badge>
-                      {r.vendorReview?.remark ? (
-                        <div
-                          style={{
-                            marginTop: 4,
-                            fontSize: 11,
-                            color: "var(--ink-500)",
-                          }}
-                        >
-                          {r.vendorReview.remark}
-                        </div>
-                      ) : null}
-                    </div>
-                  ),
-                },
-                {
-                  title: "状态",
-                  render: (r) => <Badge tone="neutral">{r.status}</Badge>,
-                },
-                {
-                  title: "操作",
-                  render: (r) => {
-                    const reviewable = isAdmissionRecordingReviewable(r);
-                    const confirmable =
-                      r.status === "recording_approved" &&
-                      r.vendorReview?.decision === "selected";
-                    if (!reviewable && !confirmable) {
-                      return (
-                        <span style={{ color: "var(--ink-400)" }}>
-                          {admissionNextActionLabel(r)}
-                        </span>
-                      );
-                    }
-                    return (
-                      <div style={{ display: "flex", gap: 6 }}>
-                        {reviewable ? (
-                          <>
-                            {canRequestAdmissionRecordingAiAnalysis(r) ? (
-                              <Button
-                                size="sm"
-                                kind="default"
-                                onClick={() => requestAiAnalysis(r)}
-                                disabled={busyAction === `ai:${r.id}`}
-                              >
-                                {r.latestRecording?.aiAnalysis?.status ===
-                                "failed"
-                                  ? "重试 AI 分析"
-                                  : "发起 AI 分析"}
-                              </Button>
-                            ) : null}
-                            <Button
-                              size="sm"
-                              kind="default"
-                              onClick={() => review(r, "needs_changes")}
-                              disabled={
-                                busyAction === `review:${r.id}:needs_changes`
-                              }
-                            >
-                              需补充
-                            </Button>
-                            <Button
-                              size="sm"
-                              kind="default"
-                              onClick={() => review(r, "rejected")}
-                              disabled={
-                                busyAction === `review:${r.id}:rejected`
-                              }
-                            >
-                              驳回
-                            </Button>
-                            <Button
-                              size="sm"
-                              kind="primary"
-                              onClick={() => review(r, "approved")}
-                              disabled={
-                                busyAction === `review:${r.id}:approved`
-                              }
-                            >
-                              通过
-                            </Button>
-                          </>
-                        ) : null}
-                        {confirmable ? (
-                          <>
-                            <Button
-                              size="sm"
-                              kind="default"
-                              onClick={() => confirmJoin(r.id)}
-                              disabled={busyAction === `confirm:${r.id}`}
-                            >
-                              二次确认
-                            </Button>
-                            {canRejectJoin ? (
-                              <Button
-                                size="sm"
-                                kind="danger"
-                                onClick={() => rejectJoin(r.id)}
-                                disabled={
-                                  busyAction === `reject-join:${r.id}`
-                                }
-                              >
-                                拒绝入项
-                              </Button>
-                            ) : null}
-                          </>
-                        ) : null}
-                      </div>
-                    );
-                  },
-                },
-              ]}
-            />
-          </Card>
+        {shareResult ? (
+          <AdmissionShareLinkDialog
+            share={shareResult}
+            onClose={() => setShareResult(null)}
+          />
         ) : null}
         {selectedAiAnalysis ? (
           <RecordingAiAnalysisDetailsPanel
@@ -14394,6 +14580,107 @@ function ScreenAdmission() {
         ) : null}
       </div>
     </>
+  );
+}
+
+// 分享链接结果弹窗：链接生成后直接呈现在屏幕中央并支持一键复制，
+// 不再只写进页面底部的消息文字里。
+function AdmissionShareLinkDialog({ share, onClose }) {
+  const [copied, setCopied] = React.useState(false);
+  const copyShareUrl = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(share.shareUrl);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = share.shareUrl;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="分享链接已生成"
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 100,
+        background: "rgba(15,23,42,0.28)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(event) => event.stopPropagation()}
+        style={{
+          width: "min(560px, 100%)",
+          background: "#fff",
+          borderRadius: 12,
+          border: "1px solid var(--line)",
+          boxShadow: "0 24px 70px rgba(15,23,42,0.22)",
+        }}
+      >
+        <div
+          style={{
+            padding: "18px 20px",
+            borderBottom: "1px solid var(--line)",
+          }}
+        >
+          <div style={{ fontSize: 16, fontWeight: 700 }}>分享链接已生成</div>
+          <div style={{ marginTop: 4, fontSize: 12, color: "var(--ink-500)" }}>
+            {share.projectName} · 厂家可通过该链接复核已通过的录屏并提交反馈
+          </div>
+        </div>
+        <div style={{ padding: 20, display: "grid", gap: 12 }}>
+          <div
+            className="mono"
+            style={{
+              padding: "10px 12px",
+              border: "1px solid var(--line-strong)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              fontSize: 12,
+              color: "var(--ink-700)",
+              wordBreak: "break-all",
+              userSelect: "all",
+            }}
+          >
+            {share.shareUrl}
+          </div>
+          {share.skippedNotApproved > 0 ? (
+            <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
+              已跳过 {share.skippedNotApproved} 条未通过 MCN
+              初审或暂无录屏的记录。
+            </div>
+          ) : null}
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: 8,
+            }}
+          >
+            <Button size="sm" kind="default" onClick={onClose}>
+              关闭
+            </Button>
+            <Button size="sm" kind="primary" onClick={copyShareUrl}>
+              {copied ? "已复制" : "复制链接"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -15298,6 +15585,12 @@ function ScreenSettlement({ go }) {
   const [selectedProjectId, setSelectedProjectId] = React.useState(
     settlementScope?.projectId || projectOptions[0]?.id || "",
   );
+  // 结算周期：默认取服务端默认结算范围，可在页头自选；改周期或切项目都会
+  // 按「项目 + 周期」重新拉取可结算池。
+  const [settlementPeriod, setSettlementPeriod] = React.useState({
+    start: settlementScope?.periodStart || "",
+    end: settlementScope?.periodEnd || "",
+  });
   const [type, setType] = React.useState("all");
   const [busyAction, setBusyAction] = React.useState(null);
   const [activeId, setActiveId] = React.useState(batches[0]?.id ?? null);
@@ -15394,10 +15687,13 @@ function ScreenSettlement({ go }) {
     projectBatches.find((batch) => batch.id === activeId) ||
     projectBatches[0] ||
     null;
+  // 默认 scope 的 poolCount 兜底只在「默认项目 + 默认周期」下成立。
   const poolCount =
     projectSettlementPool.length > 0
       ? projectSettlementPool.length
-      : selectedProjectId === settlementScope?.projectId
+      : selectedProjectId === settlementScope?.projectId &&
+          settlementPeriod.start === (settlementScope?.periodStart || "") &&
+          settlementPeriod.end === (settlementScope?.periodEnd || "")
         ? (settlementScope?.poolCount ?? 0)
         : 0;
   const settlementSummary = React.useMemo(() => {
@@ -15449,10 +15745,31 @@ function ScreenSettlement({ go }) {
         settlementScope?.projectId ||
         activeBatch?.projectId ||
         "",
-      periodStart: draft.periodStart || settlementScope?.periodStart || "",
-      periodEnd: draft.periodEnd || settlementScope?.periodEnd || "",
+      periodStart: draft.periodStart || settlementPeriod.start || "",
+      periodEnd: draft.periodEnd || settlementPeriod.end || "",
     }));
-  }, [activeBatch, selectedProjectId, settlementScope]);
+  }, [activeBatch, selectedProjectId, settlementScope, settlementPeriod]);
+
+  // 服务端只预载了「默认项目 + 默认周期」的可结算池：项目或周期任一变化
+  // 都要按新范围重新拉取，否则池子（报数）只对默认范围有数据。
+  const reloadSettlementPool = (projectId, period) => {
+    if (
+      !actions.refreshSettlementPool ||
+      !period.start ||
+      !period.end ||
+      period.start > period.end
+    ) {
+      return;
+    }
+    actions
+      .refreshSettlementPool({
+        projectId,
+        periodStart: period.start,
+        periodEnd: period.end,
+        batchType: settlementScope?.batchType,
+      })
+      .catch((error) => warnBackgroundRefreshFailure("settlement pool", error));
+  };
 
   const selectProject = (event) => {
     const projectId = event.target.value;
@@ -15464,6 +15781,19 @@ function ScreenSettlement({ go }) {
     setReconciliationKey(null);
     setCostItems([]);
     setCostItemsLoadedFor(null);
+    reloadSettlementPool(projectId, settlementPeriod);
+  };
+
+  const changeSettlementPeriod = (field) => (event) => {
+    const next = { ...settlementPeriod, [field]: event.target.value };
+    setSettlementPeriod(next);
+    // 创建批次的周期默认值跟随当前查看的周期，避免池子和批次口径不一致。
+    setBatchDraft((draft) => ({
+      ...draft,
+      periodStart: next.start,
+      periodEnd: next.end,
+    }));
+    reloadSettlementPool(selectedProjectId, next);
   };
 
   const updateCostDraft = (field) => (event) =>
@@ -16091,18 +16421,50 @@ function ScreenSettlement({ go }) {
                 {selectedProjectId || "no-project-selected"}
               </div>
             </div>
-            <select
-              aria-label="结算项目"
-              value={selectedProjectId}
-              onChange={selectProject}
-              style={{ ...taskInputStyle, width: 260 }}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+                justifyContent: "flex-end",
+              }}
             >
-              {projectOptions.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
+              {settlementPeriod.start &&
+              settlementPeriod.end &&
+              settlementPeriod.start > settlementPeriod.end ? (
+                <span style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                  周期开始需早于结束
+                </span>
+              ) : null}
+              <input
+                type="date"
+                aria-label="结算周期开始"
+                value={settlementPeriod.start}
+                onChange={changeSettlementPeriod("start")}
+                style={{ ...taskInputStyle, width: 150 }}
+              />
+              <span style={{ fontSize: 12, color: "var(--ink-400)" }}>→</span>
+              <input
+                type="date"
+                aria-label="结算周期结束"
+                value={settlementPeriod.end}
+                onChange={changeSettlementPeriod("end")}
+                style={{ ...taskInputStyle, width: 150 }}
+              />
+              <select
+                aria-label="结算项目"
+                value={selectedProjectId}
+                onChange={selectProject}
+                style={{ ...taskInputStyle, width: 260 }}
+              >
+                {projectOptions.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
           <div
             style={{
@@ -16685,7 +17047,7 @@ function ScreenSettlement({ go }) {
 
         <SettlementPoolPreview
           rows={projectSettlementPool}
-          settlementScope={settlementScope}
+          period={settlementPeriod}
         />
 
         <div
@@ -16840,7 +17202,7 @@ function settlementBatchHint(count, label) {
   return count > 0 ? `${count} 个${label}批次` : `暂无${label}批次`;
 }
 
-function SettlementPoolPreview({ rows, settlementScope }) {
+function SettlementPoolPreview({ rows, period }) {
   return (
     <Card padded={false}>
       <div
@@ -16863,8 +17225,8 @@ function SettlementPoolPreview({ rows, settlementScope }) {
             className="mono"
             style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 3 }}
           >
-            {settlementScope
-              ? `${settlementScope.periodStart} → ${settlementScope.periodEnd}`
+            {period?.start && period?.end
+              ? `${period.start} → ${period.end}`
               : "等待审核通过报数进入池子"}
           </div>
         </div>
@@ -28156,6 +28518,7 @@ function OpsReferenceInner({
       refreshAdmissionProjectBoards,
       refreshOpsTasks,
       refreshReports,
+      refreshSettlementPool,
       readVendorDeliveryPackage,
       exportAdmissionRecordings,
       requestRecordingAiAnalysis,
