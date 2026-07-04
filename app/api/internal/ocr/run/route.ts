@@ -2,12 +2,12 @@ import { NextResponse } from "next/server";
 
 import { resolveOcrImageInput } from "@/features/ai/ocr-image-source";
 import { claimRunnableOcrJobs, runOcrJobOnce } from "@/features/ai/ocr-jobs";
+import { resolveOcrRunnerIdentity } from "@/features/ai/ocr-runner-identity";
 import {
   createTencentOcrProvider,
   readTencentOcrConfigFromEnv,
 } from "@/features/ai/providers/tencent-ocr-provider";
 import { getPrivateStorageBucket } from "@/lib/config/env";
-import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 export async function POST(request: Request) {
   const expected = process.env.OCR_RUNNER_TOKEN;
@@ -18,36 +18,28 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const supabase = createSupabaseAdminClient();
-  if (!supabase) {
-    return NextResponse.json(
-      { error: "Supabase admin client is unavailable" },
-      { status: 500 },
-    );
-  }
-
   const body = (await request.json().catch(() => ({}))) as {
     limit?: unknown;
   };
-  const organizationId = process.env.OCR_RUNNER_ORGANIZATION_ID;
-  const userId = process.env.OCR_RUNNER_USER_ID;
-  if (!isUuid(organizationId) || !isUuid(userId)) {
+  // runner 身份解析与报数入队路由的进程内即时执行共用（ocr-runner-identity）。
+  const identity = resolveOcrRunnerIdentity();
+  if (!identity.ok) {
     return NextResponse.json(
-      { error: "OCR runner organization and user are not configured" },
+      {
+        error:
+          identity.reason === "admin_client_unavailable"
+            ? "Supabase admin client is unavailable"
+            : "OCR runner organization and user are not configured",
+      },
       { status: 500 },
     );
   }
+  const { client: supabase, actor } = identity;
 
   const limit =
     typeof body.limit === "number" && Number.isFinite(body.limit)
       ? Math.max(1, Math.min(Math.trunc(body.limit), 10))
       : 5;
-  const actor = {
-    userId,
-    name: process.env.OCR_RUNNER_USER_NAME || "OCR Runner",
-    role: "ops_manager" as const,
-    organizationId,
-  };
   const provider = createTencentOcrProvider(
     readTencentOcrConfigFromEnv(process.env),
   );
@@ -55,8 +47,8 @@ export async function POST(request: Request) {
   try {
     jobs = await claimRunnableOcrJobs({
       client: supabase as never,
-      organizationId,
-      runnerId: userId,
+      organizationId: actor.organizationId,
+      runnerId: actor.userId,
       limit,
     });
   } catch {
@@ -78,7 +70,7 @@ export async function POST(request: Request) {
         actor,
         jobId: job.id,
         provider,
-        runnerId: userId,
+        runnerId: actor.userId,
         imageResolver: (payload) =>
           resolveOcrImageInput({
             client: supabase,
@@ -114,13 +106,4 @@ function sanitizeRunnerError(error: unknown): string {
     .replace(/secret[^\s;]*/gi, "[redacted]")
     .replace(/\n[\s\S]*/g, "")
     .slice(0, 160);
-}
-
-function isUuid(value: string | undefined): value is string {
-  return (
-    typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      value,
-    )
-  );
 }

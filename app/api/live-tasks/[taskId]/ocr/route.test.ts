@@ -131,7 +131,8 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
     expect(JSON.stringify(body)).not.toContain("imageBase64");
 
     expect(actorFromContext).toHaveBeenCalledWith(context, true);
-    expect(createSupabaseAdminClient).toHaveBeenCalledTimes(1);
+    // 一次是入队路由本身，一次是入队后 inline kick 的 runner 身份解析。
+    expect(createSupabaseAdminClient).toHaveBeenCalledTimes(2);
     expect(submitLiveReportScreenshotForOcr).toHaveBeenCalledWith(
       expect.objectContaining({
         repo: context.repo,
