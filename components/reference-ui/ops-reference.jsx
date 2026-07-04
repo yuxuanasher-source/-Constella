@@ -1919,9 +1919,16 @@ export function Sidebar({
           const active = it.key === route;
           const IconComp = Icon[it.icon];
           const count = navCounts[it.key] ?? 0;
+          // 徽标数是全组织口径（非当前项目），在可访问名/悬浮提示里点明。
+          const badgeLabel =
+            count > 0
+              ? `${it.label}，全组织待办 ${formatBadgeCount(count)} 项`
+              : undefined;
           return (
             <button
               key={it.key}
+              title={badgeLabel}
+              aria-label={badgeLabel}
               onClick={() =>
                 it.href ? window.location.assign(it.href) : onNav(it.key)
               }
@@ -2400,7 +2407,8 @@ function formatBadgeCount(count) {
 
 function countActionableTasks(tasks) {
   return tasks.filter((task) => {
-    if (task?.anomaly) return true;
+    // 异常判定与任务页/项目详情同源：isTaskOperationalAnomaly（含派生 missed_live）。
+    if (isTaskOperationalAnomaly(task)) return true;
     return ["live", "pending_report", "pending_review"].includes(task?.status);
   }).length;
 }
@@ -6943,7 +6951,8 @@ function ProjectDetail({ id, go }) {
     allProjects.find((x) => x.id === id) || allProjects[0] || PROJECTS[0];
   const [detailMessage, setDetailMessage] = React.useState("");
   const [detailSubmitting, setDetailSubmitting] = React.useState("");
-  const [settingsOpen, setSettingsOpen] = React.useState(false);
+  // 详情页页签：概览 / 执行 / 结算 / 设置（设置 tab 兼容原 settingsOpen 语义）。
+  const [detailTab, setDetailTab] = React.useState("overview");
   const [settingsDraft, setSettingsDraft] = React.useState(() =>
     projectSettingsInitialDraft(p),
   );
@@ -6962,7 +6971,6 @@ function ProjectDetail({ id, go }) {
 
   React.useEffect(() => {
     setSettingsDraft(projectSettingsInitialDraft(p));
-    setSettingsOpen(false);
     setSettingsError("");
     // Reset only when switching to a different project — not on every data
     // refresh (otherwise saving collaboration would close 项目设置 mid-flow).
@@ -6978,6 +6986,7 @@ function ProjectDetail({ id, go }) {
   ]);
 
   React.useEffect(() => {
+    setDetailTab("overview");
     setCollaborationMessage("");
     setCollaborationError("");
     setCollaborationSubmitting("");
@@ -6987,7 +6996,7 @@ function ProjectDetail({ id, go }) {
 
   React.useEffect(() => {
     if (
-      settingsOpen &&
+      detailTab === "settings" &&
       !Array.isArray(organizationMembers) &&
       actions.refreshOrganizationMembers
     ) {
@@ -6997,7 +7006,7 @@ function ProjectDetail({ id, go }) {
           warnBackgroundRefreshFailure("project detail", error),
         );
     }
-  }, [actions, organizationMembers, settingsOpen]);
+  }, [actions, organizationMembers, detailTab]);
 
   React.useEffect(() => {
     if (streamerData == null && actions.refreshStreamers) {
@@ -7018,6 +7027,100 @@ function ProjectDetail({ id, go }) {
         );
     }
   }, [actions, applicationData]);
+
+  // B1 指标前端实算：真实环境 p.metrics 恒 0，这里由项目内任务 / 报数 / 批次实时算出。
+  // p.metrics 仅允许作 pickMetric 的展示兜底（演示 / 测试 fixture），图表一律不读 p.metrics。
+  // 应收口径与 role-home-loader 同源（已审核报数结算小时 × 厂家时薪，单位=元），
+  // 但范围是项目全周期——展示处须标注「项目周期内 · 估算」。
+  const projectComputedMetrics = React.useMemo(() => {
+    const empty = {
+      plannedHours: 0,
+      doneHours: 0,
+      audience: 0,
+      receivable: 0,
+      payable: 0,
+      gross: 0,
+      margin: null,
+      anomalies: 0,
+      taskCount: 0,
+      hasData: false,
+    };
+    if (!p) return empty;
+    const metricTasks = tasks.filter((task) => taskBelongsToProject(task, p));
+    const metricReports = reports.filter(
+      (r) => r.projectId === p.id || r.project === p.name,
+    );
+    const countableReports = metricReports.filter(
+      (r) => r.status !== "rejected" && r.status !== "voided",
+    );
+    const plannedHours = metricTasks.reduce((total, task) => {
+      const plannedMinutes = Number(task.plannedDuration);
+      if (Number.isFinite(plannedMinutes) && plannedMinutes > 0) {
+        return total + plannedMinutes / 60;
+      }
+      // plannedDuration 缺失时用计划起止时间差兜底（与 ProjectScheduleTasks 口径一致）。
+      const startMs = Date.parse(task.plannedStartAt ?? "");
+      const endMs = Date.parse(task.plannedEndAt ?? "");
+      if (
+        Number.isFinite(startMs) &&
+        Number.isFinite(endMs) &&
+        endMs > startMs
+      ) {
+        return total + (endMs - startMs) / 3600000;
+      }
+      return total;
+    }, 0);
+    const doneHours = metricTasks.reduce(
+      (total, task) => total + (Number(task.systemDuration) || 0) / 60,
+      0,
+    );
+    const audience = countableReports.reduce(
+      (total, r) => total + (Number(r.audience) || 0),
+      0,
+    );
+    const approvedHours = metricReports.reduce(
+      (total, r) =>
+        r.status === "approved"
+          ? total + (Number(r.systemDurationHours ?? r.duration) || 0)
+          : total,
+      0,
+    );
+    const receivable =
+      Math.round(approvedHours * (Number(p.defaultHourlyRate) || 0) * 100) /
+      100;
+    // 主播应付 = 项目内已生成的应付批次金额合计（不含应收批次，不含结算池预估）。
+    const payable = settlementBatches.reduce(
+      (total, batch) =>
+        batch.projectId === p.id && batch.type === "streamer_payable"
+          ? total + (Number(batch.amount) || 0)
+          : total,
+      0,
+    );
+    const gross = Math.round((receivable - payable) * 100) / 100;
+    const margin =
+      receivable > 0 ? Math.round((gross / receivable) * 100) : null;
+    const anomalies = metricTasks.filter(isTaskOperationalAnomaly).length;
+    const hasData = [
+      plannedHours,
+      doneHours,
+      audience,
+      receivable,
+      payable,
+      anomalies,
+    ].some(Boolean);
+    return {
+      plannedHours,
+      doneHours,
+      audience,
+      receivable,
+      payable,
+      gross,
+      margin,
+      anomalies,
+      taskCount: metricTasks.length,
+      hasData,
+    };
+  }, [p, tasks, reports, settlementBatches]);
 
   if (!p) {
     return (
@@ -7051,8 +7154,38 @@ function ProjectDetail({ id, go }) {
   const isPartnerCollaboration = p.collaborationRole === "partner";
   const canAssignOwner = canAssignProjectOwnerInUi(currentUser.role);
   const ownerOptions = projectOwnerOptions(members, p, currentUser);
+  // 展示取值规则：实算指标只要有数据（任一非零）整组用实算值；
+  // 否则整组回退 p.metrics（演示 / 测试 fixture 非零，真实环境恒 0）——不逐项混用两套口径。
+  const pickMetric = (computed, fallback) =>
+    projectComputedMetrics.hasData ? computed : Number(fallback) || 0;
+  const detailMetrics = {
+    plannedHours: pickMetric(
+      projectComputedMetrics.plannedHours,
+      p.metrics.plannedHours,
+    ),
+    doneHours: pickMetric(
+      projectComputedMetrics.doneHours,
+      p.metrics.doneHours,
+    ),
+    audience: pickMetric(projectComputedMetrics.audience, p.metrics.audience),
+    receivable: pickMetric(
+      projectComputedMetrics.receivable,
+      p.metrics.receivable,
+    ),
+    payable: pickMetric(projectComputedMetrics.payable, p.metrics.payable),
+    gross: pickMetric(projectComputedMetrics.gross, p.metrics.gross),
+    // margin 可为 null（实算口径下无应收时不硬造 0%）。
+    margin: projectComputedMetrics.hasData
+      ? projectComputedMetrics.margin
+      : Number(p.metrics.margin) || 0,
+    anomalies: pickMetric(
+      projectComputedMetrics.anomalies,
+      p.metrics.anomalies,
+    ),
+  };
   const donePct =
-    Math.round((p.metrics.doneHours / p.metrics.plannedHours) * 100) || 0;
+    Math.round((detailMetrics.doneHours / detailMetrics.plannedHours) * 100) ||
+    0;
   const projectApplicationRoster = mergeRosterRows(
     projectApplicationRosterRows(p, applications, streamers),
   );
@@ -7076,6 +7209,20 @@ function ProjectDetail({ id, go }) {
       (e.objectType === "project" && e.objectId === p.id) ||
       (e.objectName && e.objectName === p.name),
   );
+  // 执行 tab 待办数 = 运营异常任务 + 待审录屏；为 0 时不展示计数。
+  const executionTodoCount =
+    projectTasks.filter(isTaskOperationalAnomaly).length +
+    screeningReports.length;
+  const detailTabItems = [
+    { key: "overview", label: "概览" },
+    {
+      key: "execution",
+      label: "执行",
+      count: executionTodoCount > 0 ? executionTodoCount : undefined,
+    },
+    { key: "settlement", label: "结算" },
+    ...(isPartnerCollaboration ? [] : [{ key: "settings", label: "设置" }]),
+  ];
   const hasCustomSettlementRule =
     p.defaultSettlementRule &&
     typeof p.defaultSettlementRule === "object" &&
@@ -7104,8 +7251,12 @@ function ProjectDetail({ id, go }) {
     setSettingsDraft(projectSettingsInitialDraft(p));
     setSettingsError("");
     setDetailMessage("");
-    setSettingsOpen(true);
+    setDetailTab("settings");
   };
+  // 顶部指标条「异常任务」stat 与排班卡的 onOpenAnomalies 共用此入口：
+  // 跳到排班与任务页的异常视图，并预置当前项目筛选。
+  const openProjectAnomalies = () =>
+    go("tasks", { view: "anomaly", projectId: p.id, projectName: p.name });
   const handleSettingsChange = (field, value) => {
     setSettingsDraft((current) => ({ ...current, [field]: value }));
   };
@@ -7165,7 +7316,7 @@ function ProjectDetail({ id, go }) {
           ? "项目设置已更新，已发布招募"
           : "项目设置已更新",
       );
-      setSettingsOpen(false);
+      setDetailTab("overview");
     } catch (error) {
       setSettingsError(error?.message || "项目设置更新失败，请稍后重试");
     } finally {
@@ -7416,66 +7567,6 @@ function ProjectDetail({ id, go }) {
             {detailMessage}
           </div>
         ) : null}
-        {settingsOpen ? (
-          <Card
-            title="项目设置"
-            extra={
-              <Badge tone="blue" dot>
-                后端实时保存
-              </Badge>
-            }
-            padded={true}
-          >
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                alignItems: "flex-start",
-                gap: 28,
-              }}
-            >
-              <div style={{ flex: "2 1 520px", minWidth: 0 }}>
-                <ProjectSettingsPanel
-                  draft={settingsDraft}
-                  baseStatus={p.status}
-                  ownerOptions={ownerOptions}
-                  canAssignOwner={canAssignOwner}
-                  error={settingsError}
-                  submitting={settingsSubmitting}
-                  onChange={handleSettingsChange}
-                  onSubmit={handleProjectSettingsSubmit}
-                  onCancel={() => {
-                    setSettingsOpen(false);
-                    setSettingsError("");
-                    setSettingsDraft(projectSettingsInitialDraft(p));
-                  }}
-                />
-              </div>
-              {!isPartnerCollaboration ? (
-                <div style={{ flex: "1 1 340px", minWidth: 0 }}>
-                  <ProjectCollaborationPanel
-                    project={p}
-                    draft={collaborationDraft}
-                    message={collaborationMessage}
-                    error={collaborationError}
-                    submitting={collaborationSubmitting}
-                    shareUrl={collaborationShareUrl}
-                    applications={collaborationApplications}
-                    onChange={handleCollaborationChange}
-                    onSave={handleSaveProjectCollaboration}
-                    onCreateShare={handleCreateProjectCollaborationShare}
-                    onRefreshApplications={
-                      handleRefreshProjectCollaborationApplications
-                    }
-                    onReviewApplication={
-                      handleReviewProjectCollaborationApplication
-                    }
-                  />
-                </div>
-              ) : null}
-            </div>
-          </Card>
-        ) : null}
         {isPartnerCollaboration && p.collaborationApplicationId ? (
           <PartnerCollaborationApplicationPanel
             project={p}
@@ -7516,10 +7607,21 @@ function ProjectDetail({ id, go }) {
                 whiteSpace: "nowrap",
               }}
             >
-              ¥{(p.metrics.gross / 10000).toFixed(1)}万
+              ¥{(detailMetrics.gross / 10000).toFixed(1)}万
             </div>
-            <div style={{ fontSize: 12, marginTop: 4, color: "var(--ok-600)" }}>
-              毛利率 {p.metrics.margin}%
+            <div style={{ marginTop: 4 }}>
+              {detailMetrics.margin == null ? (
+                <Badge tone="neutral">毛利率 —</Badge>
+              ) : (
+                <Badge tone={detailMetrics.margin >= 0 ? "green" : "red"}>
+                  毛利率 {detailMetrics.margin}%
+                </Badge>
+              )}
+            </div>
+            <div
+              style={{ fontSize: 11, marginTop: 4, color: "var(--ink-400)" }}
+            >
+              项目周期内 · 估算
             </div>
           </div>
           <div
@@ -7533,459 +7635,684 @@ function ProjectDetail({ id, go }) {
           >
             <MiniStat
               label="累计直播时长"
-              value={p.metrics.doneHours.toFixed(1)}
+              value={detailMetrics.doneHours.toFixed(1)}
               unit="h"
               hint={`${donePct}% 达成`}
               hintTone={donePct >= 90 ? "green" : donePct >= 50 ? "muted" : "red"}
             />
             <MiniStat
               label="累计场观"
-              value={(p.metrics.audience / 10000).toFixed(1)}
+              value={(detailMetrics.audience / 10000).toFixed(1)}
               unit="万人次"
             />
             <MiniStat
               label="预计厂家应收"
-              value={`¥${(p.metrics.receivable / 10000).toFixed(1)}万`}
+              value={`¥${(detailMetrics.receivable / 10000).toFixed(1)}万`}
+              hint="依已审核报数估算"
             />
             <MiniStat
               label="主播应付"
-              value={`¥${(p.metrics.payable / 10000).toFixed(1)}万`}
+              value={`¥${(detailMetrics.payable / 10000).toFixed(1)}万`}
+              hint="依已生成批次"
             />
             <MiniStat
               label="项目周期"
               value={`${p.start.slice(5)} → ${p.end.slice(5)}`}
               hint={`共 ${diffDays(p.start, p.end)} 天`}
             />
+            {detailMetrics.anomalies > 0 ? (
+              /* Badge 不支持 onClick，可点击 stat 一律外包 button（参照作战台整卡 button 先例）。 */
+              <button
+                type="button"
+                onClick={openProjectAnomalies}
+                aria-label={`异常任务 ${detailMetrics.anomalies} 项，点击查看`}
+                style={{
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  textAlign: "left",
+                  cursor: "pointer",
+                  minWidth: 0,
+                }}
+              >
+                <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                  异常任务
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 4,
+                    marginTop: 4,
+                  }}
+                >
+                  <span
+                    className="num"
+                    style={{
+                      fontSize: 18,
+                      fontWeight: 600,
+                      color: "var(--danger-600)",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {detailMetrics.anomalies}
+                  </span>
+                  <span style={{ fontSize: 11, color: "var(--danger-600)" }}>
+                    项
+                  </span>
+                </div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    marginTop: 2,
+                    color: "var(--danger-600)",
+                  }}
+                >
+                  点击查看 →
+                </div>
+              </button>
+            ) : (
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                  异常任务
+                </div>
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 18,
+                    fontWeight: 600,
+                    color: "var(--ink-400)",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  无异常
+                </div>
+              </div>
+            )}
           </div>
         </Card>
 
-        {/* 单页连续区块：原页签内容纵向堆叠，去掉页签切换，功能全保留 */}
-        <Card title="项目总览">
-          <ProjectOverview p={p} />
+        {/* 详情页分 概览 / 执行 / 结算 / 设置 页签；tab 内容为条件渲染的顶级卡片 */}
+        <Card padded={false}>
+          <div style={{ padding: "0 12px" }}>
+            <Tabs
+              value={detailTab}
+              onChange={setDetailTab}
+              items={detailTabItems}
+            />
+          </div>
         </Card>
 
-        <Card
-          title="主播阵容"
-          extra={
-            projectRosterCount > 0 ? (
-              <Badge tone="blue">{projectRosterCount}</Badge>
-            ) : null
-          }
-        >
-          <ProjectRoster p={p} go={go} />
-        </Card>
+        {detailTab === "overview" && (
+          <>
+            <ProjectOverview p={p} />
+            {/* WP-B「经营概览」：四格全部由任务 / 报数实算（computed 不读 p.metrics）。 */}
+            <ProjectBusinessOverview
+              p={p}
+              reports={projectReports}
+              computed={projectComputedMetrics}
+            />
+          </>
+        )}
 
-        <Card
-          title="录屏审核"
-          extra={
-            screeningReports.length > 0 ? (
-              <Badge tone="amber">{screeningReports.length}</Badge>
-            ) : null
-          }
-        >
-          {screeningReports.length ? (
-            <CappedTable
-              onMore={() => go("reports")}
-              columns={[
-                {
-                  title: "任务 / 主播",
-                  render: (r) => (
-                    <div>
-                      <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
-                        {r.streamer}
+        {detailTab === "execution" && (
+          <Card
+            title="主播阵容"
+            extra={
+              projectRosterCount > 0 ? (
+                <Badge tone="blue">{projectRosterCount}</Badge>
+              ) : null
+            }
+          >
+            <ProjectRoster p={p} go={go} />
+          </Card>
+        )}
+
+        {detailTab === "execution" && (
+          <Card
+            title="排班 & 任务"
+            extra={
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {projectTasks.length > 0 ? (
+                  <Badge tone="blue">{projectTasks.length}</Badge>
+                ) : null}
+                <Button size="sm" kind="link" onClick={() => go("tasks")}>
+                  前往排班与任务 →
+                </Button>
+              </div>
+            }
+          >
+            <ProjectScheduleTasks
+              p={p}
+              tasks={projectTasks}
+              streamers={streamers}
+              go={go}
+              onOpenAnomalies={openProjectAnomalies}
+            />
+          </Card>
+        )}
+
+        {detailTab === "execution" && (
+          <Card
+            title="录屏审核"
+            extra={
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {screeningReports.length > 0 ? (
+                  <Badge tone="amber">{screeningReports.length}</Badge>
+                ) : null}
+                <Button size="sm" kind="link" onClick={() => go("reports")}>
+                  前往报数审核 →
+                </Button>
+              </div>
+            }
+          >
+            {screeningReports.length ? (
+              <CappedTable
+                onMore={() => go("reports")}
+                columns={[
+                  {
+                    title: "任务 / 主播",
+                    render: (r) => (
+                      <div>
+                        <div
+                          style={{ fontWeight: 600, color: "var(--ink-900)" }}
+                        >
+                          {r.streamer}
+                        </div>
+                        <div
+                          className="mono"
+                          style={{ fontSize: 11, color: "var(--ink-400)" }}
+                        >
+                          {displayRecordId(r.taskId || r.id, "任务")}
+                        </div>
                       </div>
-                      <div
-                        className="mono"
-                        style={{ fontSize: 11, color: "var(--ink-400)" }}
+                    ),
+                  },
+                  { title: "日期", render: (r) => r.date || "—" },
+                  {
+                    title: "录屏",
+                    align: "right",
+                    render: (r) => (
+                      <span className="num">{r.screens ?? 0} 段</span>
+                    ),
+                  },
+                  {
+                    title: "状态",
+                    render: (r) => {
+                      const meta =
+                        REPORT_STATUS[r.status] || REPORT_STATUS.pending;
+                      return (
+                        <Badge tone={meta.tone} dot>
+                          {meta.label}
+                        </Badge>
+                      );
+                    },
+                  },
+                ]}
+                rows={screeningReports}
+                onRowClick={() => go("reports")}
+              />
+            ) : (
+              <EmptyHint
+                title="暂无待审录屏"
+                hint="该项目当前没有待审核的下播截图 / 录屏证据。"
+                actionLabel="前往报数审核"
+                onAction={() => go("reports")}
+              />
+            )}
+          </Card>
+        )}
+
+        {detailTab === "execution" && (
+          <Card
+            title="报数审核"
+            extra={
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {projectReports.length > 0 ? (
+                  <Badge tone="blue">{projectReports.length}</Badge>
+                ) : null}
+                <Button size="sm" kind="link" onClick={() => go("reports")}>
+                  前往报数审核 →
+                </Button>
+              </div>
+            }
+          >
+            {projectReports.length ? (
+              <CappedTable
+                onMore={() => go("reports")}
+                columns={[
+                  {
+                    title: "主播",
+                    render: (r) => (
+                      <span
+                        style={{ fontWeight: 600, color: "var(--ink-900)" }}
                       >
-                        {displayRecordId(r.taskId || r.id, "任务")}
-                      </div>
-                    </div>
-                  ),
-                },
-                { title: "日期", render: (r) => r.date || "—" },
-                {
-                  title: "录屏",
-                  align: "right",
-                  render: (r) => (
-                    <span className="num">{r.screens ?? 0} 段</span>
-                  ),
-                },
-                {
-                  title: "状态",
-                  render: (r) => {
-                    const meta = REPORT_STATUS[r.status] || REPORT_STATUS.pending;
-                    return (
-                      <Badge tone={meta.tone} dot>
-                        {meta.label}
-                      </Badge>
-                    );
+                        {r.streamer}
+                      </span>
+                    ),
                   },
-                },
-              ]}
-              rows={screeningReports}
-              onRowClick={() => go("reports")}
-            />
-          ) : (
-            <EmptyHint
-              title="暂无待审录屏"
-              hint="该项目当前没有待审核的下播截图 / 录屏证据。"
-              actionLabel="前往报数审核"
-              onAction={() => go("reports")}
-            />
-          )}
-        </Card>
-
-        <Card
-          title="排班 & 任务"
-          extra={
-            projectTasks.length > 0 ? (
-              <Badge tone="blue">{projectTasks.length}</Badge>
-            ) : null
-          }
-        >
-          <ProjectScheduleTasks
-            p={p}
-            tasks={projectTasks}
-            streamers={streamers}
-            go={go}
-          />
-        </Card>
-
-        <Card
-          title="报数审核"
-          extra={
-            projectReports.length > 0 ? (
-              <Badge tone="blue">{projectReports.length}</Badge>
-            ) : null
-          }
-        >
-          {projectReports.length ? (
-            <CappedTable
-              onMore={() => go("reports")}
-              columns={[
-                {
-                  title: "主播",
-                  render: (r) => (
-                    <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
-                      {r.streamer}
-                    </span>
-                  ),
-                },
-                { title: "日期", render: (r) => r.date || "—" },
-                {
-                  title: "系统时长",
-                  align: "right",
-                  render: (r) => (
-                    <span className="num">
-                      {Number(r.systemDurationHours ?? r.duration ?? 0).toFixed(
-                        1,
-                      )}{" "}
-                      h
-                    </span>
-                  ),
-                },
-                {
-                  title: "场观",
-                  align: "right",
-                  render: (r) => (
-                    <span className="num">
-                      {Number(r.audience ?? 0).toLocaleString()}
-                    </span>
-                  ),
-                },
-                {
-                  title: "状态",
-                  render: (r) => {
-                    const meta = REPORT_STATUS[r.status] || REPORT_STATUS.pending;
-                    return (
-                      <Badge tone={meta.tone} dot>
-                        {meta.label}
-                      </Badge>
-                    );
+                  { title: "日期", render: (r) => r.date || "—" },
+                  {
+                    title: "系统时长",
+                    align: "right",
+                    render: (r) => (
+                      <span className="num">
+                        {Number(
+                          r.systemDurationHours ?? r.duration ?? 0,
+                        ).toFixed(1)}{" "}
+                        h
+                      </span>
+                    ),
                   },
-                },
-              ]}
-              rows={projectReports}
-              onRowClick={() => go("reports")}
-            />
-          ) : (
-            <EmptyHint
-              title="暂无报数"
-              hint="该项目当前没有报数记录。"
-              actionLabel="前往报数审核"
-              onAction={() => go("reports")}
-            />
-          )}
-        </Card>
+                  {
+                    title: "场观",
+                    align: "right",
+                    render: (r) => (
+                      <span className="num">
+                        {Number(r.audience ?? 0).toLocaleString()}
+                      </span>
+                    ),
+                  },
+                  {
+                    title: "状态",
+                    render: (r) => {
+                      const meta =
+                        REPORT_STATUS[r.status] || REPORT_STATUS.pending;
+                      return (
+                        <Badge tone={meta.tone} dot>
+                          {meta.label}
+                        </Badge>
+                      );
+                    },
+                  },
+                ]}
+                rows={projectReports}
+                onRowClick={() => go("reports")}
+              />
+            ) : (
+              <EmptyHint
+                title="暂无报数"
+                hint="该项目当前没有报数记录。"
+                actionLabel="前往报数审核"
+                onAction={() => go("reports")}
+              />
+            )}
+          </Card>
+        )}
 
-        <Card
-          title="结算规则"
-          extra={
-            <button
-              type="button"
-              onClick={() => go("settle")}
+        {detailTab === "settlement" && (
+          <Card
+            title="结算规则"
+            extra={
+              <Button size="sm" kind="link" onClick={() => go("settle")}>
+                前往结算中心 →
+              </Button>
+            }
+          >
+            {isPartnerCollaboration ? (
+              <EmptyHint
+                title="协作项目不展示结算金额"
+                hint="单价、底薪等金额信息由项目归属方管理，协作方不可见。"
+              />
+            ) : (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 24,
+                }}
+              >
+                <div>
+                  <DetailSubHeading>默认结算</DetailSubHeading>
+                  <DetailKV label="结算方式" value={p.pricing} />
+                  <DetailKV
+                    label="厂家单价（时薪）"
+                    value={`¥${Number(p.defaultHourlyRate ?? 0).toLocaleString()}/时`}
+                  />
+                  <DetailKV
+                    label="默认底薪"
+                    value={`¥${Number(p.defaultBaseSalary ?? 0).toLocaleString()}`}
+                    last
+                  />
+                </div>
+                <div>
+                  <DetailSubHeading>规则配置</DetailSubHeading>
+                  <DetailKV
+                    label="自定义规则"
+                    value={hasCustomSettlementRule ? "已配置" : "未配置"}
+                    tone={
+                      hasCustomSettlementRule
+                        ? "var(--ok-600)"
+                        : "var(--ink-400)"
+                    }
+                  />
+                  <DetailKV
+                    label="规则项"
+                    value={
+                      hasCustomSettlementRule
+                        ? `${Object.keys(p.defaultSettlementRule).length} 项`
+                        : "—"
+                    }
+                    last
+                  />
+                </div>
+              </div>
+            )}
+          </Card>
+        )}
+
+        {detailTab === "settlement" && (
+          <Card
+            title="结算明细"
+            extra={
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {projectBatches.length > 0 ? (
+                  <Badge tone="blue">{projectBatches.length}</Badge>
+                ) : null}
+                <Button size="sm" kind="link" onClick={() => go("settle")}>
+                  前往结算中心 →
+                </Button>
+              </div>
+            }
+          >
+            {isPartnerCollaboration ? (
+              <EmptyHint
+                title="协作项目不展示结算明细"
+                hint="结算批次与金额由项目归属方管理，协作方不可见。"
+              />
+            ) : projectBatches.length ? (
+              <CappedTable
+                onMore={() => go("settle")}
+                columns={[
+                  {
+                    title: "结算批次",
+                    render: (b) => (
+                      <span
+                        style={{ fontWeight: 600, color: "var(--ink-900)" }}
+                      >
+                        {b.name}
+                      </span>
+                    ),
+                  },
+                  { title: "周期", render: (b) => b.period || "—" },
+                  {
+                    title: "金额",
+                    align: "right",
+                    render: (b) => (
+                      <span className="num">¥{b.amount.toLocaleString()}</span>
+                    ),
+                  },
+                  {
+                    title: "状态",
+                    render: (b) => {
+                      const meta = batchStatusMeta(b.status);
+                      return (
+                        <Badge tone={meta.tone} dot>
+                          {meta.label}
+                        </Badge>
+                      );
+                    },
+                  },
+                ]}
+                rows={projectBatches}
+                onRowClick={() => go("settle")}
+              />
+            ) : (
+              <EmptyHint
+                title="暂无结算批次"
+                hint="该项目尚未生成结算批次，可前往结算中心查看与生成。"
+                actionLabel="前往结算中心"
+                onAction={() => go("settle")}
+              />
+            )}
+          </Card>
+        )}
+
+        {detailTab === "settlement" && (
+          <Card title="财务">
+            {isPartnerCollaboration ? (
+              <EmptyHint
+                title="协作项目不展示财务金额"
+                hint="应收、应付与毛利等金额信息由项目归属方管理，协作方不可见。"
+              />
+            ) : (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 24,
+                }}
+              >
+                <div>
+                  <DetailSubHeading>财务设置</DetailSubHeading>
+                  <DetailKV
+                    label="是否开票"
+                    value={p.isInvoiced ? "是" : "否"}
+                  />
+                  <DetailKV
+                    label="销项税率"
+                    value={formatRateBps(p.outputVatRateBps)}
+                  />
+                  <DetailKV
+                    label="附加税率"
+                    value={formatRateBps(p.surtaxRateBps)}
+                  />
+                  <DetailKV
+                    label="采购成本"
+                    value={`¥${(p.procurementCostCents / 100).toLocaleString()}`}
+                  />
+                  <DetailKV label="结算方式" value={p.pricing} last />
+                </div>
+                <div>
+                  <DetailSubHeading>收益拆解（项目周期内 · 估算）</DetailSubHeading>
+                  <DetailKV
+                    label="应收(含税)"
+                    value={`¥${detailMetrics.receivable.toLocaleString()}`}
+                  />
+                  <DetailKV
+                    label="应付主播"
+                    value={`-¥${detailMetrics.payable.toLocaleString()}`}
+                    tone="var(--danger-600)"
+                  />
+                  <DetailKV
+                    label="预估毛利"
+                    value={`¥${detailMetrics.gross.toLocaleString()}`}
+                    tone="var(--blue-600)"
+                  />
+                  <DetailKV
+                    label="毛利率"
+                    value={
+                      detailMetrics.margin == null
+                        ? "—"
+                        : `${Number(detailMetrics.margin).toFixed(1)}%`
+                    }
+                    tone="var(--ok-600)"
+                    last
+                  />
+                </div>
+              </div>
+            )}
+          </Card>
+        )}
+
+        {detailTab === "overview" && (
+          <Card title="协作">
+            <div
               style={{
-                border: "none",
-                background: "transparent",
-                color: "var(--blue-600)",
-                fontSize: 12,
-                fontWeight: 600,
-                cursor: "pointer",
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 24,
               }}
             >
-              前往结算中心 →
-            </button>
-          }
-        >
-          <div
-            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}
-          >
-            <div>
-              <DetailSubHeading>默认结算</DetailSubHeading>
-              <DetailKV label="结算方式" value={p.pricing} />
               <DetailKV
-                label="厂家单价（时薪）"
-                value={`¥${Number(p.defaultHourlyRate ?? 0).toLocaleString()}/时`}
-              />
-              <DetailKV
-                label="默认底薪"
-                value={`¥${Number(p.defaultBaseSalary ?? 0).toLocaleString()}`}
-                last
-              />
-            </div>
-            <div>
-              <DetailSubHeading>规则配置</DetailSubHeading>
-              <DetailKV
-                label="自定义规则"
-                value={hasCustomSettlementRule ? "已配置" : "未配置"}
+                label="对外协作"
+                value={p.isOpenToMcnCollaboration ? "已开启" : "未开启"}
                 tone={
-                  hasCustomSettlementRule
+                  p.isOpenToMcnCollaboration
                     ? "var(--ok-600)"
                     : "var(--ink-400)"
                 }
+                last
               />
               <DetailKV
-                label="规则项"
-                value={
-                  hasCustomSettlementRule
-                    ? `${Object.keys(p.defaultSettlementRule).length} 项`
-                    : "—"
-                }
+                label="分成比例"
+                value={p.mcnCollaborationTerms?.revenueShareHint || "—"}
                 last
               />
             </div>
-          </div>
-        </Card>
-
-        <Card
-          title="结算明细"
-          extra={
-            projectBatches.length > 0 ? (
-              <Badge tone="blue">{projectBatches.length}</Badge>
-            ) : null
-          }
-        >
-          {projectBatches.length ? (
-            <CappedTable
-              onMore={() => go("settle")}
-              columns={[
-                {
-                  title: "结算批次",
-                  render: (b) => (
-                    <span style={{ fontWeight: 600, color: "var(--ink-900)" }}>
-                      {b.name}
-                    </span>
-                  ),
-                },
-                { title: "周期", render: (b) => b.period || "—" },
-                {
-                  title: "金额",
-                  align: "right",
-                  render: (b) => (
-                    <span className="num">¥{b.amount.toLocaleString()}</span>
-                  ),
-                },
-                {
-                  title: "状态",
-                  render: (b) => {
-                    const meta = batchStatusMeta(b.status);
-                    return (
-                      <Badge tone={meta.tone} dot>
-                        {meta.label}
-                      </Badge>
-                    );
-                  },
-                },
-              ]}
-              rows={projectBatches}
-              onRowClick={() => go("settle")}
-            />
-          ) : (
-            <EmptyHint
-              title="暂无结算批次"
-              hint="该项目尚未生成结算批次，可前往结算中心查看与生成。"
-              actionLabel="前往结算中心"
-              onAction={() => go("settle")}
-            />
-          )}
-        </Card>
-
-        <Card title="财务">
-          <div
-            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}
-          >
-            <div>
-              <DetailSubHeading>财务设置</DetailSubHeading>
-              <DetailKV label="是否开票" value={p.isInvoiced ? "是" : "否"} />
-              <DetailKV
-                label="销项税率"
-                value={formatRateBps(p.outputVatRateBps)}
-              />
-              <DetailKV
-                label="附加税率"
-                value={formatRateBps(p.surtaxRateBps)}
-              />
-              <DetailKV
-                label="采购成本"
-                value={`¥${(p.procurementCostCents / 100).toLocaleString()}`}
-              />
-              <DetailKV label="结算方式" value={p.pricing} last />
+            <div
+              style={{
+                marginTop: 12,
+                paddingTop: 12,
+                borderTop: "1px solid var(--line)",
+                fontSize: 13,
+                color: "var(--ink-500)",
+                lineHeight: 1.6,
+              }}
+            >
+              {p.isOpenToMcnCollaboration
+                ? p.mcnCollaborationSummary || "已开启 MCN 协作，暂无补充说明。"
+                : "本项目未开启对外 MCN 协作。可在「项目设置」中开启并配置分成与说明。"}
             </div>
-            <div>
-              <DetailSubHeading>收益拆解</DetailSubHeading>
-              <DetailKV
-                label="应收(含税)"
-                value={`¥${p.metrics.receivable.toLocaleString()}`}
-              />
-              <DetailKV
-                label="应付主播"
-                value={`-¥${p.metrics.payable.toLocaleString()}`}
-                tone="var(--danger-600)"
-              />
-              <DetailKV
-                label="预估毛利"
-                value={`¥${p.metrics.gross.toLocaleString()}`}
-                tone="var(--blue-600)"
-              />
-              <DetailKV
-                label="毛利率"
-                value={`${p.metrics.margin.toFixed(1)}%`}
-                tone="var(--ok-600)"
-                last
-              />
-            </div>
-          </div>
-        </Card>
+          </Card>
+        )}
 
-        <Card title="协作">
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 24,
-            }}
+        {detailTab === "overview" && (
+          <Card
+            title="操作日志"
+            extra={
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {projectAudit.length > 0 ? (
+                  <Badge tone="neutral">{projectAudit.length}</Badge>
+                ) : null}
+                <Button size="sm" kind="link" onClick={() => go("audit")}>
+                  前往操作日志 →
+                </Button>
+              </div>
+            }
           >
-            <DetailKV
-              label="对外协作"
-              value={p.isOpenToMcnCollaboration ? "已开启" : "未开启"}
-              tone={
-                p.isOpenToMcnCollaboration ? "var(--ok-600)" : "var(--ink-400)"
-              }
-              last
-            />
-            <DetailKV
-              label="分成比例"
-              value={p.mcnCollaborationTerms?.revenueShareHint || "—"}
-              last
-            />
-          </div>
-          <div
-            style={{
-              marginTop: 12,
-              paddingTop: 12,
-              borderTop: "1px solid var(--line)",
-              fontSize: 13,
-              color: "var(--ink-500)",
-              lineHeight: 1.6,
-            }}
-          >
-            {p.isOpenToMcnCollaboration
-              ? p.mcnCollaborationSummary || "已开启 MCN 协作，暂无补充说明。"
-              : "本项目未开启对外 MCN 协作。可在「项目设置」中开启并配置分成与说明。"}
-          </div>
-        </Card>
-
-        <Card
-          title="操作日志"
-          extra={
-            projectAudit.length > 0 ? (
-              <Badge tone="neutral">{projectAudit.length}</Badge>
-            ) : null
-          }
-        >
-          {projectAudit.length ? (
-            <CappedTable
-              onMore={() => go("audit")}
-              columns={[
-                {
-                  title: "时间",
-                  render: (e) => (
-                    <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
-                      {e.createdAt || "—"}
-                    </span>
-                  ),
-                },
-                {
-                  title: "操作人",
-                  render: (e) => (
-                    <div>
-                      <div style={{ color: "var(--ink-900)" }}>
-                        {e.actorName || "—"}
-                      </div>
-                      <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
-                        {ROLES[e.actorRole] || e.actorRole || ""}
-                      </div>
-                    </div>
-                  ),
-                },
-                {
-                  title: "动作 / 对象",
-                  render: (e) => (
-                    <div>
-                      <div style={{ color: "var(--ink-900)" }}>
-                        {e.action || e.module || "—"}
-                      </div>
-                      <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
-                        {e.objectName || e.objectType || ""}
-                      </div>
-                    </div>
-                  ),
-                },
-                {
-                  title: "风险",
-                  render: (e) =>
-                    e.isHighRisk ? (
-                      <Badge tone="red" dot>
-                        高风险
-                      </Badge>
-                    ) : (
-                      <Badge tone="neutral">常规</Badge>
+            {projectAudit.length ? (
+              <CappedTable
+                onMore={() => go("audit")}
+                columns={[
+                  {
+                    title: "时间",
+                    render: (e) => (
+                      <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                        {e.createdAt || "—"}
+                      </span>
                     ),
-                },
-              ]}
-              rows={projectAudit}
-              onRowClick={() => go("audit")}
-            />
-          ) : (
-            <EmptyHint
-              title="暂无操作日志"
-              hint="该项目当前没有可展示的操作日志。"
-              actionLabel="前往操作日志"
-              onAction={() => go("audit")}
-            />
-          )}
-        </Card>
+                  },
+                  {
+                    title: "操作人",
+                    render: (e) => (
+                      <div>
+                        <div style={{ color: "var(--ink-900)" }}>
+                          {e.actorName || "—"}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                          {ROLES[e.actorRole] || e.actorRole || ""}
+                        </div>
+                      </div>
+                    ),
+                  },
+                  {
+                    title: "动作 / 对象",
+                    render: (e) => (
+                      <div>
+                        <div style={{ color: "var(--ink-900)" }}>
+                          {e.action || e.module || "—"}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                          {e.objectName || e.objectType || ""}
+                        </div>
+                      </div>
+                    ),
+                  },
+                  {
+                    title: "风险",
+                    render: (e) =>
+                      e.isHighRisk ? (
+                        <Badge tone="red" dot>
+                          高风险
+                        </Badge>
+                      ) : (
+                        <Badge tone="neutral">常规</Badge>
+                      ),
+                  },
+                ]}
+                rows={projectAudit}
+                onRowClick={() => go("audit")}
+              />
+            ) : (
+              <EmptyHint
+                title="暂无操作日志"
+                hint="该项目当前没有可展示的操作日志。"
+                actionLabel="前往操作日志"
+                onAction={() => go("audit")}
+              />
+            )}
+          </Card>
+        )}
+
+        {detailTab === "settings" && !isPartnerCollaboration && (
+          <Card
+            title="项目设置"
+            extra={
+              <Badge tone="blue" dot>
+                后端实时保存
+              </Badge>
+            }
+            padded={true}
+          >
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "flex-start",
+                gap: 28,
+              }}
+            >
+              <div style={{ flex: "2 1 520px", minWidth: 0 }}>
+                <ProjectSettingsPanel
+                  draft={settingsDraft}
+                  baseStatus={p.status}
+                  ownerOptions={ownerOptions}
+                  canAssignOwner={canAssignOwner}
+                  error={settingsError}
+                  submitting={settingsSubmitting}
+                  onChange={handleSettingsChange}
+                  onSubmit={handleProjectSettingsSubmit}
+                  onCancel={() => {
+                    setDetailTab("overview");
+                    setSettingsError("");
+                    setSettingsDraft(projectSettingsInitialDraft(p));
+                  }}
+                />
+              </div>
+              <div style={{ flex: "1 1 340px", minWidth: 0 }}>
+                <ProjectCollaborationPanel
+                  project={p}
+                  draft={collaborationDraft}
+                  message={collaborationMessage}
+                  error={collaborationError}
+                  submitting={collaborationSubmitting}
+                  shareUrl={collaborationShareUrl}
+                  applications={collaborationApplications}
+                  onChange={handleCollaborationChange}
+                  onSave={handleSaveProjectCollaboration}
+                  onCreateShare={handleCreateProjectCollaborationShare}
+                  onRefreshApplications={
+                    handleRefreshProjectCollaborationApplications
+                  }
+                  onReviewApplication={
+                    handleReviewProjectCollaborationApplication
+                  }
+                />
+              </div>
+            </div>
+          </Card>
+        )}
       </div>
     </>
   );
@@ -9386,24 +9713,20 @@ function ProjectSettingsCheck({ label, checked, onChange }) {
   );
 }
 
-function ProjectScheduleTasks({ p, tasks = [], streamers = [], go }) {
+// onOpenAnomalies：跳转到排班与任务页的异常视图（由 ProjectDetail 传入，
+// 已接 go("tasks", { view: "anomaly", ... })；「异常任务」卡点击时调用）。
+function ProjectScheduleTasks({
+  p,
+  tasks = [],
+  streamers = [],
+  go,
+  onOpenAnomalies,
+}) {
   const liveCount = tasks.filter((task) => task.status === "live").length;
   const waitingCount = tasks.filter((task) =>
     ["pending_live", "pending_report", "pending_review"].includes(task.status),
   ).length;
   const anomalyCount = tasks.filter(isTaskOperationalAnomaly).length;
-  const plannedHours = tasks.reduce((total, task) => {
-    const plannedMinutes = Number(task.plannedDuration);
-    if (Number.isFinite(plannedMinutes) && plannedMinutes > 0) {
-      return total + plannedMinutes / 60;
-    }
-    const startHour = Number(task.startHour);
-    const endHour = Number(task.endHour);
-    if (Number.isFinite(startHour) && Number.isFinite(endHour)) {
-      return total + Math.max(0, endHour - startHour);
-    }
-    return total;
-  }, 0);
   const openTasks = () => go("tasks");
 
   return (
@@ -9424,26 +9747,44 @@ function ProjectScheduleTasks({ p, tasks = [], streamers = [], go }) {
         <Card padded={true}>
           <Metric label="正在直播" value={liveCount} unit="项" />
         </Card>
-        <Card padded={true}>
-          <Metric
-            label="计划时长"
-            value={plannedHours.toFixed(1)}
-            unit="h"
-            delta={anomalyCount ? `${anomalyCount} 个异常` : "无异常"}
-            deltaTone={anomalyCount ? "red" : "green"}
-          />
-        </Card>
+        {anomalyCount > 0 ? (
+          /* Metric/Badge 不支持 onClick，可点击卡一律外包 button（参照作战台整卡 button 先例）。 */
+          <button
+            type="button"
+            onClick={onOpenAnomalies}
+            style={{
+              textAlign: "left",
+              cursor: "pointer",
+              background: "var(--danger-50)",
+              border: "1px solid #f3c9cc",
+              borderRadius: 10,
+              boxShadow: "var(--shadow-card)",
+              padding: 16,
+            }}
+          >
+            <Metric
+              label="异常任务"
+              value={anomalyCount}
+              unit="项"
+              delta="点击处理 →"
+              deltaTone="red"
+            />
+          </button>
+        ) : (
+          <Card padded={true}>
+            <Metric
+              label="异常任务"
+              value={0}
+              unit="项"
+              delta="无异常"
+              deltaTone="green"
+            />
+          </Card>
+        )}
       </div>
 
-      <Card
-        title="项目排班任务明细"
-        extra={
-          <Button size="sm" kind="default" onClick={openTasks}>
-            前往排班与任务
-          </Button>
-        }
-        padded={false}
-      >
+      <div>
+        <DetailSubHeading>项目排班任务明细</DetailSubHeading>
         {tasks.length ? (
           <TaskList
             tasks={tasks}
@@ -9452,16 +9793,14 @@ function ProjectScheduleTasks({ p, tasks = [], streamers = [], go }) {
             onSelectTask={openTasks}
           />
         ) : (
-          <div style={{ padding: 20 }}>
-            <EmptyHint
-              title="暂无项目排班任务"
-              hint="从排班与任务创建或批量排班后，会同步展示在这里。"
-              actionLabel="前往排班与任务"
-              onAction={openTasks}
-            />
-          </div>
+          <EmptyHint
+            title="暂无项目排班任务"
+            hint="从排班与任务创建或批量排班后，会同步展示在这里。"
+            actionLabel="前往排班与任务"
+            onAction={openTasks}
+          />
         )}
-      </Card>
+      </div>
     </div>
   );
 }
@@ -9611,6 +9950,214 @@ function ProjectOverview({ p }) {
         </Card>
       </div>
     </div>
+  );
+}
+
+// 经营概览（概览 tab 四格）：收入趋势 / 时长完成率 / 异常占比 / 主播贡献。
+// 诚实口径：全部由项目内报数 / 任务实算（computed 由 ProjectDetail 传入，不读 p.metrics）；
+// 收入与贡献 = 结算小时 × 厂家时薪 的估算值，非财务结算数——口径说明文案随卡渲染。
+function ProjectBusinessOverview({ p, reports = [], computed }) {
+  const hourlyRate = Number(p.defaultHourlyRate) || 0;
+  const countableReports = reports.filter(
+    (r) => r.status !== "rejected" && r.status !== "voided",
+  );
+  // 收入趋势：按报数提交日聚合估算收入，取最近 14 个有数据的天。
+  const revenueByDate = new Map();
+  countableReports.forEach((r) => {
+    if (!r.date) return;
+    const hours = Number(r.systemDurationHours ?? r.duration) || 0;
+    revenueByDate.set(
+      r.date,
+      (revenueByDate.get(r.date) || 0) + hours * hourlyRate,
+    );
+  });
+  const revenueTrend = [...revenueByDate.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .slice(-14);
+  // 主播贡献：按主播聚合结算小时，取 top5（无成本数据，只谈贡献，不算投产比）。
+  const streamerHoursMap = new Map();
+  countableReports.forEach((r) => {
+    const key = r.streamerId || r.streamer || "unknown";
+    const entry = streamerHoursMap.get(key) || {
+      key,
+      name: r.streamer || key,
+      hours: 0,
+    };
+    entry.hours += Number(r.systemDurationHours ?? r.duration) || 0;
+    streamerHoursMap.set(key, entry);
+  });
+  const topStreamers = [...streamerHoursMap.values()]
+    .sort((a, b) => b.hours - a.hours)
+    .slice(0, 5);
+  const maxStreamerHours = topStreamers[0]?.hours || 0;
+  const cellLabelStyle = {
+    fontSize: 12,
+    color: "var(--ink-400)",
+    marginBottom: 8,
+  };
+  const captionStyle = { fontSize: 11, color: "var(--ink-400)", marginTop: 8 };
+  const dashStyle = {
+    fontSize: 18,
+    fontWeight: 700,
+    color: "var(--ink-400)",
+  };
+
+  return (
+    <Card
+      title="经营概览"
+      extra={
+        <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+          项目周期内 · 依报数与任务估算，非财务口径
+        </span>
+      }
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+          gap: 16,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={cellLabelStyle}>收入趋势</div>
+          {revenueTrend.length >= 2 && hourlyRate > 0 ? (
+            <>
+              <Sparkline
+                data={revenueTrend.map(([, value]) => value)}
+                gradientId="sg-project-revenue"
+              />
+              <div style={captionStyle}>按报数提交日 · 估算收入</div>
+            </>
+          ) : revenueTrend.length === 1 && hourlyRate > 0 ? (
+            <>
+              <div
+                className="num"
+                style={{ fontSize: 18, fontWeight: 700, color: "var(--ink-900)" }}
+              >
+                ¥{Math.round(revenueTrend[0][1]).toLocaleString()}
+              </div>
+              <div style={captionStyle}>
+                按报数提交日 · 估算收入（仅 {revenueTrend[0][0]} 一天有报数）
+              </div>
+            </>
+          ) : countableReports.length > 0 && hourlyRate <= 0 ? (
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              未配置厂家时薪，暂无法估算收入
+            </div>
+          ) : (
+            <EmptyHint title="暂无报数数据" />
+          )}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={cellLabelStyle}>时长完成率</div>
+          {computed.plannedHours > 0 ? (
+            <>
+              <RingMetric
+                label="已播时长"
+                value={computed.doneHours}
+                max={computed.plannedHours}
+                dp={1}
+                suffix=" h"
+              />
+              <div style={captionStyle}>
+                计划 {computed.plannedHours.toFixed(1)} h · 依系统计时
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={dashStyle}>—</div>
+              <div style={captionStyle}>暂无计划时长数据</div>
+            </>
+          )}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={cellLabelStyle}>异常占比</div>
+          {computed.taskCount > 0 ? (
+            <>
+              <RingMetric
+                label="异常任务"
+                value={computed.anomalies}
+                max={computed.taskCount}
+                suffix=" 项"
+                color={
+                  computed.anomalies > 0 ? "var(--danger-600)" : undefined
+                }
+              />
+              <div style={captionStyle}>
+                共 {computed.taskCount} 项任务 · 依运营异常判定
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={dashStyle}>—</div>
+              <div style={captionStyle}>暂无任务数据</div>
+            </>
+          )}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={cellLabelStyle}>主播贡献</div>
+          {topStreamers.length ? (
+            <>
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 8 }}
+              >
+                {topStreamers.map((s) => (
+                  <div
+                    key={s.key}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      minWidth: 0,
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: "var(--ink-700)",
+                        width: 56,
+                        flexShrink: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={s.name}
+                    >
+                      {s.name}
+                    </span>
+                    <MiniBar
+                      value={s.hours}
+                      max={maxStreamerHours || 1}
+                      width={64}
+                    />
+                    <span
+                      className="num"
+                      style={{
+                        fontSize: 11,
+                        color: "var(--ink-500)",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {s.hours.toFixed(1)}h
+                      {hourlyRate > 0
+                        ? ` · ¥${Math.round(s.hours * hourlyRate).toLocaleString()}`
+                        : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div style={captionStyle}>
+                按结算小时 × 厂家时薪估算贡献 · top5
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              暂无报数数据
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -12306,6 +12853,8 @@ function RingMetric({
   dp = 0,
   raw = false,
   highlight = false,
+  // 可选环形颜色覆盖（如异常占比用 var(--danger-600)）；缺省时保持原 highlight/默认色。
+  color,
 }) {
   let pct = 0;
   let display = value;
@@ -12320,7 +12869,8 @@ function RingMetric({
     r = (size - stroke) / 2;
   const circ = 2 * Math.PI * r;
   const offset = circ - (pct / 100) * circ;
-  const color = highlight ? "var(--violet-600)" : "var(--blue-600)";
+  const ringColor =
+    color || (highlight ? "var(--violet-600)" : "var(--blue-600)");
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -12337,7 +12887,7 @@ function RingMetric({
           cx={size / 2}
           cy={size / 2}
           r={r}
-          stroke={color}
+          stroke={ringColor}
           strokeWidth={stroke}
           fill="none"
           strokeDasharray={circ}
@@ -12365,7 +12915,9 @@ function RingMetric({
   );
 }
 
-function Sparkline({ data, w = 280, h = 40 }) {
+// gradientId：多实例共存时必须各自传入唯一 id（SVG 渐变按 document 全局取 id），
+// 默认值 "sg" 保持既有单实例向后兼容。
+function Sparkline({ data, w = 280, h = 40, gradientId = "sg" }) {
   const min = Math.min(...data),
     max = Math.max(...data);
   const step = w / (data.length - 1);
@@ -12386,12 +12938,12 @@ function Sparkline({ data, w = 280, h = 40 }) {
       style={{ display: "block" }}
     >
       <defs>
-        <linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#1E50C8" stopOpacity="0.18" />
           <stop offset="100%" stopColor="#1E50C8" stopOpacity="0" />
         </linearGradient>
       </defs>
-      <path d={area} fill="url(#sg)" />
+      <path d={area} fill={`url(#${gradientId})`} />
       <path
         d={path}
         fill="none"
@@ -17522,7 +18074,7 @@ function BatchDetail({
 // ===== src\screen-tasks.jsx =====
 // ——— Screen: 排班与任务 ————————————————————————
 
-function ScreenTasks({ go }) {
+function ScreenTasks({ go, focusRequest }) {
   const tasks = useOpsTasks();
   const ownerProjects = useOpsProjects();
   const collaborationProjects = useOpsCollaborationProjects();
@@ -17560,6 +18112,15 @@ function ScreenTasks({ go }) {
     endTime: "23:30",
   });
   const [taskMessage, setTaskMessage] = React.useState("");
+
+  // 外部跳转请求（go("tasks", { view, projectId, projectName })）：
+  // token 每次跳转都会变化（对象随之换新），据此重放视图与项目筛选预置。
+  React.useEffect(() => {
+    if (!focusRequest) return;
+    setView(focusRequest.view || "anomaly");
+    const projectKey = focusRequest.projectId || focusRequest.projectName;
+    if (projectKey) setProject(projectKey);
+  }, [focusRequest]);
 
   const liveCount = tasks.filter((t) => t.status === "live").length;
   const pendingReportCount = tasks.filter(
@@ -18124,6 +18685,7 @@ function ScreenTasks({ go }) {
                 tasks={filteredTasks}
                 projects={projects}
                 streamers={streamers}
+                onSelectTask={setSelectedTask}
               />
             )}
             {view === "mine" && <MyTasksView />}
@@ -19328,6 +19890,17 @@ const iconBtn = {
 
 // ——— Task List ——————————————————————
 
+// dayIdx 越界（如实时任务缺排班周信息）时回退 plannedStartAt 日期或「—」，不抛错。
+function taskPlannedDateLabel(task) {
+  const day = SCHEDULE_WEEK.days[task?.dayIdx];
+  if (day?.date) return day.date;
+  const planned = task?.plannedStartAt ? new Date(task.plannedStartAt) : null;
+  if (planned && !Number.isNaN(planned.getTime())) {
+    return formatScheduleDate(planned);
+  }
+  return "—";
+}
+
 function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
   const rows = tasks;
   return (
@@ -19335,18 +19908,9 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
       onRowClick={onSelectTask}
       columns={[
         {
-          title: "任务 ID",
-          render: (r) => (
-            <span
-              className="mono"
-              style={{ fontWeight: 600, color: "var(--ink-900)" }}
-            >
-              {displayRecordId(r.id, "任务")}
-            </span>
-          ),
-        },
-        {
           title: "任务名 / 项目",
+          width: 240,
+          wrap: true,
           render: (r) => {
             const project = resolveTaskProject(r, projects);
             const projectName = project?.name || r.projectName || r.project;
@@ -19361,6 +19925,12 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
                   style={{ fontSize: 11, color: "var(--ink-400)" }}
                 >
                   {projectName} · {projectCode} · {taskTypeLabel(r.type)}
+                </div>
+                <div
+                  className="mono"
+                  style={{ fontSize: 11, color: "var(--ink-400)" }}
+                >
+                  {displayRecordId(r.id, "任务")}
                 </div>
               </div>
             );
@@ -19381,26 +19951,33 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
         },
         {
           title: "计划时间",
+          width: 150,
           render: (r) => (
             <div className="num" style={{ fontSize: 12 }}>
-              <div>{SCHEDULE_WEEK.days[r.dayIdx].date}</div>
+              <div>{taskPlannedDateLabel(r)}</div>
               <div style={{ color: "var(--ink-400)", fontSize: 11 }}>
-                {formatHour(r.startHour)} - {formatHour(r.endHour)}
+                {Number.isFinite(r.startHour) && Number.isFinite(r.endHour)
+                  ? `${formatHour(r.startHour)} - ${formatHour(r.endHour)}`
+                  : "—"}
               </div>
             </div>
           ),
         },
         {
           title: "时长",
+          width: 76,
           align: "right",
           render: (r) => (
             <span className="num" style={{ fontWeight: 600 }}>
-              {(r.endHour - r.startHour).toFixed(1)} h
+              {Number.isFinite(r.endHour - r.startHour)
+                ? `${(r.endHour - r.startHour).toFixed(1)} h`
+                : "—"}
             </span>
           ),
         },
         {
           title: "状态",
+          width: 100,
           render: (r) => {
             const k = getTaskDisplayStatusKey(r);
             const st = TASK_STATUS[k] || TASK_STATUS.pending_live;
@@ -19413,6 +19990,7 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
         },
         {
           title: "异常",
+          width: 116,
           render: (r) => {
             const anomalyKey = getTaskOperationalAnomalyKey(r);
             const anomalyMeta =
@@ -19426,6 +20004,7 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
         },
         {
           title: "",
+          width: 48,
           render: (r) => (
             <button
               type="button"
@@ -19451,7 +20030,7 @@ function TaskList({ tasks, projects = [], streamers = [], onSelectTask }) {
 
 // ——— Anomaly List ———————————————————
 
-function AnomalyList({ tasks, projects = [], streamers = [] }) {
+function AnomalyList({ tasks, projects = [], streamers = [], onSelectTask }) {
   const actions = useOpsLiveActions();
   const [actionMessage, setActionMessage] = React.useState("");
   const [scanBusy, setScanBusy] = React.useState("");
@@ -19618,8 +20197,10 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
                       marginTop: 2,
                     }}
                   >
-                    {a.name} · {SCHEDULE_WEEK.days[a.dayIdx].date}{" "}
-                    {formatHour(a.startHour)} - {formatHour(a.endHour)}
+                    {a.name} · {taskPlannedDateLabel(a)}
+                    {Number.isFinite(a.startHour) && Number.isFinite(a.endHour)
+                      ? ` ${formatHour(a.startHour)} - ${formatHour(a.endHour)}`
+                      : ""}
                   </div>
                 </div>
                 <div
@@ -19630,8 +20211,9 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
                     gap: 4,
                   }}
                 >
-                  <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
-                    检测于 {((Math.random() * 8) | 0) + 1}h 前
+                  {/* 检测时间后台未回传，不造伪数据，显示占位符。 */}
+                  <span style={{ fontSize: 11, color: "var(--ink-300)" }}>
+                    —
                   </span>
                   <div style={{ display: "flex", gap: 6 }}>
                     <Button
@@ -19649,9 +20231,11 @@ function AnomalyList({ tasks, projects = [], streamers = [] }) {
                       size="sm"
                       kind="default"
                       onClick={() =>
-                        setActionMessage(
-                          `已定位异常任务：${displayRecordId(a.id, "任务")}`,
-                        )
+                        onSelectTask
+                          ? onSelectTask(a)
+                          : setActionMessage(
+                              `已定位异常任务：${displayRecordId(a.id, "任务")}`,
+                            )
                       }
                     >
                       查看任务
@@ -27607,6 +28191,9 @@ function OpsReferenceInner({
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
   const [dashboardTarget, setDashboardTarget] = React.useState(null);
+  // go("tasks", { view, projectId, projectName }) 的跳转请求：
+  // 由 ScreenTasks 消费，预置视图与项目筛选（token 区分同参数的多次跳转）。
+  const [tasksFocusRequest, setTasksFocusRequest] = React.useState(null);
   const [tasksState, setTasksState] = React.useState(liveTasks ?? null);
   const [reportsState, setReportsState] = React.useState(() =>
     normalizeReferenceReports(liveReports),
@@ -28798,12 +29385,18 @@ function OpsReferenceInner({
     }
 
     const refreshLiveQueue = () => {
-      const request =
+      // 项目详情的实算指标 / 经营概览依赖报数（WP-B）：project 路由与任务共用
+      // 同一个 15s 节奏同时刷 reports，不加第二个定时器。
+      const requests =
         route === "reports"
-          ? actions.refreshReports()
-          : actions.refreshOpsTasks();
-      request?.catch?.((error) =>
-        warnBackgroundRefreshFailure(`${route} live queue`, error),
+          ? [actions.refreshReports()]
+          : route === "project"
+            ? [actions.refreshOpsTasks(), actions.refreshReports()]
+            : [actions.refreshOpsTasks()];
+      requests.forEach((request) =>
+        request?.catch?.((error) =>
+          warnBackgroundRefreshFailure(`${route} live queue`, error),
+        ),
       );
     };
 
@@ -28847,9 +29440,22 @@ function OpsReferenceInner({
       setRoute("streamers");
       if (arg) setStreamerId(arg);
       setDashboardTarget(null);
+    } else if (r === "tasks" && arg && typeof arg === "object") {
+      // 对象参数 = 携带初始视图/项目筛选的跳转（如项目详情「异常任务」入口），
+      // 不走 dashboardTarget 横幅；字符串参数仍走下方原有分支。
+      setRoute("tasks");
+      setTasksFocusRequest({
+        view: arg.view || "anomaly",
+        projectId: arg.projectId || null,
+        projectName: arg.projectName || null,
+        token: Date.now(),
+      });
+      setDashboardTarget(null);
     } else {
       setRoute(r);
       if (r === "projects") setProjectId(null);
+      // 普通进入任务页时清掉旧的跳转请求，避免残留的视图/筛选预置。
+      if (r === "tasks") setTasksFocusRequest(null);
       setDashboardTarget(
         arg && DASHBOARD_FOCUS_ROUTES.has(r) ? { route: r, id: arg } : null,
       );
@@ -28991,7 +29597,9 @@ function OpsReferenceInner({
               <ScreenStreamers go={go} initialActiveId={streamerId} />
             )}
             {route === "admission" && <ScreenAdmission go={go} />}
-            {route === "tasks" && <ScreenTasks go={go} />}
+            {route === "tasks" && (
+              <ScreenTasks go={go} focusRequest={tasksFocusRequest} />
+            )}
             {route === "reports" && <ScreenReports go={go} />}
             {route === "knowledge" && <ScreenKnowledge />}
             {route === "settle" && <ScreenSettlement go={go} />}
