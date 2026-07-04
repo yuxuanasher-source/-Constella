@@ -4733,14 +4733,7 @@ function AICopilot() {
     }
   };
 
-  const matchingInput = React.useMemo(
-    () => buildWarRoomMatchingInput(streamers),
-    [streamers],
-  );
-  const reviewInput = React.useMemo(
-    () => buildWarRoomReviewInput(projects, streamers),
-    [projects, streamers],
-  );
+  const reviewProjectId = projects[0]?.id;
   const scriptInput = React.useMemo(
     () => buildAiScriptOptimizationInput(projects, streamers),
     [projects, streamers],
@@ -4769,8 +4762,7 @@ function AICopilot() {
               "/api/ai/briefs",
               {
                 kind: "casting",
-                project: matchingInput.project,
-                candidates: matchingInput.candidates,
+                matching: buildWarRoomCastingMatching(),
                 maxRecommendations: 3,
               },
               formatAiBriefResult,
@@ -4786,15 +4778,19 @@ function AICopilot() {
           loading={busyKey === "review"}
           done={Boolean(results.review)}
           disabled={Boolean(busyKey)}
-          onClick={() =>
+          onClick={() => {
+            if (!reviewProjectId) {
+              setMessage("暂无可复盘的项目，请先创建项目后再运行。");
+              return;
+            }
             runAiAction(
               "review",
               "/api/ai/project-reviews",
-              reviewInput,
+              { projectId: reviewProjectId },
               formatAiProjectReviewResult,
               "AI project review failed",
-            )
-          }
+            );
+          }}
         />
         <AiActionPanel
           actionKey="copilot"
@@ -5595,6 +5591,15 @@ function buildWarRoomPricingInput({
   };
 }
 
+function buildWarRoomCastingMatching() {
+  return {
+    category: "moba",
+    platform: "douyin",
+    preferredStyles: ["高互动", "欢快互动", "高能竞技"],
+    requiredMinutes: 900,
+  };
+}
+
 function buildWarRoomMatchingInput(streamers = STREAMERS) {
   const streamerRows = streamers.length
     ? streamers
@@ -5604,12 +5609,7 @@ function buildWarRoomMatchingInput(streamers = STREAMERS) {
     : WAR_ROOM_FALLBACK_SUPPLIERS;
 
   return {
-    project: {
-      category: "moba",
-      platform: "douyin",
-      preferredStyles: ["高互动", "欢快互动", "高能竞技"],
-      requiredMinutes: 900,
-    },
+    project: buildWarRoomCastingMatching(),
     candidates: streamerRows.map((streamer) => ({
       id: streamer.id ?? "streamer-war-room-fallback",
       name: streamer.alias ?? streamer.name ?? "主播待配置",

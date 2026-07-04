@@ -1638,63 +1638,6 @@ function KpiCard({ group }) {
 // ============================================================
 //  AI 助手面板（右栏）—— 调用真实 /api/ai/* 与 /api/marketplace/intel
 // ============================================================
-function buildReviewInput(projects) {
-  const project = (projects || [])[0] || {
-    id: "project-warroom",
-    name: "经营项目",
-    start: "",
-    end: "",
-    metrics: {},
-  };
-  const rows = (projects || []).slice(0, 4);
-  const streamers = (rows.length ? rows : [project]).map((p, i) => ({
-    id: `${project.id}-s${i}`,
-    name: p.name || `主播${i + 1}`,
-    durationMinutes: 600,
-    totalViews: 40000,
-    completionRateBps: Math.round(
-      (Number(p?.metrics?.doneHours) || 0) > 0 ? 8000 : 7000,
-    ),
-    roiBps: Math.round((Number(p?.metrics?.margin) || 0) * 100 + 10000),
-    grossMarginContributionCents: Math.round(
-      (Number(p?.metrics?.gross) || 0) * 100,
-    ),
-    anomalyCount: p?.risk === "high" ? 1 : 0,
-    disputeCount: p?.risk === "high" ? 1 : 0,
-  }));
-  return {
-    project: {
-      id: project.id,
-      name: project.name,
-      category: "moba",
-      platform: "douyin",
-      periodStart: project.start || "2026-01-01",
-      periodEnd: project.end || "2026-12-31",
-    },
-    finance: {
-      receivableCents: Math.round(
-        (Number(project?.metrics?.receivable) || 12000) * 100,
-      ),
-      payableCents: Math.round(
-        (Number(project?.metrics?.payable) || 6000) * 100,
-      ),
-      supplierCostCents: 100000,
-      adjustmentCents: 0,
-      manualRevenueCents: 0,
-    },
-    streamers,
-    suppliers: [
-      {
-        id: "sup-1",
-        name: "默认供应商",
-        streamerCount: streamers.length,
-        settlementCents: 100000,
-      },
-    ],
-    evidenceSummary: { green: 8, yellow: 1, red: 0, unknown: 0 },
-    targetMarginBps: 3000,
-  };
-}
 function extractAiText(body) {
   const o = body?.agentOutput || body?.output || body || {};
   if (typeof o.summary === "string" && o.summary.trim()) {
@@ -2655,15 +2598,21 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         if (!res.ok) throw new Error(json?.error || "经营问答调用失败");
         text = formatBusinessCopilotText(json);
       } else {
-        // review / risk → 真实经营诊断代理
-        const res = await fetch("/api/ai/project-reviews", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(buildReviewInput(projects)),
-        });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json?.error || "AI 诊断调用失败");
-        text = extractAiText(json);
+        // review / risk → 真实经营诊断代理（只传 projectId，明细由服务端取数）
+        const projectId = (projects || [])[0]?.id;
+        if (!projectId) {
+          text =
+            "当前范围内暂无可诊断的项目，请先创建项目或调整周期后再试。";
+        } else {
+          const res = await fetch("/api/ai/project-reviews", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId }),
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json?.error || "AI 诊断调用失败");
+          text = extractAiText(json);
+        }
       }
       if (kind === "ask") {
         setAttachments([]);

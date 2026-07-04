@@ -42,6 +42,22 @@ export async function runAiGateway({
           providerResult.structuredOutput,
         );
         if (!validation.valid) {
+          // 结构校验失败先对同一 provider 带着错误信息重试一次——比直接
+          // 切换模型便宜且成功率更高;再失败才 failover 到下一个 provider。
+          const retried = await retryStructuredOnce(
+            provider,
+            request,
+            validation.errorSummary,
+          );
+          if (retried) {
+            return {
+              ...retried,
+              providerName: provider.name,
+              fallbackUsed: index > 0,
+              degradedReason:
+                index > 0 ? "primary_failed" : retried.degradedReason,
+            };
+          }
           failures.push(
             `${provider.name} schema validation failed: ${validation.errorSummary}`,
           );
@@ -93,6 +109,38 @@ export function orderProviders(
     ...providers.filter((provider) => provider.name === primaryProvider),
     ...providers.filter((provider) => provider.name !== primaryProvider),
   ];
+}
+
+async function retryStructuredOnce(
+  provider: AiProvider,
+  request: Extract<AiGatewayRequest, { kind: "structured" }>,
+  errorSummary: string | undefined,
+): Promise<AiProviderResult | null> {
+  try {
+    const retryRequest: typeof request = {
+      ...request,
+      messages: [
+        ...request.messages,
+        {
+          role: "user",
+          content: `上一次输出未通过结构化校验(${
+            errorSummary ?? "结构不符合要求"
+          })。请严格按照要求的 JSON 结构重新输出,只返回 JSON,不要任何解释文字。`,
+        },
+      ],
+    };
+    const result = await provider.runStructured(retryRequest);
+    if (result.status === "failed") {
+      return null;
+    }
+    const validation = validateStructuredOutput(
+      request.responseSchema,
+      result.structuredOutput,
+    );
+    return validation.valid ? result : null;
+  } catch {
+    return null;
+  }
 }
 
 async function runProvider(

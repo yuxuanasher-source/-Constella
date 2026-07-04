@@ -95,16 +95,16 @@ describe("runStreamerDiagnosisAgent", () => {
     expect(result.agentOutput.facts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          statement: "Total views are 300",
+          statement: "本场总观看数为 300",
           sourceTool: "streamer_diagnosis",
           sourceId: `${result.result.invocationId}:report.totalViews`,
         }),
         expect.objectContaining({
-          statement: "Settlement duration is 80 minutes",
+          statement: "结算时长为 80 分钟",
           sourceId: `${result.result.invocationId}:report.settlementDuration`,
         }),
         expect.objectContaining({
-          statement: "Diagnosis type is traffic_drop",
+          statement: "诊断类型为 traffic_drop",
           sourceId: `${result.result.invocationId}:output.diagnosisType`,
         }),
       ]),
@@ -113,7 +113,7 @@ describe("runStreamerDiagnosisAgent", () => {
       expect.arrayContaining([
         expect.objectContaining({
           summary:
-            "Interaction pattern needs attention before the next live session",
+            "互动模式需要在下一场直播前重点调整",
           evidence: [
             {
               sourceTool: "streamer_diagnosis",
@@ -157,7 +157,7 @@ describe("runStreamerDiagnosisAgent", () => {
       expect.arrayContaining([
         expect.objectContaining({
           summary:
-            "Content rhythm needs attention before the next live session",
+            "内容节奏需要在下一场直播前重点调整",
         }),
       ]),
     );
@@ -165,7 +165,7 @@ describe("runStreamerDiagnosisAgent", () => {
       expect.arrayContaining([
         expect.objectContaining({
           proposal:
-            "Refine opening hook and interaction rhythm before the next session",
+            "下一场开播前优化开场钩子与互动节奏",
           requiresHumanApproval: true,
         }),
       ]),
@@ -180,7 +180,7 @@ describe("runStreamerDiagnosisAgent", () => {
       providerName: "hunyuan" as const,
       fallbackUsed: false,
       structuredOutput: {
-        findings: [{ summary: "开场互动偏弱,留存信号承压" }],
+        findings: [{ summary: "开场互动偏弱,留存信号承压", factRefs: [0, 4] }],
         caveats: [{ summary: "平台流量波动未独立核验" }],
         recommendations: [
           {
@@ -229,12 +229,23 @@ describe("runStreamerDiagnosisAgent", () => {
       requiresHumanApproval: true,
     });
     expect(runGateway).toHaveBeenCalledOnce();
+    const gatewayArgs = (runGateway.mock.calls as unknown[][])[0]?.[0] as {
+      request: { promptVersion: number; messages: { content: string }[] };
+    };
+    expect(gatewayArgs.request.messages[1].content).toContain(
+      "诊断类型:traffic_drop",
+    );
+    expect(gatewayArgs.request.messages[1].content).toContain(
+      "[0] 本场总观看数为 300",
+    );
     expect(recordInvocation).toHaveBeenCalledWith(
       expect.objectContaining({
         input: expect.objectContaining({
           scene: "streamer_diagnosis",
+          objectType: "streamer",
           providerName: "hunyuan",
           status: "succeeded",
+          metadata: { diagnosisType: "traffic_drop" },
         }),
       }),
     );
@@ -247,7 +258,7 @@ describe("runStreamerDiagnosisAgent", () => {
       providerName: "hunyuan" as const,
       fallbackUsed: false,
       structuredOutput: {
-        findings: [{ summary: "场观较上场下滑约30%" }],
+        findings: [{ summary: "场观较上场下滑约30%", factRefs: [0] }],
         recommendations: [{ proposal: "复盘话术结构" }],
       },
       usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
@@ -266,7 +277,7 @@ describe("runStreamerDiagnosisAgent", () => {
 
     expect(result.validation.valid).toBe(true);
     expect(result.agentOutput.findings[0].summary).toBe(
-      "Interaction pattern needs attention before the next live session",
+      "互动模式需要在下一场直播前重点调整",
     );
     expectNoNumbersOutsideFacts(result.agentOutput);
   });

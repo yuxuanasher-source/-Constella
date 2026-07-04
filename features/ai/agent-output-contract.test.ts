@@ -69,7 +69,8 @@ describe("validateAgentOutput", () => {
     );
   });
 
-  it("rejects numeric claims in findings because numbers belong in sourced facts", () => {
+  it("accepts findings that restate numbers from their cited facts", () => {
+    // 数字护栏语义化:引用的事实里已有 4167,复述是合法的。
     const result = validateAgentOutput({
       ...validOutput,
       findings: [
@@ -82,10 +83,42 @@ describe("validateAgentOutput", () => {
       ],
     });
 
+    expect(result).toEqual({ valid: true, errors: [] });
+  });
+
+  it("rejects findings that state numbers absent from their cited facts", () => {
+    const result = validateAgentOutput({
+      ...validOutput,
+      findings: [
+        {
+          summary: "Margin dropped 30% versus last month",
+          evidence: [
+            { sourceTool: "project_review_summary", sourceId: "tool-1" },
+          ],
+        },
+      ],
+    });
+
     expect(result.valid).toBe(false);
     expect(result.errors).toContain(
       "findings[0] must not include unsourced numeric claims",
     );
+  });
+
+  it("does not hard-block Chinese numerals (prompt-level rule only)", () => {
+    const result = validateAgentOutput({
+      ...validOutput,
+      findings: [
+        {
+          summary: "毛利率约下滑三成,需要关注",
+          evidence: [
+            { sourceTool: "project_review_summary", sourceId: "tool-1" },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toEqual({ valid: true, errors: [] });
   });
 
   it("rejects numeric claims in recommendations because recommendations only propose", () => {

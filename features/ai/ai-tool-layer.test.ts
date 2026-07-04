@@ -65,13 +65,13 @@ describe("runAiToolQuery", () => {
         status: "succeeded",
       }),
     ]);
-    expect(inserts.usage_events).toEqual([
-      expect.objectContaining({
-        metric: "ai",
-        quantity: 2,
-        source: "ai_runtime",
-      }),
-    ]);
+    // 确定性工具没有真实 token 消耗:不再伪造 usage 写入用量表,
+    // 调用记录仍完整落在 ai_invocations 与审计日志。
+    expect(inserts.usage_events).toBeUndefined();
+    expect(inserts.ai_invocations[0]).toMatchObject({
+      total_tokens: 0,
+      metadata: expect.objectContaining({ mode: "deterministic" }),
+    });
     expect(inserts.audit_logs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

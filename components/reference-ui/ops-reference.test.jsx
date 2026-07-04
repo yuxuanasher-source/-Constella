@@ -9073,6 +9073,7 @@ describe("OpsReferenceApp war room smoke", () => {
               },
             ],
             tradeoffAdvice: null,
+            dataGaps: [],
           }),
         };
       }
@@ -9085,6 +9086,7 @@ describe("OpsReferenceApp war room smoke", () => {
               shouldContinue: true,
               nextSuggestedQuoteCents: 1280000,
             },
+            dataGaps: ["缺少最近一期结算数据"],
           }),
         };
       }
@@ -9135,6 +9137,19 @@ describe("OpsReferenceApp war room smoke", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
+    const briefCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/ai/briefs",
+    );
+    expect(JSON.parse(briefCall[1].body)).toEqual({
+      kind: "casting",
+      matching: {
+        category: "moba",
+        platform: "douyin",
+        preferredStyles: ["高互动", "欢快互动", "高能竞技"],
+        requiredMinutes: 900,
+      },
+      maxRecommendations: 3,
+    });
     expect(await screen.findByText(/AI Brief Streamer/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "AI 项目复盘" }));
@@ -9144,6 +9159,12 @@ describe("OpsReferenceApp war room smoke", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
+    const reviewCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/ai/project-reviews",
+    );
+    expect(JSON.parse(reviewCall[1].body)).toEqual({
+      projectId: "project-live",
+    });
     expect(await screen.findByText(/AI Review Project/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "运行 Copilot" }));
