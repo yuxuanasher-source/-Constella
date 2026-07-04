@@ -91,6 +91,13 @@ for f in "$MIGRATIONS_DIR"/*.sql; do
 done
 log "迁移完成（本次新增应用 $applied 个）"
 
+# 迁移建了新表/新列后，PostgREST 的 schema 缓存不会自动感知（生产实测：
+# 新表的所有查询报错，直到 reload）。有新迁移时通知其重载。
+if [ "$applied" -gt 0 ]; then
+  log "刷新 PostgREST schema 缓存"
+  db_q "notify pgrst, 'reload schema'" >/dev/null || log "  （notify 失败，可手动 docker restart REST 容器）"
+fi
+
 # ── 4. 构建 ──────────────────────────────────────────────────────────────
 # Node 默认堆上限约 1GB，本代码库的 TypeScript 检查在小内存服务器上会 OOM
 # （SIGABRT: JavaScript heap out of memory），故默认放宽到 3GB，可用
