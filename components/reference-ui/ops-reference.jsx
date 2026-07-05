@@ -14097,16 +14097,24 @@ function ReportDetail({ id, reports }) {
     typeof r.divergencePct === "number" ? r.divergencePct : null;
 
   return (
+    // 面板钉在视口内（不随左列表滚动）：自身高度=视口高，播放窗弹性伸缩，
+    // AI 识别/预审与操作条常驻底部。
     <div
       style={{
         position: "sticky",
         top: 76,
+        height: "calc(100vh - 100px)",
+        minHeight: 520,
         display: "flex",
         flexDirection: "column",
         gap: 16,
       }}
     >
-      <Card padded={false}>
+      <Card
+        padded={false}
+        style={{ flex: 1, minHeight: 0 }}
+        bodyStyle={{ minHeight: 0, display: "flex", flexDirection: "column" }}
+      >
         <div
           style={{
             padding: "14px 16px",
@@ -16374,7 +16382,16 @@ function AdmissionWorkspaceDetail({
           </div>
           <StatusPill tone={statusMeta.tone}>{statusMeta.label}</StatusPill>
         </div>
-        <div style={{ padding: 16, display: "grid", gap: 14 }}>
+        <div
+          style={{
+            padding: 16,
+            display: "flex",
+            flexDirection: "column",
+            gap: 14,
+            flex: 1,
+            minHeight: 0,
+          }}
+        >
           {hasRows && pendingLeft === 0 ? (
             <div
               style={{
@@ -16394,10 +16411,13 @@ function AdmissionWorkspaceDetail({
               background: "#0B1220",
               borderRadius: 10,
               padding: 12,
-              display: "grid",
-              alignContent: "center",
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "center",
               gap: 8,
+              flex: "1 1 auto",
               minHeight: 200,
+              overflow: "hidden",
             }}
           >
             {canPlayPrivate ? (
@@ -16405,7 +16425,14 @@ function AdmissionWorkspaceDetail({
                 <video
                   controls
                   key={recording.assetId}
-                  style={{ width: "100%", borderRadius: 8, background: "#000" }}
+                  style={{
+                    flex: 1,
+                    minHeight: 0,
+                    width: "100%",
+                    objectFit: "contain",
+                    borderRadius: 8,
+                    background: "#000",
+                  }}
                   src={`/api/recording-assets/${recording.assetId}/download`}
                   onError={() => setVideoError(true)}
                 />
@@ -16428,7 +16455,9 @@ function AdmissionWorkspaceDetail({
                 allowFullScreen
                 style={{
                   width: "100%",
+                  flex: "0 1 auto",
                   aspectRatio: "16 / 9",
+                  maxHeight: "100%",
                   border: "none",
                   borderRadius: 8,
                   background: "#000",
@@ -16470,8 +16499,18 @@ function AdmissionWorkspaceDetail({
               </div>
             )}
           </div>
-          <div>
-            <SectionKicker>录屏 AI</SectionKicker>
+          {/* AI 识别与预审：常驻面板底部，内容超高时块内滚动 */}
+          <div
+            style={{
+              flexShrink: 0,
+              maxHeight: 250,
+              overflowY: "auto",
+              display: "grid",
+              gap: 14,
+            }}
+          >
+            <div>
+              <SectionKicker>录屏 AI</SectionKicker>
             {analysis ? (
               <div style={{ display: "grid", gap: 6 }}>
                 <div
@@ -16579,10 +16618,12 @@ function AdmissionWorkspaceDetail({
                 ))}
               </div>
             )}
+            </div>
           </div>
           {reviewable ? (
             <div
               style={{
+                flexShrink: 0,
                 display: "flex",
                 justifyContent: "flex-end",
                 gap: 8,
