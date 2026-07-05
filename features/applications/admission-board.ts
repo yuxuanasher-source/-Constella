@@ -1,10 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import type { RecordingAiAnalysisDto } from "@/features/recordings/recording-ai-analysis";
+
 import type {
   ApplicationStatus,
   RecordingReviewStatus,
 } from "./application-state";
 import type { ApplicationSource } from "./application-service";
+import { latestRecordingAiAnalysesByAsset } from "./application-queries";
 
 type MaybeArray<T> = T | T[] | null | undefined;
 
@@ -53,6 +56,7 @@ export type AdmissionApplicationRow = {
 export type AdmissionRecordingRow = {
   id: string;
   application_id: string;
+  asset_id?: string | null;
   version: number;
   status: RecordingReviewStatus;
   duration_seconds: number | null;
@@ -60,6 +64,7 @@ export type AdmissionRecordingRow = {
   storage_path?: string | null;
   submitted_at?: string | null;
   created_at: string;
+  aiAnalysis?: RecordingAiAnalysisDto | null;
 };
 
 export type AdmissionVendorReviewRow = {
@@ -129,12 +134,14 @@ export type AdmissionRecordingDetail = {
   };
   latestRecording: {
     id: string;
+    assetId: string | null;
     version: number;
     status: RecordingReviewStatus;
     durationSeconds: number | null;
     url: string | null;
     hasPrivateStorage: boolean;
     submittedAt: string;
+    aiAnalysis: RecordingAiAnalysisDto | null;
   } | null;
   vendorReview: {
     decision: VendorAdmissionDecision;
@@ -222,6 +229,7 @@ export async function listAdmissionProjectRecordings(
     listRecordingRows(supabase, applicationIds),
     listVendorReviewRows(supabase, applicationIds),
   ]);
+  await attachLatestRecordingAiAnalyses(supabase, recordings);
 
   return toAdmissionRecordingDetails(applications, recordings, vendorReviews);
 }
@@ -315,7 +323,7 @@ async function listRecordingRows(
   const { data, error } = await supabase
     .from("recording_submissions")
     .select(
-      "id, application_id, version, status, duration_seconds, external_url, storage_path, submitted_at, created_at",
+      "id, application_id, asset_id, version, status, duration_seconds, external_url, storage_path, submitted_at, created_at",
     )
     .in("application_id", applicationIds)
     .order("version", { ascending: false });
@@ -325,6 +333,26 @@ async function listRecordingRows(
   }
 
   return (data ?? []) as unknown as AdmissionRecordingRow[];
+}
+
+async function attachLatestRecordingAiAnalyses(
+  supabase: SupabaseClient,
+  recordings: AdmissionRecordingRow[],
+) {
+  const latestRecordings = [
+    ...latestRecordingsByApplication(recordings).values(),
+  ];
+  const latestAnalyses = await latestRecordingAiAnalysesByAsset(
+    supabase,
+    latestRecordings
+      .map((recording) => recording.asset_id)
+      .filter((assetId): assetId is string => Boolean(assetId)),
+  );
+  for (const recording of latestRecordings) {
+    recording.aiAnalysis = recording.asset_id
+      ? (latestAnalyses.get(recording.asset_id) ?? null)
+      : null;
+  }
 }
 
 async function listVendorReviewRows(
@@ -470,6 +498,7 @@ function toStreamerDto(application: AdmissionApplicationRow) {
 function toRecordingDto(recording: AdmissionRecordingRow) {
   return {
     id: recording.id,
+    assetId: recording.asset_id ?? null,
     version: recording.version,
     status: recording.status,
     durationSeconds: recording.duration_seconds,
@@ -478,6 +507,7 @@ function toRecordingDto(recording: AdmissionRecordingRow) {
       recording.storage_path && !recording.external_url,
     ),
     submittedAt: recording.submitted_at ?? recording.created_at,
+    aiAnalysis: recording.aiAnalysis ?? null,
   };
 }
 

@@ -14585,6 +14585,8 @@ function ScreenAdmission() {
   const [shareResult, setShareResult] = React.useState(null);
   // 私有录屏内嵌播放弹层：存 { assetId, streamerName }，null 表示关闭。
   const [playbackRecording, setPlaybackRecording] = React.useState(null);
+  // 录屏审核工作台：非空时主体切换为「左队列 + 右播放审核」双栏视图（页头保持）。
+  const [workspaceProjectId, setWorkspaceProjectId] = React.useState("");
 
   const syncAdmissionProjectBoards = async () => {
     if (!actions.refreshAdmissionProjectBoards) {
@@ -14597,10 +14599,11 @@ function ScreenAdmission() {
     setProjectBoards(projects);
   };
 
+  // 返回是否审核成功：工作台据此决定是否自动跳到下一条待审核。
   const review = async (application, decision) => {
     if (!actions.reviewApplicationRecording) {
       setAdmissionMessage("录屏审核后台暂未接入。");
-      return;
+      return false;
     }
     // 驳回/需修改时按卡点字典选择结构化理由码（沉淀审核信号）。
     let reasonCodes = [];
@@ -14610,7 +14613,7 @@ function ScreenAdmission() {
         const picked = askAdmissionReasonCodes(checkpoints, decision);
         if (picked === null) {
           setAdmissionMessage("操作已取消：驳回或需修改需选择理由卡点");
-          return;
+          return false;
         }
         reasonCodes = picked;
       }
@@ -14626,8 +14629,10 @@ function ScreenAdmission() {
       });
       await syncAdmissionProjectBoards();
       setAdmissionMessage(recordingDecisionSuccessMessage(decision));
+      return true;
     } catch (error) {
       setAdmissionMessage(error?.message || "录屏审核失败，请稍后重试");
+      return false;
     } finally {
       setBusyAction("");
     }
@@ -15122,6 +15127,25 @@ function ScreenAdmission() {
         subtitle="点击项目行即可展开该项目的录屏明细，审核完成后可创建厂家分享链接"
       />
       <div style={{ padding: 20 }}>
+        {workspaceProjectId ? (
+          <AdmissionReviewWorkspace
+            board={
+              boards.find(
+                (board) => board.project.id === workspaceProjectId,
+              ) ?? null
+            }
+            rows={applications.filter(
+              (application) =>
+                admissionProjectId(application) === workspaceProjectId,
+            )}
+            message={admissionMessage}
+            busyAction={busyAction}
+            onBack={() => setWorkspaceProjectId("")}
+            onReview={review}
+            onOpenAiAnalysis={setSelectedAiAnalysis}
+            fetchPreReview={actions.fetchAdmissionPreReview}
+          />
+        ) : (
         <Card title="项目准入板" padded={false}>
           <div
             style={{
@@ -15255,6 +15279,13 @@ function ScreenAdmission() {
                   >
                     <Button
                       size="sm"
+                      kind="primary"
+                      onClick={() => setWorkspaceProjectId(board.project.id)}
+                    >
+                      进入录屏审核
+                    </Button>
+                    <Button
+                      size="sm"
                       kind="default"
                       onClick={() => toggleProject(board)}
                     >
@@ -15287,6 +15318,7 @@ function ScreenAdmission() {
             ]}
           />
         </Card>
+        )}
         {shareResult ? (
           <AdmissionShareLinkDialog
             share={shareResult}
@@ -15813,6 +15845,780 @@ function downloadBase64Xlsx(result) {
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL?.(href);
+}
+
+// ===== 录屏审核工作台（项目点入后的左队列 + 右播放审核双栏视图） =====
+// 布局对标 ScreenReports（grid 1.35fr / 1fr），审核动作全部复用 ScreenAdmission
+// 的 review()（含理由卡点选择），这里只做队列筛选、就地播放与审核后自动跳下一条。
+
+// 工作台页签用的状态归类：语义与 incrementAdmissionCounts 保持一致，
+// 「待审核」即 isAdmissionRecordingReviewable 可审核态。
+function admissionWorkspaceStatusKey(application) {
+  if (isAdmissionRecordingReviewable(application)) return "pending";
+  const status = application.status;
+  const recordingStatus = application.latestRecording?.status;
+  if (status === "recording_required" || recordingStatus === "needs_changes") {
+    return "needs_changes";
+  }
+  if (status === "recording_rejected" || recordingStatus === "rejected") {
+    return "rejected";
+  }
+  if (status === "recording_approved" || status === "joined") {
+    return "approved";
+  }
+  return "other";
+}
+
+function admissionWorkspaceStatusMeta(application) {
+  const key = admissionWorkspaceStatusKey(application);
+  if (key === "pending") return { key, label: "待审核", tone: "amber" };
+  if (key === "needs_changes") return { key, label: "需修改", tone: "violet" };
+  if (key === "approved") return { key, label: "已通过", tone: "green" };
+  if (key === "rejected") return { key, label: "已驳回", tone: "red" };
+  return {
+    key,
+    label: application.latestRecording ? "无需操作" : "等待录屏",
+    tone: "neutral",
+  };
+}
+
+// 两个数据源字段名不同：application-queries DTO 叫 externalUrl，
+// admission-board detail DTO 叫 url，这里统一取值。
+function admissionRecordingExternalUrl(recording) {
+  return recording?.externalUrl || recording?.url || null;
+}
+
+function admissionRecordingSourceMeta(recording) {
+  if (!recording) return { label: "无录屏", tone: "amber" };
+  if (recording.hasPrivateStorage) return { label: "私有上传", tone: "teal" };
+  if (admissionRecordingExternalUrl(recording)) {
+    return { label: "外链", tone: "blue" };
+  }
+  return { label: "无录屏", tone: "amber" };
+}
+
+function admissionRecordingDurationLabel(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "—";
+  if (seconds < 60) return `${Math.round(seconds)} 秒`;
+  return `${Math.round(seconds / 60)} 分钟`;
+}
+
+// B 站外链就地内嵌：features/recordings/recording-assets.ts 的
+// buildBilibiliEmbedUrl 的前端轻量版（BV 号简单正则提取）。
+function admissionBilibiliEmbedSrc(url) {
+  const bvid =
+    typeof url === "string"
+      ? url.match(/\/video\/(BV[0-9A-Za-z]+)/)?.[1] ?? null
+      : null;
+  if (!bvid) return null;
+  return `https://player.bilibili.com/player.html?bvid=${bvid}&page=1&high_quality=1&danmaku=0`;
+}
+
+function admissionPreReviewVerdictLabel(verdict) {
+  if (verdict === "pass") return "通过";
+  if (verdict === "fail") return "未通过";
+  if (verdict === "not_applicable") return "不适用";
+  return verdict || "不确定";
+}
+
+function admissionPreReviewVerdictTone(verdict) {
+  if (verdict === "pass") return "green";
+  if (verdict === "fail") return "red";
+  return "amber";
+}
+
+function AdmissionReviewWorkspace({
+  board,
+  rows,
+  message,
+  busyAction,
+  onBack,
+  onReview,
+  onOpenAiAnalysis,
+  fetchPreReview,
+}) {
+  const [statusFilter, setStatusFilter] = React.useState("pending");
+  const [queueQuery, setQueueQuery] = React.useState("");
+  const [activeId, setActiveId] = React.useState("");
+
+  const normalizedQuery = queueQuery.trim().toLowerCase();
+  const scopedRows = normalizedQuery
+    ? rows.filter((application) =>
+        (application.streamer?.displayName || "")
+          .toLowerCase()
+          .includes(normalizedQuery),
+      )
+    : rows;
+  const statusCounts = {
+    pending: 0,
+    needs_changes: 0,
+    approved: 0,
+    rejected: 0,
+  };
+  for (const application of scopedRows) {
+    const key = admissionWorkspaceStatusKey(application);
+    if (statusCounts[key] != null) statusCounts[key] += 1;
+  }
+  const filteredRows =
+    statusFilter === "all"
+      ? scopedRows
+      : scopedRows.filter(
+          (application) =>
+            admissionWorkspaceStatusKey(application) === statusFilter,
+        );
+  const pendingLeft = rows.filter(
+    (application) => admissionWorkspaceStatusKey(application) === "pending",
+  ).length;
+
+  // 选中对齐规则：
+  // - 数据刷新（审核回写等）按 id 保持选中，即使刚审完的条目已不属于当前页签
+  //   也停留在原条目（配合「待审核已清零」提示）；
+  // - 用户切换搜索/页签导致选中被过滤掉时，自动落到过滤结果第一条待审核
+  //   （无待审核取第一条）。
+  const filterSignature = `${statusFilter}::${normalizedQuery}`;
+  const lastFilterSignatureRef = React.useRef(filterSignature);
+  React.useEffect(() => {
+    const filterChanged = lastFilterSignatureRef.current !== filterSignature;
+    lastFilterSignatureRef.current = filterSignature;
+    if (filteredRows.some((application) => application.id === activeId)) {
+      return;
+    }
+    const stillInProject = rows.some(
+      (application) => application.id === activeId,
+    );
+    if (stillInProject && !filterChanged) {
+      return;
+    }
+    if (filteredRows.length === 0) {
+      if (activeId && (filterChanged || !stillInProject)) setActiveId("");
+      return;
+    }
+    const firstPending = filteredRows.find(
+      (application) => admissionWorkspaceStatusKey(application) === "pending",
+    );
+    setActiveId((firstPending ?? filteredRows[0]).id);
+  }, [activeId, filteredRows, filterSignature, rows]);
+
+  const active =
+    filteredRows.find((application) => application.id === activeId) ??
+    rows.find((application) => application.id === activeId) ??
+    null;
+
+  // 审核成功后自动跳到列表中下一条待审核（从当前位置向后找，找不到再回头找）。
+  const reviewAndAdvance = async (application, decision) => {
+    const queue = filteredRows;
+    const succeeded = await onReview(application, decision);
+    if (!succeeded) return;
+    const index = queue.findIndex((row) => row.id === application.id);
+    const ordered =
+      index >= 0 ? [...queue.slice(index + 1), ...queue.slice(0, index)] : queue;
+    const next = ordered.find(
+      (row) =>
+        row.id !== application.id &&
+        admissionWorkspaceStatusKey(row) === "pending",
+    );
+    if (next) setActiveId(next.id);
+  };
+
+  if (!board) {
+    return (
+      <Card>
+        <EmptyHint
+          title="项目不存在或数据已刷新"
+          hint="请返回项目列表重新选择要审核的项目。"
+          actionLabel="返回项目列表"
+          onAction={onBack}
+        />
+      </Card>
+    );
+  }
+
+  const projectName = board.project.name || board.project.code || "项目";
+  const projectMeta = [board.project.product, board.project.vendor]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1.35fr 1fr",
+        gap: 20,
+        alignItems: "flex-start",
+      }}
+    >
+      <div
+        style={{
+          gridColumn: "1 / -1",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
+        <Button size="sm" kind="default" onClick={onBack}>
+          ← 返回项目列表
+        </Button>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{ fontSize: 15, fontWeight: 600, color: "var(--ink-900)" }}
+          >
+            {projectName} · 录屏审核工作台
+          </div>
+          {projectMeta ? (
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              {projectMeta}
+            </div>
+          ) : null}
+        </div>
+        <Badge tone={pendingLeft > 0 ? "amber" : "green"}>
+          待审核 {pendingLeft}
+        </Badge>
+        <Badge tone="blue">共 {rows.length} 条</Badge>
+      </div>
+      {message ? (
+        <div
+          aria-live="polite"
+          style={{
+            gridColumn: "1 / -1",
+            padding: "10px 12px",
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            background: message.includes("失败") ? "#FDECEC" : "var(--bg-soft)",
+            color: message.includes("失败")
+              ? "var(--danger-600)"
+              : "var(--ink-600)",
+            fontSize: 12,
+          }}
+        >
+          {message}
+        </div>
+      ) : null}
+      <Card padded={false}>
+        <div
+          style={{ padding: "0 12px", borderBottom: "1px solid var(--line)" }}
+        >
+          <Tabs
+            value={statusFilter}
+            onChange={setStatusFilter}
+            items={[
+              { key: "pending", label: "待审核", count: statusCounts.pending },
+              {
+                key: "needs_changes",
+                label: "需修改",
+                count: statusCounts.needs_changes,
+              },
+              { key: "approved", label: "已通过", count: statusCounts.approved },
+              { key: "rejected", label: "已驳回", count: statusCounts.rejected },
+              { key: "all", label: "全部", count: scopedRows.length },
+            ]}
+          />
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "12px 16px",
+            borderBottom: "1px solid var(--line)",
+          }}
+        >
+          <SearchInput
+            placeholder="按主播名搜索"
+            width={220}
+            value={queueQuery}
+            onChange={setQueueQuery}
+          />
+          <div style={{ flex: 1 }} />
+          <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+            点击行在右侧预览并审核
+          </span>
+        </div>
+        <DataTable
+          activeRowId={activeId}
+          onRowClick={(application) => setActiveId(application.id)}
+          rows={filteredRows}
+          emptyText="当前筛选下暂无录屏条目"
+          columns={[
+            {
+              title: "#",
+              render: (r, index) => (
+                <span
+                  className="num"
+                  style={{ fontSize: 12, color: "var(--ink-400)" }}
+                >
+                  {index + 1}
+                </span>
+              ),
+            },
+            {
+              title: "主播",
+              render: (r) => (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Avatar name={r.streamer?.displayName} size={24} />
+                  <div>
+                    <div style={{ color: "var(--ink-900)", fontWeight: 500 }}>
+                      {r.streamer?.displayName}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                      {admissionAccountLabel(r)}
+                    </div>
+                  </div>
+                </div>
+              ),
+            },
+            {
+              title: "提交日期",
+              render: (r) => (
+                <span className="num" style={{ fontSize: 12 }}>
+                  {String(r.submittedAt || "").slice(0, 10) || "—"}
+                </span>
+              ),
+            },
+            {
+              title: "版本",
+              render: (r) => (
+                <span className="mono" style={{ fontSize: 12 }}>
+                  {r.latestRecording?.version
+                    ? `v${r.latestRecording.version}`
+                    : "—"}
+                </span>
+              ),
+            },
+            {
+              title: "时长",
+              align: "right",
+              render: (r) => (
+                <span className="num" style={{ fontSize: 12 }}>
+                  {admissionRecordingDurationLabel(
+                    r.latestRecording?.durationSeconds,
+                  )}
+                </span>
+              ),
+            },
+            {
+              title: "来源",
+              render: (r) => {
+                const source = admissionRecordingSourceMeta(r.latestRecording);
+                return <Badge tone={source.tone}>{source.label}</Badge>;
+              },
+            },
+            {
+              title: "AI",
+              render: (r) => (
+                <span style={{ fontSize: 12, color: "var(--ink-600)" }}>
+                  {r.latestRecording?.aiAnalysis?.statusLabel || "—"}
+                </span>
+              ),
+            },
+            {
+              title: "状态",
+              render: (r) => {
+                const meta = admissionWorkspaceStatusMeta(r);
+                return <StatusPill tone={meta.tone}>{meta.label}</StatusPill>;
+              },
+            },
+          ]}
+        />
+      </Card>
+      <AdmissionWorkspaceDetail
+        application={active}
+        projectName={projectName}
+        pendingLeft={pendingLeft}
+        hasRows={rows.length > 0}
+        busyAction={busyAction}
+        onReview={reviewAndAdvance}
+        onOpenAiAnalysis={onOpenAiAnalysis}
+        fetchPreReview={fetchPreReview}
+      />
+    </div>
+  );
+}
+
+// 工作台右栏：播放窗（私有内嵌 video / B 站 iframe / 外链按钮）+ AI 识别区
+// （录屏 AI 摘要 + AI 预审卡点）+ 审核操作条。
+function AdmissionWorkspaceDetail({
+  application,
+  projectName,
+  pendingLeft,
+  hasRows,
+  busyAction,
+  onReview,
+  onOpenAiAnalysis,
+  fetchPreReview,
+}) {
+  const submissionId = application?.latestRecording?.id ?? null;
+  const [videoError, setVideoError] = React.useState(false);
+  // AI 预审：选中条目变化时拉取一次；失败降级为灰字，不阻塞审核操作。
+  const [preReview, setPreReview] = React.useState({
+    status: "idle",
+    data: null,
+    fastLane: null,
+    labels: {},
+  });
+
+  React.useEffect(() => {
+    setVideoError(false);
+  }, [submissionId]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!submissionId || typeof fetchPreReview !== "function") {
+      setPreReview({
+        status: submissionId ? "error" : "idle",
+        data: null,
+        fastLane: null,
+        labels: {},
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    setPreReview({ status: "loading", data: null, fastLane: null, labels: {} });
+    Promise.all([fetchPreReview(submissionId), loadMcnReviewCheckpoints()])
+      .then(([result, checkpoints]) => {
+        if (cancelled) return;
+        setPreReview({
+          status: "ready",
+          data: result?.preReview ?? null,
+          fastLane: result?.fastLane ?? null,
+          labels: Object.fromEntries(
+            (checkpoints ?? []).map((checkpoint) => [
+              checkpoint.key,
+              checkpoint.label,
+            ]),
+          ),
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPreReview({ status: "error", data: null, fastLane: null, labels: {} });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [submissionId, fetchPreReview]);
+
+  if (!application) {
+    return (
+      <div style={{ position: "sticky", top: 76 }}>
+        <Card>
+          <EmptyHint
+            title="从左侧选择一条录屏"
+            hint="选中后可在此就地播放并完成审核。"
+          />
+        </Card>
+      </div>
+    );
+  }
+
+  const recording = application.latestRecording ?? null;
+  const externalUrl = admissionRecordingExternalUrl(recording);
+  const embedSrc = admissionBilibiliEmbedSrc(externalUrl);
+  const canPlayPrivate = Boolean(
+    recording?.hasPrivateStorage && recording?.assetId,
+  );
+  const statusMeta = admissionWorkspaceStatusMeta(application);
+  const reviewable = isAdmissionRecordingReviewable(application);
+  const analysis = recording?.aiAnalysis ?? null;
+  const dimensionLabels = Object.fromEntries(
+    (analysis?.dimensions ?? []).map((dimension) => [
+      dimension.key,
+      dimension.label,
+    ]),
+  );
+  const scorecardEntries = Object.entries(analysis?.scorecard ?? {}).slice(
+    0,
+    4,
+  );
+  const riskFlags = (analysis?.riskFlags ?? []).slice(0, 2);
+  const preReviewCheckpoints = (preReview.data?.checkpoints ?? []).slice(0, 6);
+
+  return (
+    <div
+      style={{
+        position: "sticky",
+        top: 76,
+        display: "flex",
+        flexDirection: "column",
+        gap: 16,
+      }}
+    >
+      <Card padded={false}>
+        <div
+          style={{
+            padding: "14px 16px",
+            borderBottom: "1px solid var(--line)",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              className="mono"
+              style={{ fontSize: 11, color: "var(--ink-400)" }}
+            >
+              {displayRecordId(application.id, "报名记录")}
+              {recording?.version ? ` · v${recording.version}` : ""}
+            </div>
+            <div
+              style={{
+                fontSize: 15,
+                fontWeight: 600,
+                color: "var(--ink-900)",
+                marginTop: 2,
+              }}
+            >
+              {application.streamer?.displayName || "主播"} · {projectName}
+            </div>
+          </div>
+          <StatusPill tone={statusMeta.tone}>{statusMeta.label}</StatusPill>
+        </div>
+        <div style={{ padding: 16, display: "grid", gap: 14 }}>
+          {hasRows && pendingLeft === 0 ? (
+            <div
+              style={{
+                padding: "8px 12px",
+                borderRadius: 8,
+                background: "#E6F6EE",
+                color: "#0E8A4D",
+                fontSize: 12,
+                fontWeight: 500,
+              }}
+            >
+              本项目待审核已清零 ✅
+            </div>
+          ) : null}
+          <div
+            style={{
+              background: "#0B1220",
+              borderRadius: 10,
+              padding: 12,
+              display: "grid",
+              alignContent: "center",
+              gap: 8,
+              minHeight: 200,
+            }}
+          >
+            {canPlayPrivate ? (
+              <>
+                <video
+                  controls
+                  key={recording.assetId}
+                  style={{ width: "100%", borderRadius: 8, background: "#000" }}
+                  src={`/api/recording-assets/${recording.assetId}/download`}
+                  onError={() => setVideoError(true)}
+                />
+                {videoError ? (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "#FCA5A5",
+                      textAlign: "center",
+                    }}
+                  >
+                    无法加载视频（签名过期或文件缺失）
+                  </div>
+                ) : null}
+              </>
+            ) : embedSrc ? (
+              <iframe
+                title="B 站录屏播放"
+                src={embedSrc}
+                allowFullScreen
+                style={{
+                  width: "100%",
+                  aspectRatio: "16 / 9",
+                  border: "none",
+                  borderRadius: 8,
+                  background: "#000",
+                }}
+              />
+            ) : externalUrl ? (
+              <div style={{ textAlign: "center", padding: "44px 0" }}>
+                <a
+                  href={externalUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "8px 16px",
+                    borderRadius: 8,
+                    border: "1px solid #334155",
+                    background: "#111C33",
+                    color: "#C7D5F2",
+                    fontSize: 13,
+                    fontWeight: 500,
+                    textDecoration: "none",
+                  }}
+                >
+                  打开外部链接 ↗
+                </a>
+              </div>
+            ) : (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "44px 0",
+                  fontSize: 13,
+                  color: "#64748B",
+                }}
+              >
+                暂无录屏
+              </div>
+            )}
+          </div>
+          <div>
+            <SectionKicker>录屏 AI</SectionKicker>
+            {analysis ? (
+              <div style={{ display: "grid", gap: 6 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    minWidth: 0,
+                  }}
+                >
+                  <Badge
+                    tone={
+                      analysis.status === "succeeded"
+                        ? "green"
+                        : analysis.status === "failed"
+                          ? "red"
+                          : "violet"
+                    }
+                  >
+                    {analysis.statusLabel || analysis.status}
+                  </Badge>
+                  {analysis.summary ? (
+                    <span
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        fontSize: 12,
+                        color: "var(--ink-600)",
+                      }}
+                    >
+                      {analysis.summary}
+                    </span>
+                  ) : (
+                    <span style={{ flex: 1 }} />
+                  )}
+                  <Button
+                    size="sm"
+                    kind="link"
+                    style={{ height: 22, padding: 0 }}
+                    onClick={() => onOpenAiAnalysis(analysis)}
+                  >
+                    查看全部
+                  </Button>
+                </div>
+                {scorecardEntries.length ? (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {scorecardEntries.map(([key, score]) => (
+                      <Badge key={key} tone="violet">
+                        {dimensionLabels[key] || key} {score}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+                {riskFlags.map((flag) => (
+                  <div
+                    key={flag}
+                    style={{ fontSize: 12, color: "var(--danger-600)" }}
+                  >
+                    ⚠ {flag}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                AI 分析未运行
+              </div>
+            )}
+          </div>
+          <div>
+            <SectionKicker>AI 预审</SectionKicker>
+            {preReview.status === "loading" ? (
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                预审结果拉取中…
+              </div>
+            ) : preReview.status === "error" ? (
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                预审结果不可用
+              </div>
+            ) : !preReview.data ? (
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                暂无 AI 预审结果
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 6 }}>
+                {preReview.fastLane?.eligible ? (
+                  <div>
+                    <Badge tone="green">快速通道候选</Badge>
+                  </div>
+                ) : null}
+                {preReviewCheckpoints.map((checkpoint) => (
+                  <div
+                    key={checkpoint.key}
+                    style={{ display: "flex", alignItems: "center", gap: 8 }}
+                  >
+                    <Badge tone={admissionPreReviewVerdictTone(checkpoint.verdict)}>
+                      {admissionPreReviewVerdictLabel(checkpoint.verdict)}
+                    </Badge>
+                    <span style={{ fontSize: 12, color: "var(--ink-600)" }}>
+                      {preReview.labels[checkpoint.key] || checkpoint.key}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          {reviewable ? (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+                borderTop: "1px solid var(--line)",
+                paddingTop: 12,
+              }}
+            >
+              <Button
+                kind="danger"
+                onClick={() => onReview(application, "rejected")}
+                disabled={busyAction === `review:${application.id}:rejected`}
+              >
+                驳回
+              </Button>
+              <Button
+                kind="default"
+                onClick={() => onReview(application, "needs_changes")}
+                disabled={
+                  busyAction === `review:${application.id}:needs_changes`
+                }
+              >
+                需修改
+              </Button>
+              <Button
+                kind="primary"
+                onClick={() => onReview(application, "approved")}
+                disabled={busyAction === `review:${application.id}:approved`}
+              >
+                审核通过
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </Card>
+    </div>
+  );
 }
 
 function buildAdmissionProjectBoards(applications = []) {
@@ -29246,6 +30052,18 @@ function OpsReferenceInner({
       return Array.isArray(body.projects) ? body.projects : [];
     };
 
+    const fetchAdmissionPreReview = async (submissionId) => {
+      const body = await fetchJson(
+        `/api/admission-review/pre-review?submissionId=${encodeURIComponent(submissionId)}`,
+        "fetch admission pre-review failed",
+        { method: "GET" },
+      );
+      return {
+        preReview: body.preReview ?? null,
+        fastLane: body.fastLane ?? null,
+      };
+    };
+
     const exportAdmissionRecordings = async (projectId) => {
       const body = await fetchJson(
         "/api/exports/admission-recordings",
@@ -29374,6 +30192,7 @@ function OpsReferenceInner({
       refreshStreamers,
       refreshApplications,
       refreshAdmissionProjectBoards,
+      fetchAdmissionPreReview,
       refreshOpsTasks,
       refreshReports,
       refreshSettlementPool,

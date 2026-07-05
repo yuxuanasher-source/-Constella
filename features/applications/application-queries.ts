@@ -271,7 +271,7 @@ async function latestRecordingsByApplication(
   return latestByApplication;
 }
 
-async function latestRecordingAiAnalysesByAsset(
+export async function latestRecordingAiAnalysesByAsset(
   supabase: SupabaseClient,
   assetIds: string[],
 ): Promise<Map<string, RecordingAiAnalysisDto>> {

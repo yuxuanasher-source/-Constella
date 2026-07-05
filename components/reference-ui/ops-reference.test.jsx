@@ -5523,6 +5523,457 @@ describe("OpsReferenceApp admission smoke", () => {
       screen.queryByRole("button", { name: "拒绝入项" }),
     ).not.toBeInTheDocument();
   });
+
+  // ===== 录屏审核工作台（项目点入后的左队列 + 右播放审核双栏视图） =====
+  // 卡点字典在 ops-reference.jsx 里有模块级缓存（cachedMcnReviewCheckpoints），
+  // 同文件用例共享缓存，因此各用例的 rubric stub 必须保持同一份卡点 fixture。
+  const workspaceRubricCheckpoints = [
+    { key: "content_quality", label: "内容质量达标", stage: "mcn_first" },
+    { key: "duration_ok", label: "时长达标", stage: "mcn_first" },
+  ];
+
+  const workspacePreReviewResponses = {
+    "sub-priv": {
+      ok: true,
+      body: {
+        preReview: {
+          submissionId: "sub-priv",
+          checkpoints: [
+            { key: "content_quality", verdict: "pass" },
+            { key: "duration_ok", verdict: "fail" },
+            { key: "stream_clarity", verdict: "not_applicable" },
+          ],
+        },
+        fastLane: { eligible: true, reasons: ["历史通过率高"] },
+      },
+    },
+    "sub-bili": { ok: false, body: { error: "pre-review unavailable" } },
+    "sub-ext": { ok: true, body: { preReview: null, fastLane: null } },
+  };
+
+  const buildWorkspaceAdmissionApplications = () => [
+    {
+      id: "app-ws-priv",
+      status: "recording_reviewing",
+      source: "signup",
+      submittedAt: "2026-06-07T01:00:00.000Z",
+      project: { id: "project-ws", code: "P-WS", name: "Workspace Project" },
+      streamer: {
+        id: "streamer-ws-1",
+        displayName: "Workspace Priv",
+        accountLabel: "Douyin / priv-live",
+      },
+      latestRecording: {
+        id: "sub-priv",
+        assetId: "asset-ws-priv",
+        version: 2,
+        status: "reviewing",
+        durationSeconds: 1800,
+        url: null,
+        hasPrivateStorage: true,
+        aiAnalysis: {
+          id: "analysis-ws-priv",
+          assetId: "asset-ws-priv",
+          status: "succeeded",
+          statusLabel: "已完成",
+          providerName: "deterministic",
+          summary: "开场节奏稳定，互动需补证。",
+          scorecard: { pacing: 82, interaction: 74 },
+          dimensions: [
+            { key: "pacing", label: "节奏" },
+            { key: "interaction", label: "互动" },
+          ],
+          riskFlags: ["互动证明不足"],
+          recommendations: [],
+          segments: [],
+          errorSummary: null,
+          aiInvocationId: "invocation-ws-priv",
+          createdAt: "2026-06-07T01:10:00.000Z",
+          updatedAt: "2026-06-07T01:12:00.000Z",
+          completedAt: "2026-06-07T01:12:00.000Z",
+        },
+      },
+      vendorReview: null,
+    },
+    {
+      id: "app-ws-bili",
+      status: "pending_recording_review",
+      source: "open_signup",
+      submittedAt: "2026-06-07T02:00:00.000Z",
+      project: { id: "project-ws", code: "P-WS", name: "Workspace Project" },
+      streamer: {
+        id: "streamer-ws-2",
+        displayName: "Workspace Bili",
+        accountLabel: "Bilibili / bili-live",
+      },
+      latestRecording: {
+        id: "sub-bili",
+        assetId: null,
+        version: 1,
+        status: "pending_review",
+        durationSeconds: 960,
+        externalUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
+        hasPrivateStorage: false,
+        aiAnalysis: null,
+      },
+      vendorReview: null,
+    },
+    {
+      id: "app-ws-ext",
+      status: "recording_reviewing",
+      source: "signup",
+      submittedAt: "2026-06-07T03:00:00.000Z",
+      project: { id: "project-ws", code: "P-WS", name: "Workspace Project" },
+      streamer: {
+        id: "streamer-ws-3",
+        displayName: "Workspace Ext",
+        accountLabel: "Kuaishou / ext-live",
+      },
+      latestRecording: {
+        id: "sub-ext",
+        assetId: null,
+        version: 1,
+        status: "reviewing",
+        durationSeconds: 600,
+        externalUrl: "https://videos.example.com/ws-ext",
+        hasPrivateStorage: false,
+        aiAnalysis: null,
+      },
+      vendorReview: null,
+    },
+    {
+      id: "app-ws-approved",
+      status: "recording_approved",
+      source: "signup",
+      submittedAt: "2026-06-07T04:00:00.000Z",
+      project: { id: "project-ws", code: "P-WS", name: "Workspace Project" },
+      streamer: {
+        id: "streamer-ws-4",
+        displayName: "Workspace Done",
+        accountLabel: "Douyin / done-live",
+      },
+      latestRecording: {
+        id: "sub-approved",
+        assetId: null,
+        version: 1,
+        status: "approved",
+        durationSeconds: 1200,
+        externalUrl: "https://videos.example.com/ws-approved",
+        hasPrivateStorage: false,
+        aiAnalysis: null,
+      },
+      vendorReview: null,
+    },
+  ];
+
+  const workspaceBoardResponse = {
+    projects: [
+      {
+        project: {
+          id: "project-ws",
+          code: "P-WS",
+          name: "Workspace Project",
+          vendor: "Vendor W",
+          product: "Game W",
+        },
+        counts: {
+          totalApplications: 4,
+          recordingCount: 4,
+          mcnPendingReview: 3,
+          mcnApproved: 1,
+          mcnRejected: 0,
+          needsChanges: 0,
+          vendorPending: 4,
+          vendorSelected: 0,
+          vendorBackup: 0,
+          vendorRejected: 0,
+          vendorNeedsChanges: 0,
+          pendingFinalConfirm: 1,
+        },
+        share: {
+          id: null,
+          status: "unshared",
+          expiresAt: null,
+          lastSubmittedAt: null,
+        },
+        lastActivityAt: "2026-06-07T04:00:00.000Z",
+      },
+    ],
+  };
+
+  const buildWorkspaceFetchMock = (applications) =>
+    vi.fn(async (url, init) => {
+      const target = String(url);
+      if (target === "/api/applications/admission-board") {
+        return { ok: true, json: async () => workspaceBoardResponse };
+      }
+      if (target === "/api/admission-review/rubric?stage=mcn_first") {
+        return {
+          ok: true,
+          json: async () => ({ checkpoints: workspaceRubricCheckpoints }),
+        };
+      }
+      if (target.startsWith("/api/admission-review/pre-review?submissionId=")) {
+        const submissionId = decodeURIComponent(
+          target.slice(
+            target.indexOf("submissionId=") + "submissionId=".length,
+          ),
+        );
+        const stub = workspacePreReviewResponses[submissionId];
+        if (!stub) {
+          return {
+            ok: false,
+            json: async () => ({ error: "unknown submission" }),
+          };
+        }
+        return { ok: stub.ok, json: async () => stub.body };
+      }
+      // 审核通过后的回写：application 状态与最新录屏状态都要脱离可审核态，
+      // 否则该条在「待审核」页签仍会被 isAdmissionRecordingReviewable 判为待审。
+      const approvePrivApplication = (application) =>
+        application.id === "app-ws-priv"
+          ? {
+              ...application,
+              status: "recording_approved",
+              latestRecording: {
+                ...application.latestRecording,
+                status: "approved",
+              },
+            }
+          : application;
+      if (
+        target === "/api/applications/app-ws-priv/review" &&
+        init?.method === "PATCH"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            application: approvePrivApplication(applications[0]),
+          }),
+        };
+      }
+      if (target === "/api/applications") {
+        return {
+          ok: true,
+          json: async () => ({
+            applications: applications.map(approvePrivApplication),
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+
+  it("opens the recording review workspace with a pending queue and inline private playback", async () => {
+    const admissionApplications = buildWorkspaceAdmissionApplications();
+    const fetchMock = buildWorkspaceFetchMock(admissionApplications);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={admissionApplications}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "进入录屏审核" }));
+
+    // 工作台替换项目准入板：标题 + 返回按钮出现，项目列表的展开明细入口消失。
+    expect(
+      screen.getByText("Workspace Project · 录屏审核工作台"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "← 返回项目列表" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "展开明细" }),
+    ).not.toBeInTheDocument();
+
+    // 默认页签「待审核」：三条可审核条目在列，已通过条目被过滤。
+    expect(screen.getByText("Workspace Bili")).toBeInTheDocument();
+    expect(screen.getByText("Workspace Ext")).toBeInTheDocument();
+    expect(screen.queryByText("Workspace Done")).not.toBeInTheDocument();
+
+    // 默认选中第一条待审核（私有上传）：右栏头部 + 就地 video 播放。
+    expect(
+      screen.getByText("Workspace Priv · Workspace Project"),
+    ).toBeInTheDocument();
+    const video = container.querySelector("video");
+    expect(video).not.toBeNull();
+    expect(video).toHaveAttribute(
+      "src",
+      "/api/recording-assets/asset-ws-priv/download",
+    );
+    expect(await screen.findByText("快速通道候选")).toBeInTheDocument();
+
+    // 「全部」页签能看到已通过条目。
+    fireEvent.click(
+      screen.getByRole("button", { name: (name) => name.startsWith("全部") }),
+    );
+    expect(screen.getByText("Workspace Done")).toBeInTheDocument();
+
+    // 搜索过滤为空时清空选中并显示空态；清空搜索后回落到第一条待审核。
+    fireEvent.change(screen.getByPlaceholderText("按主播名搜索"), {
+      target: { value: "无此人" },
+    });
+    expect(screen.getByText("当前筛选下暂无录屏条目")).toBeInTheDocument();
+    expect(screen.getByText("从左侧选择一条录屏")).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("按主播名搜索"), {
+      target: { value: "" },
+    });
+    expect(
+      screen.getByText("Workspace Priv · Workspace Project"),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("快速通道候选")).toBeInTheDocument();
+
+    // 返回项目列表恢复原项目准入板。
+    fireEvent.click(screen.getByRole("button", { name: "← 返回项目列表" }));
+    expect(screen.getByText("项目准入板")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "进入录屏审核" }),
+    ).toBeInTheDocument();
+  });
+
+  it("switches the workspace playback window between bilibili embed and external link", async () => {
+    const admissionApplications = buildWorkspaceAdmissionApplications();
+    const fetchMock = buildWorkspaceFetchMock(admissionApplications);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={admissionApplications}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "进入录屏审核" }));
+
+    // B 站外链 → iframe 就地内嵌播放器。
+    fireEvent.click(screen.getByText("Workspace Bili"));
+    expect(
+      screen.getByText("Workspace Bili · Workspace Project"),
+    ).toBeInTheDocument();
+    expect(screen.getByTitle("B 站录屏播放")).toHaveAttribute(
+      "src",
+      "https://player.bilibili.com/player.html?bvid=BV1xx411c7mD&page=1&high_quality=1&danmaku=0",
+    );
+    expect(await screen.findByText("预审结果不可用")).toBeInTheDocument();
+
+    // 普通外链 → 播放窗内「打开外部链接」新窗口锚点。
+    fireEvent.click(screen.getByText("Workspace Ext"));
+    expect(
+      screen.getByText("Workspace Ext · Workspace Project"),
+    ).toBeInTheDocument();
+    const externalLink = screen.getByRole("link", { name: /打开外部链接/ });
+    expect(externalLink).toHaveAttribute(
+      "href",
+      "https://videos.example.com/ws-ext",
+    );
+    expect(externalLink).toHaveAttribute("target", "_blank");
+    expect(screen.queryByTitle("B 站录屏播放")).not.toBeInTheDocument();
+    expect(await screen.findByText("暂无 AI 预审结果")).toBeInTheDocument();
+  });
+
+  it("renders workspace AI pre-review checkpoints with fast-lane badge and failure fallback", async () => {
+    const admissionApplications = buildWorkspaceAdmissionApplications();
+    const fetchMock = buildWorkspaceFetchMock(admissionApplications);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={admissionApplications}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "进入录屏审核" }));
+
+    // 录屏 AI 区：摘要 + scorecard chips（dimensions label 映射）+ 风险红字。
+    expect(
+      await screen.findByText("开场节奏稳定，互动需补证。"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("节奏 82")).toBeInTheDocument();
+    expect(screen.getByText("互动 74")).toBeInTheDocument();
+    expect(screen.getByText(/互动证明不足/)).toBeInTheDocument();
+
+    // AI 预审：快速通道徽标 + 逐卡点 verdict（label 走 rubric 映射，缺省回退 key）。
+    expect(await screen.findByText("快速通道候选")).toBeInTheDocument();
+    expect(screen.getByText("通过")).toBeInTheDocument();
+    expect(screen.getByText("未通过")).toBeInTheDocument();
+    expect(screen.getByText("不适用")).toBeInTheDocument();
+    expect(screen.getByText("内容质量达标")).toBeInTheDocument();
+    expect(screen.getByText("时长达标")).toBeInTheDocument();
+    expect(screen.getByText("stream_clarity")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/admission-review/pre-review?submissionId=sub-priv",
+        expect.objectContaining({ method: "GET" }),
+      ),
+    );
+
+    // 「查看全部」打开完整 AI 分析面板（复用现有弹层）。
+    fireEvent.click(screen.getByRole("button", { name: "查看全部" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "录屏 AI 分析详情",
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
+    expect(
+      screen.queryByRole("dialog", { name: "录屏 AI 分析详情" }),
+    ).not.toBeInTheDocument();
+
+    // 预审拉取失败 → 灰字降级，且无 AI 分析的条目显示「AI 分析未运行」。
+    fireEvent.click(screen.getByText("Workspace Bili"));
+    expect(await screen.findByText("预审结果不可用")).toBeInTheDocument();
+    expect(screen.getByText("AI 分析未运行")).toBeInTheDocument();
+    expect(screen.queryByText("快速通道候选")).not.toBeInTheDocument();
+  });
+
+  it("approves from the workspace and auto-advances to the next pending recording", async () => {
+    const admissionApplications = buildWorkspaceAdmissionApplications();
+    const fetchMock = buildWorkspaceFetchMock(admissionApplications);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={admissionApplications}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "进入录屏审核" }));
+    expect(
+      screen.getByText("Workspace Priv · Workspace Project"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "驳回" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "需修改" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "审核通过" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/app-ws-priv/review",
+        expect.objectContaining({ method: "PATCH" }),
+      ),
+    );
+    const reviewCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/api/applications/app-ws-priv/review" &&
+        init?.method === "PATCH",
+    );
+    expect(JSON.parse(reviewCall[1].body)).toMatchObject({
+      decision: "approved",
+      reasonCodes: [],
+    });
+
+    // 审核成功：提示 + 自动选中下一条待审核，已通过的条目脱离待审核列表。
+    expect(await screen.findByText("录屏已通过")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Workspace Bili · Workspace Project"),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Workspace Priv")).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText("预审结果不可用")).toBeInTheDocument();
+  });
 });
 
 describe("OpsReferenceApp live task smoke", () => {
