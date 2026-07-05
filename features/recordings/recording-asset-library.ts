@@ -96,14 +96,7 @@ async function toRecordingAssetDtoFromRow(
       storagePath: source.storage_path,
       submittedAt: source.submitted_at,
       downloadUrl: source.storage_path
-        ? (
-            await createSignedDownloadUrl({
-              client: supabase,
-              bucket,
-              path: source.storage_path,
-              expiresInSeconds: 3600,
-            })
-          ).signedUrl
+        ? await signDownloadUrlOrNull(supabase, bucket, source.storage_path)
         : null,
     })),
   );
@@ -124,6 +117,30 @@ async function toRecordingAssetDtoFromRow(
     sources,
     aiAnalysis: latestAnalysis(row.recording_ai_analyses),
   });
+}
+
+// 单个对象签名失败只降级该条 downloadUrl（列表其余照常返回），
+// 不再把整个资产列表一起 throw 掉。
+async function signDownloadUrlOrNull(
+  supabase: SupabaseClient,
+  bucket: string,
+  path: string,
+): Promise<string | null> {
+  try {
+    const { signedUrl } = await createSignedDownloadUrl({
+      client: supabase,
+      bucket,
+      path,
+      expiresInSeconds: 3600,
+    });
+    return signedUrl;
+  } catch (error) {
+    console.warn(
+      `Failed to sign recording asset download URL for ${path}`,
+      error,
+    );
+    return null;
+  }
 }
 
 function latestAnalysis(

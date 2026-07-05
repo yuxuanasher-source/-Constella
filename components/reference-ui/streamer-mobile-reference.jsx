@@ -2016,7 +2016,12 @@ function TrialCTA({ task, go }) {
         厂家二审确认是否正式加入。
       </div>
       <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
-        <MButton size="lg" kind="default" style={{ flex: 1 }}>
+        <MButton
+          size="lg"
+          kind="default"
+          style={{ flex: 1 }}
+          onClick={() => go("videos")}
+        >
           查看项目要求
         </MButton>
         <MButton
@@ -2024,6 +2029,7 @@ function TrialCTA({ task, go }) {
           kind="primary"
           style={{ flex: 1 }}
           icon={<Icon.Upload size={15} stroke="#fff" />}
+          onClick={() => go("videos")}
         >
           上传录屏
         </MButton>
@@ -4862,7 +4868,12 @@ function RangeRow({ label, value, tone }) {
 }
 
 // ——— Videos tab ———
-function VideosTab({ recordings, recordingAssets, projectAnnouncements }) {
+function VideosTab({
+  recordings,
+  recordingAssets,
+  projectAnnouncements,
+  onRefreshAssets,
+}) {
   const contextRecordings = useStreamerRecordings();
   const contextRecordingAssets = useStreamerRecordingAssets();
   const recordingRows = Array.isArray(recordings)
@@ -5120,7 +5131,11 @@ function VideosTab({ recordings, recordingAssets, projectAnnouncements }) {
           </MCard>
         ) : (
           recordingAssetRows.map((asset) => (
-            <RecordingAssetCard key={asset.id} asset={asset} />
+            <RecordingAssetCard
+              key={asset.id}
+              asset={asset}
+              onRefreshAssets={onRefreshAssets}
+            />
           ))
         )}
       </MSection>
@@ -5411,8 +5426,13 @@ function ProjectAnnouncementDetail({
   );
 }
 
-function RecordingAssetCard({ asset }) {
+function RecordingAssetCard({ asset, onRefreshAssets }) {
   const source = asset.primarySource || {};
+  // 签名 URL 1 小时过期：播放失败时提示并触发上层重签（GET /api/streamer/recordings）。
+  const [playbackExpired, setPlaybackExpired] = React.useState(false);
+  React.useEffect(() => {
+    setPlaybackExpired(false);
+  }, [source.downloadUrl]);
   const label =
     source.previewMode === "private_file"
       ? "原始文件"
@@ -5499,6 +5519,28 @@ function RecordingAssetCard({ asset }) {
               background: "var(--ink-50)",
             }}
           />
+        ) : null}
+        {source.previewMode === "private_file" && source.downloadUrl ? (
+          <video
+            controls
+            preload="none"
+            src={source.downloadUrl}
+            onError={() => {
+              setPlaybackExpired(true);
+              if (onRefreshAssets) onRefreshAssets();
+            }}
+            style={{
+              width: "100%",
+              aspectRatio: "16 / 9",
+              borderRadius: 10,
+              background: "#000",
+            }}
+          />
+        ) : null}
+        {playbackExpired ? (
+          <div style={{ fontSize: 11, color: "var(--danger-600)" }}>
+            播放地址已过期，已自动刷新，请重试
+          </div>
         ) : null}
         {href ? (
           <a
@@ -6188,7 +6230,8 @@ function StreamerMobileReferenceInner({
           },
         );
         if (body.projectRecording) {
-          await refreshProjectAnnouncements();
+          // 提交项目录屏后同时刷新资产列表，新上传的原始视频立即可见/可播。
+          await Promise.all([refreshProjectAnnouncements(), refreshRecordings()]);
           return body.projectRecording;
         }
         if (body.recording) {
@@ -6299,13 +6342,18 @@ function StreamerMobileReferenceInner({
   }, []);
 
   React.useEffect(() => {
-    if (route === "videos" && recordingRows === null) {
+    // 进入「视频」页即重签一次：SSR 注入的签名 downloadUrl 1 小时过期，
+    // 仅在 recordingRows===null 时拉取会让长驻页面永远拿不到新签名。
+    if (route === "videos") {
       actions
         .refreshRecordings?.()
         .catch((error) =>
           warnStreamerBackgroundRefreshFailure("streamer recordings", error),
         );
     }
+  }, [route, actions]);
+
+  React.useEffect(() => {
     if (route === "videos" && announcementRows === null) {
       actions
         .refreshProjectAnnouncements?.()
@@ -6316,7 +6364,7 @@ function StreamerMobileReferenceInner({
           ),
         );
     }
-  }, [route, recordingRows, announcementRows, actions]);
+  }, [route, announcementRows, actions]);
 
   const visibleTasks = Array.isArray(tasks) ? tasks : MY_TASKS;
   const visibleRecordings = Array.isArray(recordingRows) ? recordingRows : [];
@@ -6390,6 +6438,16 @@ function StreamerMobileReferenceInner({
             recordings={visibleRecordings}
             recordingAssets={visibleRecordingAssets}
             projectAnnouncements={visibleAnnouncements}
+            onRefreshAssets={() =>
+              actions
+                .refreshRecordings?.()
+                .catch((error) =>
+                  warnStreamerBackgroundRefreshFailure(
+                    "streamer recordings",
+                    error,
+                  ),
+                )
+            }
           />
         )}
 
@@ -6411,7 +6469,12 @@ function StreamerMobileReferenceInner({
 }
 
 // Small placeholder for 录屏 tab when accessed independently
-function VideosOnlyPage({ recordings, recordingAssets, projectAnnouncements }) {
+function VideosOnlyPage({
+  recordings,
+  recordingAssets,
+  projectAnnouncements,
+  onRefreshAssets,
+}) {
   return (
     <div style={{ paddingBottom: 96 }}>
       <MAppBar
@@ -6423,6 +6486,7 @@ function VideosOnlyPage({ recordings, recordingAssets, projectAnnouncements }) {
         recordings={recordings}
         recordingAssets={recordingAssets}
         projectAnnouncements={projectAnnouncements}
+        onRefreshAssets={onRefreshAssets}
       />
     </div>
   );

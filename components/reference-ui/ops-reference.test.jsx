@@ -4393,12 +4393,91 @@ describe("OpsReferenceApp admission smoke", () => {
 
     expect(screen.getAllByText("选播准入").length).toBeGreaterThan(0);
     expect(screen.getByText("元梦之星")).toBeInTheDocument();
-    // 明细默认收起，点击「查看录屏」后在项目行下方抽屉式展开。
+    // 明细默认收起，点击「展开明细」后在项目行下方抽屉式展开（原「查看录屏」已让位给真正的录屏观看入口）。
     expect(screen.queryByText("app-ui-1")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "查看录屏" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开明细" }));
     expect(screen.getByText("app-ui-1")).toBeInTheDocument();
     expect(screen.getByText("小鹿")).toBeInTheDocument();
   });
+  it("exposes real recording view and playback entries on the admission board", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[
+          {
+            id: "app-view-ext",
+            status: "pending_recording_review",
+            source: "open_signup",
+            submittedAt: "2026-06-02T10:00:00.000Z",
+            project: { id: "project-1", code: "P2412", name: "元梦之星" },
+            streamer: {
+              id: "streamer-1",
+              displayName: "小鹿",
+              cooperationStatus: "active",
+              riskLevel: "low",
+            },
+            latestRecording: {
+              id: "recording-ext-1",
+              assetId: "asset-ext-1",
+              version: 1,
+              status: "pending_review",
+              durationSeconds: 3660,
+              createdAt: "2026-06-02T10:00:00.000Z",
+              externalUrl: "https://videos.example.com/rec-ext-1",
+              hasPrivateStorage: false,
+            },
+          },
+          {
+            id: "app-view-priv",
+            status: "pending_recording_review",
+            source: "open_signup",
+            submittedAt: "2026-06-02T11:00:00.000Z",
+            project: { id: "project-1", code: "P2412", name: "元梦之星" },
+            streamer: {
+              id: "streamer-2",
+              displayName: "阿汤",
+              cooperationStatus: "active",
+              riskLevel: "low",
+            },
+            latestRecording: {
+              id: "recording-priv-1",
+              assetId: "asset-priv-1",
+              version: 1,
+              status: "pending_review",
+              durationSeconds: 1800,
+              createdAt: "2026-06-02T11:00:00.000Z",
+              externalUrl: null,
+              hasPrivateStorage: true,
+            },
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "展开明细" }));
+
+    const viewLink = screen.getByRole("link", { name: "查看录屏" });
+    expect(viewLink).toHaveAttribute(
+      "href",
+      "https://videos.example.com/rec-ext-1",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "播放录屏" }));
+    const dialog = screen.getByRole("dialog", { name: "播放录屏" });
+    const video = dialog.querySelector("video");
+    expect(video).not.toBeNull();
+    expect(video).toHaveAttribute(
+      "src",
+      "/api/recording-assets/asset-priv-1/download",
+    );
+    expect(within(dialog).getByText("阿汤")).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
+    expect(
+      screen.queryByRole("dialog", { name: "播放录屏" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders the project-first admission board and creates vendor share links", async () => {
     const createObjectURL = vi.fn(() => "blob:admission-recordings");
     const revokeObjectURL = vi.fn();
@@ -4617,7 +4696,7 @@ describe("OpsReferenceApp admission smoke", () => {
     expect(screen.getAllByText("Alpha Project").length).toBeGreaterThan(0);
     expect(await screen.findByText("厂家已选 1")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "查看录屏" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开明细" }));
     expect(await screen.findByText("Streamer Two")).toBeInTheDocument();
     expect(await screen.findByText("Good pacing.")).toBeInTheDocument();
     expect(await screen.findByText("AI：已完成")).toBeInTheDocument();
@@ -4874,7 +4953,7 @@ describe("OpsReferenceApp admission smoke", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "查看录屏" }));
+    fireEvent.click(await screen.findByRole("button", { name: "展开明细" }));
     expect(await screen.findByText("建议补充互动亮点后再通过。")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "查看 AI 详情" }));
@@ -5223,7 +5302,7 @@ describe("OpsReferenceApp admission smoke", () => {
         expect.objectContaining({ method: "GET" }),
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "查看录屏" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开明细" }));
 
     const selectedRow = screen.getByText("Selected Streamer").closest("tr");
     const backupRow = screen.getByText("Backup Streamer").closest("tr");
@@ -5341,7 +5420,7 @@ describe("OpsReferenceApp admission smoke", () => {
       <OpsReferenceApp initialRoute="admission" applicationQueue={rejectQueue} />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "查看录屏" }));
+    fireEvent.click(await screen.findByRole("button", { name: "展开明细" }));
     fireEvent.click(await screen.findByRole("button", { name: "拒绝入项" }));
 
     expect(promptMock).toHaveBeenCalled();
@@ -5436,7 +5515,7 @@ describe("OpsReferenceApp admission smoke", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "查看录屏" }));
+    fireEvent.click(await screen.findByRole("button", { name: "展开明细" }));
     expect(
       await screen.findByRole("button", { name: "二次确认" }),
     ).toBeInTheDocument();

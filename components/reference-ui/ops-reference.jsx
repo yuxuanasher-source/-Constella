@@ -7859,10 +7859,12 @@ function ProjectDetail({ id, go }) {
                   },
                   { title: "日期", render: (r) => r.date || "—" },
                   {
-                    title: "录屏",
+                    // 该列数据本来就是 screenshotCount（下播截图数），
+                    // 旧标签「录屏 X 段」名不副实，只改标签不改数据。
+                    title: "下播截图",
                     align: "right",
                     render: (r) => (
-                      <span className="num">{r.screens ?? 0} 段</span>
+                      <span className="num">{r.screens ?? 0} 张</span>
                     ),
                   },
                   {
@@ -14463,6 +14465,8 @@ function ScreenAdmission() {
   const [busyAction, setBusyAction] = React.useState("");
   const [selectedAiAnalysis, setSelectedAiAnalysis] = React.useState(null);
   const [shareResult, setShareResult] = React.useState(null);
+  // 私有录屏内嵌播放弹层：存 { assetId, streamerName }，null 表示关闭。
+  const [playbackRecording, setPlaybackRecording] = React.useState(null);
 
   const syncAdmissionProjectBoards = async () => {
     if (!actions.refreshAdmissionProjectBoards) {
@@ -14796,32 +14800,85 @@ function ScreenAdmission() {
               },
               {
                 title: "录屏",
-                render: (r) => (
-                  <div>
-                    <Badge tone={r.latestRecording ? "violet" : "amber"}>
-                      {r.latestRecording ? r.latestRecording.status : "待上传"}
-                    </Badge>
-                    <div
-                      className="mono"
-                      style={{
-                        fontSize: 11,
-                        color: "var(--ink-400)",
-                        marginTop: 4,
-                      }}
-                    >
-                      {displayRecordId(r.latestRecording?.id, "暂无录屏")}
-                      {r.latestRecording?.version
-                        ? ` · v${r.latestRecording.version}`
-                        : ""}
+                render: (r) => {
+                  const externalUrl = r.latestRecording?.externalUrl || null;
+                  const canPlayPrivate = Boolean(
+                    r.latestRecording?.hasPrivateStorage &&
+                      r.latestRecording?.assetId,
+                  );
+                  return (
+                    <div>
+                      <Badge tone={r.latestRecording ? "violet" : "amber"}>
+                        {r.latestRecording ? r.latestRecording.status : "待上传"}
+                      </Badge>
+                      <div
+                        className="mono"
+                        style={{
+                          fontSize: 11,
+                          color: "var(--ink-400)",
+                          marginTop: 4,
+                        }}
+                      >
+                        {displayRecordId(r.latestRecording?.id, "暂无录屏")}
+                        {r.latestRecording?.version
+                          ? ` · v${r.latestRecording.version}`
+                          : ""}
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 4,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
+                      >
+                        {externalUrl ? (
+                          <a
+                            href={externalUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 500,
+                              color: "var(--blue-600)",
+                              textDecoration: "none",
+                            }}
+                          >
+                            查看录屏
+                          </a>
+                        ) : null}
+                        {canPlayPrivate ? (
+                          <Button
+                            size="sm"
+                            kind="link"
+                            style={{ height: 22, padding: 0 }}
+                            onClick={() =>
+                              setPlaybackRecording({
+                                assetId: r.latestRecording.assetId,
+                                streamerName: r.streamer?.displayName || "",
+                              })
+                            }
+                          >
+                            播放录屏
+                          </Button>
+                        ) : null}
+                        {!externalUrl && !canPlayPrivate ? (
+                          <span
+                            style={{ fontSize: 12, color: "var(--ink-400)" }}
+                          >
+                            无录屏
+                          </span>
+                        ) : null}
+                      </div>
+                      <RecordingAiAnalysisInline
+                        analysis={r.latestRecording?.aiAnalysis}
+                        onOpen={() =>
+                          setSelectedAiAnalysis(r.latestRecording?.aiAnalysis)
+                        }
+                      />
                     </div>
-                    <RecordingAiAnalysisInline
-                      analysis={r.latestRecording?.aiAnalysis}
-                      onOpen={() =>
-                        setSelectedAiAnalysis(r.latestRecording?.aiAnalysis)
-                      }
-                    />
-                  </div>
-                ),
+                  );
+                },
               },
               {
                 title: "厂家决策",
@@ -15085,7 +15142,7 @@ function ScreenAdmission() {
                     >
                       {expandedProjectId === board.project.id
                         ? "收起明细"
-                        : "查看录屏"}
+                        : "展开明细"}
                     </Button>
                     <Button
                       size="sm"
@@ -15116,6 +15173,12 @@ function ScreenAdmission() {
           <AdmissionShareLinkDialog
             share={shareResult}
             onClose={() => setShareResult(null)}
+          />
+        ) : null}
+        {playbackRecording ? (
+          <RecordingPlaybackDialog
+            recording={playbackRecording}
+            onClose={() => setPlaybackRecording(null)}
           />
         ) : null}
         {selectedAiAnalysis ? (
@@ -15230,6 +15293,96 @@ function AdmissionShareLinkDialog({ share, onClose }) {
               {copied ? "已复制" : "复制链接"}
             </Button>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 私有录屏内嵌播放弹层：video 直接指向签名播放端点（服务端 302 到 1h 签名 URL，
+// video 会自动跟随重定向），外壳与 AdmissionShareLinkDialog 同构。
+function RecordingPlaybackDialog({ recording, onClose }) {
+  const [videoError, setVideoError] = React.useState(false);
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="播放录屏"
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 100,
+        background: "rgba(15,23,42,0.45)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+    >
+      <div
+        onClick={(event) => event.stopPropagation()}
+        style={{
+          width: "min(720px, 100%)",
+          background: "#fff",
+          borderRadius: 12,
+          border: "1px solid var(--line)",
+          boxShadow: "0 24px 70px rgba(15,23,42,0.22)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "14px 18px",
+            borderBottom: "1px solid var(--line)",
+          }}
+        >
+          <div>
+            <div
+              style={{ fontSize: 15, fontWeight: 600, color: "var(--ink-900)" }}
+            >
+              播放录屏
+            </div>
+            {recording.streamerName ? (
+              <div
+                style={{ marginTop: 2, fontSize: 12, color: "var(--ink-500)" }}
+              >
+                {recording.streamerName}
+              </div>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="关闭"
+            style={{
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              color: "var(--ink-400)",
+              fontSize: 18,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <div style={{ padding: 18, display: "grid", gap: 10 }}>
+          <video
+            controls
+            autoPlay
+            style={{ width: "100%", borderRadius: 8, background: "#000" }}
+            src={`/api/recording-assets/${recording.assetId}/download`}
+            onError={() => setVideoError(true)}
+          />
+          {videoError ? (
+            <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+              无法加载视频（签名过期或文件缺失），请重试
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

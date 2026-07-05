@@ -46,6 +46,8 @@ export type RecordingQueueRow = {
   version: number;
   status: RecordingReviewStatus;
   duration_seconds: number | null;
+  external_url?: string | null;
+  storage_path?: string | null;
   created_at: string;
   aiAnalysis?: RecordingAiAnalysisDto | null;
 };
@@ -73,6 +75,8 @@ export type OpsApplicationQueueItem = {
     version: number;
     status: RecordingReviewStatus;
     durationSeconds: number | null;
+    externalUrl: string | null;
+    hasPrivateStorage: boolean;
     createdAt: string;
     aiAnalysis: RecordingAiAnalysisDto | null;
   } | null;
@@ -96,6 +100,8 @@ export type StreamerApplicationCard = {
     version: number;
     status: RecordingReviewStatus;
     durationSeconds: number | null;
+    externalUrl: string | null;
+    hasPrivateStorage: boolean;
     createdAt: string;
     aiAnalysis: RecordingAiAnalysisDto | null;
   } | null;
@@ -234,7 +240,7 @@ async function latestRecordingsByApplication(
   const { data, error } = await supabase
     .from("recording_submissions")
     .select(
-      "id, application_id, asset_id, version, status, duration_seconds, created_at",
+      "id, application_id, asset_id, version, status, duration_seconds, external_url, storage_path, created_at",
     )
     .in("application_id", applicationIds)
     .order("version", { ascending: false });
@@ -303,6 +309,8 @@ function toRecordingDto(recording: RecordingQueueRow | null) {
     version: recording.version,
     status: recording.status,
     durationSeconds: recording.duration_seconds,
+    externalUrl: recording.external_url?.trim() || null,
+    hasPrivateStorage: Boolean(recording.storage_path?.trim()),
     createdAt: recording.created_at,
     aiAnalysis: recording.aiAnalysis ?? null,
   };

@@ -739,6 +739,40 @@ describe("StreamerDesktopReferenceApp recording library", () => {
     expect(screen.queryByText("支持 MP4 / MOV")).not.toBeInTheDocument();
   });
 
+  it("plays private recording assets inline in the desktop library", () => {
+    render(
+      <StreamerDesktopReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[]}
+        recordingAssets={[
+          {
+            id: "asset-desktop-player-1",
+            title: "项目录屏 v2",
+            reviewStatus: "submitted",
+            reviewStatusLabel: "待审核",
+            primarySource: {
+              previewMode: "private_file",
+              downloadUrl: "https://download.local/desktop-player.mp4",
+              openUrl: null,
+              embedUrl: null,
+              provider: "private_storage",
+            },
+            aiAnalysis: null,
+          },
+        ]}
+      />,
+    );
+
+    const video = document.querySelector("video");
+    expect(video).not.toBeNull();
+    expect(video).toHaveAttribute(
+      "src",
+      "https://download.local/desktop-player.mp4",
+    );
+    expect(screen.getByText("下载原始文件")).toBeInTheDocument();
+  });
+
   it("renders unified recording asset previews on desktop", () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
