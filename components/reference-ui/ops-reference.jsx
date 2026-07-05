@@ -8495,7 +8495,8 @@ function ProjectSettingsSection({ title, desc, extra, first = false, children })
         border: "1px solid var(--line)",
         borderRadius: 10,
         background: "#fff",
-        overflow: "hidden",
+        // 不能用 overflow: hidden 收圆角——会裁掉状态下拉这类
+        // 绝对定位的弹出面板；圆角由头带自己的 radius 保证。
       }}
     >
       <div
@@ -8507,6 +8508,8 @@ function ProjectSettingsSection({ title, desc, extra, first = false, children })
           padding: "11px 14px",
           background: "var(--bg-soft)",
           borderBottom: "1px solid var(--line)",
+          borderTopLeftRadius: 9,
+          borderTopRightRadius: 9,
         }}
       >
         <div style={{ minWidth: 0 }}>
