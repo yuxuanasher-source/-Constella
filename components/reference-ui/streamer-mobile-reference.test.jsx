@@ -1104,6 +1104,67 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
     expect(screen.queryByLabelText("录屏文件")).not.toBeInTheDocument();
   });
 
+  it("plays private recording assets inline and keeps the download link", () => {
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[]}
+        recordingAssets={[
+          {
+            id: "asset-mobile-player-1",
+            title: "项目录屏 v2",
+            reviewStatus: "submitted",
+            reviewStatusLabel: "待审核",
+            primarySource: {
+              previewMode: "private_file",
+              downloadUrl: "https://download.local/player-demo.mp4",
+              openUrl: null,
+              embedUrl: null,
+              provider: "private_storage",
+            },
+            aiAnalysis: null,
+          },
+        ]}
+      />,
+    );
+
+    const video = document.querySelector("video");
+    expect(video).not.toBeNull();
+    expect(video).toHaveAttribute(
+      "src",
+      "https://download.local/player-demo.mp4",
+    );
+    expect(screen.getByText("下载原始文件")).toBeInTheDocument();
+  });
+
+  it("routes the trial task CTA buttons to the recordings tab", () => {
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="task"
+        recordings={[]}
+        projectAnnouncements={[]}
+        liveTasks={[
+          {
+            id: "mobile-task-trial-1",
+            project: "P-TRIAL",
+            projectName: "Trial Quest",
+            vendor: "Vendor T",
+            date: "今天",
+            dateStr: "06-07 周日",
+            start: "20:00",
+            end: "22:00",
+            durationPlan: 2,
+            status: "trial",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "上传录屏" }));
+    expect(screen.getByText("录屏资产")).toBeInTheDocument();
+  });
+
   it("renders unified recording asset previews in the mobile recording library", () => {
     render(
       <StreamerMobileReferenceApp
@@ -1248,15 +1309,19 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
         screen.getByText("https://videos.example.com/game-beta"),
       ).toBeInTheDocument();
     });
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
+    // 进入「视频」页会先发一次 GET /api/streamer/recordings 重签请求，
+    // 所以按调用内容而非调用次序断言 POST。
+    expect(fetchMock).toHaveBeenCalledWith(
       "/api/streamer/recordings",
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json" },
       }),
     );
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+    const postCall = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "POST",
+    );
+    expect(JSON.parse(postCall[1].body)).toEqual({
       product: "Game Beta",
       category: "SLG",
       link: "https://videos.example.com/game-beta",

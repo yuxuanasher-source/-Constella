@@ -73,6 +73,8 @@ describe("application query DTO mappers", () => {
         version: 2,
         status: "submitted",
         durationSeconds: 3600,
+        externalUrl: null,
+        hasPrivateStorage: false,
         createdAt: "2026-06-02T01:10:00.000Z",
         aiAnalysis: expect.objectContaining({
           id: "analysis-1",

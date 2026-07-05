@@ -3104,7 +3104,7 @@ function TaskDetail({ id, go, tasks = MY_TASKS, actions = {} }) {
             <RejectedReportCTA task={t} go={go} actions={actions} />
           )}
           {t.status === "pending_review" && <ReviewingCTA task={t} />}
-          {t.status === "trial" && <TrialCTA task={t} />}
+          {t.status === "trial" && <TrialCTA task={t} go={go} />}
         </div>
 
         {/* Required */}
@@ -3709,7 +3709,7 @@ function ReviewingCTA({ task }) {
   );
 }
 
-function TrialCTA({ task }) {
+function TrialCTA({ task, go }) {
   return (
     <div
       style={{
@@ -3739,13 +3739,18 @@ function TrialCTA({ task }) {
         分钟以上录屏，运营与厂家二审后将决定是否正式加入项目。
       </div>
       <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-        <Button kind="default" style={{ flex: 1 }}>
+        <Button
+          kind="default"
+          style={{ flex: 1 }}
+          onClick={() => go && go("videos")}
+        >
           查看项目要求
         </Button>
         <Button
           kind="primary"
           icon={<Icon.Upload size={13} stroke="#fff" />}
           style={{ flex: 1 }}
+          onClick={() => go && go("videos")}
         >
           上传录屏
         </Button>
@@ -4074,7 +4079,14 @@ function ScreenVideos({
         }}
       >
         <Card padded={false}>
-          <RecordingAssetPanel assets={assetRows} />
+          <RecordingAssetPanel
+            assets={assetRows}
+            onRefreshAssets={() =>
+              actions.refreshRecordings?.().catch((error) => {
+                console.warn("refresh streamer recordings failed", error);
+              })
+            }
+          />
           <div
             style={{ padding: "0 12px", borderBottom: "1px solid var(--line)" }}
           >
@@ -4473,7 +4485,7 @@ function DesktopProjectAnnouncementDetail({
   );
 }
 
-function RecordingAssetPanel({ assets }) {
+function RecordingAssetPanel({ assets, onRefreshAssets }) {
   return (
     <div style={{ padding: 16, borderBottom: "1px solid var(--line)" }}>
       <SectionTitle
@@ -4496,7 +4508,11 @@ function RecordingAssetPanel({ assets }) {
           }}
         >
           {assets.map((asset) => (
-            <RecordingAssetCard key={asset.id} asset={asset} />
+            <RecordingAssetCard
+              key={asset.id}
+              asset={asset}
+              onRefreshAssets={onRefreshAssets}
+            />
           ))}
         </div>
       )}
@@ -4504,8 +4520,13 @@ function RecordingAssetPanel({ assets }) {
   );
 }
 
-function RecordingAssetCard({ asset }) {
+function RecordingAssetCard({ asset, onRefreshAssets }) {
   const source = asset.primarySource || {};
+  // 签名 URL 1 小时过期：播放失败时提示并触发上层重签。
+  const [playbackExpired, setPlaybackExpired] = React.useState(false);
+  React.useEffect(() => {
+    setPlaybackExpired(false);
+  }, [source.downloadUrl]);
   const label =
     source.previewMode === "private_file"
       ? "原始文件"
@@ -4592,6 +4613,28 @@ function RecordingAssetCard({ asset }) {
             background: "var(--ink-50)",
           }}
         />
+      ) : null}
+      {source.previewMode === "private_file" && source.downloadUrl ? (
+        <video
+          controls
+          preload="none"
+          src={source.downloadUrl}
+          onError={() => {
+            setPlaybackExpired(true);
+            if (onRefreshAssets) onRefreshAssets();
+          }}
+          style={{
+            width: "100%",
+            aspectRatio: "16 / 9",
+            borderRadius: 8,
+            background: "#000",
+          }}
+        />
+      ) : null}
+      {playbackExpired ? (
+        <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+          播放地址已过期，已自动刷新，请重试
+        </div>
       ) : null}
       {href ? (
         <a
