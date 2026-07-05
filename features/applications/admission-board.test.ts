@@ -93,10 +93,39 @@ const applications = [
   },
 ];
 
+const rec2AiAnalysis = {
+  id: "analysis-rec-2",
+  assetId: "asset-rec-2",
+  status: "succeeded" as const,
+  statusLabel: "分析完成",
+  providerName: "mock-provider",
+  summary: "Stable pacing with clear gameplay demo.",
+  scorecard: { rhythm: 4, script: 3 },
+  dimensions: [
+    {
+      key: "rhythm" as const,
+      label: "节奏",
+      score: 4,
+      finding: "Good pacing overall.",
+    },
+  ],
+  riskFlags: ["mentions competitor product"],
+  recommendations: [],
+  segments: [],
+  transcriptText: null,
+  asrProvider: null,
+  errorSummary: null,
+  aiInvocationId: null,
+  createdAt: "2026-06-07T02:20:00.000Z",
+  updatedAt: "2026-06-07T02:20:00.000Z",
+  completedAt: "2026-06-07T02:20:00.000Z",
+};
+
 const recordings = [
   {
     id: "rec-1-old",
     application_id: "app-1",
+    asset_id: null,
     version: 1,
     status: "submitted" as const,
     duration_seconds: 1800,
@@ -108,6 +137,7 @@ const recordings = [
   {
     id: "rec-1",
     application_id: "app-1",
+    asset_id: null,
     version: 2,
     status: "reviewing" as const,
     duration_seconds: 3600,
@@ -119,6 +149,7 @@ const recordings = [
   {
     id: "rec-2",
     application_id: "app-2",
+    asset_id: "asset-rec-2",
     version: 1,
     status: "approved" as const,
     duration_seconds: 4200,
@@ -126,10 +157,12 @@ const recordings = [
     storage_path: "private/org/project/rec-2.mp4",
     submitted_at: "2026-06-07T02:10:00.000Z",
     created_at: "2026-06-07T02:10:00.000Z",
+    aiAnalysis: rec2AiAnalysis,
   },
   {
     id: "rec-3",
     application_id: "app-3",
+    asset_id: null,
     version: 1,
     status: "needs_changes" as const,
     duration_seconds: 1200,
@@ -226,16 +259,20 @@ describe("admission project board DTO", () => {
     expect(details[0].latestRecording).toEqual(
       expect.objectContaining({
         id: "rec-1",
+        assetId: null,
         version: 2,
         url: "https://video.example/latest",
+        aiAnalysis: null,
       }),
     );
     expect(details[1].latestRecording).toEqual(
       expect.objectContaining({
         id: "rec-2",
+        assetId: "asset-rec-2",
         version: 1,
         url: null,
         hasPrivateStorage: true,
+        aiAnalysis: rec2AiAnalysis,
       }),
     );
     expect(details[1].vendorReview).toEqual(
