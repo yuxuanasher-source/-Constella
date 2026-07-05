@@ -8285,24 +8285,24 @@ function ProjectDetail({ id, go }) {
         )}
 
         {detailTab === "settings" && !isPartnerCollaboration && (
-          <Card
-            title="项目设置"
-            extra={
-              <Badge tone="blue" dot>
-                后端实时保存
-              </Badge>
-            }
-            padded={true}
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "flex-start",
+              gap: 20,
+            }}
           >
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                alignItems: "flex-start",
-                gap: 28,
-              }}
-            >
-              <div style={{ flex: "2 1 520px", minWidth: 0 }}>
+            <div style={{ flex: "2 1 520px", minWidth: 0 }}>
+              <Card
+                title="项目设置"
+                extra={
+                  <Badge tone="blue" dot>
+                    后端实时保存
+                  </Badge>
+                }
+                padded={true}
+              >
                 <ProjectSettingsPanel
                   draft={settingsDraft}
                   baseStatus={p.status}
@@ -8318,29 +8318,29 @@ function ProjectDetail({ id, go }) {
                     setSettingsDraft(projectSettingsInitialDraft(p));
                   }}
                 />
-              </div>
-              <div style={{ flex: "1 1 340px", minWidth: 0 }}>
-                <ProjectCollaborationPanel
-                  project={p}
-                  draft={collaborationDraft}
-                  message={collaborationMessage}
-                  error={collaborationError}
-                  submitting={collaborationSubmitting}
-                  shareUrl={collaborationShareUrl}
-                  applications={collaborationApplications}
-                  onChange={handleCollaborationChange}
-                  onSave={handleSaveProjectCollaboration}
-                  onCreateShare={handleCreateProjectCollaborationShare}
-                  onRefreshApplications={
-                    handleRefreshProjectCollaborationApplications
-                  }
-                  onReviewApplication={
-                    handleReviewProjectCollaborationApplication
-                  }
-                />
-              </div>
+              </Card>
             </div>
-          </Card>
+            <div style={{ flex: "1 1 340px", minWidth: 0 }}>
+              <ProjectCollaborationPanel
+                project={p}
+                draft={collaborationDraft}
+                message={collaborationMessage}
+                error={collaborationError}
+                submitting={collaborationSubmitting}
+                shareUrl={collaborationShareUrl}
+                applications={collaborationApplications}
+                onChange={handleCollaborationChange}
+                onSave={handleSaveProjectCollaboration}
+                onCreateShare={handleCreateProjectCollaborationShare}
+                onRefreshApplications={
+                  handleRefreshProjectCollaborationApplications
+                }
+                onReviewApplication={
+                  handleReviewProjectCollaborationApplication
+                }
+              />
+            </div>
+          </div>
         )}
       </div>
     </>
@@ -8477,64 +8477,53 @@ function ProjectSettingsField({ label, children }) {
         color: "var(--ink-500)",
       }}
     >
-      <span>{label}</span>
+      <span style={{ fontWeight: 500 }}>{label}</span>
       {children}
     </label>
   );
 }
 
-// One consistent section shell for the project-settings surface: a title +
-// optional hint, separated from the previous section by a hairline. Keeps every
-// group (status, basics, rules, collaboration) on the same visual rhythm.
+// One consistent section shell for the project-settings surface: a bordered
+// sub-card with a soft header band (title + optional hint) and a padded body —
+// the same vocabulary as Card / CollapsibleSection elsewhere in the product.
+// Keeps every group (status, basics, rules, visibility) on one visual rhythm.
 function ProjectSettingsSection({ title, desc, extra, first = false, children }) {
+  void first; // kept for call-site compatibility; sections now self-delimit
   return (
     <section
       style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 12,
-        paddingTop: first ? 0 : 18,
-        marginTop: first ? 0 : 18,
-        borderTop: first ? "none" : "1px solid var(--line)",
+        border: "1px solid var(--line)",
+        borderRadius: 10,
+        background: "#fff",
+        overflow: "hidden",
       }}
     >
       <div
         style={{
           display: "flex",
-          alignItems: "baseline",
+          alignItems: "flex-start",
           justifyContent: "space-between",
           gap: 12,
+          padding: "11px 14px",
+          background: "var(--bg-soft)",
+          borderBottom: "1px solid var(--line)",
         }}
       >
-        <div>
+        <div style={{ minWidth: 0 }}>
           <div
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
               fontSize: 13,
-              fontWeight: 700,
+              fontWeight: 600,
               color: "var(--ink-900)",
               letterSpacing: "-0.005em",
             }}
           >
-            <span
-              aria-hidden="true"
-              style={{
-                width: 3,
-                height: 13,
-                borderRadius: 999,
-                background: "var(--blue-500)",
-                flex: "0 0 auto",
-              }}
-            />
             {title}
           </div>
           {desc ? (
             <div
               style={{
-                marginTop: 4,
-                marginLeft: 11,
+                marginTop: 2,
                 fontSize: 12,
                 color: "var(--ink-500)",
                 lineHeight: 1.5,
@@ -8546,7 +8535,16 @@ function ProjectSettingsSection({ title, desc, extra, first = false, children })
         </div>
         {extra}
       </div>
-      {children}
+      <div
+        style={{
+          padding: 14,
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}
+      >
+        {children}
+      </div>
     </section>
   );
 }
@@ -8933,85 +8931,85 @@ function ProjectCollaborationPanel({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column" }}>
+    <Card
+      title="外部 MCN 协作"
+      extra={
+        <Badge tone={persisted ? "green" : enabled ? "blue" : "neutral"} dot>
+          {persisted ? "已开启" : enabled ? "待保存" : "未开启"}
+        </Badge>
+      }
+      padded={true}
+      bodyStyle={{ display: "flex", flexDirection: "column", gap: 14 }}
+    >
       <form
         onSubmit={onSave}
         style={{ display: "flex", flexDirection: "column", gap: 14 }}
       >
-        <ProjectSettingsSection
-          first
-          title="外部 MCN 协作"
-          desc="开启后，其他 MCN 可通过邀请链接加入本项目；项目方保留项目设置与审核权限。"
-          extra={
-            <Badge
-              tone={persisted ? "green" : enabled ? "blue" : "neutral"}
-              dot
-            >
-              {persisted ? "已开启" : enabled ? "待保存" : "未开启"}
-            </Badge>
-          }
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--ink-500)",
+            lineHeight: 1.6,
+          }}
         >
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 10,
-              alignItems: "center",
-            }}
-          >
-            <ProjectSettingsCheck
-              label="开放外部 MCN 协作"
-              checked={enabled}
-              onChange={(checked) => onChange("enabled", checked)}
-            />
-            <Button
-              kind="default"
-              icon={<Icon.Plus size={14} />}
-              onClick={onCreateShare}
-              disabled={isBusy}
-            >
-              {submitting === "share" ? "生成中" : "生成协作链接"}
-            </Button>
-            <Button
-              kind="default"
-              icon={<Icon.Search size={14} />}
-              onClick={onRefreshApplications}
-              disabled={isBusy}
-            >
-              {submitting === "applications" ? "刷新中" : "刷新申请"}
-            </Button>
-          </div>
+          开启后，其他 MCN 可通过邀请链接加入本项目；项目方保留项目设置与审核权限。
+        </div>
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-              gap: 12,
-              alignItems: "start",
-            }}
+        <ProjectSettingsCheck
+          label="开放外部 MCN 协作"
+          desc="开启并保存后，外部 MCN 可通过协作链接提交申请"
+          checked={enabled}
+          onChange={(checked) => onChange("enabled", checked)}
+        />
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+            gap: 12,
+            alignItems: "start",
+          }}
+        >
+          <ProjectSettingsField label="协作摘要">
+            <textarea
+              className="psf-control"
+              value={draft.summary}
+              onChange={(event) => onChange("summary", event.target.value)}
+              rows={3}
+              placeholder="给外部 MCN 看的项目亮点、主播要求和交付口径"
+              style={{ minHeight: 84 }}
+            />
+          </ProjectSettingsField>
+          <ProjectSettingsField label="分成建议">
+            <input
+              className="psf-control"
+              value={draft.revenueShareHint}
+              onChange={(event) =>
+                onChange("revenueShareHint", event.target.value)
+              }
+              placeholder="例如 8-12%"
+            />
+          </ProjectSettingsField>
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          <Button
+            kind="default"
+            icon={<Icon.Plus size={14} />}
+            onClick={onCreateShare}
+            disabled={isBusy}
           >
-            <ProjectSettingsField label="协作摘要">
-              <textarea
-                className="psf-control"
-                value={draft.summary}
-                onChange={(event) => onChange("summary", event.target.value)}
-                rows={3}
-                placeholder="给外部 MCN 看的项目亮点、主播要求和交付口径"
-                style={{ minHeight: 84 }}
-              />
-            </ProjectSettingsField>
-            <ProjectSettingsField label="分成建议">
-              <input
-                className="psf-control"
-                value={draft.revenueShareHint}
-                onChange={(event) =>
-                  onChange("revenueShareHint", event.target.value)
-                }
-                placeholder="例如 8-12%"
-              />
-            </ProjectSettingsField>
-          </div>
-        </ProjectSettingsSection>
+            {submitting === "share" ? "生成中" : "生成协作链接"}
+          </Button>
+          <Button
+            kind="default"
+            icon={<Icon.Search size={14} />}
+            onClick={onRefreshApplications}
+            disabled={isBusy}
+          >
+            {submitting === "applications" ? "刷新中" : "刷新申请"}
+          </Button>
+        </div>
 
         <div
           style={{
@@ -9020,6 +9018,8 @@ function ProjectCollaborationPanel({
             justifyContent: "flex-end",
             gap: 10,
             flexWrap: "wrap",
+            paddingTop: 12,
+            borderTop: "1px solid var(--line)",
           }}
         >
           <div
@@ -9041,10 +9041,9 @@ function ProjectCollaborationPanel({
       {shareUrl ? (
         <div
           style={{
-            marginTop: 14,
             border: "1px solid var(--line)",
             borderRadius: 8,
-            background: "#FAFBFD",
+            background: "var(--bg-soft)",
             padding: 12,
             display: "grid",
             gridTemplateColumns: "minmax(0, 1fr) auto",
@@ -9106,7 +9105,6 @@ function ProjectCollaborationPanel({
 
       <div
         style={{
-          marginTop: 14,
           display: "flex",
           flexDirection: "column",
           gap: 8,
@@ -9305,16 +9303,52 @@ function ProjectCollaborationPanel({
         ) : (
           <div
             style={{
-              padding: "12px 0 0",
-              fontSize: 12,
-              color: "var(--ink-400)",
+              border: "1px dashed var(--line-strong)",
+              borderRadius: 10,
+              padding: "24px 16px",
+              textAlign: "center",
+              background: "var(--bg-soft)",
             }}
           >
-            暂无外部 MCN 申请
+            <div
+              aria-hidden="true"
+              style={{
+                width: 40,
+                height: 40,
+                borderRadius: 10,
+                background: "var(--ink-50)",
+                color: "var(--ink-400)",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                marginBottom: 10,
+              }}
+            >
+              <Icon.Streamer size={18} />
+            </div>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--ink-700)",
+              }}
+            >
+              暂无外部 MCN 申请
+            </div>
+            <div
+              style={{
+                marginTop: 4,
+                fontSize: 12,
+                color: "var(--ink-400)",
+                lineHeight: 1.5,
+              }}
+            >
+              生成协作链接并分享后，外部 MCN 的申请会展示在这里。
+            </div>
           </div>
         )}
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -9432,7 +9466,7 @@ function ProjectSettingsPanel({
   return (
     <form
       onSubmit={onSubmit}
-      style={{ display: "flex", flexDirection: "column" }}
+      style={{ display: "flex", flexDirection: "column", gap: 16 }}
     >
       <style>
         {`
@@ -9482,17 +9516,43 @@ function ProjectSettingsPanel({
         title="状态设置"
         desc="状态保存后同步刷新项目列表与详情"
       >
-        <div style={{ maxWidth: 360 }}>
+        <div
+          style={{
+            maxWidth: 380,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
           <ProjectSettingsField label="项目状态">
             <ProjectSettingsStatusPicker
               value={draft.status}
               fromStatus={baseStatus}
               onChange={(value) => onChange("status", value)}
             />
-            <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
-              当前可流转：{projectStatusNextLabels(baseStatus)}
-            </span>
           </ProjectSettingsField>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+              padding: "7px 10px",
+              borderRadius: 8,
+              border: "1px solid var(--blue-100)",
+              background: "var(--blue-50)",
+              fontSize: 12,
+              lineHeight: 1.5,
+              color: "var(--blue-800)",
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{ display: "inline-flex", flex: "0 0 auto", marginTop: 2 }}
+            >
+              <Icon.History size={13} stroke="var(--blue-600)" />
+            </span>
+            <span>当前可流转：{projectStatusNextLabels(baseStatus)}</span>
+          </div>
         </div>
       </ProjectSettingsSection>
 
@@ -9500,8 +9560,8 @@ function ProjectSettingsPanel({
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-            gap: 12,
+            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+            gap: "14px 12px",
             alignItems: "end",
           }}
         >
@@ -9588,24 +9648,34 @@ function ProjectSettingsPanel({
         title="报名与录制"
         desc="控制主播报名、定向邀约与开播录制要求"
       >
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))",
+            gap: 10,
+          }}
+        >
           <ProjectSettingsCheck
             label="开放报名"
+            desc="开启后主播可自主报名参与该项目"
             checked={draft.openSignup}
             onChange={(checked) => onChange("openSignup", checked)}
           />
           <ProjectSettingsCheck
             label="允许定向邀约"
+            desc="运营可向指定主播发送定向邀约"
             checked={draft.allowDirectInvite}
             onChange={(checked) => onChange("allowDirectInvite", checked)}
           />
           <ProjectSettingsCheck
             label="强制录屏"
+            desc="开播需录屏，作为审核与结算证据"
             checked={draft.forceRecording}
             onChange={(checked) => onChange("forceRecording", checked)}
           />
           <ProjectSettingsCheck
             label="主播需点击开播/停止"
+            desc="以主播端打点时间作为时长口径"
             checked={draft.forceSystemTiming}
             onChange={(checked) => onChange("forceSystemTiming", checked)}
           />
@@ -9616,15 +9686,19 @@ function ProjectSettingsPanel({
         title="组织内公开"
         desc="公开后组织内主播可在主播端看到该项目公告与下载链接"
       >
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-          <ProjectSettingsCheck
-            label="公开给组织内主播"
-            checked={draft.isPublicToStreamers}
-            onChange={(checked) => onChange("isPublicToStreamers", checked)}
-          />
-        </div>
+        <ProjectSettingsCheck
+          label="公开给组织内主播"
+          desc="公开后主播端展示项目公告与游戏下载链接"
+          checked={draft.isPublicToStreamers}
+          onChange={(checked) => onChange("isPublicToStreamers", checked)}
+        />
         <div
           style={{
+            marginLeft: 10,
+            paddingLeft: 14,
+            borderLeft: `2px solid ${
+              draft.isPublicToStreamers ? "var(--blue-200)" : "var(--line)"
+            }`,
             display: "grid",
             gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
             gap: 12,
@@ -9655,23 +9729,29 @@ function ProjectSettingsPanel({
         </div>
       </ProjectSettingsSection>
 
-      {error ? (
-        <div
-          style={{ marginTop: 14, fontSize: 12, color: "var(--danger-600)" }}
-        >
-          {error}
-        </div>
-      ) : null}
-
       <div
         style={{
-          marginTop: 18,
+          paddingTop: 14,
+          borderTop: "1px solid var(--line)",
           display: "flex",
+          alignItems: "center",
           justifyContent: "flex-end",
           gap: 8,
+          flexWrap: "wrap",
         }}
       >
-        <Button kind="ghost" onClick={onCancel} disabled={submitting}>
+        {error ? (
+          <div
+            style={{
+              marginRight: "auto",
+              fontSize: 12,
+              color: "var(--danger-600)",
+            }}
+          >
+            {error}
+          </div>
+        ) : null}
+        <Button kind="default" onClick={onCancel} disabled={submitting}>
           取消
         </Button>
         <Button kind="primary" type="submit" disabled={submitting}>
@@ -9682,31 +9762,59 @@ function ProjectSettingsPanel({
   );
 }
 
-function ProjectSettingsCheck({ label, checked, onChange }) {
+// Row-style toggle switch: label (+ optional one-line hint) on the left, a
+// switch track on the right. Keeps a real checkbox input (role="switch",
+// aria-label) so keyboard/AT behaviour and getByLabelText lookups still work.
+function ProjectSettingsCheck({ label, desc, checked, onChange }) {
   return (
     <label
       style={{
-        height: 34,
-        border: `1px solid ${checked ? "var(--blue-300)" : "var(--line-strong)"}`,
-        borderRadius: 6,
-        padding: "0 12px",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        fontSize: 13,
-        fontWeight: 500,
-        color: checked ? "var(--blue-700)" : "var(--ink-700)",
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "9px 12px",
+        border: `1px solid ${checked ? "var(--blue-200)" : "var(--line)"}`,
+        borderRadius: 8,
         background: checked
           ? "linear-gradient(180deg, #fff 0%, #eef3ff 100%)"
-          : "linear-gradient(180deg, #fff 0%, #f8faff 100%)",
+          : "#fff",
         boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.8)",
         cursor: "pointer",
         userSelect: "none",
         transition: "border-color 120ms ease, background 120ms ease",
       }}
     >
+      <span style={{ minWidth: 0 }}>
+        <span
+          style={{
+            display: "block",
+            fontSize: 13,
+            fontWeight: 600,
+            lineHeight: "20px",
+            color: checked ? "var(--blue-700)" : "var(--ink-700)",
+          }}
+        >
+          {label}
+        </span>
+        {desc ? (
+          <span
+            style={{
+              display: "block",
+              marginTop: 2,
+              fontSize: 12,
+              lineHeight: 1.5,
+              color: "var(--ink-400)",
+            }}
+          >
+            {desc}
+          </span>
+        ) : null}
+      </span>
       <input
         type="checkbox"
+        role="switch"
+        aria-label={label}
         checked={checked}
         onChange={(event) => onChange(event.target.checked)}
         style={{
@@ -9720,24 +9828,31 @@ function ProjectSettingsCheck({ label, checked, onChange }) {
       <span
         aria-hidden="true"
         style={{
-          width: 16,
-          height: 16,
+          position: "relative",
           flex: "0 0 auto",
-          borderRadius: 5,
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          border: `1px solid ${checked ? "var(--blue-600)" : "var(--line-strong)"}`,
-          background: checked ? "var(--blue-600)" : "#fff",
-          boxShadow: checked
-            ? "0 1px 2px rgba(30, 80, 200, 0.35)"
-            : "inset 0 1px 0 rgba(255, 255, 255, 0.8)",
-          transition: "all 120ms ease",
+          width: 34,
+          height: 20,
+          borderRadius: 999,
+          background: checked ? "var(--blue-600)" : "var(--ink-200)",
+          boxShadow: "inset 0 1px 2px rgba(15, 23, 42, 0.12)",
+          transition: "background 120ms ease",
         }}
       >
-        {checked ? <Icon.Check size={11} stroke="#fff" /> : null}
+        <span
+          style={{
+            position: "absolute",
+            top: 2,
+            left: 2,
+            width: 16,
+            height: 16,
+            borderRadius: 999,
+            background: "#fff",
+            boxShadow: "0 1px 2px rgba(15, 23, 42, 0.25)",
+            transform: checked ? "translateX(14px)" : "translateX(0)",
+            transition: "transform 140ms ease",
+          }}
+        />
       </span>
-      {label}
     </label>
   );
 }
