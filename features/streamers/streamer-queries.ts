@@ -98,6 +98,7 @@ export type StreamerProjectMetricRow = {
 
 export async function listStreamerPool(
   supabase: SupabaseClient | null,
+  organizationId: string,
 ): Promise<StreamerListRow[]> {
   if (!supabase) {
     return [];
@@ -108,7 +109,27 @@ export async function listStreamerPool(
     .select(
       "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
     )
-    .order("created_at", { ascending: false });
+    // 组织过滤放在查询层（RLS 仍作为第二道防线）。
+    .eq("organization_id", organizationId)
+    // 嵌套关联收敛：DTO 的指标窗口是「近 90 天」，按 created_at 倒序取
+    // 最近 N 行足以覆盖常规体量；project_streamers 行数天然有限，保留。
+    .order("created_at", {
+      referencedTable: "recording_submissions",
+      ascending: false,
+    })
+    .limit(50, { referencedTable: "recording_submissions" })
+    .order("created_at", {
+      referencedTable: "streamer_profile_insights",
+      ascending: false,
+    })
+    .limit(20, { referencedTable: "streamer_profile_insights" })
+    .order("created_at", { referencedTable: "live_tasks", ascending: false })
+    .limit(200, { referencedTable: "live_tasks" })
+    .order("created_at", { referencedTable: "live_reports", ascending: false })
+    .limit(200, { referencedTable: "live_reports" })
+    .order("created_at", { ascending: false })
+    // 防线：主播池列表限最新 200 条，避免数据增长后单次请求拖全表。
+    .limit(200);
 
   if (error) {
     throw error;

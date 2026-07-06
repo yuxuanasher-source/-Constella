@@ -1,7 +1,6 @@
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
 import type { AuthContext } from "@/lib/auth/context";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { listOpsApplicationQueue } from "@/features/applications/application-queries";
 import {
   listAuditCenterEntries,
   type AuditQueryClient,
@@ -56,7 +55,6 @@ export default async function StubPage({
     liveSettlementPool,
     settlementScope,
     streamerCards,
-    applicationQueue,
     auditEntries,
     notificationItems,
     billingStatus,
@@ -76,7 +74,6 @@ export default async function StubPage({
       liveSettlementPool={liveSettlementPool}
       settlementScope={settlementScope}
       streamerCards={streamerCards}
-      applicationQueue={applicationQueue}
       auditEntries={auditEntries}
       notificationItems={notificationItems}
       billingStatus={billingStatus}
@@ -91,13 +88,15 @@ async function loadLiveReferenceData(
   auth: AuthContext,
 ) {
   if (module === "m2") {
-    const streamers = await listStreamerPool(supabase);
+    const streamers = await listStreamerPool(supabase, auth.organizationId);
     return { streamerCards: toStreamerCardDtos(streamers) };
   }
 
   if (module === "m3") {
-    const applications = await listOpsApplicationQueue(supabase);
-    return { applicationQueue: applications };
+    // B6：选播准入不再在 SSR 预取报名队列（listOpsApplicationQueue 是全组织
+    // 深联查）。ScreenAdmission 挂载后会并行拉 /api/applications 与
+    // /api/applications/admission-board，首屏 TTFB 不再被这条查询拖住。
+    return {};
   }
 
   if (module === "m4") {

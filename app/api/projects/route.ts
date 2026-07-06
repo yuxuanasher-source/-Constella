@@ -21,7 +21,9 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const projects = await listProjects(supabase);
+    const projects = await listProjects(supabase, {
+      organizationId: auth.organizationId,
+    });
     return NextResponse.json({ projects: toProjectCardDtos(projects) });
   } catch (error) {
     return jsonServiceError(error);

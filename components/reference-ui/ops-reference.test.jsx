@@ -6979,7 +6979,7 @@ describe("OpsReferenceApp live task smoke", () => {
       ).toBeInTheDocument();
 
       act(() => {
-        vi.advanceTimersByTime(15000);
+        vi.advanceTimersByTime(60000);
       });
       vi.useRealTimers();
 
@@ -7368,6 +7368,87 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(screen.getAllByText("已作废").length).toBeGreaterThan(0);
   });
 
+  it("lazily loads batch details when a live batch has none preloaded", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/settlement-batches/batch-lazy-1") {
+        return {
+          ok: true,
+          json: async () => ({
+            batch: {
+              id: "batch-lazy-1",
+              projectId: "project-real",
+              batchType: "payable",
+              status: "generated",
+              projectName: "Real Project",
+              periodStart: "2026-06-01",
+              periodEnd: "2026-06-30",
+              computedAmount: 320,
+              manualAmount: 0,
+              adjustmentAmount: 0,
+              totalAmount: 320,
+              itemCount: 1,
+              createdBy: "Finance",
+              updatedAt: "2026-06-03T10:00:00.000Z",
+            },
+            items: [
+              {
+                id: "item-lazy-1",
+                batchId: "batch-lazy-1",
+                itemType: "live_report",
+                streamerName: "懒加载主播",
+                settlementDuration: 120,
+                timeSource: "system",
+                evidenceLevel: "green",
+                systemAmount: 320,
+                manualAmount: 0,
+                adjustmentAmount: 0,
+                totalAmount: 320,
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // 模拟项目页入口：SSR 只带批次列表，不带批次明细（liveBatchDetails 缺省）。
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        liveBatches={[
+          {
+            id: "batch-lazy-1",
+            projectId: "project-real",
+            type: "streamer_payable",
+            name: "Real Project · 主播应付",
+            project: "Real Project",
+            vendor: "-",
+            period: "2026-06-01 -> 2026-06-30",
+            items: 1,
+            amount: 320,
+            status: "generated",
+            updated: "2026-06-03 10:00",
+            creator: "Finance",
+          },
+        ]}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/settlement-batches/batch-lazy-1",
+        undefined,
+      ),
+    );
+    expect(await screen.findByText("懒加载主播")).toBeInTheDocument();
+    // 明细已缓存后不应重复拉取同一批次。
+    const detailCalls = fetchMock.mock.calls.filter(
+      ([url]) => String(url) === "/api/settlement-batches/batch-lazy-1",
+    );
+    expect(detailCalls.length).toBe(1);
+  });
+
   it("lets finance confirm a generated batch with a reason through the confirm API", async () => {
     const generatedBatch = {
       id: "batch-confirmable",
@@ -7739,7 +7820,7 @@ describe("OpsReferenceApp settlement smoke", () => {
       render(<OpsReferenceApp initialRoute="reports" liveReports={[]} />);
 
       act(() => {
-        vi.advanceTimersByTime(15000);
+        vi.advanceTimersByTime(60000);
       });
       vi.useRealTimers();
 
@@ -8360,7 +8441,10 @@ describe("OpsReferenceApp settlement smoke", () => {
         }),
       ),
     );
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+    const ruleCall = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "PATCH",
+    );
+    expect(JSON.parse(ruleCall[1].body)).toMatchObject({
       defaultSettlementMethod: "cpt",
       reason: "结算中心项目规则调整",
     });

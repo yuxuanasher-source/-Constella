@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { cache } from "react";
 
 import { appRoles, type AppRole } from "@/lib/rbac/roles";
@@ -52,6 +52,20 @@ function pickPrimaryMembership(
     );
 }
 
+// React.cache: 同一次 SSR 请求内以 client 实例为键去重 GoTrue /user 调用。
+// layout 的 requireAuthenticatedUser 与 page 的 getAuthContext 共用这份缓存，
+// 每次 SSR 只打一次 auth.getUser 网络请求。渲染上下文之外 cache 退化为直接
+// 调用，语义不变。
+export const getAuthenticatedUser = cache(async function getAuthenticatedUser(
+  supabase: SupabaseClient,
+): Promise<User | null> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  return user ?? null;
+});
+
 // React.cache: 同一次 SSR 请求内以 client 实例为键去重。配合请求级缓存的
 // createSupabaseServerClient（同请求返回同一实例），layout 与 page 各自调用
 // getAuthContext 时只会真正执行一次 auth.getUser + profiles/memberships 查询。
@@ -63,9 +77,7 @@ export const getAuthContext = cache(async function getAuthContext(
     return null;
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getAuthenticatedUser(supabase);
 
   if (!user?.id || !user.email) {
     return null;

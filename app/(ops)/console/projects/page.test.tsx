@@ -139,7 +139,6 @@ describe("console projects route", () => {
       },
     ]);
     vi.mocked(listOpsSettlementBatches).mockResolvedValue([]);
-    vi.mocked(listOpsSettlementBatchDetails).mockResolvedValue({});
     vi.mocked(getOpsSettlementDefaultScope).mockResolvedValue(null);
     vi.mocked(listOpsSettlementPool).mockResolvedValue([]);
 
@@ -205,23 +204,6 @@ describe("console projects route", () => {
         updatedAt: "2026-06-03T10:00:00.000Z",
       },
     ]);
-    vi.mocked(listOpsSettlementBatchDetails).mockResolvedValue({
-      "batch-real-1": [
-        {
-          id: "item-real-1",
-          batchId: "batch-real-1",
-          itemType: "live_report",
-          streamerName: "Streamer One",
-          settlementDuration: 120,
-          timeSource: "system",
-          evidenceLevel: "green",
-          systemAmount: 120,
-          manualAmount: 0,
-          adjustmentAmount: 0,
-          totalAmount: 120,
-        },
-      ],
-    });
     vi.mocked(getOpsSettlementDefaultScope).mockResolvedValue({
       projectId: "project-real",
       periodStart: "2026-06-01",
@@ -247,9 +229,9 @@ describe("console projects route", () => {
     render(await ProjectsPage());
 
     expect(listOpsSettlementBatches).toHaveBeenCalledWith(supabase, "org-1");
-    expect(listOpsSettlementBatchDetails).toHaveBeenCalledWith(supabase, {
-      organizationId: "org-1",
-    });
+    // B4：projects 入口不再全量预载批次明细——结算中心屏在查看具体批次时
+    // 通过 /api/settlement-batches/[batchId] 按需拉取。
+    expect(listOpsSettlementBatchDetails).not.toHaveBeenCalled();
     expect(getOpsSettlementDefaultScope).toHaveBeenCalledWith(
       supabase,
       "org-1",
@@ -263,9 +245,6 @@ describe("console projects route", () => {
     expect(OpsReferenceApp).toHaveBeenCalledWith(
       expect.objectContaining({
         liveBatches: [expect.objectContaining({ id: "batch-real-1" })],
-        liveBatchDetails: {
-          "batch-real-1": [expect.objectContaining({ id: "item-real-1" })],
-        },
         liveSettlementPool: [expect.objectContaining({ id: "report-real-1" })],
         settlementScope: expect.objectContaining({
           projectId: "project-real",
@@ -273,6 +252,10 @@ describe("console projects route", () => {
       }),
       undefined,
     );
+    const props = vi.mocked(OpsReferenceApp).mock.calls[0][0] as {
+      liveBatchDetails?: unknown;
+    };
+    expect(props.liveBatchDetails).toBeUndefined();
   });
 
   it("still renders when partner collaboration loading fails (degrades to empty)", async () => {
@@ -289,7 +272,6 @@ describe("console projects route", () => {
     vi.mocked(listProjects).mockResolvedValue([]);
     vi.mocked(listOpsLiveTaskQueue).mockResolvedValue([]);
     vi.mocked(listOpsSettlementBatches).mockResolvedValue([]);
-    vi.mocked(listOpsSettlementBatchDetails).mockResolvedValue({});
     vi.mocked(getOpsSettlementDefaultScope).mockResolvedValue(null);
     vi.mocked(listOpsSettlementPool).mockResolvedValue([]);
     // Simulate a bad service-role key surfacing as a header-encoding error.

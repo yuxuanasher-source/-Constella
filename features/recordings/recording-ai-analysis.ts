@@ -274,6 +274,28 @@ export const recordingAiAnalysisSelect = [
   "recording_ai_segments(id, segment_kind, start_seconds, end_seconds, title, summary, risk_level, evidence, sort_order)",
 ].join(", ");
 
+// 列表/队列用轻量 select：去掉 transcript_text（长文本，UI 列表与详情
+// 面板都不渲染；admission pre-review 走自己的查询拿 transcript）。
+// segments 保留——详情面板要用。
+export const recordingAiAnalysisListSelect = [
+  "id",
+  "asset_id",
+  "status",
+  "provider_name",
+  "summary",
+  "scorecard",
+  "dimensions",
+  "risk_flags",
+  "recommendations",
+  "asr_provider",
+  "error_summary",
+  "ai_invocation_id",
+  "created_at",
+  "updated_at",
+  "completed_at",
+  "recording_ai_segments(id, segment_kind, start_seconds, end_seconds, title, summary, risk_level, evidence, sort_order)",
+].join(", ");
+
 const analysisWorkItemSelect = [
   "id",
   "organization_id",
