@@ -1708,6 +1708,85 @@ const Icon = {
         <path d="m13 8 3 3" />
       </>,
     ),
+  // Lucide icons used by the 项目设置（方案1A 云白卡片）surface — drawn at
+  // stroke-width 2 to match the design mock.
+  Settings2: (p) =>
+    ic(
+      { sw: 2, ...p },
+      <>
+        <path d="M14 17H5M19 7h-9" />
+        <circle cx="17" cy="17" r="3" />
+        <circle cx="7" cy="7" r="3" />
+      </>,
+    ),
+  Clock3: (p) =>
+    ic(
+      { sw: 2, ...p },
+      <>
+        <circle cx="12" cy="12" r="10" />
+        <path d="M12 6v6h4" />
+      </>,
+    ),
+  UserRoundPlus: (p) =>
+    ic(
+      { sw: 2, ...p },
+      <>
+        <path d="M2 21a8 8 0 0 1 13.292-6" />
+        <circle cx="10" cy="8" r="5" />
+        <path d="M19 16v6m3-3h-6" />
+      </>,
+    ),
+  Send: (p) =>
+    ic(
+      { sw: 2, ...p },
+      <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11zm7.318-19.539l-10.94 10.939" />,
+    ),
+  Video: (p) =>
+    ic(
+      { sw: 2, ...p },
+      <>
+        <path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5" />
+        <rect width="14" height="12" x="2" y="6" rx="2" />
+      </>,
+    ),
+  Timer: (p) =>
+    ic(
+      { sw: 2, ...p },
+      <>
+        <path d="M10 2h4m-2 12 3-3" />
+        <circle cx="12" cy="14" r="8" />
+      </>,
+    ),
+  Megaphone: (p) =>
+    ic(
+      { sw: 2, ...p },
+      <>
+        <path d="M11 6a13 13 0 0 0 8.4-2.8A1 1 0 0 1 21 4v12a1 1 0 0 1-1.6.8A13 13 0 0 0 11 14H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" />
+        <path d="M6 14a12 12 0 0 0 2.4 7.2a2 2 0 0 0 3.2-2.4A8 8 0 0 1 10 14M8 6v8" />
+      </>,
+    ),
+  Link2: (p) =>
+    ic(
+      { sw: 2, ...p },
+      <path d="M9 17H7A5 5 0 0 1 7 7h2m6 0h2a5 5 0 1 1 0 10h-2m-7-5h8" />,
+    ),
+  RefreshCw: (p) =>
+    ic(
+      { sw: 2, ...p },
+      <>
+        <path d="M3 12a9 9 0 0 1 9-9a9.75 9.75 0 0 1 6.74 2.74L21 8" />
+        <path d="M21 3v5h-5m5 4a9 9 0 0 1-9 9a9.75 9.75 0 0 1-6.74-2.74L3 16" />
+        <path d="M8 16H3v5" />
+      </>,
+    ),
+  Inbox: (p) =>
+    ic(
+      { sw: 2, ...p },
+      <>
+        <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+        <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11" />
+      </>,
+    ),
 };
 
 // ===== src\chrome.jsx =====
@@ -8289,59 +8368,43 @@ function ProjectDetail({ id, go }) {
         {detailTab === "settings" && !isPartnerCollaboration && (
           <div
             style={{
-              display: "flex",
-              flexWrap: "wrap",
-              alignItems: "flex-start",
-              gap: 20,
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 1fr) 360px",
+              gap: 18,
+              alignItems: "start",
             }}
           >
-            <div style={{ flex: "2 1 520px", minWidth: 0 }}>
-              <Card
-                title="项目设置"
-                extra={
-                  <Badge tone="blue" dot>
-                    后端实时保存
-                  </Badge>
-                }
-                padded={true}
-              >
-                <ProjectSettingsPanel
-                  draft={settingsDraft}
-                  baseStatus={p.status}
-                  ownerOptions={ownerOptions}
-                  canAssignOwner={canAssignOwner}
-                  error={settingsError}
-                  submitting={settingsSubmitting}
-                  onChange={handleSettingsChange}
-                  onSubmit={handleProjectSettingsSubmit}
-                  onCancel={() => {
-                    setDetailTab("overview");
-                    setSettingsError("");
-                    setSettingsDraft(projectSettingsInitialDraft(p));
-                  }}
-                />
-              </Card>
-            </div>
-            <div style={{ flex: "1 1 340px", minWidth: 0 }}>
-              <ProjectCollaborationPanel
-                project={p}
-                draft={collaborationDraft}
-                message={collaborationMessage}
-                error={collaborationError}
-                submitting={collaborationSubmitting}
-                shareUrl={collaborationShareUrl}
-                applications={collaborationApplications}
-                onChange={handleCollaborationChange}
-                onSave={handleSaveProjectCollaboration}
-                onCreateShare={handleCreateProjectCollaborationShare}
-                onRefreshApplications={
-                  handleRefreshProjectCollaborationApplications
-                }
-                onReviewApplication={
-                  handleReviewProjectCollaborationApplication
-                }
-              />
-            </div>
+            <ProjectSettingsPanel
+              draft={settingsDraft}
+              baseStatus={p.status}
+              ownerOptions={ownerOptions}
+              canAssignOwner={canAssignOwner}
+              error={settingsError}
+              submitting={settingsSubmitting}
+              onChange={handleSettingsChange}
+              onSubmit={handleProjectSettingsSubmit}
+              onCancel={() => {
+                setDetailTab("overview");
+                setSettingsError("");
+                setSettingsDraft(projectSettingsInitialDraft(p));
+              }}
+            />
+            <ProjectCollaborationPanel
+              project={p}
+              draft={collaborationDraft}
+              message={collaborationMessage}
+              error={collaborationError}
+              submitting={collaborationSubmitting}
+              shareUrl={collaborationShareUrl}
+              applications={collaborationApplications}
+              onChange={handleCollaborationChange}
+              onSave={handleSaveProjectCollaboration}
+              onCreateShare={handleCreateProjectCollaborationShare}
+              onRefreshApplications={
+                handleRefreshProjectCollaborationApplications
+              }
+              onReviewApplication={handleReviewProjectCollaborationApplication}
+            />
           </div>
         )}
       </div>
@@ -8439,33 +8502,174 @@ function projectOwnerOptions(members = [], project, currentUser) {
   return [{ value: "", label: "未分配" }, ...options];
 }
 
-const projectSettingsInputStyle = {
-  height: 34,
-  border: "1px solid var(--line-strong)",
-  borderRadius: 6,
-  padding: "0 10px",
-  fontSize: 13,
-  color: "var(--ink-900)",
+// ——— 项目设置（方案1A 云白卡片）design tokens ———
+// The settings surface is a pixel-level restoration of the 方案1A mock, so it
+// uses the mock's literal palette instead of the app-level CSS variables.
+
+const projectSettingsCardStyle = {
   background: "#fff",
-  outline: "none",
+  border: "1px solid #e4e9f1",
+  borderRadius: 14,
+  boxShadow:
+    "0 1px 2px rgba(23,35,61,.04), 0 16px 40px -28px rgba(23,35,61,.2)",
 };
 
-const projectStatusPickerTones = {
-  neutral: ["#EEF2F7", "#475569", "#94A3B8"],
-  blue: ["#EEF3FF", "#1842A6", "#3B6BE6"],
-  green: ["#E6F6EE", "#0E8A4D", "#22B86C"],
-  amber: ["#FFF3DC", "#A86A00", "#E5A33A"],
-  red: ["#FDECEC", "#C0303A", "#E66670"],
-  violet: ["#EFEBFF", "#5B4BD1", "#8C7DEB"],
-  teal: ["#DEF3F0", "#0E7C77", "#3CB1AB"],
-  ink: ["#E2E8F0", "#1E2A47", "#475569"],
+const PROJECT_SETTINGS_SURFACE_CSS = `
+  @keyframes ps-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  .ps-date-input::-webkit-calendar-picker-indicator {
+    opacity: 0;
+    cursor: pointer;
+  }
+  .ps-control {
+    height: 38px;
+    width: 100%;
+    border: 1px solid #e4e9f1;
+    border-radius: 10px;
+    padding: 0 12px;
+    font-size: 13px;
+    color: #17233d;
+    background: #fff;
+    outline: none;
+    font-family: inherit;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+  }
+  .ps-control::placeholder { color: #a4afc2; }
+  .ps-control:hover:not(:disabled) { border-color: #b9c9ea; }
+  .ps-control:focus {
+    border-color: #2f6fed;
+    box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.12);
+  }
+  .ps-control:disabled {
+    color: #8a97ad;
+    background: #f6f8fb;
+    cursor: not-allowed;
+  }
+  select.ps-control {
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 32px;
+  }
+  textarea.ps-control {
+    height: auto;
+    min-height: 76px;
+    padding: 10px 12px;
+    line-height: 1.7;
+    resize: vertical;
+  }
+  .ps-option:hover { background: #f3f6fb !important; }
+  .ps-btn {
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 0 16px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+  .ps-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  .ps-btn-primary {
+    border: none;
+    background: #2f6fed;
+    color: #fff;
+    font-weight: 600;
+    padding: 0 18px;
+    box-shadow: 0 6px 14px -6px rgba(47, 111, 237, 0.55);
+  }
+  .ps-btn-primary:hover:not(:disabled) { background: #245ed6; }
+  .ps-btn-secondary {
+    border: 1px solid #dfe5ee;
+    background: #fff;
+    color: #374a68;
+    font-weight: 500;
+  }
+  .ps-btn-secondary:hover:not(:disabled) { border-color: #b9c9ea; }
+  .ps-btn-ghost {
+    border: 1px solid #dfe5ee;
+    background: #fff;
+    color: #5b6b84;
+  }
+  .ps-btn-ghost:hover:not(:disabled) { background: #f6f8fb; }
+  .ps-btn-danger {
+    border: 1px solid #f0c9c9;
+    background: #fff;
+    color: #d64545;
+    font-weight: 500;
+  }
+  .ps-btn-danger:hover:not(:disabled) { background: #fdeeee; }
+  .ps-btn-sm {
+    height: 30px;
+    padding: 0 12px;
+    border-radius: 8px;
+    font-size: 12px;
+  }
+  .ps-switch input:focus-visible + span {
+    box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.25);
+  }
+`;
+
+const PROJECT_SETTINGS_STATUS_DOTS = {
+  neutral: "#a4afc2",
+  blue: "#2f6fed",
+  green: "#12a17c",
+  amber: "#e5a33a",
+  red: "#d64545",
+  violet: "#8c7deb",
+  teal: "#3cb1ab",
+  ink: "#5b6b84",
 };
 
-function projectStatusPickerColors(statusValue) {
+function projectSettingsStatusDot(statusValue) {
   const tone = PROJECT_STATUS[statusValue]?.tone || "neutral";
-  const [bg, fg, dot] =
-    projectStatusPickerTones[tone] || projectStatusPickerTones.neutral;
-  return { bg, fg, dot };
+  return (
+    PROJECT_SETTINGS_STATUS_DOTS[tone] || PROJECT_SETTINGS_STATUS_DOTS.neutral
+  );
+}
+
+function ProjectSettingsPill({ tone = "neutral", pulse = false, children }) {
+  const tones = {
+    green: { fg: "#0e8c6c", bg: "#e6f6f1", dot: "#12a17c" },
+    blue: { fg: "#1e4fd6", bg: "#f0f5ff", dot: "#2f6fed" },
+    neutral: { fg: "#6b7686", bg: "#eef1f6", dot: "#a4afc2" },
+  };
+  const t = tones[tone] || tones.neutral;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        fontSize: 11.5,
+        fontWeight: 600,
+        color: t.fg,
+        background: t.bg,
+        borderRadius: 999,
+        padding: "4px 10px",
+        whiteSpace: "nowrap",
+        flex: "none",
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: 999,
+          background: t.dot,
+          animation: pulse ? "ps-pulse 2s infinite" : undefined,
+        }}
+      />
+      {children}
+    </span>
+  );
 }
 
 function ProjectSettingsField({ label, children }) {
@@ -8476,81 +8680,153 @@ function ProjectSettingsField({ label, children }) {
         flexDirection: "column",
         gap: 6,
         fontSize: 12,
-        color: "var(--ink-500)",
+        color: "#6b7686",
+        minWidth: 0,
       }}
     >
-      <span style={{ fontWeight: 500 }}>{label}</span>
+      <span>{label}</span>
       {children}
     </label>
   );
 }
 
-// One consistent section shell for the project-settings surface: a bordered
-// sub-card with a soft header band (title + optional hint) and a padded body —
-// the same vocabulary as Card / CollapsibleSection elsewhere in the product.
-// Keeps every group (status, basics, rules, visibility) on one visual rhythm.
-function ProjectSettingsSection({ title, desc, extra, first = false, children }) {
-  void first; // kept for call-site compatibility; sections now self-delimit
+function ProjectSettingsSectionTitle({ title, desc }) {
   return (
-    <section
+    <div>
+      <div style={{ fontSize: 13.5, fontWeight: 600, color: "#17233d" }}>
+        {title}
+      </div>
+      {desc ? (
+        <div style={{ fontSize: 12, color: "#8a97ad", marginTop: 2 }}>
+          {desc}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProjectSettingsDivider() {
+  return <div aria-hidden="true" style={{ height: 1, background: "#edf0f6" }} />;
+}
+
+function ProjectSettingsSwitch({ label, checked, onChange, disabled = false }) {
+  return (
+    <label
+      className="ps-switch"
       style={{
-        border: "1px solid var(--line)",
-        borderRadius: 10,
-        background: "#fff",
-        // 不能用 overflow: hidden 收圆角——会裁掉状态下拉这类
-        // 绝对定位的弹出面板；圆角由头带自己的 radius 保证。
+        position: "relative",
+        display: "inline-flex",
+        flex: "none",
+        cursor: disabled ? "not-allowed" : "pointer",
       }}
     >
-      <div
+      <input
+        type="checkbox"
+        role="switch"
+        aria-label={label}
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
         style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          opacity: 0,
+          pointerEvents: "none",
+        }}
+      />
+      <span
+        aria-hidden="true"
+        style={{
+          width: 38,
+          height: 22,
+          borderRadius: 999,
+          background: checked ? "#2f6fed" : "#cfd6e2",
+          padding: 2,
+          boxSizing: "border-box",
           display: "flex",
-          alignItems: "flex-start",
-          justifyContent: "space-between",
-          gap: 12,
-          padding: "11px 14px",
-          background: "var(--bg-soft)",
-          borderBottom: "1px solid var(--line)",
-          borderTopLeftRadius: 9,
-          borderTopRightRadius: 9,
+          justifyContent: checked ? "flex-end" : "flex-start",
+          boxShadow: checked
+            ? "inset 0 1px 2px rgba(0,0,0,.15)"
+            : "inset 0 1px 2px rgba(0,0,0,.08)",
+          transition: "background 120ms ease",
         }}
       >
-        <div style={{ minWidth: 0 }}>
-          <div
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: "var(--ink-900)",
-              letterSpacing: "-0.005em",
-            }}
-          >
-            {title}
-          </div>
-          {desc ? (
-            <div
-              style={{
-                marginTop: 2,
-                fontSize: 12,
-                color: "var(--ink-500)",
-                lineHeight: 1.5,
-              }}
-            >
-              {desc}
-            </div>
-          ) : null}
+        <span
+          style={{
+            width: 18,
+            height: 18,
+            borderRadius: 999,
+            background: "#fff",
+            boxShadow: "0 1px 2px rgba(0,0,0,.25)",
+          }}
+        />
+      </span>
+    </label>
+  );
+}
+
+function ProjectSettingsToggleCard({
+  icon,
+  title,
+  desc,
+  checked,
+  onChange,
+  highlight = false,
+}) {
+  return (
+    <div
+      style={{
+        border: `1px solid ${highlight ? "#d4e2fd" : "#e4e9f1"}`,
+        background: highlight ? "#f7faff" : "#fff",
+        borderRadius: 12,
+        padding: "13px 14px",
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+      }}
+    >
+      {icon ? (
+        <span
+          aria-hidden="true"
+          style={{
+            width: 30,
+            height: 30,
+            borderRadius: 9,
+            background: "#f3f6fb",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flex: "none",
+            color: "#5b6b84",
+          }}
+        >
+          {icon}
+        </span>
+      ) : null}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: highlight ? "#1e4fd6" : "#17233d",
+          }}
+        >
+          {title}
         </div>
-        {extra}
+        <div
+          style={{
+            fontSize: 11.5,
+            color: highlight ? "#5b6b84" : "#8a97ad",
+            marginTop: 2,
+            lineHeight: 1.5,
+          }}
+        >
+          {desc}
+        </div>
       </div>
-      <div
-        style={{
-          padding: 14,
-          display: "flex",
-          flexDirection: "column",
-          gap: 12,
-        }}
-      >
-        {children}
-      </div>
-    </section>
+      <ProjectSettingsSwitch label={title} checked={checked} onChange={onChange} />
+    </div>
   );
 }
 
@@ -8585,7 +8861,6 @@ function ProjectSettingsStatusPicker({ value, fromStatus, onChange }) {
     PROJECT_STATUS_OPTIONS.find((option) => option.value === value) ||
     statusOptions[0] ||
     PROJECT_STATUS_OPTIONS[0];
-  const currentColors = projectStatusPickerColors(current.value);
   const listboxId = "project-settings-status-options";
 
   const selectOption = (option) => {
@@ -8620,60 +8895,48 @@ function ProjectSettingsStatusPicker({ value, fromStatus, onChange }) {
           }
         }}
         style={{
-          ...projectSettingsInputStyle,
           width: "100%",
-          padding: "0 10px",
+          height: 40,
+          border: `1px solid ${open ? "#b9c9ea" : "#dfe5ee"}`,
+          borderRadius: 10,
+          background: "#fff",
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
-          gap: 10,
-          borderColor: open ? "var(--blue-300)" : "var(--line-strong)",
-          background: "linear-gradient(180deg, #fff 0%, #F8FAFF 100%)",
-          boxShadow: open
-            ? "0 0 0 3px rgba(37, 99, 235, 0.12), inset 0 1px 0 rgba(255,255,255,0.8)"
-            : "inset 0 1px 0 rgba(255,255,255,0.8)",
+          gap: 8,
+          padding: "0 12px",
+          boxShadow: open ? "0 0 0 3px rgba(47, 111, 237, 0.12)" : "none",
           cursor: "pointer",
           fontFamily: "inherit",
           textAlign: "left",
+          outline: "none",
+          transition: "border-color 120ms ease, box-shadow 120ms ease",
         }}
       >
         <span
+          aria-hidden="true"
           style={{
+            width: 7,
+            height: 7,
+            borderRadius: 999,
+            background: projectSettingsStatusDot(current.value),
+            flex: "none",
+          }}
+        />
+        <span
+          style={{
+            flex: 1,
             minWidth: 0,
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-            color: "var(--ink-900)",
-            fontWeight: 600,
+            fontSize: 13.5,
+            fontWeight: 500,
+            color: "#17233d",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
           }}
         >
-          <span
-            aria-hidden="true"
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 999,
-              background: currentColors.dot,
-              boxShadow: `0 0 0 4px ${currentColors.bg}`,
-              flex: "0 0 auto",
-            }}
-          />
-          <span
-            style={{
-              minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {current.label}
-          </span>
+          {current.label}
         </span>
-        <Icon.ChevDown
-          aria-hidden="true"
-          size={14}
-          stroke={open ? "var(--blue-700)" : "var(--ink-400)"}
-        />
+        <Icon.ChevDown aria-hidden="true" size={15} sw={2} stroke="#8a97ad" />
       </button>
       {open && (
         <div
@@ -8682,20 +8945,18 @@ function ProjectSettingsStatusPicker({ value, fromStatus, onChange }) {
           aria-label="项目状态选项"
           style={{
             position: "absolute",
-            zIndex: 40,
-            top: 40,
+            zIndex: 30,
+            top: 44,
             left: 0,
             right: 0,
-            padding: 6,
-            border: "1px solid var(--line)",
-            borderRadius: 8,
             background: "#fff",
-            boxShadow:
-              "0 16px 32px rgba(15, 23, 42, 0.14), 0 4px 10px rgba(15, 23, 42, 0.08)",
+            border: "1px solid #e4e9f1",
+            borderRadius: 12,
+            boxShadow: "0 12px 32px -12px rgba(23,35,61,.28)",
+            padding: 5,
           }}
         >
           {statusOptions.map((option) => {
-            const colors = projectStatusPickerColors(option.value);
             const selected = option.value === current.value;
             return (
               <button
@@ -8703,59 +8964,33 @@ function ProjectSettingsStatusPicker({ value, fromStatus, onChange }) {
                 type="button"
                 role="option"
                 aria-selected={selected}
+                className="ps-option"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => selectOption(option)}
                 style={{
                   width: "100%",
-                  height: 32,
                   border: "none",
-                  borderRadius: 6,
-                  padding: "0 8px",
+                  background: "transparent",
                   display: "flex",
                   alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 10,
-                  background: selected ? "var(--blue-50)" : "transparent",
-                  color: selected ? "var(--blue-700)" : "var(--ink-700)",
+                  gap: 8,
+                  padding: "8px 10px",
+                  borderRadius: 8,
                   cursor: "pointer",
                   fontSize: 13,
-                  fontWeight: selected ? 700 : 600,
+                  color: "#17233d",
                   fontFamily: "inherit",
                   textAlign: "left",
                 }}
               >
-                <span
-                  style={{
-                    minWidth: 0,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 8,
-                  }}
-                >
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: 999,
-                      background: colors.dot,
-                      boxShadow: `0 0 0 4px ${colors.bg}`,
-                      flex: "0 0 auto",
-                    }}
-                  />
-                  <span>{option.label}</span>
-                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>{option.label}</span>
                 {selected && (
-                  <span
+                  <Icon.Check
                     aria-hidden="true"
-                    style={{
-                      color: "var(--blue-700)",
-                      fontSize: 12,
-                      fontWeight: 700,
-                    }}
-                  >
-                    已选
-                  </span>
+                    size={14}
+                    sw={2}
+                    stroke="#2f6fed"
+                  />
                 )}
               </button>
             );
@@ -8784,21 +9019,20 @@ function ProjectSettingsDateField({ label, value, onChange }) {
       <div
         onClick={openPicker}
         style={{
-          ...projectSettingsInputStyle,
-          borderColor: focused ? "var(--blue-300)" : "var(--line-strong)",
-          padding: 0,
+          position: "relative",
+          height: 38,
+          border: `1px solid ${focused ? "#2f6fed" : "#e4e9f1"}`,
+          borderRadius: 10,
+          background: "#fff",
           display: "flex",
           alignItems: "center",
-          position: "relative",
           cursor: "pointer",
-          background: "linear-gradient(180deg, #fff 0%, #F8FAFF 100%)",
-          boxShadow: focused
-            ? "0 0 0 3px rgba(37, 99, 235, 0.12), inset 0 1px 0 rgba(255,255,255,0.8)"
-            : "inset 0 1px 0 rgba(255,255,255,0.8)",
+          boxShadow: focused ? "0 0 0 3px rgba(47, 111, 237, 0.12)" : "none",
+          transition: "border-color 120ms ease, box-shadow 120ms ease",
         }}
       >
         <input
-          className="project-settings-date-input"
+          className="ps-date-input"
           ref={inputRef}
           type="date"
           value={value}
@@ -8815,9 +9049,9 @@ function ProjectSettingsDateField({ label, value, onChange }) {
             border: "none",
             background: "transparent",
             outline: "none",
-            color: "var(--ink-900)",
+            color: "#17233d",
             fontSize: 13,
-            padding: "0 34px 0 10px",
+            padding: "0 34px 0 12px",
             cursor: "pointer",
             fontFamily: "inherit",
           }}
@@ -8826,21 +9060,15 @@ function ProjectSettingsDateField({ label, value, onChange }) {
           aria-hidden="true"
           style={{
             position: "absolute",
-            right: 10,
+            right: 12,
             top: "50%",
             transform: "translateY(-50%)",
-            width: 18,
-            height: 18,
-            borderRadius: 5,
             display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "var(--blue-50)",
-            color: "var(--blue-700)",
+            color: "#8a97ad",
             pointerEvents: "none",
           }}
         >
-          <Icon.Calendar size={13} stroke="var(--blue-700)" />
+          <Icon.Calendar size={14} sw={2} stroke="#8a97ad" />
         </span>
       </div>
     </ProjectSettingsField>
@@ -8936,213 +9164,248 @@ function ProjectCollaborationPanel({
   };
 
   return (
-    <Card
-      title="外部 MCN 协作"
-      extra={
-        <Badge tone={persisted ? "green" : enabled ? "blue" : "neutral"} dot>
-          {persisted ? "已开启" : enabled ? "待保存" : "未开启"}
-        </Badge>
-      }
-      padded={true}
-      bodyStyle={{ display: "flex", flexDirection: "column", gap: 14 }}
+    <div
+      style={{
+        ...projectSettingsCardStyle,
+        display: "flex",
+        flexDirection: "column",
+        minWidth: 0,
+      }}
     >
-      <form
-        onSubmit={onSave}
-        style={{ display: "flex", flexDirection: "column", gap: 14 }}
-      >
-        <div
-          style={{
-            fontSize: 12,
-            color: "var(--ink-500)",
-            lineHeight: 1.6,
-          }}
-        >
-          开启后，其他 MCN 可通过邀请链接加入本项目；项目方保留项目设置与审核权限。
-        </div>
-
-        <ProjectSettingsCheck
-          label="开放外部 MCN 协作"
-          desc="开启并保存后，外部 MCN 可通过协作链接提交申请"
-          checked={enabled}
-          onChange={(checked) => onChange("enabled", checked)}
-        />
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: 12,
-            alignItems: "start",
-          }}
-        >
-          <ProjectSettingsField label="协作摘要">
-            <textarea
-              className="psf-control"
-              value={draft.summary}
-              onChange={(event) => onChange("summary", event.target.value)}
-              rows={3}
-              placeholder="给外部 MCN 看的项目亮点、主播要求和交付口径"
-              style={{ minHeight: 84 }}
-            />
-          </ProjectSettingsField>
-          <ProjectSettingsField label="分成建议">
-            <input
-              className="psf-control"
-              value={draft.revenueShareHint}
-              onChange={(event) =>
-                onChange("revenueShareHint", event.target.value)
-              }
-              placeholder="例如 8-12%"
-            />
-          </ProjectSettingsField>
-        </div>
-
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          <Button
-            kind="default"
-            icon={<Icon.Plus size={14} />}
-            onClick={onCreateShare}
-            disabled={isBusy}
-          >
-            {submitting === "share" ? "生成中" : "生成协作链接"}
-          </Button>
-          <Button
-            kind="default"
-            icon={<Icon.Search size={14} />}
-            onClick={onRefreshApplications}
-            disabled={isBusy}
-          >
-            {submitting === "applications" ? "刷新中" : "刷新申请"}
-          </Button>
-        </div>
-
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "flex-end",
-            gap: 10,
-            flexWrap: "wrap",
-            paddingTop: 12,
-            borderTop: "1px solid var(--line)",
-          }}
-        >
-          <div
-            style={{
-              marginRight: "auto",
-              minHeight: 18,
-              fontSize: 12,
-              color: error ? "var(--danger-600)" : "var(--ink-500)",
-            }}
-          >
-            {error || message}
-          </div>
-          <Button kind="primary" type="submit" disabled={isBusy}>
-            {submitting === "settings" ? "保存中" : "保存协作设置"}
-          </Button>
-        </div>
-      </form>
-
-      {shareUrl ? (
-        <div
-          style={{
-            border: "1px solid var(--line)",
-            borderRadius: 8,
-            background: "var(--bg-soft)",
-            padding: 12,
-            display: "grid",
-            gridTemplateColumns: "minmax(0, 1fr) auto",
-            gap: 10,
-            alignItems: "end",
-          }}
-        >
-          <label
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 6,
-              minWidth: 0,
-              fontSize: 12,
-              color: "var(--ink-500)",
-              fontWeight: 600,
-            }}
-          >
-            协作链接
-            <input
-              readOnly
-              className="psf-control"
-              value={shareUrl}
-              style={{
-                color: "var(--blue-700)",
-                fontFamily:
-                  "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            />
-          </label>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {copyState ? (
-              <span
-                aria-live="polite"
-                style={{
-                  fontSize: 12,
-                  color:
-                    copyState === "已复制"
-                      ? "var(--green-700)"
-                      : "var(--danger-600)",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {copyState}
-              </span>
-            ) : null}
-            <Button
-              kind="default"
-              icon={<Icon.Copy size={14} />}
-              onClick={copyShareUrl}
-            >
-              复制链接
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
       <div
         style={{
           display: "flex",
-          flexDirection: "column",
-          gap: 8,
+          alignItems: "center",
+          gap: 10,
+          padding: "15px 20px",
+          borderBottom: "1px solid #edf0f6",
         }}
       >
-        {applications.length ? (
-          applications.map((application) => {
-            const canReview = application.status === "submitted";
-            const applicationDraft = applicationDrafts[application.id] || {
-              counterSharePercent: "",
-              rejectionReason: "",
-            };
-            const counterShareBps = projectCollaborationPercentToBps(
-              applicationDraft.counterSharePercent,
-            );
-            const canSubmitCounter = canReview && counterShareBps !== null;
-            const canReject =
-              canReview && applicationDraft.rejectionReason.trim().length > 0;
-            const isReviewing = submitting === `review:${application.id}`;
-            return (
+        <div
+          style={{ flex: 1, fontSize: 15, fontWeight: 700, color: "#17233d" }}
+        >
+          外部 MCN 协作
+        </div>
+        <ProjectSettingsPill
+          tone={persisted ? "green" : enabled ? "blue" : "neutral"}
+        >
+          {persisted ? "已开启" : enabled ? "待保存" : "未开启"}
+        </ProjectSettingsPill>
+      </div>
+      <div
+        style={{
+          padding: "18px 20px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+      >
+        <form
+          onSubmit={onSave}
+          style={{ display: "flex", flexDirection: "column", gap: 14 }}
+        >
+          <p
+            style={{
+              margin: 0,
+              fontSize: 12.5,
+              color: "#5b6b84",
+              lineHeight: 1.7,
+            }}
+          >
+            开启后，其他 MCN
+            可通过邀请链接加入本项目；项目方保留项目设置与审核权限。
+          </p>
+          <ProjectSettingsToggleCard
+            highlight
+            title="开放外部 MCN 协作"
+            desc="开启并保存后，外部 MCN 可通过协作链接提交申请"
+            checked={enabled}
+            onChange={(checked) => onChange("enabled", checked)}
+          />
+          {enabled ? (
+            <>
+              <ProjectSettingsField label="协作摘要">
+                <textarea
+                  className="ps-control"
+                  value={draft.summary}
+                  onChange={(event) => onChange("summary", event.target.value)}
+                  rows={3}
+                  placeholder="给外部 MCN 看的项目亮点、主播要求和交付口径"
+                  style={{ minHeight: 64 }}
+                />
+              </ProjectSettingsField>
+              <ProjectSettingsField label="分成建议">
+                <input
+                  className="ps-control"
+                  value={draft.revenueShareHint}
+                  onChange={(event) =>
+                    onChange("revenueShareHint", event.target.value)
+                  }
+                  placeholder="例如 8-12%"
+                />
+              </ProjectSettingsField>
               <div
-                key={application.id}
                 style={{
-                  border: "1px solid var(--line)",
-                  borderRadius: 8,
-                  padding: 12,
                   display: "grid",
-                  gridTemplateColumns: "minmax(0, 1fr)",
-                  gap: 12,
-                  background: "var(--bg-soft)",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 10,
                 }}
               >
-                <div style={{ minWidth: 0 }}>
+                <button
+                  type="button"
+                  className="ps-btn ps-btn-secondary"
+                  style={{ fontSize: 12.5, gap: 6, padding: 0 }}
+                  onClick={onCreateShare}
+                  disabled={isBusy}
+                >
+                  <Icon.Link2 aria-hidden="true" size={14} stroke="#5b6b84" />
+                  {submitting === "share" ? "生成中" : "生成协作链接"}
+                </button>
+                <button
+                  type="button"
+                  className="ps-btn ps-btn-secondary"
+                  style={{ fontSize: 12.5, gap: 6, padding: 0 }}
+                  onClick={onRefreshApplications}
+                  disabled={isBusy}
+                >
+                  <Icon.RefreshCw
+                    aria-hidden="true"
+                    size={14}
+                    stroke="#5b6b84"
+                  />
+                  {submitting === "applications" ? "刷新中" : "刷新申请"}
+                </button>
+              </div>
+            </>
+          ) : null}
+          <button
+            type="submit"
+            className="ps-btn ps-btn-primary"
+            style={{ height: 38, width: "100%" }}
+            disabled={isBusy}
+          >
+            {submitting === "settings" ? "保存中" : "保存协作设置"}
+          </button>
+          {error || message ? (
+            <div
+              aria-live="polite"
+              style={{
+                fontSize: 12,
+                lineHeight: 1.6,
+                color: error ? "#d64545" : "#5b6b84",
+              }}
+            >
+              {error || message}
+            </div>
+          ) : null}
+        </form>
+
+        {shareUrl ? (
+          <div
+            style={{
+              border: "1px solid #e4e9f1",
+              borderRadius: 12,
+              background: "#f6f8fb",
+              padding: "12px 14px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
+          >
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                minWidth: 0,
+                fontSize: 12,
+                color: "#6b7686",
+              }}
+            >
+              协作链接
+              <input
+                readOnly
+                className="ps-control"
+                value={shareUrl}
+                style={{
+                  color: "#1e4fd6",
+                  fontSize: 12,
+                  fontFamily:
+                    "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              />
+            </label>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "flex-end",
+                gap: 8,
+              }}
+            >
+              {copyState ? (
+                <span
+                  aria-live="polite"
+                  style={{
+                    marginRight: "auto",
+                    fontSize: 12,
+                    color: copyState === "已复制" ? "#0e8c6c" : "#d64545",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {copyState}
+                </span>
+              ) : null}
+              <button
+                type="button"
+                className="ps-btn ps-btn-secondary ps-btn-sm"
+                onClick={copyShareUrl}
+              >
+                <Icon.Copy
+                  aria-hidden="true"
+                  size={13}
+                  sw={2}
+                  stroke="#5b6b84"
+                />
+                复制链接
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <ProjectSettingsDivider />
+
+        {applications.length ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {applications.map((application) => {
+              const canReview = application.status === "submitted";
+              const applicationDraft = applicationDrafts[application.id] || {
+                counterSharePercent: "",
+                rejectionReason: "",
+              };
+              const counterShareBps = projectCollaborationPercentToBps(
+                applicationDraft.counterSharePercent,
+              );
+              const canSubmitCounter = canReview && counterShareBps !== null;
+              const canReject =
+                canReview &&
+                applicationDraft.rejectionReason.trim().length > 0;
+              const isReviewing = submitting === `review:${application.id}`;
+              return (
+                <div
+                  key={application.id}
+                  style={{
+                    border: "1px solid #e4e9f1",
+                    borderRadius: 12,
+                    padding: "13px 14px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 10,
+                    background: "#fff",
+                  }}
+                >
                   <div
                     style={{
                       display: "flex",
@@ -9151,22 +9414,37 @@ function ProjectCollaborationPanel({
                       flexWrap: "wrap",
                     }}
                   >
-                    <strong style={{ fontSize: 13, color: "var(--ink-900)" }}>
+                    <strong
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: "#17233d",
+                      }}
+                    >
                       {projectCollaborationApplicantLabel(application)}
                     </strong>
-                    <Badge tone={canReview ? "blue" : "neutral"} dot>
+                    <ProjectSettingsPill
+                      tone={
+                        canReview
+                          ? "blue"
+                          : application.status === "approved" ||
+                              application.status === "active"
+                            ? "green"
+                            : "neutral"
+                      }
+                    >
                       {projectCollaborationApplicationStatusLabel(
                         application.status,
                       )}
-                    </Badge>
-                    <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                    </ProjectSettingsPill>
+                    <span style={{ fontSize: 12, color: "#5b6b84" }}>
                       分成{" "}
                       {projectCollaborationShareLabel(
                         application.requestedRevenueShareBps,
                       )}
                     </span>
                     {application.ownerCounterRevenueShareBps ? (
-                      <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                      <span style={{ fontSize: 12, color: "#5b6b84" }}>
                         反报价{" "}
                         {projectCollaborationShareLabel(
                           application.ownerCounterRevenueShareBps,
@@ -9177,10 +9455,9 @@ function ProjectCollaborationPanel({
                   {application.applicantNote ? (
                     <div
                       style={{
-                        marginTop: 6,
                         fontSize: 12,
-                        color: "var(--ink-500)",
-                        lineHeight: 1.5,
+                        color: "#8a97ad",
+                        lineHeight: 1.6,
                       }}
                     >
                       {application.applicantNote}
@@ -9189,163 +9466,155 @@ function ProjectCollaborationPanel({
                   {application.rejectionReason ? (
                     <div
                       style={{
-                        marginTop: 6,
                         fontSize: 12,
-                        color: "var(--danger-600)",
-                        lineHeight: 1.5,
+                        color: "#d64545",
+                        lineHeight: 1.6,
                       }}
                     >
                       {application.rejectionReason}
                     </div>
                   ) : null}
+                  {canReview ? (
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 10,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="ps-btn ps-btn-primary ps-btn-sm"
+                        style={{ alignSelf: "flex-start" }}
+                        disabled={isReviewing}
+                        onClick={() =>
+                          onReviewApplication(application, {
+                            action: "accept",
+                            ownerReviewNote: "",
+                          })
+                        }
+                      >
+                        通过申请
+                      </button>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          flexWrap: "wrap",
+                          alignItems: "end",
+                        }}
+                      >
+                        <ProjectSettingsField label="反报价比例">
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="0.01"
+                            value={applicationDraft.counterSharePercent}
+                            onChange={(event) =>
+                              updateApplicationDraft(application.id, {
+                                counterSharePercent: event.target.value,
+                              })
+                            }
+                            placeholder="8"
+                            className="ps-control"
+                            style={{ width: 110, height: 30 }}
+                          />
+                        </ProjectSettingsField>
+                        <button
+                          type="button"
+                          className="ps-btn ps-btn-secondary ps-btn-sm"
+                          disabled={isReviewing || !canSubmitCounter}
+                          onClick={() =>
+                            onReviewApplication(application, {
+                              action: "counter",
+                              ownerCounterRevenueShareBps: counterShareBps,
+                              ownerReviewNote: "",
+                            })
+                          }
+                        >
+                          提交反报价
+                        </button>
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          flexWrap: "wrap",
+                          alignItems: "end",
+                        }}
+                      >
+                        <ProjectSettingsField label="拒绝原因">
+                          <input
+                            value={applicationDraft.rejectionReason}
+                            onChange={(event) =>
+                              updateApplicationDraft(application.id, {
+                                rejectionReason: event.target.value,
+                              })
+                            }
+                            placeholder="例如 档期不匹配"
+                            className="ps-control"
+                            style={{ width: 170, height: 30 }}
+                          />
+                        </ProjectSettingsField>
+                        <button
+                          type="button"
+                          className="ps-btn ps-btn-danger ps-btn-sm"
+                          disabled={isReviewing || !canReject}
+                          onClick={() =>
+                            onReviewApplication(application, {
+                              action: "reject",
+                              ownerReviewNote: "",
+                              rejectionReason:
+                                applicationDraft.rejectionReason.trim(),
+                            })
+                          }
+                        >
+                          确认拒绝
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
-                {canReview ? (
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 10,
-                      flexWrap: "wrap",
-                      alignItems: "end",
-                    }}
-                  >
-                    <Button
-                      kind="primary"
-                      size="sm"
-                      icon={<Icon.Check size={13} stroke="#fff" />}
-                      disabled={isReviewing}
-                      onClick={() =>
-                        onReviewApplication(application, {
-                          action: "accept",
-                          ownerReviewNote: "",
-                        })
-                      }
-                    >
-                      通过申请
-                    </Button>
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: 8,
-                        flexWrap: "wrap",
-                        alignItems: "end",
-                      }}
-                    >
-                      <ProjectSettingsField label="反报价比例">
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
-                          step="0.01"
-                          value={applicationDraft.counterSharePercent}
-                          onChange={(event) =>
-                            updateApplicationDraft(application.id, {
-                              counterSharePercent: event.target.value,
-                            })
-                          }
-                          placeholder="8"
-                          className="psf-control"
-                          style={{ width: 120 }}
-                        />
-                      </ProjectSettingsField>
-                      <Button
-                        kind="default"
-                        size="sm"
-                        disabled={isReviewing || !canSubmitCounter}
-                        onClick={() =>
-                          onReviewApplication(application, {
-                            action: "counter",
-                            ownerCounterRevenueShareBps: counterShareBps,
-                            ownerReviewNote: "",
-                          })
-                        }
-                      >
-                        提交反报价
-                      </Button>
-                    </div>
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: 8,
-                        flexWrap: "wrap",
-                        alignItems: "end",
-                      }}
-                    >
-                      <ProjectSettingsField label="拒绝原因">
-                        <input
-                          value={applicationDraft.rejectionReason}
-                          onChange={(event) =>
-                            updateApplicationDraft(application.id, {
-                              rejectionReason: event.target.value,
-                            })
-                          }
-                          placeholder="例如 档期不匹配"
-                          className="psf-control"
-                          style={{ width: 180 }}
-                        />
-                      </ProjectSettingsField>
-                      <Button
-                        kind="danger"
-                        size="sm"
-                        icon={<Icon.X size={13} />}
-                        disabled={isReviewing || !canReject}
-                        onClick={() =>
-                          onReviewApplication(application, {
-                            action: "reject",
-                            ownerReviewNote: "",
-                            rejectionReason:
-                              applicationDraft.rejectionReason.trim(),
-                          })
-                        }
-                      >
-                        确认拒绝
-                      </Button>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            );
-          })
+              );
+            })}
+          </div>
         ) : (
           <div
             style={{
-              border: "1px dashed var(--line-strong)",
-              borderRadius: 10,
-              padding: "24px 16px",
+              border: "1px dashed #d5dce8",
+              borderRadius: 12,
+              padding: 20,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 8,
               textAlign: "center",
-              background: "var(--bg-soft)",
             }}
           >
-            <div
+            <span
               aria-hidden="true"
               style={{
-                width: 40,
-                height: 40,
-                borderRadius: 10,
-                background: "var(--ink-50)",
-                color: "var(--ink-400)",
-                display: "inline-flex",
+                width: 38,
+                height: 38,
+                borderRadius: 999,
+                background: "#f3f6fb",
+                display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                marginBottom: 10,
               }}
             >
-              <Icon.Streamer size={18} />
-            </div>
-            <div
-              style={{
-                fontSize: 13,
-                fontWeight: 600,
-                color: "var(--ink-700)",
-              }}
-            >
+              <Icon.Inbox size={18} stroke="#a4afc2" />
+            </span>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#17233d" }}>
               暂无外部 MCN 申请
             </div>
             <div
               style={{
-                marginTop: 4,
                 fontSize: 12,
-                color: "var(--ink-400)",
-                lineHeight: 1.5,
+                color: "#8a97ad",
+                lineHeight: 1.6,
+                maxWidth: 240,
               }}
             >
               生成协作链接并分享后，外部 MCN 的申请会展示在这里。
@@ -9353,7 +9622,7 @@ function ProjectCollaborationPanel({
           </div>
         )}
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -9471,394 +9740,359 @@ function ProjectSettingsPanel({
   return (
     <form
       onSubmit={onSubmit}
-      style={{ display: "flex", flexDirection: "column", gap: 16 }}
+      style={{
+        ...projectSettingsCardStyle,
+        display: "flex",
+        flexDirection: "column",
+        minWidth: 0,
+      }}
     >
-      <style>
-        {`
-          .project-settings-date-input::-webkit-calendar-picker-indicator {
-            opacity: 0;
-            cursor: pointer;
-          }
-          .psf-control {
-            height: 34px;
-            width: 100%;
-            border: 1px solid var(--line-strong);
-            border-radius: 6px;
-            padding: 0 10px;
-            font-size: 13px;
-            color: var(--ink-900);
-            background: linear-gradient(180deg, #fff 0%, #f8faff 100%);
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
-            outline: none;
-            font-family: inherit;
-            transition: box-shadow 120ms ease, border-color 120ms ease;
-          }
-          .psf-control::placeholder { color: var(--ink-300); }
-          .psf-control:hover:not(:disabled) { border-color: #b9c6e6; }
-          .psf-control:focus {
-            border-color: var(--blue-300);
-            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.8);
-          }
-          .psf-control:disabled {
-            color: var(--ink-400);
-            background: var(--bg-soft);
-            cursor: not-allowed;
-            box-shadow: none;
-          }
-          select.psf-control { cursor: pointer; }
-          textarea.psf-control {
-            height: auto;
-            min-height: 76px;
-            padding: 8px 10px;
-            line-height: 1.5;
-            resize: vertical;
-          }
-        `}
-      </style>
-
-      <ProjectSettingsSection
-        first
-        title="状态设置"
-        desc="状态保存后同步刷新项目列表与详情"
-      >
-        <div
-          style={{
-            maxWidth: 380,
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-          }}
-        >
-          <ProjectSettingsField label="项目状态">
-            <ProjectSettingsStatusPicker
-              value={draft.status}
-              fromStatus={baseStatus}
-              onChange={(value) => onChange("status", value)}
-            />
-          </ProjectSettingsField>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: 8,
-              padding: "7px 10px",
-              borderRadius: 8,
-              border: "1px solid var(--blue-100)",
-              background: "var(--blue-50)",
-              fontSize: 12,
-              lineHeight: 1.5,
-              color: "var(--blue-800)",
-            }}
-          >
-            <span
-              aria-hidden="true"
-              style={{ display: "inline-flex", flex: "0 0 auto", marginTop: 2 }}
-            >
-              <Icon.History size={13} stroke="var(--blue-600)" />
-            </span>
-            <span>当前可流转：{projectStatusNextLabels(baseStatus)}</span>
-          </div>
-        </div>
-      </ProjectSettingsSection>
-
-      <ProjectSettingsSection title="基础信息">
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-            gap: "14px 12px",
-            alignItems: "end",
-          }}
-        >
-          <ProjectSettingsField label="项目名称">
-            <input
-              className="psf-control"
-              value={draft.name}
-              onChange={(event) => onChange("name", event.target.value)}
-            />
-          </ProjectSettingsField>
-          <ProjectSettingsField label="负责人">
-            <select
-              className="psf-control"
-              value={draft.ownerId || ""}
-              onChange={(event) => onChange("ownerId", event.target.value)}
-              disabled={!canAssignOwner}
-            >
-              {ownerOptions.map((option) => (
-                <option key={option.value || "unassigned"} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </ProjectSettingsField>
-          <ProjectSettingsField label="厂商">
-            <input
-              className="psf-control"
-              value={draft.vendorName}
-              onChange={(event) => onChange("vendorName", event.target.value)}
-              placeholder="未填写"
-            />
-          </ProjectSettingsField>
-          <ProjectSettingsField label="产品">
-            <input
-              className="psf-control"
-              value={draft.productName}
-              onChange={(event) => onChange("productName", event.target.value)}
-              placeholder="默认使用项目名称"
-            />
-          </ProjectSettingsField>
-          <ProjectSettingsField label="代理商">
-            <input
-              className="psf-control"
-              value={draft.agentName}
-              onChange={(event) => onChange("agentName", event.target.value)}
-              placeholder="未填写"
-            />
-          </ProjectSettingsField>
-          <ProjectSettingsField label="供应商">
-            <input
-              className="psf-control"
-              value={draft.supplierName}
-              onChange={(event) => onChange("supplierName", event.target.value)}
-              placeholder="未填写"
-            />
-          </ProjectSettingsField>
-          <ProjectSettingsDateField
-            label="开始日期"
-            value={draft.startsAt}
-            onChange={(value) => onChange("startsAt", value)}
-          />
-          <ProjectSettingsDateField
-            label="结束日期"
-            value={draft.endsAt}
-            onChange={(value) => onChange("endsAt", value)}
-          />
-          <div style={{ gridColumn: "1 / -1" }}>
-            <ProjectSettingsField label="项目说明">
-              <textarea
-                className="psf-control"
-                value={draft.description}
-                onChange={(event) =>
-                  onChange("description", event.target.value)
-                }
-                placeholder="补充厂家关注角色、素材要求、转化口径等项目说明"
-                style={{ minHeight: 68 }}
-              />
-            </ProjectSettingsField>
-          </div>
-        </div>
-      </ProjectSettingsSection>
-
-      <ProjectSettingsSection
-        title="报名与录制"
-        desc="控制主播报名、定向邀约与开播录制要求"
-      >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))",
-            gap: 10,
-          }}
-        >
-          <ProjectSettingsCheck
-            label="开放报名"
-            desc="开启后主播可自主报名参与该项目"
-            checked={draft.openSignup}
-            onChange={(checked) => onChange("openSignup", checked)}
-          />
-          <ProjectSettingsCheck
-            label="允许定向邀约"
-            desc="运营可向指定主播发送定向邀约"
-            checked={draft.allowDirectInvite}
-            onChange={(checked) => onChange("allowDirectInvite", checked)}
-          />
-          <ProjectSettingsCheck
-            label="强制录屏"
-            desc="开播需录屏，作为审核与结算证据"
-            checked={draft.forceRecording}
-            onChange={(checked) => onChange("forceRecording", checked)}
-          />
-          <ProjectSettingsCheck
-            label="主播需点击开播/停止"
-            desc="以主播端打点时间作为时长口径"
-            checked={draft.forceSystemTiming}
-            onChange={(checked) => onChange("forceSystemTiming", checked)}
-          />
-        </div>
-      </ProjectSettingsSection>
-
-      <ProjectSettingsSection
-        title="组织内公开"
-        desc="公开后组织内主播可在主播端看到该项目公告与下载链接"
-      >
-        <ProjectSettingsCheck
-          label="公开给组织内主播"
-          desc="公开后主播端展示项目公告与游戏下载链接"
-          checked={draft.isPublicToStreamers}
-          onChange={(checked) => onChange("isPublicToStreamers", checked)}
-        />
-        <div
-          style={{
-            marginLeft: 10,
-            paddingLeft: 14,
-            borderLeft: `2px solid ${
-              draft.isPublicToStreamers ? "var(--blue-200)" : "var(--line)"
-            }`,
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: 12,
-            alignItems: "start",
-          }}
-        >
-          <ProjectSettingsField label="主播公告概括">
-            <textarea
-              className="psf-control"
-              value={draft.publicSummary}
-              onChange={(event) =>
-                onChange("publicSummary", event.target.value)
-              }
-              placeholder="给组织内主播看的项目概括、录播要求和注意事项"
-              rows={3}
-            />
-          </ProjectSettingsField>
-          <ProjectSettingsField label="游戏下载链接">
-            <input
-              className="psf-control"
-              value={draft.gameDownloadUrl}
-              onChange={(event) =>
-                onChange("gameDownloadUrl", event.target.value)
-              }
-              placeholder="https://..."
-            />
-          </ProjectSettingsField>
-        </div>
-      </ProjectSettingsSection>
+      <style>{PROJECT_SETTINGS_SURFACE_CSS}</style>
 
       <div
         style={{
-          paddingTop: 14,
-          borderTop: "1px solid var(--line)",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "15px 22px",
+          borderBottom: "1px solid #edf0f6",
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: 9,
+            background: "#f0f5ff",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flex: "none",
+          }}
+        >
+          <Icon.Settings2 size={15} stroke="#2f6fed" />
+        </span>
+        <div
+          style={{ flex: 1, fontSize: 15, fontWeight: 700, color: "#17233d" }}
+        >
+          项目设置
+        </div>
+        <ProjectSettingsPill tone="green" pulse>
+          后端实时保存
+        </ProjectSettingsPill>
+      </div>
+
+      <div
+        style={{
+          padding: "20px 22px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 22,
+        }}
+      >
+        <section>
+          <ProjectSettingsSectionTitle
+            title="状态设置"
+            desc="状态保存后同步刷新项目列表与详情"
+          />
+          <div style={{ marginTop: 12, maxWidth: 340 }}>
+            <ProjectSettingsField label="项目状态">
+              <ProjectSettingsStatusPicker
+                value={draft.status}
+                fromStatus={baseStatus}
+                onChange={(value) => onChange("status", value)}
+              />
+            </ProjectSettingsField>
+            <div
+              style={{
+                marginTop: 10,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                background: "#f6f8fb",
+                borderRadius: 10,
+                padding: "9px 12px",
+              }}
+            >
+              <Icon.Clock3 aria-hidden="true" size={14} stroke="#8a97ad" />
+              <span style={{ fontSize: 12.5, color: "#5b6b84" }}>
+                当前可流转：{projectStatusNextLabels(baseStatus)}
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <ProjectSettingsDivider />
+
+        <section>
+          <ProjectSettingsSectionTitle title="基础信息" />
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+              gap: 14,
+              marginTop: 12,
+            }}
+          >
+            <ProjectSettingsField label="项目名称">
+              <input
+                className="ps-control"
+                value={draft.name}
+                onChange={(event) => onChange("name", event.target.value)}
+              />
+            </ProjectSettingsField>
+            <ProjectSettingsField label="负责人">
+              <span style={{ position: "relative", display: "block" }}>
+                <select
+                  className="ps-control"
+                  value={draft.ownerId || ""}
+                  onChange={(event) => onChange("ownerId", event.target.value)}
+                  disabled={!canAssignOwner}
+                >
+                  {ownerOptions.map((option) => (
+                    <option
+                      key={option.value || "unassigned"}
+                      value={option.value}
+                    >
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <span
+                  aria-hidden="true"
+                  style={{
+                    position: "absolute",
+                    right: 12,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    display: "inline-flex",
+                    pointerEvents: "none",
+                  }}
+                >
+                  <Icon.ChevDown size={14} sw={2} stroke="#8a97ad" />
+                </span>
+              </span>
+            </ProjectSettingsField>
+            <ProjectSettingsField label="厂商">
+              <input
+                className="ps-control"
+                value={draft.vendorName}
+                onChange={(event) => onChange("vendorName", event.target.value)}
+                placeholder="未填写"
+              />
+            </ProjectSettingsField>
+            <ProjectSettingsField label="产品">
+              <input
+                className="ps-control"
+                value={draft.productName}
+                onChange={(event) =>
+                  onChange("productName", event.target.value)
+                }
+                placeholder="默认使用项目名称"
+              />
+            </ProjectSettingsField>
+            <ProjectSettingsField label="代理商">
+              <input
+                className="ps-control"
+                value={draft.agentName}
+                onChange={(event) => onChange("agentName", event.target.value)}
+                placeholder="未填写"
+              />
+            </ProjectSettingsField>
+            <ProjectSettingsField label="供应商">
+              <input
+                className="ps-control"
+                value={draft.supplierName}
+                onChange={(event) =>
+                  onChange("supplierName", event.target.value)
+                }
+                placeholder="未填写"
+              />
+            </ProjectSettingsField>
+            <ProjectSettingsDateField
+              label="开始日期"
+              value={draft.startsAt}
+              onChange={(value) => onChange("startsAt", value)}
+            />
+            <ProjectSettingsDateField
+              label="结束日期"
+              value={draft.endsAt}
+              onChange={(value) => onChange("endsAt", value)}
+            />
+            <div style={{ gridColumn: "1 / -1" }}>
+              <ProjectSettingsField label="项目说明">
+                <textarea
+                  className="ps-control"
+                  value={draft.description}
+                  onChange={(event) =>
+                    onChange("description", event.target.value)
+                  }
+                  placeholder="补充厂家关注角色、素材要求、转化口径等项目说明"
+                  style={{ minHeight: 76 }}
+                />
+              </ProjectSettingsField>
+            </div>
+          </div>
+        </section>
+
+        <ProjectSettingsDivider />
+
+        <section>
+          <ProjectSettingsSectionTitle
+            title="报名与录制"
+            desc="控制主播报名、定向邀约与开播录制要求"
+          />
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+              gap: 12,
+              marginTop: 12,
+            }}
+          >
+            <ProjectSettingsToggleCard
+              icon={<Icon.UserRoundPlus size={15} stroke="#5b6b84" />}
+              title="开放报名"
+              desc="开启后主播可自主报名参与该项目"
+              checked={draft.openSignup}
+              onChange={(checked) => onChange("openSignup", checked)}
+            />
+            <ProjectSettingsToggleCard
+              icon={<Icon.Send size={15} stroke="#5b6b84" />}
+              title="允许定向邀约"
+              desc="运营可向指定主播发送定向邀约"
+              checked={draft.allowDirectInvite}
+              onChange={(checked) => onChange("allowDirectInvite", checked)}
+            />
+            <ProjectSettingsToggleCard
+              icon={<Icon.Video size={15} stroke="#5b6b84" />}
+              title="强制录屏"
+              desc="开播需录屏，作为审核与结算证据"
+              checked={draft.forceRecording}
+              onChange={(checked) => onChange("forceRecording", checked)}
+            />
+            <ProjectSettingsToggleCard
+              icon={<Icon.Timer size={15} stroke="#5b6b84" />}
+              title="主播需点击开播/停止"
+              desc="以主播端打点时间作为时长口径"
+              checked={draft.forceSystemTiming}
+              onChange={(checked) => onChange("forceSystemTiming", checked)}
+            />
+          </div>
+        </section>
+
+        <ProjectSettingsDivider />
+
+        <section>
+          <ProjectSettingsSectionTitle
+            title="组织内公开"
+            desc="公开后组织内主播可在主播端看到该项目公告与下载链接"
+          />
+          <div style={{ marginTop: 12 }}>
+            <ProjectSettingsToggleCard
+              icon={<Icon.Megaphone size={15} stroke="#5b6b84" />}
+              title="公开给组织内主播"
+              desc="公开后主播端展示项目公告与游戏下载链接"
+              checked={draft.isPublicToStreamers}
+              onChange={(checked) => onChange("isPublicToStreamers", checked)}
+            />
+          </div>
+          {draft.isPublicToStreamers ? (
+            <div
+              style={{
+                marginTop: 12,
+                paddingLeft: 14,
+                borderLeft: "2px solid #e8ecf3",
+                display: "grid",
+                gridTemplateColumns: "1.4fr 1fr",
+                gap: 14,
+              }}
+            >
+              <ProjectSettingsField label="主播公告概括">
+                <textarea
+                  className="ps-control"
+                  value={draft.publicSummary}
+                  onChange={(event) =>
+                    onChange("publicSummary", event.target.value)
+                  }
+                  placeholder="给组织内主播看的项目概括、录播要求和注意事项"
+                  rows={3}
+                  style={{ minHeight: 72 }}
+                />
+              </ProjectSettingsField>
+              <ProjectSettingsField label="游戏下载链接">
+                <span style={{ position: "relative", display: "block" }}>
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      position: "absolute",
+                      left: 12,
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      display: "inline-flex",
+                      pointerEvents: "none",
+                      color: "#8a97ad",
+                    }}
+                  >
+                    <Icon.Link2 size={14} stroke="#8a97ad" />
+                  </span>
+                  <input
+                    className="ps-control"
+                    value={draft.gameDownloadUrl}
+                    onChange={(event) =>
+                      onChange("gameDownloadUrl", event.target.value)
+                    }
+                    placeholder="https://..."
+                    style={{ paddingLeft: 34, fontSize: 12.5 }}
+                  />
+                </span>
+              </ProjectSettingsField>
+            </div>
+          ) : null}
+        </section>
+      </div>
+
+      <div
+        style={{
+          borderTop: "1px solid #edf0f6",
+          padding: "14px 22px",
           display: "flex",
           alignItems: "center",
           justifyContent: "flex-end",
-          gap: 8,
-          flexWrap: "wrap",
+          gap: 10,
         }}
       >
         {error ? (
           <div
+            aria-live="polite"
             style={{
               marginRight: "auto",
               fontSize: 12,
-              color: "var(--danger-600)",
+              color: "#d64545",
+              lineHeight: 1.5,
             }}
           >
             {error}
           </div>
         ) : null}
-        <Button kind="default" onClick={onCancel} disabled={submitting}>
+        <button
+          type="button"
+          className="ps-btn ps-btn-ghost"
+          onClick={onCancel}
+          disabled={submitting}
+        >
           取消
-        </Button>
-        <Button kind="primary" type="submit" disabled={submitting}>
+        </button>
+        <button
+          type="submit"
+          className="ps-btn ps-btn-primary"
+          disabled={submitting}
+        >
           {submitting ? "保存中" : "保存设置"}
-        </Button>
+        </button>
       </div>
     </form>
-  );
-}
-
-// Row-style toggle switch: label (+ optional one-line hint) on the left, a
-// switch track on the right. Keeps a real checkbox input (role="switch",
-// aria-label) so keyboard/AT behaviour and getByLabelText lookups still work.
-function ProjectSettingsCheck({ label, desc, checked, onChange }) {
-  return (
-    <label
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "space-between",
-        gap: 12,
-        padding: "9px 12px",
-        border: `1px solid ${checked ? "var(--blue-200)" : "var(--line)"}`,
-        borderRadius: 8,
-        background: checked
-          ? "linear-gradient(180deg, #fff 0%, #eef3ff 100%)"
-          : "#fff",
-        boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.8)",
-        cursor: "pointer",
-        userSelect: "none",
-        transition: "border-color 120ms ease, background 120ms ease",
-      }}
-    >
-      <span style={{ minWidth: 0 }}>
-        <span
-          style={{
-            display: "block",
-            fontSize: 13,
-            fontWeight: 600,
-            lineHeight: "20px",
-            color: checked ? "var(--blue-700)" : "var(--ink-700)",
-          }}
-        >
-          {label}
-        </span>
-        {desc ? (
-          <span
-            style={{
-              display: "block",
-              marginTop: 2,
-              fontSize: 12,
-              lineHeight: 1.5,
-              color: "var(--ink-400)",
-            }}
-          >
-            {desc}
-          </span>
-        ) : null}
-      </span>
-      <input
-        type="checkbox"
-        role="switch"
-        aria-label={label}
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-        style={{
-          position: "absolute",
-          width: 1,
-          height: 1,
-          opacity: 0,
-          pointerEvents: "none",
-        }}
-      />
-      <span
-        aria-hidden="true"
-        style={{
-          position: "relative",
-          flex: "0 0 auto",
-          width: 34,
-          height: 20,
-          borderRadius: 999,
-          background: checked ? "var(--blue-600)" : "var(--ink-200)",
-          boxShadow: "inset 0 1px 2px rgba(15, 23, 42, 0.12)",
-          transition: "background 120ms ease",
-        }}
-      >
-        <span
-          style={{
-            position: "absolute",
-            top: 2,
-            left: 2,
-            width: 16,
-            height: 16,
-            borderRadius: 999,
-            background: "#fff",
-            boxShadow: "0 1px 2px rgba(15, 23, 42, 0.25)",
-            transform: checked ? "translateX(14px)" : "translateX(0)",
-            transition: "transform 140ms ease",
-          }}
-        />
-      </span>
-    </label>
   );
 }
 
