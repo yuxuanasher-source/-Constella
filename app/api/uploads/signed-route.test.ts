@@ -97,6 +97,54 @@ describe("POST /api/uploads/signed", () => {
     expect(supabase.storage.from).toHaveBeenCalledWith("customer-private");
   });
 
+  it("rejects oversized recording uploads before signing", async () => {
+    const { POST } = await import("./signed/route");
+    const response = await POST(
+      jsonRequest({
+        category: "recordings",
+        ownerId: "application-1",
+        fileName: "demo.mp4",
+        fileSizeBytes: 314572801,
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "文件超过 300MB 上限",
+    });
+    expect(createSignedUploadUrl).not.toHaveBeenCalled();
+  });
+
+  it("signs recording uploads at or below the size limit", async () => {
+    const { POST } = await import("./signed/route");
+    const response = await POST(
+      jsonRequest({
+        category: "recordings",
+        ownerId: "application-1",
+        fileName: "demo.mp4",
+        fileSizeBytes: 314572800,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(createSignedUploadUrl).toHaveBeenCalledOnce();
+  });
+
+  it("does not size-gate report screenshot uploads", async () => {
+    const { POST } = await import("./signed/route");
+    const response = await POST(
+      jsonRequest({
+        category: "report-screenshots",
+        ownerId: "task-1",
+        fileName: "report.png",
+        fileSizeBytes: 314572801,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(createSignedUploadUrl).toHaveBeenCalledOnce();
+  });
+
   it("rejects malformed JSON through the shared body validator", async () => {
     const { POST } = await import("./signed/route");
     const response = await POST(rawRequest("{not-json"));

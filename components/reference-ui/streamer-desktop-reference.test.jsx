@@ -1178,6 +1178,7 @@ describe("StreamerDesktopReferenceApp recording library", () => {
           category: "recordings",
           ownerId: "project-upload",
           fileName: "desktop.mp4",
+          fileSizeBytes: recordingFile.size,
         }),
       }),
     );
@@ -1190,6 +1191,92 @@ describe("StreamerDesktopReferenceApp recording library", () => {
         projectId: "project-upload",
         storagePath: "org-1/recordings/project-upload/desktop.mp4",
       }),
+    );
+  });
+
+  it("rejects oversized recording files inline without starting an upload", async () => {
+    const oversizedFile = new File(["stub"], "huge.mp4", {
+      type: "video/mp4",
+    });
+    Object.defineProperty(oversizedFile, "size", { value: 314572801 });
+    const fetchMock = vi.fn(async (url) => {
+      if (
+        String(url) === "/api/streamer/project-announcements/project-upload"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            project: {
+              id: "project-upload",
+              code: "PUB-U",
+              name: "Upload Project",
+              status: "recruiting",
+              vendor: "Vendor A",
+              product: "Game A",
+              publicSummary: "Upload project summary",
+              gameDownloadUrl: null,
+              openSignup: true,
+              forceRecording: true,
+              applicationId: null,
+              applicationStatus: null,
+              latestRecordingStatus: null,
+              latestRecordingVersion: null,
+              decisionReason: null,
+              reviewStatusLabel: "待投递",
+              canSubmitRecording: true,
+            },
+          }),
+        };
+      }
+      if (String(url) === "/api/streamer/recordings") {
+        return { ok: true, json: async () => ({ recordings: [] }) };
+      }
+      if (String(url) === "/api/streamer/project-announcements") {
+        return { ok: true, json: async () => ({ announcements: [] }) };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerDesktopReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[
+          {
+            id: "project-upload",
+            code: "PUB-U",
+            name: "Upload Project",
+            status: "recruiting",
+            vendor: "Vendor A",
+            product: "Game A",
+            publicSummary: "Upload project summary",
+            gameDownloadUrl: null,
+            openSignup: true,
+            forceRecording: true,
+            applicationId: null,
+            applicationStatus: null,
+            latestRecordingStatus: null,
+            latestRecordingVersion: null,
+            decisionReason: null,
+            reviewStatusLabel: "待投递",
+            canSubmitRecording: true,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+    await screen.findByText("项目详情");
+    fireEvent.change(screen.getByLabelText("上传原始录屏"), {
+      target: { files: [oversizedFile] },
+    });
+
+    await screen.findByText("文件超过 300MB 上限");
+    expect(screen.queryByText(/已选择/)).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/uploads/signed",
+      expect.anything(),
     );
   });
 

@@ -80,6 +80,63 @@ export function getPrivateStorageBucket(
   }).STORAGE_BUCKET_PRIVATE;
 }
 
+// 录屏解析资源闸门（阶段0 整改 R6/R7）：
+// - RECORDING_MAX_DURATION_MINUTES：录屏时长上限（分钟），默认 15；
+// - RECORDING_MAX_FILE_BYTES：录屏原始文件大小上限（字节），默认 314572800（300MB）。
+// 超限文件在上传侧被 400 拒绝、解析侧抛中文错误走既有降级链路；
+// 非法/缺失的 env 值一律回退默认值，不让配置错误放大闸门。
+const DEFAULT_RECORDING_MAX_DURATION_MINUTES = 15;
+const DEFAULT_RECORDING_MAX_FILE_BYTES = 314572800;
+
+export function getRecordingMaxDurationMinutes(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  return parsePositiveNumber(
+    env.RECORDING_MAX_DURATION_MINUTES,
+    DEFAULT_RECORDING_MAX_DURATION_MINUTES,
+  );
+}
+
+export function getRecordingMaxFileBytes(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  return parsePositiveNumber(
+    env.RECORDING_MAX_FILE_BYTES,
+    DEFAULT_RECORDING_MAX_FILE_BYTES,
+  );
+}
+
+function parsePositiveNumber(
+  raw: string | undefined,
+  fallback: number,
+): number {
+  const value = Number(raw?.trim());
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+// 录屏 AI 解析月度配额（阶段0 整改 R8）：每组织每自然月可发起的解析条数上限，
+// 打满后入队请求直接 429（下月自动恢复）。默认 100，可用
+// RECORDING_AI_MONTHLY_QUOTA 覆盖；非法/缺失值回退默认值，
+// 不让配置错误意外放大或收紧配额。
+const DEFAULT_RECORDING_AI_MONTHLY_QUOTA = 100;
+
+export function getRecordingAiMonthlyQuota(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  return parsePositiveInteger(
+    env.RECORDING_AI_MONTHLY_QUOTA,
+    DEFAULT_RECORDING_AI_MONTHLY_QUOTA,
+  );
+}
+
+function parsePositiveInteger(
+  raw: string | undefined,
+  fallback: number,
+): number {
+  const value = Number(raw?.trim());
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
 export type TencentCosConfig = {
   secretId: string;
   secretKey: string;

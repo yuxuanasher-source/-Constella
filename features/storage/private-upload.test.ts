@@ -93,3 +93,60 @@ describe("toPublicSignedUrl", () => {
     ).toBe(url);
   });
 });
+
+describe("createSignedDownloadUrl keepInternalOrigin", () => {
+  const makeClient = (signedUrl: string) =>
+    ({
+      storage: {
+        from: () => ({
+          createSignedUrl: async () => ({
+            data: { signedUrl },
+            error: null,
+          }),
+        }),
+      },
+    }) as never;
+
+  it("rewrites to the public origin by default", async () => {
+    const previousInternal = process.env.SUPABASE_INTERNAL_URL;
+    const previousPublic = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    process.env.SUPABASE_INTERNAL_URL = "http://127.0.0.1:8000";
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "http://134.175.123.50:8000";
+    try {
+      const { createSignedDownloadUrl } = await import("./private-upload");
+      const result = await createSignedDownloadUrl({
+        client: makeClient("http://127.0.0.1:8000/storage/v1/object/sign/a?token=t"),
+        bucket: "jy-private",
+        path: "a",
+      });
+      expect(result.signedUrl).toBe(
+        "http://134.175.123.50:8000/storage/v1/object/sign/a?token=t",
+      );
+    } finally {
+      process.env.SUPABASE_INTERNAL_URL = previousInternal;
+      process.env.NEXT_PUBLIC_SUPABASE_URL = previousPublic;
+    }
+  });
+
+  it("keeps the internal origin for server-side streaming", async () => {
+    const previousInternal = process.env.SUPABASE_INTERNAL_URL;
+    const previousPublic = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    process.env.SUPABASE_INTERNAL_URL = "http://127.0.0.1:8000";
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "http://134.175.123.50:8000";
+    try {
+      const { createSignedDownloadUrl } = await import("./private-upload");
+      const result = await createSignedDownloadUrl({
+        client: makeClient("http://127.0.0.1:8000/storage/v1/object/sign/a?token=t"),
+        bucket: "jy-private",
+        path: "a",
+        keepInternalOrigin: true,
+      });
+      expect(result.signedUrl).toBe(
+        "http://127.0.0.1:8000/storage/v1/object/sign/a?token=t",
+      );
+    } finally {
+      process.env.SUPABASE_INTERNAL_URL = previousInternal;
+      process.env.NEXT_PUBLIC_SUPABASE_URL = previousPublic;
+    }
+  });
+});

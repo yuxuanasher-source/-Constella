@@ -72,10 +72,15 @@ export async function createSignedUploadUrl(input: {
 }
 
 export async function createSignedDownloadUrl(input: {
-  client: SupabaseClient;
+  // 只依赖 storage 子集，服务端调用方（如录屏音频抽取）可传窄类型 client。
+  client: Pick<SupabaseClient, "storage">;
   bucket: string;
   path: string;
   expiresInSeconds?: number;
+  // 服务端自用下载（如录屏音频抽取的流式拉片）应保留内网 origin：
+  // 配置了 SUPABASE_INTERNAL_URL 时走本机回环，不要改写成公网地址。
+  // 交给浏览器的签名 URL（默认）必须改写为公网 origin。
+  keepInternalOrigin?: boolean;
 }) {
   const { data, error } = await input.client.storage
     .from(input.bucket)
@@ -84,8 +89,17 @@ export async function createSignedDownloadUrl(input: {
   if (error) {
     throw error;
   }
+  if (!data?.signedUrl) {
+    // 存储层未返回签名 URL（对象缺失等）：原样透传，调用方各自兜底。
+    return data;
+  }
 
-  return { ...data, signedUrl: toPublicSignedUrl(data.signedUrl) };
+  return {
+    ...data,
+    signedUrl: input.keepInternalOrigin
+      ? data.signedUrl
+      : toPublicSignedUrl(data.signedUrl),
+  };
 }
 
 function cleanUploadCategory(category: UploadCategory): UploadCategory {
