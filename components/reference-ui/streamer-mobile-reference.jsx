@@ -2699,6 +2699,11 @@ function sanitizeRecordingFileName(name) {
   return safeName || "recording.mp4";
 }
 
+// 与服务端 RECORDING_MAX_FILE_BYTES / jy-private 桶限一致（300MB）：
+// 选中即拦截超大录屏文件，省一次注定被 400 拒绝的上传。
+const RECORDING_MAX_UPLOAD_BYTES = 314572800;
+const RECORDING_UPLOAD_TOO_LARGE_MESSAGE = "文件超过 300MB 上限";
+
 function ShotStat({ label, value }) {
   return (
     <div
@@ -4953,6 +4958,12 @@ function VideosTab({
 
   const updateProjectForm = (key, value) => {
     setProjectError("");
+    // 超过 300MB 的录屏在选中时就地报错，不带入表单、不发起上传。
+    if (key === "file" && value && value.size > RECORDING_MAX_UPLOAD_BYTES) {
+      setProjectForm((current) => ({ ...current, file: null }));
+      setProjectError(RECORDING_UPLOAD_TOO_LARGE_MESSAGE);
+      return;
+    }
     setProjectForm((current) => ({ ...current, [key]: value }));
   };
 
@@ -5007,6 +5018,7 @@ function VideosTab({
         category: "recordings",
         ownerId: projectId,
         fileName,
+        fileSizeBytes: file.size,
       }),
     });
     const signed = await signedResponse.json().catch(() => ({}));

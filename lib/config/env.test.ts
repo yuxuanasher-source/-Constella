@@ -79,3 +79,55 @@ describe("getSupabaseInternalUrl", () => {
     warn.mockRestore();
   });
 });
+
+describe("recording resource gate env", () => {
+  it("defaults the recording duration and file size limits", () => {
+    expect(envConfig.getRecordingMaxDurationMinutes({})).toBe(15);
+    expect(envConfig.getRecordingMaxFileBytes({})).toBe(314572800);
+  });
+
+  it("reads overrides and falls back on invalid values", () => {
+    expect(
+      envConfig.getRecordingMaxDurationMinutes({
+        RECORDING_MAX_DURATION_MINUTES: "30",
+      }),
+    ).toBe(30);
+    expect(
+      envConfig.getRecordingMaxFileBytes({
+        RECORDING_MAX_FILE_BYTES: "1048576",
+      }),
+    ).toBe(1048576);
+    expect(
+      envConfig.getRecordingMaxDurationMinutes({
+        RECORDING_MAX_DURATION_MINUTES: "not-a-number",
+      }),
+    ).toBe(15);
+    expect(
+      envConfig.getRecordingMaxFileBytes({
+        RECORDING_MAX_FILE_BYTES: "-1",
+      }),
+    ).toBe(314572800);
+  });
+});
+
+describe("recording AI monthly quota env", () => {
+  it("defaults the monthly quota to 100", () => {
+    expect(envConfig.getRecordingAiMonthlyQuota({})).toBe(100);
+  });
+
+  it("reads overrides and falls back on invalid values", () => {
+    expect(
+      envConfig.getRecordingAiMonthlyQuota({
+        RECORDING_AI_MONTHLY_QUOTA: "20",
+      }),
+    ).toBe(20);
+    // 配额必须是正整数：0、负数、小数、非数字一律回退默认值。
+    for (const invalid of ["0", "-5", "1.5", "not-a-number"]) {
+      expect(
+        envConfig.getRecordingAiMonthlyQuota({
+          RECORDING_AI_MONTHLY_QUOTA: invalid,
+        }),
+      ).toBe(100);
+    }
+  });
+});
