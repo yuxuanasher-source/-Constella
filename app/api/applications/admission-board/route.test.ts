@@ -91,9 +91,10 @@ describe("admission board route", () => {
         }),
       ],
     });
-    expect(listAdmissionProjectBoards).toHaveBeenCalledWith({
-      client: "supabase",
-    });
+    expect(listAdmissionProjectBoards).toHaveBeenCalledWith(
+      { client: "supabase" },
+      "org-1",
+    );
   });
 
   it("blocks streamers", async () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import * as envConfig from "./env";
 
@@ -52,5 +52,30 @@ describe("parseServerEnv", () => {
       SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
       STORAGE_BUCKET_PRIVATE: "jy-private",
     });
+  });
+});
+
+describe("getSupabaseInternalUrl", () => {
+  it("returns the internal URL when configured", () => {
+    expect(
+      envConfig.getSupabaseInternalUrl({
+        SUPABASE_INTERNAL_URL: "http://127.0.0.1:8000",
+      }),
+    ).toBe("http://127.0.0.1:8000");
+  });
+
+  it("returns null when the env is absent", () => {
+    expect(envConfig.getSupabaseInternalUrl({})).toBeNull();
+  });
+
+  it("ignores invalid values and warns instead of throwing", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(
+      envConfig.getSupabaseInternalUrl({
+        SUPABASE_INTERNAL_URL: "not-a-url",
+      }),
+    ).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

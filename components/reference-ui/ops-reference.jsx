@@ -14578,6 +14578,8 @@ function ShotMetric({ label, value }) {
 
 function ScreenAdmission() {
   const applications = useOpsApplications();
+  const { applications: applicationData } =
+    React.useContext(OpsLiveDataContext);
   const actions = useOpsLiveActions();
   const currentUser = useOpsCurrentUser();
   // 与后端 rejectApplicationJoin 的角色门控一致：仅 owner / ops_manager 可最终拒绝入项。
@@ -14779,6 +14781,18 @@ function ScreenAdmission() {
       active = false;
     };
   }, [actions]);
+
+  // B6：m3 页 SSR 不再预取报名队列，挂载后按需拉取（与看板刷新并行）。
+  // 抽屉明细 / 录屏审核工作台 / 分享筛选都依赖这份 applications 数据。
+  React.useEffect(() => {
+    if (applicationData == null && actions.refreshApplications) {
+      actions
+        .refreshApplications()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("admission queue", error),
+        );
+    }
+  }, [actions, applicationData]);
 
   const toggleProject = (board) => {
     setExpandedProjectId((current) =>
@@ -17343,6 +17357,28 @@ function ScreenSettlement({ go }) {
       setActiveId(projectBatches[0]?.id ?? null);
     }
   }, [activeId, projectBatches]);
+
+  // 批次明细按需加载：项目页等入口的 SSR 不再预载全组织批次明细，首次查看
+  // 某个批次且明细缺失时拉一次该批次（结果缓存进 batchDetailsState）。
+  //   - 演示兜底批次（BATCHES）没有后端记录，跳过；
+  //   - busyAction 期间不拉：结算动作内部（如新建批次）已按需刷新明细，
+  //     避免与动作过程中的中间状态赛跑造成重复请求；
+  //   - ref 去重：同一批次失败后不在本次挂载内反复重试。
+  const requestedBatchDetailIdsRef = React.useRef(new Set());
+  React.useEffect(() => {
+    if (!activeId || busyAction || !actions.refreshSettlementBatchDetail) {
+      return;
+    }
+    if (batchDetails[activeId] != null) return;
+    if (BATCHES.some((batch) => batch.id === activeId)) return;
+    if (requestedBatchDetailIdsRef.current.has(activeId)) return;
+    requestedBatchDetailIdsRef.current.add(activeId);
+    actions
+      .refreshSettlementBatchDetail(activeId)
+      .catch((error) =>
+        warnBackgroundRefreshFailure("settlement batch detail", error),
+      );
+  }, [actions, activeId, batchDetails, busyAction]);
 
   React.useEffect(() => {
     setRuleDraft(settlementRuleDraft(selectedProject));
@@ -30237,6 +30273,7 @@ function OpsReferenceInner({
       refreshOpsTasks,
       refreshReports,
       refreshSettlementPool,
+      refreshSettlementBatchDetail,
       readVendorDeliveryPackage,
       exportAdmissionRecordings,
       requestRecordingAiAnalysis,
@@ -30411,7 +30448,39 @@ function OpsReferenceInner({
             body: JSON.stringify(input),
           },
         );
-        await refreshApplications();
+        // 不再全量 refreshApplications()（每次审核都重拉整个报名队列，
+        // 含录屏与 AI 分析关联）：项目准入看板由调用方 syncAdmissionProjectBoards()
+        // 刷新；工作台待审队列只依赖该条的 application.status 与最新录屏
+        // status，就地更新即可。application.status 以服务端返回为准，录屏
+        // status 与服务端 reviewRecordingSubmission 的写入一致（= decision）。
+        const reviewedStatus = body?.application?.status;
+        const reviewedRecordingStatus = ["approved", "rejected", "needs_changes"]
+          .includes(input?.decision)
+          ? input.decision
+          : null;
+        setApplicationsState((previous) => {
+          if (!Array.isArray(previous)) {
+            return previous;
+          }
+          return previous.map((application) => {
+            if (application.id !== id) {
+              return application;
+            }
+            return {
+              ...application,
+              ...(typeof reviewedStatus === "string"
+                ? { status: reviewedStatus }
+                : {}),
+              latestRecording:
+                application.latestRecording && reviewedRecordingStatus
+                  ? {
+                      ...application.latestRecording,
+                      status: reviewedRecordingStatus,
+                    }
+                  : application.latestRecording,
+            };
+          });
+        });
         return body;
       },
       confirmApplicationJoin: async (id) => {
@@ -30873,14 +30942,27 @@ function OpsReferenceInner({
     };
   }, [settlementScope]);
 
+  // 轮询治理：队列状态经 ref 提供给 effect，避免每次响应更新 state 都重建
+  // interval 与监听器（旧 deps 含 tasksState/reportsState 的副作用）。
+  const liveQueueStateRef = React.useRef({
+    tasks: tasksState,
+    reports: reportsState,
+  });
+  liveQueueStateRef.current = { tasks: tasksState, reports: reportsState };
+
   React.useEffect(() => {
     if (!["project", "tasks", "reports"].includes(route)) {
       return undefined;
     }
 
+    const LIVE_QUEUE_POLL_MS = 60_000;
+    let lastRunAt = 0;
     const refreshLiveQueue = () => {
+      // 后台标签页停止轮询，切回前台由 refreshOnReturn 立即补一拍。
+      if (globalThis.document?.visibilityState === "hidden") return;
+      lastRunAt = Date.now();
       // 项目详情的实算指标 / 经营概览依赖报数（WP-B）：project 路由与任务共用
-      // 同一个 15s 节奏同时刷 reports，不加第二个定时器。
+      // 同一个轮询节奏同时刷 reports，不加第二个定时器。
       const requests =
         route === "reports"
           ? [actions.refreshReports()]
@@ -30895,35 +30977,39 @@ function OpsReferenceInner({
     };
 
     const shouldRefreshImmediately =
-      (route === "tasks" && tasksState == null) ||
-      (route === "reports" && reportsState == null);
+      (route === "tasks" && liveQueueStateRef.current.tasks == null) ||
+      (route === "reports" && liveQueueStateRef.current.reports == null);
     if (shouldRefreshImmediately) {
       refreshLiveQueue();
     }
-    const intervalId = globalThis.setInterval?.(refreshLiveQueue, 15000);
-    const refreshWhenVisible = () => {
-      if (globalThis.document?.visibilityState !== "hidden") {
-        refreshLiveQueue();
-      }
+    const intervalId = globalThis.setInterval?.(
+      refreshLiveQueue,
+      LIVE_QUEUE_POLL_MS,
+    );
+    // 切回标签页时 focus 与 visibilitychange 常常连发，5 秒内只补一拍。
+    const refreshOnReturn = () => {
+      if (globalThis.document?.visibilityState === "hidden") return;
+      if (Date.now() - lastRunAt < 5_000) return;
+      refreshLiveQueue();
     };
 
-    globalThis.addEventListener?.("focus", refreshLiveQueue);
+    globalThis.addEventListener?.("focus", refreshOnReturn);
     globalThis.document?.addEventListener?.(
       "visibilitychange",
-      refreshWhenVisible,
+      refreshOnReturn,
     );
 
     return () => {
       if (intervalId) {
         globalThis.clearInterval?.(intervalId);
       }
-      globalThis.removeEventListener?.("focus", refreshLiveQueue);
+      globalThis.removeEventListener?.("focus", refreshOnReturn);
       globalThis.document?.removeEventListener?.(
         "visibilitychange",
-        refreshWhenVisible,
+        refreshOnReturn,
       );
     };
-  }, [actions, reportsState, route, tasksState]);
+  }, [actions, route]);
 
   const go = (r, arg) => {
     if (r === "project") {

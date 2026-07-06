@@ -59,7 +59,12 @@ describe("getAuthContext", () => {
     };
 
     const contextPromise = getAuthContext(client as never);
-    await Promise.resolve();
+    // 多冲几个微任务：getUser 结果经 getAuthenticatedUser（React.cache 包装）
+    // 中转，多一层 await。profileResult 仍未 resolve，断言语义不变——
+    // 「成员查询在 profile 结果返回之前就已发出」。
+    for (let i = 0; i < 10; i += 1) {
+      await Promise.resolve();
+    }
 
     const membershipWasRequestedBeforeProfileResolved = from.mock.calls
       .map(([table]) => table)

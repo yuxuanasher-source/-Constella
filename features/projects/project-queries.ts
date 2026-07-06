@@ -62,26 +62,37 @@ export type ProjectListItem = {
 };
 
 export type ListProjectsOptions = {
-  organizationId?: string;
+  organizationId: string;
 };
 
 export async function listProjects(
   supabase: SupabaseClient | null,
-  options: ListProjectsOptions = {},
+  options: ListProjectsOptions,
 ): Promise<ProjectListItem[]> {
   if (!supabase) {
     return [];
   }
 
-  let query = supabase
+  const query = supabase
     .from("projects")
     .select(
       "id, code, name, status, sensitivity, starts_at, ends_at, open_signup, allow_direct_invite, force_recording, force_system_timing, default_hourly_rate, default_base_salary, default_settlement_method, default_settlement_rule, is_invoiced, output_vat_rate_bps, surtax_rate_bps, procurement_cost_cents, vendor_name, product_name, agent_name, supplier_name, description, is_public_to_streamers, public_summary, game_download_url, is_open_to_mcn_collaboration, mcn_collaboration_summary, mcn_collaboration_terms, created_by, owner_id, ops_manager_id, creator:profiles!projects_created_by_fkey(full_name), owner:profiles!projects_owner_id_fkey(full_name), opsManager:profiles!projects_ops_manager_id_fkey(full_name), settlement_batches(id, status), live_reports(id, status, enter_settlement_pool, settled_batch_item_id), published_at, created_at",
-    );
-
-  if (options.organizationId) {
-    query = query.eq("organization_id", options.organizationId);
-  }
+    )
+    // 组织过滤放在查询层（RLS 仍作为第二道防线），避免拉全库再靠
+    // RLS 过滤的额外扫描。
+    .eq("organization_id", options.organizationId)
+    // 嵌套关联收敛：DTO 只做「存在性」判定（hasSettlementBatch /
+    // hasApprovedPoolReport），无需拉全部子行。
+    // settlement_batches：任意 1 行即可判定存在。
+    .limit(1, { referencedTable: "settlement_batches" })
+    // live_reports：只取会命中 hasApprovedPoolReport 谓词的行
+    // （approved 且未结算入批次、未显式退出结算池），每项目 1 行足够。
+    .eq("live_reports.status", "approved")
+    .is("live_reports.settled_batch_item_id", null)
+    .or("enter_settlement_pool.is.null,enter_settlement_pool.eq.true", {
+      referencedTable: "live_reports",
+    })
+    .limit(1, { referencedTable: "live_reports" });
 
   // 防线：全量列表按创建时间倒序取最新 200 条，避免数据增长后单次
   // 请求拖全表（含嵌套关联）。

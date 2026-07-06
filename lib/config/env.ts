@@ -45,6 +45,33 @@ export function getServerEnv(): ServerEnv {
   });
 }
 
+// 可选：服务端直连 Supabase 的内网地址（如腾讯云上 Kong 的内网口
+// http://127.0.0.1:8000）。配置后 SSR / route handler / admin client 的
+// Supabase 流量走内网回环，省掉公网域名解析与 TLS 往返；浏览器仍使用
+// NEXT_PUBLIC_SUPABASE_URL。两个注意点（见 lib/db/supabase-server.ts 与
+// features/storage/private-upload.ts）：
+//   1. auth cookie 名必须固定为按公网地址推导的默认名，否则与浏览器写入的
+//      cookie 对不上，会话直接失效；
+//   2. storage 签名 URL 会带上签名时 client 的 origin，返回给浏览器前必须
+//      换回公网 origin。
+// 值缺失或非法（非 URL）时返回 null，调用方回落公网地址。
+export function getSupabaseInternalUrl(
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const raw = env.SUPABASE_INTERNAL_URL;
+  if (!raw) {
+    return null;
+  }
+  const parsed = z.url().safeParse(raw);
+  if (!parsed.success) {
+    console.warn(
+      "[env] SUPABASE_INTERNAL_URL is not a valid URL; falling back to NEXT_PUBLIC_SUPABASE_URL",
+    );
+    return null;
+  }
+  return parsed.data;
+}
+
 export function getPrivateStorageBucket(
   env: Record<string, string | undefined> = process.env,
 ) {

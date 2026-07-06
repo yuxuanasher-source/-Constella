@@ -24,7 +24,7 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const streamers = await listStreamerPool(supabase);
+    const streamers = await listStreamerPool(supabase, auth.organizationId);
     return NextResponse.json({ streamers: toStreamerCardDtos(streamers) });
   } catch (error) {
     return jsonServiceError(error);

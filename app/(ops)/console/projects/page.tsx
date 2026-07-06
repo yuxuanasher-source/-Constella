@@ -17,12 +17,10 @@ import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import {
   getOpsSettlementDefaultScope,
   listOpsSettlementBatches,
-  listOpsSettlementBatchDetails,
   listOpsSettlementPool,
 } from "@/features/settlements/settlement-queries";
 import {
   toOpsReferenceBatch,
-  toOpsReferenceBatchDetailItem,
   toOpsReferenceSettlementPoolItem,
 } from "@/features/settlements/settlement-ui-adapters";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -80,7 +78,6 @@ export default async function ProjectsPage() {
       ]}
       liveTasks={liveTasks.map((task) => toOpsReferenceTask(task))}
       liveBatches={settlementData.liveBatches}
-      liveBatchDetails={settlementData.liveBatchDetails}
       liveSettlementPool={settlementData.liveSettlementPool}
       settlementScope={settlementData.settlementScope}
     />
@@ -115,14 +112,17 @@ async function loadPartnerCollaborations(
   }
 }
 
+// 项目页入口不再预载全组织的批次明细（listOpsSettlementBatchDetails 是全量
+// 三表联查，projects 路由首屏根本用不到）：结算中心屏在查看某个批次且明细
+// 缺失时会按需拉 /api/settlement-batches/[batchId]（见 ops-reference.jsx
+// ScreenSettlement 的懒加载 effect）。
 async function loadSettlementReferenceData(
   supabase: SupabaseClient,
   organizationId: string,
   batchesPromise: ReturnType<typeof listOpsSettlementBatches>,
 ) {
-  const [batches, details, settlementScope] = await Promise.all([
+  const [batches, settlementScope] = await Promise.all([
     batchesPromise,
-    listOpsSettlementBatchDetails(supabase, { organizationId }),
     getOpsSettlementDefaultScope(supabase, organizationId),
   ]);
   const settlementPool = settlementScope
@@ -136,12 +136,6 @@ async function loadSettlementReferenceData(
 
   return {
     liveBatches: batches.map((batch) => toOpsReferenceBatch(batch)),
-    liveBatchDetails: Object.fromEntries(
-      Object.entries(details).map(([batchId, items]) => [
-        batchId,
-        items.map((item) => toOpsReferenceBatchDetailItem(item)),
-      ]),
-    ),
     liveSettlementPool: settlementPool.map((item) =>
       toOpsReferenceSettlementPoolItem(item),
     ),

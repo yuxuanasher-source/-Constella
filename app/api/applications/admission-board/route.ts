@@ -18,7 +18,10 @@ export async function GET() {
       );
     }
 
-    const projects = await listAdmissionProjectBoards(context.supabase);
+    const projects = await listAdmissionProjectBoards(
+      context.supabase,
+      context.auth.organizationId,
+    );
     return NextResponse.json({ projects });
   } catch (error) {
     return jsonError(error);

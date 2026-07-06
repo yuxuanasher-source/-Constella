@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
+import { listOpsApplicationQueue } from "@/features/applications/application-queries";
 import {
   getOpsSettlementDefaultScope,
   listOpsSettlementBatches,
@@ -140,5 +141,31 @@ describe("console module stubs route", () => {
       "org-1",
     );
     expect(listOpsSettlementPool).not.toHaveBeenCalled();
+  });
+
+  it("m3 no longer prefetches the application queue during SSR", async () => {
+    const supabase = {};
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
+    vi.mocked(getAuthContext).mockResolvedValue({
+      userId: "user-ops",
+      email: "ops@example.test",
+      name: "Ops User",
+      organizationId: "org-1",
+      organizationName: "Demo Org",
+      role: "ops_manager",
+    });
+
+    render(await StubPage({ params: Promise.resolve({ module: "m3" }) }));
+
+    // B6：报名队列改为客户端挂载后经 /api/applications 拉取。
+    expect(listOpsApplicationQueue).not.toHaveBeenCalled();
+    expect(OpsReferenceApp).toHaveBeenCalledWith(
+      expect.objectContaining({ initialRoute: "admission" }),
+      undefined,
+    );
+    const props = vi.mocked(OpsReferenceApp).mock.calls[0][0] as {
+      applicationQueue?: unknown;
+    };
+    expect(props.applicationQueue).toBeUndefined();
   });
 });

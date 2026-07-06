@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
-  recordingAiAnalysisSelect,
+  recordingAiAnalysisListSelect,
   toRecordingAiAnalysisDto,
   type RecordingAiAnalysisDto,
   type RecordingAiAnalysisRow,
@@ -279,9 +279,11 @@ export async function latestRecordingAiAnalysesByAsset(
     return new Map();
   }
 
+  // 列表路径用轻量 select（无 transcript_text）；DTO 的 transcriptText
+  // 在该路径恒为 null，类型保持不变。
   const { data, error } = await supabase
     .from("recording_ai_analyses")
-    .select(recordingAiAnalysisSelect)
+    .select(recordingAiAnalysisListSelect)
     .in("asset_id", [...new Set(assetIds)])
     .order("created_at", { ascending: false });
 

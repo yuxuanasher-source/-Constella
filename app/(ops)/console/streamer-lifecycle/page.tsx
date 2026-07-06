@@ -9,13 +9,18 @@ import { isMcnStaff } from "@/lib/rbac/roles";
 export default async function StreamerLifecyclePage() {
   const supabase = await createSupabaseServerClient();
   const auth = supabase ? await getAuthContext(supabase) : null;
-  const unreadCount = await getUnreadNotificationCount(supabase, auth);
 
   const canView = Boolean(auth && isMcnStaff(auth.role));
-  const overview =
+  const [unreadCount, overview] = await Promise.all([
+    getUnreadNotificationCount(supabase, auth),
     supabase && canView
-      ? await getStreamerLifecycleOverview(supabase)
-      : { streamers: [], shiftChangeQueue: [], recentEvents: [] };
+      ? getStreamerLifecycleOverview(supabase)
+      : Promise.resolve({
+          streamers: [],
+          shiftChangeQueue: [],
+          recentEvents: [],
+        }),
+  ]);
 
   return (
     <StreamerLifecycleShell

@@ -172,6 +172,7 @@ const applicationSelect = `
 
 export async function listAdmissionProjectBoards(
   supabase: SupabaseClient | null,
+  organizationId: string,
 ): Promise<AdmissionProjectBoard[]> {
   if (!supabase) {
     return [];
@@ -194,7 +195,7 @@ export async function listAdmissionProjectBoards(
   const [recordings, vendorReviews, shareBoards] = await Promise.all([
     listRecordingRows(supabase, applicationIds),
     listVendorReviewRows(supabase, applicationIds),
-    listShareBoardRows(supabase, projectIds),
+    listShareBoardRows(supabase, projectIds, organizationId),
   ]);
 
   return toAdmissionProjectBoards(
@@ -381,14 +382,18 @@ async function listVendorReviewRows(
 async function listShareBoardRows(
   supabase: SupabaseClient,
   projectIds: string[],
+  organizationId: string,
 ): Promise<AdmissionShareBoardRow[]> {
   if (projectIds.length === 0) {
     return [];
   }
 
+  // 组织过滤走 (organization_id, project_id, status) 组合索引，RLS 仍
+  // 作为第二道防线。
   const { data, error } = await supabase
     .from("project_recording_share_boards")
     .select("id, project_id, status, expires_at, last_submitted_at")
+    .eq("organization_id", organizationId)
     .in("project_id", projectIds)
     .order("created_at", { ascending: false });
 

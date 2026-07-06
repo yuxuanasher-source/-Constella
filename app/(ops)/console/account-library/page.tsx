@@ -14,11 +14,14 @@ import { isMcnStaff } from "@/lib/rbac/roles";
 export default async function AccountLibraryPage() {
   const supabase = await createSupabaseServerClient();
   const auth = supabase ? await getAuthContext(supabase) : null;
-  const unreadCount = await getUnreadNotificationCount(supabase, auth);
 
   const canView = Boolean(auth && isMcnStaff(auth.role));
-  const accounts =
-    supabase && canView ? await listPlatformAccounts(supabase) : [];
+  const [unreadCount, accounts] = await Promise.all([
+    getUnreadNotificationCount(supabase, auth),
+    supabase && canView
+      ? listPlatformAccounts(supabase)
+      : Promise.resolve([]),
+  ]);
   const dtos = auth ? toPlatformAccountDtos(accounts, auth.role) : [];
   const canManage = Boolean(
     auth && canManageAccounts((auth as AccountLibraryActor).role),

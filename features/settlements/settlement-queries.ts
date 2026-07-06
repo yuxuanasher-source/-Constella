@@ -524,9 +524,9 @@ function projectStreamerRuleKey(projectId: string, streamerId: string) {
 }
 
 // 与 listOpsSettlementPool 同语义的计数：周期内已审核入池、且尚未进入
-// 对应类型批次的报告数。因为「排除已结算」需要报告 id 去 settlement_batch_items
-// 二次比对，无法用单条 head+count 查询表达；这里只取 id 列（不带
-// projects/streamers 关联、不查结算规则、不算金额），避免为计数拉全量宽行。
+// 对应类型批次的报告数。两段都用 head+count 计数，不再把 id 列表拉到
+// 内存：第二段从 live_reports 侧 inner join 批次项——嵌套资源不放大主表
+// 行数，每份报告只计一次，与原先 Set 去重后再比对的语义一致。
 async function countSettlementPoolReports(
   client: SupabaseClient,
   input: {
@@ -537,9 +537,9 @@ async function countSettlementPoolReports(
     periodEnd: string;
   },
 ): Promise<number> {
-  let query = client
+  let pooledQuery = client
     .from("live_reports")
-    .select("id")
+    .select("id", { count: "exact", head: true })
     .eq("organization_id", input.organizationId)
     .eq("status", "approved")
     .eq("enter_settlement_pool", true)
@@ -547,29 +547,48 @@ async function countSettlementPoolReports(
     .lte("created_at", `${input.periodEnd}T23:59:59.999Z`);
 
   if (input.projectId) {
-    query = query.eq("project_id", input.projectId);
+    pooledQuery = pooledQuery.eq("project_id", input.projectId);
   }
 
-  const { data, error } = await query.returns<Array<{ id: string }>>();
+  const { count: pooledCount, error } = await pooledQuery;
 
   if (error) {
     throw error;
   }
 
-  const reportIds = (data ?? []).map((row) => row.id);
-
-  if (reportIds.length === 0) {
+  if (!pooledCount) {
     return 0;
   }
 
-  const settledReportIds = await listSettledReportIdsForBatchType(
-    client,
-    input.organizationId,
-    reportIds,
-    input.batchType ?? "payable",
-  );
+  // 已入对应类型批次的入池报告数（同一周期与过滤条件）。
+  let settledQuery = client
+    .from("live_reports")
+    .select(
+      "id, settlement_batch_items!settlement_batch_items_live_report_id_fkey!inner(id, settlement_batches!inner(batch_type))",
+      { count: "exact", head: true },
+    )
+    .eq("organization_id", input.organizationId)
+    .eq("status", "approved")
+    .eq("enter_settlement_pool", true)
+    .gte("created_at", `${input.periodStart}T00:00:00.000Z`)
+    .lte("created_at", `${input.periodEnd}T23:59:59.999Z`)
+    .eq("settlement_batch_items.organization_id", input.organizationId)
+    .eq(
+      "settlement_batch_items.settlement_batches.batch_type",
+      input.batchType ?? "payable",
+    );
 
-  return reportIds.filter((id) => !settledReportIds.has(id)).length;
+  if (input.projectId) {
+    settledQuery = settledQuery.eq("project_id", input.projectId);
+  }
+
+  const { count: settledCount, error: settledError } = await settledQuery;
+
+  if (settledError) {
+    throw settledError;
+  }
+
+  return Math.max(pooledCount - (settledCount ?? 0), 0);
 }
 
 async function listSettledReportIdsForBatchType(
