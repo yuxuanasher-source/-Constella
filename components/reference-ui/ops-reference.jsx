@@ -228,9 +228,18 @@ function Button({
 }
 
 // Card — base container
-function Card({ children, title, extra, padded = true, style, bodyStyle }) {
+function Card({
+  children,
+  title,
+  extra,
+  padded = true,
+  style,
+  bodyStyle,
+  className,
+}) {
   return (
     <div
+      className={className}
       style={{
         background: "#fff",
         border: "1px solid var(--line)",
@@ -238,6 +247,7 @@ function Card({ children, title, extra, padded = true, style, bodyStyle }) {
         boxShadow: "var(--shadow-card)",
         display: "flex",
         flexDirection: "column",
+        minWidth: 0,
         ...style,
       }}
     >
@@ -475,6 +485,7 @@ function DataTable({
   onRowClick,
   activeRowId,
   emptyText = "暂无数据",
+  minWidth,
   // 行内抽屉：expandedRowId 命中的行会在其正下方渲染 renderExpanded(row)，
   // 让明细跟随所点的行展开，而不是跳到页面其他位置。
   renderExpanded,
@@ -483,10 +494,11 @@ function DataTable({
   rowId,
 }) {
   return (
-    <div style={{ width: "100%", overflow: "auto" }}>
+    <div style={{ width: "100%", minWidth: 0, overflow: "auto" }}>
       <table
         style={{
           width: "100%",
+          minWidth,
           borderCollapse: "separate",
           borderSpacing: 0,
           fontSize: 13,
@@ -510,6 +522,7 @@ function DataTable({
                   padding: dense ? "8px 12px" : "10px 14px",
                   borderBottom: "1px solid var(--line)",
                   width: c.width,
+                  minWidth: c.minWidth,
                   whiteSpace: "nowrap",
                 }}
               >
@@ -568,6 +581,7 @@ function DataTable({
                         verticalAlign: c.valign || "middle",
                         whiteSpace: c.wrap ? "normal" : "nowrap",
                         color: c.muted ? "var(--ink-400)" : "var(--ink-700)",
+                        minWidth: c.minWidth,
                       }}
                     >
                       {c.render ? c.render(r, i) : r[c.key]}
@@ -805,7 +819,13 @@ function ShowMore({
   );
 }
 
-function SearchInput({ placeholder = "搜索…", value, onChange, width = 280 }) {
+function SearchInput({
+  placeholder = "搜索…",
+  value,
+  onChange,
+  width = 280,
+  style,
+}) {
   return (
     <div
       style={{
@@ -815,9 +835,12 @@ function SearchInput({ placeholder = "搜索…", value, onChange, width = 280 }
         height: 32,
         padding: "0 10px",
         width,
+        maxWidth: "100%",
+        minWidth: 0,
         border: "1px solid var(--line-strong)",
         borderRadius: 6,
         background: "#fff",
+        ...style,
       }}
     >
       <Icon.Search size={14} stroke="var(--ink-400)" />
@@ -832,6 +855,7 @@ function SearchInput({ placeholder = "搜索…", value, onChange, width = 280 }
           background: "transparent",
           fontSize: 13,
           color: "var(--ink-700)",
+          minWidth: 0,
         }}
       />
     </div>
@@ -2882,10 +2906,12 @@ function PageHeader({ title, subtitle, status, actions }) {
           display: "flex",
           alignItems: "flex-start",
           justifyContent: "space-between",
+          flexWrap: "wrap",
           gap: 24,
+          minWidth: 0,
         }}
       >
-        <div>
+        <div style={{ flex: "1 1 240px", minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <h1
               style={{
@@ -2908,7 +2934,20 @@ function PageHeader({ title, subtitle, status, actions }) {
             </div>
           )}
         </div>
-        {actions && <div style={{ display: "flex", gap: 8 }}>{actions}</div>}
+        {actions && (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              justifyContent: "flex-end",
+              gap: 8,
+              flex: "0 1 auto",
+              minWidth: 0,
+            }}
+          >
+            {actions}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -12081,22 +12120,16 @@ function ScreenStreamers({ go, initialActiveId }) {
         }
       />
 
-      <div
-        style={{
-          padding: 20,
-          display: "grid",
-          gridTemplateColumns: "1fr 360px",
-          gap: 20,
-          alignItems: "flex-start",
-        }}
-      >
+      <div className="streamer-resource-layout">
         {/* List */}
-        <Card padded={false}>
+        <Card padded={false} className="streamer-resource-list">
           {/* Filter strip */}
           <div
+            className="streamer-resource-filters"
             style={{
               display: "flex",
               alignItems: "center",
+              flexWrap: "wrap",
               gap: 8,
               padding: "12px 16px",
               borderBottom: "1px solid var(--line)",
@@ -12107,6 +12140,7 @@ function ScreenStreamers({ go, initialActiveId }) {
               value={search}
               onChange={setSearch}
               width={240}
+              style={{ flex: "1 1 220px" }}
             />
             <StreamerInlineFilter
               label="品类筛选"
@@ -12139,6 +12173,8 @@ function ScreenStreamers({ go, initialActiveId }) {
                 fontSize: 13,
                 padding: "0 10px",
                 outline: "none",
+                flex: "0 1 128px",
+                minWidth: 112,
               }}
             >
               <option value="all">全部风险</option>
@@ -12147,8 +12183,10 @@ function ScreenStreamers({ go, initialActiveId }) {
               <option value="high">高风险</option>
               <option value="blacklisted">黑名单</option>
             </select>
-            <div style={{ flex: 1 }} />
-            <Badge tone="blue">{visibleStreamers.length} 位主播</Badge>
+            <div style={{ flex: "1 1 0", minWidth: 0 }} />
+            <span style={{ flex: "0 0 auto" }}>
+              <Badge tone="blue">{visibleStreamers.length} 位主播</Badge>
+            </span>
           </div>
           {exportMessage ? (
             <div
@@ -12487,6 +12525,8 @@ function ScreenStreamers({ go, initialActiveId }) {
             columns={[
               {
                 title: "主播",
+                width: 188,
+                minWidth: 188,
                 render: (r) => (
                   <div
                     style={{ display: "flex", alignItems: "center", gap: 10 }}
@@ -12519,6 +12559,8 @@ function ScreenStreamers({ go, initialActiveId }) {
               },
               {
                 title: "来源 / 供应商",
+                width: 132,
+                minWidth: 132,
                 render: (r) => (
                   <div>
                     <Badge
@@ -12547,6 +12589,8 @@ function ScreenStreamers({ go, initialActiveId }) {
               {
                 title: "擅长品类",
                 wrap: true,
+                width: 260,
+                minWidth: 220,
                 render: (r) => (
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                     {r.games.map((g) => (
@@ -12560,6 +12604,8 @@ function ScreenStreamers({ go, initialActiveId }) {
               {
                 title: "完成率",
                 align: "right",
+                width: 128,
+                minWidth: 128,
                 render: (r) => {
                   if (!hasStreamerPerformanceData(r)) {
                     return (
@@ -12590,6 +12636,8 @@ function ScreenStreamers({ go, initialActiveId }) {
               {
                 title: "ROI",
                 align: "right",
+                width: 72,
+                minWidth: 72,
                 render: (r) =>
                   hasStreamerPerformanceData(r) ? (
                     <span
@@ -12612,12 +12660,20 @@ function ScreenStreamers({ go, initialActiveId }) {
               },
               {
                 title: "默认结算",
+                width: 210,
+                minWidth: 180,
                 render: (r) => <Badge tone="ink">{r.defaultRule}</Badge>,
               },
-              { title: "风险", render: (r) => <RiskDot level={r.risk} /> },
+              {
+                title: "风险",
+                width: 72,
+                minWidth: 72,
+                render: (r) => <RiskDot level={r.risk} />,
+              },
             ]}
             rows={visibleStreamers}
             emptyText="暂无匹配主播"
+            minWidth={1000}
           />
         </Card>
 
@@ -12657,6 +12713,8 @@ function StreamerInlineFilter({ label, value, onChange, options }) {
         color: "var(--ink-500)",
         fontSize: 12,
         whiteSpace: "nowrap",
+        minWidth: 0,
+        flex: "0 1 auto",
       }}
     >
       <Icon.Filter size={13} />
@@ -12672,6 +12730,7 @@ function StreamerInlineFilter({ label, value, onChange, options }) {
           color: "var(--ink-700)",
           fontSize: 12,
           maxWidth: 96,
+          minWidth: 58,
         }}
       >
         <option value="all">全部</option>
@@ -12724,6 +12783,7 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
   if (!s) {
     return (
       <div
+        className="streamer-resource-detail"
         style={{
           position: "sticky",
           top: 76,
@@ -12885,6 +12945,7 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
 
   return (
     <div
+      className="streamer-resource-detail"
       style={{
         position: "sticky",
         top: 76,
