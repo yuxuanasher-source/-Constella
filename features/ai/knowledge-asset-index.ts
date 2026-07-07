@@ -8,7 +8,11 @@ export type KnowledgeAssetDocType =
   | "playbook";
 
 export type KnowledgeAssetMetadata = {
-  source: "knowledge_base" | "live_review" | "ai_draft";
+  source:
+    | "knowledge_base"
+    | "live_review"
+    | "ai_draft"
+    | "recording_transcript";
   docId?: string;
   path?: string[];
   projectId?: string;
