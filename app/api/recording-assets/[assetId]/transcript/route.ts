@@ -4,6 +4,7 @@ import {
   buildAnnotatedTranscript,
   loadRecordingTranscriptContext,
 } from "@/features/recordings/recording-transcript";
+import { buildTranscriptWordInsights } from "@/features/recordings/transcript-word-insights";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
@@ -68,6 +69,10 @@ export async function GET(_request: Request, context: RouteContext) {
         analysisId: transcript.analysisId,
         utterances: annotated.utterances,
         summary: annotated.summary,
+        // 高频词洞察：确定性词频统计（available:false 时不携带该字段）。
+        wordInsights: buildTranscriptWordInsights({
+          utterances: transcript.utterances,
+        }),
       },
     });
   } catch (error) {
