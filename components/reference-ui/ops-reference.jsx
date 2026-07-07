@@ -17543,6 +17543,23 @@ function AdmissionReviewWorkspace({
         alignItems: "flex-start",
       }}
     >
+      {/* 宽屏下左右两栏各自吸附视口、独立滚动：滚列表不带走预览，滚预览
+          不带走列表；窄屏（<1100px）回退为整页自然滚动。top/高度按
+          sticky 顶栏 64px + 16px 间距取值。 */}
+      <style>
+        {`
+          @media (min-width: 1100px) {
+            .admission-workspace-col {
+              position: sticky;
+              top: 80px;
+              max-height: calc(100vh - 96px);
+              overflow-y: auto;
+              overscroll-behavior: contain;
+              scrollbar-width: thin;
+            }
+          }
+        `}
+      </style>
       <div
         style={{
           gridColumn: "1 / -1",
@@ -17589,6 +17606,7 @@ function AdmissionReviewWorkspace({
           {message}
         </div>
       ) : null}
+      <div className="admission-workspace-col">
       <Card padded={false}>
         <div
           style={{ padding: "0 12px", borderBottom: "1px solid var(--line)" }}
@@ -17716,6 +17734,8 @@ function AdmissionReviewWorkspace({
           ]}
         />
       </Card>
+      </div>
+      <div className="admission-workspace-col">
       <AdmissionWorkspaceDetail
         application={active}
         projectName={projectName}
@@ -17726,6 +17746,7 @@ function AdmissionReviewWorkspace({
         onOpenAiAnalysis={onOpenAiAnalysis}
         fetchPreReview={fetchPreReview}
       />
+      </div>
     </div>
   );
 }
