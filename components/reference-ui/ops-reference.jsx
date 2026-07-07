@@ -15235,6 +15235,10 @@ function ScreenAdmission() {
                               setPlaybackRecording({
                                 assetId: r.latestRecording.assetId,
                                 streamerName: r.streamer?.displayName || "",
+                                // 逐字稿空态需要区分「未分析 / 分析中 / 已完成」，
+                                // 弹层里拿不到整条 application，这里顺手带上。
+                                aiAnalysisStatus:
+                                  r.latestRecording?.aiAnalysis?.status ?? null,
                               })
                             }
                           >
@@ -15707,8 +15711,10 @@ function AdmissionShareLinkDialog({ share, onClose }) {
 
 // 私有录屏内嵌播放弹层：video 直接指向签名播放端点（服务端 302 到 1h 签名 URL，
 // video 会自动跟随重定向），外壳与 AdmissionShareLinkDialog 同构。
+// 播放窗旁挂载直播逐字稿面板（RecordingTranscriptPanel）：宽屏侧栏、窄屏折行。
 function RecordingPlaybackDialog({ recording, onClose }) {
   const [videoError, setVideoError] = React.useState(false);
+  const videoRef = React.useRef(null);
   return (
     <div
       role="dialog"
@@ -15729,7 +15735,10 @@ function RecordingPlaybackDialog({ recording, onClose }) {
       <div
         onClick={(event) => event.stopPropagation()}
         style={{
-          width: "min(720px, 100%)",
+          width: "min(1080px, 100%)",
+          maxHeight: "min(860px, 92vh)",
+          display: "flex",
+          flexDirection: "column",
           background: "#fff",
           borderRadius: 12,
           border: "1px solid var(--line)",
@@ -15776,22 +15785,636 @@ function RecordingPlaybackDialog({ recording, onClose }) {
             ×
           </button>
         </div>
-        <div style={{ padding: 18, display: "grid", gap: 10 }}>
-          <video
-            controls
-            autoPlay
-            style={{ width: "100%", borderRadius: 8, background: "#000" }}
-            src={`/api/recording-assets/${recording.assetId}/download`}
-            onError={() => setVideoError(true)}
+        <div
+          style={{
+            padding: 18,
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "stretch",
+            gap: 14,
+            overflow: "auto",
+            minHeight: 0,
+          }}
+        >
+          <div
+            style={{
+              flex: "1.4 1 420px",
+              minWidth: 0,
+              display: "grid",
+              gap: 10,
+              alignContent: "start",
+            }}
+          >
+            <video
+              ref={videoRef}
+              controls
+              autoPlay
+              style={{ width: "100%", borderRadius: 8, background: "#000" }}
+              src={`/api/recording-assets/${recording.assetId}/download`}
+              onError={() => setVideoError(true)}
+            />
+            {videoError ? (
+              <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                无法加载视频（签名过期或文件缺失），请重试
+              </div>
+            ) : null}
+          </div>
+          <RecordingTranscriptPanel
+            assetId={recording.assetId}
+            assetName={recording.streamerName || "录屏"}
+            videoRef={videoRef}
+            analysisStatus={recording.aiAnalysisStatus ?? null}
+            bodyMaxHeight={420}
+            style={{ flex: "1 1 320px", minWidth: 280 }}
           />
-          {videoError ? (
-            <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
-              无法加载视频（签名过期或文件缺失），请重试
-            </div>
-          ) : null}
         </div>
       </div>
     </div>
+  );
+}
+
+// ===== 直播录屏逐字稿（两处播放窗共用的侧栏面板） =====
+// 挂载点：① 项目准入板「播放录屏」弹层（RecordingPlaybackDialog）；
+// ② 录屏审核工作台右栏播放窗（AdmissionWorkspaceDetail）。
+// 后端契约（与 transcript 后端并行开发，字段已锁定）：
+//   GET  /api/recording-assets/{assetId}/transcript
+//     → { transcript: { available, asrProvider, analysisId, utterances, summary } }
+//       utterances[].segments[].tone: null | "warning"(风险词黄标) | "violation"(违规词红标)
+//   POST /api/recording-assets/{assetId}/transcript/export
+//     body { format: "knowledge"|"docx"|"pdf", includeTimestamps }
+//     → knowledge 返回 { document: { id, title } }；docx/pdf 返回附件二进制（blob 下载）。
+
+// 红/黄标注色沿用全局状态 token：违规=danger 系（同状态徽章红），风险=warn 系（同徽章黄）。
+const TRANSCRIPT_TONE_MARK_STYLES = {
+  violation: { background: "var(--danger-50)", color: "var(--danger-600)" },
+  warning: { background: "var(--warn-50)", color: "var(--warn-600)" },
+};
+
+const TRANSCRIPT_EXPORT_ACTIONS = [
+  {
+    format: "knowledge",
+    label: "保存到企业库",
+    busyLabel: "保存中…",
+    failText: "保存到企业库失败，请稍后重试",
+  },
+  {
+    format: "docx",
+    label: "导出 Word",
+    busyLabel: "导出中…",
+    successText: "导出 Word 成功，已开始下载",
+    failText: "导出 Word 失败，请稍后重试",
+  },
+  {
+    format: "pdf",
+    label: "导出 PDF",
+    busyLabel: "导出中…",
+    successText: "导出 PDF 成功，已开始下载",
+    failText: "导出 PDF 失败，请稍后重试",
+  },
+];
+
+// [MM:SS] 时间戳；超过 1 小时退化为 H:MM:SS。
+function formatTranscriptClock(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const pad = (value) => String(value).padStart(2, "0");
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  return hours > 0
+    ? `${hours}:${pad(minutes)}:${pad(total % 60)}`
+    : `${pad(minutes)}:${pad(total % 60)}`;
+}
+
+// 附件文件名优先取 Content-Disposition，取不到回退「逐字稿-{资产名}.{ext}」。
+function transcriptExportFilename(response, format, assetName) {
+  const header =
+    typeof response?.headers?.get === "function"
+      ? response.headers.get("Content-Disposition") ||
+        response.headers.get("content-disposition")
+      : null;
+  if (header) {
+    const encoded = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(header);
+    if (encoded?.[1]) {
+      try {
+        return decodeURIComponent(encoded[1].trim().replace(/^"|"$/g, ""));
+      } catch {
+        // 编码异常时继续尝试普通 filename= 或默认名。
+      }
+    }
+    const plain = /filename="?([^";]+)"?/i.exec(header);
+    if (plain?.[1]) {
+      return plain[1].trim();
+    }
+  }
+  return `逐字稿-${assetName || "录屏"}.${format === "pdf" ? "pdf" : "docx"}`;
+}
+
+// 与 downloadAdmissionExport 同款的 blob 下载（jsdom 等无 createObjectURL 环境静默跳过）。
+function downloadTranscriptBlob(blob, filename) {
+  if (
+    !blob ||
+    typeof document === "undefined" ||
+    typeof URL === "undefined" ||
+    typeof URL.createObjectURL !== "function"
+  ) {
+    return;
+  }
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL?.(href);
+}
+
+function RecordingTranscriptPanel({
+  assetId,
+  assetName,
+  videoRef,
+  analysisStatus,
+  bodyMaxHeight = 320,
+  style,
+}) {
+  const [state, setState] = React.useState({
+    status: "loading",
+    transcript: null,
+  });
+  const [reloadToken, setReloadToken] = React.useState(0);
+  const [includeTimestamps, setIncludeTimestamps] = React.useState(true);
+  const [exportBusy, setExportBusy] = React.useState("");
+  const [exportMessage, setExportMessage] = React.useState(null);
+  const [activeIndex, setActiveIndex] = React.useState(-1);
+  // timeupdate 高频触发，节流后再计算当前话语行。
+  const lastFollowAtRef = React.useRef(0);
+  const activeRowRef = React.useRef(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setActiveIndex(-1);
+    setExportMessage(null);
+    if (!assetId) {
+      setState({ status: "error", transcript: null });
+      return () => {
+        cancelled = true;
+      };
+    }
+    setState({ status: "loading", transcript: null });
+    Promise.resolve()
+      .then(() =>
+        globalThis.fetch(`/api/recording-assets/${assetId}/transcript`, {
+          method: "GET",
+        }),
+      )
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.error || "加载逐字稿失败");
+        }
+        return payload.transcript ?? null;
+      })
+      .then((transcript) => {
+        if (!cancelled) {
+          setState({ status: "ready", transcript });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setState({ status: "error", transcript: null });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [assetId, reloadToken]);
+
+  const transcript = state.status === "ready" ? state.transcript : null;
+  const available = Boolean(transcript?.available);
+  const utterances = available ? (transcript.utterances ?? []) : [];
+  const summary = available ? (transcript.summary ?? null) : null;
+
+  // 播放位置 → 话语行高亮跟随（250ms 节流）。
+  React.useEffect(() => {
+    const video = videoRef?.current;
+    if (
+      !video ||
+      typeof video.addEventListener !== "function" ||
+      utterances.length === 0
+    ) {
+      return undefined;
+    }
+    const followPlayback = () => {
+      const now = Date.now();
+      if (now - lastFollowAtRef.current < 250) {
+        return;
+      }
+      lastFollowAtRef.current = now;
+      const time = Number(video.currentTime) || 0;
+      let next = -1;
+      for (let i = 0; i < utterances.length; i += 1) {
+        const utterance = utterances[i];
+        if (time < utterance.startSeconds) {
+          break;
+        }
+        next = i;
+        if (time < utterance.endSeconds) {
+          break;
+        }
+      }
+      setActiveIndex(next);
+    };
+    video.addEventListener("timeupdate", followPlayback);
+    return () => {
+      video.removeEventListener("timeupdate", followPlayback);
+    };
+  }, [videoRef, utterances]);
+
+  // 高亮行滚入可视区（jsdom 无 scrollIntoView，静默跳过）。
+  React.useEffect(() => {
+    const node = activeRowRef.current;
+    if (node && typeof node.scrollIntoView === "function") {
+      node.scrollIntoView({ block: "nearest" });
+    }
+  }, [activeIndex]);
+
+  const seekToUtterance = (utterance, index) => {
+    setActiveIndex(index);
+    const video = videoRef?.current;
+    if (!video) {
+      return;
+    }
+    try {
+      video.currentTime = Number(utterance.startSeconds) || 0;
+      const playing = video.play?.();
+      playing?.catch?.(() => {});
+    } catch {
+      // 视频未就绪/环境不支持播放时忽略，仅保留高亮。
+    }
+  };
+
+  const runExport = async (action) => {
+    if (!assetId || exportBusy) {
+      return;
+    }
+    setExportBusy(action.format);
+    setExportMessage(null);
+    try {
+      const response = await globalThis.fetch(
+        `/api/recording-assets/${assetId}/transcript/export`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: action.format, includeTimestamps }),
+        },
+      );
+      if (action.format === "knowledge") {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.error || action.failText);
+        }
+        setExportMessage({
+          tone: "ok",
+          text: `已保存到企业库：《${payload.document?.title || "逐字稿"}》`,
+        });
+        return;
+      }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        if (
+          response.status === 501 &&
+          [payload.error, payload.code].includes("pdf_font_unavailable")
+        ) {
+          throw new Error("PDF 字体未配置，请先导出 Word");
+        }
+        throw new Error(payload.error || action.failText);
+      }
+      const blob = await response.blob();
+      downloadTranscriptBlob(
+        blob,
+        transcriptExportFilename(response, action.format, assetName),
+      );
+      setExportMessage({ tone: "ok", text: action.successText });
+    } catch (error) {
+      setExportMessage({
+        tone: "error",
+        text: error?.message || action.failText,
+      });
+    } finally {
+      setExportBusy("");
+    }
+  };
+
+  // available:false 的引导空态：区分「未发起分析 / 分析中 / 分析完成但无转写」。
+  const analysisRunning =
+    analysisStatus === "pending" ||
+    analysisStatus === "queued" ||
+    analysisStatus === "running" ||
+    analysisStatus === "processing";
+  const unavailableHint = analysisRunning
+    ? "AI 分析进行中，完成后将自动生成逐字稿。"
+    : analysisStatus === "succeeded"
+      ? "本次 AI 分析未产出转写文本，可重新发起分析后生成。"
+      : "该录屏还未完成 AI 分析，请先在录屏明细的「发起 AI 分析」入口发起分析。";
+
+  let body = null;
+  if (state.status === "loading") {
+    body = (
+      <div
+        aria-label="逐字稿加载中"
+        style={{ padding: 14, display: "grid", gap: 10 }}
+      >
+        {[88, 64, 94, 72].map((width, index) => (
+          <div
+            key={index}
+            style={{
+              height: 10,
+              width: `${width}%`,
+              borderRadius: 999,
+              background: "var(--ink-50)",
+            }}
+          />
+        ))}
+        <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+          逐字稿加载中…
+        </div>
+      </div>
+    );
+  } else if (state.status === "error") {
+    body = (
+      <div
+        style={{
+          padding: "24px 14px",
+          display: "grid",
+          gap: 10,
+          justifyItems: "center",
+        }}
+      >
+        <div style={{ fontSize: 12, color: "var(--danger-600)" }}>
+          逐字稿加载失败，请重试
+        </div>
+        <Button
+          size="sm"
+          kind="default"
+          onClick={() => setReloadToken((token) => token + 1)}
+        >
+          重试
+        </Button>
+      </div>
+    );
+  } else if (!available) {
+    body = (
+      <EmptyHint title="完成 AI 分析后自动生成逐字稿" hint={unavailableHint} />
+    );
+  } else if (utterances.length === 0) {
+    body = (
+      <EmptyHint
+        title="逐字稿为空"
+        hint="本场录屏未识别到有效语音内容。"
+      />
+    );
+  } else {
+    body = (
+      <div
+        role="list"
+        aria-label="逐字稿话语列表"
+        style={{
+          overflowY: "auto",
+          maxHeight: bodyMaxHeight,
+          padding: 8,
+          display: "grid",
+          gap: 2,
+          alignContent: "start",
+        }}
+      >
+        {utterances.map((utterance, index) => {
+          const isActive = index === activeIndex;
+          const clock = formatTranscriptClock(utterance.startSeconds);
+          const segments =
+            Array.isArray(utterance.segments) && utterance.segments.length > 0
+              ? utterance.segments
+              : [{ text: utterance.text ?? "", tone: null }];
+          return (
+            <div
+              role="listitem"
+              key={utterance.index ?? index}
+              ref={isActive ? activeRowRef : null}
+              data-transcript-row={isActive ? "active" : "idle"}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 8,
+                padding: "5px 6px",
+                borderRadius: 6,
+                background: isActive ? "var(--blue-50)" : "transparent",
+                boxShadow: isActive
+                  ? "inset 0 0 0 1px var(--blue-200)"
+                  : "none",
+              }}
+            >
+              <button
+                type="button"
+                className="num"
+                onClick={() => seekToUtterance(utterance, index)}
+                aria-label={`跳转到 ${clock}`}
+                title={`跳转播放到 ${clock}`}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  padding: 0,
+                  marginTop: 1,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  lineHeight: "18px",
+                  color: isActive ? "var(--blue-700)" : "var(--blue-600)",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                [{clock}]
+              </button>
+              <div
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: 12,
+                  lineHeight: "18px",
+                  color: "var(--ink-700)",
+                  wordBreak: "break-word",
+                }}
+              >
+                {segments.map((segment, segmentIndex) => {
+                  const markStyle = segment?.tone
+                    ? TRANSCRIPT_TONE_MARK_STYLES[segment.tone]
+                    : null;
+                  if (!markStyle) {
+                    return (
+                      <React.Fragment key={segmentIndex}>
+                        {segment?.text ?? ""}
+                      </React.Fragment>
+                    );
+                  }
+                  return (
+                    <mark
+                      key={segmentIndex}
+                      data-tone={segment.tone}
+                      title={
+                        segment.keyword
+                          ? `${segment.tone === "violation" ? "违规词" : "风险词"}：${segment.keyword}${segment.category ? `（${segment.category}）` : ""}`
+                          : undefined
+                      }
+                      style={{
+                        ...markStyle,
+                        borderRadius: 3,
+                        padding: "0 2px",
+                        fontWeight: 500,
+                      }}
+                    >
+                      {segment.text}
+                    </mark>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <section
+      aria-label="直播逐字稿"
+      style={{
+        background: "#fff",
+        border: "1px solid var(--line)",
+        borderRadius: 10,
+        boxShadow: "var(--shadow-card)",
+        display: "flex",
+        flexDirection: "column",
+        minWidth: 0,
+        ...style,
+      }}
+    >
+      <div
+        style={{
+          padding: "10px 12px",
+          borderBottom: "1px solid var(--line)",
+          display: "grid",
+          gap: 8,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "baseline",
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color: "var(--ink-900)",
+              flex: 1,
+              minWidth: 0,
+            }}
+          >
+            直播逐字稿
+            {available && transcript?.asrProvider ? (
+              <span
+                style={{
+                  marginLeft: 8,
+                  fontSize: 11,
+                  fontWeight: 400,
+                  color: "var(--ink-400)",
+                }}
+              >
+                ASR：{transcript.asrProvider}
+              </span>
+            ) : null}
+          </div>
+          {summary ? (
+            <span style={{ display: "inline-flex", gap: 6 }}>
+              <Badge tone="red">违规 {summary.violationCount ?? 0}</Badge>
+              <Badge tone="amber">风险 {summary.warningCount ?? 0}</Badge>
+            </span>
+          ) : null}
+        </div>
+        {summary?.keywords?.length ? (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {summary.keywords.slice(0, 6).map((item) => (
+              <Badge
+                key={`${item.tone}:${item.keyword}`}
+                tone={item.tone === "violation" ? "red" : "amber"}
+                soft={false}
+              >
+                {item.keyword} ×{item.count}
+              </Badge>
+            ))}
+          </div>
+        ) : null}
+        {available ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              flexWrap: "wrap",
+            }}
+          >
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 12,
+                color: "var(--ink-500)",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                marginRight: 2,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={includeTimestamps}
+                onChange={(event) =>
+                  setIncludeTimestamps(event.target.checked)
+                }
+                style={{ accentColor: "var(--blue-600)" }}
+              />
+              带时间戳
+            </label>
+            {TRANSCRIPT_EXPORT_ACTIONS.map((action) => (
+              <Button
+                key={action.format}
+                size="sm"
+                kind="default"
+                onClick={() => runExport(action)}
+                disabled={Boolean(exportBusy)}
+              >
+                {exportBusy === action.format ? action.busyLabel : action.label}
+              </Button>
+            ))}
+          </div>
+        ) : null}
+        {exportMessage ? (
+          <div
+            style={{
+              fontSize: 12,
+              color:
+                exportMessage.tone === "error"
+                  ? "var(--danger-600)"
+                  : "var(--ok-600)",
+            }}
+          >
+            {exportMessage.text}
+          </div>
+        ) : null}
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>{body}</div>
+    </section>
   );
 }
 
@@ -16504,6 +17127,8 @@ function AdmissionWorkspaceDetail({
 }) {
   const submissionId = application?.latestRecording?.id ?? null;
   const [videoError, setVideoError] = React.useState(false);
+  // 逐字稿面板的时间戳跳转/高亮跟随需要直接操作本屏的 video 元素。
+  const videoRef = React.useRef(null);
   // AI 预审：选中条目变化时拉取一次；失败降级为灰字，不阻塞审核操作。
   const [preReview, setPreReview] = React.useState({
     status: "idle",
@@ -16654,6 +17279,17 @@ function AdmissionWorkspaceDetail({
               本项目待审核已清零 ✅
             </div>
           ) : null}
+          {/* 播放窗 + 直播逐字稿：宽屏并排（逐字稿作侧栏），窄屏 flexWrap 折行。 */}
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "stretch",
+              gap: 12,
+              flex: "1 1 auto",
+              minHeight: 0,
+            }}
+          >
           <div
             style={{
               background: "#0B1220",
@@ -16663,7 +17299,8 @@ function AdmissionWorkspaceDetail({
               flexDirection: "column",
               justifyContent: "center",
               gap: 8,
-              flex: "1 1 auto",
+              flex: "1.4 1 300px",
+              minWidth: 0,
               minHeight: 200,
               overflow: "hidden",
             }}
@@ -16671,6 +17308,7 @@ function AdmissionWorkspaceDetail({
             {canPlayPrivate ? (
               <>
                 <video
+                  ref={videoRef}
                   controls
                   key={recording.assetId}
                   style={{
@@ -16746,6 +17384,17 @@ function AdmissionWorkspaceDetail({
                 暂无录屏
               </div>
             )}
+          </div>
+          {canPlayPrivate ? (
+            <RecordingTranscriptPanel
+              assetId={recording.assetId}
+              assetName={`${application.streamer?.displayName || "主播"}-${projectName}`}
+              videoRef={videoRef}
+              analysisStatus={analysis?.status ?? null}
+              bodyMaxHeight={240}
+              style={{ flex: "1 1 260px", minWidth: 240 }}
+            />
+          ) : null}
           </div>
           {/* AI 识别与预审：常驻面板底部，内容超高时块内滚动 */}
           <div

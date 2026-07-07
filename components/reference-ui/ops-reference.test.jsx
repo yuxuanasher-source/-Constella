@@ -10034,3 +10034,520 @@ describe("OpsReferenceApp org smoke", () => {
     expect(screen.getAllByText("操作日志 & 审计").length).toBeGreaterThan(0);
   });
 });
+
+describe("OpsReferenceApp recording transcript panel", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  // 与后端契约一致的逐字稿 fixture：violation 红标 / warning 黄标各一处。
+  const transcriptFixture = {
+    available: true,
+    asrProvider: "whisper-large",
+    analysisId: "analysis-transcript-1",
+    utterances: [
+      {
+        index: 0,
+        startSeconds: 5,
+        endSeconds: 12,
+        text: "欢迎来到直播间，全网最低价错过不再有。",
+        segments: [
+          { text: "欢迎来到直播间，", tone: null },
+          {
+            text: "全网最低价",
+            tone: "violation",
+            keyword: "全网最低价",
+            category: "绝对化用语",
+          },
+          { text: "错过不再有。", tone: null },
+        ],
+      },
+      {
+        index: 1,
+        startSeconds: 65,
+        endSeconds: 73,
+        text: "点击下方小黄车，库存告急先到先得。",
+        segments: [
+          { text: "点击下方小黄车，", tone: null },
+          {
+            text: "库存告急",
+            tone: "warning",
+            keyword: "库存告急",
+            category: "饥饿营销",
+          },
+          { text: "先到先得。", tone: null },
+        ],
+      },
+    ],
+    summary: {
+      violationCount: 1,
+      warningCount: 1,
+      keywords: [
+        {
+          keyword: "全网最低价",
+          tone: "violation",
+          category: "绝对化用语",
+          count: 1,
+        },
+        { keyword: "库存告急", tone: "warning", category: "饥饿营销", count: 1 },
+      ],
+    },
+  };
+
+  const buildTranscriptApplication = ({ aiAnalysis } = {}) => ({
+    id: "app-transcript-priv",
+    status: "pending_recording_review",
+    source: "open_signup",
+    submittedAt: "2026-06-02T11:00:00.000Z",
+    project: { id: "project-1", code: "P2412", name: "元梦之星" },
+    streamer: {
+      id: "streamer-2",
+      displayName: "阿汤",
+      cooperationStatus: "active",
+      riskLevel: "low",
+    },
+    latestRecording: {
+      id: "recording-priv-1",
+      assetId: "asset-priv-1",
+      version: 1,
+      status: "pending_review",
+      durationSeconds: 1800,
+      createdAt: "2026-06-02T11:00:00.000Z",
+      externalUrl: null,
+      hasPrivateStorage: true,
+      aiAnalysis:
+        aiAnalysis === undefined
+          ? {
+              id: "analysis-transcript-1",
+              assetId: "asset-priv-1",
+              status: "succeeded",
+              statusLabel: "已完成",
+            }
+          : aiAnalysis,
+    },
+  });
+
+  const buildTranscriptFetchMock = ({
+    transcript = transcriptFixture,
+    onExport,
+  } = {}) =>
+    vi.fn(async (url, init) => {
+      const target = String(url);
+      if (target === "/api/recording-assets/asset-priv-1/transcript") {
+        return { ok: true, json: async () => ({ transcript }) };
+      }
+      if (
+        target === "/api/recording-assets/asset-priv-1/transcript/export" &&
+        init?.method === "POST"
+      ) {
+        if (typeof onExport !== "function") {
+          throw new Error("transcript export not stubbed");
+        }
+        return onExport(JSON.parse(init.body));
+      }
+      // 其余请求走「后端未接入」降级路径，与真实 fetch 抛错语义一致。
+      throw new Error(`unexpected request: ${target}`);
+    });
+
+  const openPlaybackDialog = () => {
+    fireEvent.click(screen.getByRole("button", { name: "展开明细" }));
+    fireEvent.click(screen.getByRole("button", { name: "播放录屏" }));
+    return screen.getByRole("dialog", { name: "播放录屏" });
+  };
+
+  it("renders transcript utterances with violation and warning marks beside the playback window", async () => {
+    const fetchMock = buildTranscriptFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[buildTranscriptApplication()]}
+      />,
+    );
+    const dialog = openPlaybackDialog();
+
+    // 面板壳 + loading 骨架先出现，随后逐字稿内容渲染。
+    expect(within(dialog).getByText("直播逐字稿")).toBeInTheDocument();
+    expect(within(dialog).getByText("逐字稿加载中…")).toBeInTheDocument();
+
+    const violationMark = await within(dialog).findByText("全网最低价", {
+      selector: "mark",
+    });
+    expect(violationMark).toHaveAttribute("data-tone", "violation");
+    const warningMark = within(dialog).getByText("库存告急", {
+      selector: "mark",
+    });
+    expect(warningMark).toHaveAttribute("data-tone", "warning");
+
+    // 摘要条：违规/风险计数徽章 + 高频关键词 chips + 时间戳按钮。
+    expect(within(dialog).getByText("违规 1")).toBeInTheDocument();
+    expect(within(dialog).getByText("风险 1")).toBeInTheDocument();
+    expect(within(dialog).getByText("全网最低价 ×1")).toBeInTheDocument();
+    expect(within(dialog).getByText("库存告急 ×1")).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "跳转到 00:05" }),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "跳转到 01:05" }),
+    ).toBeInTheDocument();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/recording-assets/asset-priv-1/transcript",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("seeks the dialog video from timestamp buttons and follows timeupdate highlighting", async () => {
+    const fetchMock = buildTranscriptFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[buildTranscriptApplication()]}
+      />,
+    );
+    const dialog = openPlaybackDialog();
+    await within(dialog).findByText("全网最低价", { selector: "mark" });
+
+    const video = dialog.querySelector("video");
+    Object.defineProperty(video, "currentTime", {
+      value: 0,
+      writable: true,
+      configurable: true,
+    });
+    video.play = vi.fn();
+
+    // 点击时间戳 → seek 到该话语起点并播放，行同步高亮。
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "跳转到 01:05" }),
+    );
+    expect(video.currentTime).toBe(65);
+    expect(video.play).toHaveBeenCalledTimes(1);
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "跳转到 01:05" })
+        .closest("[data-transcript-row]"),
+    ).toHaveAttribute("data-transcript-row", "active");
+
+    // 播放推进（timeupdate）→ 高亮跟随当前播放位置对应的话语行。
+    video.currentTime = 6;
+    fireEvent(video, new Event("timeupdate"));
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "跳转到 00:05" })
+        .closest("[data-transcript-row]"),
+    ).toHaveAttribute("data-transcript-row", "active");
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "跳转到 01:05" })
+        .closest("[data-transcript-row]"),
+    ).toHaveAttribute("data-transcript-row", "idle");
+  });
+
+  it("exports the transcript to knowledge base, word and pdf with the chosen payload", async () => {
+    const createObjectURL = vi.fn(() => "blob:transcript-export");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+    const clickDownload = vi.fn();
+    const anchors = [];
+    const originalCreateElement = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation(
+      (tagName, options) => {
+        const element = originalCreateElement(tagName, options);
+        if (tagName === "a") {
+          element.click = clickDownload;
+          anchors.push(element);
+        }
+        return element;
+      },
+    );
+
+    const exportCalls = [];
+    const fetchMock = buildTranscriptFetchMock({
+      onExport: (payload) => {
+        exportCalls.push(payload);
+        if (payload.format === "knowledge") {
+          return {
+            ok: true,
+            json: async () => ({
+              document: { id: "doc-transcript-1", title: "逐字稿 · 阿汤" },
+            }),
+          };
+        }
+        if (payload.format === "docx") {
+          return {
+            ok: true,
+            headers: {
+              get: (name) =>
+                String(name).toLowerCase() === "content-disposition"
+                  ? 'attachment; filename="transcript-asset-priv-1.docx"'
+                  : null,
+            },
+            blob: async () => new Blob(["fake-docx"]),
+          };
+        }
+        return {
+          ok: false,
+          status: 501,
+          json: async () => ({ error: "pdf_font_unavailable" }),
+        };
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[buildTranscriptApplication()]}
+      />,
+    );
+    const dialog = openPlaybackDialog();
+    await within(dialog).findByText("全网最低价", { selector: "mark" });
+
+    // 保存到企业库：默认带时间戳，成功提示包含文档标题。
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "保存到企业库" }),
+    );
+    expect(
+      await within(dialog).findByText("已保存到企业库：《逐字稿 · 阿汤》"),
+    ).toBeInTheDocument();
+    expect(exportCalls[0]).toEqual({
+      format: "knowledge",
+      includeTimestamps: true,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/recording-assets/asset-priv-1/transcript/export",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    // 关闭「带时间戳」后导出 Word：payload 跟随开关，文件名取 Content-Disposition。
+    fireEvent.click(
+      within(dialog).getByRole("checkbox", { name: "带时间戳" }),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "导出 Word" }));
+    expect(
+      await within(dialog).findByText("导出 Word 成功，已开始下载"),
+    ).toBeInTheDocument();
+    expect(exportCalls[1]).toEqual({
+      format: "docx",
+      includeTimestamps: false,
+    });
+    expect(clickDownload).toHaveBeenCalledTimes(1);
+    const downloadAnchor = anchors.find((anchor) => anchor.download);
+    expect(downloadAnchor?.download).toBe("transcript-asset-priv-1.docx");
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+
+    // 导出 PDF：后端 501 pdf_font_unavailable → 引导先导出 Word。
+    fireEvent.click(within(dialog).getByRole("button", { name: "导出 PDF" }));
+    expect(
+      await within(dialog).findByText("PDF 字体未配置，请先导出 Word"),
+    ).toBeInTheDocument();
+    expect(exportCalls[2]).toEqual({ format: "pdf", includeTimestamps: false });
+  });
+
+  it("shows the guided empty state when the transcript is unavailable", async () => {
+    const fetchMock = buildTranscriptFetchMock({
+      transcript: {
+        available: false,
+        asrProvider: null,
+        analysisId: null,
+        utterances: [],
+        summary: { violationCount: 0, warningCount: 0, keywords: [] },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[buildTranscriptApplication({ aiAnalysis: null })]}
+      />,
+    );
+    const dialog = openPlaybackDialog();
+
+    // 未分析资产：引导先去分析入口发起 AI 分析；导出控件不出现。
+    expect(
+      await within(dialog).findByText("完成 AI 分析后自动生成逐字稿"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(
+        /请先在录屏明细的「发起 AI 分析」入口发起分析/,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole("button", { name: "保存到企业库" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole("checkbox", { name: "带时间戳" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("retries the transcript fetch after a failure", async () => {
+    let transcriptCalls = 0;
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      if (target === "/api/recording-assets/asset-priv-1/transcript") {
+        transcriptCalls += 1;
+        if (transcriptCalls === 1) {
+          return { ok: false, json: async () => ({ error: "boom" }) };
+        }
+        return { ok: true, json: async () => ({ transcript: transcriptFixture }) };
+      }
+      throw new Error(`unexpected request: ${target}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[buildTranscriptApplication()]}
+      />,
+    );
+    const dialog = openPlaybackDialog();
+
+    expect(
+      await within(dialog).findByText("逐字稿加载失败，请重试"),
+    ).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "重试" }));
+    expect(
+      await within(dialog).findByText("全网最低价", { selector: "mark" }),
+    ).toBeInTheDocument();
+    expect(transcriptCalls).toBe(2);
+  });
+
+  it("mounts the transcript panel beside the workspace playback window and seeks that video", async () => {
+    const workspaceApplication = {
+      id: "app-ws-transcript",
+      status: "recording_reviewing",
+      source: "signup",
+      submittedAt: "2026-06-07T01:00:00.000Z",
+      project: { id: "project-ws", code: "P-WS", name: "Workspace Project" },
+      streamer: {
+        id: "streamer-ws-1",
+        displayName: "Workspace Priv",
+        accountLabel: "Douyin / priv-live",
+      },
+      latestRecording: {
+        id: "sub-ws-transcript",
+        assetId: "asset-ws-transcript",
+        version: 1,
+        status: "reviewing",
+        durationSeconds: 1800,
+        url: null,
+        hasPrivateStorage: true,
+        aiAnalysis: {
+          id: "analysis-ws-transcript",
+          assetId: "asset-ws-transcript",
+          status: "succeeded",
+          statusLabel: "已完成",
+        },
+      },
+      vendorReview: null,
+    };
+    const fetchMock = vi.fn(async (url) => {
+      const target = String(url);
+      if (target === "/api/applications/admission-board") {
+        return {
+          ok: true,
+          json: async () => ({
+            projects: [
+              {
+                project: {
+                  id: "project-ws",
+                  code: "P-WS",
+                  name: "Workspace Project",
+                  vendor: "Vendor W",
+                  product: "Game W",
+                },
+                counts: {
+                  totalApplications: 1,
+                  recordingCount: 1,
+                  mcnPendingReview: 1,
+                  mcnApproved: 0,
+                  mcnRejected: 0,
+                  needsChanges: 0,
+                  vendorPending: 1,
+                  vendorSelected: 0,
+                  vendorBackup: 0,
+                  vendorRejected: 0,
+                  vendorNeedsChanges: 0,
+                  pendingFinalConfirm: 0,
+                },
+                share: {
+                  id: null,
+                  status: "unshared",
+                  expiresAt: null,
+                  lastSubmittedAt: null,
+                },
+                lastActivityAt: "2026-06-07T01:00:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+      if (target === "/api/admission-review/rubric?stage=mcn_first") {
+        return {
+          ok: true,
+          json: async () => ({
+            checkpoints: [
+              { key: "content_quality", label: "内容质量达标", stage: "mcn_first" },
+              { key: "duration_ok", label: "时长达标", stage: "mcn_first" },
+            ],
+          }),
+        };
+      }
+      if (target.startsWith("/api/admission-review/pre-review?submissionId=")) {
+        return { ok: true, json: async () => ({ preReview: null, fastLane: null }) };
+      }
+      if (target === "/api/recording-assets/asset-ws-transcript/transcript") {
+        return { ok: true, json: async () => ({ transcript: transcriptFixture }) };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[workspaceApplication]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "进入录屏审核" }));
+    expect(
+      screen.getByText("Workspace Priv · Workspace Project"),
+    ).toBeInTheDocument();
+
+    // 工作台右栏：播放窗旁挂上逐字稿面板。
+    expect(screen.getByText("直播逐字稿")).toBeInTheDocument();
+    expect(
+      await screen.findByText("全网最低价", { selector: "mark" }),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/recording-assets/asset-ws-transcript/transcript",
+      expect.objectContaining({ method: "GET" }),
+    );
+
+    // 时间戳按钮接线到工作台自己的 video 元素。
+    const video = container.querySelector("video");
+    expect(video).toHaveAttribute(
+      "src",
+      "/api/recording-assets/asset-ws-transcript/download",
+    );
+    Object.defineProperty(video, "currentTime", {
+      value: 0,
+      writable: true,
+      configurable: true,
+    });
+    video.play = vi.fn();
+    fireEvent.click(screen.getByRole("button", { name: "跳转到 00:05" }));
+    expect(video.currentTime).toBe(5);
+    expect(video.play).toHaveBeenCalledTimes(1);
+  });
+});
