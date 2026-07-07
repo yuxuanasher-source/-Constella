@@ -13,12 +13,16 @@ import {
   type TranscriptSegment,
   type TranscriptSummary,
 } from "./recording-transcript";
+import {
+  buildTranscriptWordInsights,
+  type TranscriptWordInsights,
+} from "./transcript-word-insights";
 
 /**
  * 逐字稿导出的三种产物构建器：企业知识库 markdown / Word(docx) / PDF。
  * 标注口径全部来自 buildAnnotatedTranscript（复用录屏风险词典），
- * violation → 红、warning → 深黄。导出内容只含逐字稿与风险摘要，
- * 不携带成本 / 毛利等敏感经营字段。
+ * violation → 红、warning → 深黄。导出内容只含逐字稿、风险摘要与
+ * 高频词统计，不携带成本 / 毛利等敏感经营字段。
  */
 
 export type TranscriptExportInput = {
@@ -55,6 +59,46 @@ function utteranceLinePrefix(
 }
 
 // ---------------------------------------------------------------------------
+// 共享高频词块（知识库 / docx / PDF 摘要区通用，与 includeTimestamps 无关）
+// ---------------------------------------------------------------------------
+
+/** 导出摘要区里有效词 / 无效水词各展示的条数上限。 */
+const WORD_INSIGHTS_EXPORT_TOP_N = 5;
+
+/**
+ * 高频词块的三行紧凑文案：有效词 top（带类别）、无效水词 top、两个指标。
+ * 三种导出格式共用同一份文案，保证口径一致。
+ */
+export function transcriptWordInsightsLines(
+  insights: TranscriptWordInsights,
+): string[] {
+  const effective = insights.effective
+    .slice(0, WORD_INSIGHTS_EXPORT_TOP_N)
+    .map((item) => `${item.categoryLabel}「${item.word}」×${item.count}`)
+    .join("、");
+  const ineffective = insights.ineffective
+    .slice(0, WORD_INSIGHTS_EXPORT_TOP_N)
+    .map((item) => `「${item.word}」×${item.count}`)
+    .join("、");
+  const share =
+    insights.metrics.effectiveShare === null
+      ? "—"
+      : `${Math.round(insights.metrics.effectiveShare * 100)}%`;
+  return [
+    `有效词 Top${WORD_INSIGHTS_EXPORT_TOP_N}：${effective || "无"}`,
+    `无效水词 Top${WORD_INSIGHTS_EXPORT_TOP_N}：${ineffective || "无"}`,
+    `口播指标：水词密度 ${insights.metrics.fillerPerUtterance} 词/句 · 有效话术占比 ${share}`,
+  ];
+}
+
+/** 从标注话语（含原文 text）算出导出用的高频词洞察。 */
+function exportWordInsightsLines(transcript: AnnotatedTranscript): string[] {
+  return transcriptWordInsightsLines(
+    buildTranscriptWordInsights({ utterances: transcript.utterances }),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 知识库 markdown
 // ---------------------------------------------------------------------------
 
@@ -84,6 +128,10 @@ export function buildTranscriptKnowledgeDocument({
     "## 风险摘要",
     "",
     `- ${transcriptSummaryLabel(transcript.summary)}`,
+    "",
+    "## 高频词",
+    "",
+    ...exportWordInsightsLines(transcript).map((line) => `- ${line}`),
     "",
     "## 正文",
     "",
@@ -151,6 +199,13 @@ export async function buildTranscriptDocx(
         }),
       ],
     }),
+    // 高频词块：与知识库 / PDF 同一份紧凑文案，始终包含。
+    ...exportWordInsightsLines(input.transcript).map(
+      (line) =>
+        new Paragraph({
+          children: [new TextRun({ text: line, color: DOCX_TIMESTAMP_COLOR })],
+        }),
+    ),
     new Paragraph({ children: [] }),
   ];
 
@@ -285,6 +340,13 @@ export async function buildTranscriptPdf(
     ],
     PDF_BODY_SIZE,
   );
+  // 高频词块：与知识库 / docx 同一份紧凑文案，始终包含。
+  for (const line of exportWordInsightsLines(input.transcript)) {
+    writer.drawParagraph(
+      [{ text: line, color: PDF_COLOR_TIMESTAMP }],
+      PDF_BODY_SIZE,
+    );
+  }
   writer.blankLine(0.8);
 
   for (const utterance of input.transcript.utterances) {

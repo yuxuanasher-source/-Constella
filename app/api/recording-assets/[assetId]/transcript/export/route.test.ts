@@ -165,6 +165,13 @@ describe("recording asset transcript export route", () => {
     expect(doc.body).toContain("- [01:05] 想【违规:赌博】的【风险:加我微信】");
     expect(doc.body).toContain("违规命中 1 处 · 风险命中 1 处");
     expect(doc.body).toContain("违规「赌博」×1");
+    // 高频词块始终存在；这两句没有词典命中 → 列表为「无」、占比为「—」。
+    expect(doc.body).toContain("## 高频词");
+    expect(doc.body).toContain("- 有效词 Top5：无");
+    expect(doc.body).toContain("- 无效水词 Top5：无");
+    expect(doc.body).toContain(
+      "- 口播指标：水词密度 0 词/句 · 有效话术占比 —",
+    );
 
     expect(writeAuditLog).toHaveBeenCalledWith(
       { client: "supabase" },
@@ -197,6 +204,39 @@ describe("recording asset transcript export route", () => {
     expect(doc.body).toContain("- 想【违规:赌博】的【风险:加我微信】");
     expect(doc.body).not.toContain("[00:01]");
     expect(doc.body).not.toContain("[01:05]");
+    // 高频词块与 includeTimestamps 无关，关掉时间戳时依然存在。
+    expect(doc.body).toContain("## 高频词");
+  });
+
+  it("includes the word insights block with hits in the knowledge export", async () => {
+    vi.mocked(loadRecordingTranscriptContext).mockResolvedValue({
+      asset: { id: "asset-1", title: "0701 大场" },
+      transcript: {
+        analysisId: "analysis-1",
+        asrProvider: "doubao_asr",
+        completedAt: "2026-07-01T10:00:00.000Z",
+        utterances: [
+          { text: "家人们家人们点赞", startSeconds: 1, endSeconds: 3 },
+          { text: "嗯嗯嗯那个就是", startSeconds: 4, endSeconds: 6 },
+        ],
+      },
+    });
+
+    const response = await POST(request({ format: "knowledge" }), routeContext);
+
+    expect(response.status).toBe(201);
+    const [, doc] = vi.mocked(upsertKnowledgeAssetDocument).mock.calls[0];
+    expect(doc.body).toContain("## 高频词");
+    expect(doc.body).toContain(
+      "- 有效词 Top5：互动「家人们」×2、互动「点赞」×1",
+    );
+    expect(doc.body).toContain(
+      "- 无效水词 Top5：「嗯」×3、「就是」×1、「那个」×1",
+    );
+    // 水词密度 5/2=2.5 词/句；有效占比 3/(3+5)=37.5% → 四舍五入 38%。
+    expect(doc.body).toContain(
+      "- 口播指标：水词密度 2.5 词/句 · 有效话术占比 38%",
+    );
   });
 
   it("exports a Word attachment with the docx magic bytes", async () => {
