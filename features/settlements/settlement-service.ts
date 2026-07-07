@@ -58,6 +58,7 @@ export type SettlementBatchRecord = {
   projectId: string;
   batchType: SettlementBatchType;
   status: SettlementBatchStatus;
+  title?: string | null;
   periodStart: string;
   periodEnd: string;
   computedAmount: number;
@@ -70,6 +71,12 @@ export type SettlementBatchRecord = {
   lockedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
+};
+
+export type StreamerUserLink = {
+  streamerId: string;
+  userId: string | null;
+  displayName: string | null;
 };
 
 export type SettlementBatchItemRecord = {
@@ -133,6 +140,7 @@ export type SettlementRepository = {
     organizationId: string;
     projectId: string;
     batchType: SettlementBatchType;
+    title?: string | null;
     periodStart: string;
     periodEnd: string;
     computedAmount: number;
@@ -154,6 +162,13 @@ export type SettlementRepository = {
     batchId: string,
     patch: Partial<SettlementBatchRecord>,
   ): Promise<SettlementBatchRecord>;
+  listSettlementBatchItems(
+    batchId: string,
+  ): Promise<SettlementBatchItemRecord[]>;
+  listStreamerUserLinks(input: {
+    organizationId: string;
+    streamerIds: string[];
+  }): Promise<StreamerUserLink[]>;
 };
 
 export type SettlementAuditWriter = (input: AuditLogInput) => Promise<void>;
@@ -212,6 +227,10 @@ export async function generateSettlementBatch({
     batchType: SettlementBatchType;
     periodStart: string;
     periodEnd: string;
+    title?: string;
+    // 结算流程改造：建批次时可以只勾选部分主播参与本次结算；
+    // 缺省（undefined）保持旧行为 = 周期内全量入批。
+    streamerIds?: string[];
   };
 }): Promise<{
   batch: SettlementBatchRecord;
@@ -219,6 +238,7 @@ export async function generateSettlementBatch({
 }> {
   assertCanManageSettlement(actor.role);
   assertPeriod(input.periodStart, input.periodEnd);
+  const selectedStreamerIds = normalizeStreamerFilter(input.streamerIds);
 
   const reports = (
     await repo.listSettlementPoolReports({
@@ -233,10 +253,15 @@ export async function generateSettlementBatch({
     (report) =>
       report.status === "approved" &&
       !report.settledBatchTypes?.includes(input.batchType) &&
-      report.settlementDuration !== null,
+      report.settlementDuration !== null &&
+      (!selectedStreamerIds || selectedStreamerIds.has(report.streamerId)),
   );
   if (eligibleReports.length === 0) {
-    throw new Error("No unsettled approved reports found");
+    throw new Error(
+      selectedStreamerIds
+        ? "No unsettled approved reports found for the selected streamers"
+        : "No unsettled approved reports found",
+    );
   }
 
   const rules = await repo.getSettlementRules({
@@ -289,6 +314,7 @@ export async function generateSettlementBatch({
     organizationId: actor.organizationId,
     projectId: input.projectId,
     batchType: input.batchType,
+    title: input.title?.trim() || null,
     periodStart: input.periodStart,
     periodEnd: input.periodEnd,
     computedAmount: totals.computedAmount,
@@ -597,6 +623,123 @@ export async function reopenSettlementBatch({
   });
 
   return after;
+}
+
+// 结算流程改造 step 4：批次财务确认/锁定后，可选把每位参与主播的应付明细
+// 以站内通知（recipient_user_id 定向投递）发给主播本人。金额按批次项逐主播
+// 聚合；未绑定登录账号（streamers.user_id 为空）的主播计入 skipped。
+export async function sendSettlementBatchStatements({
+  repo,
+  audit,
+  notify,
+  actor,
+  batchId,
+}: {
+  repo: Pick<
+    SettlementRepository,
+    | "getSettlementBatchById"
+    | "listSettlementBatchItems"
+    | "listStreamerUserLinks"
+  >;
+  audit: SettlementAuditWriter;
+  notify: SettlementNotifier;
+  actor: SettlementActor;
+  batchId: string;
+}): Promise<{ notified: number; skipped: number }> {
+  assertCanManageSettlement(actor.role);
+  const batch = await requireSettlementBatch(repo, batchId);
+  if (batch.organizationId !== actor.organizationId) {
+    throw new Error("Settlement batch not found");
+  }
+  if (batch.batchType !== "payable") {
+    throw new Error("Only payable batches can be sent to streamers");
+  }
+  if (batch.status !== "confirmed" && batch.status !== "locked") {
+    throw new Error(
+      "Only confirmed or locked settlement batches can be sent to streamers",
+    );
+  }
+
+  const items = await repo.listSettlementBatchItems(batchId);
+  const totalsByStreamer = new Map<string, number>();
+  for (const item of items) {
+    if (!item.streamerId) {
+      continue;
+    }
+    const total =
+      item.computedAmount + item.manualAmount + item.adjustmentAmount;
+    totalsByStreamer.set(
+      item.streamerId,
+      (totalsByStreamer.get(item.streamerId) ?? 0) + total,
+    );
+  }
+  if (totalsByStreamer.size === 0) {
+    throw new Error("Settlement batch has no streamer items to send");
+  }
+
+  const links = await repo.listStreamerUserLinks({
+    organizationId: actor.organizationId,
+    streamerIds: Array.from(totalsByStreamer.keys()),
+  });
+  const linkByStreamer = new Map(links.map((link) => [link.streamerId, link]));
+
+  let notified = 0;
+  let skipped = 0;
+  for (const [streamerId, amount] of totalsByStreamer) {
+    const link = linkByStreamer.get(streamerId);
+    if (!link?.userId) {
+      skipped += 1;
+      continue;
+    }
+
+    const batchLabel = batch.title?.trim() || batch.id;
+    await notify({
+      organizationId: actor.organizationId,
+      recipientUserId: link.userId,
+      type: "settlement",
+      title: "结算明细已生成",
+      content: `结算批次「${batchLabel}」（${batch.periodStart} ~ ${batch.periodEnd}）你的应付合计 ¥${amount.toFixed(2)}，可在「结算账单」查看明细。`,
+      objectType: "settlement_batch",
+      objectId: batch.id,
+      source: "settlement.batch.statement",
+    });
+    notified += 1;
+  }
+
+  await audit({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action: "export",
+    module: "settlement",
+    objectType: "settlement_batch",
+    objectId: batch.id,
+    projectId: batch.projectId,
+    after: {
+      statement_notified: notified,
+      statement_skipped: skipped,
+    },
+    changedFields: [],
+    reason: "send streamer settlement statements",
+  });
+
+  return { notified, skipped };
+}
+
+function normalizeStreamerFilter(
+  streamerIds: string[] | undefined,
+): Set<string> | null {
+  if (!streamerIds) {
+    return null;
+  }
+
+  const cleaned = streamerIds.map((id) => id.trim()).filter(Boolean);
+  if (cleaned.length === 0) {
+    throw new Error("At least one streamer must be selected");
+  }
+
+  return new Set(cleaned);
 }
 
 function assertCanManageSettlement(role: AppRole): void {

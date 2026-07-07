@@ -7,6 +7,7 @@ import {
   listSettlementPool,
   lockSettlementBatch,
   reopenSettlementBatch,
+  sendSettlementBatchStatements,
   type SettlementBatchAtomicItemInput,
   type SettlementBatchRecord,
   type SettlementRepository,
@@ -139,6 +140,8 @@ function createRepo(): SettlementRepository {
         reopenReason: patch.reopenReason ?? null,
       }),
     ),
+    listSettlementBatchItems: vi.fn(async () => []),
+    listStreamerUserLinks: vi.fn(async () => []),
   };
 }
 
@@ -665,5 +668,175 @@ describe("settlement service", () => {
         settlementRuleSource: "project_streamer_snapshot",
       }),
     });
+  });
+
+  it("generates a batch only for the selected streamers and passes the title", async () => {
+    vi.mocked(repo.listSettlementPoolReports).mockResolvedValueOnce([
+      report,
+      { ...report, id: "report-2", streamerId: "streamer-2" },
+    ]);
+
+    const result = await generateSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        batchType: "payable",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+        title: " 六月主播应付 · 第一批 ",
+        streamerIds: ["streamer-1"],
+      },
+    });
+
+    expect(repo.createSettlementBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "六月主播应付 · 第一批",
+        items: [
+          expect.objectContaining({
+            streamerId: "streamer-1",
+            liveReportId: "report-1",
+          }),
+        ],
+      }),
+    );
+    expect(result.items).toHaveLength(1);
+  });
+
+  it("rejects batch generation when no pool reports match the selected streamers", async () => {
+    await expect(
+      generateSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor,
+        input: {
+          projectId: "project-1",
+          batchType: "payable",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+          streamerIds: ["streamer-none"],
+        },
+      }),
+    ).rejects.toThrow(
+      "No unsettled approved reports found for the selected streamers",
+    );
+  });
+
+  it("rejects batch generation with an explicit empty streamer selection", async () => {
+    await expect(
+      generateSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor,
+        input: {
+          projectId: "project-1",
+          batchType: "payable",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+          streamerIds: [],
+        },
+      }),
+    ).rejects.toThrow("At least one streamer must be selected");
+  });
+
+  it("sends per-streamer statements for confirmed payable batches", async () => {
+    vi.mocked(repo.getSettlementBatchById).mockResolvedValue(
+      createBatch({ status: "locked", title: "六月主播应付" }),
+    );
+    vi.mocked(repo.listSettlementBatchItems).mockResolvedValue([
+      {
+        id: "item-1",
+        organizationId: "org-1",
+        settlementBatchId: "batch-1",
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        liveReportId: "report-1",
+        itemType: "live_report_payable",
+        computedAmount: 160,
+        manualAmount: 20,
+        adjustmentAmount: -10,
+        evidenceLevel: "green",
+        evidenceSnapshot: {},
+      },
+      {
+        id: "item-2",
+        organizationId: "org-1",
+        settlementBatchId: "batch-1",
+        projectId: "project-1",
+        streamerId: "streamer-2",
+        liveReportId: "report-2",
+        itemType: "live_report_payable",
+        computedAmount: 80,
+        manualAmount: 0,
+        adjustmentAmount: 0,
+        evidenceLevel: "green",
+        evidenceSnapshot: {},
+      },
+    ]);
+    vi.mocked(repo.listStreamerUserLinks).mockResolvedValue([
+      { streamerId: "streamer-1", userId: "user-s1", displayName: "主播一" },
+      { streamerId: "streamer-2", userId: null, displayName: "主播二" },
+    ]);
+
+    const result = await sendSettlementBatchStatements({
+      repo,
+      audit,
+      notify,
+      actor: opsActor,
+      batchId: "batch-1",
+    });
+
+    expect(result).toEqual({ notified: 1, skipped: 1 });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientUserId: "user-s1",
+        type: "settlement",
+        objectId: "batch-1",
+        source: "settlement.batch.statement",
+        content: expect.stringContaining("¥170.00"),
+      }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "export",
+        module: "settlement",
+        objectId: "batch-1",
+      }),
+    );
+  });
+
+  it("rejects sending statements for unfinalized or receivable batches", async () => {
+    vi.mocked(repo.getSettlementBatchById).mockResolvedValueOnce(
+      createBatch({ status: "generated" }),
+    );
+    await expect(
+      sendSettlementBatchStatements({
+        repo,
+        audit,
+        notify,
+        actor,
+        batchId: "batch-1",
+      }),
+    ).rejects.toThrow(
+      "Only confirmed or locked settlement batches can be sent to streamers",
+    );
+
+    vi.mocked(repo.getSettlementBatchById).mockResolvedValueOnce(
+      createBatch({ status: "locked", batchType: "receivable" }),
+    );
+    await expect(
+      sendSettlementBatchStatements({
+        repo,
+        audit,
+        notify,
+        actor,
+        batchId: "batch-1",
+      }),
+    ).rejects.toThrow("Only payable batches can be sent to streamers");
   });
 });

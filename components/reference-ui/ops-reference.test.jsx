@@ -2217,6 +2217,9 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: "执行" }));
     expect(await screen.findByText("待确认加入")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认加入" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "按默认规则确认" }),
+    );
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
@@ -2303,6 +2306,9 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: "执行" }));
     expect(await screen.findByText("邀约中")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认加入" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "按默认规则确认" }),
+    );
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
@@ -2310,6 +2316,114 @@ describe("OpsReferenceApp project smoke", () => {
         { method: "POST" },
       ),
     );
+  });
+
+  it("confirms a roster join with an operator settlement rule", async () => {
+    const projectCard = {
+      ...taskProjectCards[0],
+      id: "project-live",
+      code: "PL-001",
+      name: "Fixture Project",
+      streamers: { active: 0, candidate: 0, pendingReview: 0 },
+    };
+    const invitedApplication = {
+      id: "application-invited",
+      project: {
+        id: "project-live",
+        code: "PL-001",
+        name: "Fixture Project",
+      },
+      streamer: {
+        id: "streamer-one",
+        displayName: "Streamer One",
+        cooperationStatus: "active",
+        riskLevel: "low",
+      },
+      status: "invited",
+    };
+    const fetchMock = vi.fn(async (url) => {
+      if (
+        String(url) === "/api/applications/application-invited/confirm-join"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            projectStreamer: {
+              id: "project-streamer-1",
+              projectId: "project-live",
+              streamerId: "streamer-one",
+              status: "joined",
+            },
+          }),
+        };
+      }
+
+      if (String(url) === "/api/applications") {
+        return {
+          ok: true,
+          json: async () => ({
+            applications: [{ ...invitedApplication, status: "joined" }],
+          }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () =>
+          String(url) === "/api/streamers"
+            ? { streamers: [] }
+            : { projects: [projectCard] },
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="project"
+        projectCards={[projectCard]}
+        streamerCards={[{ ...taskStreamerCards[0], projects: [] }]}
+        applicationQueue={[invitedApplication]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Fixture Project"));
+    fireEvent.click(screen.getByRole("button", { name: "执行" }));
+    expect(await screen.findByText("邀约中")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认加入" }));
+
+    fireEvent.change(await screen.findByLabelText("结算方式"), {
+      target: { value: "cps" },
+    });
+    fireEvent.change(screen.getByLabelText("底薪（元）"), {
+      target: { value: "2000" },
+    });
+    fireEvent.change(screen.getByLabelText("CPS/礼物分成(%)"), {
+      target: { value: "12" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "确认加入并应用规则" }),
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/application-invited/confirm-join",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const confirmCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) ===
+          "/api/applications/application-invited/confirm-join" && init?.body,
+    );
+    expect(confirmCall).toBeDefined();
+    expect(JSON.parse(confirmCall[1].body)).toEqual({
+      settlement: {
+        settlementMethod: "cps",
+        hourlyRate: 0,
+        baseSalary: 2000,
+        cpsRateBps: 1200,
+      },
+    });
   });
 
   it("filters project rows by search, vendor, owner, and schedule state", () => {

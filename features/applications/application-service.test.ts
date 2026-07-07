@@ -739,6 +739,91 @@ describe("application service", () => {
     );
   });
 
+  it("applies the operator settlement override at confirm time", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_approved",
+      }),
+      getStreamerForAdmission: vi.fn().mockResolvedValue({
+        id: "streamer-1",
+        displayName: "Streamer One",
+        userId: streamerActor.userId,
+        riskLevel: "low",
+        defaultSettlementMethod: "base_salary_cpt",
+        defaultHourlyRate: 80,
+        defaultBaseSalary: 6000,
+        defaultCpsRateBps: 0,
+      }),
+    });
+
+    await confirmApplicationJoin({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor: staffActor,
+      input: {
+        applicationId: "app-1",
+        settlement: {
+          settlementMethod: "cps",
+          hourlyRate: 0,
+          baseSalary: 2000,
+          cpsRateBps: 1200,
+        },
+      },
+    });
+
+    expect(repo.createProjectStreamer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        settlementMethod: "cps",
+        hourlyRate: 0,
+        baseSalary: 2000,
+        cpsRateBps: 1200,
+        settlementRule: expect.objectContaining({
+          source: "operator_confirm",
+          settlementMethod: "cps",
+          baseSalary: 2000,
+          cpsRateBps: 1200,
+        }),
+      }),
+    );
+  });
+
+  it("rejects invalid operator settlement overrides at confirm time", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_approved",
+      }),
+    });
+
+    await expect(
+      confirmApplicationJoin({
+        repo,
+        audit: vi.fn().mockResolvedValue(undefined),
+        notify: vi.fn().mockResolvedValue(undefined),
+        actor: staffActor,
+        input: {
+          applicationId: "app-1",
+          settlement: { settlementMethod: "bogus" },
+        },
+      }),
+    ).rejects.toThrow("Invalid settlement method");
+
+    await expect(
+      confirmApplicationJoin({
+        repo,
+        audit: vi.fn().mockResolvedValue(undefined),
+        notify: vi.fn().mockResolvedValue(undefined),
+        actor: staffActor,
+        input: {
+          applicationId: "app-1",
+          settlement: { settlementMethod: "cps", cpsRateBps: 20000 },
+        },
+      }),
+    ).rejects.toThrow("cpsRateBps cannot exceed 10000");
+  });
+
   it("copies application collaboration attribution onto joined project streamers", async () => {
     const repo = makeRepo({
       getApplicationById: vi.fn().mockResolvedValue({

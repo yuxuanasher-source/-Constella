@@ -4,7 +4,9 @@ import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { listOpsSettlementBatches } from "@/features/settlements/settlement-queries";
 import {
   getSettlementRouteContext,
+  isUuid,
   jsonError,
+  optionalString,
   readJsonBody,
   requiredString,
   requiredUuid,
@@ -36,6 +38,28 @@ export async function GET() {
   }
 }
 
+// 建批次可选按主播过滤：缺省 = 周期内全量入批（旧行为）；传入时必须是
+// 非空 uuid 数组，空数组视为参数错误而不是「全不选也生成」。
+function optionalStreamerIds(
+  body: Record<string, unknown>,
+): string[] | undefined {
+  const value = body.streamerIds;
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new RouteError("streamerIds must be a non-empty array", 400);
+  }
+
+  const ids = value.map((item) => String(item));
+  if (ids.some((id) => !isUuid(id))) {
+    throw new RouteError("streamerIds must contain valid uuids", 400);
+  }
+
+  return ids;
+}
+
 export async function POST(request: Request) {
   try {
     const body = await readJsonBody(request);
@@ -61,6 +85,8 @@ export async function POST(request: Request) {
         batchType: batchType as SettlementBatchType,
         periodStart: requiredString(body, "periodStart"),
         periodEnd: requiredString(body, "periodEnd"),
+        title: optionalString(body, "title"),
+        streamerIds: optionalStreamerIds(body),
       },
     });
 

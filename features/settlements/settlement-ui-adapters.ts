@@ -36,6 +36,7 @@ export type OpsReferenceBatchDetailItem = {
 export type OpsReferenceSettlementPoolItem = {
   id: string;
   projectId: string;
+  streamerId: string;
   streamer: string;
   project: string;
   hours: number;
@@ -54,7 +55,9 @@ export function toOpsReferenceBatch(
     id: batch.id,
     projectId: batch.projectId,
     type: isPayable ? "streamer_payable" : "vendor_receivable",
-    name: `${batch.projectName} · ${isPayable ? "主播应付" : "厂家应收"}`,
+    name:
+      batch.title?.trim() ||
+      `${batch.projectName} · ${isPayable ? "主播应付" : "厂家应收"}`,
     project: batch.projectName,
     vendor: isPayable ? "—" : batch.projectName,
     period: `${batch.periodStart} → ${batch.periodEnd}`,
@@ -93,6 +96,7 @@ export function toOpsReferenceSettlementPoolItem(
   return {
     id: item.id,
     projectId: item.projectId,
+    streamerId: item.streamerId,
     streamer: item.streamerName,
     project: item.projectName,
     hours: Math.round(((item.settlementDuration ?? 0) / 60) * 10) / 10,

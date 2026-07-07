@@ -59,6 +59,7 @@ describe("settlement DTO mappers", () => {
     const item = toOpsSettlementPoolItem({
       id: "report-1",
       project_id: "project-1",
+      streamer_id: "streamer-1",
       created_at: "2026-06-02T12:00:00.000Z",
       settlement_duration: 120,
       time_source: "system",
@@ -79,6 +80,7 @@ describe("settlement DTO mappers", () => {
       id: "report-1",
       projectId: "project-1",
       projectName: "Launch Week",
+      streamerId: "streamer-1",
       streamerName: "Streamer One",
       settlementDuration: 120,
       timeSource: "system",
@@ -215,6 +217,7 @@ describe("settlement DTO mappers", () => {
     const poolItem = toOpsSettlementPoolItem({
       id: "report-2",
       project_id: "project-1",
+      streamer_id: "streamer-2",
       created_at: "2026-06-02T12:30:00.000Z",
       settlement_duration: 90,
       time_source: "system",
@@ -234,6 +237,7 @@ describe("settlement DTO mappers", () => {
     expect(toOpsReferenceSettlementPoolItem(poolItem)).toEqual({
       id: "report-2",
       projectId: "project-1",
+      streamerId: "streamer-2",
       streamer: "Streamer Two",
       project: "Launch Week",
       hours: 1.5,
