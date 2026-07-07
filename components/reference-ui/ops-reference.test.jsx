@@ -10664,4 +10664,208 @@ describe("OpsReferenceApp recording transcript panel", () => {
     expect(video.currentTime).toBe(5);
     expect(video.play).toHaveBeenCalledTimes(1);
   });
+
+  // ===== 高频词分析（wordInsights）契约 fixture =====
+  // 有效词按类别聚簇（explanation 留空验证空簇隐藏）；「小黄车」只命中第二句、
+  // 「然后」不出现在任何话语文本中（用于空筛选态）。
+  // 指标取值覆盖两档配色：占比 0.62 → ≥60% 绿档；水词密度 2 → >1.5 红档。
+  const transcriptFixtureWithWordInsights = {
+    ...transcriptFixture,
+    wordInsights: {
+      effective: [
+        {
+          word: "小黄车",
+          category: "conversion",
+          categoryLabel: "转化引导",
+          count: 1,
+        },
+        {
+          word: "先到先得",
+          category: "conversion",
+          categoryLabel: "转化引导",
+          count: 1,
+        },
+        {
+          word: "欢迎来到",
+          category: "interaction",
+          categoryLabel: "互动",
+          count: 1,
+        },
+      ],
+      ineffective: [{ word: "然后", count: 4 }],
+      neutral: [{ word: "直播间", count: 2 }],
+      metrics: {
+        effectiveCount: 3,
+        ineffectiveCount: 4,
+        utteranceCount: 2,
+        fillerPerUtterance: 2,
+        effectiveShare: 0.62,
+      },
+    },
+  };
+
+  const openDialogWithWordInsights = async () => {
+    const fetchMock = buildTranscriptFetchMock({
+      transcript: transcriptFixtureWithWordInsights,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[buildTranscriptApplication()]}
+      />,
+    );
+    const dialog = openPlaybackDialog();
+    await within(dialog).findByText("全网最低价", { selector: "mark" });
+    return dialog;
+  };
+
+  it("renders the word insights block with metric tones and grouped chips", async () => {
+    const dialog = await openDialogWithWordInsights();
+
+    // 折叠区默认展开，aria-expanded 表达折叠态。
+    const toggle = within(dialog).getByRole("button", { name: "高频词分析" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+    // 指标徽章配色：占比 62% 命中 ≥60% 绿档；水词密度 2/句 命中 >1.5 红档。
+    expect(within(dialog).getByText("有效话术占比 62%")).toHaveAttribute(
+      "data-tone",
+      "green",
+    );
+    expect(within(dialog).getByText("水词密度 2/句")).toHaveAttribute(
+      "data-tone",
+      "red",
+    );
+
+    // 三组词 chips：有效话术按类别标签分簇，空类别（游戏讲解）整簇不渲染。
+    expect(within(dialog).getByText("有效话术")).toBeInTheDocument();
+    expect(within(dialog).getByText("转化引导")).toBeInTheDocument();
+    expect(within(dialog).getByText("互动")).toBeInTheDocument();
+    expect(within(dialog).queryByText("游戏讲解")).not.toBeInTheDocument();
+    expect(within(dialog).getByText("无效水词")).toBeInTheDocument();
+    expect(within(dialog).getByText("其他高频")).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "小黄车 ×1" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      within(dialog).getByRole("button", { name: "然后 ×4" }),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "直播间 ×2" }),
+    ).toBeInTheDocument();
+
+    // 折叠后指标与 chips 隐藏，再展开恢复。
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(dialog).queryByRole("button", { name: "小黄车 ×1" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(
+      within(dialog).getByRole("button", { name: "小黄车 ×1" }),
+    ).toBeInTheDocument();
+  });
+
+  it("filters utterances from a word chip, underlines hits and keeps risk marks", async () => {
+    const dialog = await openDialogWithWordInsights();
+
+    const chip = within(dialog).getByRole("button", { name: "小黄车 ×1" });
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute("aria-pressed", "true");
+    expect(
+      within(dialog).getByText("筛选：「小黄车」 · 1 句"),
+    ).toBeInTheDocument();
+
+    // 只剩包含「小黄车」的第二句，第一句被过滤掉。
+    expect(
+      within(dialog).queryByRole("button", { name: "跳转到 00:05" }),
+    ).not.toBeInTheDocument();
+    const seekButton = within(dialog).getByRole("button", {
+      name: "跳转到 01:05",
+    });
+
+    // 命中词以下划线 span 强调，且句内原有风险黄标保留。
+    const hits = dialog.querySelectorAll("[data-word-filter-hit]");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toHaveTextContent("小黄车");
+    expect(
+      within(dialog).getByText("库存告急", { selector: "mark" }),
+    ).toHaveAttribute("data-tone", "warning");
+
+    // 筛选态下时间戳 seek 照常工作。
+    const video = dialog.querySelector("video");
+    Object.defineProperty(video, "currentTime", {
+      value: 0,
+      writable: true,
+      configurable: true,
+    });
+    video.play = vi.fn();
+    fireEvent.click(seekButton);
+    expect(video.currentTime).toBe(65);
+    expect(video.play).toHaveBeenCalledTimes(1);
+
+    // 再点同一 chip → 取消筛选恢复全量。
+    fireEvent.click(within(dialog).getByRole("button", { name: "小黄车 ×1" }));
+    expect(
+      within(dialog).getByRole("button", { name: "跳转到 00:05" }),
+    ).toBeInTheDocument();
+    expect(dialog.querySelectorAll("[data-word-filter-hit]")).toHaveLength(0);
+  });
+
+  it("shows the empty filter hint and restores the full list from 清除筛选", async () => {
+    const dialog = await openDialogWithWordInsights();
+
+    // 「然后」不出现在任何话语 → 空态提示 + 0 句。
+    fireEvent.click(within(dialog).getByRole("button", { name: "然后 ×4" }));
+    expect(
+      within(dialog).getByText("筛选：「然后」 · 0 句"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("没有包含「然后」的句子"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole("button", { name: /跳转到/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "清除筛选" }));
+    expect(
+      within(dialog).getByRole("button", { name: "跳转到 00:05" }),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "跳转到 01:05" }),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "然后 ×4" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      within(dialog).queryByText("清除筛选"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the transcript panel intact when wordInsights is missing from the response", async () => {
+    // 旧后端响应（无 wordInsights 字段）：高频词区块整体不渲染，其余照常。
+    const fetchMock = buildTranscriptFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[buildTranscriptApplication()]}
+      />,
+    );
+    const dialog = openPlaybackDialog();
+    await within(dialog).findByText("全网最低价", { selector: "mark" });
+
+    expect(within(dialog).queryByText("高频词分析")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/有效话术占比/)).not.toBeInTheDocument();
+
+    // 话语列表、摘要徽章与导出控件不受影响。
+    expect(
+      within(dialog).getByRole("button", { name: "跳转到 00:05" }),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText("违规 1")).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "保存到企业库" }),
+    ).toBeInTheDocument();
+  });
 });

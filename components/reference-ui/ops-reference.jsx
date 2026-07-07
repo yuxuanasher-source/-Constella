@@ -16036,6 +16036,11 @@ function RecordingPlaybackDialog({ recording, onClose }) {
 //   GET  /api/recording-assets/{assetId}/transcript
 //     → { transcript: { available, asrProvider, analysisId, utterances, summary } }
 //       utterances[].segments[].tone: null | "warning"(风险词黄标) | "violation"(违规词红标)
+//       transcript.wordInsights?（高频词分析，后端可能尚未部署 → 字段缺失时整块不渲染）：
+//         { effective: [{ word, category: "conversion"|"interaction"|"explanation", categoryLabel, count }],
+//           ineffective: [{ word, count }], neutral: [{ word, count }],
+//           metrics: { effectiveCount, ineffectiveCount, utteranceCount,
+//                      fillerPerUtterance, effectiveShare: number|null } }
 //   POST /api/recording-assets/{assetId}/transcript/export
 //     body { format: "knowledge"|"docx"|"pdf", includeTimestamps }
 //     → knowledge 返回 { document: { id, title } }；docx/pdf 返回附件二进制（blob 下载）。
@@ -16045,6 +16050,338 @@ const TRANSCRIPT_TONE_MARK_STYLES = {
   violation: { background: "var(--danger-50)", color: "var(--danger-600)" },
   warning: { background: "var(--warn-50)", color: "var(--warn-600)" },
 };
+
+// ===== 高频词分析（wordInsights）展示常量 =====
+// 指标徽章配色沿用全局状态 token（ok/warn/danger/ink 系）。阈值：
+//   有效话术占比：≥60% 绿 / 30%-60% 黄 / <30% 红 / null 中性「—」；
+//   水词密度：≤0.5 绿 / 0.5-1.5 黄 / >1.5 红。
+const TRANSCRIPT_METRIC_TONE_STYLES = {
+  green: { background: "var(--ok-50)", color: "var(--ok-600)" },
+  amber: { background: "var(--warn-50)", color: "var(--warn-600)" },
+  red: { background: "var(--danger-50)", color: "var(--danger-600)" },
+  neutral: { background: "var(--ink-50)", color: "var(--ink-500)" },
+};
+
+// 词 chips 三组配色：有效话术=ok 绿系、无效水词=warn 黄灰系、其他高频=中性描边；
+// active 为点击筛选后的选中态（实底反白，与 aria-pressed 同步）。
+const TRANSCRIPT_WORD_CHIP_STYLES = {
+  effective: {
+    idle: {
+      background: "var(--ok-50)",
+      color: "var(--ok-600)",
+      border: "1px solid transparent",
+    },
+    active: {
+      background: "var(--ok-600)",
+      color: "#fff",
+      border: "1px solid var(--ok-600)",
+    },
+  },
+  ineffective: {
+    idle: {
+      background: "var(--warn-50)",
+      color: "var(--warn-600)",
+      border: "1px solid transparent",
+    },
+    active: {
+      background: "var(--warn-600)",
+      color: "#fff",
+      border: "1px solid var(--warn-600)",
+    },
+  },
+  neutral: {
+    idle: {
+      background: "#fff",
+      color: "var(--ink-500)",
+      border: "1px solid var(--ink-200)",
+    },
+    active: {
+      background: "var(--ink-700)",
+      color: "#fff",
+      border: "1px solid var(--ink-700)",
+    },
+  },
+};
+
+// 有效话术组内的类别小簇固定顺序；categoryLabel 缺失时按 category 兜底。
+const TRANSCRIPT_EFFECTIVE_CATEGORY_ORDER = [
+  "conversion",
+  "interaction",
+  "explanation",
+];
+const TRANSCRIPT_EFFECTIVE_CATEGORY_LABELS = {
+  conversion: "转化引导",
+  interaction: "互动",
+  explanation: "游戏讲解",
+};
+
+function transcriptEffectiveShareMetric(share) {
+  if (typeof share !== "number" || !Number.isFinite(share)) {
+    return { text: "—", tone: "neutral" };
+  }
+  return {
+    text: `${Math.round(share * 1000) / 10}%`,
+    tone: share >= 0.6 ? "green" : share >= 0.3 ? "amber" : "red",
+  };
+}
+
+function transcriptFillerDensityMetric(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return { text: "—", tone: "neutral" };
+  }
+  return {
+    text: `${Math.round(value * 100) / 100}/句`,
+    tone: value <= 0.5 ? "green" : value <= 1.5 ? "amber" : "red",
+  };
+}
+
+// 筛选词命中强调：下划线（不占背景色），与红/黄 mark 的底色标注互不冲突，
+// mark 内命中时同样生效。大小写不敏感、无正则（避免特殊字符转义问题）。
+function renderTranscriptWordHits(text, word) {
+  const source = String(text ?? "");
+  const needle = String(word ?? "").toLowerCase();
+  if (!needle || !source) {
+    return source;
+  }
+  const lower = source.toLowerCase();
+  if (!lower.includes(needle)) {
+    return source;
+  }
+  const parts = [];
+  let cursor = 0;
+  let hit = lower.indexOf(needle);
+  while (hit !== -1) {
+    if (hit > cursor) {
+      parts.push(source.slice(cursor, hit));
+    }
+    parts.push(
+      <span
+        key={`hit-${hit}`}
+        data-word-filter-hit="true"
+        style={{
+          textDecoration: "underline",
+          textDecorationThickness: 1.5,
+          textUnderlineOffset: 2,
+          fontWeight: 600,
+        }}
+      >
+        {source.slice(hit, hit + needle.length)}
+      </span>,
+    );
+    cursor = hit + needle.length;
+    hit = lower.indexOf(needle, cursor);
+  }
+  if (cursor < source.length) {
+    parts.push(source.slice(cursor));
+  }
+  return parts;
+}
+
+// 「高频词分析」折叠区（默认展开，折叠交互对齐 CollapsibleSection）：
+// 指标行两枚配色徽章 + 三组词 chips；chip 是 button，点击回调交给面板做筛选联动。
+function TranscriptWordInsightsSection({ insights, activeWord, onToggleWord }) {
+  const [open, setOpen] = React.useState(true);
+  const effective = Array.isArray(insights?.effective)
+    ? insights.effective
+    : [];
+  const ineffective = Array.isArray(insights?.ineffective)
+    ? insights.ineffective
+    : [];
+  const neutral = Array.isArray(insights?.neutral) ? insights.neutral : [];
+  const shareMetric = transcriptEffectiveShareMetric(
+    insights?.metrics?.effectiveShare ?? null,
+  );
+  const fillerMetric = transcriptFillerDensityMetric(
+    insights?.metrics?.fillerPerUtterance ?? null,
+  );
+
+  // 有效话术按类别聚簇：固定顺序 转化引导 → 互动 → 游戏讲解，未知类别排后。
+  const clusterMap = new Map();
+  effective.forEach((item) => {
+    if (!item?.word) {
+      return;
+    }
+    const category = item.category ?? "other";
+    if (!clusterMap.has(category)) {
+      clusterMap.set(category, {
+        category,
+        label:
+          item.categoryLabel ||
+          TRANSCRIPT_EFFECTIVE_CATEGORY_LABELS[category] ||
+          category,
+        items: [],
+      });
+    }
+    clusterMap.get(category).items.push(item);
+  });
+  const clusters = [
+    ...TRANSCRIPT_EFFECTIVE_CATEGORY_ORDER.filter((category) =>
+      clusterMap.has(category),
+    ).map((category) => clusterMap.get(category)),
+    ...[...clusterMap.values()].filter(
+      (cluster) =>
+        !TRANSCRIPT_EFFECTIVE_CATEGORY_ORDER.includes(cluster.category),
+    ),
+  ];
+
+  const renderMetric = (name, label, metric) => (
+    <span
+      data-word-insights-metric={name}
+      data-tone={metric.tone}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "2px 8px",
+        borderRadius: 999,
+        fontSize: 12,
+        lineHeight: "18px",
+        fontWeight: 500,
+        whiteSpace: "nowrap",
+        ...TRANSCRIPT_METRIC_TONE_STYLES[metric.tone],
+      }}
+    >
+      {label} {metric.text}
+    </span>
+  );
+
+  const renderChip = (item, group) => {
+    if (!item?.word) {
+      return null;
+    }
+    const active = activeWord === item.word;
+    const chipStyles = TRANSCRIPT_WORD_CHIP_STYLES[group];
+    return (
+      <button
+        key={item.word}
+        type="button"
+        aria-pressed={active}
+        onClick={() => onToggleWord(item.word)}
+        title={active ? "取消筛选" : `只看包含「${item.word}」的句子`}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 3,
+          padding: "1px 8px",
+          borderRadius: 999,
+          fontSize: 12,
+          lineHeight: "18px",
+          fontWeight: 500,
+          cursor: "pointer",
+          whiteSpace: "nowrap",
+          transition: "background 100ms ease",
+          ...(active ? chipStyles.active : chipStyles.idle),
+        }}
+      >
+        {item.word}{" "}
+        <span style={{ fontSize: 11, opacity: 0.72 }}>
+          ×{item.count ?? 0}
+        </span>
+      </button>
+    );
+  };
+
+  const groupTitleStyle = {
+    fontSize: 11,
+    fontWeight: 600,
+    color: "var(--ink-400)",
+    whiteSpace: "nowrap",
+  };
+
+  return (
+    <div style={{ borderBottom: "1px solid var(--line)" }}>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          padding: "8px 12px",
+          background: open ? "var(--bg-soft)" : "#fff",
+          border: "none",
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-900)" }}>
+          高频词分析
+        </span>
+        <span
+          aria-hidden="true"
+          style={{
+            fontSize: 11,
+            color: "var(--ink-400)",
+            transform: open ? "rotate(90deg)" : "none",
+            transition: "transform 0.15s",
+          }}
+        >
+          ▶
+        </span>
+      </button>
+      {open ? (
+        <div
+          style={{
+            padding: "8px 12px 10px",
+            borderTop: "1px solid var(--line)",
+            display: "grid",
+            gap: 8,
+          }}
+        >
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {renderMetric("effective-share", "有效话术占比", shareMetric)}
+            {renderMetric("filler-density", "水词密度", fillerMetric)}
+          </div>
+          {effective.length > 0 ? (
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={groupTitleStyle}>有效话术</div>
+              {clusters.map((cluster) => (
+                <div
+                  key={cluster.category}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: "var(--ok-600)",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {cluster.label}
+                  </span>
+                  {cluster.items.map((item) => renderChip(item, "effective"))}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {ineffective.length > 0 ? (
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={groupTitleStyle}>无效水词</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {ineffective.map((item) => renderChip(item, "ineffective"))}
+              </div>
+            </div>
+          ) : null}
+          {neutral.length > 0 ? (
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={groupTitleStyle}>其他高频</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {neutral.map((item) => renderChip(item, "neutral"))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 const TRANSCRIPT_EXPORT_ACTIONS = [
   {
@@ -16142,6 +16479,8 @@ function RecordingTranscriptPanel({
   const [exportBusy, setExportBusy] = React.useState("");
   const [exportMessage, setExportMessage] = React.useState(null);
   const [activeIndex, setActiveIndex] = React.useState(-1);
+  // 高频词点击筛选：记录选中的词（null=不筛选），换资产/重载时清空。
+  const [wordFilter, setWordFilter] = React.useState(null);
   // timeupdate 高频触发，节流后再计算当前话语行。
   const lastFollowAtRef = React.useRef(0);
   const activeRowRef = React.useRef(null);
@@ -16149,6 +16488,7 @@ function RecordingTranscriptPanel({
   React.useEffect(() => {
     let cancelled = false;
     setActiveIndex(-1);
+    setWordFilter(null);
     setExportMessage(null);
     if (!assetId) {
       setState({ status: "error", transcript: null });
@@ -16189,6 +16529,33 @@ function RecordingTranscriptPanel({
   const available = Boolean(transcript?.available);
   const utterances = available ? (transcript.utterances ?? []) : [];
   const summary = available ? (transcript.summary ?? null) : null;
+  // 高频词分析数据：后端未部署时字段缺失 → 整个区块降级不渲染，其余照常。
+  const wordInsights =
+    available &&
+    transcript?.wordInsights &&
+    typeof transcript.wordInsights === "object"
+      ? transcript.wordInsights
+      : null;
+
+  // 词筛选：大小写不敏感包含匹配；保留原 index，seek/播放跟随高亮不受筛选影响。
+  const normalizedWordFilter = wordFilter ? wordFilter.toLowerCase() : "";
+  const visibleUtterances = utterances
+    .map((utterance, index) => ({ utterance, index }))
+    .filter(({ utterance }) => {
+      if (!normalizedWordFilter) {
+        return true;
+      }
+      const text =
+        utterance.text ??
+        (Array.isArray(utterance.segments)
+          ? utterance.segments.map((segment) => segment?.text ?? "").join("")
+          : "");
+      return String(text).toLowerCase().includes(normalizedWordFilter);
+    });
+
+  const toggleWordFilter = (word) => {
+    setWordFilter((current) => (current === word ? null : word));
+  };
 
   // 播放位置 → 话语行高亮跟随（250ms 节流）。
   React.useEffect(() => {
@@ -16383,7 +16750,19 @@ function RecordingTranscriptPanel({
           alignContent: "start",
         }}
       >
-        {utterances.map((utterance, index) => {
+        {wordFilter && visibleUtterances.length === 0 ? (
+          <div
+            style={{
+              padding: "16px 8px",
+              fontSize: 12,
+              color: "var(--ink-400)",
+              textAlign: "center",
+            }}
+          >
+            {`没有包含「${wordFilter}」的句子`}
+          </div>
+        ) : null}
+        {visibleUtterances.map(({ utterance, index }) => {
           const isActive = index === activeIndex;
           const clock = formatTranscriptClock(utterance.startSeconds);
           const segments =
@@ -16446,7 +16825,10 @@ function RecordingTranscriptPanel({
                   if (!markStyle) {
                     return (
                       <React.Fragment key={segmentIndex}>
-                        {segment?.text ?? ""}
+                        {renderTranscriptWordHits(
+                          segment?.text ?? "",
+                          wordFilter,
+                        )}
                       </React.Fragment>
                     );
                   }
@@ -16466,7 +16848,7 @@ function RecordingTranscriptPanel({
                         fontWeight: 500,
                       }}
                     >
-                      {segment.text}
+                      {renderTranscriptWordHits(segment.text, wordFilter)}
                     </mark>
                   );
                 })}
@@ -16609,6 +16991,45 @@ function RecordingTranscriptPanel({
           </div>
         ) : null}
       </div>
+      {wordInsights ? (
+        <TranscriptWordInsightsSection
+          insights={wordInsights}
+          activeWord={wordFilter}
+          onToggleWord={toggleWordFilter}
+        />
+      ) : null}
+      {wordFilter ? (
+        <div
+          style={{
+            padding: "5px 12px",
+            borderBottom: "1px solid var(--line)",
+            background: "var(--blue-50)",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 12,
+          }}
+        >
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              color: "var(--blue-700)",
+              wordBreak: "break-word",
+            }}
+          >
+            {`筛选：「${wordFilter}」 · ${visibleUtterances.length} 句`}
+          </span>
+          <Button
+            size="sm"
+            kind="link"
+            onClick={() => setWordFilter(null)}
+            style={{ height: 20, padding: 0 }}
+          >
+            清除筛选
+          </Button>
+        </div>
+      ) : null}
       <div style={{ flex: 1, minHeight: 0 }}>{body}</div>
     </section>
   );
