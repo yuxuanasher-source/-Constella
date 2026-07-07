@@ -4510,13 +4510,18 @@ export function OverviewBoard({
         .scl::-webkit-scrollbar-thumb{background:#cfd7e6;border-radius:4px}
         .scl::-webkit-scrollbar-track{background:transparent}
         .ob-shell{--ob-ai-width:440px;--ob-gap:16px;--ob-pad-r:20px;--ob-ai-top:76px;--ob-ai-bottom:20px}
-        .ob-layout{display:grid;grid-template-columns:minmax(760px,1fr) 300px;gap:var(--ob-gap);align-items:start;padding:20px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 40px 24px;box-sizing:border-box}
+        /* 主列用 minmax(0,1fr)：看板渲染在「视口 − 307px 侧边栏」的内容区里，
+           硬性 min 宽（旧 760/720px）加上为固定 AI 面板预留的右 padding 会在
+           1400–1900px 视口下超出内容区，把右栏顶进 AI 面板底下。 */
+        .ob-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:var(--ob-gap);align-items:start;padding:20px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 40px 24px;box-sizing:border-box}
         .ob-main{min-width:0;display:flex;flex-direction:column;gap:16px}
         .ob-personal{min-width:0;display:flex;flex-direction:column;gap:16px}
         .ob-ai{min-width:0;position:fixed;right:var(--ob-pad-r);top:var(--ob-ai-top);bottom:var(--ob-ai-bottom);width:var(--ob-ai-width);z-index:20;display:flex;flex-direction:column}
-        @media(max-width:1560px){.ob-shell{--ob-ai-width:400px;--ob-gap:14px;--ob-pad-r:18px}.ob-layout{grid-template-columns:minmax(720px,1fr) 280px;gap:var(--ob-gap);padding:18px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 36px 20px}}
-        @media(max-width:1360px){.ob-layout{grid-template-columns:minmax(0,1fr);padding:18px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 36px 20px}}
-        @media(max-width:1080px){.ob-layout{grid-template-columns:1fr;padding:18px 18px 36px 20px}.ob-ai{position:relative;right:auto;top:auto;bottom:auto;width:auto;height:540px;z-index:auto}}
+        /* 断点以视口宽度计，而看板只在带 307px 侧边栏的控制台壳内使用，
+           阈值一律按「原意图容器宽 + 307」折算。 */
+        @media(max-width:1870px){.ob-shell{--ob-ai-width:400px;--ob-gap:14px;--ob-pad-r:18px}.ob-layout{grid-template-columns:minmax(0,1fr) 280px;gap:var(--ob-gap);padding:18px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 36px 20px}}
+        @media(max-width:1670px){.ob-layout{grid-template-columns:minmax(0,1fr);padding:18px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 36px 20px}}
+        @media(max-width:1390px){.ob-layout{grid-template-columns:1fr;padding:18px 18px 36px 20px}.ob-ai{position:relative;right:auto;top:auto;bottom:auto;width:auto;height:540px;z-index:auto}}
       `}</style>
 
       <div className="ob-layout">
