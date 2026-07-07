@@ -10372,9 +10372,28 @@ describe("OpsReferenceApp recording transcript panel", () => {
     },
   });
 
+  // 一棵最小 COS 知识树（含 kb-root），模拟 loadKnowledgeStoreRemote 的返回。
+  const buildRemoteKnowledgeStore = () => ({
+    version: 1,
+    nodes: {
+      "kb-root": {
+        id: "kb-root",
+        type: "folder",
+        name: "直属库",
+        parentId: null,
+        createdAt: 0,
+        order: 0,
+        system: true,
+      },
+    },
+  });
+
+  // knowledgeBase.state 保存最近一次 PUT 的树，供断言归档结果；remoteWritable=false
+  // 时 PUT 走「COS 未配置」降级（返回 !ok），触发客户端本地回退提示。
   const buildTranscriptFetchMock = ({
     transcript = transcriptFixture,
     onExport,
+    knowledgeBase,
   } = {}) =>
     vi.fn(async (url, init) => {
       const target = String(url);
@@ -10390,9 +10409,47 @@ describe("OpsReferenceApp recording transcript panel", () => {
         }
         return onExport(JSON.parse(init.body));
       }
+      if (knowledgeBase && target === "/api/knowledge-base") {
+        if (!init || init.method === "GET" || init.method === undefined) {
+          return {
+            ok: true,
+            json: async () => ({ store: knowledgeBase.state.store }),
+          };
+        }
+        if (init.method === "PUT") {
+          const body = JSON.parse(init.body);
+          if (knowledgeBase.remoteWritable === false) {
+            return { ok: false, json: async () => ({}) };
+          }
+          knowledgeBase.state.store = body.store;
+          knowledgeBase.state.putCount += 1;
+          return { ok: true, json: async () => ({ ok: true }) };
+        }
+      }
       // 其余请求走「后端未接入」降级路径，与真实 fetch 抛错语义一致。
       throw new Error(`unexpected request: ${target}`);
     });
+
+  // 便捷构造：knowledgeBase 控制对象（初始远端树 + PUT 落盘计数）。
+  const makeKnowledgeBaseControl = ({ remoteWritable = true } = {}) => ({
+    remoteWritable,
+    state: { store: buildRemoteKnowledgeStore(), putCount: 0 },
+  });
+
+  // 在一棵知识树里找到「逐字稿」文件夹下的 doc 节点（按 contentMd 命中）。
+  const findTranscriptDocs = (store) => {
+    if (!store?.nodes) return [];
+    const folder = Object.values(store.nodes).find(
+      (n) => n.type === "folder" && n.name === "逐字稿" && n.parentId === "kb-root",
+    );
+    if (!folder) return [];
+    const assetFolderIds = Object.values(store.nodes)
+      .filter((n) => n.type === "folder" && n.parentId === folder.id)
+      .map((n) => n.id);
+    return Object.values(store.nodes).filter(
+      (n) => n.type === "doc" && assetFolderIds.includes(n.parentId),
+    );
+  };
 
   const openPlaybackDialog = () => {
     fireEvent.click(screen.getByRole("button", { name: "展开明细" }));
@@ -10510,10 +10567,13 @@ describe("OpsReferenceApp recording transcript panel", () => {
     );
 
     const exportCalls = [];
+    const knowledgeBase = makeKnowledgeBaseControl();
     const fetchMock = buildTranscriptFetchMock({
+      knowledgeBase,
       onExport: (payload) => {
         exportCalls.push(payload);
         if (payload.format === "knowledge") {
+          // /transcript/export 现在只是尽力而为的 RAG 索引同步，主保存在 COS 知识树。
           return {
             ok: true,
             json: async () => ({
@@ -10551,17 +10611,26 @@ describe("OpsReferenceApp recording transcript panel", () => {
     const dialog = openPlaybackDialog();
     await within(dialog).findByText("全网最低价", { selector: "mark" });
 
-    // 保存到企业库：默认带时间戳，成功提示包含文档标题。
+    // 保存到企业库：主保存写进 COS 知识树，成功提示明确归档位置。
     fireEvent.click(
       within(dialog).getByRole("button", { name: "保存到企业库" }),
     );
     expect(
-      await within(dialog).findByText("已保存到企业库：《逐字稿 · 阿汤》"),
+      await within(dialog).findByText(
+        /已保存到知识库 → 逐字稿 \/《.*阿汤 逐字稿》/,
+      ),
     ).toBeInTheDocument();
-    expect(exportCalls[0]).toEqual({
-      format: "knowledge",
-      includeTimestamps: true,
-    });
+    // 主保存：COS 知识树里「逐字稿」文件夹下新增了对应文档节点。
+    const savedDocs = findTranscriptDocs(knowledgeBase.state.store);
+    expect(savedDocs).toHaveLength(1);
+    expect(savedDocs[0].name).toMatch(/阿汤 逐字稿$/);
+    expect(savedDocs[0].contentMd).toContain("【违规:全网最低价】");
+    // 次要：RAG 索引同步仍尽力而为地 POST /transcript/export（不阻断主提示）。
+    await waitFor(() =>
+      expect(
+        exportCalls.some((payload) => payload.format === "knowledge"),
+      ).toBe(true),
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/recording-assets/asset-priv-1/transcript/export",
       expect.objectContaining({
@@ -10593,6 +10662,107 @@ describe("OpsReferenceApp recording transcript panel", () => {
       await within(dialog).findByText("PDF 字体未配置，请先导出 Word"),
     ).toBeInTheDocument();
     expect(exportCalls[2]).toEqual({ format: "pdf", includeTimestamps: false });
+  });
+
+  it("saves the transcript into the COS knowledge tree under the 逐字稿 folder", async () => {
+    // 主保存：把逐字稿写进 COS 知识树（用户在「知识库」页可见），而非仅写 RAG 索引。
+    const knowledgeBase = makeKnowledgeBaseControl();
+    const fetchMock = buildTranscriptFetchMock({
+      knowledgeBase,
+      // /transcript/export 的 RAG 索引同步在此返回 !ok，验证不影响主保存成功。
+      onExport: () => ({ ok: false, json: async () => ({ error: "no index" }) }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[buildTranscriptApplication()]}
+      />,
+    );
+    const dialog = openPlaybackDialog();
+    await within(dialog).findByText("全网最低价", { selector: "mark" });
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "保存到企业库" }),
+    );
+
+    // (a) 成功提示明确落点：知识库 → 逐字稿 /《…阿汤 逐字稿》。
+    expect(
+      await within(dialog).findByText(
+        /已保存到知识库 → 逐字稿 \/《.*阿汤 逐字稿》/,
+      ),
+    ).toBeInTheDocument();
+
+    // (b) COS 知识树里「逐字稿」文件夹下确有对应 doc，且落到「阿汤」资产子文件夹。
+    const store = knowledgeBase.state.store;
+    const transcriptFolder = Object.values(store.nodes).find(
+      (n) =>
+        n.type === "folder" && n.name === "逐字稿" && n.parentId === "kb-root",
+    );
+    expect(transcriptFolder).toBeTruthy();
+    const assetFolder = Object.values(store.nodes).find(
+      (n) => n.type === "folder" && n.parentId === transcriptFolder.id,
+    );
+    expect(assetFolder?.name).toBe("阿汤");
+    const docs = findTranscriptDocs(store);
+    expect(docs).toHaveLength(1);
+    const doc = docs[0];
+    expect(doc.parentId).toBe(assetFolder.id);
+    expect(doc.name).toMatch(/^\d{4}-\d{2}-\d{2} 阿汤 逐字稿$/);
+
+    // contentMd：逐字稿文本 + 违规/风险内联标注 + 带时间戳前缀 + 风险摘要区块。
+    expect(doc.contentMd).toContain("## 正文");
+    expect(doc.contentMd).toContain("## 风险摘要");
+    expect(doc.contentMd).toContain("欢迎来到直播间");
+    expect(doc.contentMd).toContain("【违规:全网最低价】");
+    expect(doc.contentMd).toContain("【风险:库存告急】");
+    expect(doc.contentMd).toMatch(/\[00:05\]/);
+    expect(doc.contentMd).toMatch(/\[01:05\]/);
+
+    // meta 溯源字段。
+    expect(doc.meta).toMatchObject({
+      source: "recording_transcript",
+      asrProvider: "whisper-large",
+      assetName: "阿汤",
+    });
+
+    // (c) 幂等：同资产再存一次不新增重复 doc，而是原地更新。
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "保存到企业库" }),
+    );
+    await waitFor(() => expect(knowledgeBase.state.putCount).toBe(2));
+    expect(findTranscriptDocs(knowledgeBase.state.store)).toHaveLength(1);
+  });
+
+  it("falls back to a local knowledge save when COS is unavailable", async () => {
+    // COS 未配置：saveKnowledgeStoreRemote（PUT）失败 → 客户端回退本地并提示（本地），
+    // 不报成失败，与复盘归档的离线回退一致。
+    const knowledgeBase = makeKnowledgeBaseControl({ remoteWritable: false });
+    const fetchMock = buildTranscriptFetchMock({
+      knowledgeBase,
+      onExport: () => ({ ok: false, json: async () => ({ error: "no index" }) }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[buildTranscriptApplication()]}
+      />,
+    );
+    const dialog = openPlaybackDialog();
+    await within(dialog).findByText("全网最低价", { selector: "mark" });
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "保存到企业库" }),
+    );
+
+    expect(
+      await within(dialog).findByText(
+        /已保存到知识库（本地）→ 逐字稿 \/《.*阿汤 逐字稿》/,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows the guided empty state when the transcript is unavailable", async () => {
