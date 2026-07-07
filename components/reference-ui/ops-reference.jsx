@@ -16622,6 +16622,42 @@ function RecordingTranscriptPanel({
     }
     setExportBusy(action.format);
     setExportMessage(null);
+    // 「保存到企业库」：主保存是把逐字稿写进 COS 知识树（用户在「知识库」页可见），
+    // 与复盘归档同款路径；服务端 /transcript/export 只作尽力而为的 AI 检索索引同步。
+    if (action.format === "knowledge") {
+      try {
+        const { docName, remoteOk } = await archiveTranscriptToKnowledgeBase({
+          assetName,
+          asrProvider: transcript?.asrProvider ?? null,
+          transcript,
+          includeTimestamps,
+        });
+        // 次要：同步 RAG 索引 + 审计留痕，失败只记录、不影响主提示。
+        globalThis
+          .fetch(`/api/recording-assets/${assetId}/transcript/export`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ format: "knowledge", includeTimestamps }),
+          })
+          .catch((error) => {
+            console.warn("transcript RAG index sync failed", error);
+          });
+        setExportMessage({
+          tone: "ok",
+          text: remoteOk
+            ? `已保存到知识库 → 逐字稿 /《${docName}》`
+            : `已保存到知识库（本地）→ 逐字稿 /《${docName}》`,
+        });
+      } catch (error) {
+        setExportMessage({
+          tone: "error",
+          text: error?.message || action.failText,
+        });
+      } finally {
+        setExportBusy("");
+      }
+      return;
+    }
     try {
       const response = await globalThis.fetch(
         `/api/recording-assets/${assetId}/transcript/export`,
@@ -16631,17 +16667,6 @@ function RecordingTranscriptPanel({
           body: JSON.stringify({ format: action.format, includeTimestamps }),
         },
       );
-      if (action.format === "knowledge") {
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(payload.error || action.failText);
-        }
-        setExportMessage({
-          tone: "ok",
-          text: `已保存到企业库：《${payload.document?.title || "逐字稿"}》`,
-        });
-        return;
-      }
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         if (
@@ -25288,6 +25313,7 @@ function BlockEditor({ blocks, onChange }) {
 const KB_LS_KEY = "jingying.knowledgeBase.v1";
 const KB_ROOT_ID = "kb-root";
 const KB_REVIEW_FOLDER_ID = "kb-folder-review";
+const KB_TRANSCRIPT_FOLDER_ID = "kb-folder-transcript";
 // 默认内置文档：产品使用教程。system=true → 不可删除，加载时缺了自动补，人人可见。
 const KB_TUTORIAL_DOC_ID = "kb-doc-usage-tutorial";
 
@@ -25317,6 +25343,18 @@ function kbReviewFolderNode() {
   };
 }
 
+function kbTranscriptFolderNode() {
+  return {
+    id: KB_TRANSCRIPT_FOLDER_ID,
+    type: "folder",
+    name: "逐字稿",
+    parentId: KB_ROOT_ID,
+    createdAt: 0,
+    order: 1,
+    system: true,
+  };
+}
+
 // 保证系统节点（复盘文件夹、使用教程文档）始终存在；老用户的存量库加载时自动补齐。
 // 教程内容随版本更新——若已存在则刷新其 contentMd，确保看到最新版。
 function kbEnsureSystemNodes(store) {
@@ -25324,6 +25362,9 @@ function kbEnsureSystemNodes(store) {
   const nodes = { ...store.nodes };
   if (!nodes[KB_REVIEW_FOLDER_ID]) {
     nodes[KB_REVIEW_FOLDER_ID] = kbReviewFolderNode();
+  }
+  if (!nodes[KB_TRANSCRIPT_FOLDER_ID]) {
+    nodes[KB_TRANSCRIPT_FOLDER_ID] = kbTranscriptFolderNode();
   }
   const tutorial = kbTutorialNode();
   nodes[KB_TUTORIAL_DOC_ID] = nodes[KB_TUTORIAL_DOC_ID]
@@ -25350,6 +25391,7 @@ function kbDefaultStore() {
         system: true,
       },
       [KB_REVIEW_FOLDER_ID]: kbReviewFolderNode(),
+      [KB_TRANSCRIPT_FOLDER_ID]: kbTranscriptFolderNode(),
       [KB_TUTORIAL_DOC_ID]: kbTutorialNode(),
     },
   };
@@ -25578,6 +25620,180 @@ async function archiveReviewToKnowledgeBase({
   }
   saveKnowledgeStore(store);
   await saveKnowledgeStoreRemote(store);
+}
+
+// 录屏逐字稿归档：客户端用转写数据拼 markdown，排版对齐服务端知识库导出的观感
+// （## 风险摘要 / ## 高频词 / ## 正文；违规词【违规:词】、风险词【风险:词】内联标注）。
+// 供 archiveTranscriptToKnowledgeBase 落进 COS 知识树（用户在「知识库」页可见）。
+const TRANSCRIPT_KB_WORD_TOP_N = 5;
+
+function transcriptKbSegmentsToMarkedText(segments) {
+  const list =
+    Array.isArray(segments) && segments.length > 0 ? segments : null;
+  if (!list) return "";
+  return list
+    .map((segment) => {
+      const text = segment?.text ?? "";
+      if (segment?.tone === "violation") return `【违规:${text}】`;
+      if (segment?.tone === "warning") return `【风险:${text}】`;
+      return text;
+    })
+    .join("");
+}
+
+function buildTranscriptMarkdown({
+  title,
+  asrProvider,
+  transcript,
+  includeTimestamps,
+}) {
+  const summary = transcript?.summary ?? null;
+  const violationCount = summary?.violationCount ?? 0;
+  const warningCount = summary?.warningCount ?? 0;
+  const keywordLabel = summary?.keywords?.length
+    ? summary.keywords
+        .map(
+          (item) =>
+            `${item.tone === "violation" ? "违规" : "风险"}「${item.keyword}」×${item.count ?? 0}`,
+        )
+        .join("、")
+    : "无";
+
+  const lines = [
+    `# ${title}`,
+    "",
+    `ASR provider: ${asrProvider ?? "unknown"}`,
+    "",
+    "## 风险摘要",
+    "",
+    `- 违规命中 ${violationCount} 处 · 风险命中 ${warningCount} 处 · 命中词：${keywordLabel}`,
+    "",
+  ];
+
+  const insights =
+    transcript?.wordInsights && typeof transcript.wordInsights === "object"
+      ? transcript.wordInsights
+      : null;
+  if (insights) {
+    const effective = (
+      Array.isArray(insights.effective) ? insights.effective : []
+    )
+      .slice(0, TRANSCRIPT_KB_WORD_TOP_N)
+      .map(
+        (item) =>
+          `${item.categoryLabel || item.category || "有效"}「${item.word}」×${item.count ?? 0}`,
+      )
+      .join("、");
+    const ineffective = (
+      Array.isArray(insights.ineffective) ? insights.ineffective : []
+    )
+      .slice(0, TRANSCRIPT_KB_WORD_TOP_N)
+      .map((item) => `「${item.word}」×${item.count ?? 0}`)
+      .join("、");
+    const share =
+      typeof insights.metrics?.effectiveShare === "number" &&
+      Number.isFinite(insights.metrics.effectiveShare)
+        ? `${Math.round(insights.metrics.effectiveShare * 100)}%`
+        : "—";
+    const filler = insights.metrics?.fillerPerUtterance ?? "—";
+    lines.push(
+      "## 高频词",
+      "",
+      `- 有效词 Top${TRANSCRIPT_KB_WORD_TOP_N}：${effective || "无"}`,
+      `- 无效水词 Top${TRANSCRIPT_KB_WORD_TOP_N}：${ineffective || "无"}`,
+      `- 口播指标：水词密度 ${filler} 词/句 · 有效话术占比 ${share}`,
+      "",
+    );
+  }
+
+  lines.push("## 正文", "");
+  for (const utterance of transcript?.utterances ?? []) {
+    const prefix = includeTimestamps
+      ? `[${formatTranscriptClock(utterance.startSeconds)}] `
+      : "";
+    const text =
+      transcriptKbSegmentsToMarkedText(utterance.segments) ||
+      (utterance.text ?? "");
+    lines.push(`- ${prefix}${text}`);
+  }
+
+  return lines.join("\n").trim() + "\n";
+}
+
+// 逐字稿归档到「知识库 → 逐字稿 / {资产名} / {日期 资产名 逐字稿}」（腾讯云 COS）。
+// 严格对齐 archiveReviewToKnowledgeBase：先读 COS 真源（拿不到则用本地缓存），
+// 按名幂等找/建目录与文档，写回 COS + 本地缓存。返回 { docName, remoteOk }：
+// remoteOk=false（COS 未配置/写失败）时调用方回退「已保存到知识库（本地）」提示。
+async function archiveTranscriptToKnowledgeBase({
+  assetName,
+  asrProvider,
+  transcript,
+  includeTimestamps,
+}) {
+  let store = kbEnsureSystemNodes(
+    (await loadKnowledgeStoreRemote()) || loadKnowledgeStore(),
+  );
+  const folderName = assetName || "未命名录屏";
+
+  let assetFolder = kbFindChildByName(
+    store,
+    KB_TRANSCRIPT_FOLDER_ID,
+    folderName,
+    "folder",
+  );
+  if (!assetFolder) {
+    const r = kbAddNode(store, {
+      type: "folder",
+      name: folderName,
+      parentId: KB_TRANSCRIPT_FOLDER_ID,
+    });
+    store = r.store;
+    assetFolder = store.nodes[r.id];
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const docName = `${today} ${folderName} 逐字稿`.replace(/\s+/g, " ").trim();
+  const contentMd = buildTranscriptMarkdown({
+    title: docName,
+    asrProvider,
+    transcript,
+    includeTimestamps,
+  });
+  const meta = {
+    source: "recording_transcript",
+    asrProvider: asrProvider ?? null,
+    assetName: folderName,
+    exportedAt: new Date().toISOString(),
+  };
+
+  const existing = kbFindChildByName(store, assetFolder.id, docName, "doc");
+  if (existing) {
+    store = {
+      ...store,
+      nodes: {
+        ...store.nodes,
+        [existing.id]: {
+          ...existing,
+          contentMd,
+          meta,
+          updatedAt: Date.now(),
+        },
+      },
+    };
+  } else {
+    const r = kbAddNode(store, {
+      type: "doc",
+      name: docName,
+      parentId: assetFolder.id,
+      contentMd,
+      meta,
+    });
+    store = r.store;
+  }
+
+  saveKnowledgeStore(store);
+  const remoteOk = await saveKnowledgeStoreRemote(store);
+  return { docName, remoteOk };
 }
 
 // ——— 知识库文档：分享 / 导出（MD / PDF / Word）———————————————
