@@ -778,7 +778,13 @@ describe("OpsReferenceApp project smoke", () => {
     ).toBeInTheDocument();
   });
 
-  it("opens organization feature settings from the sidebar and syncs the switcher display", () => {
+  it("opens organization feature settings from the sidebar and syncs the switcher display", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ organization: { id: "org-1" } }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
     render(<OpsReferenceApp initialRoute="warroom" />);
 
     fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
@@ -796,9 +802,19 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.click(screen.getByLabelText("厂家门户"));
     fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
 
-    const orgSwitcher = screen.getByText("未来经营组").closest("button");
+    const orgSwitcher = (
+      await screen.findByText("未来经营组")
+    ).closest("button");
     expect(orgSwitcher).toHaveTextContent("当前组织 · 配额 48");
     expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
+
+    // 品牌设置持久化到组织设置接口。
+    const settingsCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/organization/settings",
+    );
+    expect(settingsCall).toBeTruthy();
+    expect(settingsCall[1].method).toBe("PATCH");
+    expect(JSON.parse(settingsCall[1].body).name).toBe("未来经营组");
   }, 15000);
 
   it("uses organization logo settings in the sidebar brand mark", () => {
@@ -813,7 +829,13 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.queryByText("JY")).not.toBeInTheDocument();
   });
 
-  it("updates the sidebar brand logo from organization settings", () => {
+  it("updates the sidebar brand logo from organization settings", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ organization: { id: "org-1" } }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
     render(<OpsReferenceApp initialRoute="warroom" />);
 
     fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
@@ -822,7 +844,115 @@ describe("OpsReferenceApp project smoke", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
 
+    await waitFor(() =>
+      expect(screen.getByLabelText("组织 LOGO")).toHaveTextContent("未"),
+    );
+  });
+
+  it("customizes the sidebar brand name and tagline from organization settings", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ organization: { id: "org-1" } }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="warroom" />);
+
+    // 默认品牌文案来自内置兜底。
+    expect(screen.getByText("经营舱")).toBeInTheDocument();
+    expect(screen.getByText("MCN OPERATIONS · v1.2")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+    fireEvent.change(screen.getByLabelText("品牌名称"), {
+      target: { value: "星耀经营舱" },
+    });
+    fireEvent.change(screen.getByLabelText("品牌副标"), {
+      target: { value: "XINGYAO OPS · v2.0" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
+
+    expect(await screen.findByText("星耀经营舱")).toBeInTheDocument();
+    expect(screen.getByText("XINGYAO OPS · v2.0")).toBeInTheDocument();
+    expect(screen.queryByText("MCN OPERATIONS · v1.2")).not.toBeInTheDocument();
+  });
+
+  it("renders custom brand fields passed from server-side organization settings", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        organizationSettings={{
+          name: "未来经营组",
+          logoText: "未",
+          brandName: "未来作战舱",
+          brandTagline: "FUTURE OPS · v9",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("未来作战舱")).toBeInTheDocument();
+    expect(screen.getByText("FUTURE OPS · v9")).toBeInTheDocument();
     expect(screen.getByLabelText("组织 LOGO")).toHaveTextContent("未");
+  });
+
+  it("saves a custom avatar mark from the profile dialog and shows it in the sidebar", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        profile: { id: "u1", avatarText: "🚀", avatarUrl: "" },
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        currentUser={{ id: "u1", name: "123", role: "owner", org: "星耀" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "个人资料" }));
+    fireEvent.change(screen.getByLabelText("头像字标"), {
+      target: { value: "🚀" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存头像" }));
+
+    expect(await screen.findByText("头像已更新。")).toBeInTheDocument();
+    const profileCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/profile",
+    );
+    expect(profileCall).toBeTruthy();
+    expect(JSON.parse(profileCall[1].body)).toEqual({
+      avatarText: "🚀",
+      avatarUrl: "",
+    });
+
+    // 侧边栏底部账号入口的头像同步显示自定义字标。
+    const accountSummary = screen.getByRole("button", { name: /账号菜单/ });
+    expect(accountSummary).toHaveTextContent("🚀");
+  });
+
+  it("renders a saved avatar image in the sidebar and greeting card", async () => {
+    const AVATAR_IMG =
+      "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD";
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        currentUser={{
+          id: "u1",
+          name: "123",
+          role: "owner",
+          org: "星耀",
+          avatarUrl: AVATAR_IMG,
+        }}
+      />,
+    );
+
+    const imgs = await screen.findAllByRole("img", { name: /头像/ });
+    expect(imgs.length).toBeGreaterThan(0);
+    expect(imgs.every((img) => img.getAttribute("src") === AVATAR_IMG)).toBe(
+      true,
+    );
   });
 
   it("keeps the organization switcher readable with a long organization name", () => {

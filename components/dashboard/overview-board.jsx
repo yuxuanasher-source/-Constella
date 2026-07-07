@@ -3430,6 +3430,13 @@ function PersonalPanel({
   const name =
     (user?.name && user.name !== "未登录用户" ? user.name : null) ||
     "经营舱用户";
+  // 头像图片优先；无图时用自定义字标；Array.from 按码点取首字，emoji 姓名不会被截半
+  const avatarImage =
+    (typeof user?.avatarUrl === "string" && user.avatarUrl.trim()) || "";
+  const avatarLabel =
+    (typeof user?.avatarText === "string" && user.avatarText.trim()) ||
+    Array.from(name)[0] ||
+    "U";
   const roleLabel = ROLE_LABELS[user?.role] || "成员";
   const org = user?.org || user?.dept || scopeLabel || "";
   const [done, setDone] = React.useState({});
@@ -3461,24 +3468,39 @@ function PersonalPanel({
             position: "relative",
           }}
         >
-          <span
-            style={{
-              width: 48,
-              height: 48,
-              flexShrink: 0,
-              borderRadius: 14,
-              background:
-                "linear-gradient(145deg,rgba(255,255,255,.3),rgba(255,255,255,.14))",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 20,
-              fontWeight: 800,
-              boxShadow: "0 4px 12px rgba(85,102,230,.4)",
-            }}
-          >
-            {name[0] || "U"}
-          </span>
+          {avatarImage ? (
+            <img
+              src={avatarImage}
+              alt={`${name} 的头像`}
+              style={{
+                width: 48,
+                height: 48,
+                flexShrink: 0,
+                borderRadius: 14,
+                objectFit: "cover",
+                boxShadow: "0 4px 12px rgba(85,102,230,.4)",
+              }}
+            />
+          ) : (
+            <span
+              style={{
+                width: 48,
+                height: 48,
+                flexShrink: 0,
+                borderRadius: 14,
+                background:
+                  "linear-gradient(145deg,rgba(255,255,255,.3),rgba(255,255,255,.14))",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: Array.from(avatarLabel).length > 1 ? 15 : 20,
+                fontWeight: 800,
+                boxShadow: "0 4px 12px rgba(85,102,230,.4)",
+              }}
+            >
+              {avatarLabel}
+            </span>
+          )}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 16.5, fontWeight: 650 }}>
               {greeting()}，{name} 👋

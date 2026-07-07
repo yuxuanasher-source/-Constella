@@ -1,6 +1,7 @@
 ﻿"use client";
 /* eslint-disable */
 import React from "react";
+import { createPortal } from "react-dom";
 
 import { OverviewBoard } from "@/components/dashboard/overview-board";
 import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
@@ -377,8 +378,8 @@ function KV({ label, children, w = 96 }) {
   );
 }
 
-// Avatar — initials disc
-function Avatar({ name, size = 28, tone }) {
+// Avatar — 头像图片优先；无图时回退到自定义字标（支持 emoji），再回退姓名首字
+function Avatar({ name, text, imageUrl, size = 28, tone }) {
   const palette = [
     "#1E50C8",
     "#5B4BD1",
@@ -387,9 +388,28 @@ function Avatar({ name, size = 28, tone }) {
     "#C0303A",
     "#0E8A4D",
   ];
+  const image = typeof imageUrl === "string" ? imageUrl.trim() : "";
+  if (image) {
+    return (
+      <img
+        src={image}
+        alt={name ? `${name} 的头像` : "头像"}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: 999,
+          objectFit: "cover",
+          flexShrink: 0,
+          display: "inline-block",
+        }}
+      />
+    );
+  }
   const code = (name || "?").split("").reduce((a, c) => a + c.charCodeAt(0), 0);
   const bg = tone || palette[code % palette.length];
-  const initials = (name || "?").slice(0, 1);
+  const custom = typeof text === "string" ? text.trim() : "";
+  const display = custom || Array.from(name || "?")[0] || "?";
+  const displayLength = Array.from(display).length;
   return (
     <span
       style={{
@@ -401,14 +421,50 @@ function Avatar({ name, size = 28, tone }) {
         borderRadius: 999,
         background: `${bg}18`,
         color: bg,
-        fontSize: size * 0.42,
+        fontSize: displayLength > 1 ? size * 0.34 : size * 0.42,
         fontWeight: 600,
         flexShrink: 0,
       }}
     >
-      {initials}
+      {display}
     </span>
   );
+}
+
+// 客户端把用户选的图片压到 256px 见方的 JPEG data URL，控制体积（一般 10-30KB）。
+// 居中裁剪成正方形，避免头像被拉伸。
+const AVATAR_IMAGE_MAX_SIZE = 256;
+function compressAvatarImage(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !/^image\/(png|jpeg)$/.test(file.type)) {
+      reject(new Error("仅支持 PNG 或 JPG 图片。"));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("图片读取失败，请重试。"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("图片解码失败，请换一张。"));
+      img.onload = () => {
+        const side = Math.min(img.naturalWidth, img.naturalHeight) || 1;
+        const sx = (img.naturalWidth - side) / 2;
+        const sy = (img.naturalHeight - side) / 2;
+        const target = Math.min(AVATAR_IMAGE_MAX_SIZE, side);
+        const canvas = document.createElement("canvas");
+        canvas.width = target;
+        canvas.height = target;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("当前浏览器不支持图片压缩。"));
+          return;
+        }
+        ctx.drawImage(img, sx, sy, side, side, 0, 0, target, target);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 // Tabular: header + body. Pass columns + rows as React-friendly arrays.
@@ -925,6 +981,8 @@ const DEFAULT_ORGANIZATION_SETTINGS = {
   id: ORG.id,
   name: ORG.name || "未配置组织",
   logoText: "JY",
+  brandName: "经营舱",
+  brandTagline: "MCN OPERATIONS · v1.2",
   memberLimit: null,
   plan: "",
   verified: false,
@@ -936,6 +994,17 @@ const DEFAULT_ORGANIZATION_SETTINGS = {
     autoReview: false,
   },
 };
+
+// 按 Unicode 码点截断，避免把 emoji 切成半个代理对。
+function sliceByCodePoints(value, max) {
+  return Array.from(value).slice(0, max).join("");
+}
+
+function normalizeBrandField(value, max, fallback) {
+  return typeof value === "string" && value.trim()
+    ? sliceByCodePoints(value.trim(), max)
+    : fallback;
+}
 
 function normalizeOrganizationSettings(input) {
   const source = input && typeof input === "object" ? input : {};
@@ -956,10 +1025,21 @@ function normalizeOrganizationSettings(input) {
       typeof source.name === "string" && source.name.trim()
         ? source.name.trim()
         : DEFAULT_ORGANIZATION_SETTINGS.name,
-    logoText:
-      typeof source.logoText === "string" && source.logoText.trim()
-        ? source.logoText.trim().slice(0, 4)
-        : DEFAULT_ORGANIZATION_SETTINGS.logoText,
+    logoText: normalizeBrandField(
+      source.logoText,
+      4,
+      DEFAULT_ORGANIZATION_SETTINGS.logoText,
+    ),
+    brandName: normalizeBrandField(
+      source.brandName,
+      12,
+      DEFAULT_ORGANIZATION_SETTINGS.brandName,
+    ),
+    brandTagline: normalizeBrandField(
+      source.brandTagline,
+      32,
+      DEFAULT_ORGANIZATION_SETTINGS.brandTagline,
+    ),
     memberLimit,
     plan:
       typeof source.plan === "string" && source.plan.trim()
@@ -997,6 +1077,8 @@ const DEFAULT_CURRENT_USER = {
   role: "owner",
   org: "",
   dept: "",
+  avatarText: "",
+  avatarUrl: "",
 };
 
 function normalizeCurrentUser(input) {
@@ -1008,6 +1090,12 @@ function normalizeCurrentUser(input) {
       : DEFAULT_CURRENT_USER.name;
   const dept = typeof source.dept === "string" ? source.dept.trim() : "";
   const org = typeof source.org === "string" ? source.org.trim() : "";
+  const avatarText =
+    typeof source.avatarText === "string"
+      ? sliceByCodePoints(source.avatarText.trim(), 4)
+      : "";
+  const avatarUrl =
+    typeof source.avatarUrl === "string" ? source.avatarUrl.trim() : "";
 
   return {
     ...DEFAULT_CURRENT_USER,
@@ -1016,6 +1104,8 @@ function normalizeCurrentUser(input) {
     role,
     org,
     dept,
+    avatarText,
+    avatarUrl,
   };
 }
 
@@ -1826,6 +1916,7 @@ export function Sidebar({
   organizationSettings,
   organizationMembers,
   onOpenOrganizationSettings,
+  onUpdateAvatar,
 }) {
   const displayUser = normalizeCurrentUser(currentUser);
   const orgSettings = normalizeOrganizationSettings(organizationSettings);
@@ -1896,7 +1987,7 @@ export function Sidebar({
               letterSpacing: "-0.005em",
             }}
           >
-            经营舱
+            {orgSettings.brandName}
           </span>
           <span
             style={{
@@ -1905,7 +1996,7 @@ export function Sidebar({
               letterSpacing: "0.04em",
             }}
           >
-            MCN OPERATIONS · v1.2
+            {orgSettings.brandTagline}
           </span>
         </div>
       </div>
@@ -2155,7 +2246,12 @@ export function Sidebar({
               textAlign: "left",
             }}
           >
-            <Avatar name={displayUser.name} size={32} />
+            <Avatar
+              name={displayUser.name}
+              text={displayUser.avatarText}
+              imageUrl={displayUser.avatarUrl}
+              size={32}
+            />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div
                 style={{
@@ -2254,6 +2350,7 @@ export function Sidebar({
           mode={accountPanel}
           currentUser={displayUser}
           onClose={() => setAccountPanel(null)}
+          onUpdateAvatar={onUpdateAvatar}
         />
       ) : null}
     </aside>
@@ -2314,9 +2411,52 @@ function AccountMenuItem({
   );
 }
 
-function AccountPanelDialog({ mode, currentUser, onClose }) {
+function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
   const title = mode === "security" ? "账号安全" : "个人资料";
-  return (
+  const [avatarDraft, setAvatarDraft] = React.useState(
+    currentUser.avatarText || "",
+  );
+  const [avatarUrlDraft, setAvatarUrlDraft] = React.useState(
+    currentUser.avatarUrl || "",
+  );
+  const [avatarBusy, setAvatarBusy] = React.useState(false);
+  const [avatarMessage, setAvatarMessage] = React.useState("");
+  const fileInputRef = React.useRef(null);
+
+  const pickImage = async (event) => {
+    const file = event.target.files?.[0];
+    // 清空 value，让用户再次选同一张图也能触发 change。
+    event.target.value = "";
+    if (!file) return;
+    setAvatarBusy(true);
+    setAvatarMessage("");
+    try {
+      const dataUrl = await compressAvatarImage(file);
+      setAvatarUrlDraft(dataUrl);
+    } catch (error) {
+      setAvatarMessage(error?.message || "图片处理失败，请换一张。");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const saveAvatar = async () => {
+    setAvatarBusy(true);
+    setAvatarMessage("");
+    try {
+      await onUpdateAvatar?.({
+        avatarText: sliceByCodePoints(avatarDraft.trim(), 4),
+        avatarUrl: avatarUrlDraft,
+      });
+      setAvatarMessage("头像已更新。");
+    } catch (error) {
+      setAvatarMessage(error?.message || "保存头像失败，请稍后重试。");
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const dialog = (
     <div
       role="dialog"
       aria-modal="true"
@@ -2324,7 +2464,7 @@ function AccountPanelDialog({ mode, currentUser, onClose }) {
       style={{
         position: "fixed",
         inset: 0,
-        zIndex: 80,
+        zIndex: 120,
         background: "rgba(15,23,42,0.24)",
         display: "grid",
         placeItems: "center",
@@ -2355,7 +2495,14 @@ function AccountPanelDialog({ mode, currentUser, onClose }) {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <Avatar name={currentUser.name} size={34} />
+            <Avatar
+              name={currentUser.name}
+              text={mode === "profile" ? avatarDraft.trim() : currentUser.avatarText}
+              imageUrl={
+                mode === "profile" ? avatarUrlDraft : currentUser.avatarUrl
+              }
+              size={34}
+            />
             <div>
               <div
                 style={{
@@ -2404,12 +2551,137 @@ function AccountPanelDialog({ mode, currentUser, onClose }) {
                 {ROLES[currentUser.role] ?? ROLES[DEFAULT_CURRENT_USER.role]}
               </KV>
               <KV label="组织">{currentUser.dept || "未配置组织"}</KV>
+              <KV label="头像图片">
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <Avatar
+                      name={currentUser.name}
+                      text={avatarDraft.trim()}
+                      imageUrl={avatarUrlDraft}
+                      size={44}
+                    />
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg"
+                      aria-label="上传头像图片"
+                      onChange={pickImage}
+                      style={{ display: "none" }}
+                    />
+                    <Button
+                      kind="default"
+                      size="sm"
+                      disabled={avatarBusy}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      上传图片
+                    </Button>
+                    {avatarUrlDraft ? (
+                      <Button
+                        kind="ghost"
+                        size="sm"
+                        disabled={avatarBusy}
+                        onClick={() => setAvatarUrlDraft("")}
+                      >
+                        移除图片
+                      </Button>
+                    ) : null}
+                  </div>
+                  <span style={{ fontSize: 11.5, color: "var(--ink-400)" }}>
+                    支持 PNG / JPG，自动压缩到 256px 见方。
+                  </span>
+                </div>
+              </KV>
+              <KV label="头像字标">
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                  }}
+                >
+                  <input
+                    aria-label="头像字标"
+                    value={avatarDraft}
+                    maxLength={8}
+                    disabled={!!avatarUrlDraft}
+                    onChange={(event) => setAvatarDraft(event.target.value)}
+                    placeholder={Array.from(currentUser.name || "?")[0] || "?"}
+                    style={{
+                      width: 120,
+                      height: 30,
+                      padding: "0 10px",
+                      border: "1px solid var(--line-strong)",
+                      borderRadius: 6,
+                      fontSize: 13,
+                      background: avatarUrlDraft ? "var(--bg-soft)" : "#fff",
+                      color: avatarUrlDraft ? "var(--ink-300)" : "var(--ink-900)",
+                    }}
+                  />
+                  <span style={{ fontSize: 11.5, color: "var(--ink-400)" }}>
+                    {avatarUrlDraft
+                      ? "已设置头像图片，字标暂不生效；移除图片后可用。"
+                      : "最多 4 个字符，支持 emoji；留空则显示姓名首字。"}
+                  </span>
+                </div>
+              </KV>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "flex-end",
+                  gap: 10,
+                }}
+              >
+                {avatarMessage ? (
+                  <span
+                    aria-live="polite"
+                    style={{
+                      fontSize: 11.5,
+                      color:
+                        avatarMessage === "头像已更新。"
+                          ? "var(--green-600, #0E8A4D)"
+                          : "var(--danger-600)",
+                    }}
+                  >
+                    {avatarMessage}
+                  </span>
+                ) : null}
+                <Button
+                  kind="primary"
+                  size="sm"
+                  disabled={avatarBusy}
+                  onClick={saveAvatar}
+                >
+                  {avatarBusy ? "保存中…" : "保存头像"}
+                </Button>
+              </div>
             </>
           )}
         </div>
       </div>
     </div>
   );
+
+  if (typeof document === "undefined") {
+    return dialog;
+  }
+  // 传送到 body：侧边栏 aside 用 position:sticky 会形成独立层叠上下文，
+  // 弹窗若留在其中会被根级 position:fixed 的 AI 助手面板盖住。
+  return createPortal(dialog, document.body);
 }
 
 export function TopBar({ breadcrumbs = [], notificationCount = 0, extra }) {
@@ -28459,18 +28731,23 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
   const normalized = normalizeOrganizationSettings(settings);
   const [name, setName] = React.useState(normalized.name);
   const [logoText, setLogoText] = React.useState(normalized.logoText);
+  const [brandName, setBrandName] = React.useState(normalized.brandName);
+  const [brandTagline, setBrandTagline] = React.useState(
+    normalized.brandTagline,
+  );
   const [memberLimit, setMemberLimit] = React.useState(
     normalized.memberLimit == null ? "" : String(normalized.memberLimit),
   );
   const [features, setFeatures] = React.useState(normalized.features);
   const [message, setMessage] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
   const enabledCount = countEnabledOrganizationFeatures({ features });
 
   const toggleFeature = (key) => {
     setFeatures((current) => ({ ...current, [key]: !current[key] }));
   };
 
-  const submit = () => {
+  const submit = async () => {
     const nextName = name.trim();
     const nextMemberLimit = memberLimit.trim() ? Number(memberLimit) : null;
     if (!nextName) {
@@ -28485,12 +28762,25 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
       return;
     }
     setMessage("");
-    onSubmit?.({
-      name: nextName,
-      logoText: logoText.trim().slice(0, 4) || normalized.logoText,
-      memberLimit: nextMemberLimit,
-      features,
-    });
+    setBusy(true);
+    try {
+      await onSubmit?.({
+        name: nextName,
+        logoText:
+          sliceByCodePoints(logoText.trim(), 4) || normalized.logoText,
+        brandName:
+          sliceByCodePoints(brandName.trim(), 12) || normalized.brandName,
+        brandTagline:
+          sliceByCodePoints(brandTagline.trim(), 32) ||
+          normalized.brandTagline,
+        memberLimit: nextMemberLimit,
+        features,
+      });
+    } catch (error) {
+      setMessage(error?.message || "保存组织设置失败，请稍后重试。");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -28571,6 +28861,28 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
             maxLength={4}
             onChange={(event) => setLogoText(event.target.value)}
             placeholder="JY"
+            style={orgMemberInputStyle}
+          />
+        </OrgMemberField>
+
+        <OrgMemberField label="品牌名称">
+          <input
+            aria-label="品牌名称"
+            value={brandName}
+            maxLength={12}
+            onChange={(event) => setBrandName(event.target.value)}
+            placeholder="经营舱"
+            style={orgMemberInputStyle}
+          />
+        </OrgMemberField>
+
+        <OrgMemberField label="品牌副标">
+          <input
+            aria-label="品牌副标"
+            value={brandTagline}
+            maxLength={32}
+            onChange={(event) => setBrandTagline(event.target.value)}
+            placeholder="MCN OPERATIONS · v1.2"
             style={orgMemberInputStyle}
           />
         </OrgMemberField>
@@ -28658,8 +28970,8 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
         <Button kind="default" onClick={onClose}>
           取消
         </Button>
-        <Button kind="primary" onClick={submit}>
-          保存功能设置
+        <Button kind="primary" disabled={busy} onClick={submit}>
+          {busy ? "保存中…" : "保存功能设置"}
         </Button>
       </div>
     </Drawer>
@@ -31583,6 +31895,9 @@ function OpsReferenceInner({
     React.useState(() => normalizeOrganizationSettings(organizationSettings));
   const [organizationSettingsOpen, setOrganizationSettingsOpen] =
     React.useState(false);
+  const [currentUserState, setCurrentUserState] = React.useState(() =>
+    normalizeCurrentUser(currentUser),
+  );
   const [billingStatusState, setBillingStatusState] = React.useState(
     billingStatus ?? null,
   );
@@ -31654,6 +31969,10 @@ function OpsReferenceInner({
       normalizeOrganizationSettings(organizationSettings),
     );
   }, [organizationSettings]);
+
+  React.useEffect(() => {
+    setCurrentUserState(normalizeCurrentUser(currentUser));
+  }, [currentUser]);
 
   React.useEffect(() => {
     setBillingStatusState(billingStatus ?? null);
@@ -32960,11 +33279,42 @@ function OpsReferenceInner({
     Array.isArray(notificationItemsState) ? notificationItemsState : [],
   );
 
-  const saveOrganizationSettings = (input) => {
+  const saveOrganizationSettings = async (input) => {
+    // 品牌四项持久化到 organizations（name 列 + branding jsonb）；
+    // memberLimit / features 目前仍是会话内展示态，保持本地合并。
+    const response = await fetch("/api/organization/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: input?.name,
+        logoText: input?.logoText,
+        brandName: input?.brandName,
+        brandTagline: input?.brandTagline,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(
+        response.status === 403
+          ? "仅负责人可以修改组织品牌设置。"
+          : body.error || "保存组织设置失败，请稍后重试。",
+      );
+    }
+    const savedBranding =
+      body.organization && typeof body.organization.branding === "object"
+        ? body.organization.branding
+        : {};
+    const savedName =
+      typeof body.organization?.name === "string" &&
+      body.organization.name.trim()
+        ? { name: body.organization.name }
+        : {};
     setOrganizationSettingsState((current) =>
       normalizeOrganizationSettings({
         ...normalizeOrganizationSettings(current),
         ...input,
+        ...savedName,
+        ...savedBranding,
         features: {
           ...normalizeOrganizationSettings(current).features,
           ...(input?.features ?? {}),
@@ -32972,6 +33322,34 @@ function OpsReferenceInner({
       }),
     );
     setOrganizationSettingsOpen(false);
+  };
+
+  const updateProfileAvatar = async (patch) => {
+    const payload =
+      typeof patch === "string" ? { avatarText: patch } : patch || {};
+    const response = await fetch("/api/profile", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(body.error || "保存头像失败，请稍后重试。");
+    }
+    setCurrentUserState((current) => {
+      const next = { ...current };
+      if (body.profile?.avatarText !== undefined) {
+        next.avatarText = body.profile.avatarText;
+      } else if (payload.avatarText !== undefined) {
+        next.avatarText = payload.avatarText;
+      }
+      if (body.profile?.avatarUrl !== undefined) {
+        next.avatarUrl = body.profile.avatarUrl;
+      } else if (payload.avatarUrl !== undefined) {
+        next.avatarUrl = payload.avatarUrl;
+      }
+      return normalizeCurrentUser(next);
+    });
   };
 
   return (
@@ -32997,7 +33375,7 @@ function OpsReferenceInner({
         complexCost: complexCostState,
         dashboardHome: dashboardHomeState,
         dashboardHomeError: dashboardHomeErrorState,
-        currentUser: normalizeCurrentUser(currentUser),
+        currentUser: currentUserState,
         actions,
       }}
     >
@@ -33008,10 +33386,11 @@ function OpsReferenceInner({
           route={navKey}
           onNav={go}
           navCounts={navCounts}
-          currentUser={currentUser}
+          currentUser={currentUserState}
           organizationSettings={organizationSettingsState}
           organizationMembers={organizationMembersState}
           onOpenOrganizationSettings={() => setOrganizationSettingsOpen(true)}
+          onUpdateAvatar={updateProfileAvatar}
         />
         <main
           style={{

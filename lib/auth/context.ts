@@ -3,26 +3,42 @@ import { cache } from "react";
 
 import { appRoles, type AppRole } from "@/lib/rbac/roles";
 
+export type OrganizationBranding = {
+  logoText?: string;
+  brandName?: string;
+  brandTagline?: string;
+};
+
 export type AuthContext = {
   userId: string;
   email: string;
   name: string;
   organizationId: string;
   organizationName: string;
+  organizationBranding?: OrganizationBranding | null;
+  avatarText?: string | null;
+  avatarUrl?: string | null;
   role: AppRole;
   requiresOnboarding?: boolean;
+};
+
+type OrganizationRow = {
+  name: string;
+  branding?: OrganizationBranding | null;
 };
 
 type MembershipRow = {
   organization_id: string;
   role: AppRole;
-  organizations: { name: string } | { name: string }[] | null;
+  organizations: OrganizationRow | OrganizationRow[] | null;
   created_at?: string | null;
 };
 
 type ProfileRow = {
   full_name: string;
   requires_onboarding: boolean;
+  avatar_text?: string | null;
+  avatar_url?: string | null;
 };
 
 // appRoles is declared most→least privileged, so its index is a priority rank
@@ -86,12 +102,12 @@ export const getAuthContext = cache(async function getAuthContext(
   const [profileResult, membershipResult] = await Promise.all([
     supabase
       .from("profiles")
-      .select("full_name, requires_onboarding")
+      .select("full_name, requires_onboarding, avatar_text, avatar_url")
       .eq("id", user.id)
       .maybeSingle<ProfileRow>(),
     supabase
       .from("organization_members")
-      .select("organization_id, role, organizations(name), created_at")
+      .select("organization_id, role, organizations(name, branding), created_at")
       .eq("user_id", user.id)
       .eq("status", "active")
       // Deterministic primary-org selection: earliest joined, stable id
@@ -118,7 +134,28 @@ export const getAuthContext = cache(async function getAuthContext(
     name: profile?.full_name ?? user.email,
     organizationId: membership.organization_id,
     organizationName: organization?.name ?? "未选择组织",
+    organizationBranding: normalizeBranding(organization?.branding),
+    avatarText: profile?.avatar_text ?? null,
+    avatarUrl: profile?.avatar_url ?? null,
     role: membership.role,
     requiresOnboarding: profile?.requires_onboarding ?? false,
   };
 });
+
+function normalizeBranding(
+  input: OrganizationBranding | null | undefined,
+): OrganizationBranding | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+  const pick = (value: unknown) =>
+    typeof value === "string" && value.trim() ? value.trim() : undefined;
+  const branding: OrganizationBranding = {
+    logoText: pick(input.logoText),
+    brandName: pick(input.brandName),
+    brandTagline: pick(input.brandTagline),
+  };
+  return branding.logoText || branding.brandName || branding.brandTagline
+    ? branding
+    : null;
+}

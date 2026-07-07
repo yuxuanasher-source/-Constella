@@ -43,11 +43,13 @@ export function currentUserFromAuth(auth: AuthContext) {
     org: auth.organizationName,
     organizationId: auth.organizationId,
     dept: auth.organizationName,
+    avatarText: auth.avatarText ?? "",
+    avatarUrl: auth.avatarUrl ?? "",
   };
 }
 
 export function organizationSettingsFromAuth(auth: AuthContext) {
-  return { name: auth.organizationName };
+  return { name: auth.organizationName, ...(auth.organizationBranding ?? {}) };
 }
 
 // 加载当前角色的经营闭环看板 DTO，供作战台（ScreenRoleHome）渲染。

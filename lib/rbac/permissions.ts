@@ -70,3 +70,9 @@ export function canManageOrganizationMembers(
 ): boolean {
   return role === "owner";
 }
+
+export function canManageOrganizationSettings(
+  role: AppRole | null | undefined,
+): boolean {
+  return role === "owner";
+}
