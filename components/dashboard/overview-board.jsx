@@ -4520,7 +4520,10 @@ export function OverviewBoard({
         /* 断点以视口宽度计，而看板只在带 307px 侧边栏的控制台壳内使用，
            阈值一律按「原意图容器宽 + 307」折算。 */
         @media(max-width:1870px){.ob-shell{--ob-ai-width:400px;--ob-gap:14px;--ob-pad-r:18px}.ob-layout{grid-template-columns:minmax(0,1fr) 280px;gap:var(--ob-gap);padding:18px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 36px 20px}}
-        @media(max-width:1670px){.ob-layout{grid-template-columns:minmax(0,1fr);padding:18px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 36px 20px}}
+        /* 收窄到单列后主/个人栏纵向堆叠：把个人栏（问候 + 大盘总览 +
+           今日推荐 + 待办事项）提到主看板之上——概览信息开屏即见，符合
+           阅读逻辑，而不是滚到待办 KPI 拆分与直播实时盘之后才出现。 */
+        @media(max-width:1670px){.ob-layout{grid-template-columns:minmax(0,1fr);padding:18px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 36px 20px}.ob-personal{order:-1}}
         @media(max-width:1390px){.ob-layout{grid-template-columns:1fr;padding:18px 18px 36px 20px}.ob-ai{position:relative;right:auto;top:auto;bottom:auto;width:auto;height:540px;z-index:auto}}
       `}</style>
 
