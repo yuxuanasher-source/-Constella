@@ -564,6 +564,23 @@ export async function reviewRecordingSubmission({
   return updated;
 }
 
+export type ConfirmJoinSettlementOverride = {
+  settlementMethod: string;
+  hourlyRate?: number;
+  baseSalary?: number;
+  cpsRateBps?: number;
+};
+
+const confirmJoinSettlementMethods = new Set([
+  "cpt",
+  "cpa",
+  "cps",
+  "gift",
+  "base_salary",
+  "base_salary_cpt",
+  "manual",
+]);
+
 export async function confirmApplicationJoin({
   repo,
   audit,
@@ -575,7 +592,12 @@ export async function confirmApplicationJoin({
   audit: ApplicationAuditWriter;
   notify: ApplicationNotifier;
   actor: AdmissionActor;
-  input: { applicationId: string };
+  input: {
+    applicationId: string;
+    // 结算流程改造 step 1：确认加入时运营可直接为该主播设定本项目的
+    // 结算规则；缺省保持旧行为 = 主播默认 > 项目默认 的自动快照。
+    settlement?: ConfirmJoinSettlementOverride;
+  };
 }): Promise<ProjectStreamerRecord> {
   if (!canConfirmJoin(actor.role)) {
     throw new Error("Only owner and ops_manager can confirm project join");
@@ -586,11 +608,13 @@ export async function confirmApplicationJoin({
   const streamer = await requireStreamer(repo, application.streamerId);
   assertApplicationTransition(application.status, "joined");
   const now = new Date().toISOString();
-  const settlementSnapshot = resolveProjectStreamerSettlementSnapshot({
-    project,
-    streamer,
-    now,
-  });
+  const settlementSnapshot = input.settlement
+    ? operatorConfirmSettlementSnapshot({ override: input.settlement, now })
+    : resolveProjectStreamerSettlementSnapshot({
+        project,
+        streamer,
+        now,
+      });
 
   const projectStreamer = await repo.createProjectStreamer({
     organizationId:
@@ -710,6 +734,50 @@ function canManageAdmission(role: AppRole): boolean {
 
 function canConfirmJoin(role: AppRole): boolean {
   return role === "owner" || role === "ops_manager";
+}
+
+function operatorConfirmSettlementSnapshot({
+  override,
+  now,
+}: {
+  override: ConfirmJoinSettlementOverride;
+  now: string;
+}) {
+  const method = override.settlementMethod;
+  if (!confirmJoinSettlementMethods.has(method)) {
+    throw new Error("Invalid settlement method");
+  }
+
+  const hourlyRate = nonNegativeAmount(override.hourlyRate, "hourlyRate");
+  const baseSalary = nonNegativeAmount(override.baseSalary, "baseSalary");
+  const cpsRateBps = nonNegativeAmount(override.cpsRateBps, "cpsRateBps");
+  if (cpsRateBps > 10000) {
+    throw new Error("cpsRateBps cannot exceed 10000");
+  }
+
+  return {
+    settlementMethod: method,
+    hourlyRate,
+    baseSalary,
+    cpsRateBps,
+    settlementRule: {
+      source: "operator_confirm",
+      settlementMethod: method,
+      cptHourlyRate: hourlyRate,
+      baseSalary,
+      cpsRateBps,
+      snapshotAt: now,
+    },
+  };
+}
+
+function nonNegativeAmount(value: number | undefined, field: string): number {
+  const amount = value ?? 0;
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error(`${field} must be a non-negative number`);
+  }
+
+  return amount;
 }
 
 function resolveProjectStreamerSettlementSnapshot({

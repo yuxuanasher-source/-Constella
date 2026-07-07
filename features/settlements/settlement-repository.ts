@@ -10,6 +10,7 @@ import type {
   SettlementPoolReport,
   SettlementRepository,
   SettlementRuleRecord,
+  StreamerUserLink,
 } from "./settlement-service";
 import type { SettlementMethod } from "./settlement-engine";
 import type {
@@ -63,6 +64,7 @@ type SettlementBatchRow = {
   project_id: string;
   batch_type: SettlementBatchType;
   status: SettlementBatchStatus;
+  title: string | null;
   period_start: string;
   period_end: string;
   computed_amount: number;
@@ -113,6 +115,7 @@ const settlementBatchSelect = `
   project_id,
   batch_type,
   status,
+  title,
   period_start,
   period_end,
   computed_amount,
@@ -308,6 +311,7 @@ export class SupabaseSettlementRepository implements SettlementRepository {
     organizationId: string;
     projectId: string;
     batchType: SettlementBatchType;
+    title?: string | null;
     periodStart: string;
     periodEnd: string;
     computedAmount: number;
@@ -324,6 +328,7 @@ export class SupabaseSettlementRepository implements SettlementRepository {
       p_organization_id: input.organizationId,
       p_project_id: input.projectId,
       p_batch_type: input.batchType,
+      p_title: input.title ?? null,
       p_period_start: input.periodStart,
       p_period_end: input.periodEnd,
       p_computed_amount: input.computedAmount,
@@ -428,6 +433,55 @@ export class SupabaseSettlementRepository implements SettlementRepository {
     }
 
     return toSettlementBatchRecord(data);
+  }
+
+  async listSettlementBatchItems(
+    batchId: string,
+  ): Promise<SettlementBatchItemRecord[]> {
+    const { data, error } = await this.client
+      .from("settlement_batch_items")
+      .select(settlementBatchItemSelect)
+      .eq("settlement_batch_id", batchId)
+      .order("created_at", { ascending: true })
+      .returns<SettlementBatchItemRow[]>();
+
+    if (error) {
+      throw error;
+    }
+
+    return (data ?? []).map(toSettlementBatchItemRecord);
+  }
+
+  async listStreamerUserLinks(input: {
+    organizationId: string;
+    streamerIds: string[];
+  }): Promise<StreamerUserLink[]> {
+    if (input.streamerIds.length === 0) {
+      return [];
+    }
+
+    const { data, error } = await this.client
+      .from("streamers")
+      .select("id, user_id, display_name")
+      .eq("organization_id", input.organizationId)
+      .in("id", input.streamerIds)
+      .returns<
+        Array<{
+          id: string;
+          user_id: string | null;
+          display_name: string | null;
+        }>
+      >();
+
+    if (error) {
+      throw error;
+    }
+
+    return (data ?? []).map((row) => ({
+      streamerId: row.id,
+      userId: row.user_id,
+      displayName: row.display_name,
+    }));
   }
 
   async getProjectStreamerSettlement(input: {
@@ -576,6 +630,7 @@ function toSettlementBatchRecord(
     projectId: row.project_id,
     batchType: row.batch_type,
     status: row.status,
+    title: row.title,
     periodStart: row.period_start,
     periodEnd: row.period_end,
     computedAmount: Number(row.computed_amount),

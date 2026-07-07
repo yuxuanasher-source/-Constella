@@ -22,6 +22,7 @@ import {
   type SettlementPoolReport,
   type SettlementRepository,
   type SettlementRuleRecord,
+  type StreamerUserLink,
 } from "@/features/settlements/settlement-service";
 import {
   toStreamerEarningsSummary,
@@ -497,6 +498,25 @@ class GoldenPathRepository
     const after = { ...before, ...patch };
     this.batches.set(batchId, after);
     return after;
+  }
+
+  async listSettlementBatchItems(
+    batchId: string,
+  ): Promise<SettlementBatchItemRecord[]> {
+    return Array.from(this.items.values()).filter(
+      (item) => item.settlementBatchId === batchId,
+    );
+  }
+
+  async listStreamerUserLinks(input: {
+    organizationId: string;
+    streamerIds: string[];
+  }): Promise<StreamerUserLink[]> {
+    return input.streamerIds.map((id) => ({
+      streamerId: id,
+      userId: `user-${id}`,
+      displayName: id,
+    }));
   }
 
   listStreamerPayableSafeRows(streamerId: string): StreamerPayableSafeRow[] {

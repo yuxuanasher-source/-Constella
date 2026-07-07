@@ -10642,6 +10642,17 @@ function ReminderItem({ tone, title, content }) {
   );
 }
 
+// 确认加入时可选的结算方式（与后端 settlement_method 枚举一致）。
+const JOIN_SETTLEMENT_METHODS = [
+  { value: "cpt", label: "CPT（按小时）" },
+  { value: "cpa", label: "CPA（按任务）" },
+  { value: "cps", label: "CPS（销售分成）" },
+  { value: "gift", label: "礼物分成" },
+  { value: "base_salary", label: "底薪" },
+  { value: "base_salary_cpt", label: "底薪 + CPT" },
+  { value: "manual", label: "手工结算" },
+];
+
 function ProjectRoster({ p, go }) {
   const streamers = useOpsStreamers();
   const applications = useOpsApplications();
@@ -10655,6 +10666,15 @@ function ProjectRoster({ p, go }) {
   const [inviteMessage, setInviteMessage] = React.useState("");
   const [rosterActionError, setRosterActionError] = React.useState("");
   const [joiningApplicationId, setJoiningApplicationId] = React.useState("");
+  // 结算流程 step 1「入项即定价」：点确认加入先展开结算规则面板，运营可
+  // 在此为该主播设定本项目结算规则，或选择按默认快照直接确认。
+  const [joinFormRow, setJoinFormRow] = React.useState(null);
+  const [joinRuleDraft, setJoinRuleDraft] = React.useState({
+    settlementMethod: "cpt",
+    hourlyRate: "",
+    baseSalary: "",
+    cpsRatePercent: "",
+  });
   const [localInvites, setLocalInvites] = React.useState([]);
   const applicationRoster = projectApplicationRosterRows(
     p,
@@ -10731,20 +10751,55 @@ function ProjectRoster({ p, go }) {
       setInviteSubmitting(false);
     }
   };
-  const confirmRosterJoin = async (row) => {
+  const confirmRosterJoin = async (row, settlement) => {
     if (!row.applicationId || !actions.confirmApplicationJoin) return;
 
     setJoiningApplicationId(row.applicationId);
     setRosterActionError("");
     setInviteMessage("");
     try {
-      await actions.confirmApplicationJoin(row.applicationId);
-      setInviteMessage(`已确认 ${row.alias} 加入项目`);
+      await actions.confirmApplicationJoin(
+        row.applicationId,
+        settlement ? { settlement } : undefined,
+      );
+      setInviteMessage(
+        settlement
+          ? `已确认 ${row.alias} 加入项目，并应用本项目结算规则`
+          : `已确认 ${row.alias} 加入项目`,
+      );
+      setJoinFormRow(null);
     } catch (error) {
       setRosterActionError(error?.message || "确认加入失败，请稍后重试");
     } finally {
       setJoiningApplicationId("");
     }
+  };
+  const openJoinForm = (row) => {
+    const method = String(row.defaultRule || "").trim().toLowerCase();
+    setJoinRuleDraft({
+      settlementMethod: JOIN_SETTLEMENT_METHODS.some(
+        (option) => option.value === method,
+      )
+        ? method
+        : "cpt",
+      hourlyRate: "",
+      baseSalary: "",
+      cpsRatePercent: "",
+    });
+    setJoinFormRow(row);
+    setRosterActionError("");
+    setInviteMessage("");
+  };
+  const submitJoinWithRule = (event) => {
+    event.preventDefault();
+    if (!joinFormRow) return;
+    const cpsPercent = Number(joinRuleDraft.cpsRatePercent || 0);
+    return confirmRosterJoin(joinFormRow, {
+      settlementMethod: joinRuleDraft.settlementMethod,
+      hourlyRate: Number(joinRuleDraft.hourlyRate || 0),
+      baseSalary: Number(joinRuleDraft.baseSalary || 0),
+      cpsRateBps: Math.round(cpsPercent * 100),
+    });
   };
 
   return (
@@ -10892,6 +10947,147 @@ function ProjectRoster({ p, go }) {
         </div>
       ) : null}
 
+      {joinFormRow ? (
+        <form
+          onSubmit={submitJoinWithRule}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            padding: 12,
+            border: "1px solid var(--blue-200)",
+            borderRadius: 8,
+            background: "var(--blue-50)",
+          }}
+        >
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}>
+            为 {joinFormRow.alias} 设置本项目结算规则
+            <span
+              style={{
+                marginLeft: 8,
+                fontSize: 11,
+                fontWeight: 400,
+                color: "var(--ink-500)",
+              }}
+            >
+              加入时固化为该主播的项目结算快照，后续可在结算中心调整
+            </span>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                "minmax(150px, 1fr) 130px 130px 130px",
+              alignItems: "end",
+              gap: 10,
+            }}
+          >
+            <TaskFormLabel label="结算方式">
+              <select
+                value={joinRuleDraft.settlementMethod}
+                onChange={(event) =>
+                  setJoinRuleDraft((draft) => ({
+                    ...draft,
+                    settlementMethod: event.target.value,
+                  }))
+                }
+                style={taskInputStyle}
+              >
+                {JOIN_SETTLEMENT_METHODS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </TaskFormLabel>
+            <TaskFormLabel label="小时单价（元）">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={joinRuleDraft.hourlyRate}
+                onChange={(event) =>
+                  setJoinRuleDraft((draft) => ({
+                    ...draft,
+                    hourlyRate: event.target.value,
+                  }))
+                }
+                placeholder="0"
+                style={taskInputStyle}
+              />
+            </TaskFormLabel>
+            <TaskFormLabel label="底薪（元）">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={joinRuleDraft.baseSalary}
+                onChange={(event) =>
+                  setJoinRuleDraft((draft) => ({
+                    ...draft,
+                    baseSalary: event.target.value,
+                  }))
+                }
+                placeholder="0"
+                style={taskInputStyle}
+              />
+            </TaskFormLabel>
+            <TaskFormLabel label="CPS/礼物分成(%)">
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={joinRuleDraft.cpsRatePercent}
+                onChange={(event) =>
+                  setJoinRuleDraft((draft) => ({
+                    ...draft,
+                    cpsRatePercent: event.target.value,
+                  }))
+                }
+                placeholder="0"
+                style={taskInputStyle}
+              />
+            </TaskFormLabel>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: 8,
+              flexWrap: "wrap",
+            }}
+          >
+            <Button
+              kind="ghost"
+              size="sm"
+              onClick={() => setJoinFormRow(null)}
+              disabled={joiningApplicationId === joinFormRow.applicationId}
+            >
+              取消
+            </Button>
+            <Button
+              kind="default"
+              size="sm"
+              onClick={() => confirmRosterJoin(joinFormRow)}
+              disabled={joiningApplicationId === joinFormRow.applicationId}
+            >
+              按默认规则确认
+            </Button>
+            <Button
+              kind="primary"
+              size="sm"
+              type="submit"
+              disabled={joiningApplicationId === joinFormRow.applicationId}
+            >
+              {joiningApplicationId === joinFormRow.applicationId
+                ? "确认中"
+                : "确认加入并应用规则"}
+            </Button>
+          </div>
+        </form>
+      ) : null}
+
       <DataTable
         columns={[
           {
@@ -10980,7 +11176,7 @@ function ProjectRoster({ p, go }) {
                     disabled={joiningApplicationId === r.applicationId}
                     onClick={(e) => {
                       e.stopPropagation();
-                      confirmRosterJoin(r);
+                      openJoinForm(r);
                     }}
                   >
                     {joiningApplicationId === r.applicationId
@@ -17529,7 +17725,10 @@ function ScreenSettlement({ go }) {
     periodStart: settlementScope?.periodStart || "",
     periodEnd: settlementScope?.periodEnd || "",
     batchType: "payable",
+    title: "",
   });
+  // 建批次的参与主播勾选：null = 未手动改动过（默认全选池内主播）。
+  const [batchStreamerIds, setBatchStreamerIds] = React.useState(null);
   const [manualDraft, setManualDraft] = React.useState({
     itemType: "cpa",
     manualAmount: "300",
@@ -17585,6 +17784,34 @@ function ScreenSettlement({ go }) {
       ),
     [settlementPool, selectedProjectId, selectedProjectName],
   );
+  // 池内出现过的主播（去重），作为建批次时「参与主播」勾选项。
+  const poolStreamers = React.useMemo(() => {
+    const seen = new Map();
+    projectSettlementPool.forEach((row) => {
+      if (row.streamerId && !seen.has(row.streamerId)) {
+        seen.set(row.streamerId, row.streamer || row.streamerId);
+      }
+    });
+    return Array.from(seen, ([id, name]) => ({ id, name }));
+  }, [projectSettlementPool]);
+  const selectedBatchStreamerIds = React.useMemo(() => {
+    if (batchStreamerIds === null) {
+      return poolStreamers.map((streamer) => streamer.id);
+    }
+    const poolIds = new Set(poolStreamers.map((streamer) => streamer.id));
+    return batchStreamerIds.filter((id) => poolIds.has(id));
+  }, [batchStreamerIds, poolStreamers]);
+  const toggleBatchStreamer = (streamerId) => {
+    setBatchStreamerIds(() => {
+      const current = new Set(selectedBatchStreamerIds);
+      if (current.has(streamerId)) {
+        current.delete(streamerId);
+      } else {
+        current.add(streamerId);
+      }
+      return Array.from(current);
+    });
+  };
 
   React.useEffect(() => {
     if (!projectBatches.some((b) => b.id === activeId)) {
@@ -17852,19 +18079,34 @@ function ScreenSettlement({ go }) {
   const createBatch = (event) => {
     event?.preventDefault?.();
     return runSettlementAction("create", async () => {
-      const { projectId, periodStart, periodEnd, batchType } = batchDraft;
+      const { projectId, periodStart, periodEnd, batchType, title } =
+        batchDraft;
       if (!projectId || !periodStart || !periodEnd || !batchType) {
         setSettlementMessage("请填写完整结算批次信息");
         return false;
       }
+      if (poolStreamers.length > 0 && selectedBatchStreamerIds.length === 0) {
+        setSettlementMessage("请至少勾选一位参与本次结算的主播");
+        return false;
+      }
 
+      // 勾选了全部主播时不传过滤参数，保持「全量入批」旧语义。
+      const isSubsetSelection =
+        poolStreamers.length > 0 &&
+        selectedBatchStreamerIds.length < poolStreamers.length;
       await actions.createSettlementBatch?.({
         projectId,
         periodStart,
         periodEnd,
         batchType,
+        ...(title.trim() ? { title: title.trim() } : {}),
+        ...(isSubsetSelection
+          ? { streamerIds: selectedBatchStreamerIds }
+          : {}),
       });
       setBatchFormOpen(false);
+      setBatchStreamerIds(null);
+      setBatchDraft((draft) => ({ ...draft, title: "" }));
       setSettlementMessage("");
       return false;
     });
@@ -17934,6 +18176,60 @@ function ScreenSettlement({ go }) {
         reason: reason.trim(),
       });
       setSettlementMessage("结算批次已财务确认");
+      return false;
+    });
+
+  const notifyBatchStreamers = () =>
+    runSettlementAction("notify", async () => {
+      if (!activeBatch) return false;
+      const result = await actions.notifySettlementBatchStreamers?.(
+        activeBatch.id,
+      );
+      setSettlementMessage(
+        result
+          ? `薪资明细已发送给 ${result.notified} 位主播${
+              result.skipped
+                ? `，${result.skipped} 位未绑定登录账号已跳过`
+                : ""
+            }`
+          : "薪资明细已发送",
+      );
+      return false;
+    });
+
+  // 结算完成 → 归档引导：当前项目的批次全部锁定（或作废）且项目状态
+  // 允许流转到「已归档」时，展示一键归档提示条。
+  const selectedProjectRecord = React.useMemo(
+    () => projects.find((project) => project.id === selectedProjectId) || null,
+    [projects, selectedProjectId],
+  );
+  const archiveGuide = React.useMemo(() => {
+    if (!selectedProjectRecord || projectBatches.length === 0) {
+      return null;
+    }
+    const allFinalized = projectBatches.every(
+      (batch) => batch.status === "locked" || batch.status === "voided",
+    );
+    if (!allFinalized || selectedProjectRecord.status === "archived") {
+      return null;
+    }
+    const allowed =
+      getAllowedProjectStatusTransitions(selectedProjectRecord.status) || [];
+    if (!allowed.includes("archived")) {
+      return null;
+    }
+    return {
+      projectId: selectedProjectRecord.id,
+      name: selectedProjectRecord.name,
+    };
+  }, [selectedProjectRecord, projectBatches]);
+  const archiveSettledProject = () =>
+    runSettlementAction("archive", async () => {
+      if (!archiveGuide) return false;
+      await actions.updateProjectBasics?.(archiveGuide.projectId, {
+        status: "archived",
+      });
+      setSettlementMessage(`项目「${archiveGuide.name}」已归档`);
       return false;
     });
   const saveProjectRule = (event) => {
@@ -18880,52 +19176,150 @@ function ScreenSettlement({ go }) {
           <form
             onSubmit={createBatch}
             style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(180px, 1fr) 150px 150px 160px auto",
-              alignItems: "end",
-              gap: 10,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
               padding: 14,
               border: "1px solid var(--line)",
               borderRadius: 8,
               background: "var(--bg-soft)",
             }}
           >
-            <TaskFormLabel label="结算项目 ID">
-              <input
-                value={batchDraft.projectId}
-                onChange={updateBatchDraft("projectId")}
-                style={taskInputStyle}
-              />
-            </TaskFormLabel>
-            <TaskFormLabel label="周期开始">
-              <input
-                type="date"
-                value={batchDraft.periodStart}
-                onChange={updateBatchDraft("periodStart")}
-                style={taskInputStyle}
-              />
-            </TaskFormLabel>
-            <TaskFormLabel label="周期结束">
-              <input
-                type="date"
-                value={batchDraft.periodEnd}
-                onChange={updateBatchDraft("periodEnd")}
-                style={taskInputStyle}
-              />
-            </TaskFormLabel>
-            <TaskFormLabel label="批次类型">
-              <select
-                value={batchDraft.batchType}
-                onChange={updateBatchDraft("batchType")}
-                style={taskInputStyle}
-              >
-                <option value="payable">主播应付</option>
-                <option value="receivable">厂家应收</option>
-              </select>
-            </TaskFormLabel>
-            <Button kind="primary" type="submit" disabled={!!busyAction}>
-              确认新建批次
-            </Button>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns:
+                  "minmax(160px, 1fr) minmax(160px, 1fr) 150px 150px 160px",
+                alignItems: "end",
+                gap: 10,
+              }}
+            >
+              <TaskFormLabel label="结算项目 ID">
+                <input
+                  value={batchDraft.projectId}
+                  onChange={updateBatchDraft("projectId")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="批次名称（可选）">
+                <input
+                  value={batchDraft.title}
+                  onChange={updateBatchDraft("title")}
+                  placeholder="例如 六月主播应付 · 第一批"
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="周期开始">
+                <input
+                  type="date"
+                  value={batchDraft.periodStart}
+                  onChange={updateBatchDraft("periodStart")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="周期结束">
+                <input
+                  type="date"
+                  value={batchDraft.periodEnd}
+                  onChange={updateBatchDraft("periodEnd")}
+                  style={taskInputStyle}
+                />
+              </TaskFormLabel>
+              <TaskFormLabel label="批次类型">
+                <select
+                  value={batchDraft.batchType}
+                  onChange={updateBatchDraft("batchType")}
+                  style={taskInputStyle}
+                >
+                  <option value="payable">主播应付</option>
+                  <option value="receivable">厂家应收</option>
+                </select>
+              </TaskFormLabel>
+            </div>
+            {poolStreamers.length > 0 ? (
+              <div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    marginBottom: 8,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: "var(--ink-700)",
+                    }}
+                  >
+                    参与本次结算的主播（{selectedBatchStreamerIds.length}/
+                    {poolStreamers.length}）
+                  </span>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    onClick={() =>
+                      setBatchStreamerIds(
+                        selectedBatchStreamerIds.length === poolStreamers.length
+                          ? []
+                          : null,
+                      )
+                    }
+                  >
+                    {selectedBatchStreamerIds.length === poolStreamers.length
+                      ? "清空"
+                      : "全选"}
+                  </Button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {poolStreamers.map((streamer) => {
+                    const checked = selectedBatchStreamerIds.includes(
+                      streamer.id,
+                    );
+                    return (
+                      <label
+                        key={streamer.id}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "5px 10px",
+                          border: `1px solid ${
+                            checked ? "var(--blue-300)" : "var(--line-strong)"
+                          }`,
+                          borderRadius: 8,
+                          background: checked ? "var(--blue-50)" : "#fff",
+                          fontSize: 12,
+                          color: checked
+                            ? "var(--blue-700)"
+                            : "var(--ink-700)",
+                          cursor: "pointer",
+                          userSelect: "none",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleBatchStreamer(streamer.id)}
+                          style={{ margin: 0 }}
+                        />
+                        {streamer.name}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                当前周期可结算池为空，无可勾选的参与主播。
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <Button kind="primary" type="submit" disabled={!!busyAction}>
+                确认新建批次
+              </Button>
+            </div>
           </form>
         ) : null}
 
@@ -18990,6 +19384,34 @@ function ScreenSettlement({ go }) {
           period={settlementPeriod}
         />
 
+        {archiveGuide ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              padding: "12px 14px",
+              border: "1px solid var(--ok-600)",
+              borderRadius: 8,
+              background: "var(--ok-50)",
+            }}
+          >
+            <div style={{ flex: 1, fontSize: 12.5, color: "var(--ink-700)" }}>
+              <strong style={{ color: "var(--ok-600)" }}>结算已完成：</strong>
+              项目「{archiveGuide.name}
+              」的结算批次已全部锁定，可以归档该项目收尾。
+            </div>
+            <Button
+              kind="default"
+              size="sm"
+              onClick={archiveSettledProject}
+              disabled={!!busyAction}
+            >
+              {busyAction === "archive" ? "归档中" : "归档项目"}
+            </Button>
+          </div>
+        ) : null}
+
         <div
           style={{
             display: "grid",
@@ -19028,10 +19450,8 @@ function ScreenSettlement({ go }) {
               />
             </div>
 
-            <DataTable
-              activeRowId={activeId}
-              onRowClick={(r) => setActiveId(r.id)}
-              columns={[
+            {(() => {
+              const batchListColumns = [
                 {
                   title: "批次",
                   render: (r) => (
@@ -19101,9 +19521,43 @@ function ScreenSettlement({ go }) {
                     );
                   },
                 },
-              ]}
-              rows={filtered}
-            />
+              ];
+              const pools = settlementBatchPools(filtered);
+              if (pools.length === 0) {
+                return <DataTable columns={batchListColumns} rows={[]} />;
+              }
+              // 分池视图：按 待审核 → 待结算 → 已结算 分节展示批次，
+              // 对齐结算流程「审核后进待结算池，锁定后进已结算」的口径。
+              return pools.map((pool) => (
+                <div key={pool.key}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "10px 14px 4px",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "var(--ink-700)",
+                      }}
+                    >
+                      {pool.label}
+                    </span>
+                    <Badge tone={pool.tone}>{pool.rows.length}</Badge>
+                  </div>
+                  <DataTable
+                    activeRowId={activeId}
+                    onRowClick={(r) => setActiveId(r.id)}
+                    columns={batchListColumns}
+                    rows={pool.rows}
+                  />
+                </div>
+              ));
+            })()}
           </Card>
 
           {/* Batch detail */}
@@ -19118,6 +19572,7 @@ function ScreenSettlement({ go }) {
             onLockBatch={lockBatch}
             onReopenBatch={reopenBatch}
             onConfirmBatch={confirmBatch}
+            onNotifyStreamers={notifyBatchStreamers}
             lockGate={activeGate}
             lockBlockMessage={reconciliationBlockMessage(activeReconciliation)}
             busyAction={busyAction}
@@ -19130,6 +19585,41 @@ function ScreenSettlement({ go }) {
 
 function sumSettlementBatchAmounts(batches) {
   return batches.reduce((sum, batch) => sum + Number(batch.amount ?? 0), 0);
+}
+
+// 批次分池：按状态把批次归入 待审核 / 待结算 / 已结算 / 已作废，对齐口述
+// 结算流程「审核后进入待结算池，结算后手动确认进入已结算」的心智模型。
+const SETTLEMENT_BATCH_POOLS = [
+  {
+    key: "review",
+    label: "待审核",
+    tone: "amber",
+    statuses: ["draft", "generated", "pending_confirm", "reopened"],
+  },
+  { key: "pending_settle", label: "待结算", tone: "blue", statuses: ["confirmed"] },
+  { key: "settled", label: "已结算", tone: "teal", statuses: ["locked"] },
+  { key: "voided", label: "已作废", tone: "neutral", statuses: ["voided"] },
+];
+
+function settlementBatchPools(rows) {
+  const known = new Set(
+    SETTLEMENT_BATCH_POOLS.flatMap((pool) => pool.statuses),
+  );
+  const pools = SETTLEMENT_BATCH_POOLS.map((pool) => ({
+    ...pool,
+    rows: rows.filter((row) => pool.statuses.includes(row.status)),
+  }));
+  const other = rows.filter((row) => !known.has(row.status));
+  if (other.length > 0) {
+    pools.push({
+      key: "other",
+      label: "其他",
+      tone: "neutral",
+      statuses: [],
+      rows: other,
+    });
+  }
+  return pools.filter((pool) => pool.rows.length > 0);
 }
 
 function formatSettlementCurrency(value) {
@@ -19270,6 +19760,7 @@ function BatchDetail({
   onLockBatch,
   onReopenBatch,
   onConfirmBatch,
+  onNotifyStreamers,
   lockGate = { evaluated: false, hasBlocking: false },
   lockBlockMessage = "",
   busyAction,
@@ -19660,6 +20151,16 @@ function BatchDetail({
               >
                 {auditBusy ? "刷新中…" : "查看审计"}
               </Button>
+              {isPayable && onNotifyStreamers ? (
+                <Button
+                  kind="default"
+                  icon={<Icon.Bell size={14} />}
+                  onClick={onNotifyStreamers}
+                  disabled={!!busyAction}
+                >
+                  {busyAction === "notify" ? "发送中…" : "发送薪资明细"}
+                </Button>
+              ) : null}
               <Button
                 kind="default"
                 icon={<Icon.Export size={14} />}
@@ -19718,6 +20219,16 @@ function BatchDetail({
                   disabled={!!busyAction}
                 >
                   {busyAction === "confirm" ? "处理中…" : "财务确认"}
+                </Button>
+              ) : null}
+              {isPayable && b.status === "confirmed" && onNotifyStreamers ? (
+                <Button
+                  kind="default"
+                  icon={<Icon.Bell size={14} />}
+                  onClick={onNotifyStreamers}
+                  disabled={!!busyAction}
+                >
+                  {busyAction === "notify" ? "发送中…" : "发送薪资明细"}
                 </Button>
               ) : null}
               <Button
@@ -30717,11 +31228,19 @@ function OpsReferenceInner({
         });
         return body;
       },
-      confirmApplicationJoin: async (id) => {
+      confirmApplicationJoin: async (id, input) => {
+        // input.settlement（可选）：确认加入时同步设定该主播在本项目的结算
+        // 规则（结算流程 step 1 入项即定价）；缺省走后端自动快照。
         const body = await fetchJson(
           `/api/applications/${id}/confirm-join`,
           "confirm application join failed",
-          { method: "POST" },
+          input?.settlement
+            ? {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ settlement: input.settlement }),
+              }
+            : { method: "POST" },
         );
         await refreshApplications();
         await Promise.all([
@@ -30970,6 +31489,15 @@ function OpsReferenceInner({
         );
         await refreshSettlementBatchDetail(batchId);
         await refreshSettlementBatches();
+      },
+      notifySettlementBatchStreamers: async (batchId) => {
+        // 结算流程 step 4：批次财务确认/锁定后，把每位主播的应付明细
+        // 作为站内通知发给主播本人（可选动作）。
+        return fetchJson(
+          `/api/settlement-batches/${batchId}/notify-streamers`,
+          "notify settlement batch streamers failed",
+          { method: "POST" },
+        );
       },
       fetchSettlementReconciliation: async ({
         projectId,

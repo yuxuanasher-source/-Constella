@@ -11,6 +11,7 @@ export type OpsSettlementPoolItem = {
   id: string;
   projectId: string;
   projectName: string;
+  streamerId: string;
   streamerName: string;
   settlementDuration: number | null;
   timeSource: "system" | "screenshot" | "claimed" | null;
@@ -26,6 +27,7 @@ export type OpsSettlementBatchListItem = {
   projectId: string;
   batchType: SettlementBatchType;
   status: SettlementBatchStatus;
+  title: string | null;
   projectName: string;
   periodStart: string;
   periodEnd: string;
@@ -65,6 +67,7 @@ export type OpsSettlementDefaultScope = {
 export type SettlementPoolRow = {
   id: string;
   project_id?: string;
+  streamer_id?: string;
   created_at: string;
   settlement_duration: number | null;
   time_source: "system" | "screenshot" | "claimed" | null;
@@ -87,6 +90,7 @@ export type SettlementBatchRow = {
   project_id: string;
   batch_type: SettlementBatchType;
   status: SettlementBatchStatus;
+  title?: string | null;
   period_start: string;
   period_end: string;
   computed_amount: number;
@@ -236,7 +240,7 @@ export async function listOpsSettlementBatches(
   const { data, error } = await client
     .from("settlement_batches")
     .select(
-      "id, project_id, batch_type, status, period_start, period_end, computed_amount, manual_amount, adjustment_amount, evidence_summary, updated_at, created_by, projects(name), settlement_batch_items(id)",
+      "id, project_id, batch_type, status, title, period_start, period_end, computed_amount, manual_amount, adjustment_amount, evidence_summary, updated_at, created_by, projects(name), settlement_batch_items(id)",
     )
     .eq("organization_id", organizationId)
     .order("updated_at", { ascending: false })
@@ -396,6 +400,7 @@ export function toOpsSettlementPoolItem(
     id: row.id,
     projectId: row.project_id ?? "unknown-project",
     projectName: project?.name ?? "Unknown project",
+    streamerId: row.streamer_id ?? "unknown-streamer",
     streamerName: streamer?.display_name ?? "Unknown streamer",
     settlementDuration: row.settlement_duration,
     timeSource: row.time_source,
@@ -421,6 +426,7 @@ export function toOpsSettlementBatchListItem(
     projectId: row.project_id,
     batchType: row.batch_type,
     status: row.status,
+    title: row.title ?? null,
     projectName: project?.name ?? "Unknown project",
     periodStart: row.period_start,
     periodEnd: row.period_end,
