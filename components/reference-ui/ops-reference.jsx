@@ -19372,7 +19372,7 @@ function ScreenSettlement({ go }) {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "0.85fr 1.35fr",
+              gridTemplateColumns: "minmax(0, 0.85fr) minmax(0, 1.35fr)",
               gap: 16,
               padding: 16,
             }}
@@ -19410,7 +19410,9 @@ function ScreenSettlement({ go }) {
               onSubmit={saveProjectRule}
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(3, minmax(120px, 1fr)) auto",
+                // auto-fit：右栏在窄容器（视口 − 侧边栏后约 400px）时字段
+                // 自动换行，而不是固定四列把「保存项目规则」顶出卡片右缘。
+                gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
                 gap: 10,
                 alignItems: "end",
                 minWidth: 0,
@@ -20064,7 +20066,9 @@ function ScreenSettlement({ go }) {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "1fr 1.4fr",
+            // minmax(0,…)：批次详情里的明细表格/UUID 等宽内容不允许把列的
+            // min-content 顶过容器（会造成整页横向溢出、右缘被裁切）。
+            gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1.4fr)",
             gap: 20,
             alignItems: "flex-start",
           }}
@@ -20572,7 +20576,9 @@ function BatchDetail({
             style={{
               marginTop: 12,
               display: "grid",
-              gridTemplateColumns: "repeat(4, 1fr)",
+              // minmax(0,…) + break-all：创建人是 36 位 UUID 这类不可断词的
+              // 长串，1fr 的 min-content 会把批次详情卡撑出容器右缘。
+              gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
               gap: 12,
               paddingTop: 12,
               borderTop: "1px dashed var(--line)",
@@ -20585,7 +20591,7 @@ function BatchDetail({
               <span className="mono">{b.project}</span>
             </KV>
             <KV label="创建人" w={50}>
-              {b.creator}
+              <span style={{ wordBreak: "break-all" }}>{b.creator}</span>
             </KV>
             <KV label="更新" w={36}>
               <span className="num" style={{ fontSize: 11.5 }}>
@@ -20764,7 +20770,7 @@ function BatchDetail({
           </div>
         ) : null}
 
-        {/* Footer: actions */}
+        {/* Footer: actions（窄容器下按钮换行而不是把卡片顶出右缘） */}
         <div
           style={{
             padding: 12,
@@ -20773,6 +20779,9 @@ function BatchDetail({
             display: "flex",
             alignItems: "center",
             gap: 8,
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
+            rowGap: 8,
           }}
         >
           {isLocked && (
