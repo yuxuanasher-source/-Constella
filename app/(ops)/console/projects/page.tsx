@@ -1,4 +1,5 @@
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
+import { listOpsApplicationQueue } from "@/features/applications/application-queries";
 import { listOpsLiveTaskQueue } from "@/features/live-operations/live-operations-queries";
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
 import { listProjects } from "@/features/projects/project-queries";
@@ -43,21 +44,30 @@ export default async function ProjectsPage() {
   const projectsPromise = listProjects(supabase, {
     organizationId: auth.organizationId,
   });
+  const applicationQueuePromise = listOpsApplicationQueue(supabase, {
+    organizationId: auth.organizationId,
+  });
   const liveTasksPromise = listOpsLiveTaskQueue(supabase, auth.organizationId);
-  const batchesPromise = listOpsSettlementBatches(supabase, auth.organizationId);
+  const batchesPromise = listOpsSettlementBatches(
+    supabase,
+    auth.organizationId,
+  );
   const [
     projects,
+    applicationQueue,
     collaborations,
     liveTasks,
     settlementData,
     dashboardHome,
   ] = await Promise.all([
     projectsPromise,
+    applicationQueuePromise,
     loadPartnerCollaborations(collaborationRepo, auth),
     liveTasksPromise,
     loadSettlementReferenceData(supabase, auth.organizationId, batchesPromise),
     loadConsoleDashboardHome(supabase, auth, {
       projects: projectsPromise,
+      applications: applicationQueuePromise,
       tasks: liveTasksPromise,
       batches: batchesPromise,
     }),
@@ -70,6 +80,7 @@ export default async function ProjectsPage() {
       currentUser={currentUserFromAuth(auth)}
       organizationSettings={organizationSettingsFromAuth(auth)}
       projectCards={toProjectCardDtos(projects)}
+      applicationQueue={applicationQueue}
       collaborationProjectCards={[
         ...toCollaborationProjectCardDtos(collaborations.projects),
         ...toCollaborationApplicationProjectCardDtos(

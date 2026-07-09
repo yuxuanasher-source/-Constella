@@ -1,4 +1,8 @@
 import type { AppRole } from "@/lib/rbac/roles";
+import type {
+  ApplicationStatus,
+  RecordingReviewStatus,
+} from "@/features/applications/application-state";
 
 const DEFAULT_DASHBOARD_TIME_ZONE = "Asia/Shanghai";
 
@@ -93,10 +97,21 @@ export type DashboardNotificationInput = {
   createdAt?: string | null;
 };
 
+export type DashboardApplicationInput = {
+  id: string;
+  projectId?: string | null;
+  status: ApplicationStatus | string;
+  submittedAt?: string | null;
+  latestRecording?: {
+    status?: RecordingReviewStatus | string | null;
+  } | null;
+};
+
 export type DashboardSourceData = {
   now: string;
   timeZone?: string;
   projects: DashboardProjectInput[];
+  applications?: DashboardApplicationInput[];
   tasks: DashboardTaskInput[];
   reports: DashboardReportInput[];
   settlementPool: DashboardSettlementPoolInput[];
@@ -292,6 +307,8 @@ export function buildRoleHomeDashboard(
 
 function collectFacts(source: DashboardSourceData) {
   const timeZone = source.timeZone ?? DEFAULT_DASHBOARD_TIME_ZONE;
+  const hasApplicationFacts = Array.isArray(source.applications);
+  const applications = hasApplicationFacts ? (source.applications ?? []) : [];
   const activeProjects = source.projects.filter((project) =>
     ["recruiting", "pending_start", "active", "paused", "settling"].includes(
       project.status,
@@ -359,6 +376,8 @@ function collectFacts(source: DashboardSourceData) {
     now: source.now,
     timeZone,
     allProjects: source.projects,
+    applications,
+    hasApplicationFacts,
     reports: source.reports,
     batches: source.batches,
     draftBatches,
@@ -389,10 +408,9 @@ function collectFacts(source: DashboardSourceData) {
     ),
     draftBatchCount: draftBatches.length,
     reopenedBatchCount: reopenedBatches.length,
-    recordingPendingCount: sumBy(
-      source.projects,
-      (project) => project.streamers?.pendingReview,
-    ),
+    recordingPendingCount: hasApplicationFacts
+      ? applications.filter(isApplicationPendingRecordingReview).length
+      : sumBy(source.projects, (project) => project.streamers?.pendingReview),
     streamerGapProjectCount: source.projects.filter(
       (project) => (project.streamers?.candidate ?? 0) > 0,
     ).length,
@@ -1291,7 +1309,7 @@ function ownerDashboard(
     drilldowns: highRiskQueue(facts.highRiskNotices),
     panels: {
       projectRanking: buildProjectRanking(facts.allProjects),
-      admissionFunnel: buildAdmissionFunnel(facts.allProjects),
+      admissionFunnel: buildAdmissionFunnel(facts),
       settlementFunnel: buildSettlementFunnel(facts),
       batchLanes: buildBatchLanes(facts),
       amountRisks: buildAmountRisks(facts),
@@ -1340,7 +1358,7 @@ function opsManagerDashboard(
     risks: anomalyQueue(facts.anomalyTasks),
     drilldowns: reportQueue(facts.pendingReports),
     panels: {
-      admissionFunnel: buildAdmissionFunnel(facts.allProjects),
+      admissionFunnel: buildAdmissionFunnel(facts),
     },
     generatedAt,
   };
@@ -1449,6 +1467,16 @@ const BATCH_LANE_DEFS: { key: string; label: string; tone: DashboardTone }[] = [
 ];
 
 function buildAdmissionFunnel(
+  facts: ReturnType<typeof collectFacts>,
+): DashboardFunnel {
+  if (facts.hasApplicationFacts) {
+    return buildAdmissionFunnelFromApplications(facts.applications);
+  }
+
+  return buildAdmissionFunnelFromProjects(facts.allProjects);
+}
+
+function buildAdmissionFunnelFromProjects(
   projects: DashboardProjectInput[],
 ): DashboardFunnel {
   const candidate = sumBy(projects, (p) => p.streamers?.candidate);
@@ -1456,6 +1484,29 @@ function buildAdmissionFunnel(
   const active = sumBy(projects, (p) => p.streamers?.active);
   const applied = candidate + pendingReview + active;
   const review = pendingReview + active;
+  return createAdmissionFunnel(applied, review, active);
+}
+
+function buildAdmissionFunnelFromApplications(
+  applications: DashboardApplicationInput[],
+): DashboardFunnel {
+  const visibleApplications = applications.filter(
+    isApplicationInAdmissionFunnel,
+  );
+  const applied = visibleApplications.length;
+  const review = visibleApplications.filter(
+    isApplicationInRecordingReviewStage,
+  ).length;
+  const admitted = visibleApplications.filter(isApplicationJoined).length;
+
+  return createAdmissionFunnel(applied, review, admitted);
+}
+
+function createAdmissionFunnel(
+  applied: number,
+  review: number,
+  admitted: number,
+): DashboardFunnel {
   const rate = (value: number) =>
     applied > 0 ? Number(((value / applied) * 100).toFixed(0)) : 0;
   return {
@@ -1480,13 +1531,59 @@ function buildAdmissionFunnel(
       {
         key: "admitted",
         label: "最终入项",
-        value: active,
-        rate: rate(active),
+        value: admitted,
+        rate: rate(admitted),
         tone: "green",
       },
     ],
     target: { route: "projects" },
   };
+}
+
+function isApplicationInAdmissionFunnel(
+  application: DashboardApplicationInput,
+) {
+  return application.status !== "withdrawn";
+}
+
+function isApplicationPendingRecordingReview(
+  application: DashboardApplicationInput,
+) {
+  if (!isApplicationInAdmissionFunnel(application)) {
+    return false;
+  }
+
+  const recordingStatus = application.latestRecording?.status;
+  return (
+    application.status === "recording_reviewing" ||
+    recordingStatus === "submitted" ||
+    recordingStatus === "reviewing"
+  );
+}
+
+function isApplicationInRecordingReviewStage(
+  application: DashboardApplicationInput,
+) {
+  if (!isApplicationInAdmissionFunnel(application)) {
+    return false;
+  }
+
+  const recordingStatus = application.latestRecording?.status;
+  return (
+    application.status === "recording_reviewing" ||
+    application.status === "recording_approved" ||
+    application.status === "joined" ||
+    recordingStatus === "submitted" ||
+    recordingStatus === "reviewing" ||
+    recordingStatus === "approved"
+  );
+}
+
+function isApplicationJoined(application: DashboardApplicationInput) {
+  return (
+    isApplicationInAdmissionFunnel(application) &&
+    application.status === "joined"
+  );
 }
 
 function buildSettlementFunnel(

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { listOpsApplicationQueue } from "@/features/applications/application-queries";
 import {
   listOpsLiveReportQueue,
   listOpsLiveTaskQueue,
@@ -25,6 +26,10 @@ vi.mock("@/features/projects/project-queries", () => ({
 vi.mock("@/features/live-operations/live-operations-queries", () => ({
   listOpsLiveTaskQueue: vi.fn(),
   listOpsLiveReportQueue: vi.fn(),
+}));
+
+vi.mock("@/features/applications/application-queries", () => ({
+  listOpsApplicationQueue: vi.fn(),
 }));
 
 vi.mock("@/features/settlements/settlement-queries", () => ({
@@ -59,6 +64,7 @@ describe("loadRoleHomeDashboard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(listProjects).mockResolvedValue([]);
+    vi.mocked(listOpsApplicationQueue).mockResolvedValue([]);
     vi.mocked(listOpsLiveTaskQueue).mockResolvedValue([]);
     vi.mocked(listOpsLiveReportQueue).mockResolvedValue([]);
     vi.mocked(listOpsSettlementPool).mockResolvedValue([]);
@@ -96,6 +102,9 @@ describe("loadRoleHomeDashboard", () => {
       periodEnd: "2026-06-30",
     });
     expect(listOpsSettlementBatches).toHaveBeenCalledWith(supabase, "org-1");
+    expect(listOpsApplicationQueue).toHaveBeenCalledWith(supabase, {
+      organizationId: "org-1",
+    });
     expect(listNotificationCenterItems).toHaveBeenCalledWith(
       supabase,
       {
@@ -105,6 +114,56 @@ describe("loadRoleHomeDashboard", () => {
       },
       { limit: 20 },
     );
+  });
+
+  it("loads application queue facts for the admission funnel", async () => {
+    vi.mocked(listProjects).mockResolvedValue([
+      projectRow({ id: "project-1", name: "Alpha" }),
+    ] as never);
+    vi.mocked(listOpsApplicationQueue).mockResolvedValue([
+      applicationQueueItem({
+        id: "application-submitted",
+        status: "submitted",
+        project: { id: "project-1", code: "P-1", name: "Alpha" },
+      }),
+      applicationQueueItem({
+        id: "application-reviewing",
+        status: "recording_reviewing",
+        project: { id: "project-1", code: "P-1", name: "Alpha" },
+        latestRecording: {
+          id: "recording-1",
+          assetId: null,
+          version: 1,
+          status: "submitted",
+          durationSeconds: 300,
+          externalUrl: null,
+          hasPrivateStorage: false,
+          createdAt: "2026-06-16T08:20:00.000Z",
+          aiAnalysis: null,
+        },
+      }),
+      applicationQueueItem({
+        id: "application-joined",
+        status: "joined",
+        project: { id: "project-1", code: "P-1", name: "Alpha" },
+      }),
+    ] as never);
+
+    const dashboard = await loadRoleHomeDashboard({
+      supabase: supabase as never,
+      auth,
+      now: "2026-06-16T09:30:00.000Z",
+    });
+
+    const source = vi.mocked(buildRoleHomeDashboard).mock.calls[0]?.[0].source;
+    expect(source?.applications?.map((application) => application.id)).toEqual([
+      "application-submitted",
+      "application-reviewing",
+      "application-joined",
+    ]);
+    expect(
+      dashboard.panels?.admissionFunnel?.stages.map((s) => s.value),
+    ).toEqual([3, 2, 1]);
   });
 
   it("uses Shanghai-local month boundaries for settlement periods", async () => {
@@ -863,6 +922,25 @@ function projectRow(overrides: Partial<ProjectListItem> = {}): ProjectListItem {
     live_reports: [],
     published_at: null,
     created_at: "2026-06-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function applicationQueueItem(overrides = {}) {
+  return {
+    id: "application-1",
+    source: "signup",
+    status: "submitted",
+    submittedAt: "2026-06-16T08:00:00.000Z",
+    decisionReason: null,
+    project: { id: "project-1", code: "P-1", name: "Alpha" },
+    streamer: {
+      id: "streamer-1",
+      displayName: "Streamer One",
+      cooperationStatus: "active",
+      riskLevel: "low",
+    },
+    latestRecording: null,
     ...overrides,
   };
 }

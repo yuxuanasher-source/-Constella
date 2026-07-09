@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
+import { listOpsApplicationQueue } from "@/features/applications/application-queries";
 import { listOpsLiveTaskQueue } from "@/features/live-operations/live-operations-queries";
 import { listProjects } from "@/features/projects/project-queries";
 import {
@@ -38,6 +39,10 @@ vi.mock("@/components/reference-ui/ops-reference", () => ({
 
 vi.mock("@/features/projects/project-queries", () => ({
   listProjects: vi.fn(),
+}));
+
+vi.mock("@/features/applications/application-queries", () => ({
+  listOpsApplicationQueue: vi.fn(),
 }));
 
 vi.mock("@/features/live-operations/live-operations-queries", () => ({
@@ -106,6 +111,7 @@ describe("console projects route", () => {
     vi.mocked(createSupabaseAdminClient).mockReturnValue({
       client: "admin-supabase",
     } as never);
+    vi.mocked(listOpsApplicationQueue).mockResolvedValue([]);
     vi.mocked(listPartnerCollaborationApplications).mockResolvedValue([]);
     vi.mocked(listPartnerCollaborationProjects).mockResolvedValue([]);
   });
@@ -170,6 +176,9 @@ describe("console projects route", () => {
       undefined,
     );
     expect(listOpsLiveTaskQueue).toHaveBeenCalledWith(supabase, "org-1");
+    expect(listOpsApplicationQueue).toHaveBeenCalledWith(supabase, {
+      organizationId: "org-1",
+    });
   });
 
   it("hydrates settlement center data for in-app navigation from the projects entry", async () => {

@@ -1,6 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
+  listOpsApplicationQueue,
+  type OpsApplicationQueueItem,
+} from "@/features/applications/application-queries";
+import {
   listOpsLiveReportQueue,
   listOpsLiveTaskQueue,
   type OpsLiveReportQueueItem,
@@ -29,6 +33,7 @@ import { isMcnStaff } from "@/lib/rbac/roles";
 
 import {
   buildRoleHomeDashboard,
+  type DashboardApplicationInput,
   type DashboardBatchInput,
   type DashboardProjectInput,
   type DashboardReportInput,
@@ -47,6 +52,7 @@ type MaybePromise<T> = T | Promise<T>;
 // 注意注入数据必须与看板自身的查询同语义：按 auth.organizationId 过滤。
 export type RoleHomePreloadedSource = {
   projects?: MaybePromise<ProjectListItem[]>;
+  applications?: MaybePromise<OpsApplicationQueueItem[]>;
   tasks?: MaybePromise<OpsLiveTaskQueueItem[]>;
   batches?: MaybePromise<OpsSettlementBatchListItem[]>;
 };
@@ -67,14 +73,19 @@ export async function loadRoleHomeDashboard(input: {
 
   const [
     projectRows,
+    applicationRows,
     taskRows,
     reportRows,
     settlementPoolRows,
     batchRows,
     notifications,
   ] = await Promise.all([
-    input.preloaded?.projects ?? listProjects(input.supabase, { organizationId }),
-    input.preloaded?.tasks ?? listOpsLiveTaskQueue(input.supabase, organizationId),
+    input.preloaded?.projects ??
+      listProjects(input.supabase, { organizationId }),
+    input.preloaded?.applications ??
+      listOpsApplicationQueue(input.supabase, { organizationId }),
+    input.preloaded?.tasks ??
+      listOpsLiveTaskQueue(input.supabase, organizationId),
     listOpsLiveReportQueue(input.supabase, organizationId),
     listOpsSettlementPool(input.supabase, {
       organizationId,
@@ -97,6 +108,7 @@ export async function loadRoleHomeDashboard(input: {
   ]);
   const scopedRows = scopeRowsForRole(role, input.auth.userId, {
     projectRows,
+    applicationRows,
     taskRows,
     reportRows,
     settlementPoolRows,
@@ -120,6 +132,7 @@ export async function loadRoleHomeDashboard(input: {
         periodStart,
         periodEnd,
       }),
+      applications: scopedRows.applicationRows.map(toDashboardApplication),
       tasks: scopedRows.taskRows.map(toDashboardTask),
       reports: scopedRows.reportRows.map(toDashboardReport),
       settlementPool: scopedRows.settlementPoolRows.map(
@@ -197,6 +210,7 @@ function scopeRowsForRole(
   userId: string,
   rows: {
     projectRows: ProjectListItem[];
+    applicationRows: OpsApplicationQueueItem[];
     taskRows: OpsLiveTaskQueueItem[];
     reportRows: OpsLiveReportQueueItem[];
     settlementPoolRows: OpsSettlementPoolItem[];
@@ -216,6 +230,9 @@ function scopeRowsForRole(
 
   return {
     projectRows: allowedProjects,
+    applicationRows: rows.applicationRows.filter((application) =>
+      allowedProjectIds.has(application.project.id),
+    ),
     taskRows: rows.taskRows.filter(
       (task) =>
         task.projectId !== null && allowedProjectIds.has(task.projectId),
@@ -472,6 +489,20 @@ function toDashboardTask(
     plannedStartAt: task.plannedStartAt ?? null,
     plannedEndAt: task.plannedEndAt ?? null,
     anomaly: task.status === "abnormal",
+  };
+}
+
+function toDashboardApplication(
+  application: OpsApplicationQueueItem,
+): DashboardApplicationInput {
+  return {
+    id: application.id,
+    projectId: application.project.id,
+    status: application.status,
+    submittedAt: application.submittedAt,
+    latestRecording: application.latestRecording
+      ? { status: application.latestRecording.status }
+      : null,
   };
 }
 

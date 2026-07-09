@@ -121,15 +121,21 @@ const applicationSelect = `
 
 export async function listOpsApplicationQueue(
   supabase: SupabaseClient | null,
+  options: { organizationId?: string | null } = {},
 ): Promise<OpsApplicationQueueItem[]> {
   if (!supabase) {
     return [];
   }
 
-  const { data, error } = await supabase
-    .from("project_applications")
-    .select(applicationSelect)
-    .order("submitted_at", { ascending: false });
+  let query = supabase.from("project_applications").select(applicationSelect);
+
+  if (options.organizationId) {
+    query = query.eq("organization_id", options.organizationId);
+  }
+
+  const { data, error } = await query.order("submitted_at", {
+    ascending: false,
+  });
 
   if (error) {
     throw error;

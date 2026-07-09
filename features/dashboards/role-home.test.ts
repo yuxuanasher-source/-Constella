@@ -426,6 +426,67 @@ describe("role home dashboard", () => {
     expect(finance.panels?.projectRanking).toBeUndefined();
   });
 
+  it("builds the admission funnel from real application business data when available", () => {
+    const dashboard = buildRoleHomeDashboard({
+      role: "owner",
+      userId: "u",
+      organizationId: "org-1",
+      source: {
+        ...source,
+        projects: [
+          {
+            ...source.projects[0],
+            streamers: { active: 277, candidate: 0, pendingReview: 0 },
+          },
+        ],
+        applications: [
+          {
+            id: "application-submitted",
+            status: "submitted",
+            projectId: "project-1",
+            submittedAt: "2026-06-16T08:00:00.000Z",
+            latestRecording: null,
+          },
+          {
+            id: "application-reviewing",
+            status: "recording_reviewing",
+            projectId: "project-1",
+            submittedAt: "2026-06-16T08:10:00.000Z",
+            latestRecording: { status: "submitted" },
+          },
+          {
+            id: "application-approved",
+            status: "recording_approved",
+            projectId: "project-1",
+            submittedAt: "2026-06-16T08:20:00.000Z",
+            latestRecording: { status: "approved" },
+          },
+          {
+            id: "application-joined",
+            status: "joined",
+            projectId: "project-1",
+            submittedAt: "2026-06-16T08:30:00.000Z",
+            latestRecording: { status: "approved" },
+          },
+          {
+            id: "application-withdrawn",
+            status: "withdrawn",
+            projectId: "project-1",
+            submittedAt: "2026-06-16T08:40:00.000Z",
+            latestRecording: { status: "submitted" },
+          },
+        ],
+      },
+    });
+
+    expect(
+      dashboard.panels?.admissionFunnel?.stages.map((s) => s.value),
+    ).toEqual([4, 3, 1]);
+    expect(
+      dashboard.panels?.admissionFunnel?.stages.map((s) => s.rate),
+    ).toEqual([100, 75, 25]);
+  });
+
   it("does not attach financial panels to the operator dashboard", () => {
     const operator = buildRoleHomeDashboard({
       role: "operator_business",
