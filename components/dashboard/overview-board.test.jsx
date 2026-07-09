@@ -860,6 +860,71 @@ describe("OverviewBoard AI panel", () => {
     expect(container.querySelector(".ob-side-card")).toBeTruthy();
   });
 
+  it("keeps overview KPI labels intact when the main board is narrow", () => {
+    const { container } = render(
+      <OverviewBoard
+        dashboard={{
+          ...dashboard,
+          actionGroups: [
+            {
+              key: "projects",
+              title: "项目待办",
+              items: [
+                { key: "active", label: "进行中", value: 19, tone: "blue" },
+                { key: "recruiting", label: "招募中", value: 2 },
+              ],
+            },
+            {
+              key: "review",
+              title: "复盘待办",
+              items: [
+                { key: "low", label: "低毛利", value: 24, tone: "amber" },
+                { key: "negative", label: "负毛利", value: 0, tone: "amber" },
+              ],
+            },
+            {
+              key: "settle",
+              title: "结算待办",
+              items: [
+                { key: "draft", label: "待生成", value: 0 },
+                { key: "confirm", label: "待确认", value: 5, tone: "amber" },
+              ],
+            },
+            {
+              key: "audit",
+              title: "审计待办",
+              items: [
+                { key: "risk", label: "高风险", value: 7, tone: "amber" },
+                { key: "reopen", label: "重开", value: 0 },
+              ],
+            },
+          ],
+        }}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    const styleText = Array.from(document.querySelectorAll("style"))
+      .map((node) => node.textContent || "")
+      .join("\n");
+    const labels = screen.getAllByTestId("overview-kpi-metric-label");
+
+    expect(container.querySelector(".ob-kpi-grid")).toBeTruthy();
+    expect(styleText).toContain("@container (max-width:860px)");
+    expect(styleText).toContain("grid-template-columns:repeat(2,minmax(0,1fr))");
+    expect(labels).toHaveLength(8);
+    for (const label of labels) {
+      expect(label).toHaveStyle({
+        whiteSpace: "nowrap",
+        wordBreak: "keep-all",
+      });
+    }
+  });
+
   it("filters dashboard widgets when switching the period tabs", () => {
     render(
       <OverviewBoard

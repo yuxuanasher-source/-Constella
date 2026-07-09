@@ -1489,12 +1489,17 @@ function KpiCard({ group }) {
   const aCol = dotColor(a.tone),
     bCol = dotColor(b.tone);
   const numCol = (it, col) => (it.tone === "neutral" ? C.ink : col);
+  const metricItems = [
+    { item: a, color: aCol },
+    { item: b, color: bCol },
+  ];
   return (
     <div
       className="ob-kpi-card lift"
       style={{
         borderRadius: 14,
         padding: "16px 16px 14px",
+        minWidth: 0,
       }}
     >
       <div
@@ -1527,85 +1532,86 @@ function KpiCard({ group }) {
             }}
           />
         </div>
-        <span style={{ fontSize: 12.5, color: C.ink3, fontWeight: 600 }}>
+        <span
+          style={{
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            fontSize: 12.5,
+            color: C.ink3,
+            fontWeight: 600,
+          }}
+        >
           {group.title}
         </span>
       </div>
-      <div style={{ display: "flex", alignItems: "flex-end" }}>
-        <div style={{ flex: 1 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2,minmax(0,1fr))",
+          gap: 8,
+        }}
+      >
+        {metricItems.map(({ item, color }) => (
           <div
+            key={item.key || item.label}
             style={{
-              fontSize: 23,
-              fontWeight: 720,
-              fontVariantNumeric: "tabular-nums",
-              lineHeight: 1,
-              color: numCol(a, aCol),
+              minWidth: 0,
+              borderRadius: 10,
+              padding: "8px 9px",
+              background: "rgba(247,249,253,.78)",
+              border: `1px solid ${C.divider2}`,
             }}
           >
-            {a.value}
-          </div>
-          <div
-            style={{
-              fontSize: 11.5,
-              color: C.muted,
-              marginTop: 4,
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-            }}
-          >
-            <span
+            <div
               style={{
-                width: 6,
-                height: 6,
-                borderRadius: "50%",
-                background: aCol,
+                fontSize: 23,
+                fontWeight: 720,
+                fontVariantNumeric: "tabular-nums",
+                lineHeight: 1,
+                color: numCol(item, color),
               }}
-            />
-            {a.label}
-          </div>
-        </div>
-        <div
-          style={{
-            width: 1,
-            height: 34,
-            background: "linear-gradient(180deg,transparent,#dfe6f2,transparent)",
-            margin: "0 12px 4px",
-          }}
-        />
-        <div style={{ flex: 1 }}>
-          <div
-            style={{
-              fontSize: 23,
-              fontWeight: 720,
-              fontVariantNumeric: "tabular-nums",
-              lineHeight: 1,
-              color: numCol(b, bCol),
-            }}
-          >
-            {b.value}
-          </div>
-          <div
-            style={{
-              fontSize: 11.5,
-              color: C.muted,
-              marginTop: 4,
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-            }}
-          >
-            <span
+            >
+              {item.value}
+            </div>
+            <div
+              data-testid="overview-kpi-metric-label"
               style={{
-                width: 6,
-                height: 6,
-                borderRadius: "50%",
-                background: bCol,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                wordBreak: "keep-all",
+                fontSize: 11.5,
+                color: C.muted,
+                marginTop: 5,
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
               }}
-            />
-            {b.label}
+            >
+              <span
+                style={{
+                  flex: "0 0 auto",
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: color,
+                }}
+              />
+              <span
+                style={{
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {item.label}
+              </span>
+            </div>
           </div>
-        </div>
+        ))}
       </div>
       <div
         style={{
@@ -4535,7 +4541,10 @@ export function OverviewBoard({
         /* 全屏优先保留截图里的主看板 / 个人面板 / AI 助手三栏。
            宽度用 clamp 做连续收缩，避免不同设备全屏时被过早切成单列。 */
         .ob-layout{display:grid;grid-template-columns:minmax(0,1fr) var(--ob-personal-width);gap:var(--ob-gap);align-items:start;padding:20px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 40px var(--ob-pad-l);box-sizing:border-box}
-        .ob-main{min-width:0;display:flex;flex-direction:column;gap:16px}
+        .ob-main{min-width:0;display:flex;flex-direction:column;gap:16px;container-type:inline-size}
+        .ob-kpi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+        @container (max-width:860px){.ob-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        @container (max-width:520px){.ob-kpi-grid{grid-template-columns:1fr}}
         .ob-personal{min-width:0;display:flex;flex-direction:column;gap:16px}
         .ob-ai{min-width:0;position:fixed;right:var(--ob-pad-r);top:var(--ob-ai-top);bottom:var(--ob-ai-bottom);width:var(--ob-ai-width);z-index:20;display:flex;flex-direction:column}
         /* 只有窗口真的被缩窄时才切换为纵向自适应，常见桌面全屏保持完整三栏。 */
@@ -4786,13 +4795,7 @@ export function OverviewBoard({
 
           {/* 4 KPI */}
           {todoGroups.length ? (
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(4,1fr)",
-                gap: 14,
-              }}
-            >
+            <div className="ob-kpi-grid">
               {todoGroups.slice(0, 4).map((g) => (
                 <KpiCard key={g.title} group={g} />
               ))}
