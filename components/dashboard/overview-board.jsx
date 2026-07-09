@@ -1179,19 +1179,14 @@ function AdmissionFunnelModel({ admission }) {
   return (
     <div
       data-testid="admission-funnel-model"
+      className="ob-admission-funnel-model"
       style={{
         padding: 0,
       }}
     >
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "190px minmax(260px,.86fr) minmax(260px,1fr)",
-          gap: 14,
-          alignItems: "stretch",
-        }}
-      >
+      <div className="ob-admission-funnel-grid">
         <div
+          className="ob-admission-funnel-head"
           style={{
             fontSize: 12,
             fontWeight: 680,
@@ -1202,6 +1197,7 @@ function AdmissionFunnelModel({ admission }) {
           转化指标
         </div>
         <div
+          className="ob-admission-funnel-head ob-admission-funnel-head-stage"
           style={{
             fontSize: 12,
             fontWeight: 680,
@@ -1213,6 +1209,7 @@ function AdmissionFunnelModel({ admission }) {
           阶段
         </div>
         <div
+          className="ob-admission-funnel-head ob-admission-funnel-head-decision"
           style={{
             fontSize: 12,
             fontWeight: 680,
@@ -1254,6 +1251,7 @@ function AdmissionFunnelModel({ admission }) {
             <React.Fragment key={stage.key || index}>
               <div
                 data-testid="admission-funnel-metric"
+                className="ob-admission-funnel-metric"
                 style={{
                   minHeight: 58,
                   display: "grid",
@@ -1313,6 +1311,7 @@ function AdmissionFunnelModel({ admission }) {
               </div>
 
               <div
+                className="ob-admission-funnel-segment-wrap"
                 style={{
                   minHeight: 58,
                   display: "flex",
@@ -1356,6 +1355,7 @@ function AdmissionFunnelModel({ admission }) {
 
               <div
                 data-testid="admission-funnel-decision"
+                className="ob-admission-funnel-decision"
                 style={{
                   minHeight: 58,
                   display: "grid",
@@ -4545,6 +4545,11 @@ export function OverviewBoard({
         .ob-kpi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
         @container (max-width:860px){.ob-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
         @container (max-width:520px){.ob-kpi-grid{grid-template-columns:1fr}}
+        .ob-admission-funnel-model{container-type:inline-size;min-width:0}
+        .ob-admission-funnel-grid{display:grid;grid-template-columns:minmax(150px,.78fr) minmax(180px,1fr) minmax(180px,1fr);gap:12px;align-items:stretch}
+        .ob-admission-funnel-metric,.ob-admission-funnel-segment-wrap,.ob-admission-funnel-decision{min-width:0}
+        @container (max-width:760px){.ob-admission-funnel-grid{grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr)}.ob-admission-funnel-head-decision{display:none}.ob-admission-funnel-decision{grid-column:1 / -1}}
+        @container (max-width:520px){.ob-admission-funnel-grid{grid-template-columns:1fr}.ob-admission-funnel-head-stage,.ob-admission-funnel-head-decision{display:none}.ob-admission-funnel-segment-wrap,.ob-admission-funnel-decision{grid-column:1 / -1}}
         .ob-personal{min-width:0;display:flex;flex-direction:column;gap:16px}
         .ob-ai{min-width:0;position:fixed;right:var(--ob-pad-r);top:var(--ob-ai-top);bottom:var(--ob-ai-bottom);width:var(--ob-ai-width);z-index:20;display:flex;flex-direction:column}
         /* 只有窗口真的被缩窄时才切换为纵向自适应，常见桌面全屏保持完整三栏。 */

@@ -11830,6 +11830,20 @@ function streamerSubaccountLabel(candidate) {
 // ===== src\screen-streamers.jsx =====
 // ——— Screen: 主播资源池 ————————————————————————————
 
+const STREAMER_POOL_RESPONSIVE_CSS = `
+.streamer-pool-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.streamer-pool-surface{container-type:inline-size}
+.streamer-pool-layout{padding:20px;display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,340px);gap:20px;align-items:flex-start}
+.streamer-pool-list-card{min-width:0}
+.streamer-pool-filter-strip{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.streamer-pool-search{flex:1 1 240px;min-width:220px;max-width:360px}
+.streamer-pool-filter-spacer{flex:1 1 24px;min-width:0}
+.streamer-pool-detail{min-width:0;position:sticky;top:76px;display:flex;flex-direction:column;gap:16px}
+@container (max-width:1180px){.streamer-pool-layout{grid-template-columns:1fr}.streamer-pool-detail{position:static}.streamer-pool-filter-strip{flex-wrap:wrap}.streamer-pool-filter-spacer{display:none}}
+@container (max-width:680px){.streamer-pool-layout{padding:14px 12px}.streamer-pool-search{flex-basis:100%;max-width:none}.streamer-pool-filter-strip>select{flex:1 1 160px}}
+@media(max-width:900px){.streamer-pool-actions{justify-content:flex-start}}
+`;
+
 function ScreenStreamers({ go, initialActiveId }) {
   const streamers = useOpsStreamers();
   const actions = useOpsLiveActions();
@@ -12051,10 +12065,11 @@ function ScreenStreamers({ go, initialActiveId }) {
 
   return (
     <>
+      <style>{STREAMER_POOL_RESPONSIVE_CSS}</style>
       <PageHeader
         title="主播资源池"
         actions={
-          <>
+          <div className="streamer-pool-actions">
             <Button
               kind="default"
               icon={<Icon.Export size={14} />}
@@ -12077,79 +12092,67 @@ function ScreenStreamers({ go, initialActiveId }) {
             >
               新增主播档案
             </Button>
-          </>
+          </div>
         }
       />
 
-      <div
-        style={{
-          padding: 20,
-          display: "grid",
-          gridTemplateColumns: "1fr 360px",
-          gap: 20,
-          alignItems: "flex-start",
-        }}
-      >
-        {/* List */}
-        <Card padded={false}>
-          {/* Filter strip */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "12px 16px",
-              borderBottom: "1px solid var(--line)",
-            }}
-          >
-            <SearchInput
-              placeholder="主播名 / 真名 / 平台账号"
-              value={search}
-              onChange={setSearch}
-              width={240}
-            />
-            <StreamerInlineFilter
-              label="品类筛选"
-              value={categoryFilter}
-              onChange={setCategoryFilter}
-              options={uniqueStreamerListOptions(streamers, "games")}
-            />
-            <StreamerInlineFilter
-              label="来源筛选"
-              value={sourceFilter}
-              onChange={setSourceFilter}
-              options={uniqueStreamerValueOptions(streamers, "source")}
-            />
-            <StreamerInlineFilter
-              label="合作状态筛选"
-              value={cooperationFilter}
-              onChange={setCooperationFilter}
-              options={uniqueStreamerValueOptions(streamers, "cooperation")}
-            />
-            <select
-              aria-label="风险筛选"
-              value={riskFilter}
-              onChange={(event) => setRiskFilter(event.target.value)}
-              style={{
-                height: 32,
-                border: "1px solid var(--line-strong)",
-                borderRadius: 6,
-                background: "#fff",
-                color: "var(--ink-700)",
-                fontSize: 13,
-                padding: "0 10px",
-                outline: "none",
-              }}
-            >
-              <option value="all">全部风险</option>
-              <option value="low">低风险</option>
-              <option value="medium">中风险</option>
-              <option value="high">高风险</option>
-              <option value="blacklisted">黑名单</option>
-            </select>
-            <div style={{ flex: 1 }} />
-            <Badge tone="blue">{visibleStreamers.length} 位主播</Badge>
-          </div>
+      <div className="streamer-pool-surface">
+        <div className="streamer-pool-layout">
+          {/* List */}
+          <div className="streamer-pool-list-card">
+            <Card padded={false}>
+              {/* Filter strip */}
+              <div className="streamer-pool-filter-strip">
+                <div className="streamer-pool-search">
+                  <SearchInput
+                    placeholder="主播名 / 真名 / 平台账号"
+                    value={search}
+                    onChange={setSearch}
+                    width="100%"
+                  />
+                </div>
+                <StreamerInlineFilter
+                  label="品类筛选"
+                  value={categoryFilter}
+                  onChange={setCategoryFilter}
+                  options={uniqueStreamerListOptions(streamers, "games")}
+                />
+                <StreamerInlineFilter
+                  label="来源筛选"
+                  value={sourceFilter}
+                  onChange={setSourceFilter}
+                  options={uniqueStreamerValueOptions(streamers, "source")}
+                />
+                <StreamerInlineFilter
+                  label="合作状态筛选"
+                  value={cooperationFilter}
+                  onChange={setCooperationFilter}
+                  options={uniqueStreamerValueOptions(streamers, "cooperation")}
+                />
+                <select
+                  aria-label="风险筛选"
+                  value={riskFilter}
+                  onChange={(event) => setRiskFilter(event.target.value)}
+                  style={{
+                    height: 32,
+                    border: "1px solid var(--line-strong)",
+                    borderRadius: 6,
+                    background: "#fff",
+                    color: "var(--ink-700)",
+                    fontSize: 13,
+                    padding: "0 10px",
+                    outline: "none",
+                  }}
+                >
+                  <option value="all">全部风险</option>
+                  <option value="low">低风险</option>
+                  <option value="medium">中风险</option>
+                  <option value="high">高风险</option>
+                  <option value="blacklisted">黑名单</option>
+                </select>
+                <div className="streamer-pool-filter-spacer" />
+                <Badge tone="blue">{visibleStreamers.length} 位主播</Badge>
+              </div>
           {exportMessage ? (
             <div
               aria-live="polite"
@@ -12618,11 +12621,13 @@ function ScreenStreamers({ go, initialActiveId }) {
             ]}
             rows={visibleStreamers}
             emptyText="暂无匹配主播"
-          />
-        </Card>
+              />
+            </Card>
+          </div>
 
-        {/* Detail panel */}
-        <StreamerPanel id={active} streamers={visibleStreamers} go={go} />
+          {/* Detail panel */}
+          <StreamerPanel id={active} streamers={visibleStreamers} go={go} />
+        </div>
       </div>
     </>
   );
@@ -12723,15 +12728,7 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
   }, [inviteProjectId, projects]);
   if (!s) {
     return (
-      <div
-        style={{
-          position: "sticky",
-          top: 76,
-          display: "flex",
-          flexDirection: "column",
-          gap: 16,
-        }}
-      >
+      <div className="streamer-pool-detail">
         <Card>
           <EmptyHint
             title="未选中主播"
@@ -12884,15 +12881,7 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
   };
 
   return (
-    <div
-      style={{
-        position: "sticky",
-        top: 76,
-        display: "flex",
-        flexDirection: "column",
-        gap: 16,
-      }}
-    >
+    <div className="streamer-pool-detail">
       <Card padded={true}>
         <div style={{ display: "flex", gap: 14 }}>
           <Avatar name={s.alias} size={52} />

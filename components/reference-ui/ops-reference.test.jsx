@@ -3715,6 +3715,52 @@ describe("OpsReferenceApp streamer smoke", () => {
     expect(screen.getAllByText("风险 medium").length).toBeGreaterThan(0);
   });
 
+  it("keeps streamer pool actions and detail panel adaptive on constrained widths", () => {
+    const { container } = render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        streamerCards={[
+          {
+            id: "streamer-adaptive",
+            alias: "Adaptive Streamer",
+            real: "Responsive Profile",
+            gender: "",
+            source: "供应商",
+            supplier: "未绑定",
+            games: ["strategy", "showcase"],
+            platforms: ["douyin"],
+            style: "analysis",
+            cooperation: "active",
+            risk: "low",
+            defaultRule: "CPT ¥88/h",
+            matchScore: 80,
+            metrics: {
+              screenPass: 80,
+              projectFinish: 80,
+              roi: 1.08,
+              grossContrib: 0,
+            },
+          },
+        ]}
+      />,
+    );
+
+    const styleText = Array.from(document.querySelectorAll("style"))
+      .map((node) => node.textContent || "")
+      .join("\n");
+
+    expect(container.querySelector(".streamer-pool-actions")).toBeTruthy();
+    expect(container.querySelector(".streamer-pool-layout")).toBeTruthy();
+    expect(container.querySelector(".streamer-pool-filter-strip")).toBeTruthy();
+    expect(container.querySelector(".streamer-pool-detail")).toBeTruthy();
+    expect(styleText).toContain(
+      ".streamer-pool-layout{padding:20px;display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,340px)",
+    );
+    expect(styleText).toContain("@container (max-width:1180px)");
+    expect(styleText).toContain(".streamer-pool-detail{position:static}");
+    expect(styleText).toContain(".streamer-pool-filter-strip{flex-wrap:wrap}");
+  });
+
   it("refreshes streamer cards on the streamer route when server data is not preloaded", async () => {
     const fetchedStreamer = {
       id: "streamer-refreshed",

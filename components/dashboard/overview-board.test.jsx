@@ -757,6 +757,44 @@ describe("OverviewBoard AI panel", () => {
     expect(within(model).getByText("业务决策")).toBeInTheDocument();
   });
 
+  it("keeps the admission funnel usable when the main board is narrow", () => {
+    const { container } = render(
+      <OverviewBoard
+        dashboard={{
+          ...dashboard,
+          panels: {
+            admissionFunnel: {
+              title: "准入漏斗 · 录屏到入项",
+              stages: [
+                { key: "signup", label: "报名 / 候选", value: 277 },
+                { key: "review", label: "录屏待审", value: 275 },
+                { key: "approved", label: "最终入项", value: 265 },
+              ],
+            },
+          },
+        }}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    const styleText = Array.from(document.querySelectorAll("style"))
+      .map((node) => node.textContent || "")
+      .join("\n");
+
+    expect(container.querySelector(".ob-admission-funnel-grid")).toBeTruthy();
+    expect(styleText).toContain(
+      "grid-template-columns:minmax(150px,.78fr) minmax(180px,1fr) minmax(180px,1fr)",
+    );
+    expect(styleText).toContain("@container (max-width:760px)");
+    expect(styleText).toContain(
+      ".ob-admission-funnel-decision{grid-column:1 / -1}",
+    );
+  });
+
   it("applies command-center visual surfaces to the dashboard", () => {
     const { container } = render(
       <OverviewBoard
