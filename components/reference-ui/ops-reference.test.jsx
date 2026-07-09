@@ -3756,7 +3756,14 @@ describe("OpsReferenceApp streamer smoke", () => {
     expect(styleText).toContain(
       ".streamer-pool-layout{padding:20px;display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,340px)",
     );
-    expect(styleText).toContain("@container (max-width:1180px)");
+    expect(styleText).toContain("@container (max-width:1680px)");
+    expect(styleText).toContain(
+      ".streamer-pool-list-card th:nth-child(4)",
+    );
+    expect(styleText).toContain(
+      "grid-template-columns:minmax(0,1fr) minmax(280px,320px)",
+    );
+    expect(styleText).toContain("@container (max-width:1380px)");
     expect(styleText).toContain(".streamer-pool-detail{position:static}");
     expect(styleText).toContain(".streamer-pool-filter-strip{flex-wrap:wrap}");
   });
