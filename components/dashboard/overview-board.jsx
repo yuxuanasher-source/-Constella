@@ -4531,22 +4531,16 @@ export function OverviewBoard({
         .scl::-webkit-scrollbar{width:8px;height:8px}
         .scl::-webkit-scrollbar-thumb{background:#cfd7e6;border-radius:4px}
         .scl::-webkit-scrollbar-track{background:transparent}
-        .ob-shell{--ob-ai-width:440px;--ob-gap:16px;--ob-pad-r:20px;--ob-ai-top:76px;--ob-ai-bottom:20px}
-        /* 主列用 minmax(0,1fr)：看板渲染在「视口 − 307px 侧边栏」的内容区里，
-           硬性 min 宽（旧 760/720px）加上为固定 AI 面板预留的右 padding 会在
-           1400–1900px 视口下超出内容区，把右栏顶进 AI 面板底下。 */
-        .ob-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:var(--ob-gap);align-items:start;padding:20px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 40px 24px;box-sizing:border-box}
+        .ob-shell{--ob-ai-width:clamp(360px,21vw,440px);--ob-personal-width:clamp(280px,15vw,300px);--ob-gap:clamp(12px,.8vw,16px);--ob-pad-r:clamp(16px,1vw,20px);--ob-pad-l:clamp(18px,1.25vw,24px);--ob-ai-top:76px;--ob-ai-bottom:20px}
+        /* 全屏优先保留截图里的主看板 / 个人面板 / AI 助手三栏。
+           宽度用 clamp 做连续收缩，避免不同设备全屏时被过早切成单列。 */
+        .ob-layout{display:grid;grid-template-columns:minmax(0,1fr) var(--ob-personal-width);gap:var(--ob-gap);align-items:start;padding:20px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 40px var(--ob-pad-l);box-sizing:border-box}
         .ob-main{min-width:0;display:flex;flex-direction:column;gap:16px}
         .ob-personal{min-width:0;display:flex;flex-direction:column;gap:16px}
         .ob-ai{min-width:0;position:fixed;right:var(--ob-pad-r);top:var(--ob-ai-top);bottom:var(--ob-ai-bottom);width:var(--ob-ai-width);z-index:20;display:flex;flex-direction:column}
-        /* 断点以视口宽度计，而看板只在带 307px 侧边栏的控制台壳内使用，
-           阈值一律按「原意图容器宽 + 307」折算。 */
-        @media(max-width:1870px){.ob-shell{--ob-ai-width:400px;--ob-gap:14px;--ob-pad-r:18px}.ob-layout{grid-template-columns:minmax(0,1fr) 280px;gap:var(--ob-gap);padding:18px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 36px 20px}}
-        /* 收窄到单列后主/个人栏纵向堆叠：把个人栏（问候 + 大盘总览 +
-           今日推荐 + 待办事项）提到主看板之上——概览信息开屏即见，符合
-           阅读逻辑，而不是滚到待办 KPI 拆分与直播实时盘之后才出现。 */
-        @media(max-width:1670px){.ob-layout{grid-template-columns:minmax(0,1fr);padding:18px calc(var(--ob-ai-width) + var(--ob-gap) + var(--ob-pad-r)) 36px 20px}.ob-personal{order:-1}}
-        @media(max-width:1390px){.ob-layout{grid-template-columns:1fr;padding:18px 18px 36px 20px}.ob-ai{position:relative;right:auto;top:auto;bottom:auto;width:auto;height:540px;z-index:auto}}
+        /* 只有窗口真的被缩窄时才切换为纵向自适应，常见桌面全屏保持完整三栏。 */
+        @media(max-width:1180px){.ob-layout{grid-template-columns:1fr;padding:16px 16px 32px}.ob-personal{order:-1}.ob-ai{position:relative;right:auto;top:auto;bottom:auto;width:auto;height:min(620px,calc(100vh - 120px));min-height:520px;z-index:auto}}
+        @media(max-width:760px){.ob-layout{padding:14px 12px 28px}.ob-ai{height:540px;min-height:480px}}
       `}</style>
 
       <div className="ob-layout">

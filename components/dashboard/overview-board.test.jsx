@@ -1124,7 +1124,7 @@ describe("OverviewBoard AI panel", () => {
     expect(screen.queryByText(/\*\*结论\*\*/)).not.toBeInTheDocument();
   });
 
-  it("uses a wider fixed assistant panel on desktop", () => {
+  it("uses a wide fluid assistant panel on desktop", () => {
     render(
       <OverviewBoard
         dashboard={dashboard}
@@ -1140,8 +1140,34 @@ describe("OverviewBoard AI panel", () => {
       .map((node) => node.textContent || "")
       .join("\n");
 
-    expect(styleText).toContain("--ob-ai-width:440px");
+    expect(styleText).toContain("--ob-ai-width:clamp(360px,21vw,440px)");
     expect(styleText).toContain("width:var(--ob-ai-width)");
+  });
+
+  it("keeps the desktop board composition until the window is genuinely compact", () => {
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    const styleText = Array.from(document.querySelectorAll("style"))
+      .map((node) => node.textContent || "")
+      .join("\n");
+
+    expect(styleText).toContain("--ob-ai-width:clamp(360px,21vw,440px)");
+    expect(styleText).toContain("--ob-personal-width:clamp(280px,15vw,300px)");
+    expect(styleText).toContain(
+      "grid-template-columns:minmax(0,1fr) var(--ob-personal-width)",
+    );
+    expect(styleText).toContain("@media(max-width:1180px)");
+    expect(styleText).not.toContain("@media(max-width:1670px)");
+    expect(styleText).not.toContain("@media(max-width:1390px)");
   });
 
   it("renders and persists project health cards returned by the AI chat API", async () => {
