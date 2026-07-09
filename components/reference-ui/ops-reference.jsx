@@ -981,6 +981,7 @@ const DEFAULT_ORGANIZATION_SETTINGS = {
   id: ORG.id,
   name: ORG.name || "未配置组织",
   logoText: "JY",
+  logoImage: "/brand/ops-mascot-logo.png",
   brandName: "经营舱",
   brandTagline: "MCN OPERATIONS · v1.2",
   memberLimit: null,
@@ -1030,6 +1031,10 @@ function normalizeOrganizationSettings(input) {
       4,
       DEFAULT_ORGANIZATION_SETTINGS.logoText,
     ),
+    logoImage:
+      typeof source.logoImage === "string" && source.logoImage.trim()
+        ? source.logoImage.trim()
+        : DEFAULT_ORGANIZATION_SETTINGS.logoImage,
     brandName: normalizeBrandField(
       source.brandName,
       12,
@@ -1960,8 +1965,8 @@ export function Sidebar({
         <div
           aria-label="组织 LOGO"
           style={{
-            width: 26,
-            height: 26,
+            width: 32,
+            height: 32,
             borderRadius: 7,
             background: "linear-gradient(135deg, #1E50C8 0%, #3B6BE6 100%)",
             color: "#fff",
@@ -1972,9 +1977,24 @@ export function Sidebar({
             fontSize: 13,
             letterSpacing: "-0.04em",
             boxShadow: "0 2px 6px rgba(30,80,200,0.35)",
+            overflow: "hidden",
           }}
         >
-          {orgSettings.logoText}
+          {orgSettings.logoImage &&
+          orgSettings.logoText === DEFAULT_ORGANIZATION_SETTINGS.logoText ? (
+            <img
+              src={orgSettings.logoImage}
+              alt="经营舱品牌标识"
+              style={{
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+                display: "block",
+              }}
+            />
+          ) : (
+            orgSettings.logoText
+          )}
         </div>
         <div
           style={{ display: "flex", flexDirection: "column", lineHeight: 1.15 }}

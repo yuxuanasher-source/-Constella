@@ -829,6 +829,16 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.queryByText("JY")).not.toBeInTheDocument();
   });
 
+  it("uses the default mascot image in the sidebar brand mark", () => {
+    render(<OpsReferenceApp initialRoute="warroom" />);
+
+    const logo = screen.getByLabelText("组织 LOGO");
+    expect(logo).not.toHaveTextContent("JY");
+    expect(
+      screen.getByRole("img", { name: "经营舱品牌标识" }),
+    ).toHaveAttribute("src", "/brand/ops-mascot-logo.png");
+  });
+
   it("updates the sidebar brand logo from organization settings", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
