@@ -3764,8 +3764,13 @@ describe("OpsReferenceApp streamer smoke", () => {
     );
     expect(styleText).not.toContain("th:nth-child(4)");
     expect(styleText).not.toContain("td:nth-child(4)");
+    expect(styleText).toContain("max-height:calc(100dvh - 96px)");
+    expect(styleText).toContain("overflow-y:auto");
+    expect(styleText).toContain("overscroll-behavior:contain");
     expect(styleText).toContain("@container (max-width:1180px)");
-    expect(styleText).toContain(".streamer-pool-detail{position:static}");
+    expect(styleText).toContain(
+      ".streamer-pool-detail{position:static;max-height:none;overflow:visible;padding-right:0}",
+    );
     expect(styleText).toContain(".streamer-pool-filter-strip{flex-wrap:wrap}");
   });
 
