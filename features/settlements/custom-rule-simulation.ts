@@ -212,7 +212,7 @@ const evidenceProvenanceSchema = z.strictObject({
   projectId: canonicalTextSchema(500),
   actorId: canonicalTextSchema(500),
   selectionToken: canonicalTextSchema(500).regex(/^[A-Za-z0-9._:-]+$/u),
-  dataSelectionHash: hashSchema,
+  evidenceHash: hashSchema,
   immutableSourceVersions: z.array(immutableSourceVersionSchema).max(MAX_RECORDS),
 });
 const simulationEvidenceSchema = z.strictObject({
@@ -345,7 +345,7 @@ export type CustomRuleSimulationInput = {
     projectId: string;
     actorId: string;
     selectionToken: string;
-    dataSelectionHash: string;
+    evidenceHash: string;
     immutableSourceVersions: Array<{
       kind: "immutable";
       source: string;
@@ -515,7 +515,22 @@ export function freezeAuthorizedCustomRuleSimulationEvidence(
     );
   }
   validateEvidenceSourceVersions(parsed.data.provenance, parsed.data.records);
+  validateEvidenceHash(parsed.data);
   return deepFreezeOwned(parsed.data);
+}
+
+export function calculateCustomRuleEvidenceHash(
+  unsafeEvidence: AuthorizedCustomRuleSimulationEvidence,
+): string {
+  const snapshot = snapshotOwnDataRoot(unsafeEvidence);
+  const parsed = simulationEvidenceSchema.safeParse(snapshot);
+  if (!parsed.success) {
+    throw new CustomRuleSimulationError(
+      "authorized simulation evidence is invalid",
+    );
+  }
+  validateEvidenceSourceVersions(parsed.data.provenance, parsed.data.records);
+  return hashEvidence(parsed.data);
 }
 
 export function calculateCustomRuleDataSelectionHash(
@@ -530,7 +545,8 @@ export function calculateCustomRuleDataSelectionHash(
     left.recordId.localeCompare(right.recordId),
   );
   validateEvidenceSourceVersions(parsed.data.provenance, records);
-  return hashDataSelection(parsed.data, records);
+  validateEvidenceHash(parsed.data);
+  return hashDataSelection(parsed.data);
 }
 
 export function simulateCustomSettlementRule(
@@ -555,7 +571,7 @@ export function simulateCustomSettlementRule(
   const sortedRecords = [...input.records].sort((left, right) =>
     left.recordId.localeCompare(right.recordId),
   );
-  const dataSelectionHash = hashDataSelection(input, sortedRecords);
+  const dataSelectionHash = hashDataSelection(input);
   const verified =
     input.readiness.historicalVerification === "verified" &&
     sortedRecords.length > 0 &&
@@ -663,7 +679,8 @@ export function simulateCustomSettlementRule(
     )
     .slice(0, MAX_CHANGE_BUCKETS)
     .map(toDecrease);
-  const scenarios = runSyntheticScenarios(input, runtime);
+  const scenarioRun = runSyntheticScenarios(input, runtime);
+  const scenarios = scenarioRun.scenarios;
   const assertionMismatchCount = scenarios.filter(
     (scenario) => !scenario.passed,
   ).length;
@@ -673,17 +690,20 @@ export function simulateCustomSettlementRule(
     evaluatedCount,
     blockedCount,
   });
-  const riskFlags = buildRiskFlags({
-    reviewRoutedCount,
-    blockedCount,
-    zeroPayCount,
-    redEvidencePriced,
-    delta,
-    percentageBps,
-    currentMarginCents: input.currentMarginCents ?? null,
-    marginImpact,
-    assertionMismatchCount,
-  });
+  const riskFlags = [
+    ...buildRiskFlags({
+      reviewRoutedCount,
+      blockedCount,
+      zeroPayCount,
+      redEvidencePriced,
+      delta,
+      percentageBps,
+      currentMarginCents: input.currentMarginCents ?? null,
+      marginImpact,
+      assertionMismatchCount,
+    }),
+    ...scenarioRun.riskFlags,
+  ].sort((left, right) => left.code.localeCompare(right.code));
   const persistedWarnings = mergePersistedWarnings(warnings, riskFlags);
   const persistedDelta = totalDeltaCents ?? "0";
   const persistable: PersistableCustomRuleSimulationSummary = {
@@ -819,14 +839,7 @@ function validateSimulationState(
     );
   }
   validateEvidenceSourceVersions(input.provenance, input.records);
-  const sortedRecords = [...input.records].sort((left, right) =>
-    left.recordId.localeCompare(right.recordId),
-  );
-  if (hashDataSelection(input, sortedRecords) !== input.provenance.dataSelectionHash) {
-    throw new CustomRuleSimulationError(
-      "authorized evidence selection hash mismatch",
-    );
-  }
+  validateEvidenceHash(input);
 
   const recordIds = new Set<string>();
   for (const record of input.records) {
@@ -859,7 +872,6 @@ function validateSimulationState(
 
 function hashDataSelection(
   input: z.infer<typeof simulationInputSchema>,
-  records: z.infer<typeof authorizedRecordSchema>[],
 ): string {
   return sha256(
     canonicalJson({
@@ -868,6 +880,7 @@ function hashDataSelection(
       catalogVersion: input.catalogVersion,
       contractHash: input.contractHash,
       formulaHash: input.formulaHash,
+      evidenceHash: input.provenance.evidenceHash,
       organizationId: input.organizationId,
       parameterHash: input.parameterHash,
       projectId: input.projectId,
@@ -880,26 +893,56 @@ function hashDataSelection(
         periodStart: input.sampleSelection.periodStart,
         populationCount: input.sampleSelection.populationCount,
         selectionTokenHash: sha256(input.provenance.selectionToken),
-        immutableSourceVersions: [...input.provenance.immutableSourceVersions]
-          .sort(
-            (left, right) =>
-              left.source.localeCompare(right.source) ||
-              left.version.localeCompare(right.version),
-          ),
-        records: records.map((record) => ({
-          recordId: record.recordId,
-          source: record.sourceVersion.source,
-          version: record.sourceVersion.version,
-        })),
         source: input.sampleSource.kind,
-        userExamplesHash: sha256(canonicalJson(
-          [...input.userExamples].sort((left, right) =>
-            left.id.localeCompare(right.id),
-          ),
-        )),
       },
     }),
   );
+}
+
+function hashEvidence(
+  evidence: z.infer<typeof simulationEvidenceSchema>,
+): string {
+  return sha256(
+    canonicalJson({
+      provenance: {
+        actorId: evidence.provenance.actorId,
+        organizationId: evidence.provenance.organizationId,
+        projectId: evidence.provenance.projectId,
+        selectionToken: evidence.provenance.selectionToken,
+        immutableSourceVersions: [
+          ...evidence.provenance.immutableSourceVersions,
+        ].sort(
+          (left, right) =>
+            left.source.localeCompare(right.source) ||
+            left.version.localeCompare(right.version),
+        ),
+      },
+      sampleSource: evidence.sampleSource,
+      sampleSelection: {
+        ...evidence.sampleSelection,
+        criteria: [...evidence.sampleSelection.criteria].sort((left, right) =>
+          left.localeCompare(right),
+        ),
+      },
+      records: [...evidence.records].sort((left, right) =>
+        left.recordId.localeCompare(right.recordId),
+      ),
+      userExamples: [...evidence.userExamples].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+      currentMarginCents: evidence.currentMarginCents ?? null,
+    }),
+  );
+}
+
+function validateEvidenceHash(
+  evidence: z.infer<typeof simulationEvidenceSchema>,
+): void {
+  if (hashEvidence(evidence) !== evidence.provenance.evidenceHash) {
+    throw new CustomRuleSimulationError(
+      "authorized evidence hash mismatch",
+    );
+  }
 }
 
 function validateEvidenceSourceVersions(
@@ -1014,13 +1057,18 @@ function executeAndExplain(
 function runSyntheticScenarios(
   input: z.infer<typeof simulationInputSchema>,
   runtime: CustomRuleSimulationRuntime,
-): CustomRuleSimulationScenario[] {
-  const work = deriveScenarioWork(input);
+): {
+  scenarios: CustomRuleSimulationScenario[];
+  riskFlags: CustomRuleSimulationRiskFlag[];
+} {
+  const plan = deriveScenarioWork(input);
+  const work = plan.work;
   if (work.length > MAX_SCENARIOS) {
     throw new CustomRuleSimulationError("scenario limit exceeded");
   }
   const ids = new Set<string>();
   const scenarios: CustomRuleSimulationScenario[] = [];
+  const contractCoverage = new Map<string, Set<"floor" | "cap">>();
   for (const scenario of work) {
     if (ids.has(scenario.id)) {
       throw new CustomRuleSimulationError("duplicate scenario id rejected");
@@ -1052,23 +1100,66 @@ function runSyntheticScenarios(
     const execution = executeAndExplain(
       input.compiledAst,
       decision.variables,
-      input.parameters,
+      scenario.parameterOverrides
+        ? { ...input.parameters, ...scenario.parameterOverrides }
+        : input.parameters,
       runtime,
     );
+    if (
+      scenario.category === "contract_example" ||
+      scenario.category === "user_example"
+    ) {
+      for (const trace of execution.trace) {
+        if (
+          trace.kind === "clamp" &&
+          (trace.outcome === "floor" || trace.outcome === "cap")
+        ) {
+          const outcomes = contractCoverage.get(trace.path) ?? new Set();
+          outcomes.add(trace.outcome);
+          contractCoverage.set(trace.path, outcomes);
+        }
+      }
+    }
     const amountCents = serializePostgresBigintCents(
       execution.result.componentsCents.final,
     );
+    const clampPassed = scenario.clampExpectation
+      ? execution.trace.some(
+          (trace) =>
+            trace.kind === "clamp" &&
+            trace.path === scenario.clampExpectation?.path &&
+            trace.outcome === scenario.clampExpectation.outcome &&
+            trace.result === scenario.clampExpectation.result,
+        )
+      : true;
     scenarios.push({
       ...scenarioIdentity(scenario),
       outcome: "calculated",
       amountCents,
       expectedAmountCents: scenario.expectedAmountCents,
       passed:
-        scenario.expectedAmountCents === null ||
-        scenario.expectedAmountCents === amountCents,
+        clampPassed &&
+        (scenario.expectedAmountCents === null ||
+          scenario.expectedAmountCents === amountCents),
     });
   }
-  return scenarios;
+  const hasUntestableClamp = plan.externallyCoveredClampPaths.some((path) => {
+    const outcomes = contractCoverage.get(path);
+    return !outcomes?.has("floor") || !outcomes.has("cap");
+  });
+  return {
+    scenarios,
+    riskFlags: hasUntestableClamp
+      ? [
+          {
+            code: "UNTESTABLE_CLAMP_BOUNDARY",
+            severity: "block",
+            message:
+              "Clamp floor and cap branches are not covered by deterministic contract or user scenarios.",
+          },
+        ]
+      : [],
+  };
 }
 
 type ScenarioWork = {
@@ -1076,6 +1167,12 @@ type ScenarioWork = {
   category: CustomRuleSimulationScenario["category"];
   variables: Record<string, TypedRuntimeValue>;
   expectedAmountCents: string | null;
+  parameterOverrides?: Record<string, TypedRuntimeValue>;
+  clampExpectation?: {
+    path: string;
+    outcome: "floor" | "cap";
+    result: number;
+  };
   missing?: {
     variableId: string;
     policy: CustomRuleMissingDataPolicy;
@@ -1084,7 +1181,10 @@ type ScenarioWork = {
 
 function deriveScenarioWork(
   input: z.infer<typeof simulationInputSchema>,
-): ScenarioWork[] {
+): {
+  work: ScenarioWork[];
+  externallyCoveredClampPaths: string[];
+} {
   const variableTypes = collectVariableTypes(input.compiledAst);
   for (const required of input.contract.requiredInputs) {
     variableTypes.set(required.name, required.valueType);
@@ -1103,10 +1203,10 @@ function deriveScenarioWork(
     variableTypes,
     input.contract.effectiveStartAt,
   );
-  const maximum = maximumVariables(
+  const clampPlan = deriveClampScenarioWork(
+    input.compiledAst,
     baseline,
-    orderedContractExamples.map((example) => example.inputs),
-    variableTypes,
+    input.parameters,
   );
   const work: ScenarioWork[] = [
     {
@@ -1116,7 +1216,7 @@ function deriveScenarioWork(
       expectedAmountCents: null,
     },
     ...deriveTierScenarioWork(input.compiledAst, baseline, input.parameters),
-    ...deriveClampScenarioWork(input.compiledAst, zero, maximum),
+    ...clampPlan.work,
   ];
 
   if (variableTypes.has("evidence_level")) {
@@ -1210,7 +1310,10 @@ function deriveScenarioWork(
         expectedAmountCents: expectedMoneyCents(example.expectedResult),
       });
     });
-  return work;
+  return {
+    work,
+    externallyCoveredClampPaths: clampPlan.externallyCoveredPaths,
+  };
 }
 
 function collectVariableTypes(ast: CompiledAstNode): Map<string, RuntimeValueType> {
@@ -1287,28 +1390,238 @@ function deriveTierScenarioWork(
 
 function deriveClampScenarioWork(
   ast: CompiledAstNode,
-  zero: Record<string, TypedRuntimeValue>,
-  maximum: Record<string, TypedRuntimeValue>,
-): ScenarioWork[] {
-  const paths: string[] = [];
+  baseline: Record<string, TypedRuntimeValue>,
+  parameters: Record<string, TypedRuntimeValue>,
+): { work: ScenarioWork[]; externallyCoveredPaths: string[] } {
+  const clamps: Array<{
+    node: Extract<CompiledAstNode, { kind: "call" }>;
+    path: string;
+  }> = [];
   walkCompiledAst(ast, "$", (node, path) => {
-    if (node.kind === "call" && node.callee === "clamp") paths.push(path);
+    if (node.kind === "call" && node.callee === "clamp") {
+      clamps.push({ node, path });
+    }
   });
-  paths.sort((left, right) => left.localeCompare(right));
-  return paths.flatMap((_, index) => [
-    {
-      id: `derived:clamp:${String(index + 1).padStart(6, "0")}:floor`,
-      category: "configured_maximum" as const,
-      variables: zero,
-      expectedAmountCents: null,
+  clamps.sort((left, right) => left.path.localeCompare(right.path));
+  const finalNode = finalComponentNode(ast);
+  const work: ScenarioWork[] = [];
+  const externallyCoveredPaths: string[] = [];
+
+  clamps.forEach(({ node, path }, index) => {
+    const valueNode = node.arguments[0];
+    const floorNode = node.arguments[1];
+    const capNode = node.arguments[2];
+    const target = valueNode ? adjustableClampTarget(valueNode) : null;
+    const floor = floorNode
+      ? resolveStaticNumericNode(floorNode, parameters)
+      : null;
+    const cap = capNode ? resolveStaticNumericNode(capNode, parameters) : null;
+    const floorProbe = floor === null ? null : checkedBoundaryProbe(floor, -1);
+    const capProbe = cap === null ? null : checkedBoundaryProbe(cap, 1);
+    if (
+      !target ||
+      floor === null ||
+      cap === null ||
+      floor > cap ||
+      floorProbe === null ||
+      capProbe === null
+    ) {
+      externallyCoveredPaths.push(path);
+      return;
+    }
+    const floorValue = numericRuntimeValue(target.valueType, floorProbe);
+    const capValue = numericRuntimeValue(target.valueType, capProbe);
+    if (!floorValue || !capValue) {
+      externallyCoveredPaths.push(path);
+      return;
+    }
+    const directMoneyResult =
+      node === finalNode &&
+      node.inferredType.kind === "scalar" &&
+      node.inferredType.scalarType === "money_cents";
+    const prefix = `derived:clamp:${String(index + 1).padStart(6, "0")}`;
+    work.push(
+      clampBoundaryScenario({
+        id: `${prefix}:floor`,
+        baseline,
+        target,
+        targetValue: floorValue,
+        path,
+        outcome: "floor",
+        result: floor,
+        expectedAmountCents: directMoneyResult
+          ? serializePostgresBigintCents(floor)
+          : null,
+      }),
+      clampBoundaryScenario({
+        id: `${prefix}:cap`,
+        baseline,
+        target,
+        targetValue: capValue,
+        path,
+        outcome: "cap",
+        result: cap,
+        expectedAmountCents: directMoneyResult
+          ? serializePostgresBigintCents(cap)
+          : null,
+      }),
+    );
+  });
+  return { work, externallyCoveredPaths };
+}
+
+type AdjustableClampTarget =
+  | {
+      kind: "variable";
+      name: string;
+      valueType: RuntimeValueType;
+    }
+  | {
+      kind: "parameter";
+      name: string;
+      valueType: RuntimeValueType;
+    };
+
+function adjustableClampTarget(node: CompiledAstNode): AdjustableClampTarget | null {
+  if (node.kind === "identifier") {
+    return { kind: "variable", name: node.name, valueType: node.inferredType };
+  }
+  if (node.kind === "call" && node.callee === "parameter") {
+    const name = compiledParameterName(node);
+    return name
+      ? { kind: "parameter", name, valueType: node.inferredType }
+      : null;
+  }
+  return null;
+}
+
+function clampBoundaryScenario(input: {
+  id: string;
+  baseline: Record<string, TypedRuntimeValue>;
+  target: AdjustableClampTarget;
+  targetValue: TypedRuntimeValue;
+  path: string;
+  outcome: "floor" | "cap";
+  result: number;
+  expectedAmountCents: string | null;
+}): ScenarioWork {
+  return {
+    id: input.id,
+    category: "configured_maximum",
+    variables:
+      input.target.kind === "variable"
+        ? { ...input.baseline, [input.target.name]: input.targetValue }
+        : input.baseline,
+    parameterOverrides:
+      input.target.kind === "parameter"
+        ? { [input.target.name]: input.targetValue }
+        : undefined,
+    expectedAmountCents: input.expectedAmountCents,
+    clampExpectation: {
+      path: input.path,
+      outcome: input.outcome,
+      result: input.result,
     },
-    {
-      id: `derived:clamp:${String(index + 1).padStart(6, "0")}:cap`,
-      category: "configured_maximum" as const,
-      variables: maximum,
-      expectedAmountCents: null,
-    },
-  ]);
+  };
+}
+
+function finalComponentNode(ast: CompiledAstNode): CompiledAstNode | null {
+  if (ast.kind !== "call" || ast.callee !== "money_result") return null;
+  const components = ast.arguments[0];
+  if (components?.kind !== "object") return null;
+  return components.entries.find((entry) => entry.key === "final")?.value ?? null;
+}
+
+function checkedBoundaryProbe(value: number, direction: -1 | 1): number | null {
+  const probe = value + direction;
+  return Number.isSafeInteger(probe) ? probe : null;
+}
+
+function resolveStaticNumericNode(
+  node: CompiledAstNode,
+  parameters: Record<string, TypedRuntimeValue>,
+): number | null {
+  if (node.kind === "literal" && node.inferredType.kind === "scalar") {
+    switch (node.inferredType.scalarType) {
+      case "money_cents":
+        return "valueCents" in node ? node.valueCents : null;
+      case "rate_bps":
+        return "valueBps" in node ? node.valueBps : null;
+      case "integer":
+      case "number":
+        return "value" in node &&
+          typeof node.value === "number" &&
+          Number.isSafeInteger(node.value)
+          ? node.value
+          : null;
+      case "boolean":
+      case "string":
+      case "timestamp":
+        return null;
+    }
+  }
+  if (node.kind === "unary" && node.operator === "-") {
+    const value = resolveStaticNumericNode(node.argument, parameters);
+    return value === null || !Number.isSafeInteger(-value) ? null : -value;
+  }
+  if (node.kind === "call" && node.callee === "parameter") {
+    const name = compiledParameterName(node);
+    return name ? numericRuntimePrimitive(parameters[name]) : null;
+  }
+  return null;
+}
+
+function compiledParameterName(
+  node: Extract<CompiledAstNode, { kind: "call" }>,
+): string | null {
+  const name = node.arguments[0];
+  return name?.kind === "literal" &&
+    name.inferredType.kind === "scalar" &&
+    name.inferredType.scalarType === "string" &&
+    "value" in name &&
+    typeof name.value === "string"
+    ? name.value
+    : null;
+}
+
+function numericRuntimePrimitive(value: TypedRuntimeValue | undefined): number | null {
+  if (!value) return null;
+  switch (value.type) {
+    case "money_cents":
+      return value.amountCents;
+    case "rate_bps":
+      return value.rateBps;
+    case "integer":
+    case "number":
+      return Number.isSafeInteger(value.value) ? value.value : null;
+    case "boolean":
+    case "string":
+    case "timestamp":
+    case "array":
+    case "object":
+      return null;
+  }
+}
+
+function numericRuntimeValue(
+  valueType: RuntimeValueType,
+  value: number,
+): TypedRuntimeValue | null {
+  if (valueType.kind !== "scalar" || !Number.isSafeInteger(value)) return null;
+  switch (valueType.scalarType) {
+    case "money_cents":
+      return { type: "money_cents", amountCents: value };
+    case "rate_bps":
+      return { type: "rate_bps", rateBps: value };
+    case "integer":
+      return { type: "integer", value };
+    case "number":
+      return { type: "number", value };
+    case "boolean":
+    case "string":
+    case "timestamp":
+      return null;
+  }
 }
 
 function walkCompiledAst(
@@ -1443,33 +1756,6 @@ function zeroVariables(
     ([left], [right]) => left.localeCompare(right),
   )) {
     result[name] = defaultRuntimeValue(valueType, name, timestampFallback);
-  }
-  return result;
-}
-
-function maximumVariables(
-  baseline: Record<string, TypedRuntimeValue>,
-  examples: Array<Record<string, TypedRuntimeValue>>,
-  variableTypes: Map<string, RuntimeValueType>,
-): Record<string, TypedRuntimeValue> {
-  const result = { ...baseline };
-  for (const name of [...variableTypes.keys()].sort((left, right) =>
-    left.localeCompare(right),
-  )) {
-    const candidates = examples
-      .map((example) => example[name])
-      .filter((value): value is TypedRuntimeValue => value !== undefined);
-    const numeric = candidates.filter(
-      (value) => value.type === "integer" || value.type === "number",
-    );
-    if (numeric.length > 0) {
-      result[name] = numeric.reduce((maximum, value) =>
-        (maximum.type === "integer" || maximum.type === "number") &&
-        value.value > maximum.value
-          ? value
-          : maximum,
-      );
-    }
   }
   return result;
 }

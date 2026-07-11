@@ -31,6 +31,7 @@ import type {
   CustomRuleRepository,
   FailedCustomRuleDraftInput,
   InsertedSettlementFormulaSimulation,
+  SettlementFormulaSimulation,
   SettlementAiGeneratedTestCase,
   SettlementAiSafetyFlag,
   SettlementAiTurnTrace,
@@ -38,6 +39,7 @@ import type {
 } from "./custom-rule-repository";
 import {
   calculateCustomRuleDataSelectionHash,
+  calculateCustomRuleEvidenceHash,
   freezeAuthorizedCustomRuleSimulationEvidence,
   hashCustomRuleContract,
   hashCustomRuleParameters,
@@ -85,7 +87,11 @@ const simulationSelectionSchema = z
 
 export type CustomRuleAuthoringRepositoryPort = Pick<
   CustomRuleRepository,
-  "createDraft" | "listDrafts" | "getDraft" | "insertSimulation"
+  | "createDraft"
+  | "listDrafts"
+  | "getDraft"
+  | "insertSimulation"
+  | "listSimulations"
 >;
 
 export type SettlementVariableCatalogPort = {
@@ -154,6 +160,7 @@ export type ConfirmCustomRuleContractInput = ReviseCustomRuleSessionInput & {
   expectedContractHash: string;
   expectedCatalogVersion: string;
   expectedFormulaHash?: string;
+  expectedEvidenceHash?: string;
   expectedDataSelectionHash?: string;
   simulationSelection: AuthorizedSimulationSelectionRequest;
 };
@@ -187,7 +194,10 @@ export type CustomRuleSimulatedSuccess = Readonly<{
 
 export type CustomRuleAiTransitionFailure = Readonly<{
   ok: false;
-  code: SettlementAiFailure["code"] | "persistence_failed";
+  code:
+    | SettlementAiFailure["code"]
+    | "persistence_failed"
+    | "conversation_failed";
   retryable: true;
   conversationId: string;
   sourceTurnId: string;
@@ -203,6 +213,7 @@ export type CustomRuleAuthoringResult =
 export type CustomRuleAuthoringServiceErrorCode =
   | "invalid_input"
   | "conversation_failed"
+  | "conversation_reconciliation_failed"
   | "catalog_failed"
   | "persistence_failed"
   | "draft_not_found"
@@ -213,6 +224,7 @@ export type CustomRuleAuthoringServiceErrorCode =
   | "contract_hash_mismatch"
   | "catalog_hash_mismatch"
   | "formula_hash_mismatch"
+  | "evidence_hash_mismatch"
   | "selection_hash_mismatch"
   | "formula_validation_failed"
   | "readiness_failed"
@@ -264,6 +276,7 @@ type FrozenServiceRetryContext = {
   expectedContractHash: string | null;
   expectedCatalogVersion: string | null;
   expectedFormulaHash: string | null;
+  expectedEvidenceHash: string | null;
   expectedDataSelectionHash: string | null;
   simulationSelection: AuthorizedSimulationSelectionRequest | null;
 };
@@ -283,6 +296,7 @@ const frozenServiceRetryContextSchema: z.ZodType<FrozenServiceRetryContext> =
     expectedContractHash: z.string().regex(HASH_PATTERN).nullable(),
     expectedCatalogVersion: z.string().regex(HASH_PATTERN).nullable(),
     expectedFormulaHash: z.string().regex(HASH_PATTERN).nullable(),
+    expectedEvidenceHash: z.string().regex(HASH_PATTERN).nullable(),
     expectedDataSelectionHash: z.string().regex(HASH_PATTERN).nullable(),
     simulationSelection: simulationSelectionSchema.nullable(),
   });
@@ -426,6 +440,7 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
           opened,
           retryContext,
           drafts,
+          sourceTurnId: input.sourceTurnId,
         });
       }
       const latest = drafts[0];
@@ -448,6 +463,7 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
         idempotencyKey = retryDraftIdempotencyKey(
           retryContext.draftIdempotencyKey,
           input.sourceTurnId,
+          input.clientRequestId,
         );
         expectedRevisionNumber = latest.revisionNumber + 1;
       }
@@ -505,6 +521,7 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
             opened,
             retryContext: opened.serviceRetryContext,
             drafts,
+            sourceTurnId: existing.turnTrace.turnId,
           });
         }
       }
@@ -588,6 +605,7 @@ async function retryConfirmationTransition(input: {
   opened: OpenedAiTurn;
   retryContext: FrozenServiceRetryContext;
   drafts: CustomRuleDraft[];
+  sourceTurnId: string;
 }): Promise<CustomRuleAuthoringResult> {
   const context = input.retryContext;
   if (
@@ -614,7 +632,79 @@ async function retryConfirmationTransition(input: {
       catalog: input.opened.prepared.catalog,
       selection: context.simulationSelection,
       expectedFormulaHash: context.expectedFormulaHash,
+      expectedEvidenceHash: context.expectedEvidenceHash,
       expectedDataSelectionHash: context.expectedDataSelectionHash,
+    });
+  }
+  if (existing?.initialStatus === "failed") {
+    const retryIdempotencyKey = retryDraftIdempotencyKey(
+      context.draftIdempotencyKey,
+      input.sourceTurnId,
+      input.scope.clientRequestId,
+    );
+    const retriedDraft = input.drafts.find(
+      (draft) => draft.idempotencyKey === retryIdempotencyKey,
+    );
+    if (retriedDraft?.initialStatus === "contract_ready") {
+      return resumeContractReadyConfirmation({
+        dependencies: input.dependencies,
+        scope: input.scope,
+        opened: input.opened,
+        draft: retriedDraft,
+        catalog: input.opened.prepared.catalog,
+        selection: context.simulationSelection,
+        expectedFormulaHash: context.expectedFormulaHash,
+        expectedEvidenceHash: context.expectedEvidenceHash,
+        expectedDataSelectionHash: context.expectedDataSelectionHash,
+      });
+    }
+    if (retriedDraft) {
+      throw serviceError(
+        "invalid_transition",
+        "confirmation retry key collided with an incompatible draft",
+        false,
+      );
+    }
+    if (
+      existing.status !== "failed" ||
+      input.drafts[0]?.id !== existing.id ||
+      existing.revisionNumber !== context.expectedRevisionNumber ||
+      hashCustomRuleContract(existing.businessContract) !==
+        context.expectedContractHash ||
+      existing.variableCatalogVersion !== context.expectedCatalogVersion
+    ) {
+      throw serviceError(
+        "invalid_transition",
+        "failed confirmation was already superseded by another semantic retry",
+        false,
+      );
+    }
+    const confirmation: ConfirmCustomRuleContractInput = {
+      actor: input.scope.actor,
+      projectId: input.scope.projectId,
+      conversationId: input.scope.conversationId,
+      expectedDraftId: existing.id,
+      expectedRevisionNumber: existing.revisionNumber,
+      clientRequestId: input.scope.clientRequestId,
+      promptText: context.promptText,
+      contractConfirmed: true,
+      expectedContractHash: context.expectedContractHash,
+      expectedCatalogVersion: context.expectedCatalogVersion,
+      expectedFormulaHash: context.expectedFormulaHash ?? undefined,
+      expectedEvidenceHash: context.expectedEvidenceHash ?? undefined,
+      expectedDataSelectionHash:
+        context.expectedDataSelectionHash ?? undefined,
+      simulationSelection: context.simulationSelection,
+    };
+    return runConfirmationTransition({
+      dependencies: input.dependencies,
+      persistFailedRevisions: false,
+      input: confirmation,
+      latest: existing,
+      catalog: input.opened.prepared.catalog,
+      contractHash: context.expectedContractHash,
+      idempotencyKey: retryIdempotencyKey,
+      opened: input.opened,
     });
   }
   if (existing) {
@@ -675,6 +765,7 @@ async function retryConfirmationTransition(input: {
     expectedContractHash: context.expectedContractHash,
     expectedCatalogVersion: context.expectedCatalogVersion,
     expectedFormulaHash: context.expectedFormulaHash ?? undefined,
+    expectedEvidenceHash: context.expectedEvidenceHash ?? undefined,
     expectedDataSelectionHash:
       context.expectedDataSelectionHash ?? undefined,
     simulationSelection: context.simulationSelection,
@@ -775,7 +866,7 @@ async function runClarifyingTransition(input: {
     revisionNumber: input.expectedRevisionNumber,
     idempotencyKey: input.idempotencyKey,
   });
-  await completeConversationTurn(
+  const completionFailure = await completeConversationTurn(
     input.dependencies.conversation,
     input.scope,
     opened,
@@ -783,6 +874,7 @@ async function runClarifyingTransition(input: {
     draftInput.aiResponse.content,
     aiResult.providerName,
   );
+  if (completionFailure) return completionFailure;
   return Object.freeze({
     ok: true,
     kind: "clarifying",
@@ -821,6 +913,7 @@ async function runConfirmationTransition(input: {
       expectedContractHash: input.contractHash,
       expectedCatalogVersion: input.catalog.version,
       expectedFormulaHash: scope.expectedFormulaHash ?? null,
+      expectedEvidenceHash: scope.expectedEvidenceHash ?? null,
       expectedDataSelectionHash: scope.expectedDataSelectionHash ?? null,
       simulationSelection: scope.simulationSelection,
     }),
@@ -978,20 +1071,21 @@ async function runConfirmationTransition(input: {
     );
   }
   if (
-    scope.expectedDataSelectionHash &&
-    scope.expectedDataSelectionHash !== evidence.provenance.dataSelectionHash
+    scope.expectedEvidenceHash &&
+    scope.expectedEvidenceHash !== evidence.provenance.evidenceHash
   ) {
     return failAndThrow(
       input.dependencies.conversation,
       scope,
       opened,
-      "selection_hash_mismatch",
-      "authorized selection hash does not match the expected hash",
+      "evidence_hash_mismatch",
+      "authorized evidence hash does not match the expected hash",
       false,
     );
   }
 
   let summary: CustomRuleSimulationResult;
+  let calculatedSelectionHash: string;
   try {
     const simulationInput: CustomRuleSimulationInput = {
       organizationId: scope.actor.organizationId,
@@ -1006,14 +1100,9 @@ async function runConfirmationTransition(input: {
       catalogVersion: input.catalog.version,
       readiness,
       ...evidence,
-      provenance: {
-        ...evidence.provenance,
-        dataSelectionHash: "0".repeat(64),
-      },
       aiTestCases: aiResult.testCases,
     };
-    simulationInput.provenance.dataSelectionHash =
-      calculateCustomRuleDataSelectionHash(simulationInput);
+    calculatedSelectionHash = calculateCustomRuleDataSelectionHash(simulationInput);
     summary = input.dependencies.simulate(simulationInput);
   } catch (error) {
     return failAndThrow(
@@ -1031,7 +1120,8 @@ async function runConfirmationTransition(input: {
     summary.persistable.ruleContractHash !== input.contractHash ||
     summary.persistable.parameterHash !== parameterHash ||
     summary.persistable.variableCatalogVersion !== input.catalog.version ||
-    summary.persistable.dataSelectionHash !== summary.dataSelectionHash
+    summary.persistable.dataSelectionHash !== summary.dataSelectionHash ||
+    summary.dataSelectionHash !== calculatedSelectionHash
   ) {
     return failAndThrow(
       input.dependencies.conversation,
@@ -1039,6 +1129,19 @@ async function runConfirmationTransition(input: {
       opened,
       "simulation_failed",
       "simulation returned mismatched freshness hashes",
+      false,
+    );
+  }
+  if (
+    scope.expectedDataSelectionHash &&
+    scope.expectedDataSelectionHash !== summary.dataSelectionHash
+  ) {
+    return failAndThrow(
+      input.dependencies.conversation,
+      scope,
+      opened,
+      "selection_hash_mismatch",
+      "final data selection hash does not match the expected hash",
       false,
     );
   }
@@ -1137,7 +1240,7 @@ async function runConfirmationTransition(input: {
     void error;
     return recoverablePersistenceFailure(scope, opened, created);
   }
-  await completeConversationTurn(
+  const completionFailure = await completeConversationTurn(
     input.dependencies.conversation,
     scope,
     opened,
@@ -1145,6 +1248,7 @@ async function runConfirmationTransition(input: {
     explanation,
     aiResult.providerName,
   );
+  if (completionFailure) return completionFailure;
   return Object.freeze({
     ok: true,
     kind: "simulated",
@@ -1164,6 +1268,7 @@ async function resumeContractReadyConfirmation(input: {
   catalog: CustomRuleVariableCatalog;
   selection: AuthorizedSimulationSelectionRequest;
   expectedFormulaHash: string | null;
+  expectedEvidenceHash: string | null;
   expectedDataSelectionHash: string | null;
 }): Promise<CustomRuleAuthoringResult> {
   await markValidating(
@@ -1180,6 +1285,7 @@ async function resumeContractReadyConfirmation(input: {
       catalog: input.catalog,
       selection: input.selection,
       expectedFormulaHash: input.expectedFormulaHash,
+      expectedEvidenceHash: input.expectedEvidenceHash,
       expectedDataSelectionHash: input.expectedDataSelectionHash,
     });
   } catch (error) {
@@ -1203,6 +1309,57 @@ async function resumeContractReadyConfirmation(input: {
     );
   }
   let simulation: InsertedSettlementFormulaSimulation;
+  if (input.draft.status === "simulated") {
+    try {
+      simulation = await readExistingSimulation(
+        input.dependencies,
+        input.scope,
+        input.draft,
+        summary,
+      );
+    } catch (error) {
+      const failure =
+        error instanceof CustomRuleAuthoringServiceError
+          ? error
+          : serviceError(
+              "persistence_failed",
+              "durable simulation readback failed during retry",
+              true,
+              error,
+            );
+      return failAndThrow(
+        input.dependencies.conversation,
+        input.scope,
+        input.opened,
+        failure.code,
+        failure.message,
+        failure.retryable,
+        failure,
+      );
+    }
+    const simulatedDraft = await getSimulatedDraft(
+      input.dependencies,
+      input.scope,
+      input.draft.id,
+    );
+    const completionFailure = await completeConversationTurn(
+      input.dependencies.conversation,
+      input.scope,
+      input.opened,
+      simulatedDraft,
+      input.draft.generatedExplanation,
+    );
+    if (completionFailure) return completionFailure;
+    return Object.freeze({
+      ok: true,
+      kind: "simulated",
+      conversationId: input.scope.conversationId,
+      draft: simulatedDraft,
+      simulation,
+      summary,
+      duplicate: true,
+    });
+  }
   try {
     simulation = await input.dependencies.repository.insertSimulation({
       organizationId: input.scope.actor.organizationId,
@@ -1251,13 +1408,14 @@ async function resumeContractReadyConfirmation(input: {
       input.draft,
     );
   }
-  await completeConversationTurn(
+  const completionFailure = await completeConversationTurn(
     input.dependencies.conversation,
     input.scope,
     input.opened,
     simulatedDraft,
     input.draft.generatedExplanation,
   );
+  if (completionFailure) return completionFailure;
   return Object.freeze({
     ok: true,
     kind: "simulated",
@@ -1296,17 +1454,16 @@ async function replaySimulatedConfirmation(input: {
     catalog,
     selection: input.input.simulationSelection,
     expectedFormulaHash: input.input.expectedFormulaHash ?? null,
+    expectedEvidenceHash: input.input.expectedEvidenceHash ?? null,
     expectedDataSelectionHash:
       input.input.expectedDataSelectionHash ?? null,
   });
-  const simulation = await input.dependencies.repository.insertSimulation({
-    organizationId: input.input.actor.organizationId,
-    projectId: input.input.projectId,
-    owner: { kind: "ai_draft", id: input.draft.id },
-    idempotencyKey: simulationIdempotencyKey(input.draft.id, summary),
-    ...summary.persistable,
-  });
-  verifySimulation(simulation, input.input, input.draft, summary);
+  const simulation = await readExistingSimulation(
+    input.dependencies,
+    input.input,
+    input.draft,
+    summary,
+  );
   const simulatedDraft = await getSimulatedDraft(
     input.dependencies,
     input.input,
@@ -1330,6 +1487,7 @@ async function buildExistingDraftSimulation(input: {
   catalog: CustomRuleVariableCatalog;
   selection: AuthorizedSimulationSelectionRequest;
   expectedFormulaHash: string | null;
+  expectedEvidenceHash: string | null;
   expectedDataSelectionHash: string | null;
 }): Promise<CustomRuleSimulationResult> {
   if (
@@ -1419,12 +1577,12 @@ async function buildExistingDraftSimulation(input: {
     input.selection,
   );
   if (
-    input.expectedDataSelectionHash !== null &&
-    input.expectedDataSelectionHash !== evidence.provenance.dataSelectionHash
+    input.expectedEvidenceHash !== null &&
+    input.expectedEvidenceHash !== evidence.provenance.evidenceHash
   ) {
     throw serviceError(
-      "selection_hash_mismatch",
-      "authorized selection hash changed before recovery",
+      "evidence_hash_mismatch",
+      "authorized evidence hash changed before recovery",
       false,
     );
   }
@@ -1441,13 +1599,9 @@ async function buildExistingDraftSimulation(input: {
     catalogVersion: input.catalog.version,
     readiness,
     ...evidence,
-    provenance: {
-      ...evidence.provenance,
-      dataSelectionHash: "0".repeat(64),
-    },
     aiTestCases: input.draft.generatedTestCases,
   };
-  simulationInput.provenance.dataSelectionHash =
+  const calculatedSelectionHash =
     calculateCustomRuleDataSelectionHash(simulationInput);
   const summary = input.dependencies.simulate(simulationInput);
   if (
@@ -1457,11 +1611,22 @@ async function buildExistingDraftSimulation(input: {
     summary.persistable.variableCatalogVersion !==
       input.draft.variableCatalogVersion ||
     summary.persistable.dataSelectionHash !== summary.dataSelectionHash ||
+    summary.dataSelectionHash !== calculatedSelectionHash ||
     summary.riskFlags.some((flag) => flag.severity === "block")
   ) {
     throw serviceError(
       "simulation_failed",
       "recovered simulation failed freshness or risk validation",
+      false,
+    );
+  }
+  if (
+    input.expectedDataSelectionHash !== null &&
+    input.expectedDataSelectionHash !== summary.dataSelectionHash
+  ) {
+    throw serviceError(
+      "selection_hash_mismatch",
+      "final data selection hash changed before recovery",
       false,
     );
   }
@@ -1477,6 +1642,7 @@ function createServiceRetryContext(input: {
   expectedContractHash?: string | null;
   expectedCatalogVersion?: string | null;
   expectedFormulaHash?: string | null;
+  expectedEvidenceHash?: string | null;
   expectedDataSelectionHash?: string | null;
   simulationSelection?: AuthorizedSimulationSelectionRequest | null;
 }): FrozenServiceRetryContext {
@@ -1502,6 +1668,7 @@ function createServiceRetryContext(input: {
     expectedContractHash: input.expectedContractHash ?? null,
     expectedCatalogVersion: input.expectedCatalogVersion ?? null,
     expectedFormulaHash: input.expectedFormulaHash ?? null,
+    expectedEvidenceHash: input.expectedEvidenceHash ?? null,
     expectedDataSelectionHash: input.expectedDataSelectionHash ?? null,
     simulationSelection,
   });
@@ -1929,6 +2096,44 @@ async function getSimulatedDraft(
   return draft;
 }
 
+async function readExistingSimulation(
+  dependencies: ServiceDependencies,
+  scope: ScopedTransition,
+  draft: CustomRuleDraft,
+  summary: CustomRuleSimulationResult,
+): Promise<InsertedSettlementFormulaSimulation> {
+  let simulations: SettlementFormulaSimulation[];
+  try {
+    simulations = await dependencies.repository.listSimulations({
+      organizationId: scope.actor.organizationId,
+      projectId: scope.projectId,
+      owner: { kind: "ai_draft", id: draft.id },
+      limit: 100,
+    });
+  } catch (error) {
+    throw serviceError(
+      "persistence_failed",
+      "durable simulation readback failed",
+      true,
+      error,
+    );
+  }
+  const idempotencyKey = simulationIdempotencyKey(draft.id, summary);
+  const simulation = simulations.find(
+    (candidate) => candidate.idempotencyKey === idempotencyKey,
+  );
+  if (!simulation) {
+    throw serviceError(
+      "persistence_failed",
+      "simulated draft has no matching immutable simulation",
+      true,
+    );
+  }
+  const readback = { ...simulation, duplicate: true };
+  verifySimulation(readback, scope, draft, summary);
+  return readback;
+}
+
 async function completeConversationTurn(
   conversation: SettlementConversationPort,
   scope: ScopedTransition,
@@ -1936,7 +2141,7 @@ async function completeConversationTurn(
   draft: CustomRuleDraft,
   content: string,
   providerName?: AiProviderName,
-): Promise<void> {
+): Promise<CustomRuleAiTransitionFailure | null> {
   try {
     await conversation.completeTurn(scope.actor, opened.turnTrace.turnId, {
       content,
@@ -1950,13 +2155,28 @@ async function completeConversationTurn(
         settlementInitialStatus: draft.initialStatus,
       },
     });
+    return null;
   } catch (error) {
-    throw serviceError(
-      "conversation_failed",
-      "durable draft exists but generic turn completion failed",
-      true,
-      error,
-    );
+    try {
+      await failConversationTurn(
+        conversation,
+        scope,
+        opened,
+        "settlement_turn_completion_failed",
+        true,
+        "durable settlement artifacts exist but turn completion failed",
+        providerName,
+      );
+    } catch (reconciliationError) {
+      throw serviceError(
+        "conversation_reconciliation_failed",
+        "generic turn could not be reconciled after durable settlement persistence",
+        false,
+        reconciliationError,
+      );
+    }
+    void error;
+    return recoverableTurnFailure("conversation_failed", scope, opened, draft);
   }
 }
 
@@ -2139,46 +2359,10 @@ async function loadAuthorizedSimulationEvidence(
   ) {
     throw new Error("authorized evidence scope or selection mismatch");
   }
-  if (hashAuthorizedEvidence(evidence) !== evidence.provenance.dataSelectionHash) {
+  if (calculateCustomRuleEvidenceHash(evidence) !== evidence.provenance.evidenceHash) {
     throw new Error("authorized evidence provenance hash mismatch");
   }
   return evidence;
-}
-
-function hashAuthorizedEvidence(
-  evidence: AuthorizedCustomRuleSimulationEvidence,
-): string {
-  return sha256(
-    canonicalJson({
-      provenance: {
-        organizationId: evidence.provenance.organizationId,
-        projectId: evidence.provenance.projectId,
-        actorId: evidence.provenance.actorId,
-        selectionToken: evidence.provenance.selectionToken,
-        immutableSourceVersions: [
-          ...evidence.provenance.immutableSourceVersions,
-        ].sort(
-          (left, right) =>
-            left.source.localeCompare(right.source) ||
-            left.version.localeCompare(right.version),
-        ),
-      },
-      sampleSource: evidence.sampleSource,
-      sampleSelection: {
-        ...evidence.sampleSelection,
-        criteria: [...evidence.sampleSelection.criteria].sort((left, right) =>
-          left.localeCompare(right),
-        ),
-      },
-      records: [...evidence.records].sort((left, right) =>
-        left.recordId.localeCompare(right.recordId),
-      ),
-      userExamples: [...evidence.userExamples].sort((left, right) =>
-        left.id.localeCompare(right.id),
-      ),
-      currentMarginCents: evidence.currentMarginCents ?? null,
-    }),
-  );
 }
 
 function resolvedClarifyingAmbiguities(input: Extract<SettlementAiResult, { ok: true }> ):
@@ -2367,9 +2551,18 @@ function recoverablePersistenceFailure(
   opened: OpenedAiTurn,
   draft: CustomRuleDraft,
 ): CustomRuleAiTransitionFailure {
+  return recoverableTurnFailure("persistence_failed", scope, opened, draft);
+}
+
+function recoverableTurnFailure(
+  code: "persistence_failed" | "conversation_failed",
+  scope: ScopedTransition,
+  opened: OpenedAiTurn,
+  draft: CustomRuleDraft,
+): CustomRuleAiTransitionFailure {
   return Object.freeze({
     ok: false,
-    code: "persistence_failed",
+    code,
     retryable: true,
     conversationId: scope.conversationId,
     sourceTurnId: opened.turnTrace.turnId,
@@ -2408,9 +2601,10 @@ function simulationIdempotencyKey(
 function retryDraftIdempotencyKey(
   originalIdempotencyKey: string,
   sourceTurnId: string,
+  clientRequestId: string,
 ): string {
   return `settlement-retry:${sha256(
-    canonicalJson({ originalIdempotencyKey, sourceTurnId }),
+    canonicalJson({ clientRequestId, originalIdempotencyKey, sourceTurnId }),
   )}`;
 }
 
@@ -2431,6 +2625,7 @@ function validateDependencies(input: ServiceDependencies): void {
     typeof input.ai?.prepare !== "function" ||
     typeof input.ai?.restore !== "function" ||
     typeof input.repository?.createDraft !== "function" ||
+    typeof input.repository?.listSimulations !== "function" ||
     typeof input.catalog?.getCatalog !== "function" ||
     typeof input.evidence?.loadAuthorizedEvidence !== "function" ||
     typeof input.analyzeReadiness !== "function" ||
@@ -2487,6 +2682,8 @@ function validateConfirmationInput(
     !HASH_PATTERN.test(input.expectedCatalogVersion) ||
     (input.expectedFormulaHash !== undefined &&
       !HASH_PATTERN.test(input.expectedFormulaHash)) ||
+    (input.expectedEvidenceHash !== undefined &&
+      !HASH_PATTERN.test(input.expectedEvidenceHash)) ||
     (input.expectedDataSelectionHash !== undefined &&
       !HASH_PATTERN.test(input.expectedDataSelectionHash)) ||
     !simulationSelectionSchema.safeParse(input.simulationSelection).success

@@ -4,7 +4,7 @@ import type { BusinessRuleContract } from "./custom-rule-contract";
 import type { CustomRuleDataReadinessReport } from "./custom-rule-data-readiness";
 import {
   CustomRuleSimulationError,
-  calculateCustomRuleDataSelectionHash,
+  calculateCustomRuleEvidenceHash,
   hashCustomRuleContract,
   hashCustomRuleParameters,
   simulateCustomSettlementRule,
@@ -228,13 +228,118 @@ describe("simulateCustomSettlementRule", () => {
     expect(ids.filter((id) => id.includes(":tier:") && id.endsWith(":below"))).toHaveLength(1);
     expect(ids.filter((id) => id.includes(":tier:") && id.endsWith(":at"))).toHaveLength(1);
     expect(ids.filter((id) => id.includes(":tier:") && id.endsWith(":above"))).toHaveLength(1);
-    expect(ids.filter((id) => id.startsWith("derived:clamp:"))).toHaveLength(2);
+    expect(ids.filter((id) => id.startsWith("derived:clamp:"))).toHaveLength(0);
     expect(ids.filter((id) => id.startsWith("derived:evidence:"))).toHaveLength(3);
     expect(ids.filter((id) => id.startsWith("derived:missing:"))).toHaveLength(3);
     expect(ids).toContain("contract:000001");
     expect(ids).toContain("ai:000001");
     expect(result.scenarios).toContainEqual(
       expect.objectContaining({ category: "user_example" }),
+    );
+    expect(result.riskFlags).toContainEqual(
+      expect.objectContaining({
+        code: "UNTESTABLE_CLAMP_BOUNDARY",
+        severity: "block",
+      }),
+    );
+  });
+
+  it("drives an adjustable clamp parameter through real floor and cap trace branches", () => {
+    const result = simulateAuthorized(parameterClampInput());
+    const clampScenarios = result.scenarios.filter((scenario) =>
+      scenario.id.startsWith("derived:clamp:"),
+    );
+
+    expect(clampScenarios).toEqual([
+      expect.objectContaining({
+        id: "derived:clamp:000001:floor",
+        amountCents: "0",
+        expectedAmountCents: "0",
+        passed: true,
+      }),
+      expect.objectContaining({
+        id: "derived:clamp:000001:cap",
+        amountCents: "3000",
+        expectedAmountCents: "3000",
+        passed: true,
+      }),
+    ]);
+    expect(result.riskFlags.map((flag) => flag.code)).not.toContain(
+      "UNTESTABLE_CLAMP_BOUNDARY",
+    );
+    expect(result.riskFlags.map((flag) => flag.code)).not.toContain(
+      "CUSTOM_RULE_SCENARIO_EXPECTATION_MISMATCH",
+    );
+  });
+
+  it("blocks an unadjustable constant clamp instead of reporting fake passed boundaries", () => {
+    const input = simulationInput(
+      "money_result({ final: clamp(yuan(10), yuan(0), yuan(30)) })",
+    );
+    for (const example of input.contract.examples) {
+      example.expectedResult = { type: "money_cents", amountCents: 1_000 };
+    }
+    input.contractHash = hashCustomRuleContract(input.contract);
+    input.aiTestCases[0].expectedResult = {
+      type: "money_cents",
+      amountCents: 1_000,
+    };
+    input.userExamples[0].expectedResult = {
+      type: "money_cents",
+      amountCents: 1_000,
+    };
+
+    const result = simulateAuthorized(input);
+
+    expect(
+      result.scenarios.filter((scenario) =>
+        scenario.id.startsWith("derived:clamp:"),
+      ),
+    ).toEqual([]);
+    expect(result.riskFlags).toContainEqual(
+      expect.objectContaining({
+        code: "UNTESTABLE_CLAMP_BOUNDARY",
+        severity: "block",
+      }),
+    );
+  });
+
+  it("accepts an unadjustable clamp only when contract and user scenarios cover both trace branches", () => {
+    const input = simulationInput(`money_result({ final: clamp(
+      if(system_minutes == 0, yuan(-1), yuan(31)),
+      yuan(0),
+      yuan(30)
+    ) })`);
+    for (const example of input.contract.examples) {
+      const minutes = example.inputs.system_minutes;
+      example.expectedResult = {
+        type: "money_cents",
+        amountCents:
+          minutes?.type === "integer" && minutes.value === 0 ? 0 : 3_000,
+      };
+    }
+    input.contractHash = hashCustomRuleContract(input.contract);
+    input.aiTestCases[0].expectedResult = {
+      type: "money_cents",
+      amountCents: 3_000,
+    };
+    input.userExamples[0].expectedResult = {
+      type: "money_cents",
+      amountCents: 3_000,
+    };
+
+    const result = simulateAuthorized(input);
+
+    expect(
+      result.scenarios.filter((scenario) =>
+        scenario.id.startsWith("derived:clamp:"),
+      ),
+    ).toEqual([]);
+    expect(result.riskFlags.map((flag) => flag.code)).not.toContain(
+      "UNTESTABLE_CLAMP_BOUNDARY",
+    );
+    expect(result.riskFlags.map((flag) => flag.code)).not.toContain(
+      "CUSTOM_RULE_SCENARIO_EXPECTATION_MISMATCH",
     );
   });
 
@@ -391,6 +496,25 @@ describe("simulateCustomSettlementRule", () => {
     }
   });
 
+  it("chains every result-affecting evidence field into evidence and final selection hashes", () => {
+    const highMargin = simulationInput();
+    highMargin.currentMarginCents = "2000";
+    const lowMargin = simulationInput();
+    lowMargin.currentMarginCents = "500";
+
+    const highResult = simulateAuthorized(highMargin);
+    const lowResult = simulateAuthorized(lowMargin);
+
+    expect(highMargin.provenance.evidenceHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(lowMargin.provenance.evidenceHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(highMargin.provenance.evidenceHash).not.toBe(
+      lowMargin.provenance.evidenceHash,
+    );
+    expect(highResult.dataSelectionHash).not.toBe(
+      lowResult.dataSelectionHash,
+    );
+  });
+
   it("fails closed on duplicates, cross-project rows, mutable versions, malformed inputs, and bounds", () => {
     const duplicate = simulationInput();
     duplicate.records = [record("same"), record("same")];
@@ -510,7 +634,7 @@ function simulationInput(
       projectId: "project-1",
       actorId: "actor-1",
       selectionToken: "selection-token-0001",
-      dataSelectionHash: "0".repeat(64),
+      evidenceHash: "0".repeat(64),
       immutableSourceVersions: [
         {
           kind: "immutable",
@@ -545,6 +669,38 @@ function simulationInput(
   };
 }
 
+function parameterClampInput(): CustomRuleSimulationInput {
+  const input = simulationInput();
+  const adjustableParameter = {
+    name: "adjustable_amount",
+    description: "可调试算金额",
+    valueType: { kind: "scalar" as const, scalarType: "money_cents" as const },
+    userFacingUnit: "元",
+    defaultValue: { type: "money_cents" as const, amountCents: 2_000 },
+  };
+  input.contract.parameters.push(adjustableParameter);
+  input.parameters.adjustable_amount = adjustableParameter.defaultValue;
+  const formula = `money_result({ final: clamp(
+    parameter("adjustable_amount"),
+    yuan(0),
+    yuan(30)
+  ) })`;
+  const validated = validateCustomRuleFormula(formula, {
+    scope: input.contract.scope,
+    executionGrain: input.contract.executionGrain,
+    parameters: input.contract.parameters.map((parameter) => ({
+      name: parameter.name,
+      valueType: parameter.valueType,
+    })),
+  });
+  if (!validated.ok) throw new Error("parameter clamp formula must compile");
+  input.compiledAst = validated.compiledAst;
+  input.formulaHash = validated.formulaHash;
+  input.contractHash = hashCustomRuleContract(input.contract);
+  input.parameterHash = hashCustomRuleParameters(input.parameters);
+  return input;
+}
+
 function simulateAuthorized(
   input: CustomRuleSimulationInput,
   runtime?: CustomRuleSimulationRuntime,
@@ -564,9 +720,15 @@ function simulateAuthorized(
       left.source.localeCompare(right.source) ||
       left.version.localeCompare(right.version),
   );
-  input.provenance.dataSelectionHash = "0".repeat(64);
-  input.provenance.dataSelectionHash =
-    calculateCustomRuleDataSelectionHash(input);
+  input.provenance.evidenceHash = "0".repeat(64);
+  input.provenance.evidenceHash = calculateCustomRuleEvidenceHash({
+    provenance: input.provenance,
+    sampleSource: input.sampleSource,
+    sampleSelection: input.sampleSelection,
+    records: input.records,
+    userExamples: input.userExamples,
+    currentMarginCents: input.currentMarginCents,
+  });
   return runtime
     ? simulateCustomSettlementRule(input, runtime)
     : simulateCustomSettlementRule(input);

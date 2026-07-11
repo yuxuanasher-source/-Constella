@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { describe, expect, it, vi } from "vitest";
 
 import type { AiGatewayResult } from "@/features/ai/contracts";
@@ -30,6 +28,7 @@ import {
   type SettlementVariableCatalogPort,
 } from "./custom-rule-service";
 import {
+  calculateCustomRuleEvidenceHash,
   hashCustomRuleContract,
   hashCustomRuleParameters,
   simulateCustomSettlementRule,
@@ -360,6 +359,72 @@ describe("custom rule authoring service", () => {
     expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
   });
 
+  it("appends a new semantic retry revision after a persisted failed confirmation", async () => {
+    const harness = createHarness(
+      [{ providerFailure: true }, confirmedFormulaOutput()],
+      { persistFailedRevisions: true },
+    );
+    const previous = harness.repository.seedDraft(confirmableDraft());
+
+    const failed = await harness.service.confirmContract(confirmInput(previous));
+    expect(failed).toMatchObject({
+      ok: false,
+      code: "SETTLEMENT_AI_PROVIDER_FAILED",
+      sourceTurnId: uuid(201),
+      failedDraft: {
+        revisionNumber: 2,
+        initialStatus: "failed",
+        status: "failed",
+      },
+    });
+    if (failed.ok || !failed.failedDraft) {
+      throw new Error("persisted failure fixture unexpectedly passed");
+    }
+
+    const retried = await harness.service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      sourceTurnId: failed.sourceTurnId,
+      clientRequestId: "persisted-confirm-retry-0001",
+    });
+
+    expect(retried).toMatchObject({
+      ok: true,
+      kind: "simulated",
+      draft: { revisionNumber: 3, initialStatus: "contract_ready" },
+    });
+    expect(harness.repository.createDraftCalls).toHaveLength(2);
+    expect(harness.repository.createDraftCalls[1].idempotencyKey).toMatch(
+      /^settlement-retry:/u,
+    );
+    expect(harness.repository.createDraftCalls[1].idempotencyKey).not.toBe(
+      harness.repository.createDraftCalls[0].idempotencyKey,
+    );
+    const supersededFailure = harness.repository.drafts.find(
+      (draft) => draft.id === failed.failedDraft?.id,
+    );
+    expect(supersededFailure).toMatchObject({
+      initialStatus: "failed",
+      status: "superseded",
+      supersededByDraftId: retried.ok ? retried.draft.id : null,
+      supersededAt: expect.any(String),
+    });
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+
+    await expect(
+      harness.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: failed.sourceTurnId,
+        clientRequestId: "persisted-confirm-retry-conflict",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_transition" });
+    expect(harness.repository.createDraftCalls).toHaveLength(2);
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+  });
+
   it("fails closed when the public conversation API fails and never falls back to local draft history", async () => {
     const harness = createHarness([
       clarificationOutput("请确认每小时结算单价？", "confirm_rate"),
@@ -426,9 +491,9 @@ describe("custom rule authoring service", () => {
       },
       summary: {
         recordCount: 1,
-        totalOldCents: "1000",
+        totalOldCents: "1600",
         totalNewCents: "2000",
-        totalDeltaCents: "1000",
+        totalDeltaCents: "400",
       },
     });
     const readyInput = harness.repository.createDraftCalls[0];
@@ -499,7 +564,8 @@ describe("custom rule authoring service", () => {
     });
     expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
     expect(harness.repository.createDraftCalls).toHaveLength(1);
-    expect(harness.repository.insertSimulationCalls).toHaveLength(2);
+    expect(harness.repository.insertSimulationCalls).toHaveLength(1);
+    expect(harness.repository.listSimulationCalls).toHaveLength(1);
     expect(harness.conversation.retryTurn).not.toHaveBeenCalled();
     expect(harness.conversation.completeTurn).toHaveBeenCalledTimes(1);
   });
@@ -598,6 +664,17 @@ describe("custom rule authoring service", () => {
     ).rejects.toMatchObject({ code: "catalog_hash_mismatch" });
     expect(catalog.conversation.acceptTurn).not.toHaveBeenCalled();
 
+    const evidence = createHarness([confirmedFormulaOutput()]);
+    const evidenceDraft = evidence.repository.seedDraft(confirmableDraft());
+    await expect(
+      evidence.service.confirmContract({
+        ...confirmInput(evidenceDraft),
+        expectedEvidenceHash: "e".repeat(64),
+      }),
+    ).rejects.toMatchObject({ code: "evidence_hash_mismatch" });
+    expect(evidence.evidencePort.loadAuthorizedEvidence).toHaveBeenCalledTimes(1);
+    expect(evidence.simulationInputs).toHaveLength(0);
+
     const selection = createHarness([confirmedFormulaOutput()]);
     const selectionDraft = selection.repository.seedDraft(confirmableDraft());
     await expect(
@@ -608,6 +685,39 @@ describe("custom rule authoring service", () => {
     ).rejects.toMatchObject({ code: "selection_hash_mismatch" });
     expect(selection.conversation.failTurn).toHaveBeenCalledTimes(1);
     expect(selection.repository.createDraftCalls).toHaveLength(0);
+    expect(selection.simulationInputs).toHaveLength(1);
+  });
+
+  it("changes evidence, final selection, and simulation idempotency hashes when authorized margin changes", async () => {
+    const high = createHarness([confirmedFormulaOutput()], {
+      currentMarginCents: "2000",
+    });
+    const low = createHarness([confirmedFormulaOutput()], {
+      currentMarginCents: "500",
+    });
+    const highDraft = high.repository.seedDraft(confirmableDraft());
+    const lowDraft = low.repository.seedDraft(confirmableDraft());
+
+    const highResult = await high.service.confirmContract(confirmInput(highDraft));
+    const lowResult = await low.service.confirmContract(confirmInput(lowDraft));
+    if (
+      !highResult.ok ||
+      highResult.kind !== "simulated" ||
+      !lowResult.ok ||
+      lowResult.kind !== "simulated"
+    ) {
+      throw new Error("margin hash fixtures must simulate successfully");
+    }
+
+    expect(high.simulationInputs[0].provenance.evidenceHash).not.toBe(
+      low.simulationInputs[0].provenance.evidenceHash,
+    );
+    expect(highResult.summary.dataSelectionHash).not.toBe(
+      lowResult.summary.dataSelectionHash,
+    );
+    expect(high.repository.insertSimulationCalls[0].idempotencyKey).not.toBe(
+      low.repository.insertSimulationCalls[0].idempotencyKey,
+    );
   });
 
   it("rejects unsafe free-form selection criteria before the evidence port is called", async () => {
@@ -725,6 +835,66 @@ describe("custom rule authoring service", () => {
       "conversation.failTurn",
     ]);
   });
+
+  it("reconciles a post-persistence completeTurn failure without repeating AI or simulation insertion", async () => {
+    const harness = createHarness([confirmedFormulaOutput()], {
+      failCompleteTurnOnce: true,
+    });
+    const previous = harness.repository.seedDraft(confirmableDraft());
+
+    const failed = await harness.service.confirmContract(confirmInput(previous));
+    expect(failed).toMatchObject({
+      ok: false,
+      code: "conversation_failed",
+      retryable: true,
+      sourceTurnId: uuid(201),
+      failedDraft: { initialStatus: "contract_ready", status: "simulated" },
+    });
+    if (failed.ok) throw new Error("completion failure fixture unexpectedly passed");
+    expect(harness.repository.insertSimulationCalls).toHaveLength(1);
+    expect(harness.conversation.failTurn).toHaveBeenCalledWith(
+      actor,
+      uuid(201),
+      expect.objectContaining({ retryable: true }),
+    );
+
+    const recovered = await harness.service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      sourceTurnId: failed.sourceTurnId,
+      clientRequestId: "complete-reconciliation-retry-0001",
+    });
+
+    expect(recovered).toMatchObject({
+      ok: true,
+      kind: "simulated",
+      duplicate: true,
+      draft: { status: "simulated" },
+    });
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(harness.repository.insertSimulationCalls).toHaveLength(1);
+    expect(harness.repository.listSimulationCalls).toHaveLength(1);
+    expect(harness.conversation.completeTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it("surfaces an explicit nonrecoverable error when completion reconciliation also fails", async () => {
+    const harness = createHarness([confirmedFormulaOutput()], {
+      failCompleteTurnOnce: true,
+      failFailTurn: true,
+    });
+    const previous = harness.repository.seedDraft(confirmableDraft());
+
+    await expect(
+      harness.service.confirmContract(confirmInput(previous)),
+    ).rejects.toMatchObject({
+      code: "conversation_reconciliation_failed",
+      retryable: false,
+    });
+    expect(harness.repository.insertSimulationCalls).toHaveLength(1);
+    expect(harness.conversation.completeTurn).toHaveBeenCalledTimes(1);
+    expect(harness.conversation.failTurn).toHaveBeenCalledTimes(1);
+  });
 });
 
 type ProviderOutput =
@@ -738,6 +908,9 @@ function createHarness(
     failSimulationInsert?: boolean;
     skipSimulatedTransition?: boolean;
     evidenceFailure?: "scope" | "hash" | "selection_token";
+    currentMarginCents?: string;
+    failCompleteTurnOnce?: boolean;
+    failFailTurn?: boolean;
   } = {},
 ) {
   const events: string[] = [];
@@ -748,6 +921,7 @@ function createHarness(
     Awaited<ReturnType<SettlementConversationPort["captureGatewayContext"]>>
   >();
   const retrySources = new Map<string, string>();
+  let failedCompleteTurns = 0;
   const conversation: SettlementConversationPort = {
     createConversation: vi.fn(async () => {
       events.push("conversation.createConversation");
@@ -843,9 +1017,14 @@ function createHarness(
     }),
     completeTurn: vi.fn(async () => {
       events.push("conversation.completeTurn");
+      if (options.failCompleteTurnOnce && failedCompleteTurns === 0) {
+        failedCompleteTurns += 1;
+        throw new Error("conversation completion failed");
+      }
     }),
     failTurn: vi.fn(async () => {
       events.push("conversation.failTurn");
+      if (options.failFailTurn) throw new Error("conversation failure persistence failed");
     }),
   };
 
@@ -871,11 +1050,13 @@ function createHarness(
   const evidencePort: AuthorizedSimulationEvidencePort = {
     loadAuthorizedEvidence: vi.fn(async (input) => {
       events.push("evidence.loadAuthorizedEvidence");
-      const evidence = structuredClone(authorizedEvidence(input));
+      const evidence = structuredClone(
+        authorizedEvidence(input, options.currentMarginCents ?? "5000"),
+      );
       if (options.evidenceFailure === "scope") {
         evidence.provenance.projectId = uuid(999);
       } else if (options.evidenceFailure === "hash") {
-        evidence.provenance.dataSelectionHash = "f".repeat(64);
+        evidence.provenance.evidenceHash = "f".repeat(64);
       } else if (options.evidenceFailure === "selection_token") {
         evidence.provenance.selectionToken = "selection-token-other";
       }
@@ -913,6 +1094,7 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
   readonly simulations: SettlementFormulaSimulation[] = [];
   readonly createDraftCalls: CreateCustomRuleDraftInput[] = [];
   readonly insertSimulationCalls: InsertSettlementFormulaSimulationInput[] = [];
+  readonly listSimulationCalls: Parameters<CustomRuleRepository["listSimulations"]>[0][] = [];
   private failedSimulationInserts = 0;
 
   constructor(
@@ -921,6 +1103,9 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
       failSimulationInsert?: boolean;
       skipSimulatedTransition?: boolean;
       evidenceFailure?: "scope" | "hash" | "selection_token";
+      currentMarginCents?: string;
+      failCompleteTurnOnce?: boolean;
+      failFailTurn?: boolean;
     },
   ) {}
 
@@ -1021,6 +1206,23 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
       if (draft && draft.status === "contract_ready") draft.status = "simulated";
     }
     return { ...structuredClone(simulation), duplicate: false };
+  }
+
+  async listSimulations(
+    input: Parameters<CustomRuleRepository["listSimulations"]>[0],
+  ): Promise<SettlementFormulaSimulation[]> {
+    this.events.push("repository.listSimulations");
+    this.listSimulationCalls.push(structuredClone(input));
+    return this.simulations
+      .filter(
+        (simulation) =>
+          simulation.organizationId === input.organizationId &&
+          simulation.projectId === input.projectId &&
+          simulation.owner.kind === input.owner.kind &&
+          simulation.owner.id === input.owner.id,
+      )
+      .slice(0, input.limit ?? 100)
+      .map((simulation) => structuredClone(simulation));
   }
 }
 
@@ -1328,6 +1530,7 @@ function authorizedEvidence(
   input: Parameters<
     AuthorizedSimulationEvidencePort["loadAuthorizedEvidence"]
   >[0],
+  currentMarginCents: string,
 ): AuthorizedCustomRuleSimulationEvidence {
   const evidence: AuthorizedCustomRuleSimulationEvidence = {
     provenance: {
@@ -1335,7 +1538,7 @@ function authorizedEvidence(
       projectId: input.projectId,
       actorId: input.actor.userId,
       selectionToken: input.selection.selectionToken,
-      dataSelectionHash: "0".repeat(64),
+      evidenceHash: "0".repeat(64),
       immutableSourceVersions: [
         {
           kind: "immutable",
@@ -1367,7 +1570,7 @@ function authorizedEvidence(
         missingInputs: [],
         currentRuleResult: {
           unitSource: "current_rule_cents",
-          amountCents: "1000",
+          amountCents: "1600",
         },
       },
     ],
@@ -1381,63 +1584,10 @@ function authorizedEvidence(
         expectedResult: { type: "money_cents", amountCents: 2_000 },
       },
     ],
-    currentMarginCents: "5000",
+    currentMarginCents,
   };
-  evidence.provenance.dataSelectionHash = authorizedEvidenceHash(evidence);
+  evidence.provenance.evidenceHash = calculateCustomRuleEvidenceHash(evidence);
   return deepFreezeFixture(evidence);
-}
-
-function authorizedEvidenceHash(
-  evidence: AuthorizedCustomRuleSimulationEvidence,
-): string {
-  return createHash("sha256")
-    .update(
-      fixtureCanonicalJson({
-        provenance: {
-          organizationId: evidence.provenance.organizationId,
-          projectId: evidence.provenance.projectId,
-          actorId: evidence.provenance.actorId,
-          selectionToken: evidence.provenance.selectionToken,
-          immutableSourceVersions: [
-            ...evidence.provenance.immutableSourceVersions,
-          ].sort(
-            (left, right) =>
-              left.source.localeCompare(right.source) ||
-              left.version.localeCompare(right.version),
-          ),
-        },
-        sampleSource: evidence.sampleSource,
-        sampleSelection: {
-          ...evidence.sampleSelection,
-          criteria: [...evidence.sampleSelection.criteria].sort((left, right) =>
-            left.localeCompare(right),
-          ),
-        },
-        records: [...evidence.records].sort((left, right) =>
-          left.recordId.localeCompare(right.recordId),
-        ),
-        userExamples: [...evidence.userExamples].sort((left, right) =>
-          left.id.localeCompare(right.id),
-        ),
-        currentMarginCents: evidence.currentMarginCents ?? null,
-      }),
-      "utf8",
-    )
-    .digest("hex");
-}
-
-function fixtureCanonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => fixtureCanonicalJson(item)).join(",")}]`;
-  }
-  return `{${Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(
-      ([key, child]) =>
-        `${JSON.stringify(key)}:${fixtureCanonicalJson(child)}`,
-    )
-    .join(",")}}`;
 }
 
 function deepFreezeFixture<Value>(value: Value): Value {
