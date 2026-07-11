@@ -34,7 +34,7 @@ export type ProjectVariableCoverage = {
   hasHistory: boolean;
   businessTimezone: string | null;
   businessTimezoneConfirmed: boolean;
-  businessTimezoneSource?: CustomRuleBusinessTimezoneSource;
+  businessTimezoneSource: CustomRuleBusinessTimezoneSource;
   variables: Record<string, CustomRuleVariableCoverage>;
 };
 
@@ -69,7 +69,7 @@ export type CustomRuleCatalogHashInput = {
   executionGrain: CustomRuleExecutionGrain;
   businessTimezone: string | null;
   businessTimezoneConfirmed: boolean;
-  businessTimezoneSource?: CustomRuleBusinessTimezoneSource;
+  businessTimezoneSource: CustomRuleBusinessTimezoneSource;
   hasHistory?: boolean;
   variables: ReadonlyArray<{
     id: string;
@@ -617,7 +617,15 @@ export function buildCustomRuleVariableCatalog(input: {
           definition.scopes.includes(input.scope) &&
           definition.grains.includes(input.executionGrain),
       );
-  const timezoneReady = isConfirmedIanaTimezone(input.coverage);
+  const businessTimezoneSource = normalizeCustomRuleBusinessTimezoneSource(
+    input.coverage.businessTimezoneSource,
+  );
+  const timezoneReady = isConfirmedIanaTimezone({
+    businessTimezone: input.coverage.businessTimezone,
+    businessTimezoneConfirmed:
+      input.coverage.businessTimezoneConfirmed,
+    businessTimezoneSource,
+  });
   const hashVariables: Array<
     CustomRuleCatalogHashInput["variables"][number]
   > = [];
@@ -666,9 +674,8 @@ export function buildCustomRuleVariableCatalog(input: {
     scope: input.scope,
     executionGrain: input.executionGrain,
     businessTimezone: input.coverage.businessTimezone,
-    businessTimezoneConfirmed: input.coverage.businessTimezoneConfirmed,
-    businessTimezoneSource:
-      input.coverage.businessTimezoneSource ?? "contract_default",
+    businessTimezoneConfirmed: timezoneReady,
+    businessTimezoneSource,
     hasHistory: input.coverage.hasHistory,
     variables: hashVariables,
   });
@@ -677,9 +684,8 @@ export function buildCustomRuleVariableCatalog(input: {
     scope: input.scope,
     executionGrain: input.executionGrain,
     businessTimezone: input.coverage.businessTimezone,
-    businessTimezoneConfirmed: input.coverage.businessTimezoneConfirmed,
-    businessTimezoneSource:
-      input.coverage.businessTimezoneSource ?? "contract_default",
+    businessTimezoneConfirmed: timezoneReady,
+    businessTimezoneSource,
     hasHistory: input.coverage.hasHistory,
     version,
     variables,
@@ -689,6 +695,14 @@ export function buildCustomRuleVariableCatalog(input: {
 export function hashCustomRuleCatalogState(
   input: CustomRuleCatalogHashInput,
 ): string {
+  const businessTimezoneSource = normalizeCustomRuleBusinessTimezoneSource(
+    input.businessTimezoneSource,
+  );
+  const businessTimezoneConfirmed = isConfirmedIanaTimezone({
+    businessTimezone: input.businessTimezone,
+    businessTimezoneConfirmed: input.businessTimezoneConfirmed,
+    businessTimezoneSource,
+  });
   const variables = input.variables
     .map((variable) => {
       assertCoverageCounts(
@@ -712,10 +726,11 @@ export function hashCustomRuleCatalogState(
     scope: input.scope,
     executionGrain: input.executionGrain,
     businessTimezone: input.businessTimezone,
-    businessTimezoneConfirmed: input.businessTimezoneConfirmed,
-    businessTimezoneSource:
-      input.businessTimezoneSource ?? "contract_default",
-    hasHistory: input.hasHistory ?? variables.some((item) => item.coverageDenominator > 0),
+    businessTimezoneConfirmed,
+    businessTimezoneSource,
+    hasHistory:
+      input.hasHistory ??
+      variables.some((item) => item.coverageDenominator > 0),
     variables,
   });
 
@@ -750,10 +765,21 @@ export function assertCoverageCounts(
 export function isConfirmedIanaTimezone(
   coverage: Pick<
     ProjectVariableCoverage,
-    "businessTimezone" | "businessTimezoneConfirmed"
+    | "businessTimezone"
+    | "businessTimezoneConfirmed"
+    | "businessTimezoneSource"
   >,
 ): boolean {
-  if (!coverage.businessTimezoneConfirmed || !coverage.businessTimezone) {
+  const source = normalizeCustomRuleBusinessTimezoneSource(
+    coverage.businessTimezoneSource,
+  );
+  if (
+    !coverage.businessTimezoneConfirmed ||
+    !coverage.businessTimezone ||
+    source === "unresolved" ||
+    (source === "contract_default" &&
+      coverage.businessTimezone !== "Asia/Shanghai")
+  ) {
     return false;
   }
 
@@ -765,6 +791,17 @@ export function isConfirmedIanaTimezone(
   } catch {
     return false;
   }
+}
+
+export function normalizeCustomRuleBusinessTimezoneSource(
+  value: unknown,
+): CustomRuleBusinessTimezoneSource {
+  return value === "contract_default" ||
+    value === "organization_setting" ||
+    value === "confirmed_contract" ||
+    value === "unresolved"
+    ? value
+    : "unresolved";
 }
 
 function source(

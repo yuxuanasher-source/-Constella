@@ -151,6 +151,37 @@ describe("analyzeCustomRuleDataReadiness", () => {
     });
   });
 
+  it.each(["period_start", "period_end"])(
+    "forbids explicit defaults for authorized sample boundary %s",
+    (variableId) => {
+      const report = analyzeCustomRuleDataReadiness({
+        catalog: buildCustomRuleVariableCatalog({
+          scope: "payable",
+          executionGrain: "project_streamer_period",
+          coverage: coverageFixture(),
+        }),
+        inputs: [
+          {
+            variableId,
+            required: false,
+            missingDataPolicy: {
+              action: "use_explicit_default",
+              defaultValue: {
+                type: "timestamp",
+                value: "2026-06-01T00:00:00.000Z",
+              },
+            },
+          },
+        ],
+      });
+
+      expect(report.inputs[0]).toMatchObject({
+        ready: false,
+        code: "CUSTOM_RULE_EXPLICIT_DEFAULT_FORBIDDEN",
+      });
+    },
+  );
+
   it("rejects an explicit default whose runtime type does not match the variable", () => {
     const report = analyzeCustomRuleDataReadiness({
       catalog: payableReportCatalog(),
@@ -246,6 +277,26 @@ describe("analyzeCustomRuleDataReadiness", () => {
     });
   });
 
+  it("uses the stable timezone code when provenance is unresolved", () => {
+    const report = analyzeCustomRuleDataReadiness({
+      catalog: buildCustomRuleVariableCatalog({
+        scope: "payable",
+        executionGrain: "report",
+        coverage: coverageFixture({
+          businessTimezoneConfirmed: true,
+          businessTimezoneSource: "unresolved",
+        }),
+      }),
+      inputs: [{ variableId: "hour_of_day", required: true }],
+    });
+
+    expect(report.inputs[0]).toMatchObject({
+      status: "unavailable",
+      ready: false,
+      code: "CUSTOM_RULE_BUSINESS_TIMEZONE_UNCONFIRMED",
+    });
+  });
+
   it.each([
     [-1, 10],
     [1.5, 10],
@@ -316,6 +367,7 @@ function coverageFixture(
     denominator?: number;
     businessTimezone?: string | null;
     businessTimezoneConfirmed?: boolean;
+    businessTimezoneSource?: ProjectVariableCoverage["businessTimezoneSource"];
   } = {},
 ): ProjectVariableCoverage {
   const denominator = overrides.denominator ?? 10;
@@ -336,6 +388,8 @@ function coverageFixture(
     businessTimezone: overrides.businessTimezone ?? "Asia/Shanghai",
     businessTimezoneConfirmed:
       overrides.businessTimezoneConfirmed ?? true,
+    businessTimezoneSource:
+      overrides.businessTimezoneSource ?? "contract_default",
     variables: {
       system_minutes: counts(8),
       screenshot_minutes: counts(7),

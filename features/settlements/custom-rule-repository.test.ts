@@ -67,7 +67,7 @@ describe("SupabaseCustomRuleReadRepository", () => {
     expect(serialized).not.toContain("source_payload");
     expect(serialized).not.toContain("amount_cents");
     expect(serialized).not.toContain("computed_amount");
-    expect(mock.from).toHaveBeenCalledTimes(4);
+    expect(mock.from).toHaveBeenCalledTimes(5);
   });
 
   it("scopes every query by organization/project and applies supplied period boundaries", async () => {
@@ -100,7 +100,6 @@ describe("SupabaseCustomRuleReadRepository", () => {
     for (const table of [
       "live_reports",
       "project_cost_items",
-      "settlement_batch_items",
     ] as const) {
       expect(mock.calls[table]).toContainEqual([
         "gte",
@@ -115,6 +114,36 @@ describe("SupabaseCustomRuleReadRepository", () => {
       "lte",
       ["joined_at", PERIOD_END],
     ]);
+    expect(mock.calls.settlement_batches).toContainEqual([
+      "gte",
+      ["period_end", "2026-06-01"],
+    ]);
+    expect(mock.calls.settlement_batches).toContainEqual([
+      "lte",
+      ["period_start", "2026-06-30"],
+    ]);
+    expect(mock.calls.settlement_batches).toContainEqual([
+      "in",
+      ["status", ["confirmed", "locked"]],
+    ]);
+    expect(mock.calls.settlement_batch_items).toContainEqual([
+      "in",
+      [
+        "settlement_batch_id",
+        ["batch-payable-1", "batch-payable-2", "batch-receivable-1"],
+      ],
+    ]);
+    expect(mock.calls.settlement_batch_items).not.toContainEqual([
+      "gte",
+      expect.any(Array),
+    ]);
+    expect(mock.calls.settlement_batch_items).not.toContainEqual([
+      "lte",
+      expect.any(Array),
+    ]);
+    expect(selectFor(mock, "settlement_batch_items")).not.toContain(
+      "created_at",
+    );
     expect(mock.calls.project_streamers).toContainEqual([
       "or",
       [`removed_at.is.null,removed_at.gte.${PERIOD_START}`],
@@ -125,6 +154,7 @@ describe("SupabaseCustomRuleReadRepository", () => {
       ["status", "approved"],
     ]);
     expect(selectFor(mock, "live_reports")).toContain("reviewed_at");
+    expect(selectFor(mock, "live_reports")).toContain("id");
     expect(selectFor(mock, "live_reports")).toContain(
       "live_tasks!inner(system_started_at)",
     );
@@ -176,10 +206,97 @@ describe("SupabaseCustomRuleReadRepository", () => {
     });
   });
 
+  it("intersects import and settlement coverage with current approved report IDs", async () => {
+    const results = defaultResults();
+    results.live_reports = {
+      ...results.live_reports,
+      data: (results.live_reports.data ?? []).slice(0, 2).map((row, index) => ({
+        ...(row as Record<string, unknown>),
+        id: index === 0 ? "approved-a" : "approved-b",
+      })),
+      count: 2,
+    };
+    results.project_cost_items = {
+      data: [
+        {
+          item_type: "gift",
+          live_report_id: "pending-c",
+          created_at: "2026-06-10T00:00:00.000Z",
+        },
+        {
+          item_type: "gift",
+          live_report_id: "pending-c",
+          created_at: "2026-06-11T00:00:00.000Z",
+        },
+        {
+          item_type: "gift",
+          live_report_id: "pending-d",
+          created_at: "2026-06-12T00:00:00.000Z",
+        },
+        {
+          item_type: "gift",
+          live_report_id: "unknown-report",
+          created_at: "2026-06-13T00:00:00.000Z",
+        },
+        {
+          item_type: "gift",
+          live_report_id: null,
+          created_at: "2026-06-14T00:00:00.000Z",
+        },
+      ],
+      count: 5,
+      error: null,
+    };
+    results.settlement_batch_items = {
+      data: [
+        {
+          settlement_batch_id: "batch-payable-1",
+          streamer_id: "streamer-a",
+          live_report_id: "pending-c",
+        },
+        {
+          settlement_batch_id: "batch-payable-2",
+          streamer_id: "streamer-b",
+          live_report_id: "pending-d",
+        },
+        {
+          settlement_batch_id: "batch-receivable-1",
+          streamer_id: null,
+          live_report_id: "unknown-report",
+        },
+        {
+          settlement_batch_id: "batch-receivable-1",
+          streamer_id: null,
+          live_report_id: null,
+        },
+      ],
+      count: 4,
+      error: null,
+    };
+    const coverage = await new SupabaseCustomRuleReadRepository(
+      createClient(results).client,
+    ).getProjectVariableCoverage({
+      organizationId: "org-1",
+      projectId: "project-1",
+    });
+
+    expect(coverage.variables.gift_amount).toMatchObject({
+      numerator: 0,
+      denominator: 2,
+    });
+    expect(coverage.variables.period_payable_amount).toMatchObject({
+      numerator: 0,
+      denominator: 2,
+    });
+    expect(coverage.variables.period_receivable_amount).toMatchObject({
+      numerator: 0,
+      denominator: 2,
+    });
+  });
+
   it("returns no-history metadata without converting it into a query failure", async () => {
-    const repository = new SupabaseCustomRuleReadRepository(
-      createClient(emptyResults()).client,
-    );
+    const mock = createClient(emptyResults());
+    const repository = new SupabaseCustomRuleReadRepository(mock.client);
 
     const coverage = await repository.getProjectVariableCoverage({
       organizationId: "org-1",
@@ -199,6 +316,26 @@ describe("SupabaseCustomRuleReadRepository", () => {
         gift_amount: { numerator: 0, denominator: 0 },
       },
     });
+    expect(mock.from).toHaveBeenCalledTimes(4);
+    expect(mock.calls.settlement_batch_items).toEqual([]);
+  });
+
+  it("does not issue an unbounded settlement-item query when no batch overlaps", async () => {
+    const results = defaultResults();
+    results.settlement_batches = { data: [], count: 0, error: null };
+    const mock = createClient(results);
+    const coverage = await new SupabaseCustomRuleReadRepository(
+      mock.client,
+    ).getProjectVariableCoverage({
+      organizationId: "org-1",
+      projectId: "project-1",
+      periodStart: PERIOD_START,
+      periodEnd: PERIOD_END,
+    });
+
+    expect(mock.calls.settlement_batch_items).toEqual([]);
+    expect(coverage.variables.period_payable_amount.numerator).toBe(0);
+    expect(coverage.variables.period_receivable_amount.numerator).toBe(0);
   });
 
   it("fails closed on query errors and identifies the failed source", async () => {
@@ -220,6 +357,33 @@ describe("SupabaseCustomRuleReadRepository", () => {
       source: "live_reports",
       cause: databaseError,
     });
+  });
+
+  it("fails closed when the settlement-batch period query fails", async () => {
+    const databaseError = new Error("batch query unavailable");
+    const results = defaultResults();
+    results.settlement_batches = {
+      data: null,
+      count: null,
+      error: databaseError,
+    };
+    const mock = createClient(results);
+
+    await expect(
+      new SupabaseCustomRuleReadRepository(
+        mock.client,
+      ).getProjectVariableCoverage({
+        organizationId: "org-1",
+        projectId: "project-1",
+        periodStart: PERIOD_START,
+        periodEnd: PERIOD_END,
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_COVERAGE_QUERY_FAILED",
+      source: "settlement_batches",
+      cause: databaseError,
+    });
+    expect(mock.calls.settlement_batch_items).toEqual([]);
   });
 
   it.each([
@@ -415,12 +579,35 @@ describe("SupabaseCustomRuleReadRepository", () => {
       availability: "unavailable",
     });
   });
+
+  it("does not confirm a valid IANA value with unresolved provenance", async () => {
+    const coverage = await new SupabaseCustomRuleReadRepository(
+      createClient().client,
+      {
+        resolvedBusinessTimezone: {
+          value: "Asia/Shanghai",
+          confirmed: true,
+          source: "unresolved",
+        },
+      },
+    ).getProjectVariableCoverage({
+      organizationId: "org-1",
+      projectId: "project-1",
+    });
+
+    expect(coverage).toMatchObject({
+      businessTimezone: "Asia/Shanghai",
+      businessTimezoneSource: "unresolved",
+      businessTimezoneConfirmed: false,
+    });
+  });
 });
 
 const TABLES = [
   "live_reports",
   "project_streamers",
   "project_cost_items",
+  "settlement_batches",
   "settlement_batch_items",
 ] as const;
 type TableName = (typeof TABLES)[number];
@@ -516,6 +703,7 @@ function defaultResults(): MockResults {
     live_reports: {
       data: [
         {
+          id: "report-1",
           system_duration: 60,
           screenshot_duration: 58,
           settlement_duration: 60,
@@ -529,6 +717,7 @@ function defaultResults(): MockResults {
           },
         },
         {
+          id: "report-2",
           system_duration: null,
           screenshot_duration: 40,
           settlement_duration: 45,
@@ -540,6 +729,7 @@ function defaultResults(): MockResults {
           live_tasks: [{ system_started_at: null }],
         },
         {
+          id: "report-3",
           system_duration: 30,
           screenshot_duration: null,
           settlement_duration: 30,
@@ -611,37 +801,49 @@ function defaultResults(): MockResults {
       count: 5,
       error: null,
     },
+    settlement_batches: {
+      data: [
+        {
+          id: "batch-payable-1",
+          batch_type: "payable",
+          status: "locked",
+          period_start: "2026-06-01",
+          period_end: "2026-06-15",
+        },
+        {
+          id: "batch-payable-2",
+          batch_type: "payable",
+          status: "confirmed",
+          period_start: "2026-06-16",
+          period_end: "2026-06-30",
+        },
+        {
+          id: "batch-receivable-1",
+          batch_type: "receivable",
+          status: "locked",
+          period_start: "2026-06-01",
+          period_end: "2026-06-30",
+        },
+      ],
+      count: 3,
+      error: null,
+    },
     settlement_batch_items: {
       data: [
         {
+          settlement_batch_id: "batch-payable-1",
           streamer_id: "streamer-a",
           live_report_id: "report-1",
-          created_at: "2026-06-16T00:00:00.000Z",
-          settlement_batches: {
-            batch_type: "payable",
-            period_start: "2026-06-01",
-            period_end: "2026-06-15",
-          },
         },
         {
+          settlement_batch_id: "batch-payable-2",
           streamer_id: "streamer-b",
           live_report_id: "report-2",
-          created_at: "2026-06-30T00:00:00.000Z",
-          settlement_batches: [{
-            batch_type: "payable",
-            period_start: "2026-06-16",
-            period_end: "2026-06-30",
-          }],
         },
         {
+          settlement_batch_id: "batch-receivable-1",
           streamer_id: null,
           live_report_id: "report-1",
-          created_at: "2026-06-30T00:00:00.000Z",
-          settlement_batches: {
-            batch_type: "receivable",
-            period_start: "2026-06-01",
-            period_end: "2026-06-30",
-          },
         },
       ],
       count: 3,

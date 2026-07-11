@@ -126,6 +126,41 @@ describe("buildCustomRuleVariableCatalog", () => {
     expect(variable(invalid, "hour_of_day").availability).toBe("unavailable");
   });
 
+  it("fails closed when timezone provenance is missing, unresolved, or inconsistent", () => {
+    const missingSourceCoverage = coverageFixture();
+    delete (missingSourceCoverage as Partial<ProjectVariableCoverage>)
+      .businessTimezoneSource;
+    const missingSource = buildCustomRuleVariableCatalog({
+      scope: "payable",
+      executionGrain: "report",
+      coverage: missingSourceCoverage,
+    });
+    const unresolved = buildCustomRuleVariableCatalog({
+      scope: "payable",
+      executionGrain: "report",
+      coverage: coverageFixture({ businessTimezoneSource: "unresolved" }),
+    });
+    const inconsistentDefault = buildCustomRuleVariableCatalog({
+      scope: "payable",
+      executionGrain: "report",
+      coverage: coverageFixture({
+        businessTimezone: "Asia/Tokyo",
+        businessTimezoneSource: "contract_default",
+      }),
+    });
+
+    expect(missingSource.businessTimezoneSource).toBe("unresolved");
+    expect(variable(missingSource, "weekday").availability).toBe(
+      "unavailable",
+    );
+    expect(variable(unresolved, "hour_of_day").availability).toBe(
+      "unavailable",
+    );
+    expect(variable(inconsistentDefault, "weekday").availability).toBe(
+      "unavailable",
+    );
+  });
+
   it("exposes compatible period aggregates only at aggregate grains", () => {
     const catalog = buildCustomRuleVariableCatalog({
       scope: "payable",
@@ -233,11 +268,19 @@ describe("buildCustomRuleVariableCatalog", () => {
       executionGrain: "report",
       coverage: coverageFixture({ businessTimezone: "Asia/Tokyo" }),
     });
+    const changedTimezoneSource = buildCustomRuleVariableCatalog({
+      scope: "payable",
+      executionGrain: "report",
+      coverage: coverageFixture({
+        businessTimezoneSource: "confirmed_contract",
+      }),
+    });
 
     expect(reordered.version).toBe(base.version);
     expect(changedCoverage.version).not.toBe(base.version);
     expect(changedPeriod.version).not.toBe(base.version);
     expect(changedTimezone.version).not.toBe(base.version);
+    expect(changedTimezoneSource.version).not.toBe(base.version);
   });
 });
 
@@ -281,6 +324,7 @@ function coverageFixture(
   overrides: {
     businessTimezone?: string | null;
     businessTimezoneConfirmed?: boolean;
+    businessTimezoneSource?: ProjectVariableCoverage["businessTimezoneSource"];
     systemMinutesNumerator?: number;
     latestSampledPeriod?: { start: string; end: string } | null;
     reverseCoverageInsertion?: boolean;
@@ -320,6 +364,8 @@ function coverageFixture(
     businessTimezone: overrides.businessTimezone ?? "Asia/Shanghai",
     businessTimezoneConfirmed:
       overrides.businessTimezoneConfirmed ?? true,
+    businessTimezoneSource:
+      overrides.businessTimezoneSource ?? "contract_default",
     variables: Object.fromEntries(
       orderedEntries.map(([id, numerator]) => [
         id,
@@ -339,6 +385,7 @@ function hashInput(): CustomRuleCatalogHashInput {
     executionGrain: "report",
     businessTimezone: "Asia/Shanghai",
     businessTimezoneConfirmed: true,
+    businessTimezoneSource: "contract_default",
     variables: [
       {
         id: "system_minutes",

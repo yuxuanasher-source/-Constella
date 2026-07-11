@@ -2,6 +2,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
   assertCoverageCounts,
+  isConfirmedIanaTimezone,
+  normalizeCustomRuleBusinessTimezoneSource,
   type CustomRuleBusinessTimezoneSource,
   type CustomRuleLatestSampledPeriod,
   type CustomRuleVariableCoverage,
@@ -75,6 +77,7 @@ type CoverageSource =
   | "live_reports"
   | "project_streamers"
   | "project_cost_items"
+  | "settlement_batches"
   | "settlement_batch_items";
 
 type LiveTaskRelation =
@@ -83,6 +86,7 @@ type LiveTaskRelation =
   | null;
 
 type LiveReportCoverageRow = {
+  id: string;
   system_duration: number | null;
   screenshot_duration: number | null;
   settlement_duration: number | null;
@@ -115,24 +119,23 @@ type NormalizedCostItemCoverageRow = {
   created_at: string;
 };
 
-type SettlementBatchRelation =
-  | {
-      batch_type: "payable" | "receivable";
-      period_start: string;
-      period_end: string;
-    }
-  | Array<{
-      batch_type: "payable" | "receivable";
-      period_start: string;
-      period_end: string;
-    }>
-  | null;
+type SettlementBatchCoverageRow = {
+  id: string;
+  batch_type: "payable" | "receivable";
+  status: "confirmed" | "locked";
+  period_start: string;
+  period_end: string;
+};
 
 type SettlementBatchItemCoverageRow = {
+  settlement_batch_id: string | null;
   streamer_id: string | null;
   live_report_id: string | null;
-  created_at: string;
-  settlement_batches: SettlementBatchRelation;
+};
+
+type SettlementCoverageRows = {
+  batches: SettlementBatchCoverageRow[];
+  items: SettlementBatchItemCoverageRow[];
 };
 
 type CoverageQueryResult<Row> = {
@@ -142,6 +145,7 @@ type CoverageQueryResult<Row> = {
 };
 
 const LIVE_REPORT_SELECT = [
+  "id",
   "system_duration",
   "screenshot_duration",
   "settlement_duration",
@@ -166,11 +170,17 @@ const NORMALIZED_COST_ITEM_SELECT = [
   "live_report_id",
   "created_at",
 ].join(", ");
+const SETTLEMENT_BATCH_SELECT = [
+  "id",
+  "batch_type",
+  "status",
+  "period_start",
+  "period_end",
+].join(", ");
 const SETTLEMENT_BATCH_ITEM_SELECT = [
+  "settlement_batch_id",
   "streamer_id",
   "live_report_id",
-  "created_at",
-  "settlement_batches!inner(batch_type, period_start, period_end)",
 ].join(", ");
 const DEFAULT_MAX_ROWS_PER_SOURCE = 5_000;
 const DEFAULT_TIMEZONE: ResolvedCustomRuleBusinessTimezone = {
@@ -209,19 +219,20 @@ export class SupabaseCustomRuleReadRepository
     unsafeInput: GetProjectVariableCoverageInput,
   ): Promise<ProjectVariableCoverage> {
     const input = validateCoverageInput(unsafeInput);
-    const [reports, projectStreamers, normalizedCostItems, settlementItems] =
+    const [reports, projectStreamers, normalizedCostItems, settlement] =
       await Promise.all([
         this.listApprovedReportCoverage(input),
         this.listProjectStreamerCoverage(input),
         this.listNormalizedCostItemCoverage(input),
-        this.listSettlementItemCoverage(input),
+        this.listSettlementCoverage(input),
       ]);
 
     return aggregateProjectVariableCoverage({
       reports,
       projectStreamers,
       normalizedCostItems,
-      settlementItems,
+      settlementBatches: settlement.batches,
+      settlementItems: settlement.items,
       businessTimezone: this.businessTimezone,
     });
   }
@@ -305,21 +316,60 @@ export class SupabaseCustomRuleReadRepository
     );
   }
 
+  private async listSettlementCoverage(
+    input: GetProjectVariableCoverageInput,
+  ): Promise<SettlementCoverageRows> {
+    const batches = await this.listSettlementBatchCoverage(input);
+    if (batches.length === 0) {
+      return { batches, items: [] };
+    }
+    const items = await this.listSettlementItemCoverage(
+      input,
+      batches.map((batch) => batch.id),
+    );
+    return { batches, items };
+  }
+
+  private async listSettlementBatchCoverage(
+    input: GetProjectVariableCoverageInput,
+  ): Promise<SettlementBatchCoverageRow[]> {
+    let query = this.client
+      .from("settlement_batches")
+      .select(SETTLEMENT_BATCH_SELECT, { count: "exact" })
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .in("batch_type", ["payable", "receivable"])
+      .in("status", ["confirmed", "locked"]);
+    if (input.periodStart) {
+      query = query.gte("period_end", periodDate(input.periodStart));
+    }
+    if (input.periodEnd) {
+      query = query.lte("period_start", periodDate(input.periodEnd));
+    }
+
+    return readBoundedRows(
+      "settlement_batches",
+      query
+        .limit(this.maxRowsPerSource + 1)
+        .returns<SettlementBatchCoverageRow[]>(),
+      this.maxRowsPerSource,
+    );
+  }
+
   private async listSettlementItemCoverage(
     input: GetProjectVariableCoverageInput,
+    unsafeBatchIds: readonly string[],
   ): Promise<SettlementBatchItemCoverageRow[]> {
-    let query = this.client
+    const batchIds = [...new Set(unsafeBatchIds)].sort();
+    if (batchIds.length === 0) {
+      return [];
+    }
+    const query = this.client
       .from("settlement_batch_items")
       .select(SETTLEMENT_BATCH_ITEM_SELECT, { count: "exact" })
       .eq("organization_id", input.organizationId)
       .eq("project_id", input.projectId)
-      .in("settlement_batches.batch_type", ["payable", "receivable"]);
-    if (input.periodStart) {
-      query = query.gte("created_at", input.periodStart);
-    }
-    if (input.periodEnd) {
-      query = query.lte("created_at", input.periodEnd);
-    }
+      .in("settlement_batch_id", batchIds);
 
     return readBoundedRows(
       "settlement_batch_items",
@@ -373,10 +423,14 @@ function aggregateProjectVariableCoverage(input: {
   reports: LiveReportCoverageRow[];
   projectStreamers: ProjectStreamerCoverageRow[];
   normalizedCostItems: NormalizedCostItemCoverageRow[];
+  settlementBatches: SettlementBatchCoverageRow[];
   settlementItems: SettlementBatchItemCoverageRow[];
   businessTimezone: ResolvedCustomRuleBusinessTimezone;
 }): ProjectVariableCoverage {
   const reportCount = input.reports.length;
+  const approvedReportIds = new Set(
+    input.reports.map((row) => row.id).filter(isNonemptyString),
+  );
   const streamerCount = input.projectStreamers.length;
   const reportPeriod = sampledPeriod(
     input.reports.map((row) => row.created_at),
@@ -394,9 +448,21 @@ function aggregateProjectVariableCoverage(input: {
   const giftItems = normalizedByType("gift");
   const supplierItems = normalizedByType("supplier_fee");
   const trafficItems = normalizedByType("traffic");
-  const settlementRows = input.settlementItems.flatMap((row) =>
-    relationRows(row.settlement_batches).map((batch) => ({ row, batch })),
+  const settlementBatchesById = new Map(
+    input.settlementBatches.map((batch) => [batch.id, batch]),
   );
+  const settlementRows = input.settlementItems
+    .filter(
+      (row) =>
+        row.live_report_id !== null &&
+        approvedReportIds.has(row.live_report_id),
+    )
+    .flatMap((row) => {
+      const batch = row.settlement_batch_id
+        ? settlementBatchesById.get(row.settlement_batch_id)
+        : undefined;
+      return batch ? [{ row, batch }] : [];
+    });
   const payableItems = settlementRows.filter(
     ({ batch }) => batch.batch_type === "payable",
   );
@@ -520,16 +586,23 @@ function aggregateProjectVariableCoverage(input: {
     ),
     sales_amount: coverage("sales_amount", 0, reportCount, null),
     orders_count: coverage("orders_count", 0, reportCount, null),
-    gift_amount: normalizedCoverage("gift_amount", giftItems, reportCount),
+    gift_amount: normalizedCoverage(
+      "gift_amount",
+      giftItems,
+      reportCount,
+      approvedReportIds,
+    ),
     supplier_fee: normalizedCoverage(
       "supplier_fee",
       supplierItems,
       reportCount,
+      approvedReportIds,
     ),
     traffic_cost: normalizedCoverage(
       "traffic_cost",
       trafficItems,
       reportCount,
+      approvedReportIds,
     ),
     manual_adjustment: coverage(
       "manual_adjustment",
@@ -581,18 +654,14 @@ function aggregateProjectVariableCoverage(input: {
     ),
     period_payable_amount: coverage(
       "period_payable_amount",
-      boundedUniqueCount(
-        payableItems.map(({ row }) => row.streamer_id),
-        streamerCount,
-      ),
+      uniqueNonNullCount(payableItems.map(({ row }) => row.streamer_id)),
       streamerCount,
       settlementPeriod(payableItems.map(({ batch }) => batch)),
     ),
     period_receivable_amount: coverage(
       "period_receivable_amount",
-      boundedUniqueCount(
+      uniqueNonNullCount(
         receivableItems.map(({ row }) => row.live_report_id),
-        reportCount,
       ),
       reportCount,
       settlementPeriod(receivableItems.map(({ batch }) => batch)),
@@ -624,15 +693,18 @@ function normalizedCoverage(
   variableId: string,
   rows: NormalizedCostItemCoverageRow[],
   denominator: number,
+  approvedReportIds: ReadonlySet<string>,
 ): CustomRuleVariableCoverage {
+  const approvedRows = rows.filter(
+    (row) =>
+      row.live_report_id !== null &&
+      approvedReportIds.has(row.live_report_id),
+  );
   return coverage(
     variableId,
-    boundedUniqueCount(
-      rows.map((row) => row.live_report_id),
-      denominator,
-    ),
+    uniqueNonNullCount(approvedRows.map((row) => row.live_report_id)),
     denominator,
-    sampledPeriod(rows.map((row) => row.created_at)),
+    sampledPeriod(approvedRows.map((row) => row.created_at)),
   );
 }
 
@@ -656,14 +728,11 @@ function countPresent<Row>(
   }, 0);
 }
 
-function boundedUniqueCount(
-  values: ReadonlyArray<string | null>,
-  denominator: number,
-): number {
+function uniqueNonNullCount(values: ReadonlyArray<string | null>): number {
   const unique = new Set(
     values.filter((value): value is string => Boolean(value)),
   );
-  return Math.min(unique.size, denominator);
+  return unique.size;
 }
 
 function firstRelation<Row>(row: Row | Row[] | null): Row | null {
@@ -671,13 +740,6 @@ function firstRelation<Row>(row: Row | Row[] | null): Row | null {
     return row[0] ?? null;
   }
   return row;
-}
-
-function relationRows<Row>(row: Row | Row[] | null): Row[] {
-  if (Array.isArray(row)) {
-    return row;
-  }
-  return row ? [row] : [];
 }
 
 function sampledPeriod(
@@ -796,6 +858,10 @@ function optionalPeriod(
   return value;
 }
 
+function periodDate(value: string): string {
+  return value.slice(0, 10);
+}
+
 function validateMaximumRows(value: number): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new CustomRuleCoverageInputError(
@@ -808,25 +874,22 @@ function validateMaximumRows(value: number): number {
 function resolveBusinessTimezone(
   timezone: ResolvedCustomRuleBusinessTimezone,
 ): ResolvedCustomRuleBusinessTimezone {
+  const source = normalizeCustomRuleBusinessTimezoneSource(timezone.source);
   return {
     value: timezone.value,
-    source: timezone.source,
-    confirmed:
-      timezone.confirmed &&
-      typeof timezone.value === "string" &&
-      isValidIanaTimezone(timezone.value),
+    source,
+    confirmed: isConfirmedIanaTimezone({
+      businessTimezone: timezone.value,
+      businessTimezoneConfirmed: timezone.confirmed,
+      businessTimezoneSource: source,
+    }),
   };
-}
-
-function isValidIanaTimezone(value: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function isString(value: string | null): value is string {
   return typeof value === "string";
+}
+
+function isNonemptyString(value: string): boolean {
+  return value.length > 0;
 }

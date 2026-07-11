@@ -84,6 +84,8 @@ const EXPLICIT_DEFAULT_FORBIDDEN_VARIABLES = new Set([
   "weekday",
   "hour_of_day",
   "approved_at",
+  "period_start",
+  "period_end",
 ]);
 
 export function analyzeCustomRuleDataReadiness(input: {
@@ -182,6 +184,7 @@ function evaluateInputReadiness(input: {
       businessTimezone: input.catalog.businessTimezone,
       businessTimezoneConfirmed:
         input.catalog.businessTimezoneConfirmed,
+      businessTimezoneSource: input.catalog.businessTimezoneSource,
     })
   ) {
     return evaluatedVariable({
