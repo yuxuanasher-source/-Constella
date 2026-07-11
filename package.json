@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@heroui/react": "^3.2.1",
+    "@jsep-plugin/object": "1.2.2",
     "@pdf-lib/fontkit": "^1.1.1",
     "@radix-ui/react-avatar": "^1.1.11",
     "@radix-ui/react-dialog": "^1.1.15",
@@ -52,6 +53,7 @@
     "docx": "^9.7.1",
     "exceljs": "^4.4.0",
     "framer-motion": "^12.41.0",
+    "jsep": "1.4.0",
     "lucide-react": "^1.17.0",
     "next": "16.2.6",
     "pdf-lib": "^1.17.1",

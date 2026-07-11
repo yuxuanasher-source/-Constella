@@ -14,6 +14,9 @@ importers:
       '@heroui/react':
         specifier: ^3.2.1
         version: 3.2.1(@react-spectrum/provider@3.11.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(tailwindcss@4.3.0)
+      '@jsep-plugin/object':
+        specifier: 1.2.2
+        version: 1.2.2(jsep@1.4.0)
       '@pdf-lib/fontkit':
         specifier: ^1.1.1
         version: 1.1.1
@@ -59,6 +62,9 @@ importers:
       framer-motion:
         specifier: ^12.41.0
         version: 12.41.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      jsep:
+        specifier: 1.4.0
+        version: 1.4.0
       lucide-react:
         specifier: ^1.17.0
         version: 1.17.0(react@19.2.4)
@@ -568,6 +574,12 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@jsep-plugin/object@1.2.2':
+    resolution: {integrity: sha512-GZsC7gI5oBR+mfDFJqULf5a76FRVKednNCdSco96HM1NUbZSdDT7t/fkClUf6In64L5JORCIyhOhE6wJA6AZYg==}
+    engines: {node: '>= 10.16.0'}
+    peerDependencies:
+      jsep: ^0.4.0||^1.0.0
 
   '@napi-rs/wasm-runtime@1.1.4':
     resolution: {integrity: sha512-3NQNNgA1YSlJb/kMH1ildASP9HW7/7kYnRI2szWJaofaS1hWmbGI4H+d3+22aGzXXN9IJ+n+GiFVcGipJP18ow==}
@@ -2672,6 +2684,10 @@ packages:
       canvas:
         optional: true
 
+  jsep@1.4.0:
+    resolution: {integrity: sha512-B7qPcEVE3NVkmSJbaYxvv4cHkVW7DQsZz13pUMrfS8z8Q/BuShN+gcTXrUlPiGqM2/t/EEaI030bpxMqY8gMlw==}
+    engines: {node: '>= 10.16.0'}
+
   jsesc@3.1.0:
     resolution: {integrity: sha512-/sM3dO2FOzXjKQhJuo0Q173wf2KOo8t4I8vHy6lF9poUp7bKT0/NHE8fPX23PwfhnykfqnC2xRxOnVw5XuGIaA==}
     engines: {node: '>=6'}
@@ -4357,6 +4373,10 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@jsep-plugin/object@1.2.2(jsep@1.4.0)':
+    dependencies:
+      jsep: 1.4.0
 
   '@napi-rs/wasm-runtime@1.1.4(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)':
     dependencies:
@@ -6565,6 +6585,8 @@ snapshots:
       xml-name-validator: 5.0.0
     transitivePeerDependencies:
       - '@noble/hashes'
+
+  jsep@1.4.0: {}
 
   jsesc@3.1.0: {}
 
