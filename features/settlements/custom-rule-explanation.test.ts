@@ -454,7 +454,7 @@ describe("custom rule execution explanation", () => {
     expect(capExplanation).not.toContain("触发下限");
   });
 
-  it("renders reconciled tier amounts whose sum equals the rounded component", () => {
+  it("renders exact fractional tier amounts and truthful residue allocation", () => {
     const ast = compileFormula(`money_result({
       final: tiered(system_minutes, [
         { upto: 30, rate_per_hour: yuan(0.01) },
@@ -466,20 +466,49 @@ describe("custom rule execution explanation", () => {
       variables: { system_minutes: integer(60) },
     });
 
-    const explanation = buildCustomRuleExecutionExplanation({
+    const input = {
       ast,
       trace: execution.trace,
       result: execution.result,
       labels: labels(),
-    });
+    };
+    const explanation = buildCustomRuleExecutionExplanation(input);
+    const repeated = buildCustomRuleExecutionExplanation(input);
 
     expect(explanation).toContain(
-      "分段计费第1档：30 分钟 × 0.01 元/小时 = 0.01 元",
+      "分段计费第1档：30 分钟 × 0.01 元/小时，精确金额 0.005 元，按总额舍入的尾差分配后记 0.01 元",
     );
     expect(explanation).toContain(
-      "分段计费第2档：30 分钟 × 0.01 元/小时 = 0.00 元",
+      "分段计费第2档：30 分钟 × 0.01 元/小时，精确金额 0.005 元，按总额舍入的尾差分配后记 0.00 元",
     );
     expect(explanation).toContain("最终金额：0.01 元");
+    expect(repeated).toBe(explanation);
+    expect(explanation).not.toContain(
+      "30 分钟 × 0.01 元/小时 = 0.01 元",
+    );
+  });
+
+  it("keeps a concise equality when a tier has no fractional-cent residue", () => {
+    const ast = compileFormula(`money_result({
+      final: tiered(system_minutes, [
+        { upto: null, rate_per_hour: yuan(60) }
+      ])
+    })`);
+    const execution = executionFor({
+      ast,
+      variables: { system_minutes: integer(60) },
+    });
+
+    expect(
+      buildCustomRuleExecutionExplanation({
+        ast,
+        trace: execution.trace,
+        result: execution.result,
+        labels: labels(),
+      }),
+    ).toContain(
+      "分段计费第1档：60 分钟 × 60.00 元/小时 = 60.00 元",
+    );
   });
 
   it("rejects explanation proxies without invoking traps", () => {

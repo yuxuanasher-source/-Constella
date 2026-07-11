@@ -166,6 +166,28 @@ function countingProxy<Target extends object>(target: Target): {
   return { proxy, reads: () => reads };
 }
 
+type ExactFraction = { numerator: bigint; denominator: bigint };
+
+function addExactFractions(
+  left: ExactFraction,
+  right: ExactFraction,
+): ExactFraction {
+  return {
+    numerator:
+      left.numerator * right.denominator +
+      right.numerator * left.denominator,
+    denominator: left.denominator * right.denominator,
+  };
+}
+
+function roundExactFraction(value: ExactFraction): bigint {
+  const quotient = value.numerator / value.denominator;
+  const remainder = value.numerator % value.denominator;
+  return remainder * BigInt(2) >= value.denominator
+    ? quotient + BigInt(1)
+    : quotient;
+}
+
 function replaceFinalNode(
   ast: CompiledAstNode,
   replacement: CompiledAstNode,
@@ -301,14 +323,75 @@ describe("executeCompiledCustomRule calculations", () => {
     ).toEqual([1]);
 
     const acrossTwoTiers = runAt(60);
-    const tierAmounts = acrossTwoTiers.trace
-      .filter((event) => event.kind === "tier")
-      .map((event) => event.amountCents);
+    const tierEvents = acrossTwoTiers.trace.filter(
+      (event) => event.kind === "tier",
+    );
+    const tierAmounts = tierEvents.map((event) => event.amountCents);
     expect(tierAmounts).toEqual([1, 0]);
+    expect(tierEvents.map((event) => event.exactAmountCents)).toEqual([
+      { numerator: "1", denominator: "2" },
+      { numerator: "1", denominator: "2" },
+    ]);
     expect(tierAmounts.reduce((sum, amount) => sum + amount, 0)).toBe(
       acrossTwoTiers.result.componentsCents.final,
     );
+    const exactTotal = tierEvents
+      .map((event) => ({
+        numerator: BigInt(event.exactAmountCents.numerator),
+        denominator: BigInt(event.exactAmountCents.denominator),
+      }))
+      .reduce(addExactFractions, {
+        numerator: BigInt(0),
+        denominator: BigInt(1),
+      });
+    expect(Number(roundExactFraction(exactTotal))).toBe(
+      acrossTwoTiers.result.componentsCents.final,
+    );
     expect(acrossTwoTiers.result.componentsCents.final).toBe(1);
+  });
+
+  it("records exact no-residue tiers and deterministically allocates multi-tier residue", () => {
+    const exactAst = compileFormula(`money_result({
+      final: tiered(system_minutes, [
+        { upto: null, rate_per_hour: yuan(60) }
+      ])
+    })`);
+    const exactExecution = executeCompiledCustomRuleWithTrace({
+      ast: exactAst,
+      variables: { system_minutes: integer(60) },
+      parameters: {},
+    });
+    const exactTier = exactExecution.trace.find(
+      (event) => event.kind === "tier",
+    );
+    expect(exactTier).toMatchObject({
+      kind: "tier",
+      exactAmountCents: { numerator: "6000", denominator: "1" },
+      amountCents: 6_000,
+    });
+
+    const residueAst = compileFormula(`money_result({
+      final: tiered(system_minutes, [
+        { upto: 30, rate_per_hour: yuan(0.01) },
+        { upto: 60, rate_per_hour: yuan(0.01) },
+        { upto: 90, rate_per_hour: yuan(0.01) }
+      ])
+    })`);
+    const runResidue = () =>
+      executeCompiledCustomRuleWithTrace({
+        ast: residueAst,
+        variables: { system_minutes: integer(90) },
+        parameters: {},
+      });
+    const first = runResidue();
+    const second = runResidue();
+    expect(
+      first.trace
+        .filter((event) => event.kind === "tier")
+        .map((event) => event.amountCents),
+    ).toEqual([1, 1, 0]);
+    expect(first.result.componentsCents.final).toBe(2);
+    expect(JSON.stringify(second)).toBe(JSON.stringify(first));
   });
 
   it("applies evidence discounts and rounds signed exact half-cents away from zero", () => {
@@ -1498,6 +1581,36 @@ describe("executeCompiledCustomRule limits", () => {
       "EXECUTION_MAX_STEPS",
     );
     expect(sentinel.reads()).toBe(0);
+  });
+
+  it("charges primitive and null snapshot visits before schema validation", () => {
+    const ast = compileFormula(`money_result({
+      final: if(contains(project_tags, "target"), yuan(1), yuan(0))
+    })`);
+    const junk = Array.from({ length: 50_000 }, (_, index) =>
+      index % 2 === 0 ? "junk" : null,
+    ) as unknown as TypedRuntimeValue[];
+
+    expectExecutionIssue(
+      () =>
+        executeCompiledCustomRule({
+          ast,
+          variables: {
+            project_tags: { type: "array", items: junk },
+          },
+          parameters: {},
+          limits: { maxSteps: 8, maxDepth: 20 },
+        }),
+      "EXECUTION_MAX_STEPS",
+    );
+  });
+
+  it("keeps maxSteps eight usable for a minimal valid execution", () => {
+    expect(
+      executeFormula("money_result({ final: yuan(1) })", {
+        limits: { maxSteps: 8, maxDepth: 20 },
+      }).componentsCents.final,
+    ).toBe(100);
   });
 
   it("allows normal small arrays within the work budget", () => {

@@ -210,13 +210,7 @@ export function buildCustomRuleExecutionExplanation(
         );
         break;
       case "tier":
-        sentences.push(
-          `${labelFor(labels.functions, "tiered", "函数")}第${
-            event.tierIndex + 1
-          }档：${formatPlainNumber(event.minutesApplied)} 分钟 × ${formatMoney(
-            event.ratePerHourCents,
-          )}/小时 = ${formatMoney(event.amountCents)}。`,
-        );
+        sentences.push(formatTierSentence(event, labels));
         break;
       case "evidence":
         sentences.push(
@@ -465,13 +459,15 @@ function parseTraceEvent(
           "tierIndex",
           "minutesApplied",
           "ratePerHourCents",
+          "exactAmountCents",
           "amountCents",
         ]) ||
         typeof value.path !== "string" ||
         !isNonNegativeSafeInteger(value.tierIndex) ||
         !isNonNegativeFiniteNumber(value.minutesApplied) ||
-        !Number.isSafeInteger(value.ratePerHourCents) ||
-        !Number.isSafeInteger(value.amountCents)
+        !isNonNegativeSafeInteger(value.ratePerHourCents) ||
+        !isExactAmountCents(value.exactAmountCents) ||
+        !isNonNegativeSafeInteger(value.amountCents)
       ) {
         invalidTrace(index);
       }
@@ -699,6 +695,72 @@ function formatTraceNumeric(value: number, scalarType: RuntimeScalarType): strin
   return formatPlainNumber(value);
 }
 
+function formatTierSentence(
+  event: Extract<CustomRuleExecutionTraceEvent, { kind: "tier" }>,
+  labels: CustomRuleLabelRegistry,
+): string {
+  const prefix = `${labelFor(labels.functions, "tiered", "函数")}第${
+    event.tierIndex + 1
+  }档：${formatPlainNumber(event.minutesApplied)} 分钟 × ${formatMoney(
+    event.ratePerHourCents,
+  )}/小时`;
+  const numerator = BigInt(event.exactAmountCents.numerator);
+  const denominator = BigInt(event.exactAmountCents.denominator);
+  if (numerator % denominator === BigInt(0)) {
+    if (numerator / denominator !== BigInt(event.amountCents)) {
+      invalidTrace();
+    }
+    return `${prefix} = ${formatMoney(event.amountCents)}。`;
+  }
+  return `${prefix}，精确金额 ${formatExactTierAmount(
+    numerator,
+    denominator,
+  )}，按总额舍入的尾差分配后记 ${formatMoney(event.amountCents)}。`;
+}
+
+function formatExactTierAmount(
+  numeratorCents: bigint,
+  denominatorCents: bigint,
+): string {
+  const yuanDenominator = denominatorCents * BigInt(100);
+  const divisor = greatestCommonDivisor(numeratorCents, yuanDenominator);
+  const numerator = numeratorCents / divisor;
+  let remainder = yuanDenominator / divisor;
+  let twos = 0;
+  let fives = 0;
+  while (remainder % BigInt(2) === BigInt(0)) {
+    remainder /= BigInt(2);
+    twos += 1;
+  }
+  while (remainder % BigInt(5) === BigInt(0)) {
+    remainder /= BigInt(5);
+    fives += 1;
+  }
+  if (remainder !== BigInt(1)) {
+    return `${numeratorCents.toString()}/${denominatorCents.toString()} 分`;
+  }
+  const scale = Math.max(twos, fives);
+  const scaledNumerator =
+    numerator *
+    BigInt(2) ** BigInt(scale - twos) *
+    BigInt(5) ** BigInt(scale - fives);
+  const digits = scaledNumerator.toString().padStart(scale + 1, "0");
+  const integerPart = scale === 0 ? digits : digits.slice(0, -scale);
+  const fractionalPart = scale === 0 ? "" : digits.slice(-scale);
+  return `${integerPart}${fractionalPart ? `.${fractionalPart}` : ""} 元`;
+}
+
+function greatestCommonDivisor(left: bigint, right: bigint): bigint {
+  let a = left < BigInt(0) ? -left : left;
+  let b = right < BigInt(0) ? -right : right;
+  while (b !== BigInt(0)) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  return a === BigInt(0) ? BigInt(1) : a;
+}
+
 function formatMoney(cents: number): string {
   const amount = BigInt(cents);
   const sign = amount < BigInt(0) ? "-" : "";
@@ -733,6 +795,20 @@ function hasExactKeys(
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isExactAmountCents(value: unknown): value is {
+  numerator: string;
+  denominator: string;
+} {
+  return (
+    isPlainRecord(value) &&
+    hasExactKeys(value, ["numerator", "denominator"]) &&
+    typeof value.numerator === "string" &&
+    /^(0|[1-9]\d*)$/.test(value.numerator) &&
+    typeof value.denominator === "string" &&
+    /^[1-9]\d*$/.test(value.denominator)
+  );
 }
 
 function isNonNegativeFiniteNumber(value: unknown): value is number {

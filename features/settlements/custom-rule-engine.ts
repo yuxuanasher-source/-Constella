@@ -62,6 +62,10 @@ export type CustomRuleExecutionTraceEvent =
       tierIndex: number;
       minutesApplied: number;
       ratePerHourCents: number;
+      exactAmountCents: Readonly<{
+        numerator: string;
+        denominator: string;
+      }>;
       amountCents: number;
     }>
   | Readonly<{
@@ -154,7 +158,7 @@ export const CUSTOM_RULE_MAX_EXECUTION_LIMITS: CustomRuleExecutionLimits =
   });
 const SNAPSHOT_MAX_DEPTH = 256;
 const SNAPSHOT_MAX_NODES = 200_000;
-const SNAPSHOT_STEP_MULTIPLIER = 4;
+const SNAPSHOT_STEP_MULTIPLIER = 16;
 const MAX_RATIONAL_BITS = 256;
 const MAX_DECIMAL_SCALE = 36;
 const RATE_DENOMINATOR = BigInt(10_000);
@@ -1235,6 +1239,7 @@ function snapshotOwnData(
     if (isCustomRuleProxy(current)) {
       throw new DataSnapshotFailure();
     }
+    consumeWorkBudget(budget, path);
     if (current === null || typeof current !== "object") {
       if (
         typeof current === "function" ||
@@ -1246,7 +1251,6 @@ function snapshotOwnData(
       }
       return current;
     }
-    consumeWorkBudget(budget, path);
     if (ancestors.has(current)) {
       throw new DataSnapshotFailure();
     }
@@ -2205,6 +2209,10 @@ function evaluateTiered(
       tierIndex: tier.tierIndex,
       minutesApplied: tier.minutesApplied,
       ratePerHourCents: tier.ratePerHourCents,
+      exactAmountCents: {
+        numerator: tier.exactAmount.numerator.toString(),
+        denominator: tier.exactAmount.denominator.toString(),
+      },
       amountCents: allocatedAmounts[index],
     });
   }
