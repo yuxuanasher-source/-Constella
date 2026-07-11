@@ -890,8 +890,9 @@ function frozenClarifyingArtifactMismatch(input: {
   if (mismatch) return mismatch;
   if (
     input.draft.unresolvedAmbiguities.length === 0 ||
-    input.draft.aiResponse.content !==
-      input.draft.unresolvedAmbiguities[0]?.question
+    !input.draft.unresolvedAmbiguities.some(
+      (ambiguity) => ambiguity.question === input.draft.aiResponse.content,
+    )
   ) {
     return "persisted clarifying content does not match its focused question";
   }

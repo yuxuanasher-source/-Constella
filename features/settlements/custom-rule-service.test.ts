@@ -408,6 +408,111 @@ describe("custom rule authoring service", () => {
     expect(mismatch.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
   });
 
+  it("completes with the persisted selected question instead of re-deriving ambiguity order", async () => {
+    const selectedQuestion = "请确认规则生效日期？";
+    const output = {
+      contractPatch: {},
+      unresolvedAmbiguities: [
+        {
+          code: "b_date",
+          question: selectedQuestion,
+          required: true,
+        },
+        {
+          code: "a_rate",
+          question: "请确认每小时费率？",
+          required: true,
+        },
+      ],
+      nextQuestion: selectedQuestion,
+      formulaProposal: null,
+      testCases: [],
+      safetyFlags: [],
+    };
+    const harness = createHarness([output], { failCompleteTurnOnce: true });
+    const previous = harness.repository.seedDraft(clarifyingDraft());
+
+    const failed = await harness.service.answerOrRevise({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      expectedDraftId: previous.id,
+      expectedRevisionNumber: 1,
+      clientRequestId: "revise-selected-question-0001",
+      promptText: "Keep both ambiguities and ask about the date first.",
+    });
+    expect(failed).toMatchObject({
+      ok: false,
+      code: "conversation_failed",
+      failedDraft: {
+        aiResponse: { content: selectedQuestion },
+        unresolvedAmbiguities: [
+          { code: "a_rate" },
+          { code: "b_date" },
+        ],
+      },
+    });
+    if (failed.ok || !failed.failedDraft) {
+      throw new Error("selected question completion fixture unexpectedly passed");
+    }
+
+    const recovered = await harness.service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      sourceTurnId: failed.sourceTurnId,
+      clientRequestId: "revise-selected-question-retry-0001",
+    });
+    expect(recovered).toMatchObject({ ok: true, kind: "clarifying" });
+    expect(harness.conversation.completeTurn).toHaveBeenNthCalledWith(
+      2,
+      actor,
+      uuid(202),
+      expect.objectContaining({ content: selectedQuestion }),
+    );
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
+    expect(harness.repository.createDraftCalls).toHaveLength(1);
+    expect(harness.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
+    expect(harness.repository.insertSimulationCalls).toHaveLength(0);
+
+    const tampered = createHarness([structuredClone(output)], {
+      failCompleteTurnOnce: true,
+    });
+    const tamperedPrevious = tampered.repository.seedDraft(clarifyingDraft());
+    const tamperedFailure = await tampered.service.answerOrRevise({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      expectedDraftId: tamperedPrevious.id,
+      expectedRevisionNumber: 1,
+      clientRequestId: "revise-selected-question-tampered-0001",
+      promptText: "Keep both ambiguities and ask about the date first.",
+    });
+    if (tamperedFailure.ok || !tamperedFailure.failedDraft) {
+      throw new Error("tampered content fixture unexpectedly passed");
+    }
+    const tamperedDraft = tampered.repository.drafts.find(
+      (draft) => draft.id === tamperedFailure.failedDraft?.id,
+    );
+    if (!tamperedDraft || tamperedDraft.initialStatus !== "clarifying") {
+      throw new Error("tampered clarifying draft fixture is missing");
+    }
+    tamperedDraft.aiResponse.content = "篡改后的非授权问题";
+
+    await expect(
+      tampered.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: tamperedFailure.sourceTurnId,
+        clientRequestId: "revise-selected-question-tampered-retry-0001",
+      }),
+    ).rejects.toMatchObject({ code: "conversation_failed", retryable: false });
+    expect(tampered.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(tampered.repository.createDraftCalls).toHaveLength(1);
+  });
+
   it("records an explicitly owned failed revision before failing the generic turn", async () => {
     const harness = createHarness([{ providerFailure: true }], {
       persistFailedRevisions: true,
