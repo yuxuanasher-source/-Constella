@@ -16,8 +16,10 @@ import type {
   CustomRuleRepository,
   InsertedSettlementFormulaSimulation,
   InsertSettlementFormulaSimulationInput,
+  SettlementAiUnresolvedAmbiguity,
   SettlementFormulaSimulation,
 } from "./custom-rule-repository";
+import { parseCustomRuleFormula } from "./custom-rule-parser";
 import {
   createCustomRuleAuthoringService,
   type CustomRuleAuthoringRepositoryPort,
@@ -30,6 +32,7 @@ import {
   type CustomRuleSimulationEvidence,
 } from "./custom-rule-simulation";
 import type { CustomRuleVariableCatalog } from "./custom-rule-variable-catalog";
+import { validateCustomRuleFormula } from "./custom-rule-validator";
 
 const ORGANIZATION_ID = "00000000-0000-4000-8000-000000000001";
 const PROJECT_ID = "00000000-0000-4000-8000-000000000002";
@@ -369,7 +372,7 @@ describe("custom rule authoring service", () => {
 
     const duplicate = createHarness([confirmedFormulaOutput()]);
     const duplicateDraft = duplicate.repository.seedDraft(
-      clarifyingDraft({ status: "simulated" }),
+      simulatedDraft(),
     );
     await expect(
       duplicate.service.confirmContract(confirmInput(duplicateDraft)),
@@ -605,22 +608,16 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
       .sort((left, right) => right.revisionNumber - left.revisionNumber)[0];
     const revisionNumber = (previous?.revisionNumber ?? 0) + 1;
     const id = uuid(100 + revisionNumber);
-    const created: CustomRuleDraft = {
-      ...structuredClone(input),
+    const created = createStoredDraft(input, {
       id,
-      initialStatus: input.status,
-      status: input.status,
       revisionNumber,
       createdBy: USER_ID,
       createdAt: "2026-07-12T00:00:00.000Z",
       supersedesDraftId: previous?.id ?? null,
-      supersededByDraftId: null,
-      supersededAt: null,
-    };
+    });
     if (previous) {
-      previous.status = "superseded";
-      previous.supersededByDraftId = id;
-      previous.supersededAt = "2026-07-12T00:00:00.000Z";
+      const previousIndex = this.drafts.indexOf(previous);
+      this.drafts[previousIndex] = supersedeDraft(previous, id);
     }
     this.drafts.push(created);
     return { ...structuredClone(created), duplicate: false };
@@ -687,6 +684,72 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
   }
 }
 
+type StoredDraftMetadata = {
+  id: string;
+  revisionNumber: number;
+  createdBy: string;
+  createdAt: string;
+  supersedesDraftId: string | null;
+};
+
+function createStoredDraft(
+  input: CreateCustomRuleDraftInput,
+  metadata: StoredDraftMetadata,
+): CustomRuleDraft {
+  switch (input.status) {
+    case "clarifying":
+      return {
+        ...structuredClone(input),
+        ...metadata,
+        initialStatus: "clarifying",
+        status: "clarifying",
+        supersededByDraftId: null,
+        supersededAt: null,
+      };
+    case "failed":
+      return {
+        ...structuredClone(input),
+        ...metadata,
+        initialStatus: "failed",
+        status: "failed",
+        supersededByDraftId: null,
+        supersededAt: null,
+      };
+    case "contract_ready":
+      return {
+        ...structuredClone(input),
+        ...metadata,
+        initialStatus: "contract_ready",
+        status: "contract_ready",
+        supersededByDraftId: null,
+        supersededAt: null,
+      };
+  }
+}
+
+function supersedeDraft(
+  draft: CustomRuleDraft,
+  supersededByDraftId: string,
+): CustomRuleDraft {
+  const lifecycle: {
+    status: "superseded";
+    supersededByDraftId: string;
+    supersededAt: string;
+  } = {
+    status: "superseded",
+    supersededByDraftId,
+    supersededAt: "2026-07-12T00:00:00.000Z",
+  };
+  switch (draft.initialStatus) {
+    case "clarifying":
+      return { ...draft, ...lifecycle };
+    case "failed":
+      return { ...draft, ...lifecycle };
+    case "contract_ready":
+      return { ...draft, ...lifecycle };
+  }
+}
+
 function confirmInput(draft: CustomRuleDraft) {
   return {
     actor,
@@ -732,7 +795,12 @@ function confirmedFormulaOutput() {
 }
 
 function clarifyingDraft(
-  overrides: Partial<CustomRuleDraft> = {},
+  options: {
+    unresolvedAmbiguities?: [
+      SettlementAiUnresolvedAmbiguity,
+      ...SettlementAiUnresolvedAmbiguity[],
+    ];
+  } = {},
 ): CustomRuleDraft {
   const businessContract = contract();
   const parameters = Object.fromEntries(
@@ -754,7 +822,7 @@ function clarifyingDraft(
       assistantMessageId: uuid(410),
     },
     businessContract,
-    unresolvedAmbiguities: [
+    unresolvedAmbiguities: options.unresolvedAmbiguities ?? [
       {
         code: "confirm_rate",
         question: "请确认每小时结算单价？",
@@ -783,7 +851,6 @@ function clarifyingDraft(
     supersedesDraftId: null,
     supersededByDraftId: null,
     supersededAt: null,
-    ...overrides,
   };
 }
 
@@ -797,6 +864,75 @@ function confirmableDraft(): CustomRuleDraft {
       },
     ],
   });
+}
+
+function simulatedDraft(): CustomRuleDraft {
+  const businessContract = contract();
+  const expression = "payable = money_result({ final: yuan(20) })";
+  const parsed = parseCustomRuleFormula(expression);
+  const validated = validateCustomRuleFormula(expression, {
+    scope: businessContract.scope,
+    executionGrain: businessContract.executionGrain,
+    parameters: businessContract.parameters.map((parameter) => ({
+      name: parameter.name,
+      valueType: parameter.valueType,
+    })),
+  });
+  if (!parsed.ok || !validated.ok) {
+    throw new Error("simulated draft fixture formula must be valid");
+  }
+  const parameters = Object.fromEntries(
+    businessContract.parameters.map((parameter) => [
+      parameter.name,
+      parameter.defaultValue,
+    ]),
+  );
+  return {
+    id: FIRST_DRAFT_ID,
+    organizationId: ORGANIZATION_ID,
+    projectId: PROJECT_ID,
+    conversationId: CONVERSATION_ID,
+    idempotencyKey: "seed-simulated-draft-request-0001",
+    promptText: "我确认以上业务规则。",
+    turnTrace: {
+      turnId: uuid(211),
+      userMessageId: uuid(311),
+      assistantMessageId: uuid(411),
+    },
+    businessContract,
+    unresolvedAmbiguities: [],
+    variableCatalogVersion: CATALOG_VERSION,
+    aiResponse: {
+      content: "已生成并试算确认后的规则。",
+      finishReason: "stop",
+      providerRequestId: null,
+    },
+    generatedFormula: {
+      expression,
+      normalizedAst: parsed.ast,
+    },
+    generatedExplanation: "公式已经过确定性校验和试算。",
+    generatedTestCases: [
+      {
+        name: "确认后的标准场景",
+        inputs: { system_minutes: { type: "integer", value: 60 } },
+        expectedResult: { type: "money_cents", amountCents: 2_000 },
+      },
+    ],
+    model: "deterministic",
+    safetyFlags: [],
+    contractHash: hashCustomRuleContract(businessContract),
+    formulaHash: validated.formulaHash,
+    parameterHash: hashCustomRuleParameters(parameters),
+    initialStatus: "contract_ready",
+    status: "simulated",
+    revisionNumber: 1,
+    createdBy: USER_ID,
+    createdAt: "2026-07-12T00:00:00.000Z",
+    supersedesDraftId: null,
+    supersededByDraftId: null,
+    supersededAt: null,
+  };
 }
 
 function catalog(): CustomRuleVariableCatalog {
