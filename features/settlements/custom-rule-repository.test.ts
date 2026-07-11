@@ -12,6 +12,7 @@ import {
   type CustomRuleReadRepository,
   type FailedCustomRuleDraftInput,
   type InsertSettlementFormulaSimulationInput,
+  type SettlementAiFormulaDraft,
   type SettlementSimulationOwner,
 } from "./custom-rule-repository";
 
@@ -1157,6 +1158,20 @@ describe("custom-rule draft and simulation persistence", () => {
     expect(result).not.toHaveProperty("organization_id");
     expect(result).not.toHaveProperty("requestFingerprint");
     expect(result).not.toHaveProperty("request_fingerprint");
+    if (result.initialStatus !== "contract_ready") {
+      throw new Error("expected a contract-ready draft");
+    }
+    const narrowedFormula: SettlementAiFormulaDraft = result.generatedFormula;
+    expect(narrowedFormula.expression).toBe("grossRevenue");
+    if (result.status === "superseded") {
+      const supersededByDraftId: string = result.supersededByDraftId;
+      const supersededAt: string = result.supersededAt;
+      expect([supersededByDraftId, supersededAt]).not.toContain(null);
+    } else {
+      const supersededByDraftId: null = result.supersededByDraftId;
+      const supersededAt: null = result.supersededAt;
+      expect([supersededByDraftId, supersededAt]).toEqual([null, null]);
+    }
   });
 
   it("persists a clarifying draft without placeholder formula state", async () => {
@@ -1198,6 +1213,49 @@ describe("custom-rule draft and simulation persistence", () => {
       generatedTestCases: [],
       formulaHash: null,
     });
+    if (result.initialStatus !== "clarifying") {
+      throw new Error("expected a clarifying draft");
+    }
+    const noFormula: null = result.generatedFormula;
+    expect(noFormula).toBeNull();
+  });
+
+  it("maps a valid superseded clarifying draft with required lifecycle metadata", async () => {
+    const input = validClarifyingDraftInput();
+    const mock = createPersistenceClient({
+      draftRows: [draftRow({
+        unresolved_ambiguities: input.unresolvedAmbiguities,
+        generated_formula: null,
+        generated_explanation: null,
+        generated_test_cases: [],
+        formula_hash: null,
+        initial_status: "clarifying",
+        status: "superseded",
+        superseded_by_draft_id: DRAFT_2_ID,
+        superseded_at: "2026-07-11T11:10:00.000Z",
+      })],
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const [result] = await repository.listDrafts({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+    });
+
+    expect(result).toMatchObject({
+      initialStatus: "clarifying",
+      status: "superseded",
+      generatedFormula: null,
+      supersededByDraftId: DRAFT_2_ID,
+      supersededAt: "2026-07-11T11:10:00.000Z",
+    });
+    if (result?.status === "superseded") {
+      const supersededByDraftId: string = result.supersededByDraftId;
+      const supersededAt: string = result.supersededAt;
+      expect([supersededByDraftId, supersededAt]).not.toContain(null);
+    }
   });
 
   it("persists failed evidence without an authoritative formula", async () => {
@@ -1242,6 +1300,14 @@ describe("custom-rule draft and simulation persistence", () => {
       generatedFormula: null,
       formulaHash: null,
     });
+    if (result.initialStatus !== "failed") {
+      throw new Error("expected a failed draft");
+    }
+    const noFormula: null = result.generatedFormula;
+    expect(noFormula).toBeNull();
+    // @ts-expect-error Failed drafts cannot expose an authoritative formula.
+    const invalidFailedFormula: SettlementAiFormulaDraft = result.generatedFormula;
+    expect(invalidFailedFormula).toBeNull();
   });
 
   it.each([
@@ -1582,6 +1648,30 @@ describe("custom-rule draft and simulation persistence", () => {
         generated_explanation: null,
         generated_test_cases: [],
         formula_hash: null,
+      },
+    ],
+    [
+      "superseded row without superseding draft",
+      {
+        status: "superseded",
+        superseded_by_draft_id: null,
+        superseded_at: "2026-07-11T11:10:00.000Z",
+      },
+    ],
+    [
+      "superseded row without superseded timestamp",
+      {
+        status: "superseded",
+        superseded_by_draft_id: DRAFT_2_ID,
+        superseded_at: null,
+      },
+    ],
+    [
+      "active row with supersession metadata",
+      {
+        status: "contract_ready",
+        superseded_by_draft_id: DRAFT_2_ID,
+        superseded_at: "2026-07-11T11:10:00.000Z",
       },
     ],
   ])("fails closed on malformed draft rows: %s", async (_label, patch) => {

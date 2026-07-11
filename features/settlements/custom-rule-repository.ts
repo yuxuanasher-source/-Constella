@@ -138,22 +138,76 @@ export type CreateCustomRuleDraftInput =
   | ContractReadyCustomRuleDraftInput
   | FailedCustomRuleDraftInput;
 
-export type CustomRuleDraft = CustomRuleDraftCommonInput & {
+type CustomRuleDraftFormulaStateMap = {
+  clarifying: {
+    unresolvedAmbiguities: [
+      SettlementAiUnresolvedAmbiguity,
+      ...SettlementAiUnresolvedAmbiguity[],
+    ];
+    generatedFormula: null;
+    generatedExplanation: null;
+    generatedTestCases: [];
+    formulaHash: null;
+  };
+  failed: {
+    unresolvedAmbiguities: SettlementAiUnresolvedAmbiguity[];
+    generatedFormula: null;
+    generatedExplanation: null;
+    generatedTestCases: [];
+    formulaHash: null;
+  };
+  contract_ready: {
+    unresolvedAmbiguities: [];
+    generatedFormula: SettlementAiFormulaDraft;
+    generatedExplanation: string;
+    generatedTestCases: [
+      SettlementAiGeneratedTestCase,
+      ...SettlementAiGeneratedTestCase[],
+    ];
+    formulaHash: string;
+  };
+};
+
+type CustomRuleDraftCurrentStatusMap = {
+  clarifying: "clarifying";
+  failed: "failed";
+  contract_ready: "contract_ready" | "simulated";
+};
+
+type CustomRuleDraftLifecycleState<
+  CurrentStatus extends Exclude<SettlementAiDraftStatus, "superseded">,
+> =
+  | {
+    status: CurrentStatus;
+    supersededByDraftId: null;
+    supersededAt: null;
+  }
+  | {
+    status: "superseded";
+    supersededByDraftId: string;
+    supersededAt: string;
+  };
+
+type CustomRuleDraftState = {
+  [InitialStatus in CreateSettlementAiDraftStatus]: {
+    initialStatus: InitialStatus;
+  } & CustomRuleDraftFormulaStateMap[InitialStatus]
+    & CustomRuleDraftLifecycleState<
+      CustomRuleDraftCurrentStatusMap[InitialStatus]
+    >;
+}[CreateSettlementAiDraftStatus];
+
+type CustomRuleDraftMetadata = {
   id: string;
-  unresolvedAmbiguities: SettlementAiUnresolvedAmbiguity[];
-  generatedFormula: SettlementAiFormulaDraft | null;
-  generatedExplanation: string | null;
-  generatedTestCases: SettlementAiGeneratedTestCase[];
-  formulaHash: string | null;
-  initialStatus: CreateSettlementAiDraftStatus;
-  status: SettlementAiDraftStatus;
   revisionNumber: number;
   createdBy: string;
   createdAt: string;
   supersedesDraftId: string | null;
-  supersededByDraftId: string | null;
-  supersededAt: string | null;
 };
+
+export type CustomRuleDraft = CustomRuleDraftCommonInput
+  & CustomRuleDraftMetadata
+  & CustomRuleDraftState;
 
 export type CreatedCustomRuleDraft = CustomRuleDraft & {
   duplicate: boolean;
@@ -876,7 +930,7 @@ const getSimulationInputSchema = z.strictObject({
   owner: simulationOwnerSchema,
 });
 
-const DRAFT_ROW_SHAPE = {
+const DRAFT_ROW_COMMON_SHAPE = {
   id: uuidSchema,
   organization_id: uuidSchema,
   project_id: uuidSchema,
@@ -884,78 +938,106 @@ const DRAFT_ROW_SHAPE = {
   prompt_text: boundedTextSchema.max(100_000),
   turn_trace: turnTraceSchema,
   business_contract: businessRuleContractSchema,
-  unresolved_ambiguities: z.array(unresolvedAmbiguitySchema).max(100),
   variable_catalog_version: hashSchema,
   ai_response: aiResponseSchema,
-  generated_formula: generatedFormulaSchema.nullable(),
-  generated_explanation: boundedTextSchema.max(100_000).nullable(),
-  generated_test_cases: z.array(generatedTestCaseSchema).max(200),
   model: nonemptyTextSchema.max(200),
   safety_flags: z.array(safetyFlagSchema).max(100),
   contract_hash: hashSchema,
-  formula_hash: hashSchema.nullable(),
   parameter_hash: hashSchema,
-  initial_status: z.enum(["clarifying", "contract_ready", "failed"]),
-  status: z.enum(SETTLEMENT_AI_DRAFT_STATUSES),
   revision_number: z.number().int().positive().refine(Number.isSafeInteger),
   idempotency_key: nonemptyTextSchema.max(200),
   created_by: uuidSchema,
   created_at: timestampSchema,
   supersedes_draft_id: uuidSchema.nullable(),
-  superseded_by_draft_id: uuidSchema.nullable(),
-  superseded_at: timestampSchema.nullable(),
 };
-const draftRowSchema = z
-  .strictObject(DRAFT_ROW_SHAPE)
-  .superRefine(validateDraftRowFormulaState);
-const createdDraftRowSchema = z
-  .strictObject({
-    ...DRAFT_ROW_SHAPE,
-    request_fingerprint: hashSchema,
-    duplicate: z.boolean(),
-  })
-  .superRefine(validateDraftRowFormulaState);
-
-type DraftFormulaStateRow = {
-  unresolved_ambiguities: SettlementAiUnresolvedAmbiguity[];
-  generated_formula: SettlementAiFormulaDraft | null;
-  generated_explanation: string | null;
-  generated_test_cases: SettlementAiGeneratedTestCase[];
-  formula_hash: string | null;
-  initial_status: CreateSettlementAiDraftStatus;
-  status: SettlementAiDraftStatus;
+const CLARIFYING_DRAFT_ROW_SHAPE = {
+  initial_status: z.literal("clarifying"),
+  unresolved_ambiguities: z.array(unresolvedAmbiguitySchema).min(1).max(100),
+  generated_formula: z.null(),
+  generated_explanation: z.null(),
+  generated_test_cases: z.tuple([]),
+  formula_hash: z.null(),
+};
+const FAILED_DRAFT_ROW_SHAPE = {
+  initial_status: z.literal("failed"),
+  unresolved_ambiguities: z.array(unresolvedAmbiguitySchema).max(100),
+  generated_formula: z.null(),
+  generated_explanation: z.null(),
+  generated_test_cases: z.tuple([]),
+  formula_hash: z.null(),
+};
+const READY_DRAFT_ROW_SHAPE = {
+  initial_status: z.literal("contract_ready"),
+  unresolved_ambiguities: z.tuple([]),
+  generated_formula: generatedFormulaSchema,
+  generated_explanation: boundedTextSchema.max(100_000),
+  generated_test_cases: z.array(generatedTestCaseSchema).min(1).max(200),
+  formula_hash: hashSchema,
+};
+const SUPERSEDED_DRAFT_ROW_SHAPE = {
+  status: z.literal("superseded"),
+  superseded_by_draft_id: uuidSchema,
+  superseded_at: timestampSchema,
+};
+const ACTIVE_DRAFT_ROW_SHAPE = {
+  superseded_by_draft_id: z.null(),
+  superseded_at: z.null(),
 };
 
-function validateDraftRowFormulaState(
-  row: DraftFormulaStateRow,
-  context: z.RefinementCtx,
-): void {
-  const hasNoFormula = row.generated_formula === null
-    && row.generated_explanation === null
-    && row.generated_test_cases.length === 0
-    && row.formula_hash === null;
-  const hasReadyFormula = row.generated_formula !== null
-    && row.generated_explanation !== null
-    && row.generated_test_cases.length > 0
-    && row.formula_hash !== null;
-  const initialShapeIsValid = row.initial_status === "contract_ready"
-    ? row.unresolved_ambiguities.length === 0 && hasReadyFormula
-    : hasNoFormula && (
-      row.initial_status !== "clarifying"
-      || row.unresolved_ambiguities.length > 0
-    );
-  const currentStatusIsValid = row.status === "simulated"
-    ? row.initial_status === "contract_ready"
-    : row.status === "superseded" || row.status === row.initial_status;
-
-  if (!initialShapeIsValid || !currentStatusIsValid) {
-    context.addIssue({
-      code: "custom",
-      path: ["initial_status"],
-      message: "does not match the persisted draft formula state",
-    });
-  }
-}
+const clarifyingDraftRowSchema = z.strictObject({
+  ...DRAFT_ROW_COMMON_SHAPE,
+  ...CLARIFYING_DRAFT_ROW_SHAPE,
+  ...ACTIVE_DRAFT_ROW_SHAPE,
+  status: z.literal("clarifying"),
+});
+const supersededClarifyingDraftRowSchema = z.strictObject({
+  ...DRAFT_ROW_COMMON_SHAPE,
+  ...CLARIFYING_DRAFT_ROW_SHAPE,
+  ...SUPERSEDED_DRAFT_ROW_SHAPE,
+});
+const failedDraftRowSchema = z.strictObject({
+  ...DRAFT_ROW_COMMON_SHAPE,
+  ...FAILED_DRAFT_ROW_SHAPE,
+  ...ACTIVE_DRAFT_ROW_SHAPE,
+  status: z.literal("failed"),
+});
+const supersededFailedDraftRowSchema = z.strictObject({
+  ...DRAFT_ROW_COMMON_SHAPE,
+  ...FAILED_DRAFT_ROW_SHAPE,
+  ...SUPERSEDED_DRAFT_ROW_SHAPE,
+});
+const readyDraftRowSchema = z.strictObject({
+  ...DRAFT_ROW_COMMON_SHAPE,
+  ...READY_DRAFT_ROW_SHAPE,
+  ...ACTIVE_DRAFT_ROW_SHAPE,
+  status: z.enum(["contract_ready", "simulated"]),
+});
+const supersededReadyDraftRowSchema = z.strictObject({
+  ...DRAFT_ROW_COMMON_SHAPE,
+  ...READY_DRAFT_ROW_SHAPE,
+  ...SUPERSEDED_DRAFT_ROW_SHAPE,
+});
+const DRAFT_ROW_SCHEMAS = [
+  clarifyingDraftRowSchema,
+  supersededClarifyingDraftRowSchema,
+  failedDraftRowSchema,
+  supersededFailedDraftRowSchema,
+  readyDraftRowSchema,
+  supersededReadyDraftRowSchema,
+] as const;
+const draftRowSchema = z.union(DRAFT_ROW_SCHEMAS);
+const CREATED_DRAFT_ROW_SHAPE = {
+  request_fingerprint: hashSchema,
+  duplicate: z.boolean(),
+};
+const createdDraftRowSchema = z.union([
+  clarifyingDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+  supersededClarifyingDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+  failedDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+  supersededFailedDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+  readyDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+  supersededReadyDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+]);
 const SIMULATION_ROW_SHAPE = {
   id: uuidSchema,
   organization_id: uuidSchema,
@@ -2681,7 +2763,7 @@ function utf8ByteLength(value: string): number {
 }
 
 function toCustomRuleDraft(row: DraftRow | CreatedDraftRow): CustomRuleDraft {
-  return {
+  const common = {
     id: row.id,
     organizationId: row.organization_id,
     projectId: row.project_id,
@@ -2690,26 +2772,115 @@ function toCustomRuleDraft(row: DraftRow | CreatedDraftRow): CustomRuleDraft {
     promptText: row.prompt_text,
     turnTrace: row.turn_trace,
     businessContract: row.business_contract,
-    unresolvedAmbiguities: row.unresolved_ambiguities,
     variableCatalogVersion: row.variable_catalog_version,
     aiResponse: row.ai_response,
-    generatedFormula: row.generated_formula,
-    generatedExplanation: row.generated_explanation,
-    generatedTestCases: row.generated_test_cases,
     model: row.model,
     safetyFlags: row.safety_flags,
     contractHash: row.contract_hash,
-    formulaHash: row.formula_hash,
     parameterHash: row.parameter_hash,
-    initialStatus: row.initial_status,
-    status: row.status,
     revisionNumber: row.revision_number,
     createdBy: row.created_by,
     createdAt: row.created_at,
     supersedesDraftId: row.supersedes_draft_id,
-    supersededByDraftId: row.superseded_by_draft_id,
-    supersededAt: row.superseded_at,
   };
+
+  if (row.initial_status === "clarifying") {
+    const unresolvedAmbiguities = requireNonemptyDraftArray(
+      row.unresolved_ambiguities,
+      "clarifying ambiguities",
+    );
+    const state = {
+      initialStatus: row.initial_status,
+      unresolvedAmbiguities,
+      generatedFormula: row.generated_formula,
+      generatedExplanation: row.generated_explanation,
+      generatedTestCases: row.generated_test_cases,
+      formulaHash: row.formula_hash,
+    };
+    return row.status === "superseded"
+      ? {
+        ...common,
+        ...state,
+        status: row.status,
+        supersededByDraftId: row.superseded_by_draft_id,
+        supersededAt: row.superseded_at,
+      }
+      : {
+        ...common,
+        ...state,
+        status: row.status,
+        supersededByDraftId: row.superseded_by_draft_id,
+        supersededAt: row.superseded_at,
+      };
+  }
+
+  if (row.initial_status === "failed") {
+    const state = {
+      initialStatus: row.initial_status,
+      unresolvedAmbiguities: row.unresolved_ambiguities,
+      generatedFormula: row.generated_formula,
+      generatedExplanation: row.generated_explanation,
+      generatedTestCases: row.generated_test_cases,
+      formulaHash: row.formula_hash,
+    };
+    return row.status === "superseded"
+      ? {
+        ...common,
+        ...state,
+        status: row.status,
+        supersededByDraftId: row.superseded_by_draft_id,
+        supersededAt: row.superseded_at,
+      }
+      : {
+        ...common,
+        ...state,
+        status: row.status,
+        supersededByDraftId: row.superseded_by_draft_id,
+        supersededAt: row.superseded_at,
+      };
+  }
+
+  const generatedTestCases = requireNonemptyDraftArray(
+    row.generated_test_cases,
+    "contract-ready test cases",
+  );
+  const state = {
+    initialStatus: row.initial_status,
+    unresolvedAmbiguities: row.unresolved_ambiguities,
+    generatedFormula: row.generated_formula,
+    generatedExplanation: row.generated_explanation,
+    generatedTestCases,
+    formulaHash: row.formula_hash,
+  };
+  return row.status === "superseded"
+    ? {
+      ...common,
+      ...state,
+      status: row.status,
+      supersededByDraftId: row.superseded_by_draft_id,
+      supersededAt: row.superseded_at,
+    }
+    : {
+      ...common,
+      ...state,
+      status: row.status,
+      supersededByDraftId: row.superseded_by_draft_id,
+      supersededAt: row.superseded_at,
+    };
+}
+
+function requireNonemptyDraftArray<Value>(
+  values: Value[],
+  label: string,
+): [Value, ...Value[]] {
+  const [first, ...rest] = values;
+  if (first === undefined) {
+    throw new CustomRulePersistenceDataError(
+      "draft",
+      `${label} unexpectedly empty after validation`,
+    );
+  }
+  return [first, ...rest];
 }
 
 function toSettlementFormulaSimulation(
