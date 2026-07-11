@@ -34,7 +34,10 @@ const identifierSchema = z
   .string()
   .trim()
   .min(1)
-  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
+  .refine((value) => value !== "amount", {
+    message: "use an explicit unit-bearing identifier instead of amount",
+  });
 const nonEmptyTextSchema = z.string().trim().min(1);
 const chineseTextSchema = z
   .string()

@@ -263,6 +263,36 @@ describe("target and runtime value contracts", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("rejects bare amount identifiers in nested runtime type and value objects", () => {
+    expect(
+      runtimeValueTypeSchema.safeParse({
+        kind: "object",
+        fields: { amount: scalarType("money_cents") },
+      }).success,
+    ).toBe(false);
+    expect(
+      typedRuntimeValueSchema.safeParse({
+        type: "object",
+        fields: {
+          amount: { type: "money_cents", amountCents: 100 },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      typedRuntimeValueSchema.safeParse({
+        type: "object",
+        fields: {
+          nested: {
+            type: "object",
+            fields: {
+              amount: { type: "money_cents", amountCents: 100 },
+            },
+          },
+        },
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("strict component schemas", () => {
@@ -404,6 +434,52 @@ describe("strict component schemas", () => {
     expect(
       businessRuleContractPatchSchema.safeParse({ unexpected: true }).success,
     ).toBe(false);
+  });
+
+  it("rejects bare amount identifiers at every nested contract entry point", () => {
+    expect(
+      customRuleParameterDefinitionSchema.safeParse({
+        name: "amount",
+        description: "平台应收分成金额",
+        valueType: scalarType("money_cents"),
+        userFacingUnit: "元",
+        defaultValue: { type: "money_cents", amountCents: 0 },
+      }).success,
+    ).toBe(false);
+    expect(
+      customRuleSimulationRecordSchema.safeParse({
+        recordId: "record-amount",
+        status: "calculated",
+        inputValues: {
+          amount: { type: "money_cents", amountCents: 100 },
+        },
+        result: { type: "money_cents", amountCents: 100 },
+        diagnostics: [],
+      }).success,
+    ).toBe(false);
+
+    for (const section of [
+      "calculationComponents",
+      "requiredInputs",
+      "parameters",
+    ] as const) {
+      const input = validContractInput();
+      const entries = input[section] as Array<Record<string, unknown>>;
+      entries[0] = { ...entries[0], name: "amount" };
+      expect(businessRuleContractSchema.safeParse(input).success).toBe(false);
+    }
+
+    const exampleInput = validContractInput();
+    const examples = exampleInput.examples as Array<Record<string, unknown>>;
+    examples[0] = {
+      ...examples[0],
+      inputs: {
+        amount: { type: "money_cents", amountCents: 10_000 },
+      },
+    };
+    expect(businessRuleContractSchema.safeParse(exampleInput).success).toBe(
+      false,
+    );
   });
 });
 

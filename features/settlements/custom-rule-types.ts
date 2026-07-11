@@ -108,11 +108,6 @@ export type NormalizedAstNode =
       entries: Array<{ key: string; value: NormalizedAstNode }>;
     };
 
-type NonUnitRuntimeScalarType = Exclude<
-  RuntimeScalarType,
-  "money_cents" | "rate_bps"
->;
-
 type CompiledLiteralAstNode =
   | {
       kind: "literal";
@@ -126,11 +121,28 @@ type CompiledLiteralAstNode =
     }
   | {
       kind: "literal";
-      inferredType: {
-        kind: "scalar";
-        scalarType: NonUnitRuntimeScalarType;
-      };
-      value: NormalizedLiteralValue;
+      inferredType: { kind: "scalar"; scalarType: "number" };
+      value: number;
+    }
+  | {
+      kind: "literal";
+      inferredType: { kind: "scalar"; scalarType: "integer" };
+      value: number;
+    }
+  | {
+      kind: "literal";
+      inferredType: { kind: "scalar"; scalarType: "boolean" };
+      value: boolean;
+    }
+  | {
+      kind: "literal";
+      inferredType: { kind: "scalar"; scalarType: "string" };
+      value: string;
+    }
+  | {
+      kind: "literal";
+      inferredType: { kind: "scalar"; scalarType: "timestamp" };
+      value: string;
     };
 
 export type CompiledAstNode =
@@ -169,6 +181,7 @@ export type CompiledAstNode =
 const POSTGRES_BIGINT_MIN = BigInt("-9223372036854775808");
 const POSTGRES_BIGINT_MAX = BigInt("9223372036854775807");
 const POSTGRES_BIGINT_DECIMAL_PATTERN = /^-?\d+$/;
+const MAX_SCALED_INTEGER_DRIFT = 1e-6;
 
 export function isCustomRuleTargetCompatible(
   scope: CustomRuleScope,
@@ -240,14 +253,14 @@ function scaleToSafeInteger(
     throw new RangeError(`${outputLabel} overflowed`);
   }
 
-  const rounded = Math.round(scaled);
+  const rounded = assertSafeIntegerValue(Math.round(scaled), outputLabel);
   const tolerance = Math.min(
-    Number.EPSILON * Math.max(1, Math.abs(scaled)) * Math.max(2, scale / 25),
-    1e-7,
+    Number.EPSILON * Math.abs(scaled) * Math.max(2, scale / 25),
+    MAX_SCALED_INTEGER_DRIFT,
   );
   if (Math.abs(scaled - rounded) > tolerance) {
     throw new RangeError(`${inputLabel} has a fractional ${outputLabel} value`);
   }
 
-  return assertSafeIntegerValue(rounded, outputLabel);
+  return rounded;
 }

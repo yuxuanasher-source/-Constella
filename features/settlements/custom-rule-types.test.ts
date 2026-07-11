@@ -164,6 +164,31 @@ describe("product-owned AST contracts", () => {
         valueBps: 8000,
       },
       {
+        kind: "literal",
+        inferredType: { kind: "scalar", scalarType: "number" },
+        value: 1.25,
+      },
+      {
+        kind: "literal",
+        inferredType: { kind: "scalar", scalarType: "integer" },
+        value: 2,
+      },
+      {
+        kind: "literal",
+        inferredType: { kind: "scalar", scalarType: "boolean" },
+        value: true,
+      },
+      {
+        kind: "literal",
+        inferredType: { kind: "scalar", scalarType: "string" },
+        value: "eligible",
+      },
+      {
+        kind: "literal",
+        inferredType: { kind: "scalar", scalarType: "timestamp" },
+        value: "2026-07-01T00:00:00+08:00",
+      },
+      {
         kind: "call",
         callee: "sum",
         arguments: [
@@ -185,6 +210,47 @@ describe("product-owned AST contracts", () => {
     expect(nodes[0]).toMatchObject({ valueCents: 2900 });
     expect(nodes[1]).toMatchObject({ valueBps: 8000 });
   });
+
+  it("ties each compiled literal value to its inferred scalar type", () => {
+    // @ts-expect-error boolean literals cannot persist string values
+    const invalidBoolean: CompiledAstNode = {
+      kind: "literal",
+      inferredType: { kind: "scalar", scalarType: "boolean" },
+      value: "true",
+    };
+    // @ts-expect-error string literals cannot persist number values
+    const invalidString: CompiledAstNode = {
+      kind: "literal",
+      inferredType: { kind: "scalar", scalarType: "string" },
+      value: 1,
+    };
+    // @ts-expect-error number literals cannot persist string values
+    const invalidNumber: CompiledAstNode = {
+      kind: "literal",
+      inferredType: { kind: "scalar", scalarType: "number" },
+      value: "1",
+    };
+    // @ts-expect-error money literals must use valueCents
+    const invalidMoney: CompiledAstNode = {
+      kind: "literal",
+      inferredType: { kind: "scalar", scalarType: "money_cents" },
+      value: 100,
+    };
+    // @ts-expect-error rate literals must use valueBps
+    const invalidRate: CompiledAstNode = {
+      kind: "literal",
+      inferredType: { kind: "scalar", scalarType: "rate_bps" },
+      value: 8000,
+    };
+
+    expect([
+      invalidBoolean,
+      invalidString,
+      invalidNumber,
+      invalidMoney,
+      invalidRate,
+    ]).toHaveLength(5);
+  });
 });
 
 describe("strict unit adapters", () => {
@@ -192,9 +258,18 @@ describe("strict unit adapters", () => {
     expect(yuanToCentsStrict(0.01)).toBe(1);
     expect(yuanToCentsStrict(0.29)).toBe(29);
     expect(yuanToCentsStrict(0.1 + 0.2)).toBe(30);
+    expect(yuanToCentsStrict(10_000_000.03)).toBe(1_000_000_003);
+    expect(yuanToCentsStrict(-10_000_000.03)).toBe(-1_000_000_003);
+    expect(yuanToCentsStrict(Number.MAX_SAFE_INTEGER / 100)).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+    expect(yuanToCentsStrict(Number.MIN_SAFE_INTEGER / 100)).toBe(
+      Number.MIN_SAFE_INTEGER,
+    );
     expect(centsToLegacyYuan(29)).toBe(0.29);
     expect(percentToBpsStrict(80)).toBe(8000);
     expect(percentToBpsStrict(0.01)).toBe(1);
+    expect(percentToBpsStrict(-0.01)).toBe(-1);
     expect(assertSafeIntegerValue(42, "test value")).toBe(42);
   });
 
@@ -206,8 +281,12 @@ describe("strict unit adapters", () => {
 
     expect(() => yuanToCentsStrict(0.001)).toThrow();
     expect(() => yuanToCentsStrict(0.291)).toThrow();
+    expect(() => yuanToCentsStrict(1e-18)).toThrow();
+    expect(() => yuanToCentsStrict(-1e-18)).toThrow();
     expect(() => yuanToCentsStrict(10_000_000_000_000.002)).toThrow();
     expect(() => percentToBpsStrict(80.001)).toThrow();
+    expect(() => percentToBpsStrict(1e-18)).toThrow();
+    expect(() => percentToBpsStrict(-1e-18)).toThrow();
     expect(() => yuanToCentsStrict(Number.MAX_SAFE_INTEGER)).toThrow();
     expect(() => percentToBpsStrict(Number.MAX_SAFE_INTEGER)).toThrow();
     expect(() => centsToLegacyYuan(1.5)).toThrow();
