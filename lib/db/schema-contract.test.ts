@@ -391,14 +391,15 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "unresolved_ambiguities jsonb not null",
       "variable_catalog_version text not null",
       "ai_response jsonb not null",
-      "generated_formula jsonb not null",
-      "generated_explanation text not null",
+      "generated_formula jsonb",
+      "generated_explanation text",
       "generated_test_cases jsonb not null",
       "model text not null",
       "safety_flags jsonb not null",
       "contract_hash text not null",
-      "formula_hash text not null",
+      "formula_hash text",
       "parameter_hash text not null",
+      "initial_status text not null",
       "status text not null",
       "revision_number integer not null",
       "idempotency_key text not null",
@@ -411,6 +412,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
     ]) {
       expect(draft).toContain(column);
     }
+    expect(draft).not.toContain("generated_formula jsonb not null");
+    expect(draft).not.toContain("generated_explanation text not null");
+    expect(draft).not.toContain("formula_hash text not null");
 
     const simulation = settlementAiTableDefinition(
       "settlement_formula_simulations",
@@ -472,6 +476,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(draft).toContain(
       "status in ('clarifying', 'contract_ready', 'simulated', 'failed', 'superseded')",
     );
+    expect(draft).toContain(
+      "initial_status in ('clarifying', 'contract_ready', 'failed')",
+    );
     expect(simulation).toContain(
       "constraint settlement_formula_simulations_exactly_one_owner check (((rule_version_id is not null)::integer + (ai_draft_id is not null)::integer = 1))",
     );
@@ -480,6 +487,71 @@ describe("Phase 1 settlement AI persistence contract", () => {
     );
     expect(simulation).not.toMatch(/foreign key \(rule_version_id/u);
     expect(simulation).not.toMatch(/rule_version_id uuid references/u);
+  });
+
+  it("persists and validates the immutable initial draft formula state", () => {
+    const validator = extractSettlementAiFunction(
+      "settlement_ai_draft_formula_state_is_valid",
+    );
+    const header = normalizeSql(validator.header);
+    const body = normalizeSql(validator.body);
+    const tableCheck = settlementAiCheckDefinition(
+      "ai_settlement_rule_drafts",
+      "ai_settlement_rule_drafts_formula_state_valid",
+    );
+    const createDraft = settlementAiFunctionBody(
+      "create_ai_settlement_rule_draft",
+    );
+    const createSimulation = settlementAiFunctionBody(
+      "create_settlement_formula_simulation",
+    );
+
+    expect(header).toContain("returns boolean");
+    expect(header).toContain("stable");
+    expect(header).toContain("set search_path = pg_catalog, public");
+    expect(body).not.toMatch(/^begin return true; end;$/u);
+    expect(body).toContain("p_generated_formula is null");
+    expect(body).toContain("p_generated_explanation is null");
+    expect(body).toContain("p_generated_test_cases = '[]'::jsonb");
+    expect(body).toContain("p_formula_hash is null");
+    expect(body).toContain(
+      "pg_catalog.jsonb_array_length(p_unresolved_ambiguities) > 0",
+    );
+    expect(body).toContain(
+      "pg_catalog.jsonb_array_length(p_unresolved_ambiguities) = 0",
+    );
+    expect(body).toContain(
+      "public.settlement_ai_generated_formula_is_valid(p_generated_formula)",
+    );
+    expect(body).toMatch(
+      /public\.settlement_ai_generated_test_cases_is_valid\(\s*p_generated_test_cases\s*\)/u,
+    );
+    expect(body).toContain("p_status = 'simulated'");
+    expect(body).toContain("p_initial_status <> 'contract_ready'");
+    expect(tableCheck).toContain(
+      "public.settlement_ai_draft_formula_state_is_valid(",
+    );
+    expect(tableCheck).toContain("initial_status");
+    expect(tableCheck).toContain("status");
+    const precheck = createDraft.indexOf(
+      "public.settlement_ai_draft_formula_state_is_valid(",
+    );
+    expect(precheck).toBeGreaterThanOrEqual(0);
+    expect(precheck).toBeLessThan(
+      createDraft.indexOf("insert into public.ai_settlement_rule_drafts"),
+    );
+    expect(createDraft).toMatch(
+      /insert into public\.ai_settlement_rule_drafts \([^)]*initial_status/iu,
+    );
+    expect(createDraft).toContain(
+      "v_existing.generated_explanation is distinct from pg_catalog.btrim(p_generated_explanation)",
+    );
+    expect(createDraft).toContain(
+      "v_existing.formula_hash is distinct from p_formula_hash",
+    );
+    expect(createSimulation).toContain(
+      "v_draft.initial_status <> 'contract_ready'",
+    );
   });
 
   it("adds useful scope, status, conversation, owner, and recency indexes", () => {
@@ -755,6 +827,7 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "settlement_ai_generated_formula_is_valid",
       "settlement_ai_generated_test_cases_is_valid",
       "settlement_ai_safety_flags_is_valid",
+      "settlement_ai_draft_formula_state_is_valid",
       "settlement_ai_draft_payload_is_valid",
     ];
     for (const validatorName of validatorNames) {
@@ -1116,6 +1189,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "idempotency_status_conflict_missing",
       "idempotent_superseded_message_replay_invalid",
       "idempotent_lifecycle_replay_invalid",
+      "actual_clarifying_no_formula_invalid",
+      "clarifying_placeholder_rpc_accepted",
+      "actual_contract_ready_formula_invalid",
       "actual_simulation_shape_invalid",
       "raw_criteria_rpc_accepted",
       "settlement_ai_rpc_fixture_rollback",

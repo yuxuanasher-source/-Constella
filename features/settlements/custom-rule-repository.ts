@@ -84,7 +84,7 @@ export type SettlementAiSafetyFlag = {
   message: string;
 };
 
-export type CreateCustomRuleDraftInput = {
+export type CustomRuleDraftCommonInput = {
   organizationId: string;
   projectId: string;
   conversationId: string;
@@ -92,25 +92,60 @@ export type CreateCustomRuleDraftInput = {
   promptText: string;
   turnTrace: SettlementAiTurnTrace;
   businessContract: BusinessRuleContract;
-  unresolvedAmbiguities: SettlementAiUnresolvedAmbiguity[];
   variableCatalogVersion: string;
   aiResponse: SettlementAiResponse;
-  generatedFormula: SettlementAiFormulaDraft;
-  generatedExplanation: string;
-  generatedTestCases: SettlementAiGeneratedTestCase[];
   model: string;
   safetyFlags: SettlementAiSafetyFlag[];
   contractHash: string;
-  formulaHash: string;
   parameterHash: string;
-  status: CreateSettlementAiDraftStatus;
 };
 
-export type CustomRuleDraft = Omit<
-  CreateCustomRuleDraftInput,
-  "status"
-> & {
+export type ClarifyingCustomRuleDraftInput = CustomRuleDraftCommonInput & {
+  status: "clarifying";
+  unresolvedAmbiguities: [
+    SettlementAiUnresolvedAmbiguity,
+    ...SettlementAiUnresolvedAmbiguity[],
+  ];
+  generatedFormula: null;
+  generatedExplanation: null;
+  generatedTestCases: [];
+  formulaHash: null;
+};
+
+export type ContractReadyCustomRuleDraftInput = CustomRuleDraftCommonInput & {
+  status: "contract_ready";
+  unresolvedAmbiguities: [];
+  generatedFormula: SettlementAiFormulaDraft;
+  generatedExplanation: string;
+  generatedTestCases: [
+    SettlementAiGeneratedTestCase,
+    ...SettlementAiGeneratedTestCase[],
+  ];
+  formulaHash: string;
+};
+
+export type FailedCustomRuleDraftInput = CustomRuleDraftCommonInput & {
+  status: "failed";
+  unresolvedAmbiguities: SettlementAiUnresolvedAmbiguity[];
+  generatedFormula: null;
+  generatedExplanation: null;
+  generatedTestCases: [];
+  formulaHash: null;
+};
+
+export type CreateCustomRuleDraftInput =
+  | ClarifyingCustomRuleDraftInput
+  | ContractReadyCustomRuleDraftInput
+  | FailedCustomRuleDraftInput;
+
+export type CustomRuleDraft = CustomRuleDraftCommonInput & {
   id: string;
+  unresolvedAmbiguities: SettlementAiUnresolvedAmbiguity[];
+  generatedFormula: SettlementAiFormulaDraft | null;
+  generatedExplanation: string | null;
+  generatedTestCases: SettlementAiGeneratedTestCase[];
+  formulaHash: string | null;
+  initialStatus: CreateSettlementAiDraftStatus;
   status: SettlementAiDraftStatus;
   revisionNumber: number;
   createdBy: string;
@@ -564,6 +599,7 @@ const DRAFT_SELECT = [
   "contract_hash",
   "formula_hash",
   "parameter_hash",
+  "initial_status",
   "status",
   "revision_number",
   "idempotency_key",
@@ -662,7 +698,7 @@ const safetyFlagSchema = z.strictObject({
   severity: z.enum(["info", "warning", "block"]),
   message: boundedTextSchema,
 });
-const createDraftInputSchema = z.strictObject({
+const CREATE_DRAFT_COMMON_INPUT_SHAPE = {
   organizationId: uuidSchema,
   projectId: uuidSchema,
   conversationId: uuidSchema,
@@ -670,19 +706,42 @@ const createDraftInputSchema = z.strictObject({
   promptText: boundedTextSchema.max(100_000),
   turnTrace: turnTraceSchema,
   businessContract: businessRuleContractSchema,
-  unresolvedAmbiguities: z.array(unresolvedAmbiguitySchema).max(100),
   variableCatalogVersion: hashSchema,
   aiResponse: aiResponseSchema,
-  generatedFormula: generatedFormulaSchema,
-  generatedExplanation: boundedTextSchema.max(100_000),
-  generatedTestCases: z.array(generatedTestCaseSchema).min(1).max(200),
   model: nonemptyTextSchema.max(200),
   safetyFlags: z.array(safetyFlagSchema).max(100),
   contractHash: hashSchema,
-  formulaHash: hashSchema,
   parameterHash: hashSchema,
-  status: z.enum(["clarifying", "contract_ready", "failed"]),
-});
+};
+const createDraftInputSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    ...CREATE_DRAFT_COMMON_INPUT_SHAPE,
+    status: z.literal("clarifying"),
+    unresolvedAmbiguities: z.array(unresolvedAmbiguitySchema).min(1).max(100),
+    generatedFormula: z.null(),
+    generatedExplanation: z.null(),
+    generatedTestCases: z.tuple([]),
+    formulaHash: z.null(),
+  }),
+  z.strictObject({
+    ...CREATE_DRAFT_COMMON_INPUT_SHAPE,
+    status: z.literal("contract_ready"),
+    unresolvedAmbiguities: z.tuple([]),
+    generatedFormula: generatedFormulaSchema,
+    generatedExplanation: boundedTextSchema.max(100_000),
+    generatedTestCases: z.array(generatedTestCaseSchema).min(1).max(200),
+    formulaHash: hashSchema,
+  }),
+  z.strictObject({
+    ...CREATE_DRAFT_COMMON_INPUT_SHAPE,
+    status: z.literal("failed"),
+    unresolvedAmbiguities: z.array(unresolvedAmbiguitySchema).max(100),
+    generatedFormula: z.null(),
+    generatedExplanation: z.null(),
+    generatedTestCases: z.tuple([]),
+    formulaHash: z.null(),
+  }),
+]);
 const listDraftsInputSchema = z.strictObject({
   organizationId: uuidSchema,
   projectId: uuidSchema,
@@ -828,14 +887,15 @@ const DRAFT_ROW_SHAPE = {
   unresolved_ambiguities: z.array(unresolvedAmbiguitySchema).max(100),
   variable_catalog_version: hashSchema,
   ai_response: aiResponseSchema,
-  generated_formula: generatedFormulaSchema,
-  generated_explanation: boundedTextSchema.max(100_000),
-  generated_test_cases: z.array(generatedTestCaseSchema).min(1).max(200),
+  generated_formula: generatedFormulaSchema.nullable(),
+  generated_explanation: boundedTextSchema.max(100_000).nullable(),
+  generated_test_cases: z.array(generatedTestCaseSchema).max(200),
   model: nonemptyTextSchema.max(200),
   safety_flags: z.array(safetyFlagSchema).max(100),
   contract_hash: hashSchema,
-  formula_hash: hashSchema,
+  formula_hash: hashSchema.nullable(),
   parameter_hash: hashSchema,
+  initial_status: z.enum(["clarifying", "contract_ready", "failed"]),
   status: z.enum(SETTLEMENT_AI_DRAFT_STATUSES),
   revision_number: z.number().int().positive().refine(Number.isSafeInteger),
   idempotency_key: nonemptyTextSchema.max(200),
@@ -845,12 +905,57 @@ const DRAFT_ROW_SHAPE = {
   superseded_by_draft_id: uuidSchema.nullable(),
   superseded_at: timestampSchema.nullable(),
 };
-const draftRowSchema = z.strictObject(DRAFT_ROW_SHAPE);
-const createdDraftRowSchema = z.strictObject({
-  ...DRAFT_ROW_SHAPE,
-  request_fingerprint: hashSchema,
-  duplicate: z.boolean(),
-});
+const draftRowSchema = z
+  .strictObject(DRAFT_ROW_SHAPE)
+  .superRefine(validateDraftRowFormulaState);
+const createdDraftRowSchema = z
+  .strictObject({
+    ...DRAFT_ROW_SHAPE,
+    request_fingerprint: hashSchema,
+    duplicate: z.boolean(),
+  })
+  .superRefine(validateDraftRowFormulaState);
+
+type DraftFormulaStateRow = {
+  unresolved_ambiguities: SettlementAiUnresolvedAmbiguity[];
+  generated_formula: SettlementAiFormulaDraft | null;
+  generated_explanation: string | null;
+  generated_test_cases: SettlementAiGeneratedTestCase[];
+  formula_hash: string | null;
+  initial_status: CreateSettlementAiDraftStatus;
+  status: SettlementAiDraftStatus;
+};
+
+function validateDraftRowFormulaState(
+  row: DraftFormulaStateRow,
+  context: z.RefinementCtx,
+): void {
+  const hasNoFormula = row.generated_formula === null
+    && row.generated_explanation === null
+    && row.generated_test_cases.length === 0
+    && row.formula_hash === null;
+  const hasReadyFormula = row.generated_formula !== null
+    && row.generated_explanation !== null
+    && row.generated_test_cases.length > 0
+    && row.formula_hash !== null;
+  const initialShapeIsValid = row.initial_status === "contract_ready"
+    ? row.unresolved_ambiguities.length === 0 && hasReadyFormula
+    : hasNoFormula && (
+      row.initial_status !== "clarifying"
+      || row.unresolved_ambiguities.length > 0
+    );
+  const currentStatusIsValid = row.status === "simulated"
+    ? row.initial_status === "contract_ready"
+    : row.status === "superseded" || row.status === row.initial_status;
+
+  if (!initialShapeIsValid || !currentStatusIsValid) {
+    context.addIssue({
+      code: "custom",
+      path: ["initial_status"],
+      message: "does not match the persisted draft formula state",
+    });
+  }
+}
 const SIMULATION_ROW_SHAPE = {
   id: uuidSchema,
   organization_id: uuidSchema,
@@ -2596,6 +2701,7 @@ function toCustomRuleDraft(row: DraftRow | CreatedDraftRow): CustomRuleDraft {
     contractHash: row.contract_hash,
     formulaHash: row.formula_hash,
     parameterHash: row.parameter_hash,
+    initialStatus: row.initial_status,
     status: row.status,
     revisionNumber: row.revision_number,
     createdBy: row.created_by,

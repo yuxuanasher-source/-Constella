@@ -1304,6 +1304,77 @@ exception
 end;
 $$;
 
+create or replace function public.settlement_ai_draft_formula_state_is_valid(
+  p_initial_status text,
+  p_status text,
+  p_unresolved_ambiguities jsonb,
+  p_generated_formula jsonb,
+  p_generated_explanation text,
+  p_generated_test_cases jsonb,
+  p_formula_hash text
+)
+returns boolean
+language plpgsql
+stable
+set search_path = pg_catalog, public
+as $$
+begin
+  if p_initial_status is null
+     or p_initial_status not in ('clarifying', 'contract_ready', 'failed')
+     or p_status is null
+     or p_status not in (
+       'clarifying',
+       'contract_ready',
+       'simulated',
+       'failed',
+       'superseded'
+     )
+     or p_unresolved_ambiguities is null
+     or pg_catalog.jsonb_typeof(p_unresolved_ambiguities) <> 'array'
+     or pg_catalog.jsonb_array_length(p_unresolved_ambiguities) > 100
+     or p_generated_test_cases is null
+     or pg_catalog.jsonb_typeof(p_generated_test_cases) <> 'array' then
+    return false;
+  end if;
+  if p_status in ('clarifying', 'contract_ready', 'failed')
+     and p_status <> p_initial_status then
+    return false;
+  end if;
+  if p_status = 'simulated'
+     and p_initial_status <> 'contract_ready' then
+    return false;
+  end if;
+
+  if p_initial_status = 'contract_ready' then
+    return pg_catalog.jsonb_array_length(p_unresolved_ambiguities) = 0
+      and p_generated_formula is not null
+      and public.settlement_ai_generated_formula_is_valid(p_generated_formula)
+      and nullif(pg_catalog.btrim(p_generated_explanation), '') is not null
+      and pg_catalog.char_length(
+        pg_catalog.btrim(p_generated_explanation)
+      ) <= 4000
+      and public.settlement_ai_generated_test_cases_is_valid(
+        p_generated_test_cases
+      )
+      and p_formula_hash is not null
+      and p_formula_hash ~ '^[0-9a-f]{64}$';
+  end if;
+
+  if p_initial_status = 'clarifying'
+     and not (
+       pg_catalog.jsonb_array_length(p_unresolved_ambiguities) > 0
+     ) then
+    return false;
+  end if;
+  return p_generated_formula is null
+    and p_generated_explanation is null
+    and p_generated_test_cases = '[]'::jsonb
+    and p_formula_hash is null;
+exception
+  when others then return false;
+end;
+$$;
+
 create or replace function public.settlement_ai_draft_payload_is_valid(
   p_turn_trace jsonb,
   p_business_contract jsonb,
@@ -1334,7 +1405,10 @@ begin
      or not public.settlement_ai_json_within_budget(p_business_contract)
      or not public.settlement_ai_json_within_budget(p_unresolved_ambiguities)
      or not public.settlement_ai_json_within_budget(p_ai_response)
-     or not public.settlement_ai_json_within_budget(p_generated_formula)
+     or (
+       p_generated_formula is not null
+       and not public.settlement_ai_json_within_budget(p_generated_formula)
+     )
      or not public.settlement_ai_json_within_budget(p_generated_test_cases)
      or not public.settlement_ai_json_within_budget(p_safety_flags) then
     return false;
@@ -1343,7 +1417,16 @@ begin
     and public.settlement_ai_json_is_safe(p_business_contract)
     and public.settlement_ai_json_is_safe(p_unresolved_ambiguities)
     and public.settlement_ai_json_is_safe(p_ai_response)
-    and public.settlement_ai_json_is_safe(p_generated_formula)
+    and (
+      p_generated_formula is null
+      or pg_catalog.jsonb_typeof(p_generated_formula) = 'null'
+      or (
+        public.settlement_ai_json_is_safe(p_generated_formula)
+        and public.settlement_ai_generated_formula_is_valid(
+          p_generated_formula
+        )
+      )
+    )
     and public.settlement_ai_json_is_safe(p_generated_test_cases)
     and public.settlement_ai_json_is_safe(p_safety_flags)
     and public.settlement_ai_turn_trace_json_is_valid(p_turn_trace)
@@ -1352,9 +1435,11 @@ begin
       p_unresolved_ambiguities
     )
     and public.settlement_ai_response_is_valid(p_ai_response)
-    and public.settlement_ai_generated_formula_is_valid(p_generated_formula)
-    and public.settlement_ai_generated_test_cases_is_valid(
-      p_generated_test_cases
+    and (
+      p_generated_test_cases = '[]'::jsonb
+      or public.settlement_ai_generated_test_cases_is_valid(
+        p_generated_test_cases
+      )
     )
     and public.settlement_ai_safety_flags_is_valid(p_safety_flags);
 exception
@@ -1729,14 +1814,15 @@ create table public.ai_settlement_rule_drafts (
   unresolved_ambiguities jsonb not null default '[]'::jsonb,
   variable_catalog_version text not null,
   ai_response jsonb not null,
-  generated_formula jsonb not null,
-  generated_explanation text not null,
+  generated_formula jsonb,
+  generated_explanation text,
   generated_test_cases jsonb not null,
   model text not null,
   safety_flags jsonb not null default '[]'::jsonb,
   contract_hash text not null,
-  formula_hash text not null,
+  formula_hash text,
   parameter_hash text not null,
+  initial_status text not null,
   status text not null,
   revision_number integer not null,
   idempotency_key text not null,
@@ -1771,16 +1857,24 @@ create table public.ai_settlement_rule_drafts (
   constraint ai_settlement_rule_drafts_status_check check (
     status in ('clarifying', 'contract_ready', 'simulated', 'failed', 'superseded')
   ),
+  constraint ai_settlement_rule_drafts_initial_status_check check (
+    initial_status in ('clarifying', 'contract_ready', 'failed')
+  ),
   constraint ai_settlement_rule_drafts_hashes_check check (
     variable_catalog_version ~ '^[0-9a-f]{64}$'
     and contract_hash ~ '^[0-9a-f]{64}$'
-    and formula_hash ~ '^[0-9a-f]{64}$'
+    and (formula_hash is null or formula_hash ~ '^[0-9a-f]{64}$')
     and parameter_hash ~ '^[0-9a-f]{64}$'
     and request_fingerprint ~ '^[0-9a-f]{64}$'
   ),
   constraint ai_settlement_rule_drafts_text_check check (
     pg_catalog.char_length(pg_catalog.btrim(prompt_text)) between 1 and 4000
-    and pg_catalog.char_length(pg_catalog.btrim(generated_explanation)) between 1 and 4000
+    and (
+      generated_explanation is null
+      or pg_catalog.char_length(
+        pg_catalog.btrim(generated_explanation)
+      ) between 1 and 4000
+    )
     and pg_catalog.char_length(pg_catalog.btrim(model)) between 1 and 200
     and pg_catalog.char_length(pg_catalog.btrim(idempotency_key)) between 1 and 200
   ),
@@ -1795,12 +1889,14 @@ create table public.ai_settlement_rule_drafts (
       ai_response,
       array['content', 'finishReason', 'providerRequestId']::text[]
     )
-    and public.settlement_ai_json_has_exact_keys(
-      generated_formula,
-      array['expression', 'normalizedAst']::text[]
+    and (
+      generated_formula is null
+      or public.settlement_ai_json_has_exact_keys(
+        generated_formula,
+        array['expression', 'normalizedAst']::text[]
+      )
     )
     and pg_catalog.jsonb_typeof(generated_test_cases) = 'array'
-    and pg_catalog.jsonb_array_length(generated_test_cases) > 0
     and pg_catalog.jsonb_typeof(safety_flags) = 'array'
   ),
   constraint ai_settlement_rule_drafts_chinese_contract_check check (
@@ -1821,6 +1917,17 @@ create table public.ai_settlement_rule_drafts (
       generated_formula,
       generated_test_cases,
       safety_flags
+    )
+  ),
+  constraint ai_settlement_rule_drafts_formula_state_valid check (
+    public.settlement_ai_draft_formula_state_is_valid(
+      initial_status,
+      status,
+      unresolved_ambiguities,
+      generated_formula,
+      generated_explanation,
+      generated_test_cases,
+      formula_hash
     )
   ),
   constraint ai_settlement_rule_drafts_supersession_state_check check (
@@ -2138,15 +2245,25 @@ begin
      or pg_catalog.char_length(pg_catalog.btrim(p_idempotency_key)) > 200
      or nullif(pg_catalog.btrim(p_prompt_text), '') is null
      or pg_catalog.char_length(pg_catalog.btrim(p_prompt_text)) > 4000
-     or nullif(pg_catalog.btrim(p_generated_explanation), '') is null
-     or pg_catalog.char_length(pg_catalog.btrim(p_generated_explanation)) > 4000
+     or (
+       p_generated_explanation is not null
+       and (
+         nullif(pg_catalog.btrim(p_generated_explanation), '') is null
+         or pg_catalog.char_length(
+           pg_catalog.btrim(p_generated_explanation)
+         ) > 4000
+       )
+     )
      or nullif(pg_catalog.btrim(p_model), '') is null
      or pg_catalog.char_length(pg_catalog.btrim(p_model)) > 200 then
     raise exception 'settlement_ai_draft_text_invalid';
   end if;
   if p_variable_catalog_version !~ '^[0-9a-f]{64}$'
      or p_contract_hash !~ '^[0-9a-f]{64}$'
-     or p_formula_hash !~ '^[0-9a-f]{64}$'
+     or (
+       p_formula_hash is not null
+       and p_formula_hash !~ '^[0-9a-f]{64}$'
+     )
      or p_parameter_hash !~ '^[0-9a-f]{64}$' then
     raise exception 'settlement_ai_draft_hash_invalid';
   end if;
@@ -2161,11 +2278,25 @@ begin
   ) then
     raise exception 'settlement_ai_draft_payload_invalid';
   end if;
+  if not public.settlement_ai_draft_formula_state_is_valid(
+    p_status,
+    p_status,
+    p_unresolved_ambiguities,
+    p_generated_formula,
+    p_generated_explanation,
+    p_generated_test_cases,
+    p_formula_hash
+  ) then
+    raise exception 'settlement_ai_draft_formula_state_invalid';
+  end if;
   if not public.settlement_ai_json_is_safe(p_turn_trace)
      or not public.settlement_ai_json_is_safe(p_business_contract)
      or not public.settlement_ai_json_is_safe(p_unresolved_ambiguities)
      or not public.settlement_ai_json_is_safe(p_ai_response)
-     or not public.settlement_ai_json_is_safe(p_generated_formula)
+     or (
+       p_generated_formula is not null
+       and not public.settlement_ai_json_is_safe(p_generated_formula)
+     )
      or not public.settlement_ai_json_is_safe(p_generated_test_cases)
      or not public.settlement_ai_json_is_safe(p_safety_flags) then
     raise exception 'settlement_ai_draft_json_unsafe';
@@ -2178,9 +2309,12 @@ begin
        p_ai_response,
        array['content', 'finishReason', 'providerRequestId']::text[]
      )
-     or not public.settlement_ai_json_has_exact_keys(
-       p_generated_formula,
-       array['expression', 'normalizedAst']::text[]
+     or (
+       p_generated_formula is not null
+       and not public.settlement_ai_json_has_exact_keys(
+         p_generated_formula,
+         array['expression', 'normalizedAst']::text[]
+       )
      )
      or not public.settlement_ai_json_has_exact_keys(
        p_business_contract,
@@ -2205,7 +2339,6 @@ begin
      )
      or pg_catalog.jsonb_typeof(p_unresolved_ambiguities) <> 'array'
      or pg_catalog.jsonb_typeof(p_generated_test_cases) <> 'array'
-     or pg_catalog.jsonb_array_length(p_generated_test_cases) = 0
      or pg_catalog.jsonb_typeof(p_safety_flags) <> 'array' then
     raise exception 'settlement_ai_draft_json_shape_invalid';
   end if;
@@ -2331,12 +2464,12 @@ begin
        or v_existing.variable_catalog_version <> p_variable_catalog_version
        or v_existing.ai_response is distinct from p_ai_response
        or v_existing.generated_formula is distinct from p_generated_formula
-       or v_existing.generated_explanation <> pg_catalog.btrim(p_generated_explanation)
+       or v_existing.generated_explanation is distinct from pg_catalog.btrim(p_generated_explanation)
        or v_existing.generated_test_cases is distinct from p_generated_test_cases
        or v_existing.model <> pg_catalog.btrim(p_model)
        or v_existing.safety_flags is distinct from p_safety_flags
        or v_existing.contract_hash <> p_contract_hash
-       or v_existing.formula_hash <> p_formula_hash
+       or v_existing.formula_hash is distinct from p_formula_hash
        or v_existing.parameter_hash <> p_parameter_hash then
       raise exception 'settlement_ai_draft_idempotency_conflict';
     end if;
@@ -2414,6 +2547,7 @@ begin
     contract_hash,
     formula_hash,
     parameter_hash,
+    initial_status,
     status,
     revision_number,
     idempotency_key,
@@ -2438,6 +2572,7 @@ begin
     p_contract_hash,
     p_formula_hash,
     p_parameter_hash,
+    p_status,
     p_status,
     v_next_revision,
     pg_catalog.btrim(p_idempotency_key),
@@ -2737,7 +2872,8 @@ begin
     if not found then
       raise exception 'settlement_ai_simulation_draft_scope_mismatch';
     end if;
-    if v_draft.status not in ('contract_ready', 'simulated')
+    if v_draft.initial_status <> 'contract_ready'
+       or v_draft.status not in ('contract_ready', 'simulated')
        or v_draft.formula_hash <> p_formula_hash
        or v_draft.contract_hash <> p_rule_contract_hash
        or v_draft.parameter_hash <> p_parameter_hash
@@ -3286,13 +3422,13 @@ begin
       v_valid_ambiguities,
       pg_catalog.repeat('a', 64),
       v_valid_ai_response,
-      v_valid_generated_formula,
-      '按项目确认收入计算。',
-      v_valid_generated_tests,
+      null,
+      null,
+      '[]'::jsonb,
       'fixture-model',
       v_valid_safety_flags,
       pg_catalog.repeat('b', 64),
-      pg_catalog.repeat('c', 64),
+      null,
       pg_catalog.repeat('d', 64),
       'clarifying'
     );
@@ -3317,6 +3453,7 @@ begin
            'contract_hash',
            'formula_hash',
            'parameter_hash',
+           'initial_status',
            'status',
            'revision_number',
            'idempotency_key',
@@ -3344,6 +3481,25 @@ begin
     ) then
       raise exception 'actual_draft_shape_invalid';
     end if;
+    if v_draft_one ->> 'initial_status' <> 'clarifying'
+       or v_draft_one ->> 'status' <> 'clarifying'
+       or pg_catalog.jsonb_typeof(v_draft_one -> 'generated_formula') <> 'null'
+       or pg_catalog.jsonb_typeof(
+         v_draft_one -> 'generated_explanation'
+       ) <> 'null'
+       or v_draft_one -> 'generated_test_cases' <> '[]'::jsonb
+       or pg_catalog.jsonb_typeof(v_draft_one -> 'formula_hash') <> 'null'
+       or not public.settlement_ai_draft_formula_state_is_valid(
+         v_draft_one ->> 'initial_status',
+         v_draft_one ->> 'status',
+         v_draft_one -> 'unresolved_ambiguities',
+         nullif(v_draft_one -> 'generated_formula', 'null'::jsonb),
+         v_draft_one ->> 'generated_explanation',
+         v_draft_one -> 'generated_test_cases',
+         v_draft_one ->> 'formula_hash'
+       ) then
+      raise exception 'actual_clarifying_no_formula_invalid';
+    end if;
 
     update public.ai_chat_messages
     set status = 'superseded'
@@ -3360,13 +3516,13 @@ begin
       v_valid_ambiguities,
       pg_catalog.repeat('a', 64),
       v_valid_ai_response,
-      v_valid_generated_formula,
-      '按项目确认收入计算。',
-      v_valid_generated_tests,
+      null,
+      null,
+      '[]'::jsonb,
       'fixture-model',
       v_valid_safety_flags,
       pg_catalog.repeat('b', 64),
-      pg_catalog.repeat('c', 64),
+      null,
       pg_catalog.repeat('d', 64),
       'clarifying'
     );
@@ -3389,13 +3545,13 @@ begin
         v_valid_ambiguities,
         pg_catalog.repeat('a', 64),
         v_valid_ai_response,
-        v_valid_generated_formula,
-        '按项目确认收入计算。',
-        v_valid_generated_tests,
+        null,
+        null,
+        '[]'::jsonb,
         'fixture-model',
         v_valid_safety_flags,
         pg_catalog.repeat('b', 64),
-        pg_catalog.repeat('c', 64),
+        null,
         pg_catalog.repeat('d', 64),
         'failed'
       );
@@ -3417,6 +3573,37 @@ begin
         v_organization_id,
         v_fixture_project_id,
         v_conversation_id,
+        'task6-settlement-ai-clarifying-placeholder',
+        '请按项目收入生成结算规则。',
+        v_turn_trace,
+        v_valid_contract,
+        v_valid_ambiguities,
+        pg_catalog.repeat('a', 64),
+        v_valid_ai_response,
+        v_valid_generated_formula,
+        '不应持久化的占位公式。',
+        v_valid_generated_tests,
+        'fixture-model',
+        v_valid_safety_flags,
+        pg_catalog.repeat('b', 64),
+        pg_catalog.repeat('c', 64),
+        pg_catalog.repeat('d', 64),
+        'clarifying'
+      );
+      raise exception 'clarifying_placeholder_rpc_accepted';
+    exception
+      when others then
+        if sqlerrm = 'clarifying_placeholder_rpc_accepted' then raise; end if;
+        if sqlerrm <> 'settlement_ai_draft_formula_state_invalid' then
+          raise exception 'clarifying_placeholder_rpc_unexpected: %', sqlerrm;
+        end if;
+    end;
+
+    begin
+      perform public.create_ai_settlement_rule_draft(
+        v_organization_id,
+        v_fixture_project_id,
+        v_conversation_id,
         'task6-settlement-ai-malformed-ambiguity',
         '请按项目收入生成结算规则。',
         v_turn_trace,
@@ -3424,15 +3611,15 @@ begin
         '[{"code":"confirm","question":"请确认。","required":"true"}]'::jsonb,
         pg_catalog.repeat('a', 64),
         v_valid_ai_response,
-        v_valid_generated_formula,
-        '按项目确认收入计算。',
-        v_valid_generated_tests,
+        null,
+        null,
+        '[]'::jsonb,
         'fixture-model',
         v_valid_safety_flags,
         pg_catalog.repeat('b', 64),
-        pg_catalog.repeat('c', 64),
+        null,
         pg_catalog.repeat('d', 64),
-        'contract_ready'
+        'clarifying'
       );
       raise exception 'malformed_ambiguity_rpc_accepted';
     exception
@@ -3459,15 +3646,15 @@ begin
         v_valid_ambiguities,
         pg_catalog.repeat('a', 64),
         v_valid_ai_response,
-        v_valid_generated_formula,
-        '按项目确认收入计算。',
-        v_valid_generated_tests,
+        null,
+        null,
+        '[]'::jsonb,
         'fixture-model',
         v_valid_safety_flags,
         pg_catalog.repeat('b', 64),
-        pg_catalog.repeat('c', 64),
+        null,
         pg_catalog.repeat('d', 64),
-        'contract_ready'
+        'clarifying'
       );
       raise exception 'invalid_datetime_rpc_accepted';
     exception
@@ -3487,7 +3674,7 @@ begin
         '请按项目收入生成结算规则。',
         v_turn_trace,
         v_valid_contract,
-        v_valid_ambiguities,
+        '[]'::jsonb,
         pg_catalog.repeat('a', 64),
         v_valid_ai_response,
         v_valid_generated_formula,
@@ -3517,7 +3704,7 @@ begin
       '请按项目收入生成结算规则。',
       v_turn_trace,
       v_valid_contract,
-      v_valid_ambiguities,
+      '[]'::jsonb,
       pg_catalog.repeat('a', 64),
       v_valid_ai_response,
       v_valid_generated_formula,
@@ -3541,8 +3728,29 @@ begin
          having pg_catalog.count(*) = 2
            and pg_catalog.min(revision.revision_number) = 1
            and pg_catalog.max(revision.revision_number) = 2
-       ) then
+    ) then
       raise exception 'actual_revision_sequence_invalid';
+    end if;
+    if v_draft_two ->> 'initial_status' <> 'contract_ready'
+       or v_draft_two ->> 'status' <> 'contract_ready'
+       or pg_catalog.jsonb_typeof(v_draft_two -> 'generated_formula') <> 'object'
+       or pg_catalog.jsonb_typeof(
+         v_draft_two -> 'generated_explanation'
+       ) <> 'string'
+       or pg_catalog.jsonb_array_length(
+         v_draft_two -> 'generated_test_cases'
+       ) = 0
+       or v_draft_two ->> 'formula_hash' <> pg_catalog.repeat('c', 64)
+       or not public.settlement_ai_draft_formula_state_is_valid(
+         v_draft_two ->> 'initial_status',
+         v_draft_two ->> 'status',
+         v_draft_two -> 'unresolved_ambiguities',
+         v_draft_two -> 'generated_formula',
+         v_draft_two ->> 'generated_explanation',
+         v_draft_two -> 'generated_test_cases',
+         v_draft_two ->> 'formula_hash'
+       ) then
+      raise exception 'actual_contract_ready_formula_invalid';
     end if;
 
     begin
@@ -3564,6 +3772,7 @@ begin
         contract_hash,
         formula_hash,
         parameter_hash,
+        initial_status,
         status,
         revision_number,
         idempotency_key,
@@ -3578,17 +3787,18 @@ begin
         draft.prompt_text,
         draft.turn_trace,
         draft.business_contract,
-        '[{"code":7,"question":"请确认。","required":true}]'::jsonb,
+        draft.unresolved_ambiguities,
         draft.variable_catalog_version,
         draft.ai_response,
         draft.generated_formula,
         draft.generated_explanation,
         draft.generated_test_cases,
         draft.model,
-        draft.safety_flags,
+        '[{"code":"review","severity":"critical","message":"复核"}]'::jsonb,
         draft.contract_hash,
         draft.formula_hash,
         draft.parameter_hash,
+        draft.initial_status,
         'contract_ready',
         3,
         'task6-settlement-ai-direct-invalid',
@@ -3701,7 +3911,7 @@ begin
       '请按项目收入生成结算规则。',
       v_turn_trace,
       v_valid_contract,
-      v_valid_ambiguities,
+      '[]'::jsonb,
       pg_catalog.repeat('a', 64),
       v_valid_ai_response,
       v_valid_generated_formula,
@@ -3919,6 +4129,15 @@ revoke all on function public.settlement_ai_safety_flags_is_valid(jsonb)
   from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_business_contract_is_valid(jsonb)
   from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_draft_formula_state_is_valid(
+  text,
+  text,
+  jsonb,
+  jsonb,
+  text,
+  jsonb,
+  text
+) from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_draft_payload_is_valid(
   jsonb,
   jsonb,

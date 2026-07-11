@@ -5,9 +5,12 @@ import { analyzeCustomRuleDataReadiness } from "./custom-rule-data-readiness";
 import { buildCustomRuleVariableCatalog } from "./custom-rule-variable-catalog";
 import {
   SupabaseCustomRuleReadRepository,
+  type ClarifyingCustomRuleDraftInput,
+  type ContractReadyCustomRuleDraftInput,
   type CreateCustomRuleDraftInput,
   type CustomRuleRepository,
   type CustomRuleReadRepository,
+  type FailedCustomRuleDraftInput,
   type InsertSettlementFormulaSimulationInput,
   type SettlementSimulationOwner,
 } from "./custom-rule-repository";
@@ -1144,6 +1147,7 @@ describe("custom-rule draft and simulation persistence", () => {
       projectId: PROJECT_ID,
       conversationId: CONVERSATION_ID,
       revisionNumber: 1,
+      initialStatus: "contract_ready",
       status: "contract_ready",
       contractHash: HASH_B,
       formulaHash: HASH_C,
@@ -1153,6 +1157,138 @@ describe("custom-rule draft and simulation persistence", () => {
     expect(result).not.toHaveProperty("organization_id");
     expect(result).not.toHaveProperty("requestFingerprint");
     expect(result).not.toHaveProperty("request_fingerprint");
+  });
+
+  it("persists a clarifying draft without placeholder formula state", async () => {
+    const input = validClarifyingDraftInput();
+    const mock = createPersistenceClient({
+      draftRpcData: draftRow({
+        unresolved_ambiguities: input.unresolvedAmbiguities,
+        generated_formula: null,
+        generated_explanation: null,
+        generated_test_cases: [],
+        formula_hash: null,
+        initial_status: "clarifying",
+        status: "clarifying",
+        duplicate: false,
+        request_fingerprint: HASH_E,
+      }),
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const result = await repository.createDraft(input);
+
+    expect(mock.rpc).toHaveBeenCalledWith(
+      "create_ai_settlement_rule_draft",
+      expect.objectContaining({
+        p_unresolved_ambiguities: input.unresolvedAmbiguities,
+        p_generated_formula: null,
+        p_generated_explanation: null,
+        p_generated_test_cases: [],
+        p_formula_hash: null,
+        p_status: "clarifying",
+      }),
+    );
+    expect(result).toMatchObject({
+      initialStatus: "clarifying",
+      status: "clarifying",
+      generatedFormula: null,
+      generatedExplanation: null,
+      generatedTestCases: [],
+      formulaHash: null,
+    });
+  });
+
+  it("persists failed evidence without an authoritative formula", async () => {
+    const input = validFailedDraftInput();
+    const mock = createPersistenceClient({
+      draftRpcData: draftRow({
+        unresolved_ambiguities: input.unresolvedAmbiguities,
+        ai_response: input.aiResponse,
+        generated_formula: null,
+        generated_explanation: null,
+        generated_test_cases: [],
+        safety_flags: input.safetyFlags,
+        formula_hash: null,
+        initial_status: "failed",
+        status: "failed",
+        duplicate: false,
+        request_fingerprint: HASH_E,
+      }),
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const result = await repository.createDraft(input);
+
+    expect(mock.rpc).toHaveBeenCalledWith(
+      "create_ai_settlement_rule_draft",
+      expect.objectContaining({
+        p_ai_response: input.aiResponse,
+        p_generated_formula: null,
+        p_generated_explanation: null,
+        p_generated_test_cases: [],
+        p_safety_flags: input.safetyFlags,
+        p_formula_hash: null,
+        p_status: "failed",
+      }),
+    );
+    expect(result).toMatchObject({
+      initialStatus: "failed",
+      status: "failed",
+      aiResponse: input.aiResponse,
+      safetyFlags: input.safetyFlags,
+      generatedFormula: null,
+      formulaHash: null,
+    });
+  });
+
+  it.each([
+    [
+      "clarifying without a required ambiguity",
+      { ...validClarifyingDraftInput(), unresolvedAmbiguities: [] },
+    ],
+    [
+      "clarifying with a placeholder formula",
+      {
+        ...validClarifyingDraftInput(),
+        generatedFormula: validDraftInput().generatedFormula,
+      },
+    ],
+    [
+      "ready with unresolved ambiguities",
+      {
+        ...validDraftInput(),
+        unresolvedAmbiguities: validClarifyingDraftInput().unresolvedAmbiguities,
+      },
+    ],
+    [
+      "ready without formula state",
+      {
+        ...validDraftInput(),
+        generatedFormula: null,
+        generatedExplanation: null,
+        generatedTestCases: [],
+        formulaHash: null,
+      },
+    ],
+    [
+      "failed with an authoritative formula",
+      {
+        ...validFailedDraftInput(),
+        generatedFormula: validDraftInput().generatedFormula,
+      },
+    ],
+  ])("rejects incoherent draft state before RPC: %s", async (_label, input) => {
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(
+      repository.createDraft(input as unknown as CreateCustomRuleDraftInput),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(mock.rpc).not.toHaveBeenCalled();
   });
 
   it("preserves turn-bound AI response whitespace through RPC and row mapping", async () => {
@@ -1416,6 +1552,36 @@ describe("custom-rule draft and simulation persistence", () => {
           expression: "grossRevenue",
           normalizedAst: { kind: "literal", value: Number.POSITIVE_INFINITY },
         },
+      },
+    ],
+    [
+      "clarifying row with formula state",
+      {
+        initial_status: "clarifying",
+        status: "clarifying",
+        unresolved_ambiguities: validClarifyingDraftInput().unresolvedAmbiguities,
+      },
+    ],
+    [
+      "ready row without formula state",
+      {
+        initial_status: "contract_ready",
+        generated_formula: null,
+        generated_explanation: null,
+        generated_test_cases: [],
+        formula_hash: null,
+      },
+    ],
+    [
+      "simulated row from a clarifying initial state",
+      {
+        initial_status: "clarifying",
+        status: "simulated",
+        unresolved_ambiguities: validClarifyingDraftInput().unresolvedAmbiguities,
+        generated_formula: null,
+        generated_explanation: null,
+        generated_test_cases: [],
+        formula_hash: null,
       },
     ],
   ])("fails closed on malformed draft rows: %s", async (_label, patch) => {
@@ -2400,7 +2566,7 @@ function validAiResponse() {
   };
 }
 
-function validDraftInput(): CreateCustomRuleDraftInput {
+function validDraftInput(): ContractReadyCustomRuleDraftInput {
   return {
     organizationId: ORGANIZATION_ID,
     projectId: PROJECT_ID,
@@ -2439,6 +2605,48 @@ function validDraftInput(): CreateCustomRuleDraftInput {
   };
 }
 
+function validClarifyingDraftInput(): ClarifyingCustomRuleDraftInput {
+  return {
+    ...validDraftInput(),
+    unresolvedAmbiguities: [
+      {
+        code: "confirm_revenue_scope",
+        question: "请确认收入统计范围。",
+        required: true,
+      },
+    ],
+    generatedFormula: null,
+    generatedExplanation: null,
+    generatedTestCases: [],
+    formulaHash: null,
+    status: "clarifying",
+  };
+}
+
+function validFailedDraftInput(): FailedCustomRuleDraftInput {
+  return {
+    ...validDraftInput(),
+    unresolvedAmbiguities: [],
+    aiResponse: {
+      content: "规则生成失败，需人工检查输入。",
+      finishReason: "content_filter",
+      providerRequestId: "provider-request-failed-1",
+    },
+    generatedFormula: null,
+    generatedExplanation: null,
+    generatedTestCases: [],
+    safetyFlags: [
+      {
+        code: "generation_failed",
+        severity: "block",
+        message: "未生成可执行公式。",
+      },
+    ],
+    formulaHash: null,
+    status: "failed",
+  };
+}
+
 function draftRow(overrides: Record<string, unknown> = {}) {
   const input = validDraftInput();
   return {
@@ -2460,6 +2668,7 @@ function draftRow(overrides: Record<string, unknown> = {}) {
     contract_hash: HASH_B,
     formula_hash: HASH_C,
     parameter_hash: HASH_D,
+    initial_status: "contract_ready",
     status: "contract_ready",
     revision_number: 1,
     idempotency_key: "draft-request-1",
