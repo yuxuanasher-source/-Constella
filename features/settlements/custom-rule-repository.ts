@@ -122,7 +122,6 @@ type NormalizedCostItemCoverageRow = {
 type SettlementBatchCoverageRow = {
   id: string;
   batch_type: "payable" | "receivable";
-  status: "confirmed" | "locked";
   period_start: string;
   period_end: string;
 };
@@ -173,7 +172,6 @@ const NORMALIZED_COST_ITEM_SELECT = [
 const SETTLEMENT_BATCH_SELECT = [
   "id",
   "batch_type",
-  "status",
   "period_start",
   "period_end",
 ].join(", ");

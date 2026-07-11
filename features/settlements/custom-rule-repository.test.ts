@@ -126,6 +126,9 @@ describe("SupabaseCustomRuleReadRepository", () => {
       "in",
       ["status", ["confirmed", "locked"]],
     ]);
+    expect(selectFor(mock, "settlement_batches")).toBe(
+      "id, batch_type, period_start, period_end",
+    );
     expect(mock.calls.settlement_batch_items).toContainEqual([
       "in",
       [
