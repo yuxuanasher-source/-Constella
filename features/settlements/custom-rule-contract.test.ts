@@ -17,6 +17,7 @@ import {
   reviseBusinessRuleContract,
   runtimeValueTypeSchema,
   typedRuntimeValueSchema,
+  type BusinessRuleContractChange,
 } from "./custom-rule-contract";
 import {
   CUSTOM_RULE_COMPOSITION_MODES,
@@ -33,6 +34,29 @@ import type {
 
 function scalarType(scalarType: RuntimeScalarType): RuntimeValueType {
   return { kind: "scalar", scalarType };
+}
+
+type RuntimeSchema = {
+  parse(value: unknown): unknown;
+  safeParse(value: unknown): { success: boolean };
+};
+
+async function getRuntimeSchema(name: string): Promise<RuntimeSchema> {
+  const contractModule = (await import(
+    "./custom-rule-contract"
+  )) as unknown as Record<string, unknown>;
+  const schema = contractModule[name];
+
+  expect(schema).toBeDefined();
+  return schema as RuntimeSchema;
+}
+
+function issuePaths(
+  result: ReturnType<typeof businessRuleContractSchema.safeParse>,
+) {
+  return result.success
+    ? []
+    : result.error.issues.map((issue) => issue.path.join("."));
 }
 
 function validContractInput(
@@ -293,6 +317,146 @@ describe("target and runtime value contracts", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("rejects noncanonical, ambiguous, and dangerous persisted identifiers", () => {
+    expect(
+      customRuleParameterDefinitionSchema.safeParse({
+        name: " platformRate ",
+        description: "平台应收分成比例",
+        valueType: scalarType("rate_bps"),
+        userFacingUnit: "%",
+        defaultValue: { type: "rate_bps", rateBps: 8000 },
+      }).success,
+    ).toBe(false);
+    expect(
+      runtimeValueTypeSchema.safeParse({
+        kind: "object",
+        fields: {
+          foo: scalarType("number"),
+          " foo ": scalarType("number"),
+        },
+      }).success,
+    ).toBe(false);
+
+    for (const key of [
+      "Amount",
+      "AMOUNT",
+      "__proto__",
+      "prototype",
+      "constructor",
+    ]) {
+      const fields = Object.fromEntries([[key, scalarType("money_cents")]]);
+      expect(
+        runtimeValueTypeSchema.safeParse({ kind: "object", fields }).success,
+        key,
+      ).toBe(false);
+    }
+  });
+});
+
+describe("product-owned AST runtime schemas", () => {
+  it("validates normalized AST nodes without transforming identifiers", async () => {
+    const normalizedAstNodeSchema = await getRuntimeSchema(
+      "normalizedAstNodeSchema",
+    );
+    const ast = {
+      kind: "binary",
+      operator: "+",
+      left: { kind: "identifier", name: "grossRevenue" },
+      right: { kind: "literal", value: 1.25 },
+    };
+
+    expect(normalizedAstNodeSchema.parse(ast)).toEqual(ast);
+    expect(
+      JSON.parse(JSON.stringify(normalizedAstNodeSchema.parse(ast))),
+    ).toEqual(ast);
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        normalizedAstNodeSchema.safeParse({ kind: "literal", value }).success,
+      ).toBe(false);
+    }
+    for (const name of [" amount ", "Amount", "__proto__", "constructor"]) {
+      expect(
+        normalizedAstNodeSchema.safeParse({ kind: "identifier", name })
+          .success,
+      ).toBe(false);
+    }
+    expect(
+      normalizedAstNodeSchema.safeParse({
+        kind: "identifier",
+        name: "grossRevenue",
+        extra: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("validates compiled AST units and JSON-safe recursive nodes", async () => {
+    const compiledAstNodeSchema = await getRuntimeSchema(
+      "compiledAstNodeSchema",
+    );
+    const ast = {
+      kind: "call",
+      callee: "sum",
+      arguments: [
+        {
+          kind: "literal",
+          inferredType: { kind: "scalar", scalarType: "money_cents" },
+          valueCents: 100,
+        },
+        {
+          kind: "literal",
+          inferredType: { kind: "scalar", scalarType: "rate_bps" },
+          valueBps: 8000,
+        },
+      ],
+      inferredType: { kind: "scalar", scalarType: "money_cents" },
+    };
+
+    expect(compiledAstNodeSchema.parse(ast)).toEqual(ast);
+    expect(
+      JSON.parse(JSON.stringify(compiledAstNodeSchema.parse(ast))),
+    ).toEqual(ast);
+    for (const valueCents of [1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(
+        compiledAstNodeSchema.safeParse({
+          kind: "literal",
+          inferredType: { kind: "scalar", scalarType: "money_cents" },
+          valueCents,
+        }).success,
+      ).toBe(false);
+    }
+    for (const valueBps of [1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(
+        compiledAstNodeSchema.safeParse({
+          kind: "literal",
+          inferredType: { kind: "scalar", scalarType: "rate_bps" },
+          valueBps,
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      compiledAstNodeSchema.safeParse({
+        kind: "literal",
+        inferredType: { kind: "scalar", scalarType: "number" },
+        value: Number.NaN,
+      }).success,
+    ).toBe(false);
+    expect(
+      compiledAstNodeSchema.safeParse({
+        kind: "identifier",
+        name: " grossRevenue ",
+        inferredType: scalarType("money_cents"),
+      }).success,
+    ).toBe(false);
+    expect(
+      compiledAstNodeSchema.safeParse({
+        kind: "literal",
+        inferredType: { kind: "scalar", scalarType: "rate_bps" },
+        valueBps: 8000,
+        extra: true,
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("strict component schemas", () => {
@@ -379,6 +543,40 @@ describe("strict component schemas", () => {
         aggregateAmountCents: "09007199254740993123",
       }).success,
     ).toBe(false);
+  });
+
+  it("ties simulation result presence to calculation status", () => {
+    const base = {
+      recordId: "record-status",
+      inputValues: {
+        grossRevenue: { type: "money_cents", amountCents: 10_000 },
+      },
+      diagnostics: [],
+    };
+
+    expect(
+      customRuleSimulationRecordSchema.safeParse({
+        ...base,
+        status: "calculated",
+        result: null,
+      }).success,
+    ).toBe(false);
+    for (const status of ["routed_to_review", "blocked"] as const) {
+      expect(
+        customRuleSimulationRecordSchema.safeParse({
+          ...base,
+          status,
+          result: null,
+        }).success,
+      ).toBe(true);
+      expect(
+        customRuleSimulationRecordSchema.safeParse({
+          ...base,
+          status,
+          result: { type: "money_cents", amountCents: 8_000 },
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it("rejects unknown keys on every persisted object schema", () => {
@@ -590,6 +788,49 @@ describe("business rule contract", () => {
     );
   });
 
+  it("rejects input and parameter symbol collisions with a located issue", () => {
+    const input = validContractInput();
+    const parameters = input.parameters as Array<Record<string, unknown>>;
+    parameters[0] = { ...parameters[0], name: "grossRevenue" };
+
+    const result = businessRuleContractSchema.safeParse(input);
+
+    expect(result.success).toBe(false);
+    expect(issuePaths(result)).toContain("parameters.0.name");
+  });
+
+  it("requires every example input and validates its declared runtime type", () => {
+    const missingInput = validContractInput();
+    const missingExamples = missingInput.examples as Array<
+      Record<string, unknown>
+    >;
+    missingExamples[0] = { ...missingExamples[0], inputs: {} };
+
+    const missingResult = businessRuleContractSchema.safeParse(missingInput);
+    expect(missingResult.success).toBe(false);
+    expect(issuePaths(missingResult)).toContain(
+      "examples.0.inputs.grossRevenue",
+    );
+
+    const mismatchedInput = validContractInput();
+    const mismatchedExamples = mismatchedInput.examples as Array<
+      Record<string, unknown>
+    >;
+    mismatchedExamples[1] = {
+      ...mismatchedExamples[1],
+      inputs: {
+        grossRevenue: { type: "rate_bps", rateBps: 5000 },
+      },
+    };
+
+    const mismatchedResult =
+      businessRuleContractSchema.safeParse(mismatchedInput);
+    expect(mismatchedResult.success).toBe(false);
+    expect(issuePaths(mismatchedResult)).toContain(
+      "examples.1.inputs.grossRevenue",
+    );
+  });
+
   it("requires one normal and two boundary examples", () => {
     const examples = validContractInput().examples as Array<
       Record<string, unknown>
@@ -663,6 +904,27 @@ describe("business rule contract", () => {
 });
 
 describe("business rule revisions", () => {
+  it("keeps diff fields correlated with their before and after values", () => {
+    const targetValue = {
+      targetType: "project",
+      targetId: null,
+    } as const;
+    const validChange: BusinessRuleContractChange = {
+      field: "scope",
+      before: "receivable",
+      after: "payable",
+    };
+    // @ts-expect-error scope changes cannot carry target values
+    const invalidChange: BusinessRuleContractChange = {
+      field: "scope",
+      before: targetValue,
+      after: "payable",
+    };
+
+    expect(validChange.field).toBe("scope");
+    expect(invalidChange.field).toBe("scope");
+  });
+
   it("changes one known field while preserving every unaffected field", () => {
     const before = businessRuleContractSchema.parse(validContractInput());
     const revisedSummary = "计算项目净应收金额，仍仅适用于指定项目。";
