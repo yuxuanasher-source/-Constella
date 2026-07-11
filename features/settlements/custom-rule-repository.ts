@@ -164,6 +164,11 @@ type CoverageQueryResult<Row> = {
   count: number | null;
 };
 
+type CoverageKeysetSnapshot<Row> = {
+  rows: Row[];
+  exactCount: number;
+};
+
 const LIVE_REPORT_SELECT = [
   "id",
   "system_duration",
@@ -207,6 +212,7 @@ const SETTLEMENT_BATCH_ITEM_SELECT = [
 ].join(", ");
 const DEFAULT_MAX_ROWS_PER_SOURCE = 5_000;
 const POSTGREST_PAGE_SIZE = 1_000;
+const SETTLEMENT_BATCH_ID_CHUNK_SIZE = 100;
 const DEFAULT_TIMEZONE: ResolvedCustomRuleBusinessTimezone = {
   value: "Asia/Shanghai",
   confirmed: true,
@@ -266,86 +272,128 @@ export class SupabaseCustomRuleReadRepository
   private async listApprovedReportCoverage(
     input: ResolvedCoverageQueryInput,
   ): Promise<LiveReportCoverageRow[]> {
-    return readPaginatedRows(
+    const buildQuery = (columns: string) => {
+      let query = this.client
+        .from("live_reports")
+        .select(columns, { count: "exact" })
+        .eq("organization_id", input.organizationId)
+        .eq("project_id", input.projectId)
+        .eq("status", "approved");
+      if (input.periodStartInclusive) {
+        query = query.gte("created_at", input.periodStartInclusive);
+      }
+      if (input.periodEndExclusive) {
+        query = query.lt("created_at", input.periodEndExclusive);
+      }
+      return query;
+    };
+    const snapshot = await readKeysetRows(
       "live_reports",
       this.maxRowsPerSource,
-      (from, to) => {
-        let query = this.client
-          .from("live_reports")
-          .select(LIVE_REPORT_SELECT, { count: "exact" })
-          .eq("organization_id", input.organizationId)
-          .eq("project_id", input.projectId)
-          .eq("status", "approved");
-        if (input.periodStartInclusive) {
-          query = query.gte("created_at", input.periodStartInclusive);
-        }
-        if (input.periodEndExclusive) {
-          query = query.lt("created_at", input.periodEndExclusive);
+      () =>
+        buildQuery("id")
+          .order("id", { ascending: false })
+          .limit(1)
+          .returns<Array<{ id: string }>>(),
+      (highWaterId, lastId) => {
+        let query = buildQuery(LIVE_REPORT_SELECT).lte("id", highWaterId);
+        if (lastId) {
+          query = query.gt("id", lastId);
         }
         return query
           .order("id", { ascending: true })
-          .range(from, to)
+          .limit(POSTGREST_PAGE_SIZE)
           .returns<LiveReportCoverageRow[]>();
       },
     );
+    return snapshot.rows;
   }
 
   private async listProjectStreamerCoverage(
     input: ResolvedCoverageQueryInput,
   ): Promise<ProjectStreamerCoverageRow[]> {
-    return readPaginatedRows(
+    const buildQuery = (columns: string) => {
+      let query = this.client
+        .from("project_streamers")
+        .select(columns, { count: "exact" })
+        .eq("organization_id", input.organizationId)
+        .eq("project_id", input.projectId)
+        .not("joined_at", "is", null);
+      if (input.periodEndExclusive) {
+        query = query.lt("joined_at", input.periodEndExclusive);
+      }
+      if (input.periodStartInclusive) {
+        query = query.or(
+          `removed_at.is.null,removed_at.gte.${input.periodStartInclusive}`,
+        );
+      }
+      return query;
+    };
+    const snapshot = await readKeysetRows(
       "project_streamers",
       this.maxRowsPerSource,
-      (from, to) => {
-        let query = this.client
-          .from("project_streamers")
-          .select(PROJECT_STREAMER_SELECT, { count: "exact" })
-          .eq("organization_id", input.organizationId)
-          .eq("project_id", input.projectId)
-          .not("joined_at", "is", null);
-        if (input.periodEndExclusive) {
-          query = query.lt("joined_at", input.periodEndExclusive);
-        }
-        if (input.periodStartInclusive) {
-          query = query.or(
-            `removed_at.is.null,removed_at.gte.${input.periodStartInclusive}`,
-          );
+      () =>
+        buildQuery("id")
+          .order("id", { ascending: false })
+          .limit(1)
+          .returns<Array<{ id: string }>>(),
+      (highWaterId, lastId) => {
+        let query = buildQuery(PROJECT_STREAMER_SELECT).lte("id", highWaterId);
+        if (lastId) {
+          query = query.gt("id", lastId);
         }
         return query
           .order("id", { ascending: true })
-          .range(from, to)
+          .limit(POSTGREST_PAGE_SIZE)
           .returns<ProjectStreamerCoverageRow[]>();
       },
     );
+    return snapshot.rows;
   }
 
   private async listNormalizedCostItemCoverage(
     input: ResolvedCoverageQueryInput,
   ): Promise<NormalizedCostItemCoverageRow[]> {
-    return readPaginatedRows(
+    const buildQuery = (columns: string) => {
+      let query = this.client
+        .from("project_cost_items")
+        .select(columns, { count: "exact" })
+        .eq("organization_id", input.organizationId)
+        .eq("project_id", input.projectId)
+        .eq("source", "import")
+        .eq("status", "confirmed")
+        .in("item_type", ["gift", "supplier_fee", "traffic"]);
+      if (input.periodStartInclusive) {
+        query = query.gte("created_at", input.periodStartInclusive);
+      }
+      if (input.periodEndExclusive) {
+        query = query.lt("created_at", input.periodEndExclusive);
+      }
+      return query;
+    };
+    const snapshot = await readKeysetRows(
       "project_cost_items",
       this.maxRowsPerSource,
-      (from, to) => {
-        let query = this.client
-          .from("project_cost_items")
-          .select(NORMALIZED_COST_ITEM_SELECT, { count: "exact" })
-          .eq("organization_id", input.organizationId)
-          .eq("project_id", input.projectId)
-          .eq("source", "import")
-          .eq("status", "confirmed")
-          .in("item_type", ["gift", "supplier_fee", "traffic"]);
-        if (input.periodStartInclusive) {
-          query = query.gte("created_at", input.periodStartInclusive);
-        }
-        if (input.periodEndExclusive) {
-          query = query.lt("created_at", input.periodEndExclusive);
+      () =>
+        buildQuery("id")
+          .order("id", { ascending: false })
+          .limit(1)
+          .returns<Array<{ id: string }>>(),
+      (highWaterId, lastId) => {
+        let query = buildQuery(NORMALIZED_COST_ITEM_SELECT).lte(
+          "id",
+          highWaterId,
+        );
+        if (lastId) {
+          query = query.gt("id", lastId);
         }
         return query
           .order("id", { ascending: true })
-          .range(from, to)
+          .limit(POSTGREST_PAGE_SIZE)
           .returns<NormalizedCostItemCoverageRow[]>();
       },
     );
+    return snapshot.rows;
   }
 
   private async listSettlementCoverage(
@@ -365,29 +413,42 @@ export class SupabaseCustomRuleReadRepository
   private async listSettlementBatchCoverage(
     input: ResolvedCoverageQueryInput,
   ): Promise<SettlementBatchCoverageRow[]> {
-    return readPaginatedRows(
+    const buildQuery = (columns: string) => {
+      let query = this.client
+        .from("settlement_batches")
+        .select(columns, { count: "exact" })
+        .eq("organization_id", input.organizationId)
+        .eq("project_id", input.projectId)
+        .in("batch_type", ["payable", "receivable"])
+        .in("status", ["confirmed", "locked"]);
+      if (input.periodStart) {
+        query = query.gte("period_end", input.periodStart);
+      }
+      if (input.periodEnd) {
+        query = query.lte("period_start", input.periodEnd);
+      }
+      return query;
+    };
+    const snapshot = await readKeysetRows(
       "settlement_batches",
       this.maxRowsPerSource,
-      (from, to) => {
-        let query = this.client
-          .from("settlement_batches")
-          .select(SETTLEMENT_BATCH_SELECT, { count: "exact" })
-          .eq("organization_id", input.organizationId)
-          .eq("project_id", input.projectId)
-          .in("batch_type", ["payable", "receivable"])
-          .in("status", ["confirmed", "locked"]);
-        if (input.periodStart) {
-          query = query.gte("period_end", input.periodStart);
-        }
-        if (input.periodEnd) {
-          query = query.lte("period_start", input.periodEnd);
+      () =>
+        buildQuery("id")
+          .order("id", { ascending: false })
+          .limit(1)
+          .returns<Array<{ id: string }>>(),
+      (highWaterId, lastId) => {
+        let query = buildQuery(SETTLEMENT_BATCH_SELECT).lte("id", highWaterId);
+        if (lastId) {
+          query = query.gt("id", lastId);
         }
         return query
           .order("id", { ascending: true })
-          .range(from, to)
+          .limit(POSTGREST_PAGE_SIZE)
           .returns<SettlementBatchCoverageRow[]>();
       },
     );
+    return snapshot.rows;
   }
 
   private async listSettlementItemCoverage(
@@ -398,56 +459,136 @@ export class SupabaseCustomRuleReadRepository
     if (batchIds.length === 0) {
       return [];
     }
-    return readPaginatedRows(
+    const rowsById = new Map<string, SettlementBatchItemCoverageRow>();
+    let totalExactCount = 0;
+    for (
+      let offset = 0;
+      offset < batchIds.length;
+      offset += SETTLEMENT_BATCH_ID_CHUNK_SIZE
+    ) {
+      const batchIdChunk = batchIds.slice(
+        offset,
+        offset + SETTLEMENT_BATCH_ID_CHUNK_SIZE,
+      );
+      const snapshot = await this.listSettlementItemChunk(
+        input,
+        batchIdChunk,
+      );
+      totalExactCount += snapshot.exactCount;
+      if (totalExactCount > this.maxRowsPerSource) {
+        throw new CustomRuleCoverageLimitError(
+          "settlement_batch_items",
+          this.maxRowsPerSource,
+        );
+      }
+      for (const row of snapshot.rows) {
+        rowsById.set(readCoverageRowId("settlement_batch_items", row), row);
+      }
+    }
+    if (rowsById.size !== totalExactCount) {
+      throw new CustomRuleCoveragePageError(
+        "settlement_batch_items",
+        "global unique row count does not match chunk counts",
+      );
+    }
+    return [...rowsById.values()].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
+  }
+
+  private async listSettlementItemChunk(
+    input: ResolvedCoverageQueryInput,
+    batchIds: readonly string[],
+  ): Promise<CoverageKeysetSnapshot<SettlementBatchItemCoverageRow>> {
+    const buildQuery = (columns: string) =>
+      this.client
+        .from("settlement_batch_items")
+        .select(columns, { count: "exact" })
+        .eq("organization_id", input.organizationId)
+        .eq("project_id", input.projectId)
+        .in("settlement_batch_id", batchIds);
+    return readKeysetRows(
       "settlement_batch_items",
       this.maxRowsPerSource,
-      (from, to) =>
-        this.client
-          .from("settlement_batch_items")
-          .select(SETTLEMENT_BATCH_ITEM_SELECT, { count: "exact" })
-          .eq("organization_id", input.organizationId)
-          .eq("project_id", input.projectId)
-          .in("settlement_batch_id", batchIds)
+      () =>
+        buildQuery("id")
+          .order("id", { ascending: false })
+          .limit(1)
+          .returns<Array<{ id: string }>>(),
+      (highWaterId, lastId) => {
+        let query = buildQuery(SETTLEMENT_BATCH_ITEM_SELECT).lte(
+          "id",
+          highWaterId,
+        );
+        if (lastId) {
+          query = query.gt("id", lastId);
+        }
+        return query
           .order("id", { ascending: true })
-          .range(from, to)
-          .returns<SettlementBatchItemCoverageRow[]>(),
+          .limit(POSTGREST_PAGE_SIZE)
+          .returns<SettlementBatchItemCoverageRow[]>();
+      },
     );
   }
 }
 
-async function readPaginatedRows<Row>(
+async function readKeysetRows<Row>(
   source: CoverageSource,
   limit: number,
+  readHighWater: () => PromiseLike<CoverageQueryResult<{ id: string }>>,
   readPage: (
-    from: number,
-    to: number,
+    highWaterId: string,
+    lastId: string | null,
   ) => PromiseLike<CoverageQueryResult<Row>>,
-): Promise<Row[]> {
+): Promise<CoverageKeysetSnapshot<Row>> {
+  const highWaterResult = await readHighWater();
+  if (highWaterResult.error) {
+    throw new CustomRuleCoverageQueryError(source, highWaterResult.error);
+  }
+  const exactCount = validateExactCoverageCount(
+    source,
+    highWaterResult.count,
+  );
+  if (exactCount > limit) {
+    throw new CustomRuleCoverageLimitError(source, limit);
+  }
+  if (!Array.isArray(highWaterResult.data)) {
+    throw new CustomRuleCoveragePageError(
+      source,
+      "high-water rows must be an array",
+    );
+  }
+  if (exactCount === 0) {
+    if (highWaterResult.data.length !== 0) {
+      throw new CustomRuleCoveragePageError(
+        source,
+        "empty snapshot returned a high-water row",
+      );
+    }
+    return { rows: [], exactCount };
+  }
+  if (highWaterResult.data.length !== 1) {
+    throw new CustomRuleCoveragePageError(
+      source,
+      "nonempty snapshot must return exactly one high-water row",
+    );
+  }
+  const highWaterId = readCoverageRowId(source, highWaterResult.data[0]);
   const rows: Row[] = [];
   const rowIds = new Set<string>();
-  let exactCount: number | null = null;
+  let lastId: string | null = null;
 
-  for (let from = 0; ; from += POSTGREST_PAGE_SIZE) {
-    const result = await readPage(from, from + POSTGREST_PAGE_SIZE - 1);
+  while (rows.length < exactCount) {
+    const result = await readPage(highWaterId, lastId);
     if (result.error) {
       throw new CustomRuleCoverageQueryError(source, result.error);
     }
-    if (!Number.isSafeInteger(result.count) || (result.count ?? -1) < 0) {
-      throw new CustomRuleCoverageCountError(
-        source,
-        "exact count must be a nonnegative safe integer",
-      );
-    }
-    const pageCount = result.count as number;
-    if (exactCount === null) {
-      exactCount = pageCount;
-      if (exactCount > limit) {
-        throw new CustomRuleCoverageLimitError(source, limit);
-      }
-    } else if (pageCount !== exactCount) {
+    const remainingCount = exactCount - rows.length;
+    const pageCount = validateExactCoverageCount(source, result.count);
+    if (pageCount !== remainingCount) {
       throw new CustomRuleCoveragePageError(
         source,
-        "exact count changed between pages",
+        "bounded keyset count drifted during pagination",
       );
     }
     if (!Array.isArray(result.data)) {
@@ -459,30 +600,56 @@ async function readPaginatedRows<Row>(
 
     const expectedPageLength = Math.min(
       POSTGREST_PAGE_SIZE,
-      Math.max(exactCount - from, 0),
+      remainingCount,
     );
     if (result.data.length !== expectedPageLength) {
       throw new CustomRuleCoveragePageError(
         source,
-        `expected ${expectedPageLength} rows at offset ${from}`,
+        `expected ${expectedPageLength} rows after key ${lastId ?? "<start>"}`,
       );
     }
     for (const row of result.data) {
       const rowId = readCoverageRowId(source, row);
+      if (
+        (lastId !== null && rowId.localeCompare(lastId) <= 0) ||
+        rowId.localeCompare(highWaterId) > 0
+      ) {
+        throw new CustomRuleCoveragePageError(
+          source,
+          "page row IDs must be strictly increasing within the high-water",
+        );
+      }
       if (rowIds.has(rowId)) {
         throw new CustomRuleCoveragePageError(
           source,
-          `duplicate row id at offset ${from}`,
+          "duplicate row id across keyset pages",
         );
       }
       rowIds.add(rowId);
       rows.push(row);
-    }
-
-    if (rows.length === exactCount) {
-      return rows;
+      lastId = rowId;
     }
   }
+  if (rowIds.size !== exactCount) {
+    throw new CustomRuleCoveragePageError(
+      source,
+      "final unique row count does not match the initial exact count",
+    );
+  }
+  return { rows, exactCount };
+}
+
+function validateExactCoverageCount(
+  source: CoverageSource,
+  count: number | null,
+): number {
+  if (!Number.isSafeInteger(count) || (count ?? -1) < 0) {
+    throw new CustomRuleCoverageCountError(
+      source,
+      "exact count must be a nonnegative safe integer",
+    );
+  }
+  return count as number;
 }
 
 function readCoverageRowId(source: CoverageSource, row: unknown): string {
@@ -546,9 +713,7 @@ function aggregateProjectVariableCoverage(input: {
     .filter(
       (row) =>
         row.live_report_id !== null &&
-        approvedReportIds.has(row.live_report_id) &&
-        row.streamer_id !== null &&
-        projectStreamerIds.has(row.streamer_id),
+        approvedReportIds.has(row.live_report_id),
     )
     .flatMap((row) => {
       const batch = row.settlement_batch_id
@@ -557,7 +722,10 @@ function aggregateProjectVariableCoverage(input: {
       return batch ? [{ row, batch }] : [];
     });
   const payableItems = settlementRows.filter(
-    ({ batch }) => batch.batch_type === "payable",
+    ({ batch, row }) =>
+      batch.batch_type === "payable" &&
+      row.streamer_id !== null &&
+      projectStreamerIds.has(row.streamer_id),
   );
   const receivableItems = settlementRows.filter(
     ({ batch }) => batch.batch_type === "receivable",

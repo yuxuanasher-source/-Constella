@@ -308,12 +308,15 @@ describe("analyzeCustomRuleDataReadiness", () => {
   ])(
     "rejects unsafe coverage counts numerator=%s denominator=%s",
     (coverageNumerator, coverageDenominator) => {
-      const catalog = payableReportCatalog();
-      catalog.variables = catalog.variables.map((item) =>
-        item.id === "system_minutes"
-          ? { ...item, coverageNumerator, coverageDenominator }
-          : item,
-      );
+      const validCatalog = payableReportCatalog();
+      const catalog: CustomRuleVariableCatalog = {
+        ...validCatalog,
+        variables: validCatalog.variables.map((item) =>
+          item.id === "system_minutes"
+            ? { ...item, coverageNumerator, coverageDenominator }
+            : item,
+        ),
+      };
 
       expect(() =>
         analyzeCustomRuleDataReadiness({

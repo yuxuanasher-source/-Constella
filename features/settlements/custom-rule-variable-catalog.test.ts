@@ -324,6 +324,39 @@ describe("buildCustomRuleVariableCatalog", () => {
     });
     expect(third.version).toBe(first.version);
   });
+
+  it("deep-freezes the complete catalog DTO so versioned content cannot drift", () => {
+    const catalog = buildCustomRuleVariableCatalog({
+      scope: "payable",
+      executionGrain: "report",
+      coverage: coverageFixture(),
+    });
+    const item = variable(catalog, "system_minutes");
+    const serialized = JSON.stringify(catalog);
+    const version = catalog.version;
+
+    expect(Object.isFrozen(catalog)).toBe(true);
+    expect(Object.isFrozen(catalog.variables)).toBe(true);
+    expect(Object.isFrozen(item)).toBe(true);
+    expect(Object.isFrozen(item.latestSampledPeriod)).toBe(true);
+    expect(() => Object.assign(catalog, { scope: "receivable" })).toThrow(
+      TypeError,
+    );
+    expect(() => catalog.variables.push(item)).toThrow(TypeError);
+    expect(() =>
+      Object.assign(item, {
+        availability: "unavailable",
+        coverageNumerator: 0,
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      Object.assign(item.latestSampledPeriod ?? {}, {
+        start: "2099-01-01T00:00:00.000Z",
+      }),
+    ).toThrow(TypeError);
+    expect(catalog.version).toBe(version);
+    expect(JSON.stringify(catalog)).toBe(serialized);
+  });
 });
 
 describe("hashCustomRuleCatalogState", () => {

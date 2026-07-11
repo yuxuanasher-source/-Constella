@@ -682,7 +682,7 @@ export function buildCustomRuleVariableCatalog(input: {
     variables: hashVariables,
   });
 
-  return {
+  return deepFreezeObjectGraph({
     scope: input.scope,
     executionGrain: input.executionGrain,
     businessTimezone: input.coverage.businessTimezone,
@@ -691,7 +691,7 @@ export function buildCustomRuleVariableCatalog(input: {
     hasHistory: input.coverage.hasHistory,
     version,
     variables,
-  };
+  });
 }
 
 export function hashCustomRuleCatalogState(
@@ -809,7 +809,11 @@ export function normalizeCustomRuleBusinessTimezoneSource(
 function deepFreezeVariableDefinitions(
   definitions: VariableDefinition[],
 ): readonly VariableDefinition[] {
-  const pending: object[] = [definitions];
+  return deepFreezeObjectGraph(definitions);
+}
+
+function deepFreezeObjectGraph<Value extends object>(value: Value): Value {
+  const pending: object[] = [value];
   const visited = new WeakSet<object>();
   while (pending.length > 0) {
     const current = pending.pop();
@@ -824,7 +828,7 @@ function deepFreezeVariableDefinitions(
     }
     Object.freeze(current);
   }
-  return definitions;
+  return value;
 }
 
 function cloneAndFreezeRuntimeType(

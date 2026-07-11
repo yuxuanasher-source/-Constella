@@ -69,7 +69,7 @@ describe("SupabaseCustomRuleReadRepository", () => {
     expect(serialized).not.toContain("source_payload");
     expect(serialized).not.toContain("amount_cents");
     expect(serialized).not.toContain("computed_amount");
-    expect(mock.from).toHaveBeenCalledTimes(5);
+    expect(mock.from).toHaveBeenCalledTimes(10);
   });
 
   it("scopes every query by organization/project and applies supplied period boundaries", async () => {
@@ -98,13 +98,27 @@ describe("SupabaseCustomRuleReadRepository", () => {
       ]);
       expect(mock.calls[table]).toContainEqual([
         "order",
+        ["id", { ascending: false }],
+      ]);
+      expect(mock.calls[table]).toContainEqual([
+        "order",
         ["id", { ascending: true }],
       ]);
-      expect(mock.calls[table]).toContainEqual(["range", [0, 999]]);
-      expect(mock.calls[table]).not.toContainEqual([
-        "limit",
-        expect.any(Array),
-      ]);
+      expect(mock.calls[table]).toContainEqual(["limit", [1]]);
+      expect(mock.calls[table]).toContainEqual(["limit", [1_000]]);
+      expect(mock.calls[table].filter(([method]) => method === "range")).toEqual(
+        [],
+      );
+      for (const queryCalls of mock.queries[table]) {
+        expect(queryCalls).toContainEqual([
+          "eq",
+          ["organization_id", "org-1"],
+        ]);
+        expect(queryCalls).toContainEqual([
+          "eq",
+          ["project_id", "project-1"],
+        ]);
+      }
     }
 
     for (const table of [
@@ -150,10 +164,11 @@ describe("SupabaseCustomRuleReadRepository", () => {
       "gte",
       expect.any(Array),
     ]);
-    expect(mock.calls.settlement_batch_items).not.toContainEqual([
-      "lte",
-      expect.any(Array),
-    ]);
+    expect(
+      mock.calls.settlement_batch_items.filter(
+        ([method, args]) => method === "lte" && args[0] !== "id",
+      ),
+    ).toEqual([]);
     expect(selectFor(mock, "settlement_batch_items")).not.toContain(
       "created_at",
     );
@@ -317,7 +332,7 @@ describe("SupabaseCustomRuleReadRepository", () => {
     });
   });
 
-  it("intersects settlement coverage with real project-streamer IDs", async () => {
+  it("uses approved reports for receivables and additionally intersects payable streamers", async () => {
     const results = defaultResults();
     results.settlement_batch_items = {
       data: [
@@ -354,11 +369,23 @@ describe("SupabaseCustomRuleReadRepository", () => {
         {
           id: "intersection-6",
           settlement_batch_id: "batch-receivable-1",
-          streamer_id: "streamer-b",
+          streamer_id: null,
+          live_report_id: "report-1",
+        },
+        {
+          id: "intersection-7",
+          settlement_batch_id: "batch-receivable-1",
+          streamer_id: "streamer-foreign",
           live_report_id: "report-2",
         },
+        {
+          id: "intersection-8",
+          settlement_batch_id: "batch-receivable-1",
+          streamer_id: null,
+          live_report_id: "report-foreign",
+        },
       ],
-      count: 6,
+      count: 8,
       error: null,
     };
 
@@ -374,7 +401,7 @@ describe("SupabaseCustomRuleReadRepository", () => {
       denominator: 2,
     });
     expect(coverage.variables.period_receivable_amount).toMatchObject({
-      numerator: 1,
+      numerator: 2,
       denominator: 3,
     });
   });
@@ -615,7 +642,7 @@ describe("SupabaseCustomRuleReadRepository", () => {
     expect(mock.from).not.toHaveBeenCalled();
   });
 
-  it("reads 1001 rows as stable 1000 + 1 PostgREST pages", async () => {
+  it("reads 1001 rows with a fixed high-water and 1000 + 1 keyset pages", async () => {
     const results = defaultResults();
     results.live_reports = {
       data: approvedReportRows(1_001),
@@ -635,14 +662,25 @@ describe("SupabaseCustomRuleReadRepository", () => {
       numerator: 1_001,
       denominator: 1_001,
     });
-    expect(mock.calls.live_reports.filter(([method]) => method === "range")).toEqual([
-      ["range", [0, 999]],
-      ["range", [1_000, 1_999]],
+    expect(mock.calls.live_reports.filter(([method]) => method === "range")).toEqual([]);
+    expect(mock.calls.live_reports.filter(([method]) => method === "limit")).toEqual([
+      ["limit", [1]],
+      ["limit", [1_000]],
+      ["limit", [1_000]],
     ]);
-    expect(mock.calls.live_reports.filter(([method]) => method === "order")).toHaveLength(2);
+    expect(mock.calls.live_reports).toContainEqual([
+      "gt",
+      ["id", "report-001000"],
+    ]);
+    expect(
+      mock.calls.live_reports.filter(
+        ([method, args]) =>
+          method === "lte" && args[0] === "id" && args[1] === "report-001001",
+      ),
+    ).toHaveLength(2);
     expect(
       mock.from.mock.calls.filter(([table]) => table === "live_reports"),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   it("uses one page at the exact 1000-row boundary", async () => {
@@ -661,16 +699,19 @@ describe("SupabaseCustomRuleReadRepository", () => {
       projectId: "project-1",
     });
 
-    expect(mock.calls.live_reports.filter(([method]) => method === "range")).toEqual([
-      ["range", [0, 999]],
+    expect(mock.calls.live_reports.filter(([method]) => method === "range")).toEqual([]);
+    expect(mock.calls.live_reports.filter(([method]) => method === "limit")).toEqual([
+      ["limit", [1]],
+      ["limit", [1_000]],
     ]);
+    expect(mock.calls.live_reports.filter(([method]) => method === "gt")).toEqual([]);
   });
 
   it.each([
     [
       "duplicate page",
       {
-        1_000: { data: [approvedReportRows(1)[0]] },
+        1: { data: [approvedReportRows(1)[0]] },
       },
     ],
     [
@@ -682,7 +723,13 @@ describe("SupabaseCustomRuleReadRepository", () => {
     [
       "count drift",
       {
-        1_000: { count: 1_002 },
+        1: { count: 2 },
+      },
+    ],
+    [
+      "non-monotonic first page",
+      {
+        0: { data: approvedReportRows(1_000).reverse() },
       },
     ],
   ] as const)("fails closed on %s pagination anomalies", async (_label, pages) => {
@@ -714,7 +761,7 @@ describe("SupabaseCustomRuleReadRepository", () => {
       data: approvedReportRows(1_001),
       count: 1_001,
       error: null,
-      pages: { 1_000: { error: pageError } },
+      pages: { 1: { error: pageError } },
     };
 
     await expect(
@@ -728,6 +775,157 @@ describe("SupabaseCustomRuleReadRepository", () => {
       code: "CUSTOM_RULE_COVERAGE_QUERY_FAILED",
       source: "live_reports",
       cause: pageError,
+    });
+  });
+
+  it("excludes IDs inserted above the fixed high-water", async () => {
+    const results = defaultResults();
+    results.live_reports = {
+      data: approvedReportRows(1_001),
+      count: 1_001,
+      error: null,
+      afterHighWater(result) {
+        result.data = [
+          ...(result.data ?? []),
+          approvedReportRow("report-999999"),
+        ];
+      },
+    };
+    const mock = createClient(results);
+
+    const coverage = await new SupabaseCustomRuleReadRepository(
+      mock.client,
+    ).getProjectVariableCoverage({
+      organizationId: "org-1",
+      projectId: "project-1",
+    });
+
+    expect(coverage.variables.system_minutes).toMatchObject({
+      numerator: 1_001,
+      denominator: 1_001,
+    });
+    expect(mock.calls.live_reports).toContainEqual([
+      "lte",
+      ["id", "report-001001"],
+    ]);
+  });
+
+  it("fails closed when deletion plus a new high ID drifts the snapshot", async () => {
+    const results = defaultResults();
+    results.live_reports = {
+      data: approvedReportRows(1_001),
+      count: 1_001,
+      error: null,
+      afterHighWater(result) {
+        result.data = [
+          ...(result.data ?? []).filter(
+            (row) => rowOrderValue(row, "id") !== "report-000500",
+          ),
+          approvedReportRow("report-999999"),
+        ];
+      },
+    };
+
+    await expect(
+      new SupabaseCustomRuleReadRepository(
+        createClient(results).client,
+      ).getProjectVariableCoverage({
+        organizationId: "org-1",
+        projectId: "project-1",
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_COVERAGE_PAGE_INVALID",
+      source: "live_reports",
+    });
+  });
+
+  it("chunks settlement batch IDs for independently bounded item snapshots", async () => {
+    const results = defaultResults();
+    const batches = settlementBatchRows(205);
+    results.settlement_batches = {
+      data: batches,
+      count: batches.length,
+      error: null,
+    };
+    results.settlement_batch_items = {
+      data: batches.map((batch, index) => ({
+        id: `settlement-item-${String(index + 1).padStart(6, "0")}`,
+        settlement_batch_id: rowOrderValue(batch, "id"),
+        streamer_id: "streamer-a",
+        live_report_id: `report-${(index % 3) + 1}`,
+      })),
+      count: batches.length,
+      error: null,
+    };
+    const mock = createClient(results);
+
+    await new SupabaseCustomRuleReadRepository(
+      mock.client,
+    ).getProjectVariableCoverage({
+      organizationId: "org-1",
+      projectId: "project-1",
+    });
+
+    const itemChunks = mock.queries.settlement_batch_items.map((queryCalls) => {
+      const chunkCall = queryCalls.find(
+        ([method, args]) =>
+          method === "in" && args[0] === "settlement_batch_id",
+      );
+      expect(chunkCall).toBeDefined();
+      const ids = chunkCall?.[1][1] as readonly unknown[];
+      expect(ids.length).toBeLessThanOrEqual(100);
+      expect(queryCalls).toContainEqual([
+        "eq",
+        ["organization_id", "org-1"],
+      ]);
+      expect(queryCalls).toContainEqual([
+        "eq",
+        ["project_id", "project-1"],
+      ]);
+      return ids;
+    });
+    expect(itemChunks).toHaveLength(6);
+    expect(new Set(itemChunks.map((ids) => JSON.stringify(ids))).size).toBe(3);
+  });
+
+  it("enforces the global settlement-item limit across chunks", async () => {
+    const results = defaultResults();
+    const batches = settlementBatchRows(101);
+    const items = [
+      ...Array.from({ length: 4_950 }, (_, index) => ({
+        id: `settlement-item-a-${String(index + 1).padStart(6, "0")}`,
+        settlement_batch_id: "batch-000001",
+        streamer_id: "streamer-a",
+        live_report_id: "report-1",
+      })),
+      ...Array.from({ length: 51 }, (_, index) => ({
+        id: `settlement-item-b-${String(index + 1).padStart(6, "0")}`,
+        settlement_batch_id: "batch-000101",
+        streamer_id: "streamer-a",
+        live_report_id: "report-1",
+      })),
+    ];
+    results.settlement_batches = {
+      data: batches,
+      count: batches.length,
+      error: null,
+    };
+    results.settlement_batch_items = {
+      data: items,
+      count: items.length,
+      error: null,
+    };
+
+    await expect(
+      new SupabaseCustomRuleReadRepository(
+        createClient(results).client,
+      ).getProjectVariableCoverage({
+        organizationId: "org-1",
+        projectId: "project-1",
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_COVERAGE_LIMIT_EXCEEDED",
+      source: "settlement_batch_items",
     });
   });
 
@@ -913,6 +1111,7 @@ type QueryCall = [
   | "select"
   | "eq"
   | "in"
+  | "gt"
   | "gte"
   | "lt"
   | "lte"
@@ -929,6 +1128,8 @@ type MockResult = {
   count: number | null;
   error: Error | null;
   pages?: Record<number, MockPageOverride>;
+  highWater?: MockPageOverride;
+  afterHighWater?: (result: MockResult) => void;
 };
 type MockPageOverride = {
   data?: unknown[] | null;
@@ -940,6 +1141,7 @@ type MockQuery = {
   select(columns: string, options: { count: "exact" }): MockQuery;
   eq(column: string, value: unknown): MockQuery;
   in(column: string, values: readonly unknown[]): MockQuery;
+  gt(column: string, value: string): MockQuery;
   gte(column: string, value: string): MockQuery;
   lt(column: string, value: string): MockQuery;
   lte(column: string, value: string): MockQuery;
@@ -955,11 +1157,27 @@ function createClient(results: MockResults = defaultResults()) {
   const calls = Object.fromEntries(
     TABLES.map((table) => [table, [] as QueryCall[]]),
   ) as Record<TableName, QueryCall[]>;
-  const from = vi.fn((table: TableName) => createQuery(table, calls, results));
+  const queries = Object.fromEntries(
+    TABLES.map((table) => [table, [] as QueryCall[][]]),
+  ) as Record<TableName, QueryCall[][]>;
+  const state = {
+    pageReads: Object.fromEntries(
+      TABLES.map((table) => [table, 0]),
+    ) as Record<TableName, number>,
+    highWaterReads: Object.fromEntries(
+      TABLES.map((table) => [table, 0]),
+    ) as Record<TableName, number>,
+  };
+  const from = vi.fn((table: TableName) => {
+    const queryCalls: QueryCall[] = [];
+    queries[table].push(queryCalls);
+    return createQuery(table, calls, queryCalls, results, state);
+  });
 
   return {
     client: { from } as unknown as SupabaseClient,
     calls,
+    queries,
     from,
   };
 }
@@ -967,24 +1185,55 @@ function createClient(results: MockResults = defaultResults()) {
 function createQuery(
   table: TableName,
   calls: Record<TableName, QueryCall[]>,
+  queryCalls: QueryCall[],
   results: MockResults,
+  state: {
+    pageReads: Record<TableName, number>;
+    highWaterReads: Record<TableName, number>;
+  },
 ): MockQuery {
   let selectedRange: { from: number; to: number } | null = null;
   let selectedOrder: { column: string; ascending: boolean } | null = null;
+  let selectedColumns = "";
+  let selectedLimit: number | null = null;
+  let idGreaterThan: string | null = null;
+  let idLessThanOrEqual: string | null = null;
+  let settlementBatchIds: readonly unknown[] | null = null;
   const record = (
     method: QueryCall[0],
     args: unknown[],
   ): MockQuery => {
-    calls[table].push([method, args]);
+    const call: QueryCall = [method, args];
+    calls[table].push(call);
+    queryCalls.push(call);
     return query;
   };
   const query: MockQuery = {
-    select: (columns, options) => record("select", [columns, options]),
+    select: (columns, options) => {
+      selectedColumns = columns;
+      return record("select", [columns, options]);
+    },
     eq: (column, value) => record("eq", [column, value]),
-    in: (column, values) => record("in", [column, values]),
+    in: (column, values) => {
+      if (column === "settlement_batch_id") {
+        settlementBatchIds = values;
+      }
+      return record("in", [column, values]);
+    },
+    gt: (column, value) => {
+      if (column === "id") {
+        idGreaterThan = value;
+      }
+      return record("gt", [column, value]);
+    },
     gte: (column, value) => record("gte", [column, value]),
     lt: (column, value) => record("lt", [column, value]),
-    lte: (column, value) => record("lte", [column, value]),
+    lte: (column, value) => {
+      if (column === "id") {
+        idLessThanOrEqual = value;
+      }
+      return record("lte", [column, value]);
+    },
     or: (filter) => record("or", [filter]),
     not: (column, operator, value) =>
       record("not", [column, operator, value]),
@@ -996,33 +1245,99 @@ function createQuery(
       selectedRange = { from, to };
       return record("range", [from, to]);
     },
-    limit: (count) => record("limit", [count]),
+    limit: (count) => {
+      selectedLimit = count;
+      return record("limit", [count]);
+    },
     returns: async () => {
-      calls[table].push(["returns", []]);
+      const returnsCall: QueryCall = ["returns", []];
+      calls[table].push(returnsCall);
+      queryCalls.push(returnsCall);
       const base = results[table];
-      const override = selectedRange
-        ? base.pages?.[selectedRange.from]
-        : undefined;
+      const isHighWater =
+        selectedColumns === "id" &&
+        selectedOrder?.ascending === false &&
+        selectedLimit === 1;
+      const pageIndex = isHighWater ? null : state.pageReads[table]++;
+      const override = isHighWater
+        ? base.highWater
+        : pageIndex === null
+          ? undefined
+          : base.pages?.[pageIndex];
+      const filteredData = filterRows(base.data, {
+        idGreaterThan,
+        idLessThanOrEqual,
+        settlementBatchIds,
+      });
+      const hasCardinalityFilter =
+        idGreaterThan !== null ||
+        idLessThanOrEqual !== null ||
+        settlementBatchIds !== null;
+      const filteredCount =
+        hasCardinalityFilter && filteredData
+          ? filteredData.length
+          : base.count;
       const orderedData = selectedOrder
-        ? orderRows(base.data, selectedOrder)
-        : base.data;
-      const data = hasOwn(override, "data")
-        ? override?.data ?? null
-        : selectedRange && orderedData
-          ? orderedData.slice(selectedRange.from, selectedRange.to + 1)
+        ? orderRows(filteredData, selectedOrder)
+        : filteredData;
+      const boundedData = selectedRange && orderedData
+        ? orderedData.slice(selectedRange.from, selectedRange.to + 1)
+        : selectedLimit !== null && orderedData
+          ? orderedData.slice(0, selectedLimit)
           : orderedData;
-      return {
+      const unsafeData = hasOwn(override, "data")
+        ? override?.data ?? null
+        : boundedData;
+      const data = selectedColumns === "id" && unsafeData
+        ? unsafeData.map((row) => ({ id: rowOrderValue(row, "id") }))
+        : unsafeData;
+      const result = {
         data,
         count: hasOwn(override, "count")
           ? override?.count ?? null
-          : base.count,
+          : filteredCount,
         error: hasOwn(override, "error")
           ? override?.error ?? null
           : base.error,
       };
+      if (isHighWater) {
+        state.highWaterReads[table] += 1;
+        base.afterHighWater?.(base);
+      }
+      return result;
     },
   };
   return query;
+}
+
+function filterRows(
+  rows: unknown[] | null,
+  filters: {
+    idGreaterThan: string | null;
+    idLessThanOrEqual: string | null;
+    settlementBatchIds: readonly unknown[] | null;
+  },
+): unknown[] | null {
+  if (!rows) {
+    return rows;
+  }
+  return rows.filter((row) => {
+    const id = rowOrderValue(row, "id");
+    if (filters.idGreaterThan && id.localeCompare(filters.idGreaterThan) <= 0) {
+      return false;
+    }
+    if (
+      filters.idLessThanOrEqual &&
+      id.localeCompare(filters.idLessThanOrEqual) > 0
+    ) {
+      return false;
+    }
+    if (filters.settlementBatchIds) {
+      const batchId = rowOrderValue(row, "settlement_batch_id");
+      return filters.settlementBatchIds.includes(batchId);
+    }
+    return true;
+  });
 }
 
 function hasOwn(
@@ -1056,7 +1371,9 @@ function rowOrderValue(row: unknown, column: string): string {
 }
 
 function selectFor(mock: ReturnType<typeof createClient>, table: TableName) {
-  const call = mock.calls[table].find(([method]) => method === "select");
+  const selects = mock.calls[table].filter(([method]) => method === "select");
+  const call =
+    selects.find(([, args]) => String(args[0]) !== "id") ?? selects[0];
   return String(call?.[1][0] ?? "");
 }
 
@@ -1236,8 +1553,16 @@ function defaultResults(): MockResults {
 }
 
 function approvedReportRows(count: number): unknown[] {
-  return Array.from({ length: count }, (_, index) => ({
-    id: `report-${String(index + 1).padStart(6, "0")}`,
+  return Array.from({ length: count }, (_, index) =>
+    approvedReportRow(
+      `report-${String(index + 1).padStart(6, "0")}`,
+    ),
+  );
+}
+
+function approvedReportRow(id: string): unknown {
+  return {
+    id,
     system_duration: 60,
     screenshot_duration: 60,
     settlement_duration: 60,
@@ -1247,5 +1572,15 @@ function approvedReportRows(count: number): unknown[] {
     reviewed_at: "2026-06-02T10:00:00.000Z",
     created_at: "2026-06-01T10:00:00.000Z",
     live_tasks: { system_started_at: "2026-06-01T09:00:00.000Z" },
+  };
+}
+
+function settlementBatchRows(count: number): unknown[] {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `batch-${String(index + 1).padStart(6, "0")}`,
+    batch_type: "payable",
+    status: "locked",
+    period_start: "2026-06-01",
+    period_end: "2026-06-30",
   }));
 }
