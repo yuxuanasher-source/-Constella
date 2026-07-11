@@ -6,6 +6,7 @@ import type {
   AiProviderName,
   AiProviderResult,
 } from "./contracts";
+import { hasMeaningfulAiContent } from "./response-quality";
 
 export async function runAiGateway({
   providers,
@@ -30,10 +31,29 @@ export async function runAiGateway({
 
   for (const [index, provider] of candidates.entries()) {
     try {
-      const providerResult = await runProvider(provider, request);
+      let providerResult = await runProvider(provider, request);
       if (providerResult.status === "failed") {
         failures.push(providerResult.errorSummary ?? `${provider.name} failed`);
         continue;
+      }
+
+      if (
+        request.kind === "text" &&
+        !hasMeaningfulAiContent(providerResult.text)
+      ) {
+        const retried = await provider.runText(request);
+        if (
+          retried.status !== "failed" &&
+          hasMeaningfulAiContent(retried.text)
+        ) {
+          providerResult = retried;
+        } else {
+          failures.push(
+            retried.errorSummary ??
+              `${provider.name} returned content without meaningful text`,
+          );
+          continue;
+        }
       }
 
       if (request.kind === "structured") {

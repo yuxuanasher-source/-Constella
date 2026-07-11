@@ -12,6 +12,7 @@ import type {
   AiReasoningConfig,
   AiTextInput,
 } from "@/features/ai/contracts";
+import type { ConversationGatewayContext } from "@/features/ai/conversation-contracts";
 import {
   DASHBOARD_FACTS_ANSWER_RULES,
   buildDashboardChatGrounding,
@@ -68,14 +69,12 @@ import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 import { isMcnStaff } from "@/lib/rbac/roles";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { sanitizeAiAttachments } from "@/features/ai/attachment-validation";
 
 const PROMPT_KEY = "dashboard.ai.chat";
 const PROMPT_VERSION = 1;
 const MAX_MESSAGES = 12;
 const MAX_MESSAGE_CHARS = 4000;
-const MAX_ATTACHMENTS = 5;
-const MAX_ATTACHMENT_TEXT_CHARS = 200_000;
-const MAX_ATTACHMENT_DATA_CHARS = 8_000_000;
 
 const SYSTEM_PROMPT = [
   "你是经营舱的星耀 AI 助手，服务 MCN 经营团队。",
@@ -107,6 +106,21 @@ const ATTACHMENT_ANSWER_RULES = [
 export const maxDuration = 60;
 
 export async function POST(request: Request) {
+  return executeDashboardAiChat(request);
+}
+
+export type DashboardAiChatInternalOptions = {
+  trustedGatewayContext?: ConversationGatewayContext;
+  onContextReady?: (
+    context: ConversationGatewayContext,
+  ) => Promise<void> | void;
+  onGenerationStarted?: (providerName: AiProviderName) => Promise<void> | void;
+};
+
+export async function executeDashboardAiChat(
+  request: Request,
+  options: DashboardAiChatInternalOptions = {},
+) {
   try {
     const supabase = await createSupabaseServerClient();
     if (!supabase) {
@@ -133,22 +147,31 @@ export async function POST(request: Request) {
     };
     const wantsStream = shouldStreamResponse(request, body.stream);
     const chatMessages = sanitizeMessages(body.messages);
-    const chatMode = sanitizeChatMode(body.mode);
-    const attachmentResult = sanitizeAttachments(body.attachments);
-    if (!attachmentResult.ok) {
+    const requestedChatMode = sanitizeChatMode(body.mode);
+    const trustedGatewayContext = options.trustedGatewayContext;
+    const attachmentResult = sanitizeAiAttachments(body.attachments);
+    if (!trustedGatewayContext && !attachmentResult.ok) {
       return NextResponse.json(
         { error: attachmentResult.error },
         { status: 400 },
       );
     }
-    const attachments = attachmentResult.attachments;
+    const chatMode = trustedGatewayContext?.mode ?? requestedChatMode;
+    const attachments =
+      trustedGatewayContext?.attachments ??
+      (attachmentResult.ok ? attachmentResult.attachments : []);
     const lastMessage = chatMessages[chatMessages.length - 1];
-    if (!lastMessage || lastMessage.role !== "user") {
+    if (
+      !trustedGatewayContext &&
+      (!lastMessage || lastMessage.role !== "user")
+    ) {
       return NextResponse.json(
         { error: "A non-empty user message is required" },
         { status: 400 },
       );
     }
+    const lastUserMessage =
+      trustedGatewayContext?.lastUserMessage ?? lastMessage?.content ?? "";
 
     const providers = createConfiguredAiProviders();
     const realProvider = providers.find(
@@ -164,112 +187,162 @@ export async function POST(request: Request) {
       );
     }
 
-    // 三段 grounding 的数据源相互独立（角色看板、主播画像、知识库检索、复盘文档），
-    // 全部并行加载；只有后面的同步组装步骤存在依赖：
-    // buildDashboardChatGrounding 需要 dashboard + insights，
-    // composeDashboardKnowledgeContext 的 retrospectiveDraft 需要 grounding.facts。
-    const [
-      dashboard,
-      streamerProfileInsights,
-      knowledgePassages,
-      reviewDocuments,
-      xingyaoStore,
-      xingyaoWeights,
-    ] = await Promise.all([
-      loadRoleHomeDashboard({ supabase, auth }).catch(() => null),
-      loadStreamerProfileInsightsForGrounding({ supabase, auth }).catch(
-        () => [],
-      ),
-      searchKnowledgeDocuments(supabase as unknown as KnowledgeClient, {
-        organizationId: auth.organizationId,
-        query: lastMessage.content,
-        limit: 5,
-        candidateLimit: 200,
-      }).catch(() => []),
-      listLiveReviewDocuments(
-        supabase,
-        {
-          userId: auth.userId,
-          name: auth.name,
-          role: auth.role,
+    const routing = resolveAiProviderRouting();
+    let messages: AiMessage[];
+    let primaryProvider: AiProviderName;
+    let responseMetadata: ChatResponseMetadata;
+    let invocationMetadata: Record<string, unknown>;
+
+    if (trustedGatewayContext) {
+      messages = trustedGatewayContext.messages;
+      primaryProvider = trustedGatewayContext.primaryProvider;
+      responseMetadata = {
+        grounding: trustedGatewayContext.responseMetadata.grounding,
+        knowledge: trustedGatewayContext.responseMetadata.knowledge,
+        retrospectiveDraft:
+          trustedGatewayContext.responseMetadata
+            .retrospectiveDraft as DashboardKnowledgeContext["retrospectiveDraft"],
+      };
+      invocationMetadata = trustedGatewayContext.invocationMetadata;
+    } else {
+      // Initial turns freeze all business and knowledge inputs before generation.
+      // Technical retries bypass this block and reuse that exact snapshot.
+      const [
+        dashboard,
+        streamerProfileInsights,
+        knowledgePassages,
+        reviewDocuments,
+        xingyaoStore,
+        xingyaoWeights,
+      ] = await Promise.all([
+        loadRoleHomeDashboard({ supabase, auth }).catch(() => null),
+        loadStreamerProfileInsightsForGrounding({ supabase, auth }).catch(
+          () => [],
+        ),
+        searchKnowledgeDocuments(supabase as unknown as KnowledgeClient, {
           organizationId: auth.organizationId,
+          query: lastUserMessage,
+          limit: 5,
+          candidateLimit: 200,
+        }).catch(() => []),
+        listLiveReviewDocuments(
+          supabase,
+          {
+            userId: auth.userId,
+            name: auth.name,
+            role: auth.role,
+            organizationId: auth.organizationId,
+          },
+          { limit: 100 },
+        ).catch(() => []),
+        loadXingyaoFeatureStore({
+          client: supabase as unknown as XingyaoSnapshotClient,
+          organizationId: auth.organizationId,
+        }).catch(() => null),
+        loadXingyaoRiskWeights(
+          supabase as unknown as XingyaoWeightRepositoryClient,
+          auth.organizationId,
+        ).catch(() => DEFAULT_XINGYAO_RISK_WEIGHTS),
+      ]);
+      if (!dashboard) {
+        return NextResponse.json(
+          { error: "无法读取真实业务数据，已停止 AI 分析" },
+          { status: 503 },
+        );
+      }
+
+      const grounding = buildDashboardChatGrounding({
+        dashboard,
+        auth,
+        streamerProfileInsights,
+      });
+      const xingyaoGrounding: XingyaoChatGrounding | null = xingyaoStore
+        ? buildXingyaoChatGrounding({
+            store: xingyaoStore,
+            weights: xingyaoWeights,
+          })
+        : null;
+      const knowledgeContext = composeDashboardKnowledgeContext({
+        passages: knowledgePassages,
+        reviewDocuments,
+        query: lastUserMessage,
+        facts: grounding.facts,
+      });
+      primaryProvider = choosePrimaryProvider({
+        providers,
+        requestedMode: chatMode,
+        configuredPrimary: routing.primaryProvider,
+        fallbackProvider: realProvider.name,
+      });
+      messages = [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: buildModePromptText(chatMode) },
+        {
+          role: "system",
+          content: [
+            DASHBOARD_FACTS_ANSWER_RULES,
+            KNOWLEDGE_ANSWER_RULES,
+            ...(attachments.length ? [ATTACHMENT_ANSWER_RULES] : []),
+          ].join("\n\n"),
         },
-        { limit: 100 },
-      ).catch(() => []),
-      loadXingyaoFeatureStore({
-        client: supabase as unknown as XingyaoSnapshotClient,
-        organizationId: auth.organizationId,
-      }).catch(() => null),
-      loadXingyaoRiskWeights(
-        supabase as unknown as XingyaoWeightRepositoryClient,
-        auth.organizationId,
-      ).catch(() => DEFAULT_XINGYAO_RISK_WEIGHTS),
-    ]);
-    if (!dashboard) {
-      return NextResponse.json(
-        { error: "无法读取真实业务数据，已停止 AI 分析" },
-        { status: 503 },
-      );
+        { role: "user", content: grounding.promptText },
+        ...(xingyaoGrounding && xingyaoGrounding.facts.length
+          ? [{ role: "user" as const, content: xingyaoGrounding.promptText }]
+          : []),
+        { role: "user", content: knowledgeContext.promptText },
+        ...(attachments.length
+          ? [
+              {
+                role: "user" as const,
+                content: buildAttachmentPromptText(attachments),
+              },
+            ]
+          : []),
+        ...chatMessages,
+      ];
+      responseMetadata = {
+        grounding: {
+          generatedAt: grounding.generatedAt,
+          facts: grounding.facts,
+          projectHealth: grounding.projectHealth,
+          suggestedActions: grounding.suggestedActions,
+          missingData: grounding.missingData,
+        },
+        knowledge: {
+          passages: knowledgeContext.passages,
+          citations: knowledgeContext.citations,
+          reviewAssist: knowledgeContext.reviewAssist,
+        },
+        retrospectiveDraft: knowledgeContext.retrospectiveDraft,
+      };
+      invocationMetadata = {
+        ...(routing.shadowProvider
+          ? { configuredShadowProvider: routing.shadowProvider }
+          : {}),
+        groundingFactCount: grounding.facts.length,
+        groundingDroppedFactCount: grounding.droppedFactCount,
+        groundingMissingDataCount: grounding.missingData.length,
+        groundingProjectHealthCount: grounding.projectHealth.topProjects.length,
+        groundingSuggestedActionCount: grounding.suggestedActions.length,
+        streamerProfileInsightCount: streamerProfileInsights.length,
+        knowledgePassageCount: knowledgeContext.passages.length,
+        reviewKnowledgeSampleSize: knowledgeContext.reviewAssist.sampleSize,
+        chatMode,
+        attachmentCount: attachments.length,
+        attachmentNames: attachments.map((attachment) => attachment.name),
+      };
+      await options.onContextReady?.({
+        messages,
+        attachments,
+        mode: chatMode,
+        primaryProvider,
+        lastUserMessage,
+        responseMetadata,
+        invocationMetadata,
+      });
     }
 
-    const grounding = buildDashboardChatGrounding({
-      dashboard,
-      auth,
-      streamerProfileInsights,
-    });
-    // 星耀组织级诊断事实包（ROI 归因 + 风险预警）；快照加载失败时静默降级，
-    // 聊天仍以看板 grounding 为底。
-    const xingyaoGrounding: XingyaoChatGrounding | null = xingyaoStore
-      ? buildXingyaoChatGrounding({
-          store: xingyaoStore,
-          weights: xingyaoWeights,
-        })
-      : null;
-    const knowledgeContext = composeDashboardKnowledgeContext({
-      passages: knowledgePassages,
-      reviewDocuments,
-      query: lastMessage.content,
-      facts: grounding.facts,
-    });
-    const routing = resolveAiProviderRouting();
-    const primaryProvider = choosePrimaryProvider({
-      providers,
-      requestedMode: chatMode,
-      configuredPrimary: routing.primaryProvider,
-      fallbackProvider: realProvider.name,
-    });
     const reasoning = buildReasoningConfig(chatMode);
-    // 注入防御(方案 WP3):system 只保留人设、模式与回答规则;事实包、
-    // 知识库、附件全部作为 user 角色的数据块置于对话历史之前——UGC 不再
-    // 拥有 system 权级。
-    const messages: AiMessage[] = [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "system", content: buildModePromptText(chatMode) },
-      {
-        role: "system",
-        content: [
-          DASHBOARD_FACTS_ANSWER_RULES,
-          KNOWLEDGE_ANSWER_RULES,
-          ...(attachments.length ? [ATTACHMENT_ANSWER_RULES] : []),
-        ].join("\n\n"),
-      },
-      { role: "user", content: grounding.promptText },
-      // 星耀组织级事实包与其他事实包一样走 user 角色数据块（注入防御 WP3），
-      // 不赋予 system 权级。
-      ...(xingyaoGrounding && xingyaoGrounding.facts.length
-        ? [{ role: "user" as const, content: xingyaoGrounding.promptText }]
-        : []),
-      { role: "user", content: knowledgeContext.promptText },
-      ...(attachments.length
-        ? [
-            {
-              role: "user" as const,
-              content: buildAttachmentPromptText(attachments),
-            },
-          ]
-        : []),
-      ...chatMessages,
-    ];
 
     const gatewayRequest: AiTextInput = {
       promptKey: PROMPT_KEY,
@@ -290,13 +363,13 @@ export async function POST(request: Request) {
       auth,
       chatMode,
       attachments,
-      lastUserMessage: lastMessage.content,
+      lastUserMessage,
       primaryProvider,
-      shadowProvider: routing.shadowProvider,
-      grounding,
-      knowledgeContext,
-      streamerProfileInsightCount: streamerProfileInsights.length,
+      responseMetadata,
+      invocationMetadata,
     };
+
+    await options.onGenerationStarted?.(primaryProvider);
 
     if (wantsStream) {
       return streamChatResponse({
@@ -312,8 +385,8 @@ export async function POST(request: Request) {
       request: { kind: "text", ...gatewayRequest },
     });
 
-    // 记账（含 usage 计量与审计日志）不阻塞主响应：默认交给 next/server 的
-    // after() 在响应返回后完成；仅复盘草稿路径需要等待（外键依赖，见下）。
+    // 成功回答在返回前等待 invocation 账本落库，使会话回合可以稳定关联本次
+    // 模型调用；失败响应仍允许 after() 收尾，避免错误路径被记账故障阻塞。
     const invocationPromise = recordChatInvocation({
       context: chatContext,
       gatewayResult,
@@ -339,42 +412,31 @@ export async function POST(request: Request) {
     }
 
     let retrospectiveDraftId: string | null | undefined = null;
-    if (shouldCreateRetrospectiveDraft(lastMessage.content)) {
+    const invocationId = await invocationPromise;
+    if (shouldCreateRetrospectiveDraft(chatContext.lastUserMessage)) {
       // ai_drafts.ai_invocation_id 外键指向 ai_invocations，
-      // 草稿路径必须等记账落库拿到 invocationId 后再建草稿。
-      const invocationId = await invocationPromise;
+      // 草稿路径使用已落库的 invocationId 建立外键关联。
       retrospectiveDraftId = (
         await createAiDraft(supabase as unknown as DraftClient, {
           organizationId: auth.organizationId,
           actingUserId: auth.userId,
           aiInvocationId: invocationId,
-          envelope: knowledgeContext.retrospectiveDraft,
+          envelope: chatContext.responseMetadata.retrospectiveDraft,
         }).catch(() => null)
       )?.id;
-    } else {
-      scheduleAfterResponse(invocationPromise);
     }
 
     return NextResponse.json({
       message: { role: "assistant", content: gatewayResult.text },
       providerName: gatewayResult.providerName,
       status: gatewayResult.status,
+      invocationId,
       fallbackUsed: gatewayResult.fallbackUsed,
       mode: chatMode,
       usage: gatewayResult.usage,
-      grounding: {
-        generatedAt: grounding.generatedAt,
-        facts: grounding.facts,
-        projectHealth: grounding.projectHealth,
-        suggestedActions: grounding.suggestedActions,
-        missingData: grounding.missingData,
-      },
-      knowledge: {
-        passages: knowledgeContext.passages,
-        citations: knowledgeContext.citations,
-        reviewAssist: knowledgeContext.reviewAssist,
-      },
-      retrospectiveDraft: knowledgeContext.retrospectiveDraft,
+      grounding: chatContext.responseMetadata.grounding,
+      knowledge: chatContext.responseMetadata.knowledge,
+      retrospectiveDraft: chatContext.responseMetadata.retrospectiveDraft,
       retrospectiveDraftId,
     });
   } catch (error) {
@@ -389,6 +451,12 @@ export async function POST(request: Request) {
   }
 }
 
+type ChatResponseMetadata = {
+  grounding: Record<string, unknown>;
+  knowledge: Record<string, unknown>;
+  retrospectiveDraft: DashboardKnowledgeContext["retrospectiveDraft"];
+};
+
 type ChatRequestContext = {
   supabase: SupabaseClient;
   auth: AuthContext;
@@ -396,10 +464,8 @@ type ChatRequestContext = {
   attachments: AiAttachment[];
   lastUserMessage: string;
   primaryProvider: AiProviderName;
-  shadowProvider?: AiProviderName;
-  grounding: ReturnType<typeof buildDashboardChatGrounding>;
-  knowledgeContext: DashboardKnowledgeContext;
-  streamerProfileInsightCount: number;
+  responseMetadata: ChatResponseMetadata;
+  invocationMetadata: Record<string, unknown>;
 };
 
 function shouldStreamResponse(request: Request, streamFlag: unknown): boolean {
@@ -431,7 +497,6 @@ function recordChatInvocation({
   gatewayResult: AiGatewayResult;
   streamed: boolean;
 }): Promise<string | null> {
-  const { grounding, knowledgeContext, attachments, chatMode } = context;
   return recordAiInvocation({
     client: context.supabase,
     actor: context.auth as AiActor,
@@ -449,21 +514,7 @@ function recordChatInvocation({
       errorSummary: gatewayResult.errorSummary,
       metadata: {
         fallbackUsed: gatewayResult.fallbackUsed,
-        // 影子评估未真正执行,配置值记入 metadata 而非 shadow_provider 列。
-        ...(context.shadowProvider
-          ? { configuredShadowProvider: context.shadowProvider }
-          : {}),
-        groundingFactCount: grounding.facts.length,
-        groundingDroppedFactCount: grounding.droppedFactCount,
-        groundingMissingDataCount: grounding.missingData.length,
-        groundingProjectHealthCount: grounding.projectHealth.topProjects.length,
-        groundingSuggestedActionCount: grounding.suggestedActions.length,
-        streamerProfileInsightCount: context.streamerProfileInsightCount,
-        knowledgePassageCount: knowledgeContext.passages.length,
-        reviewKnowledgeSampleSize: knowledgeContext.reviewAssist.sampleSize,
-        chatMode,
-        attachmentCount: attachments.length,
-        attachmentNames: attachments.map((attachment) => attachment.name),
+        ...context.invocationMetadata,
         ...(streamed ? { stream: true } : {}),
       },
     },
@@ -531,6 +582,8 @@ function streamChatResponse({
             gatewayResult: result,
             streamed: true,
           });
+          const invocationId = await invocationPromise;
+          accountingWork = Promise.resolve(invocationId);
 
           if (
             event.type === "done" &&
@@ -540,7 +593,6 @@ function streamChatResponse({
             let retrospectiveDraftId: string | null | undefined = null;
             if (shouldCreateRetrospectiveDraft(context.lastUserMessage)) {
               // 与 JSON 分支相同：草稿的 ai_invocation_id 外键要求记账先落库。
-              const invocationId = await invocationPromise;
               retrospectiveDraftId = (
                 await createAiDraft(
                   context.supabase as unknown as DraftClient,
@@ -548,12 +600,10 @@ function streamChatResponse({
                     organizationId: context.auth.organizationId,
                     actingUserId: context.auth.userId,
                     aiInvocationId: invocationId,
-                    envelope: context.knowledgeContext.retrospectiveDraft,
+                    envelope: context.responseMetadata.retrospectiveDraft,
                   },
                 ).catch(() => null)
               )?.id;
-            } else {
-              accountingWork = invocationPromise;
             }
 
             send("done", {
@@ -563,29 +613,20 @@ function streamChatResponse({
               fallbackUsed: result.fallbackUsed,
               mode: context.chatMode,
               usage: result.usage,
-              grounding: {
-                generatedAt: context.grounding.generatedAt,
-                facts: context.grounding.facts,
-                projectHealth: context.grounding.projectHealth,
-                suggestedActions: context.grounding.suggestedActions,
-                missingData: context.grounding.missingData,
-              },
-              knowledge: {
-                passages: context.knowledgeContext.passages,
-                citations: context.knowledgeContext.citations,
-                reviewAssist: context.knowledgeContext.reviewAssist,
-              },
-              retrospectiveDraft: context.knowledgeContext.retrospectiveDraft,
+              grounding: context.responseMetadata.grounding,
+              knowledge: context.responseMetadata.knowledge,
+              retrospectiveDraft: context.responseMetadata.retrospectiveDraft,
               retrospectiveDraftId,
+              invocationId,
             });
           } else {
-            accountingWork = invocationPromise;
             send("error", {
               error:
                 result.errorSummary ||
                 "真实 AI 大模型调用失败，请检查 DeepSeek 配置或稍后重试",
               providerName: result.providerName,
               status: result.status,
+              invocationId,
               streamStarted: event.type === "error" ? event.streamStarted : false,
             });
           }
@@ -685,116 +726,6 @@ function choosePrimaryProvider({
   }
 
   return configuredPrimary ?? fallbackProvider;
-}
-
-function sanitizeAttachments(
-  value: unknown,
-):
-  | { ok: true; attachments: AiAttachment[] }
-  | { ok: false; error: string } {
-  if (value === undefined || value === null) {
-    return { ok: true, attachments: [] };
-  }
-  if (!Array.isArray(value)) {
-    return { ok: false, error: "Attachments must be an array" };
-  }
-  if (value.length > MAX_ATTACHMENTS) {
-    return {
-      ok: false,
-      error: "AI chat supports up to five attachments per message",
-    };
-  }
-
-  const attachments: AiAttachment[] = [];
-  for (const [index, item] of value.entries()) {
-    if (!isRecord(item)) {
-      return { ok: false, error: `Attachment ${index + 1} is invalid` };
-    }
-
-    const name = sanitizeAttachmentName(item.name, index);
-    const mimeType = sanitizeAttachmentMimeType(item.mimeType);
-    if (!mimeType) {
-      return {
-        ok: false,
-        error: `Attachment ${name} has an unsupported file type`,
-      };
-    }
-
-    const attachment: AiAttachment = {
-      name,
-      mimeType,
-      ...(typeof item.sizeBytes === "number" && Number.isFinite(item.sizeBytes)
-        ? { sizeBytes: Math.max(0, Math.trunc(item.sizeBytes)) }
-        : {}),
-    };
-
-    if (typeof item.text === "string" && item.text.trim()) {
-      if (item.text.length > MAX_ATTACHMENT_TEXT_CHARS) {
-        return { ok: false, error: `Attachment ${name} text is too large` };
-      }
-      attachment.text = item.text.trim();
-    }
-    if (typeof item.data === "string" && item.data.trim()) {
-      if (item.data.length > MAX_ATTACHMENT_DATA_CHARS) {
-        return { ok: false, error: `Attachment ${name} data is too large` };
-      }
-      attachment.data = item.data.trim();
-    }
-    if (typeof item.fileId === "string" && item.fileId.trim()) {
-      attachment.fileId = item.fileId.trim();
-    }
-    if (typeof item.url === "string" && item.url.trim()) {
-      attachment.url = item.url.trim();
-    }
-
-    if (
-      !attachment.text &&
-      !attachment.data &&
-      !attachment.fileId &&
-      !attachment.url
-    ) {
-      return { ok: false, error: `Attachment ${name} has no readable content` };
-    }
-
-    attachments.push(attachment);
-  }
-
-  return { ok: true, attachments };
-}
-
-function sanitizeAttachmentName(value: unknown, index: number): string {
-  const text = typeof value === "string" ? value.trim() : "";
-  const safe = text
-    .replace(/[\\/]/g, "_")
-    .replace(/[^\w.\-\u4e00-\u9fa5]/g, "_")
-    .slice(0, 120);
-  return safe || `attachment-${index + 1}`;
-}
-
-function sanitizeAttachmentMimeType(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const mimeType = value.trim().toLowerCase();
-  if (!mimeType) {
-    return null;
-  }
-
-  if (mimeType.startsWith("text/") || mimeType.startsWith("image/")) {
-    return mimeType;
-  }
-
-  const allowed = new Set([
-    "application/json",
-    "application/pdf",
-    "application/msword",
-    "application/vnd.ms-excel",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ]);
-
-  return allowed.has(mimeType) ? mimeType : null;
 }
 
 // 附件预览有单附件与全请求两级预算(方案 WP5),超出预算的部分被截断并

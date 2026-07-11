@@ -222,6 +222,7 @@ describe("POST /api/ai/chat", () => {
         content: "本月可见经营数据：进行中项目 3 个，本月厂家应收 240 元。",
       },
       providerName: "deepseek",
+      invocationId: "invocation-1",
       status: "succeeded",
       grounding: {
         generatedAt: "2026-06-28T01:20:00.000Z",
@@ -679,6 +680,7 @@ describe("POST /api/ai/chat", () => {
     expect(events[2].data).toMatchObject({
       message: { role: "assistant", content: "流式回复" },
       providerName: "deepseek",
+      invocationId: "invocation-1",
       status: "succeeded",
       usage: { promptTokens: 12, completionTokens: 9, totalTokens: 21 },
       grounding: expect.objectContaining({
@@ -728,6 +730,69 @@ describe("POST /api/ai/chat", () => {
     expect(events.at(-1)?.event).toBe("done");
   });
 
+  it("captures and reuses an internal trusted gateway context", async () => {
+    const onContextReady = vi.fn();
+    const { executeDashboardAiChat } = await import("./route");
+    const request = new Request("http://localhost/api/ai/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "当前重试请求" }],
+      }),
+    });
+
+    await executeDashboardAiChat(request.clone(), { onContextReady });
+
+    expect(onContextReady).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({ role: "system" }),
+          expect.objectContaining({ role: "user", content: "当前重试请求" }),
+        ]),
+        mode: "fast",
+        primaryProvider: "deepseek",
+      }),
+    );
+
+    const trustedGatewayContext = {
+      messages: [
+        { role: "system" as const, content: "冻结系统规则" },
+        { role: "user" as const, content: "冻结业务事实" },
+      ],
+      attachments: [],
+      mode: "deep" as const,
+      primaryProvider: "deepseek" as const,
+      lastUserMessage: "当前重试请求",
+      responseMetadata: {
+        grounding: { generatedAt: "2026-07-11T03:00:00.000Z", facts: [] },
+        knowledge: { passages: [], citations: [], reviewAssist: { sampleSize: 0 } },
+        retrospectiveDraft: { draftType: "retrospective", status: "pending" },
+      },
+      invocationMetadata: {
+        groundingFactCount: 0,
+        knowledgePassageCount: 0,
+      },
+    };
+    onContextReady.mockClear();
+    loadRoleHomeDashboardMock.mockClear();
+    searchKnowledgeDocumentsMock.mockClear();
+    listLiveReviewDocumentsMock.mockClear();
+    await executeDashboardAiChat(request.clone(), { trustedGatewayContext });
+
+    expect(runAiGatewayMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        primaryProvider: "deepseek",
+        request: expect.objectContaining({
+          mode: "deep",
+          messages: trustedGatewayContext.messages,
+        }),
+      }),
+    );
+    expect(onContextReady).not.toHaveBeenCalled();
+    expect(loadRoleHomeDashboardMock).not.toHaveBeenCalled();
+    expect(searchKnowledgeDocumentsMock).not.toHaveBeenCalled();
+    expect(listLiveReviewDocumentsMock).not.toHaveBeenCalled();
+  });
+
   it("emits an SSE error event and records the failure when all providers fail before streaming", async () => {
     runAiGatewayStreamMock.mockImplementation(async function* () {
       yield {
@@ -765,6 +830,7 @@ describe("POST /api/ai/chat", () => {
         data: expect.objectContaining({
           error: "DeepSeek request timed out after 30000ms",
           providerName: "deepseek",
+          invocationId: "invocation-1",
           status: "failed",
         }),
       },

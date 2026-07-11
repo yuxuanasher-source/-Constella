@@ -56,6 +56,37 @@ function streamingProvider(
   };
 }
 
+function streamingProviderAttempts(
+  name: AiStreamingProvider["name"],
+  attempts: AiProviderStreamEvent[][],
+): AiStreamingProvider {
+  let attemptIndex = 0;
+
+  return {
+    name,
+    capabilities: ["text"],
+    async runText() {
+      throw new Error("not used in streaming test");
+    },
+    async *runTextStream() {
+      const events = attempts[Math.min(attemptIndex, attempts.length - 1)] ?? [];
+      attemptIndex += 1;
+      for (const event of events) {
+        yield event;
+      }
+    },
+    async runStructured() {
+      throw new Error("not used");
+    },
+    async runWithTools() {
+      throw new Error("not used");
+    },
+    estimateCost() {
+      return { costCents: 0 };
+    },
+  };
+}
+
 async function collect(
   iterator: AsyncGenerator<AiGatewayStreamEvent, void, unknown>,
 ): Promise<AiGatewayStreamEvent[]> {
@@ -262,5 +293,130 @@ describe("runAiGatewayStream", () => {
       type: "done",
       result: expect.objectContaining({ providerName: "hunyuan" }),
     });
+  });
+
+  it("retries the same provider once when a completed stream contains only punctuation", async () => {
+    const provider = streamingProviderAttempts("deepseek", [
+      [
+        { type: "delta", text: "." },
+        { type: "delta", text: "\n." },
+        { type: "done", result: succeededResult(".\n.") },
+      ],
+      [
+        { type: "delta", text: "完整答复" },
+        { type: "done", result: succeededResult("完整答复") },
+      ],
+    ]);
+    const runTextStreamSpy = vi.spyOn(provider, "runTextStream");
+
+    const events = await collect(
+      runAiGatewayStream({
+        providers: [provider],
+        primaryProvider: "deepseek",
+        request: textRequest,
+      }),
+    );
+
+    expect(runTextStreamSpy).toHaveBeenCalledTimes(2);
+    expect(events).toEqual([
+      {
+        type: "delta",
+        text: "完整答复",
+        providerName: "deepseek",
+        fallbackUsed: false,
+      },
+      {
+        type: "done",
+        result: expect.objectContaining({
+          status: "succeeded",
+          text: "完整答复",
+          providerName: "deepseek",
+          fallbackUsed: false,
+        }),
+      },
+    ]);
+  });
+
+  it("falls back without exposing punctuation when the retry is still invalid", async () => {
+    const primary = streamingProviderAttempts("deepseek", [
+      [
+        { type: "delta", text: "..." },
+        { type: "done", result: succeededResult("...") },
+      ],
+      [
+        { type: "delta", text: "- -" },
+        { type: "done", result: succeededResult("- -") },
+      ],
+    ]);
+    const runTextStreamSpy = vi.spyOn(primary, "runTextStream");
+
+    const events = await collect(
+      runAiGatewayStream({
+        providers: [
+          primary,
+          streamingProvider("hunyuan", [
+            { type: "delta", text: "备用答复" },
+            { type: "done", result: succeededResult("备用答复") },
+          ]),
+        ],
+        primaryProvider: "deepseek",
+        request: textRequest,
+      }),
+    );
+
+    expect(runTextStreamSpy).toHaveBeenCalledTimes(2);
+    expect(events).toEqual([
+      {
+        type: "delta",
+        text: "备用答复",
+        providerName: "hunyuan",
+        fallbackUsed: true,
+      },
+      {
+        type: "done",
+        result: expect.objectContaining({
+          status: "succeeded",
+          text: "备用答复",
+          providerName: "hunyuan",
+          fallbackUsed: true,
+        }),
+      },
+    ]);
+  });
+
+  it("buffers leading markdown until semantic content confirms a valid answer", async () => {
+    const events = await collect(
+      runAiGatewayStream({
+        providers: [
+          streamingProvider("deepseek", [
+            { type: "delta", text: "**" },
+            { type: "delta", text: "处理建议" },
+            { type: "delta", text: "**" },
+            { type: "done", result: succeededResult("**处理建议**") },
+          ]),
+        ],
+        primaryProvider: "deepseek",
+        request: textRequest,
+      }),
+    );
+
+    expect(events).toEqual([
+      {
+        type: "delta",
+        text: "**处理建议",
+        providerName: "deepseek",
+        fallbackUsed: false,
+      },
+      {
+        type: "delta",
+        text: "**",
+        providerName: "deepseek",
+        fallbackUsed: false,
+      },
+      {
+        type: "done",
+        result: expect.objectContaining({ text: "**处理建议**" }),
+      },
+    ]);
   });
 });
