@@ -10,11 +10,14 @@ import {
   type ProjectVariableCoverage,
 } from "./custom-rule-variable-catalog";
 
+/** Canonical Gregorian business date, validated at runtime as YYYY-MM-DD. */
+export type CustomRuleBusinessDate = string;
+
 export type GetProjectVariableCoverageInput = {
   organizationId: string;
   projectId: string;
-  periodStart?: string;
-  periodEnd?: string;
+  periodStart?: CustomRuleBusinessDate;
+  periodEnd?: CustomRuleBusinessDate;
 };
 
 export type CustomRuleReadRepository = {
@@ -73,6 +76,15 @@ export class CustomRuleCoverageLimitError extends Error {
   }
 }
 
+export class CustomRuleCoveragePageError extends Error {
+  readonly code = "CUSTOM_RULE_COVERAGE_PAGE_INVALID";
+
+  constructor(readonly source: CoverageSource, message: string) {
+    super(`${source}: ${message}`);
+    this.name = "CustomRuleCoveragePageError";
+  }
+}
+
 type CoverageSource =
   | "live_reports"
   | "project_streamers"
@@ -104,6 +116,8 @@ type StreamerRelation =
   | null;
 
 type ProjectStreamerCoverageRow = {
+  id: string;
+  streamer_id: string;
   hourly_rate: number | null;
   base_salary: number | null;
   cps_rate_bps: number | null;
@@ -114,6 +128,7 @@ type ProjectStreamerCoverageRow = {
 };
 
 type NormalizedCostItemCoverageRow = {
+  id: string;
   item_type: "gift" | "supplier_fee" | "traffic";
   live_report_id: string | null;
   created_at: string;
@@ -127,6 +142,7 @@ type SettlementBatchCoverageRow = {
 };
 
 type SettlementBatchItemCoverageRow = {
+  id: string;
   settlement_batch_id: string | null;
   streamer_id: string | null;
   live_report_id: string | null;
@@ -135,6 +151,11 @@ type SettlementBatchItemCoverageRow = {
 type SettlementCoverageRows = {
   batches: SettlementBatchCoverageRow[];
   items: SettlementBatchItemCoverageRow[];
+};
+
+type ResolvedCoverageQueryInput = GetProjectVariableCoverageInput & {
+  periodStartInclusive?: string;
+  periodEndExclusive?: string;
 };
 
 type CoverageQueryResult<Row> = {
@@ -156,6 +177,8 @@ const LIVE_REPORT_SELECT = [
   "live_tasks!inner(system_started_at)",
 ].join(", ");
 const PROJECT_STREAMER_SELECT = [
+  "id",
+  "streamer_id",
   "hourly_rate",
   "base_salary",
   "cps_rate_bps",
@@ -165,6 +188,7 @@ const PROJECT_STREAMER_SELECT = [
   "streamers!inner(source_type)",
 ].join(", ");
 const NORMALIZED_COST_ITEM_SELECT = [
+  "id",
   "item_type",
   "live_report_id",
   "created_at",
@@ -176,11 +200,13 @@ const SETTLEMENT_BATCH_SELECT = [
   "period_end",
 ].join(", ");
 const SETTLEMENT_BATCH_ITEM_SELECT = [
+  "id",
   "settlement_batch_id",
   "streamer_id",
   "live_report_id",
 ].join(", ");
 const DEFAULT_MAX_ROWS_PER_SOURCE = 5_000;
+const POSTGREST_PAGE_SIZE = 1_000;
 const DEFAULT_TIMEZONE: ResolvedCustomRuleBusinessTimezone = {
   value: "Asia/Shanghai",
   confirmed: true,
@@ -192,8 +218,7 @@ const ALLOWED_INPUT_KEYS = new Set([
   "periodStart",
   "periodEnd",
 ]);
-const ISO_PERIOD_PATTERN =
-  /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2}))?$/u;
+const BUSINESS_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/u;
 
 export class SupabaseCustomRuleReadRepository
   implements CustomRuleReadRepository
@@ -216,7 +241,10 @@ export class SupabaseCustomRuleReadRepository
   async getProjectVariableCoverage(
     unsafeInput: GetProjectVariableCoverageInput,
   ): Promise<ProjectVariableCoverage> {
-    const input = validateCoverageInput(unsafeInput);
+    const input = resolveCoverageQueryInput(
+      validateCoverageInput(unsafeInput),
+      this.businessTimezone,
+    );
     const [reports, projectStreamers, normalizedCostItems, settlement] =
       await Promise.all([
         this.listApprovedReportCoverage(input),
@@ -236,86 +264,92 @@ export class SupabaseCustomRuleReadRepository
   }
 
   private async listApprovedReportCoverage(
-    input: GetProjectVariableCoverageInput,
+    input: ResolvedCoverageQueryInput,
   ): Promise<LiveReportCoverageRow[]> {
-    let query = this.client
-      .from("live_reports")
-      .select(LIVE_REPORT_SELECT, { count: "exact" })
-      .eq("organization_id", input.organizationId)
-      .eq("project_id", input.projectId)
-      .eq("status", "approved");
-    if (input.periodStart) {
-      query = query.gte("created_at", input.periodStart);
-    }
-    if (input.periodEnd) {
-      query = query.lte("created_at", input.periodEnd);
-    }
-
-    return readBoundedRows(
+    return readPaginatedRows(
       "live_reports",
-      query
-        .limit(this.maxRowsPerSource + 1)
-        .returns<LiveReportCoverageRow[]>(),
       this.maxRowsPerSource,
+      (from, to) => {
+        let query = this.client
+          .from("live_reports")
+          .select(LIVE_REPORT_SELECT, { count: "exact" })
+          .eq("organization_id", input.organizationId)
+          .eq("project_id", input.projectId)
+          .eq("status", "approved");
+        if (input.periodStartInclusive) {
+          query = query.gte("created_at", input.periodStartInclusive);
+        }
+        if (input.periodEndExclusive) {
+          query = query.lt("created_at", input.periodEndExclusive);
+        }
+        return query
+          .order("id", { ascending: true })
+          .range(from, to)
+          .returns<LiveReportCoverageRow[]>();
+      },
     );
   }
 
   private async listProjectStreamerCoverage(
-    input: GetProjectVariableCoverageInput,
+    input: ResolvedCoverageQueryInput,
   ): Promise<ProjectStreamerCoverageRow[]> {
-    let query = this.client
-      .from("project_streamers")
-      .select(PROJECT_STREAMER_SELECT, { count: "exact" })
-      .eq("organization_id", input.organizationId)
-      .eq("project_id", input.projectId)
-      .not("joined_at", "is", null);
-    if (input.periodEnd) {
-      query = query.lte("joined_at", input.periodEnd);
-    }
-    if (input.periodStart) {
-      query = query.or(
-        `removed_at.is.null,removed_at.gte.${input.periodStart}`,
-      );
-    }
-
-    return readBoundedRows(
+    return readPaginatedRows(
       "project_streamers",
-      query
-        .limit(this.maxRowsPerSource + 1)
-        .returns<ProjectStreamerCoverageRow[]>(),
       this.maxRowsPerSource,
+      (from, to) => {
+        let query = this.client
+          .from("project_streamers")
+          .select(PROJECT_STREAMER_SELECT, { count: "exact" })
+          .eq("organization_id", input.organizationId)
+          .eq("project_id", input.projectId)
+          .not("joined_at", "is", null);
+        if (input.periodEndExclusive) {
+          query = query.lt("joined_at", input.periodEndExclusive);
+        }
+        if (input.periodStartInclusive) {
+          query = query.or(
+            `removed_at.is.null,removed_at.gte.${input.periodStartInclusive}`,
+          );
+        }
+        return query
+          .order("id", { ascending: true })
+          .range(from, to)
+          .returns<ProjectStreamerCoverageRow[]>();
+      },
     );
   }
 
   private async listNormalizedCostItemCoverage(
-    input: GetProjectVariableCoverageInput,
+    input: ResolvedCoverageQueryInput,
   ): Promise<NormalizedCostItemCoverageRow[]> {
-    let query = this.client
-      .from("project_cost_items")
-      .select(NORMALIZED_COST_ITEM_SELECT, { count: "exact" })
-      .eq("organization_id", input.organizationId)
-      .eq("project_id", input.projectId)
-      .eq("source", "import")
-      .eq("status", "confirmed")
-      .in("item_type", ["gift", "supplier_fee", "traffic"]);
-    if (input.periodStart) {
-      query = query.gte("created_at", input.periodStart);
-    }
-    if (input.periodEnd) {
-      query = query.lte("created_at", input.periodEnd);
-    }
-
-    return readBoundedRows(
+    return readPaginatedRows(
       "project_cost_items",
-      query
-        .limit(this.maxRowsPerSource + 1)
-        .returns<NormalizedCostItemCoverageRow[]>(),
       this.maxRowsPerSource,
+      (from, to) => {
+        let query = this.client
+          .from("project_cost_items")
+          .select(NORMALIZED_COST_ITEM_SELECT, { count: "exact" })
+          .eq("organization_id", input.organizationId)
+          .eq("project_id", input.projectId)
+          .eq("source", "import")
+          .eq("status", "confirmed")
+          .in("item_type", ["gift", "supplier_fee", "traffic"]);
+        if (input.periodStartInclusive) {
+          query = query.gte("created_at", input.periodStartInclusive);
+        }
+        if (input.periodEndExclusive) {
+          query = query.lt("created_at", input.periodEndExclusive);
+        }
+        return query
+          .order("id", { ascending: true })
+          .range(from, to)
+          .returns<NormalizedCostItemCoverageRow[]>();
+      },
     );
   }
 
   private async listSettlementCoverage(
-    input: GetProjectVariableCoverageInput,
+    input: ResolvedCoverageQueryInput,
   ): Promise<SettlementCoverageRows> {
     const batches = await this.listSettlementBatchCoverage(input);
     if (batches.length === 0) {
@@ -329,92 +363,146 @@ export class SupabaseCustomRuleReadRepository
   }
 
   private async listSettlementBatchCoverage(
-    input: GetProjectVariableCoverageInput,
+    input: ResolvedCoverageQueryInput,
   ): Promise<SettlementBatchCoverageRow[]> {
-    let query = this.client
-      .from("settlement_batches")
-      .select(SETTLEMENT_BATCH_SELECT, { count: "exact" })
-      .eq("organization_id", input.organizationId)
-      .eq("project_id", input.projectId)
-      .in("batch_type", ["payable", "receivable"])
-      .in("status", ["confirmed", "locked"]);
-    if (input.periodStart) {
-      query = query.gte("period_end", periodDate(input.periodStart));
-    }
-    if (input.periodEnd) {
-      query = query.lte("period_start", periodDate(input.periodEnd));
-    }
-
-    return readBoundedRows(
+    return readPaginatedRows(
       "settlement_batches",
-      query
-        .limit(this.maxRowsPerSource + 1)
-        .returns<SettlementBatchCoverageRow[]>(),
       this.maxRowsPerSource,
+      (from, to) => {
+        let query = this.client
+          .from("settlement_batches")
+          .select(SETTLEMENT_BATCH_SELECT, { count: "exact" })
+          .eq("organization_id", input.organizationId)
+          .eq("project_id", input.projectId)
+          .in("batch_type", ["payable", "receivable"])
+          .in("status", ["confirmed", "locked"]);
+        if (input.periodStart) {
+          query = query.gte("period_end", input.periodStart);
+        }
+        if (input.periodEnd) {
+          query = query.lte("period_start", input.periodEnd);
+        }
+        return query
+          .order("id", { ascending: true })
+          .range(from, to)
+          .returns<SettlementBatchCoverageRow[]>();
+      },
     );
   }
 
   private async listSettlementItemCoverage(
-    input: GetProjectVariableCoverageInput,
+    input: ResolvedCoverageQueryInput,
     unsafeBatchIds: readonly string[],
   ): Promise<SettlementBatchItemCoverageRow[]> {
     const batchIds = [...new Set(unsafeBatchIds)].sort();
     if (batchIds.length === 0) {
       return [];
     }
-    const query = this.client
-      .from("settlement_batch_items")
-      .select(SETTLEMENT_BATCH_ITEM_SELECT, { count: "exact" })
-      .eq("organization_id", input.organizationId)
-      .eq("project_id", input.projectId)
-      .in("settlement_batch_id", batchIds);
-
-    return readBoundedRows(
+    return readPaginatedRows(
       "settlement_batch_items",
-      query
-        .limit(this.maxRowsPerSource + 1)
-        .returns<SettlementBatchItemCoverageRow[]>(),
       this.maxRowsPerSource,
+      (from, to) =>
+        this.client
+          .from("settlement_batch_items")
+          .select(SETTLEMENT_BATCH_ITEM_SELECT, { count: "exact" })
+          .eq("organization_id", input.organizationId)
+          .eq("project_id", input.projectId)
+          .in("settlement_batch_id", batchIds)
+          .order("id", { ascending: true })
+          .range(from, to)
+          .returns<SettlementBatchItemCoverageRow[]>(),
     );
   }
 }
 
-async function readBoundedRows<Row>(
+async function readPaginatedRows<Row>(
   source: CoverageSource,
-  pending: PromiseLike<CoverageQueryResult<Row>>,
   limit: number,
+  readPage: (
+    from: number,
+    to: number,
+  ) => PromiseLike<CoverageQueryResult<Row>>,
 ): Promise<Row[]> {
-  const result = await pending;
-  if (result.error) {
-    throw new CustomRuleCoverageQueryError(source, result.error);
-  }
-  if (!Number.isSafeInteger(result.count) || (result.count ?? -1) < 0) {
-    throw new CustomRuleCoverageCountError(
-      source,
-      "exact count must be a nonnegative safe integer",
-    );
-  }
-  const exactCount = result.count as number;
-  if (exactCount > limit) {
-    throw new CustomRuleCoverageLimitError(source, limit);
-  }
-  if (!Array.isArray(result.data)) {
-    if (exactCount === 0 && result.data === null) {
-      return [];
-    }
-    throw new CustomRuleCoverageCountError(
-      source,
-      "rows were not returned for the exact count",
-    );
-  }
-  if (result.data.length !== exactCount) {
-    throw new CustomRuleCoverageCountError(
-      source,
-      "bounded rows do not match the exact count",
-    );
-  }
+  const rows: Row[] = [];
+  const rowIds = new Set<string>();
+  let exactCount: number | null = null;
 
-  return result.data;
+  for (let from = 0; ; from += POSTGREST_PAGE_SIZE) {
+    const result = await readPage(from, from + POSTGREST_PAGE_SIZE - 1);
+    if (result.error) {
+      throw new CustomRuleCoverageQueryError(source, result.error);
+    }
+    if (!Number.isSafeInteger(result.count) || (result.count ?? -1) < 0) {
+      throw new CustomRuleCoverageCountError(
+        source,
+        "exact count must be a nonnegative safe integer",
+      );
+    }
+    const pageCount = result.count as number;
+    if (exactCount === null) {
+      exactCount = pageCount;
+      if (exactCount > limit) {
+        throw new CustomRuleCoverageLimitError(source, limit);
+      }
+    } else if (pageCount !== exactCount) {
+      throw new CustomRuleCoveragePageError(
+        source,
+        "exact count changed between pages",
+      );
+    }
+    if (!Array.isArray(result.data)) {
+      throw new CustomRuleCoveragePageError(
+        source,
+        "page rows must be an array",
+      );
+    }
+
+    const expectedPageLength = Math.min(
+      POSTGREST_PAGE_SIZE,
+      Math.max(exactCount - from, 0),
+    );
+    if (result.data.length !== expectedPageLength) {
+      throw new CustomRuleCoveragePageError(
+        source,
+        `expected ${expectedPageLength} rows at offset ${from}`,
+      );
+    }
+    for (const row of result.data) {
+      const rowId = readCoverageRowId(source, row);
+      if (rowIds.has(rowId)) {
+        throw new CustomRuleCoveragePageError(
+          source,
+          `duplicate row id at offset ${from}`,
+        );
+      }
+      rowIds.add(rowId);
+      rows.push(row);
+    }
+
+    if (rows.length === exactCount) {
+      return rows;
+    }
+  }
+}
+
+function readCoverageRowId(source: CoverageSource, row: unknown): string {
+  if (!row || typeof row !== "object" || Array.isArray(row)) {
+    throw new CustomRuleCoveragePageError(source, "page row must be an object");
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(row, "id");
+  if (
+    !descriptor ||
+    descriptor.get ||
+    descriptor.set ||
+    typeof descriptor.value !== "string" ||
+    descriptor.value.length === 0
+  ) {
+    throw new CustomRuleCoveragePageError(
+      source,
+      "page row must have an own nonempty id",
+    );
+  }
+  return descriptor.value;
 }
 
 function aggregateProjectVariableCoverage(input: {
@@ -429,7 +517,12 @@ function aggregateProjectVariableCoverage(input: {
   const approvedReportIds = new Set(
     input.reports.map((row) => row.id).filter(isNonemptyString),
   );
-  const streamerCount = input.projectStreamers.length;
+  const projectStreamerIds = new Set(
+    input.projectStreamers
+      .map((row) => row.streamer_id)
+      .filter(isNonemptyString),
+  );
+  const streamerCount = projectStreamerIds.size;
   const reportPeriod = sampledPeriod(
     input.reports.map((row) => row.created_at),
   );
@@ -453,7 +546,9 @@ function aggregateProjectVariableCoverage(input: {
     .filter(
       (row) =>
         row.live_report_id !== null &&
-        approvedReportIds.has(row.live_report_id),
+        approvedReportIds.has(row.live_report_id) &&
+        row.streamer_id !== null &&
+        projectStreamerIds.has(row.streamer_id),
     )
     .flatMap((row) => {
       const batch = row.settlement_batch_id
@@ -810,7 +905,7 @@ function validateCoverageInput(
   if (
     periodStart &&
     periodEnd &&
-    Date.parse(periodStart) > Date.parse(periodEnd)
+    periodStart > periodEnd
   ) {
     throw new CustomRuleCoverageInputError(
       "periodStart must not be later than periodEnd",
@@ -844,20 +939,220 @@ function optionalPeriod(
   if (value === undefined) {
     return undefined;
   }
-  if (
-    typeof value !== "string" ||
-    !ISO_PERIOD_PATTERN.test(value) ||
-    !Number.isFinite(Date.parse(value))
-  ) {
+  if (typeof value !== "string" || !isValidBusinessDate(value)) {
     throw new CustomRuleCoverageInputError(
-      `${key} must be an ISO date or timestamp`,
+      `${key} must be a valid YYYY-MM-DD business date`,
     );
   }
   return value;
 }
 
-function periodDate(value: string): string {
-  return value.slice(0, 10);
+function resolveCoverageQueryInput(
+  input: GetProjectVariableCoverageInput,
+  businessTimezone: ResolvedCustomRuleBusinessTimezone,
+): ResolvedCoverageQueryInput {
+  if (!input.periodStart && !input.periodEnd) {
+    return input;
+  }
+  if (!businessTimezone.confirmed || !businessTimezone.value) {
+    throw new CustomRuleCoverageInputError(
+      "period filtering requires a confirmed IANA business timezone",
+    );
+  }
+
+  return {
+    ...input,
+    ...(input.periodStart
+      ? {
+          periodStartInclusive: businessDateBoundary(
+            input.periodStart,
+            businessTimezone.value,
+          ),
+        }
+      : {}),
+    ...(input.periodEnd
+      ? {
+          periodEndExclusive: businessDateBoundary(
+            nextBusinessDate(input.periodEnd),
+            businessTimezone.value,
+          ),
+        }
+      : {}),
+  };
+}
+
+type CalendarDateParts = {
+  year: number;
+  month: number;
+  day: number;
+};
+
+type CalendarDateTimeParts = CalendarDateParts & {
+  hour: number;
+  minute: number;
+  second: number;
+};
+
+function isValidBusinessDate(value: string): boolean {
+  const parts = parseBusinessDate(value);
+  return (
+    parts !== null &&
+    parts.year >= 1 &&
+    parts.day <= daysInMonth(parts.year, parts.month)
+  );
+}
+
+function parseBusinessDate(value: string): CalendarDateParts | null {
+  const match = BUSINESS_DATE_PATTERN.exec(value);
+  if (!match) {
+    return null;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1) {
+    return null;
+  }
+  return { year, month, day };
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    return isLeapYear(year) ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function nextBusinessDate(value: string): string {
+  const parsed = parseBusinessDate(value);
+  if (!parsed || !isValidBusinessDate(value)) {
+    throw new CustomRuleCoverageInputError("invalid business-date boundary");
+  }
+  let { year, month, day } = parsed;
+  day += 1;
+  if (day > daysInMonth(year, month)) {
+    day = 1;
+    month += 1;
+  }
+  if (month > 12) {
+    month = 1;
+    year += 1;
+  }
+  if (year > 9_999) {
+    throw new CustomRuleCoverageInputError(
+      "periodEnd cannot produce a supported exclusive boundary",
+    );
+  }
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function businessDateBoundary(value: string, timezone: string): string {
+  const parsed = parseBusinessDate(value);
+  if (!parsed || !isValidBusinessDate(value)) {
+    throw new CustomRuleCoverageInputError("invalid business-date boundary");
+  }
+  const targetEpoch = utcEpoch({ ...parsed, hour: 0, minute: 0, second: 0 });
+  let instant = targetEpoch;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const local = zonedDateTimeParts(instant, timezone);
+    const adjustment = targetEpoch - utcEpoch(local);
+    instant += adjustment;
+    if (adjustment === 0) {
+      break;
+    }
+  }
+
+  const local = zonedDateTimeParts(instant, timezone);
+  if (
+    local.year !== parsed.year ||
+    local.month !== parsed.month ||
+    local.day !== parsed.day ||
+    local.hour !== 0 ||
+    local.minute !== 0 ||
+    local.second !== 0
+  ) {
+    throw new CustomRuleCoverageInputError(
+      "business-date midnight does not exist in the resolved timezone",
+    );
+  }
+  const offsetMinutes = (targetEpoch - instant) / 60_000;
+  if (!Number.isInteger(offsetMinutes) || Math.abs(offsetMinutes) > 24 * 60) {
+    throw new CustomRuleCoverageInputError(
+      "business timezone produced an unsupported UTC offset",
+    );
+  }
+  return `${value}T00:00:00.000${formatOffset(offsetMinutes)}`;
+}
+
+function zonedDateTimeParts(
+  epochMilliseconds: number,
+  timezone: string,
+): CalendarDateTimeParts {
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
+      timeZone: timezone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    throw new CustomRuleCoverageInputError(
+      "business timezone cannot resolve period boundaries",
+    );
+  }
+
+  const values = new Map<string, number>();
+  for (const part of formatter.formatToParts(new Date(epochMilliseconds))) {
+    if (
+      part.type === "year" ||
+      part.type === "month" ||
+      part.type === "day" ||
+      part.type === "hour" ||
+      part.type === "minute" ||
+      part.type === "second"
+    ) {
+      values.set(part.type, Number(part.value));
+    }
+  }
+  const result = {
+    year: values.get("year"),
+    month: values.get("month"),
+    day: values.get("day"),
+    hour: values.get("hour"),
+    minute: values.get("minute"),
+    second: values.get("second"),
+  };
+  if (Object.values(result).some((part) => !Number.isInteger(part))) {
+    throw new CustomRuleCoverageInputError(
+      "business timezone returned an invalid calendar boundary",
+    );
+  }
+  return result as CalendarDateTimeParts;
+}
+
+function utcEpoch(parts: CalendarDateTimeParts): number {
+  const date = new Date(0);
+  date.setUTCFullYear(parts.year, parts.month - 1, parts.day);
+  date.setUTCHours(parts.hour, parts.minute, parts.second, 0);
+  return date.getTime();
+}
+
+function formatOffset(offsetMinutes: number): string {
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absolute = Math.abs(offsetMinutes);
+  const hours = Math.floor(absolute / 60);
+  const minutes = absolute % 60;
+  return `${sign}${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
 function validateMaximumRows(value: number): number {

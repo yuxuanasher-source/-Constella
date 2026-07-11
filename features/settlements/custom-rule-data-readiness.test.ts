@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { CustomRuleMissingDataPolicy } from "./custom-rule-types";
 import {
   analyzeCustomRuleDataReadiness,
+  CustomRuleReadinessInputError,
   isCustomRuleSimulationReadinessFresh,
 } from "./custom-rule-data-readiness";
 import {
@@ -351,7 +352,288 @@ describe("analyzeCustomRuleDataReadiness", () => {
     expect(reverse.readinessHash).toBe(forward.readinessHash);
     expect(reverse.inputs).toEqual(forward.inputs);
   });
+
+  it.each([
+    ["unknown action", { action: "retry_later" }],
+    ["missing default payload", { action: "use_explicit_default" }],
+    [
+      "missing money payload",
+      { action: "use_explicit_default", defaultValue: { type: "money_cents" } },
+    ],
+    [
+      "NaN money payload",
+      {
+        action: "use_explicit_default",
+        defaultValue: { type: "money_cents", amountCents: Number.NaN },
+      },
+    ],
+    [
+      "infinite number payload",
+      {
+        action: "use_explicit_default",
+        defaultValue: { type: "number", value: Number.POSITIVE_INFINITY },
+      },
+    ],
+    [
+      "null money payload",
+      {
+        action: "use_explicit_default",
+        defaultValue: { type: "money_cents", amountCents: null },
+      },
+    ],
+  ])("rejects malformed policy boundary: %s", (_label, missingDataPolicy) => {
+    expect(() =>
+      analyzeUnsafe({
+        catalog: payableReportCatalog(),
+        inputs: [
+          {
+            variableId: "gift_amount",
+            required: false,
+            missingDataPolicy,
+          },
+        ],
+      }),
+    ).toThrow(CustomRuleReadinessInputError);
+  });
+
+  it.each([
+    [
+      "requirement",
+      {
+        variableId: "system_minutes",
+        required: true,
+        unexpected: true,
+      },
+    ],
+    [
+      "policy",
+      {
+        variableId: "gift_amount",
+        required: false,
+        missingDataPolicy: {
+          action: "route_item_to_review",
+          unexpected: true,
+        },
+      },
+    ],
+    [
+      "runtime value",
+      {
+        variableId: "gift_amount",
+        required: false,
+        missingDataPolicy: {
+          action: "use_explicit_default",
+          defaultValue: {
+            type: "money_cents",
+            amountCents: 0,
+            unexpected: true,
+          },
+        },
+      },
+    ],
+  ])("rejects extra keys on %s objects", (_label, requirement) => {
+    expect(() =>
+      analyzeUnsafe({
+        catalog: payableReportCatalog(),
+        inputs: [requirement],
+      }),
+    ).toThrow(CustomRuleReadinessInputError);
+  });
+
+  it("rejects accessors without invoking caller code", () => {
+    let accessorReads = 0;
+    const requirement = { required: true } as Record<string, unknown>;
+    Object.defineProperty(requirement, "variableId", {
+      enumerable: true,
+      get() {
+        accessorReads += 1;
+        return "system_minutes";
+      },
+    });
+    const policy = {} as Record<string, unknown>;
+    Object.defineProperty(policy, "action", {
+      enumerable: true,
+      get() {
+        accessorReads += 1;
+        return "route_item_to_review";
+      },
+    });
+    const defaultValue = { type: "money_cents" } as Record<string, unknown>;
+    Object.defineProperty(defaultValue, "amountCents", {
+      enumerable: true,
+      get() {
+        accessorReads += 1;
+        return 0;
+      },
+    });
+
+    for (const unsafeRequirement of [
+      requirement,
+      {
+        variableId: "gift_amount",
+        required: false,
+        missingDataPolicy: policy,
+      },
+      {
+        variableId: "gift_amount",
+        required: false,
+        missingDataPolicy: {
+          action: "use_explicit_default",
+          defaultValue,
+        },
+      },
+    ]) {
+      expect(() =>
+        analyzeUnsafe({
+          catalog: payableReportCatalog(),
+          inputs: [unsafeRequirement],
+        }),
+      ).toThrow(CustomRuleReadinessInputError);
+    }
+    expect(accessorReads).toBe(0);
+  });
+
+  it("rejects proxies without invoking traps", () => {
+    let trapCalls = 0;
+    const proxy = new Proxy(
+      { action: "route_item_to_review" },
+      {
+        get(target, property, receiver) {
+          trapCalls += 1;
+          return Reflect.get(target, property, receiver);
+        },
+        getOwnPropertyDescriptor(target, property) {
+          trapCalls += 1;
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+        getPrototypeOf(target) {
+          trapCalls += 1;
+          return Reflect.getPrototypeOf(target);
+        },
+        ownKeys(target) {
+          trapCalls += 1;
+          return Reflect.ownKeys(target);
+        },
+      },
+    );
+
+    expect(() =>
+      analyzeUnsafe({
+        catalog: payableReportCatalog(),
+        inputs: [
+          {
+            variableId: "gift_amount",
+            required: false,
+            missingDataPolicy: proxy,
+          },
+        ],
+      }),
+    ).toThrow(CustomRuleReadinessInputError);
+    expect(trapCalls).toBe(0);
+  });
+
+  it("rejects runtime values deeper than 20 levels", () => {
+    let defaultValue: unknown = { type: "string", value: "leaf" };
+    for (let depth = 0; depth < 21; depth += 1) {
+      defaultValue = { type: "array", items: [defaultValue] };
+    }
+
+    expect(() =>
+      analyzeUnsafe({
+        catalog: payableReportCatalog(),
+        inputs: [
+          {
+            variableId: "gift_amount",
+            required: false,
+            missingDataPolicy: {
+              action: "use_explicit_default",
+              defaultValue,
+            },
+          },
+        ],
+      }),
+    ).toThrow(CustomRuleReadinessInputError);
+  });
+
+  it.each([
+    [
+      "array items",
+      {
+        type: "array",
+        items: Array.from({ length: 301 }, () => ({
+          type: "string",
+          value: "item",
+        })),
+      },
+    ],
+    [
+      "object fields",
+      {
+        type: "object",
+        fields: Object.fromEntries(
+          Array.from({ length: 301 }, (_, index) => [
+            `field_${index}`,
+            { type: "string", value: "item" },
+          ]),
+        ),
+      },
+    ],
+  ])("rejects more than 300 %s", (_label, defaultValue) => {
+    expect(() =>
+      analyzeUnsafe({
+        catalog: payableReportCatalog(),
+        inputs: [
+          {
+            variableId: "gift_amount",
+            required: false,
+            missingDataPolicy: {
+              action: "use_explicit_default",
+              defaultValue,
+            },
+          },
+        ],
+      }),
+    ).toThrow(CustomRuleReadinessInputError);
+  });
+
+  it("rejects more than 300 requirements", () => {
+    expect(() =>
+      analyzeUnsafe({
+        catalog: payableReportCatalog(),
+        inputs: Array.from({ length: 301 }, (_, index) => ({
+          variableId: `variable_${index}`,
+          required: true,
+        })),
+      }),
+    ).toThrow(CustomRuleReadinessInputError);
+  });
+
+  it("exposes a stable code for readiness boundary failures", () => {
+    try {
+      analyzeUnsafe({
+        catalog: payableReportCatalog(),
+        inputs: [
+          {
+            variableId: "gift_amount",
+            required: false,
+            missingDataPolicy: { action: "bogus" },
+          },
+        ],
+      });
+      throw new Error("expected readiness validation to fail");
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "CUSTOM_RULE_READINESS_INPUT_INVALID",
+      });
+    }
+  });
 });
+
+function analyzeUnsafe(input: unknown) {
+  return analyzeCustomRuleDataReadiness(
+    input as Parameters<typeof analyzeCustomRuleDataReadiness>[0],
+  );
+}
 
 function payableReportCatalog(): CustomRuleVariableCatalog {
   return buildCustomRuleVariableCatalog({

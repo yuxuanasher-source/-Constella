@@ -8,11 +8,13 @@ import {
   type CustomRuleReadRepository,
 } from "./custom-rule-repository";
 
-const PERIOD_START = "2026-06-01T00:00:00.000Z";
-const PERIOD_END = "2026-06-30T23:59:59.999Z";
+const PERIOD_START = "2026-06-01";
+const PERIOD_END = "2026-06-30";
+const PERIOD_START_BOUNDARY = "2026-06-01T00:00:00.000+08:00";
+const PERIOD_END_EXCLUSIVE = "2026-07-01T00:00:00.000+08:00";
 
 describe("SupabaseCustomRuleReadRepository", () => {
-  it("aggregates only schema-backed coverage metadata from four bounded queries", async () => {
+  it("aggregates only schema-backed coverage metadata from paginated sources", async () => {
     const mock = createClient();
     const repository: CustomRuleReadRepository =
       new SupabaseCustomRuleReadRepository(mock.client);
@@ -94,7 +96,15 @@ describe("SupabaseCustomRuleReadRepository", () => {
         "select",
         [expect.any(String), { count: "exact" }],
       ]);
-      expect(mock.calls[table]).toContainEqual(["limit", [5_001]]);
+      expect(mock.calls[table]).toContainEqual([
+        "order",
+        ["id", { ascending: true }],
+      ]);
+      expect(mock.calls[table]).toContainEqual(["range", [0, 999]]);
+      expect(mock.calls[table]).not.toContainEqual([
+        "limit",
+        expect.any(Array),
+      ]);
     }
 
     for (const table of [
@@ -103,16 +113,16 @@ describe("SupabaseCustomRuleReadRepository", () => {
     ] as const) {
       expect(mock.calls[table]).toContainEqual([
         "gte",
-        ["created_at", PERIOD_START],
+        ["created_at", PERIOD_START_BOUNDARY],
       ]);
       expect(mock.calls[table]).toContainEqual([
-        "lte",
-        ["created_at", PERIOD_END],
+        "lt",
+        ["created_at", PERIOD_END_EXCLUSIVE],
       ]);
     }
     expect(mock.calls.project_streamers).toContainEqual([
-      "lte",
-      ["joined_at", PERIOD_END],
+      "lt",
+      ["joined_at", PERIOD_END_EXCLUSIVE],
     ]);
     expect(mock.calls.settlement_batches).toContainEqual([
       "gte",
@@ -149,7 +159,7 @@ describe("SupabaseCustomRuleReadRepository", () => {
     );
     expect(mock.calls.project_streamers).toContainEqual([
       "or",
-      [`removed_at.is.null,removed_at.gte.${PERIOD_START}`],
+      [`removed_at.is.null,removed_at.gte.${PERIOD_START_BOUNDARY}`],
     ]);
 
     expect(mock.calls.live_reports).toContainEqual([
@@ -165,6 +175,7 @@ describe("SupabaseCustomRuleReadRepository", () => {
     expect(selectFor(mock, "project_streamers")).toContain(
       "streamers!inner(source_type)",
     );
+    expect(selectFor(mock, "project_streamers")).toContain("streamer_id");
     expect(mock.calls.project_cost_items).toContainEqual([
       "eq",
       ["source", "import"],
@@ -222,26 +233,31 @@ describe("SupabaseCustomRuleReadRepository", () => {
     results.project_cost_items = {
       data: [
         {
+          id: "cost-pending-1",
           item_type: "gift",
           live_report_id: "pending-c",
           created_at: "2026-06-10T00:00:00.000Z",
         },
         {
+          id: "cost-pending-2",
           item_type: "gift",
           live_report_id: "pending-c",
           created_at: "2026-06-11T00:00:00.000Z",
         },
         {
+          id: "cost-pending-3",
           item_type: "gift",
           live_report_id: "pending-d",
           created_at: "2026-06-12T00:00:00.000Z",
         },
         {
+          id: "cost-pending-4",
           item_type: "gift",
           live_report_id: "unknown-report",
           created_at: "2026-06-13T00:00:00.000Z",
         },
         {
+          id: "cost-pending-5",
           item_type: "gift",
           live_report_id: null,
           created_at: "2026-06-14T00:00:00.000Z",
@@ -253,21 +269,25 @@ describe("SupabaseCustomRuleReadRepository", () => {
     results.settlement_batch_items = {
       data: [
         {
+          id: "settlement-pending-1",
           settlement_batch_id: "batch-payable-1",
           streamer_id: "streamer-a",
           live_report_id: "pending-c",
         },
         {
+          id: "settlement-pending-2",
           settlement_batch_id: "batch-payable-2",
           streamer_id: "streamer-b",
           live_report_id: "pending-d",
         },
         {
+          id: "settlement-pending-3",
           settlement_batch_id: "batch-receivable-1",
           streamer_id: null,
           live_report_id: "unknown-report",
         },
         {
+          id: "settlement-pending-4",
           settlement_batch_id: "batch-receivable-1",
           streamer_id: null,
           live_report_id: null,
@@ -297,6 +317,68 @@ describe("SupabaseCustomRuleReadRepository", () => {
     });
   });
 
+  it("intersects settlement coverage with real project-streamer IDs", async () => {
+    const results = defaultResults();
+    results.settlement_batch_items = {
+      data: [
+        {
+          id: "intersection-1",
+          settlement_batch_id: "batch-payable-1",
+          streamer_id: "streamer-a",
+          live_report_id: "report-1",
+        },
+        {
+          id: "intersection-2",
+          settlement_batch_id: "batch-payable-1",
+          streamer_id: "streamer-a",
+          live_report_id: "report-1",
+        },
+        {
+          id: "intersection-3",
+          settlement_batch_id: "batch-payable-2",
+          streamer_id: "streamer-foreign",
+          live_report_id: "report-2",
+        },
+        {
+          id: "intersection-4",
+          settlement_batch_id: "batch-payable-2",
+          streamer_id: null,
+          live_report_id: "report-2",
+        },
+        {
+          id: "intersection-5",
+          settlement_batch_id: "batch-payable-2",
+          streamer_id: "streamer-b",
+          live_report_id: "report-unknown",
+        },
+        {
+          id: "intersection-6",
+          settlement_batch_id: "batch-receivable-1",
+          streamer_id: "streamer-b",
+          live_report_id: "report-2",
+        },
+      ],
+      count: 6,
+      error: null,
+    };
+
+    const coverage = await new SupabaseCustomRuleReadRepository(
+      createClient(results).client,
+    ).getProjectVariableCoverage({
+      organizationId: "org-1",
+      projectId: "project-1",
+    });
+
+    expect(coverage.variables.period_payable_amount).toMatchObject({
+      numerator: 1,
+      denominator: 2,
+    });
+    expect(coverage.variables.period_receivable_amount).toMatchObject({
+      numerator: 1,
+      denominator: 3,
+    });
+  });
+
   it("returns no-history metadata without converting it into a query failure", async () => {
     const mock = createClient(emptyResults());
     const repository = new SupabaseCustomRuleReadRepository(mock.client);
@@ -321,6 +403,56 @@ describe("SupabaseCustomRuleReadRepository", () => {
     });
     expect(mock.from).toHaveBeenCalledTimes(4);
     expect(mock.calls.settlement_batch_items).toEqual([]);
+  });
+
+  it("converts business-date report boundaries in the resolved IANA timezone", async () => {
+    const mock = createClient();
+    const repository = new SupabaseCustomRuleReadRepository(mock.client, {
+      resolvedBusinessTimezone: {
+        value: "America/New_York",
+        confirmed: true,
+        source: "confirmed_contract",
+      },
+    });
+
+    await repository.getProjectVariableCoverage({
+      organizationId: "org-1",
+      projectId: "project-1",
+      periodStart: "2026-03-08",
+      periodEnd: "2026-03-08",
+    });
+
+    for (const table of [
+      "live_reports",
+      "project_cost_items",
+    ] as const) {
+      expect(mock.calls[table]).toContainEqual([
+        "gte",
+        ["created_at", "2026-03-08T00:00:00.000-05:00"],
+      ]);
+      expect(mock.calls[table]).toContainEqual([
+        "lt",
+        ["created_at", "2026-03-09T00:00:00.000-04:00"],
+      ]);
+    }
+    expect(mock.calls.project_streamers).toContainEqual([
+      "lt",
+      ["joined_at", "2026-03-09T00:00:00.000-04:00"],
+    ]);
+    expect(mock.calls.project_streamers).toContainEqual([
+      "or",
+      [
+        "removed_at.is.null,removed_at.gte.2026-03-08T00:00:00.000-05:00",
+      ],
+    ]);
+    expect(mock.calls.settlement_batches).toContainEqual([
+      "gte",
+      ["period_end", "2026-03-08"],
+    ]);
+    expect(mock.calls.settlement_batches).toContainEqual([
+      "lte",
+      ["period_start", "2026-03-08"],
+    ]);
   });
 
   it("does not issue an unbounded settlement-item query when no batch overlaps", async () => {
@@ -410,6 +542,30 @@ describe("SupabaseCustomRuleReadRepository", () => {
       },
     ],
     [
+      "offset timestamp",
+      {
+        organizationId: "org-1",
+        projectId: "project-1",
+        periodStart: "2026-06-01T00:00:00+08:00",
+      },
+    ],
+    [
+      "impossible calendar date",
+      {
+        organizationId: "org-1",
+        projectId: "project-1",
+        periodStart: "2026-02-30",
+      },
+    ],
+    [
+      "T24 time",
+      {
+        organizationId: "org-1",
+        projectId: "project-1",
+        periodEnd: "2026-06-01T24:00:00+08:00",
+      },
+    ],
+    [
       "unknown key",
       {
         organizationId: "org-1",
@@ -457,6 +613,122 @@ describe("SupabaseCustomRuleReadRepository", () => {
     ).rejects.toMatchObject({ code: "CUSTOM_RULE_COVERAGE_INPUT_INVALID" });
     expect(reads).toBe(0);
     expect(mock.from).not.toHaveBeenCalled();
+  });
+
+  it("reads 1001 rows as stable 1000 + 1 PostgREST pages", async () => {
+    const results = defaultResults();
+    results.live_reports = {
+      data: approvedReportRows(1_001),
+      count: 1_001,
+      error: null,
+    };
+    const mock = createClient(results);
+
+    const coverage = await new SupabaseCustomRuleReadRepository(
+      mock.client,
+    ).getProjectVariableCoverage({
+      organizationId: "org-1",
+      projectId: "project-1",
+    });
+
+    expect(coverage.variables.system_minutes).toMatchObject({
+      numerator: 1_001,
+      denominator: 1_001,
+    });
+    expect(mock.calls.live_reports.filter(([method]) => method === "range")).toEqual([
+      ["range", [0, 999]],
+      ["range", [1_000, 1_999]],
+    ]);
+    expect(mock.calls.live_reports.filter(([method]) => method === "order")).toHaveLength(2);
+    expect(
+      mock.from.mock.calls.filter(([table]) => table === "live_reports"),
+    ).toHaveLength(2);
+  });
+
+  it("uses one page at the exact 1000-row boundary", async () => {
+    const results = defaultResults();
+    results.live_reports = {
+      data: approvedReportRows(1_000),
+      count: 1_000,
+      error: null,
+    };
+    const mock = createClient(results);
+
+    await new SupabaseCustomRuleReadRepository(
+      mock.client,
+    ).getProjectVariableCoverage({
+      organizationId: "org-1",
+      projectId: "project-1",
+    });
+
+    expect(mock.calls.live_reports.filter(([method]) => method === "range")).toEqual([
+      ["range", [0, 999]],
+    ]);
+  });
+
+  it.each([
+    [
+      "duplicate page",
+      {
+        1_000: { data: [approvedReportRows(1)[0]] },
+      },
+    ],
+    [
+      "short first page",
+      {
+        0: { data: approvedReportRows(999) },
+      },
+    ],
+    [
+      "count drift",
+      {
+        1_000: { count: 1_002 },
+      },
+    ],
+  ] as const)("fails closed on %s pagination anomalies", async (_label, pages) => {
+    const results = defaultResults();
+    results.live_reports = {
+      data: approvedReportRows(1_001),
+      count: 1_001,
+      error: null,
+      pages: pages as Record<number, MockPageOverride>,
+    };
+
+    await expect(
+      new SupabaseCustomRuleReadRepository(
+        createClient(results).client,
+      ).getProjectVariableCoverage({
+        organizationId: "org-1",
+        projectId: "project-1",
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_COVERAGE_PAGE_INVALID",
+      source: "live_reports",
+    });
+  });
+
+  it("fails closed when a later page query fails", async () => {
+    const pageError = new Error("second page unavailable");
+    const results = defaultResults();
+    results.live_reports = {
+      data: approvedReportRows(1_001),
+      count: 1_001,
+      error: null,
+      pages: { 1_000: { error: pageError } },
+    };
+
+    await expect(
+      new SupabaseCustomRuleReadRepository(
+        createClient(results).client,
+      ).getProjectVariableCoverage({
+        organizationId: "org-1",
+        projectId: "project-1",
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_COVERAGE_QUERY_FAILED",
+      source: "live_reports",
+      cause: pageError,
+    });
   });
 
   it.each([
@@ -604,6 +876,29 @@ describe("SupabaseCustomRuleReadRepository", () => {
       businessTimezoneConfirmed: false,
     });
   });
+
+  it("rejects period filtering when the business timezone is unresolved", async () => {
+    const mock = createClient();
+    const repository = new SupabaseCustomRuleReadRepository(mock.client, {
+      resolvedBusinessTimezone: {
+        value: "Asia/Shanghai",
+        confirmed: true,
+        source: "unresolved",
+      },
+    });
+
+    await expect(
+      repository.getProjectVariableCoverage({
+        organizationId: "org-1",
+        projectId: "project-1",
+        periodStart: PERIOD_START,
+        periodEnd: PERIOD_END,
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_COVERAGE_INPUT_INVALID",
+    });
+    expect(mock.from).not.toHaveBeenCalled();
+  });
 });
 
 const TABLES = [
@@ -619,9 +914,12 @@ type QueryCall = [
   | "eq"
   | "in"
   | "gte"
+  | "lt"
   | "lte"
   | "or"
   | "not"
+  | "order"
+  | "range"
   | "limit"
   | "returns",
   unknown[],
@@ -630,6 +928,12 @@ type MockResult = {
   data: unknown[] | null;
   count: number | null;
   error: Error | null;
+  pages?: Record<number, MockPageOverride>;
+};
+type MockPageOverride = {
+  data?: unknown[] | null;
+  count?: number | null;
+  error?: Error | null;
 };
 type MockResults = Record<TableName, MockResult>;
 type MockQuery = {
@@ -637,9 +941,12 @@ type MockQuery = {
   eq(column: string, value: unknown): MockQuery;
   in(column: string, values: readonly unknown[]): MockQuery;
   gte(column: string, value: string): MockQuery;
+  lt(column: string, value: string): MockQuery;
   lte(column: string, value: string): MockQuery;
   or(filter: string): MockQuery;
   not(column: string, operator: string, value: unknown): MockQuery;
+  order(column: string, options: { ascending: boolean }): MockQuery;
+  range(from: number, to: number): MockQuery;
   limit(count: number): MockQuery;
   returns(): Promise<MockResult>;
 };
@@ -662,6 +969,8 @@ function createQuery(
   calls: Record<TableName, QueryCall[]>,
   results: MockResults,
 ): MockQuery {
+  let selectedRange: { from: number; to: number } | null = null;
+  let selectedOrder: { column: string; ascending: boolean } | null = null;
   const record = (
     method: QueryCall[0],
     args: unknown[],
@@ -674,17 +983,76 @@ function createQuery(
     eq: (column, value) => record("eq", [column, value]),
     in: (column, values) => record("in", [column, values]),
     gte: (column, value) => record("gte", [column, value]),
+    lt: (column, value) => record("lt", [column, value]),
     lte: (column, value) => record("lte", [column, value]),
     or: (filter) => record("or", [filter]),
     not: (column, operator, value) =>
       record("not", [column, operator, value]),
+    order: (column, options) => {
+      selectedOrder = { column, ascending: options.ascending };
+      return record("order", [column, options]);
+    },
+    range: (from, to) => {
+      selectedRange = { from, to };
+      return record("range", [from, to]);
+    },
     limit: (count) => record("limit", [count]),
     returns: async () => {
       calls[table].push(["returns", []]);
-      return results[table];
+      const base = results[table];
+      const override = selectedRange
+        ? base.pages?.[selectedRange.from]
+        : undefined;
+      const orderedData = selectedOrder
+        ? orderRows(base.data, selectedOrder)
+        : base.data;
+      const data = hasOwn(override, "data")
+        ? override?.data ?? null
+        : selectedRange && orderedData
+          ? orderedData.slice(selectedRange.from, selectedRange.to + 1)
+          : orderedData;
+      return {
+        data,
+        count: hasOwn(override, "count")
+          ? override?.count ?? null
+          : base.count,
+        error: hasOwn(override, "error")
+          ? override?.error ?? null
+          : base.error,
+      };
     },
   };
   return query;
+}
+
+function hasOwn(
+  value: object | null | undefined,
+  key: PropertyKey,
+): boolean {
+  return value !== null && value !== undefined && Object.hasOwn(value, key);
+}
+
+function orderRows(
+  rows: unknown[] | null,
+  order: { column: string; ascending: boolean },
+): unknown[] | null {
+  if (!rows) {
+    return rows;
+  }
+  return [...rows].sort((left, right) => {
+    const leftValue = rowOrderValue(left, order.column);
+    const rightValue = rowOrderValue(right, order.column);
+    const comparison = leftValue.localeCompare(rightValue);
+    return order.ascending ? comparison : -comparison;
+  });
+}
+
+function rowOrderValue(row: unknown, column: string): string {
+  if (!row || typeof row !== "object" || Array.isArray(row)) {
+    return "";
+  }
+  const value = (row as Record<string, unknown>)[column];
+  return typeof value === "string" ? value : "";
 }
 
 function selectFor(mock: ReturnType<typeof createClient>, table: TableName) {
@@ -752,6 +1120,8 @@ function defaultResults(): MockResults {
     project_streamers: {
       data: [
         {
+          id: "project-streamer-1",
+          streamer_id: "streamer-a",
           hourly_rate: 8_000,
           base_salary: 0,
           cps_rate_bps: 1_500,
@@ -761,6 +1131,8 @@ function defaultResults(): MockResults {
           streamers: { source_type: "internal" },
         },
         {
+          id: "project-streamer-2",
+          streamer_id: "streamer-b",
           hourly_rate: null,
           base_salary: 5_000,
           cps_rate_bps: 0,
@@ -776,26 +1148,31 @@ function defaultResults(): MockResults {
     project_cost_items: {
       data: [
         {
+          id: "cost-1",
           item_type: "gift",
           live_report_id: "report-1",
           created_at: "2026-06-10T00:00:00.000Z",
         },
         {
+          id: "cost-2",
           item_type: "gift",
           live_report_id: "report-1",
           created_at: "2026-06-11T00:00:00.000Z",
         },
         {
+          id: "cost-3",
           item_type: "gift",
           live_report_id: null,
           created_at: "2026-06-12T00:00:00.000Z",
         },
         {
+          id: "cost-4",
           item_type: "supplier_fee",
           live_report_id: "report-2",
           created_at: "2026-06-13T00:00:00.000Z",
         },
         {
+          id: "cost-5",
           item_type: "traffic",
           live_report_id: "report-3",
           created_at: "2026-06-14T00:00:00.000Z",
@@ -834,18 +1211,21 @@ function defaultResults(): MockResults {
     settlement_batch_items: {
       data: [
         {
+          id: "settlement-item-1",
           settlement_batch_id: "batch-payable-1",
           streamer_id: "streamer-a",
           live_report_id: "report-1",
         },
         {
+          id: "settlement-item-2",
           settlement_batch_id: "batch-payable-2",
           streamer_id: "streamer-b",
           live_report_id: "report-2",
         },
         {
+          id: "settlement-item-3",
           settlement_batch_id: "batch-receivable-1",
-          streamer_id: null,
+          streamer_id: "streamer-a",
           live_report_id: "report-1",
         },
       ],
@@ -853,4 +1233,19 @@ function defaultResults(): MockResults {
       error: null,
     },
   };
+}
+
+function approvedReportRows(count: number): unknown[] {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `report-${String(index + 1).padStart(6, "0")}`,
+    system_duration: 60,
+    screenshot_duration: 60,
+    settlement_duration: 60,
+    evidence_level: "green",
+    time_source: "system",
+    viewers: 100,
+    reviewed_at: "2026-06-02T10:00:00.000Z",
+    created_at: "2026-06-01T10:00:00.000Z",
+    live_tasks: { system_started_at: "2026-06-01T09:00:00.000Z" },
+  }));
 }

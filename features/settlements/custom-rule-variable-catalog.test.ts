@@ -282,6 +282,48 @@ describe("buildCustomRuleVariableCatalog", () => {
     expect(changedTimezone.version).not.toBe(base.version);
     expect(changedTimezoneSource.version).not.toBe(base.version);
   });
+
+  it("isolates and deep-freezes nested runtime types for every catalog DTO", () => {
+    const first = buildCustomRuleVariableCatalog({
+      scope: "payable",
+      executionGrain: "report",
+      coverage: coverageFixture(),
+    });
+    const second = buildCustomRuleVariableCatalog({
+      scope: "payable",
+      executionGrain: "report",
+      coverage: coverageFixture(),
+    });
+    const firstType = variable(first, "project_tags").runtimeType;
+    const secondType = variable(second, "project_tags").runtimeType;
+
+    expect(firstType).not.toBe(secondType);
+    expect(firstType.kind).toBe("array");
+    expect(secondType.kind).toBe("array");
+    if (firstType.kind !== "array" || secondType.kind !== "array") {
+      throw new Error("project_tags must remain an array runtime type");
+    }
+    expect(firstType.itemType).not.toBe(secondType.itemType);
+    expect(Object.isFrozen(firstType)).toBe(true);
+    expect(Object.isFrozen(firstType.itemType)).toBe(true);
+    expect(() =>
+      Object.assign(firstType.itemType, {
+        kind: "scalar",
+        scalarType: "number",
+      }),
+    ).toThrow(TypeError);
+
+    const third = buildCustomRuleVariableCatalog({
+      scope: "payable",
+      executionGrain: "report",
+      coverage: coverageFixture(),
+    });
+    expect(variable(third, "project_tags").runtimeType).toEqual({
+      kind: "array",
+      itemType: { kind: "scalar", scalarType: "string" },
+    });
+    expect(third.version).toBe(first.version);
+  });
 });
 
 describe("hashCustomRuleCatalogState", () => {

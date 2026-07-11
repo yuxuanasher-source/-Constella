@@ -155,7 +155,8 @@ const STRING_ARRAY_TYPE: RuntimeValueType = {
   itemType: STRING_TYPE,
 };
 
-const VARIABLE_DEFINITIONS: readonly VariableDefinition[] = [
+const VARIABLE_DEFINITIONS: readonly VariableDefinition[] =
+  deepFreezeVariableDefinitions([
   source({
     id: "system_minutes",
     label: "系统计时分钟",
@@ -601,7 +602,7 @@ const VARIABLE_DEFINITIONS: readonly VariableDefinition[] = [
     scopes: RECONCILIATION_ONLY,
     grains: PERIOD_GRAINS,
   }),
-];
+  ]);
 
 export function buildCustomRuleVariableCatalog(input: {
   scope: CustomRuleScope;
@@ -632,6 +633,7 @@ export function buildCustomRuleVariableCatalog(input: {
   const variables = definitions
     .map((definition): CustomRuleVariableCatalogItem => {
       const coverage = resolveCoverage(definition, input.coverage);
+      const runtimeType = cloneAndFreezeRuntimeType(definition.runtimeType);
       const availability =
         definition.requiresBusinessTimezone && !timezoneReady
           ? "unavailable"
@@ -648,7 +650,7 @@ export function buildCustomRuleVariableCatalog(input: {
       const item: CustomRuleVariableCatalogItem = {
         id: definition.id,
         label: definition.label,
-        runtimeType: definition.runtimeType,
+        runtimeType,
         unit: definition.unit,
         sourceLabel: definition.sourceLabel,
         availability,
@@ -802,6 +804,57 @@ export function normalizeCustomRuleBusinessTimezoneSource(
     value === "unresolved"
     ? value
     : "unresolved";
+}
+
+function deepFreezeVariableDefinitions(
+  definitions: VariableDefinition[],
+): readonly VariableDefinition[] {
+  const pending: object[] = [definitions];
+  const visited = new WeakSet<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || visited.has(current)) {
+      continue;
+    }
+    visited.add(current);
+    for (const value of Object.values(current)) {
+      if (value && typeof value === "object") {
+        pending.push(value);
+      }
+    }
+    Object.freeze(current);
+  }
+  return definitions;
+}
+
+function cloneAndFreezeRuntimeType(
+  runtimeType: RuntimeValueType,
+): RuntimeValueType {
+  if (runtimeType.kind === "scalar") {
+    return Object.freeze({
+      kind: "scalar",
+      scalarType: runtimeType.scalarType,
+    });
+  }
+  if (runtimeType.kind === "array") {
+    return Object.freeze({
+      kind: "array",
+      itemType: cloneAndFreezeRuntimeType(runtimeType.itemType),
+    });
+  }
+
+  const fields = Object.fromEntries(
+    Object.keys(runtimeType.fields)
+      .sort()
+      .map((key) => [
+        key,
+        cloneAndFreezeRuntimeType(runtimeType.fields[key]),
+      ]),
+  ) as Record<string, RuntimeValueType>;
+  return Object.freeze({
+    kind: "object",
+    fields: Object.freeze(fields),
+  });
 }
 
 function source(

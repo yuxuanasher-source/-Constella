@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { types as nodeTypes } from "node:util";
 
 import type {
   CustomRuleMissingDataPolicy,
@@ -69,6 +70,15 @@ export type CustomRuleSimulationReadinessSnapshot = Pick<
   "catalogVersion" | "readinessHash" | "businessTimezone"
 >;
 
+export class CustomRuleReadinessInputError extends TypeError {
+  readonly code = "CUSTOM_RULE_READINESS_INPUT_INVALID";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "CustomRuleReadinessInputError";
+  }
+}
+
 const TIMEZONE_VARIABLES = new Set(["weekday", "hour_of_day"]);
 const EXPLICIT_DEFAULT_FORBIDDEN_VARIABLES = new Set([
   "project_id",
@@ -87,11 +97,15 @@ const EXPLICIT_DEFAULT_FORBIDDEN_VARIABLES = new Set([
   "period_start",
   "period_end",
 ]);
+const MAX_REQUIREMENTS = 300;
+const MAX_RUNTIME_VALUE_DEPTH = 20;
+const MAX_RUNTIME_VALUE_NODES = 300;
 
-export function analyzeCustomRuleDataReadiness(input: {
+export function analyzeCustomRuleDataReadiness(unsafeInput: {
   catalog: CustomRuleVariableCatalog;
   inputs: readonly CustomRuleInputRequirement[];
 }): CustomRuleDataReadinessReport {
+  const input = validateReadinessInput(unsafeInput);
   validateCatalogCoverage(input.catalog);
   const catalogById = new Map(
     input.catalog.variables.map((variable) => [variable.id, variable]),
@@ -250,77 +264,73 @@ function evaluateInputReadiness(input: {
     });
   }
 
-  if (
-    policy.action === "use_explicit_default" &&
-    EXPLICIT_DEFAULT_FORBIDDEN_VARIABLES.has(variable.id)
-  ) {
-    return evaluatedVariable({
-      requirement: input.requirement,
-      variable,
-      policy,
-      status,
-      ready: false,
-      code: "CUSTOM_RULE_EXPLICIT_DEFAULT_FORBIDDEN",
-      reasonZh: "身份、证据真实性或授权相关变量禁止使用默认值。",
-    });
+  switch (policy.action) {
+    case "route_item_to_review":
+      return evaluatedVariable({
+        requirement: input.requirement,
+        variable,
+        policy,
+        status,
+        ready: true,
+        code: "CUSTOM_RULE_OPTIONAL_INPUT_ROUTE_TO_REVIEW",
+        reasonZh:
+          status === "partial"
+            ? "缺失该变量的记录将转入人工复核。"
+            : "已明确：该变量缺失时转入人工复核。",
+      });
+    case "block_batch":
+      return evaluatedVariable({
+        requirement: input.requirement,
+        variable,
+        policy,
+        status,
+        ready: true,
+        code: "CUSTOM_RULE_OPTIONAL_INPUT_BLOCK_BATCH",
+        reasonZh:
+          status === "partial"
+            ? "存在缺失记录；执行时将阻断整个结算批次。"
+            : "已明确：该变量缺失时阻断整个结算批次。",
+      });
+    case "use_explicit_default":
+      if (EXPLICIT_DEFAULT_FORBIDDEN_VARIABLES.has(variable.id)) {
+        return evaluatedVariable({
+          requirement: input.requirement,
+          variable,
+          policy,
+          status,
+          ready: false,
+          code: "CUSTOM_RULE_EXPLICIT_DEFAULT_FORBIDDEN",
+          reasonZh: "身份、证据真实性或授权相关变量禁止使用默认值。",
+        });
+      }
+      if (!runtimeValueMatchesType(policy.defaultValue, variable.runtimeType)) {
+        return evaluatedVariable({
+          requirement: input.requirement,
+          variable,
+          policy,
+          status,
+          ready: false,
+          code: "CUSTOM_RULE_EXPLICIT_DEFAULT_TYPE_MISMATCH",
+          reasonZh: "明确默认值的运行时类型与变量类型不一致。",
+        });
+      }
+      return evaluatedVariable({
+        requirement: input.requirement,
+        variable,
+        policy,
+        status,
+        ready: true,
+        code: "CUSTOM_RULE_OPTIONAL_INPUT_EXPLICIT_DEFAULT",
+        reasonZh:
+          status === "partial"
+            ? "缺失记录将使用已明确并纳入试算的默认值。"
+            : "已明确：该变量缺失时使用可见默认值。",
+      });
+    default:
+      throw new CustomRuleReadinessInputError(
+        "missing-data policy action is unsupported",
+      );
   }
-
-  if (
-    policy.action === "use_explicit_default" &&
-    !runtimeValueMatchesType(policy.defaultValue, variable.runtimeType)
-  ) {
-    return evaluatedVariable({
-      requirement: input.requirement,
-      variable,
-      policy,
-      status,
-      ready: false,
-      code: "CUSTOM_RULE_EXPLICIT_DEFAULT_TYPE_MISMATCH",
-      reasonZh: "明确默认值的运行时类型与变量类型不一致。",
-    });
-  }
-
-  if (policy.action === "route_item_to_review") {
-    return evaluatedVariable({
-      requirement: input.requirement,
-      variable,
-      policy,
-      status,
-      ready: true,
-      code: "CUSTOM_RULE_OPTIONAL_INPUT_ROUTE_TO_REVIEW",
-      reasonZh:
-        status === "partial"
-          ? "缺失该变量的记录将转入人工复核。"
-          : "已明确：该变量缺失时转入人工复核。",
-    });
-  }
-  if (policy.action === "block_batch") {
-    return evaluatedVariable({
-      requirement: input.requirement,
-      variable,
-      policy,
-      status,
-      ready: true,
-      code: "CUSTOM_RULE_OPTIONAL_INPUT_BLOCK_BATCH",
-      reasonZh:
-        status === "partial"
-          ? "存在缺失记录；执行时将阻断整个结算批次。"
-          : "已明确：该变量缺失时阻断整个结算批次。",
-    });
-  }
-
-  return evaluatedVariable({
-    requirement: input.requirement,
-    variable,
-    policy,
-    status,
-    ready: true,
-    code: "CUSTOM_RULE_OPTIONAL_INPUT_EXPLICIT_DEFAULT",
-    reasonZh:
-      status === "partial"
-        ? "缺失记录将使用已明确并纳入试算的默认值。"
-        : "已明确：该变量缺失时使用可见默认值。",
-  });
 }
 
 function resolveDataStatus(
@@ -388,6 +398,471 @@ function evaluated(input: {
     },
     missingDataPolicy: input.policy,
   };
+}
+
+type OwnDataObject = {
+  descriptors: PropertyDescriptorMap;
+  keys: string[];
+};
+
+type RuntimeValueWorkItem = {
+  source: unknown;
+  depth: number;
+  assign: (value: TypedRuntimeValue) => void;
+};
+
+function validateReadinessInput(input: unknown): {
+  catalog: CustomRuleVariableCatalog;
+  inputs: readonly CustomRuleInputRequirement[];
+} {
+  const outer = readOwnDataObject(input, "readiness input");
+  assertExactKeys(outer, ["catalog", "inputs"], "readiness input");
+  const catalog = ownDataValue(outer, "catalog");
+  if (
+    nodeTypes.isProxy(catalog) ||
+    !catalog ||
+    typeof catalog !== "object" ||
+    Array.isArray(catalog)
+  ) {
+    throw new CustomRuleReadinessInputError(
+      "catalog must be a non-proxy object",
+    );
+  }
+
+  const unsafeRequirements = readOwnDataArray(
+    ownDataValue(outer, "inputs"),
+    "inputs",
+    MAX_REQUIREMENTS,
+  );
+  const variableIds = new Set<string>();
+  const requirements = unsafeRequirements.map((requirement, index) => {
+    const validated = validateRequirement(requirement, index);
+    if (variableIds.has(validated.variableId)) {
+      throw new CustomRuleReadinessInputError(
+        `inputs[${index}] duplicates variableId ${validated.variableId}`,
+      );
+    }
+    variableIds.add(validated.variableId);
+    return validated;
+  });
+
+  const snapshot = Object.create(null) as {
+    catalog: CustomRuleVariableCatalog;
+    inputs: readonly CustomRuleInputRequirement[];
+  };
+  snapshot.catalog = catalog as CustomRuleVariableCatalog;
+  snapshot.inputs = Object.freeze(requirements);
+  return Object.freeze(snapshot);
+}
+
+function validateRequirement(
+  input: unknown,
+  index: number,
+): CustomRuleInputRequirement {
+  const label = `inputs[${index}]`;
+  const requirement = readOwnDataObject(input, label);
+  const variableId = ownDataValue(requirement, "variableId");
+  const required = ownDataValue(requirement, "required");
+  if (
+    typeof variableId !== "string" ||
+    variableId.length === 0 ||
+    variableId.trim() !== variableId
+  ) {
+    throw new CustomRuleReadinessInputError(
+      `${label}.variableId must be a nonempty canonical string`,
+    );
+  }
+  if (required === true) {
+    assertExactKeys(requirement, ["variableId", "required"], label);
+    return freezeNullRecord({ variableId, required: true });
+  }
+  if (required !== false) {
+    throw new CustomRuleReadinessInputError(
+      `${label}.required must be a boolean literal`,
+    );
+  }
+  assertAllowedKeys(
+    requirement,
+    ["variableId", "required", "missingDataPolicy"],
+    label,
+  );
+  if (!Object.hasOwn(requirement.descriptors, "missingDataPolicy")) {
+    return freezeNullRecord({ variableId, required: false });
+  }
+  return freezeNullRecord({
+    variableId,
+    required: false,
+    missingDataPolicy: validateMissingDataPolicy(
+      ownDataValue(requirement, "missingDataPolicy"),
+      `${label}.missingDataPolicy`,
+    ),
+  });
+}
+
+function validateMissingDataPolicy(
+  input: unknown,
+  label: string,
+): CustomRuleMissingDataPolicy {
+  const policy = readOwnDataObject(input, label);
+  const action = ownDataValue(policy, "action");
+  switch (action) {
+    case "route_item_to_review":
+      assertExactKeys(policy, ["action"], label);
+      return freezeNullRecord({ action });
+    case "block_batch":
+      assertExactKeys(policy, ["action"], label);
+      return freezeNullRecord({ action });
+    case "use_explicit_default":
+      assertExactKeys(policy, ["action", "defaultValue"], label);
+      return freezeNullRecord({
+        action,
+        defaultValue: validateTypedRuntimeValue(
+          ownDataValue(policy, "defaultValue"),
+          `${label}.defaultValue`,
+        ),
+      });
+    default:
+      throw new CustomRuleReadinessInputError(
+        `${label}.action is unsupported`,
+      );
+  }
+}
+
+function validateTypedRuntimeValue(
+  input: unknown,
+  label: string,
+): TypedRuntimeValue {
+  let snapshot: TypedRuntimeValue | undefined;
+  let nodeCount = 0;
+  let itemCount = 0;
+  const work: RuntimeValueWorkItem[] = [
+    {
+      source: input,
+      depth: 0,
+      assign(value) {
+        snapshot = value;
+      },
+    },
+  ];
+
+  while (work.length > 0) {
+    const current = work.pop();
+    if (!current) {
+      break;
+    }
+    if (current.depth > MAX_RUNTIME_VALUE_DEPTH) {
+      throw new CustomRuleReadinessInputError(
+        `${label} exceeds maximum depth ${MAX_RUNTIME_VALUE_DEPTH}`,
+      );
+    }
+    nodeCount += 1;
+    if (nodeCount > MAX_RUNTIME_VALUE_NODES) {
+      throw new CustomRuleReadinessInputError(
+        `${label} exceeds maximum node count ${MAX_RUNTIME_VALUE_NODES}`,
+      );
+    }
+
+    const value = readOwnDataObject(current.source, label);
+    const type = ownDataValue(value, "type");
+    switch (type) {
+      case "money_cents": {
+        assertExactKeys(value, ["type", "amountCents"], label);
+        const amountCents = ownDataValue(value, "amountCents");
+        if (!Number.isSafeInteger(amountCents)) {
+          throw new CustomRuleReadinessInputError(
+            `${label}.amountCents must be a safe integer`,
+          );
+        }
+        current.assign(
+          freezeNullRecord({ type, amountCents }) as TypedRuntimeValue,
+        );
+        break;
+      }
+      case "rate_bps": {
+        assertExactKeys(value, ["type", "rateBps"], label);
+        const rateBps = ownDataValue(value, "rateBps");
+        if (!Number.isSafeInteger(rateBps)) {
+          throw new CustomRuleReadinessInputError(
+            `${label}.rateBps must be a safe integer`,
+          );
+        }
+        current.assign(freezeNullRecord({ type, rateBps }) as TypedRuntimeValue);
+        break;
+      }
+      case "number": {
+        assertExactKeys(value, ["type", "value"], label);
+        const numericValue = ownDataValue(value, "value");
+        if (typeof numericValue !== "number" || !Number.isFinite(numericValue)) {
+          throw new CustomRuleReadinessInputError(
+            `${label}.value must be a finite number`,
+          );
+        }
+        current.assign(
+          freezeNullRecord({ type, value: numericValue }) as TypedRuntimeValue,
+        );
+        break;
+      }
+      case "integer": {
+        assertExactKeys(value, ["type", "value"], label);
+        const integerValue = ownDataValue(value, "value");
+        if (!Number.isSafeInteger(integerValue)) {
+          throw new CustomRuleReadinessInputError(
+            `${label}.value must be a safe integer`,
+          );
+        }
+        current.assign(
+          freezeNullRecord({ type, value: integerValue }) as TypedRuntimeValue,
+        );
+        break;
+      }
+      case "boolean":
+      case "string":
+      case "timestamp": {
+        assertExactKeys(value, ["type", "value"], label);
+        const scalarValue = ownDataValue(value, "value");
+        const expectedType = type === "boolean" ? "boolean" : "string";
+        if (typeof scalarValue !== expectedType) {
+          throw new CustomRuleReadinessInputError(
+            `${label}.value must be a ${expectedType}`,
+          );
+        }
+        current.assign(
+          freezeNullRecord({ type, value: scalarValue }) as TypedRuntimeValue,
+        );
+        break;
+      }
+      case "array": {
+        assertExactKeys(value, ["type", "items"], label);
+        const unsafeItems = readOwnDataArray(
+          ownDataValue(value, "items"),
+          `${label}.items`,
+          MAX_RUNTIME_VALUE_NODES,
+        );
+        itemCount += unsafeItems.length;
+        assertRuntimeItemBudget(itemCount, label);
+        const items = new Array<TypedRuntimeValue>(unsafeItems.length);
+        const arraySnapshot = Object.create(null) as {
+          type: "array";
+          items: TypedRuntimeValue[];
+        };
+        arraySnapshot.type = "array";
+        arraySnapshot.items = items;
+        current.assign(arraySnapshot);
+        for (let index = unsafeItems.length - 1; index >= 0; index -= 1) {
+          work.push({
+            source: unsafeItems[index],
+            depth: current.depth + 1,
+            assign(child) {
+              items[index] = child;
+            },
+          });
+        }
+        break;
+      }
+      case "object": {
+        assertExactKeys(value, ["type", "fields"], label);
+        const unsafeFields = readOwnDataObject(
+          ownDataValue(value, "fields"),
+          `${label}.fields`,
+        );
+        if (unsafeFields.keys.length > MAX_RUNTIME_VALUE_NODES) {
+          throw new CustomRuleReadinessInputError(
+            `${label}.fields exceeds ${MAX_RUNTIME_VALUE_NODES} entries`,
+          );
+        }
+        itemCount += unsafeFields.keys.length;
+        assertRuntimeItemBudget(itemCount, label);
+        const fields = Object.create(null) as Record<
+          string,
+          TypedRuntimeValue
+        >;
+        const objectSnapshot = Object.create(null) as {
+          type: "object";
+          fields: Record<string, TypedRuntimeValue>;
+        };
+        objectSnapshot.type = "object";
+        objectSnapshot.fields = fields;
+        current.assign(objectSnapshot);
+        for (let index = unsafeFields.keys.length - 1; index >= 0; index -= 1) {
+          const key = unsafeFields.keys[index];
+          work.push({
+            source: ownDataValue(unsafeFields, key),
+            depth: current.depth + 1,
+            assign(child) {
+              fields[key] = child;
+            },
+          });
+        }
+        break;
+      }
+      default:
+        throw new CustomRuleReadinessInputError(
+          `${label}.type is unsupported`,
+        );
+    }
+  }
+
+  if (!snapshot) {
+    throw new CustomRuleReadinessInputError(`${label} is missing`);
+  }
+  return deepFreezeRuntimeValue(snapshot);
+}
+
+function assertRuntimeItemBudget(itemCount: number, label: string): void {
+  if (itemCount > MAX_RUNTIME_VALUE_NODES) {
+    throw new CustomRuleReadinessInputError(
+      `${label} exceeds maximum item count ${MAX_RUNTIME_VALUE_NODES}`,
+    );
+  }
+}
+
+function deepFreezeRuntimeValue(value: TypedRuntimeValue): TypedRuntimeValue {
+  const work: unknown[] = [value];
+  while (work.length > 0) {
+    const current = work.pop();
+    if (!current || typeof current !== "object" || Object.isFrozen(current)) {
+      continue;
+    }
+    if (Array.isArray(current)) {
+      work.push(...current);
+    } else {
+      const record = current as Record<string, unknown>;
+      work.push(...Object.keys(record).map((key) => record[key]));
+    }
+    Object.freeze(current);
+  }
+  return value;
+}
+
+function readOwnDataObject(input: unknown, label: string): OwnDataObject {
+  if (nodeTypes.isProxy(input)) {
+    throw new CustomRuleReadinessInputError(`${label} must not be a Proxy`);
+  }
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new CustomRuleReadinessInputError(`${label} must be an object`);
+  }
+  const prototype = Object.getPrototypeOf(input);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new CustomRuleReadinessInputError(
+      `${label} must be a plain own-data object`,
+    );
+  }
+  const keys = Reflect.ownKeys(input);
+  if (keys.some((key) => typeof key !== "string")) {
+    throw new CustomRuleReadinessInputError(
+      `${label} must not contain symbol keys`,
+    );
+  }
+  const descriptors: PropertyDescriptorMap =
+    Object.getOwnPropertyDescriptors(input);
+  for (const key of keys as string[]) {
+    const descriptor = descriptors[key];
+    if (
+      !descriptor ||
+      !descriptor.enumerable ||
+      !("value" in descriptor) ||
+      descriptor.get ||
+      descriptor.set
+    ) {
+      throw new CustomRuleReadinessInputError(
+        `${label}.${key} must be an enumerable own data property`,
+      );
+    }
+  }
+  return { descriptors, keys: keys as string[] };
+}
+
+function readOwnDataArray(
+  input: unknown,
+  label: string,
+  maximumLength: number,
+): unknown[] {
+  if (nodeTypes.isProxy(input)) {
+    throw new CustomRuleReadinessInputError(`${label} must not be a Proxy`);
+  }
+  if (!Array.isArray(input) || Object.getPrototypeOf(input) !== Array.prototype) {
+    throw new CustomRuleReadinessInputError(`${label} must be a plain array`);
+  }
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(input, "length");
+  const length = lengthDescriptor?.value;
+  if (!Number.isSafeInteger(length) || length < 0 || length > maximumLength) {
+    throw new CustomRuleReadinessInputError(
+      `${label} must contain at most ${maximumLength} items`,
+    );
+  }
+  const keys = Reflect.ownKeys(input);
+  const allowedKeys = new Set<string>([
+    "length",
+    ...Array.from({ length }, (_, index) => String(index)),
+  ]);
+  if (
+    keys.length !== allowedKeys.size ||
+    keys.some((key) => typeof key !== "string" || !allowedKeys.has(key))
+  ) {
+    throw new CustomRuleReadinessInputError(
+      `${label} must be dense and contain no extra properties`,
+    );
+  }
+  const values: unknown[] = [];
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
+    if (
+      !descriptor ||
+      !descriptor.enumerable ||
+      !("value" in descriptor) ||
+      descriptor.get ||
+      descriptor.set
+    ) {
+      throw new CustomRuleReadinessInputError(
+        `${label}[${index}] must be an enumerable own data property`,
+      );
+    }
+    values.push(descriptor.value);
+  }
+  return values;
+}
+
+function ownDataValue(input: OwnDataObject, key: string): unknown {
+  return input.descriptors[key]?.value;
+}
+
+function assertExactKeys(
+  input: OwnDataObject,
+  expectedKeys: readonly string[],
+  label: string,
+): void {
+  assertAllowedKeys(input, expectedKeys, label);
+  if (input.keys.length !== expectedKeys.length) {
+    throw new CustomRuleReadinessInputError(
+      `${label} is missing a required property`,
+    );
+  }
+}
+
+function assertAllowedKeys(
+  input: OwnDataObject,
+  allowedKeys: readonly string[],
+  label: string,
+): void {
+  const allowed = new Set(allowedKeys);
+  if (input.keys.some((key) => !allowed.has(key))) {
+    throw new CustomRuleReadinessInputError(
+      `${label} contains an unknown property`,
+    );
+  }
+}
+
+function freezeNullRecord<T extends object>(value: T): T {
+  const snapshot = Object.create(null) as T;
+  for (const [key, entry] of Object.entries(value)) {
+    Object.defineProperty(snapshot, key, {
+      configurable: false,
+      enumerable: true,
+      value: entry,
+      writable: false,
+    });
+  }
+  return Object.freeze(snapshot);
 }
 
 function validateCatalogCoverage(catalog: CustomRuleVariableCatalog): void {
