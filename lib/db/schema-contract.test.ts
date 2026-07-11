@@ -16,6 +16,34 @@ const allMigrations = readdirSync(migrationsDir)
   .filter((file) => file.endsWith(".sql"))
   .map((file) => readFileSync(join(migrationsDir, file), "utf8"))
   .join("\n");
+const settlementAiMigrationName =
+  "20260711110000_custom_settlement_rule_authoring.sql";
+const settlementAiMigration = readdirSync(migrationsDir).includes(
+  settlementAiMigrationName,
+)
+  ? readFileSync(join(migrationsDir, settlementAiMigrationName), "utf8")
+  : "";
+const normalizedSettlementAiMigration = settlementAiMigration
+  .toLowerCase()
+  .replace(/\s+/gu, " ")
+  .trim();
+
+function settlementAiTableDefinition(table: string): string {
+  const match = normalizedSettlementAiMigration.match(
+    new RegExp(`create table public\\.${table} \\((.*?)\\);`, "u"),
+  );
+  return match?.[1] ?? "";
+}
+
+function settlementAiFunctionDefinition(fn: string): string {
+  const match = normalizedSettlementAiMigration.match(
+    new RegExp(
+      `create or replace function public\\.${fn}\\([\\s\\S]*?\\$\\$;`,
+      "u",
+    ),
+  );
+  return match?.[0] ?? "";
+}
 
 describe("P0 database contract", () => {
   it("declares the required foundation and reference tables", () => {
@@ -228,6 +256,224 @@ describe("P0 database contract", () => {
     );
     expect(allMigrations).toContain(
       "revoke all on function public.finish_ai_chat_turn",
+    );
+  });
+});
+
+describe("Phase 1 settlement AI persistence contract", () => {
+  it("declares complete draft and summary-only simulation storage", () => {
+    expect(settlementAiMigration).not.toBe("");
+
+    const draft = settlementAiTableDefinition("ai_settlement_rule_drafts");
+    for (const column of [
+      "id uuid primary key",
+      "organization_id uuid not null",
+      "project_id uuid not null",
+      "conversation_id uuid not null",
+      "prompt_text text not null",
+      "turn_trace jsonb not null",
+      "business_contract jsonb not null",
+      "unresolved_ambiguities jsonb not null",
+      "variable_catalog_version text not null",
+      "ai_response jsonb not null",
+      "generated_formula jsonb not null",
+      "generated_explanation text not null",
+      "generated_test_cases jsonb not null",
+      "model text not null",
+      "safety_flags jsonb not null",
+      "contract_hash text not null",
+      "formula_hash text not null",
+      "parameter_hash text not null",
+      "status text not null",
+      "revision_number integer not null",
+      "idempotency_key text not null",
+      "created_by uuid not null",
+      "created_at timestamptz not null",
+      "supersedes_draft_id uuid",
+      "superseded_by_draft_id uuid",
+      "superseded_at timestamptz",
+    ]) {
+      expect(draft).toContain(column);
+    }
+
+    const simulation = settlementAiTableDefinition(
+      "settlement_formula_simulations",
+    );
+    for (const column of [
+      "rule_version_id uuid",
+      "ai_draft_id uuid",
+      "formula_hash text not null",
+      "rule_contract_hash text not null",
+      "parameter_hash text not null",
+      "variable_catalog_version text not null",
+      "data_selection_hash text not null",
+      "sample_source jsonb not null",
+      "sample_selection jsonb not null",
+      "coverage jsonb not null",
+      "scenarios jsonb not null",
+      "historical_totals jsonb not null",
+      "deltas jsonb not null",
+      "largest_changes jsonb not null",
+      "warnings jsonb not null",
+      "idempotency_key text not null",
+      "created_by uuid not null",
+      "created_at timestamptz not null",
+    ]) {
+      expect(simulation).toContain(column);
+    }
+    expect(simulation).not.toMatch(
+      /raw_(?:sample|report|import)|source_payload|parsed_payload|streamer_amount|internal_margin|tax/u,
+    );
+  });
+
+  it("enforces project, conversation, revision, and exactly-one-owner integrity", () => {
+    const draft = settlementAiTableDefinition("ai_settlement_rule_drafts");
+    const simulation = settlementAiTableDefinition(
+      "settlement_formula_simulations",
+    );
+
+    expect(normalizedSettlementAiMigration).toContain(
+      "constraint projects_id_organization_key unique (id, organization_id)",
+    );
+    expect(normalizedSettlementAiMigration).toContain(
+      "add column project_id uuid",
+    );
+    expect(normalizedSettlementAiMigration).toContain(
+      "constraint ai_conversations_project_scope_fkey foreign key (project_id, organization_id) references public.projects(id, organization_id)",
+    );
+    expect(draft).toContain(
+      "constraint ai_settlement_rule_drafts_project_scope_fkey foreign key (project_id, organization_id) references public.projects(id, organization_id)",
+    );
+    expect(draft).toContain(
+      "constraint ai_settlement_rule_drafts_conversation_scope_fkey foreign key (conversation_id, organization_id, project_id) references public.ai_conversations(id, organization_id, project_id)",
+    );
+    expect(draft).toContain(
+      "constraint ai_settlement_rule_drafts_conversation_revision_key unique (conversation_id, revision_number)",
+    );
+    expect(draft).toContain(
+      "constraint ai_settlement_rule_drafts_revision_positive check (revision_number > 0)",
+    );
+    expect(draft).toContain(
+      "status in ('clarifying', 'contract_ready', 'simulated', 'failed', 'superseded')",
+    );
+    expect(simulation).toContain(
+      "constraint settlement_formula_simulations_exactly_one_owner check (((rule_version_id is not null)::integer + (ai_draft_id is not null)::integer = 1))",
+    );
+    expect(simulation).toContain(
+      "constraint settlement_formula_simulations_draft_scope_fkey foreign key (ai_draft_id, organization_id, project_id) references public.ai_settlement_rule_drafts(id, organization_id, project_id)",
+    );
+    expect(simulation).not.toMatch(/foreign key \(rule_version_id/u);
+    expect(simulation).not.toMatch(/rule_version_id uuid references/u);
+  });
+
+  it("adds useful scope, status, conversation, owner, and recency indexes", () => {
+    for (const index of [
+      "ai_settlement_rule_drafts_org_project_status_recent_idx",
+      "ai_settlement_rule_drafts_conversation_recent_idx",
+      "ai_settlement_rule_drafts_created_by_idempotency_key",
+      "settlement_formula_simulations_org_project_recent_idx",
+      "settlement_formula_simulations_ai_draft_recent_idx",
+      "settlement_formula_simulations_rule_version_recent_idx",
+      "settlement_formula_simulations_created_by_idempotency_key",
+    ]) {
+      expect(normalizedSettlementAiMigration).toContain(index);
+    }
+  });
+
+  it("allows only project-scoped MCN reads and removes direct client writes", () => {
+    for (const table of [
+      "ai_settlement_rule_drafts",
+      "settlement_formula_simulations",
+    ]) {
+      expect(normalizedSettlementAiMigration).toContain(
+        `alter table public.${table} enable row level security`,
+      );
+      expect(normalizedSettlementAiMigration).toContain(
+        `revoke all on table public.${table} from public, anon, authenticated, service_role`,
+      );
+      expect(normalizedSettlementAiMigration).toContain(
+        `grant select on table public.${table} to authenticated`,
+      );
+    }
+    for (const policy of [
+      "ai_settlement_rule_drafts_mcn_project_read",
+      "settlement_formula_simulations_mcn_project_read",
+    ]) {
+      expect(normalizedSettlementAiMigration).toContain(
+        `create policy ${policy}`,
+      );
+    }
+    expect(normalizedSettlementAiMigration).toContain(
+      "auth.uid() is not null and public.is_org_member(organization_id) and public.is_mcn_staff(organization_id) and public.can_access_project(project_id)",
+    );
+    expect(normalizedSettlementAiMigration).not.toMatch(
+      /create policy [^;]+ for (?:insert|update|delete)/u,
+    );
+  });
+
+  it("hardens RPC writes, monotonic revisions, JSON safety, and immutability", () => {
+    const createDraft = settlementAiFunctionDefinition(
+      "create_ai_settlement_rule_draft",
+    );
+    const createSimulation = settlementAiFunctionDefinition(
+      "create_settlement_formula_simulation",
+    );
+
+    for (const fn of [createDraft, createSimulation]) {
+      expect(fn).toContain("security definer");
+      expect(fn).toContain("set search_path = pg_catalog, public");
+      expect(fn).toContain("auth.uid()");
+      expect(fn).toContain("public.is_org_member");
+      expect(fn).toContain("public.is_mcn_staff");
+      expect(fn).toContain("public.can_access_project");
+      expect(fn).toContain("settlement_ai_json_is_safe");
+    }
+    expect(createDraft).toContain("for update");
+    expect(createDraft).toContain(
+      "coalesce(max(d.revision_number), 0) + 1",
+    );
+    expect(createDraft).toContain("owner_user_id = auth.uid()");
+    expect(createSimulation).toContain(
+      "((p_rule_version_id is not null)::integer + (p_ai_draft_id is not null)::integer) <> 1",
+    );
+    expect(createSimulation).toContain("d.organization_id = p_organization_id");
+    expect(createSimulation).toContain("d.project_id = p_project_id");
+
+    for (const fn of [
+      "create_ai_settlement_rule_draft",
+      "create_settlement_formula_simulation",
+    ]) {
+      expect(normalizedSettlementAiMigration).toMatch(
+        new RegExp(
+          `revoke all on function public\\.${fn}\\([^;]+\\) from public, anon, authenticated, service_role;`,
+          "u",
+        ),
+      );
+      expect(normalizedSettlementAiMigration).toMatch(
+        new RegExp(
+          `grant execute on function public\\.${fn}\\([^;]+\\) to authenticated;`,
+          "u",
+        ),
+      );
+      expect(normalizedSettlementAiMigration).not.toMatch(
+        new RegExp(
+          `grant execute on function public\\.${fn}\\([^;]+\\) to service_role;`,
+          "u",
+        ),
+      );
+    }
+
+    expect(normalizedSettlementAiMigration).toContain(
+      "create trigger ai_settlement_rule_drafts_guard before update or delete on public.ai_settlement_rule_drafts",
+    );
+    expect(normalizedSettlementAiMigration).toContain(
+      "create trigger settlement_formula_simulations_immutable before update or delete on public.settlement_formula_simulations",
+    );
+    expect(normalizedSettlementAiMigration).toContain(
+      "settlement_formula_simulations are append-only",
+    );
+    expect(normalizedSettlementAiMigration).toContain(
+      "only contract_ready to simulated and supersession transitions are allowed",
     );
   });
 });

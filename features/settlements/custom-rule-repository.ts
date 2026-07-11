@@ -1,4 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { z } from "zod";
+
+import {
+  businessRuleContractSchema,
+  normalizedAstNodeSchema,
+  typedRuntimeValueSchema,
+  type BusinessRuleContract,
+} from "./custom-rule-contract";
+import type { NormalizedAstNode, TypedRuntimeValue } from "./custom-rule-types";
 
 import {
   assertCoverageCounts,
@@ -24,6 +33,230 @@ export type CustomRuleReadRepository = {
   getProjectVariableCoverage(
     input: GetProjectVariableCoverageInput,
   ): Promise<ProjectVariableCoverage>;
+};
+
+export const SETTLEMENT_AI_DRAFT_STATUSES = [
+  "clarifying",
+  "contract_ready",
+  "simulated",
+  "failed",
+  "superseded",
+] as const;
+export type SettlementAiDraftStatus =
+  (typeof SETTLEMENT_AI_DRAFT_STATUSES)[number];
+export type CreateSettlementAiDraftStatus = Exclude<
+  SettlementAiDraftStatus,
+  "simulated" | "superseded"
+>;
+
+export type SettlementAiTurnTrace = {
+  turnId: string;
+  userMessageId: string;
+  assistantMessageId: string;
+};
+
+export type SettlementAiUnresolvedAmbiguity = {
+  code: string;
+  question: string;
+  required: boolean;
+};
+
+export type SettlementAiResponse = {
+  content: string;
+  finishReason: "stop" | "length" | "content_filter" | "tool_call";
+  providerRequestId: string | null;
+};
+
+export type SettlementAiFormulaDraft = {
+  expression: string;
+  normalizedAst: NormalizedAstNode;
+};
+
+export type SettlementAiGeneratedTestCase = {
+  name: string;
+  inputs: Record<string, TypedRuntimeValue>;
+  expectedResult: TypedRuntimeValue;
+};
+
+export type SettlementAiSafetyFlag = {
+  code: string;
+  severity: "info" | "warning" | "block";
+  message: string;
+};
+
+export type CreateCustomRuleDraftInput = {
+  organizationId: string;
+  projectId: string;
+  conversationId: string;
+  idempotencyKey: string;
+  promptText: string;
+  turnTrace: SettlementAiTurnTrace;
+  businessContract: BusinessRuleContract;
+  unresolvedAmbiguities: SettlementAiUnresolvedAmbiguity[];
+  variableCatalogVersion: string;
+  aiResponse: SettlementAiResponse;
+  generatedFormula: SettlementAiFormulaDraft;
+  generatedExplanation: string;
+  generatedTestCases: SettlementAiGeneratedTestCase[];
+  model: string;
+  safetyFlags: SettlementAiSafetyFlag[];
+  contractHash: string;
+  formulaHash: string;
+  parameterHash: string;
+  status: CreateSettlementAiDraftStatus;
+};
+
+export type CustomRuleDraft = Omit<
+  CreateCustomRuleDraftInput,
+  "status"
+> & {
+  id: string;
+  status: SettlementAiDraftStatus;
+  revisionNumber: number;
+  createdBy: string;
+  createdAt: string;
+  supersedesDraftId: string | null;
+  supersededByDraftId: string | null;
+  supersededAt: string | null;
+};
+
+export type CreatedCustomRuleDraft = CustomRuleDraft & {
+  duplicate: boolean;
+};
+
+export type ListCustomRuleDraftsInput = {
+  organizationId: string;
+  projectId: string;
+  conversationId: string;
+  /** Defaults to newest revision first. */
+  revisionOrder?: "asc" | "desc";
+  limit?: number;
+};
+
+export type GetCustomRuleDraftInput = {
+  organizationId: string;
+  projectId: string;
+  conversationId: string;
+  draftId: string;
+};
+
+export type SettlementSimulationOwner =
+  | { kind: "rule_version"; id: string }
+  | { kind: "ai_draft"; id: string };
+
+export type SettlementSimulationSampleSource = {
+  kind:
+    | "historical_settlements"
+    | "approved_operations"
+    | "synthetic_scenarios";
+};
+
+export type SettlementSimulationSampleSelection = {
+  periodStart: CustomRuleBusinessDate;
+  periodEnd: CustomRuleBusinessDate;
+  populationCount: number;
+  sampledCount: number;
+  criteria: string[];
+};
+
+export type SettlementSimulationCoverage = {
+  totalRecords: number;
+  evaluatedRecords: number;
+  skippedRecords: number;
+};
+
+export type SettlementSimulationScenario = {
+  name: string;
+  kind: "normal" | "boundary" | "missing_data";
+  result: "passed" | "warning" | "failed";
+};
+
+export type SettlementSimulationHistoricalTotals = {
+  payableAmountCents: string | null;
+  receivableAmountCents: string | null;
+  recordCount: number;
+};
+
+export type SettlementSimulationDeltas = {
+  payableAmountCents: string;
+  receivableAmountCents: string;
+  percentageBps: number;
+};
+
+export type SettlementSimulationLargestChange = {
+  dimension: "rule_component" | "scenario" | "period";
+  key: string;
+  deltaAmountCents: string;
+  direction: "increase" | "decrease" | "unchanged";
+};
+
+export type SettlementSimulationWarning = {
+  code: string;
+  severity: "info" | "warning" | "block";
+  message: string;
+};
+
+export type InsertSettlementFormulaSimulationInput = {
+  organizationId: string;
+  projectId: string;
+  owner: SettlementSimulationOwner;
+  idempotencyKey: string;
+  formulaHash: string;
+  ruleContractHash: string;
+  parameterHash: string;
+  variableCatalogVersion: string;
+  dataSelectionHash: string;
+  sampleSource: SettlementSimulationSampleSource;
+  sampleSelection: SettlementSimulationSampleSelection;
+  coverage: SettlementSimulationCoverage;
+  scenarios: SettlementSimulationScenario[];
+  historicalTotals: SettlementSimulationHistoricalTotals;
+  deltas: SettlementSimulationDeltas;
+  largestChanges: SettlementSimulationLargestChange[];
+  warnings: SettlementSimulationWarning[];
+};
+
+export type SettlementFormulaSimulation =
+  InsertSettlementFormulaSimulationInput & {
+    id: string;
+    createdBy: string;
+    createdAt: string;
+  };
+
+export type InsertedSettlementFormulaSimulation =
+  SettlementFormulaSimulation & {
+    duplicate: boolean;
+  };
+
+export type ListSettlementFormulaSimulationsInput = {
+  organizationId: string;
+  projectId: string;
+  owner: SettlementSimulationOwner;
+  limit?: number;
+};
+
+export type GetSettlementFormulaSimulationInput = {
+  organizationId: string;
+  projectId: string;
+  simulationId: string;
+  owner: SettlementSimulationOwner;
+};
+
+export type CustomRuleRepository = CustomRuleReadRepository & {
+  createDraft(
+    input: CreateCustomRuleDraftInput,
+  ): Promise<CreatedCustomRuleDraft>;
+  listDrafts(input: ListCustomRuleDraftsInput): Promise<CustomRuleDraft[]>;
+  getDraft(input: GetCustomRuleDraftInput): Promise<CustomRuleDraft | null>;
+  insertSimulation(
+    input: InsertSettlementFormulaSimulationInput,
+  ): Promise<InsertedSettlementFormulaSimulation>;
+  listSimulations(
+    input: ListSettlementFormulaSimulationsInput,
+  ): Promise<SettlementFormulaSimulation[]>;
+  getSimulation(
+    input: GetSettlementFormulaSimulationInput,
+  ): Promise<SettlementFormulaSimulation | null>;
 };
 
 export type ResolvedCustomRuleBusinessTimezone = {
@@ -82,6 +315,36 @@ export class CustomRuleCoveragePageError extends Error {
   constructor(readonly source: CoverageSource, message: string) {
     super(`${source}: ${message}`);
     this.name = "CustomRuleCoveragePageError";
+  }
+}
+
+export class CustomRulePersistenceInputError extends TypeError {
+  readonly code = "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "CustomRulePersistenceInputError";
+  }
+}
+
+export class CustomRulePersistenceQueryError extends Error {
+  readonly code = "CUSTOM_RULE_PERSISTENCE_QUERY_FAILED";
+
+  constructor(
+    readonly operation: string,
+    readonly cause: unknown,
+  ) {
+    super(`Failed custom-rule persistence operation: ${operation}`);
+    this.name = "CustomRulePersistenceQueryError";
+  }
+}
+
+export class CustomRulePersistenceDataError extends Error {
+  readonly code = "CUSTOM_RULE_PERSISTENCE_DATA_INVALID";
+
+  constructor(readonly entity: "draft" | "simulation", message: string) {
+    super(`Invalid persisted custom-rule ${entity}: ${message}`);
+    this.name = "CustomRulePersistenceDataError";
   }
 }
 
@@ -225,9 +488,355 @@ const ALLOWED_INPUT_KEYS = new Set([
   "periodEnd",
 ]);
 const BUSINESS_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/u;
+const POSTGRES_BIGINT_MIN = BigInt("-9223372036854775808");
+const POSTGRES_BIGINT_MAX = BigInt("9223372036854775807");
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+const FORBIDDEN_SIMULATION_JSON_KEYS = new Set([
+  "conversationid",
+  "importpayload",
+  "internalmargin",
+  "organizationid",
+  "parsedpayload",
+  "payload",
+  "projectid",
+  "rawpayload",
+  "rawrows",
+  "reportrows",
+  "rows",
+  "samplerows",
+  "sourcepayload",
+  "streameramounts",
+  "streamerid",
+  "tax",
+]);
+const DRAFT_SELECT = [
+  "id",
+  "organization_id",
+  "project_id",
+  "conversation_id",
+  "prompt_text",
+  "turn_trace",
+  "business_contract",
+  "unresolved_ambiguities",
+  "variable_catalog_version",
+  "ai_response",
+  "generated_formula",
+  "generated_explanation",
+  "generated_test_cases",
+  "model",
+  "safety_flags",
+  "contract_hash",
+  "formula_hash",
+  "parameter_hash",
+  "status",
+  "revision_number",
+  "idempotency_key",
+  "created_by",
+  "created_at",
+  "supersedes_draft_id",
+  "superseded_by_draft_id",
+  "superseded_at",
+].join(", ");
+const SIMULATION_SELECT = [
+  "id",
+  "organization_id",
+  "project_id",
+  "rule_version_id",
+  "ai_draft_id",
+  "formula_hash",
+  "rule_contract_hash",
+  "parameter_hash",
+  "variable_catalog_version",
+  "data_selection_hash",
+  "sample_source",
+  "sample_selection",
+  "coverage",
+  "scenarios",
+  "historical_totals",
+  "deltas",
+  "largest_changes",
+  "warnings",
+  "idempotency_key",
+  "created_by",
+  "created_at",
+].join(", ");
+
+const uuidSchema = z.string().uuid();
+const nonemptyTextSchema = z.string().trim().min(1);
+const boundedTextSchema = nonemptyTextSchema.max(4_000);
+const hashSchema = z.string().regex(SHA256_PATTERN);
+const timestampSchema = z.string().refine(
+  (value) => Number.isFinite(Date.parse(value)),
+  "must be an ISO timestamp",
+);
+const nonnegativeSafeIntegerSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .refine(Number.isSafeInteger, "must be a safe integer");
+const signedSafeIntegerSchema = z
+  .number()
+  .int()
+  .refine(Number.isSafeInteger, "must be a safe integer");
+const postgresBigintDecimalSchema = z.string().refine(
+  (value) => {
+    if (!/^-?(?:0|[1-9]\d*)$/u.test(value)) return false;
+    try {
+      const parsed = BigInt(value);
+      return parsed >= POSTGRES_BIGINT_MIN && parsed <= POSTGRES_BIGINT_MAX;
+    } catch {
+      return false;
+    }
+  },
+  "must be a canonical Postgres bigint decimal string",
+);
+const businessDateSchema = z
+  .string()
+  .refine(isValidBusinessDate, "must be a valid YYYY-MM-DD business date");
+const turnTraceSchema = z.strictObject({
+  turnId: uuidSchema,
+  userMessageId: uuidSchema,
+  assistantMessageId: uuidSchema,
+});
+const unresolvedAmbiguitySchema = z.strictObject({
+  code: nonemptyTextSchema.max(120),
+  question: boundedTextSchema,
+  required: z.boolean(),
+});
+const aiResponseSchema = z.strictObject({
+  content: boundedTextSchema.max(100_000),
+  finishReason: z.enum(["stop", "length", "content_filter", "tool_call"]),
+  providerRequestId: nonemptyTextSchema.max(500).nullable(),
+});
+const generatedFormulaSchema = z.strictObject({
+  expression: boundedTextSchema.max(20_000),
+  normalizedAst: normalizedAstNodeSchema,
+});
+const generatedTestCaseSchema = z.strictObject({
+  name: nonemptyTextSchema.max(200),
+  inputs: z.record(z.string().regex(IDENTIFIER_PATTERN), typedRuntimeValueSchema),
+  expectedResult: typedRuntimeValueSchema,
+});
+const safetyFlagSchema = z.strictObject({
+  code: nonemptyTextSchema.max(120),
+  severity: z.enum(["info", "warning", "block"]),
+  message: boundedTextSchema,
+});
+const createDraftInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  conversationId: uuidSchema,
+  idempotencyKey: nonemptyTextSchema.max(200),
+  promptText: boundedTextSchema.max(100_000),
+  turnTrace: turnTraceSchema,
+  businessContract: businessRuleContractSchema,
+  unresolvedAmbiguities: z.array(unresolvedAmbiguitySchema).max(100),
+  variableCatalogVersion: hashSchema,
+  aiResponse: aiResponseSchema,
+  generatedFormula: generatedFormulaSchema,
+  generatedExplanation: boundedTextSchema.max(100_000),
+  generatedTestCases: z.array(generatedTestCaseSchema).min(1).max(200),
+  model: nonemptyTextSchema.max(200),
+  safetyFlags: z.array(safetyFlagSchema).max(100),
+  contractHash: hashSchema,
+  formulaHash: hashSchema,
+  parameterHash: hashSchema,
+  status: z.enum(["clarifying", "contract_ready", "failed"]),
+});
+const listDraftsInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  conversationId: uuidSchema,
+  revisionOrder: z.enum(["asc", "desc"]).default("desc"),
+  limit: z.number().int().min(1).max(500).default(100),
+});
+const getDraftInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  conversationId: uuidSchema,
+  draftId: uuidSchema,
+});
+const simulationOwnerSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("rule_version"), id: uuidSchema }),
+  z.strictObject({ kind: z.literal("ai_draft"), id: uuidSchema }),
+]);
+const sampleSourceSchema = z.strictObject({
+  kind: z.enum([
+    "historical_settlements",
+    "approved_operations",
+    "synthetic_scenarios",
+  ]),
+});
+const sampleSelectionSchema = z
+  .strictObject({
+    periodStart: businessDateSchema,
+    periodEnd: businessDateSchema,
+    populationCount: nonnegativeSafeIntegerSchema,
+    sampledCount: nonnegativeSafeIntegerSchema,
+    criteria: z.array(nonemptyTextSchema.max(200)).max(100),
+  })
+  .superRefine((selection, context) => {
+    if (selection.periodStart > selection.periodEnd) {
+      context.addIssue({
+        code: "custom",
+        path: ["periodStart"],
+        message: "periodStart must not be later than periodEnd",
+      });
+    }
+    if (selection.sampledCount > selection.populationCount) {
+      context.addIssue({
+        code: "custom",
+        path: ["sampledCount"],
+        message: "sampledCount cannot exceed populationCount",
+      });
+    }
+  });
+const simulationCoverageSchema = z
+  .strictObject({
+    totalRecords: nonnegativeSafeIntegerSchema,
+    evaluatedRecords: nonnegativeSafeIntegerSchema,
+    skippedRecords: nonnegativeSafeIntegerSchema,
+  })
+  .superRefine((coverageValue, context) => {
+    if (
+      coverageValue.evaluatedRecords + coverageValue.skippedRecords !==
+      coverageValue.totalRecords
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["totalRecords"],
+        message: "evaluatedRecords plus skippedRecords must equal totalRecords",
+      });
+    }
+  });
+const simulationScenarioSchema = z.strictObject({
+  name: nonemptyTextSchema.max(200),
+  kind: z.enum(["normal", "boundary", "missing_data"]),
+  result: z.enum(["passed", "warning", "failed"]),
+});
+const historicalTotalsSchema = z.strictObject({
+  payableAmountCents: postgresBigintDecimalSchema.nullable(),
+  receivableAmountCents: postgresBigintDecimalSchema.nullable(),
+  recordCount: nonnegativeSafeIntegerSchema,
+});
+const simulationDeltasSchema = z.strictObject({
+  payableAmountCents: postgresBigintDecimalSchema,
+  receivableAmountCents: postgresBigintDecimalSchema,
+  percentageBps: signedSafeIntegerSchema,
+});
+const largestChangeSchema = z.strictObject({
+  dimension: z.enum(["rule_component", "scenario", "period"]),
+  key: nonemptyTextSchema.max(200),
+  deltaAmountCents: postgresBigintDecimalSchema,
+  direction: z.enum(["increase", "decrease", "unchanged"]),
+});
+const simulationWarningSchema = z.strictObject({
+  code: nonemptyTextSchema.max(120),
+  severity: z.enum(["info", "warning", "block"]),
+  message: boundedTextSchema,
+});
+const insertSimulationInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  owner: simulationOwnerSchema,
+  idempotencyKey: nonemptyTextSchema.max(200),
+  formulaHash: hashSchema,
+  ruleContractHash: hashSchema,
+  parameterHash: hashSchema,
+  variableCatalogVersion: hashSchema,
+  dataSelectionHash: hashSchema,
+  sampleSource: sampleSourceSchema,
+  sampleSelection: sampleSelectionSchema,
+  coverage: simulationCoverageSchema,
+  scenarios: z.array(simulationScenarioSchema).min(1).max(200),
+  historicalTotals: historicalTotalsSchema,
+  deltas: simulationDeltasSchema,
+  largestChanges: z.array(largestChangeSchema).max(100),
+  warnings: z.array(simulationWarningSchema).max(100),
+});
+const listSimulationsInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  owner: simulationOwnerSchema,
+  limit: z.number().int().min(1).max(500).default(100),
+});
+const getSimulationInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  simulationId: uuidSchema,
+  owner: simulationOwnerSchema,
+});
+
+const DRAFT_ROW_SHAPE = {
+  id: uuidSchema,
+  organization_id: uuidSchema,
+  project_id: uuidSchema,
+  conversation_id: uuidSchema,
+  prompt_text: boundedTextSchema.max(100_000),
+  turn_trace: turnTraceSchema,
+  business_contract: businessRuleContractSchema,
+  unresolved_ambiguities: z.array(unresolvedAmbiguitySchema).max(100),
+  variable_catalog_version: hashSchema,
+  ai_response: aiResponseSchema,
+  generated_formula: generatedFormulaSchema,
+  generated_explanation: boundedTextSchema.max(100_000),
+  generated_test_cases: z.array(generatedTestCaseSchema).min(1).max(200),
+  model: nonemptyTextSchema.max(200),
+  safety_flags: z.array(safetyFlagSchema).max(100),
+  contract_hash: hashSchema,
+  formula_hash: hashSchema,
+  parameter_hash: hashSchema,
+  status: z.enum(SETTLEMENT_AI_DRAFT_STATUSES),
+  revision_number: z.number().int().positive().refine(Number.isSafeInteger),
+  idempotency_key: nonemptyTextSchema.max(200),
+  created_by: uuidSchema,
+  created_at: timestampSchema,
+  supersedes_draft_id: uuidSchema.nullable(),
+  superseded_by_draft_id: uuidSchema.nullable(),
+  superseded_at: timestampSchema.nullable(),
+};
+const draftRowSchema = z.strictObject(DRAFT_ROW_SHAPE);
+const createdDraftRowSchema = z.strictObject({
+  ...DRAFT_ROW_SHAPE,
+  duplicate: z.boolean(),
+});
+const SIMULATION_ROW_SHAPE = {
+  id: uuidSchema,
+  organization_id: uuidSchema,
+  project_id: uuidSchema,
+  rule_version_id: uuidSchema.nullable(),
+  ai_draft_id: uuidSchema.nullable(),
+  formula_hash: hashSchema,
+  rule_contract_hash: hashSchema,
+  parameter_hash: hashSchema,
+  variable_catalog_version: hashSchema,
+  data_selection_hash: hashSchema,
+  sample_source: sampleSourceSchema,
+  sample_selection: sampleSelectionSchema,
+  coverage: simulationCoverageSchema,
+  scenarios: z.array(simulationScenarioSchema).min(1).max(200),
+  historical_totals: historicalTotalsSchema,
+  deltas: simulationDeltasSchema,
+  largest_changes: z.array(largestChangeSchema).max(100),
+  warnings: z.array(simulationWarningSchema).max(100),
+  idempotency_key: nonemptyTextSchema.max(200),
+  created_by: uuidSchema,
+  created_at: timestampSchema,
+};
+const simulationRowSchema = z
+  .strictObject(SIMULATION_ROW_SHAPE)
+  .superRefine(validateSimulationRowOwner);
+const insertedSimulationRowSchema = z
+  .strictObject({ ...SIMULATION_ROW_SHAPE, duplicate: z.boolean() })
+  .superRefine(validateSimulationRowOwner);
+type DraftRow = z.infer<typeof draftRowSchema>;
+type CreatedDraftRow = z.infer<typeof createdDraftRowSchema>;
+type SimulationRow = z.infer<typeof simulationRowSchema>;
+type InsertedSimulationRow = z.infer<typeof insertedSimulationRowSchema>;
 
 export class SupabaseCustomRuleReadRepository
-  implements CustomRuleReadRepository
+  implements CustomRuleRepository
 {
   private readonly maxRowsPerSource: number;
   private readonly businessTimezone: ResolvedCustomRuleBusinessTimezone;
@@ -242,6 +851,218 @@ export class SupabaseCustomRuleReadRepository
     this.businessTimezone = resolveBusinessTimezone(
       options.resolvedBusinessTimezone ?? DEFAULT_TIMEZONE,
     );
+  }
+
+  async createDraft(
+    unsafeInput: CreateCustomRuleDraftInput,
+  ): Promise<CreatedCustomRuleDraft> {
+    const input = parsePersistenceInput(
+      createDraftInputSchema,
+      unsafeInput,
+      "draft input",
+    );
+    const { data, error } = await this.client.rpc(
+      "create_ai_settlement_rule_draft",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_conversation_id: input.conversationId,
+        p_idempotency_key: input.idempotencyKey,
+        p_prompt_text: input.promptText,
+        p_turn_trace: input.turnTrace,
+        p_business_contract: input.businessContract,
+        p_unresolved_ambiguities: input.unresolvedAmbiguities,
+        p_variable_catalog_version: input.variableCatalogVersion,
+        p_ai_response: input.aiResponse,
+        p_generated_formula: input.generatedFormula,
+        p_generated_explanation: input.generatedExplanation,
+        p_generated_test_cases: input.generatedTestCases,
+        p_model: input.model,
+        p_safety_flags: input.safetyFlags,
+        p_contract_hash: input.contractHash,
+        p_formula_hash: input.formulaHash,
+        p_parameter_hash: input.parameterHash,
+        p_status: input.status,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError("create_draft", error);
+    }
+    const row = parsePersistenceRow(
+      createdDraftRowSchema,
+      data,
+      "draft",
+    );
+    return { ...toCustomRuleDraft(row), duplicate: row.duplicate };
+  }
+
+  async listDrafts(
+    unsafeInput: ListCustomRuleDraftsInput,
+  ): Promise<CustomRuleDraft[]> {
+    const input = parsePersistenceInput(
+      listDraftsInputSchema,
+      unsafeInput,
+      "draft list input",
+    );
+    const { data, error } = await this.client
+      .from("ai_settlement_rule_drafts")
+      .select(DRAFT_SELECT)
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("conversation_id", input.conversationId)
+      .order("revision_number", {
+        ascending: input.revisionOrder === "asc",
+      })
+      .limit(input.limit)
+      .returns<unknown[]>();
+    if (error) {
+      throw new CustomRulePersistenceQueryError("list_drafts", error);
+    }
+    if (!Array.isArray(data)) {
+      throw new CustomRulePersistenceDataError(
+        "draft",
+        "list result must be an array",
+      );
+    }
+    return data.map((row) =>
+      toCustomRuleDraft(
+        parsePersistenceRow(draftRowSchema, row, "draft"),
+      ),
+    );
+  }
+
+  async getDraft(
+    unsafeInput: GetCustomRuleDraftInput,
+  ): Promise<CustomRuleDraft | null> {
+    const input = parsePersistenceInput(
+      getDraftInputSchema,
+      unsafeInput,
+      "draft get input",
+    );
+    const { data, error } = await this.client
+      .from("ai_settlement_rule_drafts")
+      .select(DRAFT_SELECT)
+      .eq("id", input.draftId)
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("conversation_id", input.conversationId)
+      .maybeSingle();
+    if (error) {
+      throw new CustomRulePersistenceQueryError("get_draft", error);
+    }
+    return data === null
+      ? null
+      : toCustomRuleDraft(
+          parsePersistenceRow(draftRowSchema, data, "draft"),
+        );
+  }
+
+  async insertSimulation(
+    unsafeInput: InsertSettlementFormulaSimulationInput,
+  ): Promise<InsertedSettlementFormulaSimulation> {
+    assertSafeSimulationSummaryInput(unsafeInput);
+    const input = parsePersistenceInput(
+      insertSimulationInputSchema,
+      unsafeInput,
+      "simulation input",
+    );
+    const { data, error } = await this.client.rpc(
+      "create_settlement_formula_simulation",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_rule_version_id:
+          input.owner.kind === "rule_version" ? input.owner.id : null,
+        p_ai_draft_id:
+          input.owner.kind === "ai_draft" ? input.owner.id : null,
+        p_idempotency_key: input.idempotencyKey,
+        p_formula_hash: input.formulaHash,
+        p_rule_contract_hash: input.ruleContractHash,
+        p_parameter_hash: input.parameterHash,
+        p_variable_catalog_version: input.variableCatalogVersion,
+        p_data_selection_hash: input.dataSelectionHash,
+        p_sample_source: input.sampleSource,
+        p_sample_selection: input.sampleSelection,
+        p_coverage: input.coverage,
+        p_scenarios: input.scenarios,
+        p_historical_totals: input.historicalTotals,
+        p_deltas: input.deltas,
+        p_largest_changes: input.largestChanges,
+        p_warnings: input.warnings,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError("insert_simulation", error);
+    }
+    const row = parsePersistenceRow(
+      insertedSimulationRowSchema,
+      data,
+      "simulation",
+    );
+    return {
+      ...toSettlementFormulaSimulation(row),
+      duplicate: row.duplicate,
+    };
+  }
+
+  async listSimulations(
+    unsafeInput: ListSettlementFormulaSimulationsInput,
+  ): Promise<SettlementFormulaSimulation[]> {
+    const input = parsePersistenceInput(
+      listSimulationsInputSchema,
+      unsafeInput,
+      "simulation list input",
+    );
+    let query = this.client
+      .from("settlement_formula_simulations")
+      .select(SIMULATION_SELECT)
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId);
+    query = scopeSimulationOwnerQuery(query, input.owner);
+    const { data, error } = await query
+      .order("created_at", { ascending: false })
+      .limit(input.limit)
+      .returns<unknown[]>();
+    if (error) {
+      throw new CustomRulePersistenceQueryError("list_simulations", error);
+    }
+    if (!Array.isArray(data)) {
+      throw new CustomRulePersistenceDataError(
+        "simulation",
+        "list result must be an array",
+      );
+    }
+    return data.map((row) =>
+      toSettlementFormulaSimulation(
+        parsePersistenceRow(simulationRowSchema, row, "simulation"),
+      ),
+    );
+  }
+
+  async getSimulation(
+    unsafeInput: GetSettlementFormulaSimulationInput,
+  ): Promise<SettlementFormulaSimulation | null> {
+    const input = parsePersistenceInput(
+      getSimulationInputSchema,
+      unsafeInput,
+      "simulation get input",
+    );
+    let query = this.client
+      .from("settlement_formula_simulations")
+      .select(SIMULATION_SELECT)
+      .eq("id", input.simulationId)
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId);
+    query = scopeSimulationOwnerQuery(query, input.owner);
+    const { data, error } = await query.maybeSingle();
+    if (error) {
+      throw new CustomRulePersistenceQueryError("get_simulation", error);
+    }
+    return data === null
+      ? null
+      : toSettlementFormulaSimulation(
+          parsePersistenceRow(simulationRowSchema, data, "simulation"),
+        );
   }
 
   async getProjectVariableCoverage(
@@ -1353,4 +2174,200 @@ function isString(value: string | null): value is string {
 
 function isNonemptyString(value: string): boolean {
   return value.length > 0;
+}
+
+function validateSimulationRowOwner(
+  row: { rule_version_id: string | null; ai_draft_id: string | null },
+  context: z.RefinementCtx,
+): void {
+  const ownerCount = Number(row.rule_version_id !== null) +
+    Number(row.ai_draft_id !== null);
+  if (ownerCount !== 1) {
+    context.addIssue({
+      code: "custom",
+      path: ["rule_version_id"],
+      message: "exactly one simulation owner is required",
+    });
+  }
+}
+
+function parsePersistenceInput<Output>(
+  schema: z.ZodType<Output>,
+  value: unknown,
+  label: string,
+): Output {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    throw new CustomRulePersistenceInputError(
+      `${label}: ${formatPersistenceIssues(result.error.issues)}`,
+    );
+  }
+  return result.data;
+}
+
+function parsePersistenceRow<Output>(
+  schema: z.ZodType<Output>,
+  value: unknown,
+  entity: "draft" | "simulation",
+): Output {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    throw new CustomRulePersistenceDataError(
+      entity,
+      formatPersistenceIssues(result.error.issues),
+    );
+  }
+  return result.data;
+}
+
+function formatPersistenceIssues(
+  issues: ReadonlyArray<{ path: PropertyKey[]; message: string }>,
+): string {
+  return issues
+    .slice(0, 3)
+    .map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`)
+    .join("; ");
+}
+
+function assertSafeSimulationSummaryInput(value: unknown): void {
+  if (!isPlainDataRecord(value)) {
+    throw new CustomRulePersistenceInputError(
+      "simulation input must be a plain own-data object",
+    );
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of [
+    "sampleSource",
+    "sampleSelection",
+    "coverage",
+    "scenarios",
+    "historicalTotals",
+    "deltas",
+    "largestChanges",
+    "warnings",
+  ]) {
+    const descriptor = descriptors[key];
+    if (!descriptor) continue;
+    if (descriptor.get || descriptor.set || !("value" in descriptor)) {
+      throw new CustomRulePersistenceInputError(
+        `${key} must be an own data property`,
+      );
+    }
+    assertSafeSimulationJson(descriptor.value, key);
+  }
+}
+
+function assertSafeSimulationJson(value: unknown, path: string): void {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  ) {
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) =>
+      assertSafeSimulationJson(item, `${path}.${index}`),
+    );
+    return;
+  }
+  if (!isPlainDataRecord(value)) {
+    throw new CustomRulePersistenceInputError(
+      `${path} must contain JSON own-data values only`,
+    );
+  }
+  for (const [key, descriptor] of Object.entries(
+    Object.getOwnPropertyDescriptors(value),
+  )) {
+    if (descriptor.get || descriptor.set || !("value" in descriptor)) {
+      throw new CustomRulePersistenceInputError(
+        `${path}.${key} must be an own data property`,
+      );
+    }
+    const normalizedKey = key.replace(/[^a-z0-9]/giu, "").toLowerCase();
+    if (FORBIDDEN_SIMULATION_JSON_KEYS.has(normalizedKey)) {
+      throw new CustomRulePersistenceInputError(
+        `${path}.${key} is forbidden summary data`,
+      );
+    }
+    assertSafeSimulationJson(descriptor.value, `${path}.${key}`);
+  }
+}
+
+function isPlainDataRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function toCustomRuleDraft(row: DraftRow | CreatedDraftRow): CustomRuleDraft {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    conversationId: row.conversation_id,
+    idempotencyKey: row.idempotency_key,
+    promptText: row.prompt_text,
+    turnTrace: row.turn_trace,
+    businessContract: row.business_contract,
+    unresolvedAmbiguities: row.unresolved_ambiguities,
+    variableCatalogVersion: row.variable_catalog_version,
+    aiResponse: row.ai_response,
+    generatedFormula: row.generated_formula,
+    generatedExplanation: row.generated_explanation,
+    generatedTestCases: row.generated_test_cases,
+    model: row.model,
+    safetyFlags: row.safety_flags,
+    contractHash: row.contract_hash,
+    formulaHash: row.formula_hash,
+    parameterHash: row.parameter_hash,
+    status: row.status,
+    revisionNumber: row.revision_number,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    supersedesDraftId: row.supersedes_draft_id,
+    supersededByDraftId: row.superseded_by_draft_id,
+    supersededAt: row.superseded_at,
+  };
+}
+
+function toSettlementFormulaSimulation(
+  row: SimulationRow | InsertedSimulationRow,
+): SettlementFormulaSimulation {
+  const owner: SettlementSimulationOwner = row.ai_draft_id !== null
+    ? { kind: "ai_draft", id: row.ai_draft_id }
+    : { kind: "rule_version", id: row.rule_version_id as string };
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    owner,
+    idempotencyKey: row.idempotency_key,
+    formulaHash: row.formula_hash,
+    ruleContractHash: row.rule_contract_hash,
+    parameterHash: row.parameter_hash,
+    variableCatalogVersion: row.variable_catalog_version,
+    dataSelectionHash: row.data_selection_hash,
+    sampleSource: row.sample_source,
+    sampleSelection: row.sample_selection,
+    coverage: row.coverage,
+    scenarios: row.scenarios,
+    historicalTotals: row.historical_totals,
+    deltas: row.deltas,
+    largestChanges: row.largest_changes,
+    warnings: row.warnings,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  };
+}
+
+function scopeSimulationOwnerQuery<
+  Query extends { eq(column: string, value: string): Query },
+>(query: Query, owner: SettlementSimulationOwner): Query {
+  return owner.kind === "ai_draft"
+    ? query.eq("ai_draft_id", owner.id)
+    : query.eq("rule_version_id", owner.id);
 }
