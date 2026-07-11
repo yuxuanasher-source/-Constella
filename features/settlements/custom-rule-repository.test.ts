@@ -1306,6 +1306,24 @@ describe("custom-rule draft and simulation persistence", () => {
     expect(mock.rpc).not.toHaveBeenCalled();
   });
 
+  it("rejects a draft JSON subcontainer over 64 KiB before RPC", async () => {
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(
+      repository.createDraft({
+        ...validDraftInput(),
+        safetyFlags: Array.from({ length: 20 }, (_, index) => ({
+          code: `warning_${index}`,
+          severity: "warning" as const,
+          message: "x".repeat(4_000),
+        })),
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(mock.rpc).not.toHaveBeenCalled();
+  });
+
   it.each(["asc", "desc"] as const)(
     "lists conversation revisions in explicitly documented %s order",
     async (revisionOrder) => {
@@ -1632,7 +1650,15 @@ describe("custom-rule draft and simulation persistence", () => {
     expect(mock.from).not.toHaveBeenCalled();
   });
 
-  it.each(["project_id", "reportId", "amountCents", "tax", "raw payload"])(
+  it.each([
+    "project_id",
+    "reportId",
+    "amountCents",
+    "streamer",
+    "streamerAmount",
+    "tax",
+    "raw payload",
+  ])(
     "rejects forbidden largest-change key value %s before RPC",
     async (key) => {
       const mock = createPersistenceClient();
@@ -1655,6 +1681,24 @@ describe("custom-rule draft and simulation persistence", () => {
       expect(mock.rpc).not.toHaveBeenCalled();
     },
   );
+
+  it("rejects a simulation JSON subcontainer over 64 KiB before RPC", async () => {
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(
+      repository.insertSimulation({
+        ...validSimulationInput({ kind: "ai_draft", id: DRAFT_ID }),
+        warnings: Array.from({ length: 20 }, (_, index) => ({
+          code: `warning_${index}`,
+          severity: "warning" as const,
+          message: "x".repeat(4_000),
+        })),
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(mock.rpc).not.toHaveBeenCalled();
+  });
 
   it("rejects over-depth and over-node JSON iteratively before RPC", async () => {
     const deepValue: Record<string, unknown> = {};

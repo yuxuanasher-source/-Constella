@@ -493,6 +493,7 @@ const POSTGRES_BIGINT_MAX = BigInt("9223372036854775807");
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const JSON_BUDGET_MAX_TOTAL_BYTES = 262_144;
+const JSON_BUDGET_MAX_SUBCONTAINER_BYTES = 65_536;
 const JSON_BUDGET_MAX_STRING_BYTES = 16_384;
 const JSON_BUDGET_MAX_KEY_BYTES = 256;
 const JSON_BUDGET_MAX_CONTAINER_ITEMS = 200;
@@ -536,6 +537,8 @@ const FORBIDDEN_SIMULATION_JSON_KEYS = new Set([
 const FORBIDDEN_SIMULATION_VALUE_KEYS = new Set([
   ...FORBIDDEN_SIMULATION_JSON_KEYS,
   "amountcents",
+  "streamer",
+  "streameramount",
 ]);
 const FORBIDDEN_SIMULATION_CRITERIA_PATTERN =
   /(report|project|streamer)[_-]?id|amount[_-]?cents|internal[_-]?margin|tax|payload|rows/iu;
@@ -2278,6 +2281,7 @@ function formatPersistenceIssues(
 type JsonBudgetEntry = {
   value: unknown;
   path: string;
+  rootPath: string;
   depth: number;
   ancestors: readonly object[];
 };
@@ -2344,6 +2348,7 @@ function collectPersistenceJsonFields(
     entries.push({
       value: descriptor.value,
       path: key,
+      rootPath: key,
       depth: 0,
       ancestors: [],
     });
@@ -2358,6 +2363,24 @@ function assertJsonCollectionWithinBudget(
   const stack = [...roots];
   let nodeCount = 0;
   let serializedBytes = 2 + Math.max(0, roots.length - 1);
+  const serializedBytesByRoot = new Map(
+    roots.map(({ rootPath }) => [rootPath, 0]),
+  );
+  const addSerializedBytes = (entry: JsonBudgetEntry, bytes: number): void => {
+    serializedBytes += bytes;
+    const rootBytes = (serializedBytesByRoot.get(entry.rootPath) ?? 0) + bytes;
+    if (rootBytes > JSON_BUDGET_MAX_SUBCONTAINER_BYTES) {
+      throw new CustomRulePersistenceInputError(
+        `${entry.rootPath} exceeds the ${JSON_BUDGET_MAX_SUBCONTAINER_BYTES}-byte JSON subcontainer budget`,
+      );
+    }
+    serializedBytesByRoot.set(entry.rootPath, rootBytes);
+    if (serializedBytes > JSON_BUDGET_MAX_TOTAL_BYTES) {
+      throw new CustomRulePersistenceInputError(
+        `JSON payload exceeds the ${JSON_BUDGET_MAX_TOTAL_BYTES}-byte budget`,
+      );
+    }
+  };
 
   while (stack.length > 0) {
     const entry = stack.pop();
@@ -2374,9 +2397,9 @@ function assertJsonCollectionWithinBudget(
       );
     }
 
-    const { value, path, depth, ancestors } = entry;
+    const { value, path, rootPath, depth, ancestors } = entry;
     if (value === null) {
-      serializedBytes += 4;
+      addSerializedBytes(entry, 4);
     } else if (typeof value === "string") {
       const rawBytes = utf8ByteLength(value);
       const encodedBytes = utf8ByteLength(JSON.stringify(value));
@@ -2386,11 +2409,11 @@ function assertJsonCollectionWithinBudget(
         );
       }
       options.validateString?.(value, path);
-      serializedBytes += encodedBytes;
+      addSerializedBytes(entry, encodedBytes);
     } else if (typeof value === "boolean") {
-      serializedBytes += value ? 4 : 5;
+      addSerializedBytes(entry, value ? 4 : 5);
     } else if (typeof value === "number" && Number.isFinite(value)) {
-      serializedBytes += utf8ByteLength(JSON.stringify(value));
+      addSerializedBytes(entry, utf8ByteLength(JSON.stringify(value)));
     } else if (Array.isArray(value)) {
       if (ancestors.includes(value)) {
         throw new CustomRulePersistenceInputError(`${path} must not be cyclic`);
@@ -2408,7 +2431,7 @@ function assertJsonCollectionWithinBudget(
           `${path} exceeds the array item budget`,
         );
       }
-      serializedBytes += 2 + Math.max(0, length - 1);
+      addSerializedBytes(entry, 2 + Math.max(0, length - 1));
       for (let index = length - 1; index >= 0; index -= 1) {
         const descriptor = descriptors[String(index)];
         if (!descriptor || descriptor.get || descriptor.set || !("value" in descriptor)) {
@@ -2419,6 +2442,7 @@ function assertJsonCollectionWithinBudget(
         stack.push({
           value: descriptor.value,
           path: `${path}[${index}]`,
+          rootPath,
           depth: depth + 1,
           ancestors: childAncestors,
         });
@@ -2441,7 +2465,7 @@ function assertJsonCollectionWithinBudget(
           `${path} exceeds the object key budget`,
         );
       }
-      serializedBytes += 2 + Math.max(0, keys.length - 1);
+      addSerializedBytes(entry, 2 + Math.max(0, keys.length - 1));
       for (let index = keys.length - 1; index >= 0; index -= 1) {
         const key = keys[index];
         if (key === undefined) continue;
@@ -2462,10 +2486,14 @@ function assertJsonCollectionWithinBudget(
             `${path}.${key} is forbidden summary data`,
           );
         }
-        serializedBytes += utf8ByteLength(JSON.stringify(key)) + 1;
+        addSerializedBytes(
+          entry,
+          utf8ByteLength(JSON.stringify(key)) + 1,
+        );
         stack.push({
           value: descriptor.value,
           path: `${path}.${key}`,
+          rootPath,
           depth: depth + 1,
           ancestors: childAncestors,
         });
@@ -2476,11 +2504,6 @@ function assertJsonCollectionWithinBudget(
       );
     }
 
-    if (serializedBytes > JSON_BUDGET_MAX_TOTAL_BYTES) {
-      throw new CustomRulePersistenceInputError(
-        `JSON payload exceeds the ${JSON_BUDGET_MAX_TOTAL_BYTES}-byte budget`,
-      );
-    }
   }
 }
 

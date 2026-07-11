@@ -614,7 +614,14 @@ describe("Phase 1 settlement AI persistence contract", () => {
 
   it("binds draft traces to the locked completed Xingyao turn and message pair", () => {
     const body = settlementAiFunctionBody("create_ai_settlement_rule_draft");
+    const fingerprint = body.indexOf("v_request_fingerprint :=");
     const conversationLock = body.indexOf("from public.ai_conversations as c");
+    const existingLookup = body.indexOf(
+      "from public.ai_settlement_rule_drafts as d",
+    );
+    const duplicateReturn = body.indexOf(
+      "pg_catalog.jsonb_build_object('duplicate', true)",
+    );
     const turnLock = body.indexOf("from public.ai_chat_turns as trace_turn");
 
     expect(body).toMatch(
@@ -629,8 +636,19 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(body).toMatch(
       /v_trace_assistant_message_id := \(p_turn_trace ->> 'assistantmessageid'\)::uuid/u,
     );
+    expect(fingerprint).toBeGreaterThanOrEqual(0);
     expect(conversationLock).toBeGreaterThanOrEqual(0);
+    expect(conversationLock).toBeGreaterThan(fingerprint);
+    expect(existingLookup).toBeGreaterThan(conversationLock);
+    expect(existingLookup).toBeLessThan(turnLock);
+    expect(duplicateReturn).toBeGreaterThan(existingLookup);
+    expect(duplicateReturn).toBeLessThan(turnLock);
     expect(turnLock).toBeGreaterThan(conversationLock);
+    expect(body).toContain("d.organization_id = p_organization_id");
+    expect(body).toContain("d.created_by = v_actor_id");
+    expect(body).toContain(
+      "d.idempotency_key = pg_catalog.btrim(p_idempotency_key)",
+    );
     expect(body).toContain("trace_turn.conversation_id = p_conversation_id");
     expect(body).toContain("trace_turn.organization_id = p_organization_id");
     expect(body).toContain("trace_turn.owner_user_id = v_actor_id");
@@ -865,6 +883,7 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(header).toContain("immutable");
     expect(header).toContain("set search_path = pg_catalog, public");
     expect(body).toContain("pg_catalog.pg_column_size(p_value) > 262144");
+    expect(body).toContain("pg_catalog.pg_column_size(v_node) > 65536");
     expect(body).toContain("v_node_count > 300");
     expect(body).toContain("v_depth > 20");
     expect(body).toContain("v_item_count > 200");
@@ -1008,6 +1027,8 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "'projectid'",
       "'reportid'",
       "'amountcents'",
+      "'streamer'",
+      "'streameramount'",
       "'tax'",
       "'rawpayload'",
     ]) {
@@ -1093,6 +1114,7 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "phase1_rule_version_rpc_accepted",
       "oversized_warning_rpc_accepted",
       "idempotency_status_conflict_missing",
+      "idempotent_superseded_message_replay_invalid",
       "idempotent_lifecycle_replay_invalid",
       "actual_simulation_shape_invalid",
       "raw_criteria_rpc_accepted",
@@ -1103,6 +1125,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
     }
     expect(selfChecks).toContain("when others then");
     expect(selfChecks).toContain("sqlerrm");
+    expect(selfChecks).toMatch(
+      /update public\.ai_chat_messages\s+set status = 'superseded'\s+where id = v_assistant_message_id/u,
+    );
 
     for (const policyName of [
       "ai_settlement_rule_drafts_mcn_project_read",

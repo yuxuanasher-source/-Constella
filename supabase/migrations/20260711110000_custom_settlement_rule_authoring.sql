@@ -2310,6 +2310,40 @@ begin
     raise exception 'settlement_ai_conversation_project_mismatch';
   end if;
 
+  -- The conversation lock serializes retries. A matching immutable request may
+  -- be replayed after Xingyao supersedes its source assistant message; only a
+  -- first insert needs the source turn and messages to remain current.
+  select d.*
+  into v_existing
+  from public.ai_settlement_rule_drafts as d
+  where d.organization_id = p_organization_id
+    and d.created_by = v_actor_id
+    and d.idempotency_key = pg_catalog.btrim(p_idempotency_key)
+  for update;
+  if found then
+    if v_existing.request_fingerprint <> v_request_fingerprint
+       or v_existing.project_id <> p_project_id
+       or v_existing.conversation_id <> p_conversation_id
+       or v_existing.prompt_text <> pg_catalog.btrim(p_prompt_text)
+       or v_existing.turn_trace is distinct from p_turn_trace
+       or v_existing.business_contract is distinct from p_business_contract
+       or v_existing.unresolved_ambiguities is distinct from p_unresolved_ambiguities
+       or v_existing.variable_catalog_version <> p_variable_catalog_version
+       or v_existing.ai_response is distinct from p_ai_response
+       or v_existing.generated_formula is distinct from p_generated_formula
+       or v_existing.generated_explanation <> pg_catalog.btrim(p_generated_explanation)
+       or v_existing.generated_test_cases is distinct from p_generated_test_cases
+       or v_existing.model <> pg_catalog.btrim(p_model)
+       or v_existing.safety_flags is distinct from p_safety_flags
+       or v_existing.contract_hash <> p_contract_hash
+       or v_existing.formula_hash <> p_formula_hash
+       or v_existing.parameter_hash <> p_parameter_hash then
+      raise exception 'settlement_ai_draft_idempotency_conflict';
+    end if;
+    return pg_catalog.to_jsonb(v_existing)
+      || pg_catalog.jsonb_build_object('duplicate', true);
+  end if;
+
   select trace_turn.*
   into v_trace_turn
   from public.ai_chat_turns as trace_turn
@@ -2348,37 +2382,6 @@ begin
   for update of user_message, assistant_message;
   if not found then
     raise exception 'settlement_ai_turn_message_trace_mismatch';
-  end if;
-
-  select d.*
-  into v_existing
-  from public.ai_settlement_rule_drafts as d
-  where d.organization_id = p_organization_id
-    and d.created_by = v_actor_id
-    and d.idempotency_key = pg_catalog.btrim(p_idempotency_key)
-  for update;
-  if found then
-    if v_existing.request_fingerprint <> v_request_fingerprint
-       or v_existing.project_id <> p_project_id
-       or v_existing.conversation_id <> p_conversation_id
-       or v_existing.prompt_text <> pg_catalog.btrim(p_prompt_text)
-       or v_existing.turn_trace is distinct from p_turn_trace
-       or v_existing.business_contract is distinct from p_business_contract
-       or v_existing.unresolved_ambiguities is distinct from p_unresolved_ambiguities
-       or v_existing.variable_catalog_version <> p_variable_catalog_version
-       or v_existing.ai_response is distinct from p_ai_response
-       or v_existing.generated_formula is distinct from p_generated_formula
-       or v_existing.generated_explanation <> pg_catalog.btrim(p_generated_explanation)
-       or v_existing.generated_test_cases is distinct from p_generated_test_cases
-       or v_existing.model <> pg_catalog.btrim(p_model)
-       or v_existing.safety_flags is distinct from p_safety_flags
-       or v_existing.contract_hash <> p_contract_hash
-       or v_existing.formula_hash <> p_formula_hash
-       or v_existing.parameter_hash <> p_parameter_hash then
-      raise exception 'settlement_ai_draft_idempotency_conflict';
-    end if;
-    return pg_catalog.to_jsonb(v_existing)
-      || pg_catalog.jsonb_build_object('duplicate', true);
   end if;
 
   select coalesce(max(d.revision_number), 0) + 1
@@ -3342,6 +3345,38 @@ begin
       raise exception 'actual_draft_shape_invalid';
     end if;
 
+    update public.ai_chat_messages
+    set status = 'superseded'
+    where id = v_assistant_message_id;
+
+    v_draft_replay := public.create_ai_settlement_rule_draft(
+      v_organization_id,
+      v_fixture_project_id,
+      v_conversation_id,
+      'task6-settlement-ai-draft-1',
+      '请按项目收入生成结算规则。',
+      v_turn_trace,
+      v_valid_contract,
+      v_valid_ambiguities,
+      pg_catalog.repeat('a', 64),
+      v_valid_ai_response,
+      v_valid_generated_formula,
+      '按项目确认收入计算。',
+      v_valid_generated_tests,
+      'fixture-model',
+      v_valid_safety_flags,
+      pg_catalog.repeat('b', 64),
+      pg_catalog.repeat('c', 64),
+      pg_catalog.repeat('d', 64),
+      'clarifying'
+    );
+    if not (v_draft_replay ->> 'duplicate')::boolean
+       or v_draft_replay ->> 'id' <> v_draft_one ->> 'id'
+       or v_draft_replay ->> 'request_fingerprint'
+         <> v_draft_one ->> 'request_fingerprint' then
+      raise exception 'idempotent_superseded_message_replay_invalid';
+    end if;
+
     begin
       perform public.create_ai_settlement_rule_draft(
         v_organization_id,
@@ -3372,6 +3407,10 @@ begin
           raise exception 'idempotency_status_conflict_unexpected: %', sqlerrm;
         end if;
     end;
+
+    update public.ai_chat_messages
+    set status = 'completed'
+    where id = v_assistant_message_id;
 
     begin
       perform public.create_ai_settlement_rule_draft(
