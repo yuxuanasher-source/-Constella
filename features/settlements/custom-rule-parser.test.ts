@@ -174,6 +174,24 @@ describe("parseCustomRuleFormula", () => {
   });
 
   it.each([
+    [
+      "top-level",
+      "money_result?.({ final: yuan(1) })",
+      "money_result?.({ final: yuan(1) })",
+    ],
+    [
+      "nested",
+      "money_result({ final: yuan?.(1) })",
+      "yuan?.(1)",
+    ],
+  ])("rejects %s optional calls with the call span", (_label, formula, call) => {
+    const issue = expectParseIssue(formula, "PARSE_UNSUPPORTED_NODE");
+    const start = formula.indexOf(call);
+
+    expect(issue.span).toEqual({ start, end: start + call.length });
+  });
+
+  it.each([
     ["member access", "record.amount", "PARSE_UNSUPPORTED_NODE"],
     ["computed access", 'record["amount"]', "PARSE_UNSUPPORTED_NODE"],
     ["assignment", "if(flag = true, yuan(1), yuan(0))", "PARSE_SYNTAX_ERROR"],

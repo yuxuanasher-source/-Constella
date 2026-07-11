@@ -59,6 +59,7 @@ export type ParseCustomRuleFormulaResult =
 type LocatedExpression = Expression & {
   start?: number;
   end?: number;
+  optional?: boolean;
 };
 
 type JsepParser = {
@@ -330,6 +331,14 @@ function translateNode(
       };
     }
     case "CallExpression": {
+      if (node.optional === true) {
+        throw parserFailure(
+          "PARSE_UNSUPPORTED_NODE",
+          "Optional calls are not allowed",
+          span,
+          path,
+        );
+      }
       const callee = asLocatedExpression(node.callee);
       if (!callee || callee.type !== "Identifier") {
         throw parserFailure(
