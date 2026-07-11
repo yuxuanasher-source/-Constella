@@ -2486,7 +2486,10 @@ begin
     and trace_turn.owner_user_id = v_actor_id
     and trace_turn.user_message_id = v_trace_user_message_id
     and trace_turn.assistant_message_id = v_trace_assistant_message_id
-    and trace_turn.status = 'completed'
+    and trace_turn.status = case
+      when p_status = 'failed' then 'failed'
+      else 'completed'
+    end
   for update of trace_turn;
   if not found then
     raise exception 'settlement_ai_turn_trace_scope_mismatch';
@@ -2508,7 +2511,10 @@ begin
     and user_message.role = 'user'
     and assistant_message.role = 'assistant'
     and user_message.status = 'completed'
-    and assistant_message.status = 'completed'
+    and assistant_message.status = case
+      when p_status = 'failed' then 'failed'
+      else 'completed'
+    end
     and assistant_message.parent_message_id = user_message.id
     and assistant_message.sequence_no > user_message.sequence_no
     and assistant_message.content = p_ai_response ->> 'content'
@@ -2939,6 +2945,756 @@ begin
 end;
 $$;
 
+-- Atomic finalizers accept JSON envelopes so Task7 can pass the exact
+-- repository contract without exposing a second, drifting parameter surface.
+-- This bounded iterative walker applies one global budget across all envelopes
+-- while retaining the existing 64 KiB limit for every nested container.
+create or replace function public.settlement_ai_atomic_payload_within_budget(
+  p_values jsonb[]
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog, public
+as $$
+declare
+  v_queue jsonb[] := array[]::jsonb[];
+  v_depths integer[] := array[]::integer[];
+  v_is_root boolean[] := array[]::boolean[];
+  v_index integer := 1;
+  v_node_count integer := 0;
+  v_total_bytes bigint := 0;
+  v_node jsonb;
+  v_depth integer;
+  v_root boolean;
+  v_type text;
+  v_item_count integer;
+  v_child jsonb;
+  v_key text;
+  v_value jsonb;
+begin
+  if p_values is null
+     or pg_catalog.cardinality(p_values) not between 2 and 3 then
+    return false;
+  end if;
+  foreach v_value in array p_values loop
+    if v_value is null then
+      return false;
+    end if;
+    v_total_bytes := v_total_bytes + pg_catalog.pg_column_size(v_value);
+    if v_total_bytes > 262144 then
+      return false;
+    end if;
+    v_queue := pg_catalog.array_append(v_queue, v_value);
+    v_depths := pg_catalog.array_append(v_depths, 0);
+    v_is_root := pg_catalog.array_append(v_is_root, true);
+  end loop;
+
+  while v_index <= pg_catalog.cardinality(v_queue) loop
+    v_node := v_queue[v_index];
+    v_depth := v_depths[v_index];
+    v_root := v_is_root[v_index];
+    v_index := v_index + 1;
+    v_node_count := v_node_count + 1;
+    if v_node_count > 300 or v_depth > 20 then
+      return false;
+    end if;
+    if not v_root and pg_catalog.pg_column_size(v_node) > 65536 then
+      return false;
+    end if;
+
+    v_type := pg_catalog.jsonb_typeof(v_node);
+    if v_type = 'string' then
+      if pg_catalog.octet_length(v_node #>> '{}') > 16384 then
+        return false;
+      end if;
+    elsif v_type = 'array' then
+      v_item_count := pg_catalog.jsonb_array_length(v_node);
+      if v_item_count > 200
+         or pg_catalog.cardinality(v_queue) + v_item_count > 300 then
+        return false;
+      end if;
+      for v_child in
+        select item.value
+        from pg_catalog.jsonb_array_elements(v_node) as item(value)
+      loop
+        v_queue := pg_catalog.array_append(v_queue, v_child);
+        v_depths := pg_catalog.array_append(v_depths, v_depth + 1);
+        v_is_root := pg_catalog.array_append(v_is_root, false);
+      end loop;
+    elsif v_type = 'object' then
+      select pg_catalog.count(*)::integer
+      into v_item_count
+      from pg_catalog.jsonb_object_keys(v_node);
+      if v_item_count > 200
+         or pg_catalog.cardinality(v_queue) + v_item_count > 300 then
+        return false;
+      end if;
+      for v_key, v_child in
+        select object_item.key, object_item.value
+        from pg_catalog.jsonb_each(v_node) as object_item(key, value)
+      loop
+        if pg_catalog.octet_length(v_key) > 256 then
+          return false;
+        end if;
+        v_queue := pg_catalog.array_append(v_queue, v_child);
+        v_depths := pg_catalog.array_append(v_depths, v_depth + 1);
+        v_is_root := pg_catalog.array_append(v_is_root, false);
+      end loop;
+    end if;
+  end loop;
+  return true;
+exception
+  when others then return false;
+end;
+$$;
+
+create or replace function public.settlement_ai_atomic_draft_envelope_is_valid(
+  p_draft jsonb
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog, public
+as $$
+begin
+  if not public.settlement_ai_json_within_budget(p_draft) then
+    return false;
+  end if;
+  if not public.settlement_ai_json_is_safe(p_draft)
+     or not public.settlement_ai_json_has_exact_keys(
+       p_draft,
+       array[
+         'organizationId',
+         'projectId',
+         'conversationId',
+         'idempotencyKey',
+         'promptText',
+         'turnTrace',
+         'businessContract',
+         'unresolvedAmbiguities',
+         'variableCatalogVersion',
+         'aiResponse',
+         'generatedFormula',
+         'generatedExplanation',
+         'generatedTestCases',
+         'model',
+         'safetyFlags',
+         'contractHash',
+         'formulaHash',
+         'parameterHash',
+         'status'
+       ]::text[]
+     ) then
+    return false;
+  end if;
+  if not public.settlement_ai_uuid_text_is_valid(
+       p_draft ->> 'organizationId'
+     )
+     or not public.settlement_ai_uuid_text_is_valid(
+       p_draft ->> 'projectId'
+     )
+     or not public.settlement_ai_uuid_text_is_valid(
+       p_draft ->> 'conversationId'
+     )
+     or not public.settlement_ai_turn_trace_json_is_valid(
+       p_draft -> 'turnTrace'
+     )
+     or not public.settlement_ai_response_is_valid(p_draft -> 'aiResponse')
+     or pg_catalog.jsonb_typeof(p_draft -> 'businessContract') <> 'object'
+     or pg_catalog.jsonb_typeof(p_draft -> 'unresolvedAmbiguities') <> 'array'
+     or pg_catalog.jsonb_typeof(p_draft -> 'generatedTestCases') <> 'array'
+     or pg_catalog.jsonb_typeof(p_draft -> 'safetyFlags') <> 'array'
+     or pg_catalog.jsonb_typeof(p_draft -> 'status') <> 'string'
+     or p_draft ->> 'status' not in (
+       'clarifying',
+       'contract_ready',
+       'failed'
+     ) then
+    return false;
+  end if;
+  if nullif(pg_catalog.btrim(p_draft ->> 'idempotencyKey'), '') is null
+     or pg_catalog.char_length(
+       pg_catalog.btrim(p_draft ->> 'idempotencyKey')
+     ) > 200
+     or nullif(pg_catalog.btrim(p_draft ->> 'promptText'), '') is null
+     or pg_catalog.char_length(p_draft ->> 'promptText') > 4000
+     or nullif(pg_catalog.btrim(p_draft ->> 'model'), '') is null
+     or pg_catalog.char_length(pg_catalog.btrim(p_draft ->> 'model')) > 200
+     or p_draft ->> 'variableCatalogVersion' !~ '^[0-9a-f]{64}$'
+     or p_draft ->> 'contractHash' !~ '^[0-9a-f]{64}$'
+     or p_draft ->> 'parameterHash' !~ '^[0-9a-f]{64}$' then
+    return false;
+  end if;
+  if pg_catalog.jsonb_typeof(p_draft -> 'formulaHash') <> 'null'
+     and (
+       pg_catalog.jsonb_typeof(p_draft -> 'formulaHash') <> 'string'
+       or p_draft ->> 'formulaHash' !~ '^[0-9a-f]{64}$'
+     ) then
+    return false;
+  end if;
+  return true;
+exception
+  when others then return false;
+end;
+$$;
+
+create or replace function public.settlement_ai_atomic_completion_is_valid(
+  p_draft jsonb,
+  p_completion jsonb
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog, public
+as $$
+begin
+  if not public.settlement_ai_json_within_budget(p_completion) then
+    return false;
+  end if;
+  if not public.settlement_ai_json_is_safe(p_completion)
+     or not public.settlement_ai_json_has_exact_keys(
+       p_completion,
+       array[
+         'providerName',
+         'content',
+         'aiInvocationId',
+         'metadata'
+       ]::text[]
+     )
+     or pg_catalog.jsonb_typeof(p_completion -> 'providerName') <> 'string'
+     or nullif(
+       pg_catalog.btrim(p_completion ->> 'providerName'),
+       ''
+     ) is null
+     or pg_catalog.char_length(
+       pg_catalog.btrim(p_completion ->> 'providerName')
+     ) > 200
+     or pg_catalog.jsonb_typeof(p_completion -> 'content') <> 'string'
+     or nullif(pg_catalog.btrim(p_completion ->> 'content'), '') is null
+     or pg_catalog.char_length(p_completion ->> 'content') > 4000
+     or p_completion ->> 'content'
+       is distinct from p_draft -> 'aiResponse' ->> 'content'
+     or pg_catalog.jsonb_typeof(p_completion -> 'metadata') <> 'object' then
+    return false;
+  end if;
+  if pg_catalog.jsonb_typeof(p_completion -> 'aiInvocationId') = 'null' then
+    return true;
+  end if;
+  return pg_catalog.jsonb_typeof(p_completion -> 'aiInvocationId') = 'string'
+    and public.settlement_ai_uuid_text_is_valid(
+      p_completion ->> 'aiInvocationId'
+    );
+exception
+  when others then return false;
+end;
+$$;
+
+create or replace function public.settlement_ai_atomic_simulation_envelope_is_valid(
+  p_simulation jsonb
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog, public
+as $$
+begin
+  if not public.settlement_ai_json_within_budget(p_simulation) then
+    return false;
+  end if;
+  if not public.settlement_ai_simulation_json_is_safe(p_simulation)
+     or not public.settlement_ai_json_has_exact_keys(
+       p_simulation,
+       array[
+         'idempotencyKey',
+         'dataSelectionHash',
+         'sampleSource',
+         'sampleSelection',
+         'coverage',
+         'scenarios',
+         'historicalTotals',
+         'deltas',
+         'largestChanges',
+         'warnings'
+       ]::text[]
+     )
+     or nullif(
+       pg_catalog.btrim(p_simulation ->> 'idempotencyKey'),
+       ''
+     ) is null
+     or pg_catalog.char_length(
+       pg_catalog.btrim(p_simulation ->> 'idempotencyKey')
+     ) > 200
+     or p_simulation ->> 'dataSelectionHash' !~ '^[0-9a-f]{64}$'
+     or pg_catalog.jsonb_typeof(p_simulation -> 'sampleSource') <> 'object'
+     or pg_catalog.jsonb_typeof(p_simulation -> 'sampleSelection') <> 'object'
+     or pg_catalog.jsonb_typeof(p_simulation -> 'coverage') <> 'object'
+     or pg_catalog.jsonb_typeof(p_simulation -> 'scenarios') <> 'array'
+     or pg_catalog.jsonb_typeof(p_simulation -> 'historicalTotals') <> 'object'
+     or pg_catalog.jsonb_typeof(p_simulation -> 'deltas') <> 'object'
+     or pg_catalog.jsonb_typeof(p_simulation -> 'largestChanges') <> 'array'
+     or pg_catalog.jsonb_typeof(p_simulation -> 'warnings') <> 'array' then
+    return false;
+  end if;
+  return true;
+exception
+  when others then return false;
+end;
+$$;
+
+-- All atomic finalizers acquire the conversation before the turn. The called
+-- Xingyao and settlement RPCs then re-enter the same locks in the same order.
+create or replace function public.settlement_ai_lock_atomic_draft_turn(
+  p_draft jsonb
+)
+returns public.ai_chat_turns
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_organization_id uuid;
+  v_project_id uuid;
+  v_conversation_id uuid;
+  v_turn_id uuid;
+  v_user_message_id uuid;
+  v_assistant_message_id uuid;
+  v_conversation_project_id uuid;
+  v_turn public.ai_chat_turns%rowtype;
+begin
+  if auth.uid() is null or v_actor_id is null then
+    raise exception 'authentication_required';
+  end if;
+  if not public.settlement_ai_atomic_draft_envelope_is_valid(p_draft) then
+    raise exception 'settlement_ai_atomic_draft_envelope_invalid';
+  end if;
+  v_organization_id := (p_draft ->> 'organizationId')::uuid;
+  v_project_id := (p_draft ->> 'projectId')::uuid;
+  v_conversation_id := (p_draft ->> 'conversationId')::uuid;
+  v_turn_id := (p_draft -> 'turnTrace' ->> 'turnId')::uuid;
+  v_user_message_id := (p_draft -> 'turnTrace' ->> 'userMessageId')::uuid;
+  v_assistant_message_id := (
+    p_draft -> 'turnTrace' ->> 'assistantMessageId'
+  )::uuid;
+
+  if not public.is_org_member(v_organization_id)
+     or not public.is_mcn_staff(v_organization_id)
+     or not public.can_access_project(v_project_id) then
+    raise exception 'settlement_ai_project_access_denied';
+  end if;
+  if not exists (
+    select 1
+    from public.projects as project
+    where project.id = v_project_id
+      and project.organization_id = v_organization_id
+  ) then
+    raise exception 'settlement_ai_project_scope_mismatch';
+  end if;
+
+  select conversation.project_id
+  into v_conversation_project_id
+  from public.ai_conversations as conversation
+  where conversation.id = v_conversation_id
+    and conversation.organization_id = v_organization_id
+    and conversation.owner_user_id = v_actor_id
+  for update;
+  if not found then
+    raise exception 'settlement_ai_conversation_scope_mismatch';
+  end if;
+  if v_conversation_project_id is not null
+     and v_conversation_project_id <> v_project_id then
+    raise exception 'settlement_ai_conversation_project_mismatch';
+  end if;
+
+  select turn.*
+  into v_turn
+  from public.ai_chat_turns as turn
+  where turn.id = v_turn_id
+    and turn.organization_id = v_organization_id
+    and turn.owner_user_id = v_actor_id
+    and turn.conversation_id = v_conversation_id
+    and turn.user_message_id = v_user_message_id
+    and turn.assistant_message_id = v_assistant_message_id
+  for update;
+  if not found then
+    raise exception 'settlement_ai_turn_trace_scope_mismatch';
+  end if;
+  return v_turn;
+end;
+$$;
+
+create or replace function public.finalize_settlement_ai_draft_turn(
+  p_draft jsonb,
+  p_completion jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_turn public.ai_chat_turns%rowtype;
+  v_draft jsonb;
+begin
+  if not public.settlement_ai_atomic_draft_envelope_is_valid(p_draft)
+     or not public.settlement_ai_atomic_completion_is_valid(
+       p_draft,
+       p_completion
+     )
+     or not public.settlement_ai_atomic_payload_within_budget(
+       array[p_draft, p_completion]::jsonb[]
+     ) then
+    raise exception 'settlement_ai_atomic_payload_invalid';
+  end if;
+  if p_draft ->> 'status' not in ('clarifying', 'contract_ready') then
+    raise exception 'settlement_ai_atomic_success_draft_status_invalid';
+  end if;
+  v_turn := public.settlement_ai_lock_atomic_draft_turn(p_draft);
+  if v_turn.status = 'completed' then
+    if not exists (
+      select 1
+      from public.ai_settlement_rule_drafts as existing
+      where existing.organization_id = (p_draft ->> 'organizationId')::uuid
+        and existing.project_id = (p_draft ->> 'projectId')::uuid
+        and existing.conversation_id = (p_draft ->> 'conversationId')::uuid
+        and existing.created_by = v_actor_id
+        and existing.idempotency_key = pg_catalog.btrim(
+          p_draft ->> 'idempotencyKey'
+        )
+    ) then
+      raise exception 'settlement_ai_atomic_completed_without_draft';
+    end if;
+    if v_turn.provider_name is distinct from pg_catalog.btrim(
+         p_completion ->> 'providerName'
+       )
+       or v_turn.ai_invocation_id is distinct from
+         (p_completion ->> 'aiInvocationId')::uuid
+       or not exists (
+         select 1
+         from public.ai_chat_messages as terminal_message
+         where terminal_message.id = v_turn.assistant_message_id
+           and terminal_message.organization_id = v_turn.organization_id
+           and terminal_message.owner_user_id = v_actor_id
+           and terminal_message.conversation_id = v_turn.conversation_id
+           and terminal_message.status = 'completed'
+           and terminal_message.content = p_completion ->> 'content'
+           and terminal_message.metadata is not distinct from
+             p_completion -> 'metadata'
+       ) then
+      raise exception 'settlement_ai_atomic_completion_replay_conflict';
+    end if;
+  elsif v_turn.status <> 'validating' then
+    raise exception 'settlement_ai_atomic_success_turn_state_invalid';
+  end if;
+
+  if not public.finish_ai_chat_turn(
+    (p_draft ->> 'organizationId')::uuid,
+    v_actor_id,
+    v_turn.id,
+    true,
+    p_completion ->> 'content',
+    pg_catalog.btrim(p_completion ->> 'providerName'),
+    (p_completion ->> 'aiInvocationId')::uuid,
+    null,
+    null,
+    false,
+    p_completion -> 'metadata'
+  ) then
+    raise exception 'settlement_ai_atomic_turn_completion_failed';
+  end if;
+
+  v_draft := public.create_ai_settlement_rule_draft(
+    (p_draft ->> 'organizationId')::uuid,
+    (p_draft ->> 'projectId')::uuid,
+    (p_draft ->> 'conversationId')::uuid,
+    p_draft ->> 'idempotencyKey',
+    p_draft ->> 'promptText',
+    p_draft -> 'turnTrace',
+    p_draft -> 'businessContract',
+    p_draft -> 'unresolvedAmbiguities',
+    p_draft ->> 'variableCatalogVersion',
+    p_draft -> 'aiResponse',
+    nullif(p_draft -> 'generatedFormula', 'null'::jsonb),
+    p_draft ->> 'generatedExplanation',
+    p_draft -> 'generatedTestCases',
+    p_draft ->> 'model',
+    p_draft -> 'safetyFlags',
+    p_draft ->> 'contractHash',
+    p_draft ->> 'formulaHash',
+    p_draft ->> 'parameterHash',
+    p_draft ->> 'status'
+  );
+  return v_draft;
+end;
+$$;
+
+create or replace function public.finalize_settlement_ai_simulation_turn(
+  p_draft jsonb,
+  p_completion jsonb,
+  p_simulation jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_turn public.ai_chat_turns%rowtype;
+  v_existing_draft_id uuid;
+  v_draft jsonb;
+  v_simulation jsonb;
+begin
+  if not public.settlement_ai_atomic_draft_envelope_is_valid(p_draft)
+     or not public.settlement_ai_atomic_completion_is_valid(
+       p_draft,
+       p_completion
+     )
+     or not public.settlement_ai_atomic_simulation_envelope_is_valid(
+       p_simulation
+     )
+     or not public.settlement_ai_atomic_payload_within_budget(
+       array[p_draft, p_completion, p_simulation]::jsonb[]
+     ) then
+    raise exception 'settlement_ai_atomic_payload_invalid';
+  end if;
+  if p_draft ->> 'status' <> 'contract_ready' then
+    raise exception 'settlement_ai_atomic_simulation_draft_status_invalid';
+  end if;
+  v_turn := public.settlement_ai_lock_atomic_draft_turn(p_draft);
+  if v_turn.status = 'completed' then
+    select existing.id
+    into v_existing_draft_id
+    from public.ai_settlement_rule_drafts as existing
+    where existing.organization_id = (p_draft ->> 'organizationId')::uuid
+      and existing.project_id = (p_draft ->> 'projectId')::uuid
+      and existing.conversation_id = (p_draft ->> 'conversationId')::uuid
+      and existing.created_by = v_actor_id
+      and existing.idempotency_key = pg_catalog.btrim(
+        p_draft ->> 'idempotencyKey'
+      );
+    if not found then
+      raise exception 'settlement_ai_atomic_completed_without_draft';
+    end if;
+    if not exists (
+      select 1
+      from public.settlement_formula_simulations as existing
+      where existing.organization_id = (p_draft ->> 'organizationId')::uuid
+        and existing.project_id = (p_draft ->> 'projectId')::uuid
+        and existing.ai_draft_id = v_existing_draft_id
+        and existing.created_by = v_actor_id
+        and existing.idempotency_key = pg_catalog.btrim(
+          p_simulation ->> 'idempotencyKey'
+        )
+    ) then
+      raise exception 'settlement_ai_atomic_completed_without_simulation';
+    end if;
+    if v_turn.provider_name is distinct from pg_catalog.btrim(
+         p_completion ->> 'providerName'
+       )
+       or v_turn.ai_invocation_id is distinct from
+         (p_completion ->> 'aiInvocationId')::uuid
+       or not exists (
+         select 1
+         from public.ai_chat_messages as terminal_message
+         where terminal_message.id = v_turn.assistant_message_id
+           and terminal_message.organization_id = v_turn.organization_id
+           and terminal_message.owner_user_id = v_actor_id
+           and terminal_message.conversation_id = v_turn.conversation_id
+           and terminal_message.status = 'completed'
+           and terminal_message.content = p_completion ->> 'content'
+           and terminal_message.metadata is not distinct from
+             p_completion -> 'metadata'
+       ) then
+      raise exception 'settlement_ai_atomic_completion_replay_conflict';
+    end if;
+  elsif v_turn.status <> 'validating' then
+    raise exception 'settlement_ai_atomic_success_turn_state_invalid';
+  end if;
+
+  if not public.finish_ai_chat_turn(
+    (p_draft ->> 'organizationId')::uuid,
+    v_actor_id,
+    v_turn.id,
+    true,
+    p_completion ->> 'content',
+    pg_catalog.btrim(p_completion ->> 'providerName'),
+    (p_completion ->> 'aiInvocationId')::uuid,
+    null,
+    null,
+    false,
+    p_completion -> 'metadata'
+  ) then
+    raise exception 'settlement_ai_atomic_turn_completion_failed';
+  end if;
+
+  v_draft := public.create_ai_settlement_rule_draft(
+    (p_draft ->> 'organizationId')::uuid,
+    (p_draft ->> 'projectId')::uuid,
+    (p_draft ->> 'conversationId')::uuid,
+    p_draft ->> 'idempotencyKey',
+    p_draft ->> 'promptText',
+    p_draft -> 'turnTrace',
+    p_draft -> 'businessContract',
+    p_draft -> 'unresolvedAmbiguities',
+    p_draft ->> 'variableCatalogVersion',
+    p_draft -> 'aiResponse',
+    nullif(p_draft -> 'generatedFormula', 'null'::jsonb),
+    p_draft ->> 'generatedExplanation',
+    p_draft -> 'generatedTestCases',
+    p_draft ->> 'model',
+    p_draft -> 'safetyFlags',
+    p_draft ->> 'contractHash',
+    p_draft ->> 'formulaHash',
+    p_draft ->> 'parameterHash',
+    p_draft ->> 'status'
+  );
+  v_simulation := public.create_settlement_formula_simulation(
+    (p_draft ->> 'organizationId')::uuid,
+    (p_draft ->> 'projectId')::uuid,
+    null,
+    (v_draft ->> 'id')::uuid,
+    p_simulation ->> 'idempotencyKey',
+    p_draft ->> 'formulaHash',
+    p_draft ->> 'contractHash',
+    p_draft ->> 'parameterHash',
+    p_draft ->> 'variableCatalogVersion',
+    p_simulation ->> 'dataSelectionHash',
+    p_simulation -> 'sampleSource',
+    p_simulation -> 'sampleSelection',
+    p_simulation -> 'coverage',
+    p_simulation -> 'scenarios',
+    p_simulation -> 'historicalTotals',
+    p_simulation -> 'deltas',
+    p_simulation -> 'largestChanges',
+    p_simulation -> 'warnings'
+  );
+  select pg_catalog.to_jsonb(current_draft)
+    || pg_catalog.jsonb_build_object(
+      'duplicate', (v_draft ->> 'duplicate')::boolean
+    )
+  into v_draft
+  from public.ai_settlement_rule_drafts as current_draft
+  where current_draft.id = (v_draft ->> 'id')::uuid;
+  return pg_catalog.jsonb_build_object(
+    'draft', v_draft,
+    'simulation', v_simulation
+  );
+end;
+$$;
+
+create or replace function public.finalize_settlement_ai_failed_turn(
+  p_draft jsonb,
+  p_completion jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_turn public.ai_chat_turns%rowtype;
+  v_draft jsonb;
+begin
+  if not public.settlement_ai_atomic_draft_envelope_is_valid(p_draft)
+     or not public.settlement_ai_atomic_completion_is_valid(
+       p_draft,
+       p_completion
+     )
+     or not public.settlement_ai_atomic_payload_within_budget(
+       array[p_draft, p_completion]::jsonb[]
+     ) then
+    raise exception 'settlement_ai_atomic_payload_invalid';
+  end if;
+  if p_draft ->> 'status' <> 'failed' then
+    raise exception 'settlement_ai_atomic_failed_draft_status_invalid';
+  end if;
+  v_turn := public.settlement_ai_lock_atomic_draft_turn(p_draft);
+  if v_turn.status = 'failed' then
+    if not exists (
+      select 1
+      from public.ai_settlement_rule_drafts as existing
+      where existing.organization_id = (p_draft ->> 'organizationId')::uuid
+        and existing.project_id = (p_draft ->> 'projectId')::uuid
+        and existing.conversation_id = (p_draft ->> 'conversationId')::uuid
+        and existing.created_by = v_actor_id
+        and existing.initial_status = 'failed'
+        and existing.idempotency_key = pg_catalog.btrim(
+          p_draft ->> 'idempotencyKey'
+        )
+    ) then
+      raise exception 'settlement_ai_atomic_failed_without_draft';
+    end if;
+    if v_turn.provider_name is distinct from pg_catalog.btrim(
+         p_completion ->> 'providerName'
+       )
+       or v_turn.ai_invocation_id is distinct from
+         (p_completion ->> 'aiInvocationId')::uuid
+       or v_turn.error_code <> 'settlement_ai_generation_failed'
+       or v_turn.error_summary <> 'Settlement AI generation failed'
+       or v_turn.retryable
+       or not exists (
+         select 1
+         from public.ai_chat_messages as terminal_message
+         where terminal_message.id = v_turn.assistant_message_id
+           and terminal_message.organization_id = v_turn.organization_id
+           and terminal_message.owner_user_id = v_actor_id
+           and terminal_message.conversation_id = v_turn.conversation_id
+           and terminal_message.status = 'failed'
+           and terminal_message.content = p_completion ->> 'content'
+           and terminal_message.metadata is not distinct from
+             p_completion -> 'metadata'
+       ) then
+      raise exception 'settlement_ai_atomic_completion_replay_conflict';
+    end if;
+  elsif v_turn.status <> 'validating' then
+    raise exception 'settlement_ai_atomic_failed_turn_state_invalid';
+  end if;
+
+  if not public.finish_ai_chat_turn(
+    (p_draft ->> 'organizationId')::uuid,
+    v_actor_id,
+    v_turn.id,
+    false,
+    p_completion ->> 'content',
+    pg_catalog.btrim(p_completion ->> 'providerName'),
+    (p_completion ->> 'aiInvocationId')::uuid,
+    'settlement_ai_generation_failed',
+    'Settlement AI generation failed',
+    false,
+    p_completion -> 'metadata'
+  ) then
+    raise exception 'settlement_ai_atomic_turn_failure_failed';
+  end if;
+
+  v_draft := public.create_ai_settlement_rule_draft(
+    (p_draft ->> 'organizationId')::uuid,
+    (p_draft ->> 'projectId')::uuid,
+    (p_draft ->> 'conversationId')::uuid,
+    p_draft ->> 'idempotencyKey',
+    p_draft ->> 'promptText',
+    p_draft -> 'turnTrace',
+    p_draft -> 'businessContract',
+    p_draft -> 'unresolvedAmbiguities',
+    p_draft ->> 'variableCatalogVersion',
+    p_draft -> 'aiResponse',
+    nullif(p_draft -> 'generatedFormula', 'null'::jsonb),
+    p_draft ->> 'generatedExplanation',
+    p_draft -> 'generatedTestCases',
+    p_draft ->> 'model',
+    p_draft -> 'safetyFlags',
+    p_draft ->> 'contractHash',
+    p_draft ->> 'formulaHash',
+    p_draft ->> 'parameterHash',
+    p_draft ->> 'status'
+  );
+  return v_draft;
+end;
+$$;
+
 -- settlement_ai_validator_self_checks
 do $$
 declare
@@ -3035,15 +3791,45 @@ declare
   v_fixture_project_id uuid := '30000000-0000-4000-8000-000000000001'::uuid;
   v_conversation_id uuid := '40000000-0000-4000-8000-000000000001'::uuid;
   v_other_conversation_id uuid := '40000000-0000-4000-8000-000000000002'::uuid;
+  v_atomic_draft_conversation_id uuid := '40000000-0000-4000-8000-000000000003'::uuid;
+  v_atomic_simulation_conversation_id uuid := '40000000-0000-4000-8000-000000000004'::uuid;
+  v_atomic_invalid_draft_conversation_id uuid := '40000000-0000-4000-8000-000000000005'::uuid;
+  v_atomic_invalid_simulation_conversation_id uuid := '40000000-0000-4000-8000-000000000006'::uuid;
+  v_atomic_failed_conversation_id uuid := '40000000-0000-4000-8000-000000000007'::uuid;
   v_user_message_id uuid := '50000000-0000-4000-8000-000000000001'::uuid;
   v_assistant_message_id uuid := '50000000-0000-4000-8000-000000000002'::uuid;
+  v_atomic_draft_user_message_id uuid := '50000000-0000-4000-8000-000000000010'::uuid;
+  v_atomic_draft_assistant_message_id uuid := '50000000-0000-4000-8000-000000000011'::uuid;
+  v_atomic_simulation_user_message_id uuid := '50000000-0000-4000-8000-000000000012'::uuid;
+  v_atomic_simulation_assistant_message_id uuid := '50000000-0000-4000-8000-000000000013'::uuid;
+  v_atomic_invalid_draft_user_message_id uuid := '50000000-0000-4000-8000-000000000014'::uuid;
+  v_atomic_invalid_draft_assistant_message_id uuid := '50000000-0000-4000-8000-000000000015'::uuid;
+  v_atomic_invalid_simulation_user_message_id uuid := '50000000-0000-4000-8000-000000000016'::uuid;
+  v_atomic_invalid_simulation_assistant_message_id uuid := '50000000-0000-4000-8000-000000000017'::uuid;
+  v_atomic_failed_user_message_id uuid := '50000000-0000-4000-8000-000000000018'::uuid;
+  v_atomic_failed_assistant_message_id uuid := '50000000-0000-4000-8000-000000000019'::uuid;
   v_turn_id uuid := '60000000-0000-4000-8000-000000000001'::uuid;
+  v_atomic_draft_turn_id uuid := '60000000-0000-4000-8000-000000000002'::uuid;
+  v_atomic_simulation_turn_id uuid := '60000000-0000-4000-8000-000000000003'::uuid;
+  v_atomic_invalid_draft_turn_id uuid := '60000000-0000-4000-8000-000000000004'::uuid;
+  v_atomic_invalid_simulation_turn_id uuid := '60000000-0000-4000-8000-000000000005'::uuid;
+  v_atomic_failed_turn_id uuid := '60000000-0000-4000-8000-000000000006'::uuid;
   v_turn_trace jsonb;
   v_valid_ambiguities jsonb := '[{"code":"confirm_rate","question":"请确认分成比例。","required":true}]'::jsonb;
   v_valid_ai_response jsonb := '{"content":"\n已生成结算规则。\n","finishReason":"stop","providerRequestId":null}'::jsonb;
   v_valid_generated_formula jsonb := '{"expression":"grossRevenue","normalizedAst":{"kind":"identifier","name":"grossRevenue"}}'::jsonb;
   v_valid_generated_tests jsonb := '[{"name":"标准场景","inputs":{"grossRevenue":{"type":"money_cents","amountCents":10000}},"expectedResult":{"type":"money_cents","amountCents":10000}}]'::jsonb;
   v_valid_safety_flags jsonb := '[{"code":"manual_review","severity":"info","message":"需人工复核。"}]'::jsonb;
+  v_failed_ai_response jsonb := '{"content":"规则生成失败，需人工检查输入。","finishReason":"content_filter","providerRequestId":null}'::jsonb;
+  v_atomic_draft_input jsonb;
+  v_atomic_simulation_draft_input jsonb;
+  v_atomic_invalid_draft_input jsonb;
+  v_atomic_invalid_simulation_draft_input jsonb;
+  v_atomic_failed_draft_input jsonb;
+  v_atomic_completion jsonb;
+  v_atomic_simulation_input jsonb;
+  v_atomic_result jsonb;
+  v_atomic_replay jsonb;
   v_draft_one jsonb;
   v_draft_two jsonb;
   v_draft_replay jsonb;
@@ -3344,6 +4130,41 @@ begin
         v_actor_id,
         v_fixture_project_id,
         'Task6 跨会话攻击目标'
+      ),
+      (
+        v_atomic_draft_conversation_id,
+        v_organization_id,
+        v_actor_id,
+        v_fixture_project_id,
+        'Task6 原子草案会话'
+      ),
+      (
+        v_atomic_simulation_conversation_id,
+        v_organization_id,
+        v_actor_id,
+        v_fixture_project_id,
+        'Task6 原子模拟会话'
+      ),
+      (
+        v_atomic_invalid_draft_conversation_id,
+        v_organization_id,
+        v_actor_id,
+        v_fixture_project_id,
+        'Task6 原子草案回滚会话'
+      ),
+      (
+        v_atomic_invalid_simulation_conversation_id,
+        v_organization_id,
+        v_actor_id,
+        v_fixture_project_id,
+        'Task6 原子模拟回滚会话'
+      ),
+      (
+        v_atomic_failed_conversation_id,
+        v_organization_id,
+        v_actor_id,
+        v_fixture_project_id,
+        'Task6 原子失败会话'
       );
 
     insert into public.ai_chat_messages (
@@ -3378,6 +4199,116 @@ begin
         'completed',
         v_valid_ai_response ->> 'content',
         v_user_message_id
+      ),
+      (
+        v_atomic_draft_user_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_draft_conversation_id,
+        1,
+        'user',
+        'completed',
+        '请生成需要澄清的结算规则。',
+        null
+      ),
+      (
+        v_atomic_draft_assistant_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_draft_conversation_id,
+        2,
+        'assistant',
+        'streaming',
+        '',
+        v_atomic_draft_user_message_id
+      ),
+      (
+        v_atomic_simulation_user_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_simulation_conversation_id,
+        1,
+        'user',
+        'completed',
+        '请生成并模拟结算规则。',
+        null
+      ),
+      (
+        v_atomic_simulation_assistant_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_simulation_conversation_id,
+        2,
+        'assistant',
+        'streaming',
+        '',
+        v_atomic_simulation_user_message_id
+      ),
+      (
+        v_atomic_invalid_draft_user_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_invalid_draft_conversation_id,
+        1,
+        'user',
+        'completed',
+        '请生成无效草案。',
+        null
+      ),
+      (
+        v_atomic_invalid_draft_assistant_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_invalid_draft_conversation_id,
+        2,
+        'assistant',
+        'streaming',
+        '',
+        v_atomic_invalid_draft_user_message_id
+      ),
+      (
+        v_atomic_invalid_simulation_user_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_invalid_simulation_conversation_id,
+        1,
+        'user',
+        'completed',
+        '请生成无效模拟。',
+        null
+      ),
+      (
+        v_atomic_invalid_simulation_assistant_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_invalid_simulation_conversation_id,
+        2,
+        'assistant',
+        'streaming',
+        '',
+        v_atomic_invalid_simulation_user_message_id
+      ),
+      (
+        v_atomic_failed_user_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_failed_conversation_id,
+        1,
+        'user',
+        'completed',
+        '请生成会失败的结算规则。',
+        null
+      ),
+      (
+        v_atomic_failed_assistant_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_failed_conversation_id,
+        2,
+        'assistant',
+        'streaming',
+        '',
+        v_atomic_failed_user_message_id
       );
 
     insert into public.ai_chat_turns (
@@ -3390,17 +4321,73 @@ begin
       status,
       idempotency_key,
       completed_at
-    ) values (
-      v_turn_id,
-      v_organization_id,
-      v_actor_id,
-      v_conversation_id,
-      v_user_message_id,
-      v_assistant_message_id,
-      'completed',
-      'task6-settlement-ai-turn',
-      pg_catalog.clock_timestamp()
-    );
+    ) values
+      (
+        v_turn_id,
+        v_organization_id,
+        v_actor_id,
+        v_conversation_id,
+        v_user_message_id,
+        v_assistant_message_id,
+        'completed',
+        'task6-settlement-ai-turn',
+        pg_catalog.clock_timestamp()
+      ),
+      (
+        v_atomic_draft_turn_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_draft_conversation_id,
+        v_atomic_draft_user_message_id,
+        v_atomic_draft_assistant_message_id,
+        'validating',
+        'task6-settlement-ai-atomic-draft-turn',
+        null
+      ),
+      (
+        v_atomic_simulation_turn_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_simulation_conversation_id,
+        v_atomic_simulation_user_message_id,
+        v_atomic_simulation_assistant_message_id,
+        'validating',
+        'task6-settlement-ai-atomic-simulation-turn',
+        null
+      ),
+      (
+        v_atomic_invalid_draft_turn_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_invalid_draft_conversation_id,
+        v_atomic_invalid_draft_user_message_id,
+        v_atomic_invalid_draft_assistant_message_id,
+        'validating',
+        'task6-settlement-ai-atomic-invalid-draft-turn',
+        null
+      ),
+      (
+        v_atomic_invalid_simulation_turn_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_invalid_simulation_conversation_id,
+        v_atomic_invalid_simulation_user_message_id,
+        v_atomic_invalid_simulation_assistant_message_id,
+        'validating',
+        'task6-settlement-ai-atomic-invalid-simulation-turn',
+        null
+      ),
+      (
+        v_atomic_failed_turn_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_failed_conversation_id,
+        v_atomic_failed_user_message_id,
+        v_atomic_failed_assistant_message_id,
+        'validating',
+        'task6-settlement-ai-atomic-failed-turn',
+        null
+      );
 
     perform pg_catalog.set_config(
       'request.jwt.claim.sub',
@@ -3410,6 +4397,306 @@ begin
     if auth.uid() is distinct from v_actor_id then
       raise exception 'actual_rpc_auth_context_invalid';
     end if;
+
+    v_atomic_completion := pg_catalog.jsonb_build_object(
+      'providerName', 'fixture-provider',
+      'content', v_valid_ai_response ->> 'content',
+      'aiInvocationId', null,
+      'metadata', pg_catalog.jsonb_build_object('fixture', true)
+    );
+    v_atomic_draft_input := pg_catalog.jsonb_build_object(
+      'organizationId', v_organization_id,
+      'projectId', v_fixture_project_id,
+      'conversationId', v_atomic_draft_conversation_id,
+      'idempotencyKey', 'task6-settlement-ai-atomic-draft',
+      'promptText', '请按项目收入生成结算规则。',
+      'turnTrace', pg_catalog.jsonb_build_object(
+        'turnId', v_atomic_draft_turn_id,
+        'userMessageId', v_atomic_draft_user_message_id,
+        'assistantMessageId', v_atomic_draft_assistant_message_id
+      ),
+      'businessContract', v_valid_contract,
+      'unresolvedAmbiguities', v_valid_ambiguities,
+      'variableCatalogVersion', pg_catalog.repeat('a', 64),
+      'aiResponse', v_valid_ai_response,
+      'generatedFormula', null,
+      'generatedExplanation', null,
+      'generatedTestCases', '[]'::jsonb,
+      'model', 'fixture-model',
+      'safetyFlags', v_valid_safety_flags,
+      'contractHash', pg_catalog.repeat('b', 64),
+      'formulaHash', null,
+      'parameterHash', pg_catalog.repeat('d', 64),
+      'status', 'clarifying'
+    );
+    v_atomic_simulation_draft_input := v_atomic_draft_input
+      || pg_catalog.jsonb_build_object(
+        'conversationId', v_atomic_simulation_conversation_id,
+        'idempotencyKey', 'task6-settlement-ai-atomic-simulation-draft',
+        'turnTrace', pg_catalog.jsonb_build_object(
+          'turnId', v_atomic_simulation_turn_id,
+          'userMessageId', v_atomic_simulation_user_message_id,
+          'assistantMessageId', v_atomic_simulation_assistant_message_id
+        ),
+        'unresolvedAmbiguities', '[]'::jsonb,
+        'generatedFormula', v_valid_generated_formula,
+        'generatedExplanation', '按项目确认收入计算。',
+        'generatedTestCases', v_valid_generated_tests,
+        'formulaHash', pg_catalog.repeat('c', 64),
+        'status', 'contract_ready'
+      );
+    v_atomic_invalid_draft_input := v_atomic_draft_input
+      || pg_catalog.jsonb_build_object(
+        'conversationId', v_atomic_invalid_draft_conversation_id,
+        'idempotencyKey', 'task6-settlement-ai-atomic-invalid-draft',
+        'turnTrace', pg_catalog.jsonb_build_object(
+          'turnId', v_atomic_invalid_draft_turn_id,
+          'userMessageId', v_atomic_invalid_draft_user_message_id,
+          'assistantMessageId', v_atomic_invalid_draft_assistant_message_id
+        ),
+        'businessContract', v_valid_contract || '{"extra":true}'::jsonb
+      );
+    v_atomic_invalid_simulation_draft_input :=
+      v_atomic_simulation_draft_input
+      || pg_catalog.jsonb_build_object(
+        'conversationId', v_atomic_invalid_simulation_conversation_id,
+        'idempotencyKey',
+          'task6-settlement-ai-atomic-invalid-simulation-draft',
+        'turnTrace', pg_catalog.jsonb_build_object(
+          'turnId', v_atomic_invalid_simulation_turn_id,
+          'userMessageId', v_atomic_invalid_simulation_user_message_id,
+          'assistantMessageId',
+            v_atomic_invalid_simulation_assistant_message_id
+        )
+      );
+    v_atomic_failed_draft_input := v_atomic_draft_input
+      || pg_catalog.jsonb_build_object(
+        'conversationId', v_atomic_failed_conversation_id,
+        'idempotencyKey', 'task6-settlement-ai-atomic-failed-draft',
+        'turnTrace', pg_catalog.jsonb_build_object(
+          'turnId', v_atomic_failed_turn_id,
+          'userMessageId', v_atomic_failed_user_message_id,
+          'assistantMessageId', v_atomic_failed_assistant_message_id
+        ),
+        'unresolvedAmbiguities', '[]'::jsonb,
+        'aiResponse', v_failed_ai_response,
+        'safetyFlags', '[{"code":"generation_failed","severity":"block","message":"未生成可执行公式。"}]'::jsonb,
+        'status', 'failed'
+      );
+    v_atomic_simulation_input := pg_catalog.jsonb_build_object(
+      'idempotencyKey', 'task6-settlement-ai-atomic-simulation',
+      'dataSelectionHash', pg_catalog.repeat('e', 64),
+      'sampleSource', v_valid_sample_source,
+      'sampleSelection', v_valid_sample_selection,
+      'coverage', v_valid_coverage,
+      'scenarios', v_valid_scenarios,
+      'historicalTotals', v_valid_historical_totals,
+      'deltas', v_valid_deltas,
+      'largestChanges', v_valid_largest_changes,
+      'warnings', v_valid_warnings
+    );
+
+    v_atomic_result := public.finalize_settlement_ai_draft_turn(
+      v_atomic_draft_input,
+      v_atomic_completion
+    );
+    if (v_atomic_result ->> 'duplicate')::boolean
+       or v_atomic_result ->> 'initial_status' <> 'clarifying'
+       or v_atomic_result ->> 'status' <> 'clarifying'
+       or not exists (
+         select 1
+         from public.ai_chat_turns as atomic_turn
+         where atomic_turn.id = v_atomic_draft_turn_id
+           and atomic_turn.status = 'completed'
+       ) then
+      raise exception 'atomic_draft_turn_not_completed';
+    end if;
+    if not exists (
+      select 1
+      from public.ai_chat_messages as atomic_message
+      where atomic_message.id = v_atomic_draft_assistant_message_id
+        and atomic_message.status = 'completed'
+        and atomic_message.content = v_valid_ai_response ->> 'content'
+    ) then
+      raise exception 'atomic_draft_message_content_mismatch';
+    end if;
+    begin
+      perform public.finalize_settlement_ai_draft_turn(
+        v_atomic_draft_input,
+        v_atomic_completion || pg_catalog.jsonb_build_object(
+          'providerName', 'different-provider'
+        )
+      );
+      raise exception 'atomic_completion_replay_mismatch_accepted';
+    exception
+      when others then
+        if sqlerrm = 'atomic_completion_replay_mismatch_accepted' then
+          raise;
+        end if;
+        if sqlerrm <> 'settlement_ai_atomic_completion_replay_conflict' then
+          raise exception 'atomic_completion_replay_mismatch_unexpected: %',
+            sqlerrm;
+        end if;
+    end;
+    v_atomic_replay := public.finalize_settlement_ai_draft_turn(
+      v_atomic_draft_input,
+      v_atomic_completion
+    );
+    if not (v_atomic_replay ->> 'duplicate')::boolean
+       or v_atomic_replay ->> 'id' <> v_atomic_result ->> 'id' then
+      raise exception 'atomic_draft_replay_invalid';
+    end if;
+
+    v_atomic_result := public.finalize_settlement_ai_simulation_turn(
+      v_atomic_simulation_draft_input,
+      v_atomic_completion,
+      v_atomic_simulation_input
+    );
+    if v_atomic_result -> 'draft' ->> 'status' <> 'simulated'
+       or (v_atomic_result -> 'draft' ->> 'duplicate')::boolean
+       or (v_atomic_result -> 'simulation' ->> 'duplicate')::boolean
+       or v_atomic_result -> 'simulation' ->> 'ai_draft_id'
+         <> v_atomic_result -> 'draft' ->> 'id' then
+      raise exception 'atomic_simulation_shape_invalid';
+    end if;
+    if not exists (
+      select 1
+      from public.ai_chat_turns as atomic_turn
+      join public.ai_chat_messages as atomic_message
+        on atomic_message.id = atomic_turn.assistant_message_id
+      where atomic_turn.id = v_atomic_simulation_turn_id
+        and atomic_turn.status = 'completed'
+        and atomic_message.status = 'completed'
+        and atomic_message.content = v_valid_ai_response ->> 'content'
+    ) then
+      raise exception 'atomic_simulation_turn_not_completed';
+    end if;
+
+    begin
+      perform public.finalize_settlement_ai_draft_turn(
+        v_atomic_invalid_draft_input,
+        v_atomic_completion
+      );
+      raise exception 'atomic_invalid_draft_was_accepted';
+    exception
+      when others then
+        if sqlerrm = 'atomic_invalid_draft_was_accepted' then raise; end if;
+        if sqlerrm <> 'settlement_ai_draft_payload_invalid' then
+          raise exception 'atomic_invalid_draft_unexpected: %', sqlerrm;
+        end if;
+    end;
+    if not exists (
+         select 1
+         from public.ai_chat_turns as atomic_turn
+         join public.ai_chat_messages as atomic_message
+           on atomic_message.id = atomic_turn.assistant_message_id
+         where atomic_turn.id = v_atomic_invalid_draft_turn_id
+           and atomic_turn.status = 'validating'
+           and atomic_message.status = 'streaming'
+           and atomic_message.content = ''
+       )
+       or exists (
+         select 1
+         from public.ai_settlement_rule_drafts as atomic_draft
+         where atomic_draft.idempotency_key =
+           'task6-settlement-ai-atomic-invalid-draft'
+       ) then
+      raise exception 'atomic_invalid_draft_rollback_failed';
+    end if;
+
+    begin
+      perform public.finalize_settlement_ai_simulation_turn(
+        v_atomic_invalid_simulation_draft_input,
+        v_atomic_completion,
+        pg_catalog.jsonb_set(
+          v_atomic_simulation_input
+            || pg_catalog.jsonb_build_object(
+              'idempotencyKey',
+              'task6-settlement-ai-atomic-invalid-simulation'
+            ),
+          '{sampleSelection,criteria}',
+          '[{"name":"confirmed"}]'::jsonb
+        )
+      );
+      raise exception 'atomic_invalid_simulation_was_accepted';
+    exception
+      when others then
+        if sqlerrm = 'atomic_invalid_simulation_was_accepted' then raise; end if;
+        if sqlerrm <> 'settlement_ai_simulation_summary_invalid' then
+          raise exception 'atomic_invalid_simulation_unexpected: %', sqlerrm;
+        end if;
+    end;
+    if not exists (
+         select 1
+         from public.ai_chat_turns as atomic_turn
+         join public.ai_chat_messages as atomic_message
+           on atomic_message.id = atomic_turn.assistant_message_id
+         where atomic_turn.id = v_atomic_invalid_simulation_turn_id
+           and atomic_turn.status = 'validating'
+           and atomic_message.status = 'streaming'
+           and atomic_message.content = ''
+       )
+       or exists (
+         select 1
+         from public.ai_settlement_rule_drafts as atomic_draft
+         where atomic_draft.idempotency_key =
+           'task6-settlement-ai-atomic-invalid-simulation-draft'
+       )
+       or exists (
+         select 1
+         from public.settlement_formula_simulations as atomic_simulation
+         where atomic_simulation.idempotency_key =
+           'task6-settlement-ai-atomic-invalid-simulation'
+       ) then
+      raise exception 'atomic_invalid_simulation_rollback_failed';
+    end if;
+
+    v_atomic_result := public.finalize_settlement_ai_failed_turn(
+      v_atomic_failed_draft_input,
+      v_atomic_completion || pg_catalog.jsonb_build_object(
+        'content', v_failed_ai_response ->> 'content'
+      )
+    );
+    if v_atomic_result ->> 'initial_status' <> 'failed'
+       or v_atomic_result ->> 'status' <> 'failed'
+       or (v_atomic_result ->> 'duplicate')::boolean then
+      raise exception 'atomic_failed_draft_shape_invalid';
+    end if;
+    if not exists (
+      select 1
+      from public.ai_chat_turns as atomic_turn
+      join public.ai_chat_messages as atomic_message
+        on atomic_message.id = atomic_turn.assistant_message_id
+      where atomic_turn.id = v_atomic_failed_turn_id
+        and atomic_turn.status = 'failed'
+        and atomic_turn.error_code = 'settlement_ai_generation_failed'
+        and atomic_turn.error_summary = 'Settlement AI generation failed'
+        and not atomic_turn.retryable
+        and atomic_message.status = 'failed'
+        and atomic_message.content = v_failed_ai_response ->> 'content'
+    ) then
+      raise exception 'atomic_failed_turn_not_failed';
+    end if;
+
+    begin
+      perform public.finalize_settlement_ai_draft_turn(
+        v_atomic_failed_draft_input || pg_catalog.jsonb_build_object(
+          'idempotencyKey', 'task6-settlement-ai-success-after-failure',
+          'unresolvedAmbiguities', v_valid_ambiguities,
+          'status', 'clarifying'
+        ),
+        v_atomic_completion || pg_catalog.jsonb_build_object(
+          'content', v_failed_ai_response ->> 'content'
+        )
+      );
+      raise exception 'atomic_success_accepted_failed_turn';
+    exception
+      when others then
+        if sqlerrm = 'atomic_success_accepted_failed_turn' then raise; end if;
+        if sqlerrm <> 'settlement_ai_atomic_success_turn_state_invalid' then
+          raise exception 'atomic_failed_source_unexpected: %', sqlerrm;
+        end if;
+    end;
 
     v_draft_one := public.create_ai_settlement_rule_draft(
       v_organization_id,
@@ -4164,6 +5451,16 @@ revoke all on function public.guard_ai_settlement_rule_draft_revision()
   from public, anon, authenticated, service_role;
 revoke all on function public.prevent_settlement_formula_simulation_mutation()
   from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_atomic_payload_within_budget(jsonb[])
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_atomic_draft_envelope_is_valid(jsonb)
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_atomic_completion_is_valid(jsonb, jsonb)
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_atomic_simulation_envelope_is_valid(jsonb)
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_lock_atomic_draft_turn(jsonb)
+  from public, anon, authenticated, service_role;
 
 revoke all on function public.create_ai_settlement_rule_draft(
   uuid,
@@ -4250,6 +5547,27 @@ grant execute on function public.create_settlement_formula_simulation(
   jsonb,
   jsonb
 ) to authenticated;
+
+revoke all on function public.finalize_settlement_ai_draft_turn(jsonb, jsonb)
+  from public, anon, authenticated, service_role;
+grant execute on function public.finalize_settlement_ai_draft_turn(jsonb, jsonb)
+  to authenticated;
+
+revoke all on function public.finalize_settlement_ai_simulation_turn(
+  jsonb,
+  jsonb,
+  jsonb
+) from public, anon, authenticated, service_role;
+grant execute on function public.finalize_settlement_ai_simulation_turn(
+  jsonb,
+  jsonb,
+  jsonb
+) to authenticated;
+
+revoke all on function public.finalize_settlement_ai_failed_turn(jsonb, jsonb)
+  from public, anon, authenticated, service_role;
+grant execute on function public.finalize_settlement_ai_failed_turn(jsonb, jsonb)
+  to authenticated;
 
 comment on table public.ai_settlement_rule_drafts is
   'Append-only Xingyao settlement rule revisions; only narrow lifecycle transitions are mutable.';

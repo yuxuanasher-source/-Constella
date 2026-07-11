@@ -317,6 +317,53 @@ export type InsertedSettlementFormulaSimulation =
     duplicate: boolean;
   };
 
+export type SettlementAiJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | SettlementAiJsonValue[]
+  | { [key: string]: SettlementAiJsonValue };
+
+export type SettlementAiTurnCompletionInput = {
+  providerName: string;
+  content: string;
+  aiInvocationId: string | null;
+  metadata: Record<string, SettlementAiJsonValue>;
+};
+
+export type FinalizeSettlementAiDraftTurnInput = {
+  draft: ClarifyingCustomRuleDraftInput | ContractReadyCustomRuleDraftInput;
+  completion: SettlementAiTurnCompletionInput;
+};
+
+export type FinalizeSettlementAiFailedTurnInput = {
+  draft: FailedCustomRuleDraftInput;
+  completion: SettlementAiTurnCompletionInput;
+};
+
+export type FinalizeSettlementAiSimulationSummaryInput = Omit<
+  InsertSettlementFormulaSimulationInput,
+  | "organizationId"
+  | "projectId"
+  | "owner"
+  | "formulaHash"
+  | "ruleContractHash"
+  | "parameterHash"
+  | "variableCatalogVersion"
+>;
+
+export type FinalizeSettlementAiSimulationTurnInput = {
+  draft: ContractReadyCustomRuleDraftInput;
+  completion: SettlementAiTurnCompletionInput;
+  simulation: FinalizeSettlementAiSimulationSummaryInput;
+};
+
+export type FinalizedSettlementAiSimulationTurn = {
+  draft: CreatedCustomRuleDraft;
+  simulation: InsertedSettlementFormulaSimulation;
+};
+
 export type ListSettlementFormulaSimulationsInput = {
   organizationId: string;
   projectId: string;
@@ -332,6 +379,15 @@ export type GetSettlementFormulaSimulationInput = {
 };
 
 export type CustomRuleRepository = CustomRuleReadRepository & {
+  finalizeDraftTurn(
+    input: FinalizeSettlementAiDraftTurnInput,
+  ): Promise<CreatedCustomRuleDraft>;
+  finalizeSimulationTurn(
+    input: FinalizeSettlementAiSimulationTurnInput,
+  ): Promise<FinalizedSettlementAiSimulationTurn>;
+  finalizeFailedTurn(
+    input: FinalizeSettlementAiFailedTurnInput,
+  ): Promise<CreatedCustomRuleDraft>;
   createDraft(
     input: CreateCustomRuleDraftInput,
   ): Promise<CreatedCustomRuleDraft>;
@@ -767,8 +823,7 @@ const CREATE_DRAFT_COMMON_INPUT_SHAPE = {
   contractHash: hashSchema,
   parameterHash: hashSchema,
 };
-const createDraftInputSchema = z.discriminatedUnion("status", [
-  z.strictObject({
+const clarifyingDraftInputSchema = z.strictObject({
     ...CREATE_DRAFT_COMMON_INPUT_SHAPE,
     status: z.literal("clarifying"),
     unresolvedAmbiguities: z.array(unresolvedAmbiguitySchema).min(1).max(100),
@@ -776,8 +831,8 @@ const createDraftInputSchema = z.discriminatedUnion("status", [
     generatedExplanation: z.null(),
     generatedTestCases: z.tuple([]),
     formulaHash: z.null(),
-  }),
-  z.strictObject({
+  });
+const contractReadyDraftInputSchema = z.strictObject({
     ...CREATE_DRAFT_COMMON_INPUT_SHAPE,
     status: z.literal("contract_ready"),
     unresolvedAmbiguities: z.tuple([]),
@@ -785,8 +840,8 @@ const createDraftInputSchema = z.discriminatedUnion("status", [
     generatedExplanation: boundedTextSchema.max(100_000),
     generatedTestCases: z.array(generatedTestCaseSchema).min(1).max(200),
     formulaHash: hashSchema,
-  }),
-  z.strictObject({
+  });
+const failedDraftInputSchema = z.strictObject({
     ...CREATE_DRAFT_COMMON_INPUT_SHAPE,
     status: z.literal("failed"),
     unresolvedAmbiguities: z.array(unresolvedAmbiguitySchema).max(100),
@@ -794,7 +849,11 @@ const createDraftInputSchema = z.discriminatedUnion("status", [
     generatedExplanation: z.null(),
     generatedTestCases: z.tuple([]),
     formulaHash: z.null(),
-  }),
+  });
+const createDraftInputSchema = z.discriminatedUnion("status", [
+  clarifyingDraftInputSchema,
+  contractReadyDraftInputSchema,
+  failedDraftInputSchema,
 ]);
 const listDraftsInputSchema = z.strictObject({
   organizationId: uuidSchema,
@@ -888,25 +947,28 @@ const simulationWarningSchema = z.strictObject({
   severity: z.enum(["info", "warning", "block"]),
   message: boundedTextSchema,
 });
+const SIMULATION_SUMMARY_INPUT_SHAPE = {
+  idempotencyKey: nonemptyTextSchema.max(200),
+  dataSelectionHash: hashSchema,
+  sampleSource: sampleSourceSchema,
+  sampleSelection: sampleSelectionSchema,
+  coverage: simulationCoverageSchema,
+  scenarios: z.array(simulationScenarioSchema).min(1).max(200),
+  historicalTotals: historicalTotalsSchema,
+  deltas: simulationDeltasSchema,
+  largestChanges: z.array(largestChangeSchema).max(100),
+  warnings: z.array(simulationWarningSchema).max(100),
+};
 const insertSimulationInputSchema = z
   .strictObject({
     organizationId: uuidSchema,
     projectId: uuidSchema,
     owner: simulationOwnerSchema,
-    idempotencyKey: nonemptyTextSchema.max(200),
     formulaHash: hashSchema,
     ruleContractHash: hashSchema,
     parameterHash: hashSchema,
     variableCatalogVersion: hashSchema,
-    dataSelectionHash: hashSchema,
-    sampleSource: sampleSourceSchema,
-    sampleSelection: sampleSelectionSchema,
-    coverage: simulationCoverageSchema,
-    scenarios: z.array(simulationScenarioSchema).min(1).max(200),
-    historicalTotals: historicalTotalsSchema,
-    deltas: simulationDeltasSchema,
-    largestChanges: z.array(largestChangeSchema).max(100),
-    warnings: z.array(simulationWarningSchema).max(100),
+    ...SIMULATION_SUMMARY_INPUT_SHAPE,
   })
   .superRefine((input, context) => {
     if (input.owner.kind === "rule_version") {
@@ -917,6 +979,47 @@ const insertSimulationInputSchema = z
       });
     }
   });
+const jsonValueSchema: z.ZodType<SettlementAiJsonValue> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number().finite(),
+    z.boolean(),
+    z.null(),
+    z.array(jsonValueSchema),
+    z.record(z.string(), jsonValueSchema),
+  ])
+);
+const turnCompletionInputSchema = z.strictObject({
+  providerName: nonemptyTextSchema.max(200),
+  content: preservedBoundedTextSchema,
+  aiInvocationId: uuidSchema.nullable(),
+  metadata: z.record(z.string(), jsonValueSchema),
+});
+const finalizeDraftTurnInputSchema = z
+  .strictObject({
+    draft: z.union([
+      clarifyingDraftInputSchema,
+      contractReadyDraftInputSchema,
+    ]),
+    completion: turnCompletionInputSchema,
+  })
+  .superRefine(validateAtomicCompletionContent);
+const finalizeFailedTurnInputSchema = z
+  .strictObject({
+    draft: failedDraftInputSchema,
+    completion: turnCompletionInputSchema,
+  })
+  .superRefine(validateAtomicCompletionContent);
+const finalizeSimulationSummaryInputSchema = z.strictObject(
+  SIMULATION_SUMMARY_INPUT_SHAPE,
+);
+const finalizeSimulationTurnInputSchema = z
+  .strictObject({
+    draft: contractReadyDraftInputSchema,
+    completion: turnCompletionInputSchema,
+    simulation: finalizeSimulationSummaryInputSchema,
+  })
+  .superRefine(validateAtomicCompletionContent);
 const listSimulationsInputSchema = z.strictObject({
   organizationId: uuidSchema,
   projectId: uuidSchema,
@@ -1038,6 +1141,16 @@ const createdDraftRowSchema = z.union([
   readyDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
   supersededReadyDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
 ]);
+const createdSuccessfulDraftRowSchema = z.union([
+  clarifyingDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+  supersededClarifyingDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+  readyDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+  supersededReadyDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+]);
+const createdFailedDraftRowSchema = z.union([
+  failedDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+  supersededFailedDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+]);
 const SIMULATION_ROW_SHAPE = {
   id: uuidSchema,
   organization_id: uuidSchema,
@@ -1067,6 +1180,13 @@ const simulationRowSchema = z
 const insertedSimulationRowSchema = z
   .strictObject({ ...SIMULATION_ROW_SHAPE, duplicate: z.boolean() })
   .superRefine(validateSimulationRowOwner);
+const finalizedSimulationTurnRowSchema = z.strictObject({
+  draft: z.union([
+    readyDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+    supersededReadyDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
+  ]),
+  simulation: insertedSimulationRowSchema,
+});
 type DraftRow = z.infer<typeof draftRowSchema>;
 type CreatedDraftRow = z.infer<typeof createdDraftRowSchema>;
 type SimulationRow = z.infer<typeof simulationRowSchema>;
@@ -1088,6 +1208,94 @@ export class SupabaseCustomRuleReadRepository
     this.businessTimezone = resolveBusinessTimezone(
       options.resolvedBusinessTimezone ?? DEFAULT_TIMEZONE,
     );
+  }
+
+  async finalizeDraftTurn(
+    unsafeInput: FinalizeSettlementAiDraftTurnInput,
+  ): Promise<CreatedCustomRuleDraft> {
+    assertSafeAtomicDraftTurnInput(unsafeInput);
+    const input = parsePersistenceInput(
+      finalizeDraftTurnInputSchema,
+      unsafeInput,
+      "atomic draft turn input",
+    );
+    const { data, error } = await this.client.rpc(
+      "finalize_settlement_ai_draft_turn",
+      { p_draft: input.draft, p_completion: input.completion },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError("finalize_draft_turn", error);
+    }
+    const row = parsePersistenceRow(
+      createdSuccessfulDraftRowSchema,
+      data,
+      "draft",
+    );
+    return { ...toCustomRuleDraft(row), duplicate: row.duplicate };
+  }
+
+  async finalizeSimulationTurn(
+    unsafeInput: FinalizeSettlementAiSimulationTurnInput,
+  ): Promise<FinalizedSettlementAiSimulationTurn> {
+    assertSafeAtomicSimulationTurnInput(unsafeInput);
+    const input = parsePersistenceInput(
+      finalizeSimulationTurnInputSchema,
+      unsafeInput,
+      "atomic simulation turn input",
+    );
+    const { data, error } = await this.client.rpc(
+      "finalize_settlement_ai_simulation_turn",
+      {
+        p_draft: input.draft,
+        p_completion: input.completion,
+        p_simulation: input.simulation,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "finalize_simulation_turn",
+        error,
+      );
+    }
+    const row = parsePersistenceRow(
+      finalizedSimulationTurnRowSchema,
+      data,
+      "simulation",
+    );
+    return {
+      draft: {
+        ...toCustomRuleDraft(row.draft),
+        duplicate: row.draft.duplicate,
+      },
+      simulation: {
+        ...toSettlementFormulaSimulation(row.simulation),
+        duplicate: row.simulation.duplicate,
+      },
+    };
+  }
+
+  async finalizeFailedTurn(
+    unsafeInput: FinalizeSettlementAiFailedTurnInput,
+  ): Promise<CreatedCustomRuleDraft> {
+    assertSafeAtomicDraftTurnInput(unsafeInput);
+    const input = parsePersistenceInput(
+      finalizeFailedTurnInputSchema,
+      unsafeInput,
+      "atomic failed turn input",
+    );
+    const { data, error } = await this.client.rpc(
+      "finalize_settlement_ai_failed_turn",
+      { p_draft: input.draft, p_completion: input.completion },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError("finalize_failed_turn", error);
+    }
+    const row = parsePersistenceRow(
+      createdFailedDraftRowSchema,
+      data,
+      "draft",
+    );
+    return { ...toCustomRuleDraft(row), duplicate: row.duplicate };
   }
 
   async createDraft(
@@ -2478,7 +2686,103 @@ type JsonBudgetEntry = {
 type JsonBudgetOptions = {
   forbiddenKeys: ReadonlySet<string>;
   validateString?: (value: string, path: string) => void;
+  enforceSubcontainerBudget?: boolean;
 };
+
+function validateAtomicCompletionContent(
+  input: {
+    draft: { aiResponse: { content: string } };
+    completion: { content: string };
+  },
+  context: z.RefinementCtx,
+): void {
+  if (input.completion.content !== input.draft.aiResponse.content) {
+    context.addIssue({
+      code: "custom",
+      path: ["completion", "content"],
+      message: "must exactly match the turn-bound AI response content",
+    });
+  }
+}
+
+function assertSafeAtomicDraftTurnInput(value: unknown): void {
+  const draft = getRequiredOwnDataValue(value, "atomic turn input", "draft");
+  const completion = getRequiredOwnDataValue(
+    value,
+    "atomic turn input",
+    "completion",
+  );
+  assertSafeDraftPayloadInput(draft);
+  assertSafeCompletionInput(completion);
+  assertJsonCollectionWithinBudget(
+    [
+      jsonBudgetRoot(draft, "draft"),
+      jsonBudgetRoot(completion, "completion"),
+    ],
+    {
+      forbiddenKeys: FORBIDDEN_DRAFT_JSON_KEYS,
+      enforceSubcontainerBudget: false,
+    },
+  );
+}
+
+function assertSafeAtomicSimulationTurnInput(value: unknown): void {
+  const draft = getRequiredOwnDataValue(
+    value,
+    "atomic simulation turn input",
+    "draft",
+  );
+  const completion = getRequiredOwnDataValue(
+    value,
+    "atomic simulation turn input",
+    "completion",
+  );
+  const simulation = getRequiredOwnDataValue(
+    value,
+    "atomic simulation turn input",
+    "simulation",
+  );
+  assertSafeDraftPayloadInput(draft);
+  assertSafeCompletionInput(completion);
+  assertSafeSimulationSummaryInput(simulation);
+  assertJsonCollectionWithinBudget(
+    [
+      jsonBudgetRoot(draft, "draft"),
+      jsonBudgetRoot(completion, "completion"),
+      jsonBudgetRoot(simulation, "simulation"),
+    ],
+    {
+      forbiddenKeys: FORBIDDEN_DRAFT_JSON_KEYS,
+      enforceSubcontainerBudget: false,
+    },
+  );
+}
+
+function assertSafeCompletionInput(value: unknown): void {
+  assertJsonCollectionWithinBudget(
+    [jsonBudgetRoot(value, "completion")],
+    { forbiddenKeys: FORBIDDEN_DRAFT_JSON_KEYS },
+  );
+}
+
+function jsonBudgetRoot(value: unknown, path: string): JsonBudgetEntry {
+  return { value, path, rootPath: path, depth: 0, ancestors: [] };
+}
+
+function getRequiredOwnDataValue(
+  value: unknown,
+  label: string,
+  key: string,
+): unknown {
+  const descriptors = getPlainObjectDescriptors(value, label);
+  const descriptor = descriptors[key];
+  if (!descriptor || descriptor.get || descriptor.set || !("value" in descriptor)) {
+    throw new CustomRulePersistenceInputError(
+      `${label}.${key} must be an own data property`,
+    );
+  }
+  return descriptor.value;
+}
 
 function assertSafeDraftPayloadInput(value: unknown): void {
   const entries = collectPersistenceJsonFields(
@@ -2559,7 +2863,10 @@ function assertJsonCollectionWithinBudget(
   const addSerializedBytes = (entry: JsonBudgetEntry, bytes: number): void => {
     serializedBytes += bytes;
     const rootBytes = (serializedBytesByRoot.get(entry.rootPath) ?? 0) + bytes;
-    if (rootBytes > JSON_INPUT_CONSERVATIVE_MAX_SUBCONTAINER_BYTES) {
+    if (
+      options.enforceSubcontainerBudget !== false &&
+      rootBytes > JSON_INPUT_CONSERVATIVE_MAX_SUBCONTAINER_BYTES
+    ) {
       throw new CustomRulePersistenceInputError(
         `${entry.rootPath} exceeds the conservative ${JSON_INPUT_CONSERVATIVE_MAX_SUBCONTAINER_BYTES}-byte JSON input subcontainer budget`,
       );

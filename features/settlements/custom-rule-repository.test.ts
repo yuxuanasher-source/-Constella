@@ -11,6 +11,7 @@ import {
   type CustomRuleRepository,
   type CustomRuleReadRepository,
   type FailedCustomRuleDraftInput,
+  type FinalizeSettlementAiSimulationSummaryInput,
   type InsertSettlementFormulaSimulationInput,
   type SettlementAiFormulaDraft,
   type SettlementSimulationOwner,
@@ -1108,6 +1109,184 @@ describe("SupabaseCustomRuleReadRepository", () => {
 });
 
 describe("custom-rule draft and simulation persistence", () => {
+  it("atomically finishes a validating turn and creates its draft through one RPC", async () => {
+    const draft = validClarifyingDraftInput();
+    const completion = validTurnCompletion(draft.aiResponse.content);
+    const mock = createPersistenceClient({
+      finalizedDraftRpcData: draftRow({
+        unresolved_ambiguities: draft.unresolvedAmbiguities,
+        generated_formula: null,
+        generated_explanation: null,
+        generated_test_cases: [],
+        formula_hash: null,
+        initial_status: "clarifying",
+        status: "clarifying",
+        duplicate: false,
+        request_fingerprint: HASH_E,
+      }),
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const result = await repository.finalizeDraftTurn({ draft, completion });
+
+    expect(mock.rpc).toHaveBeenCalledWith(
+      "finalize_settlement_ai_draft_turn",
+      { p_draft: draft, p_completion: completion },
+    );
+    expect(mock.from).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      initialStatus: "clarifying",
+      status: "clarifying",
+      generatedFormula: null,
+      duplicate: false,
+    });
+  });
+
+  it("atomically finishes a turn and persists a ready draft plus simulation summary", async () => {
+    const draft = validDraftInput();
+    const completion = validTurnCompletion(draft.aiResponse.content);
+    const simulation = validAtomicSimulationSummary();
+    const mock = createPersistenceClient({
+      finalizedSimulationRpcData: {
+        draft: draftRow({ status: "simulated", duplicate: false, request_fingerprint: HASH_E }),
+        simulation: simulationRow(
+          { kind: "ai_draft", id: DRAFT_ID },
+          { duplicate: false },
+        ),
+      },
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const result = await repository.finalizeSimulationTurn({
+      draft,
+      completion,
+      simulation,
+    });
+
+    expect(mock.rpc).toHaveBeenCalledWith(
+      "finalize_settlement_ai_simulation_turn",
+      {
+        p_draft: draft,
+        p_completion: completion,
+        p_simulation: simulation,
+      },
+    );
+    expect(mock.from).not.toHaveBeenCalled();
+    expect(result.draft).toMatchObject({
+      id: DRAFT_ID,
+      initialStatus: "contract_ready",
+      status: "simulated",
+      duplicate: false,
+    });
+    expect(result.simulation).toMatchObject({
+      id: SIMULATION_ID,
+      owner: { kind: "ai_draft", id: DRAFT_ID },
+      duplicate: false,
+    });
+  });
+
+  it("atomically fails a turn and persists sanitized failure evidence", async () => {
+    const draft = validFailedDraftInput();
+    const completion = validTurnCompletion(draft.aiResponse.content);
+    const mock = createPersistenceClient({
+      finalizedFailedRpcData: draftRow({
+        unresolved_ambiguities: draft.unresolvedAmbiguities,
+        ai_response: draft.aiResponse,
+        generated_formula: null,
+        generated_explanation: null,
+        generated_test_cases: [],
+        safety_flags: draft.safetyFlags,
+        formula_hash: null,
+        initial_status: "failed",
+        status: "failed",
+        duplicate: false,
+        request_fingerprint: HASH_E,
+      }),
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const result = await repository.finalizeFailedTurn({ draft, completion });
+
+    expect(mock.rpc).toHaveBeenCalledWith(
+      "finalize_settlement_ai_failed_turn",
+      { p_draft: draft, p_completion: completion },
+    );
+    expect(mock.from).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      initialStatus: "failed",
+      status: "failed",
+      aiResponse: draft.aiResponse,
+      duplicate: false,
+    });
+  });
+
+  it.each([
+    [
+      "content that differs from the turn-bound AI response",
+      () => ({
+        draft: validClarifyingDraftInput(),
+        completion: validTurnCompletion("different content"),
+      }),
+    ],
+    [
+      "raw completion metadata",
+      () => {
+        const draft = validClarifyingDraftInput();
+        return {
+          draft,
+          completion: {
+            ...validTurnCompletion(draft.aiResponse.content),
+            metadata: { rawRows: [] },
+          },
+        };
+      },
+    ],
+    [
+      "oversized completion metadata",
+      () => {
+        const draft = validClarifyingDraftInput();
+        return {
+          draft,
+          completion: {
+            ...validTurnCompletion(draft.aiResponse.content),
+            metadata: { note: "x".repeat(61 * 1_024) },
+          },
+        };
+      },
+    ],
+  ])("rejects unsafe atomic draft completion before RPC: %s", async (_label, buildInput) => {
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(
+      repository.finalizeDraftTurn(buildInput()),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(mock.rpc).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the atomic simulation RPC returns a partial result", async () => {
+    const draft = validDraftInput();
+    const mock = createPersistenceClient({
+      finalizedSimulationRpcData: {
+        draft: draftRow({ duplicate: false, request_fingerprint: HASH_E }),
+      },
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(
+      repository.finalizeSimulationTurn({
+        draft,
+        completion: validTurnCompletion(draft.aiResponse.content),
+        simulation: validAtomicSimulationSummary(),
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_DATA_INVALID" });
+  });
+
   it("creates a draft through the authenticated RPC and maps duplicate revisions", async () => {
     const draft = draftRow({ duplicate: true, request_fingerprint: HASH_E });
     const mock = createPersistenceClient({ draftRpcData: draft });
@@ -2737,6 +2916,15 @@ function validFailedDraftInput(): FailedCustomRuleDraftInput {
   };
 }
 
+function validTurnCompletion(content: string) {
+  return {
+    providerName: "openai",
+    content,
+    aiInvocationId: "80000000-0000-4000-8000-000000000001",
+    metadata: { modelVersion: "gpt-5.2" },
+  };
+}
+
 function draftRow(overrides: Record<string, unknown> = {}) {
   const input = validDraftInput();
   return {
@@ -2827,6 +3015,25 @@ function validSimulationInput(
   };
 }
 
+function validAtomicSimulationSummary(): FinalizeSettlementAiSimulationSummaryInput {
+  const simulation = validSimulationInput({
+    kind: "ai_draft",
+    id: DRAFT_ID,
+  });
+  return {
+    idempotencyKey: simulation.idempotencyKey,
+    dataSelectionHash: simulation.dataSelectionHash,
+    sampleSource: simulation.sampleSource,
+    sampleSelection: simulation.sampleSelection,
+    coverage: simulation.coverage,
+    scenarios: simulation.scenarios,
+    historicalTotals: simulation.historicalTotals,
+    deltas: simulation.deltas,
+    largestChanges: simulation.largestChanges,
+    warnings: simulation.warnings,
+  };
+}
+
 function simulationRow(
   owner: SettlementSimulationOwner,
   overrides: Record<string, unknown> = {},
@@ -2884,6 +3091,9 @@ function createPersistenceClient(
     simulationRows?: unknown[];
     draftRpcData?: unknown;
     simulationRpcData?: unknown;
+    finalizedDraftRpcData?: unknown;
+    finalizedSimulationRpcData?: unknown;
+    finalizedFailedRpcData?: unknown;
   } = {},
 ) {
   const queryCalls: PersistenceQueryCall[] = [];
@@ -2902,6 +3112,51 @@ function createPersistenceClient(
             { kind: "ai_draft", id: DRAFT_ID },
             { duplicate: false },
           ),
+        error: null,
+      };
+    }
+    if (fn === "finalize_settlement_ai_draft_turn") {
+      return {
+        data:
+          options.finalizedDraftRpcData ??
+          draftRow({ duplicate: false, request_fingerprint: HASH_E }),
+        error: null,
+      };
+    }
+    if (fn === "finalize_settlement_ai_simulation_turn") {
+      return {
+        data:
+          options.finalizedSimulationRpcData ?? {
+            draft: draftRow({
+              status: "simulated",
+              duplicate: false,
+              request_fingerprint: HASH_E,
+            }),
+            simulation: simulationRow(
+              { kind: "ai_draft", id: DRAFT_ID },
+              { duplicate: false },
+            ),
+          },
+        error: null,
+      };
+    }
+    if (fn === "finalize_settlement_ai_failed_turn") {
+      return {
+        data:
+          options.finalizedFailedRpcData ??
+          draftRow({
+            unresolved_ambiguities: [],
+            ai_response: validFailedDraftInput().aiResponse,
+            generated_formula: null,
+            generated_explanation: null,
+            generated_test_cases: [],
+            safety_flags: validFailedDraftInput().safetyFlags,
+            formula_hash: null,
+            initial_status: "failed",
+            status: "failed",
+            duplicate: false,
+            request_fingerprint: HASH_E,
+          }),
         error: null,
       };
     }

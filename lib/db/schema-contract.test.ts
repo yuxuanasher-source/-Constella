@@ -684,6 +684,109 @@ describe("Phase 1 settlement AI persistence contract", () => {
     );
   });
 
+  it("atomically finalizes Xingyao turns before persisting settlement domain rows", () => {
+    const lockTurn = settlementAiFunctionDefinition(
+      "settlement_ai_lock_atomic_draft_turn",
+    );
+    const finalizeDraft = settlementAiFunctionDefinition(
+      "finalize_settlement_ai_draft_turn",
+    );
+    const finalizeSimulation = settlementAiFunctionDefinition(
+      "finalize_settlement_ai_simulation_turn",
+    );
+    const finalizeFailed = settlementAiFunctionDefinition(
+      "finalize_settlement_ai_failed_turn",
+    );
+
+    for (const fn of [lockTurn, finalizeDraft, finalizeSimulation, finalizeFailed]) {
+      expect(fn).toContain("security definer");
+      expect(fn).toContain("set search_path = pg_catalog, public");
+    }
+    for (const fn of [finalizeDraft, finalizeSimulation, finalizeFailed]) {
+      expect(fn).toContain("public.settlement_ai_lock_atomic_draft_turn");
+    }
+    expect(lockTurn).toContain("auth.uid()");
+    expect(lockTurn).toContain("public.is_org_member");
+    expect(lockTurn).toContain("public.is_mcn_staff");
+    expect(lockTurn).toContain("public.can_access_project");
+    const conversationLock = lockTurn.indexOf("from public.ai_conversations");
+    const turnLock = lockTurn.indexOf("from public.ai_chat_turns");
+    expect(conversationLock).toBeGreaterThanOrEqual(0);
+    expect(turnLock).toBeGreaterThan(conversationLock);
+    expect(lockTurn).toContain("for update");
+
+    expect(finalizeDraft).toContain("v_turn.status = 'completed'");
+    expect(finalizeDraft).toContain("v_turn.status <> 'validating'");
+    expect(finalizeDraft).toContain("settlement_ai_atomic_completed_without_draft");
+    expect(finalizeDraft).toContain("settlement_ai_atomic_completion_replay_conflict");
+    expect(finalizeDraft).toContain("from public.ai_chat_messages as terminal_message");
+    expect(finalizeDraft).toContain("terminal_message.metadata is not distinct from");
+    expect(finalizeDraft).toContain("v_turn.provider_name is distinct from");
+    expect(finalizeDraft).toContain("public.finish_ai_chat_turn(");
+    expect(finalizeDraft).toContain("public.create_ai_settlement_rule_draft(");
+    expect(finalizeDraft.indexOf("public.finish_ai_chat_turn(")).toBeLessThan(
+      finalizeDraft.indexOf("public.create_ai_settlement_rule_draft("),
+    );
+
+    expect(finalizeSimulation).toContain("v_turn.status = 'completed'");
+    expect(finalizeSimulation).toContain(
+      "settlement_ai_atomic_completed_without_simulation",
+    );
+    expect(finalizeSimulation).toContain("public.finish_ai_chat_turn(");
+    expect(finalizeSimulation).toContain("public.create_ai_settlement_rule_draft(");
+    expect(finalizeSimulation).toContain(
+      "public.create_settlement_formula_simulation(",
+    );
+    expect(finalizeSimulation.indexOf("public.finish_ai_chat_turn(")).toBeLessThan(
+      finalizeSimulation.indexOf("public.create_ai_settlement_rule_draft("),
+    );
+    expect(
+      finalizeSimulation.indexOf("public.create_ai_settlement_rule_draft("),
+    ).toBeLessThan(
+      finalizeSimulation.indexOf("public.create_settlement_formula_simulation("),
+    );
+
+    expect(finalizeFailed).toContain("v_turn.status = 'failed'");
+    expect(finalizeFailed).toContain("v_turn.status <> 'validating'");
+    expect(finalizeFailed).toContain("public.finish_ai_chat_turn(");
+    expect(finalizeFailed).toContain("false,");
+    expect(finalizeFailed).toContain("'settlement_ai_generation_failed'");
+    expect(finalizeFailed).toContain("'settlement ai generation failed'");
+    expect(finalizeFailed.indexOf("public.finish_ai_chat_turn(")).toBeLessThan(
+      finalizeFailed.indexOf("public.create_ai_settlement_rule_draft("),
+    );
+  });
+
+  it("exposes only authenticated atomic finalizers and keeps helpers private", () => {
+    for (const fn of [
+      "finalize_settlement_ai_draft_turn",
+      "finalize_settlement_ai_simulation_turn",
+      "finalize_settlement_ai_failed_turn",
+    ]) {
+      expect(normalizedSettlementAiMigration).toContain(
+        `revoke all on function public.${fn}(`,
+      );
+      expect(normalizedSettlementAiMigration).toMatch(
+        new RegExp(
+          `grant execute on function public\\.${fn}\\([^;]+\\) to authenticated;`,
+          "u",
+        ),
+      );
+      expect(normalizedSettlementAiMigration).not.toMatch(
+        new RegExp(
+          `grant execute on function public\\.${fn}\\([^;]+\\) to service_role;`,
+          "u",
+        ),
+      );
+    }
+    expect(normalizedSettlementAiMigration).toContain(
+      "revoke all on function public.settlement_ai_lock_atomic_draft_turn(jsonb)",
+    );
+    expect(normalizedSettlementAiMigration).not.toMatch(
+      /grant execute on function public\.settlement_ai_lock_atomic_draft_turn/u,
+    );
+  });
+
   it("binds draft traces to the locked completed Xingyao turn and message pair", () => {
     const body = settlementAiFunctionBody("create_ai_settlement_rule_draft");
     const fingerprint = body.indexOf("v_request_fingerprint :=");
@@ -728,7 +831,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(body).toContain(
       "trace_turn.assistant_message_id = v_trace_assistant_message_id",
     );
-    expect(body).toContain("trace_turn.status = 'completed'");
+    expect(body).toContain(
+      "trace_turn.status = case when p_status = 'failed' then 'failed' else 'completed' end",
+    );
     expect(body).toContain("for update of trace_turn");
     expect(body).toContain("from public.ai_chat_messages as user_message");
     expect(body).toContain(
@@ -737,7 +842,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(body).toContain("user_message.role = 'user'");
     expect(body).toContain("assistant_message.role = 'assistant'");
     expect(body).toContain("user_message.status = 'completed'");
-    expect(body).toContain("assistant_message.status = 'completed'");
+    expect(body).toContain(
+      "assistant_message.status = case when p_status = 'failed' then 'failed' else 'completed' end",
+    );
     expect(body).toContain(
       "assistant_message.parent_message_id = user_message.id",
     );
@@ -1193,6 +1300,17 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "clarifying_placeholder_rpc_accepted",
       "actual_contract_ready_formula_invalid",
       "actual_simulation_shape_invalid",
+      "atomic_draft_turn_not_completed",
+      "atomic_draft_message_content_mismatch",
+      "atomic_draft_replay_invalid",
+      "atomic_completion_replay_mismatch_accepted",
+      "atomic_simulation_turn_not_completed",
+      "atomic_simulation_shape_invalid",
+      "atomic_invalid_draft_rollback_failed",
+      "atomic_invalid_simulation_rollback_failed",
+      "atomic_failed_turn_not_failed",
+      "atomic_failed_draft_shape_invalid",
+      "atomic_success_accepted_failed_turn",
       "raw_criteria_rpc_accepted",
       "settlement_ai_rpc_fixture_rollback",
       "settlement_ai_rpc_fixture_cleanup_failed",
