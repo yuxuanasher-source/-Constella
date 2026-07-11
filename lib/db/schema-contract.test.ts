@@ -656,6 +656,10 @@ describe("Phase 1 settlement AI persistence contract", () => {
     const createDraft = settlementAiFunctionBody(
       "create_ai_settlement_rule_draft",
     );
+    const offsetDatetimeBody = settlementAiFunctionBody(
+      "settlement_ai_offset_datetime_is_valid",
+    );
+    const selfChecks = settlementAiSelfCheckBlock();
 
     expect(header).toContain("returns boolean");
     expect(header).toContain("language plpgsql");
@@ -683,6 +687,12 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(body).toContain(
       "v_scope <> 'payable' and v_target_type <> 'project'",
     );
+    expect(offsetDatetimeBody).toContain("([01][0-9]|2[0-3])");
+    expect(offsetDatetimeBody).toContain("[0-5][0-9]:[0-5][0-9]");
+    expect(offsetDatetimeBody).toContain("v_calendar_date :=");
+    expect(offsetDatetimeBody).toContain("pg_catalog.to_char(");
+    expect(selfChecks).toContain("invalid_contract_hour_24");
+    expect(selfChecks).toContain("invalid_contract_feb_30");
     expect(tableCheck).toContain(
       "public.settlement_ai_business_contract_is_valid(business_contract)",
     );
@@ -696,6 +706,127 @@ describe("Phase 1 settlement AI persistence contract", () => {
         "public.settlement_ai_business_contract_is_valid(p_business_contract)",
       ),
     ).toBeLessThan(createDraft.indexOf("insert into public.ai_settlement_rule_drafts"));
+  });
+
+  it("keeps every draft JSON value readable by the repository schemas", () => {
+    const validatorNames = [
+      "settlement_ai_turn_trace_json_is_valid",
+      "settlement_ai_unresolved_ambiguities_is_valid",
+      "settlement_ai_response_is_valid",
+      "settlement_ai_normalized_ast_is_valid",
+      "settlement_ai_generated_formula_is_valid",
+      "settlement_ai_generated_test_cases_is_valid",
+      "settlement_ai_safety_flags_is_valid",
+      "settlement_ai_draft_payload_is_valid",
+    ];
+    for (const validatorName of validatorNames) {
+      const validator = extractSettlementAiFunction(validatorName);
+      expect(normalizeSql(validator.header)).toContain("returns boolean");
+      expect(normalizeSql(validator.header)).toContain(
+        "set search_path = pg_catalog, public",
+      );
+      expect(normalizeSql(validator.body)).not.toMatch(
+        /^begin return true; end;$/u,
+      );
+      expect(normalizedSettlementAiMigration).toContain(
+        `revoke all on function public.${validatorName}(`,
+      );
+      expect(normalizedSettlementAiMigration).not.toMatch(
+        new RegExp(`grant execute on function public\\.${validatorName}\\(`, "u"),
+      );
+    }
+
+    const ambiguities = settlementAiFunctionBody(
+      "settlement_ai_unresolved_ambiguities_is_valid",
+    );
+    expect(ambiguities).toContain("pg_catalog.jsonb_array_length(p_value) > 100");
+    expect(ambiguities).toContain("array['code', 'question', 'required']::text[]");
+    expect(ambiguities).toContain("v_item -> 'code') <> 'string'");
+    expect(ambiguities).toContain("not between 1 and 120");
+    expect(ambiguities).toContain("v_item -> 'question') <> 'string'");
+    expect(ambiguities).toContain("not between 1 and 4000");
+    expect(ambiguities).toContain("v_item -> 'required') <> 'boolean'");
+
+    const aiResponse = settlementAiFunctionBody(
+      "settlement_ai_response_is_valid",
+    );
+    expect(aiResponse).toContain(
+      "array['content', 'finishreason', 'providerrequestid']::text[]",
+    );
+    expect(aiResponse).toContain(
+      "'stop', 'length', 'content_filter', 'tool_call'",
+    );
+    expect(aiResponse).toContain("between 1 and 500");
+
+    const normalizedAst = settlementAiFunctionBody(
+      "settlement_ai_normalized_ast_is_valid",
+    );
+    for (const kind of [
+      "literal",
+      "identifier",
+      "unary",
+      "binary",
+      "call",
+      "array",
+      "object",
+    ]) {
+      expect(normalizedAst).toContain(`v_kind = '${kind}'`);
+    }
+    expect(normalizedAst).toContain(
+      "public.settlement_ai_normalized_ast_is_valid",
+    );
+    expect(normalizedAst).toContain("public.settlement_ai_finite_number_json");
+
+    const generatedFormula = settlementAiFunctionBody(
+      "settlement_ai_generated_formula_is_valid",
+    );
+    expect(generatedFormula).toContain(
+      "array['expression', 'normalizedast']::text[]",
+    );
+    expect(generatedFormula).toContain(
+      "public.settlement_ai_normalized_ast_is_valid",
+    );
+
+    const generatedTests = settlementAiFunctionBody(
+      "settlement_ai_generated_test_cases_is_valid",
+    );
+    expect(generatedTests).toMatch(
+      /pg_catalog\.jsonb_array_length\(p_value\) not between 1 and 200/u,
+    );
+    expect(generatedTests).toContain(
+      "array['name', 'inputs', 'expectedresult']::text[]",
+    );
+    expect(generatedTests).toContain(
+      "public.settlement_ai_plain_identifier_is_valid",
+    );
+    expect(generatedTests).toContain(
+      "public.settlement_ai_typed_value_is_valid",
+    );
+
+    const safetyFlags = settlementAiFunctionBody(
+      "settlement_ai_safety_flags_is_valid",
+    );
+    expect(safetyFlags).toContain("pg_catalog.jsonb_array_length(p_value) > 100");
+    expect(safetyFlags).toContain("array['code', 'severity', 'message']::text[]");
+    expect(safetyFlags).toContain("'info', 'warning', 'block'");
+
+    const payloadCheck = settlementAiCheckDefinition(
+      "ai_settlement_rule_drafts",
+      "ai_settlement_rule_drafts_payload_valid",
+    );
+    const createDraft = settlementAiFunctionBody(
+      "create_ai_settlement_rule_draft",
+    );
+    expect(payloadCheck).toContain(
+      "public.settlement_ai_draft_payload_is_valid(",
+    );
+    const payloadPrecheck = createDraft.indexOf(
+      "public.settlement_ai_draft_payload_is_valid(",
+    );
+    expect(payloadPrecheck).toBeGreaterThanOrEqual(0);
+    expect(payloadPrecheck).toBeLessThan(
+      createDraft.indexOf("insert into public.ai_settlement_rule_drafts"),
+    );
   });
 
   it("validates every simulation summary container before table or RPC writes", () => {
@@ -770,7 +901,12 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "invalid_contract_empty_examples",
       "invalid_contract_target_scope",
       "invalid_contract_timezone",
+      "invalid_contract_hour_24",
+      "invalid_contract_feb_30",
       "invalid_trace_accepted",
+      "invalid_ambiguity_code_type",
+      "invalid_ambiguity_question_type",
+      "invalid_ambiguity_required_type",
       "invalid_selection_criteria_object",
       "invalid_selection_raw_rows",
       "invalid_selection_project_id",
@@ -785,8 +921,45 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "if not public.settlement_ai_simulation_summary_is_valid(",
     );
     expect(selfChecks.match(/raise exception/gu)?.length ?? 0).toBeGreaterThan(
-      8,
+      14,
     );
+
+    for (const insertTarget of [
+      "auth.users",
+      "public.profiles",
+      "public.organizations",
+      "public.organization_members",
+      "public.projects",
+      "public.ai_conversations",
+      "public.ai_chat_messages",
+      "public.ai_chat_turns",
+    ]) {
+      expect(selfChecks).toContain(`insert into ${insertTarget}`);
+    }
+    expect(selfChecks).toMatch(
+      /pg_catalog\.set_config\(\s*'request\.jwt\.claim\.sub'/u,
+    );
+    expect(
+      selfChecks.match(/public\.create_ai_settlement_rule_draft\(/gu)?.length ?? 0,
+    ).toBeGreaterThanOrEqual(5);
+    expect(
+      selfChecks.match(/public\.create_settlement_formula_simulation\(/gu)?.length ?? 0,
+    ).toBeGreaterThanOrEqual(2);
+    for (const behaviorAssertion of [
+      "actual_draft_shape_invalid",
+      "actual_revision_sequence_invalid",
+      "forged_trace_rpc_accepted",
+      "malformed_ambiguity_rpc_accepted",
+      "invalid_datetime_rpc_accepted",
+      "actual_simulation_shape_invalid",
+      "raw_criteria_rpc_accepted",
+      "settlement_ai_rpc_fixture_rollback",
+      "settlement_ai_rpc_fixture_cleanup_failed",
+    ]) {
+      expect(selfChecks).toContain(behaviorAssertion);
+    }
+    expect(selfChecks).toContain("when others then");
+    expect(selfChecks).toContain("sqlerrm");
 
     for (const policyName of [
       "ai_settlement_rule_drafts_mcn_project_read",

@@ -136,6 +136,37 @@ as $$
     );
 $$;
 
+create or replace function public.settlement_ai_plain_identifier_is_valid(
+  p_value text
+)
+returns boolean
+language sql
+immutable
+set search_path = pg_catalog, public
+as $$
+  select
+    p_value is not null
+    and p_value = pg_catalog.btrim(p_value)
+    and p_value ~ '^[A-Za-z_][A-Za-z0-9_]*$';
+$$;
+
+create or replace function public.settlement_ai_uuid_text_is_valid(
+  p_value text
+)
+returns boolean
+language sql
+immutable
+set search_path = pg_catalog, public
+as $$
+  select p_value is not null and p_value ~* (
+    '^('
+    || '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
+    || '|00000000-0000-0000-0000-000000000000'
+    || '|ffffffff-ffff-ffff-ffff-ffffffffffff'
+    || ')$'
+  );
+$$;
+
 create or replace function public.settlement_ai_offset_datetime_is_valid(
   p_value text
 )
@@ -144,9 +175,16 @@ language plpgsql
 immutable
 set search_path = pg_catalog, public
 as $$
+declare
+  v_calendar_date date;
 begin
   if p_value is null
-     or p_value !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' then
+     or p_value !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$' then
+    return false;
+  end if;
+  v_calendar_date := pg_catalog.substr(p_value, 1, 10)::date;
+  if pg_catalog.to_char(v_calendar_date, 'YYYY-MM-DD')
+     <> pg_catalog.substr(p_value, 1, 10) then
     return false;
   end if;
   perform p_value::timestamptz;
@@ -200,6 +238,28 @@ begin
   v_numeric := v_text::numeric;
   return v_numeric between -9007199254740991::numeric and 9007199254740991::numeric
     and (not p_nonnegative or v_numeric >= 0);
+exception
+  when others then return false;
+end;
+$$;
+
+create or replace function public.settlement_ai_finite_number_json(
+  p_value jsonb
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog, public
+as $$
+declare
+  v_number numeric;
+begin
+  if pg_catalog.jsonb_typeof(p_value) <> 'number' then
+    return false;
+  end if;
+  v_number := (p_value #>> '{}')::numeric;
+  return v_number between
+    -1.7976931348623157e308::numeric and 1.7976931348623157e308::numeric;
 exception
   when others then return false;
 end;
@@ -435,6 +495,356 @@ begin
          p_value -> 'fields' -> v_field.key,
          v_field.value
        ) then
+      return false;
+    end if;
+  end loop;
+  return true;
+exception
+  when others then return false;
+end;
+$$;
+
+create or replace function public.settlement_ai_turn_trace_json_is_valid(
+  p_value jsonb
+)
+returns boolean
+language sql
+immutable
+set search_path = pg_catalog, public
+as $$
+  select
+    public.settlement_ai_json_has_exact_keys(
+      p_value,
+      array['turnId', 'userMessageId', 'assistantMessageId']::text[]
+    )
+    and pg_catalog.jsonb_typeof(p_value -> 'turnId') = 'string'
+    and pg_catalog.jsonb_typeof(p_value -> 'userMessageId') = 'string'
+    and pg_catalog.jsonb_typeof(p_value -> 'assistantMessageId') = 'string'
+    and public.settlement_ai_uuid_text_is_valid(p_value ->> 'turnId')
+    and public.settlement_ai_uuid_text_is_valid(p_value ->> 'userMessageId')
+    and public.settlement_ai_uuid_text_is_valid(
+      p_value ->> 'assistantMessageId'
+    );
+$$;
+
+create or replace function public.settlement_ai_unresolved_ambiguities_is_valid(
+  p_value jsonb
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog, public
+as $$
+declare
+  v_item jsonb;
+begin
+  if pg_catalog.jsonb_typeof(p_value) <> 'array'
+     or pg_catalog.jsonb_array_length(p_value) > 100 then
+    return false;
+  end if;
+  for v_item in
+    select item.value
+    from pg_catalog.jsonb_array_elements(p_value) as item(value)
+  loop
+    if not public.settlement_ai_json_has_exact_keys(
+         v_item,
+         array['code', 'question', 'required']::text[]
+       )
+       or pg_catalog.jsonb_typeof(v_item -> 'code') <> 'string'
+       or pg_catalog.char_length(
+         pg_catalog.btrim(v_item ->> 'code')
+       ) not between 1 and 120
+       or pg_catalog.jsonb_typeof(v_item -> 'question') <> 'string'
+       or pg_catalog.char_length(
+         pg_catalog.btrim(v_item ->> 'question')
+       ) not between 1 and 4000
+       or pg_catalog.jsonb_typeof(v_item -> 'required') <> 'boolean' then
+      return false;
+    end if;
+  end loop;
+  return true;
+exception
+  when others then return false;
+end;
+$$;
+
+create or replace function public.settlement_ai_response_is_valid(
+  p_value jsonb
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog, public
+as $$
+begin
+  if not public.settlement_ai_json_has_exact_keys(
+       p_value,
+       array['content', 'finishReason', 'providerRequestId']::text[]
+     )
+     or pg_catalog.jsonb_typeof(p_value -> 'content') <> 'string'
+     or pg_catalog.char_length(
+       pg_catalog.btrim(p_value ->> 'content')
+     ) not between 1 and 4000
+     or pg_catalog.jsonb_typeof(p_value -> 'finishReason') <> 'string'
+     or p_value ->> 'finishReason' not in (
+       'stop', 'length', 'content_filter', 'tool_call'
+     ) then
+    return false;
+  end if;
+  if pg_catalog.jsonb_typeof(p_value -> 'providerRequestId') = 'null' then
+    return true;
+  end if;
+  return pg_catalog.jsonb_typeof(p_value -> 'providerRequestId') = 'string'
+    and pg_catalog.char_length(
+      pg_catalog.btrim(p_value ->> 'providerRequestId')
+    ) between 1 and 500;
+exception
+  when others then return false;
+end;
+$$;
+
+create or replace function public.settlement_ai_normalized_ast_is_valid(
+  p_value jsonb
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog, public
+as $$
+declare
+  v_kind text;
+  v_item jsonb;
+  v_entry jsonb;
+  v_value_type text;
+begin
+  if pg_catalog.jsonb_typeof(p_value) <> 'object'
+     or pg_catalog.jsonb_typeof(p_value -> 'kind') <> 'string' then
+    return false;
+  end if;
+  v_kind := p_value ->> 'kind';
+
+  if v_kind = 'literal' then
+    if not public.settlement_ai_json_has_exact_keys(
+      p_value,
+      array['kind', 'value']::text[]
+    ) then
+      return false;
+    end if;
+    v_value_type := pg_catalog.jsonb_typeof(p_value -> 'value');
+    return v_value_type in ('string', 'boolean', 'null')
+      or (
+        v_value_type = 'number'
+        and public.settlement_ai_finite_number_json(p_value -> 'value')
+      );
+  end if;
+
+  if v_kind = 'identifier' then
+    return public.settlement_ai_json_has_exact_keys(
+      p_value,
+      array['kind', 'name']::text[]
+    ) and pg_catalog.jsonb_typeof(p_value -> 'name') = 'string'
+      and public.settlement_ai_identifier_is_valid(p_value ->> 'name');
+  end if;
+
+  if v_kind = 'unary' then
+    return public.settlement_ai_json_has_exact_keys(
+      p_value,
+      array['kind', 'operator', 'argument']::text[]
+    ) and pg_catalog.jsonb_typeof(p_value -> 'operator') = 'string'
+      and pg_catalog.char_length(p_value ->> 'operator') >= 1
+      and public.settlement_ai_normalized_ast_is_valid(
+        p_value -> 'argument'
+      );
+  end if;
+
+  if v_kind = 'binary' then
+    return public.settlement_ai_json_has_exact_keys(
+      p_value,
+      array['kind', 'operator', 'left', 'right']::text[]
+    ) and pg_catalog.jsonb_typeof(p_value -> 'operator') = 'string'
+      and pg_catalog.char_length(p_value ->> 'operator') >= 1
+      and public.settlement_ai_normalized_ast_is_valid(p_value -> 'left')
+      and public.settlement_ai_normalized_ast_is_valid(p_value -> 'right');
+  end if;
+
+  if v_kind = 'call' then
+    if not public.settlement_ai_json_has_exact_keys(
+         p_value,
+         array['kind', 'callee', 'arguments']::text[]
+       )
+       or pg_catalog.jsonb_typeof(p_value -> 'callee') <> 'string'
+       or not public.settlement_ai_identifier_is_valid(p_value ->> 'callee')
+       or pg_catalog.jsonb_typeof(p_value -> 'arguments') <> 'array' then
+      return false;
+    end if;
+    for v_item in
+      select item.value
+      from pg_catalog.jsonb_array_elements(p_value -> 'arguments') as item(value)
+    loop
+      if not public.settlement_ai_normalized_ast_is_valid(v_item) then
+        return false;
+      end if;
+    end loop;
+    return true;
+  end if;
+
+  if v_kind = 'array' then
+    if not public.settlement_ai_json_has_exact_keys(
+         p_value,
+         array['kind', 'elements']::text[]
+       )
+       or pg_catalog.jsonb_typeof(p_value -> 'elements') <> 'array' then
+      return false;
+    end if;
+    for v_item in
+      select item.value
+      from pg_catalog.jsonb_array_elements(p_value -> 'elements') as item(value)
+    loop
+      if not public.settlement_ai_normalized_ast_is_valid(v_item) then
+        return false;
+      end if;
+    end loop;
+    return true;
+  end if;
+
+  if v_kind = 'object' then
+    if not public.settlement_ai_json_has_exact_keys(
+         p_value,
+         array['kind', 'entries']::text[]
+       )
+       or pg_catalog.jsonb_typeof(p_value -> 'entries') <> 'array' then
+      return false;
+    end if;
+    for v_entry in
+      select entry.value
+      from pg_catalog.jsonb_array_elements(p_value -> 'entries') as entry(value)
+    loop
+      if not public.settlement_ai_json_has_exact_keys(
+           v_entry,
+           array['key', 'value']::text[]
+         )
+         or pg_catalog.jsonb_typeof(v_entry -> 'key') <> 'string'
+         or not public.settlement_ai_identifier_is_valid(v_entry ->> 'key')
+         or not public.settlement_ai_normalized_ast_is_valid(
+           v_entry -> 'value'
+         ) then
+        return false;
+      end if;
+    end loop;
+    return true;
+  end if;
+
+  return false;
+exception
+  when others then return false;
+end;
+$$;
+
+create or replace function public.settlement_ai_generated_formula_is_valid(
+  p_value jsonb
+)
+returns boolean
+language sql
+immutable
+set search_path = pg_catalog, public
+as $$
+  select
+    public.settlement_ai_json_has_exact_keys(
+      p_value,
+      array['expression', 'normalizedAst']::text[]
+    )
+    and pg_catalog.jsonb_typeof(p_value -> 'expression') = 'string'
+    and pg_catalog.char_length(
+      pg_catalog.btrim(p_value ->> 'expression')
+    ) between 1 and 4000
+    and public.settlement_ai_normalized_ast_is_valid(
+      p_value -> 'normalizedAst'
+    );
+$$;
+
+create or replace function public.settlement_ai_generated_test_cases_is_valid(
+  p_value jsonb
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog, public
+as $$
+declare
+  v_item jsonb;
+  v_input record;
+begin
+  if pg_catalog.jsonb_typeof(p_value) <> 'array'
+     or pg_catalog.jsonb_array_length(p_value) not between 1 and 200 then
+    return false;
+  end if;
+  for v_item in
+    select item.value
+    from pg_catalog.jsonb_array_elements(p_value) as item(value)
+  loop
+    if not public.settlement_ai_json_has_exact_keys(
+         v_item,
+         array['name', 'inputs', 'expectedResult']::text[]
+       )
+       or pg_catalog.jsonb_typeof(v_item -> 'name') <> 'string'
+       or pg_catalog.char_length(
+         pg_catalog.btrim(v_item ->> 'name')
+       ) not between 1 and 200
+       or pg_catalog.jsonb_typeof(v_item -> 'inputs') <> 'object'
+       or not public.settlement_ai_typed_value_is_valid(
+         v_item -> 'expectedResult'
+       ) then
+      return false;
+    end if;
+    for v_input in
+      select input.key, input.value
+      from pg_catalog.jsonb_each(v_item -> 'inputs') as input(key, value)
+    loop
+      if not public.settlement_ai_plain_identifier_is_valid(v_input.key)
+         or not public.settlement_ai_typed_value_is_valid(v_input.value) then
+        return false;
+      end if;
+    end loop;
+  end loop;
+  return true;
+exception
+  when others then return false;
+end;
+$$;
+
+create or replace function public.settlement_ai_safety_flags_is_valid(
+  p_value jsonb
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog, public
+as $$
+declare
+  v_item jsonb;
+begin
+  if pg_catalog.jsonb_typeof(p_value) <> 'array'
+     or pg_catalog.jsonb_array_length(p_value) > 100 then
+    return false;
+  end if;
+  for v_item in
+    select item.value
+    from pg_catalog.jsonb_array_elements(p_value) as item(value)
+  loop
+    if not public.settlement_ai_json_has_exact_keys(
+         v_item,
+         array['code', 'severity', 'message']::text[]
+       )
+       or pg_catalog.jsonb_typeof(v_item -> 'code') <> 'string'
+       or pg_catalog.char_length(
+         pg_catalog.btrim(v_item ->> 'code')
+       ) not between 1 and 120
+       or pg_catalog.jsonb_typeof(v_item -> 'severity') <> 'string'
+       or v_item ->> 'severity' not in ('info', 'warning', 'block')
+       or pg_catalog.jsonb_typeof(v_item -> 'message') <> 'string'
+       or pg_catalog.char_length(
+         pg_catalog.btrim(v_item ->> 'message')
+       ) not between 1 and 4000 then
       return false;
     end if;
   end loop;
@@ -808,6 +1218,41 @@ begin
 exception
   when others then return false;
 end;
+$$;
+
+create or replace function public.settlement_ai_draft_payload_is_valid(
+  p_turn_trace jsonb,
+  p_business_contract jsonb,
+  p_unresolved_ambiguities jsonb,
+  p_ai_response jsonb,
+  p_generated_formula jsonb,
+  p_generated_test_cases jsonb,
+  p_safety_flags jsonb
+)
+returns boolean
+language sql
+stable
+set search_path = pg_catalog, public
+as $$
+  select
+    public.settlement_ai_json_is_safe(p_turn_trace)
+    and public.settlement_ai_json_is_safe(p_business_contract)
+    and public.settlement_ai_json_is_safe(p_unresolved_ambiguities)
+    and public.settlement_ai_json_is_safe(p_ai_response)
+    and public.settlement_ai_json_is_safe(p_generated_formula)
+    and public.settlement_ai_json_is_safe(p_generated_test_cases)
+    and public.settlement_ai_json_is_safe(p_safety_flags)
+    and public.settlement_ai_turn_trace_json_is_valid(p_turn_trace)
+    and public.settlement_ai_business_contract_is_valid(p_business_contract)
+    and public.settlement_ai_unresolved_ambiguities_is_valid(
+      p_unresolved_ambiguities
+    )
+    and public.settlement_ai_response_is_valid(p_ai_response)
+    and public.settlement_ai_generated_formula_is_valid(p_generated_formula)
+    and public.settlement_ai_generated_test_cases_is_valid(
+      p_generated_test_cases
+    )
+    and public.settlement_ai_safety_flags_is_valid(p_safety_flags);
 $$;
 
 create or replace function public.settlement_ai_simulation_json_is_safe(
@@ -1221,6 +1666,17 @@ create table public.ai_settlement_rule_drafts (
   constraint ai_settlement_rule_drafts_business_contract_valid check (
     public.settlement_ai_business_contract_is_valid(business_contract)
   ),
+  constraint ai_settlement_rule_drafts_payload_valid check (
+    public.settlement_ai_draft_payload_is_valid(
+      turn_trace,
+      business_contract,
+      unresolved_ambiguities,
+      ai_response,
+      generated_formula,
+      generated_test_cases,
+      safety_flags
+    )
+  ),
   constraint ai_settlement_rule_drafts_supersession_state_check check (
     (
       status = 'superseded'
@@ -1538,6 +1994,17 @@ begin
      or p_formula_hash !~ '^[0-9a-f]{64}$'
      or p_parameter_hash !~ '^[0-9a-f]{64}$' then
     raise exception 'settlement_ai_draft_hash_invalid';
+  end if;
+  if not public.settlement_ai_draft_payload_is_valid(
+    p_turn_trace,
+    p_business_contract,
+    p_unresolved_ambiguities,
+    p_ai_response,
+    p_generated_formula,
+    p_generated_test_cases,
+    p_safety_flags
+  ) then
+    raise exception 'settlement_ai_draft_payload_invalid';
   end if;
   if not public.settlement_ai_json_is_safe(p_turn_trace)
      or not public.settlement_ai_json_is_safe(p_business_contract)
@@ -2212,7 +2679,30 @@ declare
   v_valid_deltas jsonb := '{"payableAmountCents":"1000","receivableAmountCents":"0","percentageBps":125}'::jsonb;
   v_valid_largest_changes jsonb := '[{"dimension":"rule_component","key":"grossRevenue","deltaAmountCents":"1000","direction":"increase"}]'::jsonb;
   v_valid_warnings jsonb := '[]'::jsonb;
+  v_actor_id uuid := '10000000-0000-4000-8000-000000000001'::uuid;
+  v_organization_id uuid := '20000000-0000-4000-8000-000000000001'::uuid;
+  v_fixture_project_id uuid := '30000000-0000-4000-8000-000000000001'::uuid;
+  v_conversation_id uuid := '40000000-0000-4000-8000-000000000001'::uuid;
+  v_other_conversation_id uuid := '40000000-0000-4000-8000-000000000002'::uuid;
+  v_user_message_id uuid := '50000000-0000-4000-8000-000000000001'::uuid;
+  v_assistant_message_id uuid := '50000000-0000-4000-8000-000000000002'::uuid;
+  v_turn_id uuid := '60000000-0000-4000-8000-000000000001'::uuid;
+  v_turn_trace jsonb;
+  v_valid_ambiguities jsonb := '[{"code":"confirm_rate","question":"请确认分成比例。","required":true}]'::jsonb;
+  v_valid_ai_response jsonb := '{"content":"已生成结算规则。","finishReason":"stop","providerRequestId":null}'::jsonb;
+  v_valid_generated_formula jsonb := '{"expression":"grossRevenue","normalizedAst":{"kind":"identifier","name":"grossRevenue"}}'::jsonb;
+  v_valid_generated_tests jsonb := '[{"name":"标准场景","inputs":{"grossRevenue":{"type":"money_cents","amountCents":10000}},"expectedResult":{"type":"money_cents","amountCents":10000}}]'::jsonb;
+  v_valid_safety_flags jsonb := '[{"code":"manual_review","severity":"info","message":"需人工复核。"}]'::jsonb;
+  v_draft_one jsonb;
+  v_draft_two jsonb;
+  v_simulation jsonb;
+  v_constraint_name text;
 begin
+  v_turn_trace := pg_catalog.jsonb_build_object(
+    'turnId', v_turn_id,
+    'userMessageId', v_user_message_id,
+    'assistantMessageId', v_assistant_message_id
+  );
   if not public.settlement_ai_business_contract_is_valid(v_valid_contract) then
     raise exception 'valid_contract_rejected';
   end if;
@@ -2256,6 +2746,70 @@ begin
     )
   ) then
     raise exception 'invalid_contract_timezone';
+  end if;
+  if public.settlement_ai_business_contract_is_valid(
+    pg_catalog.jsonb_set(
+      v_valid_contract,
+      '{effectiveStartAt}',
+      '"2026-07-01T24:00:00+08:00"'::jsonb
+    )
+  ) then
+    raise exception 'invalid_contract_hour_24';
+  end if;
+  if public.settlement_ai_business_contract_is_valid(
+    pg_catalog.jsonb_set(
+      v_valid_contract,
+      '{effectiveStartAt}',
+      '"2026-02-30T00:00:00+08:00"'::jsonb
+    )
+  ) then
+    raise exception 'invalid_contract_feb_30';
+  end if;
+  if not public.settlement_ai_draft_payload_is_valid(
+    v_turn_trace,
+    v_valid_contract,
+    v_valid_ambiguities,
+    v_valid_ai_response,
+    v_valid_generated_formula,
+    v_valid_generated_tests,
+    v_valid_safety_flags
+  ) then
+    raise exception 'valid_draft_payload_rejected';
+  end if;
+  if public.settlement_ai_unresolved_ambiguities_is_valid(
+    '[{"code":7,"question":"请确认。","required":true}]'::jsonb
+  ) then
+    raise exception 'invalid_ambiguity_code_type';
+  end if;
+  if public.settlement_ai_unresolved_ambiguities_is_valid(
+    '[{"code":"confirm","question":7,"required":true}]'::jsonb
+  ) then
+    raise exception 'invalid_ambiguity_question_type';
+  end if;
+  if public.settlement_ai_unresolved_ambiguities_is_valid(
+    '[{"code":"confirm","question":"请确认。","required":"true"}]'::jsonb
+  ) then
+    raise exception 'invalid_ambiguity_required_type';
+  end if;
+  if public.settlement_ai_response_is_valid(
+    '{"content":7,"finishReason":"stop","providerRequestId":null}'::jsonb
+  ) then
+    raise exception 'invalid_ai_response_content_type';
+  end if;
+  if public.settlement_ai_generated_formula_is_valid(
+    '{"expression":"x","normalizedAst":{"kind":"literal","value":1e400}}'::jsonb
+  ) then
+    raise exception 'invalid_generated_formula_ast';
+  end if;
+  if public.settlement_ai_generated_test_cases_is_valid(
+    '[{"name":"坏场景","inputs":{},"expectedResult":{"type":"money_cents","amountCents":1.5}}]'::jsonb
+  ) then
+    raise exception 'invalid_generated_test_case_value';
+  end if;
+  if public.settlement_ai_safety_flags_is_valid(
+    '[{"code":"review","severity":"critical","message":"复核"}]'::jsonb
+  ) then
+    raise exception 'invalid_safety_flag_severity';
   end if;
 
   if exists (
@@ -2362,6 +2916,528 @@ begin
   ) then
     raise exception 'invalid_selection_amount_cents';
   end if;
+
+  begin
+    insert into auth.users (id, email)
+    values (v_actor_id, 'task6-settlement-ai-selfcheck@example.invalid');
+
+    insert into public.profiles (id, email, full_name)
+    values (
+      v_actor_id,
+      'task6-settlement-ai-selfcheck@example.invalid',
+      'Task6 Settlement AI Selfcheck'
+    );
+
+    insert into public.organizations (id, name, code)
+    values (
+      v_organization_id,
+      'Task6 Settlement AI Selfcheck',
+      'task6-settlement-ai-selfcheck'
+    );
+
+    insert into public.organization_members (
+      organization_id,
+      user_id,
+      role,
+      status
+    ) values (
+      v_organization_id,
+      v_actor_id,
+      'owner',
+      'active'
+    );
+
+    insert into public.projects (
+      id,
+      organization_id,
+      code,
+      name,
+      created_by,
+      owner_id
+    ) values (
+      v_fixture_project_id,
+      v_organization_id,
+      'task6-settlement-ai-selfcheck',
+      'Task6 Settlement AI Selfcheck',
+      v_actor_id,
+      v_actor_id
+    );
+
+    insert into public.ai_conversations (
+      id,
+      organization_id,
+      owner_user_id,
+      project_id,
+      title
+    ) values
+      (
+        v_conversation_id,
+        v_organization_id,
+        v_actor_id,
+        v_fixture_project_id,
+        'Task6 合法会话'
+      ),
+      (
+        v_other_conversation_id,
+        v_organization_id,
+        v_actor_id,
+        v_fixture_project_id,
+        'Task6 跨会话攻击目标'
+      );
+
+    insert into public.ai_chat_messages (
+      id,
+      organization_id,
+      owner_user_id,
+      conversation_id,
+      sequence_no,
+      role,
+      status,
+      content,
+      parent_message_id
+    ) values
+      (
+        v_user_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_conversation_id,
+        1,
+        'user',
+        'completed',
+        '请生成项目结算规则。',
+        null
+      ),
+      (
+        v_assistant_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_conversation_id,
+        2,
+        'assistant',
+        'completed',
+        v_valid_ai_response ->> 'content',
+        v_user_message_id
+      );
+
+    insert into public.ai_chat_turns (
+      id,
+      organization_id,
+      owner_user_id,
+      conversation_id,
+      user_message_id,
+      assistant_message_id,
+      status,
+      idempotency_key,
+      completed_at
+    ) values (
+      v_turn_id,
+      v_organization_id,
+      v_actor_id,
+      v_conversation_id,
+      v_user_message_id,
+      v_assistant_message_id,
+      'completed',
+      'task6-settlement-ai-turn',
+      pg_catalog.clock_timestamp()
+    );
+
+    perform pg_catalog.set_config(
+      'request.jwt.claim.sub',
+      v_actor_id::text,
+      true
+    );
+    if auth.uid() is distinct from v_actor_id then
+      raise exception 'actual_rpc_auth_context_invalid';
+    end if;
+
+    v_draft_one := public.create_ai_settlement_rule_draft(
+      v_organization_id,
+      v_fixture_project_id,
+      v_conversation_id,
+      'task6-settlement-ai-draft-1',
+      '请按项目收入生成结算规则。',
+      v_turn_trace,
+      v_valid_contract,
+      v_valid_ambiguities,
+      pg_catalog.repeat('a', 64),
+      v_valid_ai_response,
+      v_valid_generated_formula,
+      '按项目确认收入计算。',
+      v_valid_generated_tests,
+      'fixture-model',
+      v_valid_safety_flags,
+      pg_catalog.repeat('b', 64),
+      pg_catalog.repeat('c', 64),
+      pg_catalog.repeat('d', 64),
+      'contract_ready'
+    );
+    if not public.settlement_ai_json_has_exact_keys(
+         v_draft_one,
+         array[
+           'id',
+           'organization_id',
+           'project_id',
+           'conversation_id',
+           'prompt_text',
+           'turn_trace',
+           'business_contract',
+           'unresolved_ambiguities',
+           'variable_catalog_version',
+           'ai_response',
+           'generated_formula',
+           'generated_explanation',
+           'generated_test_cases',
+           'model',
+           'safety_flags',
+           'contract_hash',
+           'formula_hash',
+           'parameter_hash',
+           'status',
+           'revision_number',
+           'idempotency_key',
+           'created_by',
+           'created_at',
+           'supersedes_draft_id',
+           'superseded_by_draft_id',
+           'superseded_at',
+           'duplicate'
+         ]::text[]
+       )
+       or v_draft_one ->> 'revision_number' <> '1'
+       or pg_catalog.jsonb_typeof(v_draft_one -> 'duplicate') <> 'boolean'
+       or (v_draft_one ->> 'duplicate')::boolean
+       or not public.settlement_ai_draft_payload_is_valid(
+         v_draft_one -> 'turn_trace',
+         v_draft_one -> 'business_contract',
+         v_draft_one -> 'unresolved_ambiguities',
+         v_draft_one -> 'ai_response',
+         v_draft_one -> 'generated_formula',
+         v_draft_one -> 'generated_test_cases',
+         v_draft_one -> 'safety_flags'
+       ) then
+      raise exception 'actual_draft_shape_invalid';
+    end if;
+
+    begin
+      perform public.create_ai_settlement_rule_draft(
+        v_organization_id,
+        v_fixture_project_id,
+        v_conversation_id,
+        'task6-settlement-ai-malformed-ambiguity',
+        '请按项目收入生成结算规则。',
+        v_turn_trace,
+        v_valid_contract,
+        '[{"code":"confirm","question":"请确认。","required":"true"}]'::jsonb,
+        pg_catalog.repeat('a', 64),
+        v_valid_ai_response,
+        v_valid_generated_formula,
+        '按项目确认收入计算。',
+        v_valid_generated_tests,
+        'fixture-model',
+        v_valid_safety_flags,
+        pg_catalog.repeat('b', 64),
+        pg_catalog.repeat('c', 64),
+        pg_catalog.repeat('d', 64),
+        'contract_ready'
+      );
+      raise exception 'malformed_ambiguity_rpc_accepted';
+    exception
+      when others then
+        if sqlerrm = 'malformed_ambiguity_rpc_accepted' then raise; end if;
+        if sqlerrm <> 'settlement_ai_draft_payload_invalid' then
+          raise exception 'malformed_ambiguity_rpc_unexpected: %', sqlerrm;
+        end if;
+    end;
+
+    begin
+      perform public.create_ai_settlement_rule_draft(
+        v_organization_id,
+        v_fixture_project_id,
+        v_conversation_id,
+        'task6-settlement-ai-invalid-datetime',
+        '请按项目收入生成结算规则。',
+        v_turn_trace,
+        pg_catalog.jsonb_set(
+          v_valid_contract,
+          '{effectiveStartAt}',
+          '"2026-07-01T24:00:00+08:00"'::jsonb
+        ),
+        v_valid_ambiguities,
+        pg_catalog.repeat('a', 64),
+        v_valid_ai_response,
+        v_valid_generated_formula,
+        '按项目确认收入计算。',
+        v_valid_generated_tests,
+        'fixture-model',
+        v_valid_safety_flags,
+        pg_catalog.repeat('b', 64),
+        pg_catalog.repeat('c', 64),
+        pg_catalog.repeat('d', 64),
+        'contract_ready'
+      );
+      raise exception 'invalid_datetime_rpc_accepted';
+    exception
+      when others then
+        if sqlerrm = 'invalid_datetime_rpc_accepted' then raise; end if;
+        if sqlerrm <> 'settlement_ai_draft_payload_invalid' then
+          raise exception 'invalid_datetime_rpc_unexpected: %', sqlerrm;
+        end if;
+    end;
+
+    begin
+      perform public.create_ai_settlement_rule_draft(
+        v_organization_id,
+        v_fixture_project_id,
+        v_other_conversation_id,
+        'task6-settlement-ai-forged-trace',
+        '请按项目收入生成结算规则。',
+        v_turn_trace,
+        v_valid_contract,
+        v_valid_ambiguities,
+        pg_catalog.repeat('a', 64),
+        v_valid_ai_response,
+        v_valid_generated_formula,
+        '按项目确认收入计算。',
+        v_valid_generated_tests,
+        'fixture-model',
+        v_valid_safety_flags,
+        pg_catalog.repeat('b', 64),
+        pg_catalog.repeat('c', 64),
+        pg_catalog.repeat('d', 64),
+        'contract_ready'
+      );
+      raise exception 'forged_trace_rpc_accepted';
+    exception
+      when others then
+        if sqlerrm = 'forged_trace_rpc_accepted' then raise; end if;
+        if sqlerrm <> 'settlement_ai_turn_trace_scope_mismatch' then
+          raise exception 'forged_trace_rpc_unexpected: %', sqlerrm;
+        end if;
+    end;
+
+    v_draft_two := public.create_ai_settlement_rule_draft(
+      v_organization_id,
+      v_fixture_project_id,
+      v_conversation_id,
+      'task6-settlement-ai-draft-2',
+      '请按项目收入生成结算规则。',
+      v_turn_trace,
+      v_valid_contract,
+      v_valid_ambiguities,
+      pg_catalog.repeat('a', 64),
+      v_valid_ai_response,
+      v_valid_generated_formula,
+      '按项目确认收入计算。',
+      v_valid_generated_tests,
+      'fixture-model',
+      v_valid_safety_flags,
+      pg_catalog.repeat('b', 64),
+      pg_catalog.repeat('c', 64),
+      pg_catalog.repeat('d', 64),
+      'contract_ready'
+    );
+    if v_draft_two ->> 'revision_number' <> '2'
+       or (v_draft_two ->> 'supersedes_draft_id')::uuid
+         <> (v_draft_one ->> 'id')::uuid
+       or not exists (
+         select 1
+         from public.ai_settlement_rule_drafts as revision
+         where revision.conversation_id = v_conversation_id
+         group by revision.conversation_id
+         having pg_catalog.count(*) = 2
+           and pg_catalog.min(revision.revision_number) = 1
+           and pg_catalog.max(revision.revision_number) = 2
+       ) then
+      raise exception 'actual_revision_sequence_invalid';
+    end if;
+
+    begin
+      insert into public.ai_settlement_rule_drafts (
+        organization_id,
+        project_id,
+        conversation_id,
+        prompt_text,
+        turn_trace,
+        business_contract,
+        unresolved_ambiguities,
+        variable_catalog_version,
+        ai_response,
+        generated_formula,
+        generated_explanation,
+        generated_test_cases,
+        model,
+        safety_flags,
+        contract_hash,
+        formula_hash,
+        parameter_hash,
+        status,
+        revision_number,
+        idempotency_key,
+        created_by,
+        supersedes_draft_id
+      )
+      select
+        draft.organization_id,
+        draft.project_id,
+        draft.conversation_id,
+        draft.prompt_text,
+        draft.turn_trace,
+        draft.business_contract,
+        '[{"code":7,"question":"请确认。","required":true}]'::jsonb,
+        draft.variable_catalog_version,
+        draft.ai_response,
+        draft.generated_formula,
+        draft.generated_explanation,
+        draft.generated_test_cases,
+        draft.model,
+        draft.safety_flags,
+        draft.contract_hash,
+        draft.formula_hash,
+        draft.parameter_hash,
+        'contract_ready',
+        3,
+        'task6-settlement-ai-direct-invalid',
+        draft.created_by,
+        draft.id
+      from public.ai_settlement_rule_drafts as draft
+      where draft.id = (v_draft_two ->> 'id')::uuid;
+      raise exception 'malformed_service_insert_accepted';
+    exception
+      when check_violation then
+        get stacked diagnostics v_constraint_name = constraint_name;
+        if v_constraint_name <>
+           'ai_settlement_rule_drafts_payload_valid' then
+          raise exception 'malformed_service_insert_wrong_check: %',
+            v_constraint_name;
+        end if;
+    end;
+
+    v_simulation := public.create_settlement_formula_simulation(
+      v_organization_id,
+      v_fixture_project_id,
+      null,
+      (v_draft_two ->> 'id')::uuid,
+      'task6-settlement-ai-simulation-1',
+      pg_catalog.repeat('c', 64),
+      pg_catalog.repeat('b', 64),
+      pg_catalog.repeat('d', 64),
+      pg_catalog.repeat('a', 64),
+      pg_catalog.repeat('e', 64),
+      v_valid_sample_source,
+      v_valid_sample_selection,
+      v_valid_coverage,
+      v_valid_scenarios,
+      v_valid_historical_totals,
+      v_valid_deltas,
+      v_valid_largest_changes,
+      v_valid_warnings
+    );
+    if not public.settlement_ai_json_has_exact_keys(
+         v_simulation,
+         array[
+           'id',
+           'organization_id',
+           'project_id',
+           'rule_version_id',
+           'ai_draft_id',
+           'formula_hash',
+           'rule_contract_hash',
+           'parameter_hash',
+           'variable_catalog_version',
+           'data_selection_hash',
+           'sample_source',
+           'sample_selection',
+           'coverage',
+           'scenarios',
+           'historical_totals',
+           'deltas',
+           'largest_changes',
+           'warnings',
+           'idempotency_key',
+           'created_by',
+           'created_at',
+           'duplicate'
+         ]::text[]
+       )
+       or pg_catalog.jsonb_typeof(v_simulation -> 'rule_version_id') <> 'null'
+       or (v_simulation ->> 'ai_draft_id')::uuid
+         <> (v_draft_two ->> 'id')::uuid
+       or (v_simulation ->> 'duplicate')::boolean then
+      raise exception 'actual_simulation_shape_invalid';
+    end if;
+
+    begin
+      perform public.create_settlement_formula_simulation(
+        v_organization_id,
+        v_fixture_project_id,
+        null,
+        (v_draft_two ->> 'id')::uuid,
+        'task6-settlement-ai-simulation-raw-criteria',
+        pg_catalog.repeat('c', 64),
+        pg_catalog.repeat('b', 64),
+        pg_catalog.repeat('d', 64),
+        pg_catalog.repeat('a', 64),
+        pg_catalog.repeat('e', 64),
+        v_valid_sample_source,
+        pg_catalog.jsonb_set(
+          v_valid_sample_selection,
+          '{criteria}',
+          '[{"name":"confirmed"}]'::jsonb
+        ),
+        v_valid_coverage,
+        v_valid_scenarios,
+        v_valid_historical_totals,
+        v_valid_deltas,
+        v_valid_largest_changes,
+        v_valid_warnings
+      );
+      raise exception 'raw_criteria_rpc_accepted';
+    exception
+      when others then
+        if sqlerrm = 'raw_criteria_rpc_accepted' then raise; end if;
+        if sqlerrm <> 'settlement_ai_simulation_summary_invalid' then
+          raise exception 'raw_criteria_rpc_unexpected: %', sqlerrm;
+        end if;
+    end;
+
+    raise exception 'settlement_ai_rpc_fixture_rollback';
+  exception
+    when others then
+      if sqlerrm <> 'settlement_ai_rpc_fixture_rollback' then
+        raise;
+      end if;
+  end;
+
+  if exists (
+       select 1 from auth.users where id = v_actor_id
+     )
+     or exists (
+       select 1
+       from public.organizations
+       where id = v_organization_id
+     )
+     or exists (
+       select 1
+       from public.projects
+       where id = v_fixture_project_id
+     )
+     or exists (
+       select 1
+       from public.ai_conversations
+       where id in (v_conversation_id, v_other_conversation_id)
+     )
+     or exists (
+       select 1
+       from public.ai_settlement_rule_drafts
+       where organization_id = v_organization_id
+     )
+     or exists (
+       select 1
+       from public.settlement_formula_simulations
+       where organization_id = v_organization_id
+     ) then
+    raise exception 'settlement_ai_rpc_fixture_cleanup_failed';
+  end if;
 end;
 $$;
 
@@ -2385,11 +3461,17 @@ revoke all on function public.settlement_ai_json_is_safe(jsonb)
   from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_identifier_is_valid(text)
   from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_plain_identifier_is_valid(text)
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_uuid_text_is_valid(text)
+  from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_offset_datetime_is_valid(text)
   from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_business_date_is_valid(text)
   from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_safe_integer_json(jsonb, boolean)
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_finite_number_json(jsonb)
   from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_runtime_type_is_valid(jsonb)
   from public, anon, authenticated, service_role;
@@ -2397,8 +3479,31 @@ revoke all on function public.settlement_ai_typed_value_is_valid(jsonb)
   from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_runtime_value_matches_type(jsonb, jsonb)
   from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_turn_trace_json_is_valid(jsonb)
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_unresolved_ambiguities_is_valid(jsonb)
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_response_is_valid(jsonb)
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_normalized_ast_is_valid(jsonb)
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_generated_formula_is_valid(jsonb)
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_generated_test_cases_is_valid(jsonb)
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_safety_flags_is_valid(jsonb)
+  from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_business_contract_is_valid(jsonb)
   from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_draft_payload_is_valid(
+  jsonb,
+  jsonb,
+  jsonb,
+  jsonb,
+  jsonb,
+  jsonb,
+  jsonb
+) from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_simulation_json_is_safe(jsonb)
   from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_simulation_summary_is_valid(

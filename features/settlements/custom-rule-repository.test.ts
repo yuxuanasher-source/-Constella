@@ -1153,6 +1153,87 @@ describe("custom-rule draft and simulation persistence", () => {
     expect(result).not.toHaveProperty("organization_id");
   });
 
+  it.each([
+    [
+      "ambiguity code number",
+      {
+        unresolvedAmbiguities: [
+          { code: 7, question: "请确认规则。", required: true },
+        ],
+      },
+    ],
+    [
+      "ambiguity question number",
+      {
+        unresolvedAmbiguities: [
+          { code: "confirm_rate", question: 7, required: true },
+        ],
+      },
+    ],
+    [
+      "ambiguity required string",
+      {
+        unresolvedAmbiguities: [
+          { code: "confirm_rate", question: "请确认规则。", required: "true" },
+        ],
+      },
+    ],
+    [
+      "AI response content number",
+      {
+        aiResponse: {
+          content: 7,
+          finishReason: "stop",
+          providerRequestId: null,
+        },
+      },
+    ],
+    [
+      "non-finite normalized AST literal",
+      {
+        generatedFormula: {
+          expression: "grossRevenue",
+          normalizedAst: { kind: "literal", value: Number.POSITIVE_INFINITY },
+        },
+      },
+    ],
+    [
+      "non-integer generated test money",
+      {
+        generatedTestCases: [
+          {
+            name: "标准场景",
+            inputs: {},
+            expectedResult: { type: "money_cents", amountCents: 1.5 },
+          },
+        ],
+      },
+    ],
+    [
+      "unknown safety severity",
+      {
+        safetyFlags: [
+          { code: "manual_review", severity: "critical", message: "复核" },
+        ],
+      },
+    ],
+    ["non-string model", { model: 7 }],
+  ])("rejects malformed draft input before RPC: %s", async (_label, patch) => {
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+    const unsafeInput = {
+      ...validDraftInput(),
+      ...patch,
+    } as unknown as CreateCustomRuleDraftInput;
+
+    await expect(repository.createDraft(unsafeInput)).rejects.toMatchObject({
+      code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID",
+    });
+    expect(mock.rpc).not.toHaveBeenCalled();
+    expect(mock.from).not.toHaveBeenCalled();
+  });
+
   it.each(["asc", "desc"] as const)(
     "lists conversation revisions in explicitly documented %s order",
     async (revisionOrder) => {
@@ -1215,6 +1296,33 @@ describe("custom-rule draft and simulation persistence", () => {
     ["extra JSON", { ai_response: { ...validAiResponse(), extra: true } }],
     ["missing JSON", { generated_test_cases: undefined }],
     ["unsafe JSON", { safety_flags: [{ code: "x", severity: "block", message: "x", raw_payload: {} }] }],
+    [
+      "ambiguity field types",
+      {
+        unresolved_ambiguities: [
+          { code: 7, question: 7, required: "true" },
+        ],
+      },
+    ],
+    [
+      "AI response field types",
+      {
+        ai_response: {
+          content: 7,
+          finishReason: "stop",
+          providerRequestId: null,
+        },
+      },
+    ],
+    [
+      "generated formula AST",
+      {
+        generated_formula: {
+          expression: "grossRevenue",
+          normalizedAst: { kind: "literal", value: Number.POSITIVE_INFINITY },
+        },
+      },
+    ],
   ])("fails closed on malformed draft rows: %s", async (_label, patch) => {
     const malformed = { ...draftRow(), ...patch };
     const mock = createPersistenceClient({ draftRows: [malformed] });
