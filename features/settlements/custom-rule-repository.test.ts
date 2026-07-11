@@ -1105,7 +1105,7 @@ describe("SupabaseCustomRuleReadRepository", () => {
 
 describe("custom-rule draft and simulation persistence", () => {
   it("creates a draft through the authenticated RPC and maps duplicate revisions", async () => {
-    const draft = draftRow({ duplicate: true });
+    const draft = draftRow({ duplicate: true, request_fingerprint: HASH_E });
     const mock = createPersistenceClient({ draftRpcData: draft });
     const repository: CustomRuleRepository =
       new SupabaseCustomRuleReadRepository(mock.client);
@@ -1151,6 +1151,50 @@ describe("custom-rule draft and simulation persistence", () => {
       duplicate: true,
     });
     expect(result).not.toHaveProperty("organization_id");
+    expect(result).not.toHaveProperty("requestFingerprint");
+    expect(result).not.toHaveProperty("request_fingerprint");
+  });
+
+  it("preserves turn-bound AI response whitespace through RPC and row mapping", async () => {
+    const preservedContent = "\n已生成项目应收规则草案。\n";
+    const input = {
+      ...validDraftInput(),
+      aiResponse: {
+        ...validAiResponse(),
+        content: preservedContent,
+      },
+    };
+    const mock = createPersistenceClient({
+      draftRpcData: draftRow({
+        ai_response: input.aiResponse,
+        duplicate: false,
+        request_fingerprint: HASH_E,
+      }),
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const result = await repository.createDraft(input);
+
+    expect(mock.rpc).toHaveBeenCalledWith(
+      "create_ai_settlement_rule_draft",
+      expect.objectContaining({
+        p_ai_response: expect.objectContaining({ content: preservedContent }),
+      }),
+    );
+    expect(result.aiResponse.content).toBe(preservedContent);
+  });
+
+  it("fails closed when a draft RPC row omits its immutable request fingerprint", async () => {
+    const mock = createPersistenceClient({
+      draftRpcData: draftRow({ duplicate: false }),
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(repository.createDraft(validDraftInput())).rejects.toMatchObject({
+      code: "CUSTOM_RULE_PERSISTENCE_DATA_INVALID",
+    });
   });
 
   it.each([
@@ -1232,6 +1276,34 @@ describe("custom-rule draft and simulation persistence", () => {
     });
     expect(mock.rpc).not.toHaveBeenCalled();
     expect(mock.from).not.toHaveBeenCalled();
+  });
+
+  it("rejects over-depth draft JSON before Zod recursion or RPC", async () => {
+    let normalizedAst: Record<string, unknown> = {
+      kind: "identifier",
+      name: "grossRevenue",
+    };
+    for (let depth = 0; depth < 21; depth += 1) {
+      normalizedAst = {
+        kind: "unary",
+        operator: "+",
+        argument: normalizedAst,
+      };
+    }
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(
+      repository.createDraft({
+        ...validDraftInput(),
+        generatedFormula: {
+          expression: "grossRevenue",
+          normalizedAst,
+        },
+      } as never),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(mock.rpc).not.toHaveBeenCalled();
   });
 
   it.each(["asc", "desc"] as const)(
@@ -1338,22 +1410,8 @@ describe("custom-rule draft and simulation persistence", () => {
     ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_DATA_INVALID" });
   });
 
-  it.each([
-    [
-      "AI draft",
-      { kind: "ai_draft" as const, id: DRAFT_ID },
-      { p_rule_version_id: null, p_ai_draft_id: DRAFT_ID },
-    ],
-    [
-      "rule version",
-      { kind: "rule_version" as const, id: RULE_VERSION_ID },
-      { p_rule_version_id: RULE_VERSION_ID, p_ai_draft_id: null },
-    ],
-  ])("inserts an immutable %s simulation through RPC only", async (
-    _label,
-    owner,
-    expectedOwnerArgs,
-  ) => {
+  it("inserts an immutable AI draft simulation through RPC only", async () => {
+    const owner = { kind: "ai_draft" as const, id: DRAFT_ID };
     const row = simulationRow(owner, { duplicate: false });
     const mock = createPersistenceClient({ simulationRpcData: row });
     const repository: CustomRuleRepository =
@@ -1367,7 +1425,8 @@ describe("custom-rule draft and simulation persistence", () => {
       {
         p_organization_id: ORGANIZATION_ID,
         p_project_id: PROJECT_ID,
-        ...expectedOwnerArgs,
+        p_rule_version_id: null,
+        p_ai_draft_id: DRAFT_ID,
         p_idempotency_key: "simulation-request-1",
         p_formula_hash: HASH_C,
         p_rule_contract_hash: HASH_B,
@@ -1390,6 +1449,20 @@ describe("custom-rule draft and simulation persistence", () => {
       "9007199254740993",
     );
     expect(typeof result.historicalTotals.payableAmountCents).toBe("string");
+  });
+
+  it("rejects Phase 1 rule-version simulation writes before RPC", async () => {
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(
+      repository.insertSimulation(
+        validSimulationInput({ kind: "rule_version", id: RULE_VERSION_ID }),
+      ),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(mock.rpc).not.toHaveBeenCalled();
+    expect(mock.from).not.toHaveBeenCalled();
   });
 
   it("reads simulations through scope and owner predicates in immutable recency order", async () => {
@@ -1424,7 +1497,38 @@ describe("custom-rule draft and simulation persistence", () => {
           "order",
           ["created_at", { ascending: false }],
         ],
+        [
+          "settlement_formula_simulations",
+          "order",
+          ["id", { ascending: false }],
+        ],
         ["settlement_formula_simulations", "eq", ["id", SIMULATION_ID]],
+      ]),
+    );
+  });
+
+  it("retains future rule-version simulation read compatibility", async () => {
+    const owner = { kind: "rule_version" as const, id: RULE_VERSION_ID };
+    const mock = createPersistenceClient({
+      simulationRows: [simulationRow(owner)],
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const rows = await repository.listSimulations({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      owner,
+    });
+
+    expect(rows[0]?.owner).toEqual(owner);
+    expect(mock.queryCalls).toEqual(
+      expect.arrayContaining([
+        [
+          "settlement_formula_simulations",
+          "eq",
+          ["rule_version_id", RULE_VERSION_ID],
+        ],
       ]),
     );
   });
@@ -1474,6 +1578,45 @@ describe("custom-rule draft and simulation persistence", () => {
         ],
       },
     ],
+    [
+      "criteria project id",
+      {
+        sampleSelection: {
+          ...validSampleSelection(),
+          criteria: ["project_id=project-2"],
+        },
+      },
+    ],
+    [
+      "criteria report id",
+      {
+        sampleSelection: {
+          ...validSampleSelection(),
+          criteria: ["reportId=report-2"],
+        },
+      },
+    ],
+    [
+      "criteria amount cents",
+      {
+        sampleSelection: {
+          ...validSampleSelection(),
+          criteria: ["amountCents=100"],
+        },
+      },
+    ],
+    [
+      "one-megabyte whitespace warning",
+      {
+        warnings: [
+          {
+            code: "large_warning",
+            severity: "warning",
+            message: `${" ".repeat(1024 * 1024)}x`,
+          },
+        ],
+      },
+    ],
   ])("rejects unsafe simulation summary input: %s", async (_label, patch) => {
     const mock = createPersistenceClient();
     const repository: CustomRuleRepository =
@@ -1487,6 +1630,80 @@ describe("custom-rule draft and simulation persistence", () => {
     ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
     expect(mock.rpc).not.toHaveBeenCalled();
     expect(mock.from).not.toHaveBeenCalled();
+  });
+
+  it.each(["project_id", "reportId", "amountCents", "tax", "raw payload"])(
+    "rejects forbidden largest-change key value %s before RPC",
+    async (key) => {
+      const mock = createPersistenceClient();
+      const repository: CustomRuleRepository =
+        new SupabaseCustomRuleReadRepository(mock.client);
+
+      await expect(
+        repository.insertSimulation({
+          ...validSimulationInput({ kind: "ai_draft", id: DRAFT_ID }),
+          largestChanges: [
+            {
+              dimension: "rule_component",
+              key,
+              deltaAmountCents: "100",
+              direction: "increase",
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+      expect(mock.rpc).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects over-depth and over-node JSON iteratively before RPC", async () => {
+    const deepValue: Record<string, unknown> = {};
+    let cursor = deepValue;
+    for (let depth = 0; depth < 21; depth += 1) {
+      const child: Record<string, unknown> = {};
+      cursor.child = child;
+      cursor = child;
+    }
+    const excessiveScenarios = Array.from({ length: 80 }, (_, index) => ({
+      name: `场景${index}`,
+      kind: "normal" as const,
+      result: "passed" as const,
+    }));
+
+    for (const patch of [
+      { warnings: [{ code: "deep", severity: "warning", message: deepValue }] },
+      { scenarios: excessiveScenarios },
+    ]) {
+      const mock = createPersistenceClient();
+      const repository: CustomRuleRepository =
+        new SupabaseCustomRuleReadRepository(mock.client);
+      await expect(
+        repository.insertSimulation({
+          ...validSimulationInput({ kind: "ai_draft", id: DRAFT_ID }),
+          ...patch,
+        } as never),
+      ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+      expect(mock.rpc).not.toHaveBeenCalled();
+    }
+  });
+
+  it("fails closed on Proxy descriptor traps before RPC", async () => {
+    const trapped = new Proxy({}, {
+      ownKeys() {
+        throw new Error("proxy ownKeys trap");
+      },
+    });
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(
+      repository.insertSimulation({
+        ...validSimulationInput({ kind: "ai_draft", id: DRAFT_ID }),
+        warnings: [trapped],
+      } as never),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(mock.rpc).not.toHaveBeenCalled();
   });
 
   it.each([

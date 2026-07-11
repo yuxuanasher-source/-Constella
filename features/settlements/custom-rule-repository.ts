@@ -492,7 +492,29 @@ const POSTGRES_BIGINT_MIN = BigInt("-9223372036854775808");
 const POSTGRES_BIGINT_MAX = BigInt("9223372036854775807");
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+const JSON_BUDGET_MAX_TOTAL_BYTES = 262_144;
+const JSON_BUDGET_MAX_STRING_BYTES = 16_384;
+const JSON_BUDGET_MAX_KEY_BYTES = 256;
+const JSON_BUDGET_MAX_CONTAINER_ITEMS = 200;
+const JSON_BUDGET_MAX_NODES = 300;
+const JSON_BUDGET_MAX_DEPTH = 20;
+const UTF8_ENCODER = new TextEncoder();
+const FORBIDDEN_DRAFT_JSON_KEYS = new Set([
+  "importpayload",
+  "internalmargin",
+  "parsedpayload",
+  "payload",
+  "rawpayload",
+  "rawrows",
+  "reportrows",
+  "rows",
+  "samplerows",
+  "sourcepayload",
+  "streameramounts",
+  "tax",
+]);
 const FORBIDDEN_SIMULATION_JSON_KEYS = new Set([
+  "amountcents",
   "conversationid",
   "importpayload",
   "internalmargin",
@@ -502,6 +524,7 @@ const FORBIDDEN_SIMULATION_JSON_KEYS = new Set([
   "projectid",
   "rawpayload",
   "rawrows",
+  "reportid",
   "reportrows",
   "rows",
   "samplerows",
@@ -510,6 +533,12 @@ const FORBIDDEN_SIMULATION_JSON_KEYS = new Set([
   "streamerid",
   "tax",
 ]);
+const FORBIDDEN_SIMULATION_VALUE_KEYS = new Set([
+  ...FORBIDDEN_SIMULATION_JSON_KEYS,
+  "amountcents",
+]);
+const FORBIDDEN_SIMULATION_CRITERIA_PATTERN =
+  /(report|project|streamer)[_-]?id|amount[_-]?cents|internal[_-]?margin|tax|payload|rows/iu;
 const DRAFT_SELECT = [
   "id",
   "organization_id",
@@ -565,6 +594,10 @@ const SIMULATION_SELECT = [
 const uuidSchema = z.string().uuid();
 const nonemptyTextSchema = z.string().trim().min(1);
 const boundedTextSchema = nonemptyTextSchema.max(4_000);
+const preservedBoundedTextSchema = z
+  .string()
+  .max(4_000)
+  .refine((value) => value.trim().length > 0, "must contain non-whitespace text");
 const hashSchema = z.string().regex(SHA256_PATTERN);
 const timestampSchema = z.string().refine(
   (value) => Number.isFinite(Date.parse(value)),
@@ -605,7 +638,7 @@ const unresolvedAmbiguitySchema = z.strictObject({
   required: z.boolean(),
 });
 const aiResponseSchema = z.strictObject({
-  content: boundedTextSchema.max(100_000),
+  content: preservedBoundedTextSchema,
   finishReason: z.enum(["stop", "length", "content_filter", "tool_call"]),
   providerRequestId: nonemptyTextSchema.max(500).nullable(),
 });
@@ -736,25 +769,35 @@ const simulationWarningSchema = z.strictObject({
   severity: z.enum(["info", "warning", "block"]),
   message: boundedTextSchema,
 });
-const insertSimulationInputSchema = z.strictObject({
-  organizationId: uuidSchema,
-  projectId: uuidSchema,
-  owner: simulationOwnerSchema,
-  idempotencyKey: nonemptyTextSchema.max(200),
-  formulaHash: hashSchema,
-  ruleContractHash: hashSchema,
-  parameterHash: hashSchema,
-  variableCatalogVersion: hashSchema,
-  dataSelectionHash: hashSchema,
-  sampleSource: sampleSourceSchema,
-  sampleSelection: sampleSelectionSchema,
-  coverage: simulationCoverageSchema,
-  scenarios: z.array(simulationScenarioSchema).min(1).max(200),
-  historicalTotals: historicalTotalsSchema,
-  deltas: simulationDeltasSchema,
-  largestChanges: z.array(largestChangeSchema).max(100),
-  warnings: z.array(simulationWarningSchema).max(100),
-});
+const insertSimulationInputSchema = z
+  .strictObject({
+    organizationId: uuidSchema,
+    projectId: uuidSchema,
+    owner: simulationOwnerSchema,
+    idempotencyKey: nonemptyTextSchema.max(200),
+    formulaHash: hashSchema,
+    ruleContractHash: hashSchema,
+    parameterHash: hashSchema,
+    variableCatalogVersion: hashSchema,
+    dataSelectionHash: hashSchema,
+    sampleSource: sampleSourceSchema,
+    sampleSelection: sampleSelectionSchema,
+    coverage: simulationCoverageSchema,
+    scenarios: z.array(simulationScenarioSchema).min(1).max(200),
+    historicalTotals: historicalTotalsSchema,
+    deltas: simulationDeltasSchema,
+    largestChanges: z.array(largestChangeSchema).max(100),
+    warnings: z.array(simulationWarningSchema).max(100),
+  })
+  .superRefine((input, context) => {
+    if (input.owner.kind === "rule_version") {
+      context.addIssue({
+        code: "custom",
+        path: ["owner"],
+        message: "rule-version simulation writes are not enabled in Phase 1",
+      });
+    }
+  });
 const listSimulationsInputSchema = z.strictObject({
   organizationId: uuidSchema,
   projectId: uuidSchema,
@@ -799,6 +842,7 @@ const DRAFT_ROW_SHAPE = {
 const draftRowSchema = z.strictObject(DRAFT_ROW_SHAPE);
 const createdDraftRowSchema = z.strictObject({
   ...DRAFT_ROW_SHAPE,
+  request_fingerprint: hashSchema,
   duplicate: z.boolean(),
 });
 const SIMULATION_ROW_SHAPE = {
@@ -856,6 +900,7 @@ export class SupabaseCustomRuleReadRepository
   async createDraft(
     unsafeInput: CreateCustomRuleDraftInput,
   ): Promise<CreatedCustomRuleDraft> {
+    assertSafeDraftPayloadInput(unsafeInput);
     const input = parsePersistenceInput(
       createDraftInputSchema,
       unsafeInput,
@@ -1021,6 +1066,7 @@ export class SupabaseCustomRuleReadRepository
     query = scopeSimulationOwnerQuery(query, input.owner);
     const { data, error } = await query
       .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
       .limit(input.limit)
       .returns<unknown[]>();
     if (error) {
@@ -2229,78 +2275,278 @@ function formatPersistenceIssues(
     .join("; ");
 }
 
+type JsonBudgetEntry = {
+  value: unknown;
+  path: string;
+  depth: number;
+  ancestors: readonly object[];
+};
+type JsonBudgetOptions = {
+  forbiddenKeys: ReadonlySet<string>;
+  validateString?: (value: string, path: string) => void;
+};
+
+function assertSafeDraftPayloadInput(value: unknown): void {
+  const entries = collectPersistenceJsonFields(
+    value,
+    "draft input",
+    [
+      "turnTrace",
+      "businessContract",
+      "unresolvedAmbiguities",
+      "aiResponse",
+      "generatedFormula",
+      "generatedTestCases",
+      "safetyFlags",
+    ],
+  );
+  assertJsonCollectionWithinBudget(entries, {
+    forbiddenKeys: FORBIDDEN_DRAFT_JSON_KEYS,
+  });
+}
+
 function assertSafeSimulationSummaryInput(value: unknown): void {
-  if (!isPlainDataRecord(value)) {
-    throw new CustomRulePersistenceInputError(
-      "simulation input must be a plain own-data object",
-    );
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  for (const key of [
-    "sampleSource",
-    "sampleSelection",
-    "coverage",
-    "scenarios",
-    "historicalTotals",
-    "deltas",
-    "largestChanges",
-    "warnings",
-  ]) {
+  const entries = collectPersistenceJsonFields(
+    value,
+    "simulation input",
+    [
+      "sampleSource",
+      "sampleSelection",
+      "coverage",
+      "scenarios",
+      "historicalTotals",
+      "deltas",
+      "largestChanges",
+      "warnings",
+    ],
+  );
+  assertJsonCollectionWithinBudget(entries, {
+    forbiddenKeys: FORBIDDEN_SIMULATION_JSON_KEYS,
+    validateString: validateSimulationSummaryString,
+  });
+}
+
+function collectPersistenceJsonFields(
+  value: unknown,
+  label: string,
+  keys: readonly string[],
+): JsonBudgetEntry[] {
+  const descriptors = getPlainObjectDescriptors(value, label);
+  const entries: JsonBudgetEntry[] = [];
+  for (const key of keys) {
     const descriptor = descriptors[key];
     if (!descriptor) continue;
     if (descriptor.get || descriptor.set || !("value" in descriptor)) {
       throw new CustomRulePersistenceInputError(
-        `${key} must be an own data property`,
+        `${label}.${key} must be an own data property`,
       );
     }
-    assertSafeSimulationJson(descriptor.value, key);
+    entries.push({
+      value: descriptor.value,
+      path: key,
+      depth: 0,
+      ancestors: [],
+    });
+  }
+  return entries;
+}
+
+function assertJsonCollectionWithinBudget(
+  roots: JsonBudgetEntry[],
+  options: JsonBudgetOptions,
+): void {
+  const stack = [...roots];
+  let nodeCount = 0;
+  let serializedBytes = 2 + Math.max(0, roots.length - 1);
+
+  while (stack.length > 0) {
+    const entry = stack.pop();
+    if (!entry) break;
+    nodeCount += 1;
+    if (nodeCount > JSON_BUDGET_MAX_NODES) {
+      throw new CustomRulePersistenceInputError(
+        `${entry.path} exceeds the ${JSON_BUDGET_MAX_NODES}-node JSON budget`,
+      );
+    }
+    if (entry.depth > JSON_BUDGET_MAX_DEPTH) {
+      throw new CustomRulePersistenceInputError(
+        `${entry.path} exceeds the JSON depth budget`,
+      );
+    }
+
+    const { value, path, depth, ancestors } = entry;
+    if (value === null) {
+      serializedBytes += 4;
+    } else if (typeof value === "string") {
+      const rawBytes = utf8ByteLength(value);
+      const encodedBytes = utf8ByteLength(JSON.stringify(value));
+      if (rawBytes > JSON_BUDGET_MAX_STRING_BYTES) {
+        throw new CustomRulePersistenceInputError(
+          `${path} exceeds the raw string byte budget`,
+        );
+      }
+      options.validateString?.(value, path);
+      serializedBytes += encodedBytes;
+    } else if (typeof value === "boolean") {
+      serializedBytes += value ? 4 : 5;
+    } else if (typeof value === "number" && Number.isFinite(value)) {
+      serializedBytes += utf8ByteLength(JSON.stringify(value));
+    } else if (Array.isArray(value)) {
+      if (ancestors.includes(value)) {
+        throw new CustomRulePersistenceInputError(`${path} must not be cyclic`);
+      }
+      const childAncestors = [...ancestors, value];
+      const descriptors = getArrayDescriptors(value, path);
+      const length = descriptors.length?.value;
+      if (!Number.isSafeInteger(length) || length < 0) {
+        throw new CustomRulePersistenceInputError(
+          `${path} has an invalid array length`,
+        );
+      }
+      if (length > JSON_BUDGET_MAX_CONTAINER_ITEMS) {
+        throw new CustomRulePersistenceInputError(
+          `${path} exceeds the array item budget`,
+        );
+      }
+      serializedBytes += 2 + Math.max(0, length - 1);
+      for (let index = length - 1; index >= 0; index -= 1) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor || descriptor.get || descriptor.set || !("value" in descriptor)) {
+          throw new CustomRulePersistenceInputError(
+            `${path}[${index}] must be an own data property`,
+          );
+        }
+        stack.push({
+          value: descriptor.value,
+          path: `${path}[${index}]`,
+          depth: depth + 1,
+          ancestors: childAncestors,
+        });
+      }
+    } else if (typeof value === "object") {
+      if (ancestors.includes(value)) {
+        throw new CustomRulePersistenceInputError(`${path} must not be cyclic`);
+      }
+      const childAncestors = [...ancestors, value];
+      const descriptors = getPlainObjectDescriptors(value, path);
+      const ownKeys = Reflect.ownKeys(descriptors);
+      if (ownKeys.some((key) => typeof key !== "string")) {
+        throw new CustomRulePersistenceInputError(
+          `${path} must not contain symbol keys`,
+        );
+      }
+      const keys = ownKeys as string[];
+      if (keys.length > JSON_BUDGET_MAX_CONTAINER_ITEMS) {
+        throw new CustomRulePersistenceInputError(
+          `${path} exceeds the object key budget`,
+        );
+      }
+      serializedBytes += 2 + Math.max(0, keys.length - 1);
+      for (let index = keys.length - 1; index >= 0; index -= 1) {
+        const key = keys[index];
+        if (key === undefined) continue;
+        const descriptor = descriptors[key];
+        if (!descriptor || descriptor.get || descriptor.set || !("value" in descriptor)) {
+          throw new CustomRulePersistenceInputError(
+            `${path}.${key} must be an own data property`,
+          );
+        }
+        if (utf8ByteLength(key) > JSON_BUDGET_MAX_KEY_BYTES) {
+          throw new CustomRulePersistenceInputError(
+            `${path}.${key} exceeds the key byte budget`,
+          );
+        }
+        const normalizedKey = normalizeSafetyKey(key);
+        if (options.forbiddenKeys.has(normalizedKey)) {
+          throw new CustomRulePersistenceInputError(
+            `${path}.${key} is forbidden summary data`,
+          );
+        }
+        serializedBytes += utf8ByteLength(JSON.stringify(key)) + 1;
+        stack.push({
+          value: descriptor.value,
+          path: `${path}.${key}`,
+          depth: depth + 1,
+          ancestors: childAncestors,
+        });
+      }
+    } else {
+      throw new CustomRulePersistenceInputError(
+        `${path} must contain JSON own-data values only`,
+      );
+    }
+
+    if (serializedBytes > JSON_BUDGET_MAX_TOTAL_BYTES) {
+      throw new CustomRulePersistenceInputError(
+        `JSON payload exceeds the ${JSON_BUDGET_MAX_TOTAL_BYTES}-byte budget`,
+      );
+    }
   }
 }
 
-function assertSafeSimulationJson(value: unknown, path: string): void {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean" ||
-    (typeof value === "number" && Number.isFinite(value))
-  ) {
-    return;
-  }
-  if (Array.isArray(value)) {
-    value.forEach((item, index) =>
-      assertSafeSimulationJson(item, `${path}.${index}`),
-    );
-    return;
-  }
-  if (!isPlainDataRecord(value)) {
+function getPlainObjectDescriptors(
+  value: unknown,
+  path: string,
+): PropertyDescriptorMap {
+  try {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new CustomRulePersistenceInputError(
+        `${path} must be a plain own-data object`,
+      );
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new CustomRulePersistenceInputError(
+        `${path} must be a plain own-data object`,
+      );
+    }
+    return Object.getOwnPropertyDescriptors(value);
+  } catch (error) {
+    if (error instanceof CustomRulePersistenceInputError) throw error;
     throw new CustomRulePersistenceInputError(
-      `${path} must contain JSON own-data values only`,
+      `${path} could not be inspected safely`,
     );
-  }
-  for (const [key, descriptor] of Object.entries(
-    Object.getOwnPropertyDescriptors(value),
-  )) {
-    if (descriptor.get || descriptor.set || !("value" in descriptor)) {
-      throw new CustomRulePersistenceInputError(
-        `${path}.${key} must be an own data property`,
-      );
-    }
-    const normalizedKey = key.replace(/[^a-z0-9]/giu, "").toLowerCase();
-    if (FORBIDDEN_SIMULATION_JSON_KEYS.has(normalizedKey)) {
-      throw new CustomRulePersistenceInputError(
-        `${path}.${key} is forbidden summary data`,
-      );
-    }
-    assertSafeSimulationJson(descriptor.value, `${path}.${key}`);
   }
 }
 
-function isPlainDataRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
+function getArrayDescriptors(
+  value: unknown[],
+  path: string,
+): Record<string, PropertyDescriptor> {
+  try {
+    return Object.getOwnPropertyDescriptors(value);
+  } catch {
+    throw new CustomRulePersistenceInputError(
+      `${path} could not be inspected safely`,
+    );
   }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+}
+
+function validateSimulationSummaryString(value: string, path: string): void {
+  if (
+    /^sampleSelection\.criteria\[[0-9]+\]$/u.test(path) &&
+    FORBIDDEN_SIMULATION_CRITERIA_PATTERN.test(value)
+  ) {
+    throw new CustomRulePersistenceInputError(
+      `${path} contains forbidden row-level criteria`,
+    );
+  }
+  if (
+    /^largestChanges\[[0-9]+\]\.key$/u.test(path) &&
+    FORBIDDEN_SIMULATION_VALUE_KEYS.has(normalizeSafetyKey(value))
+  ) {
+    throw new CustomRulePersistenceInputError(
+      `${path} identifies forbidden row-level data`,
+    );
+  }
+}
+
+function normalizeSafetyKey(value: string): string {
+  return value.replace(/[^a-z0-9]/giu, "").toLowerCase();
+}
+
+function utf8ByteLength(value: string): number {
+  return UTF8_ENCODER.encode(value).byteLength;
 }
 
 function toCustomRuleDraft(row: DraftRow | CreatedDraftRow): CustomRuleDraft {

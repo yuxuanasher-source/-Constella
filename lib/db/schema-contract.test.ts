@@ -402,6 +402,7 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "status text not null",
       "revision_number integer not null",
       "idempotency_key text not null",
+      "request_fingerprint text not null",
       "created_by uuid not null",
       "created_at timestamptz not null",
       "supersedes_draft_id uuid",
@@ -493,6 +494,12 @@ describe("Phase 1 settlement AI persistence contract", () => {
     ]) {
       expect(normalizedSettlementAiMigration).toContain(index);
     }
+    expect(normalizedSettlementAiMigration).toMatch(
+      /on public\.settlement_formula_simulations \(\s*ai_draft_id,\s*created_at desc,\s*id desc\s*\)/u,
+    );
+    expect(normalizedSettlementAiMigration).toMatch(
+      /on public\.settlement_formula_simulations \(\s*rule_version_id,\s*created_at desc,\s*id desc\s*\)/u,
+    );
   });
 
   it("allows only project-scoped MCN reads and removes direct client writes", () => {
@@ -550,6 +557,19 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(createDraft).toContain("owner_user_id = auth.uid()");
     expect(createSimulation).toContain(
       "((p_rule_version_id is not null)::integer + (p_ai_draft_id is not null)::integer) <> 1",
+    );
+    const phaseOneOwnerGate = createSimulation.indexOf(
+      "if p_rule_version_id is not null then",
+    );
+    expect(phaseOneOwnerGate).toBeGreaterThanOrEqual(0);
+    expect(createSimulation).toContain(
+      "settlement_ai_rule_version_owner_phase1_unsupported",
+    );
+    expect(createSimulation).toContain("if p_ai_draft_id is null then");
+    expect(phaseOneOwnerGate).toBeLessThan(
+      createSimulation.indexOf(
+        "insert into public.settlement_formula_simulations",
+      ),
     );
     expect(createSimulation).toContain("d.organization_id = p_organization_id");
     expect(createSimulation).toContain("d.project_id = p_project_id");
@@ -757,6 +777,12 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "'stop', 'length', 'content_filter', 'tool_call'",
     );
     expect(aiResponse).toContain("between 1 and 500");
+    expect(aiResponse).toContain(
+      "pg_catalog.char_length(p_value ->> 'content') > 4000",
+    );
+    expect(aiResponse).toContain(
+      "nullif(pg_catalog.btrim(p_value ->> 'content'), '') is null",
+    );
 
     const normalizedAst = settlementAiFunctionBody(
       "settlement_ai_normalized_ast_is_valid",
@@ -829,6 +855,110 @@ describe("Phase 1 settlement AI persistence contract", () => {
     );
   });
 
+  it("bounds every JSON payload before recursive validation", () => {
+    const budget = extractSettlementAiFunction(
+      "settlement_ai_json_within_budget",
+    );
+    const header = normalizeSql(budget.header);
+    const body = normalizeSql(budget.body);
+    expect(header).toContain("language plpgsql");
+    expect(header).toContain("immutable");
+    expect(header).toContain("set search_path = pg_catalog, public");
+    expect(body).toContain("pg_catalog.pg_column_size(p_value) > 262144");
+    expect(body).toContain("v_node_count > 300");
+    expect(body).toContain("v_depth > 20");
+    expect(body).toContain("v_item_count > 200");
+    expect(body).toContain("pg_catalog.octet_length(v_node #>> '{}') > 16384");
+    expect(body).toContain("pg_catalog.octet_length(v_key) > 256");
+    expect(body).not.toContain("with recursive");
+
+    const draftPayload = settlementAiFunctionBody(
+      "settlement_ai_draft_payload_is_valid",
+    );
+    const simulationSummary = settlementAiFunctionBody(
+      "settlement_ai_simulation_summary_is_valid",
+    );
+    expect(draftPayload).toMatch(
+      /public\.settlement_ai_json_within_budget\(\s*pg_catalog\.jsonb_build_array\(/u,
+    );
+    expect(simulationSummary).toMatch(
+      /public\.settlement_ai_json_within_budget\(\s*pg_catalog\.jsonb_build_array\(/u,
+    );
+    for (const value of [
+      "p_turn_trace",
+      "p_business_contract",
+      "p_unresolved_ambiguities",
+      "p_ai_response",
+      "p_generated_formula",
+      "p_generated_test_cases",
+      "p_safety_flags",
+    ]) {
+      expect(draftPayload).toContain(
+        `public.settlement_ai_json_within_budget(${value})`,
+      );
+    }
+    for (const value of [
+      "p_sample_source",
+      "p_sample_selection",
+      "p_coverage",
+      "p_scenarios",
+      "p_historical_totals",
+      "p_deltas",
+      "p_largest_changes",
+      "p_warnings",
+    ]) {
+      expect(simulationSummary).toContain(
+        `public.settlement_ai_json_within_budget(${value})`,
+      );
+    }
+    expect(normalizedSettlementAiMigration).toContain(
+      "revoke all on function public.settlement_ai_json_within_budget(jsonb)",
+    );
+  });
+
+  it("fingerprints the immutable initial draft request including status", () => {
+    const draft = settlementAiTableDefinition("ai_settlement_rule_drafts");
+    const createDraft = settlementAiFunctionBody(
+      "create_ai_settlement_rule_draft",
+    );
+    expect(draft).toContain("request_fingerprint text not null");
+    expect(draft).toContain(
+      "request_fingerprint ~ '^[0-9a-f]{64}$'",
+    );
+    expect(createDraft).toContain("v_request_fingerprint text");
+    expect(createDraft).toContain("extensions.digest(");
+    expect(createDraft).toContain("'status', p_status");
+    for (const field of [
+      "p_organization_id",
+      "p_project_id",
+      "p_conversation_id",
+      "p_idempotency_key",
+      "p_prompt_text",
+      "p_turn_trace",
+      "p_business_contract",
+      "p_unresolved_ambiguities",
+      "p_variable_catalog_version",
+      "p_ai_response",
+      "p_generated_formula",
+      "p_generated_explanation",
+      "p_generated_test_cases",
+      "p_model",
+      "p_safety_flags",
+      "p_contract_hash",
+      "p_formula_hash",
+      "p_parameter_hash",
+    ]) {
+      expect(createDraft).toContain(field);
+    }
+    expect(createDraft).toContain(
+      "v_existing.request_fingerprint <> v_request_fingerprint",
+    );
+    expect(createDraft).toMatch(
+      /insert into public\.ai_settlement_rule_drafts \([^)]*request_fingerprint/iu,
+    );
+    expect(createDraft).not.toContain("v_existing.status <> p_status");
+  });
+
   it("validates every simulation summary container before table or RPC writes", () => {
     const validator = extractSettlementAiFunction(
       "settlement_ai_simulation_summary_is_valid",
@@ -874,6 +1004,15 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(safetyBody).toContain("'streamerid'");
     expect(safetyBody).toContain("'internalmargin'");
     expect(safetyBody).toContain("'amountcents'");
+    for (const forbiddenValue of [
+      "'projectid'",
+      "'reportid'",
+      "'amountcents'",
+      "'tax'",
+      "'rawpayload'",
+    ]) {
+      expect(body).toContain(forbiddenValue);
+    }
     expect(tableCheck).toContain(
       "public.settlement_ai_simulation_summary_is_valid(",
     );
@@ -951,6 +1090,10 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "forged_trace_rpc_accepted",
       "malformed_ambiguity_rpc_accepted",
       "invalid_datetime_rpc_accepted",
+      "phase1_rule_version_rpc_accepted",
+      "oversized_warning_rpc_accepted",
+      "idempotency_status_conflict_missing",
+      "idempotent_lifecycle_replay_invalid",
       "actual_simulation_shape_invalid",
       "raw_criteria_rpc_accepted",
       "settlement_ai_rpc_fixture_rollback",

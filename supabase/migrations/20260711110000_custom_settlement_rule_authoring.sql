@@ -36,6 +36,88 @@ as $$
     ) = pg_catalog.cardinality(p_keys);
 $$;
 
+create or replace function public.settlement_ai_json_within_budget(
+  p_value jsonb
+)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog, public
+as $$
+declare
+  v_queue jsonb[] := array[p_value];
+  v_depths integer[] := array[0];
+  v_index integer := 1;
+  v_node_count integer := 0;
+  v_node jsonb;
+  v_depth integer;
+  v_type text;
+  v_item_count integer;
+  v_child jsonb;
+  v_key text;
+begin
+  if p_value is null
+     or pg_catalog.pg_column_size(p_value) > 262144 then
+    return false;
+  end if;
+
+  while v_index <= pg_catalog.cardinality(v_queue) loop
+    v_node := v_queue[v_index];
+    v_depth := v_depths[v_index];
+    v_index := v_index + 1;
+    v_node_count := v_node_count + 1;
+    if v_node_count > 300 or v_depth > 20 then
+      return false;
+    end if;
+    if v_node_count > 1
+       and pg_catalog.pg_column_size(v_node) > 65536 then
+      return false;
+    end if;
+
+    v_type := pg_catalog.jsonb_typeof(v_node);
+    if v_type = 'string' then
+      if pg_catalog.octet_length(v_node #>> '{}') > 16384 then
+        return false;
+      end if;
+    elsif v_type = 'array' then
+      v_item_count := pg_catalog.jsonb_array_length(v_node);
+      if v_item_count > 200
+         or pg_catalog.cardinality(v_queue) + v_item_count > 300 then
+        return false;
+      end if;
+      for v_child in
+        select item.value
+        from pg_catalog.jsonb_array_elements(v_node) as item(value)
+      loop
+        v_queue := pg_catalog.array_append(v_queue, v_child);
+        v_depths := pg_catalog.array_append(v_depths, v_depth + 1);
+      end loop;
+    elsif v_type = 'object' then
+      select pg_catalog.count(*)::integer
+      into v_item_count
+      from pg_catalog.jsonb_object_keys(v_node);
+      if v_item_count > 200
+         or pg_catalog.cardinality(v_queue) + v_item_count > 300 then
+        return false;
+      end if;
+      for v_key, v_child in
+        select object_item.key, object_item.value
+        from pg_catalog.jsonb_each(v_node) as object_item(key, value)
+      loop
+        if pg_catalog.octet_length(v_key) > 256 then
+          return false;
+        end if;
+        v_queue := pg_catalog.array_append(v_queue, v_child);
+        v_depths := pg_catalog.array_append(v_depths, v_depth + 1);
+      end loop;
+    end if;
+  end loop;
+  return true;
+exception
+  when others then return false;
+end;
+$$;
+
 create or replace function public.settlement_ai_decimal_is_bigint(
   p_value jsonb,
   p_allow_null boolean
@@ -582,9 +664,8 @@ begin
        array['content', 'finishReason', 'providerRequestId']::text[]
      )
      or pg_catalog.jsonb_typeof(p_value -> 'content') <> 'string'
-     or pg_catalog.char_length(
-       pg_catalog.btrim(p_value ->> 'content')
-     ) not between 1 and 4000
+     or pg_catalog.char_length(p_value ->> 'content') > 4000
+     or nullif(pg_catalog.btrim(p_value ->> 'content'), '') is null
      or pg_catalog.jsonb_typeof(p_value -> 'finishReason') <> 'string'
      or p_value ->> 'finishReason' not in (
        'stop', 'length', 'content_filter', 'tool_call'
@@ -878,6 +959,9 @@ declare
   v_normal_examples integer := 0;
   v_boundary_examples integer := 0;
 begin
+  if not public.settlement_ai_json_within_budget(p_contract) then
+    return false;
+  end if;
   if not public.settlement_ai_json_has_exact_keys(
     p_contract,
     array[
@@ -1230,12 +1314,32 @@ create or replace function public.settlement_ai_draft_payload_is_valid(
   p_safety_flags jsonb
 )
 returns boolean
-language sql
+language plpgsql
 stable
 set search_path = pg_catalog, public
 as $$
-  select
-    public.settlement_ai_json_is_safe(p_turn_trace)
+begin
+  if not public.settlement_ai_json_within_budget(
+       pg_catalog.jsonb_build_array(
+         p_turn_trace,
+         p_business_contract,
+         p_unresolved_ambiguities,
+         p_ai_response,
+         p_generated_formula,
+         p_generated_test_cases,
+         p_safety_flags
+       )
+     )
+     or not public.settlement_ai_json_within_budget(p_turn_trace)
+     or not public.settlement_ai_json_within_budget(p_business_contract)
+     or not public.settlement_ai_json_within_budget(p_unresolved_ambiguities)
+     or not public.settlement_ai_json_within_budget(p_ai_response)
+     or not public.settlement_ai_json_within_budget(p_generated_formula)
+     or not public.settlement_ai_json_within_budget(p_generated_test_cases)
+     or not public.settlement_ai_json_within_budget(p_safety_flags) then
+    return false;
+  end if;
+  return public.settlement_ai_json_is_safe(p_turn_trace)
     and public.settlement_ai_json_is_safe(p_business_contract)
     and public.settlement_ai_json_is_safe(p_unresolved_ambiguities)
     and public.settlement_ai_json_is_safe(p_ai_response)
@@ -1253,6 +1357,9 @@ as $$
       p_generated_test_cases
     )
     and public.settlement_ai_safety_flags_is_valid(p_safety_flags);
+exception
+  when others then return false;
+end;
 $$;
 
 create or replace function public.settlement_ai_simulation_json_is_safe(
@@ -1337,7 +1444,7 @@ declare
   v_normalized text;
 begin
   if p_project_id is null
-     or not public.settlement_ai_simulation_json_is_safe(
+     or not public.settlement_ai_json_within_budget(
        pg_catalog.jsonb_build_array(
          p_sample_source,
          p_sample_selection,
@@ -1348,7 +1455,29 @@ begin
          p_largest_changes,
          p_warnings
        )
-     ) then
+     )
+     or not public.settlement_ai_json_within_budget(p_sample_source)
+     or not public.settlement_ai_json_within_budget(p_sample_selection)
+     or not public.settlement_ai_json_within_budget(p_coverage)
+     or not public.settlement_ai_json_within_budget(p_scenarios)
+     or not public.settlement_ai_json_within_budget(p_historical_totals)
+     or not public.settlement_ai_json_within_budget(p_deltas)
+     or not public.settlement_ai_json_within_budget(p_largest_changes)
+     or not public.settlement_ai_json_within_budget(p_warnings) then
+    return false;
+  end if;
+  if not public.settlement_ai_simulation_json_is_safe(
+    pg_catalog.jsonb_build_array(
+      p_sample_source,
+      p_sample_selection,
+      p_coverage,
+      p_scenarios,
+      p_historical_totals,
+      p_deltas,
+      p_largest_changes,
+      p_warnings
+    )
+  ) then
     return false;
   end if;
   if not public.settlement_ai_json_has_exact_keys(
@@ -1534,11 +1663,26 @@ begin
       pg_catalog.regexp_replace(v_item ->> 'key', '[^a-z0-9]', '', 'g')
     );
     if v_normalized in (
+      'amountcents',
+      'conversationid',
+      'importpayload',
       'tax',
       'internalmargin',
+      'organizationid',
+      'parsedpayload',
+      'payload',
+      'projectid',
+      'rawpayload',
+      'rawrows',
+      'reportid',
+      'reportrows',
+      'rows',
+      'samplerows',
+      'sourcepayload',
       'streamer',
       'streameramount',
-      'streameramounts'
+      'streameramounts',
+      'streamerid'
     ) then
       return false;
     end if;
@@ -1596,6 +1740,7 @@ create table public.ai_settlement_rule_drafts (
   status text not null,
   revision_number integer not null,
   idempotency_key text not null,
+  request_fingerprint text not null,
   created_by uuid not null references public.profiles(id),
   created_at timestamptz not null default pg_catalog.now(),
   supersedes_draft_id uuid,
@@ -1631,6 +1776,7 @@ create table public.ai_settlement_rule_drafts (
     and contract_hash ~ '^[0-9a-f]{64}$'
     and formula_hash ~ '^[0-9a-f]{64}$'
     and parameter_hash ~ '^[0-9a-f]{64}$'
+    and request_fingerprint ~ '^[0-9a-f]{64}$'
   ),
   constraint ai_settlement_rule_drafts_text_check check (
     pg_catalog.char_length(pg_catalog.btrim(prompt_text)) between 1 and 4000
@@ -1830,11 +1976,19 @@ create index settlement_formula_simulations_org_project_recent_idx
   );
 
 create index settlement_formula_simulations_ai_draft_recent_idx
-  on public.settlement_formula_simulations (ai_draft_id, created_at desc)
+  on public.settlement_formula_simulations (
+    ai_draft_id,
+    created_at desc,
+    id desc
+  )
   where ai_draft_id is not null;
 
 create index settlement_formula_simulations_rule_version_recent_idx
-  on public.settlement_formula_simulations (rule_version_id, created_at desc)
+  on public.settlement_formula_simulations (
+    rule_version_id,
+    created_at desc,
+    id desc
+  )
   where rule_version_id is not null;
 
 create or replace function public.guard_ai_settlement_rule_draft_revision()
@@ -1959,6 +2113,7 @@ declare
   v_trace_user_message_id uuid;
   v_trace_assistant_message_id uuid;
   v_next_revision integer;
+  v_request_fingerprint text;
 begin
   if auth.uid() is null or v_actor_id is null then
     raise exception 'authentication_required';
@@ -2069,6 +2224,33 @@ begin
      ) then
     raise exception 'settlement_ai_draft_business_contract_invalid';
   end if;
+  v_request_fingerprint := pg_catalog.encode(
+    extensions.digest(
+      pg_catalog.jsonb_build_object(
+        'organizationId', p_organization_id,
+        'projectId', p_project_id,
+        'conversationId', p_conversation_id,
+        'idempotencyKey', pg_catalog.btrim(p_idempotency_key),
+        'promptText', pg_catalog.btrim(p_prompt_text),
+        'turnTrace', p_turn_trace,
+        'businessContract', p_business_contract,
+        'unresolvedAmbiguities', p_unresolved_ambiguities,
+        'variableCatalogVersion', p_variable_catalog_version,
+        'aiResponse', p_ai_response,
+        'generatedFormula', p_generated_formula,
+        'generatedExplanation', pg_catalog.btrim(p_generated_explanation),
+        'generatedTestCases', p_generated_test_cases,
+        'model', pg_catalog.btrim(p_model),
+        'safetyFlags', p_safety_flags,
+        'contractHash', p_contract_hash,
+        'formulaHash', p_formula_hash,
+        'parameterHash', p_parameter_hash,
+        'status', p_status
+      )::text,
+      'sha256'
+    ),
+    'hex'
+  );
   if exists (
     select 1
     from pg_catalog.jsonb_array_elements(p_unresolved_ambiguities) as item(value)
@@ -2176,7 +2358,8 @@ begin
     and d.idempotency_key = pg_catalog.btrim(p_idempotency_key)
   for update;
   if found then
-    if v_existing.project_id <> p_project_id
+    if v_existing.request_fingerprint <> v_request_fingerprint
+       or v_existing.project_id <> p_project_id
        or v_existing.conversation_id <> p_conversation_id
        or v_existing.prompt_text <> pg_catalog.btrim(p_prompt_text)
        or v_existing.turn_trace is distinct from p_turn_trace
@@ -2231,6 +2414,7 @@ begin
     status,
     revision_number,
     idempotency_key,
+    request_fingerprint,
     created_by,
     supersedes_draft_id
   ) values (
@@ -2254,6 +2438,7 @@ begin
     p_status,
     v_next_revision,
     pg_catalog.btrim(p_idempotency_key),
+    v_request_fingerprint,
     v_actor_id,
     v_previous.id
   )
@@ -2321,6 +2506,12 @@ begin
   for update;
   if not found then
     raise exception 'settlement_ai_project_scope_mismatch';
+  end if;
+  if p_rule_version_id is not null then
+    raise exception 'settlement_ai_rule_version_owner_phase1_unsupported';
+  end if;
+  if p_ai_draft_id is null then
+    raise exception 'settlement_ai_simulation_ai_draft_owner_required';
   end if;
   if ((p_rule_version_id is not null)::integer + (p_ai_draft_id is not null)::integer) <> 1 then
     raise exception 'settlement_ai_simulation_owner_invalid';
@@ -2459,7 +2650,28 @@ begin
       )
       or pg_catalog.lower(
         pg_catalog.regexp_replace(item.value ->> 'key', '[^a-z0-9]', '', 'g')
-      ) in ('tax', 'internalmargin', 'streamer', 'streameramount')
+      ) in (
+        'amountcents',
+        'conversationid',
+        'importpayload',
+        'internalmargin',
+        'organizationid',
+        'parsedpayload',
+        'payload',
+        'projectid',
+        'rawpayload',
+        'rawrows',
+        'reportid',
+        'reportrows',
+        'rows',
+        'samplerows',
+        'sourcepayload',
+        'streamer',
+        'streameramount',
+        'streameramounts',
+        'streamerid',
+        'tax'
+      )
       or not public.settlement_ai_decimal_is_bigint(
         item.value -> 'deltaAmountCents',
         false
@@ -2689,12 +2901,13 @@ declare
   v_turn_id uuid := '60000000-0000-4000-8000-000000000001'::uuid;
   v_turn_trace jsonb;
   v_valid_ambiguities jsonb := '[{"code":"confirm_rate","question":"请确认分成比例。","required":true}]'::jsonb;
-  v_valid_ai_response jsonb := '{"content":"已生成结算规则。","finishReason":"stop","providerRequestId":null}'::jsonb;
+  v_valid_ai_response jsonb := '{"content":"\n已生成结算规则。\n","finishReason":"stop","providerRequestId":null}'::jsonb;
   v_valid_generated_formula jsonb := '{"expression":"grossRevenue","normalizedAst":{"kind":"identifier","name":"grossRevenue"}}'::jsonb;
   v_valid_generated_tests jsonb := '[{"name":"标准场景","inputs":{"grossRevenue":{"type":"money_cents","amountCents":10000}},"expectedResult":{"type":"money_cents","amountCents":10000}}]'::jsonb;
   v_valid_safety_flags jsonb := '[{"code":"manual_review","severity":"info","message":"需人工复核。"}]'::jsonb;
   v_draft_one jsonb;
   v_draft_two jsonb;
+  v_draft_replay jsonb;
   v_simulation jsonb;
   v_constraint_name text;
 begin
@@ -2810,6 +3023,15 @@ begin
     '[{"code":"review","severity":"critical","message":"复核"}]'::jsonb
   ) then
     raise exception 'invalid_safety_flag_severity';
+  end if;
+  if public.settlement_ai_json_within_budget(
+    pg_catalog.jsonb_build_object(
+      'code', 'large_warning',
+      'severity', 'warning',
+      'message', pg_catalog.repeat(' ', 1048576) || 'x'
+    )
+  ) then
+    raise exception 'oversized_json_budget_accepted';
   end if;
 
   if exists (
@@ -3069,7 +3291,7 @@ begin
       pg_catalog.repeat('b', 64),
       pg_catalog.repeat('c', 64),
       pg_catalog.repeat('d', 64),
-      'contract_ready'
+      'clarifying'
     );
     if not public.settlement_ai_json_has_exact_keys(
          v_draft_one,
@@ -3095,6 +3317,7 @@ begin
            'status',
            'revision_number',
            'idempotency_key',
+           'request_fingerprint',
            'created_by',
            'created_at',
            'supersedes_draft_id',
@@ -3104,6 +3327,7 @@ begin
          ]::text[]
        )
        or v_draft_one ->> 'revision_number' <> '1'
+       or v_draft_one ->> 'request_fingerprint' !~ '^[0-9a-f]{64}$'
        or pg_catalog.jsonb_typeof(v_draft_one -> 'duplicate') <> 'boolean'
        or (v_draft_one ->> 'duplicate')::boolean
        or not public.settlement_ai_draft_payload_is_valid(
@@ -3114,9 +3338,40 @@ begin
          v_draft_one -> 'generated_formula',
          v_draft_one -> 'generated_test_cases',
          v_draft_one -> 'safety_flags'
-       ) then
+    ) then
       raise exception 'actual_draft_shape_invalid';
     end if;
+
+    begin
+      perform public.create_ai_settlement_rule_draft(
+        v_organization_id,
+        v_fixture_project_id,
+        v_conversation_id,
+        'task6-settlement-ai-draft-1',
+        '请按项目收入生成结算规则。',
+        v_turn_trace,
+        v_valid_contract,
+        v_valid_ambiguities,
+        pg_catalog.repeat('a', 64),
+        v_valid_ai_response,
+        v_valid_generated_formula,
+        '按项目确认收入计算。',
+        v_valid_generated_tests,
+        'fixture-model',
+        v_valid_safety_flags,
+        pg_catalog.repeat('b', 64),
+        pg_catalog.repeat('c', 64),
+        pg_catalog.repeat('d', 64),
+        'failed'
+      );
+      raise exception 'idempotency_status_conflict_missing';
+    exception
+      when others then
+        if sqlerrm = 'idempotency_status_conflict_missing' then raise; end if;
+        if sqlerrm <> 'settlement_ai_draft_idempotency_conflict' then
+          raise exception 'idempotency_status_conflict_unexpected: %', sqlerrm;
+        end if;
+    end;
 
     begin
       perform public.create_ai_settlement_rule_draft(
@@ -3273,6 +3528,7 @@ begin
         status,
         revision_number,
         idempotency_key,
+        request_fingerprint,
         created_by,
         supersedes_draft_id
       )
@@ -3297,6 +3553,7 @@ begin
         'contract_ready',
         3,
         'task6-settlement-ai-direct-invalid',
+        draft.request_fingerprint,
         draft.created_by,
         draft.id
       from public.ai_settlement_rule_drafts as draft
@@ -3309,6 +3566,37 @@ begin
            'ai_settlement_rule_drafts_payload_valid' then
           raise exception 'malformed_service_insert_wrong_check: %',
             v_constraint_name;
+        end if;
+    end;
+
+    begin
+      perform public.create_settlement_formula_simulation(
+        v_organization_id,
+        v_fixture_project_id,
+        '70000000-0000-4000-8000-000000000001'::uuid,
+        null,
+        'task6-settlement-ai-rule-version-owner',
+        pg_catalog.repeat('c', 64),
+        pg_catalog.repeat('b', 64),
+        pg_catalog.repeat('d', 64),
+        pg_catalog.repeat('a', 64),
+        pg_catalog.repeat('e', 64),
+        v_valid_sample_source,
+        v_valid_sample_selection,
+        v_valid_coverage,
+        v_valid_scenarios,
+        v_valid_historical_totals,
+        v_valid_deltas,
+        v_valid_largest_changes,
+        v_valid_warnings
+      );
+      raise exception 'phase1_rule_version_rpc_accepted';
+    exception
+      when others then
+        if sqlerrm = 'phase1_rule_version_rpc_accepted' then raise; end if;
+        if sqlerrm <>
+           'settlement_ai_rule_version_owner_phase1_unsupported' then
+          raise exception 'phase1_rule_version_rpc_unexpected: %', sqlerrm;
         end if;
     end;
 
@@ -3365,6 +3653,101 @@ begin
        or (v_simulation ->> 'duplicate')::boolean then
       raise exception 'actual_simulation_shape_invalid';
     end if;
+
+    v_draft_replay := public.create_ai_settlement_rule_draft(
+      v_organization_id,
+      v_fixture_project_id,
+      v_conversation_id,
+      'task6-settlement-ai-draft-2',
+      '请按项目收入生成结算规则。',
+      v_turn_trace,
+      v_valid_contract,
+      v_valid_ambiguities,
+      pg_catalog.repeat('a', 64),
+      v_valid_ai_response,
+      v_valid_generated_formula,
+      '按项目确认收入计算。',
+      v_valid_generated_tests,
+      'fixture-model',
+      v_valid_safety_flags,
+      pg_catalog.repeat('b', 64),
+      pg_catalog.repeat('c', 64),
+      pg_catalog.repeat('d', 64),
+      'contract_ready'
+    );
+    if not (v_draft_replay ->> 'duplicate')::boolean
+       or v_draft_replay ->> 'status' <> 'simulated'
+       or v_draft_replay ->> 'revision_number' <> '2'
+       or v_draft_replay ->> 'request_fingerprint'
+         <> v_draft_two ->> 'request_fingerprint' then
+      raise exception 'idempotent_lifecycle_replay_invalid';
+    end if;
+
+    begin
+      perform public.create_settlement_formula_simulation(
+        v_organization_id,
+        v_fixture_project_id,
+        null,
+        (v_draft_two ->> 'id')::uuid,
+        'task6-settlement-ai-simulation-large-warning',
+        pg_catalog.repeat('c', 64),
+        pg_catalog.repeat('b', 64),
+        pg_catalog.repeat('d', 64),
+        pg_catalog.repeat('a', 64),
+        pg_catalog.repeat('e', 64),
+        v_valid_sample_source,
+        v_valid_sample_selection,
+        v_valid_coverage,
+        v_valid_scenarios,
+        v_valid_historical_totals,
+        v_valid_deltas,
+        v_valid_largest_changes,
+        pg_catalog.jsonb_build_array(
+          pg_catalog.jsonb_build_object(
+            'code', 'large_warning',
+            'severity', 'warning',
+            'message', pg_catalog.repeat(' ', 1048576) || 'x'
+          )
+        )
+      );
+      raise exception 'oversized_warning_rpc_accepted';
+    exception
+      when others then
+        if sqlerrm = 'oversized_warning_rpc_accepted' then raise; end if;
+        if sqlerrm <> 'settlement_ai_simulation_summary_invalid' then
+          raise exception 'oversized_warning_rpc_unexpected: %', sqlerrm;
+        end if;
+    end;
+
+    begin
+      perform public.create_settlement_formula_simulation(
+        v_organization_id,
+        v_fixture_project_id,
+        null,
+        (v_draft_two ->> 'id')::uuid,
+        'task6-settlement-ai-simulation-forbidden-key',
+        pg_catalog.repeat('c', 64),
+        pg_catalog.repeat('b', 64),
+        pg_catalog.repeat('d', 64),
+        pg_catalog.repeat('a', 64),
+        pg_catalog.repeat('e', 64),
+        v_valid_sample_source,
+        v_valid_sample_selection,
+        v_valid_coverage,
+        v_valid_scenarios,
+        v_valid_historical_totals,
+        v_valid_deltas,
+        '[{"dimension":"rule_component","key":"project_id","deltaAmountCents":"100","direction":"increase"}]'::jsonb,
+        v_valid_warnings
+      );
+      raise exception 'forbidden_largest_change_rpc_accepted';
+    exception
+      when others then
+        if sqlerrm = 'forbidden_largest_change_rpc_accepted' then raise; end if;
+        if sqlerrm <> 'settlement_ai_simulation_summary_invalid' then
+          raise exception 'forbidden_largest_change_rpc_unexpected: %', sqlerrm;
+        end if;
+    end;
 
     begin
       perform public.create_settlement_formula_simulation(
@@ -3454,6 +3837,8 @@ grant select on table public.ai_settlement_rule_drafts to authenticated;
 grant select on table public.settlement_formula_simulations to authenticated;
 
 revoke all on function public.settlement_ai_json_has_exact_keys(jsonb, text[])
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_json_within_budget(jsonb)
   from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_decimal_is_bigint(jsonb, boolean)
   from public, anon, authenticated, service_role;
