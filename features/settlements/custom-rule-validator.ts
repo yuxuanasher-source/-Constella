@@ -66,6 +66,11 @@ type ComponentReference = {
   path: string;
 };
 
+type NumericConstantEvaluation =
+  | { kind: "constant"; value: number }
+  | { kind: "dynamic" }
+  | { kind: "invalid" };
+
 type ValidatedOptions = {
   scope: CustomRuleScope;
   executionGrain: CustomRuleExecutionGrain;
@@ -373,7 +378,9 @@ export function validateCustomRuleFormula(
     };
 
     const compiledAst = compileTopLevel(parsed.ast, "$", context);
-    const schemaResult = compiledAstNodeSchema.safeParse(compiledAst);
+    const schemaResult = compiledAstNodeSchema.safeParse(
+      copyOwnData(compiledAst),
+    );
     if (!schemaResult.success) {
       throw issue(
         "VALIDATION_COMPILED_AST_INVALID",
@@ -411,23 +418,30 @@ function validateRuntimeOptions(
   options: unknown,
   span: CustomRuleSourceSpan,
 ): ValidatedOptions {
-  if (
-    !isPlainRecord(options) ||
-    !hasExactKeys(
+  const optionValues = isPlainRecord(options)
+    ? readOwnDataProperties(
       options,
       ["scope", "executionGrain", "parameters"],
       ["scope", "executionGrain"],
-    ) ||
-    !CUSTOM_RULE_SCOPES.includes(options.scope as CustomRuleScope) ||
+    )
+    : null;
+  const scope = optionValues?.get("scope");
+  const executionGrain = optionValues?.get("executionGrain");
+  const parametersValue = optionValues?.has("parameters")
+    ? optionValues.get("parameters")
+    : [];
+  if (
+    !optionValues ||
+    !CUSTOM_RULE_SCOPES.includes(scope as CustomRuleScope) ||
     !CUSTOM_RULE_EXECUTION_GRAINS.includes(
-      options.executionGrain as CustomRuleExecutionGrain,
+      executionGrain as CustomRuleExecutionGrain,
     ) ||
-    (options.parameters !== undefined && !Array.isArray(options.parameters))
+    !Array.isArray(parametersValue)
   ) {
     throw invalidOptions(span);
   }
 
-  const parameters = options.parameters ?? [];
+  const parameters = parametersValue;
   if (parameters.length > MAX_PARAMETERS) {
     throw issue(
       "VALIDATION_PARAMETER_LIMIT",
@@ -439,31 +453,41 @@ function validateRuntimeOptions(
   const parameterTypes = new Map<string, RuntimeValueType>();
   let parameterTypeNodeCount = 0;
   for (const parameter of parameters) {
+    const parameterValues = isPlainRecord(parameter)
+      ? readOwnDataProperties(
+        parameter,
+        ["name", "valueType"],
+        ["name", "valueType"],
+      )
+      : null;
+    const name = parameterValues?.get("name");
+    const rawValueType = parameterValues?.get("valueType");
     if (
-      !isPlainRecord(parameter) ||
-      !hasExactKeys(parameter, ["name", "valueType"], ["name", "valueType"]) ||
-      typeof parameter.name !== "string" ||
-      !IDENTIFIER_PATTERN.test(parameter.name) ||
-      RESERVED_IDENTIFIERS.has(parameter.name.toLowerCase()) ||
-      parameterTypes.has(parameter.name)
+      !parameterValues ||
+      typeof name !== "string" ||
+      !IDENTIFIER_PATTERN.test(name) ||
+      RESERVED_IDENTIFIERS.has(name.toLowerCase()) ||
+      parameterTypes.has(name)
     ) {
       throw invalidOptions(span);
     }
     parameterTypeNodeCount = countParameterTypeNodes(
-      parameter.valueType,
+      rawValueType,
       parameterTypeNodeCount,
       span,
     );
-    const valueType = runtimeValueTypeSchema.safeParse(parameter.valueType);
+    const valueType = runtimeValueTypeSchema.safeParse(
+      copyOwnData(rawValueType),
+    );
     if (!valueType.success) {
       throw invalidOptions(span);
     }
-    parameterTypes.set(parameter.name, valueType.data);
+    parameterTypes.set(name, valueType.data);
   }
 
   return {
-    scope: options.scope as CustomRuleScope,
-    executionGrain: options.executionGrain as CustomRuleExecutionGrain,
+    scope: scope as CustomRuleScope,
+    executionGrain: executionGrain as CustomRuleExecutionGrain,
     parameterTypes,
   };
 }
@@ -527,16 +551,37 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-function hasExactKeys(
+function copyOwnData(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(copyOwnData);
+  }
+  if (value !== null && typeof value === "object") {
+    const copy = Object.create(null) as Record<string, unknown>;
+    for (const key of Object.keys(value)) {
+      copy[key] = copyOwnData((value as Record<string, unknown>)[key]);
+    }
+    return copy;
+  }
+  return value;
+}
+
+function readOwnDataProperties(
   value: Record<string, unknown>,
   allowedKeys: readonly string[],
   requiredKeys: readonly string[],
-): boolean {
-  const keys = Object.keys(value);
-  return (
-    keys.every((key) => allowedKeys.includes(key)) &&
-    requiredKeys.every((key) => Object.hasOwn(value, key))
-  );
+): ReadonlyMap<string, unknown> | null {
+  const values = new Map<string, unknown>();
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string" || !allowedKeys.includes(key)) {
+      return null;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !Object.hasOwn(descriptor, "value")) {
+      return null;
+    }
+    values.set(key, descriptor.value);
+  }
+  return requiredKeys.every((key) => values.has(key)) ? values : null;
 }
 
 function invalidOptions(span: CustomRuleSourceSpan): ValidationFailure {
@@ -817,16 +862,24 @@ function compileBinary(
   const rightPath = path + ".right";
   const left = compileNode(node.left, leftPath, context);
   const right = compileNode(node.right, rightPath, context);
-  if (
-    (node.operator === "/" || node.operator === "%") &&
-    isStaticallyZero(node.right)
-  ) {
-    throw issueAt(
-      "VALIDATION_ZERO_DIVISOR",
-      "Divisor cannot be statically zero",
-      rightPath,
-      context,
-    );
+  if (node.operator === "/" || node.operator === "%") {
+    const divisor = evaluateNumericConstant(right);
+    if (divisor.kind === "invalid") {
+      throw issueAt(
+        "VALIDATION_INVALID_CONSTANT_ARITHMETIC",
+        "Constant arithmetic is non-finite or unsafe",
+        rightPath,
+        context,
+      );
+    }
+    if (divisor.kind === "constant" && divisor.value === 0) {
+      throw issueAt(
+        "VALIDATION_ZERO_DIVISOR",
+        "Divisor cannot be statically zero",
+        rightPath,
+        context,
+      );
+    }
   }
   let inferredType: RuntimeValueType;
 
@@ -1840,15 +1893,87 @@ function isRawNumericSource(node: NormalizedAstNode): boolean {
   );
 }
 
-function isStaticallyZero(node: NormalizedAstNode): boolean {
+function evaluateNumericConstant(
+  node: CompiledAstNode,
+): NumericConstantEvaluation {
   if (node.kind === "literal") {
-    return typeof node.value === "number" && node.value === 0;
+    if (
+      "value" in node &&
+      typeof node.value === "number" &&
+      (node.inferredType.scalarType === "number" ||
+        node.inferredType.scalarType === "integer")
+    ) {
+      return constantNumber(node.value);
+    }
+    if (
+      "valueBps" in node &&
+      node.inferredType.scalarType === "rate_bps"
+    ) {
+      return constantNumber(node.valueBps);
+    }
+    return { kind: "dynamic" };
   }
-  return (
+  if (
     node.kind === "unary" &&
-    (node.operator === "+" || node.operator === "-") &&
-    isStaticallyZero(node.argument)
-  );
+    (node.operator === "+" || node.operator === "-")
+  ) {
+    const argument = evaluateNumericConstant(node.argument);
+    if (argument.kind !== "constant") {
+      return argument;
+    }
+    return constantNumber(
+      node.operator === "-" ? -argument.value : argument.value,
+    );
+  }
+  if (
+    node.kind !== "binary" ||
+    !["+", "-", "*", "/", "%"].includes(node.operator)
+  ) {
+    return { kind: "dynamic" };
+  }
+
+  const left = evaluateNumericConstant(node.left);
+  const right = evaluateNumericConstant(node.right);
+  if (left.kind === "dynamic" || right.kind === "dynamic") {
+    return { kind: "dynamic" };
+  }
+  if (left.kind === "invalid" || right.kind === "invalid") {
+    return { kind: "invalid" };
+  }
+  if (
+    (node.operator === "/" || node.operator === "%") &&
+    right.value === 0
+  ) {
+    return { kind: "invalid" };
+  }
+
+  let value: number;
+  switch (node.operator) {
+    case "+":
+      value = left.value + right.value;
+      break;
+    case "-":
+      value = left.value - right.value;
+      break;
+    case "*":
+      value = left.value * right.value;
+      break;
+    case "/":
+      value = left.value / right.value;
+      break;
+    case "%":
+      value = left.value % right.value;
+      break;
+    default:
+      return { kind: "dynamic" };
+  }
+  return constantNumber(value);
+}
+
+function constantNumber(value: number): NumericConstantEvaluation {
+  return Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER
+    ? { kind: "constant", value }
+    : { kind: "invalid" };
 }
 
 function isMoney(valueType: RuntimeValueType): boolean {

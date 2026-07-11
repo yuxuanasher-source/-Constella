@@ -264,7 +264,9 @@ export function parseCustomRuleFormula(
       spansByPath: {},
     };
     const ast = translateNode(parsed as LocatedExpression, "$", 1, context);
-    const schemaResult = normalizedAstNodeSchema.safeParse(ast);
+    const schemaResult = normalizedAstNodeSchema.safeParse(
+      copyOwnData(ast),
+    );
     if (!schemaResult.success) {
       throw parserFailure(
         "PARSE_INVALID_IDENTIFIER",
@@ -749,7 +751,11 @@ function validateIdentifier(
   span: CustomRuleSourceSpan,
   path: string,
 ): string {
-  if (!normalizedAstNodeSchema.safeParse({ kind: "identifier", name }).success) {
+  if (
+    !normalizedAstNodeSchema.safeParse(
+      copyOwnData({ kind: "identifier", name }),
+    ).success
+  ) {
     throw parserFailure(
       "PARSE_INVALID_IDENTIFIER",
       "Identifier is noncanonical, reserved, or ambiguous",
@@ -758,6 +764,20 @@ function validateIdentifier(
     );
   }
   return name;
+}
+
+function copyOwnData(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(copyOwnData);
+  }
+  if (value !== null && typeof value === "object") {
+    const copy = Object.create(null) as Record<string, unknown>;
+    for (const key of Object.keys(value)) {
+      copy[key] = copyOwnData((value as Record<string, unknown>)[key]);
+    }
+    return copy;
+  }
+  return value;
 }
 
 function asLocatedExpression(value: unknown): LocatedExpression | null {

@@ -229,6 +229,112 @@ describe("validateCustomRuleFormula runtime options", () => {
       options("payable", "report", { parameters }),
     );
   });
+
+  it("ignores Object.prototype parameters and restores the test pollution", () => {
+    const propertyName = "parameters";
+    const originalDescriptor = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      propertyName,
+    );
+
+    try {
+      Object.defineProperty(Object.prototype, propertyName, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: [
+          {
+            name: "prototype_polluted_bonus",
+            valueType: scalar("money_cents"),
+          },
+        ],
+      });
+
+      expect(
+        validateCustomRuleFormula(
+          "money_result({ final: yuan(1) })",
+          DEFAULT_OPTIONS,
+        ),
+      ).toMatchObject({ ok: true });
+      expectValidationIssue(
+        'money_result({ final: parameter("prototype_polluted_bonus") })',
+        "VALIDATION_UNKNOWN_PARAMETER",
+      );
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(
+          Object.prototype,
+          propertyName,
+          originalDescriptor,
+        );
+      } else {
+        delete (Object.prototype as Record<string, unknown>)[propertyName];
+      }
+    }
+  });
+
+  it("rejects inherited scope and execution grain properties", () => {
+    const inheritedOptions = Object.create({
+      scope: "payable",
+      executionGrain: "report",
+    }) as ValidateCustomRuleFormulaOptions;
+
+    expectValidationIssue(
+      "money_result({ final: yuan(1) })",
+      "VALIDATION_INVALID_OPTIONS",
+      inheritedOptions,
+    );
+  });
+
+  it("rejects own scope and grain accessors without invoking them", () => {
+    let accessorReads = 0;
+    const accessorOptions = {};
+    Object.defineProperties(accessorOptions, {
+      scope: {
+        enumerable: true,
+        get() {
+          accessorReads += 1;
+          return "payable";
+        },
+      },
+      executionGrain: {
+        enumerable: true,
+        get() {
+          accessorReads += 1;
+          return "report";
+        },
+      },
+    });
+
+    expectValidationIssue(
+      "money_result({ final: yuan(1) })",
+      "VALIDATION_INVALID_OPTIONS",
+      accessorOptions as ValidateCustomRuleFormulaOptions,
+    );
+    expect(accessorReads).toBe(0);
+  });
+
+  it("rejects an own parameters accessor without invoking it", () => {
+    let accessorReads = 0;
+    const accessorOptions = {
+      scope: "payable",
+      executionGrain: "report",
+    };
+    Object.defineProperty(accessorOptions, "parameters", {
+      enumerable: true,
+      get() {
+        accessorReads += 1;
+        return [];
+      },
+    });
+
+    expectValidationIssue(
+      "money_result({ final: yuan(1) })",
+      "VALIDATION_INVALID_OPTIONS",
+      accessorOptions as ValidateCustomRuleFormulaOptions,
+    );
+    expect(accessorReads).toBe(0);
+  });
 });
 
 describe("validateCustomRuleFormula scope contract", () => {
@@ -311,26 +417,80 @@ describe("typed unit compilation", () => {
   });
 
   it.each([
-    ["division", "money_result({ final: yuan(1) * (1 / 0) })"],
-    ["remainder", "money_result({ final: yuan(1) * (5 % 0) })"],
-    ["negative zero", "money_result({ final: yuan(1) * (1 / (-0)) })"],
-    ["positive zero", "money_result({ final: yuan(1) * (1 / (+0)) })"],
-    ["parenthesized zero", "money_result({ final: yuan(1) * (1 / (((0)))) })"],
-  ])("rejects a statically provable %s divisor", (_label, formula) => {
-    const issue = expectValidationIssue(
-      formula,
-      "VALIDATION_ZERO_DIVISOR",
-    );
+    ["division", "money_result({ final: yuan(1) * (1 / 0) })", "0"],
+    ["remainder", "money_result({ final: yuan(1) * (5 % 0) })", "0"],
+    [
+      "negative zero",
+      "money_result({ final: yuan(1) * (1 / (-0)) })",
+      "(-0)",
+    ],
+    [
+      "positive zero",
+      "money_result({ final: yuan(1) * (1 / (+0)) })",
+      "(+0)",
+    ],
+    [
+      "parenthesized zero",
+      "money_result({ final: yuan(1) * (1 / (((0)))) })",
+      "(((0)))",
+    ],
+    [
+      "rate literal zero",
+      "money_result({ final: yuan(1) * (rate_percent(1) / rate_percent(0)) })",
+      "rate_percent(0)",
+    ],
+    [
+      "constant difference division",
+      "money_result({ final: yuan(1) * (1 / (1 - 1)) })",
+      "(1 - 1)",
+    ],
+    [
+      "constant difference remainder",
+      "money_result({ final: yuan(1) * (5 % (3 - 3)) })",
+      "(3 - 3)",
+    ],
+  ])(
+    "rejects a statically provable %s divisor",
+    (_label, formula, divisorSource) => {
+      const issue = expectValidationIssue(
+        formula,
+        "VALIDATION_ZERO_DIVISOR",
+      );
 
-    expect(formula.slice(issue.span.start, issue.span.end)).toContain("0");
-  });
+      expect(formula.slice(issue.span.start, issue.span.end)).toBe(
+        divisorSource,
+      );
+    },
+  );
 
   it("allows nonzero constants and leaves dynamic zero checks to execution", () => {
     expectValidationSuccess(
       "money_result({ final: yuan(1) * (1 / -2) })",
     );
     expectValidationSuccess(
+      "money_result({ final: yuan(1) * (1 / (3 - 1)) })",
+    );
+    expectValidationSuccess(
+      "money_result({ final: yuan(1) * (rate_percent(1) / rate_percent(0.5)) })",
+    );
+    expectValidationSuccess(
       "money_result({ final: yuan(1) * (1 / system_minutes) })",
+    );
+  });
+
+  it.each([
+    [
+      "non-finite",
+      "money_result({ final: yuan(1) * (1 / (1e308 * 1e308)) })",
+    ],
+    [
+      "unsafe",
+      "money_result({ final: yuan(1) * (1 / (9007199254740991 + 1)) })",
+    ],
+  ])("fails closed for %s constant folding", (_label, formula) => {
+    expectValidationIssue(
+      formula,
+      "VALIDATION_INVALID_CONSTANT_ARITHMETIC",
     );
   });
 
