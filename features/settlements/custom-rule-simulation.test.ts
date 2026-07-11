@@ -4,10 +4,12 @@ import type { BusinessRuleContract } from "./custom-rule-contract";
 import type { CustomRuleDataReadinessReport } from "./custom-rule-data-readiness";
 import {
   CustomRuleSimulationError,
+  calculateCustomRuleDataSelectionHash,
   hashCustomRuleContract,
   hashCustomRuleParameters,
   simulateCustomSettlementRule,
   type CustomRuleSimulationInput,
+  type CustomRuleSimulationRuntime,
 } from "./custom-rule-simulation";
 import type { TypedRuntimeValue } from "./custom-rule-types";
 import { validateCustomRuleFormula } from "./custom-rule-validator";
@@ -31,7 +33,7 @@ describe("simulateCustomSettlementRule", () => {
     ];
     input.sampleSelection.populationCount = 2;
 
-    const result = simulateCustomSettlementRule(input);
+    const result = simulateAuthorized(input);
 
     expect(result).toMatchObject({
       recordCount: 2,
@@ -94,8 +96,8 @@ describe("simulateCustomSettlementRule", () => {
     const second = structuredClone(first);
     second.records.reverse();
 
-    const firstResult = simulateCustomSettlementRule(first);
-    const secondResult = simulateCustomSettlementRule(second);
+    const firstResult = simulateAuthorized(first);
+    const secondResult = simulateAuthorized(second);
 
     expect(firstResult.dataSelectionHash).toBe(secondResult.dataSelectionHash);
     expect(firstResult.largestIncreases).toEqual([
@@ -121,7 +123,7 @@ describe("simulateCustomSettlementRule", () => {
     input.sampleSelection.populationCount = 0;
     input.readiness = readiness(false);
 
-    const result = simulateCustomSettlementRule(input);
+    const result = simulateAuthorized(input);
 
     expect(result).toMatchObject({
       recordCount: 0,
@@ -140,34 +142,151 @@ describe("simulateCustomSettlementRule", () => {
     expect(result.persistable.historicalTotals.payableAmountCents).toBeNull();
   });
 
-  it("runs zero, every configured edge and maximum, every evidence level, every missing policy, and user examples", () => {
-    const result = simulateCustomSettlementRule(simulationInput());
+  it("forces an empty authorized population to unverified even when readiness claims verified history", () => {
+    const input = simulationInput();
+    input.records = [];
+    input.sampleSelection.populationCount = 0;
+    input.readiness = readiness(true);
+
+    const result = simulateAuthorized(input);
+
+    expect(result.historicalVerification.status).toBe("unverified");
+    expect(result.totalOldCents).toBeNull();
+    expect(result.totalDeltaCents).toBeNull();
+    expect(result.marginImpactCents).toBeNull();
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({ code: "CUSTOM_RULE_NO_HISTORICAL_COMPARISON" }),
+    );
+  });
+
+  it("runs derived zero and missing policies plus contract, AI, and user assertions", () => {
+    const result = simulateAuthorized(simulationInput());
 
     expect(result.scenarios.map((scenario) => scenario.id)).toEqual([
       "synthetic:zero",
-      "threshold:sixty_minutes:at",
-      "maximum:configured_minutes",
-      "evidence:green",
-      "evidence:red",
-      "evidence:yellow",
-      "missing:block_batch:system_minutes",
-      "missing:route_item_to_review:system_minutes",
-      "missing:use_explicit_default:system_minutes",
-      "user:adjustable-standard",
+      "derived:missing:block_batch",
+      "derived:missing:route_item_to_review",
+      "derived:missing:use_explicit_default",
+      "contract:000001",
+      "contract:000002",
+      "contract:000003",
+      "ai:000001",
+      expect.stringMatching(/^user:[a-f0-9]{16}$/),
     ]);
     expect(result.scenarios).toContainEqual(
       expect.objectContaining({
-        id: "missing:route_item_to_review:system_minutes",
+        id: "derived:missing:route_item_to_review",
         outcome: "review_routed",
       }),
     );
     expect(result.scenarios).toContainEqual(
       expect.objectContaining({
-        id: "missing:block_batch:system_minutes",
+        id: "derived:missing:block_batch",
         outcome: "blocked",
       }),
     );
-    expect(result.persistable.scenarios).toHaveLength(10);
+    expect(result.persistable.scenarios).toHaveLength(9);
+  });
+
+  it("derives tier, clamp, evidence, missing-policy, and zero scenarios instead of trusting caller kinds", () => {
+    const formula = `money_result({ final: clamp(
+      percent(
+        tiered(system_minutes, [
+          { upto: 60, rate_per_hour: yuan(10) },
+          { upto: null, rate_per_hour: yuan(20) }
+        ]),
+        evidence_multiplier(evidence_level, {
+          green: rate_percent(100),
+          yellow: rate_percent(70),
+          red: rate_percent(0)
+        })
+      ),
+      yuan(0),
+      yuan(30)
+    ) })`;
+    const input = simulationInput(formula);
+    expect(input).not.toHaveProperty("synthetic");
+    input.userExamples = [
+      {
+        id: "adjustable-standard",
+        inputs: variables(90, "green"),
+        expectedResult: { type: "money_cents", amountCents: 20_000 },
+      },
+    ];
+    input.aiTestCases = [
+      {
+        name: "ai-standard",
+        inputs: variables(60, "green"),
+        expectedResult: { type: "money_cents", amountCents: 10_000 },
+      },
+    ];
+
+    const result = simulateAuthorized(input);
+    const ids = result.scenarios.map((scenario) => scenario.id);
+
+    expect(ids).toContain("synthetic:zero");
+    expect(ids.filter((id) => id.includes(":tier:") && id.endsWith(":below"))).toHaveLength(1);
+    expect(ids.filter((id) => id.includes(":tier:") && id.endsWith(":at"))).toHaveLength(1);
+    expect(ids.filter((id) => id.includes(":tier:") && id.endsWith(":above"))).toHaveLength(1);
+    expect(ids.filter((id) => id.startsWith("derived:clamp:"))).toHaveLength(2);
+    expect(ids.filter((id) => id.startsWith("derived:evidence:"))).toHaveLength(3);
+    expect(ids.filter((id) => id.startsWith("derived:missing:"))).toHaveLength(3);
+    expect(ids).toContain("contract:000001");
+    expect(ids).toContain("ai:000001");
+    expect(result.scenarios).toContainEqual(
+      expect.objectContaining({ category: "user_example" }),
+    );
+  });
+
+  it("executes expected results and emits a blocking risk when an AI or user assertion mismatches", () => {
+    const input = simulationInput();
+    expect(input).not.toHaveProperty("synthetic");
+    input.aiTestCases = [
+      {
+        name: "wrong-ai-claim",
+        inputs: variables(60, "green"),
+        expectedResult: { type: "money_cents", amountCents: 99_999 },
+      },
+    ];
+    input.userExamples = [
+      {
+        id: "wrong-user-claim",
+        inputs: variables(60, "green"),
+        expectedResult: { type: "money_cents", amountCents: 1 },
+      },
+    ];
+
+    const result = simulateAuthorized(input);
+
+    expect(result.scenarios).toContainEqual(
+      expect.objectContaining({ category: "ai_test_case", passed: false }),
+    );
+    expect(result.scenarios).toContainEqual(
+      expect.objectContaining({ category: "user_example", passed: false }),
+    );
+    expect(result.riskFlags).toContainEqual(
+      expect.objectContaining({
+        code: "CUSTOM_RULE_SCENARIO_EXPECTATION_MISMATCH",
+        severity: "block",
+      }),
+    );
+  });
+
+  it("rejects free-form selection criteria that could smuggle identifiers or amounts", () => {
+    const input = simulationInput();
+    const unsafe = {
+      ...input,
+      sampleSelection: {
+        ...input.sampleSelection,
+        criteria: ["streamerId=private-streamer-1 amountCents=10000"],
+      },
+    };
+
+    expect(() =>
+      Reflect.apply(simulateCustomSettlementRule, undefined, [unsafe]),
+    ).toThrow(
+      CustomRuleSimulationError,
+    );
   });
 
   it("summarizes uncovered, zero-pay, review-routed, margin, risk, and warning counts", () => {
@@ -199,7 +318,7 @@ describe("simulateCustomSettlementRule", () => {
     input.sampleSelection.populationCount = 2;
     input.currentMarginCents = "250";
 
-    const result = simulateCustomSettlementRule(input);
+    const result = simulateAuthorized(input);
 
     expect(result).toMatchObject({
       recordCount: 2,
@@ -213,6 +332,7 @@ describe("simulateCustomSettlementRule", () => {
     });
     expect(result.riskFlags.map((flag) => flag.code)).toEqual([
       "CUSTOM_RULE_REVIEW_ROUTED_RECORDS",
+      "CUSTOM_RULE_SCENARIO_EXPECTATION_MISMATCH",
       "CUSTOM_RULE_ZERO_PAY_RECORDS",
     ]);
     expect(result.warnings).toContainEqual(
@@ -222,7 +342,7 @@ describe("simulateCustomSettlementRule", () => {
 
   it("changes freshness hash for source version, timezone, catalog, formula, contract, or parameters", () => {
     const base = simulationInput();
-    const baseHash = simulateCustomSettlementRule(base).dataSelectionHash;
+    const baseHash = simulateAuthorized(base).dataSelectionHash;
 
     const sourceChanged = structuredClone(base);
     sourceChanged.records[0].sourceVersion.version = "locked-v2";
@@ -265,7 +385,7 @@ describe("simulateCustomSettlementRule", () => {
       contractChanged,
       parameterChanged,
     ]) {
-      expect(simulateCustomSettlementRule(changed).dataSelectionHash).not.toBe(
+      expect(simulateAuthorized(changed).dataSelectionHash).not.toBe(
         baseHash,
       );
     }
@@ -309,9 +429,6 @@ describe("simulateCustomSettlementRule", () => {
     );
     overLimit.sampleSelection.populationCount = 501;
 
-    const missingScenarioClass = simulationInput();
-    missingScenarioClass.synthetic.evidenceLevels = [];
-
     const accessor = simulationInput();
     Object.defineProperty(accessor.records[0], "variables", {
       enumerable: true,
@@ -329,11 +446,10 @@ describe("simulateCustomSettlementRule", () => {
       mutableVersion,
       overflow,
       overLimit,
-      missingScenarioClass,
       accessor,
       proxied,
     ]) {
-      expect(() => simulateCustomSettlementRule(invalid)).toThrow(
+      expect(() => simulateAuthorized(invalid)).toThrow(
         CustomRuleSimulationError,
       );
     }
@@ -341,7 +457,7 @@ describe("simulateCustomSettlementRule", () => {
 
   it("fails closed when an injected engine returns malformed output", () => {
     expect(() =>
-      simulateCustomSettlementRule(simulationInput(), {
+      simulateAuthorized(simulationInput(), {
         execute: () => ({
           result: {
             kind: "money_result",
@@ -378,6 +494,8 @@ function simulationInput(
   };
 
   return {
+    organizationId: "organization-1",
+    actorId: "actor-1",
     projectId: "project-1",
     contract: businessContract,
     compiledAst: validated.compiledAst,
@@ -387,65 +505,71 @@ function simulationInput(
     parameterHash: hashCustomRuleParameters(parameters),
     catalogVersion: "a".repeat(64),
     readiness: readiness(true),
+    provenance: {
+      organizationId: "organization-1",
+      projectId: "project-1",
+      actorId: "actor-1",
+      selectionToken: "selection-token-0001",
+      dataSelectionHash: "0".repeat(64),
+      immutableSourceVersions: [
+        {
+          kind: "immutable",
+          source: "locked_settlement_item",
+          version: "locked-v1",
+        },
+      ],
+    },
     sampleSource: { kind: "historical_settlements" },
     sampleSelection: {
       periodStart: "2026-07-01",
       periodEnd: "2026-07-10",
       populationCount: 1,
-      criteria: ["locked settlement comparison"],
+      criteria: ["approved_reports", "period_overlap", "project_scope"],
     },
     records: [record("record-1")],
-    synthetic: {
-      zero: {
-        variables: variables(0, "green"),
-      },
-      thresholdEdges: [
-        {
-          thresholdId: "sixty_minutes",
-          edge: "at",
-          variables: variables(60, "green"),
-        },
-      ],
-      configuredMaximums: [
-        {
-          maximumId: "configured_minutes",
-          variables: variables(600, "green"),
-        },
-      ],
-      evidenceLevels: [
-        { level: "yellow", variables: variables(60, "yellow") },
-        { level: "green", variables: variables(60, "green") },
-        { level: "red", variables: variables(60, "red") },
-      ],
-      missingDataPolicies: [
-        {
-          variableId: "system_minutes",
-          policy: { action: "route_item_to_review" },
-          variables: { evidence_level: { type: "string", value: "green" } },
-        },
-        {
-          variableId: "system_minutes",
-          policy: { action: "block_batch" },
-          variables: { evidence_level: { type: "string", value: "green" } },
-        },
-        {
-          variableId: "system_minutes",
-          policy: {
-            action: "use_explicit_default",
-            defaultValue: { type: "integer", value: 0 },
-          },
-          variables: { evidence_level: { type: "string", value: "green" } },
-        },
-      ],
-    },
     userExamples: [
       {
         id: "adjustable-standard",
-        variables: variables(90, "green"),
+        inputs: variables(90, "green"),
+        expectedResult: { type: "money_cents", amountCents: 2_000 },
+      },
+    ],
+    aiTestCases: [
+      {
+        name: "ai-standard",
+        inputs: variables(60, "green"),
+        expectedResult: { type: "money_cents", amountCents: 2_000 },
       },
     ],
     currentMarginCents: "5000",
   };
+}
+
+function simulateAuthorized(
+  input: CustomRuleSimulationInput,
+  runtime?: CustomRuleSimulationRuntime,
+) {
+  const sourceVersions = new Map<
+    string,
+    CustomRuleSimulationInput["provenance"]["immutableSourceVersions"][number]
+  >();
+  for (const record of input.records) {
+    sourceVersions.set(
+      `${record.sourceVersion.source}\u0000${record.sourceVersion.version}`,
+      record.sourceVersion,
+    );
+  }
+  input.provenance.immutableSourceVersions = [...sourceVersions.values()].sort(
+    (left, right) =>
+      left.source.localeCompare(right.source) ||
+      left.version.localeCompare(right.version),
+  );
+  input.provenance.dataSelectionHash = "0".repeat(64);
+  input.provenance.dataSelectionHash =
+    calculateCustomRuleDataSelectionHash(input);
+  return runtime
+    ? simulateCustomSettlementRule(input, runtime)
+    : simulateCustomSettlementRule(input);
 }
 
 function record(

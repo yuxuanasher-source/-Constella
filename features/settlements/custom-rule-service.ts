@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { z } from "zod";
+
 import type { AiProviderName } from "@/features/ai/contracts";
 
 import type {
@@ -35,9 +37,12 @@ import type {
   SettlementAiUnresolvedAmbiguity,
 } from "./custom-rule-repository";
 import {
+  calculateCustomRuleDataSelectionHash,
+  freezeAuthorizedCustomRuleSimulationEvidence,
   hashCustomRuleContract,
   hashCustomRuleParameters,
-  type CustomRuleSimulationEvidence,
+  type AuthorizedCustomRuleSimulationEvidence,
+  type CustomRuleSimulationCriteriaCode,
   type CustomRuleSimulationInput,
   type CustomRuleSimulationResult,
 } from "./custom-rule-simulation";
@@ -48,6 +53,35 @@ import type { CustomRuleVariableCatalog } from "./custom-rule-variable-catalog";
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]+$/u;
 const CONFIRM_CONTRACT_AMBIGUITY = "confirm_contract";
+const simulationCriteriaCodeSchema = z.enum([
+  "approved_reports",
+  "period_overlap",
+  "complete_evidence",
+  "project_scope",
+]);
+const simulationSelectionSchema = z
+  .strictObject({
+    selectionToken: z.string().min(8).max(500).regex(CLIENT_REQUEST_ID_PATTERN),
+    periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
+    periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
+    criteriaCodes: z.array(simulationCriteriaCodeSchema).min(1).max(4),
+  })
+  .superRefine((selection, context) => {
+    if (selection.periodStart > selection.periodEnd) {
+      context.addIssue({
+        code: "custom",
+        path: ["periodStart"],
+        message: "selection period is invalid",
+      });
+    }
+    if (new Set(selection.criteriaCodes).size !== selection.criteriaCodes.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["criteriaCodes"],
+        message: "selection criteria codes must be unique",
+      });
+    }
+  });
 
 export type CustomRuleAuthoringRepositoryPort = Pick<
   CustomRuleRepository,
@@ -65,7 +99,24 @@ export type SettlementVariableCatalogPort = {
 
 export type SettlementRuleAiPort = {
   prepare(input: PrepareSettlementAiInput): PreparedSettlementAiRequest;
+  restore(context: unknown): PreparedSettlementAiRequest;
   execute(prepared: PreparedSettlementAiRequest): Promise<SettlementAiResult>;
+};
+
+export type AuthorizedSimulationSelectionRequest = Readonly<{
+  selectionToken: string;
+  periodStart: string;
+  periodEnd: string;
+  criteriaCodes: readonly CustomRuleSimulationCriteriaCode[];
+}>;
+
+export type AuthorizedSimulationEvidencePort = {
+  loadAuthorizedEvidence(input: {
+    actor: { organizationId: string; userId: string };
+    organizationId: string;
+    projectId: string;
+    selection: AuthorizedSimulationSelectionRequest;
+  }): Promise<AuthorizedCustomRuleSimulationEvidence>;
 };
 
 export type CustomRuleReadinessAnalyzer = (input: {
@@ -80,7 +131,7 @@ export type CustomRuleSimulator = (
 export type StartCustomRuleSessionInput = {
   actor: { organizationId: string; userId: string };
   projectId: string;
-  conversationId?: string;
+  conversationId: string;
   title?: string;
   clientRequestId: string;
   promptText: string;
@@ -104,7 +155,15 @@ export type ConfirmCustomRuleContractInput = ReviseCustomRuleSessionInput & {
   expectedCatalogVersion: string;
   expectedFormulaHash?: string;
   expectedDataSelectionHash?: string;
-  simulationEvidence: CustomRuleSimulationEvidence;
+  simulationSelection: AuthorizedSimulationSelectionRequest;
+};
+
+export type RetryCustomRuleTurnInput = {
+  actor: { organizationId: string; userId: string };
+  projectId: string;
+  conversationId: string;
+  sourceTurnId: string;
+  clientRequestId: string;
 };
 
 export type CustomRuleClarifyingSuccess = Readonly<{
@@ -128,9 +187,10 @@ export type CustomRuleSimulatedSuccess = Readonly<{
 
 export type CustomRuleAiTransitionFailure = Readonly<{
   ok: false;
-  code: SettlementAiFailure["code"];
+  code: SettlementAiFailure["code"] | "persistence_failed";
   retryable: true;
   conversationId: string;
+  sourceTurnId: string;
   turnTrace: SettlementAiTurnTrace;
   failedDraft: CustomRuleDraft | null;
 }>;
@@ -175,6 +235,7 @@ type ServiceDependencies = {
   ai: SettlementRuleAiPort;
   repository: CustomRuleAuthoringRepositoryPort;
   catalog: SettlementVariableCatalogPort;
+  evidence: AuthorizedSimulationEvidencePort;
   analyzeReadiness: CustomRuleReadinessAnalyzer;
   simulate: CustomRuleSimulator;
   primaryProvider: AiProviderName;
@@ -189,6 +250,43 @@ type ScopedTransition = {
   promptText: string;
 };
 
+type FrozenServiceRetryContext = {
+  version: 1;
+  action: "clarify" | "revise" | "confirm";
+  organizationId: string;
+  actorId: string;
+  projectId: string;
+  conversationId: string;
+  promptText: string;
+  draftIdempotencyKey: string;
+  expectedRevisionNumber: number;
+  expectedDraftId: string | null;
+  expectedContractHash: string | null;
+  expectedCatalogVersion: string | null;
+  expectedFormulaHash: string | null;
+  expectedDataSelectionHash: string | null;
+  simulationSelection: AuthorizedSimulationSelectionRequest | null;
+};
+
+const frozenServiceRetryContextSchema: z.ZodType<FrozenServiceRetryContext> =
+  z.strictObject({
+    version: z.literal(1),
+    action: z.enum(["clarify", "revise", "confirm"]),
+    organizationId: z.string().min(1).max(500),
+    actorId: z.string().min(1).max(500),
+    projectId: z.string().min(1).max(500),
+    conversationId: z.string().min(1).max(500),
+    promptText: z.string().min(1).max(12_000),
+    draftIdempotencyKey: z.string().min(1).max(500),
+    expectedRevisionNumber: z.number().int().safe().positive(),
+    expectedDraftId: z.string().min(1).max(500).nullable(),
+    expectedContractHash: z.string().regex(HASH_PATTERN).nullable(),
+    expectedCatalogVersion: z.string().regex(HASH_PATTERN).nullable(),
+    expectedFormulaHash: z.string().regex(HASH_PATTERN).nullable(),
+    expectedDataSelectionHash: z.string().regex(HASH_PATTERN).nullable(),
+    simulationSelection: simulationSelectionSchema.nullable(),
+  });
+
 type OpenedAiTurn = {
   turnTrace: SettlementAiTurnTrace;
   prepared: PreparedSettlementAiRequest;
@@ -197,7 +295,13 @@ type OpenedAiTurn = {
     summaryVersion: number;
     messageIds: string[];
   };
+  serviceRetryContext: FrozenServiceRetryContext;
 };
+
+type ContractReadyDraft = Extract<
+  CustomRuleDraft,
+  { initialStatus: "contract_ready" }
+>;
 
 export function createCustomRuleAuthoringService(dependencies: ServiceDependencies) {
   validateDependencies(dependencies);
@@ -208,13 +312,7 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
       unsafeInput: StartCustomRuleSessionInput,
     ): Promise<CustomRuleAuthoringResult> {
       const input = validateStartInput(unsafeInput);
-      const conversationId = input.conversationId
-        ? input.conversationId
-        : await createConversation(
-            dependencies.conversation,
-            input.actor,
-            input.title,
-          );
+      const conversationId = input.conversationId;
       const scope = { ...input, conversationId };
       await requireConversationHistory(
         dependencies.conversation,
@@ -302,6 +400,72 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
       });
     },
 
+    async retryTurn(
+      unsafeInput: RetryCustomRuleTurnInput,
+    ): Promise<CustomRuleAuthoringResult> {
+      const input = validateRetryInput(unsafeInput);
+      await requireConversationHistory(
+        dependencies.conversation,
+        input.actor,
+        input.conversationId,
+      );
+      const opened = await openRetryTurn(dependencies, input);
+      const retryContext = opened.serviceRetryContext;
+      const scope: ScopedTransition = {
+        actor: input.actor,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        clientRequestId: input.clientRequestId,
+        promptText: retryContext.promptText,
+      };
+      const drafts = await listScopedDrafts(dependencies.repository, scope);
+      if (retryContext.action === "confirm") {
+        return retryConfirmationTransition({
+          dependencies,
+          scope,
+          opened,
+          retryContext,
+          drafts,
+        });
+      }
+      const latest = drafts[0];
+      if (
+        retryContext.expectedRevisionNumber > 1 &&
+        latest?.revisionNumber !== retryContext.expectedRevisionNumber - 1
+      ) {
+        throw serviceError(
+          "stale_revision",
+          "settlement draft revision changed before retry",
+          false,
+        );
+      }
+      let idempotencyKey = retryContext.draftIdempotencyKey;
+      let expectedRevisionNumber = retryContext.expectedRevisionNumber;
+      if (
+        latest?.initialStatus === "failed" &&
+        latest.idempotencyKey === idempotencyKey
+      ) {
+        idempotencyKey = retryDraftIdempotencyKey(
+          retryContext.draftIdempotencyKey,
+          input.sourceTurnId,
+        );
+        expectedRevisionNumber = latest.revisionNumber + 1;
+      }
+      return runClarifyingTransition({
+        dependencies,
+        persistFailedRevisions,
+        operation: retryContext.action === "clarify" ? "start" : "revise",
+        scope,
+        currentContract: opened.prepared.currentContract,
+        currentAmbiguities:
+          opened.prepared.retryContext.unresolvedAmbiguities,
+        catalog: opened.prepared.catalog,
+        idempotencyKey,
+        expectedRevisionNumber,
+        opened,
+      });
+    },
+
     async confirmContract(
       unsafeInput: ConfirmCustomRuleContractInput,
     ): Promise<CustomRuleAuthoringResult> {
@@ -312,6 +476,45 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
         input.conversationId,
       );
       const drafts = await listScopedDrafts(dependencies.repository, input);
+      const idempotencyKey = draftIdempotencyKey("confirm", input);
+      const existing = drafts.find(
+        (draft) => draft.idempotencyKey === idempotencyKey,
+      );
+      if (existing?.initialStatus === "contract_ready") {
+        if (existing.status === "simulated") {
+          return replaySimulatedConfirmation({
+            dependencies,
+            input,
+            draft: existing,
+          });
+        }
+        if (existing.status === "contract_ready") {
+          const opened = await openRetryTurn(dependencies, {
+            actor: input.actor,
+            projectId: input.projectId,
+            conversationId: input.conversationId,
+            sourceTurnId: existing.turnTrace.turnId,
+            clientRequestId: technicalRetryClientRequestId(
+              input.clientRequestId,
+              existing.turnTrace.turnId,
+            ),
+          });
+          return retryConfirmationTransition({
+            dependencies,
+            scope: input,
+            opened,
+            retryContext: opened.serviceRetryContext,
+            drafts,
+          });
+        }
+      }
+      if (existing) {
+        throw serviceError(
+          "duplicate_confirmation",
+          "confirmation request has already been used",
+          false,
+        );
+      }
       const latest = requireLatestDraft(drafts);
       if (latest.status === "contract_ready" || latest.status === "simulated") {
         throw serviceError(
@@ -328,14 +531,15 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
           false,
         );
       }
-      const unresolvedRequired = latest.unresolvedAmbiguities.filter(
-        (ambiguity) =>
-          ambiguity.required && ambiguity.code !== CONFIRM_CONTRACT_AMBIGUITY,
-      );
-      if (unresolvedRequired.length > 0) {
+      const ambiguities = latest.unresolvedAmbiguities;
+      const consumesInternalConfirmation =
+        ambiguities.length === 1 &&
+        ambiguities[0]?.code === CONFIRM_CONTRACT_AMBIGUITY &&
+        ambiguities[0].required;
+      if (ambiguities.length > 0 && !consumesInternalConfirmation) {
         throw serviceError(
           "unresolved_ambiguities",
-          "required business ambiguities remain unresolved",
+          "business ambiguities remain unresolved",
           false,
         );
       }
@@ -365,14 +569,6 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
           false,
         );
       }
-      const idempotencyKey = draftIdempotencyKey("confirm", input);
-      if (drafts.some((draft) => draft.idempotencyKey === idempotencyKey)) {
-        throw serviceError(
-          "duplicate_confirmation",
-          "confirmation request has already been used",
-          false,
-        );
-      }
       return runConfirmationTransition({
         dependencies,
         persistFailedRevisions,
@@ -386,6 +582,115 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
   });
 }
 
+async function retryConfirmationTransition(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  opened: OpenedAiTurn;
+  retryContext: FrozenServiceRetryContext;
+  drafts: CustomRuleDraft[];
+}): Promise<CustomRuleAuthoringResult> {
+  const context = input.retryContext;
+  if (
+    context.action !== "confirm" ||
+    !context.expectedContractHash ||
+    !context.expectedCatalogVersion ||
+    !context.simulationSelection
+  ) {
+    throw serviceError(
+      "conversation_failed",
+      "confirmation retry context is incomplete",
+      false,
+    );
+  }
+  const existing = input.drafts.find(
+    (draft) => draft.idempotencyKey === context.draftIdempotencyKey,
+  );
+  if (existing?.initialStatus === "contract_ready") {
+    return resumeContractReadyConfirmation({
+      dependencies: input.dependencies,
+      scope: input.scope,
+      opened: input.opened,
+      draft: existing,
+      catalog: input.opened.prepared.catalog,
+      selection: context.simulationSelection,
+      expectedFormulaHash: context.expectedFormulaHash,
+      expectedDataSelectionHash: context.expectedDataSelectionHash,
+    });
+  }
+  if (existing) {
+    throw serviceError(
+      "duplicate_confirmation",
+      "confirmation retry collided with another draft state",
+      false,
+    );
+  }
+  const latest = requireLatestDraft(input.drafts);
+  if (
+    latest.status !== "clarifying" ||
+    latest.revisionNumber + 1 !== context.expectedRevisionNumber ||
+    hashCustomRuleContract(latest.businessContract) !==
+      context.expectedContractHash ||
+    latest.variableCatalogVersion !== context.expectedCatalogVersion
+  ) {
+    throw serviceError(
+      "stale_revision",
+      "confirmation context changed before retry",
+      false,
+    );
+  }
+  const onlyInternalConfirmation =
+    latest.unresolvedAmbiguities.length === 1 &&
+    latest.unresolvedAmbiguities[0]?.code === CONFIRM_CONTRACT_AMBIGUITY &&
+    latest.unresolvedAmbiguities[0].required;
+  if (
+    latest.unresolvedAmbiguities.length > 0 &&
+    !onlyInternalConfirmation
+  ) {
+    throw serviceError(
+      "unresolved_ambiguities",
+      "business ambiguities remain unresolved",
+      false,
+    );
+  }
+  if (
+    input.opened.prepared.catalog.version !== context.expectedCatalogVersion ||
+    hashCustomRuleContract(input.opened.prepared.currentContract) !==
+      context.expectedContractHash
+  ) {
+    throw serviceError(
+      "conversation_failed",
+      "frozen confirmation context hash mismatch",
+      false,
+    );
+  }
+  const confirmation: ConfirmCustomRuleContractInput = {
+    actor: input.scope.actor,
+    projectId: input.scope.projectId,
+    conversationId: input.scope.conversationId,
+    expectedDraftId: latest.id,
+    expectedRevisionNumber: latest.revisionNumber,
+    clientRequestId: input.scope.clientRequestId,
+    promptText: context.promptText,
+    contractConfirmed: true,
+    expectedContractHash: context.expectedContractHash,
+    expectedCatalogVersion: context.expectedCatalogVersion,
+    expectedFormulaHash: context.expectedFormulaHash ?? undefined,
+    expectedDataSelectionHash:
+      context.expectedDataSelectionHash ?? undefined,
+    simulationSelection: context.simulationSelection,
+  };
+  return runConfirmationTransition({
+    dependencies: input.dependencies,
+    persistFailedRevisions: false,
+    input: confirmation,
+    latest,
+    catalog: input.opened.prepared.catalog,
+    contractHash: context.expectedContractHash,
+    idempotencyKey: context.draftIdempotencyKey,
+    opened: input.opened,
+  });
+}
+
 async function runClarifyingTransition(input: {
   dependencies: ServiceDependencies;
   persistFailedRevisions: boolean;
@@ -396,8 +701,9 @@ async function runClarifyingTransition(input: {
   catalog: CustomRuleVariableCatalog;
   idempotencyKey: string;
   expectedRevisionNumber: number;
+  opened?: OpenedAiTurn;
 }): Promise<CustomRuleAuthoringResult> {
-  const opened = await openAiTurn({
+  const opened = input.opened ?? await openAiTurn({
     dependencies: input.dependencies,
     scope: input.scope,
     action: input.operation === "start" ? "clarify" : "revise",
@@ -405,6 +711,13 @@ async function runClarifyingTransition(input: {
     currentContract: input.currentContract,
     currentAmbiguities: input.currentAmbiguities,
     catalog: input.catalog,
+    serviceRetryContext: createServiceRetryContext({
+      action: input.operation === "start" ? "clarify" : "revise",
+      scope: input.scope,
+      idempotencyKey: input.idempotencyKey,
+      expectedRevisionNumber: input.expectedRevisionNumber,
+      expectedDraftId: null,
+    }),
   });
   const aiResult = await executeAi(input.dependencies.ai, opened.prepared);
   if (!aiResult.ok) {
@@ -488,9 +801,10 @@ async function runConfirmationTransition(input: {
   catalog: CustomRuleVariableCatalog;
   contractHash: string;
   idempotencyKey: string;
+  opened?: OpenedAiTurn;
 }): Promise<CustomRuleAuthoringResult> {
   const scope = input.input;
-  const opened = await openAiTurn({
+  const opened = input.opened ?? await openAiTurn({
     dependencies: input.dependencies,
     scope,
     action: "confirm",
@@ -498,6 +812,18 @@ async function runConfirmationTransition(input: {
     currentContract: input.latest.businessContract,
     currentAmbiguities: [],
     catalog: input.catalog,
+    serviceRetryContext: createServiceRetryContext({
+      action: "confirm",
+      scope,
+      idempotencyKey: input.idempotencyKey,
+      expectedRevisionNumber: input.latest.revisionNumber + 1,
+      expectedDraftId: input.latest.id,
+      expectedContractHash: input.contractHash,
+      expectedCatalogVersion: input.catalog.version,
+      expectedFormulaHash: scope.expectedFormulaHash ?? null,
+      expectedDataSelectionHash: scope.expectedDataSelectionHash ?? null,
+      simulationSelection: scope.simulationSelection,
+    }),
   });
   const aiResult = await executeAi(input.dependencies.ai, opened.prepared);
   if (!aiResult.ok) {
@@ -633,9 +959,43 @@ async function runConfirmationTransition(input: {
     );
   }
 
+  let evidence: AuthorizedCustomRuleSimulationEvidence;
+  try {
+    evidence = await loadAuthorizedSimulationEvidence(
+      input.dependencies.evidence,
+      scope,
+      scope.simulationSelection,
+    );
+  } catch (error) {
+    return failAndThrow(
+      input.dependencies.conversation,
+      scope,
+      opened,
+      "simulation_failed",
+      "authorized simulation evidence is invalid",
+      false,
+      error,
+    );
+  }
+  if (
+    scope.expectedDataSelectionHash &&
+    scope.expectedDataSelectionHash !== evidence.provenance.dataSelectionHash
+  ) {
+    return failAndThrow(
+      input.dependencies.conversation,
+      scope,
+      opened,
+      "selection_hash_mismatch",
+      "authorized selection hash does not match the expected hash",
+      false,
+    );
+  }
+
   let summary: CustomRuleSimulationResult;
   try {
-    summary = input.dependencies.simulate({
+    const simulationInput: CustomRuleSimulationInput = {
+      organizationId: scope.actor.organizationId,
+      actorId: scope.actor.userId,
       projectId: scope.projectId,
       contract: aiResult.contract,
       compiledAst: deterministic.compiledAst,
@@ -645,8 +1005,16 @@ async function runConfirmationTransition(input: {
       parameterHash,
       catalogVersion: input.catalog.version,
       readiness,
-      ...scope.simulationEvidence,
-    });
+      ...evidence,
+      provenance: {
+        ...evidence.provenance,
+        dataSelectionHash: "0".repeat(64),
+      },
+      aiTestCases: aiResult.testCases,
+    };
+    simulationInput.provenance.dataSelectionHash =
+      calculateCustomRuleDataSelectionHash(simulationInput);
+    summary = input.dependencies.simulate(simulationInput);
   } catch (error) {
     return failAndThrow(
       input.dependencies.conversation,
@@ -674,16 +1042,13 @@ async function runConfirmationTransition(input: {
       false,
     );
   }
-  if (
-    scope.expectedDataSelectionHash &&
-    scope.expectedDataSelectionHash !== summary.dataSelectionHash
-  ) {
+  if (summary.riskFlags.some((flag) => flag.severity === "block")) {
     return failAndThrow(
       input.dependencies.conversation,
       scope,
       opened,
-      "selection_hash_mismatch",
-      "simulation selection hash does not match the expected hash",
+      "simulation_failed",
+      "deterministic scenario assertions or risk checks blocked confirmation",
       false,
     );
   }
@@ -741,15 +1106,16 @@ async function runConfirmationTransition(input: {
       ...summary.persistable,
     });
   } catch (error) {
-    return failAndThrow(
+    await failConversationTurn(
       input.dependencies.conversation,
       scope,
       opened,
-      "persistence_failed",
-      "immutable simulation persistence failed",
+      "settlement_simulation_persistence_failed",
       true,
-      error,
+      "immutable simulation persistence failed",
     );
+    void error;
+    return recoverablePersistenceFailure(scope, opened, created);
   }
   verifySimulation(simulation, scope, created, summary);
   let simulatedDraft: CustomRuleDraft;
@@ -760,15 +1126,16 @@ async function runConfirmationTransition(input: {
       created.id,
     );
   } catch (error) {
-    return failAndThrow(
+    await failConversationTurn(
       input.dependencies.conversation,
       scope,
       opened,
-      "persistence_failed",
-      "simulated draft readback did not confirm the durable transition",
+      "settlement_simulation_readback_failed",
       true,
-      error,
+      "simulated draft readback did not confirm the durable transition",
     );
+    void error;
+    return recoverablePersistenceFailure(scope, opened, created);
   }
   await completeConversationTurn(
     input.dependencies.conversation,
@@ -789,6 +1156,357 @@ async function runConfirmationTransition(input: {
   });
 }
 
+async function resumeContractReadyConfirmation(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  opened: OpenedAiTurn;
+  draft: ContractReadyDraft;
+  catalog: CustomRuleVariableCatalog;
+  selection: AuthorizedSimulationSelectionRequest;
+  expectedFormulaHash: string | null;
+  expectedDataSelectionHash: string | null;
+}): Promise<CustomRuleAuthoringResult> {
+  await markValidating(
+    input.dependencies.conversation,
+    input.scope,
+    input.opened,
+  );
+  let summary: CustomRuleSimulationResult;
+  try {
+    summary = await buildExistingDraftSimulation({
+      dependencies: input.dependencies,
+      scope: input.scope,
+      draft: input.draft,
+      catalog: input.catalog,
+      selection: input.selection,
+      expectedFormulaHash: input.expectedFormulaHash,
+      expectedDataSelectionHash: input.expectedDataSelectionHash,
+    });
+  } catch (error) {
+    const failure =
+      error instanceof CustomRuleAuthoringServiceError
+        ? error
+        : serviceError(
+            "simulation_failed",
+            "contract-ready simulation recovery failed",
+            true,
+            error,
+          );
+    return failAndThrow(
+      input.dependencies.conversation,
+      input.scope,
+      input.opened,
+      failure.code,
+      failure.message,
+      failure.retryable,
+      failure,
+    );
+  }
+  let simulation: InsertedSettlementFormulaSimulation;
+  try {
+    simulation = await input.dependencies.repository.insertSimulation({
+      organizationId: input.scope.actor.organizationId,
+      projectId: input.scope.projectId,
+      owner: { kind: "ai_draft", id: input.draft.id },
+      idempotencyKey: simulationIdempotencyKey(input.draft.id, summary),
+      ...summary.persistable,
+    });
+  } catch (error) {
+    await failConversationTurn(
+      input.dependencies.conversation,
+      input.scope,
+      input.opened,
+      "settlement_simulation_persistence_failed",
+      true,
+      "immutable simulation persistence failed during retry",
+    );
+    void error;
+    return recoverablePersistenceFailure(
+      input.scope,
+      input.opened,
+      input.draft,
+    );
+  }
+  verifySimulation(simulation, input.scope, input.draft, summary);
+  let simulatedDraft: CustomRuleDraft;
+  try {
+    simulatedDraft = await getSimulatedDraft(
+      input.dependencies,
+      input.scope,
+      input.draft.id,
+    );
+  } catch (error) {
+    await failConversationTurn(
+      input.dependencies.conversation,
+      input.scope,
+      input.opened,
+      "settlement_simulation_readback_failed",
+      true,
+      "simulated draft readback failed during retry",
+    );
+    void error;
+    return recoverablePersistenceFailure(
+      input.scope,
+      input.opened,
+      input.draft,
+    );
+  }
+  await completeConversationTurn(
+    input.dependencies.conversation,
+    input.scope,
+    input.opened,
+    simulatedDraft,
+    input.draft.generatedExplanation,
+  );
+  return Object.freeze({
+    ok: true,
+    kind: "simulated",
+    conversationId: input.scope.conversationId,
+    draft: simulatedDraft,
+    simulation,
+    summary,
+    duplicate: true,
+  });
+}
+
+async function replaySimulatedConfirmation(input: {
+  dependencies: ServiceDependencies;
+  input: ConfirmCustomRuleContractInput;
+  draft: ContractReadyDraft;
+}): Promise<CustomRuleAuthoringResult> {
+  const catalog = await loadCatalog(
+    input.dependencies.catalog,
+    input.input,
+    input.draft.businessContract,
+  );
+  if (
+    catalog.version !== input.draft.variableCatalogVersion ||
+    catalog.version !== input.input.expectedCatalogVersion
+  ) {
+    throw serviceError(
+      "catalog_hash_mismatch",
+      "variable catalog changed before idempotent readback",
+      false,
+    );
+  }
+  const summary = await buildExistingDraftSimulation({
+    dependencies: input.dependencies,
+    scope: input.input,
+    draft: input.draft,
+    catalog,
+    selection: input.input.simulationSelection,
+    expectedFormulaHash: input.input.expectedFormulaHash ?? null,
+    expectedDataSelectionHash:
+      input.input.expectedDataSelectionHash ?? null,
+  });
+  const simulation = await input.dependencies.repository.insertSimulation({
+    organizationId: input.input.actor.organizationId,
+    projectId: input.input.projectId,
+    owner: { kind: "ai_draft", id: input.draft.id },
+    idempotencyKey: simulationIdempotencyKey(input.draft.id, summary),
+    ...summary.persistable,
+  });
+  verifySimulation(simulation, input.input, input.draft, summary);
+  const simulatedDraft = await getSimulatedDraft(
+    input.dependencies,
+    input.input,
+    input.draft.id,
+  );
+  return Object.freeze({
+    ok: true,
+    kind: "simulated",
+    conversationId: input.input.conversationId,
+    draft: simulatedDraft,
+    simulation,
+    summary,
+    duplicate: true,
+  });
+}
+
+async function buildExistingDraftSimulation(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  draft: ContractReadyDraft;
+  catalog: CustomRuleVariableCatalog;
+  selection: AuthorizedSimulationSelectionRequest;
+  expectedFormulaHash: string | null;
+  expectedDataSelectionHash: string | null;
+}): Promise<CustomRuleSimulationResult> {
+  if (
+    input.draft.status !== "contract_ready" &&
+    input.draft.status !== "simulated"
+  ) {
+    throw serviceError(
+      "invalid_transition",
+      "draft is not available for simulation recovery",
+      false,
+    );
+  }
+  const deterministic = validateCustomRuleFormula(
+    input.draft.generatedFormula.expression,
+    {
+      scope: input.draft.businessContract.scope,
+      executionGrain: input.draft.businessContract.executionGrain,
+      parameters: input.draft.businessContract.parameters.map((parameter) => ({
+        name: parameter.name,
+        valueType: parameter.valueType,
+      })),
+    },
+  );
+  const normalized = parseCustomRuleFormula(
+    input.draft.generatedFormula.expression,
+  );
+  if (
+    !deterministic.ok ||
+    !normalized.ok ||
+    deterministic.formulaHash !== input.draft.formulaHash ||
+    canonicalJson(normalized.ast) !==
+      canonicalJson(input.draft.generatedFormula.normalizedAst) ||
+    (input.expectedFormulaHash !== null &&
+      input.expectedFormulaHash !== deterministic.formulaHash)
+  ) {
+    throw serviceError(
+      "formula_hash_mismatch",
+      "persisted formula failed deterministic recovery validation",
+      false,
+    );
+  }
+  const explanation = buildCustomRuleTemplateExplanation({
+    ast: deterministic.compiledAst,
+  });
+  if (explanation !== input.draft.generatedExplanation) {
+    throw serviceError(
+      "formula_validation_failed",
+      "persisted explanation no longer matches the formula",
+      false,
+    );
+  }
+  const parameters = parameterValues(input.draft.businessContract);
+  const parameterHash = hashCustomRuleParameters(parameters);
+  if (
+    parameterHash !== input.draft.parameterHash ||
+    hashCustomRuleContract(input.draft.businessContract) !==
+      input.draft.contractHash ||
+    input.catalog.version !== input.draft.variableCatalogVersion
+  ) {
+    throw serviceError(
+      "formula_hash_mismatch",
+      "persisted draft hashes are stale",
+      false,
+    );
+  }
+  const readiness = input.dependencies.analyzeReadiness({
+    catalog: input.catalog,
+    inputs: readinessRequirements(
+      input.draft.businessContract,
+      deterministic.variables,
+    ),
+  });
+  if (
+    !readiness.readyForSimulation ||
+    readiness.catalogVersion !== input.catalog.version ||
+    readiness.businessTimezone !== input.draft.businessContract.businessTimezone
+  ) {
+    throw serviceError(
+      "readiness_failed",
+      "frozen data catalog is not ready for simulation recovery",
+      false,
+    );
+  }
+  const evidence = await loadAuthorizedSimulationEvidence(
+    input.dependencies.evidence,
+    input.scope,
+    input.selection,
+  );
+  if (
+    input.expectedDataSelectionHash !== null &&
+    input.expectedDataSelectionHash !== evidence.provenance.dataSelectionHash
+  ) {
+    throw serviceError(
+      "selection_hash_mismatch",
+      "authorized selection hash changed before recovery",
+      false,
+    );
+  }
+  const simulationInput: CustomRuleSimulationInput = {
+    organizationId: input.scope.actor.organizationId,
+    actorId: input.scope.actor.userId,
+    projectId: input.scope.projectId,
+    contract: input.draft.businessContract,
+    compiledAst: deterministic.compiledAst,
+    parameters,
+    formulaHash: deterministic.formulaHash,
+    contractHash: input.draft.contractHash,
+    parameterHash,
+    catalogVersion: input.catalog.version,
+    readiness,
+    ...evidence,
+    provenance: {
+      ...evidence.provenance,
+      dataSelectionHash: "0".repeat(64),
+    },
+    aiTestCases: input.draft.generatedTestCases,
+  };
+  simulationInput.provenance.dataSelectionHash =
+    calculateCustomRuleDataSelectionHash(simulationInput);
+  const summary = input.dependencies.simulate(simulationInput);
+  if (
+    summary.persistable.formulaHash !== input.draft.formulaHash ||
+    summary.persistable.ruleContractHash !== input.draft.contractHash ||
+    summary.persistable.parameterHash !== input.draft.parameterHash ||
+    summary.persistable.variableCatalogVersion !==
+      input.draft.variableCatalogVersion ||
+    summary.persistable.dataSelectionHash !== summary.dataSelectionHash ||
+    summary.riskFlags.some((flag) => flag.severity === "block")
+  ) {
+    throw serviceError(
+      "simulation_failed",
+      "recovered simulation failed freshness or risk validation",
+      false,
+    );
+  }
+  return summary;
+}
+
+function createServiceRetryContext(input: {
+  action: FrozenServiceRetryContext["action"];
+  scope: ScopedTransition;
+  idempotencyKey: string;
+  expectedRevisionNumber: number;
+  expectedDraftId: string | null;
+  expectedContractHash?: string | null;
+  expectedCatalogVersion?: string | null;
+  expectedFormulaHash?: string | null;
+  expectedDataSelectionHash?: string | null;
+  simulationSelection?: AuthorizedSimulationSelectionRequest | null;
+}): FrozenServiceRetryContext {
+  const simulationSelection = input.simulationSelection
+    ? Object.freeze({
+        ...input.simulationSelection,
+        criteriaCodes: Object.freeze([
+          ...input.simulationSelection.criteriaCodes,
+        ]),
+      })
+    : null;
+  return Object.freeze({
+    version: 1,
+    action: input.action,
+    organizationId: input.scope.actor.organizationId,
+    actorId: input.scope.actor.userId,
+    projectId: input.scope.projectId,
+    conversationId: input.scope.conversationId,
+    promptText: input.scope.promptText,
+    draftIdempotencyKey: input.idempotencyKey,
+    expectedRevisionNumber: input.expectedRevisionNumber,
+    expectedDraftId: input.expectedDraftId,
+    expectedContractHash: input.expectedContractHash ?? null,
+    expectedCatalogVersion: input.expectedCatalogVersion ?? null,
+    expectedFormulaHash: input.expectedFormulaHash ?? null,
+    expectedDataSelectionHash: input.expectedDataSelectionHash ?? null,
+    simulationSelection,
+  });
+}
+
 async function openAiTurn(input: {
   dependencies: ServiceDependencies;
   scope: ScopedTransition;
@@ -797,6 +1515,7 @@ async function openAiTurn(input: {
   currentContract: BusinessRuleContract;
   currentAmbiguities: SettlementAiUnresolvedAmbiguity[];
   catalog: CustomRuleVariableCatalog;
+  serviceRetryContext: FrozenServiceRetryContext;
 }): Promise<OpenedAiTurn> {
   let accepted;
   try {
@@ -872,6 +1591,8 @@ async function openAiTurn(input: {
       contextHash: prepared.contextHash,
       snapshotVersion: preparedTurn.snapshot.version,
       summaryVersion: preparedTurn.snapshot.summaryVersion,
+      settlementAiRetryContext: prepared.retryContext,
+      settlementServiceRetryContext: input.serviceRetryContext,
     },
   };
   let captured;
@@ -907,6 +1628,136 @@ async function openAiTurn(input: {
       summaryVersion: captured.summaryVersion,
       messageIds: [...captured.messageIds],
     },
+    serviceRetryContext: input.serviceRetryContext,
+  };
+}
+
+async function openRetryTurn(
+  dependencies: ServiceDependencies,
+  input: RetryCustomRuleTurnInput,
+): Promise<OpenedAiTurn> {
+  let accepted;
+  try {
+    accepted = await dependencies.conversation.retryTurn(
+      input.actor,
+      input.sourceTurnId,
+      { clientRequestId: input.clientRequestId },
+    );
+  } catch (error) {
+    throw serviceError(
+      "conversation_failed",
+      "generic conversation retry could not be accepted",
+      true,
+      error,
+    );
+  }
+  if (accepted.conversationId !== input.conversationId) {
+    throw serviceError(
+      "conversation_failed",
+      "generic retry returned a mismatched conversation",
+      false,
+    );
+  }
+  let preparedTurn;
+  try {
+    preparedTurn = await dependencies.conversation.prepareTurn(
+      input.actor,
+      accepted.turnId,
+    );
+  } catch (error) {
+    throw serviceError(
+      "conversation_failed",
+      "generic retry context could not be restored",
+      true,
+      error,
+    );
+  }
+  const gatewayContext = preparedTurn.snapshot.gatewayContext;
+  if (!gatewayContext) {
+    throw serviceError(
+      "conversation_failed",
+      "generic retry has no frozen gateway context",
+      false,
+    );
+  }
+  const serviceContextResult = frozenServiceRetryContextSchema.safeParse(
+    gatewayContext.invocationMetadata.settlementServiceRetryContext,
+  );
+  if (!serviceContextResult.success) {
+    throw serviceError(
+      "conversation_failed",
+      "settlement retry metadata is invalid",
+      false,
+    );
+  }
+  const serviceRetryContext = serviceContextResult.data;
+  if (
+    serviceRetryContext.organizationId !== input.actor.organizationId ||
+    serviceRetryContext.actorId !== input.actor.userId ||
+    serviceRetryContext.projectId !== input.projectId ||
+    serviceRetryContext.conversationId !== input.conversationId ||
+    (serviceRetryContext.action === "confirm") !==
+      (serviceRetryContext.simulationSelection !== null)
+  ) {
+    throw serviceError(
+      "conversation_failed",
+      "settlement retry metadata scope mismatch",
+      false,
+    );
+  }
+  let prepared: PreparedSettlementAiRequest;
+  try {
+    prepared = dependencies.ai.restore(
+      gatewayContext.invocationMetadata.settlementAiRetryContext,
+    );
+  } catch (error) {
+    throw serviceError(
+      "conversation_failed",
+      "frozen settlement AI context could not be restored",
+      false,
+      error,
+    );
+  }
+  if (
+    prepared.action !== serviceRetryContext.action ||
+    canonicalJson(preparedTurn.messages) !==
+      canonicalJson(gatewayContext.messages) ||
+    canonicalJson(prepared.request.messages) !==
+      canonicalJson(gatewayContext.messages)
+  ) {
+    throw serviceError(
+      "conversation_failed",
+      "frozen settlement retry context mismatch",
+      false,
+    );
+  }
+  try {
+    await dependencies.conversation.markGenerating(
+      input.actor,
+      accepted.turnId,
+      dependencies.primaryProvider,
+    );
+  } catch (error) {
+    throw serviceError(
+      "conversation_failed",
+      "generic retry could not enter generation",
+      true,
+      error,
+    );
+  }
+  return {
+    turnTrace: {
+      turnId: accepted.turnId,
+      userMessageId: accepted.userMessageId,
+      assistantMessageId: accepted.assistantMessageId,
+    },
+    prepared,
+    snapshot: {
+      version: preparedTurn.snapshot.version,
+      summaryVersion: preparedTurn.snapshot.summaryVersion,
+      messageIds: [...preparedTurn.snapshot.messageIds],
+    },
+    serviceRetryContext,
   };
 }
 
@@ -1015,6 +1866,7 @@ async function handleAiFailure(input: {
     code: input.failure.code,
     retryable: true,
     conversationId: input.scope.conversationId,
+    sourceTurnId: input.opened.turnTrace.turnId,
     turnTrace: input.opened.turnTrace,
     failedDraft,
   });
@@ -1171,24 +2023,6 @@ async function markValidating(
   }
 }
 
-async function createConversation(
-  conversation: SettlementConversationPort,
-  actor: { organizationId: string; userId: string },
-  title?: string,
-): Promise<string> {
-  try {
-    const created = await conversation.createConversation(actor, title);
-    return created.id;
-  } catch (error) {
-    throw serviceError(
-      "conversation_failed",
-      "generic conversation could not be created",
-      true,
-      error,
-    );
-  }
-}
-
 async function requireConversationHistory(
   conversation: SettlementConversationPort,
   actor: { organizationId: string; userId: string },
@@ -1279,6 +2113,72 @@ async function loadCatalog(
       error,
     );
   }
+}
+
+async function loadAuthorizedSimulationEvidence(
+  port: AuthorizedSimulationEvidencePort,
+  scope: Pick<ScopedTransition, "actor" | "projectId">,
+  selection: AuthorizedSimulationSelectionRequest,
+): Promise<AuthorizedCustomRuleSimulationEvidence> {
+  const unsafeEvidence = await port.loadAuthorizedEvidence({
+    actor: scope.actor,
+    organizationId: scope.actor.organizationId,
+    projectId: scope.projectId,
+    selection,
+  });
+  const evidence = freezeAuthorizedCustomRuleSimulationEvidence(unsafeEvidence);
+  if (
+    evidence.provenance.organizationId !== scope.actor.organizationId ||
+    evidence.provenance.projectId !== scope.projectId ||
+    evidence.provenance.actorId !== scope.actor.userId ||
+    evidence.provenance.selectionToken !== selection.selectionToken ||
+    evidence.sampleSelection.periodStart !== selection.periodStart ||
+    evidence.sampleSelection.periodEnd !== selection.periodEnd ||
+    canonicalJson([...evidence.sampleSelection.criteria].sort()) !==
+      canonicalJson([...selection.criteriaCodes].sort())
+  ) {
+    throw new Error("authorized evidence scope or selection mismatch");
+  }
+  if (hashAuthorizedEvidence(evidence) !== evidence.provenance.dataSelectionHash) {
+    throw new Error("authorized evidence provenance hash mismatch");
+  }
+  return evidence;
+}
+
+function hashAuthorizedEvidence(
+  evidence: AuthorizedCustomRuleSimulationEvidence,
+): string {
+  return sha256(
+    canonicalJson({
+      provenance: {
+        organizationId: evidence.provenance.organizationId,
+        projectId: evidence.provenance.projectId,
+        actorId: evidence.provenance.actorId,
+        selectionToken: evidence.provenance.selectionToken,
+        immutableSourceVersions: [
+          ...evidence.provenance.immutableSourceVersions,
+        ].sort(
+          (left, right) =>
+            left.source.localeCompare(right.source) ||
+            left.version.localeCompare(right.version),
+        ),
+      },
+      sampleSource: evidence.sampleSource,
+      sampleSelection: {
+        ...evidence.sampleSelection,
+        criteria: [...evidence.sampleSelection.criteria].sort((left, right) =>
+          left.localeCompare(right),
+        ),
+      },
+      records: [...evidence.records].sort((left, right) =>
+        left.recordId.localeCompare(right.recordId),
+      ),
+      userExamples: [...evidence.userExamples].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      ),
+      currentMarginCents: evidence.currentMarginCents ?? null,
+    }),
+  );
 }
 
 function resolvedClarifyingAmbiguities(input: Extract<SettlementAiResult, { ok: true }> ):
@@ -1456,7 +2356,24 @@ function replayFailure(draft: CustomRuleDraft): CustomRuleAiTransitionFailure {
     code: "SETTLEMENT_AI_PROVIDER_FAILED",
     retryable: true,
     conversationId: draft.conversationId,
+    sourceTurnId: draft.turnTrace.turnId,
     turnTrace: draft.turnTrace,
+    failedDraft: draft,
+  });
+}
+
+function recoverablePersistenceFailure(
+  scope: ScopedTransition,
+  opened: OpenedAiTurn,
+  draft: CustomRuleDraft,
+): CustomRuleAiTransitionFailure {
+  return Object.freeze({
+    ok: false,
+    code: "persistence_failed",
+    retryable: true,
+    conversationId: scope.conversationId,
+    sourceTurnId: opened.turnTrace.turnId,
+    turnTrace: opened.turnTrace,
     failedDraft: draft,
   });
 }
@@ -1488,13 +2405,34 @@ function simulationIdempotencyKey(
   )}`;
 }
 
+function retryDraftIdempotencyKey(
+  originalIdempotencyKey: string,
+  sourceTurnId: string,
+): string {
+  return `settlement-retry:${sha256(
+    canonicalJson({ originalIdempotencyKey, sourceTurnId }),
+  )}`;
+}
+
+function technicalRetryClientRequestId(
+  clientRequestId: string,
+  sourceTurnId: string,
+): string {
+  return `settlement-confirm-retry:${sha256(
+    canonicalJson({ clientRequestId, sourceTurnId }),
+  )}`;
+}
+
 function validateDependencies(input: ServiceDependencies): void {
   if (
     !input ||
-    typeof input.conversation?.createConversation !== "function" ||
+    typeof input.conversation?.getHistory !== "function" ||
+    typeof input.conversation?.retryTurn !== "function" ||
     typeof input.ai?.prepare !== "function" ||
+    typeof input.ai?.restore !== "function" ||
     typeof input.repository?.createDraft !== "function" ||
     typeof input.catalog?.getCatalog !== "function" ||
+    typeof input.evidence?.loadAuthorizedEvidence !== "function" ||
     typeof input.analyzeReadiness !== "function" ||
     typeof input.simulate !== "function"
   ) {
@@ -1510,7 +2448,11 @@ function validateStartInput(
   input: StartCustomRuleSessionInput,
 ): StartCustomRuleSessionInput {
   validateScopeInput(input);
-  if (!input.seedContract || input.initialAmbiguities.length === 0) {
+  if (
+    !canonicalText(input.conversationId, 500) ||
+    !input.seedContract ||
+    input.initialAmbiguities.length === 0
+  ) {
     throw serviceError(
       "invalid_input",
       "start session requires a seed contract and initial ambiguity",
@@ -1546,9 +2488,28 @@ function validateConfirmationInput(
     (input.expectedFormulaHash !== undefined &&
       !HASH_PATTERN.test(input.expectedFormulaHash)) ||
     (input.expectedDataSelectionHash !== undefined &&
-      !HASH_PATTERN.test(input.expectedDataSelectionHash))
+      !HASH_PATTERN.test(input.expectedDataSelectionHash)) ||
+    !simulationSelectionSchema.safeParse(input.simulationSelection).success
   ) {
     throw serviceError("invalid_input", "confirmation input is invalid", false);
+  }
+  return input;
+}
+
+function validateRetryInput(
+  input: RetryCustomRuleTurnInput,
+): RetryCustomRuleTurnInput {
+  validateScopeInput({
+    actor: input.actor,
+    projectId: input.projectId,
+    clientRequestId: input.clientRequestId,
+    promptText: "technical retry",
+  });
+  if (
+    !canonicalText(input.conversationId, 500) ||
+    !canonicalText(input.sourceTurnId, 500)
+  ) {
+    throw serviceError("invalid_input", "retry input is invalid", false);
   }
   return input;
 }

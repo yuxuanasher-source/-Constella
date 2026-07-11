@@ -9,6 +9,7 @@ import type {
   ConversationContextSnapshot,
   ConversationGatewayContext,
   CreateTurnCommand,
+  RetryTurnCommand,
 } from "@/features/ai/conversation-contracts";
 import type { ConversationActor } from "@/features/ai/conversation-service";
 import type {
@@ -59,6 +60,7 @@ const SYSTEM_PROMPT = [
   "每轮最多提出一个聚焦问题。任何未解决事项或未明确确认的合同时，都不得生成公式或测试用例。",
   "公式只是建议，服务器会独立解析、校验、解释和试算。不要声称公式已生效，不要执行结算，也不要索取原始报表或个人金额。",
   "只使用请求中提供的范围安全变量目录。严格返回响应结构，不要添加字段。",
+  'Reference configured values only as parameter("parameter_name"); never copy parameter defaults or example amounts into a formula.',
 ].join("\n");
 
 const canonicalTextSchema = (maximum: number) =>
@@ -263,6 +265,22 @@ const prepareInputSchema = z.strictObject({
     .max(MAX_CONVERSATION_MESSAGES),
 });
 
+const frozenRetryContextSchema = z.strictObject({
+  version: z.literal(1),
+  action: z.enum(["clarify", "revise", "confirm"]),
+  contractConfirmed: z.boolean(),
+  currentContract: businessRuleContractSchema,
+  unresolvedAmbiguities: z
+    .array(settlementAmbiguitySchema)
+    .max(MAX_UNRESOLVED_AMBIGUITIES),
+  catalog: safeCatalogSchema,
+  messages: z
+    .array(conversationMessageSchema)
+    .max(MAX_CONVERSATION_MESSAGES + 2),
+  promptHash: z.string().regex(HASH_PATTERN),
+  contextHash: z.string().regex(HASH_PATTERN),
+});
+
 export type SettlementConversationTurnRef = {
   conversationId: string;
   turnId: string;
@@ -290,6 +308,11 @@ export type SettlementConversationPort = {
     actor: ConversationActor,
     conversationId: string,
     command: CreateTurnCommand,
+  ): Promise<SettlementConversationTurnRef>;
+  retryTurn(
+    actor: ConversationActor,
+    sourceTurnId: string,
+    command: RetryTurnCommand,
   ): Promise<SettlementConversationTurnRef>;
   prepareTurn(
     actor: ConversationActor,
@@ -362,6 +385,19 @@ export type PreparedSettlementAiRequest = Readonly<{
   contractConfirmed: boolean;
   currentContract: BusinessRuleContract;
   catalog: CustomRuleVariableCatalog;
+  retryContext: FrozenSettlementAiContext;
+}>;
+
+export type FrozenSettlementAiContext = Readonly<{
+  version: 1;
+  action: PrepareSettlementAiInput["action"];
+  contractConfirmed: boolean;
+  currentContract: BusinessRuleContract;
+  unresolvedAmbiguities: SettlementAiUnresolvedAmbiguity[];
+  catalog: CustomRuleVariableCatalog;
+  messages: AiMessage[];
+  promptHash: string;
+  contextHash: string;
 }>;
 
 type SuccessfulFormulaValidation = Extract<
@@ -441,8 +477,8 @@ export function createSettlementRuleAiAdapter(input: {
         action: parsed.data.action,
         catalog,
         contractConfirmed: parsed.data.contractConfirmed,
-        currentContract: parsed.data.currentContract,
-        protocolVersion: 1,
+        contractStructure: projectContractStructure(parsed.data.currentContract),
+        protocolVersion: 2,
         unresolvedAmbiguities,
         userMessage: parsed.data.userMessage,
       };
@@ -463,41 +499,64 @@ export function createSettlementRuleAiAdapter(input: {
         throw new SettlementAiInputError("settlement AI prompt budget exceeded");
       }
       const promptHash = sha256(canonicalJson(messages));
-      const contextHash = sha256(
-        canonicalJson({
-          catalogVersion: catalog.version,
-          contract: parsed.data.currentContract,
-          messages,
-          unresolvedAmbiguities,
-        }),
-      );
-      const frozenMessages: AiMessage[] = messages.map((message) =>
-        Object.freeze({ ...message }),
-      );
-      Object.freeze(frozenMessages);
-      const request: SettlementStructuredGatewayRequest = Object.freeze({
-        kind: "structured" as const,
-        promptKey: "settlements.custom-rule-authoring",
-        promptVersion: 1,
-        messages: frozenMessages,
-        responseSchema: settlementDraftResponseSchema,
-        mode: "fast" as const,
-        metadata: Object.freeze({
-          catalogVersion: catalog.version,
-          executionGrain: catalog.executionGrain,
-          promptHash,
-          scope: catalog.scope,
-        }),
+      const contextHash = hashPreparedContext({
+        catalogVersion: catalog.version,
+        currentContract: parsed.data.currentContract,
+        messages,
+        unresolvedAmbiguities,
       });
-
-      return Object.freeze({
-        request,
+      return createPreparedRequest({
         promptHash,
         contextHash,
         action: parsed.data.action,
         contractConfirmed: parsed.data.contractConfirmed,
-        currentContract: deepFreezeOwned(parsed.data.currentContract),
-        catalog: deepFreezeOwned(catalog),
+        currentContract: parsed.data.currentContract,
+        unresolvedAmbiguities,
+        catalog,
+        messages,
+      });
+    },
+
+    restore(unsafeContext: FrozenSettlementAiContext): PreparedSettlementAiRequest {
+      const snapshot = snapshotForValidation(unsafeContext, MAX_PROMPT_CHARS * 2);
+      const parsed = frozenRetryContextSchema.safeParse(snapshot);
+      if (!parsed.success) {
+        throw new SettlementAiInputError("frozen settlement AI context is invalid");
+      }
+      validatePreparationState({
+        action: parsed.data.action,
+        contractConfirmed: parsed.data.contractConfirmed,
+        userMessage: "technical-retry",
+        currentContract: parsed.data.currentContract,
+        unresolvedAmbiguities: parsed.data.unresolvedAmbiguities,
+        catalog: parsed.data.catalog,
+        conversationMessages: [],
+      });
+      const messages = parsed.data.messages.map((message) => ({ ...message }));
+      const promptHash = sha256(canonicalJson(messages));
+      const contextHash = hashPreparedContext({
+        catalogVersion: parsed.data.catalog.version,
+        currentContract: parsed.data.currentContract,
+        messages,
+        unresolvedAmbiguities: parsed.data.unresolvedAmbiguities,
+      });
+      if (
+        promptHash !== parsed.data.promptHash ||
+        contextHash !== parsed.data.contextHash
+      ) {
+        throw new SettlementAiInputError(
+          "frozen settlement AI context hash mismatch",
+        );
+      }
+      return createPreparedRequest({
+        promptHash,
+        contextHash,
+        action: parsed.data.action,
+        contractConfirmed: parsed.data.contractConfirmed,
+        currentContract: parsed.data.currentContract,
+        unresolvedAmbiguities: parsed.data.unresolvedAmbiguities,
+        catalog: parsed.data.catalog,
+        messages,
       });
     },
 
@@ -719,10 +778,123 @@ function validatePreparedRequest(
     !HASH_PATTERN.test(prepared.promptHash) ||
     !HASH_PATTERN.test(prepared.contextHash) ||
     prepared.request.kind !== "structured" ||
-    prepared.request.responseSchema !== settlementDraftResponseSchema
+    prepared.request.responseSchema !== settlementDraftResponseSchema ||
+    !Object.isFrozen(prepared.retryContext)
   ) {
     throw new SettlementAiInputError("prepared settlement AI request is invalid");
   }
+}
+
+function createPreparedRequest(input: {
+  promptHash: string;
+  contextHash: string;
+  action: PrepareSettlementAiInput["action"];
+  contractConfirmed: boolean;
+  currentContract: BusinessRuleContract;
+  unresolvedAmbiguities: SettlementAiUnresolvedAmbiguity[];
+  catalog: CustomRuleVariableCatalog;
+  messages: AiMessage[];
+}): PreparedSettlementAiRequest {
+  const currentContract = deepFreezeOwned(
+    businessRuleContractSchema.parse(
+      snapshotForValidation(input.currentContract, MAX_PROMPT_CHARS),
+    ),
+  );
+  const catalog = deepFreezeOwned(
+    safeCatalogSchema.parse(
+      snapshotForValidation(input.catalog, MAX_PROMPT_CHARS),
+    ),
+  );
+  const unresolvedAmbiguities = deepFreezeOwned(
+    z.array(settlementAmbiguitySchema).parse(
+      snapshotForValidation(input.unresolvedAmbiguities, MAX_PROMPT_CHARS),
+    ),
+  );
+  const frozenMessages = deepFreezeOwned(
+    z.array(conversationMessageSchema).parse(
+      snapshotForValidation(input.messages, MAX_PROMPT_CHARS),
+    ),
+  );
+  const retryContext = deepFreezeOwned({
+    version: 1 as const,
+    action: input.action,
+    contractConfirmed: input.contractConfirmed,
+    currentContract,
+    unresolvedAmbiguities,
+    catalog,
+    messages: frozenMessages.map((message) => ({ ...message })),
+    promptHash: input.promptHash,
+    contextHash: input.contextHash,
+  });
+  const request: SettlementStructuredGatewayRequest = Object.freeze({
+    kind: "structured" as const,
+    promptKey: "settlements.custom-rule-authoring",
+    promptVersion: 2,
+    messages: frozenMessages,
+    responseSchema: settlementDraftResponseSchema,
+    mode: "fast" as const,
+    metadata: Object.freeze({
+      catalogVersion: catalog.version,
+      executionGrain: catalog.executionGrain,
+      promptHash: input.promptHash,
+      scope: catalog.scope,
+    }),
+  });
+  return Object.freeze({
+    request,
+    promptHash: input.promptHash,
+    contextHash: input.contextHash,
+    action: input.action,
+    contractConfirmed: input.contractConfirmed,
+    currentContract,
+    catalog,
+    retryContext,
+  });
+}
+
+function hashPreparedContext(input: {
+  catalogVersion: string;
+  currentContract: BusinessRuleContract;
+  messages: AiMessage[];
+  unresolvedAmbiguities: SettlementAiUnresolvedAmbiguity[];
+}): string {
+  return sha256(
+    canonicalJson({
+      catalogVersion: input.catalogVersion,
+      contract: input.currentContract,
+      messages: input.messages,
+      unresolvedAmbiguities: input.unresolvedAmbiguities,
+    }),
+  );
+}
+
+function projectContractStructure(contract: BusinessRuleContract) {
+  return {
+    schemaVersion: contract.schemaVersion,
+    scope: contract.scope,
+    target: { targetType: contract.target.targetType },
+    executionGrain: contract.executionGrain,
+    compositionMode: contract.compositionMode,
+    calculationComponents: [...contract.calculationComponents]
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .map((component) => ({
+        id: component.name,
+        resultType: component.resultType,
+      })),
+    requiredVariables: [...contract.requiredInputs]
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .map((required) => ({
+        id: required.name,
+        valueType: required.valueType,
+      })),
+    parameters: [...contract.parameters]
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .map((parameter) => ({
+        name: parameter.name,
+        valueType: parameter.valueType,
+      })),
+    missingDataPolicy: { action: contract.missingDataPolicy.action },
+  };
 }
 
 function orderProviderOutput(

@@ -19,6 +19,7 @@ import {
 import { buildCustomRuleExecutionExplanation } from "./custom-rule-explanation";
 import type {
   InsertSettlementFormulaSimulationInput,
+  SettlementAiGeneratedTestCase,
   SettlementSimulationWarning,
 } from "./custom-rule-repository";
 import {
@@ -27,6 +28,7 @@ import {
   yuanToCentsStrict,
   type CompiledAstNode,
   type CustomRuleMissingDataPolicy,
+  type RuntimeValueType,
   type TypedRuntimeValue,
 } from "./custom-rule-types";
 
@@ -38,6 +40,15 @@ const MAX_CHANGE_BUCKETS = 10;
 const MAX_SNAPSHOT_DEPTH = 64;
 const MAX_SNAPSHOT_NODES = 200_000;
 const MAX_SNAPSHOT_STRING_CHARACTERS = 2_000_000;
+
+export const CUSTOM_RULE_SIMULATION_CRITERIA_CODES = [
+  "approved_reports",
+  "period_overlap",
+  "complete_evidence",
+  "project_scope",
+] as const;
+export type CustomRuleSimulationCriteriaCode =
+  (typeof CUSTOM_RULE_SIMULATION_CRITERIA_CODES)[number];
 
 const canonicalTextSchema = (maximum: number) =>
   z
@@ -156,47 +167,65 @@ const sampleSourceSchema = z.strictObject({
     "synthetic_scenarios",
   ]),
 });
+const selectionCriteriaSchema = z.enum(CUSTOM_RULE_SIMULATION_CRITERIA_CODES);
 const sampleSelectionSchema = z
   .strictObject({
     periodStart: businessDateSchema,
     periodEnd: businessDateSchema,
     populationCount: nonnegativeSafeIntegerSchema,
-    criteria: z.array(canonicalTextSchema(200)).max(100),
+    criteria: z.array(selectionCriteriaSchema).min(1).max(4),
   })
-  .refine(
-    (selection) => selection.periodStart <= selection.periodEnd,
-    { message: "sample period start must not be after period end" },
-  );
-const thresholdScenarioSchema = z.strictObject({
-  thresholdId: canonicalTextSchema(120),
-  edge: z.enum(["below", "at", "above"]),
-  variables: runtimeValuesSchema,
-});
-const maximumScenarioSchema = z.strictObject({
-  maximumId: canonicalTextSchema(120),
-  variables: runtimeValuesSchema,
-});
-const evidenceScenarioSchema = z.strictObject({
-  level: z.enum(["green", "yellow", "red"]),
-  variables: runtimeValuesSchema,
-});
-const missingPolicyScenarioSchema = z.strictObject({
-  variableId: z.string().regex(IDENTIFIER_PATTERN),
-  policy: customRuleMissingDataPolicySchema,
-  variables: runtimeValuesSchema,
-});
-const syntheticSchema = z.strictObject({
-  zero: z.strictObject({ variables: runtimeValuesSchema }),
-  thresholdEdges: z.array(thresholdScenarioSchema).min(1).max(MAX_SCENARIOS),
-  configuredMaximums: z.array(maximumScenarioSchema).min(1).max(MAX_SCENARIOS),
-  evidenceLevels: z.array(evidenceScenarioSchema).max(3),
-  missingDataPolicies: z.array(missingPolicyScenarioSchema).max(3),
-});
+  .superRefine((selection, context) => {
+    if (selection.periodStart > selection.periodEnd) {
+      context.addIssue({
+        code: "custom",
+        path: ["periodStart"],
+        message: "sample period start must not be after period end",
+      });
+    }
+    if (new Set(selection.criteria).size !== selection.criteria.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["criteria"],
+        message: "selection criteria codes must be unique",
+      });
+    }
+  });
 const userExampleSchema = z.strictObject({
   id: canonicalTextSchema(120),
-  variables: runtimeValuesSchema,
+  inputs: runtimeValuesSchema,
+  expectedResult: typedRuntimeValueSchema.refine(
+    (value) => value.type === "money_cents",
+    { message: "user examples must expect money" },
+  ),
+});
+const aiTestCaseSchema = z.strictObject({
+  name: canonicalTextSchema(200),
+  inputs: runtimeValuesSchema,
+  expectedResult: typedRuntimeValueSchema.refine(
+    (value) => value.type === "money_cents",
+    { message: "AI test cases must expect money" },
+  ),
+});
+const evidenceProvenanceSchema = z.strictObject({
+  organizationId: canonicalTextSchema(500),
+  projectId: canonicalTextSchema(500),
+  actorId: canonicalTextSchema(500),
+  selectionToken: canonicalTextSchema(500).regex(/^[A-Za-z0-9._:-]+$/u),
+  dataSelectionHash: hashSchema,
+  immutableSourceVersions: z.array(immutableSourceVersionSchema).max(MAX_RECORDS),
+});
+const simulationEvidenceSchema = z.strictObject({
+  provenance: evidenceProvenanceSchema,
+  sampleSource: sampleSourceSchema,
+  sampleSelection: sampleSelectionSchema,
+  records: z.array(authorizedRecordSchema).max(MAX_RECORDS),
+  userExamples: z.array(userExampleSchema).max(MAX_SCENARIOS),
+  currentMarginCents: canonicalBigintSchema.nullable().optional(),
 });
 const simulationInputSchema = z.strictObject({
+  organizationId: canonicalTextSchema(500),
+  actorId: canonicalTextSchema(500),
   projectId: canonicalTextSchema(500),
   contract: businessRuleContractSchema,
   compiledAst: compiledAstNodeSchema,
@@ -206,11 +235,12 @@ const simulationInputSchema = z.strictObject({
   parameterHash: hashSchema,
   catalogVersion: hashSchema,
   readiness: readinessSchema,
+  provenance: evidenceProvenanceSchema,
   sampleSource: sampleSourceSchema,
   sampleSelection: sampleSelectionSchema,
   records: z.array(authorizedRecordSchema).max(MAX_RECORDS),
-  synthetic: syntheticSchema,
-  userExamples: z.array(userExampleSchema).min(1).max(MAX_SCENARIOS),
+  userExamples: z.array(userExampleSchema).max(MAX_SCENARIOS),
+  aiTestCases: z.array(aiTestCaseSchema).min(1).max(MAX_SCENARIOS),
   currentMarginCents: canonicalBigintSchema.nullable().optional(),
 });
 
@@ -299,6 +329,8 @@ const executionOutputSchema = z.strictObject({
 });
 
 export type CustomRuleSimulationInput = {
+  organizationId: string;
+  actorId: string;
   projectId: string;
   contract: BusinessRuleContract;
   compiledAst: CompiledAstNode;
@@ -308,12 +340,24 @@ export type CustomRuleSimulationInput = {
   parameterHash: string;
   catalogVersion: string;
   readiness: CustomRuleDataReadinessReport;
+  provenance: {
+    organizationId: string;
+    projectId: string;
+    actorId: string;
+    selectionToken: string;
+    dataSelectionHash: string;
+    immutableSourceVersions: Array<{
+      kind: "immutable";
+      source: string;
+      version: string;
+    }>;
+  };
   sampleSource: { kind: "historical_settlements" | "approved_operations" | "synthetic_scenarios" };
   sampleSelection: {
     periodStart: string;
     periodEnd: string;
     populationCount: number;
-    criteria: string[];
+    criteria: CustomRuleSimulationCriteriaCode[];
   };
   records: Array<{
     recordId: string;
@@ -333,43 +377,26 @@ export type CustomRuleSimulationInput = {
       | { unitSource: "legacy_yuan"; amountYuan: number }
       | null;
   }>;
-  synthetic: {
-    zero: { variables: Record<string, TypedRuntimeValue> };
-    thresholdEdges: Array<{
-      thresholdId: string;
-      edge: "below" | "at" | "above";
-      variables: Record<string, TypedRuntimeValue>;
-    }>;
-    configuredMaximums: Array<{
-      maximumId: string;
-      variables: Record<string, TypedRuntimeValue>;
-    }>;
-    evidenceLevels: Array<{
-      level: "green" | "yellow" | "red";
-      variables: Record<string, TypedRuntimeValue>;
-    }>;
-    missingDataPolicies: Array<{
-      variableId: string;
-      policy: CustomRuleMissingDataPolicy;
-      variables: Record<string, TypedRuntimeValue>;
-    }>;
-  };
   userExamples: Array<{
     id: string;
-    variables: Record<string, TypedRuntimeValue>;
+    inputs: Record<string, TypedRuntimeValue>;
+    expectedResult: TypedRuntimeValue;
   }>;
+  aiTestCases: SettlementAiGeneratedTestCase[];
   currentMarginCents?: string | null;
 };
 
-export type CustomRuleSimulationEvidence = Pick<
+export type AuthorizedCustomRuleSimulationEvidence = Pick<
   CustomRuleSimulationInput,
   | "sampleSource"
   | "sampleSelection"
   | "records"
-  | "synthetic"
   | "userExamples"
   | "currentMarginCents"
->;
+> & { provenance: CustomRuleSimulationInput["provenance"] };
+
+export type CustomRuleSimulationEvidence =
+  AuthorizedCustomRuleSimulationEvidence;
 
 export type CustomRuleSimulationRuntime = {
   execute(input: ExecuteCompiledCustomRuleInput): unknown;
@@ -388,9 +415,13 @@ export type CustomRuleSimulationScenario = Readonly<{
     | "configured_maximum"
     | "evidence_level"
     | "missing_data_policy"
+    | "contract_example"
+    | "ai_test_case"
     | "user_example";
   outcome: "calculated" | "review_routed" | "blocked";
   amountCents: string | null;
+  expectedAmountCents: string | null;
+  passed: boolean;
 }>;
 
 export type CustomRuleSimulationRiskFlag = Readonly<{
@@ -473,6 +504,35 @@ export function hashCustomRuleParameters(
   return sha256(canonicalJson(parsed.data));
 }
 
+export function freezeAuthorizedCustomRuleSimulationEvidence(
+  unsafeEvidence: unknown,
+): AuthorizedCustomRuleSimulationEvidence {
+  const snapshot = snapshotOwnDataRoot(unsafeEvidence);
+  const parsed = simulationEvidenceSchema.safeParse(snapshot);
+  if (!parsed.success) {
+    throw new CustomRuleSimulationError(
+      "authorized simulation evidence is invalid",
+    );
+  }
+  validateEvidenceSourceVersions(parsed.data.provenance, parsed.data.records);
+  return deepFreezeOwned(parsed.data);
+}
+
+export function calculateCustomRuleDataSelectionHash(
+  unsafeInput: CustomRuleSimulationInput,
+): string {
+  const snapshot = snapshotOwnDataRoot(unsafeInput);
+  const parsed = simulationInputSchema.safeParse(snapshot);
+  if (!parsed.success) {
+    throw new CustomRuleSimulationError("simulation input is invalid");
+  }
+  const records = [...parsed.data.records].sort((left, right) =>
+    left.recordId.localeCompare(right.recordId),
+  );
+  validateEvidenceSourceVersions(parsed.data.provenance, records);
+  return hashDataSelection(parsed.data, records);
+}
+
 export function simulateCustomSettlementRule(
   unsafeInput: CustomRuleSimulationInput,
   runtime: CustomRuleSimulationRuntime = DEFAULT_RUNTIME,
@@ -496,7 +556,10 @@ export function simulateCustomSettlementRule(
     left.recordId.localeCompare(right.recordId),
   );
   const dataSelectionHash = hashDataSelection(input, sortedRecords);
-  const verified = input.readiness.historicalVerification === "verified";
+  const verified =
+    input.readiness.historicalVerification === "verified" &&
+    sortedRecords.length > 0 &&
+    input.sampleSelection.populationCount > 0;
   const unitSources = new Set<"current_rule_cents" | "legacy_yuan">();
   const changes: Array<{
     bucket: string;
@@ -601,6 +664,9 @@ export function simulateCustomSettlementRule(
     .slice(0, MAX_CHANGE_BUCKETS)
     .map(toDecrease);
   const scenarios = runSyntheticScenarios(input, runtime);
+  const assertionMismatchCount = scenarios.filter(
+    (scenario) => !scenario.passed,
+  ).length;
   const warnings = buildWarnings({
     verified,
     totalRecords: sortedRecords.length,
@@ -616,6 +682,7 @@ export function simulateCustomSettlementRule(
     percentageBps,
     currentMarginCents: input.currentMarginCents ?? null,
     marginImpact,
+    assertionMismatchCount,
   });
   const persistedWarnings = mergePersistedWarnings(warnings, riskFlags);
   const persistedDelta = totalDeltaCents ?? "0";
@@ -631,9 +698,12 @@ export function simulateCustomSettlementRule(
       periodEnd: input.sampleSelection.periodEnd,
       populationCount: input.sampleSelection.populationCount,
       sampledCount: sortedRecords.length,
-      criteria: [...input.sampleSelection.criteria].sort((left, right) =>
-        left.localeCompare(right),
-      ),
+      criteria: [
+        ...[...input.sampleSelection.criteria].sort((left, right) =>
+          left.localeCompare(right),
+        ),
+        `selection_token_sha256:${sha256(input.provenance.selectionToken)}`,
+      ],
     },
     coverage: {
       totalRecords: sortedRecords.length,
@@ -649,7 +719,7 @@ export function simulateCustomSettlementRule(
             ? "missing_data"
             : "boundary",
       result:
-        scenario.outcome === "blocked"
+        !scenario.passed || scenario.outcome === "blocked"
           ? "failed"
           : scenario.outcome === "review_routed" ||
               scenario.id.includes("use_explicit_default")
@@ -715,7 +785,7 @@ export function simulateCustomSettlementRule(
 function validateSimulationState(
   input: z.infer<typeof simulationInputSchema>,
 ): void {
-  if (sha256(canonicalJson(input.compiledAst)) !== input.formulaHash) {
+  if (sha256(canonicalCompiledAstJson(input.compiledAst)) !== input.formulaHash) {
     throw new CustomRuleSimulationError("formula hash does not match compiled AST");
   }
   if (hashCustomRuleContract(input.contract) !== input.contractHash) {
@@ -739,6 +809,24 @@ function validateSimulationState(
       "sample population cannot be smaller than selected records",
     );
   }
+  if (
+    input.provenance.organizationId !== input.organizationId ||
+    input.provenance.projectId !== input.projectId ||
+    input.provenance.actorId !== input.actorId
+  ) {
+    throw new CustomRuleSimulationError(
+      "authorized evidence provenance scope mismatch",
+    );
+  }
+  validateEvidenceSourceVersions(input.provenance, input.records);
+  const sortedRecords = [...input.records].sort((left, right) =>
+    left.recordId.localeCompare(right.recordId),
+  );
+  if (hashDataSelection(input, sortedRecords) !== input.provenance.dataSelectionHash) {
+    throw new CustomRuleSimulationError(
+      "authorized evidence selection hash mismatch",
+    );
+  }
 
   const recordIds = new Set<string>();
   for (const record of input.records) {
@@ -759,41 +847,13 @@ function validateSimulationState(
     }
   }
 
-  assertExactCoverage(
-    input.synthetic.evidenceLevels.map((scenario) => scenario.level),
-    ["green", "red", "yellow"],
-    "evidence levels",
-  );
-  assertExactCoverage(
-    input.synthetic.missingDataPolicies.map(
-      (scenario) => scenario.policy.action,
-    ),
-    ["block_batch", "route_item_to_review", "use_explicit_default"],
-    "missing-data policies",
-  );
-  const scenarioCount =
-    1 +
-    input.synthetic.thresholdEdges.length +
-    input.synthetic.configuredMaximums.length +
-    input.synthetic.evidenceLevels.length +
-    input.synthetic.missingDataPolicies.length +
-    input.userExamples.length;
-  if (scenarioCount > MAX_SCENARIOS) {
-    throw new CustomRuleSimulationError("scenario limit exceeded");
-  }
-}
-
-function assertExactCoverage(
-  actual: string[],
-  expected: string[],
-  label: string,
-): void {
-  const ordered = [...actual].sort((left, right) => left.localeCompare(right));
   if (
-    ordered.length !== expected.length ||
-    ordered.some((value, index) => value !== expected[index])
+    input.contract.examples.length +
+      input.aiTestCases.length +
+      input.userExamples.length >
+    MAX_SCENARIOS
   ) {
-    throw new CustomRuleSimulationError(`${label} are incomplete or duplicated`);
+    throw new CustomRuleSimulationError("scenario limit exceeded");
   }
 }
 
@@ -803,11 +863,14 @@ function hashDataSelection(
 ): string {
   return sha256(
     canonicalJson({
+      actorId: input.actorId,
       businessTimezone: input.contract.businessTimezone,
       catalogVersion: input.catalogVersion,
       contractHash: input.contractHash,
       formulaHash: input.formulaHash,
+      organizationId: input.organizationId,
       parameterHash: input.parameterHash,
+      projectId: input.projectId,
       readinessHash: input.readiness.readinessHash,
       sampleSelection: {
         criteria: [...input.sampleSelection.criteria].sort((left, right) =>
@@ -816,15 +879,66 @@ function hashDataSelection(
         periodEnd: input.sampleSelection.periodEnd,
         periodStart: input.sampleSelection.periodStart,
         populationCount: input.sampleSelection.populationCount,
+        selectionTokenHash: sha256(input.provenance.selectionToken),
+        immutableSourceVersions: [...input.provenance.immutableSourceVersions]
+          .sort(
+            (left, right) =>
+              left.source.localeCompare(right.source) ||
+              left.version.localeCompare(right.version),
+          ),
         records: records.map((record) => ({
           recordId: record.recordId,
           source: record.sourceVersion.source,
           version: record.sourceVersion.version,
         })),
         source: input.sampleSource.kind,
+        userExamplesHash: sha256(canonicalJson(
+          [...input.userExamples].sort((left, right) =>
+            left.id.localeCompare(right.id),
+          ),
+        )),
       },
     }),
   );
+}
+
+function validateEvidenceSourceVersions(
+  provenance: z.infer<typeof evidenceProvenanceSchema>,
+  records: z.infer<typeof authorizedRecordSchema>[],
+): void {
+  const declared = [...provenance.immutableSourceVersions].sort(
+    (left, right) =>
+      left.source.localeCompare(right.source) ||
+      left.version.localeCompare(right.version),
+  );
+  const declaredKeys = declared.map(
+    (version) => `${version.source}\u0000${version.version}`,
+  );
+  if (new Set(declaredKeys).size !== declaredKeys.length) {
+    throw new CustomRuleSimulationError(
+      "immutable source provenance contains duplicates",
+    );
+  }
+  const actualByKey = new Map<
+    string,
+    z.infer<typeof immutableSourceVersionSchema>
+  >();
+  for (const record of records) {
+    actualByKey.set(
+      `${record.sourceVersion.source}\u0000${record.sourceVersion.version}`,
+      record.sourceVersion,
+    );
+  }
+  const actual = [...actualByKey.values()].sort(
+    (left, right) =>
+      left.source.localeCompare(right.source) ||
+      left.version.localeCompare(right.version),
+  );
+  if (canonicalJson(declared) !== canonicalJson(actual)) {
+    throw new CustomRuleSimulationError(
+      "immutable source provenance does not match selected records",
+    );
+  }
 }
 
 function applyMissingPolicies(
@@ -901,68 +1015,10 @@ function runSyntheticScenarios(
   input: z.infer<typeof simulationInputSchema>,
   runtime: CustomRuleSimulationRuntime,
 ): CustomRuleSimulationScenario[] {
-  const work: Array<{
-    id: string;
-    category: CustomRuleSimulationScenario["category"];
-    variables: Record<string, TypedRuntimeValue>;
-    missing?: {
-      variableId: string;
-      policy: CustomRuleMissingDataPolicy;
-    };
-  }> = [
-    {
-      id: "synthetic:zero",
-      category: "zero",
-      variables: input.synthetic.zero.variables,
-    },
-    ...[...input.synthetic.thresholdEdges]
-      .sort(
-        (left, right) =>
-          left.thresholdId.localeCompare(right.thresholdId) ||
-          left.edge.localeCompare(right.edge),
-      )
-      .map((scenario) => ({
-        id: `threshold:${scenario.thresholdId}:${scenario.edge}`,
-        category: "threshold_edge" as const,
-        variables: scenario.variables,
-      })),
-    ...[...input.synthetic.configuredMaximums]
-      .sort((left, right) => left.maximumId.localeCompare(right.maximumId))
-      .map((scenario) => ({
-        id: `maximum:${scenario.maximumId}`,
-        category: "configured_maximum" as const,
-        variables: scenario.variables,
-      })),
-    ...[...input.synthetic.evidenceLevels]
-      .sort((left, right) => left.level.localeCompare(right.level))
-      .map((scenario) => ({
-        id: `evidence:${scenario.level}`,
-        category: "evidence_level" as const,
-        variables: scenario.variables,
-      })),
-    ...[...input.synthetic.missingDataPolicies]
-      .sort(
-        (left, right) =>
-          left.policy.action.localeCompare(right.policy.action) ||
-          left.variableId.localeCompare(right.variableId),
-      )
-      .map((scenario) => ({
-        id: `missing:${scenario.policy.action}:${scenario.variableId}`,
-        category: "missing_data_policy" as const,
-        variables: scenario.variables,
-        missing: {
-          variableId: scenario.variableId,
-          policy: scenario.policy,
-        },
-      })),
-    ...[...input.userExamples]
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .map((scenario) => ({
-        id: `user:${scenario.id}`,
-        category: "user_example" as const,
-        variables: scenario.variables,
-      })),
-  ];
+  const work = deriveScenarioWork(input);
+  if (work.length > MAX_SCENARIOS) {
+    throw new CustomRuleSimulationError("scenario limit exceeded");
+  }
   const ids = new Set<string>();
   const scenarios: CustomRuleSimulationScenario[] = [];
   for (const scenario of work) {
@@ -974,11 +1030,23 @@ function runSyntheticScenarios(
       ? applyMissingPolicies(scenario.variables, [scenario.missing])
       : { outcome: "calculated" as const, variables: scenario.variables };
     if (decision.outcome === "review_routed") {
-      scenarios.push({ ...scenarioIdentity(scenario), outcome: "review_routed", amountCents: null });
+      scenarios.push({
+        ...scenarioIdentity(scenario),
+        outcome: "review_routed",
+        amountCents: null,
+        expectedAmountCents: scenario.expectedAmountCents,
+        passed: scenario.expectedAmountCents === null,
+      });
       continue;
     }
     if (decision.outcome === "blocked") {
-      scenarios.push({ ...scenarioIdentity(scenario), outcome: "blocked", amountCents: null });
+      scenarios.push({
+        ...scenarioIdentity(scenario),
+        outcome: "blocked",
+        amountCents: null,
+        expectedAmountCents: scenario.expectedAmountCents,
+        passed: scenario.expectedAmountCents === null,
+      });
       continue;
     }
     const execution = executeAndExplain(
@@ -987,15 +1055,469 @@ function runSyntheticScenarios(
       input.parameters,
       runtime,
     );
+    const amountCents = serializePostgresBigintCents(
+      execution.result.componentsCents.final,
+    );
     scenarios.push({
       ...scenarioIdentity(scenario),
       outcome: "calculated",
-      amountCents: serializePostgresBigintCents(
-        execution.result.componentsCents.final,
-      ),
+      amountCents,
+      expectedAmountCents: scenario.expectedAmountCents,
+      passed:
+        scenario.expectedAmountCents === null ||
+        scenario.expectedAmountCents === amountCents,
     });
   }
   return scenarios;
+}
+
+type ScenarioWork = {
+  id: string;
+  category: CustomRuleSimulationScenario["category"];
+  variables: Record<string, TypedRuntimeValue>;
+  expectedAmountCents: string | null;
+  missing?: {
+    variableId: string;
+    policy: CustomRuleMissingDataPolicy;
+  };
+};
+
+function deriveScenarioWork(
+  input: z.infer<typeof simulationInputSchema>,
+): ScenarioWork[] {
+  const variableTypes = collectVariableTypes(input.compiledAst);
+  for (const required of input.contract.requiredInputs) {
+    variableTypes.set(required.name, required.valueType);
+  }
+  const orderedContractExamples = [...input.contract.examples].sort(
+    (left, right) =>
+      left.name.localeCompare(right.name) ||
+      canonicalJson(left).localeCompare(canonicalJson(right)),
+  );
+  const baseline = completeVariables(
+    orderedContractExamples[0]?.inputs ?? {},
+    variableTypes,
+    input.contract.effectiveStartAt,
+  );
+  const zero = zeroVariables(
+    variableTypes,
+    input.contract.effectiveStartAt,
+  );
+  const maximum = maximumVariables(
+    baseline,
+    orderedContractExamples.map((example) => example.inputs),
+    variableTypes,
+  );
+  const work: ScenarioWork[] = [
+    {
+      id: "synthetic:zero",
+      category: "zero",
+      variables: zero,
+      expectedAmountCents: null,
+    },
+    ...deriveTierScenarioWork(input.compiledAst, baseline, input.parameters),
+    ...deriveClampScenarioWork(input.compiledAst, zero, maximum),
+  ];
+
+  if (variableTypes.has("evidence_level")) {
+    for (const level of ["green", "red", "yellow"] as const) {
+      work.push({
+        id: `derived:evidence:${level}`,
+        category: "evidence_level",
+        variables: {
+          ...baseline,
+          evidence_level: { type: "string", value: level },
+        },
+        expectedAmountCents: null,
+      });
+    }
+  }
+
+  const missingVariable = [...variableTypes.keys()]
+    .filter((name) => name !== "evidence_level")
+    .sort((left, right) => left.localeCompare(right))[0];
+  if (missingVariable) {
+    const missingType = variableTypes.get(missingVariable);
+    if (!missingType) {
+      throw new CustomRuleSimulationError("missing scenario type is unavailable");
+    }
+    const withoutMissing = { ...baseline };
+    delete withoutMissing[missingVariable];
+    const policies: CustomRuleMissingDataPolicy[] = [
+      { action: "block_batch" },
+      { action: "route_item_to_review" },
+      {
+        action: "use_explicit_default",
+        defaultValue: defaultRuntimeValue(
+          missingType,
+          missingVariable,
+          input.contract.effectiveStartAt,
+        ),
+      },
+    ];
+    for (const policy of policies) {
+      work.push({
+        id: `derived:missing:${policy.action}`,
+        category: "missing_data_policy",
+        variables: withoutMissing,
+        expectedAmountCents: null,
+        missing: { variableId: missingVariable, policy },
+      });
+    }
+  }
+
+  orderedContractExamples.forEach((example, index) => {
+    work.push({
+      id: `contract:${String(index + 1).padStart(6, "0")}`,
+      category: "contract_example",
+      variables: completeVariables(
+        { ...baseline, ...example.inputs },
+        variableTypes,
+        input.contract.effectiveStartAt,
+      ),
+      expectedAmountCents: expectedMoneyCents(example.expectedResult),
+    });
+  });
+  [...input.aiTestCases]
+    .sort(
+      (left, right) =>
+        left.name.localeCompare(right.name) ||
+        canonicalJson(left).localeCompare(canonicalJson(right)),
+    )
+    .forEach((testCase, index) => {
+      work.push({
+        id: `ai:${String(index + 1).padStart(6, "0")}`,
+        category: "ai_test_case",
+        variables: completeVariables(
+          { ...baseline, ...testCase.inputs },
+          variableTypes,
+          input.contract.effectiveStartAt,
+        ),
+        expectedAmountCents: expectedMoneyCents(testCase.expectedResult),
+      });
+    });
+  [...input.userExamples]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .forEach((example) => {
+      work.push({
+        id: `user:${sha256(example.id).slice(0, 16)}`,
+        category: "user_example",
+        variables: completeVariables(
+          { ...baseline, ...example.inputs },
+          variableTypes,
+          input.contract.effectiveStartAt,
+        ),
+        expectedAmountCents: expectedMoneyCents(example.expectedResult),
+      });
+    });
+  return work;
+}
+
+function collectVariableTypes(ast: CompiledAstNode): Map<string, RuntimeValueType> {
+  const types = new Map<string, RuntimeValueType>();
+  walkCompiledAst(ast, "$", (node) => {
+    if (node.kind === "identifier") {
+      const existing = types.get(node.name);
+      if (existing && canonicalJson(existing) !== canonicalJson(node.inferredType)) {
+        throw new CustomRuleSimulationError(
+          "compiled AST declares inconsistent variable types",
+        );
+      }
+      types.set(node.name, node.inferredType);
+    }
+  });
+  return types;
+}
+
+function deriveTierScenarioWork(
+  ast: CompiledAstNode,
+  baseline: Record<string, TypedRuntimeValue>,
+  parameters: Record<string, TypedRuntimeValue>,
+): ScenarioWork[] {
+  const thresholds: Array<{
+    path: string;
+    variableName: string;
+    variableType: RuntimeValueType;
+    value: number;
+  }> = [];
+  walkCompiledAst(ast, "$", (node, path) => {
+    if (node.kind !== "call" || node.callee !== "tiered") return;
+    const variable = node.arguments[0];
+    const tiers = node.arguments[1];
+    if (variable?.kind !== "identifier" || tiers?.kind !== "array") {
+      throw new CustomRuleSimulationError(
+        "tier scenarios require a direct typed variable and compiled tiers",
+      );
+    }
+    for (const [index, tier] of tiers.elements.entries()) {
+      if (tier.kind !== "object") {
+        throw new CustomRuleSimulationError("compiled tier is malformed");
+      }
+      const limit = tier.entries.find((entry) => entry.key === "upto")?.value;
+      if (!limit) continue;
+      thresholds.push({
+        path: `${path}.arguments[1].elements[${index}]`,
+        variableName: variable.name,
+        variableType: variable.inferredType,
+        value: resolveNumericNode(limit, parameters),
+      });
+    }
+  });
+  thresholds.sort(
+    (left, right) =>
+      left.path.localeCompare(right.path) || left.value - right.value,
+  );
+  const result: ScenarioWork[] = [];
+  thresholds.forEach((threshold, index) => {
+    const values = thresholdEdgeValues(threshold.value, threshold.variableType);
+    for (const edge of ["below", "at", "above"] as const) {
+      result.push({
+        id: `derived:tier:${String(index + 1).padStart(6, "0")}:${edge}`,
+        category: "threshold_edge",
+        variables: {
+          ...baseline,
+          [threshold.variableName]: values[edge],
+        },
+        expectedAmountCents: null,
+      });
+    }
+  });
+  return result;
+}
+
+function deriveClampScenarioWork(
+  ast: CompiledAstNode,
+  zero: Record<string, TypedRuntimeValue>,
+  maximum: Record<string, TypedRuntimeValue>,
+): ScenarioWork[] {
+  const paths: string[] = [];
+  walkCompiledAst(ast, "$", (node, path) => {
+    if (node.kind === "call" && node.callee === "clamp") paths.push(path);
+  });
+  paths.sort((left, right) => left.localeCompare(right));
+  return paths.flatMap((_, index) => [
+    {
+      id: `derived:clamp:${String(index + 1).padStart(6, "0")}:floor`,
+      category: "configured_maximum" as const,
+      variables: zero,
+      expectedAmountCents: null,
+    },
+    {
+      id: `derived:clamp:${String(index + 1).padStart(6, "0")}:cap`,
+      category: "configured_maximum" as const,
+      variables: maximum,
+      expectedAmountCents: null,
+    },
+  ]);
+}
+
+function walkCompiledAst(
+  node: CompiledAstNode,
+  path: string,
+  visit: (node: CompiledAstNode, path: string) => void,
+): void {
+  visit(node, path);
+  switch (node.kind) {
+    case "unary":
+      walkCompiledAst(node.argument, `${path}.argument`, visit);
+      return;
+    case "binary":
+      walkCompiledAst(node.left, `${path}.left`, visit);
+      walkCompiledAst(node.right, `${path}.right`, visit);
+      return;
+    case "call":
+      node.arguments.forEach((argument, index) =>
+        walkCompiledAst(argument, `${path}.arguments[${index}]`, visit),
+      );
+      return;
+    case "array":
+      node.elements.forEach((element, index) =>
+        walkCompiledAst(element, `${path}.elements[${index}]`, visit),
+      );
+      return;
+    case "object":
+      node.entries.forEach((entry, index) =>
+        walkCompiledAst(entry.value, `${path}.entries[${index}].value`, visit),
+      );
+      return;
+    case "identifier":
+    case "literal":
+      return;
+  }
+}
+
+function resolveNumericNode(
+  node: CompiledAstNode,
+  parameters: Record<string, TypedRuntimeValue>,
+): number {
+  if (
+    node.kind === "literal" &&
+    "value" in node &&
+    typeof node.value === "number" &&
+    (node.inferredType.scalarType === "integer" ||
+      node.inferredType.scalarType === "number")
+  ) {
+    return node.value;
+  }
+  if (node.kind === "unary" && node.operator === "-") {
+    return -resolveNumericNode(node.argument, parameters);
+  }
+  if (node.kind === "call" && node.callee === "parameter") {
+    const name = node.arguments[0];
+    if (
+      name?.kind === "literal" &&
+      "value" in name &&
+      typeof name.value === "string" &&
+      name.inferredType.scalarType === "string"
+    ) {
+      const value = parameters[name.value];
+      if (value?.type === "integer" || value?.type === "number") {
+        return value.value;
+      }
+    }
+  }
+  throw new CustomRuleSimulationError(
+    "tier threshold is not a deterministic numeric literal or parameter",
+  );
+}
+
+function thresholdEdgeValues(
+  threshold: number,
+  valueType: RuntimeValueType,
+): Record<"below" | "at" | "above", TypedRuntimeValue> {
+  if (valueType.kind !== "scalar") {
+    throw new CustomRuleSimulationError("tier variable must be scalar");
+  }
+  const below = threshold - 1;
+  const above = threshold + 1;
+  if (
+    !Number.isSafeInteger(below) ||
+    !Number.isSafeInteger(threshold) ||
+    !Number.isSafeInteger(above)
+  ) {
+    throw new CustomRuleSimulationError(
+      "tier threshold edges exceed deterministic safe integers",
+    );
+  }
+  if (valueType.scalarType === "integer") {
+    return {
+      below: { type: "integer", value: below },
+      at: { type: "integer", value: threshold },
+      above: { type: "integer", value: above },
+    };
+  }
+  if (valueType.scalarType === "number") {
+    return {
+      below: { type: "number", value: below },
+      at: { type: "number", value: threshold },
+      above: { type: "number", value: above },
+    };
+  }
+  throw new CustomRuleSimulationError(
+    "tier threshold variable must be integer or number",
+  );
+}
+
+function completeVariables(
+  source: Record<string, TypedRuntimeValue>,
+  variableTypes: Map<string, RuntimeValueType>,
+  timestampFallback: string,
+): Record<string, TypedRuntimeValue> {
+  const result = { ...source };
+  for (const [name, valueType] of [...variableTypes.entries()].sort(
+    ([left], [right]) => left.localeCompare(right),
+  )) {
+    if (!Object.hasOwn(result, name)) {
+      result[name] = defaultRuntimeValue(valueType, name, timestampFallback);
+    }
+  }
+  return result;
+}
+
+function zeroVariables(
+  variableTypes: Map<string, RuntimeValueType>,
+  timestampFallback: string,
+): Record<string, TypedRuntimeValue> {
+  const result: Record<string, TypedRuntimeValue> = {};
+  for (const [name, valueType] of [...variableTypes.entries()].sort(
+    ([left], [right]) => left.localeCompare(right),
+  )) {
+    result[name] = defaultRuntimeValue(valueType, name, timestampFallback);
+  }
+  return result;
+}
+
+function maximumVariables(
+  baseline: Record<string, TypedRuntimeValue>,
+  examples: Array<Record<string, TypedRuntimeValue>>,
+  variableTypes: Map<string, RuntimeValueType>,
+): Record<string, TypedRuntimeValue> {
+  const result = { ...baseline };
+  for (const name of [...variableTypes.keys()].sort((left, right) =>
+    left.localeCompare(right),
+  )) {
+    const candidates = examples
+      .map((example) => example[name])
+      .filter((value): value is TypedRuntimeValue => value !== undefined);
+    const numeric = candidates.filter(
+      (value) => value.type === "integer" || value.type === "number",
+    );
+    if (numeric.length > 0) {
+      result[name] = numeric.reduce((maximum, value) =>
+        (maximum.type === "integer" || maximum.type === "number") &&
+        value.value > maximum.value
+          ? value
+          : maximum,
+      );
+    }
+  }
+  return result;
+}
+
+function defaultRuntimeValue(
+  valueType: RuntimeValueType,
+  name: string,
+  timestampFallback: string,
+): TypedRuntimeValue {
+  if (valueType.kind === "array") return { type: "array", items: [] };
+  if (valueType.kind === "object") {
+    return {
+      type: "object",
+      fields: Object.fromEntries(
+        Object.entries(valueType.fields)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([field, fieldType]) => [
+            field,
+            defaultRuntimeValue(fieldType, field, timestampFallback),
+          ]),
+      ),
+    };
+  }
+  switch (valueType.scalarType) {
+    case "money_cents":
+      return { type: "money_cents", amountCents: 0 };
+    case "rate_bps":
+      return { type: "rate_bps", rateBps: 0 };
+    case "number":
+      return { type: "number", value: 0 };
+    case "integer":
+      return { type: "integer", value: 0 };
+    case "boolean":
+      return { type: "boolean", value: false };
+    case "string":
+      return { type: "string", value: name === "evidence_level" ? "green" : "synthetic" };
+    case "timestamp":
+      return { type: "timestamp", value: timestampFallback };
+  }
+}
+
+function expectedMoneyCents(value: TypedRuntimeValue): string {
+  if (value.type !== "money_cents") {
+    throw new CustomRuleSimulationError(
+      "scenario expected result must be money cents",
+    );
+  }
+  return serializePostgresBigintCents(value.amountCents);
 }
 
 function scenarioIdentity(scenario: {
@@ -1103,8 +1625,16 @@ function buildRiskFlags(input: {
   percentageBps: number;
   currentMarginCents: string | null;
   marginImpact: bigint | null;
+  assertionMismatchCount: number;
 }): CustomRuleSimulationRiskFlag[] {
   const flags: CustomRuleSimulationRiskFlag[] = [];
+  if (input.assertionMismatchCount > 0) {
+    flags.push({
+      code: "CUSTOM_RULE_SCENARIO_EXPECTATION_MISMATCH",
+      severity: "block",
+      message: "One or more contract, AI, or user scenario expectations did not match deterministic execution.",
+    });
+  }
   if (input.blockedCount > 0) {
     flags.push({
       code: "CUSTOM_RULE_BLOCKED_RECORDS",
@@ -1291,6 +1821,42 @@ function canonicalJson(value: unknown): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
     .join(",")}}`;
+}
+
+function canonicalCompiledAstJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalCompiledAstJson(item)).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => {
+        let child = record[key];
+        if (
+          key === "entries" &&
+          record.kind === "object" &&
+          Array.isArray(child)
+        ) {
+          child = [...child].sort((left, right) => {
+            const leftKey = objectEntryKey(left);
+            const rightKey = objectEntryKey(right);
+            return leftKey.localeCompare(rightKey);
+          });
+        }
+        return `${JSON.stringify(key)}:${canonicalCompiledAstJson(child)}`;
+      })
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+function objectEntryKey(value: unknown): string {
+  if (value === null || typeof value !== "object") return "";
+  const descriptor = Object.getOwnPropertyDescriptor(value, "key");
+  return descriptor && "value" in descriptor && typeof descriptor.value === "string"
+    ? descriptor.value
+    : "";
 }
 
 function sha256(value: string): string {

@@ -116,6 +116,15 @@ describe("SettlementConversationPort", () => {
         attempt: 1,
         duplicate: false,
       }),
+      retryTurn: async () => ({
+        conversationId: "conversation-1",
+        turnId: "turn-2",
+        userMessageId: "user-message-2",
+        assistantMessageId: "assistant-message-2",
+        status: "accepted",
+        attempt: 2,
+        duplicate: false,
+      }),
       prepareTurn: async () => ({
         messages: [],
         snapshot: {
@@ -351,6 +360,54 @@ describe("createSettlementRuleAiAdapter", () => {
     );
   });
 
+  it("projects only contract structure and never sends defaults, amounts, or examples", () => {
+    const adapter = createSettlementRuleAiAdapter({
+      gateway: async () => gatewayResult(),
+    });
+    const input = baseInput();
+    input.currentContract.parameters[0].description = "known10000";
+    input.currentContract.examples[0].description = "private-example-known10000";
+
+    const prepared = adapter.prepare(input);
+    const prompt = prepared.request.messages.at(-1)?.content ?? "";
+    const payload = JSON.parse(prompt);
+
+    expect(payload).not.toHaveProperty("currentContract");
+    expect(payload.contractStructure).toEqual(
+      expect.objectContaining({
+        scope: "payable",
+        target: { targetType: "project" },
+        executionGrain: "report",
+        compositionMode: "replace",
+        calculationComponents: [
+          {
+            id: "base",
+            resultType: { kind: "scalar", scalarType: "money_cents" },
+          },
+        ],
+        requiredVariables: [
+          {
+            id: "system_minutes",
+            valueType: { kind: "scalar", scalarType: "integer" },
+          },
+        ],
+        parameters: [
+          {
+            name: "hourly_rate",
+            valueType: { kind: "scalar", scalarType: "money_cents" },
+          },
+        ],
+        missingDataPolicy: { action: "route_item_to_review" },
+      }),
+    );
+    expect(prompt).not.toMatch(
+      /known10000|amountCents|rateBps|defaultValue|expectedResult|private-example/i,
+    );
+    expect(prepared.request.messages[0].content).toContain(
+      'parameter("parameter_name")',
+    );
+  });
+
   it("freezes trusted context before the gateway call and reuses it for technical retries", async () => {
     const captured: string[] = [];
     const gateway: SettlementStructuredGateway = vi.fn(async (request) => {
@@ -398,6 +455,47 @@ describe("createSettlementRuleAiAdapter", () => {
       ),
     ).toBe(false);
     expect(Object.isFrozen(prepared)).toBe(true);
+  });
+
+  it("restores a prepared request only from its frozen retry context", async () => {
+    const captured: string[] = [];
+    const adapter = createSettlementRuleAiAdapter({
+      gateway: async (request) => {
+        captured.push(JSON.stringify(request.messages));
+        return gatewayResult({
+          contractPatch: {},
+          unresolvedAmbiguities: [
+            {
+              code: "confirm_rate",
+              question: "璇风‘璁ゆ瘡灏忔椂缁撶畻鍗曚环锛?",
+              required: true,
+            },
+          ],
+          nextQuestion: "璇风‘璁ゆ瘡灏忔椂缁撶畻鍗曚环锛?",
+          formulaProposal: null,
+          testCases: [],
+          safetyFlags: [],
+        });
+      },
+    });
+    const mutable = baseInput();
+    const prepared = adapter.prepare(mutable);
+    const frozenRetryContext = structuredClone(prepared.retryContext);
+    mutable.currentContract.parameters[0].defaultValue = {
+      type: "money_cents",
+      amountCents: 99_999,
+    };
+    mutable.catalog.variables[0].label = "live-regrounded-label";
+
+    const restored = adapter.restore(frozenRetryContext);
+    await adapter.execute(restored);
+
+    expect(restored.promptHash).toBe(prepared.promptHash);
+    expect(restored.contextHash).toBe(prepared.contextHash);
+    expect(restored.request.messages).toEqual(prepared.request.messages);
+    expect(captured[0]).not.toContain("live-regrounded-label");
+    expect(captured[0]).not.toContain("99999");
+    expect(Object.isFrozen(restored.retryContext)).toBe(true);
   });
 
   it("returns a retryable failure without mutating existing draft evidence", async () => {

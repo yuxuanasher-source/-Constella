@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { AiGatewayResult } from "@/features/ai/contracts";
@@ -22,6 +24,8 @@ import type {
 import { parseCustomRuleFormula } from "./custom-rule-parser";
 import {
   createCustomRuleAuthoringService,
+  type AuthorizedSimulationEvidencePort,
+  type AuthorizedSimulationSelectionRequest,
   type CustomRuleAuthoringRepositoryPort,
   type SettlementVariableCatalogPort,
 } from "./custom-rule-service";
@@ -29,7 +33,8 @@ import {
   hashCustomRuleContract,
   hashCustomRuleParameters,
   simulateCustomSettlementRule,
-  type CustomRuleSimulationEvidence,
+  type AuthorizedCustomRuleSimulationEvidence,
+  type CustomRuleSimulationInput,
 } from "./custom-rule-simulation";
 import type { CustomRuleVariableCatalog } from "./custom-rule-variable-catalog";
 import { validateCustomRuleFormula } from "./custom-rule-validator";
@@ -43,7 +48,7 @@ const CATALOG_VERSION = "a".repeat(64);
 const actor = { organizationId: ORGANIZATION_ID, userId: USER_ID };
 
 describe("custom rule authoring service", () => {
-  it("starts a generic conversation and durably persists revision one before completing the turn", async () => {
+  it("starts from an existing scoped conversation and durably persists revision one before completing the turn", async () => {
     const harness = createHarness([
       clarificationOutput("请确认每小时结算单价？", "confirm_rate"),
     ]);
@@ -52,6 +57,7 @@ describe("custom rule authoring service", () => {
     const result = await harness.service.startSession({
       actor,
       projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
       title: "AI 结算规则",
       clientRequestId: "start-request-0001",
       promptText,
@@ -101,6 +107,7 @@ describe("custom rule authoring service", () => {
       CONVERSATION_ID,
       expect.objectContaining({ content: promptText }),
     );
+    expect(harness.conversation.createConversation).not.toHaveBeenCalled();
     expect(harness.events.indexOf("repository.createDraft")).toBeLessThan(
       harness.events.indexOf("conversation.completeTurn"),
     );
@@ -118,6 +125,57 @@ describe("custom rule authoring service", () => {
         }),
       }),
     );
+  });
+
+  it("requires an existing conversation id and replays the same durable start key", async () => {
+    const invalid = createHarness([
+      clarificationOutput("Confirm hourly rate?", "confirm_rate"),
+    ]);
+    await expect(
+      invalid.service.startSession({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: "",
+        clientRequestId: "start-request-invalid",
+        promptText: "Clarify the settlement rule.",
+        seedContract: contract(),
+        initialAmbiguities: [
+          {
+            code: "confirm_rate",
+            question: "Confirm hourly rate?",
+            required: true,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(invalid.conversation.createConversation).not.toHaveBeenCalled();
+    expect(invalid.repository.createDraftCalls).toHaveLength(0);
+
+    const replay = createHarness([
+      clarificationOutput("Confirm hourly rate?", "confirm_rate"),
+    ]);
+    const input = {
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      clientRequestId: "start-request-replay",
+      promptText: "Clarify the settlement rule.",
+      seedContract: contract(),
+      initialAmbiguities: [
+        {
+          code: "confirm_rate",
+          question: "Confirm hourly rate?",
+          required: true,
+        },
+      ],
+    };
+    const first = await replay.service.startSession(input);
+    const second = await replay.service.startSession(input);
+    expect(first).toMatchObject({ ok: true, duplicate: false });
+    expect(second).toMatchObject({ ok: true, duplicate: true });
+    expect(replay.repository.createDraftCalls).toHaveLength(1);
+    expect(replay.conversation.acceptTurn).toHaveBeenCalledTimes(1);
+    expect(replay.conversation.createConversation).not.toHaveBeenCalled();
   });
 
   it("revises by appending the generic turn first, preserves prior evidence, and replays idempotently", async () => {
@@ -226,6 +284,82 @@ describe("custom rule authoring service", () => {
     expect(previous.generatedFormula).toEqual(priorSnapshot.generatedFormula);
   });
 
+  it("retries a provider failure from the public frozen conversation turn without live re-grounding", async () => {
+    const harness = createHarness([
+      { providerFailure: true },
+      clarificationOutput("Confirm the final contract?", "confirm_contract"),
+    ]);
+    const previous = harness.repository.seedDraft(clarifyingDraft());
+
+    const failed = await harness.service.answerOrRevise({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      expectedDraftId: previous.id,
+      expectedRevisionNumber: 1,
+      clientRequestId: "provider-failure-request-0001",
+      promptText: "Continue authoring the rule.",
+    });
+    expect(failed).toMatchObject({
+      ok: false,
+      code: "SETTLEMENT_AI_PROVIDER_FAILED",
+      sourceTurnId: uuid(201),
+    });
+    if (failed.ok) throw new Error("provider failure fixture unexpectedly passed");
+
+    const retried = await harness.service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      sourceTurnId: failed.sourceTurnId,
+      clientRequestId: "provider-retry-request-0001",
+    });
+
+    expect(retried).toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      draft: { revisionNumber: 2 },
+    });
+    expect(harness.conversation.retryTurn).toHaveBeenCalledWith(
+      actor,
+      uuid(201),
+      { clientRequestId: "provider-retry-request-0001" },
+    );
+    expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
+    expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+  });
+
+  it("retries a failed confirmation provider turn from frozen context and runs AI only once more", async () => {
+    const harness = createHarness([
+      { providerFailure: true },
+      confirmedFormulaOutput(),
+    ]);
+    const previous = harness.repository.seedDraft(confirmableDraft());
+
+    const failed = await harness.service.confirmContract(confirmInput(previous));
+    expect(failed).toMatchObject({
+      ok: false,
+      code: "SETTLEMENT_AI_PROVIDER_FAILED",
+      sourceTurnId: uuid(201),
+    });
+    if (failed.ok) throw new Error("confirmation failure unexpectedly passed");
+
+    const retried = await harness.service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      sourceTurnId: failed.sourceTurnId,
+      clientRequestId: "confirm-provider-retry-0001",
+    });
+
+    expect(retried).toMatchObject({ ok: true, kind: "simulated" });
+    expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
+    expect(harness.evidencePort.loadAuthorizedEvidence).toHaveBeenCalledTimes(1);
+    expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+  });
+
   it("fails closed when the public conversation API fails and never falls back to local draft history", async () => {
     const harness = createHarness([
       clarificationOutput("请确认每小时结算单价？", "confirm_rate"),
@@ -268,7 +402,7 @@ describe("custom rule authoring service", () => {
       contractConfirmed: true,
       expectedContractHash: previous.contractHash,
       expectedCatalogVersion: CATALOG_VERSION,
-      simulationEvidence: simulationEvidence(),
+      simulationSelection: safeSelection(),
     });
 
     expect(result).toMatchObject({
@@ -333,6 +467,41 @@ describe("custom rule authoring service", () => {
       actor,
       CONVERSATION_ID,
     );
+    expect(harness.evidencePort.loadAuthorizedEvidence).toHaveBeenCalledWith({
+      actor,
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: safeSelection(),
+    });
+    expect(harness.simulationInputs).toHaveLength(1);
+    expect(Object.isFrozen(harness.simulationInputs[0].records)).toBe(true);
+    expect(harness.simulationInputs[0].provenance).toMatchObject({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      actorId: USER_ID,
+      selectionToken: "selection-token-0001",
+    });
+  });
+
+  it("returns an idempotent simulated success for the same durable confirmation key", async () => {
+    const harness = createHarness([confirmedFormulaOutput()]);
+    const previous = harness.repository.seedDraft(confirmableDraft());
+    const confirmation = confirmInput(previous);
+
+    const first = await harness.service.confirmContract(confirmation);
+    const replay = await harness.service.confirmContract(confirmation);
+
+    expect(first).toMatchObject({ ok: true, kind: "simulated" });
+    expect(replay).toMatchObject({
+      ok: true,
+      kind: "simulated",
+      duplicate: true,
+    });
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(harness.repository.createDraftCalls).toHaveLength(1);
+    expect(harness.repository.insertSimulationCalls).toHaveLength(2);
+    expect(harness.conversation.retryTurn).not.toHaveBeenCalled();
+    expect(harness.conversation.completeTurn).toHaveBeenCalledTimes(1);
   });
 
   it("rejects invalid, stale, unresolved, and duplicate confirmation transitions before persistence", async () => {
@@ -370,6 +539,22 @@ describe("custom rule authoring service", () => {
       unresolved.service.confirmContract(confirmInput(unresolvedDraft)),
     ).rejects.toMatchObject({ code: "unresolved_ambiguities" });
 
+    const optional = createHarness([confirmedFormulaOutput()]);
+    const optionalDraft = optional.repository.seedDraft(
+      clarifyingDraft({
+        unresolvedAmbiguities: [
+          {
+            code: "optional_rounding_note",
+            question: "Confirm the optional rounding note?",
+            required: false,
+          },
+        ],
+      }),
+    );
+    await expect(
+      optional.service.confirmContract(confirmInput(optionalDraft)),
+    ).rejects.toMatchObject({ code: "unresolved_ambiguities" });
+
     const duplicate = createHarness([confirmedFormulaOutput()]);
     const duplicateDraft = duplicate.repository.seedDraft(
       simulatedDraft(),
@@ -378,7 +563,13 @@ describe("custom rule authoring service", () => {
       duplicate.service.confirmContract(confirmInput(duplicateDraft)),
     ).rejects.toMatchObject({ code: "duplicate_confirmation" });
 
-    for (const harness of [falseConfirmation, stale, unresolved, duplicate]) {
+    for (const harness of [
+      falseConfirmation,
+      stale,
+      unresolved,
+      optional,
+      duplicate,
+    ]) {
       expect(harness.repository.createDraftCalls).toHaveLength(0);
       expect(harness.conversation.acceptTurn).not.toHaveBeenCalled();
     }
@@ -419,15 +610,73 @@ describe("custom rule authoring service", () => {
     expect(selection.repository.createDraftCalls).toHaveLength(0);
   });
 
+  it("rejects unsafe free-form selection criteria before the evidence port is called", async () => {
+    const harness = createHarness([confirmedFormulaOutput()]);
+    const draft = harness.repository.seedDraft(confirmableDraft());
+    const unsafe = {
+      ...confirmInput(draft),
+      simulationSelection: {
+        ...safeSelection(),
+        criteria: ["streamerId=private-1 amountCents=10000"],
+      },
+    };
+
+    await expect(
+      Reflect.apply(harness.service.confirmContract, undefined, [unsafe]),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(harness.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
+    expect(harness.conversation.acceptTurn).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on authorized evidence scope, token, or provenance hash mismatch", async () => {
+    for (const evidenceFailure of [
+      "scope",
+      "selection_token",
+      "hash",
+    ] as const) {
+      const harness = createHarness([confirmedFormulaOutput()], {
+        evidenceFailure,
+      });
+      const draft = harness.repository.seedDraft(confirmableDraft());
+
+      await expect(
+        harness.service.confirmContract(confirmInput(draft)),
+      ).rejects.toMatchObject({ code: "simulation_failed" });
+      expect(harness.simulationInputs).toHaveLength(0);
+      expect(harness.repository.createDraftCalls).toHaveLength(0);
+      expect(harness.conversation.failTurn).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("blocks confirmation when an AI expected result disagrees with deterministic execution", async () => {
+    const output = confirmedFormulaOutput();
+    output.testCases[0].expectedResult.amountCents = 99_999;
+    const harness = createHarness([output]);
+    const draft = harness.repository.seedDraft(confirmableDraft());
+
+    await expect(
+      harness.service.confirmContract(confirmInput(draft)),
+    ).rejects.toMatchObject({ code: "simulation_failed" });
+    expect(harness.repository.createDraftCalls).toHaveLength(0);
+    expect(harness.repository.insertSimulationCalls).toHaveLength(0);
+    expect(harness.conversation.failTurn).toHaveBeenCalledTimes(1);
+  });
+
   it("does not claim completion when simulation persistence or readback fails", async () => {
     const harness = createHarness([confirmedFormulaOutput()], {
       failSimulationInsert: true,
     });
     const previous = harness.repository.seedDraft(confirmableDraft());
+    const confirmation = confirmInput(previous);
 
-    await expect(
-      harness.service.confirmContract(confirmInput(previous)),
-    ).rejects.toMatchObject({ code: "persistence_failed" });
+    const failed = await harness.service.confirmContract(confirmation);
+    expect(failed).toMatchObject({
+      ok: false,
+      code: "persistence_failed",
+      retryable: true,
+      sourceTurnId: uuid(201),
+      failedDraft: { initialStatus: "contract_ready", status: "contract_ready" },
+    });
     expect(harness.repository.createDraftCalls).toHaveLength(1);
     expect(harness.repository.insertSimulationCalls).toHaveLength(1);
     expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
@@ -436,13 +685,37 @@ describe("custom rule authoring service", () => {
       harness.events.indexOf("conversation.failTurn"),
     );
 
+    const recovered = await harness.service.confirmContract(confirmation);
+    expect(recovered).toMatchObject({
+      ok: true,
+      kind: "simulated",
+      draft: { initialStatus: "contract_ready", status: "simulated" },
+    });
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(harness.repository.createDraftCalls).toHaveLength(1);
+    expect(harness.repository.insertSimulationCalls).toHaveLength(2);
+    expect(harness.repository.insertSimulationCalls[0].idempotencyKey).toBe(
+      harness.repository.insertSimulationCalls[1].idempotencyKey,
+    );
+    expect(harness.conversation.retryTurn).toHaveBeenCalledWith(
+      actor,
+      uuid(201),
+      expect.objectContaining({ clientRequestId: expect.any(String) }),
+    );
+    expect(harness.conversation.completeTurn).toHaveBeenCalledTimes(1);
+
     const readback = createHarness([confirmedFormulaOutput()], {
       skipSimulatedTransition: true,
     });
     const readbackDraft = readback.repository.seedDraft(confirmableDraft());
-    await expect(
-      readback.service.confirmContract(confirmInput(readbackDraft)),
-    ).rejects.toMatchObject({ code: "persistence_failed" });
+    const readbackFailure = await readback.service.confirmContract(
+      confirmInput(readbackDraft),
+    );
+    expect(readbackFailure).toMatchObject({
+      ok: false,
+      code: "persistence_failed",
+      sourceTurnId: uuid(201),
+    });
     expect(readback.repository.insertSimulationCalls).toHaveLength(1);
     expect(readback.conversation.completeTurn).not.toHaveBeenCalled();
     expect(readback.conversation.failTurn).toHaveBeenCalledTimes(1);
@@ -464,11 +737,17 @@ function createHarness(
     persistFailedRevisions?: boolean;
     failSimulationInsert?: boolean;
     skipSimulatedTransition?: boolean;
+    evidenceFailure?: "scope" | "hash" | "selection_token";
   } = {},
 ) {
   const events: string[] = [];
   let acceptedContent = "";
   let turnNumber = 0;
+  const capturedSnapshots = new Map<
+    string,
+    Awaited<ReturnType<SettlementConversationPort["captureGatewayContext"]>>
+  >();
+  const retrySources = new Map<string, string>();
   const conversation: SettlementConversationPort = {
     createConversation: vi.fn(async () => {
       events.push("conversation.createConversation");
@@ -509,8 +788,35 @@ function createHarness(
         duplicate: false,
       };
     }),
-    prepareTurn: vi.fn(async () => {
+    retryTurn: vi.fn(async (_actor, sourceTurnId, command) => {
+      events.push("conversation.retryTurn");
+      void command;
+      turnNumber += 1;
+      const turnId = uuid(200 + turnNumber);
+      retrySources.set(turnId, sourceTurnId);
+      return {
+        conversationId: CONVERSATION_ID,
+        turnId,
+        userMessageId: uuid(300 + turnNumber),
+        assistantMessageId: uuid(400 + turnNumber),
+        status: "accepted" as const,
+        attempt: 2,
+        duplicate: false,
+      };
+    }),
+    prepareTurn: vi.fn(async (_actor, turnId) => {
       events.push("conversation.prepareTurn");
+      const sourceTurnId = retrySources.get(turnId);
+      if (sourceTurnId) {
+        const frozen = capturedSnapshots.get(sourceTurnId);
+        if (!frozen?.gatewayContext) {
+          throw new Error("retry source has no frozen gateway context");
+        }
+        return {
+          messages: frozen.gatewayContext.messages,
+          snapshot: structuredClone(frozen),
+        };
+      }
       return {
         messages: [{ role: "user" as const, content: acceptedContent }],
         snapshot: {
@@ -522,11 +828,12 @@ function createHarness(
         },
       };
     }),
-    captureGatewayContext: vi.fn(async (_actor, _turnId, snapshot, gatewayContext) => {
+    captureGatewayContext: vi.fn(async (_actor, turnId, snapshot, gatewayContext) => {
       void _actor;
-      void _turnId;
       events.push("conversation.captureGatewayContext");
-      return { ...snapshot, gatewayContext };
+      const captured = { ...snapshot, gatewayContext };
+      capturedSnapshots.set(turnId, structuredClone(captured));
+      return captured;
     }),
     markGenerating: vi.fn(async () => {
       events.push("conversation.markGenerating");
@@ -561,17 +868,44 @@ function createHarness(
       return catalog();
     }),
   };
+  const evidencePort: AuthorizedSimulationEvidencePort = {
+    loadAuthorizedEvidence: vi.fn(async (input) => {
+      events.push("evidence.loadAuthorizedEvidence");
+      const evidence = structuredClone(authorizedEvidence(input));
+      if (options.evidenceFailure === "scope") {
+        evidence.provenance.projectId = uuid(999);
+      } else if (options.evidenceFailure === "hash") {
+        evidence.provenance.dataSelectionHash = "f".repeat(64);
+      } else if (options.evidenceFailure === "selection_token") {
+        evidence.provenance.selectionToken = "selection-token-other";
+      }
+      return deepFreezeFixture(evidence);
+    }),
+  };
+  const simulationInputs: CustomRuleSimulationInput[] = [];
   const service = createCustomRuleAuthoringService({
     conversation,
     ai: createSettlementRuleAiAdapter({ gateway }),
     repository,
     catalog: catalogPort,
+    evidence: evidencePort,
     analyzeReadiness: analyzeCustomRuleDataReadiness,
-    simulate: simulateCustomSettlementRule,
+    simulate: (input) => {
+      simulationInputs.push(input);
+      return simulateCustomSettlementRule(input);
+    },
     primaryProvider: "deterministic",
     persistFailedRevisions: options.persistFailedRevisions ?? false,
   });
-  return { service, conversation, repository, catalogPort, events };
+  return {
+    service,
+    conversation,
+    repository,
+    catalogPort,
+    evidencePort,
+    simulationInputs,
+    events,
+  };
 }
 
 class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
@@ -579,12 +913,14 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
   readonly simulations: SettlementFormulaSimulation[] = [];
   readonly createDraftCalls: CreateCustomRuleDraftInput[] = [];
   readonly insertSimulationCalls: InsertSettlementFormulaSimulationInput[] = [];
+  private failedSimulationInserts = 0;
 
   constructor(
     private readonly events: string[],
     private readonly options: {
       failSimulationInsert?: boolean;
       skipSimulatedTransition?: boolean;
+      evidenceFailure?: "scope" | "hash" | "selection_token";
     },
   ) {}
 
@@ -662,7 +998,11 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
   ): Promise<InsertedSettlementFormulaSimulation> {
     this.events.push("repository.insertSimulation");
     this.insertSimulationCalls.push(structuredClone(input));
-    if (this.options.failSimulationInsert) {
+    if (
+      this.options.failSimulationInsert &&
+      this.failedSimulationInserts === 0
+    ) {
+      this.failedSimulationInserts += 1;
       throw new Error("simulation persistence failed");
     }
     const existing = this.simulations.find(
@@ -762,7 +1102,7 @@ function confirmInput(draft: CustomRuleDraft) {
     contractConfirmed: true as const,
     expectedContractHash: draft.contractHash,
     expectedCatalogVersion: CATALOG_VERSION,
-    simulationEvidence: simulationEvidence(),
+    simulationSelection: safeSelection(),
   };
 }
 
@@ -971,19 +1311,50 @@ function catalog(): CustomRuleVariableCatalog {
   };
 }
 
-function simulationEvidence(): CustomRuleSimulationEvidence {
+function safeSelection(): AuthorizedSimulationSelectionRequest {
   return {
+    selectionToken: "selection-token-0001",
+    periodStart: "2026-07-01",
+    periodEnd: "2026-07-10",
+    criteriaCodes: [
+      "approved_reports",
+      "period_overlap",
+      "project_scope",
+    ],
+  };
+}
+
+function authorizedEvidence(
+  input: Parameters<
+    AuthorizedSimulationEvidencePort["loadAuthorizedEvidence"]
+  >[0],
+): AuthorizedCustomRuleSimulationEvidence {
+  const evidence: AuthorizedCustomRuleSimulationEvidence = {
+    provenance: {
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      actorId: input.actor.userId,
+      selectionToken: input.selection.selectionToken,
+      dataSelectionHash: "0".repeat(64),
+      immutableSourceVersions: [
+        {
+          kind: "immutable",
+          source: "locked_settlement_item",
+          version: "locked-v1",
+        },
+      ],
+    },
     sampleSource: { kind: "historical_settlements" },
     sampleSelection: {
-      periodStart: "2026-07-01",
-      periodEnd: "2026-07-10",
+      periodStart: input.selection.periodStart,
+      periodEnd: input.selection.periodEnd,
       populationCount: 1,
-      criteria: ["locked settlement comparison"],
+      criteria: [...input.selection.criteriaCodes],
     },
     records: [
       {
         recordId: "authorized-record-1",
-        projectId: PROJECT_ID,
+        projectId: input.projectId,
         sourceVersion: {
           kind: "immutable",
           source: "locked_settlement_item",
@@ -1000,71 +1371,83 @@ function simulationEvidence(): CustomRuleSimulationEvidence {
         },
       },
     ],
-    synthetic: {
-      zero: {
-        variables: {
-          system_minutes: { type: "integer", value: 0 },
-          evidence_level: { type: "string", value: "green" },
-        },
-      },
-      thresholdEdges: [
-        {
-          thresholdId: "sixty_minutes",
-          edge: "at",
-          variables: {
-            system_minutes: { type: "integer", value: 60 },
-            evidence_level: { type: "string", value: "green" },
-          },
-        },
-      ],
-      configuredMaximums: [
-        {
-          maximumId: "configured_minutes",
-          variables: {
-            system_minutes: { type: "integer", value: 600 },
-            evidence_level: { type: "string", value: "green" },
-          },
-        },
-      ],
-      evidenceLevels: (["green", "yellow", "red"] as const).map((level) => ({
-        level,
-        variables: {
-          system_minutes: { type: "integer" as const, value: 60 },
-          evidence_level: { type: "string" as const, value: level },
-        },
-      })),
-      missingDataPolicies: [
-        {
-          variableId: "system_minutes",
-          policy: { action: "block_batch" },
-          variables: { evidence_level: { type: "string", value: "green" } },
-        },
-        {
-          variableId: "system_minutes",
-          policy: { action: "route_item_to_review" },
-          variables: { evidence_level: { type: "string", value: "green" } },
-        },
-        {
-          variableId: "system_minutes",
-          policy: {
-            action: "use_explicit_default",
-            defaultValue: { type: "integer", value: 0 },
-          },
-          variables: { evidence_level: { type: "string", value: "green" } },
-        },
-      ],
-    },
     userExamples: [
       {
         id: "adjustable-standard",
-        variables: {
+        inputs: {
           system_minutes: { type: "integer", value: 90 },
           evidence_level: { type: "string", value: "green" },
         },
+        expectedResult: { type: "money_cents", amountCents: 2_000 },
       },
     ],
     currentMarginCents: "5000",
   };
+  evidence.provenance.dataSelectionHash = authorizedEvidenceHash(evidence);
+  return deepFreezeFixture(evidence);
+}
+
+function authorizedEvidenceHash(
+  evidence: AuthorizedCustomRuleSimulationEvidence,
+): string {
+  return createHash("sha256")
+    .update(
+      fixtureCanonicalJson({
+        provenance: {
+          organizationId: evidence.provenance.organizationId,
+          projectId: evidence.provenance.projectId,
+          actorId: evidence.provenance.actorId,
+          selectionToken: evidence.provenance.selectionToken,
+          immutableSourceVersions: [
+            ...evidence.provenance.immutableSourceVersions,
+          ].sort(
+            (left, right) =>
+              left.source.localeCompare(right.source) ||
+              left.version.localeCompare(right.version),
+          ),
+        },
+        sampleSource: evidence.sampleSource,
+        sampleSelection: {
+          ...evidence.sampleSelection,
+          criteria: [...evidence.sampleSelection.criteria].sort((left, right) =>
+            left.localeCompare(right),
+          ),
+        },
+        records: [...evidence.records].sort((left, right) =>
+          left.recordId.localeCompare(right.recordId),
+        ),
+        userExamples: [...evidence.userExamples].sort((left, right) =>
+          left.id.localeCompare(right.id),
+        ),
+        currentMarginCents: evidence.currentMarginCents ?? null,
+      }),
+      "utf8",
+    )
+    .digest("hex");
+}
+
+function fixtureCanonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => fixtureCanonicalJson(item)).join(",")}]`;
+  }
+  return `{${Object.entries(value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(
+      ([key, child]) =>
+        `${JSON.stringify(key)}:${fixtureCanonicalJson(child)}`,
+    )
+    .join(",")}}`;
+}
+
+function deepFreezeFixture<Value>(value: Value): Value {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if ("value" in descriptor) deepFreezeFixture(descriptor.value);
+  }
+  return Object.freeze(value);
 }
 
 function contract(): BusinessRuleContract {
