@@ -254,37 +254,57 @@ describe("product-owned AST contracts", () => {
 });
 
 describe("strict unit adapters", () => {
-  it("converts yuan and percent values to integer storage units", () => {
+  it("scales canonical decimal yuan and percent values exactly", () => {
     expect(yuanToCentsStrict(0.01)).toBe(1);
+    expect(yuanToCentsStrict(1e-2)).toBe(1);
     expect(yuanToCentsStrict(0.29)).toBe(29);
-    expect(yuanToCentsStrict(0.1 + 0.2)).toBe(30);
     expect(yuanToCentsStrict(10_000_000.03)).toBe(1_000_000_003);
     expect(yuanToCentsStrict(-10_000_000.03)).toBe(-1_000_000_003);
-    expect(yuanToCentsStrict(Number.MAX_SAFE_INTEGER / 100)).toBe(
-      Number.MAX_SAFE_INTEGER,
-    );
-    expect(yuanToCentsStrict(Number.MIN_SAFE_INTEGER / 100)).toBe(
-      Number.MIN_SAFE_INTEGER,
-    );
+    expect(yuanToCentsStrict(10_000_000_000.03)).toBe(1_000_000_000_003);
+    expect(yuanToCentsStrict(-10_000_000_000.03)).toBe(-1_000_000_000_003);
     expect(centsToLegacyYuan(29)).toBe(0.29);
     expect(percentToBpsStrict(80)).toBe(8000);
     expect(percentToBpsStrict(0.01)).toBe(1);
+    expect(percentToBpsStrict(1e-2)).toBe(1);
     expect(percentToBpsStrict(-0.01)).toBe(-1);
+    expect(percentToBpsStrict(10_000_000_000.03)).toBe(1_000_000_000_003);
+    expect(percentToBpsStrict(-10_000_000_000.03)).toBe(
+      -1_000_000_000_003,
+    );
     expect(assertSafeIntegerValue(42, "test value")).toBe(42);
   });
 
-  it("rejects sub-unit, nonfinite, and unsafe conversion inputs", () => {
+  it("uses the canonical decimal string at the safe-integer boundary", () => {
+    const largestClearlySafeYuan = 90_071_992_547_409.9;
+
+    expect(largestClearlySafeYuan.toString()).toBe("90071992547409.9");
+    expect(yuanToCentsStrict(largestClearlySafeYuan)).toBe(
+      Number.MAX_SAFE_INTEGER - 1,
+    );
+    expect(yuanToCentsStrict(-largestClearlySafeYuan)).toBe(
+      Number.MIN_SAFE_INTEGER + 1,
+    );
+    expect(() => yuanToCentsStrict(90_071_992_547_410)).toThrow();
+    expect(() => yuanToCentsStrict(-90_071_992_547_410)).toThrow();
+    expect(() => percentToBpsStrict(90_071_992_547_410)).toThrow();
+  });
+
+  it("rejects fractional, nonfinite, and silently rounded conversions", () => {
     for (const value of [Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() => yuanToCentsStrict(value)).toThrow();
       expect(() => percentToBpsStrict(value)).toThrow();
     }
 
     expect(() => yuanToCentsStrict(0.001)).toThrow();
+    expect(() => yuanToCentsStrict(1e-3)).toThrow();
     expect(() => yuanToCentsStrict(0.291)).toThrow();
     expect(() => yuanToCentsStrict(1e-18)).toThrow();
     expect(() => yuanToCentsStrict(-1e-18)).toThrow();
+    expect(() => yuanToCentsStrict(0.1 + 0.2)).toThrow();
     expect(() => yuanToCentsStrict(10_000_000_000_000.002)).toThrow();
     expect(() => percentToBpsStrict(80.001)).toThrow();
+    expect(() => percentToBpsStrict(0.001)).toThrow();
+    expect(() => percentToBpsStrict(1e-3)).toThrow();
     expect(() => percentToBpsStrict(1e-18)).toThrow();
     expect(() => percentToBpsStrict(-1e-18)).toThrow();
     expect(() => yuanToCentsStrict(Number.MAX_SAFE_INTEGER)).toThrow();

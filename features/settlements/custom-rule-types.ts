@@ -181,7 +181,11 @@ export type CompiledAstNode =
 const POSTGRES_BIGINT_MIN = BigInt("-9223372036854775808");
 const POSTGRES_BIGINT_MAX = BigInt("9223372036854775807");
 const POSTGRES_BIGINT_DECIMAL_PATTERN = /^-?\d+$/;
-const MAX_SCALED_INTEGER_DRIFT = 1e-6;
+const CANONICAL_NUMBER_DECIMAL_PATTERN =
+  /^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/;
+const SAFE_INTEGER_MIN_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
+const SAFE_INTEGER_MAX_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const ZERO_BIGINT = BigInt(0);
 
 export function isCustomRuleTargetCompatible(
   scope: CustomRuleScope,
@@ -198,7 +202,7 @@ export function assertSafeIntegerValue(value: number, label: string): number {
 }
 
 export function yuanToCentsStrict(value: number): number {
-  return scaleToSafeInteger(value, 100, "yuan", "cents");
+  return scaleCanonicalDecimalToSafeInteger(value, 2, "yuan", "cents");
 }
 
 export function centsToLegacyYuan(cents: number): number {
@@ -206,7 +210,12 @@ export function centsToLegacyYuan(cents: number): number {
 }
 
 export function percentToBpsStrict(value: number): number {
-  return scaleToSafeInteger(value, 100, "percent", "basis points");
+  return scaleCanonicalDecimalToSafeInteger(
+    value,
+    2,
+    "percent",
+    "basis points",
+  );
 }
 
 export function parsePostgresBigintCents(
@@ -238,9 +247,9 @@ export function serializePostgresBigintCents(
   return parsePostgresBigintCents(value).toString(10);
 }
 
-function scaleToSafeInteger(
+function scaleCanonicalDecimalToSafeInteger(
   value: number,
-  scale: number,
+  decimalPlaces: number,
   inputLabel: string,
   outputLabel: string,
 ): number {
@@ -248,19 +257,44 @@ function scaleToSafeInteger(
     throw new RangeError(`${inputLabel} must be finite`);
   }
 
-  const scaled = value * scale;
-  if (!Number.isFinite(scaled)) {
-    throw new RangeError(`${outputLabel} overflowed`);
+  const match = CANONICAL_NUMBER_DECIMAL_PATTERN.exec(value.toString());
+  if (!match) {
+    throw new TypeError(`${inputLabel} must use canonical decimal notation`);
   }
 
-  const rounded = assertSafeIntegerValue(Math.round(scaled), outputLabel);
-  const tolerance = Math.min(
-    Number.EPSILON * Math.abs(scaled) * Math.max(2, scale / 25),
-    MAX_SCALED_INTEGER_DRIFT,
-  );
-  if (Math.abs(scaled - rounded) > tolerance) {
-    throw new RangeError(`${inputLabel} has a fractional ${outputLabel} value`);
+  const [, sign, wholeDigits, fractionalDigits = "", exponentText = "0"] =
+    match;
+  const digits = BigInt(`${wholeDigits}${fractionalDigits}`);
+  const scaledExponent =
+    Number(exponentText) - fractionalDigits.length + decimalPlaces;
+
+  let magnitude: bigint;
+  if (scaledExponent >= 0) {
+    magnitude = digits * decimalPowerOfTen(scaledExponent);
+  } else {
+    const divisor = decimalPowerOfTen(-scaledExponent);
+    if (digits % divisor !== ZERO_BIGINT) {
+      throw new RangeError(
+        `${inputLabel} has a fractional ${outputLabel} value`,
+      );
+    }
+    magnitude = digits / divisor;
   }
 
-  return rounded;
+  const scaled = sign === "-" ? -magnitude : magnitude;
+  if (
+    scaled < SAFE_INTEGER_MIN_BIGINT ||
+    scaled > SAFE_INTEGER_MAX_BIGINT
+  ) {
+    throw new RangeError(`${outputLabel} must be a safe integer`);
+  }
+
+  return Number(scaled);
+}
+
+function decimalPowerOfTen(exponent: number): bigint {
+  if (!Number.isSafeInteger(exponent) || exponent < 0) {
+    throw new RangeError("decimal exponent must be a nonnegative safe integer");
+  }
+  return BigInt(`1${"0".repeat(exponent)}`);
 }
