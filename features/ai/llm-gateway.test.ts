@@ -116,6 +116,57 @@ describe("runAiGateway", () => {
     });
   });
 
+  it("retries punctuation-only text once before accepting a meaningful answer", async () => {
+    const runText = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "succeeded",
+        text: ".\n.",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        latencyMs: 10,
+        costCents: 0,
+      })
+      .mockResolvedValueOnce({
+        status: "succeeded",
+        text: "完整答复",
+        usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 },
+        latencyMs: 12,
+        costCents: 0,
+      });
+    const provider: AiProvider = {
+      name: "deepseek",
+      capabilities: ["text"],
+      runText,
+      async runStructured() {
+        throw new Error("not used");
+      },
+      async runWithTools() {
+        throw new Error("not used");
+      },
+      estimateCost() {
+        return { costCents: 0 };
+      },
+    };
+
+    const result = await runAiGateway({
+      providers: [provider],
+      primaryProvider: "deepseek",
+      request: {
+        kind: "text",
+        promptKey: "dashboard.ai.chat",
+        promptVersion: 1,
+        messages: [{ role: "user", content: "分析风险" }],
+      },
+    });
+
+    expect(runText).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      status: "succeeded",
+      providerName: "deepseek",
+      text: "完整答复",
+    });
+  });
+
   it("returns all provider failed when structured output does not match the schema", async () => {
     const result = await runAiGateway({
       providers: [
