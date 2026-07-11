@@ -70,11 +70,13 @@ function executionFor(input: {
   ast: CompiledAstNode;
   variables?: Readonly<Record<string, TypedRuntimeValue>>;
   parameters?: Readonly<Record<string, TypedRuntimeValue>>;
+  limits?: { maxSteps: number; maxDepth: number };
 }): CustomRuleExecutionWithTrace {
   return executeCompiledCustomRuleWithTrace({
     ast: input.ast,
     variables: input.variables ?? {},
     parameters: input.parameters ?? {},
+    ...(input.limits === undefined ? {} : { limits: input.limits }),
   });
 }
 
@@ -134,6 +136,57 @@ function expectExplanationIssue(
     return explanationError;
   }
   throw new Error(`Expected ${code}`);
+}
+
+function countingProxy<Target extends object>(target: Target): {
+  proxy: Target;
+  reads: () => number;
+} {
+  let reads = 0;
+  const recordRead = () => {
+    reads += 1;
+  };
+  const proxy = new Proxy(target, {
+    get(current, property, receiver) {
+      recordRead();
+      return Reflect.get(current, property, receiver);
+    },
+    getOwnPropertyDescriptor(current, property) {
+      recordRead();
+      return Reflect.getOwnPropertyDescriptor(current, property);
+    },
+    getPrototypeOf(current) {
+      recordRead();
+      return Reflect.getPrototypeOf(current);
+    },
+    has(current, property) {
+      recordRead();
+      return Reflect.has(current, property);
+    },
+    ownKeys(current) {
+      recordRead();
+      return Reflect.ownKeys(current);
+    },
+  });
+  return { proxy, reads: () => reads };
+}
+
+function replaceFinalNode(
+  ast: CompiledAstNode,
+  replacement: CompiledAstNode,
+): CompiledAstNode {
+  const copy = structuredClone(ast);
+  if (copy.kind !== "call" || copy.arguments[0]?.kind !== "object") {
+    throw new Error("Expected a compiled money_result AST");
+  }
+  const finalEntry = copy.arguments[0].entries.find(
+    (entry) => entry.key === "final",
+  );
+  if (!finalEntry) {
+    throw new Error("Expected a final component");
+  }
+  finalEntry.value = replacement;
+  return copy;
 }
 
 function cptAst(untriggeredBonusYuan = 99): CompiledAstNode {
@@ -235,6 +288,74 @@ describe("custom rule template explanation", () => {
 });
 
 describe("custom rule execution explanation", () => {
+  it("recomputes legal high-depth and high-step executions with bounded safe limits", () => {
+    const moneyType = scalar("money_cents");
+    let deepFinal: CompiledAstNode = {
+      kind: "literal",
+      inferredType: moneyType,
+      valueCents: 100,
+    };
+    for (let index = 0; index < 70; index += 1) {
+      deepFinal = {
+        kind: "unary",
+        operator: "+",
+        argument: deepFinal,
+        inferredType: moneyType,
+      };
+    }
+    const deepAst = replaceFinalNode(
+      compileFormula("money_result({ final: yuan(1) })"),
+      deepFinal,
+    );
+    const deepExecution = executionFor({
+      ast: deepAst,
+      limits: { maxSteps: 1_000, maxDepth: 80 },
+    });
+    expect(
+      buildCustomRuleExecutionExplanation({
+        ast: deepAst,
+        trace: deepExecution.trace,
+        result: deepExecution.result,
+        labels: labels(),
+      }),
+    ).toContain("最终金额：1.00 元");
+
+    const wideAst = structuredClone(
+      compileFormula(`money_result({
+        final: if(in(streamer_level, ["A"]), yuan(1), yuan(0))
+      })`),
+    );
+    if (
+      wideAst.kind !== "call" ||
+      wideAst.arguments[0]?.kind !== "object" ||
+      wideAst.arguments[0].entries[0]?.value.kind !== "call" ||
+      wideAst.arguments[0].entries[0].value.arguments[0]?.kind !== "call" ||
+      wideAst.arguments[0].entries[0].value.arguments[0].arguments[1]?.kind !==
+        "array"
+    ) {
+      throw new Error("Expected a compiled in array");
+    }
+    wideAst.arguments[0].entries[0].value.arguments[0].arguments[1].elements =
+      Array.from({ length: 10_200 }, () => ({
+        kind: "literal" as const,
+        inferredType: scalar("string"),
+        value: "A",
+      }));
+    const wideExecution = executionFor({
+      ast: wideAst,
+      variables: { streamer_level: stringValue("missing") },
+      limits: { maxSteps: 30_000, maxDepth: 80 },
+    });
+    expect(
+      buildCustomRuleExecutionExplanation({
+        ast: wideAst,
+        trace: wideExecution.trace,
+        result: wideExecution.result,
+        labels: labels(),
+      }),
+    ).toContain("最终金额：0.00 元");
+  });
+
   it("is byte-stable, includes units and ordered components, and omits the untriggered branch", () => {
     const ast = cptAst();
     const execution = executionFor({
@@ -331,6 +452,129 @@ describe("custom rule execution explanation", () => {
     const capExplanation = explainAt(200_000);
     expect(capExplanation).toContain("触发上限 100.00 元");
     expect(capExplanation).not.toContain("触发下限");
+  });
+
+  it("renders reconciled tier amounts whose sum equals the rounded component", () => {
+    const ast = compileFormula(`money_result({
+      final: tiered(system_minutes, [
+        { upto: 30, rate_per_hour: yuan(0.01) },
+        { upto: 60, rate_per_hour: yuan(0.01) }
+      ])
+    })`);
+    const execution = executionFor({
+      ast,
+      variables: { system_minutes: integer(60) },
+    });
+
+    const explanation = buildCustomRuleExecutionExplanation({
+      ast,
+      trace: execution.trace,
+      result: execution.result,
+      labels: labels(),
+    });
+
+    expect(explanation).toContain(
+      "分段计费第1档：30 分钟 × 0.01 元/小时 = 0.01 元",
+    );
+    expect(explanation).toContain(
+      "分段计费第2档：30 分钟 × 0.01 元/小时 = 0.00 元",
+    );
+    expect(explanation).toContain("最终金额：0.01 元");
+  });
+
+  it("rejects explanation proxies without invoking traps", () => {
+    const ast = compileFormula("money_result({ final: yuan(1) })");
+    const execution = executionFor({ ast });
+    const registry = labels();
+    const baseInput = {
+      ast,
+      trace: execution.trace,
+      result: execution.result,
+      labels: registry,
+    };
+    const outerInput = countingProxy(baseInput);
+    const astProxy = countingProxy(ast);
+    const traceProxy = countingProxy([...execution.trace]);
+    const resultProxy = countingProxy(execution.result);
+    const componentsProxy = countingProxy({
+      ...execution.result.componentsCents,
+    });
+    const nestedTrace = [...execution.trace];
+    const componentIndex = nestedTrace.findIndex(
+      (event) => event.kind === "component",
+    );
+    if (componentIndex < 0) {
+      throw new Error("Expected a component trace event");
+    }
+    const eventProxy = countingProxy(nestedTrace[componentIndex] as object);
+    nestedTrace[componentIndex] =
+      eventProxy.proxy as CustomRuleExecutionWithTrace["trace"][number];
+
+    const cases: Array<{
+      operation: () => unknown;
+      reads: () => number;
+    }> = [
+      {
+        operation: () =>
+          buildCustomRuleExecutionExplanation(
+            outerInput.proxy as Parameters<
+              typeof buildCustomRuleExecutionExplanation
+            >[0],
+          ),
+        reads: outerInput.reads,
+      },
+      {
+        operation: () =>
+          buildCustomRuleExecutionExplanation({
+            ...baseInput,
+            ast: astProxy.proxy,
+          }),
+        reads: astProxy.reads,
+      },
+      {
+        operation: () =>
+          buildCustomRuleExecutionExplanation({
+            ...baseInput,
+            trace: traceProxy.proxy,
+          }),
+        reads: traceProxy.reads,
+      },
+      {
+        operation: () =>
+          buildCustomRuleExecutionExplanation({
+            ...baseInput,
+            trace: nestedTrace,
+          }),
+        reads: eventProxy.reads,
+      },
+      {
+        operation: () =>
+          buildCustomRuleExecutionExplanation({
+            ...baseInput,
+            result: resultProxy.proxy,
+          }),
+        reads: resultProxy.reads,
+      },
+      {
+        operation: () =>
+          buildCustomRuleExecutionExplanation({
+            ...baseInput,
+            result: {
+              kind: "money_result",
+              componentsCents: componentsProxy.proxy,
+            },
+          }),
+        reads: componentsProxy.reads,
+      },
+    ];
+
+    for (const testCase of cases) {
+      expectExplanationIssue(
+        testCase.operation,
+        "EXPLANATION_INVALID_INPUT",
+      );
+      expect(testCase.reads()).toBe(0);
+    }
   });
 
   it("rejects free-form AI prose instead of treating it as authoritative", () => {

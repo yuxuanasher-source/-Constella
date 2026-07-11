@@ -1,7 +1,9 @@
 import { typedRuntimeValueSchema } from "./custom-rule-contract";
 import {
+  CUSTOM_RULE_MAX_EXECUTION_LIMITS,
   CustomRuleExecutionError,
   executeCompiledCustomRuleWithTrace,
+  isCustomRuleProxy,
   preflightCompiledCustomRuleAst,
   type CustomRuleExecutionTraceEvent,
   type CustomRuleMoneyResult,
@@ -579,7 +581,12 @@ function verifyExecution(
 
   let recomputed;
   try {
-    recomputed = executeCompiledCustomRuleWithTrace({ ast, variables, parameters });
+    recomputed = executeCompiledCustomRuleWithTrace({
+      ast,
+      variables,
+      parameters,
+      limits: CUSTOM_RULE_MAX_EXECUTION_LIMITS,
+    });
   } catch (error) {
     if (error instanceof CustomRuleExecutionError) {
       executionMismatch("Trace cannot reproduce the compiled AST execution");
@@ -741,6 +748,9 @@ function snapshotOwnData(value: unknown): unknown {
     if (nodes > 200_000 || depth > 256) {
       throw new DataSnapshotFailure();
     }
+    if (isCustomRuleProxy(current)) {
+      throw new DataSnapshotFailure();
+    }
     if (current === null || typeof current !== "object") {
       if (
         typeof current === "undefined" ||
@@ -814,7 +824,12 @@ function snapshotOwnData(value: unknown): unknown {
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    isCustomRuleProxy(value) ||
+    Array.isArray(value)
+  ) {
     return false;
   }
   const prototype = Object.getPrototypeOf(value);

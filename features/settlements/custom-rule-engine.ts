@@ -1,3 +1,5 @@
+import { types as nodeUtilTypes } from "node:util";
+
 import {
   compiledAstNodeSchema,
   typedRuntimeValueSchema,
@@ -97,26 +99,29 @@ export type CustomRuleExecutionWithTrace = Readonly<{
   trace: readonly CustomRuleExecutionTraceEvent[];
 }>;
 
+export type CustomRuleExecutionLimits = Readonly<{
+  maxSteps: number;
+  maxDepth: number;
+}>;
+
 export type ExecuteCompiledCustomRuleInput = Readonly<{
   ast: CompiledAstNode;
   variables: Readonly<Record<string, TypedRuntimeValue>>;
   parameters: Readonly<Record<string, TypedRuntimeValue>>;
-  limits?: Readonly<{ maxSteps: number; maxDepth: number }>;
+  limits?: CustomRuleExecutionLimits;
 }>;
-
-type ExecutionLimits = Readonly<{ maxSteps: number; maxDepth: number }>;
 
 type PreparedInput = Readonly<{
   ast: CompiledAstNode;
   variables: ReadonlyMap<string, TypedRuntimeValue>;
   parameters: ReadonlyMap<string, TypedRuntimeValue>;
-  limits: ExecutionLimits;
+  limits: CustomRuleExecutionLimits;
 }>;
 
 type EngineContext = {
   readonly variables: ReadonlyMap<string, TypedRuntimeValue>;
   readonly parameters: ReadonlyMap<string, TypedRuntimeValue>;
-  readonly limits: ExecutionLimits;
+  readonly limits: CustomRuleExecutionLimits;
   readonly trace: CustomRuleExecutionTraceEvent[];
   readonly componentNames: ReadonlySet<string>;
   readonly components: Map<string, TypedRuntimeValue>;
@@ -125,22 +130,45 @@ type EngineContext = {
 
 type Rational = Readonly<{ numerator: bigint; denominator: bigint }>;
 
-const DEFAULT_LIMITS: ExecutionLimits = Object.freeze({
+type WorkBudget = {
+  readonly limit: number;
+  used: number;
+};
+
+type AstPreflightState = {
+  readonly maxSteps: number;
+  readonly maxDepth: number;
+  nodes: number;
+};
+
+const DEFAULT_LIMITS: CustomRuleExecutionLimits = Object.freeze({
   maxSteps: 10_000,
   maxDepth: 64,
 });
 const MAX_CALLER_STEPS = 100_000;
 const MAX_CALLER_DEPTH = 128;
+export const CUSTOM_RULE_MAX_EXECUTION_LIMITS: CustomRuleExecutionLimits =
+  Object.freeze({
+    maxSteps: MAX_CALLER_STEPS,
+    maxDepth: MAX_CALLER_DEPTH,
+  });
 const SNAPSHOT_MAX_DEPTH = 256;
 const SNAPSHOT_MAX_NODES = 200_000;
+const SNAPSHOT_STEP_MULTIPLIER = 4;
 const MAX_RATIONAL_BITS = 256;
 const MAX_DECIMAL_SCALE = 36;
 const RATE_DENOMINATOR = BigInt(10_000);
 const MINUTES_PER_HOUR = BigInt(60);
-const PREFLIGHT_MAX_NODES = 100_000;
-const PREFLIGHT_MAX_DEPTH = 128;
 
 class DataSnapshotFailure extends Error {}
+
+export function isCustomRuleProxy(value: unknown): boolean {
+  return (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function") &&
+    nodeUtilTypes.isProxy(value)
+  );
+}
 
 export function executeCompiledCustomRule(
   input: ExecuteCompiledCustomRuleInput,
@@ -174,36 +202,69 @@ export function executeCompiledCustomRuleWithTrace(
 }
 
 function prepareInput(input: unknown): PreparedInput {
-  const outer = readOwnDataRecord(input);
+  if (!isPlainRecord(input)) {
+    invalidExecutionInput();
+  }
+  const limitsDescriptor = Object.getOwnPropertyDescriptor(input, "limits");
+  if (
+    limitsDescriptor &&
+    (limitsDescriptor.enumerable !== true ||
+      !Object.hasOwn(limitsDescriptor, "value"))
+  ) {
+    invalidExecutionInput();
+  }
+  const limits = parseLimits(limitsDescriptor?.value);
+  const outer = readOwnDataRecord(
+    input,
+    createSnapshotBudget(limits.maxSteps),
+    "$",
+  );
   if (
     !outer ||
     !hasExactOrOptionalKeys(outer, ["ast", "variables", "parameters"], [
       "limits",
     ])
   ) {
-    executionFailure(
-      "EXECUTION_INVALID_INPUT",
-      "Execution input must contain only own data properties",
-      "$",
-    );
+    invalidExecutionInput();
   }
 
-  const limits = parseLimits(outer.get("limits"));
-  const variables = parseRuntimeRecord(outer.get("variables"), "$.variables");
+  const runtimeSnapshotBudget = createSnapshotBudget(limits.maxSteps);
+  const variables = parseRuntimeRecord(
+    outer.get("variables"),
+    "$.variables",
+    runtimeSnapshotBudget,
+  );
   const parameters = parseRuntimeRecord(
     outer.get("parameters"),
     "$.parameters",
+    runtimeSnapshotBudget,
   );
-  const ast = preflightCompiledCustomRuleAst(outer.get("ast"));
+  const ast = parseCompiledAst(
+    outer.get("ast"),
+    createSnapshotBudget(limits.maxSteps),
+  );
+  preflightParsedCustomRuleAst(ast, limits);
 
   return { ast, variables, parameters, limits };
 }
 
-function parseLimits(value: unknown): ExecutionLimits {
+function invalidExecutionInput(): never {
+  executionFailure(
+    "EXECUTION_INVALID_INPUT",
+    "Execution input must contain only own data properties",
+    "$",
+  );
+}
+
+function parseLimits(value: unknown): CustomRuleExecutionLimits {
   if (value === undefined) {
     return DEFAULT_LIMITS;
   }
-  const values = readOwnDataRecord(value);
+  const values = readOwnDataRecord(
+    value,
+    { limit: 8, used: 0 },
+    "$.limits",
+  );
   if (!values || !hasExactOrOptionalKeys(values, ["maxSteps", "maxDepth"], [])) {
     invalidLimits();
   }
@@ -233,11 +294,21 @@ function invalidLimits(): never {
 function parseRuntimeRecord(
   value: unknown,
   path: string,
+  budget: WorkBudget,
 ): ReadonlyMap<string, TypedRuntimeValue> {
   let snapshot: unknown;
   try {
-    snapshot = snapshotOwnData(value, SNAPSHOT_MAX_DEPTH, SNAPSHOT_MAX_NODES);
-  } catch {
+    snapshot = snapshotOwnData(
+      value,
+      SNAPSHOT_MAX_DEPTH,
+      SNAPSHOT_MAX_NODES,
+      budget,
+      path,
+    );
+  } catch (error) {
+    if (error instanceof CustomRuleExecutionError) {
+      throw error;
+    }
     invalidRuntimeInput(path);
   }
   if (!isPlainRecord(snapshot)) {
@@ -263,11 +334,20 @@ function invalidRuntimeInput(path: string): never {
   );
 }
 
-function parseCompiledAst(value: unknown): CompiledAstNode {
+function parseCompiledAst(value: unknown, budget: WorkBudget): CompiledAstNode {
   let snapshot: unknown;
   try {
-    snapshot = snapshotOwnData(value, SNAPSHOT_MAX_DEPTH, SNAPSHOT_MAX_NODES);
-  } catch {
+    snapshot = snapshotOwnData(
+      value,
+      SNAPSHOT_MAX_DEPTH,
+      SNAPSHOT_MAX_NODES,
+      budget,
+      "$.ast",
+    );
+  } catch (error) {
+    if (error instanceof CustomRuleExecutionError) {
+      throw error;
+    }
     invalidAst();
   }
 
@@ -284,16 +364,32 @@ function parseCompiledAst(value: unknown): CompiledAstNode {
 
 export function preflightCompiledCustomRuleAst(
   value: unknown,
+  limits: CustomRuleExecutionLimits = CUSTOM_RULE_MAX_EXECUTION_LIMITS,
 ): CompiledAstNode {
-  const ast = parseCompiledAst(value);
-  const state = { nodes: 0 };
-  preflightMoneyResultAst(ast, state);
+  const validatedLimits = parseLimits(limits);
+  const ast = parseCompiledAst(
+    value,
+    createSnapshotBudget(validatedLimits.maxSteps),
+  );
+  preflightParsedCustomRuleAst(ast, validatedLimits);
   return ast;
+}
+
+function preflightParsedCustomRuleAst(
+  ast: CompiledAstNode,
+  limits: CustomRuleExecutionLimits,
+): void {
+  const state: AstPreflightState = {
+    nodes: 0,
+    maxSteps: limits.maxSteps,
+    maxDepth: limits.maxDepth,
+  };
+  preflightMoneyResultAst(ast, state);
 }
 
 function preflightMoneyResultAst(
   ast: CompiledAstNode,
-  state: { nodes: number },
+  state: AstPreflightState,
 ): void {
   preflightEnter(state, "$", 0);
   if (
@@ -346,7 +442,7 @@ function preflightNode(
   node: CompiledAstNode,
   path: string,
   depth: number,
-  state: { nodes: number },
+  state: AstPreflightState,
   components: AstPreflightComponents,
 ): RuntimeValueType {
   preflightEnter(state, path, depth);
@@ -486,7 +582,7 @@ function preflightCall(
   node: Extract<CompiledAstNode, { kind: "call" }>,
   path: string,
   depth: number,
-  state: { nodes: number },
+  state: AstPreflightState,
   components: AstPreflightComponents,
 ): RuntimeValueType {
   switch (node.callee) {
@@ -687,7 +783,7 @@ function preflightTieredCall(
   node: Extract<CompiledAstNode, { kind: "call" }>,
   path: string,
   depth: number,
-  state: { nodes: number },
+  state: AstPreflightState,
   components: AstPreflightComponents,
 ): RuntimeValueType {
   assertPreflightArity(node, 2, path);
@@ -753,7 +849,7 @@ function preflightArguments(
   node: Extract<CompiledAstNode, { kind: "call" }>,
   path: string,
   depth: number,
-  state: { nodes: number },
+  state: AstPreflightState,
   components: AstPreflightComponents,
 ): RuntimeValueType[] {
   return node.arguments.map((argument, index) =>
@@ -1021,15 +1117,22 @@ function isKnownBinaryOperator(operator: string): boolean {
 }
 
 function preflightEnter(
-  state: { nodes: number },
+  state: AstPreflightState,
   path: string,
   depth: number,
 ): void {
   state.nodes += 1;
-  if (depth > PREFLIGHT_MAX_DEPTH || state.nodes > PREFLIGHT_MAX_NODES) {
+  if (depth > state.maxDepth) {
     executionFailure(
-      "EXECUTION_INVALID_AST",
-      "Compiled AST exceeds the preflight traversal bound",
+      "EXECUTION_MAX_DEPTH",
+      "Compiled AST preflight exceeded maxDepth",
+      path,
+    );
+  }
+  if (state.nodes > state.maxSteps) {
+    executionFailure(
+      "EXECUTION_MAX_STEPS",
+      "Compiled AST preflight exceeded maxSteps",
       path,
     );
   }
@@ -1043,12 +1146,49 @@ function invalidAst(): never {
   );
 }
 
-function readOwnDataRecord(value: unknown): ReadonlyMap<string, unknown> | null {
+function createSnapshotBudget(maxSteps: number): WorkBudget {
+  return {
+    limit: Math.min(SNAPSHOT_MAX_NODES, maxSteps * SNAPSHOT_STEP_MULTIPLIER),
+    used: 0,
+  };
+}
+
+function consumeWorkBudget(
+  budget: WorkBudget,
+  path: string,
+  units = 1,
+): void {
+  if (units < 0 || !Number.isSafeInteger(units)) {
+    executionFailure(
+      "EXECUTION_INVALID_LIMITS",
+      "Work budget units must be a non-negative safe integer",
+      path,
+    );
+  }
+  if (budget.used > budget.limit - units) {
+    executionFailure(
+      "EXECUTION_MAX_STEPS",
+      "Execution preparation exceeded the bounded work budget",
+      path,
+    );
+  }
+  budget.used += units;
+}
+
+function readOwnDataRecord(
+  value: unknown,
+  budget: WorkBudget,
+  path: string,
+): ReadonlyMap<string, unknown> | null {
+  if (isCustomRuleProxy(value)) {
+    return null;
+  }
   if (!isPlainRecord(value)) {
     return null;
   }
   const values = new Map<string, unknown>();
   for (const key of Reflect.ownKeys(value)) {
+    consumeWorkBudget(budget, path);
     if (typeof key !== "string") {
       return null;
     }
@@ -1081,13 +1221,18 @@ function snapshotOwnData(
   value: unknown,
   maxDepth: number,
   maxNodes: number,
+  budget: WorkBudget,
+  rootPath: string,
 ): unknown {
   const ancestors = new WeakSet<object>();
   const state = { nodes: 0 };
 
-  const visit = (current: unknown, depth: number): unknown => {
+  const visit = (current: unknown, depth: number, path: string): unknown => {
     state.nodes += 1;
     if (depth > maxDepth || state.nodes > maxNodes) {
+      throw new DataSnapshotFailure();
+    }
+    if (isCustomRuleProxy(current)) {
       throw new DataSnapshotFailure();
     }
     if (current === null || typeof current !== "object") {
@@ -1101,6 +1246,7 @@ function snapshotOwnData(
       }
       return current;
     }
+    consumeWorkBudget(budget, path);
     if (ancestors.has(current)) {
       throw new DataSnapshotFailure();
     }
@@ -1143,7 +1289,9 @@ function snapshotOwnData(
         ) {
           throw new DataSnapshotFailure();
         }
-        copy.push(visit(descriptor.value, depth + 1));
+        copy.push(
+          visit(descriptor.value, depth + 1, `${path}[${index}]`),
+        );
       }
       ancestors.delete(current);
       return copy;
@@ -1165,17 +1313,22 @@ function snapshotOwnData(
       ) {
         throw new DataSnapshotFailure();
       }
-      copy[key] = visit(descriptor.value, depth + 1);
+      copy[key] = visit(descriptor.value, depth + 1, `${path}.${key}`);
     }
     ancestors.delete(current);
     return copy;
   };
 
-  return visit(value, 0);
+  return visit(value, 0, rootPath);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    isCustomRuleProxy(value) ||
+    Array.isArray(value)
+  ) {
     return false;
   }
   const prototype = Object.getPrototypeOf(value);
@@ -1460,12 +1613,18 @@ function evaluateBinary(
     case "==":
     case "===":
       assertComparableValues(left, right, path);
-      result = { type: "boolean", value: runtimeValuesEqual(left, right) };
+      result = {
+        type: "boolean",
+        value: runtimeValuesEqual(left, right, context, path),
+      };
       break;
     case "!=":
     case "!==":
       assertComparableValues(left, right, path);
-      result = { type: "boolean", value: !runtimeValuesEqual(left, right) };
+      result = {
+        type: "boolean",
+        value: !runtimeValuesEqual(left, right, context, path),
+      };
       break;
     case "<":
     case "<=":
@@ -1473,7 +1632,12 @@ function evaluateBinary(
     case ">=":
       result = {
         type: "boolean",
-        value: evaluateOrderedComparison(node.operator, left, right, path),
+        value: evaluateOrderedComparison(
+          node.operator,
+          left,
+          right,
+          path,
+        ),
       };
       break;
     default:
@@ -1939,8 +2103,18 @@ function evaluateTiered(
   let previousLimit = zeroRational();
   let totalAmount = zeroRational();
   let sawUnbounded = false;
+  const triggeredTiers: Array<{
+    tierIndex: number;
+    minutesApplied: number;
+    ratePerHourCents: number;
+    exactAmount: Rational;
+  }> = [];
 
   for (const [index, tier] of tiers.items.entries()) {
+    consumeExecutionWork(
+      context,
+      `${path}.arguments[1].elements[${index}]`,
+    );
     if (tier.type !== "object") {
       invalidAstContext("Each tier must be an object", path);
     }
@@ -2003,13 +2177,11 @@ function evaluateTiered(
         path,
       );
       totalAmount = addRational(totalAmount, tierAmount, path);
-      context.trace.push({
-        kind: "tier",
-        path,
+      triggeredTiers.push({
         tierIndex: index,
         minutesApplied: rationalToFiniteNumber(applied, path),
         ratePerHourCents: ratePerHour.amountCents,
-        amountCents: rationalToRoundedSafeInteger(tierAmount, path),
+        exactAmount: tierAmount,
       });
     }
 
@@ -2019,7 +2191,89 @@ function evaluateTiered(
     previousLimit = upperLimit;
   }
 
-  return moneyValue(rationalToRoundedSafeInteger(totalAmount, path), path);
+  const totalCents = rationalToRoundedSafeInteger(totalAmount, path);
+  const allocatedAmounts = allocateTierTraceAmounts(
+    triggeredTiers.map((tier) => tier.exactAmount),
+    totalCents,
+    context,
+    path,
+  );
+  for (const [index, tier] of triggeredTiers.entries()) {
+    context.trace.push({
+      kind: "tier",
+      path,
+      tierIndex: tier.tierIndex,
+      minutesApplied: tier.minutesApplied,
+      ratePerHourCents: tier.ratePerHourCents,
+      amountCents: allocatedAmounts[index],
+    });
+  }
+  return moneyValue(totalCents, path);
+}
+
+function allocateTierTraceAmounts(
+  exactAmounts: readonly Rational[],
+  roundedTotal: number,
+  context: EngineContext,
+  path: string,
+): number[] {
+  if (exactAmounts.length === 0) {
+    return [];
+  }
+  const allocations: number[] = [];
+  let floorSum = BigInt(0);
+  const rankedRemainders = exactAmounts.map((amount, index) => {
+    consumeExecutionWork(context, `${path}.tierAllocation[${index}]`);
+    if (amount.numerator < BigInt(0)) {
+      invalidAstContext("Tier trace allocation requires non-negative amounts", path);
+    }
+    const floor = amount.numerator / amount.denominator;
+    floorSum = checkedBigInt(floorSum + floor, path);
+    allocations.push(checkedBigIntToSafeNumber(floor, path));
+    return {
+      index,
+      remainder: normalizeRational(
+        amount.numerator % amount.denominator,
+        amount.denominator,
+        path,
+      ),
+    };
+  });
+  rankedRemainders.sort((left, right) => {
+    consumeExecutionWork(context, `${path}.tierAllocation.sort`);
+    const comparison = compareRational(
+      left.remainder,
+      right.remainder,
+      path,
+    );
+    return comparison === 0 ? left.index - right.index : -comparison;
+  });
+
+  const remainderUnits = BigInt(roundedTotal) - floorSum;
+  if (
+    remainderUnits < BigInt(0) ||
+    remainderUnits > BigInt(rankedRemainders.length)
+  ) {
+    executionFailure(
+      "EXECUTION_ARITHMETIC_OVERFLOW",
+      "Tier trace residue cannot reconcile to the rounded total",
+      path,
+    );
+  }
+  const unitCount = Number(remainderUnits);
+  for (let index = 0; index < unitCount; index += 1) {
+    consumeExecutionWork(context, `${path}.tierAllocation.remainder`);
+    const target = rankedRemainders[index];
+    if (!target) {
+      executionFailure(
+        "EXECUTION_ARITHMETIC_OVERFLOW",
+        "Tier trace residue allocation is incomplete",
+        path,
+      );
+    }
+    allocations[target.index] += 1;
+  }
+  return allocations;
 }
 
 function evaluateIn(
@@ -2034,12 +2288,21 @@ function evaluateIn(
   if (candidates.type !== "array") {
     invalidAstContext("in requires an array", path);
   }
-  for (const candidate of candidates.items) {
+  let result = false;
+  for (const [index, candidate] of candidates.items.entries()) {
     assertComparableValues(value, candidate, path);
+    if (
+      runtimeValuesEqual(
+        value,
+        candidate,
+        context,
+        `${path}.candidates[${index}]`,
+      )
+    ) {
+      result = true;
+      break;
+    }
   }
-  const result = candidates.items.some((candidate) =>
-    runtimeValuesEqual(value, candidate),
-  );
   if (scalarTypeOf(node.inferredType) !== "boolean") {
     invalidAstContext("in must return a boolean", path);
   }
@@ -2058,17 +2321,27 @@ function evaluateContains(
   if (collection.type !== "array") {
     invalidAstContext("contains requires an array", path);
   }
-  for (const candidate of collection.items) {
+  let found = false;
+  for (const [index, candidate] of collection.items.entries()) {
     assertComparableValues(candidate, item, path);
+    if (
+      runtimeValuesEqual(
+        candidate,
+        item,
+        context,
+        `${path}.collection[${index}]`,
+      )
+    ) {
+      found = true;
+      break;
+    }
   }
   if (scalarTypeOf(node.inferredType) !== "boolean") {
     invalidAstContext("contains must return a boolean", path);
   }
   return {
     type: "boolean",
-    value: collection.items.some((candidate) =>
-      runtimeValuesEqual(candidate, item),
-    ),
+    value: found,
   };
 }
 
@@ -2090,14 +2363,26 @@ function enterNode(context: EngineContext, path: string, depth: number): void {
       path,
     );
   }
-  context.steps += 1;
-  if (context.steps > context.limits.maxSteps) {
+  consumeExecutionWork(context, path);
+}
+
+function consumeExecutionWork(
+  context: EngineContext,
+  path: string,
+  units = 1,
+): void {
+  if (
+    !Number.isSafeInteger(units) ||
+    units < 0 ||
+    context.steps > context.limits.maxSteps - units
+  ) {
     executionFailure(
       "EXECUTION_MAX_STEPS",
       "Execution exceeded the configured maximum steps",
       path,
     );
   }
+  context.steps += units;
 }
 
 type NumericRuntimeValue = Extract<
@@ -2239,8 +2524,8 @@ function evaluateOrderedComparison(
   } else if (left.type === "string" && right.type === "string") {
     comparison = left.value.localeCompare(right.value, "en");
   } else if (left.type === "timestamp" && right.type === "timestamp") {
-    const leftTime = Date.parse(left.value);
-    const rightTime = Date.parse(right.value);
+    const leftTime = timestampEpoch(left.value, path);
+    const rightTime = timestampEpoch(right.value, path);
     comparison = leftTime < rightTime ? -1 : leftTime > rightTime ? 1 : 0;
   } else {
     invalidAstContext("Ordered comparison requires ordered scalar values", path);
@@ -2257,10 +2542,25 @@ function evaluateOrderedComparison(
   }
 }
 
+function timestampEpoch(value: string, path: string): number {
+  const epoch = Date.parse(value);
+  if (!Number.isFinite(epoch)) {
+    executionFailure(
+      "EXECUTION_INVALID_CONTEXT",
+      "Timestamp cannot be normalized to a finite epoch",
+      path,
+    );
+  }
+  return epoch;
+}
+
 function runtimeValuesEqual(
   left: TypedRuntimeValue,
   right: TypedRuntimeValue,
+  context: EngineContext,
+  path: string,
 ): boolean {
+  consumeExecutionWork(context, path);
   if (isGeneralNumericValue(left) && isGeneralNumericValue(right)) {
     return left.value === right.value;
   }
@@ -2276,14 +2576,23 @@ function runtimeValuesEqual(
     case "integer":
     case "boolean":
     case "string":
-    case "timestamp":
       return right.type === left.type && left.value === right.value;
+    case "timestamp":
+      return (
+        right.type === "timestamp" &&
+        timestampEpoch(left.value, path) === timestampEpoch(right.value, path)
+      );
     case "array":
       return (
         right.type === "array" &&
         left.items.length === right.items.length &&
         left.items.every((item, index) =>
-          runtimeValuesEqual(item, right.items[index]),
+          runtimeValuesEqual(
+            item,
+            right.items[index],
+            context,
+            `${path}.items[${index}]`,
+          ),
         )
       );
     case "object": {
@@ -2295,7 +2604,12 @@ function runtimeValuesEqual(
       return (
         JSON.stringify(leftKeys) === JSON.stringify(rightKeys) &&
         leftKeys.every((key) =>
-          runtimeValuesEqual(left.fields[key], right.fields[key]),
+          runtimeValuesEqual(
+            left.fields[key],
+            right.fields[key],
+            context,
+            `${path}.fields.${key}`,
+          ),
         )
       );
     }

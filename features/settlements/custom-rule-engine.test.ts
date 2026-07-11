@@ -11,6 +11,7 @@ import {
   CustomRuleExecutionError,
   executeCompiledCustomRule,
   executeCompiledCustomRuleWithTrace,
+  preflightCompiledCustomRuleAst,
 } from "./custom-rule-engine";
 
 const scalar = <ScalarType extends RuntimeScalarType>(
@@ -42,6 +43,11 @@ const rate = (rateBps: number): TypedRuntimeValue => ({
 
 const stringValue = (value: string): TypedRuntimeValue => ({
   type: "string",
+  value,
+});
+
+const timestamp = (value: string): TypedRuntimeValue => ({
+  type: "timestamp",
   value,
 });
 
@@ -125,6 +131,39 @@ function deepFreeze<Value>(value: Value): Value {
     Object.freeze(value);
   }
   return value;
+}
+
+function countingProxy<Target extends object>(target: Target): {
+  proxy: Target;
+  reads: () => number;
+} {
+  let reads = 0;
+  const recordRead = () => {
+    reads += 1;
+  };
+  const proxy = new Proxy(target, {
+    get(current, property, receiver) {
+      recordRead();
+      return Reflect.get(current, property, receiver);
+    },
+    getOwnPropertyDescriptor(current, property) {
+      recordRead();
+      return Reflect.getOwnPropertyDescriptor(current, property);
+    },
+    getPrototypeOf(current) {
+      recordRead();
+      return Reflect.getPrototypeOf(current);
+    },
+    has(current, property) {
+      recordRead();
+      return Reflect.has(current, property);
+    },
+    ownKeys(current) {
+      recordRead();
+      return Reflect.ownKeys(current);
+    },
+  });
+  return { proxy, reads: () => reads };
 }
 
 function replaceFinalNode(
@@ -238,6 +277,38 @@ describe("executeCompiledCustomRule calculations", () => {
         .filter((event) => event.kind === "tier")
         .map((event) => event.tierIndex),
     ).toEqual([0, 1]);
+  });
+
+  it("allocates tier rounding residue so trace amounts reconcile to the rounded total", () => {
+    const ast = compileFormula(`money_result({
+      final: tiered(system_minutes, [
+        { upto: 30, rate_per_hour: yuan(0.01) },
+        { upto: 60, rate_per_hour: yuan(0.01) }
+      ])
+    })`);
+    const runAt = (minutes: number) =>
+      executeCompiledCustomRuleWithTrace({
+        ast,
+        variables: { system_minutes: integer(minutes) },
+        parameters: {},
+      });
+
+    const atThreshold = runAt(30);
+    expect(
+      atThreshold.trace
+        .filter((event) => event.kind === "tier")
+        .map((event) => event.amountCents),
+    ).toEqual([1]);
+
+    const acrossTwoTiers = runAt(60);
+    const tierAmounts = acrossTwoTiers.trace
+      .filter((event) => event.kind === "tier")
+      .map((event) => event.amountCents);
+    expect(tierAmounts).toEqual([1, 0]);
+    expect(tierAmounts.reduce((sum, amount) => sum + amount, 0)).toBe(
+      acrossTwoTiers.result.componentsCents.final,
+    );
+    expect(acrossTwoTiers.result.componentsCents.final).toBe(1);
   });
 
   it("applies evidence discounts and rounds signed exact half-cents away from zero", () => {
@@ -520,6 +591,47 @@ describe("executeCompiledCustomRule arithmetic failures", () => {
           },
         ),
       "EXECUTION_ARITHMETIC_OVERFLOW",
+    );
+  });
+});
+
+describe("executeCompiledCustomRule timestamp semantics", () => {
+  it("uses normalized epoch values for equality and ordering", () => {
+    const variables = {
+      live_started_at: timestamp("2026-07-11T12:00:00+08:00"),
+      approved_at: timestamp("2026-07-11T04:00:00Z"),
+    };
+
+    expect(
+      executeFormula(
+        `money_result({
+          final: if(
+            live_started_at == approved_at &&
+              live_started_at <= approved_at &&
+              live_started_at >= approved_at &&
+              !(live_started_at != approved_at),
+            yuan(1),
+            yuan(0)
+          )
+        })`,
+        { variableValues: variables },
+      ).componentsCents.final,
+    ).toBe(100);
+  });
+
+  it("fails closed on an invalid runtime timestamp", () => {
+    expectExecutionIssue(
+      () =>
+        executeFormula(
+          "money_result({ final: if(live_started_at == approved_at, yuan(1), yuan(0)) })",
+          {
+            variableValues: {
+              live_started_at: timestamp("not-a-timestamp"),
+              approved_at: timestamp("2026-07-11T04:00:00Z"),
+            },
+          },
+        ),
+      "EXECUTION_INVALID_INPUT",
     );
   });
 });
@@ -1182,6 +1294,125 @@ describe("executeCompiledCustomRule trust boundary", () => {
     );
     expect(reads).toBe(0);
   });
+
+  it("rejects proxies at every engine trust-boundary layer without invoking traps", () => {
+    const minuteAst = compileFormula(
+      "money_result({ final: yuan(1) * system_minutes })",
+    );
+    const baseInput = {
+      ast: minuteAst,
+      variables: { system_minutes: integer(60) },
+      parameters: {},
+    };
+    const outerInput = countingProxy(baseInput);
+    const variables = countingProxy(baseInput.variables);
+    const parameters = countingProxy(baseInput.parameters);
+    const rootAst = countingProxy(minuteAst);
+    const nestedRuntimeValue = countingProxy(integer(60) as object);
+
+    const tagsAst = compileFormula(`money_result({
+      final: if(contains(project_tags, "featured"), yuan(1), yuan(0))
+    })`);
+    const nestedItems = countingProxy([stringValue("featured")]);
+
+    const nestedAst = structuredClone(minuteAst);
+    if (
+      nestedAst.kind !== "call" ||
+      nestedAst.arguments[0]?.kind !== "object" ||
+      nestedAst.arguments[0].entries[0]?.value.kind !== "binary"
+    ) {
+      throw new Error("Expected a compiled multiplication");
+    }
+    const nestedAstNode = countingProxy(
+      nestedAst.arguments[0].entries[0].value.left,
+    );
+    nestedAst.arguments[0].entries[0].value.left = nestedAstNode.proxy;
+
+    const cases: Array<{
+      operation: () => unknown;
+      code: string;
+      reads: () => number;
+    }> = [
+      {
+        operation: () =>
+          executeCompiledCustomRule(
+            outerInput.proxy as Parameters<typeof executeCompiledCustomRule>[0],
+          ),
+        code: "EXECUTION_INVALID_INPUT",
+        reads: outerInput.reads,
+      },
+      {
+        operation: () =>
+          executeCompiledCustomRule({
+            ...baseInput,
+            variables: variables.proxy,
+          }),
+        code: "EXECUTION_INVALID_INPUT",
+        reads: variables.reads,
+      },
+      {
+        operation: () =>
+          executeCompiledCustomRule({
+            ...baseInput,
+            parameters: parameters.proxy,
+          }),
+        code: "EXECUTION_INVALID_INPUT",
+        reads: parameters.reads,
+      },
+      {
+        operation: () =>
+          executeCompiledCustomRule({
+            ...baseInput,
+            ast: rootAst.proxy,
+          }),
+        code: "EXECUTION_INVALID_AST",
+        reads: rootAst.reads,
+      },
+      {
+        operation: () =>
+          executeCompiledCustomRule({
+            ...baseInput,
+            variables: {
+              system_minutes:
+                nestedRuntimeValue.proxy as TypedRuntimeValue,
+            },
+          }),
+        code: "EXECUTION_INVALID_INPUT",
+        reads: nestedRuntimeValue.reads,
+      },
+      {
+        operation: () =>
+          executeCompiledCustomRule({
+            ast: tagsAst,
+            variables: {
+              project_tags: {
+                type: "array",
+                items:
+                  nestedItems.proxy as unknown as TypedRuntimeValue[],
+              },
+            },
+            parameters: {},
+          }),
+        code: "EXECUTION_INVALID_INPUT",
+        reads: nestedItems.reads,
+      },
+      {
+        operation: () =>
+          executeCompiledCustomRule({
+            ast: nestedAst,
+            variables: { system_minutes: integer(60) },
+            parameters: {},
+          }),
+        code: "EXECUTION_INVALID_AST",
+        reads: nestedAstNode.reads,
+      },
+    ];
+
+    for (const testCase of cases) {
+      expectExecutionIssue(testCase.operation, testCase.code);
+      expect(testCase.reads()).toBe(0);
+    }
+  });
 });
 
 describe("executeCompiledCustomRule limits", () => {
@@ -1245,6 +1476,126 @@ describe("executeCompiledCustomRule limits", () => {
     expectExecutionIssue(
       () => executeCompiledCustomRule({ ast, variables: {}, parameters: {} }),
       "EXECUTION_MAX_DEPTH",
+    );
+  });
+
+  it("exhausts bounded snapshot work before traversing a huge runtime array", () => {
+    const ast = compileFormula(`money_result({
+      final: if(contains(project_tags, "target"), yuan(1), yuan(0))
+    })`);
+    const items = Array.from({ length: 50_000 }, () => stringValue("other"));
+    const sentinel = countingProxy(stringValue("target") as object);
+    items[100] = sentinel.proxy as TypedRuntimeValue;
+
+    expectExecutionIssue(
+      () =>
+        executeCompiledCustomRule({
+          ast,
+          variables: { project_tags: { type: "array", items } },
+          parameters: {},
+          limits: { maxSteps: 8, maxDepth: 20 },
+        }),
+      "EXECUTION_MAX_STEPS",
+    );
+    expect(sentinel.reads()).toBe(0);
+  });
+
+  it("allows normal small arrays within the work budget", () => {
+    expect(
+      executeFormula(
+        `money_result({
+          final: if(contains(project_tags, "target"), yuan(1), yuan(0))
+        })`,
+        {
+          variableValues: {
+            project_tags: stringArray("other", "target"),
+          },
+          limits: { maxSteps: 100, maxDepth: 20 },
+        },
+      ).componentsCents.final,
+    ).toBe(100);
+  });
+
+  it("bounds snapshot and preflight work with caller maxSteps", () => {
+    const ast = structuredClone(
+      compileFormula(`money_result({
+        final: if(true, yuan(1), if(in(streamer_level, ["S"]), yuan(2), yuan(3)))
+      })`),
+    );
+    const finalNode = readFinalNode(ast);
+    if (
+      finalNode.kind !== "call" ||
+      finalNode.arguments[2]?.kind !== "call" ||
+      finalNode.arguments[2].arguments[0]?.kind !== "call" ||
+      finalNode.arguments[2].arguments[0].arguments[1]?.kind !== "array"
+    ) {
+      throw new Error("Expected a hidden compiled in array");
+    }
+    const candidates = finalNode.arguments[2].arguments[0].arguments[1];
+    candidates.elements = Array.from({ length: 100 }, () => ({
+      kind: "literal" as const,
+      inferredType: scalar("string"),
+      value: "S",
+    }));
+
+    expectExecutionIssue(
+      () =>
+        preflightCompiledCustomRuleAst(ast, {
+          maxSteps: 8,
+          maxDepth: 20,
+        }),
+      "EXECUTION_MAX_STEPS",
+    );
+  });
+
+  it("charges deep equality work against maxSteps", () => {
+    const fieldNames = Array.from(
+      { length: 40 },
+      (_, index) => `field_${index.toString().padStart(2, "0")}`,
+    );
+    const valueType: RuntimeValueType = {
+      kind: "object",
+      fields: Object.fromEntries(
+        fieldNames.map((name) => [name, scalar("string")]),
+      ),
+    };
+    const objectValue = (lastValue: string): TypedRuntimeValue => ({
+      type: "object",
+      fields: Object.fromEntries(
+        fieldNames.map((name, index) => [
+          name,
+          stringValue(index === fieldNames.length - 1 ? lastValue : "same"),
+        ]),
+      ),
+    });
+    const candidateExpression = Array.from(
+      { length: 5 },
+      () => 'parameter("candidate")',
+    ).join(", ");
+
+    expectExecutionIssue(
+      () =>
+        executeFormula(
+          `money_result({
+            final: if(
+              in(parameter("needle"), [${candidateExpression}]),
+              yuan(1),
+              yuan(0)
+            )
+          })`,
+          {
+            parameterDefinitions: [
+              { name: "needle", valueType },
+              { name: "candidate", valueType },
+            ],
+            parameterValues: {
+              needle: objectValue("needle"),
+              candidate: objectValue("candidate"),
+            },
+            limits: { maxSteps: 100, maxDepth: 20 },
+          },
+        ),
+      "EXECUTION_MAX_STEPS",
     );
   });
 });
