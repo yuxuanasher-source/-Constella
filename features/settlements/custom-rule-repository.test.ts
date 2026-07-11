@@ -1320,7 +1320,12 @@ describe("custom-rule draft and simulation persistence", () => {
           message: "x".repeat(4_000),
         })),
       }),
-    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID",
+      message: expect.stringContaining(
+        "conservative 61440-byte JSON input subcontainer budget",
+      ),
+    });
     expect(mock.rpc).not.toHaveBeenCalled();
   });
 
@@ -1682,7 +1687,7 @@ describe("custom-rule draft and simulation persistence", () => {
     },
   );
 
-  it("rejects a simulation JSON subcontainer over 64 KiB before RPC", async () => {
+  it("rejects the reviewer 16-warning fixture before RPC", async () => {
     const mock = createPersistenceClient();
     const repository: CustomRuleRepository =
       new SupabaseCustomRuleReadRepository(mock.client);
@@ -1690,14 +1695,40 @@ describe("custom-rule draft and simulation persistence", () => {
     await expect(
       repository.insertSimulation({
         ...validSimulationInput({ kind: "ai_draft", id: DRAFT_ID }),
-        warnings: Array.from({ length: 20 }, (_, index) => ({
+        warnings: Array.from({ length: 16 }, (_, index) => ({
           code: `warning_${index}`,
           severity: "warning" as const,
           message: "x".repeat(4_000),
         })),
       }),
-    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID",
+      message: expect.stringContaining(
+        "conservative 61440-byte JSON input subcontainer budget",
+      ),
+    });
     expect(mock.rpc).not.toHaveBeenCalled();
+  });
+
+  it("allows a warning subcontainer clearly below the conservative limit", async () => {
+    const warnings = Array.from({ length: 8 }, (_, index) => ({
+      code: `warning_${index}`,
+      severity: "warning" as const,
+      message: "x".repeat(4_000),
+    }));
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await repository.insertSimulation({
+      ...validSimulationInput({ kind: "ai_draft", id: DRAFT_ID }),
+      warnings,
+    });
+
+    expect(mock.rpc).toHaveBeenCalledWith(
+      "create_settlement_formula_simulation",
+      expect.objectContaining({ p_warnings: warnings }),
+    );
   });
 
   it("rejects over-depth and over-node JSON iteratively before RPC", async () => {

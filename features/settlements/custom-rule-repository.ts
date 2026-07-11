@@ -492,8 +492,11 @@ const POSTGRES_BIGINT_MIN = BigInt("-9223372036854775808");
 const POSTGRES_BIGINT_MAX = BigInt("9223372036854775807");
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
-const JSON_BUDGET_MAX_TOTAL_BYTES = 262_144;
-const JSON_BUDGET_MAX_SUBCONTAINER_BYTES = 65_536;
+// SQL remains authoritative at pg_column_size 256/64 KiB. These serialized
+// input ceilings reserve 16 KiB total and 4 KiB per root for JSONB container
+// metadata across the 300-node maximum; the byte measures are not equivalent.
+const JSON_INPUT_CONSERVATIVE_MAX_TOTAL_BYTES = 240 * 1_024;
+const JSON_INPUT_CONSERVATIVE_MAX_SUBCONTAINER_BYTES = 60 * 1_024;
 const JSON_BUDGET_MAX_STRING_BYTES = 16_384;
 const JSON_BUDGET_MAX_KEY_BYTES = 256;
 const JSON_BUDGET_MAX_CONTAINER_ITEMS = 200;
@@ -2369,15 +2372,15 @@ function assertJsonCollectionWithinBudget(
   const addSerializedBytes = (entry: JsonBudgetEntry, bytes: number): void => {
     serializedBytes += bytes;
     const rootBytes = (serializedBytesByRoot.get(entry.rootPath) ?? 0) + bytes;
-    if (rootBytes > JSON_BUDGET_MAX_SUBCONTAINER_BYTES) {
+    if (rootBytes > JSON_INPUT_CONSERVATIVE_MAX_SUBCONTAINER_BYTES) {
       throw new CustomRulePersistenceInputError(
-        `${entry.rootPath} exceeds the ${JSON_BUDGET_MAX_SUBCONTAINER_BYTES}-byte JSON subcontainer budget`,
+        `${entry.rootPath} exceeds the conservative ${JSON_INPUT_CONSERVATIVE_MAX_SUBCONTAINER_BYTES}-byte JSON input subcontainer budget`,
       );
     }
     serializedBytesByRoot.set(entry.rootPath, rootBytes);
-    if (serializedBytes > JSON_BUDGET_MAX_TOTAL_BYTES) {
+    if (serializedBytes > JSON_INPUT_CONSERVATIVE_MAX_TOTAL_BYTES) {
       throw new CustomRulePersistenceInputError(
-        `JSON payload exceeds the ${JSON_BUDGET_MAX_TOTAL_BYTES}-byte budget`,
+        `JSON payload exceeds the conservative ${JSON_INPUT_CONSERVATIVE_MAX_TOTAL_BYTES}-byte input budget`,
       );
     }
   };
