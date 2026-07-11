@@ -186,6 +186,20 @@ const CANONICAL_NUMBER_DECIMAL_PATTERN =
 const SAFE_INTEGER_MIN_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
 const SAFE_INTEGER_MAX_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const ZERO_BIGINT = BigInt(0);
+const ONE_BIGINT = BigInt(1);
+const TWO_BIGINT = BigInt(2);
+const FLOAT_NOISE_ULP_MULTIPLIER = 4;
+const MAX_FLOAT_NOISE_IN_SCALED_UNITS = 1e-9;
+
+class FractionalScaledValueError extends RangeError {
+  constructor(
+    message: string,
+    readonly nearestInteger: bigint,
+  ) {
+    super(message);
+    this.name = "FractionalScaledValueError";
+  }
+}
 
 export function isCustomRuleTargetCompatible(
   scope: CustomRuleScope,
@@ -202,15 +216,22 @@ export function assertSafeIntegerValue(value: number, label: string): number {
 }
 
 export function yuanToCentsStrict(value: number): number {
-  return scaleCanonicalDecimalToSafeInteger(value, 2, "yuan", "cents");
+  return scaleLegacyNumberToSafeInteger(value, 2, "yuan", "cents");
 }
 
 export function centsToLegacyYuan(cents: number): number {
-  return assertSafeIntegerValue(cents, "cents") / 100;
+  const safeCents = assertSafeIntegerValue(cents, "cents");
+  const yuan = safeCents / 100;
+
+  if (scaleCanonicalDecimalExactly(yuan, 2, "yuan", "cents") !== safeCents) {
+    throw new RangeError("cents cannot be represented losslessly as yuan");
+  }
+
+  return yuan;
 }
 
 export function percentToBpsStrict(value: number): number {
-  return scaleCanonicalDecimalToSafeInteger(
+  return scaleLegacyNumberToSafeInteger(
     value,
     2,
     "percent",
@@ -247,7 +268,35 @@ export function serializePostgresBigintCents(
   return parsePostgresBigintCents(value).toString(10);
 }
 
-function scaleCanonicalDecimalToSafeInteger(
+function scaleLegacyNumberToSafeInteger(
+  value: number,
+  decimalPlaces: number,
+  inputLabel: string,
+  outputLabel: string,
+): number {
+  try {
+    return scaleCanonicalDecimalExactly(
+      value,
+      decimalPlaces,
+      inputLabel,
+      outputLabel,
+    );
+  } catch (error) {
+    if (!(error instanceof FractionalScaledValueError)) {
+      throw error;
+    }
+
+    return recoverNormalFloatingNoise(
+      value,
+      decimalPlaces,
+      inputLabel,
+      outputLabel,
+      error,
+    );
+  }
+}
+
+function scaleCanonicalDecimalExactly(
   value: number,
   decimalPlaces: number,
   inputLabel: string,
@@ -273,9 +322,16 @@ function scaleCanonicalDecimalToSafeInteger(
     magnitude = digits * decimalPowerOfTen(scaledExponent);
   } else {
     const divisor = decimalPowerOfTen(-scaledExponent);
-    if (digits % divisor !== ZERO_BIGINT) {
-      throw new RangeError(
+    const remainder = digits % divisor;
+    if (remainder !== ZERO_BIGINT) {
+      const nearestMagnitude =
+        digits / divisor +
+        (remainder * TWO_BIGINT >= divisor ? ONE_BIGINT : ZERO_BIGINT);
+      const nearestInteger =
+        sign === "-" ? -nearestMagnitude : nearestMagnitude;
+      throw new FractionalScaledValueError(
         `${inputLabel} has a fractional ${outputLabel} value`,
+        nearestInteger,
       );
     }
     magnitude = digits / divisor;
@@ -290,6 +346,53 @@ function scaleCanonicalDecimalToSafeInteger(
   }
 
   return Number(scaled);
+}
+
+function recoverNormalFloatingNoise(
+  value: number,
+  decimalPlaces: number,
+  inputLabel: string,
+  outputLabel: string,
+  fractionalError: FractionalScaledValueError,
+): number {
+  const nearestInteger = fractionalError.nearestInteger;
+  if (
+    nearestInteger < SAFE_INTEGER_MIN_BIGINT ||
+    nearestInteger > SAFE_INTEGER_MAX_BIGINT
+  ) {
+    throw new RangeError(`${outputLabel} must be a safe integer`);
+  }
+
+  const candidateInteger = Number(nearestInteger);
+  const decimalScale = Number(decimalPowerOfTen(decimalPlaces));
+  const candidateValue = candidateInteger / decimalScale;
+
+  let candidateRoundTrip: number;
+  try {
+    candidateRoundTrip = scaleCanonicalDecimalExactly(
+      candidateValue,
+      decimalPlaces,
+      inputLabel,
+      outputLabel,
+    );
+  } catch {
+    throw fractionalError;
+  }
+  if (candidateRoundTrip !== candidateInteger) {
+    throw fractionalError;
+  }
+
+  const relativeUlpTolerance =
+    Number.EPSILON *
+    Math.max(Math.abs(value), Math.abs(candidateValue)) *
+    FLOAT_NOISE_ULP_MULTIPLIER;
+  const scaledUnitCap = MAX_FLOAT_NOISE_IN_SCALED_UNITS / decimalScale;
+  const tolerance = Math.min(relativeUlpTolerance, scaledUnitCap);
+  if (Math.abs(value - candidateValue) > tolerance) {
+    throw fractionalError;
+  }
+
+  return candidateInteger;
 }
 
 function decimalPowerOfTen(exponent: number): bigint {

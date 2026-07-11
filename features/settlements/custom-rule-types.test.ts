@@ -258,6 +258,8 @@ describe("strict unit adapters", () => {
     expect(yuanToCentsStrict(0.01)).toBe(1);
     expect(yuanToCentsStrict(1e-2)).toBe(1);
     expect(yuanToCentsStrict(0.29)).toBe(29);
+    expect(yuanToCentsStrict(0.1 + 0.2)).toBe(30);
+    expect(yuanToCentsStrict(0.7 + 0.1)).toBe(80);
     expect(yuanToCentsStrict(10_000_000.03)).toBe(1_000_000_003);
     expect(yuanToCentsStrict(-10_000_000.03)).toBe(-1_000_000_003);
     expect(yuanToCentsStrict(10_000_000_000.03)).toBe(1_000_000_000_003);
@@ -267,6 +269,8 @@ describe("strict unit adapters", () => {
     expect(percentToBpsStrict(0.01)).toBe(1);
     expect(percentToBpsStrict(1e-2)).toBe(1);
     expect(percentToBpsStrict(-0.01)).toBe(-1);
+    expect(percentToBpsStrict(0.1 + 0.2)).toBe(30);
+    expect(percentToBpsStrict(0.7 + 0.1)).toBe(80);
     expect(percentToBpsStrict(10_000_000_000.03)).toBe(1_000_000_000_003);
     expect(percentToBpsStrict(-10_000_000_000.03)).toBe(
       -1_000_000_000_003,
@@ -289,7 +293,23 @@ describe("strict unit adapters", () => {
     expect(() => percentToBpsStrict(90_071_992_547_410)).toThrow();
   });
 
-  it("rejects fractional, nonfinite, and silently rounded conversions", () => {
+  it("returns legacy yuan only when cents round-trip without loss", () => {
+    const largestLosslessCents = Number.MAX_SAFE_INTEGER - 1;
+    const smallestLosslessCents = Number.MIN_SAFE_INTEGER + 1;
+
+    expect(centsToLegacyYuan(1)).toBe(0.01);
+    expect(centsToLegacyYuan(-1)).toBe(-0.01);
+    expect(centsToLegacyYuan(largestLosslessCents)).toBe(
+      90_071_992_547_409.9,
+    );
+    expect(centsToLegacyYuan(smallestLosslessCents)).toBe(
+      -90_071_992_547_409.9,
+    );
+    expect(() => centsToLegacyYuan(Number.MAX_SAFE_INTEGER)).toThrow();
+    expect(() => centsToLegacyYuan(Number.MIN_SAFE_INTEGER)).toThrow();
+  });
+
+  it("rejects real fractional, nonfinite, and unsafe conversions", () => {
     for (const value of [Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() => yuanToCentsStrict(value)).toThrow();
       expect(() => percentToBpsStrict(value)).toThrow();
@@ -300,7 +320,6 @@ describe("strict unit adapters", () => {
     expect(() => yuanToCentsStrict(0.291)).toThrow();
     expect(() => yuanToCentsStrict(1e-18)).toThrow();
     expect(() => yuanToCentsStrict(-1e-18)).toThrow();
-    expect(() => yuanToCentsStrict(0.1 + 0.2)).toThrow();
     expect(() => yuanToCentsStrict(10_000_000_000_000.002)).toThrow();
     expect(() => percentToBpsStrict(80.001)).toThrow();
     expect(() => percentToBpsStrict(0.001)).toThrow();
