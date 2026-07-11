@@ -471,14 +471,13 @@ function validateRuntimeOptions(
     ) {
       throw invalidOptions(span);
     }
-    parameterTypeNodeCount = countParameterTypeNodes(
+    const copiedType = validateAndCopyParameterType(
       rawValueType,
       parameterTypeNodeCount,
       span,
     );
-    const valueType = runtimeValueTypeSchema.safeParse(
-      copyOwnData(rawValueType),
-    );
+    parameterTypeNodeCount = copiedType.nodeCount;
+    const valueType = runtimeValueTypeSchema.safeParse(copiedType.value);
     if (!valueType.success) {
       throw invalidOptions(span);
     }
@@ -492,13 +491,24 @@ function validateRuntimeOptions(
   };
 }
 
-function countParameterTypeNodes(
+function validateAndCopyParameterType(
   root: unknown,
   initialNodeCount: number,
   span: CustomRuleSourceSpan,
-): number {
-  const stack: Array<{ value: unknown; depth: number }> = [
-    { value: root, depth: 1 },
+): { value: unknown; nodeCount: number } {
+  const holder = Object.create(null) as Record<string, unknown>;
+  const stack: Array<{
+    source: unknown;
+    depth: number;
+    target: Record<string, unknown>;
+    key: string;
+  }> = [
+    {
+      source: root,
+      depth: 1,
+      target: holder,
+      key: "value",
+    },
   ];
   let nodeCount = initialNodeCount;
 
@@ -514,25 +524,65 @@ function countParameterTypeNodes(
     if (nodeCount > MAX_PARAMETER_TYPE_NODES) {
       throw parameterTypeLimit(span);
     }
-    if (!isPlainRecord(current.value)) {
-      continue;
+
+    const values = snapshotOwnEnumerableData(current.source);
+    const kind = values?.get("kind");
+    const copy = Object.create(null) as Record<string, unknown>;
+    if (!values || typeof kind !== "string") {
+      throw invalidOptions(span);
     }
-    if (current.value.kind === "array") {
-      stack.push({
-        value: current.value.itemType,
-        depth: current.depth + 1,
-      });
-    } else if (
-      current.value.kind === "object" &&
-      isPlainRecord(current.value.fields)
-    ) {
-      for (const fieldType of Object.values(current.value.fields)) {
-        stack.push({ value: fieldType, depth: current.depth + 1 });
+    current.target[current.key] = copy;
+
+    if (kind === "scalar") {
+      if (
+        !hasExactDataKeys(values, ["kind", "scalarType"]) ||
+        typeof values.get("scalarType") !== "string"
+      ) {
+        throw invalidOptions(span);
       }
+      copy.kind = kind;
+      copy.scalarType = values.get("scalarType");
+    } else if (kind === "array") {
+      if (!hasExactDataKeys(values, ["kind", "itemType"])) {
+        throw invalidOptions(span);
+      }
+      copy.kind = kind;
+      stack.push({
+        source: values.get("itemType"),
+        depth: current.depth + 1,
+        target: copy,
+        key: "itemType",
+      });
+    } else if (kind === "object") {
+      if (!hasExactDataKeys(values, ["kind", "fields"])) {
+        throw invalidOptions(span);
+      }
+      const fieldValues = snapshotOwnEnumerableData(values.get("fields"));
+      if (!fieldValues) {
+        throw invalidOptions(span);
+      }
+      const fieldsCopy = Object.create(null) as Record<string, unknown>;
+      copy.kind = kind;
+      copy.fields = fieldsCopy;
+      const fields = [...fieldValues.entries()];
+      for (let index = fields.length - 1; index >= 0; index -= 1) {
+        const field = fields[index];
+        if (!field) {
+          continue;
+        }
+        stack.push({
+          source: field[1],
+          depth: current.depth + 1,
+          target: fieldsCopy,
+          key: field[0],
+        });
+      }
+    } else {
+      throw invalidOptions(span);
     }
   }
 
-  return nodeCount;
+  return { value: holder.value, nodeCount };
 }
 
 function parameterTypeLimit(span: CustomRuleSourceSpan): ValidationFailure {
@@ -549,6 +599,41 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   }
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function snapshotOwnEnumerableData(
+  value: unknown,
+): ReadonlyMap<string, unknown> | null {
+  if (!isPlainRecord(value)) {
+    return null;
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const values = new Map<string, unknown>();
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key !== "string") {
+      return null;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(descriptors, key)?.value;
+    if (
+      !descriptor ||
+      descriptor.enumerable !== true ||
+      !Object.hasOwn(descriptor, "value")
+    ) {
+      return null;
+    }
+    values.set(key, descriptor.value);
+  }
+  return values;
+}
+
+function hasExactDataKeys(
+  values: ReadonlyMap<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  return (
+    values.size === keys.length &&
+    keys.every((key) => values.has(key))
+  );
 }
 
 function copyOwnData(value: unknown): unknown {
@@ -570,16 +655,12 @@ function readOwnDataProperties(
   allowedKeys: readonly string[],
   requiredKeys: readonly string[],
 ): ReadonlyMap<string, unknown> | null {
-  const values = new Map<string, unknown>();
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string" || !allowedKeys.includes(key)) {
-      return null;
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor || !Object.hasOwn(descriptor, "value")) {
-      return null;
-    }
-    values.set(key, descriptor.value);
+  const values = snapshotOwnEnumerableData(value);
+  if (
+    !values ||
+    [...values.keys()].some((key) => !allowedKeys.includes(key))
+  ) {
+    return null;
   }
   return requiredKeys.every((key) => values.has(key)) ? values : null;
 }

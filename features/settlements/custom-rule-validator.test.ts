@@ -51,6 +51,19 @@ function objectTypeWithNodeCount(nodeCount: number): RuntimeValueType {
   };
 }
 
+function optionsForRuntimeValueType(
+  valueType: unknown,
+): ValidateCustomRuleFormulaOptions {
+  return options("payable", "report", {
+    parameters: [
+      {
+        name: "nested_type",
+        valueType: valueType as RuntimeValueType,
+      },
+    ],
+  });
+}
+
 function expectValidationSuccess(
   formula: string,
   validationOptions: ValidateCustomRuleFormulaOptions = DEFAULT_OPTIONS,
@@ -334,6 +347,141 @@ describe("validateCustomRuleFormula runtime options", () => {
       accessorOptions as ValidateCustomRuleFormulaOptions,
     );
     expect(accessorReads).toBe(0);
+  });
+
+  it("never invokes nested RuntimeValueType accessors", () => {
+    let getterReads = 0;
+    let setterWrites = 0;
+
+    const kindAccessor = { scalarType: "money_cents" };
+    Object.defineProperty(kindAccessor, "kind", {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        return "scalar";
+      },
+    });
+    const nestedKindAccessor = {
+      kind: "array",
+      itemType: kindAccessor,
+    };
+
+    const itemTypeAccessor = { kind: "array" };
+    Object.defineProperty(itemTypeAccessor, "itemType", {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        return scalar("money_cents");
+      },
+    });
+
+    const fieldsAccessor = { kind: "object" };
+    Object.defineProperty(fieldsAccessor, "fields", {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        return { nested: scalar("money_cents") };
+      },
+    });
+
+    const accessorFields = {};
+    Object.defineProperty(accessorFields, "nested", {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        return scalar("money_cents");
+      },
+    });
+    const fieldEntryAccessor = {
+      kind: "object",
+      fields: accessorFields,
+    };
+
+    const setterOnly = { kind: "array" };
+    Object.defineProperty(setterOnly, "itemType", {
+      enumerable: true,
+      set(value: unknown) {
+        void value;
+        setterWrites += 1;
+      },
+    });
+
+    for (const valueType of [
+      nestedKindAccessor,
+      itemTypeAccessor,
+      fieldsAccessor,
+      fieldEntryAccessor,
+      setterOnly,
+    ]) {
+      expectValidationIssue(
+        "money_result({ final: yuan(1) })",
+        "VALIDATION_INVALID_OPTIONS",
+        optionsForRuntimeValueType(valueType),
+      );
+    }
+
+    expect(getterReads).toBe(0);
+    expect(setterWrites).toBe(0);
+  });
+
+  it("rejects unsafe RuntimeValueType object shapes", () => {
+    const symbolKey = {
+      kind: "scalar",
+      scalarType: "money_cents",
+      [Symbol("extra")]: true,
+    };
+    const nonEnumerableExtra = {
+      kind: "scalar",
+      scalarType: "money_cents",
+    };
+    Object.defineProperty(nonEnumerableExtra, "hidden", {
+      enumerable: false,
+      value: true,
+    });
+    const nonEnumerableRequired = { kind: "scalar" };
+    Object.defineProperty(nonEnumerableRequired, "scalarType", {
+      enumerable: false,
+      value: "money_cents",
+    });
+    const extraField = {
+      kind: "scalar",
+      scalarType: "money_cents",
+      extra: true,
+    };
+    class RuntimeTypeClass {
+      readonly kind = "scalar";
+      readonly scalarType = "money_cents";
+    }
+
+    for (const valueType of [
+      symbolKey,
+      nonEnumerableExtra,
+      nonEnumerableRequired,
+      extraField,
+      new RuntimeTypeClass(),
+    ]) {
+      expectValidationIssue(
+        "money_result({ final: yuan(1) })",
+        "VALIDATION_INVALID_OPTIONS",
+        optionsForRuntimeValueType(valueType),
+      );
+    }
+  });
+
+  it("accepts legal null-prototype RuntimeValueType objects", () => {
+    const itemType = Object.assign(Object.create(null), {
+      kind: "scalar",
+      scalarType: "money_cents",
+    }) as RuntimeValueType;
+    const valueType = Object.assign(Object.create(null), {
+      kind: "array",
+      itemType,
+    }) as RuntimeValueType;
+
+    expectValidationSuccess(
+      "money_result({ final: yuan(1) })",
+      optionsForRuntimeValueType(valueType),
+    );
   });
 });
 
