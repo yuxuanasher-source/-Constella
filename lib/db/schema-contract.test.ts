@@ -2,6 +2,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { businessRuleContractSchema } from "../../features/settlements/custom-rule-contract";
+
 const migration = readFileSync(
   join(
     process.cwd(),
@@ -28,21 +30,134 @@ const normalizedSettlementAiMigration = settlementAiMigration
   .replace(/\s+/gu, " ")
   .trim();
 
-function settlementAiTableDefinition(table: string): string {
-  const match = normalizedSettlementAiMigration.match(
-    new RegExp(`create table public\\.${table} \\((.*?)\\);`, "u"),
+function normalizeSql(sql: string): string {
+  return sql.toLowerCase().replace(/\s+/gu, " ").trim();
+}
+
+function extractBalancedSql(
+  sql: string,
+  marker: string,
+): { full: string; inner: string } {
+  const normalizedSql = sql.toLowerCase();
+  const markerIndex = normalizedSql.indexOf(marker.toLowerCase());
+  expect(markerIndex, `missing SQL marker: ${marker}`).toBeGreaterThanOrEqual(0);
+  const openIndex = sql.indexOf("(", markerIndex + marker.length);
+  expect(openIndex, `missing opening parenthesis after: ${marker}`).toBeGreaterThan(
+    markerIndex,
   );
-  return match?.[1] ?? "";
+
+  let depth = 0;
+  let inString = false;
+  for (let index = openIndex; index < sql.length; index += 1) {
+    const character = sql[index];
+    if (character === "'") {
+      if (inString && sql[index + 1] === "'") {
+        index += 1;
+        continue;
+      }
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (character === "(") depth += 1;
+    if (character === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return {
+          full: sql.slice(markerIndex, index + 1),
+          inner: sql.slice(openIndex + 1, index),
+        };
+      }
+    }
+  }
+  throw new Error(`unbalanced SQL after marker: ${marker}`);
+}
+
+function settlementAiTableDefinition(table: string): string {
+  return normalizeSql(
+    extractBalancedSql(
+      settlementAiMigration,
+      `create table public.${table}`,
+    ).inner,
+  );
+}
+
+function extractSettlementAiFunction(fn: string): {
+  definition: string;
+  header: string;
+  body: string;
+} {
+  const marker = `create or replace function public.${fn}`;
+  const start = settlementAiMigration.toLowerCase().indexOf(marker);
+  expect(start, `missing SQL function: ${fn}`).toBeGreaterThanOrEqual(0);
+  const bodyMarker = /\bas\s+\$\$/giu;
+  bodyMarker.lastIndex = start;
+  const bodyStartMatch = bodyMarker.exec(settlementAiMigration);
+  expect(bodyStartMatch, `missing function body: ${fn}`).not.toBeNull();
+  const bodyStart = bodyStartMatch?.index ?? -1;
+  const bodyContentStart = bodyStart + (bodyStartMatch?.[0].length ?? 0);
+  const bodyEnd = settlementAiMigration.indexOf("$$;", bodyContentStart);
+  expect(bodyEnd, `missing function terminator: ${fn}`).toBeGreaterThan(
+    bodyContentStart,
+  );
+  return {
+    definition: settlementAiMigration.slice(start, bodyEnd + 3),
+    header: settlementAiMigration.slice(start, bodyStart),
+    body: settlementAiMigration.slice(bodyContentStart, bodyEnd),
+  };
 }
 
 function settlementAiFunctionDefinition(fn: string): string {
-  const match = normalizedSettlementAiMigration.match(
-    new RegExp(
-      `create or replace function public\\.${fn}\\([\\s\\S]*?\\$\\$;`,
-      "u",
-    ),
+  return normalizeSql(extractSettlementAiFunction(fn).definition);
+}
+
+function settlementAiFunctionBody(fn: string): string {
+  return normalizeSql(extractSettlementAiFunction(fn).body);
+}
+
+function settlementAiPolicyDefinition(policy: string): string {
+  const marker = `create policy ${policy}`;
+  const start = normalizedSettlementAiMigration.indexOf(marker);
+  expect(start, `missing SQL policy: ${policy}`).toBeGreaterThanOrEqual(0);
+  const end = normalizedSettlementAiMigration.indexOf(";", start);
+  expect(end, `missing policy terminator: ${policy}`).toBeGreaterThan(start);
+  return normalizedSettlementAiMigration.slice(start, end + 1);
+}
+
+function settlementAiCheckDefinition(
+  table: string,
+  constraint: string,
+): string {
+  const tableDefinition = settlementAiTableDefinition(table);
+  return normalizeSql(
+    extractBalancedSql(
+      tableDefinition,
+      `constraint ${constraint} check`,
+    ).full,
   );
-  return match?.[0] ?? "";
+}
+
+function settlementAiSelfCheckSource(): string {
+  const marker = "-- settlement_ai_validator_self_checks";
+  const start = settlementAiMigration.indexOf(marker);
+  expect(start, "missing validator self-check marker").toBeGreaterThanOrEqual(0);
+  const blockStart = settlementAiMigration.indexOf("do $$", start);
+  const blockEnd = settlementAiMigration.indexOf("$$;", blockStart);
+  expect(blockStart).toBeGreaterThan(start);
+  expect(blockEnd).toBeGreaterThan(blockStart);
+  return settlementAiMigration.slice(blockStart, blockEnd + 3);
+}
+
+function settlementAiSelfCheckBlock(): string {
+  return normalizeSql(settlementAiSelfCheckSource());
+}
+
+function settlementAiCanonicalBusinessContract(): unknown {
+  const match = settlementAiSelfCheckSource().match(
+    /v_valid_contract\s+jsonb\s*:=\s*\$contract\$\s*([\s\S]*?)\s*\$contract\$::jsonb;/u,
+  );
+  expect(match, "missing canonical business contract fixture").not.toBeNull();
+  return JSON.parse(match?.[1] ?? "null") as unknown;
 }
 
 describe("P0 database contract", () => {
@@ -475,5 +590,215 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(normalizedSettlementAiMigration).toContain(
       "only contract_ready to simulated and supersession transitions are allowed",
     );
+  });
+
+  it("binds draft traces to the locked completed Xingyao turn and message pair", () => {
+    const body = settlementAiFunctionBody("create_ai_settlement_rule_draft");
+    const conversationLock = body.indexOf("from public.ai_conversations as c");
+    const turnLock = body.indexOf("from public.ai_chat_turns as trace_turn");
+
+    expect(body).toMatch(
+      /pg_catalog\.jsonb_typeof\(p_turn_trace -> 'turnid'\) <> 'string'/u,
+    );
+    expect(body).toMatch(
+      /v_trace_turn_id := \(p_turn_trace ->> 'turnid'\)::uuid/u,
+    );
+    expect(body).toMatch(
+      /v_trace_user_message_id := \(p_turn_trace ->> 'usermessageid'\)::uuid/u,
+    );
+    expect(body).toMatch(
+      /v_trace_assistant_message_id := \(p_turn_trace ->> 'assistantmessageid'\)::uuid/u,
+    );
+    expect(conversationLock).toBeGreaterThanOrEqual(0);
+    expect(turnLock).toBeGreaterThan(conversationLock);
+    expect(body).toContain("trace_turn.conversation_id = p_conversation_id");
+    expect(body).toContain("trace_turn.organization_id = p_organization_id");
+    expect(body).toContain("trace_turn.owner_user_id = v_actor_id");
+    expect(body).toContain("trace_turn.user_message_id = v_trace_user_message_id");
+    expect(body).toContain(
+      "trace_turn.assistant_message_id = v_trace_assistant_message_id",
+    );
+    expect(body).toContain("trace_turn.status = 'completed'");
+    expect(body).toContain("for update of trace_turn");
+    expect(body).toContain("from public.ai_chat_messages as user_message");
+    expect(body).toContain(
+      "join public.ai_chat_messages as assistant_message",
+    );
+    expect(body).toContain("user_message.role = 'user'");
+    expect(body).toContain("assistant_message.role = 'assistant'");
+    expect(body).toContain("user_message.status = 'completed'");
+    expect(body).toContain("assistant_message.status = 'completed'");
+    expect(body).toContain(
+      "assistant_message.parent_message_id = user_message.id",
+    );
+    expect(body).toContain(
+      "assistant_message.sequence_no > user_message.sequence_no",
+    );
+    expect(body).toContain(
+      "assistant_message.content = p_ai_response ->> 'content'",
+    );
+    expect(body).toContain("for update of user_message, assistant_message");
+  });
+
+  it("validates the full SQL business contract before table or RPC writes", () => {
+    const validator = extractSettlementAiFunction(
+      "settlement_ai_business_contract_is_valid",
+    );
+    const header = normalizeSql(validator.header);
+    const body = normalizeSql(validator.body);
+    const identifierBody = settlementAiFunctionBody(
+      "settlement_ai_identifier_is_valid",
+    );
+    const tableCheck = settlementAiCheckDefinition(
+      "ai_settlement_rule_drafts",
+      "ai_settlement_rule_drafts_business_contract_valid",
+    );
+    const createDraft = settlementAiFunctionBody(
+      "create_ai_settlement_rule_draft",
+    );
+
+    expect(header).toContain("returns boolean");
+    expect(header).toContain("language plpgsql");
+    expect(header).toContain("stable");
+    expect(header).toContain("set search_path = pg_catalog, public");
+    expect(body).not.toMatch(/^begin return true; end;$/u);
+    expect(body.match(/return false/gu)?.length ?? 0).toBeGreaterThan(5);
+    expect(body).toContain("public.settlement_ai_json_has_exact_keys");
+    expect(body).toContain("public.settlement_ai_runtime_type_is_valid");
+    expect(body).toContain("public.settlement_ai_typed_value_is_valid");
+    expect(body).toContain("public.settlement_ai_runtime_value_matches_type");
+    expect(normalizedSettlementAiMigration).not.toContain(
+      "pg_catalog.nullif(",
+    );
+    expect(body).toContain("nullif(");
+    expect(body).toContain("from pg_catalog.pg_timezone_names as timezone");
+    expect(body).toContain("pg_catalog.jsonb_array_elements");
+    expect(body).toContain("v_normal_examples");
+    expect(body).toContain("v_boundary_examples");
+    expect(body).toContain("v_component_names");
+    expect(body).toContain("v_required_input_names");
+    expect(body).toContain("v_parameter_names");
+    expect(body).toContain("v_example_names");
+    expect(identifierBody).toContain("'amount'");
+    expect(body).toContain(
+      "v_scope <> 'payable' and v_target_type <> 'project'",
+    );
+    expect(tableCheck).toContain(
+      "public.settlement_ai_business_contract_is_valid(business_contract)",
+    );
+    expect(
+      createDraft.indexOf(
+        "public.settlement_ai_business_contract_is_valid(p_business_contract)",
+      ),
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      createDraft.indexOf(
+        "public.settlement_ai_business_contract_is_valid(p_business_contract)",
+      ),
+    ).toBeLessThan(createDraft.indexOf("insert into public.ai_settlement_rule_drafts"));
+  });
+
+  it("validates every simulation summary container before table or RPC writes", () => {
+    const validator = extractSettlementAiFunction(
+      "settlement_ai_simulation_summary_is_valid",
+    );
+    const header = normalizeSql(validator.header);
+    const body = normalizeSql(validator.body);
+    const safetyBody = settlementAiFunctionBody(
+      "settlement_ai_simulation_json_is_safe",
+    );
+    const tableCheck = settlementAiCheckDefinition(
+      "settlement_formula_simulations",
+      "settlement_formula_simulations_summary_valid",
+    );
+    const createSimulation = settlementAiFunctionBody(
+      "create_settlement_formula_simulation",
+    );
+
+    expect(header).toContain("returns boolean");
+    expect(header).toContain("language plpgsql");
+    expect(header).toContain("immutable");
+    expect(header).toContain("set search_path = pg_catalog, public");
+    expect(body).not.toMatch(/^begin return true; end;$/u);
+    expect(body.match(/return false/gu)?.length ?? 0).toBeGreaterThan(5);
+    expect(body).toContain("public.settlement_ai_simulation_json_is_safe");
+    expect(body).toContain("public.settlement_ai_json_has_exact_keys");
+    expect(body).toContain("public.settlement_ai_safe_integer_json");
+    expect(body).toContain("public.settlement_ai_decimal_is_bigint");
+    expect(body).toMatch(
+      /from pg_catalog\.jsonb_array_elements\(\s*p_sample_selection -> 'criteria'\s*\) as criteria\(value\)/u,
+    );
+    expect(body).toContain("pg_catalog.jsonb_typeof(v_item) <> 'string'");
+    expect(body).toMatch(
+      /pg_catalog\.jsonb_array_length\(p_scenarios\) between 1 and 200/u,
+    );
+    expect(body).toMatch(
+      /pg_catalog\.jsonb_array_length\(p_largest_changes\) <= 100/u,
+    );
+    expect(body).toMatch(
+      /pg_catalog\.jsonb_array_length\(p_warnings\) <= 100/u,
+    );
+    expect(safetyBody).toContain("'reportid'");
+    expect(safetyBody).toContain("'projectid'");
+    expect(safetyBody).toContain("'streamerid'");
+    expect(safetyBody).toContain("'internalmargin'");
+    expect(safetyBody).toContain("'amountcents'");
+    expect(tableCheck).toContain(
+      "public.settlement_ai_simulation_summary_is_valid(",
+    );
+    const validatorCall = createSimulation.indexOf(
+      "public.settlement_ai_simulation_summary_is_valid(",
+    );
+    expect(validatorCall).toBeGreaterThanOrEqual(0);
+    expect(validatorCall).toBeLessThan(
+      createSimulation.indexOf(
+        "insert into public.settlement_formula_simulations",
+      ),
+    );
+  });
+
+  it("ships executable negative validator self-checks and exact read policies", () => {
+    const selfChecks = settlementAiSelfCheckBlock();
+    expect(
+      businessRuleContractSchema.safeParse(
+        settlementAiCanonicalBusinessContract(),
+      ).success,
+    ).toBe(true);
+    for (const fixture of [
+      "invalid_contract_extra_key",
+      "invalid_contract_empty_components",
+      "invalid_contract_empty_examples",
+      "invalid_contract_target_scope",
+      "invalid_contract_timezone",
+      "invalid_trace_accepted",
+      "invalid_selection_criteria_object",
+      "invalid_selection_raw_rows",
+      "invalid_selection_project_id",
+      "invalid_selection_amount_cents",
+    ]) {
+      expect(selfChecks).toContain(fixture);
+    }
+    expect(selfChecks).toContain(
+      "if not public.settlement_ai_business_contract_is_valid(v_valid_contract)",
+    );
+    expect(selfChecks).toContain(
+      "if not public.settlement_ai_simulation_summary_is_valid(",
+    );
+    expect(selfChecks.match(/raise exception/gu)?.length ?? 0).toBeGreaterThan(
+      8,
+    );
+
+    for (const policyName of [
+      "ai_settlement_rule_drafts_mcn_project_read",
+      "settlement_formula_simulations_mcn_project_read",
+    ]) {
+      const policy = settlementAiPolicyDefinition(policyName);
+      expect(policy).toContain("for select using (");
+      expect(policy).toContain("auth.uid() is not null");
+      expect(policy).toContain("public.is_org_member(organization_id)");
+      expect(policy).toContain("public.is_mcn_staff(organization_id)");
+      expect(policy).toContain("public.can_access_project(project_id)");
+      expect(policy).not.toMatch(/for (insert|update|delete|all)/u);
+    }
   });
 });
