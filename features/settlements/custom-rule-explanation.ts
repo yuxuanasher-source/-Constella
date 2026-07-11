@@ -1,10 +1,8 @@
-import {
-  compiledAstNodeSchema,
-  typedRuntimeValueSchema,
-} from "./custom-rule-contract";
+import { typedRuntimeValueSchema } from "./custom-rule-contract";
 import {
   CustomRuleExecutionError,
   executeCompiledCustomRuleWithTrace,
+  preflightCompiledCustomRuleAst,
   type CustomRuleExecutionTraceEvent,
   type CustomRuleMoneyResult,
 } from "./custom-rule-engine";
@@ -300,12 +298,11 @@ function invalidInput(): never {
 function parseRoot(value: unknown): ParsedRoot {
   let parsed: CompiledAstNode;
   try {
-    const result = compiledAstNodeSchema.safeParse(value);
-    if (!result.success) {
-      invalidAst();
+    parsed = preflightCompiledCustomRuleAst(value);
+  } catch (error) {
+    if (!(error instanceof CustomRuleExecutionError)) {
+      throw error;
     }
-    parsed = result.data;
-  } catch {
     invalidAst();
   }
   if (

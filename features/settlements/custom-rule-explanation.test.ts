@@ -189,6 +189,49 @@ describe("custom rule template explanation", () => {
       template.indexOf("条件判断"),
     );
   });
+
+  it("rejects root and nested semantic AST type forgeries", () => {
+    const wrongRootType = structuredClone(cptAst());
+    wrongRootType.inferredType = scalar("money_cents");
+    expectExplanationIssue(
+      () =>
+        buildCustomRuleTemplateExplanation({
+          ast: wrongRootType,
+          labels: labels(),
+        }),
+      "EXPLANATION_INVALID_AST",
+    );
+
+    const wrongNestedArray = structuredClone(
+      compileFormula(`money_result({
+        final: if(in(streamer_level, ["S", "A"]), yuan(1), yuan(2))
+      })`),
+    );
+    if (
+      wrongNestedArray.kind !== "call" ||
+      wrongNestedArray.arguments[0]?.kind !== "object" ||
+      wrongNestedArray.arguments[0].entries[0]?.value.kind !== "call" ||
+      wrongNestedArray.arguments[0].entries[0].value.arguments[0]?.kind !==
+        "call" ||
+      wrongNestedArray.arguments[0].entries[0].value.arguments[0].arguments[1]
+        ?.kind !== "array" ||
+      wrongNestedArray.arguments[0].entries[0].value.arguments[0].arguments[1]
+        .inferredType.kind !== "array"
+    ) {
+      throw new Error("Expected a compiled nested in array");
+    }
+    wrongNestedArray.arguments[0].entries[0].value.arguments[0].arguments[1].inferredType.itemType =
+      scalar("integer");
+
+    expectExplanationIssue(
+      () =>
+        buildCustomRuleTemplateExplanation({
+          ast: wrongNestedArray,
+          labels: labels(),
+        }),
+      "EXPLANATION_INVALID_AST",
+    );
+  });
 });
 
 describe("custom rule execution explanation", () => {
@@ -417,6 +460,59 @@ describe("custom rule execution explanation", () => {
           labels: registry,
         }),
       "EXPLANATION_INVALID_RESULT",
+    );
+  });
+
+  it("rejects semantic AST forgeries before explaining an execution", () => {
+    const ast = compileFormula(`money_result({
+      final: percent(yuan(1), evidence_multiplier(evidence_level, {
+        green: rate_percent(100),
+        yellow: rate_percent(80),
+        red: rate_percent(0)
+      }))
+    })`);
+    const execution = executionFor({
+      ast,
+      variables: { evidence_level: stringValue("green") },
+    });
+
+    const wrongRootType = structuredClone(ast);
+    wrongRootType.inferredType = scalar("money_cents");
+    expectExplanationIssue(
+      () =>
+        buildCustomRuleExecutionExplanation({
+          ast: wrongRootType,
+          trace: execution.trace,
+          result: execution.result,
+          labels: labels(),
+        }),
+      "EXPLANATION_INVALID_AST",
+    );
+
+    const wrongNestedObject = structuredClone(ast);
+    if (
+      wrongNestedObject.kind !== "call" ||
+      wrongNestedObject.arguments[0]?.kind !== "object" ||
+      wrongNestedObject.arguments[0].entries[0]?.value.kind !== "call" ||
+      wrongNestedObject.arguments[0].entries[0].value.arguments[1]?.kind !==
+        "call" ||
+      wrongNestedObject.arguments[0].entries[0].value.arguments[1].arguments[1]
+        ?.kind !== "object"
+    ) {
+      throw new Error("Expected a compiled evidence rate object");
+    }
+    wrongNestedObject.arguments[0].entries[0].value.arguments[1].arguments[1].inferredType =
+      scalar("money_cents");
+
+    expectExplanationIssue(
+      () =>
+        buildCustomRuleExecutionExplanation({
+          ast: wrongNestedObject,
+          trace: execution.trace,
+          result: execution.result,
+          labels: labels(),
+        }),
+      "EXPLANATION_INVALID_AST",
     );
   });
 });

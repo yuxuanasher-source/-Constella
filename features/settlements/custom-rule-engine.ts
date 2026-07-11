@@ -137,6 +137,8 @@ const MAX_RATIONAL_BITS = 256;
 const MAX_DECIMAL_SCALE = 36;
 const RATE_DENOMINATOR = BigInt(10_000);
 const MINUTES_PER_HOUR = BigInt(60);
+const PREFLIGHT_MAX_NODES = 100_000;
+const PREFLIGHT_MAX_DEPTH = 128;
 
 class DataSnapshotFailure extends Error {}
 
@@ -192,7 +194,7 @@ function prepareInput(input: unknown): PreparedInput {
     outer.get("parameters"),
     "$.parameters",
   );
-  const ast = parseCompiledAst(outer.get("ast"));
+  const ast = preflightCompiledCustomRuleAst(outer.get("ast"));
 
   return { ast, variables, parameters, limits };
 }
@@ -277,6 +279,759 @@ function parseCompiledAst(value: unknown): CompiledAstNode {
     return parsed.data;
   } catch {
     invalidAst();
+  }
+}
+
+export function preflightCompiledCustomRuleAst(
+  value: unknown,
+): CompiledAstNode {
+  const ast = parseCompiledAst(value);
+  const state = { nodes: 0 };
+  preflightMoneyResultAst(ast, state);
+  return ast;
+}
+
+function preflightMoneyResultAst(
+  ast: CompiledAstNode,
+  state: { nodes: number },
+): void {
+  preflightEnter(state, "$", 0);
+  if (
+    ast.kind !== "call" ||
+    ast.callee !== "money_result" ||
+    ast.arguments.length !== 1 ||
+    ast.arguments[0]?.kind !== "object" ||
+    ast.inferredType.kind !== "object"
+  ) {
+    invalidAstContext("Formula root must be one money_result call", "$.ast");
+  }
+
+  const objectNode = ast.arguments[0];
+  preflightEnter(state, "$.arguments[0]", 1);
+  const componentNames = objectNode.entries.map((entry) => entry.key);
+  if (
+    componentNames.length === 0 ||
+    new Set(componentNames).size !== componentNames.length ||
+    componentNames.filter((name) => name === "final").length !== 1
+  ) {
+    invalidAstContext(
+      "money_result requires unique components and exactly one final",
+      "$.arguments[0]",
+    );
+  }
+  assertMoneyResultType(objectNode.inferredType, componentNames, "$.arguments[0]");
+  assertMoneyResultType(ast.inferredType, componentNames, "$");
+
+  const allComponents = new Set(componentNames);
+  const availableComponents = new Set<string>();
+  for (const [index, entry] of objectNode.entries.entries()) {
+    const path = `$.arguments[0].entries[${index}].value`;
+    const valueType = preflightNode(entry.value, path, 2, state, {
+      allComponents,
+      availableComponents,
+    });
+    if (scalarTypeOf(valueType) !== "money_cents") {
+      invalidAstContext("money_result components must be money", path);
+    }
+    availableComponents.add(entry.key);
+  }
+}
+
+type AstPreflightComponents = Readonly<{
+  allComponents: ReadonlySet<string>;
+  availableComponents: ReadonlySet<string>;
+}>;
+
+function preflightNode(
+  node: CompiledAstNode,
+  path: string,
+  depth: number,
+  state: { nodes: number },
+  components: AstPreflightComponents,
+): RuntimeValueType {
+  preflightEnter(state, path, depth);
+
+  switch (node.kind) {
+    case "literal":
+      return node.inferredType;
+    case "identifier":
+      if (
+        components.allComponents.has(node.name) &&
+        !components.availableComponents.has(node.name)
+      ) {
+        invalidAstContext(
+          "Component references must point to earlier components",
+          path,
+        );
+      }
+      if (
+        components.availableComponents.has(node.name) &&
+        scalarTypeOf(node.inferredType) !== "money_cents"
+      ) {
+        invalidAstContext(
+          "Component identifier type must be money",
+          path,
+        );
+      }
+      return node.inferredType;
+    case "unary": {
+      const argumentType = preflightNode(
+        node.argument,
+        `${path}.argument`,
+        depth + 1,
+        state,
+        components,
+      );
+      let expectedType: RuntimeValueType;
+      if (node.operator === "!") {
+        assertScalarType(argumentType, "boolean", path);
+        expectedType = scalarRuntimeType("boolean");
+      } else if (node.operator === "+" || node.operator === "-") {
+        if (!isNumericRuntimeType(argumentType)) {
+          invalidAstContext("Unary arithmetic requires a numeric type", path);
+        }
+        expectedType = argumentType;
+      } else {
+        unknownOperator(path);
+      }
+      assertDeclaredType(node.inferredType, expectedType, path);
+      return node.inferredType;
+    }
+    case "binary": {
+      if (!isKnownBinaryOperator(node.operator)) {
+        unknownOperator(path);
+      }
+      const leftType = preflightNode(
+        node.left,
+        `${path}.left`,
+        depth + 1,
+        state,
+        components,
+      );
+      const rightType = preflightNode(
+        node.right,
+        `${path}.right`,
+        depth + 1,
+        state,
+        components,
+      );
+      const expectedType = preflightBinaryType(
+        node.operator,
+        leftType,
+        rightType,
+        path,
+      );
+      assertDeclaredType(node.inferredType, expectedType, path);
+      return node.inferredType;
+    }
+    case "call":
+      return preflightCall(node, path, depth, state, components);
+    case "array": {
+      if (node.inferredType.kind !== "array") {
+        invalidAstContext("Array node must declare an array type", path);
+      }
+      for (const [index, element] of node.elements.entries()) {
+        const elementType = preflightNode(
+          element,
+          `${path}.elements[${index}]`,
+          depth + 1,
+          state,
+          components,
+        );
+        assertDeclaredType(
+          elementType,
+          node.inferredType.itemType,
+          `${path}.elements[${index}]`,
+        );
+      }
+      return node.inferredType;
+    }
+    case "object": {
+      if (node.inferredType.kind !== "object") {
+        invalidAstContext("Object node must declare an object type", path);
+      }
+      const objectType = node.inferredType;
+      const entryNames = node.entries.map((entry) => entry.key);
+      const fieldNames = Object.keys(objectType.fields);
+      if (
+        new Set(entryNames).size !== entryNames.length ||
+        entryNames.length !== fieldNames.length ||
+        entryNames.some((name) => !Object.hasOwn(objectType.fields, name))
+      ) {
+        invalidAstContext(
+          "Object inferred fields must match property keys exactly",
+          path,
+        );
+      }
+      for (const [index, entry] of node.entries.entries()) {
+        const entryType = preflightNode(
+          entry.value,
+          `${path}.entries[${index}].value`,
+          depth + 1,
+          state,
+          components,
+        );
+        assertDeclaredType(
+          entryType,
+          objectType.fields[entry.key],
+          `${path}.entries[${index}].value`,
+        );
+      }
+      return node.inferredType;
+    }
+  }
+}
+
+function preflightCall(
+  node: Extract<CompiledAstNode, { kind: "call" }>,
+  path: string,
+  depth: number,
+  state: { nodes: number },
+  components: AstPreflightComponents,
+): RuntimeValueType {
+  switch (node.callee) {
+    case "parameter": {
+      assertPreflightArity(node, 1, path);
+      const nameNode = node.arguments[0];
+      if (
+        nameNode?.kind !== "literal" ||
+        nameNode.inferredType.scalarType !== "string" ||
+        !("value" in nameNode) ||
+        typeof nameNode.value !== "string"
+      ) {
+        invalidAstContext("parameter requires one compiled string literal", path);
+      }
+      preflightNode(
+        nameNode,
+        `${path}.arguments[0]`,
+        depth + 1,
+        state,
+        components,
+      );
+      return node.inferredType;
+    }
+    case "if": {
+      assertPreflightArity(node, 3, path);
+      const argumentTypes = preflightArguments(
+        node,
+        path,
+        depth,
+        state,
+        components,
+      );
+      assertScalarType(argumentTypes[0], "boolean", path);
+      const branchType = commonPreflightType(
+        argumentTypes[1],
+        argumentTypes[2],
+        path,
+      );
+      assertDeclaredType(node.inferredType, branchType, path);
+      return node.inferredType;
+    }
+    case "min":
+    case "max": {
+      assertPreflightArity(node, 2, path);
+      const argumentTypes = preflightArguments(
+        node,
+        path,
+        depth,
+        state,
+        components,
+      );
+      const expectedType = commonPreflightNumericType(
+        argumentTypes[0],
+        argumentTypes[1],
+        path,
+      );
+      assertDeclaredType(node.inferredType, expectedType, path);
+      return node.inferredType;
+    }
+    case "clamp": {
+      assertPreflightArity(node, 3, path);
+      const argumentTypes = preflightArguments(
+        node,
+        path,
+        depth,
+        state,
+        components,
+      );
+      const lowerType = commonPreflightNumericType(
+        argumentTypes[0],
+        argumentTypes[1],
+        path,
+      );
+      const expectedType = commonPreflightNumericType(
+        lowerType,
+        argumentTypes[2],
+        path,
+      );
+      assertDeclaredType(node.inferredType, expectedType, path);
+      return node.inferredType;
+    }
+    case "round_money": {
+      assertPreflightArity(node, 1, path);
+      const argumentTypes = preflightArguments(
+        node,
+        path,
+        depth,
+        state,
+        components,
+      );
+      assertScalarType(argumentTypes[0], "money_cents", path);
+      assertScalarType(node.inferredType, "money_cents", path);
+      return node.inferredType;
+    }
+    case "tiered":
+      return preflightTieredCall(node, path, depth, state, components);
+    case "percent": {
+      assertPreflightArity(node, 2, path);
+      const argumentTypes = preflightArguments(
+        node,
+        path,
+        depth,
+        state,
+        components,
+      );
+      assertScalarType(argumentTypes[0], "money_cents", path);
+      assertScalarType(argumentTypes[1], "rate_bps", path);
+      assertScalarType(node.inferredType, "money_cents", path);
+      return node.inferredType;
+    }
+    case "evidence_multiplier": {
+      assertPreflightArity(node, 2, path);
+      const levelType = preflightNode(
+        node.arguments[0],
+        `${path}.arguments[0]`,
+        depth + 1,
+        state,
+        components,
+      );
+      assertScalarType(levelType, "string", path);
+      const ratesNode = node.arguments[1];
+      if (ratesNode?.kind !== "object") {
+        invalidAstContext(
+          "evidence_multiplier requires a compiled rate object",
+          path,
+        );
+      }
+      const ratesType = preflightNode(
+        ratesNode,
+        `${path}.arguments[1]`,
+        depth + 1,
+        state,
+        components,
+      );
+      if (ratesType.kind !== "object") {
+        invalidAstContext("Evidence rates must declare an object type", path);
+      }
+      const keys = Object.keys(ratesType.fields).sort();
+      if (canonicalJson(keys) !== canonicalJson(["green", "red", "yellow"])) {
+        invalidAstContext("Evidence rates must define green, yellow, and red", path);
+      }
+      for (const key of keys) {
+        assertScalarType(ratesType.fields[key], "rate_bps", path);
+      }
+      assertScalarType(node.inferredType, "rate_bps", path);
+      return node.inferredType;
+    }
+    case "in": {
+      assertPreflightArity(node, 2, path);
+      const argumentTypes = preflightArguments(
+        node,
+        path,
+        depth,
+        state,
+        components,
+      );
+      if (
+        argumentTypes[1].kind !== "array" ||
+        !sameRuntimeType(argumentTypes[0], argumentTypes[1].itemType)
+      ) {
+        invalidAstContext("in candidates must match the searched value type", path);
+      }
+      assertScalarType(node.inferredType, "boolean", path);
+      return node.inferredType;
+    }
+    case "contains": {
+      assertPreflightArity(node, 2, path);
+      const argumentTypes = preflightArguments(
+        node,
+        path,
+        depth,
+        state,
+        components,
+      );
+      if (
+        argumentTypes[0].kind !== "array" ||
+        !sameRuntimeType(argumentTypes[0].itemType, argumentTypes[1])
+      ) {
+        invalidAstContext("contains requires an array and matching item", path);
+      }
+      assertScalarType(node.inferredType, "boolean", path);
+      return node.inferredType;
+    }
+    case "money_result":
+    case "yuan":
+    case "rate_percent":
+      invalidAstContext("Compiled call is not valid in this AST position", path);
+    default:
+      executionFailure(
+        "EXECUTION_UNKNOWN_FUNCTION",
+        "Compiled AST calls an unknown function",
+        path,
+      );
+  }
+}
+
+function preflightTieredCall(
+  node: Extract<CompiledAstNode, { kind: "call" }>,
+  path: string,
+  depth: number,
+  state: { nodes: number },
+  components: AstPreflightComponents,
+): RuntimeValueType {
+  assertPreflightArity(node, 2, path);
+  const minutesType = preflightNode(
+    node.arguments[0],
+    `${path}.arguments[0]`,
+    depth + 1,
+    state,
+    components,
+  );
+  if (!isGeneralNumericRuntimeType(minutesType)) {
+    invalidAstContext("tiered minutes must be integer or number", path);
+  }
+  const tiersNode = node.arguments[1];
+  if (
+    tiersNode?.kind !== "array" ||
+    tiersNode.elements.length === 0 ||
+    tiersNode.inferredType.kind !== "array" ||
+    tiersNode.inferredType.itemType.kind !== "object" ||
+    !sameRuntimeType(
+      tiersNode.inferredType.itemType,
+      objectRuntimeType({ rate_per_hour: scalarRuntimeType("money_cents") }),
+    )
+  ) {
+    invalidAstContext("tiered requires a valid compiled tier array", path);
+  }
+  preflightEnter(state, `${path}.arguments[1]`, depth + 1);
+  for (const [index, tierNode] of tiersNode.elements.entries()) {
+    const tierPath = `${path}.arguments[1].elements[${index}]`;
+    if (tierNode.kind !== "object") {
+      invalidAstContext("Each tier must be an object", tierPath);
+    }
+    const tierType = preflightNode(
+      tierNode,
+      tierPath,
+      depth + 2,
+      state,
+      components,
+    );
+    if (tierType.kind !== "object") {
+      invalidAstContext("Each tier must declare an object type", tierPath);
+    }
+    const keys = Object.keys(tierType.fields).sort();
+    const isFinal = index === tiersNode.elements.length - 1;
+    const validKeys =
+      canonicalJson(keys) === canonicalJson(["rate_per_hour", "upto"]) ||
+      (isFinal && canonicalJson(keys) === canonicalJson(["rate_per_hour"]));
+    if (!validKeys) {
+      invalidAstContext("Tier fields do not match the compiled contract", tierPath);
+    }
+    assertScalarType(tierType.fields.rate_per_hour, "money_cents", tierPath);
+    if (Object.hasOwn(tierType.fields, "upto")) {
+      if (!isGeneralNumericRuntimeType(tierType.fields.upto)) {
+        invalidAstContext("Tier limits must be integer or number", tierPath);
+      }
+    }
+  }
+  assertScalarType(node.inferredType, "money_cents", path);
+  return node.inferredType;
+}
+
+function preflightArguments(
+  node: Extract<CompiledAstNode, { kind: "call" }>,
+  path: string,
+  depth: number,
+  state: { nodes: number },
+  components: AstPreflightComponents,
+): RuntimeValueType[] {
+  return node.arguments.map((argument, index) =>
+    preflightNode(
+      argument,
+      `${path}.arguments[${index}]`,
+      depth + 1,
+      state,
+      components,
+    ),
+  );
+}
+
+function preflightBinaryType(
+  operator: string,
+  leftType: RuntimeValueType,
+  rightType: RuntimeValueType,
+  path: string,
+): RuntimeValueType {
+  if (operator === "&&" || operator === "||") {
+    assertScalarType(leftType, "boolean", path);
+    assertScalarType(rightType, "boolean", path);
+    return scalarRuntimeType("boolean");
+  }
+  if (operator === "+" || operator === "-") {
+    if (sameRuntimeType(leftType, rightType) && isNumericRuntimeType(leftType)) {
+      return leftType;
+    }
+    if (
+      isGeneralNumericRuntimeType(leftType) &&
+      isGeneralNumericRuntimeType(rightType)
+    ) {
+      return scalarRuntimeType("number");
+    }
+    invalidAstContext("Addition requires compatible numeric units", path);
+  }
+  if (operator === "*") {
+    const leftScalar = scalarTypeOf(leftType);
+    const rightScalar = scalarTypeOf(rightType);
+    if (
+      (leftScalar === "money_cents" && rightScalar === "rate_bps") ||
+      (leftScalar === "rate_bps" && rightScalar === "money_cents")
+    ) {
+      return scalarRuntimeType("money_cents");
+    }
+    if (
+      (leftScalar === "money_cents" && isGeneralNumericRuntimeType(rightType)) ||
+      (rightScalar === "money_cents" && isGeneralNumericRuntimeType(leftType))
+    ) {
+      return scalarRuntimeType("money_cents");
+    }
+    if (
+      (leftScalar === "rate_bps" && isGeneralNumericRuntimeType(rightType)) ||
+      (rightScalar === "rate_bps" && isGeneralNumericRuntimeType(leftType))
+    ) {
+      return scalarRuntimeType("rate_bps");
+    }
+    if (
+      isGeneralNumericRuntimeType(leftType) &&
+      isGeneralNumericRuntimeType(rightType)
+    ) {
+      return leftScalar === "integer" && rightScalar === "integer"
+        ? scalarRuntimeType("integer")
+        : scalarRuntimeType("number");
+    }
+    invalidAstContext("Multiplication received incompatible units", path);
+  }
+  if (operator === "/") {
+    const leftScalar = scalarTypeOf(leftType);
+    const rightScalar = scalarTypeOf(rightType);
+    if (leftScalar === "money_cents" || rightScalar === "money_cents") {
+      invalidAstContext("General division cannot accept money values", path);
+    }
+    if (leftScalar === "rate_bps" && isGeneralNumericRuntimeType(rightType)) {
+      return scalarRuntimeType("rate_bps");
+    }
+    if (
+      (leftScalar === "rate_bps" && rightScalar === "rate_bps") ||
+      (isGeneralNumericRuntimeType(leftType) &&
+        isGeneralNumericRuntimeType(rightType))
+    ) {
+      return scalarRuntimeType("number");
+    }
+    invalidAstContext("Division received incompatible units", path);
+  }
+  if (operator === "%") {
+    if (
+      !isGeneralNumericRuntimeType(leftType) ||
+      !isGeneralNumericRuntimeType(rightType)
+    ) {
+      invalidAstContext("Modulo requires unitless numeric values", path);
+    }
+    return scalarTypeOf(leftType) === "integer" &&
+      scalarTypeOf(rightType) === "integer"
+      ? scalarRuntimeType("integer")
+      : scalarRuntimeType("number");
+  }
+  if (["==", "!=", "===", "!=="].includes(operator)) {
+    if (
+      !sameRuntimeType(leftType, rightType) &&
+      !(
+        isGeneralNumericRuntimeType(leftType) &&
+        isGeneralNumericRuntimeType(rightType)
+      )
+    ) {
+      invalidAstContext("Equality requires compatible types", path);
+    }
+    return scalarRuntimeType("boolean");
+  }
+  if (["<", "<=", ">", ">="].includes(operator)) {
+    const leftScalar = scalarTypeOf(leftType);
+    const ordered = new Set<RuntimeScalarType>([
+      "money_cents",
+      "rate_bps",
+      "number",
+      "integer",
+      "string",
+      "timestamp",
+    ]);
+    if (
+      !(
+        (sameRuntimeType(leftType, rightType) &&
+          leftScalar !== null &&
+          ordered.has(leftScalar)) ||
+        (isGeneralNumericRuntimeType(leftType) &&
+          isGeneralNumericRuntimeType(rightType))
+      )
+    ) {
+      invalidAstContext("Ordered comparison requires compatible scalar types", path);
+    }
+    return scalarRuntimeType("boolean");
+  }
+  unknownOperator(path);
+}
+
+function commonPreflightNumericType(
+  leftType: RuntimeValueType,
+  rightType: RuntimeValueType,
+  path: string,
+): RuntimeValueType {
+  if (!isNumericRuntimeType(leftType) || !isNumericRuntimeType(rightType)) {
+    invalidAstContext("Function requires numeric types", path);
+  }
+  return commonPreflightType(leftType, rightType, path);
+}
+
+function commonPreflightType(
+  leftType: RuntimeValueType,
+  rightType: RuntimeValueType,
+  path: string,
+): RuntimeValueType {
+  if (sameRuntimeType(leftType, rightType)) {
+    return leftType;
+  }
+  if (
+    isGeneralNumericRuntimeType(leftType) &&
+    isGeneralNumericRuntimeType(rightType)
+  ) {
+    return scalarRuntimeType("number");
+  }
+  invalidAstContext("Compiled branches require one compatible type", path);
+}
+
+function assertPreflightArity(
+  node: Extract<CompiledAstNode, { kind: "call" }>,
+  arity: number,
+  path: string,
+): void {
+  if (node.arguments.length !== arity) {
+    invalidAstContext("Compiled function has an invalid argument count", path);
+  }
+}
+
+function assertDeclaredType(
+  actual: RuntimeValueType,
+  expected: RuntimeValueType | undefined,
+  path: string,
+): void {
+  if (!expected || !sameRuntimeType(actual, expected)) {
+    invalidAstContext(
+      "Compiled node inferred type does not match child semantics",
+      path,
+    );
+  }
+}
+
+function assertScalarType(
+  type: RuntimeValueType | undefined,
+  scalarType: RuntimeScalarType,
+  path: string,
+): void {
+  if (scalarTypeOf(type) !== scalarType) {
+    invalidAstContext(
+      `Compiled node must declare ${scalarType}`,
+      path,
+    );
+  }
+}
+
+function sameRuntimeType(
+  left: RuntimeValueType,
+  right: RuntimeValueType,
+): boolean {
+  if (left.kind !== right.kind) {
+    return false;
+  }
+  if (left.kind === "scalar" && right.kind === "scalar") {
+    return left.scalarType === right.scalarType;
+  }
+  if (left.kind === "array" && right.kind === "array") {
+    return sameRuntimeType(left.itemType, right.itemType);
+  }
+  if (left.kind !== "object" || right.kind !== "object") {
+    return false;
+  }
+  const leftKeys = Object.keys(left.fields).sort();
+  const rightKeys = Object.keys(right.fields).sort();
+  return (
+    canonicalJson(leftKeys) === canonicalJson(rightKeys) &&
+    leftKeys.every((key) =>
+      sameRuntimeType(left.fields[key], right.fields[key]),
+    )
+  );
+}
+
+function scalarRuntimeType(scalarType: RuntimeScalarType): RuntimeValueType {
+  return { kind: "scalar", scalarType };
+}
+
+function objectRuntimeType(
+  fields: Record<string, RuntimeValueType>,
+): RuntimeValueType {
+  return { kind: "object", fields };
+}
+
+function isNumericRuntimeType(type: RuntimeValueType): boolean {
+  return ["money_cents", "rate_bps", "number", "integer"].includes(
+    scalarTypeOf(type) ?? "",
+  );
+}
+
+function isGeneralNumericRuntimeType(type: RuntimeValueType): boolean {
+  const scalarType = scalarTypeOf(type);
+  return scalarType === "number" || scalarType === "integer";
+}
+
+function isKnownBinaryOperator(operator: string): boolean {
+  return [
+    "&&",
+    "||",
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+    "==",
+    "!=",
+    "===",
+    "!==",
+    "<",
+    "<=",
+    ">",
+    ">=",
+  ].includes(operator);
+}
+
+function preflightEnter(
+  state: { nodes: number },
+  path: string,
+  depth: number,
+): void {
+  state.nodes += 1;
+  if (depth > PREFLIGHT_MAX_DEPTH || state.nodes > PREFLIGHT_MAX_NODES) {
+    executionFailure(
+      "EXECUTION_INVALID_AST",
+      "Compiled AST exceeds the preflight traversal bound",
+      path,
+    );
   }
 }
 

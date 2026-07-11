@@ -148,6 +148,19 @@ function replaceFinalNode(
   return copy;
 }
 
+function readFinalNode(ast: CompiledAstNode): CompiledAstNode {
+  if (ast.kind !== "call" || ast.arguments[0]?.kind !== "object") {
+    throw new Error("Expected a compiled money_result AST");
+  }
+  const finalEntry = ast.arguments[0].entries.find(
+    (entry) => entry.key === "final",
+  );
+  if (!finalEntry) {
+    throw new Error("Expected a final component");
+  }
+  return finalEntry.value;
+}
+
 describe("executeCompiledCustomRule calculations", () => {
   it("executes CPT plus a named bonus with stable ordered components", () => {
     const ast = compileFormula(
@@ -378,6 +391,20 @@ describe("executeCompiledCustomRule calculations", () => {
     ).toBe(100);
   });
 
+  it("preflights but does not execute dynamic zero division in an unselected branch", () => {
+    expect(
+      executeFormula(`money_result({
+        final: if(
+          true,
+          yuan(1),
+          yuan(1) * (1 / system_minutes)
+        )
+      })`, {
+        variableValues: { system_minutes: integer(0) },
+      }).componentsCents.final,
+    ).toBe(100);
+  });
+
   it("returns a byte-stable immutable detailed execution trace", () => {
     const ast = compileFormula(
       "money_result({ final: percent(sales_amount, rate_percent(10)) })",
@@ -498,6 +525,238 @@ describe("executeCompiledCustomRule arithmetic failures", () => {
 });
 
 describe("executeCompiledCustomRule trust boundary", () => {
+  it("rejects an unknown function hidden in an unselected branch during preflight", () => {
+    const ast = structuredClone(
+      compileFormula("money_result({ final: if(true, yuan(1), yuan(2)) })"),
+    );
+    const finalNode = readFinalNode(ast);
+    if (finalNode.kind !== "call" || finalNode.callee !== "if") {
+      throw new Error("Expected a compiled if call");
+    }
+    finalNode.arguments[2] = {
+      kind: "call",
+      callee: "mystery",
+      arguments: [
+        {
+          kind: "literal",
+          inferredType: scalar("money_cents"),
+          valueCents: 100,
+        },
+      ],
+      inferredType: scalar("money_cents"),
+    };
+
+    expectExecutionIssue(
+      () => executeCompiledCustomRule({ ast, variables: {}, parameters: {} }),
+      "EXECUTION_UNKNOWN_FUNCTION",
+    );
+  });
+
+  it("rejects an unknown operator hidden in an unselected branch during preflight", () => {
+    const ast = structuredClone(
+      compileFormula(
+        "money_result({ final: if(true, yuan(1), yuan(2) + yuan(3)) })",
+      ),
+    );
+    const finalNode = readFinalNode(ast);
+    if (
+      finalNode.kind !== "call" ||
+      finalNode.arguments[2]?.kind !== "binary"
+    ) {
+      throw new Error("Expected an unselected compiled binary expression");
+    }
+    finalNode.arguments[2].operator = "**";
+
+    expectExecutionIssue(
+      () => executeCompiledCustomRule({ ast, variables: {}, parameters: {} }),
+      "EXECUTION_UNKNOWN_OPERATOR",
+    );
+  });
+
+  it("rejects a malformed node hidden in an unselected branch during preflight", () => {
+    const ast = structuredClone(
+      compileFormula("money_result({ final: if(true, yuan(1), yuan(2)) })"),
+    );
+    const finalNode = readFinalNode(ast);
+    if (finalNode.kind !== "call" || finalNode.callee !== "if") {
+      throw new Error("Expected a compiled if call");
+    }
+    finalNode.arguments[2] = { kind: "mystery" } as unknown as CompiledAstNode;
+
+    expectExecutionIssue(
+      () => executeCompiledCustomRule({ ast, variables: {}, parameters: {} }),
+      "EXECUTION_INVALID_AST",
+    );
+  });
+
+  it("rejects forged array inferred types recursively", () => {
+    const makeAst = () =>
+      structuredClone(
+        compileFormula(`money_result({
+          final: if(in(streamer_level, ["S", "A"]), yuan(1), yuan(2))
+        })`),
+      );
+
+    const wrongContainerType = makeAst();
+    const wrongContainerFinal = readFinalNode(wrongContainerType);
+    if (
+      wrongContainerFinal.kind !== "call" ||
+      wrongContainerFinal.arguments[0]?.kind !== "call" ||
+      wrongContainerFinal.arguments[0].arguments[1]?.kind !== "array"
+    ) {
+      throw new Error("Expected a compiled in array");
+    }
+    wrongContainerFinal.arguments[0].arguments[1].inferredType =
+      scalar("money_cents");
+
+    expectExecutionIssue(
+      () =>
+        executeCompiledCustomRule({
+          ast: wrongContainerType,
+          variables: { streamer_level: stringValue("S") },
+          parameters: {},
+        }),
+      "EXECUTION_INVALID_AST_CONTEXT",
+    );
+
+    const wrongItemType = makeAst();
+    const wrongItemFinal = readFinalNode(wrongItemType);
+    if (
+      wrongItemFinal.kind !== "call" ||
+      wrongItemFinal.arguments[0]?.kind !== "call" ||
+      wrongItemFinal.arguments[0].arguments[1]?.kind !== "array" ||
+      wrongItemFinal.arguments[0].arguments[1].inferredType.kind !== "array"
+    ) {
+      throw new Error("Expected a compiled in array");
+    }
+    wrongItemFinal.arguments[0].arguments[1].inferredType.itemType =
+      scalar("integer");
+
+    expectExecutionIssue(
+      () =>
+        executeCompiledCustomRule({
+          ast: wrongItemType,
+          variables: { streamer_level: stringValue("S") },
+          parameters: {},
+        }),
+      "EXECUTION_INVALID_AST_CONTEXT",
+    );
+
+    const wrongChildType = makeAst();
+    const wrongChildFinal = readFinalNode(wrongChildType);
+    if (
+      wrongChildFinal.kind !== "call" ||
+      wrongChildFinal.arguments[0]?.kind !== "call" ||
+      wrongChildFinal.arguments[0].arguments[1]?.kind !== "array"
+    ) {
+      throw new Error("Expected a compiled in array");
+    }
+    wrongChildFinal.arguments[0].arguments[1].elements[1] = {
+      kind: "literal",
+      inferredType: scalar("integer"),
+      value: 1,
+    };
+
+    expectExecutionIssue(
+      () =>
+        executeCompiledCustomRule({
+          ast: wrongChildType,
+          variables: { streamer_level: stringValue("S") },
+          parameters: {},
+        }),
+      "EXECUTION_INVALID_AST_CONTEXT",
+    );
+  });
+
+  it("rejects forged object inferred types recursively", () => {
+    const makeAst = () =>
+      structuredClone(
+        compileFormula(`money_result({
+          final: percent(yuan(1), evidence_multiplier(evidence_level, {
+            green: rate_percent(100),
+            yellow: rate_percent(80),
+            red: rate_percent(0)
+          }))
+        })`),
+      );
+    const readRates = (ast: CompiledAstNode) => {
+      const finalNode = readFinalNode(ast);
+      if (
+        finalNode.kind !== "call" ||
+        finalNode.arguments[1]?.kind !== "call" ||
+        finalNode.arguments[1].arguments[1]?.kind !== "object"
+      ) {
+        throw new Error("Expected a compiled evidence rate object");
+      }
+      return finalNode.arguments[1].arguments[1];
+    };
+
+    const wrongContainerType = makeAst();
+    readRates(wrongContainerType).inferredType = scalar("money_cents");
+    expectExecutionIssue(
+      () =>
+        executeCompiledCustomRule({
+          ast: wrongContainerType,
+          variables: { evidence_level: stringValue("green") },
+          parameters: {},
+        }),
+      "EXECUTION_INVALID_AST_CONTEXT",
+    );
+
+    const wrongFieldSet = makeAst();
+    const wrongFieldSetRates = readRates(wrongFieldSet);
+    if (wrongFieldSetRates.inferredType.kind !== "object") {
+      throw new Error("Expected an object inferred type");
+    }
+    delete wrongFieldSetRates.inferredType.fields.red;
+    expectExecutionIssue(
+      () =>
+        executeCompiledCustomRule({
+          ast: wrongFieldSet,
+          variables: { evidence_level: stringValue("green") },
+          parameters: {},
+        }),
+      "EXECUTION_INVALID_AST_CONTEXT",
+    );
+
+    const wrongFieldType = makeAst();
+    const wrongFieldTypeRates = readRates(wrongFieldType);
+    if (wrongFieldTypeRates.inferredType.kind !== "object") {
+      throw new Error("Expected an object inferred type");
+    }
+    wrongFieldTypeRates.inferredType.fields.green = scalar("money_cents");
+    expectExecutionIssue(
+      () =>
+        executeCompiledCustomRule({
+          ast: wrongFieldType,
+          variables: { evidence_level: stringValue("green") },
+          parameters: {},
+        }),
+      "EXECUTION_INVALID_AST_CONTEXT",
+    );
+  });
+
+  it("rejects a forged declared type in an unselected binary subtree", () => {
+    const ast = structuredClone(
+      compileFormula(
+        "money_result({ final: if(true, yuan(1), yuan(2) + yuan(3)) })",
+      ),
+    );
+    const finalNode = readFinalNode(ast);
+    if (
+      finalNode.kind !== "call" ||
+      finalNode.arguments[2]?.kind !== "binary"
+    ) {
+      throw new Error("Expected an unselected compiled binary expression");
+    }
+    finalNode.arguments[2].inferredType = scalar("boolean");
+
+    expectExecutionIssue(
+      () => executeCompiledCustomRule({ ast, variables: {}, parameters: {} }),
+      "EXECUTION_INVALID_AST_CONTEXT",
+    );
+  });
+
   it("throws stable issues for missing variables and parameters", () => {
     expectExecutionIssue(
       () =>
