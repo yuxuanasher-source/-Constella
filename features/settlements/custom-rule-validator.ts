@@ -10,6 +10,8 @@ import {
   type CustomRuleSourceSpan,
 } from "./custom-rule-parser";
 import {
+  CUSTOM_RULE_EXECUTION_GRAINS,
+  CUSTOM_RULE_SCOPES,
   percentToBpsStrict,
   yuanToCentsStrict,
 } from "./custom-rule-types";
@@ -62,6 +64,12 @@ type CompileContext = {
 type ComponentReference = {
   name: string;
   path: string;
+};
+
+type ValidatedOptions = {
+  scope: CustomRuleScope;
+  executionGrain: CustomRuleExecutionGrain;
+  parameterTypes: ReadonlyMap<string, RuntimeValueType>;
 };
 
 const scalar = <ScalarType extends RuntimeScalarType>(
@@ -280,6 +288,9 @@ const DISABLED_PHASE_ONE_SCOPES = new Set<CustomRuleScope>([
   "external_cost",
   "reconciliation",
 ]);
+const MAX_PARAMETERS = 300;
+const MAX_PARAMETER_TYPE_DEPTH = 20;
+const MAX_PARAMETER_TYPE_NODES = 300;
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const RESERVED_IDENTIFIERS = new Set([
   "amount",
@@ -299,6 +310,21 @@ export function validateCustomRuleFormula(
   formula: string,
   options: ValidateCustomRuleFormulaOptions,
 ): ValidateCustomRuleFormulaResult {
+  const optionSpan = { start: 0, end: formula.length };
+  let validatedOptions: ValidatedOptions;
+  try {
+    validatedOptions = validateRuntimeOptions(options, optionSpan);
+  } catch (error) {
+    if (error instanceof ValidationFailure) {
+      return { ok: false, issues: [error.issue] };
+    }
+    return validationFailure(
+      "VALIDATION_INVALID_OPTIONS",
+      "Validation options are invalid",
+      optionSpan,
+    );
+  }
+
   const parsed = parseCustomRuleFormula(formula);
   if (!parsed.ok) {
     return parsed;
@@ -309,7 +335,10 @@ export function validateCustomRuleFormula(
     end: formula.length,
   };
 
-  if (parsed.scopePrefix !== null && parsed.scopePrefix !== options.scope) {
+  if (
+    parsed.scopePrefix !== null &&
+    parsed.scopePrefix !== validatedOptions.scope
+  ) {
     const prefixStart = formula.indexOf(parsed.scopePrefix);
     return validationFailure(
       "VALIDATION_SCOPE_MISMATCH",
@@ -322,7 +351,7 @@ export function validateCustomRuleFormula(
     );
   }
 
-  if (DISABLED_PHASE_ONE_SCOPES.has(options.scope)) {
+  if (DISABLED_PHASE_ONE_SCOPES.has(validatedOptions.scope)) {
     return validationFailure(
       "VALIDATION_SCOPE_DISABLED",
       "This settlement scope is disabled in Phase 1",
@@ -331,13 +360,12 @@ export function validateCustomRuleFormula(
   }
 
   try {
-    const parameterTypes = createParameterTypes(options.parameters, rootSpan);
     const context: CompileContext = {
-      scope: options.scope,
-      executionGrain: options.executionGrain,
+      scope: validatedOptions.scope,
+      executionGrain: validatedOptions.executionGrain,
       spansByPath: parsed.spansByPath,
       rootSpan,
-      parameterTypes,
+      parameterTypes: validatedOptions.parameterTypes,
       referencedVariables: new Set(),
       referencedParameters: new Set(),
       componentNames: new Set(),
@@ -379,33 +407,144 @@ function variable(
   return { valueType, scopes, grains };
 }
 
-function createParameterTypes(
-  parameters: ValidateCustomRuleFormulaOptions["parameters"],
+function validateRuntimeOptions(
+  options: unknown,
   span: CustomRuleSourceSpan,
-): ReadonlyMap<string, RuntimeValueType> {
-  const result = new Map<string, RuntimeValueType>();
-  for (const parameter of parameters ?? []) {
+): ValidatedOptions {
+  if (
+    !isPlainRecord(options) ||
+    !hasExactKeys(
+      options,
+      ["scope", "executionGrain", "parameters"],
+      ["scope", "executionGrain"],
+    ) ||
+    !CUSTOM_RULE_SCOPES.includes(options.scope as CustomRuleScope) ||
+    !CUSTOM_RULE_EXECUTION_GRAINS.includes(
+      options.executionGrain as CustomRuleExecutionGrain,
+    ) ||
+    (options.parameters !== undefined && !Array.isArray(options.parameters))
+  ) {
+    throw invalidOptions(span);
+  }
+
+  const parameters = options.parameters ?? [];
+  if (parameters.length > MAX_PARAMETERS) {
+    throw issue(
+      "VALIDATION_PARAMETER_LIMIT",
+      "Parameter count exceeds the validation limit",
+      span,
+    );
+  }
+
+  const parameterTypes = new Map<string, RuntimeValueType>();
+  let parameterTypeNodeCount = 0;
+  for (const parameter of parameters) {
     if (
+      !isPlainRecord(parameter) ||
+      !hasExactKeys(parameter, ["name", "valueType"], ["name", "valueType"]) ||
+      typeof parameter.name !== "string" ||
       !IDENTIFIER_PATTERN.test(parameter.name) ||
       RESERVED_IDENTIFIERS.has(parameter.name.toLowerCase()) ||
-      !runtimeValueTypeSchema.safeParse(parameter.valueType).success
+      parameterTypes.has(parameter.name)
     ) {
-      throw issue(
-        "VALIDATION_INVALID_PARAMETER",
-        "Parameter metadata is not canonical",
-        span,
-      );
+      throw invalidOptions(span);
     }
-    if (result.has(parameter.name)) {
-      throw issue(
-        "VALIDATION_DUPLICATE_PARAMETER",
-        "Parameter names must be unique",
-        span,
-      );
+    parameterTypeNodeCount = countParameterTypeNodes(
+      parameter.valueType,
+      parameterTypeNodeCount,
+      span,
+    );
+    const valueType = runtimeValueTypeSchema.safeParse(parameter.valueType);
+    if (!valueType.success) {
+      throw invalidOptions(span);
     }
-    result.set(parameter.name, parameter.valueType);
+    parameterTypes.set(parameter.name, valueType.data);
   }
-  return result;
+
+  return {
+    scope: options.scope as CustomRuleScope,
+    executionGrain: options.executionGrain as CustomRuleExecutionGrain,
+    parameterTypes,
+  };
+}
+
+function countParameterTypeNodes(
+  root: unknown,
+  initialNodeCount: number,
+  span: CustomRuleSourceSpan,
+): number {
+  const stack: Array<{ value: unknown; depth: number }> = [
+    { value: root, depth: 1 },
+  ];
+  let nodeCount = initialNodeCount;
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) {
+      break;
+    }
+    if (current.depth > MAX_PARAMETER_TYPE_DEPTH) {
+      throw parameterTypeLimit(span);
+    }
+    nodeCount += 1;
+    if (nodeCount > MAX_PARAMETER_TYPE_NODES) {
+      throw parameterTypeLimit(span);
+    }
+    if (!isPlainRecord(current.value)) {
+      continue;
+    }
+    if (current.value.kind === "array") {
+      stack.push({
+        value: current.value.itemType,
+        depth: current.depth + 1,
+      });
+    } else if (
+      current.value.kind === "object" &&
+      isPlainRecord(current.value.fields)
+    ) {
+      for (const fieldType of Object.values(current.value.fields)) {
+        stack.push({ value: fieldType, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return nodeCount;
+}
+
+function parameterTypeLimit(span: CustomRuleSourceSpan): ValidationFailure {
+  return issue(
+    "VALIDATION_PARAMETER_TYPE_LIMIT",
+    "Parameter type complexity exceeds the validation limit",
+    span,
+  );
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[],
+  requiredKeys: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    keys.every((key) => allowedKeys.includes(key)) &&
+    requiredKeys.every((key) => Object.hasOwn(value, key))
+  );
+}
+
+function invalidOptions(span: CustomRuleSourceSpan): ValidationFailure {
+  return issue(
+    "VALIDATION_INVALID_OPTIONS",
+    "Validation options are invalid",
+    span,
+  );
 }
 
 function compileTopLevel(
@@ -592,7 +731,9 @@ function compileIdentifier(
     };
   }
 
-  const definition = VARIABLE_DEFINITIONS[node.name];
+  const definition = Object.hasOwn(VARIABLE_DEFINITIONS, node.name)
+    ? VARIABLE_DEFINITIONS[node.name]
+    : undefined;
   if (!definition) {
     throw issueAt(
       "VALIDATION_UNKNOWN_VARIABLE",
@@ -676,6 +817,17 @@ function compileBinary(
   const rightPath = path + ".right";
   const left = compileNode(node.left, leftPath, context);
   const right = compileNode(node.right, rightPath, context);
+  if (
+    (node.operator === "/" || node.operator === "%") &&
+    isStaticallyZero(node.right)
+  ) {
+    throw issueAt(
+      "VALIDATION_ZERO_DIVISOR",
+      "Divisor cannot be statically zero",
+      rightPath,
+      context,
+    );
+  }
   let inferredType: RuntimeValueType;
 
   if (node.operator === "&&" || node.operator === "||") {
@@ -1685,6 +1837,17 @@ function isRawNumericSource(node: NormalizedAstNode): boolean {
       (node.operator === "+" || node.operator === "-") &&
       node.argument.kind === "literal" &&
       typeof node.argument.value === "number")
+  );
+}
+
+function isStaticallyZero(node: NormalizedAstNode): boolean {
+  if (node.kind === "literal") {
+    return typeof node.value === "number" && node.value === 0;
+  }
+  return (
+    node.kind === "unary" &&
+    (node.operator === "+" || node.operator === "-") &&
+    isStaticallyZero(node.argument)
   );
 }
 

@@ -1,3 +1,4 @@
+import jsep from "jsep";
 import { describe, expect, it } from "vitest";
 
 import { normalizedAstNodeSchema } from "./custom-rule-contract";
@@ -39,6 +40,92 @@ function expectParseIssue(formula: string, code: string) {
 }
 
 describe("parseCustomRuleFormula", () => {
+  it("isolates parsing from external jsep configuration and restores caller state", () => {
+    const formula = "money_result({ final: yuan(1) + yuan(2) * 3 })";
+    const baseline = expectParseSuccess(formula);
+    const binaryOps = jsep.binary_ops;
+    const unaryOps = jsep.unary_ops;
+    const literals = jsep.literals;
+    const identifierChars = jsep.additional_identifier_chars;
+    const rightAssociative = jsep.right_associative;
+    const hooks = jsep.hooks as unknown as Record<
+      string,
+      jsep.HookCallback[] | undefined
+    >;
+    const originalPlusPrecedence = binaryOps["+"] ?? 0;
+    const originalPlusAssociativity = rightAssociative.has("+");
+    const hadGobbleTokenHooks = Object.hasOwn(hooks, "gobble-token");
+    const originalGobbleTokenHooks = [
+      ...(hooks["gobble-token"] ?? []),
+    ];
+    const pollutionPluginName = "task3_state_pollution";
+    const originalPlugin =
+      jsep.plugins.registered[pollutionPluginName];
+    const pollutionHook: jsep.HookCallback = function (environment) {
+      if (this.expr.startsWith("money_result", this.index)) {
+        this.index = this.expr.length;
+        environment.node = { type: "Literal", value: 999, raw: "999" };
+      }
+    };
+    const pollutionPlugin = {
+      name: pollutionPluginName,
+      init(parser: typeof jsep) {
+        parser.hooks.add("gobble-token", pollutionHook, true);
+      },
+    };
+
+    try {
+      jsep.addBinaryOp("+", 20, true);
+      jsep.addUnaryOp("outside_unary");
+      jsep.addLiteral("outside_literal", 7);
+      jsep.addIdentifierChar("@");
+      (
+        jsep.plugins.register as unknown as (
+          ...plugins: typeof pollutionPlugin[]
+        ) => void
+      )(pollutionPlugin);
+
+      const first = expectParseSuccess(formula);
+      const second = expectParseSuccess(formula);
+      const invalid = parseCustomRuleFormula("money_result({ final:");
+
+      expect(first.ast).toEqual(baseline.ast);
+      expect(second).toEqual(first);
+      expect(invalid).toMatchObject({
+        ok: false,
+        issues: [{ code: "PARSE_SYNTAX_ERROR" }],
+      });
+      expect(binaryOps["+"]).toBe(20);
+      expect(rightAssociative.has("+")).toBe(true);
+      expect(unaryOps).toHaveProperty("outside_unary");
+      expect(literals).toHaveProperty("outside_literal", 7);
+      expect(identifierChars.has("@")).toBe(true);
+      expect(hooks["gobble-token"]).toContain(pollutionHook);
+      expect(jsep.plugins.registered[pollutionPluginName]).toBe(
+        pollutionPlugin,
+      );
+    } finally {
+      jsep.addBinaryOp(
+        "+",
+        originalPlusPrecedence,
+        originalPlusAssociativity,
+      );
+      jsep.removeUnaryOp("outside_unary");
+      jsep.removeLiteral("outside_literal");
+      jsep.removeIdentifierChar("@");
+      if (!hadGobbleTokenHooks) {
+        delete hooks["gobble-token"];
+      } else {
+        hooks["gobble-token"] = originalGobbleTokenHooks;
+      }
+      if (originalPlugin === undefined) {
+        delete jsep.plugins.registered[pollutionPluginName];
+      } else {
+        jsep.plugins.registered[pollutionPluginName] = originalPlugin;
+      }
+    }
+  });
+
   it.each([
     "payable",
     "receivable",
@@ -211,6 +298,15 @@ describe("parseCustomRuleFormula", () => {
     ["bitwise operators", "left | right", "PARSE_UNSUPPORTED_OPERATOR"],
   ])("rejects %s", (_label, formula, code) => {
     expectParseIssue(formula, code);
+  });
+
+  it("keeps keyword spans in UTF-16 code units after astral string literals", () => {
+    const formula = '"😀" + new';
+    const issue = expectParseIssue(formula, "PARSE_SYNTAX_ERROR");
+    const start = formula.indexOf("new");
+
+    expect(issue.span).toEqual({ start, end: start + 1 });
+    expect(formula.slice(issue.span.start, issue.span.end)).toBe("n");
   });
 
   it("rejects formulas larger than 16 KiB by UTF-8 bytes", () => {

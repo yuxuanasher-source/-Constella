@@ -1,3 +1,4 @@
+import jsep from "jsep";
 import { describe, expect, it } from "vitest";
 
 import { compiledAstNodeSchema } from "./custom-rule-contract";
@@ -28,6 +29,26 @@ function options(
   overrides: Partial<ValidateCustomRuleFormulaOptions> = {},
 ): ValidateCustomRuleFormulaOptions {
   return { scope, executionGrain, ...overrides };
+}
+
+function nestedArrayType(depth: number): RuntimeValueType {
+  let valueType: RuntimeValueType = scalar("money_cents");
+  for (let currentDepth = 1; currentDepth < depth; currentDepth += 1) {
+    valueType = { kind: "array", itemType: valueType };
+  }
+  return valueType;
+}
+
+function objectTypeWithNodeCount(nodeCount: number): RuntimeValueType {
+  return {
+    kind: "object",
+    fields: Object.fromEntries(
+      Array.from({ length: nodeCount - 1 }, (_, index) => [
+        "field_" + index,
+        scalar("money_cents"),
+      ]),
+    ),
+  };
 }
 
 function expectValidationSuccess(
@@ -69,6 +90,146 @@ function expectValidationIssue(
   expect(JSON.parse(JSON.stringify(result))).toEqual(result);
   return result.issues[0];
 }
+
+describe("validateCustomRuleFormula runtime options", () => {
+  it.each([
+    [
+      "scope",
+      { scope: "bogus", executionGrain: "report" },
+    ],
+    [
+      "execution grain",
+      { scope: "payable", executionGrain: "bogus" },
+    ],
+    [
+      "unknown option key",
+      { scope: "payable", executionGrain: "report", extra: true },
+    ],
+    [
+      "non-array parameters",
+      { scope: "payable", executionGrain: "report", parameters: "bad" },
+    ],
+    [
+      "parameter identifier",
+      {
+        scope: "payable",
+        executionGrain: "report",
+        parameters: [
+          { name: "bad-name", valueType: scalar("money_cents") },
+        ],
+      },
+    ],
+    [
+      "parameter value type",
+      {
+        scope: "payable",
+        executionGrain: "report",
+        parameters: [
+          {
+            name: "bonus",
+            valueType: { kind: "scalar", scalarType: "bogus" },
+          },
+        ],
+      },
+    ],
+    [
+      "unknown parameter key",
+      {
+        scope: "payable",
+        executionGrain: "report",
+        parameters: [
+          {
+            name: "bonus",
+            valueType: scalar("money_cents"),
+            extra: true,
+          },
+        ],
+      },
+    ],
+  ])("rejects invalid %s before parsing", (_label, invalidOptions) => {
+    const formula = "record.amount";
+    const result = validateCustomRuleFormula(
+      formula,
+      invalidOptions as unknown as ValidateCustomRuleFormulaOptions,
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      issues: [
+        {
+          code: "VALIDATION_INVALID_OPTIONS",
+          message: "Validation options are invalid",
+          span: { start: 0, end: formula.length },
+        },
+      ],
+    });
+  });
+
+  it("enforces parameter type depth without recursive overflow", () => {
+    const formula = "money_result({ final: yuan(1) })";
+
+    expectValidationSuccess(
+      formula,
+      options("payable", "report", {
+        parameters: [{ name: "deep", valueType: nestedArrayType(20) }],
+      }),
+    );
+    expectValidationIssue(
+      formula,
+      "VALIDATION_PARAMETER_TYPE_LIMIT",
+      options("payable", "report", {
+        parameters: [{ name: "deep", valueType: nestedArrayType(21) }],
+      }),
+    );
+    expectValidationIssue(
+      formula,
+      "VALIDATION_PARAMETER_TYPE_LIMIT",
+      options("payable", "report", {
+        parameters: [{ name: "deep", valueType: nestedArrayType(2_000) }],
+      }),
+    );
+  });
+
+  it("enforces the aggregate parameter type node budget at 300", () => {
+    const formula = "money_result({ final: yuan(1) })";
+
+    expectValidationSuccess(
+      formula,
+      options("payable", "report", {
+        parameters: [
+          { name: "wide", valueType: objectTypeWithNodeCount(300) },
+        ],
+      }),
+    );
+    expectValidationIssue(
+      formula,
+      "VALIDATION_PARAMETER_TYPE_LIMIT",
+      options("payable", "report", {
+        parameters: [
+          { name: "wide", valueType: objectTypeWithNodeCount(301) },
+        ],
+      }),
+    );
+  });
+
+  it("enforces the parameter count budget at 300", () => {
+    const formula = "money_result({ final: yuan(1) })";
+    const parameters = Array.from({ length: 301 }, (_, index) => ({
+      name: "parameter_" + index,
+      valueType: scalar("money_cents"),
+    }));
+
+    expectValidationSuccess(
+      formula,
+      options("payable", "report", { parameters: parameters.slice(0, 300) }),
+    );
+    expectValidationIssue(
+      formula,
+      "VALIDATION_PARAMETER_LIMIT",
+      options("payable", "report", { parameters }),
+    );
+  });
+});
 
 describe("validateCustomRuleFormula scope contract", () => {
   it("uses the explicitly requested scope when the formula has no prefix", () => {
@@ -146,6 +307,30 @@ describe("typed unit compilation", () => {
     expectValidationIssue(
       "money_result({ final: yuan(80) + rate_percent(20) })",
       "VALIDATION_UNIT_MISMATCH",
+    );
+  });
+
+  it.each([
+    ["division", "money_result({ final: yuan(1) * (1 / 0) })"],
+    ["remainder", "money_result({ final: yuan(1) * (5 % 0) })"],
+    ["negative zero", "money_result({ final: yuan(1) * (1 / (-0)) })"],
+    ["positive zero", "money_result({ final: yuan(1) * (1 / (+0)) })"],
+    ["parenthesized zero", "money_result({ final: yuan(1) * (1 / (((0)))) })"],
+  ])("rejects a statically provable %s divisor", (_label, formula) => {
+    const issue = expectValidationIssue(
+      formula,
+      "VALIDATION_ZERO_DIVISOR",
+    );
+
+    expect(formula.slice(issue.span.start, issue.span.end)).toContain("0");
+  });
+
+  it("allows nonzero constants and leaves dynamic zero checks to execution", () => {
+    expectValidationSuccess(
+      "money_result({ final: yuan(1) * (1 / -2) })",
+    );
+    expectValidationSuccess(
+      "money_result({ final: yuan(1) * (1 / system_minutes) })",
     );
   });
 
@@ -276,6 +461,23 @@ describe("scope and grain variable allowlists", () => {
       end: formula.indexOf("invented_amount") + "invented_amount".length,
     });
   });
+
+  it.each(["toString", "hasOwnProperty", "valueOf"])(
+    "treats Object.prototype identifier %s as an unknown variable",
+    (identifier) => {
+      const formula = "money_result({ final: " + identifier + " })";
+      const issue = expectValidationIssue(
+        formula,
+        "VALIDATION_UNKNOWN_VARIABLE",
+      );
+      const start = formula.indexOf(identifier);
+
+      expect(issue.span).toEqual({
+        start,
+        end: start + identifier.length,
+      });
+    },
+  );
 });
 
 describe("parameters and money_result components", () => {
@@ -331,6 +533,28 @@ describe("parameters and money_result components", () => {
 });
 
 describe("deterministic output", () => {
+  it("keeps compiled AST and hash stable across external jsep precedence changes", () => {
+    const formula = "money_result({ final: yuan(1) + yuan(2) * 3 })";
+    const baseline = expectValidationSuccess(formula);
+    const originalPrecedence = jsep.binary_ops["+"] ?? 0;
+    const originalAssociativity = jsep.right_associative.has("+");
+
+    try {
+      jsep.addBinaryOp("+", 20, true);
+
+      const first = expectValidationSuccess(formula);
+      const second = expectValidationSuccess(formula);
+
+      expect(first.compiledAst).toEqual(baseline.compiledAst);
+      expect(first.formulaHash).toBe(baseline.formulaHash);
+      expect(second).toEqual(first);
+      expect(jsep.binary_ops["+"]).toBe(20);
+      expect(jsep.right_associative.has("+")).toBe(true);
+    } finally {
+      jsep.addBinaryOp("+", originalPrecedence, originalAssociativity);
+    }
+  });
+
   it("hashes canonical compiled JSON independently of object insertion order", () => {
     const first = expectValidationSuccess(`money_result({ final:
       percent(yuan(100), evidence_multiplier(evidence_level, {

@@ -70,6 +70,27 @@ type JsepParser = {
   gobbleToken(): Expression | false | undefined;
 };
 
+type JsepHookEnvironment = {
+  context?: JsepParser;
+  node?: Expression;
+};
+
+type JsepHookCallback = (
+  this: JsepParser | JsepHookEnvironment,
+  environment: JsepHookEnvironment,
+) => void;
+
+type JsepPlugin = {
+  name: string;
+  init(parser: JsepStatic): void;
+};
+
+type JsepStatic = (new (expression: string) => JsepParser) &
+  Record<string, unknown> & {
+    hooks: IsolatedJsepHooks;
+    plugins: IsolatedJsepPlugins;
+  };
+
 type ObjectProperty = {
   type: string;
   computed?: boolean;
@@ -92,9 +113,116 @@ class ParserFailure extends Error {
   }
 }
 
-if (!Object.prototype.hasOwnProperty.call(jsep.plugins.registered, "object")) {
-  jsep.plugins.register(objectPlugin);
+class IsolatedJsepHooks {
+  add(
+    name:
+      | string
+      | readonly string[]
+      | Readonly<Record<string, JsepHookCallback>>,
+    callback?: JsepHookCallback | boolean,
+    first = false,
+  ): void {
+    if (typeof name === "object" && !Array.isArray(name)) {
+      for (const [hookName, hookCallback] of Object.entries(name)) {
+        this.add(hookName, hookCallback, callback === true);
+      }
+      return;
+    }
+
+    for (const hookName of Array.isArray(name) ? name : [name]) {
+      const callbacks = this.callbacksFor(hookName);
+      if (typeof callback === "function") {
+        callbacks[first ? "unshift" : "push"](callback);
+      }
+    }
+  }
+
+  run(name: string, environment: JsepHookEnvironment): void {
+    const context = environment.context ?? environment;
+    for (const callback of this.callbacksFor(name)) {
+      callback.call(context, environment);
+    }
+  }
+
+  private callbacksFor(name: string): JsepHookCallback[] {
+    const record = this as unknown as Record<string, unknown>;
+    const existing = record[name];
+    if (Array.isArray(existing)) {
+      return existing as JsepHookCallback[];
+    }
+    const callbacks: JsepHookCallback[] = [];
+    record[name] = callbacks;
+    return callbacks;
+  }
 }
+
+class IsolatedJsepPlugins {
+  readonly registered: Record<string, JsepPlugin> = Object.create(null) as Record<
+    string,
+    JsepPlugin
+  >;
+
+  constructor(private readonly parser: JsepStatic) {}
+
+  register(...plugins: JsepPlugin[]): void {
+    for (const plugin of plugins) {
+      if (
+        typeof plugin !== "object" ||
+        typeof plugin.name !== "string" ||
+        typeof plugin.init !== "function"
+      ) {
+        throw new TypeError("Invalid JSEP plugin format");
+      }
+      if (Object.hasOwn(this.registered, plugin.name)) {
+        continue;
+      }
+      plugin.init(this.parser);
+      this.registered[plugin.name] = plugin;
+    }
+  }
+}
+
+const JSEP_FIXED_STATE = {
+  COMPOUND: "Compound",
+  SEQUENCE_EXP: "SequenceExpression",
+  IDENTIFIER: "Identifier",
+  MEMBER_EXP: "MemberExpression",
+  LITERAL: "Literal",
+  THIS_EXP: "ThisExpression",
+  CALL_EXP: "CallExpression",
+  UNARY_EXP: "UnaryExpression",
+  BINARY_EXP: "BinaryExpression",
+  ARRAY_EXP: "ArrayExpression",
+  TAB_CODE: 9,
+  LF_CODE: 10,
+  CR_CODE: 13,
+  SPACE_CODE: 32,
+  PERIOD_CODE: 46,
+  COMMA_CODE: 44,
+  SQUOTE_CODE: 39,
+  DQUOTE_CODE: 34,
+  OPAREN_CODE: 40,
+  CPAREN_CODE: 41,
+  OBRACK_CODE: 91,
+  CBRACK_CODE: 93,
+  QUMARK_CODE: 63,
+  SEMCOL_CODE: 59,
+  COLON_CODE: 58,
+  max_unop_len: 1,
+  max_binop_len: 3,
+  this_str: "this",
+} as const;
+
+const JSEP_STATE_KEYS = [
+  ...Object.keys(JSEP_FIXED_STATE),
+  "hooks",
+  "plugins",
+  "unary_ops",
+  "binary_ops",
+  "right_associative",
+  "additional_identifier_chars",
+  "literals",
+] as const;
 
 export function parseCustomRuleFormula(
   formula: string,
@@ -233,13 +361,77 @@ function extractFormulaBody(
 }
 
 function parseWithLocations(body: string): Expression {
+  return withIsolatedJsepState((JsepConstructor) => {
+    const parser = new JsepConstructor(body);
+    instrumentParserMethod(parser, "gobbleToken");
+    instrumentParserMethod(parser, "gobbleExpression");
+    return parser.parse();
+  });
+}
+
+function withIsolatedJsepState<Result>(
+  operation: (parser: JsepStatic) => Result,
+): Result {
   const JsepConstructor = (
-    jsep as unknown as { Jsep: new (expression: string) => JsepParser }
+    jsep as unknown as { Jsep: JsepStatic }
   ).Jsep;
-  const parser = new JsepConstructor(body);
-  instrumentParserMethod(parser, "gobbleToken");
-  instrumentParserMethod(parser, "gobbleExpression");
-  return parser.parse();
+  const descriptors = new Map<
+    (typeof JSEP_STATE_KEYS)[number],
+    PropertyDescriptor | undefined
+  >();
+
+  for (const key of JSEP_STATE_KEYS) {
+    descriptors.set(key, Object.getOwnPropertyDescriptor(JsepConstructor, key));
+  }
+
+  try {
+    const hooks = new IsolatedJsepHooks();
+    const plugins = new IsolatedJsepPlugins(JsepConstructor);
+    Object.assign(JsepConstructor, JSEP_FIXED_STATE, {
+      hooks,
+      plugins,
+      unary_ops: { "-": 1, "!": 1, "~": 1, "+": 1 },
+      binary_ops: {
+        "||": 1,
+        "??": 1,
+        "&&": 2,
+        "|": 3,
+        "^": 4,
+        "&": 5,
+        "==": 6,
+        "!=": 6,
+        "===": 6,
+        "!==": 6,
+        "<": 7,
+        ">": 7,
+        "<=": 7,
+        ">=": 7,
+        "<<": 8,
+        ">>": 8,
+        ">>>": 8,
+        "+": 9,
+        "-": 9,
+        "*": 10,
+        "/": 10,
+        "%": 10,
+        "**": 11,
+      },
+      right_associative: new Set(["**"]),
+      additional_identifier_chars: new Set(["$", "_"]),
+      literals: { true: true, false: false, null: null },
+    });
+    plugins.register(objectPlugin as unknown as JsepPlugin);
+    return operation(JsepConstructor);
+  } finally {
+    for (const key of JSEP_STATE_KEYS) {
+      const descriptor = descriptors.get(key);
+      if (descriptor) {
+        Object.defineProperty(JsepConstructor, key, descriptor);
+      } else {
+        delete JsepConstructor[key];
+      }
+    }
+  }
 }
 
 function instrumentParserMethod(
@@ -631,6 +823,18 @@ function findForbiddenSyntax(
     if (character === "`") {
       return syntaxIssue(bodyOffset + index, "Template literals are not allowed");
     }
+    if (
+      character === "?" &&
+      next !== "." &&
+      next !== "?" &&
+      previous !== "?"
+    ) {
+      return {
+        code: "PARSE_UNSUPPORTED_NODE",
+        message: "Conditional expressions are not allowed",
+        span: { start: bodyOffset + index, end: bodyOffset + index + 1 },
+      };
+    }
     if (body.slice(index, index + 3) === "...") {
       return syntaxIssue(bodyOffset + index, "Spread syntax is not allowed");
     }
@@ -705,7 +909,10 @@ function findForbiddenSyntax(
 function stripQuotedText(value: string): string {
   let quote: "\"" | "'" | null = null;
   let escaped = false;
-  return Array.from(value, (character) => {
+  let stripped = "";
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index] ?? "";
     if (quote) {
       if (escaped) {
         escaped = false;
@@ -714,14 +921,16 @@ function stripQuotedText(value: string): string {
       } else if (character === quote) {
         quote = null;
       }
-      return " ";
-    }
-    if (character === "\"" || character === "'") {
+      stripped += " ";
+    } else if (character === "\"" || character === "'") {
       quote = character;
-      return " ";
+      stripped += " ";
+    } else {
+      stripped += character;
     }
-    return character;
-  }).join("");
+  }
+
+  return stripped;
 }
 
 function syntaxIssue(index: number, message: string): CustomRuleIssue {
