@@ -177,6 +177,79 @@ describe("custom rule authoring service", () => {
     expect(replay.conversation.createConversation).not.toHaveBeenCalled();
   });
 
+  it("retries a durably persisted start only by completing the new generic turn", async () => {
+    const harness = createHarness(
+      [clarificationOutput("Confirm the hourly rate?", "confirm_rate")],
+      { failCompleteTurnOnce: true },
+    );
+    const input = {
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      clientRequestId: "start-completion-only-0001",
+      promptText: "Clarify the settlement rule.",
+      seedContract: contract(),
+      initialAmbiguities: [
+        {
+          code: "confirm_rate",
+          question: "Confirm the hourly rate?",
+          required: true,
+        },
+      ],
+    };
+
+    const failed = await harness.service.startSession(input);
+    expect(failed).toMatchObject({
+      ok: false,
+      code: "conversation_failed",
+      retryable: true,
+      sourceTurnId: uuid(201),
+      failedDraft: {
+        revisionNumber: 1,
+        initialStatus: "clarifying",
+        status: "clarifying",
+      },
+    });
+    if (failed.ok || !failed.failedDraft) {
+      throw new Error("start completion failure fixture unexpectedly passed");
+    }
+
+    const recovered = await harness.service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      sourceTurnId: failed.sourceTurnId,
+      clientRequestId: "start-completion-only-retry-0001",
+    });
+
+    expect(recovered).toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      duplicate: true,
+      draft: { id: failed.failedDraft.id, revisionNumber: 1 },
+    });
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
+    expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
+    expect(harness.repository.createDraftCalls).toHaveLength(1);
+    expect(harness.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
+    expect(harness.conversation.completeTurn).toHaveBeenCalledTimes(2);
+
+    const nonrecoverable = createHarness(
+      [clarificationOutput("Confirm the hourly rate?", "confirm_rate")],
+      { failCompleteTurnOnce: true, failFailTurn: true },
+    );
+    await expect(
+      nonrecoverable.service.startSession({
+        ...input,
+        clientRequestId: "start-completion-nonrecoverable-0001",
+      }),
+    ).rejects.toMatchObject({
+      code: "conversation_reconciliation_failed",
+      retryable: false,
+    });
+  });
+
   it("revises by appending the generic turn first, preserves prior evidence, and replays idempotently", async () => {
     const harness = createHarness([
       {
@@ -244,6 +317,95 @@ describe("custom rule authoring service", () => {
     expect(previous.businessContract).toEqual(previousEvidence.businessContract);
     expect(previous.generatedFormula).toEqual(previousEvidence.generatedFormula);
     expect(previous.generatedTestCases).toEqual(previousEvidence.generatedTestCases);
+  });
+
+  it("retries a durably persisted revision by validated completion-only readback", async () => {
+    const output = {
+      contractPatch: {
+        summary: "每场直播按系统时长结算，其他已确认条件保持不变。",
+      },
+      unresolvedAmbiguities: [],
+      nextQuestion: "请确认以上业务规则无误？",
+      formulaProposal: null,
+      testCases: [],
+      safetyFlags: [],
+    };
+    const harness = createHarness([output], { failCompleteTurnOnce: true });
+    const previous = harness.repository.seedDraft(clarifyingDraft());
+    const revision = {
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      expectedDraftId: previous.id,
+      expectedRevisionNumber: 1,
+      clientRequestId: "revise-completion-only-0001",
+      promptText: "Update only the summary.",
+    };
+
+    const failed = await harness.service.answerOrRevise(revision);
+    expect(failed).toMatchObject({
+      ok: false,
+      code: "conversation_failed",
+      sourceTurnId: uuid(201),
+      failedDraft: {
+        revisionNumber: 2,
+        initialStatus: "clarifying",
+        status: "clarifying",
+      },
+    });
+    if (failed.ok || !failed.failedDraft) {
+      throw new Error("revision completion failure fixture unexpectedly passed");
+    }
+
+    const recovered = await harness.service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      sourceTurnId: failed.sourceTurnId,
+      clientRequestId: "revise-completion-only-retry-0001",
+    });
+    expect(recovered).toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      duplicate: true,
+      draft: { id: failed.failedDraft.id, revisionNumber: 2 },
+    });
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
+    expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
+    expect(harness.repository.createDraftCalls).toHaveLength(1);
+    expect(harness.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
+
+    const mismatch = createHarness([structuredClone(output)], {
+      failCompleteTurnOnce: true,
+    });
+    const mismatchPrevious = mismatch.repository.seedDraft(clarifyingDraft());
+    const mismatchFailed = await mismatch.service.answerOrRevise({
+      ...revision,
+      expectedDraftId: mismatchPrevious.id,
+      clientRequestId: "revise-completion-mismatch-0001",
+    });
+    if (mismatchFailed.ok || !mismatchFailed.failedDraft) {
+      throw new Error("revision mismatch fixture unexpectedly passed");
+    }
+    const stored = mismatch.repository.drafts.find(
+      (draft) => draft.id === mismatchFailed.failedDraft?.id,
+    );
+    if (!stored) throw new Error("persisted revision fixture is missing");
+    stored.contractHash = "f".repeat(64);
+
+    await expect(
+      mismatch.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: mismatchFailed.sourceTurnId,
+        clientRequestId: "revise-completion-mismatch-retry-0001",
+      }),
+    ).rejects.toMatchObject({ code: "conversation_failed", retryable: false });
+    expect(mismatch.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(mismatch.repository.createDraftCalls).toHaveLength(1);
+    expect(mismatch.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
   });
 
   it("records an explicitly owned failed revision before failing the generic turn", async () => {
@@ -326,6 +488,74 @@ describe("custom rule authoring service", () => {
     );
     expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
     expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+  });
+
+  it("retries a persisted failed revision before applying normal stale checks", async () => {
+    const harness = createHarness(
+      [
+        { providerFailure: true },
+        clarificationOutput("Confirm the final contract?", "confirm_contract"),
+      ],
+      { persistFailedRevisions: true },
+    );
+    const previous = harness.repository.seedDraft(clarifyingDraft());
+
+    const failed = await harness.service.answerOrRevise({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      expectedDraftId: previous.id,
+      expectedRevisionNumber: 1,
+      clientRequestId: "persisted-revise-failure-0001",
+      promptText: "Continue the frozen revision.",
+    });
+    expect(failed).toMatchObject({
+      ok: false,
+      code: "SETTLEMENT_AI_PROVIDER_FAILED",
+      sourceTurnId: uuid(201),
+      failedDraft: {
+        revisionNumber: 2,
+        initialStatus: "failed",
+        status: "failed",
+      },
+    });
+    if (failed.ok || !failed.failedDraft) {
+      throw new Error("persisted revision failure fixture unexpectedly passed");
+    }
+
+    const recovered = await harness.service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      sourceTurnId: failed.sourceTurnId,
+      clientRequestId: "persisted-revise-retry-0001",
+    });
+
+    expect(recovered).toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      draft: { revisionNumber: 3, initialStatus: "clarifying" },
+    });
+    expect(harness.repository.createDraftCalls).toHaveLength(2);
+    expect(harness.repository.createDraftCalls[1].idempotencyKey).toMatch(
+      /^settlement-retry:/u,
+    );
+    expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
+    expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+    expect(harness.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
+
+    await expect(
+      harness.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: failed.sourceTurnId,
+        clientRequestId: "persisted-revise-stale-retry-0001",
+      }),
+    ).rejects.toMatchObject({ code: "stale_revision", retryable: false });
+    expect(harness.repository.createDraftCalls).toHaveLength(2);
     expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
   });
 

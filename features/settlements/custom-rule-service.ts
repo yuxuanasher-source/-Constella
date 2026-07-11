@@ -316,6 +316,11 @@ type ContractReadyDraft = Extract<
   CustomRuleDraft,
   { initialStatus: "contract_ready" }
 >;
+type ClarifyingDraft = Extract<
+  CustomRuleDraft,
+  { initialStatus: "clarifying" }
+>;
+type FailedDraft = Extract<CustomRuleDraft, { initialStatus: "failed" }>;
 
 export function createCustomRuleAuthoringService(dependencies: ServiceDependencies) {
   validateDependencies(dependencies);
@@ -361,6 +366,7 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
         catalog,
         idempotencyKey,
         expectedRevisionNumber: 1,
+        expectedDraftId: null,
       });
     },
 
@@ -411,6 +417,7 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
         catalog,
         idempotencyKey,
         expectedRevisionNumber: latest.revisionNumber + 1,
+        expectedDraftId: latest.id,
       });
     },
 
@@ -444,7 +451,55 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
         });
       }
       const latest = drafts[0];
+      const persisted = drafts.find(
+        (draft) => draft.idempotencyKey === retryContext.draftIdempotencyKey,
+      );
+      if (persisted?.initialStatus === "clarifying") {
+        if (persisted.status !== "clarifying" || latest?.id !== persisted.id) {
+          throw serviceError(
+            "stale_revision",
+            "durable clarifying retry artifact is no longer current",
+            false,
+          );
+        }
+        return resumeClarifyingCompletion({
+          dependencies,
+          scope,
+          opened,
+          retryContext,
+          drafts,
+          draft: persisted,
+          sourceTurnId: input.sourceTurnId,
+        });
+      }
+      let idempotencyKey = retryContext.draftIdempotencyKey;
+      let expectedRevisionNumber = retryContext.expectedRevisionNumber;
       if (
+        persisted?.initialStatus === "failed"
+      ) {
+        if (persisted.status !== "failed" || latest?.id !== persisted.id) {
+          throw serviceError(
+            "stale_revision",
+            "durable failed retry artifact is no longer current",
+            false,
+          );
+        }
+        await assertFrozenFailedRetryArtifact({
+          dependencies,
+          scope,
+          opened,
+          retryContext,
+          drafts,
+          draft: persisted,
+          sourceTurnId: input.sourceTurnId,
+        });
+        idempotencyKey = retryDraftIdempotencyKey(
+          retryContext.draftIdempotencyKey,
+          input.sourceTurnId,
+          input.clientRequestId,
+        );
+        expectedRevisionNumber = persisted.revisionNumber + 1;
+      } else if (
         retryContext.expectedRevisionNumber > 1 &&
         latest?.revisionNumber !== retryContext.expectedRevisionNumber - 1
       ) {
@@ -453,19 +508,6 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
           "settlement draft revision changed before retry",
           false,
         );
-      }
-      let idempotencyKey = retryContext.draftIdempotencyKey;
-      let expectedRevisionNumber = retryContext.expectedRevisionNumber;
-      if (
-        latest?.initialStatus === "failed" &&
-        latest.idempotencyKey === idempotencyKey
-      ) {
-        idempotencyKey = retryDraftIdempotencyKey(
-          retryContext.draftIdempotencyKey,
-          input.sourceTurnId,
-          input.clientRequestId,
-        );
-        expectedRevisionNumber = latest.revisionNumber + 1;
       }
       return runClarifyingTransition({
         dependencies,
@@ -478,6 +520,7 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
         catalog: opened.prepared.catalog,
         idempotencyKey,
         expectedRevisionNumber,
+        expectedDraftId: persisted?.id ?? retryContext.expectedDraftId,
         opened,
       });
     },
@@ -782,6 +825,168 @@ async function retryConfirmationTransition(input: {
   });
 }
 
+async function resumeClarifyingCompletion(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  opened: OpenedAiTurn;
+  retryContext: FrozenServiceRetryContext;
+  drafts: CustomRuleDraft[];
+  draft: ClarifyingDraft;
+  sourceTurnId: string;
+}): Promise<CustomRuleAuthoringResult> {
+  const mismatch = frozenClarifyingArtifactMismatch(input);
+  if (mismatch) {
+    return rejectFrozenRetryArtifact(
+      input.dependencies,
+      input.scope,
+      input.opened,
+      mismatch,
+    );
+  }
+  await markValidating(
+    input.dependencies.conversation,
+    input.scope,
+    input.opened,
+  );
+  const completionFailure = await completeConversationTurn(
+    input.dependencies.conversation,
+    input.scope,
+    input.opened,
+    input.draft,
+    input.draft.aiResponse.content,
+  );
+  if (completionFailure) return completionFailure;
+  return replayClarifying(input.draft, input.drafts);
+}
+
+async function assertFrozenFailedRetryArtifact(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  opened: OpenedAiTurn;
+  retryContext: FrozenServiceRetryContext;
+  drafts: CustomRuleDraft[];
+  draft: FailedDraft;
+  sourceTurnId: string;
+}): Promise<void> {
+  const mismatch = frozenRetryArtifactMismatch(input, true);
+  if (mismatch) {
+    await rejectFrozenRetryArtifact(
+      input.dependencies,
+      input.scope,
+      input.opened,
+      mismatch,
+    );
+  }
+}
+
+function frozenClarifyingArtifactMismatch(input: {
+  opened: OpenedAiTurn;
+  retryContext: FrozenServiceRetryContext;
+  drafts: CustomRuleDraft[];
+  draft: ClarifyingDraft;
+  sourceTurnId: string;
+}): string | null {
+  const mismatch = frozenRetryArtifactMismatch(input, false);
+  if (mismatch) return mismatch;
+  if (
+    input.draft.unresolvedAmbiguities.length === 0 ||
+    input.draft.aiResponse.content !==
+      input.draft.unresolvedAmbiguities[0]?.question
+  ) {
+    return "persisted clarifying content does not match its focused question";
+  }
+  return null;
+}
+
+function frozenRetryArtifactMismatch(
+  input: {
+    opened: OpenedAiTurn;
+    retryContext: FrozenServiceRetryContext;
+    drafts: CustomRuleDraft[];
+    draft: ClarifyingDraft | FailedDraft;
+    sourceTurnId: string;
+  },
+  requireUnchangedContract: boolean,
+): string | null {
+  const context = input.retryContext;
+  if (
+    context.action === "confirm" ||
+    context.expectedContractHash === null ||
+    context.expectedCatalogVersion === null ||
+    input.draft.revisionNumber !== context.expectedRevisionNumber ||
+    input.draft.idempotencyKey !== context.draftIdempotencyKey ||
+    input.draft.promptText !== context.promptText ||
+    input.draft.turnTrace.turnId !== input.sourceTurnId ||
+    !input.opened.snapshot.messageIds.includes(
+      input.draft.turnTrace.userMessageId,
+    ) ||
+    input.draft.variableCatalogVersion !== context.expectedCatalogVersion ||
+    input.opened.prepared.catalog.version !== context.expectedCatalogVersion ||
+    hashCustomRuleContract(input.opened.prepared.currentContract) !==
+      context.expectedContractHash ||
+    hashCustomRuleContract(input.draft.businessContract) !==
+      input.draft.contractHash ||
+    hashCustomRuleParameters(parameterValues(input.draft.businessContract)) !==
+      input.draft.parameterHash ||
+    (requireUnchangedContract &&
+      input.draft.contractHash !== context.expectedContractHash)
+  ) {
+    return "persisted retry artifact does not match frozen operation hashes";
+  }
+  if (context.action === "clarify") {
+    return context.expectedDraftId === null &&
+      context.expectedRevisionNumber === 1 &&
+      input.draft.supersedesDraftId === null
+      ? null
+      : "persisted start artifact has invalid revision lineage";
+  }
+  if (
+    context.expectedDraftId === null ||
+    context.expectedRevisionNumber <= 1 ||
+    input.draft.supersedesDraftId !== context.expectedDraftId
+  ) {
+    return "persisted revision artifact has invalid revision lineage";
+  }
+  const previous = input.drafts.find(
+    (draft) => draft.id === context.expectedDraftId,
+  );
+  if (
+    !previous ||
+    previous.revisionNumber !== context.expectedRevisionNumber - 1 ||
+    previous.contractHash !== context.expectedContractHash ||
+    hashCustomRuleContract(previous.businessContract) !== previous.contractHash
+  ) {
+    return "persisted revision base does not match frozen operation hashes";
+  }
+  return null;
+}
+
+async function rejectFrozenRetryArtifact(
+  dependencies: ServiceDependencies,
+  scope: ScopedTransition,
+  opened: OpenedAiTurn,
+  message: string,
+): Promise<never> {
+  try {
+    await failConversationTurn(
+      dependencies.conversation,
+      scope,
+      opened,
+      "settlement_retry_artifact_mismatch",
+      false,
+      message,
+    );
+  } catch (error) {
+    throw serviceError(
+      "conversation_reconciliation_failed",
+      "mismatched settlement retry artifact could not fail the generic turn",
+      false,
+      error,
+    );
+  }
+  throw serviceError("conversation_failed", message, false);
+}
+
 async function runClarifyingTransition(input: {
   dependencies: ServiceDependencies;
   persistFailedRevisions: boolean;
@@ -792,6 +997,7 @@ async function runClarifyingTransition(input: {
   catalog: CustomRuleVariableCatalog;
   idempotencyKey: string;
   expectedRevisionNumber: number;
+  expectedDraftId: string | null;
   opened?: OpenedAiTurn;
 }): Promise<CustomRuleAuthoringResult> {
   const opened = input.opened ?? await openAiTurn({
@@ -807,7 +1013,9 @@ async function runClarifyingTransition(input: {
       scope: input.scope,
       idempotencyKey: input.idempotencyKey,
       expectedRevisionNumber: input.expectedRevisionNumber,
-      expectedDraftId: null,
+      expectedDraftId: input.expectedDraftId,
+      expectedContractHash: hashCustomRuleContract(input.currentContract),
+      expectedCatalogVersion: input.catalog.version,
     }),
   });
   const aiResult = await executeAi(input.dependencies.ai, opened.prepared);
