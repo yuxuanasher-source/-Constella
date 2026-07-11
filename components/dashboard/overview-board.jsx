@@ -8,6 +8,8 @@
 // AI 面板调用真实接口，返回真实诊断或真实错误，绝不伪造成功内容。
 
 import * as React from "react";
+import { RefreshCw, RotateCcw } from "lucide-react";
+import { isConversationStreamEvent } from "@/features/ai/conversation-contracts";
 
 // ——— 设计稿调色板（取自设计文件内联样式） ———
 const C = {
@@ -103,7 +105,8 @@ function normalizeVisualSeries(value) {
   return series.length >= 2 ? series : null;
 }
 
-const AI_PANEL_STORAGE_PREFIX = "jingying-cabin.dashboard.ai.messages.v1";
+const AI_CONVERSATION_STORAGE_PREFIX =
+  "jingying-cabin.dashboard.ai.conversation.v1";
 const AI_CHAT_ATTACHMENT_LIMIT = 5;
 const AI_CHAT_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024;
 const AI_CHAT_ATTACHMENT_ACCEPT = [
@@ -123,9 +126,39 @@ const AI_CHAT_ATTACHMENT_ACCEPT = [
   "application/pdf",
 ].join(",");
 
-function aiPanelStorageKey(user) {
+function aiConversationStorageKey(user) {
   const identity = user?.id || user?.name || user?.role || "anonymous";
-  return `${AI_PANEL_STORAGE_PREFIX}.${identity}`;
+  return `${AI_CONVERSATION_STORAGE_PREFIX}.${identity}`;
+}
+
+function loadStoredConversationId(storageKey) {
+  if (typeof window === "undefined" || !window.localStorage) return "";
+  try {
+    const value = window.localStorage.getItem(storageKey) || "";
+    return value.length <= 120 ? value : "";
+  } catch {
+    return "";
+  }
+}
+
+function saveStoredConversationId(storageKey, conversationId) {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    if (conversationId) {
+      window.localStorage.setItem(storageKey, conversationId);
+    } else {
+      window.localStorage.removeItem(storageKey);
+    }
+  } catch {
+    // Conversation still works for the current page when storage is unavailable.
+  }
+}
+
+function createAiClientRequestId(prefix = "turn") {
+  const randomId = globalThis.crypto?.randomUUID?.();
+  return randomId
+    ? `${prefix}:${randomId}`
+    : `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2, 12)}`;
 }
 
 function normalizeAiMessageMeta(value) {
@@ -330,44 +363,50 @@ function normalizeAiTarget(value) {
   };
 }
 
-function normalizeStoredAiMessages(value) {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => {
-      const meta = normalizeAiMessageMeta(item?.meta);
+function normalizeConversationHistory(value) {
+  const turns = Array.isArray(value?.turns) ? value.turns : [];
+  const turnByAssistantMessage = new Map(
+    turns
+      .filter(
+        (turn) =>
+          typeof turn?.assistantMessageId === "string" &&
+          typeof turn?.id === "string",
+      )
+      .map((turn) => [turn.assistantMessageId, turn]),
+  );
+  if (!Array.isArray(value?.messages)) return [];
+
+  return value.messages
+    .filter(
+      (message) =>
+        message?.status !== "superseded" &&
+        (message?.role === "user" || message?.role === "assistant"),
+    )
+    .map((message) => {
+      const turn = turnByAssistantMessage.get(message.id);
+      const status =
+        typeof message?.status === "string" ? message.status : "completed";
+      const rawText =
+        typeof message?.content === "string" ? message.content.trim() : "";
+      const failedText = turn?.errorSummary || "本次回答未完成";
       return {
-        role: item?.role === "user" ? "user" : "ai",
-        text: typeof item?.text === "string" ? item.text.slice(0, 8000) : "",
-        ...(meta ? { meta } : {}),
+        id: typeof message?.id === "string" ? message.id : undefined,
+        role: message?.role === "user" ? "user" : "ai",
+        text:
+          rawText ||
+          (status === "failed"
+            ? `⚠ ${failedText}`
+            : status === "completed"
+              ? "已完成回复"
+              : "正在恢复会话状态…"),
+        status,
+        ...(normalizeAiMessageMeta(message?.metadata)
+          ? { meta: normalizeAiMessageMeta(message.metadata) }
+          : {}),
+        ...(turn?.id ? { turnId: turn.id } : {}),
+        ...(turn?.retryable ? { retryable: true } : {}),
       };
-    })
-    .filter((item) => item.text.trim())
-    .slice(-20);
-}
-
-function loadStoredAiMessages(storageKey) {
-  if (typeof window === "undefined" || !window.localStorage) return [];
-  try {
-    return normalizeStoredAiMessages(
-      JSON.parse(window.localStorage.getItem(storageKey) || "[]"),
-    );
-  } catch {
-    return [];
-  }
-}
-
-function saveStoredAiMessages(storageKey, messages) {
-  if (typeof window === "undefined" || !window.localStorage) return;
-  try {
-    const normalized = normalizeStoredAiMessages(messages);
-    if (normalized.length) {
-      window.localStorage.setItem(storageKey, JSON.stringify(normalized));
-    } else {
-      window.localStorage.removeItem(storageKey);
-    }
-  } catch {
-    // Ignore storage quota or privacy-mode failures; chat still works in memory.
-  }
+    });
 }
 
 function fileToAiAttachment(file) {
@@ -2401,9 +2440,10 @@ function AiMarkdownTable({ table }) {
 }
 
 function AiPanel({ user, projects, go, onTodoDraftCreated }) {
-  const storageKey = aiPanelStorageKey(user);
-  const [msgs, setMsgs] = React.useState(() =>
-    loadStoredAiMessages(storageKey),
+  const conversationStorageKey = aiConversationStorageKey(user);
+  const [msgs, setMsgs] = React.useState([]);
+  const [conversationId, setConversationId] = React.useState(() =>
+    loadStoredConversationId(conversationStorageKey),
   );
   const [draft, setDraft] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -2415,91 +2455,272 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     "经营舱用户";
   const bodyRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
+  const conversationIdRef = React.useRef(conversationId);
+  const conversationInitRef = React.useRef(null);
+  const conversationCreateRef = React.useRef(null);
+  const panelMountedRef = React.useRef(true);
   React.useEffect(() => {
     if (bodyRef.current)
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
   }, [msgs, busy]);
   React.useEffect(() => {
-    saveStoredAiMessages(storageKey, msgs);
-  }, [storageKey, msgs]);
+    conversationIdRef.current = conversationId;
+    saveStoredConversationId(conversationStorageKey, conversationId);
+  }, [conversationId, conversationStorageKey]);
+  React.useEffect(() => {
+    panelMountedRef.current = true;
+    if (!conversationInitRef.current) {
+      conversationInitRef.current = restoreServerConversation();
+    }
+    void conversationInitRef.current;
+    return () => {
+      panelMountedRef.current = false;
+    };
+  }, [conversationStorageKey]);
 
-  const push = (role, text, meta) =>
-    setMsgs((m) => m.concat([{ role, text, ...(meta ? { meta } : {}) }]));
-  const chatHistory = (userText) =>
-    (msgs || [])
-      .slice(-8)
-      .map((m) => ({
-        role: m.role === "ai" ? "assistant" : "user",
-        content: m.text,
-      }))
-      .concat([{ role: "user", content: userText }]);
+  const push = (role, text, meta, fields) =>
+    setMsgs((m) =>
+      m.concat([
+        {
+          role,
+          text,
+          ...(meta ? { meta } : {}),
+          ...(fields || {}),
+        },
+      ]),
+    );
+  async function restoreServerConversation() {
+    const clearActiveConversation = () => {
+      conversationIdRef.current = "";
+      if (panelMountedRef.current) {
+        setConversationId("");
+        setMsgs([]);
+      }
+      saveStoredConversationId(conversationStorageKey, "");
+    };
+    try {
+      let activeId = conversationIdRef.current;
+      if (!activeId) {
+        const listResponse = await fetch("/api/ai/conversations", {
+          cache: "no-store",
+        });
+        const listPayload = await listResponse.json().catch(() => ({}));
+        activeId = Array.isArray(listPayload?.conversations)
+          ? listPayload.conversations.find(
+              (conversation) => typeof conversation?.id === "string",
+            )?.id || ""
+          : "";
+      }
+      if (!activeId) return null;
 
-  // 消费 /api/ai/chat 的 SSE 流：delta 事件逐段追加到同一个 AI 气泡，
-  // done 事件带回完整 payload（含 grounding/suggestedActions meta）收尾。
-  // 流开始前的 error 事件向上抛，由 run() 的 catch 按原有交互渲染错误气泡。
-  async function consumeAiChatStream(res) {
+      const historyResponse = await fetch(
+        `/api/ai/conversations/${encodeURIComponent(activeId)}`,
+        { cache: "no-store" },
+      );
+      const history = await historyResponse.json().catch(() => ({}));
+      if (!historyResponse.ok) {
+        if ([404, 410].includes(historyResponse.status)) {
+          clearActiveConversation();
+          return null;
+        }
+        throw new Error(history?.error || "无法恢复 AI 会话");
+      }
+      if (history?.conversation?.id !== activeId) {
+        clearActiveConversation();
+        return null;
+      }
+
+      conversationIdRef.current = activeId;
+      if (panelMountedRef.current) {
+        setConversationId(activeId);
+        setMsgs(normalizeConversationHistory(history));
+      }
+      saveStoredConversationId(conversationStorageKey, activeId);
+      return activeId;
+    } catch {
+      // A transient restore failure is surfaced on the next user action.
+      return null;
+    }
+  }
+
+  async function ensureServerConversation(title) {
+    if (conversationInitRef.current) {
+      await conversationInitRef.current;
+      if (conversationIdRef.current) return conversationIdRef.current;
+    }
+    if (conversationIdRef.current) return conversationIdRef.current;
+    if (conversationCreateRef.current) return conversationCreateRef.current;
+
+    conversationCreateRef.current = (async () => {
+      const response = await fetch("/api/ai/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: String(title || "新会话").slice(0, 40) }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const nextId =
+        typeof payload?.conversation?.id === "string"
+          ? payload.conversation.id
+          : "";
+      if (!nextId) {
+        throw new Error(
+          payload?.error || "星耀 AI 会话协议不可用，请稍后重试",
+        );
+      }
+
+      conversationIdRef.current = nextId;
+      if (panelMountedRef.current) {
+        setMsgs([]);
+        setConversationId(nextId);
+      }
+      saveStoredConversationId(conversationStorageKey, nextId);
+      return nextId;
+    })();
+
+    try {
+      return await conversationCreateRef.current;
+    } finally {
+      conversationCreateRef.current = null;
+    }
+  }
+
+  async function consumeConversationStream(
+    res,
+    {
+      userMessageClientId,
+      replaceMessageId,
+      onTurnStarted,
+      onAssistantMessageId,
+    } = {},
+  ) {
+    if (!res.body) throw new Error("AI 会话流不可用");
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let streamedText = "";
-    let bubbleOpen = false;
-    let sawFinalEvent = false;
+    let activeTurnId = "";
+    let activeAssistantMessageId = "";
+    let sawTerminalEvent = false;
+    let failed = false;
 
-    const renderAiBubble = (text, meta) => {
-      const message = { role: "ai", text, ...(meta ? { meta } : {}) };
-      const replaceLast = bubbleOpen;
-      setMsgs((m) => {
-        if (replaceLast && m.length && m[m.length - 1].role === "ai") {
-          return m.slice(0, -1).concat([message]);
-        }
-        return m.concat([message]);
+    const upsertAiMessage = (message) => {
+      setMsgs((current) => {
+        const index = current.findIndex(
+          (item) =>
+            (message.id && item.id === message.id) ||
+            (replaceMessageId && item.id === replaceMessageId),
+        );
+        if (index < 0) return current.concat([message]);
+        const next = current.slice();
+        next[index] = { ...current[index], ...message };
+        return next;
       });
-      bubbleOpen = true;
     };
 
     const handleEvent = (eventName, payload) => {
-      if (eventName === "delta") {
-        const chunk = typeof payload?.content === "string" ? payload.content : "";
-        if (!chunk) return;
-        streamedText += chunk;
-        renderAiBubble(streamedText);
-        return;
-      }
-      if (eventName === "done") {
-        sawFinalEvent = true;
-        renderAiBubble(
-          payload?.message?.content || streamedText || "已生成回复（需人工确认）。",
-          normalizeAiMessageMeta(payload),
-        );
-        return;
-      }
-      if (eventName === "error") {
-        sawFinalEvent = true;
-        const message = payload?.error || "AI 调用失败";
-        if (streamedText) {
-          // 已经流出部分内容：就地标注中断原因，不再额外弹错误气泡。
-          renderAiBubble(`${streamedText}\n\n⚠ 回复中断：${message}`);
-          return;
+      if (eventName === "turn.started") {
+        activeTurnId =
+          typeof payload?.turnId === "string" ? payload.turnId : activeTurnId;
+        activeAssistantMessageId =
+          typeof payload?.assistantMessageId === "string"
+            ? payload.assistantMessageId
+            : activeAssistantMessageId;
+        onTurnStarted?.({
+          turnId: activeTurnId,
+          userMessageId: payload.userMessageId,
+          assistantMessageId: activeAssistantMessageId,
+        });
+        onAssistantMessageId?.(activeAssistantMessageId);
+        if (userMessageClientId && payload?.userMessageId) {
+          setMsgs((current) =>
+            current.map((message) =>
+              message.id === userMessageClientId
+                ? {
+                    ...message,
+                    id: payload.userMessageId,
+                    turnId: activeTurnId,
+                  }
+                : message,
+            ),
+          );
         }
-        throw new Error(message);
+        return;
+      }
+      if (eventName === "response.delta") {
+        const delta = typeof payload?.delta === "string" ? payload.delta : "";
+        if (!delta) return;
+        streamedText += delta;
+        activeTurnId = payload?.turnId || activeTurnId;
+        activeAssistantMessageId = payload?.messageId || activeAssistantMessageId;
+        onAssistantMessageId?.(activeAssistantMessageId);
+        upsertAiMessage({
+          id: activeAssistantMessageId,
+          role: "ai",
+          text: streamedText,
+          status: "streaming",
+          turnId: activeTurnId,
+        });
+        return;
+      }
+      if (eventName === "response.completed") {
+        sawTerminalEvent = true;
+        activeTurnId = payload?.turnId || activeTurnId;
+        activeAssistantMessageId = payload?.messageId || activeAssistantMessageId;
+        onAssistantMessageId?.(activeAssistantMessageId);
+        const completedMeta = normalizeAiMessageMeta(
+          payload?.meta || payload,
+        );
+        upsertAiMessage({
+          id: activeAssistantMessageId,
+          role: "ai",
+          text: payload?.content || streamedText,
+          status: "completed",
+          turnId: activeTurnId,
+          retryable: false,
+          ...(completedMeta ? { meta: completedMeta } : {}),
+        });
+        return;
+      }
+      if (eventName === "response.failed") {
+        sawTerminalEvent = true;
+        failed = true;
+        activeTurnId = payload?.turnId || activeTurnId;
+        const message = payload?.message || "AI 调用失败";
+        upsertAiMessage({
+          id:
+            activeAssistantMessageId ||
+            replaceMessageId ||
+            createAiClientRequestId("assistant"),
+          role: "ai",
+          text: streamedText
+            ? `${streamedText}\n\n⚠ 回复中断：${message}`
+            : `⚠ ${message}`,
+          status: "failed",
+          turnId: activeTurnId,
+          retryable: payload?.retryable === true,
+        });
       }
     };
 
     const flushEventBlock = (block) => {
       let eventName = "message";
       const dataLines = [];
-      for (const line of block.split("\n")) {
+      for (const line of block.split(/\r?\n/)) {
         if (line.startsWith("event:")) eventName = line.slice(6).trim();
         else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
       }
       if (!dataLines.length) return;
-      let payload = null;
       try {
-        payload = JSON.parse(dataLines.join("\n"));
+        const payload = JSON.parse(dataLines.join("\n"));
+        if (
+          payload?.type === eventName &&
+          isConversationStreamEvent(payload)
+        ) {
+          handleEvent(eventName, payload);
+        }
       } catch {
-        payload = null;
+        // Ignore malformed non-terminal events; missing terminal is handled below.
       }
-      handleEvent(eventName, payload);
     };
 
     try {
@@ -2507,47 +2728,97 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        let separatorIndex;
-        while ((separatorIndex = buffer.indexOf("\n\n")) >= 0) {
-          const block = buffer.slice(0, separatorIndex);
-          buffer = buffer.slice(separatorIndex + 2);
+        let separator = buffer.match(/\r?\n\r?\n/);
+        while (separator?.index != null) {
+          const block = buffer.slice(0, separator.index);
+          buffer = buffer.slice(separator.index + separator[0].length);
           if (block.trim()) flushEventBlock(block);
+          separator = buffer.match(/\r?\n\r?\n/);
         }
       }
       if (buffer.trim()) flushEventBlock(buffer);
     } catch (error) {
       reader.cancel?.().catch?.(() => {});
+      if (sawTerminalEvent) return { failed, turnId: activeTurnId };
       throw error;
     }
 
-    if (!sawFinalEvent) {
-      if (streamedText) {
-        renderAiBubble(`${streamedText}\n\n⚠ 回复中断：连接提前结束`);
-      } else {
-        throw new Error("AI 流式连接提前结束");
-      }
+    if (!sawTerminalEvent) {
+      throw new Error("AI 会话连接提前结束");
     }
+    return { failed, turnId: activeTurnId };
+  }
+
+  async function sendConversationTurn({
+    activeConversationId,
+    userText,
+    requestMode,
+    requestAttachments,
+    userMessageClientId,
+    onTurnStarted,
+    onAssistantMessageId,
+  }) {
+    const res = await fetch(
+      `/api/ai/conversations/${encodeURIComponent(activeConversationId)}/turns`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          content: userText,
+          mode: requestMode,
+          attachments: requestAttachments,
+          clientRequestId: createAiClientRequestId("turn"),
+        }),
+      },
+    );
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      throw new Error(payload?.error || "AI 会话调用失败");
+    }
+    const contentType = res.headers?.get?.("content-type") || "";
+    if (!res.body || !contentType.includes("text/event-stream")) {
+      throw new Error("AI 会话未返回有效的流式响应");
+    }
+    return consumeConversationStream(res, {
+      userMessageClientId,
+      onTurnStarted,
+      onAssistantMessageId,
+    });
   }
 
   async function run(kind, userText, options = {}) {
     if (busy) return;
     const requestMode = options.mode || mode;
     const requestAttachments = options.attachments || [];
-    push(
-      "user",
-      userText,
-      requestAttachments.length
-        ? {
-            attachmentNames: requestAttachments.map(
-              (attachment) => attachment.name,
-            ),
-          }
-        : undefined,
-    );
+    const userMessageClientId = createAiClientRequestId("user");
+    let acceptedTurn = null;
+    let userMessagePushed = false;
+    const pushUserMessage = () => {
+      if (userMessagePushed) return;
+      push(
+        "user",
+        userText,
+        requestAttachments.length
+          ? {
+              attachmentNames: requestAttachments.map(
+                (attachment) => attachment.name,
+              ),
+            }
+          : undefined,
+        { id: userMessageClientId, status: "completed" },
+      );
+      userMessagePushed = true;
+    };
     setBusy(true);
     try {
       let text = "";
       let meta;
+      const activeConversationId =
+        kind === "ask" ? await ensureServerConversation(userText) : null;
+      pushUserMessage();
       if (kind === "match") {
         const res = await fetch("/api/marketplace/intel", {
           cache: "no-store",
@@ -2562,36 +2833,19 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
               .join("\n")
           : "当前暂无可撮合的高契合机会，待有新发单/接单意向后会自动出现。";
       } else if (kind === "ask") {
-        const res = await fetch("/api/ai/chat", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "text/event-stream",
+        await sendConversationTurn({
+          activeConversationId,
+          userText,
+          requestMode,
+          requestAttachments,
+          userMessageClientId,
+          onTurnStarted: (turn) => {
+            acceptedTurn = turn;
           },
-          body: JSON.stringify({
-            messages: chatHistory(userText),
-            mode: requestMode,
-            attachments: requestAttachments,
-            stream: true,
-          }),
         });
-        const contentType =
-          typeof res.headers?.get === "function"
-            ? res.headers.get("content-type") || ""
-            : "";
-        if (res.ok && res.body && contentType.includes("text/event-stream")) {
-          // 优先流式：消息气泡在流式过程中逐段渲染，无需最终 push。
-          await consumeAiChatStream(res);
-          setAttachments([]);
-          setAttachmentError("");
-          return;
-        }
-        // 非流式 fallback（老版本服务端 / 代理剥掉了 SSE）：按原 JSON 契约处理。
-        const json = await res.json();
-        meta = normalizeAiMessageMeta(json);
-        if (!res.ok) throw new Error(json?.error || "AI 调用失败");
-        text =
-          json?.message?.content || json?.text || "已生成回复（需人工确认）。";
+        setAttachments([]);
+        setAttachmentError("");
+        return;
       } else if (kind === "business") {
         const res = await fetch("/api/ai/business-copilot", {
           method: "POST",
@@ -2626,9 +2880,112 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       }
       push("ai", text, meta);
     } catch (e) {
-      push(
-        "ai",
-        `⚠ ${e instanceof Error ? e.message : "调用失败，请稍后重试"}`,
+      const errorMessage =
+        e instanceof Error ? e.message : "调用失败，请稍后重试";
+      if (kind === "ask") {
+        setMsgs((current) => {
+          const next = acceptedTurn
+            ? current.slice()
+            : current.filter((message) => message.id !== userMessageClientId);
+          if (!acceptedTurn) {
+            return next.concat([{ role: "ai", text: `⚠ ${errorMessage}` }]);
+          }
+
+          const assistantId = acceptedTurn.assistantMessageId;
+          const index = next.findIndex((message) => message.id === assistantId);
+          const failedMessage = {
+            id: assistantId,
+            role: "ai",
+            status: "failed",
+            retryable: false,
+            turnId: acceptedTurn.turnId,
+            text: `⚠ ${errorMessage}，请刷新以恢复服务端会话状态`,
+          };
+          if (index < 0) return next.concat([failedMessage]);
+          next[index] = {
+            ...next[index],
+            ...failedMessage,
+            text: next[index].text
+              ? `${next[index].text}\n\n⚠ 回复中断：${errorMessage}`
+              : failedMessage.text,
+          };
+          return next;
+        });
+      } else {
+        pushUserMessage();
+        push("ai", `⚠ ${errorMessage}`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function replayConversationMessage(message, action) {
+    if (busy || !message?.turnId) return;
+    setBusy(true);
+    setMsgs((current) =>
+      current.map((item) =>
+        item.id === message.id ? { ...item, status: "retrying" } : item,
+      ),
+    );
+    let replacementMessageId = message.id;
+    let replacementTurnId = message.turnId;
+    try {
+      const endpoint =
+        action === "regenerate"
+          ? `/api/ai/turns/${encodeURIComponent(message.turnId)}/regenerate`
+          : `/api/ai/turns/${encodeURIComponent(message.turnId)}/retry`;
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          clientRequestId: createAiClientRequestId(action),
+        }),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload?.error || "AI 会话恢复失败");
+      }
+      const contentType = res.headers?.get?.("content-type") || "";
+      if (!res.body || !contentType.includes("text/event-stream")) {
+        throw new Error("AI 会话恢复未返回有效的流式响应");
+      }
+      await consumeConversationStream(res, {
+        replaceMessageId: message.id,
+        onTurnStarted: (turn) => {
+          replacementMessageId = turn.assistantMessageId;
+          replacementTurnId = turn.turnId;
+        },
+        onAssistantMessageId: (messageId) => {
+          replacementMessageId = messageId || replacementMessageId;
+        },
+      });
+    } catch (error) {
+      setMsgs((current) =>
+        current.map((item) =>
+          item.id === message.id || item.id === replacementMessageId
+            ? {
+                ...item,
+                status: "failed",
+                retryable: true,
+                turnId: replacementTurnId,
+                text: item.text
+                  ? `${item.text}\n\n⚠ 回复中断：${
+                      error instanceof Error
+                        ? error.message
+                        : "AI 会话恢复失败"
+                    }`
+                  : `⚠ ${
+                      error instanceof Error
+                        ? error.message
+                        : "AI 会话恢复失败"
+                    }`,
+              }
+            : item,
+        ),
       );
     } finally {
       setBusy(false);
@@ -3019,7 +3376,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         ) : null}
         {msgs.map((m, i) => (
           <div
-            key={i}
+            key={m.id || i}
             style={{
               display: "flex",
               justifyContent: m.role === "user" ? "flex-end" : "flex-start",
@@ -3061,6 +3418,68 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
                     actions={m.meta?.suggestedActions}
                     onCreateDraft={createSuggestedActionDraft}
                   />
+                  {m.turnId &&
+                  (m.status === "failed" || m.status === "completed") ? (
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "flex-end",
+                        gap: 6,
+                        paddingTop: 2,
+                      }}
+                    >
+                      {m.status === "failed" && m.retryable ? (
+                        <button
+                          type="button"
+                          onClick={() => replayConversationMessage(m, "retry")}
+                          disabled={busy}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 5,
+                            minHeight: 28,
+                            border: `1px solid ${C.border}`,
+                            borderRadius: 7,
+                            background: C.soft,
+                            color: C.ink4,
+                            padding: "4px 8px",
+                            fontSize: 11.5,
+                            fontWeight: 650,
+                            cursor: busy ? "default" : "pointer",
+                          }}
+                        >
+                          <RotateCcw size={12} aria-hidden="true" />
+                          重试
+                        </button>
+                      ) : null}
+                      {m.status === "completed" ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            replayConversationMessage(m, "regenerate")
+                          }
+                          disabled={busy}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 5,
+                            minHeight: 28,
+                            border: "1px solid transparent",
+                            borderRadius: 7,
+                            background: "transparent",
+                            color: C.muted,
+                            padding: "4px 7px",
+                            fontSize: 11.5,
+                            fontWeight: 600,
+                            cursor: busy ? "default" : "pointer",
+                          }}
+                        >
+                          <RefreshCw size={12} aria-hidden="true" />
+                          重新生成
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 m.text

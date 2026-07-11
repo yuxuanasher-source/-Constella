@@ -186,4 +186,48 @@ describe("P0 database contract", () => {
       'create policy "public can submit mcn onboarding requests"',
     );
   });
+
+  it("declares the owner-scoped Xingyao conversation ledger", () => {
+    for (const table of [
+      "ai_conversations",
+      "ai_chat_messages",
+      "ai_chat_turns",
+    ]) {
+      expect(allMigrations).toContain(`create table public.${table}`);
+      expect(allMigrations).toContain(
+        `alter table public.${table} enable row level security`,
+      );
+    }
+
+    expect(allMigrations).toContain("ai_chat_messages_conversation_sequence_key");
+    expect(allMigrations).toContain("ai_chat_turns_owner_idempotency_key");
+    expect(allMigrations).toContain("ai_chat_turns_one_active_per_conversation");
+    expect(allMigrations).toContain("lease_expires_at timestamptz");
+    expect(allMigrations).toContain("turn_lease_expired");
+    expect(allMigrations).toContain("ai_chat_turns_one_retry_successor");
+    expect(allMigrations).toContain("ai_chat_turns_one_regenerate_successor");
+    expect(allMigrations).toContain("source_turn_already_replaced");
+    expect(allMigrations).toContain("with recursive regeneration_lineage");
+    expect(allMigrations).toContain(
+      "create or replace function public.renew_ai_chat_turn_lease",
+    );
+    expect(allMigrations).toContain("v_stale_message_ids uuid[]");
+    expect(allMigrations).toContain("v_conversation_id uuid");
+    expect(allMigrations).toContain("owner_user_id = auth.uid()");
+    expect(allMigrations).toContain("ai_conversations_owner_access");
+    expect(allMigrations).toContain("ai_chat_messages_owner_read");
+    expect(allMigrations).toContain("ai_chat_turns_owner_read");
+    expect(allMigrations).toContain(
+      "create or replace function public.create_ai_chat_turn",
+    );
+    expect(allMigrations).toContain(
+      "create or replace function public.finish_ai_chat_turn",
+    );
+    expect(allMigrations).toContain(
+      "revoke all on function public.create_ai_chat_turn",
+    );
+    expect(allMigrations).toContain(
+      "revoke all on function public.finish_ai_chat_turn",
+    );
+  });
 });

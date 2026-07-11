@@ -28,51 +28,82 @@ const dashboard = {
 describe("OverviewBoard AI panel", () => {
   beforeEach(() => {
     localStorage.clear();
+    const protocolFetch = createConversationProtocolFetch({
+      content: "真实 DeepSeek 回复",
+    });
     vi.stubGlobal(
       "fetch",
-      vi.fn((url) => {
-        if (url === "/api/ai/chat") {
-          return Promise.resolve({
-            ok: true,
-            json: () =>
-              Promise.resolve({
-                message: { role: "assistant", content: "真实 DeepSeek 回复" },
-                providerName: "deepseek",
-              }),
-          });
-        }
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ matches: { recommendations: [] } }),
-        });
-      }),
+      vi.fn((url, options) =>
+        protocolFetch(url, options) || defaultFetchResponse(url),
+      ),
     );
   });
 
-  it("consumes SSE streaming chat responses chunk by chunk into one bubble", async () => {
+  it("creates a durable conversation and sends only the new turn", async () => {
     const encoder = new TextEncoder();
-    const sse = [
-      "event: delta",
-      'data: {"content":"流式"}',
-      "",
-      "event: delta",
-      'data: {"content":"回复"}',
-      "",
-      "event: done",
-      'data: {"message":{"role":"assistant","content":"流式回复完成"},"providerName":"deepseek","status":"succeeded"}',
-      "",
-      "",
-    ].join("\n");
-    fetch.mockImplementation((url) => {
-      if (url === "/api/ai/chat") {
+    fetch.mockImplementation((url, options = {}) => {
+      if (url === "/api/ai/conversations" && options.method === "POST") {
         return Promise.resolve({
           ok: true,
-          headers: {
-            get: (key) =>
-              key.toLowerCase() === "content-type"
-                ? "text/event-stream; charset=utf-8"
-                : null,
-          },
+          status: 201,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-1", title: "新会话" },
+            }),
+        });
+      }
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ conversations: [] }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-1/turns") {
+        const sse = protocolSse([
+          [
+            "turn.started",
+            {
+              type: "turn.started",
+              conversationId: "conversation-1",
+              turnId: "turn-1",
+              userMessageId: "message-user-1",
+              assistantMessageId: "message-assistant-1",
+            },
+          ],
+          [
+            "context.ready",
+            {
+              type: "context.ready",
+              conversationId: "conversation-1",
+              turnId: "turn-1",
+              snapshotVersion: 1,
+            },
+          ],
+          [
+            "response.delta",
+            {
+              type: "response.delta",
+              conversationId: "conversation-1",
+              turnId: "turn-1",
+              messageId: "message-assistant-1",
+              delta: "真实",
+            },
+          ],
+          [
+            "response.completed",
+            {
+              type: "response.completed",
+              conversationId: "conversation-1",
+              turnId: "turn-1",
+              messageId: "message-assistant-1",
+              content: "真实会话回复",
+            },
+          ],
+        ]);
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => "text/event-stream; charset=utf-8" },
           body: new ReadableStream({
             start(controller) {
               controller.enqueue(encoder.encode(sse));
@@ -82,10 +113,452 @@ describe("OverviewBoard AI panel", () => {
         });
       }
       return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ matches: { recommendations: [] } }),
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({ error: "not found" }),
       });
     });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-1", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "解读当前风险" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("真实会话回复")).toBeInTheDocument();
+    const turnCall = fetch.mock.calls.find(
+      ([url]) => url === "/api/ai/conversations/conversation-1/turns",
+    );
+    const payload = JSON.parse(turnCall[1].body);
+    expect(payload).toMatchObject({
+      content: "解读当前风险",
+      mode: "fast",
+      attachments: [],
+    });
+    expect(payload.clientRequestId).toBeTruthy();
+    expect(payload).not.toHaveProperty("messages");
+    expect(fetch).not.toHaveBeenCalledWith("/api/ai/chat", expect.anything());
+    expect(Object.values(localStorage).join(" ")).toContain("conversation-1");
+  });
+
+  it("fails closed when the conversation protocol is unavailable", async () => {
+    fetch.mockImplementation((url, options = {}) => {
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: () => Promise.resolve({ error: "星耀 AI 会话协议不可用" }),
+        });
+      }
+      return defaultFetchResponse(url, options);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-1", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "分析风险" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("⚠ 星耀 AI 会话协议不可用")).toBeInTheDocument();
+    expect(screen.queryByText("分析风险")).not.toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith("/api/ai/chat", expect.anything());
+  });
+
+  it("clears a stale stored conversation before creating a fresh one", async () => {
+    localStorage.setItem(
+      "jingying-cabin.dashboard.ai.conversation.v1.user-stale",
+      "conversation-stale",
+    );
+    const protocolFetch = createConversationProtocolFetch({
+      content: "fresh conversation reply",
+      conversationId: "conversation-fresh",
+    });
+    fetch.mockImplementation((url, options) => {
+      if (url === "/api/ai/conversations/conversation-stale") {
+        return Promise.resolve({
+          ok: false,
+          status: 404,
+          json: () => Promise.resolve({ error: "Conversation not found" }),
+        });
+      }
+      return protocolFetch(url, options) || defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-stale", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "新问题" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("fresh conversation reply")).toBeInTheDocument();
+    expect(
+      fetch.mock.calls.some(
+        ([url]) => url === "/api/ai/conversations/conversation-fresh/turns",
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects malformed terminal SSE envelopes", async () => {
+    const encoder = new TextEncoder();
+    const protocolFetch = createConversationProtocolFetch({
+      content: "unused",
+      conversationId: "conversation-malformed",
+    });
+    fetch.mockImplementation((url, options) => {
+      if (url === "/api/ai/conversations/conversation-malformed/turns") {
+        return Promise.resolve(
+          protocolStreamResponse(encoder, [
+            [
+              "turn.started",
+              {
+                type: "turn.started",
+                conversationId: "conversation-malformed",
+                turnId: "turn-malformed",
+                userMessageId: "message-user-malformed",
+                assistantMessageId: "message-assistant-malformed",
+              },
+            ],
+            [
+              "response.completed",
+              {
+                type: "response.completed",
+                conversationId: "conversation-malformed",
+                turnId: "turn-malformed",
+                messageId: "message-assistant-malformed",
+                content: ".",
+              },
+            ],
+          ]),
+        );
+      }
+      return protocolFetch(url, options) || defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-malformed", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "检查协议" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText(/AI 会话连接提前结束/)).toBeInTheDocument();
+    expect(screen.getByText("检查协议")).toBeInTheDocument();
+    expect(screen.queryByText(".")).not.toBeInTheDocument();
+  });
+
+  it("retries a failed turn without sending a new user message", async () => {
+    const encoder = new TextEncoder();
+    fetch.mockImplementation((url, options = {}) => {
+      if (url === "/api/ai/conversations" && options.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: () =>
+            Promise.resolve({ conversation: { id: "conversation-1" } }),
+        });
+      }
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ conversations: [] }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-1/turns") {
+        return Promise.resolve(
+          protocolStreamResponse(encoder, [
+            [
+              "turn.started",
+              {
+                type: "turn.started",
+                conversationId: "conversation-1",
+                turnId: "turn-1",
+                userMessageId: "message-user-1",
+                assistantMessageId: "message-assistant-1",
+              },
+            ],
+            [
+              "response.failed",
+              {
+                type: "response.failed",
+                conversationId: "conversation-1",
+                turnId: "turn-1",
+                code: "provider_failed",
+                retryable: true,
+                message: "provider timeout",
+              },
+            ],
+          ]),
+        );
+      }
+      if (url === "/api/ai/turns/turn-1/retry") {
+        return Promise.resolve(
+          protocolStreamResponse(encoder, [
+            [
+              "turn.started",
+              {
+                type: "turn.started",
+                conversationId: "conversation-1",
+                turnId: "turn-2",
+                userMessageId: "message-user-1",
+                assistantMessageId: "message-assistant-2",
+              },
+            ],
+            [
+              "response.delta",
+              {
+                type: "response.delta",
+                conversationId: "conversation-1",
+                turnId: "turn-2",
+                messageId: "message-assistant-2",
+                delta: "恢复后的完整答复",
+              },
+            ],
+            [
+              "response.completed",
+              {
+                type: "response.completed",
+                conversationId: "conversation-1",
+                turnId: "turn-2",
+                messageId: "message-assistant-2",
+                content: "恢复后的完整答复",
+              },
+            ],
+          ]),
+        );
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({ error: "not found" }),
+      });
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-1", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "分析风险" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "重试" }));
+
+    expect(await screen.findByText("恢复后的完整答复")).toBeInTheDocument();
+    const retryCall = fetch.mock.calls.find(
+      ([url]) => url === "/api/ai/turns/turn-1/retry",
+    );
+    const retryPayload = JSON.parse(retryCall[1].body);
+    expect(Object.keys(retryPayload)).toEqual(["clientRequestId"]);
+    expect(screen.getAllByText("分析风险")).toHaveLength(1);
+    expect(screen.queryByText("重试", { selector: "div" })).not.toBeInTheDocument();
+  });
+
+  it("marks the replacement assistant message failed when a retry stream disconnects", async () => {
+    const encoder = new TextEncoder();
+    fetch.mockImplementation((url, options = {}) => {
+      if (url === "/api/ai/conversations" && options.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: () => Promise.resolve({ conversation: { id: "conversation-1" } }),
+        });
+      }
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ conversations: [] }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-1/turns") {
+        return Promise.resolve(
+          protocolStreamResponse(encoder, [
+            [
+              "turn.started",
+              {
+                type: "turn.started",
+                conversationId: "conversation-1",
+                turnId: "turn-1",
+                userMessageId: "message-user-1",
+                assistantMessageId: "message-assistant-1",
+              },
+            ],
+            [
+              "response.failed",
+              {
+                type: "response.failed",
+                conversationId: "conversation-1",
+                turnId: "turn-1",
+                code: "provider_failed",
+                retryable: true,
+                message: "provider timeout",
+              },
+            ],
+          ]),
+        );
+      }
+      if (url === "/api/ai/turns/turn-1/retry") {
+        return Promise.resolve(
+          interruptedProtocolStreamResponse(
+            encoder,
+            [
+              [
+                "turn.started",
+                {
+                  type: "turn.started",
+                  conversationId: "conversation-1",
+                  turnId: "turn-2",
+                  userMessageId: "message-user-1",
+                  assistantMessageId: "message-assistant-2",
+                },
+              ],
+              [
+                "response.delta",
+                {
+                  type: "response.delta",
+                  conversationId: "conversation-1",
+                  turnId: "turn-2",
+                  messageId: "message-assistant-2",
+                  delta: "部分回复",
+                },
+              ],
+            ],
+            "socket closed",
+          ),
+        );
+      }
+      return defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-1", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "分析风险" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+    fireEvent.click(await screen.findByRole("button", { name: "重试" }));
+
+    expect(await screen.findByText(/socket closed/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
+
+  it("restores the latest owner conversation and its retryable turn", async () => {
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversations: [{ id: "conversation-remote", title: "风险处置" }],
+            }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-remote") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-remote", title: "风险处置" },
+              messages: [
+                {
+                  id: "message-user-remote",
+                  role: "user",
+                  status: "completed",
+                  content: "远端会话问题",
+                },
+                {
+                  id: "message-assistant-remote",
+                  role: "assistant",
+                  status: "failed",
+                  content: "",
+                },
+              ],
+              turns: [
+                {
+                  id: "turn-remote",
+                  assistantMessageId: "message-assistant-remote",
+                  status: "failed",
+                  retryable: true,
+                  errorSummary: "上游暂时不可用",
+                },
+              ],
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({ error: "not found" }),
+      });
+    });
+
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-remote", name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(await screen.findByText("远端会话问题")).toBeInTheDocument();
+    expect(screen.getByText("⚠ 上游暂时不可用")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
+
+  it("consumes SSE streaming chat responses chunk by chunk into one bubble", async () => {
+    const protocolFetch = createConversationProtocolFetch({
+      content: "流式回复完成",
+      chunks: ["流式", "回复"],
+    });
+    fetch.mockImplementation((url, options) =>
+      protocolFetch(url, options) || defaultFetchResponse(url),
+    );
 
     const { container } = render(
       <OverviewBoard
@@ -105,12 +578,12 @@ describe("OverviewBoard AI panel", () => {
     // done 事件用最终文本替换流式过程中的同一个气泡，而不是追加新气泡。
     expect(await screen.findByText("流式回复完成")).toBeInTheDocument();
     expect(screen.queryByText("流式回复")).not.toBeInTheDocument();
-    const chatCall = fetch.mock.calls.find(([url]) => url === "/api/ai/chat");
-    expect(chatCall[1].headers.Accept).toBe("text/event-stream");
-    expect(JSON.parse(chatCall[1].body).stream).toBe(true);
+    const turnCall = fetch.mock.calls.find(([url]) => url.endsWith("/turns"));
+    expect(turnCall[1].headers.Accept).toBe("text/event-stream");
+    expect(JSON.parse(turnCall[1].body)).not.toHaveProperty("messages");
   });
 
-  it("sends free-form messages to the chat API", async () => {
+  it("sends free-form messages through the durable conversation protocol", async () => {
     const { container } = render(
       <OverviewBoard
         dashboard={dashboard}
@@ -129,13 +602,13 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
     await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith("/api/ai/chat", expect.anything()),
+      expect(fetch.mock.calls.some(([url]) => url.endsWith("/turns"))).toBe(true),
     );
-    const chatCall = fetch.mock.calls.find(([url]) => url === "/api/ai/chat");
-    expect(JSON.parse(chatCall[1].body).messages.at(-1)).toEqual({
-      role: "user",
-      content: "你好",
-    });
+    const turnCall = fetch.mock.calls.find(([url]) => url.endsWith("/turns"));
+    const payload = JSON.parse(turnCall[1].body);
+    expect(payload.content).toBe("你好");
+    expect(payload).not.toHaveProperty("messages");
+    expect(fetch).not.toHaveBeenCalledWith("/api/ai/chat", expect.anything());
     expect(await screen.findByText("真实 DeepSeek 回复")).toBeInTheDocument();
   });
 
@@ -169,10 +642,10 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
     await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith("/api/ai/chat", expect.anything()),
+      expect(fetch.mock.calls.some(([url]) => url.endsWith("/turns"))).toBe(true),
     );
-    const chatCall = fetch.mock.calls.find(([url]) => url === "/api/ai/chat");
-    const payload = JSON.parse(chatCall[1].body);
+    const turnCall = fetch.mock.calls.find(([url]) => url.endsWith("/turns"));
+    const payload = JSON.parse(turnCall[1].body);
     expect(payload.mode).toBe("deep");
     expect(payload.attachments).toHaveLength(5);
     expect(payload.attachments[0]).toMatchObject({
@@ -231,17 +704,16 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.click(screen.getByText("生成复盘报告"));
 
     await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith("/api/ai/chat", expect.anything()),
+      expect(fetch.mock.calls.some(([url]) => url.endsWith("/turns"))).toBe(true),
     );
     expect(fetch).not.toHaveBeenCalledWith(
       "/api/ai/project-reviews",
       expect.anything(),
     );
-    const chatCall = fetch.mock.calls.find(([url]) => url === "/api/ai/chat");
-    expect(JSON.parse(chatCall[1].body).messages.at(-1)).toEqual({
-      role: "user",
-      content: "帮我生成本月经营复盘报告，并结合知识库沉淀可复用经验",
-    });
+    const turnCall = fetch.mock.calls.find(([url]) => url.endsWith("/turns"));
+    expect(JSON.parse(turnCall[1].body).content).toBe(
+      "帮我生成本月经营复盘报告，并结合知识库沉淀可复用经验",
+    );
   });
 
   it("sends only the project id when the risk quick action calls project-reviews", async () => {
@@ -1127,22 +1599,7 @@ describe("OverviewBoard AI panel", () => {
       "说明：仅显示系统可见数据。",
     ].join("\n");
 
-    fetch.mockImplementation((url) => {
-      if (url === "/api/ai/chat") {
-        return Promise.resolve({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              message: { role: "assistant", content: markdownTable },
-              providerName: "deepseek",
-            }),
-        });
-      }
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ matches: { recommendations: [] } }),
-      });
-    });
+    mockConversationProtocol({ content: markdownTable });
 
     const { container } = render(
       <OverviewBoard
@@ -1181,22 +1638,7 @@ describe("OverviewBoard AI panel", () => {
       "2. 再安排复盘",
     ].join("\n");
 
-    fetch.mockImplementation((url) => {
-      if (url === "/api/ai/chat") {
-        return Promise.resolve({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              message: { role: "assistant", content: markdownDocument },
-              providerName: "deepseek",
-            }),
-        });
-      }
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ matches: { recommendations: [] } }),
-      });
-    });
+    mockConversationProtocol({ content: markdownDocument });
 
     const { container } = render(
       <OverviewBoard
@@ -1274,63 +1716,50 @@ describe("OverviewBoard AI panel", () => {
   });
 
   it("renders and persists project health cards returned by the AI chat API", async () => {
-    fetch.mockImplementation((url) => {
-      if (url === "/api/ai/chat") {
-        return Promise.resolve({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              message: { role: "assistant", content: "AI summary" },
-              providerName: "deepseek",
-              grounding: {
-                projectHealth: {
-                  topProjects: [
-                    {
-                      projectId: "p-low-margin",
-                      projectName: "Nova Launch",
-                      priority: "high",
-                      score: 125,
-                      reasons: [
-                        "Negative gross profit in project ranking",
-                        "Matched current risk queue",
-                      ],
-                      evidence: [
-                        {
-                          sourceTool: "role_home_dashboard",
-                          sourceId: "panel:projectRanking:rank:p-low-margin",
-                        },
-                      ],
-                      target: { route: "project", id: "p-low-margin" },
-                    },
-                  ],
-                },
-                suggestedActions: [
-                  {
-                    actionId: "p-low-margin:margin-review",
-                    projectId: "p-low-margin",
-                    projectName: "Nova Launch",
-                    priority: "high",
-                    title: "Review margin and cost assumptions",
-                    rationale:
-                      "The project has margin signals that need a human review.",
-                    evidence: [
-                      {
-                        sourceTool: "role_home_dashboard",
-                        sourceId: "panel:projectRanking:rank:p-low-margin",
-                      },
-                    ],
-                    target: { route: "project", id: "p-low-margin" },
-                    requiresHumanApproval: true,
-                  },
-                ],
+    const grounding = {
+      projectHealth: {
+        topProjects: [
+          {
+            projectId: "p-low-margin",
+            projectName: "Nova Launch",
+            priority: "high",
+            score: 125,
+            reasons: [
+              "Negative gross profit in project ranking",
+              "Matched current risk queue",
+            ],
+            evidence: [
+              {
+                sourceTool: "role_home_dashboard",
+                sourceId: "panel:projectRanking:rank:p-low-margin",
               },
-            }),
-        });
-      }
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ matches: { recommendations: [] } }),
-      });
+            ],
+            target: { route: "project", id: "p-low-margin" },
+          },
+        ],
+      },
+      suggestedActions: [
+        {
+          actionId: "p-low-margin:margin-review",
+          projectId: "p-low-margin",
+          projectName: "Nova Launch",
+          priority: "high",
+          title: "Review margin and cost assumptions",
+          rationale: "The project has margin signals that need a human review.",
+          evidence: [
+            {
+              sourceTool: "role_home_dashboard",
+              sourceId: "panel:projectRanking:rank:p-low-margin",
+            },
+          ],
+          target: { route: "project", id: "p-low-margin" },
+          requiresHumanApproval: true,
+        },
+      ],
+    };
+    mockConversationProtocol({
+      content: "AI summary",
+      meta: { grounding },
     });
     const { container, unmount } = render(
       <OverviewBoard
@@ -1372,45 +1801,40 @@ describe("OverviewBoard AI panel", () => {
       />,
     );
 
-    expect(screen.getByText("AI summary")).toBeInTheDocument();
+    expect(await screen.findByText("AI summary")).toBeInTheDocument();
     expect(screen.getByTestId("ai-project-health-card")).toBeInTheDocument();
     expect(screen.getByTestId("ai-suggested-action-card")).toBeInTheDocument();
     expect(screen.getAllByText("Nova Launch").length).toBeGreaterThanOrEqual(1);
   });
 
   it("creates a pending todo draft from an AI suggested action", async () => {
-    fetch.mockImplementation((url) => {
-      if (url === "/api/ai/chat") {
-        return Promise.resolve({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              message: { role: "assistant", content: "AI summary" },
-              providerName: "deepseek",
-              grounding: {
-                suggestedActions: [
-                  {
-                    actionId: "p-low-margin:margin-review",
-                    projectId: "p-low-margin",
-                    projectName: "Nova Launch",
-                    priority: "high",
-                    title: "Review margin and cost assumptions",
-                    rationale:
-                      "The project has margin signals that need a human review.",
-                    evidence: [
-                      {
-                        sourceTool: "role_home_dashboard",
-                        sourceId: "panel:projectRanking:rank:p-low-margin",
-                      },
-                    ],
-                    target: { route: "project", id: "p-low-margin" },
-                    requiresHumanApproval: true,
-                  },
-                ],
-              },
-            }),
-        });
-      }
+    const protocolFetch = createConversationProtocolFetch({
+      content: "AI summary",
+      meta: {
+        grounding: {
+          suggestedActions: [
+            {
+              actionId: "p-low-margin:margin-review",
+              projectId: "p-low-margin",
+              projectName: "Nova Launch",
+              priority: "high",
+              title: "Review margin and cost assumptions",
+              rationale:
+                "The project has margin signals that need a human review.",
+              evidence: [
+                {
+                  sourceTool: "role_home_dashboard",
+                  sourceId: "panel:projectRanking:rank:p-low-margin",
+                },
+              ],
+              target: { route: "project", id: "p-low-margin" },
+              requiresHumanApproval: true,
+            },
+          ],
+        },
+      },
+    });
+    fetch.mockImplementation((url, options) => {
       if (url === "/api/ai/drafts?status=pending") {
         return Promise.resolve({
           ok: true,
@@ -1434,10 +1858,7 @@ describe("OverviewBoard AI panel", () => {
             }),
         });
       }
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ matches: { recommendations: [] } }),
-      });
+      return protocolFetch(url, options) || defaultFetchResponse(url);
     });
 
     const { container } = render(
@@ -1547,7 +1968,174 @@ describe("OverviewBoard AI panel", () => {
       />,
     );
 
-    expect(screen.getByText("默认分析本月")).toBeInTheDocument();
-    expect(screen.getByText("真实 DeepSeek 回复")).toBeInTheDocument();
+    expect(await screen.findByText("默认分析本月")).toBeInTheDocument();
+    expect(await screen.findByText("真实 DeepSeek 回复")).toBeInTheDocument();
   });
 });
+
+function protocolSse(events) {
+  return events
+    .map(
+      ([event, data]) =>
+        `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+    )
+    .join("");
+}
+
+function protocolStreamResponse(encoder, events) {
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => "text/event-stream; charset=utf-8" },
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(protocolSse(events)));
+        controller.close();
+      },
+    }),
+  };
+}
+
+function interruptedProtocolStreamResponse(encoder, events, message) {
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => "text/event-stream; charset=utf-8" },
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(protocolSse(events)));
+        setTimeout(() => controller.error(new Error(message)), 0);
+      },
+    }),
+  };
+}
+
+function createConversationProtocolFetch({
+  content,
+  chunks = [],
+  meta,
+  conversationId = "conversation-test",
+}) {
+  const encoder = new TextEncoder();
+  let created = false;
+  let turnSequence = 0;
+  const messages = [];
+  const turns = [];
+
+  return (url, options = {}) => {
+    if (url === "/api/ai/conversations" && options.method === "POST") {
+      created = true;
+      return Promise.resolve({
+        ok: true,
+        status: 201,
+        json: () =>
+          Promise.resolve({ conversation: { id: conversationId, title: "新会话" } }),
+      });
+    }
+    if (url === "/api/ai/conversations") {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            conversations: created ? [{ id: conversationId, title: "新会话" }] : [],
+          }),
+      });
+    }
+    if (url === `/api/ai/conversations/${conversationId}`) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            conversation: { id: conversationId, title: "新会话" },
+            messages,
+            turns,
+          }),
+      });
+    }
+    if (url === `/api/ai/conversations/${conversationId}/turns`) {
+      created = true;
+      turnSequence += 1;
+      const payload = JSON.parse(options.body || "{}");
+      const turnId = `turn-${turnSequence}`;
+      const userMessageId = `message-user-${turnSequence}`;
+      const assistantMessageId = `message-assistant-${turnSequence}`;
+      messages.push({
+        id: userMessageId,
+        role: "user",
+        status: "completed",
+        content: payload.content,
+      });
+      messages.push({
+        id: assistantMessageId,
+        role: "assistant",
+        status: "completed",
+        content,
+        ...(meta ? { metadata: meta } : {}),
+      });
+      turns.push({
+        id: turnId,
+        assistantMessageId,
+        status: "completed",
+        retryable: false,
+      });
+      return Promise.resolve(
+        protocolStreamResponse(encoder, [
+          [
+            "turn.started",
+            {
+              type: "turn.started",
+              conversationId,
+              turnId,
+              userMessageId,
+              assistantMessageId,
+            },
+          ],
+          ...chunks.map((delta) => [
+            "response.delta",
+            {
+              type: "response.delta",
+              conversationId,
+              turnId,
+              messageId: assistantMessageId,
+              delta,
+            },
+          ]),
+          [
+            "response.completed",
+            {
+              type: "response.completed",
+              conversationId,
+              turnId,
+              messageId: assistantMessageId,
+              content,
+              ...(meta ? { meta } : {}),
+            },
+          ],
+        ]),
+      );
+    }
+    return null;
+  };
+}
+
+function mockConversationProtocol(options) {
+  const protocolFetch = createConversationProtocolFetch(options);
+  fetch.mockImplementation((url, requestOptions) =>
+    protocolFetch(url, requestOptions) || defaultFetchResponse(url),
+  );
+}
+
+function defaultFetchResponse(url) {
+  if (url === "/api/ai/drafts?status=pending") {
+    return Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ drafts: [] }),
+    });
+  }
+  return Promise.resolve({
+    ok: true,
+    json: () => Promise.resolve({ matches: { recommendations: [] } }),
+  });
+}
