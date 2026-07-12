@@ -15,6 +15,7 @@ import type {
   SettlementConversationPort,
   SettlementConversationTurn,
 } from "./custom-rule-ai";
+import { canonicalizeSettlementAmbiguities } from "./custom-rule-ai";
 import {
   businessRuleContractSchema,
   diffBusinessRuleContracts,
@@ -530,7 +531,8 @@ export function createCustomRuleAuthoringService(
         (draft) => draft.idempotencyKey === idempotencyKey,
       );
       if (replay) {
-        return replayVerifiedStartDraft({
+        return replayStartDraftWithStableRead({
+          dependencies,
           history,
           scope,
           currentContract: input.seedContract,
@@ -1977,7 +1979,8 @@ async function openStartAiTurn(input: {
   if (replay) {
     return {
       kind: "result",
-      result: replayVerifiedStartDraft({
+      result: await replayStartDraftWithStableRead({
+        dependencies: input.dependencies,
         history: observed.history,
         scope: input.scope,
         currentContract: input.currentContract,
@@ -2402,10 +2405,99 @@ type StartReplayVerificationInput = {
 function replayVerifiedStartDraft(
   input: StartReplayVerificationInput,
 ): CustomRuleClarifyingSuccess | CustomRuleAiTransitionFailure {
+  try {
+    return verifiedStartReplayResult(input);
+  } catch (error) {
+    throwPublicStartReplayMismatch(error, input.draft.turnTrace.turnId);
+  }
+}
+
+async function replayStartDraftWithStableRead(
+  input: StartReplayVerificationInput & {
+    dependencies: ServiceDependencies;
+  },
+): Promise<CustomRuleClarifyingSuccess | CustomRuleAiTransitionFailure> {
+  try {
+    return verifiedStartReplayResult(input);
+  } catch (error) {
+    if (!(error instanceof StartReplayMismatchError)) throw error;
+  }
+
+  let previousVerifiedFingerprint: string | null = null;
+  let lastTurnId = input.draft.turnTrace.turnId;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const drafts = await listScopedDrafts(
+      input.dependencies.repository,
+      input.scope,
+    );
+    const history = await requireConversationHistory(
+      input.dependencies.conversation,
+      input.scope.actor,
+      input.scope.conversationId,
+    );
+    const draft = drafts.find(
+      (candidate) => candidate.idempotencyKey === input.draftIdempotencyKey,
+    );
+    if (!draft) {
+      previousVerifiedFingerprint = null;
+      continue;
+    }
+    lastTurnId = draft.turnTrace.turnId;
+    const candidate = { ...input, drafts, history, draft };
+    try {
+      const result = verifiedStartReplayResult(candidate);
+      const fingerprint = startReplayReadbackFingerprint(candidate);
+      if (fingerprint === previousVerifiedFingerprint) return result;
+      previousVerifiedFingerprint = fingerprint;
+    } catch (error) {
+      if (!(error instanceof StartReplayMismatchError)) throw error;
+      previousVerifiedFingerprint = null;
+    }
+  }
+  throwPublicStartReplayMismatch(
+    new StartReplayMismatchError(lastTurnId),
+    lastTurnId,
+  );
+}
+
+function verifiedStartReplayResult(
+  input: StartReplayVerificationInput,
+): CustomRuleClarifyingSuccess | CustomRuleAiTransitionFailure {
   requireMatchingStartReplay(input);
   return input.draft.initialStatus === "failed"
     ? replayFailure(input.draft)
     : replayClarifying(input.draft, input.drafts);
+}
+
+function startReplayReadbackFingerprint(
+  input: StartReplayVerificationInput,
+): string {
+  const successor = input.history.turns.find(
+    (turn) => turn.id === input.draft.turnTrace.turnId,
+  );
+  const source = successor?.retryOfTurnId
+    ? input.history.turns.find((turn) => turn.id === successor.retryOfTurnId)
+    : null;
+  const messageIds = new Set<string>([
+    input.draft.turnTrace.userMessageId,
+    input.draft.turnTrace.assistantMessageId,
+  ]);
+  if (source) {
+    messageIds.add(source.userMessageId);
+    messageIds.add(source.assistantMessageId);
+  }
+  for (const messageId of successor?.contextSnapshot?.messageIds ?? []) {
+    messageIds.add(messageId);
+  }
+  return canonicalJson({
+    draft: input.draft,
+    drafts: input.drafts,
+    messages: input.history.messages.filter((message) =>
+      messageIds.has(message.id),
+    ),
+    source: source ?? null,
+    successor: successor ?? null,
+  });
 }
 
 function requireMatchingStartReplay(input: StartReplayVerificationInput): void {
@@ -2626,7 +2718,9 @@ function requireMatchingFrozenStartRecovery(
     canonicalJson(aiContext.currentContract) !==
       canonicalJson(input.currentContract) ||
     canonicalJson(aiContext.unresolvedAmbiguities) !==
-      canonicalJson(input.currentAmbiguities) ||
+      canonicalJson(
+        canonicalizeSettlementAmbiguities(input.currentAmbiguities),
+      ) ||
     aiContext.catalog.version !== input.draft.variableCatalogVersion ||
     aiContext.catalog.scope !== input.currentContract.scope ||
     aiContext.catalog.executionGrain !== input.currentContract.executionGrain ||
@@ -2667,13 +2761,28 @@ function matchesReturnedTurn(
   );
 }
 
+class StartReplayMismatchError extends Error {
+  constructor(readonly sourceTurnId: string) {
+    super("settlement start replay mismatch");
+    this.name = "StartReplayMismatchError";
+  }
+}
+
 function startReplayMismatch(sourceTurnId: string): never {
+  throw new StartReplayMismatchError(sourceTurnId);
+}
+
+function throwPublicStartReplayMismatch(
+  error: unknown,
+  fallbackTurnId: string,
+): never {
+  if (!(error instanceof StartReplayMismatchError)) throw error;
   throw serviceError(
     "conversation_failed",
     "Settlement start replay does not match its durable recovery lineage.",
     false,
     undefined,
-    sourceTurnId,
+    error.sourceTurnId || fallbackTurnId,
   );
 }
 

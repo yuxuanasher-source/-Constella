@@ -100,6 +100,24 @@ function startInput(
   };
 }
 
+const OUT_OF_ORDER_AMBIGUITIES: SettlementAiUnresolvedAmbiguity[] = [
+  {
+    code: "z_rate",
+    question: "Confirm the hourly rate?",
+    required: true,
+  },
+  {
+    code: "a_effective_date",
+    question: "Confirm the effective date?",
+    required: true,
+  },
+  {
+    code: "m_missing_policy",
+    question: "Confirm the missing-data policy?",
+    required: false,
+  },
+];
+
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolvePromise: (() => void) | undefined;
   const promise = new Promise<void>((resolve) => {
@@ -114,11 +132,18 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   };
 }
 
-async function recoveredStartFixture(clientRequestId: string) {
+async function recoveredStartFixture(
+  clientRequestId: string,
+  initialAmbiguities: SettlementAiUnresolvedAmbiguity[] =
+    startInput(clientRequestId).initialAmbiguities,
+) {
   const harness = createHarness([
     clarificationOutput("Confirm the recovered hourly rate?", "confirm_rate"),
   ]);
-  const input = startInput(clientRequestId);
+  const input = {
+    ...startInput(clientRequestId),
+    initialAmbiguities: structuredClone(initialAmbiguities),
+  };
   const source = await harness.conversation.acceptTurn(
     actor,
     CONVERSATION_ID,
@@ -875,6 +900,163 @@ describe("custom rule authoring service", () => {
         ...before,
         accept: before.accept + (path === "post_duplicate" ? 1 : 0),
       });
+    },
+  );
+
+  it.each([
+    { path: "pre_accept" as const, freshReadsBeforeStale: 0 },
+    { path: "post_duplicate" as const, freshReadsBeforeStale: 1 },
+  ])(
+    "converges a mixed $path recovery replay to the same terminal draft",
+    async ({ path, freshReadsBeforeStale }) => {
+      const fixture = await recoveredStartFixture(
+        `mixed-recovery-${path}-0001`,
+      );
+      if (path === "post_duplicate") {
+        fixture.harness.repository.hideDraftOnceForTest(
+          fixture.recovered.draft.idempotencyKey,
+        );
+      }
+      fixture.harness.queueMixedRecoveryHistoryForTest(
+        fixture.recovered.draft.turnTrace.turnId,
+        freshReadsBeforeStale,
+      );
+      const before = recoveryActivity(fixture.harness);
+      const historyReadsBefore = vi.mocked(
+        fixture.harness.conversation.getHistory,
+      ).mock.calls.length;
+      const draftReadsBefore = fixture.harness.events.filter(
+        (event) => event === "repository.listDrafts",
+      ).length;
+
+      const replay = await fixture.harness.service.startSession(fixture.input);
+
+      expect(replay).toMatchObject({
+        ok: true,
+        kind: "clarifying",
+        duplicate: true,
+        draft: {
+          id: fixture.recovered.draft.id,
+          aiResponse: fixture.recovered.draft.aiResponse,
+          turnTrace: fixture.recovered.draft.turnTrace,
+        },
+      });
+      expect(
+        vi.mocked(fixture.harness.conversation.getHistory).mock.calls.length -
+          historyReadsBefore,
+      ).toBe(path === "post_duplicate" ? 4 : 3);
+      expect(
+        fixture.harness.events.filter(
+          (event) => event === "repository.listDrafts",
+        ).length - draftReadsBefore,
+      ).toBe(path === "post_duplicate" ? 4 : 3);
+      expect(recoveryActivity(fixture.harness)).toEqual({
+        ...before,
+        accept: before.accept + (path === "post_duplicate" ? 1 : 0),
+      });
+    },
+  );
+
+  it("exhausts the bounded reread before rejecting a persistent recovery mismatch", async () => {
+    const fixture = await recoveredStartFixture(
+      "persistent-recovery-mismatch-0001",
+    );
+    fixture.harness.tamperMessageForTest(
+      fixture.recovered.draft.turnTrace.assistantMessageId,
+      { content: "Persistently tampered assistant content." },
+    );
+    const before = recoveryActivity(fixture.harness);
+    const historyReadsBefore = vi.mocked(
+      fixture.harness.conversation.getHistory,
+    ).mock.calls.length;
+    const draftReadsBefore = fixture.harness.events.filter(
+      (event) => event === "repository.listDrafts",
+    ).length;
+
+    await expect(
+      fixture.harness.service.startSession(fixture.input),
+    ).rejects.toMatchObject({
+      code: "conversation_failed",
+      retryable: false,
+    });
+
+    expect(
+      vi.mocked(fixture.harness.conversation.getHistory).mock.calls.length -
+        historyReadsBefore,
+    ).toBe(5);
+    expect(
+      fixture.harness.events.filter(
+        (event) => event === "repository.listDrafts",
+      ).length - draftReadsBefore,
+    ).toBe(5);
+    expect(recoveryActivity(fixture.harness)).toEqual(before);
+  });
+
+  it.each(["pre_accept", "post_duplicate"] as const)(
+    "replays $path recovery with canonically equivalent ambiguity ordering",
+    async (path) => {
+      const fixture = await recoveredStartFixture(
+        `unordered-ambiguity-${path}-0001`,
+        OUT_OF_ORDER_AMBIGUITIES,
+      );
+      if (path === "post_duplicate") {
+        fixture.harness.repository.hideDraftOnceForTest(
+          fixture.recovered.draft.idempotencyKey,
+        );
+      }
+      const before = recoveryActivity(fixture.harness);
+
+      const replay = await fixture.harness.service.startSession(fixture.input);
+
+      expect(replay).toMatchObject({
+        ok: true,
+        kind: "clarifying",
+        duplicate: true,
+        draft: { id: fixture.recovered.draft.id },
+      });
+      expect(recoveryActivity(fixture.harness)).toEqual({
+        ...before,
+        accept: before.accept + (path === "post_duplicate" ? 1 : 0),
+      });
+    },
+  );
+
+  it.each([
+    {
+      name: "field",
+      tamper: (ambiguities: SettlementAiUnresolvedAmbiguity[]) => [
+        { ...ambiguities[0], question: "Confirm a tampered effective date?" },
+        ...ambiguities.slice(1),
+      ],
+    },
+    {
+      name: "membership",
+      tamper: (ambiguities: SettlementAiUnresolvedAmbiguity[]) =>
+        ambiguities.slice(1),
+    },
+  ])(
+    "fails closed when canonical frozen ambiguity $name is tampered",
+    async ({ tamper }) => {
+      const fixture = await recoveredStartFixture(
+        "tampered-canonical-ambiguity-0001",
+        OUT_OF_ORDER_AMBIGUITIES,
+      );
+      const canonical = [...OUT_OF_ORDER_AMBIGUITIES].sort((left, right) =>
+        left.code.localeCompare(right.code),
+      );
+      fixture.harness.tamperFrozenAiAmbiguitiesForTest(
+        fixture.recovered.draft.turnTrace.turnId,
+        tamper(canonical),
+      );
+      const before = recoveryActivity(fixture.harness);
+
+      await expect(
+        fixture.harness.service.startSession(fixture.input),
+      ).rejects.toMatchObject({
+        code: "conversation_failed",
+        retryable: false,
+      });
+      expect(recoveryActivity(fixture.harness)).toEqual(before);
     },
   );
 
@@ -3213,6 +3395,9 @@ function createHarness(
   const retrySuccessors = new Map<string, string>();
   const turns = new Map<string, StoredConversationTurn>();
   const messages = new Map<string, AiConversationMessageDto>();
+  const historyReadQueue: Array<
+    Awaited<ReturnType<SettlementConversationPort["getHistory"]>>
+  > = [];
   messages.set(RETRY_CONTEXT_MESSAGE_IDS[0], {
     id: RETRY_CONTEXT_MESSAGE_IDS[0],
     conversationId: CONVERSATION_ID,
@@ -3353,6 +3538,20 @@ function createHarness(
     }
     return source;
   };
+  const currentHistory = (): Awaited<
+    ReturnType<SettlementConversationPort["getHistory"]>
+  > => ({
+    conversation: {
+      id: CONVERSATION_ID,
+      title: "AI 结算规则",
+      status: "active" as const,
+      lastMessageAt: "2026-07-12T00:00:00.000Z",
+      createdAt: "2026-07-12T00:00:00.000Z",
+      updatedAt: "2026-07-12T00:00:00.000Z",
+    },
+    messages: [...messages.values()].map((message) => structuredClone(message)),
+    turns: [...turns.values()].map((turn) => structuredClone(turn)),
+  });
   const conversation: SettlementConversationPort = {
     createConversation: vi.fn(async () => {
       events.push("conversation.createConversation");
@@ -3367,20 +3566,7 @@ function createHarness(
     }),
     getHistory: vi.fn(async () => {
       events.push("conversation.getHistory");
-      return {
-        conversation: {
-          id: CONVERSATION_ID,
-          title: "AI 结算规则",
-          status: "active" as const,
-          lastMessageAt: "2026-07-12T00:00:00.000Z",
-          createdAt: "2026-07-12T00:00:00.000Z",
-          updatedAt: "2026-07-12T00:00:00.000Z",
-        },
-        messages: [...messages.values()].map((message) =>
-          structuredClone(message),
-        ),
-        turns: [...turns.values()].map((turn) => structuredClone(turn)),
-      };
+      return historyReadQueue.shift() ?? currentHistory();
     }),
     acceptTurn: vi.fn(async (_actor, _conversationId, command) => {
       events.push("conversation.acceptTurn");
@@ -3713,6 +3899,41 @@ function createHarness(
         throw new Error("message deletion fixture is missing");
       }
     },
+    queueMixedRecoveryHistoryForTest(
+      successorTurnId: string,
+      freshReadsBeforeStale: number,
+    ) {
+      for (let index = 0; index < freshReadsBeforeStale; index += 1) {
+        historyReadQueue.push(currentHistory());
+      }
+      const stale = currentHistory();
+      const turnIndex = stale.turns.findIndex(
+        (turn) => turn.id === successorTurnId,
+      );
+      if (turnIndex < 0) {
+        throw new Error("mixed history successor fixture is missing");
+      }
+      stale.turns[turnIndex] = {
+        ...stale.turns[turnIndex],
+        status: "validating",
+        errorCode: null,
+        retryable: false,
+      };
+      const assistantId = stale.turns[turnIndex].assistantMessageId;
+      const assistantIndex = stale.messages.findIndex(
+        (message) => message.id === assistantId,
+      );
+      if (assistantIndex < 0) {
+        throw new Error("mixed history assistant fixture is missing");
+      }
+      stale.messages[assistantIndex] = {
+        ...stale.messages[assistantIndex],
+        status: "pending",
+        content: "",
+        metadata: undefined,
+      };
+      historyReadQueue.push(stale);
+    },
     transitionTurnForTest(
       turnId: string,
       status: AiConversationTurnDto["status"],
@@ -3748,6 +3969,40 @@ function createHarness(
             settlementServiceRetryContext: {
               ...serviceContext,
               ...patch,
+            },
+          },
+        },
+      };
+      turns.set(turnId, { ...turn, contextSnapshot: structuredClone(tampered) });
+      capturedSnapshots.set(turnId, structuredClone(tampered));
+    },
+    tamperFrozenAiAmbiguitiesForTest(
+      turnId: string,
+      ambiguities: SettlementAiUnresolvedAmbiguity[],
+    ) {
+      const turn = turns.get(turnId);
+      const snapshot = turn?.contextSnapshot;
+      const gatewayContext = snapshot?.gatewayContext;
+      const aiContext =
+        gatewayContext?.invocationMetadata.settlementAiRetryContext;
+      if (
+        !turn ||
+        !snapshot ||
+        !gatewayContext ||
+        typeof aiContext !== "object" ||
+        aiContext === null
+      ) {
+        throw new Error("frozen AI context fixture is missing");
+      }
+      const tampered = {
+        ...snapshot,
+        gatewayContext: {
+          ...gatewayContext,
+          invocationMetadata: {
+            ...gatewayContext.invocationMetadata,
+            settlementAiRetryContext: {
+              ...aiContext,
+              unresolvedAmbiguities: structuredClone(ambiguities),
             },
           },
         },

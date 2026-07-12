@@ -428,8 +428,8 @@ export function createSettlementRuleAiAdapter(input: {
           left.id.localeCompare(right.id),
         ),
       };
-      const unresolvedAmbiguities = [...parsed.data.unresolvedAmbiguities].sort(
-        compareAmbiguities,
+      const unresolvedAmbiguities = canonicalizeSettlementAmbiguities(
+        parsed.data.unresolvedAmbiguities,
       );
       const promptPayload = {
         action: parsed.data.action,
@@ -901,8 +901,8 @@ function orderProviderOutput(
 ): z.infer<typeof settlementDraftResponseSchema> {
   return {
     contractPatch: output.contractPatch,
-    unresolvedAmbiguities: [...output.unresolvedAmbiguities].sort(
-      compareAmbiguities,
+    unresolvedAmbiguities: canonicalizeSettlementAmbiguities(
+      output.unresolvedAmbiguities,
     ),
     nextQuestion: output.nextQuestion,
     formulaProposal: output.formulaProposal,
@@ -925,6 +925,14 @@ function compareAmbiguities(
     left.question.localeCompare(right.question) ||
     Number(right.required) - Number(left.required)
   );
+}
+
+export function canonicalizeSettlementAmbiguities(
+  ambiguities: readonly SettlementAiUnresolvedAmbiguity[],
+): SettlementAiUnresolvedAmbiguity[] {
+  return [...ambiguities]
+    .sort(compareAmbiguities)
+    .map((ambiguity) => ({ ...ambiguity }));
 }
 
 function failure(

@@ -6,6 +6,7 @@ import type { BusinessRuleContract } from "./custom-rule-contract";
 import type { CustomRuleVariableCatalog } from "./custom-rule-variable-catalog";
 import {
   SettlementAiInputError,
+  canonicalizeSettlementAmbiguities,
   createSettlementRuleAiAdapter,
   settlementDraftResponseSchema,
   type SettlementConversationPort,
@@ -13,6 +14,39 @@ import {
 } from "./custom-rule-ai";
 
 const HASH = "a".repeat(64);
+
+describe("canonicalizeSettlementAmbiguities", () => {
+  it("sorts three ambiguities deterministically without mutating the caller", () => {
+    const input = [
+      {
+        code: "z_rate",
+        question: "Confirm the hourly rate?",
+        required: true,
+      },
+      {
+        code: "a_date",
+        question: "Confirm the effective date?",
+        required: false,
+      },
+      {
+        code: "m_policy",
+        question: "Confirm the missing-data policy?",
+        required: true,
+      },
+    ];
+    const original = structuredClone(input);
+
+    const canonical = canonicalizeSettlementAmbiguities(input);
+
+    expect(canonical.map((ambiguity) => ambiguity.code)).toEqual([
+      "a_date",
+      "m_policy",
+      "z_rate",
+    ]);
+    expect(input).toEqual(original);
+    expect(canonical[0]).not.toBe(input[1]);
+  });
+});
 
 describe("settlementDraftResponseSchema", () => {
   it("rejects unknown nested keys before business logic sees provider output", () => {
