@@ -8,6 +8,7 @@ import {
   hashCustomRuleContract,
   hashCustomRuleParameters,
   simulateCustomSettlementRule,
+  type AuthorizedCustomRuleSimulationEvidence,
 } from "./custom-rule-simulation";
 import { getCustomRuleSystemTemplate } from "./custom-rule-system-templates";
 import { validateCustomRuleFormula } from "./custom-rule-validator";
@@ -435,6 +436,7 @@ type QueryChain = {
   gte: ReturnType<typeof vi.fn>;
   lte: ReturnType<typeof vi.fn>;
   lt: ReturnType<typeof vi.fn>;
+  is: ReturnType<typeof vi.fn>;
   in: ReturnType<typeof vi.fn>;
   not: ReturnType<typeof vi.fn>;
   order: ReturnType<typeof vi.fn>;
@@ -462,6 +464,7 @@ function tableQuery(
     gte: vi.fn(),
     lte: vi.fn(),
     lt: vi.fn(),
+    is: vi.fn(),
     in: vi.fn(),
     not: vi.fn(),
     order: vi.fn(),
@@ -537,6 +540,9 @@ function tableQuery(
         (candidate) => compareValues(candidate, value) < 0,
         [value],
       ),
+    );
+    query.is = vi.fn((column: string, value: unknown) =>
+      filter(tracker.is, column, (candidate) => candidate === value, [value]),
     );
     query.in = vi.fn((column: string, values: unknown[]) => {
       const allowed = new Set(values);
@@ -828,6 +834,7 @@ async function evidenceHarness(input?: {
   streamers?: unknown[];
   draft?: unknown;
   enforceFilters?: boolean;
+  enforceReportFilters?: boolean;
   catalog?: unknown;
 }) {
   const itemRows = [
@@ -837,10 +844,9 @@ async function evidenceHarness(input?: {
   const batchRows =
     input?.batches ?? deriveSettlementBatchesFromItems(itemRows);
   const queryOptions = { enforceFilters: input?.enforceFilters };
-  const reports = tableQuery(
-    input?.reports ?? [approvedReport()],
-    queryOptions,
-  );
+  const reports = tableQuery(input?.reports ?? [approvedReport()], {
+    enforceFilters: input?.enforceReportFilters ?? input?.enforceFilters,
+  });
   const items = tableQuery(itemRows, queryOptions);
   const batches = tableQuery(batchRows, queryOptions);
   const costs = tableQuery(input?.costs ?? [], queryOptions);
@@ -886,30 +892,9 @@ async function evidenceHarness(input?: {
             | "project_scope"
           )[];
         }>;
-        loadAuthorizedEvidence(input: Record<string, unknown>): Promise<{
-          provenance: {
-            selectionToken: string;
-            evidenceHash: string;
-            immutableSourceVersions: Array<{
-              source: string;
-              version: string;
-            }>;
-          };
-          sampleSource: { kind: string };
-          sampleSelection: { populationCount: number };
-          currentMarginCents?: string | null;
-          userExamples: Array<{
-            id: string;
-            inputs: Record<string, unknown>;
-            expectedResult: unknown;
-          }>;
-          records: Array<{
-            recordId: string;
-            sourceVersion: { version: string };
-            variables: Record<string, unknown>;
-            currentRuleResult: unknown;
-          }>;
-        }>;
+        loadAuthorizedEvidence(
+          input: Record<string, unknown>,
+        ): Promise<AuthorizedCustomRuleSimulationEvidence>;
       };
     }
   ).createSupabaseCustomRuleEvidenceAdapter;
@@ -974,6 +959,107 @@ function authorizationInput(
   };
 }
 
+function periodBoundaryFixture(
+  businessTimezone: string,
+  expectedStart: string,
+  expectedEnd: string,
+) {
+  const timestampType = {
+    kind: "scalar" as const,
+    scalarType: "timestamp" as const,
+  };
+  const contract = businessRuleContractSchema.parse({
+    schemaVersion: 1,
+    scope: "payable",
+    target: { targetType: "project", targetId: null },
+    executionGrain: "project_period",
+    compositionMode: "replace",
+    title: "业务周期边界规则",
+    summary: "使用已确认业务时区校验周期开始和结束时间边界。",
+    calculationComponents: [
+      {
+        name: "final",
+        description: "Returns one yuan only when both boundaries match.",
+        expression: "Compare canonical period boundaries.",
+        resultType: { kind: "scalar", scalarType: "money_cents" },
+      },
+    ],
+    requiredInputs: [
+      {
+        name: "period_start",
+        description: "Canonical inclusive business-period start.",
+        source: "authorized.period_start",
+        valueType: timestampType,
+        userFacingUnit: "timestamp",
+      },
+      {
+        name: "period_end",
+        description: "Canonical inclusive business-period end.",
+        source: "authorized.period_end",
+        valueType: timestampType,
+        userFacingUnit: "timestamp",
+      },
+    ],
+    parameters: [
+      {
+        name: "expected_start",
+        description: "Expected canonical start instant.",
+        valueType: timestampType,
+        userFacingUnit: "timestamp",
+        defaultValue: { type: "timestamp", value: expectedStart },
+      },
+      {
+        name: "expected_end",
+        description: "Expected canonical inclusive end instant.",
+        valueType: timestampType,
+        userFacingUnit: "timestamp",
+        defaultValue: { type: "timestamp", value: expectedEnd },
+      },
+    ],
+    effectiveStartAt: "2026-07-01T00:00:00+08:00",
+    effectiveEndAt: null,
+    missingDataPolicy: { action: "route_item_to_review" },
+    compositionDescription:
+      "Replaces the project-period amount for boundary verification.",
+    businessTimezone,
+    examples: ["normal", "start", "end"].map((name, index) => ({
+      name,
+      kind: index === 0 ? "normal" : "boundary",
+      description: "Canonical timestamp boundary comparison.",
+      inputs: {
+        period_start: { type: "timestamp", value: expectedStart },
+        period_end: { type: "timestamp", value: expectedEnd },
+      },
+      expectedResult: { type: "money_cents", amountCents: 100 },
+    })),
+  });
+  const formula = `money_result({
+    final: if(
+      period_start == parameter("expected_start") &&
+      period_end == parameter("expected_end"),
+      yuan(1),
+      yuan(0)
+    )
+  })`;
+  const validation = validateCustomRuleFormula(formula, {
+    scope: contract.scope,
+    executionGrain: contract.executionGrain,
+    parameters: contract.parameters.map((parameter) => ({
+      name: parameter.name,
+      valueType: parameter.valueType,
+    })),
+  });
+  if (!validation.ok)
+    throw new Error("Expected valid boundary formula fixture");
+  const parameters = Object.fromEntries(
+    contract.parameters.map((parameter) => [
+      parameter.name,
+      parameter.defaultValue,
+    ]),
+  );
+  return { contract, formula, validation, parameters };
+}
+
 describe("Supabase custom-rule authorized evidence adapter", () => {
   it("uses confirmed Asia/Shanghai midnight boundaries for approved-operation fallback", async () => {
     const beforeStart = approvedReport({
@@ -1024,6 +1110,150 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       atStart.id,
       beforeEnd.id,
     ]);
+  });
+
+  it.each([
+    ["Asia/Shanghai", "2026-06-30T16:00:00.000Z", "2026-07-10T15:59:59.999Z"],
+    [
+      "America/St_Johns",
+      "2026-07-01T02:30:00.000Z",
+      "2026-07-11T02:29:59.999Z",
+    ],
+  ] as const)(
+    "emits canonical %s period timestamps and compares them in Task 7",
+    async (businessTimezone, expectedStart, expectedEnd) => {
+      const fixture = periodBoundaryFixture(
+        businessTimezone,
+        expectedStart,
+        expectedEnd,
+      );
+      const catalogVersion = "a".repeat(64);
+      const harness = await evidenceHarness({
+        reports: [approvedReport()],
+        items: [lockedSettlementItem()],
+        streamers: [],
+        draft: evidenceDraft({ businessContract: fixture.contract }),
+        catalog: {
+          getCatalog: vi.fn().mockResolvedValue({
+            businessTimezone,
+            businessTimezoneConfirmed: true,
+            businessTimezoneSource: "confirmed_contract",
+            variables: [],
+          }),
+        },
+      });
+
+      const authorized =
+        await harness.adapter.authorizeSelection(authorizationInput());
+      const evidence = await harness.adapter.loadAuthorizedEvidence({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        selection: authorized,
+      });
+
+      expect(evidence.records[0]?.variables).toMatchObject({
+        period_start: { type: "timestamp", value: expectedStart },
+        period_end: { type: "timestamp", value: expectedEnd },
+      });
+      const result = simulateCustomSettlementRule({
+        organizationId: ORGANIZATION_ID,
+        actorId: USER_ID,
+        projectId: PROJECT_ID,
+        contract: fixture.contract,
+        compiledAst: fixture.validation.compiledAst,
+        parameters: fixture.parameters,
+        formulaHash: fixture.validation.formulaHash,
+        contractHash: hashCustomRuleContract(fixture.contract),
+        parameterHash: hashCustomRuleParameters(fixture.parameters),
+        catalogVersion,
+        readiness: {
+          catalogVersion,
+          readinessHash: "b".repeat(64),
+          businessTimezone,
+          businessTimezoneConfirmed: true,
+          businessTimezoneSource: "confirmed_contract",
+          historicalVerification: "verified",
+          readyForSimulation: true,
+          readyForActivation: true,
+          inputs: ["period_start", "period_end"].map((variableId) => ({
+            variableId,
+            required: true,
+            status: "available" as const,
+            ready: true,
+            coverageNumerator: 1,
+            coverageDenominator: 1,
+            code: "CUSTOM_RULE_INPUT_AVAILABLE" as const,
+            reasonZh: "周期时间边界完整。",
+          })),
+          warnings: [],
+        },
+        ...evidence,
+        aiTestCases: fixture.contract.examples.map((example) => ({
+          name: example.name,
+          inputs: example.inputs,
+          expectedResult: example.expectedResult,
+        })),
+      });
+      expect(result.totalNewCents).toBe("100");
+    },
+  );
+
+  it("binds canonical timezone period semantics into selection and evidence hashes", async () => {
+    const authorize = async (
+      businessTimezone: string,
+      expectedStart: string,
+      expectedEnd: string,
+    ) => {
+      const fixture = periodBoundaryFixture(
+        businessTimezone,
+        expectedStart,
+        expectedEnd,
+      );
+      const harness = await evidenceHarness({
+        reports: [approvedReport()],
+        items: [lockedSettlementItem()],
+        streamers: [],
+        draft: evidenceDraft({ businessContract: fixture.contract }),
+        catalog: {
+          getCatalog: vi.fn().mockResolvedValue({
+            businessTimezone,
+            businessTimezoneConfirmed: true,
+            businessTimezoneSource: "confirmed_contract",
+            variables: [],
+          }),
+        },
+      });
+      const authorized =
+        await harness.adapter.authorizeSelection(authorizationInput());
+      const evidence = await harness.adapter.loadAuthorizedEvidence({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        selection: authorized,
+      });
+      return { authorized, evidence };
+    };
+    const shanghai = await authorize(
+      "Asia/Shanghai",
+      "2026-06-30T16:00:00.000Z",
+      "2026-07-10T15:59:59.999Z",
+    );
+    const stJohns = await authorize(
+      "America/St_Johns",
+      "2026-07-01T02:30:00.000Z",
+      "2026-07-11T02:29:59.999Z",
+    );
+
+    expect(stJohns.authorized.selectionToken).not.toBe(
+      shanghai.authorized.selectionToken,
+    );
+    expect(stJohns.evidence.records[0]?.sourceVersion.version).not.toBe(
+      shanghai.evidence.records[0]?.sourceVersion.version,
+    );
+    expect(stJohns.evidence.provenance.evidenceHash).not.toBe(
+      shanghai.evidence.provenance.evidenceHash,
+    );
   });
 
   it("excludes a non-overlapping locked batch even when its report review is in-window", async () => {
@@ -1110,6 +1340,80 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       retryable: true,
     });
   });
+
+  it("selects approved report status as part of the immutable snapshot", async () => {
+    const harness = await evidenceHarness();
+
+    await harness.adapter.authorizeSelection(authorizationInput());
+
+    expect(
+      harness.reports.select.mock.calls.some(([columns]) =>
+        String(columns)
+          .split(",")
+          .map((column) => column.trim())
+          .includes("status"),
+      ),
+    ).toBe(true);
+  });
+
+  it.each(["draft", "pending_review", "rejected"])(
+    "rejects a %s report returned by the fallback query despite status filters",
+    async (status) => {
+      const harness = await evidenceHarness({
+        reports: [approvedReport({ status })],
+        items: [],
+        batches: [],
+        enforceReportFilters: false,
+      });
+
+      await expect(
+        harness.adapter.authorizeSelection(authorizationInput()),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_EVIDENCE_INVALID",
+        status: 500,
+        retryable: true,
+      });
+    },
+  );
+
+  it("rejects a non-approved report returned for a locked batch despite filters", async () => {
+    const harness = await evidenceHarness({
+      reports: [approvedReport({ status: "draft" })],
+      enforceReportFilters: false,
+    });
+
+    await expect(
+      harness.adapter.authorizeSelection(authorizationInput()),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_EVIDENCE_INVALID",
+      status: 500,
+      retryable: true,
+    });
+  });
+
+  it.each([
+    ["settlement_duration", { settlement_duration: null }],
+    ["time_source", { time_source: null }],
+    ["evidence_level", { evidence_level: null }],
+  ])(
+    "rejects an approved report missing its %s snapshot field after query",
+    async (_field, malformedSnapshot) => {
+      const harness = await evidenceHarness({
+        reports: [approvedReport(malformedSnapshot)],
+        items: [],
+        batches: [],
+        enforceReportFilters: false,
+      });
+
+      await expect(
+        harness.adapter.authorizeSelection(authorizationInput()),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_EVIDENCE_INVALID",
+        status: 500,
+        retryable: true,
+      });
+    },
+  );
 
   it("matches a locked item by live_report_id when the report pointer is empty", async () => {
     const report = approvedReport({ settled_batch_item_id: null });
@@ -2303,6 +2607,199 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     expect(evidence.currentMarginCents).toBe("1550");
   });
 
+  it.each([
+    [
+      "selected report",
+      "live_report_id",
+      {
+        live_report_id: approvedReport().id,
+        settlement_batch_id: null,
+        created_at: "2026-07-20T08:00:00.000Z",
+      },
+    ],
+    [
+      "matching locked batch",
+      "settlement_batch_id",
+      {
+        live_report_id: null,
+        settlement_batch_id: lockedSettlementBatch().id,
+        created_at: "2026-06-01T08:00:00.000Z",
+      },
+    ],
+  ] as const)(
+    "includes a confirmed cost linked to the %s regardless of created_at",
+    async (_label, expectedColumn, costOverrides) => {
+      const payableBatch = lockedSettlementBatch();
+      const receivableBatch = lockedSettlementBatch({
+        id: "42424242-4242-4242-8242-424242424242",
+        batch_type: "receivable",
+      });
+      const harness = await evidenceHarness({
+        reports: [approvedReport()],
+        items: [lockedSettlementItem({ settlement_batches: payableBatch })],
+        pairedItems: [
+          lockedSettlementItem({
+            id: "43434343-4343-4343-8343-434343434343",
+            computed_amount: "30.00",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: receivableBatch,
+          }),
+        ],
+        batches: [payableBatch, receivableBatch],
+        costs: [confirmedCostItem(costOverrides)],
+        streamers: [],
+        draft: evidenceDraft({
+          businessContract: {
+            scope: "payable",
+            executionGrain: "project_period",
+            businessTimezone: "Asia/Shanghai",
+            requiredInputs: [{ name: "period_report_count" }],
+          },
+        }),
+      });
+
+      const authorized =
+        await harness.adapter.authorizeSelection(authorizationInput());
+      const evidence = await harness.adapter.loadAuthorizedEvidence({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        selection: authorized,
+      });
+
+      expect(harness.costs.in).toHaveBeenCalledWith(
+        expectedColumn,
+        expect.any(Array),
+      );
+      expect(evidence.currentMarginCents).toBe("1550");
+    },
+  );
+
+  it("uses the business-date window only for fully unlinked confirmed costs", async () => {
+    const payableBatch = lockedSettlementBatch();
+    const receivableBatch = lockedSettlementBatch({
+      id: "44444444-4444-4444-8444-444444444445",
+      batch_type: "receivable",
+    });
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [lockedSettlementItem({ settlement_batches: payableBatch })],
+      pairedItems: [
+        lockedSettlementItem({
+          id: "45454545-4545-4545-8545-454545454545",
+          computed_amount: "30.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+      ],
+      batches: [payableBatch, receivableBatch],
+      costs: [
+        confirmedCostItem({
+          id: "46464646-4646-4646-8646-464646464646",
+          live_report_id: null,
+          settlement_batch_id: null,
+          amount_cents: "200",
+          created_at: "2026-07-05T08:00:00.000Z",
+        }),
+        confirmedCostItem({
+          id: "47474747-4747-4747-8747-474747474747",
+          live_report_id: null,
+          settlement_batch_id: null,
+          amount_cents: "10000",
+          created_at: "2026-07-20T08:00:00.000Z",
+        }),
+      ],
+      streamers: [],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "project_period",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [{ name: "period_report_count" }],
+        },
+      }),
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(harness.costs.is).toHaveBeenCalledWith("live_report_id", null);
+    expect(harness.costs.is).toHaveBeenCalledWith("settlement_batch_id", null);
+    expect(evidence.currentMarginCents).toBe("1550");
+  });
+
+  it("includes a cost linked only to a report in the paired locked scope", async () => {
+    const payableBatch = lockedSettlementBatch();
+    const receivableBatch = lockedSettlementBatch({
+      id: "48484848-4848-4848-8848-484848484848",
+      batch_type: "receivable",
+    });
+    const pairedOnlyReportId = "49494949-4949-4949-8949-494949494949";
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [lockedSettlementItem({ settlement_batches: payableBatch })],
+      pairedItems: [
+        lockedSettlementItem({
+          id: "50505050-5050-4050-8050-505050505050",
+          computed_amount: "30.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+        lockedSettlementItem({
+          id: "51515151-5151-4151-8151-515151515152",
+          live_report_id: pairedOnlyReportId,
+          streamer_id: "52525252-5252-4252-8252-525252525252",
+          computed_amount: "10.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+      ],
+      batches: [payableBatch, receivableBatch],
+      costs: [
+        confirmedCostItem({
+          live_report_id: pairedOnlyReportId,
+          settlement_batch_id: null,
+          amount_cents: "200",
+          created_at: "2026-07-20T08:00:00.000Z",
+        }),
+      ],
+      streamers: [],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "project_period",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [{ name: "period_report_count" }],
+        },
+      }),
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(harness.costs.in).toHaveBeenCalledWith(
+      "live_report_id",
+      expect.arrayContaining([pairedOnlyReportId]),
+    );
+    expect(evidence.currentMarginCents).toBe("2550");
+  });
+
   it.each(["batch", "project_period"] as const)(
     "includes every in-period confirmed project cost once for %s margin",
     async (executionGrain) => {
@@ -2525,6 +3022,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
         confirmedCostItem({
           live_report_id: approvedReport().id,
           settlement_batch_id: payableBatch.id,
+          created_at: "2026-07-20T08:00:00.000Z",
         }),
       ],
       streamers: [],
@@ -2547,6 +3045,13 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
+    expect(harness.costs.in).toHaveBeenCalledWith("live_report_id", [
+      approvedReport().id,
+    ]);
+    expect(harness.costs.in).toHaveBeenCalledWith(
+      "settlement_batch_id",
+      expect.arrayContaining([payableBatch.id]),
+    );
     expect(evidence.currentMarginCents).toBe("1550");
   });
 
@@ -3282,6 +3787,125 @@ describe("custom-rule evidence and Task 7 simulation integration", () => {
             live_report_id: null,
             settlement_batch_id: null,
             amount_cents: "200",
+          }),
+        ],
+      },
+    );
+
+    expect(result.summary.riskFlags).toContainEqual(
+      expect.objectContaining({
+        code: "CUSTOM_RULE_NEGATIVE_MARGIN",
+        severity: "block",
+      }),
+    );
+  });
+
+  it("marks unlinked in-period cost accounting as provisional", async () => {
+    const receivableBatch = {
+      id: "95959595-9595-4595-8595-959595959595",
+      status: "locked",
+      batch_type: "receivable",
+      locked_at: "2026-07-10T00:00:00.000Z",
+    };
+    const secondReportId = "91919191-9191-4919-8919-919191919191";
+    const result = await simulationServiceHarness(
+      "project_period",
+      "full",
+      [],
+      {
+        pairedItems: [
+          lockedSettlementItem({
+            id: "96969696-9696-4696-8696-969696969696",
+            computed_amount: "30.00",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: receivableBatch,
+          }),
+          lockedSettlementItem({
+            id: "97979797-9797-4797-8797-979797979797",
+            live_report_id: secondReportId,
+            computed_amount: "30.00",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: receivableBatch,
+          }),
+        ],
+        costs: [
+          confirmedCostItem({
+            live_report_id: null,
+            settlement_batch_id: null,
+            created_at: "2026-07-05T08:00:00.000Z",
+          }),
+        ],
+      },
+    );
+
+    expect(result.summary.warnings).toContainEqual(
+      expect.objectContaining({
+        code: "CUSTOM_RULE_MARGIN_PROVISIONAL",
+        severity: "warning",
+      }),
+    );
+  });
+
+  it("blocks negative margin from a late-created selected-report cost", async () => {
+    const payableBatch = {
+      id: "98989898-9898-4898-8898-989898989898",
+      status: "locked",
+      batch_type: "payable",
+      locked_at: "2026-07-10T00:00:00.000Z",
+    };
+    const receivableBatch = {
+      id: "99999999-9999-4999-8999-999999999998",
+      status: "locked",
+      batch_type: "receivable",
+      locked_at: "2026-07-10T00:00:00.000Z",
+    };
+    const secondReportId = "91919191-9191-4919-8919-919191919191";
+    const result = await simulationServiceHarness(
+      "project_period",
+      "full",
+      [],
+      {
+        requestedItems: [
+          lockedSettlementItem({
+            computed_amount: "0.00",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: payableBatch,
+          }),
+          lockedSettlementItem({
+            id: "10101010-1010-4010-8010-101010101011",
+            live_report_id: secondReportId,
+            computed_amount: "0.00",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: payableBatch,
+          }),
+        ],
+        pairedItems: [
+          lockedSettlementItem({
+            id: "11111111-1111-4111-8111-111111111112",
+            computed_amount: "0.50",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: receivableBatch,
+          }),
+          lockedSettlementItem({
+            id: "12121212-1212-4212-8212-121212121213",
+            live_report_id: secondReportId,
+            computed_amount: "0.50",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: receivableBatch,
+          }),
+        ],
+        costs: [
+          confirmedCostItem({
+            live_report_id: approvedReport().id,
+            settlement_batch_id: null,
+            amount_cents: "200",
+            created_at: "2026-07-20T08:00:00.000Z",
           }),
         ],
       },

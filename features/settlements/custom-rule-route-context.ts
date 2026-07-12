@@ -893,6 +893,7 @@ const approvedReportRowSchema = z.strictObject({
   organization_id: z.string().uuid(),
   project_id: z.string().uuid(),
   streamer_id: z.string().uuid(),
+  status: z.string().min(1),
   system_duration: z.number().int().nonnegative().nullable(),
   screenshot_duration: z.number().int().nonnegative().nullable(),
   settlement_duration: z.number().int().nonnegative().nullable(),
@@ -992,6 +993,7 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
       evidence: AuthorizedCustomRuleSimulationEvidence;
       historicalComplete: boolean;
       marginStatus: "available" | "unavailable" | "not_applicable";
+      usesUnlinkedCostFallback: boolean;
     }
   >();
   let latestSelectionToken: string | null = null;
@@ -1157,12 +1159,25 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         requestedItemsByReport: itemsByReport,
         pairedItemsByReport,
       });
-      const costs = await loadConfirmedPeriodCosts(input.client, {
+      const costReportIds = [
+        ...new Set([
+          ...reportIds,
+          ...[...items, ...pairedItems].flatMap((item) =>
+            item.live_report_id ? [item.live_report_id] : [],
+          ),
+        ]),
+      ].sort((left, right) => left.localeCompare(right));
+      const costSelection = await loadAuthorizedConfirmedCosts(input.client, {
         organizationId: unsafeInput.actor.organizationId,
         projectId: unsafeInput.projectId,
+        reportIds: costReportIds,
+        batchIds: [...requestedBatches, ...pairedBatches]
+          .map((batch) => batch.id)
+          .sort((left, right) => left.localeCompare(right)),
         periodStartInclusive: businessPeriod.startInclusive,
         periodEndExclusive: businessPeriod.endExclusive,
       });
+      const costs = costSelection.rows;
       assertRowsInScope(
         costs,
         unsafeInput.actor.organizationId,
@@ -1244,6 +1259,7 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         itemsByReport,
         streamersById,
         historicalComplete,
+        periodBoundaries: businessPeriod,
       });
       assertRequiredRecordVariables(records, requiredVariables);
       if (records.length > MAX_AUTHORIZED_SIMULATION_RECORDS) {
@@ -1262,6 +1278,12 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           revisionNumber: draft.revisionNumber,
           periodStart: unsafeInput.selection.periodStart,
           periodEnd: unsafeInput.selection.periodEnd,
+          businessTimezone: catalog.businessTimezone,
+          runtimePeriodStart: businessPeriod.runtimeStartInclusive,
+          runtimePeriodEnd: businessPeriod.runtimeEndInclusive,
+          costSelectionMode: costSelection.usesUnlinkedPeriodFallback
+            ? "linked_plus_unlinked_period_fallback"
+            : "linked_only",
           criteriaCodes: [...unsafeInput.selection.criteriaCodes].sort(),
           userExamples,
           selectedSnapshots,
@@ -1321,6 +1343,7 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         evidence: freezeAuthorizedCustomRuleSimulationEvidence(evidence),
         historicalComplete,
         marginStatus: margin.status,
+        usesUnlinkedCostFallback: costSelection.usesUnlinkedPeriodFallback,
       });
       latestSelectionToken = selectionToken;
       return authorizedSelection;
@@ -1388,21 +1411,37 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
       const state = latestSelectionToken
         ? authorizedEvidence.get(latestSelectionToken)
         : null;
-      if (!state || state.marginStatus !== "unavailable") return result;
-      const warning = {
-        code: "CUSTOM_RULE_MARGIN_UNAVAILABLE",
-        severity: "warning" as const,
-        message:
-          "授权周期缺少完整的应收、应付或可定向成本证据，未验证毛利影响。",
-      };
-      const warnings = [...result.warnings, warning].sort((left, right) =>
-        left.code.localeCompare(right.code),
-      );
+      if (!state) return result;
+      const addedWarnings: Array<{
+        code: string;
+        severity: "warning";
+        message: string;
+      }> = [];
+      if (state.marginStatus === "unavailable") {
+        addedWarnings.push({
+          code: "CUSTOM_RULE_MARGIN_UNAVAILABLE",
+          severity: "warning",
+          message: "授权证据无法完整分配应收、应付或成本组成，未验证毛利影响。",
+        });
+      }
+      if (state.usesUnlinkedCostFallback) {
+        addedWarnings.push({
+          code: "CUSTOM_RULE_MARGIN_PROVISIONAL",
+          severity: "warning",
+          message: "未关联成本按业务日期内的创建时间纳入，毛利证据为临时口径。",
+        });
+      }
+      if (addedWarnings.length === 0) return result;
+      const addedCodes = new Set(addedWarnings.map((warning) => warning.code));
+      const warnings = [
+        ...result.warnings.filter((warning) => !addedCodes.has(warning.code)),
+        ...addedWarnings,
+      ].sort((left, right) => left.code.localeCompare(right.code));
       const persistedWarnings = [
         ...result.persistable.warnings.filter(
-          (item) => item.code !== warning.code,
+          (warning) => !addedCodes.has(warning.code),
         ),
-        warning,
+        ...addedWarnings,
       ].sort((left, right) => left.code.localeCompare(right.code));
       return {
         ...result,
@@ -1443,13 +1482,35 @@ function businessPeriodBoundaries(
   periodStart: string,
   periodEnd: string,
   businessTimezone: string,
-): { startInclusive: string; endExclusive: string } {
+): {
+  startInclusive: string;
+  endExclusive: string;
+  runtimeStartInclusive: string;
+  runtimeEndInclusive: string;
+} {
+  const startInclusive = businessDateBoundary(periodStart, businessTimezone);
+  const endExclusive = businessDateBoundary(
+    nextBusinessDate(periodEnd),
+    businessTimezone,
+  );
+  const startEpoch = Date.parse(startInclusive);
+  const endEpoch = Date.parse(endExclusive);
+  if (
+    !Number.isFinite(startEpoch) ||
+    !Number.isFinite(endEpoch) ||
+    endEpoch <= startEpoch
+  ) {
+    throw routeError(
+      "CUSTOM_RULE_DATA_NOT_READY",
+      "Project business timezone cannot resolve the selection period",
+      422,
+    );
+  }
   return {
-    startInclusive: businessDateBoundary(periodStart, businessTimezone),
-    endExclusive: businessDateBoundary(
-      nextBusinessDate(periodEnd),
-      businessTimezone,
-    ),
+    startInclusive,
+    endExclusive,
+    runtimeStartInclusive: new Date(startEpoch).toISOString(),
+    runtimeEndInclusive: new Date(endEpoch - 1).toISOString(),
   };
 }
 
@@ -1638,7 +1699,7 @@ async function loadApprovedReportsByReviewPeriod(
     let query = client
       .from("live_reports")
       .select(
-        "id, organization_id, project_id, streamer_id, system_duration, screenshot_duration, settlement_duration, evidence_level, time_source, viewers, reviewed_at, created_at, settled_batch_item_id, live_tasks!inner(system_started_at)",
+        "id, organization_id, project_id, streamer_id, status, system_duration, screenshot_duration, settlement_duration, evidence_level, time_source, viewers, reviewed_at, created_at, settled_batch_item_id, live_tasks!inner(system_started_at)",
       )
       .eq("organization_id", input.organizationId)
       .eq("project_id", input.projectId)
@@ -1662,6 +1723,7 @@ async function loadApprovedReportsByReviewPeriod(
       error,
       "approved live reports",
     ).sort((left, right) => left.id.localeCompare(right.id));
+    assertApprovedReportSnapshots(page);
     rows.push(...page);
     if (rows.length > MAX_AUTHORIZED_SOURCE_REPORTS) {
       throw routeError(
@@ -1702,7 +1764,7 @@ async function loadApprovedReportsByIds(
       let query = client
         .from("live_reports")
         .select(
-          "id, organization_id, project_id, streamer_id, system_duration, screenshot_duration, settlement_duration, evidence_level, time_source, viewers, reviewed_at, created_at, settled_batch_item_id, live_tasks!inner(system_started_at)",
+          "id, organization_id, project_id, streamer_id, status, system_duration, screenshot_duration, settlement_duration, evidence_level, time_source, viewers, reviewed_at, created_at, settled_batch_item_id, live_tasks!inner(system_started_at)",
         )
         .eq("organization_id", input.organizationId)
         .eq("project_id", input.projectId)
@@ -1725,6 +1787,7 @@ async function loadApprovedReportsByIds(
         error,
         "approved live reports",
       ).sort((left, right) => left.id.localeCompare(right.id));
+      assertApprovedReportSnapshots(page);
       for (const row of page) {
         if (rowsById.has(row.id)) {
           throw routeError(
@@ -1772,6 +1835,25 @@ async function loadApprovedReportsByIds(
     );
   }
   return rows;
+}
+
+function assertApprovedReportSnapshots(reports: ApprovedReportRow[]): void {
+  if (
+    reports.some(
+      (report) =>
+        report.status !== "approved" ||
+        report.settlement_duration === null ||
+        report.time_source === null ||
+        report.evidence_level === null,
+    )
+  ) {
+    throw routeError(
+      "CUSTOM_RULE_EVIDENCE_INVALID",
+      "Approved report evidence violates the immutable snapshot invariant",
+      500,
+      true,
+    );
+  }
 }
 
 async function loadLockedSettlementBatches(
@@ -1963,7 +2045,116 @@ async function loadLockedSettlementItems(
   return rows;
 }
 
-async function loadConfirmedPeriodCosts(
+async function loadAuthorizedConfirmedCosts(
+  client: SupabaseClient,
+  input: {
+    organizationId: string;
+    projectId: string;
+    reportIds: string[];
+    batchIds: string[];
+    periodStartInclusive: string;
+    periodEndExclusive: string;
+  },
+): Promise<{
+  rows: ProjectCostRow[];
+  usesUnlinkedPeriodFallback: boolean;
+}> {
+  const rowsById = new Map<string, ProjectCostRow>();
+  const reportRows = await loadConfirmedCostsByAuthorizedIds(client, {
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+    column: "live_report_id",
+    ids: input.reportIds,
+  });
+  const batchRows = await loadConfirmedCostsByAuthorizedIds(client, {
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+    column: "settlement_batch_id",
+    ids: input.batchIds,
+  });
+  const unlinkedRows = await loadUnlinkedConfirmedPeriodCosts(client, input);
+  for (const row of [...reportRows, ...batchRows, ...unlinkedRows]) {
+    mergeAuthorizedCostRow(rowsById, row);
+  }
+  return {
+    rows: [...rowsById.values()].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    ),
+    usesUnlinkedPeriodFallback: unlinkedRows.length > 0,
+  };
+}
+
+async function loadConfirmedCostsByAuthorizedIds(
+  client: SupabaseClient,
+  input: {
+    organizationId: string;
+    projectId: string;
+    column: "live_report_id" | "settlement_batch_id";
+    ids: string[];
+  },
+): Promise<ProjectCostRow[]> {
+  if (input.ids.length === 0) return [];
+  const authorizedIds = new Set(input.ids);
+  const rowsById = new Map<string, ProjectCostRow>();
+  for (const ids of chunks(input.ids, EVIDENCE_ID_CHUNK_SIZE)) {
+    let cursor: string | null = null;
+    while (true) {
+      let query = client
+        .from("project_cost_items")
+        .select(
+          "id, organization_id, project_id, live_report_id, settlement_batch_id, amount_cents, direction, status, created_at",
+        )
+        .eq("organization_id", input.organizationId)
+        .eq("project_id", input.projectId)
+        .eq("status", "confirmed")
+        .in(input.column, ids);
+      if (cursor) query = query.gt("id", cursor);
+      const { data, error } = await query
+        .order("id", { ascending: true })
+        .limit(EVIDENCE_PAGE_SIZE)
+        .returns<unknown[]>();
+      const page = parseEvidenceRows(
+        projectCostRowSchema,
+        data,
+        error,
+        "linked confirmed project costs",
+      ).sort((left, right) => left.id.localeCompare(right.id));
+      assertRowsInScope(page, input.organizationId, input.projectId);
+      for (const row of page) {
+        const linkedId = row[input.column];
+        if (
+          linkedId === null ||
+          !authorizedIds.has(linkedId) ||
+          !Number.isFinite(Date.parse(row.created_at))
+        ) {
+          throw routeError(
+            "CUSTOM_RULE_EVIDENCE_INVALID",
+            "Linked confirmed cost evidence is outside the authorized selection",
+            500,
+            true,
+          );
+        }
+        mergeAuthorizedCostRow(rowsById, row);
+      }
+      if (page.length < EVIDENCE_PAGE_SIZE) break;
+      const nextCursor = page.at(-1)?.id;
+      if (!nextCursor || nextCursor === cursor) {
+        throw routeError(
+          "CUSTOM_RULE_EVIDENCE_INVALID",
+          "Settlement rule linked cost pagination is not deterministic",
+          500,
+          true,
+        );
+      }
+      cursor = nextCursor;
+    }
+  }
+  return [...rowsById.values()].sort((left, right) =>
+    left.id.localeCompare(right.id),
+  );
+}
+
+async function loadUnlinkedConfirmedPeriodCosts(
   client: SupabaseClient,
   input: {
     organizationId: string;
@@ -1983,6 +2174,8 @@ async function loadConfirmedPeriodCosts(
       .eq("organization_id", input.organizationId)
       .eq("project_id", input.projectId)
       .eq("status", "confirmed")
+      .is("live_report_id", null)
+      .is("settlement_batch_id", null)
       .gte("created_at", input.periodStartInclusive)
       .lt("created_at", input.periodEndExclusive);
     if (cursor) query = query.gt("id", cursor);
@@ -1996,23 +2189,24 @@ async function loadConfirmedPeriodCosts(
       error,
       "confirmed project costs",
     ).sort((left, right) => left.id.localeCompare(right.id));
+    assertRowsInScope(page, input.organizationId, input.projectId);
     for (const row of page) {
-      if (rowsById.has(row.id)) {
+      const createdAt = Date.parse(row.created_at);
+      if (
+        row.live_report_id !== null ||
+        row.settlement_batch_id !== null ||
+        !Number.isFinite(createdAt) ||
+        createdAt < Date.parse(input.periodStartInclusive) ||
+        createdAt >= Date.parse(input.periodEndExclusive)
+      ) {
         throw routeError(
           "CUSTOM_RULE_EVIDENCE_INVALID",
-          "Confirmed cost evidence contains duplicate rows",
+          "Unlinked confirmed cost evidence is outside the authorized period",
           500,
           true,
         );
       }
-      rowsById.set(row.id, row);
-    }
-    if (rowsById.size > MAX_AUTHORIZED_SOURCE_REPORTS) {
-      throw routeError(
-        "CUSTOM_RULE_SELECTION_TOO_LARGE",
-        "Authorized simulation selection has too many source cost items",
-        422,
-      );
+      mergeAuthorizedCostRow(rowsById, row);
     }
     if (page.length < EVIDENCE_PAGE_SIZE) break;
     const nextCursor = page.at(-1)?.id;
@@ -2029,24 +2223,30 @@ async function loadConfirmedPeriodCosts(
   const rows = [...rowsById.values()].sort((left, right) =>
     left.id.localeCompare(right.id),
   );
-  const start = Date.parse(input.periodStartInclusive);
-  const end = Date.parse(input.periodEndExclusive);
-  if (
-    rows.some(
-      (row) =>
-        !Number.isFinite(Date.parse(row.created_at)) ||
-        Date.parse(row.created_at) < start ||
-        Date.parse(row.created_at) >= end,
-    )
-  ) {
+  return rows;
+}
+
+function mergeAuthorizedCostRow(
+  rowsById: Map<string, ProjectCostRow>,
+  row: ProjectCostRow,
+): void {
+  const existing = rowsById.get(row.id);
+  if (existing && JSON.stringify(existing) !== JSON.stringify(row)) {
     throw routeError(
       "CUSTOM_RULE_EVIDENCE_INVALID",
-      "Confirmed cost evidence is outside the authorized period",
+      "Confirmed cost evidence has conflicting immutable snapshots",
       500,
       true,
     );
   }
-  return rows;
+  rowsById.set(row.id, row);
+  if (rowsById.size > MAX_AUTHORIZED_SOURCE_REPORTS) {
+    throw routeError(
+      "CUSTOM_RULE_SELECTION_TOO_LARGE",
+      "Authorized simulation selection has too many source cost items",
+      422,
+    );
+  }
 }
 
 function deriveCurrentMargin(input: {
@@ -2342,6 +2542,7 @@ function buildAuthorizedSimulationRecords(input: {
   itemsByReport: Map<string, SettlementItemRow>;
   streamersById: Map<string, ProjectStreamerRow>;
   historicalComplete: boolean;
+  periodBoundaries: ReturnType<typeof businessPeriodBoundaries>;
 }): AuthorizedSimulationRecord[] {
   if (input.contract.executionGrain === "report") {
     return input.reports.map((report) => {
@@ -2406,6 +2607,7 @@ function buildAuthorizedSimulationRecords(input: {
         selection: input.selection,
         reports,
         periodComputedAmount,
+        periodBoundaries: input.periodBoundaries,
       });
       variables.streamer_id = { type: "string", value: streamerId };
       addProjectStreamerVariables(variables, streamer);
@@ -2461,6 +2663,7 @@ function buildAuthorizedSimulationRecords(input: {
               selection: input.selection,
               reports,
               periodComputedAmount,
+              periodBoundaries: input.periodBoundaries,
             }),
             currentAmount,
           });
@@ -2498,6 +2701,7 @@ function buildAuthorizedSimulationRecords(input: {
             selection: input.selection,
             reports,
             periodComputedAmount,
+            periodBoundaries: input.periodBoundaries,
           }),
           currentAmount,
         });
@@ -2527,6 +2731,7 @@ function buildAuthorizedSimulationRecords(input: {
           selection: input.selection,
           reports: input.reports,
           periodComputedAmount,
+          periodBoundaries: input.periodBoundaries,
         }),
         currentAmount,
       }),
@@ -2618,6 +2823,10 @@ function periodAggregateRecord(input: {
   const batchVersions = [...input.batches]
     .sort((left, right) => left.id.localeCompare(right.id))
     .map((batch) => sha256(JSON.stringify(batch)));
+  const runtimePeriodBoundaries = {
+    periodStart: input.variables.period_start ?? null,
+    periodEnd: input.variables.period_end ?? null,
+  };
   return {
     recordId: input.recordId,
     projectId: input.projectId,
@@ -2625,7 +2834,12 @@ function periodAggregateRecord(input: {
       kind: "immutable",
       source: input.source,
       version: sha256(
-        JSON.stringify({ sourceVersions, itemVersions, batchVersions }),
+        JSON.stringify({
+          sourceVersions,
+          itemVersions,
+          batchVersions,
+          runtimePeriodBoundaries,
+        }),
       ),
     },
     variables: input.variables,
@@ -2665,16 +2879,17 @@ function periodAggregateVariables(input: {
   selection: AuthorizeCustomRuleSelectionInput["selection"];
   reports: ApprovedReportRow[];
   periodComputedAmount: bigint | null;
+  periodBoundaries: ReturnType<typeof businessPeriodBoundaries>;
 }): Record<string, TypedRuntimeValue> {
   const variables: Record<string, TypedRuntimeValue> = {
     project_id: { type: "string", value: input.projectId },
     period_start: {
       type: "timestamp",
-      value: `${input.selection.periodStart}T00:00:00.000Z`,
+      value: input.periodBoundaries.runtimeStartInclusive,
     },
     period_end: {
       type: "timestamp",
-      value: `${input.selection.periodEnd}T23:59:59.999Z`,
+      value: input.periodBoundaries.runtimeEndInclusive,
     },
     period_report_count: { type: "integer", value: input.reports.length },
   };
@@ -2914,6 +3129,7 @@ function reportSnapshotVersion(
     organization_id: report.organization_id,
     project_id: report.project_id,
     streamer_id: report.streamer_id,
+    status: report.status,
     system_duration: report.system_duration,
     screenshot_duration: report.screenshot_duration,
     settlement_duration: report.settlement_duration,
