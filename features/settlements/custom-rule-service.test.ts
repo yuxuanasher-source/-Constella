@@ -28,6 +28,7 @@ import type {
   SettlementAiUnresolvedAmbiguity,
   SettlementFormulaSimulation,
 } from "./custom-rule-repository";
+import { SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES } from "./custom-rule-repository";
 import { parseCustomRuleFormula } from "./custom-rule-parser";
 import {
   createCustomRuleAuthoringService,
@@ -222,7 +223,9 @@ describe("custom rule authoring service", () => {
     });
     expect(failedStart.repository.createDraftCalls).toHaveLength(1);
     expect(failedStart.conversation.acceptTurn).toHaveBeenCalledTimes(1);
-    expect(failedStart.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(
+      failedStart.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(1);
 
     const oversized = createHarness([
       clarificationOutput("Confirm the hourly rate?", "confirm_rate"),
@@ -289,7 +292,8 @@ describe("custom rule authoring service", () => {
       sourceTurnId: uuid(201),
       failedDraft: null,
     });
-    if (failed.ok) throw new Error("atomic rollback fixture unexpectedly passed");
+    if (failed.ok)
+      throw new Error("atomic rollback fixture unexpectedly passed");
     expect(rolledBack.repository.atomicFailureSnapshots).toEqual([
       {
         kind: "draft",
@@ -313,14 +317,22 @@ describe("custom rule authoring service", () => {
       duplicate: false,
       draft: { revisionNumber: 1 },
     });
-    expect(rolledBack.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+    expect(
+      rolledBack.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(2);
     expect(rolledBack.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
-    expect(rolledBack.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
+    expect(rolledBack.conversation.captureGatewayContext).toHaveBeenCalledTimes(
+      1,
+    );
     expect(rolledBack.repository.finalizeDraftTurnCalls).toHaveLength(2);
-    expect(rolledBack.repository.finalizeDraftTurnCalls[1].draft.idempotencyKey).toBe(
+    expect(
+      rolledBack.repository.finalizeDraftTurnCalls[1].draft.idempotencyKey,
+    ).toBe(
       rolledBack.repository.finalizeDraftTurnCalls[0].draft.idempotencyKey,
     );
-    expect(rolledBack.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
+    expect(
+      rolledBack.evidencePort.loadAuthorizedEvidence,
+    ).not.toHaveBeenCalled();
     expect(rolledBack.conversation.completeTurn).not.toHaveBeenCalled();
 
     const nonrecoverable = createHarness(
@@ -406,9 +418,15 @@ describe("custom rule authoring service", () => {
       harness.events.indexOf("repository.finalizeDraftTurn"),
     );
     expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
-    expect(previous.businessContract).toEqual(previousEvidence.businessContract);
-    expect(previous.generatedFormula).toEqual(previousEvidence.generatedFormula);
-    expect(previous.generatedTestCases).toEqual(previousEvidence.generatedTestCases);
+    expect(previous.businessContract).toEqual(
+      previousEvidence.businessContract,
+    );
+    expect(previous.generatedFormula).toEqual(
+      previousEvidence.generatedFormula,
+    );
+    expect(previous.generatedTestCases).toEqual(
+      previousEvidence.generatedTestCases,
+    );
   });
 
   it("reads back a matching atomic revision after the commit response is lost", async () => {
@@ -447,7 +465,9 @@ describe("custom rule authoring service", () => {
         status: "clarifying",
       },
     });
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(1);
     expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
     expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
     expect(harness.repository.finalizeDraftTurnCalls).toHaveLength(1);
@@ -470,7 +490,9 @@ describe("custom rule authoring service", () => {
       retryable: false,
       sourceTurnId: uuid(201),
     });
-    expect(mismatch.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(
+      mismatch.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(1);
     expect(mismatch.repository.finalizeDraftTurnCalls).toHaveLength(1);
     expect(mismatch.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
   });
@@ -513,10 +535,7 @@ describe("custom rule authoring service", () => {
       kind: "clarifying",
       draft: {
         aiResponse: { content: selectedQuestion },
-        unresolvedAmbiguities: [
-          { code: "a_rate" },
-          { code: "b_date" },
-        ],
+        unresolvedAmbiguities: [{ code: "a_rate" }, { code: "b_date" }],
       },
     });
     expect(harness.repository.finalizeDraftTurnCalls[0]).toMatchObject({
@@ -524,7 +543,9 @@ describe("custom rule authoring service", () => {
       completion: { content: selectedQuestion },
     });
     expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(1);
     expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
     expect(harness.repository.finalizeDraftTurnCalls).toHaveLength(1);
     expect(harness.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
@@ -549,7 +570,9 @@ describe("custom rule authoring service", () => {
       code: "conversation_reconciliation_failed",
       retryable: false,
     });
-    expect(tampered.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(
+      tampered.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(1);
     expect(tampered.repository.finalizeDraftTurnCalls).toHaveLength(1);
   });
 
@@ -589,6 +612,10 @@ describe("custom rule authoring service", () => {
       completion: {
         content: "Settlement AI provider is temporarily unavailable.",
       },
+      errorCode: "SETTLEMENT_AI_PROVIDER_FAILED",
+      errorSummary:
+        SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES.SETTLEMENT_AI_PROVIDER_FAILED,
+      retryable: true,
     });
     expectOrdered(harness.events, [
       "conversation.markValidating",
@@ -596,6 +623,17 @@ describe("custom rule authoring service", () => {
     ]);
     expect(harness.conversation.failTurn).not.toHaveBeenCalled();
     expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
+    const providerFailureHistory = await harness.conversation.getHistory(
+      actor,
+      CONVERSATION_ID,
+    );
+    expect(
+      providerFailureHistory.turns.find((turn) => turn.id === uuid(201)),
+    ).toMatchObject({
+      status: "failed",
+      errorCode: "SETTLEMENT_AI_PROVIDER_FAILED",
+      retryable: true,
+    });
     expect(previous.businessContract).toEqual(priorSnapshot.businessContract);
     expect(previous.generatedFormula).toEqual(priorSnapshot.generatedFormula);
   });
@@ -630,7 +668,8 @@ describe("custom rule authoring service", () => {
       persistFailedRevisions: true,
       atomicFailedFailure: "before_write",
     });
-    const rolledBackPrevious = rolledBack.repository.seedDraft(clarifyingDraft());
+    const rolledBackPrevious =
+      rolledBack.repository.seedDraft(clarifyingDraft());
     const failed = await rolledBack.service.answerOrRevise({
       actor,
       projectId: PROJECT_ID,
@@ -673,7 +712,8 @@ describe("custom rule authoring service", () => {
       code: "SETTLEMENT_AI_PROVIDER_FAILED",
       sourceTurnId: uuid(201),
     });
-    if (failed.ok) throw new Error("provider failure fixture unexpectedly passed");
+    if (failed.ok)
+      throw new Error("provider failure fixture unexpectedly passed");
 
     const retried = await harness.service.retryTurn({
       actor,
@@ -695,7 +735,9 @@ describe("custom rule authoring service", () => {
     );
     expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
     expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(2);
   });
 
   it("retries a persisted failed revision before applying normal stale checks", async () => {
@@ -750,7 +792,9 @@ describe("custom rule authoring service", () => {
     );
     expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
     expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(2);
     expect(harness.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
 
     await expect(
@@ -762,8 +806,60 @@ describe("custom rule authoring service", () => {
         clientRequestId: "persisted-revise-stale-retry-0001",
       }),
     ).rejects.toMatchObject({ code: "stale_revision", retryable: false });
+    expect(harness.conversation.failTurn).toHaveBeenLastCalledWith(
+      actor,
+      uuid(203),
+      expect.objectContaining({
+        errorCode: "settlement_post_open_validation_failed",
+        retryable: false,
+      }),
+    );
     expect(harness.repository.createDraftCalls).toHaveLength(2);
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(2);
+  });
+
+  it("returns reconciliation failure when post-open stale compensation cannot persist", async () => {
+    const harness = createHarness(
+      [
+        { providerFailure: true },
+        clarificationOutput("Confirm the final contract?", "confirm_contract"),
+      ],
+      { persistFailedRevisions: true, failFailTurn: true },
+    );
+    const previous = harness.repository.seedDraft(clarifyingDraft());
+    const failed = await harness.service.answerOrRevise({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      expectedDraftId: previous.id,
+      expectedRevisionNumber: 1,
+      clientRequestId: "post-open-reconciliation-source-0001",
+      promptText: "Continue the frozen revision.",
+    });
+    if (failed.ok) throw new Error("post-open source unexpectedly passed");
+    await harness.service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      sourceTurnId: failed.sourceTurnId,
+      clientRequestId: "post-open-reconciliation-success-0001",
+    });
+
+    await expect(
+      harness.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: failed.sourceTurnId,
+        clientRequestId: "post-open-reconciliation-failure-0001",
+      }),
+    ).rejects.toMatchObject({
+      code: "conversation_reconciliation_failed",
+      retryable: false,
+      sourceTurnId: uuid(203),
+    });
   });
 
   it("retries a failed confirmation provider turn from frozen context and runs AI only once more", async () => {
@@ -773,7 +869,9 @@ describe("custom rule authoring service", () => {
     ]);
     const previous = harness.repository.seedDraft(confirmableDraft());
 
-    const failed = await harness.service.confirmContract(confirmInput(previous));
+    const failed = await harness.service.confirmContract(
+      confirmInput(previous),
+    );
     expect(failed).toMatchObject({
       ok: false,
       code: "SETTLEMENT_AI_PROVIDER_FAILED",
@@ -791,9 +889,13 @@ describe("custom rule authoring service", () => {
 
     expect(retried).toMatchObject({ ok: true, kind: "simulated" });
     expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
-    expect(harness.evidencePort.loadAuthorizedEvidence).toHaveBeenCalledTimes(1);
+    expect(harness.evidencePort.loadAuthorizedEvidence).toHaveBeenCalledTimes(
+      1,
+    );
     expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(2);
   });
 
   it("appends a new semantic retry revision after a persisted failed confirmation", async () => {
@@ -803,7 +905,9 @@ describe("custom rule authoring service", () => {
     );
     const previous = harness.repository.seedDraft(confirmableDraft());
 
-    const failed = await harness.service.confirmContract(confirmInput(previous));
+    const failed = await harness.service.confirmContract(
+      confirmInput(previous),
+    );
     expect(failed).toMatchObject({
       ok: false,
       code: "SETTLEMENT_AI_PROVIDER_FAILED",
@@ -848,7 +952,9 @@ describe("custom rule authoring service", () => {
         retried.ok && retried.kind === "simulated" ? retried.draft.id : null,
       supersededAt: expect.any(String),
     });
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(2);
 
     await expect(
       harness.service.retryTurn({
@@ -860,7 +966,9 @@ describe("custom rule authoring service", () => {
       }),
     ).rejects.toMatchObject({ code: "invalid_transition" });
     expect(harness.repository.createDraftCalls).toHaveLength(2);
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(2);
   });
 
   it("fails closed when the public conversation API fails and never falls back to local draft history", async () => {
@@ -934,9 +1042,9 @@ describe("custom rule authoring service", () => {
           retryable: true,
         }),
       );
-      expect(JSON.stringify(vi.mocked(harness.conversation.failTurn).mock.calls)).not.toContain(
-        "raw-secret-provider-body",
-      );
+      expect(
+        JSON.stringify(vi.mocked(harness.conversation.failTurn).mock.calls),
+      ).not.toContain("raw-secret-provider-body");
       expect(harness.repository.createDraftCalls).toHaveLength(0);
     }
 
@@ -968,7 +1076,8 @@ describe("custom rule authoring service", () => {
       clientRequestId: "restore-source-failure-0001",
       promptText: "Continue the settlement draft.",
     });
-    if (providerFailure.ok) throw new Error("restore source unexpectedly passed");
+    if (providerFailure.ok)
+      throw new Error("restore source unexpectedly passed");
     await expect(
       restore.service.retryTurn({
         actor,
@@ -1000,7 +1109,8 @@ describe("custom rule authoring service", () => {
       clientRequestId: "retry-scope-source-0001",
       promptText: "Continue the settlement draft.",
     });
-    if (mismatchSource.ok) throw new Error("retry scope source unexpectedly passed");
+    if (mismatchSource.ok)
+      throw new Error("retry scope source unexpectedly passed");
     await expect(
       mismatch.service.retryTurn({
         actor,
@@ -1021,7 +1131,81 @@ describe("custom rule authoring service", () => {
     );
   });
 
-  it("branches on the real retry turn DTO before preparing accepted context", async () => {
+  it("never terminates an active turn returned as a concurrent duplicate", async () => {
+    const gatewayControl: { release?: () => void } = {};
+    const gatewayGate = new Promise<void>((resolve) => {
+      gatewayControl.release = resolve;
+    });
+    const duplicateStart = createHarness(
+      [clarificationOutput("Confirm the hourly rate?", "confirm_rate")],
+      { gatewayGate },
+    );
+    const input = {
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      clientRequestId: "concurrent-duplicate-start-0001",
+      promptText: "Start a duplicate settlement request.",
+      seedContract: contract(),
+      initialAmbiguities: [
+        {
+          code: "confirm_rate",
+          question: "Confirm the hourly rate?",
+          required: true,
+        },
+      ],
+    };
+    const owner = duplicateStart.service.startSession(input);
+    await vi.waitFor(() => {
+      expect(duplicateStart.conversation.markGenerating).toHaveBeenCalledTimes(
+        1,
+      );
+    });
+    const prepareCallsBeforeDuplicate = vi.mocked(
+      duplicateStart.conversation.prepareTurn,
+    ).mock.calls.length;
+    await expect(
+      duplicateStart.service.startSession(input),
+    ).rejects.toMatchObject({
+      code: "conversation_failed",
+      retryable: true,
+      sourceTurnId: uuid(201),
+    });
+    expect(duplicateStart.conversation.prepareTurn).toHaveBeenCalledTimes(
+      prepareCallsBeforeDuplicate,
+    );
+    expect(duplicateStart.conversation.failTurn).not.toHaveBeenCalled();
+    expect(duplicateStart.repository.finalizeDraftTurnCalls).toHaveLength(0);
+    const releaseGateway = gatewayControl.release;
+    if (!releaseGateway) throw new Error("gateway release was not initialized");
+    releaseGateway();
+    await expect(owner).resolves.toMatchObject({
+      ok: true,
+      kind: "clarifying",
+    });
+    expect(duplicateStart.repository.finalizeDraftTurnCalls).toHaveLength(1);
+
+    const duplicateRetry = createHarness([], {
+      retryTurnDuplicate: true,
+      retryTurnStatus: "generating",
+    });
+    const pending = await duplicateRetry.service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      sourceTurnId: uuid(210),
+      clientRequestId: "concurrent-duplicate-retry-0001",
+    });
+    expect(pending).toMatchObject({
+      ok: true,
+      kind: "retry_in_progress",
+      turn: { status: "generating", duplicate: true },
+    });
+    expect(duplicateRetry.conversation.prepareTurn).not.toHaveBeenCalled();
+    expect(duplicateRetry.conversation.failTurn).not.toHaveBeenCalled();
+  });
+
+  it("branches on history-backed retry status before preparing accepted context", async () => {
     for (const status of ["grounding", "generating", "validating"] as const) {
       const active = createHarness([], {
         retryTurnStatus: status,
@@ -1042,11 +1226,35 @@ describe("custom rule authoring service", () => {
       expect(active.conversation.prepareTurn).not.toHaveBeenCalled();
     }
 
+    const completedIdempotencyKey = "completed-retry-draft-key-0001";
+    const completedContent = "Exact completed retry assistant content.";
     const completed = createHarness([], {
       retryTurnStatus: "completed",
       retryTurnDuplicate: true,
+      retryTerminalCompletion: {
+        providerName: "deterministic",
+        content: completedContent,
+        aiInvocationId: null,
+        metadata: {
+          contextSnapshotVersion: 7,
+          contextSummaryVersion: 3,
+          contextMessageIds: [uuid(301)],
+          settlementIdempotencyKey: completedIdempotencyKey,
+          settlementInitialStatus: "clarifying",
+        },
+      },
     });
-    const completedDraft = completed.repository.seedDraft(clarifyingDraft());
+    const completedDraft = completed.repository.seedDraft(
+      clarifyingDraft({
+        idempotencyKey: completedIdempotencyKey,
+        aiResponseContent: completedContent,
+        turnTrace: {
+          turnId: uuid(201),
+          userMessageId: uuid(301),
+          assistantMessageId: uuid(401),
+        },
+      }),
+    );
     const readback = await completed.service.retryTurn({
       actor,
       projectId: PROJECT_ID,
@@ -1102,6 +1310,118 @@ describe("custom rule authoring service", () => {
       sourceTurnId: uuid(201),
     });
     expect(conflict.conversation.prepareTurn).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on pending assistants and source-bound drafts during completed retry readback", async () => {
+    const completionIdempotencyKey = "completed-retry-key-0002";
+    const completionContent = "Completed retry content.";
+    const completion: SettlementAiTurnCompletionInput = {
+      providerName: "deterministic",
+      content: completionContent,
+      aiInvocationId: null,
+      metadata: {
+        contextSnapshotVersion: 7,
+        contextSummaryVersion: 3,
+        contextMessageIds: [uuid(301)],
+        settlementIdempotencyKey: completionIdempotencyKey,
+        settlementInitialStatus: "clarifying",
+      },
+    };
+    const pending = createHarness([], {
+      retryTurnStatus: "completed",
+      retryTurnDuplicate: true,
+    });
+    pending.repository.seedDraft(
+      clarifyingDraft({
+        idempotencyKey: completionIdempotencyKey,
+        aiResponseContent: completionContent,
+        turnTrace: {
+          turnId: uuid(201),
+          userMessageId: uuid(301),
+          assistantMessageId: uuid(401),
+        },
+      }),
+    );
+    await expect(
+      pending.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: uuid(210),
+        clientRequestId: "completed-pending-assistant-0001",
+      }),
+    ).rejects.toMatchObject({ code: "conversation_failed", retryable: false });
+    expect(pending.conversation.failTurn).not.toHaveBeenCalled();
+
+    const sourceBound = createHarness([], {
+      retryTurnStatus: "completed",
+      retryTurnDuplicate: true,
+      retryTerminalCompletion: completion,
+    });
+    sourceBound.repository.seedDraft(
+      clarifyingDraft({
+        idempotencyKey: completionIdempotencyKey,
+        aiResponseContent: completionContent,
+      }),
+    );
+    await expect(
+      sourceBound.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: uuid(210),
+        clientRequestId: "completed-source-bound-draft-0001",
+      }),
+    ).rejects.toMatchObject({ code: "conversation_failed", retryable: false });
+    expect(sourceBound.conversation.failTurn).not.toHaveBeenCalled();
+
+    for (const tamper of ["content", "metadata"] as const) {
+      const expectedKey = `completed-retry-${tamper}-key-0001`;
+      const expectedContent = `Expected ${tamper} retry content.`;
+      const terminalCompletion: SettlementAiTurnCompletionInput = {
+        providerName: "deterministic",
+        content:
+          tamper === "content" ? "Tampered retry content." : expectedContent,
+        aiInvocationId: null,
+        metadata: {
+          contextSnapshotVersion: 7,
+          contextSummaryVersion: 3,
+          contextMessageIds: [uuid(301)],
+          settlementIdempotencyKey:
+            tamper === "metadata" ? "wrong-retry-key-0001" : expectedKey,
+          settlementInitialStatus: "clarifying",
+        },
+      };
+      const harness = createHarness([], {
+        retryTurnStatus: "completed",
+        retryTurnDuplicate: true,
+        retryTerminalCompletion: terminalCompletion,
+      });
+      harness.repository.seedDraft(
+        clarifyingDraft({
+          idempotencyKey: expectedKey,
+          aiResponseContent: expectedContent,
+          turnTrace: {
+            turnId: uuid(201),
+            userMessageId: uuid(301),
+            assistantMessageId: uuid(401),
+          },
+        }),
+      );
+      await expect(
+        harness.service.retryTurn({
+          actor,
+          projectId: PROJECT_ID,
+          conversationId: CONVERSATION_ID,
+          sourceTurnId: uuid(210),
+          clientRequestId: `completed-${tamper}-mismatch-0001`,
+        }),
+      ).rejects.toMatchObject({
+        code: "conversation_failed",
+        retryable: false,
+      });
+      expect(harness.conversation.failTurn).not.toHaveBeenCalled();
+    }
   });
 
   it("atomically finalizes a validated contract, simulation, and generic turn", async () => {
@@ -1220,7 +1540,9 @@ describe("custom rule authoring service", () => {
       kind: "simulated",
       duplicate: true,
     });
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(1);
     expect(harness.repository.createDraftCalls).toHaveLength(1);
     expect(harness.repository.insertSimulationCalls).toHaveLength(1);
     expect(harness.repository.listSimulationCalls).toHaveLength(1);
@@ -1231,7 +1553,8 @@ describe("custom rule authoring service", () => {
 
   it("rejects invalid, stale, unresolved, and duplicate confirmation transitions before persistence", async () => {
     const falseConfirmation = createHarness([confirmedFormulaOutput()]);
-    const falseDraft = falseConfirmation.repository.seedDraft(confirmableDraft());
+    const falseDraft =
+      falseConfirmation.repository.seedDraft(confirmableDraft());
     await expect(
       falseConfirmation.service.confirmContract({
         ...confirmInput(falseDraft),
@@ -1281,9 +1604,7 @@ describe("custom rule authoring service", () => {
     ).rejects.toMatchObject({ code: "unresolved_ambiguities" });
 
     const duplicate = createHarness([confirmedFormulaOutput()]);
-    const duplicateDraft = duplicate.repository.seedDraft(
-      simulatedDraft(),
-    );
+    const duplicateDraft = duplicate.repository.seedDraft(simulatedDraft());
     await expect(
       duplicate.service.confirmContract(confirmInput(duplicateDraft)),
     ).rejects.toMatchObject({ code: "duplicate_confirmation" });
@@ -1331,7 +1652,9 @@ describe("custom rule authoring service", () => {
         expectedEvidenceHash: "e".repeat(64),
       }),
     ).rejects.toMatchObject({ code: "evidence_hash_mismatch" });
-    expect(evidence.evidencePort.loadAuthorizedEvidence).toHaveBeenCalledTimes(1);
+    expect(evidence.evidencePort.loadAuthorizedEvidence).toHaveBeenCalledTimes(
+      1,
+    );
     expect(evidence.simulationInputs).toHaveLength(0);
 
     const selection = createHarness([confirmedFormulaOutput()]);
@@ -1357,7 +1680,9 @@ describe("custom rule authoring service", () => {
     const highDraft = high.repository.seedDraft(confirmableDraft());
     const lowDraft = low.repository.seedDraft(confirmableDraft());
 
-    const highResult = await high.service.confirmContract(confirmInput(highDraft));
+    const highResult = await high.service.confirmContract(
+      confirmInput(highDraft),
+    );
     const lowResult = await low.service.confirmContract(confirmInput(lowDraft));
     if (
       !highResult.ok ||
@@ -1453,12 +1778,27 @@ describe("custom rule authoring service", () => {
         formulaHash: null,
       },
       completion: {
-        content: "deterministic scenario assertions or risk checks blocked confirmation",
+        content:
+          "deterministic scenario assertions or risk checks blocked confirmation",
       },
+      errorCode: "simulation_failed",
+      errorSummary: SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES.simulation_failed,
+      retryable: false,
     });
     expect(harness.repository.finalizeSimulationTurnCalls).toHaveLength(0);
     expect(harness.conversation.failTurn).not.toHaveBeenCalled();
     expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
+    const domainFailureHistory = await harness.conversation.getHistory(
+      actor,
+      CONVERSATION_ID,
+    );
+    expect(
+      domainFailureHistory.turns.find((turn) => turn.id === uuid(201)),
+    ).toMatchObject({
+      status: "failed",
+      errorCode: "simulation_failed",
+      retryable: false,
+    });
   });
 
   it("retries a rollback-like atomic simulation failure with the same keys", async () => {
@@ -1479,7 +1819,8 @@ describe("custom rule authoring service", () => {
       sourceTurnId: uuid(201),
       failedDraft: null,
     });
-    if (failed.ok) throw new Error("atomic simulation rollback unexpectedly passed");
+    if (failed.ok)
+      throw new Error("atomic simulation rollback unexpectedly passed");
     expect(harness.repository.drafts).toHaveLength(1);
     expect(harness.repository.simulations).toHaveLength(0);
     expect(harness.repository.atomicFailureSnapshots).toEqual([
@@ -1505,7 +1846,9 @@ describe("custom rule authoring service", () => {
       kind: "simulated",
       draft: { initialStatus: "contract_ready", status: "simulated" },
     });
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(2);
     expect(harness.repository.finalizeSimulationTurnCalls).toHaveLength(2);
     expect(harness.repository.insertSimulationCalls).toHaveLength(1);
     expect(
@@ -1514,18 +1857,19 @@ describe("custom rule authoring service", () => {
       harness.repository.finalizeSimulationTurnCalls[1].draft.idempotencyKey,
     );
     expect(
-      harness.repository.finalizeSimulationTurnCalls[0].simulation.idempotencyKey,
+      harness.repository.finalizeSimulationTurnCalls[0].simulation
+        .idempotencyKey,
     ).toBe(
-      harness.repository.finalizeSimulationTurnCalls[1].simulation.idempotencyKey,
+      harness.repository.finalizeSimulationTurnCalls[1].simulation
+        .idempotencyKey,
     );
 
     const nonrecoverable = createHarness([confirmedFormulaOutput()], {
       atomicSimulationFailure: "before_write",
       failFailTurn: true,
     });
-    const nonrecoverableDraft = nonrecoverable.repository.seedDraft(
-      confirmableDraft(),
-    );
+    const nonrecoverableDraft =
+      nonrecoverable.repository.seedDraft(confirmableDraft());
     await expect(
       nonrecoverable.service.confirmContract(confirmInput(nonrecoverableDraft)),
     ).rejects.toMatchObject({
@@ -1541,19 +1885,77 @@ describe("custom rule authoring service", () => {
     });
     const previous = harness.repository.seedDraft(confirmableDraft());
 
-    const result = await harness.service.confirmContract(confirmInput(previous));
+    const result = await harness.service.confirmContract(
+      confirmInput(previous),
+    );
     expect(result).toMatchObject({
       ok: true,
       kind: "simulated",
       duplicate: true,
       draft: { status: "simulated" },
     });
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(1);
     expect(harness.repository.finalizeSimulationTurnCalls).toHaveLength(1);
     expect(harness.repository.insertSimulationCalls).toHaveLength(1);
-    expect(harness.repository.listSimulationCalls).toHaveLength(1);
+    expect(
+      harness.repository.listSimulationCalls.length,
+    ).toBeGreaterThanOrEqual(2);
     expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
     expect(harness.conversation.failTurn).not.toHaveBeenCalled();
+  });
+
+  it("boundedly re-reads transient mixed atomic snapshots before reconciling", async () => {
+    const draftLag = createHarness(
+      [clarificationOutput("Confirm the hourly rate?", "confirm_rate")],
+      {
+        atomicDraftFailure: "after_commit",
+        transientDraftReadbackMisses: 1,
+      },
+    );
+    const draftResult = await draftLag.service.startSession({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      clientRequestId: "transient-draft-readback-0001",
+      promptText: "Start a settlement draft.",
+      seedContract: contract(),
+      initialAmbiguities: [
+        {
+          code: "confirm_rate",
+          question: "Confirm the hourly rate?",
+          required: true,
+        },
+      ],
+    });
+    expect(draftResult).toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      duplicate: true,
+    });
+    expect(
+      draftLag.events.filter((event) => event === "repository.listDrafts")
+        .length,
+    ).toBeGreaterThanOrEqual(3);
+
+    const simulationLag = createHarness([confirmedFormulaOutput()], {
+      atomicSimulationFailure: "after_commit",
+      transientSimulationReadbackMisses: 1,
+    });
+    const previous = simulationLag.repository.seedDraft(confirmableDraft());
+    const simulationResult = await simulationLag.service.confirmContract(
+      confirmInput(previous),
+    );
+    expect(simulationResult).toMatchObject({
+      ok: true,
+      kind: "simulated",
+      duplicate: true,
+    });
+    expect(
+      simulationLag.repository.listSimulationCalls.length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(simulationLag.conversation.failTurn).not.toHaveBeenCalled();
   });
 
   it("fails closed on an impossible partial atomic simulation state", async () => {
@@ -1577,9 +1979,7 @@ describe("custom rule authoring service", () => {
   });
 });
 
-type ProviderOutput =
-  | Record<string, unknown>
-  | { providerFailure: true };
+type ProviderOutput = Record<string, unknown> | { providerFailure: true };
 
 function createHarness(
   outputs: ProviderOutput[],
@@ -1589,6 +1989,8 @@ function createHarness(
     tamperAtomicDraftAfterCommit?: "content" | "hash";
     atomicSimulationFailure?: "before_write" | "after_commit" | "partial";
     atomicFailedFailure?: "before_write" | "after_commit" | "partial";
+    transientDraftReadbackMisses?: number;
+    transientSimulationReadbackMisses?: number;
     evidenceFailure?: "scope" | "hash" | "selection_token";
     currentMarginCents?: string;
     failFailTurn?: boolean;
@@ -1607,8 +2009,11 @@ function createHarness(
       | "completed"
       | "failed"
       | "cancelled";
+    retryReturnedStatus?: AiConversationTurnDto["status"];
     retryTurnDuplicate?: boolean;
     retryTurnRetryable?: boolean;
+    retryTerminalCompletion?: SettlementAiTurnCompletionInput;
+    gatewayGate?: Promise<void>;
     retryConversationMismatch?: boolean;
   } = {},
 ) {
@@ -1620,6 +2025,10 @@ function createHarness(
     Awaited<ReturnType<SettlementConversationPort["captureGatewayContext"]>>
   >();
   const retrySources = new Map<string, string>();
+  const acceptedRequests = new Map<
+    string,
+    Awaited<ReturnType<SettlementConversationPort["acceptTurn"]>>
+  >();
   const turns = new Map<string, AiConversationTurnDto>();
   const messages = new Map<string, AiConversationMessageDto>();
   const registerTurn = (input: {
@@ -1629,6 +2038,8 @@ function createHarness(
     status: AiConversationTurnDto["status"];
     attempt: number;
     retryOfTurnId: string | null;
+    retryable?: boolean;
+    userContent?: string;
   }) => {
     turns.set(input.turnId, {
       id: input.turnId,
@@ -1641,7 +2052,18 @@ function createHarness(
       retryOfTurnId: input.retryOfTurnId,
       regenerateOfTurnId: null,
       errorCode: null,
-      retryable: false,
+      retryable: input.retryable ?? false,
+    });
+    messages.set(input.userMessageId, {
+      id: input.userMessageId,
+      conversationId: CONVERSATION_ID,
+      sequence: turnNumber * 2 - 1,
+      role: "user",
+      status: "completed",
+      content: input.userContent ?? "Retry requested.",
+      parentMessageId: null,
+      createdAt: "2026-07-12T00:00:00.000Z",
+      updatedAt: "2026-07-12T00:00:00.000Z",
     });
     messages.set(input.assistantMessageId, {
       id: input.assistantMessageId,
@@ -1659,14 +2081,18 @@ function createHarness(
     turnId: string,
     status: AiConversationTurnDto["status"],
     completion?: SettlementAiTurnCompletionInput,
+    failure?: { errorCode: string; retryable: boolean },
   ) => {
     const turn = turns.get(turnId);
     if (!turn) throw new Error("atomic fixture turn is missing");
     turns.set(turnId, {
       ...turn,
       status,
-      errorCode: status === "failed" ? "settlement_ai_generation_failed" : null,
-      retryable: false,
+      errorCode:
+        status === "failed"
+          ? (failure?.errorCode ?? "conversation_failed")
+          : null,
+      retryable: status === "failed" && (failure?.retryable ?? false),
     });
     if (completion) {
       const assistant = messages.get(turn.assistantMessageId);
@@ -1703,12 +2129,21 @@ function createHarness(
           createdAt: "2026-07-12T00:00:00.000Z",
           updatedAt: "2026-07-12T00:00:00.000Z",
         },
-        messages: [...messages.values()].map((message) => structuredClone(message)),
+        messages: [...messages.values()].map((message) =>
+          structuredClone(message),
+        ),
         turns: [...turns.values()].map((turn) => structuredClone(turn)),
       };
     }),
     acceptTurn: vi.fn(async (_actor, _conversationId, command) => {
       events.push("conversation.acceptTurn");
+      const existing = acceptedRequests.get(command.clientRequestId);
+      if (existing) {
+        const duplicate: Awaited<
+          ReturnType<SettlementConversationPort["acceptTurn"]>
+        > = { ...existing, status: "accepted", duplicate: true };
+        return duplicate;
+      }
       acceptedContent = command.content;
       turnNumber += 1;
       const result = {
@@ -1727,7 +2162,9 @@ function createHarness(
         status: result.status,
         attempt: result.attempt,
         retryOfTurnId: null,
+        userContent: command.content,
       });
+      acceptedRequests.set(command.clientRequestId, result);
       return result;
     }),
     retryTurn: vi.fn(async (_actor, sourceTurnId, command) => {
@@ -1743,19 +2180,25 @@ function createHarness(
         turnId,
         userMessageId: uuid(300 + turnNumber),
         assistantMessageId: uuid(400 + turnNumber),
-        status: options.retryTurnStatus ?? "accepted",
+        status: options.retryReturnedStatus ?? "accepted",
         attempt: 2,
         duplicate: options.retryTurnDuplicate ?? false,
-        retryable: options.retryTurnRetryable,
       };
       registerTurn({
         turnId: result.turnId,
         userMessageId: result.userMessageId,
         assistantMessageId: result.assistantMessageId,
-        status: result.status,
+        status: options.retryTurnStatus ?? result.status,
         attempt: result.attempt,
         retryOfTurnId: sourceTurnId,
+        retryable: options.retryTurnRetryable,
       });
+      if (
+        (options.retryTurnStatus ?? result.status) === "completed" &&
+        options.retryTerminalCompletion
+      ) {
+        transitionTurn(turnId, "completed", options.retryTerminalCompletion);
+      }
       return result;
     }),
     prepareTurn: vi.fn(async (_actor, turnId) => {
@@ -1787,16 +2230,18 @@ function createHarness(
         },
       };
     }),
-    captureGatewayContext: vi.fn(async (_actor, turnId, snapshot, gatewayContext) => {
-      void _actor;
-      events.push("conversation.captureGatewayContext");
-      if (options.acceptedSetupFailure === "capture") {
-        throw new Error("raw-secret-provider-body");
-      }
-      const captured = { ...snapshot, gatewayContext };
-      capturedSnapshots.set(turnId, structuredClone(captured));
-      return captured;
-    }),
+    captureGatewayContext: vi.fn(
+      async (_actor, turnId, snapshot, gatewayContext) => {
+        void _actor;
+        events.push("conversation.captureGatewayContext");
+        if (options.acceptedSetupFailure === "capture") {
+          throw new Error("raw-secret-provider-body");
+        }
+        const captured = { ...snapshot, gatewayContext };
+        capturedSnapshots.set(turnId, structuredClone(captured));
+        return captured;
+      },
+    ),
     markGenerating: vi.fn(async (_actor, turnId) => {
       events.push("conversation.markGenerating");
       if (options.acceptedSetupFailure === "mark_generating") {
@@ -1817,19 +2262,25 @@ function createHarness(
         providerName: input.providerName ?? "deterministic",
         content: input.content,
         aiInvocationId: input.invocationId ?? null,
-        metadata: (input.metadata ?? {}) as SettlementAiTurnCompletionInput["metadata"],
+        metadata: (input.metadata ??
+          {}) as SettlementAiTurnCompletionInput["metadata"],
       });
     }),
-    failTurn: vi.fn(async (_actor, turnId) => {
+    failTurn: vi.fn(async (_actor, turnId, input) => {
       events.push("conversation.failTurn");
-      if (options.failFailTurn) throw new Error("conversation failure persistence failed");
-      transitionTurn(turnId, "failed");
+      if (options.failFailTurn)
+        throw new Error("conversation failure persistence failed");
+      transitionTurn(turnId, "failed", undefined, {
+        errorCode: input.errorCode,
+        retryable: input.retryable,
+      });
     }),
   };
 
   const queue = [...outputs];
   const gateway: SettlementStructuredGateway = async () => {
     events.push("gateway.execute");
+    if (options.gatewayGate) await options.gatewayGate;
     const output = queue.shift();
     if (!output || "providerFailure" in output) {
       return gatewayResult(undefined, {
@@ -1913,7 +2364,8 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
   readonly createDraftCalls: CreateCustomRuleDraftInput[] = [];
   readonly insertSimulationCalls: InsertSettlementFormulaSimulationInput[] = [];
   readonly finalizeDraftTurnCalls: FinalizeSettlementAiDraftTurnInput[] = [];
-  readonly finalizeSimulationTurnCalls: FinalizeSettlementAiSimulationTurnInput[] = [];
+  readonly finalizeSimulationTurnCalls: FinalizeSettlementAiSimulationTurnInput[] =
+    [];
   readonly finalizeFailedTurnCalls: FinalizeSettlementAiFailedTurnInput[] = [];
   readonly atomicFailureSnapshots: Array<{
     kind: "draft" | "simulation" | "failed";
@@ -1921,10 +2373,16 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
     simulationCount: number;
     turnStatus: AiConversationTurnDto["status"];
   }> = [];
-  readonly listSimulationCalls: Parameters<CustomRuleRepository["listSimulations"]>[0][] = [];
+  readonly listSimulationCalls: Parameters<
+    CustomRuleRepository["listSimulations"]
+  >[0][] = [];
   private atomicDraftFailures = 0;
   private atomicSimulationFailures = 0;
   private atomicFailedFailures = 0;
+  private hiddenDraftIdempotencyKey: string | null = null;
+  private hiddenSimulationIdempotencyKey: string | null = null;
+  private remainingDraftReadbackMisses = 0;
+  private remainingSimulationReadbackMisses = 0;
 
   constructor(
     private readonly events: string[],
@@ -1933,6 +2391,8 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
       tamperAtomicDraftAfterCommit?: "content" | "hash";
       atomicSimulationFailure?: "before_write" | "after_commit" | "partial";
       atomicFailedFailure?: "before_write" | "after_commit" | "partial";
+      transientDraftReadbackMisses?: number;
+      transientSimulationReadbackMisses?: number;
       evidenceFailure?: "scope" | "hash" | "selection_token";
       currentMarginCents?: string;
       failFailTurn?: boolean;
@@ -1951,14 +2411,18 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
         | "completed"
         | "failed"
         | "cancelled";
+      retryReturnedStatus?: AiConversationTurnDto["status"];
       retryTurnDuplicate?: boolean;
       retryTurnRetryable?: boolean;
+      retryTerminalCompletion?: SettlementAiTurnCompletionInput;
+      gatewayGate?: Promise<void>;
       retryConversationMismatch?: boolean;
     },
     private readonly transitionTurn: (
       turnId: string,
       status: AiConversationTurnDto["status"],
       completion?: SettlementAiTurnCompletionInput,
+      failure?: { errorCode: string; retryable: boolean },
     ) => void,
   ) {}
 
@@ -1983,7 +2447,11 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
     if (failure === "partial") {
       throw new Error("atomic draft partial-state fixture");
     }
-    this.transitionTurn(input.draft.turnTrace.turnId, "completed", input.completion);
+    this.transitionTurn(
+      input.draft.turnTrace.turnId,
+      "completed",
+      input.completion,
+    );
     if (this.options.tamperAtomicDraftAfterCommit) {
       const stored = this.drafts.find((draft) => draft.id === created.id);
       if (!stored) throw new Error("atomic draft tamper fixture is missing");
@@ -1994,6 +2462,7 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
       }
     }
     if (failure === "after_commit") {
+      this.hideCommittedDraftForTransientReadback(input.draft.idempotencyKey);
       throw new Error("atomic draft response lost after commit");
     }
     return created;
@@ -2031,8 +2500,16 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
       throw new Error("atomic simulation draft fixture is invalid");
     }
     draft.status = "simulated";
-    this.transitionTurn(input.draft.turnTrace.turnId, "completed", input.completion);
+    this.transitionTurn(
+      input.draft.turnTrace.turnId,
+      "completed",
+      input.completion,
+    );
     if (failure === "after_commit") {
+      this.hideCommittedDraftForTransientReadback(input.draft.idempotencyKey);
+      this.hiddenSimulationIdempotencyKey = input.simulation.idempotencyKey;
+      this.remainingSimulationReadbackMisses =
+        this.options.transientSimulationReadbackMisses ?? 0;
       throw new Error("atomic simulation response lost after commit");
     }
     return {
@@ -2056,8 +2533,14 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
     if (failure === "partial") {
       throw new Error("atomic failed-turn partial-state fixture");
     }
-    this.transitionTurn(input.draft.turnTrace.turnId, "failed", input.completion);
+    this.transitionTurn(
+      input.draft.turnTrace.turnId,
+      "failed",
+      input.completion,
+      { errorCode: input.errorCode, retryable: input.retryable },
+    );
     if (failure === "after_commit") {
+      this.hideCommittedDraftForTransientReadback(input.draft.idempotencyKey);
       throw new Error("atomic failed-turn response lost after commit");
     }
     return created;
@@ -2094,12 +2577,20 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
     input: Parameters<CustomRuleRepository["listDrafts"]>[0],
   ): Promise<CustomRuleDraft[]> {
     this.events.push("repository.listDrafts");
+    const hiddenKey =
+      this.remainingDraftReadbackMisses > 0
+        ? this.hiddenDraftIdempotencyKey
+        : null;
+    if (this.remainingDraftReadbackMisses > 0) {
+      this.remainingDraftReadbackMisses -= 1;
+    }
     return this.drafts
       .filter(
         (draft) =>
           draft.organizationId === input.organizationId &&
           draft.projectId === input.projectId &&
-          draft.conversationId === input.conversationId,
+          draft.conversationId === input.conversationId &&
+          draft.idempotencyKey !== hiddenKey,
       )
       .sort((left, right) =>
         input.revisionOrder === "asc"
@@ -2139,8 +2630,11 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
     };
     this.simulations.push(simulation);
     if (input.owner.kind === "ai_draft") {
-      const draft = this.drafts.find((candidate) => candidate.id === input.owner.id);
-      if (draft && draft.status === "contract_ready") draft.status = "simulated";
+      const draft = this.drafts.find(
+        (candidate) => candidate.id === input.owner.id,
+      );
+      if (draft && draft.status === "contract_ready")
+        draft.status = "simulated";
     }
     return { ...structuredClone(simulation), duplicate: false };
   }
@@ -2163,9 +2657,13 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
     return this.options.atomicFailedFailure;
   }
 
-  private recordAtomicFailure(
-    kind: "draft" | "simulation" | "failed",
-  ): void {
+  private hideCommittedDraftForTransientReadback(idempotencyKey: string): void {
+    this.hiddenDraftIdempotencyKey = idempotencyKey;
+    this.remainingDraftReadbackMisses =
+      this.options.transientDraftReadbackMisses ?? 0;
+  }
+
+  private recordAtomicFailure(kind: "draft" | "simulation" | "failed"): void {
     this.atomicFailureSnapshots.push({
       kind,
       draftCount: this.drafts.length,
@@ -2179,13 +2677,21 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
   ): Promise<SettlementFormulaSimulation[]> {
     this.events.push("repository.listSimulations");
     this.listSimulationCalls.push(structuredClone(input));
+    const hiddenKey =
+      this.remainingSimulationReadbackMisses > 0
+        ? this.hiddenSimulationIdempotencyKey
+        : null;
+    if (this.remainingSimulationReadbackMisses > 0) {
+      this.remainingSimulationReadbackMisses -= 1;
+    }
     return this.simulations
       .filter(
         (simulation) =>
           simulation.organizationId === input.organizationId &&
           simulation.projectId === input.projectId &&
           simulation.owner.kind === input.owner.kind &&
-          simulation.owner.id === input.owner.id,
+          simulation.owner.id === input.owner.id &&
+          simulation.idempotencyKey !== hiddenKey,
       )
       .slice(0, input.limit ?? 100)
       .map((simulation) => structuredClone(simulation));
@@ -2308,6 +2814,13 @@ function clarifyingDraft(
       SettlementAiUnresolvedAmbiguity,
       ...SettlementAiUnresolvedAmbiguity[],
     ];
+    turnTrace?: {
+      turnId: string;
+      userMessageId: string;
+      assistantMessageId: string;
+    };
+    idempotencyKey?: string;
+    aiResponseContent?: string;
   } = {},
 ): CustomRuleDraft {
   const businessContract = contract();
@@ -2322,9 +2835,9 @@ function clarifyingDraft(
     organizationId: ORGANIZATION_ID,
     projectId: PROJECT_ID,
     conversationId: CONVERSATION_ID,
-    idempotencyKey: "seed-draft-request-0001",
+    idempotencyKey: options.idempotencyKey ?? "seed-draft-request-0001",
     promptText: "每场直播按时长结算。",
-    turnTrace: {
+    turnTrace: options.turnTrace ?? {
       turnId: uuid(210),
       userMessageId: uuid(310),
       assistantMessageId: uuid(410),
@@ -2339,7 +2852,7 @@ function clarifyingDraft(
     ],
     variableCatalogVersion: CATALOG_VERSION,
     aiResponse: {
-      content: "请确认每小时结算单价？",
+      content: options.aiResponseContent ?? "请确认每小时结算单价？",
       finishReason: "stop",
       providerRequestId: null,
     },
@@ -2484,11 +2997,7 @@ function safeSelection(): AuthorizedSimulationSelectionRequest {
     selectionToken: "selection-token-0001",
     periodStart: "2026-07-01",
     periodEnd: "2026-07-10",
-    criteriaCodes: [
-      "approved_reports",
-      "period_overlap",
-      "project_scope",
-    ],
+    criteriaCodes: ["approved_reports", "period_overlap", "project_scope"],
   };
 }
 
@@ -2560,7 +3069,9 @@ function deepFreezeFixture<Value>(value: Value): Value {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
     return value;
   }
-  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+  for (const descriptor of Object.values(
+    Object.getOwnPropertyDescriptors(value),
+  )) {
     if ("value" in descriptor) deepFreezeFixture(descriptor.value);
   }
   return Object.freeze(value);

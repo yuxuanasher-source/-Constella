@@ -13,6 +13,7 @@ import type {
   RetryTurnCommand,
 } from "@/features/ai/conversation-contracts";
 import type { ConversationActor } from "@/features/ai/conversation-service";
+import type { CreatedConversationTurn } from "@/features/ai/conversation-repository";
 import type {
   AiGatewayRequest,
   AiGatewayResult,
@@ -281,24 +282,10 @@ const frozenRetryContextSchema = z.strictObject({
     .array(settlementAmbiguitySchema)
     .max(MAX_UNRESOLVED_AMBIGUITIES),
   catalog: safeCatalogSchema,
-  messages: z
-    .array(preparedMessageSchema)
-    .max(MAX_CONVERSATION_MESSAGES + 2),
+  messages: z.array(preparedMessageSchema).max(MAX_CONVERSATION_MESSAGES + 2),
   promptHash: z.string().regex(HASH_PATTERN),
   contextHash: z.string().regex(HASH_PATTERN),
 });
-
-export type SettlementConversationTurnRef = {
-  conversationId: string;
-  turnId: string;
-  userMessageId: string;
-  assistantMessageId: string;
-  status: "accepted" | "grounding" | "generating" | "validating" | "completed" | "failed" | "cancelled";
-  attempt: number;
-  duplicate: boolean;
-  errorCode?: string | null;
-  retryable?: boolean;
-};
 
 /** Public Xingyao service surface used by settlement authoring. */
 export type SettlementConversationPort = {
@@ -318,12 +305,12 @@ export type SettlementConversationPort = {
     actor: ConversationActor,
     conversationId: string,
     command: CreateTurnCommand,
-  ): Promise<SettlementConversationTurnRef>;
+  ): Promise<CreatedConversationTurn>;
   retryTurn(
     actor: ConversationActor,
     sourceTurnId: string,
     command: RetryTurnCommand,
-  ): Promise<SettlementConversationTurnRef>;
+  ): Promise<CreatedConversationTurn>;
   prepareTurn(
     actor: ConversationActor,
     turnId: string,
@@ -481,7 +468,9 @@ export function createSettlementRuleAiAdapter(input: {
   const internalLogger = input.internalLogger;
 
   return Object.freeze({
-    prepare(unsafeInput: PrepareSettlementAiInput): PreparedSettlementAiRequest {
+    prepare(
+      unsafeInput: PrepareSettlementAiInput,
+    ): PreparedSettlementAiRequest {
       const snapshot = snapshotForValidation(unsafeInput, MAX_PROMPT_CHARS);
       const parsed = prepareInputSchema.safeParse(snapshot);
       if (!parsed.success) {
@@ -495,14 +484,16 @@ export function createSettlementRuleAiAdapter(input: {
           left.id.localeCompare(right.id),
         ),
       };
-      const unresolvedAmbiguities = [
-        ...parsed.data.unresolvedAmbiguities,
-      ].sort(compareAmbiguities);
+      const unresolvedAmbiguities = [...parsed.data.unresolvedAmbiguities].sort(
+        compareAmbiguities,
+      );
       const promptPayload = {
         action: parsed.data.action,
         catalog,
         contractConfirmed: parsed.data.contractConfirmed,
-        contractStructure: projectContractStructure(parsed.data.currentContract),
+        contractStructure: projectContractStructure(
+          parsed.data.currentContract,
+        ),
         protocolVersion: 2,
         unresolvedAmbiguities,
         userMessage: parsed.data.userMessage,
@@ -521,7 +512,9 @@ export function createSettlementRuleAiAdapter(input: {
         conversationChars > MAX_CONVERSATION_CHARS ||
         userPrompt.length > MAX_PROMPT_CHARS
       ) {
-        throw new SettlementAiInputError("settlement AI prompt budget exceeded");
+        throw new SettlementAiInputError(
+          "settlement AI prompt budget exceeded",
+        );
       }
       const promptHash = sha256(canonicalJson(messages));
       const contextHash = hashPreparedContext({
@@ -543,10 +536,15 @@ export function createSettlementRuleAiAdapter(input: {
     },
 
     restore(unsafeContext: unknown): PreparedSettlementAiRequest {
-      const snapshot = snapshotForValidation(unsafeContext, MAX_PROMPT_CHARS * 2);
+      const snapshot = snapshotForValidation(
+        unsafeContext,
+        MAX_PROMPT_CHARS * 2,
+      );
       const parsed = frozenRetryContextSchema.safeParse(snapshot);
       if (!parsed.success) {
-        throw new SettlementAiInputError("frozen settlement AI context is invalid");
+        throw new SettlementAiInputError(
+          "frozen settlement AI context is invalid",
+        );
       }
       validatePreparationState({
         action: parsed.data.action,
@@ -591,7 +589,9 @@ export function createSettlementRuleAiAdapter(input: {
       validatePreparedRequest(prepared);
       let gatewayResult: AiGatewayResult;
       try {
-        gatewayResult = await gateway(toMutableGatewayRequest(prepared.request));
+        gatewayResult = await gateway(
+          toMutableGatewayRequest(prepared.request),
+        );
       } catch {
         logInternal(internalLogger, { category: "provider_exception" });
         return failure(
@@ -628,7 +628,8 @@ export function createSettlementRuleAiAdapter(input: {
           gatewayResult.providerName,
         );
       }
-      const parsedOutput = settlementDraftResponseSchema.safeParse(providerSnapshot);
+      const parsedOutput =
+        settlementDraftResponseSchema.safeParse(providerSnapshot);
       if (!parsedOutput.success) {
         return failure(
           prepared,
@@ -691,16 +692,24 @@ export function createSettlementRuleAiAdapter(input: {
           return failure(
             prepared,
             "SETTLEMENT_AI_FORMULA_INVALID",
-            validated.issues.map((issue) => issue.code).sort().join(", "),
+            validated.issues
+              .map((issue) => issue.code)
+              .sort()
+              .join(", "),
             gatewayResult.providerName,
           );
         }
-        const normalized = parseCustomRuleFormula(orderedOutput.formulaProposal);
+        const normalized = parseCustomRuleFormula(
+          orderedOutput.formulaProposal,
+        );
         if (!normalized.ok) {
           return failure(
             prepared,
             "SETTLEMENT_AI_FORMULA_INVALID",
-            normalized.issues.map((issue) => issue.code).sort().join(", "),
+            normalized.issues
+              .map((issue) => issue.code)
+              .sort()
+              .join(", "),
             gatewayResult.providerName,
           );
         }
@@ -813,9 +822,7 @@ function validateProviderState(
   return null;
 }
 
-function validatePreparedRequest(
-  prepared: PreparedSettlementAiRequest,
-): void {
+function validatePreparedRequest(prepared: PreparedSettlementAiRequest): void {
   if (
     !prepared ||
     !Object.isFrozen(prepared) ||
@@ -825,7 +832,9 @@ function validatePreparedRequest(
     prepared.request.responseSchema !== settlementDraftResponseSchema ||
     !Object.isFrozen(prepared.retryContext)
   ) {
-    throw new SettlementAiInputError("prepared settlement AI request is invalid");
+    throw new SettlementAiInputError(
+      "prepared settlement AI request is invalid",
+    );
   }
 }
 
@@ -850,14 +859,16 @@ function createPreparedRequest(input: {
     ),
   );
   const unresolvedAmbiguities = deepFreezeOwned(
-    z.array(settlementAmbiguitySchema).parse(
-      snapshotForValidation(input.unresolvedAmbiguities, MAX_PROMPT_CHARS),
-    ),
+    z
+      .array(settlementAmbiguitySchema)
+      .parse(
+        snapshotForValidation(input.unresolvedAmbiguities, MAX_PROMPT_CHARS),
+      ),
   );
   const frozenMessages = deepFreezeOwned(
-    z.array(preparedMessageSchema).parse(
-      snapshotForValidation(input.messages, MAX_PROMPT_CHARS),
-    ),
+    z
+      .array(preparedMessageSchema)
+      .parse(snapshotForValidation(input.messages, MAX_PROMPT_CHARS)),
   );
   const retryContext = deepFreezeOwned({
     version: 1 as const,
@@ -989,7 +1000,10 @@ function failure(
   });
 }
 
-function snapshotForValidation(value: unknown, maxStringCharacters: number): unknown {
+function snapshotForValidation(
+  value: unknown,
+  maxStringCharacters: number,
+): unknown {
   const budget = { nodes: 0, stringCharacters: 0, maxStringCharacters };
   try {
     return snapshotOwnData(value, budget, 0);
@@ -1045,7 +1059,9 @@ function snapshotOwnData(
     for (let index = 0; index < value.length; index += 1) {
       const descriptor = descriptors[String(index)];
       if (!descriptor || !("value" in descriptor)) {
-        throw new SettlementAiInputError("sparse or accessor arrays are forbidden");
+        throw new SettlementAiInputError(
+          "sparse or accessor arrays are forbidden",
+        );
       }
       output.push(snapshotOwnData(descriptor.value, budget, depth + 1));
     }
@@ -1069,7 +1085,9 @@ function snapshotOwnData(
     }
     const descriptor = descriptors[key];
     if (!("value" in descriptor) || !descriptor.enumerable) {
-      throw new SettlementAiInputError("accessors and hidden properties are forbidden");
+      throw new SettlementAiInputError(
+        "accessors and hidden properties are forbidden",
+      );
     }
     output[key] = snapshotOwnData(descriptor.value, budget, depth + 1);
   }
@@ -1080,7 +1098,9 @@ function deepFreezeOwned<Value>(value: Value): Value {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
     return value;
   }
-  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+  for (const descriptor of Object.values(
+    Object.getOwnPropertyDescriptors(value),
+  )) {
     if ("value" in descriptor) deepFreezeOwned(descriptor.value);
   }
   return Object.freeze(value);
@@ -1095,7 +1115,10 @@ function canonicalJson(value: unknown): string {
   }
   return `{${Object.keys(value)
     .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`)
+    .map(
+      (key) =>
+        `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`,
+    )
     .join(",")}}`;
 }
 

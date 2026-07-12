@@ -3,6 +3,11 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import type { AiProviderName } from "@/features/ai/contracts";
+import type {
+  AiConversationTurnDto,
+  ConversationTurnStatus,
+} from "@/features/ai/conversation-contracts";
+import type { CreatedConversationTurn } from "@/features/ai/conversation-repository";
 
 import type {
   PrepareSettlementAiInput,
@@ -10,7 +15,6 @@ import type {
   SettlementAiFailure,
   SettlementAiResult,
   SettlementConversationPort,
-  SettlementConversationTurnRef,
 } from "./custom-rule-ai";
 import {
   diffBusinessRuleContracts,
@@ -41,8 +45,11 @@ import type {
   SettlementAiSafetyFlag,
   SettlementAiTurnTrace,
   SettlementAiTurnCompletionInput,
+  SettlementAiFailedTurnErrorCode,
+  SettlementAiFailedTurnFailureSemantics,
   SettlementAiUnresolvedAmbiguity,
 } from "./custom-rule-repository";
+import { SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES } from "./custom-rule-repository";
 import {
   calculateCustomRuleDataSelectionHash,
   calculateCustomRuleEvidenceHash,
@@ -84,7 +91,9 @@ const simulationSelectionSchema = z
         message: "selection period is invalid",
       });
     }
-    if (new Set(selection.criteriaCodes).size !== selection.criteriaCodes.length) {
+    if (
+      new Set(selection.criteriaCodes).size !== selection.criteriaCodes.length
+    ) {
       context.addIssue({
         code: "custom",
         path: ["criteriaCodes"],
@@ -92,6 +101,13 @@ const simulationSelectionSchema = z
       });
     }
   });
+const atomicCompletionMetadataSchema = z.strictObject({
+  contextSnapshotVersion: z.number().int().nonnegative(),
+  contextSummaryVersion: z.number().int().nonnegative(),
+  contextMessageIds: z.array(z.string().min(1).max(500)).min(1).max(200),
+  settlementIdempotencyKey: z.string().min(1).max(500),
+  settlementInitialStatus: z.enum(["clarifying", "contract_ready", "failed"]),
+});
 
 export type CustomRuleAuthoringRepositoryPort = {
   finalizeDraftTurn(
@@ -208,7 +224,7 @@ export type CustomRuleSimulatedSuccess = Readonly<{
 
 type CustomRuleRetryTurnDto = Readonly<{
   turnId: string;
-  status: SettlementConversationTurnRef["status"];
+  status: ConversationTurnStatus;
   attempt: number;
   duplicate: boolean;
 }>;
@@ -218,7 +234,7 @@ export type CustomRuleRetryInProgress = Readonly<{
   kind: "retry_in_progress";
   conversationId: string;
   turn: CustomRuleRetryTurnDto & {
-    status: "grounding" | "generating" | "validating";
+    status: "accepted" | "grounding" | "generating" | "validating";
   };
 }>;
 
@@ -387,7 +403,9 @@ type ClarifyingDraft = Extract<
 >;
 type FailedDraft = Extract<CustomRuleDraft, { initialStatus: "failed" }>;
 
-export function createCustomRuleAuthoringService(dependencies: ServiceDependencies) {
+export function createCustomRuleAuthoringService(
+  dependencies: ServiceDependencies,
+) {
   validateDependencies(dependencies);
   const persistFailedRevisions = dependencies.persistFailedRevisions ?? false;
 
@@ -511,76 +529,78 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
         clientRequestId: input.clientRequestId,
         promptText: retryContext.promptText,
       };
-      if (retryContext.action === "confirm") {
-        return retryConfirmationTransition({
-          dependencies,
-          scope,
-          opened,
-          retryContext,
-          drafts,
-          sourceTurnId: input.sourceTurnId,
-        });
-      }
-      const latest = drafts[0];
-      const persisted = drafts.find(
-        (draft) => draft.idempotencyKey === retryContext.draftIdempotencyKey,
-      );
-      if (persisted?.initialStatus === "clarifying") {
-        throw atomicReconciliationError(
-          opened,
-          new Error("accepted retry conflicts with an atomic clarifying artifact"),
+      return runOwnedOpenedTransition(dependencies, scope, opened, async () => {
+        if (retryContext.action === "confirm") {
+          return retryConfirmationTransition({
+            dependencies,
+            scope,
+            opened,
+            retryContext,
+            drafts,
+            sourceTurnId: input.sourceTurnId,
+          });
+        }
+        const latest = drafts[0];
+        const persisted = drafts.find(
+          (draft) => draft.idempotencyKey === retryContext.draftIdempotencyKey,
         );
-      }
-      let idempotencyKey = retryContext.draftIdempotencyKey;
-      let expectedRevisionNumber = retryContext.expectedRevisionNumber;
-      if (
-        persisted?.initialStatus === "failed"
-      ) {
-        if (persisted.status !== "failed" || latest?.id !== persisted.id) {
+        if (persisted?.initialStatus === "clarifying") {
+          throw atomicReconciliationError(
+            opened,
+            new Error(
+              "accepted retry conflicts with an atomic clarifying artifact",
+            ),
+          );
+        }
+        let idempotencyKey = retryContext.draftIdempotencyKey;
+        let expectedRevisionNumber = retryContext.expectedRevisionNumber;
+        if (persisted?.initialStatus === "failed") {
+          if (persisted.status !== "failed" || latest?.id !== persisted.id) {
+            throw serviceError(
+              "stale_revision",
+              "durable failed retry artifact is no longer current",
+              false,
+            );
+          }
+          await assertFrozenFailedRetryArtifact({
+            dependencies,
+            scope,
+            opened,
+            retryContext,
+            drafts,
+            draft: persisted,
+            sourceTurnId: input.sourceTurnId,
+          });
+          idempotencyKey = retryDraftIdempotencyKey(
+            retryContext.draftIdempotencyKey,
+            input.sourceTurnId,
+            input.clientRequestId,
+          );
+          expectedRevisionNumber = persisted.revisionNumber + 1;
+        } else if (
+          retryContext.expectedRevisionNumber > 1 &&
+          latest?.revisionNumber !== retryContext.expectedRevisionNumber - 1
+        ) {
           throw serviceError(
             "stale_revision",
-            "durable failed retry artifact is no longer current",
+            "settlement draft revision changed before retry",
             false,
           );
         }
-        await assertFrozenFailedRetryArtifact({
+        return runClarifyingTransition({
           dependencies,
+          persistFailedRevisions,
+          operation: retryContext.action === "clarify" ? "start" : "revise",
           scope,
+          currentContract: opened.prepared.currentContract,
+          currentAmbiguities:
+            opened.prepared.retryContext.unresolvedAmbiguities,
+          catalog: opened.prepared.catalog,
+          idempotencyKey,
+          expectedRevisionNumber,
+          expectedDraftId: persisted?.id ?? retryContext.expectedDraftId,
           opened,
-          retryContext,
-          drafts,
-          draft: persisted,
-          sourceTurnId: input.sourceTurnId,
         });
-        idempotencyKey = retryDraftIdempotencyKey(
-          retryContext.draftIdempotencyKey,
-          input.sourceTurnId,
-          input.clientRequestId,
-        );
-        expectedRevisionNumber = persisted.revisionNumber + 1;
-      } else if (
-        retryContext.expectedRevisionNumber > 1 &&
-        latest?.revisionNumber !== retryContext.expectedRevisionNumber - 1
-      ) {
-        throw serviceError(
-          "stale_revision",
-          "settlement draft revision changed before retry",
-          false,
-        );
-      }
-      return runClarifyingTransition({
-        dependencies,
-        persistFailedRevisions,
-        operation: retryContext.action === "clarify" ? "start" : "revise",
-        scope,
-        currentContract: opened.prepared.currentContract,
-        currentAmbiguities:
-          opened.prepared.retryContext.unresolvedAmbiguities,
-        catalog: opened.prepared.catalog,
-        idempotencyKey,
-        expectedRevisionNumber,
-        expectedDraftId: persisted?.id ?? retryContext.expectedDraftId,
-        opened,
       });
     },
 
@@ -717,7 +737,9 @@ async function retryConfirmationTransition(input: {
   if (existing?.initialStatus === "contract_ready") {
     throw atomicReconciliationError(
       input.opened,
-      new Error("accepted retry conflicts with an atomic confirmation artifact"),
+      new Error(
+        "accepted retry conflicts with an atomic confirmation artifact",
+      ),
     );
   }
   if (existing?.initialStatus === "failed") {
@@ -769,8 +791,7 @@ async function retryConfirmationTransition(input: {
       expectedCatalogVersion: context.expectedCatalogVersion,
       expectedFormulaHash: context.expectedFormulaHash ?? undefined,
       expectedEvidenceHash: context.expectedEvidenceHash ?? undefined,
-      expectedDataSelectionHash:
-        context.expectedDataSelectionHash ?? undefined,
+      expectedDataSelectionHash: context.expectedDataSelectionHash ?? undefined,
       simulationSelection: context.simulationSelection,
     };
     return runConfirmationTransition({
@@ -809,10 +830,7 @@ async function retryConfirmationTransition(input: {
     latest.unresolvedAmbiguities.length === 1 &&
     latest.unresolvedAmbiguities[0]?.code === CONFIRM_CONTRACT_AMBIGUITY &&
     latest.unresolvedAmbiguities[0].required;
-  if (
-    latest.unresolvedAmbiguities.length > 0 &&
-    !onlyInternalConfirmation
-  ) {
+  if (latest.unresolvedAmbiguities.length > 0 && !onlyInternalConfirmation) {
     throw serviceError(
       "unresolved_ambiguities",
       "business ambiguities remain unresolved",
@@ -843,8 +861,7 @@ async function retryConfirmationTransition(input: {
     expectedCatalogVersion: context.expectedCatalogVersion,
     expectedFormulaHash: context.expectedFormulaHash ?? undefined,
     expectedEvidenceHash: context.expectedEvidenceHash ?? undefined,
-    expectedDataSelectionHash:
-      context.expectedDataSelectionHash ?? undefined,
+    expectedDataSelectionHash: context.expectedDataSelectionHash ?? undefined,
     simulationSelection: context.simulationSelection,
   };
   return runConfirmationTransition({
@@ -963,9 +980,16 @@ async function rejectFrozenRetryArtifact(
       "mismatched settlement retry artifact could not fail the generic turn",
       false,
       error,
+      opened.turnTrace.turnId,
     );
   }
-  throw serviceError("conversation_failed", message, false);
+  throw serviceError(
+    "conversation_failed",
+    message,
+    false,
+    undefined,
+    opened.turnTrace.turnId,
+  );
 }
 
 async function runClarifyingTransition(input: {
@@ -981,87 +1005,100 @@ async function runClarifyingTransition(input: {
   expectedDraftId: string | null;
   opened?: OpenedAiTurn;
 }): Promise<CustomRuleAuthoringResult> {
-  const opened = input.opened ?? await openAiTurn({
-    dependencies: input.dependencies,
-    scope: input.scope,
-    action: input.operation === "start" ? "clarify" : "revise",
-    contractConfirmed: false,
-    currentContract: input.currentContract,
-    currentAmbiguities: input.currentAmbiguities,
-    catalog: input.catalog,
-    serviceRetryContext: createServiceRetryContext({
-      action: input.operation === "start" ? "clarify" : "revise",
-      scope: input.scope,
-      idempotencyKey: input.idempotencyKey,
-      expectedRevisionNumber: input.expectedRevisionNumber,
-      expectedDraftId: input.expectedDraftId,
-      expectedContractHash: hashCustomRuleContract(input.currentContract),
-      expectedCatalogVersion: input.catalog.version,
-    }),
-  });
-  const aiResult = await executeAi(input.dependencies.ai, opened.prepared);
-  if (!aiResult.ok) {
-    return handleAiFailure({
+  const opened =
+    input.opened ??
+    (await openAiTurn({
       dependencies: input.dependencies,
-      persistFailedRevisions: input.persistFailedRevisions,
       scope: input.scope,
-      opened,
-      failure: aiResult,
+      action: input.operation === "start" ? "clarify" : "revise",
+      contractConfirmed: false,
       currentContract: input.currentContract,
       currentAmbiguities: input.currentAmbiguities,
-      catalogVersion: input.catalog.version,
-      idempotencyKey: input.idempotencyKey,
-      expectedRevisionNumber: input.expectedRevisionNumber,
-    });
-  }
-  await markValidating(input.dependencies.conversation, input.scope, opened);
-  const ambiguities = resolvedClarifyingAmbiguities(aiResult);
-  const parameterHash = hashCustomRuleParameters(
-    parameterValues(aiResult.contract),
-  );
-  const draftInput: ClarifyingCustomRuleDraftInput = {
-    organizationId: input.scope.actor.organizationId,
-    projectId: input.scope.projectId,
-    conversationId: input.scope.conversationId,
-    idempotencyKey: input.idempotencyKey,
-    promptText: input.scope.promptText,
-    turnTrace: opened.turnTrace,
-    businessContract: aiResult.contract,
-    unresolvedAmbiguities: ambiguities,
-    variableCatalogVersion: input.catalog.version,
-    aiResponse: {
-      content: aiResult.nextQuestion ?? ambiguities[0].question,
-      finishReason: "stop",
-      providerRequestId: null,
-    },
-    generatedFormula: null,
-    generatedExplanation: null,
-    generatedTestCases: [],
-    model: aiResult.providerName ?? input.dependencies.primaryProvider,
-    safetyFlags: mapSafetyFlags(aiResult.safetyFlags),
-    contractHash: hashCustomRuleContract(aiResult.contract),
-    formulaHash: null,
-    parameterHash,
-    status: "clarifying",
-  };
-  const finalized = await finalizeDraftTurn({
-    dependencies: input.dependencies,
-    scope: input.scope,
+      catalog: input.catalog,
+      serviceRetryContext: createServiceRetryContext({
+        action: input.operation === "start" ? "clarify" : "revise",
+        scope: input.scope,
+        idempotencyKey: input.idempotencyKey,
+        expectedRevisionNumber: input.expectedRevisionNumber,
+        expectedDraftId: input.expectedDraftId,
+        expectedContractHash: hashCustomRuleContract(input.currentContract),
+        expectedCatalogVersion: input.catalog.version,
+      }),
+    }));
+  return runOwnedOpenedTransition(
+    input.dependencies,
+    input.scope,
     opened,
-    draft: draftInput,
-    expectedRevisionNumber: input.expectedRevisionNumber,
-    providerName: aiResult.providerName,
-  });
-  if (!finalized.ok) return finalized.failure;
-  const created = finalized.draft;
-  return Object.freeze({
-    ok: true,
-    kind: "clarifying",
-    conversationId: input.scope.conversationId,
-    draft: created,
-    diff: aiResult.diff,
-    duplicate: created.duplicate,
-  });
+    async () => {
+      const aiResult = await executeAi(input.dependencies.ai, opened.prepared);
+      if (!aiResult.ok) {
+        return handleAiFailure({
+          dependencies: input.dependencies,
+          persistFailedRevisions: input.persistFailedRevisions,
+          scope: input.scope,
+          opened,
+          failure: aiResult,
+          currentContract: input.currentContract,
+          currentAmbiguities: input.currentAmbiguities,
+          catalogVersion: input.catalog.version,
+          idempotencyKey: input.idempotencyKey,
+          expectedRevisionNumber: input.expectedRevisionNumber,
+        });
+      }
+      await markValidating(
+        input.dependencies.conversation,
+        input.scope,
+        opened,
+      );
+      const ambiguities = resolvedClarifyingAmbiguities(aiResult);
+      const parameterHash = hashCustomRuleParameters(
+        parameterValues(aiResult.contract),
+      );
+      const draftInput: ClarifyingCustomRuleDraftInput = {
+        organizationId: input.scope.actor.organizationId,
+        projectId: input.scope.projectId,
+        conversationId: input.scope.conversationId,
+        idempotencyKey: input.idempotencyKey,
+        promptText: input.scope.promptText,
+        turnTrace: opened.turnTrace,
+        businessContract: aiResult.contract,
+        unresolvedAmbiguities: ambiguities,
+        variableCatalogVersion: input.catalog.version,
+        aiResponse: {
+          content: aiResult.nextQuestion ?? ambiguities[0].question,
+          finishReason: "stop",
+          providerRequestId: null,
+        },
+        generatedFormula: null,
+        generatedExplanation: null,
+        generatedTestCases: [],
+        model: aiResult.providerName ?? input.dependencies.primaryProvider,
+        safetyFlags: mapSafetyFlags(aiResult.safetyFlags),
+        contractHash: hashCustomRuleContract(aiResult.contract),
+        formulaHash: null,
+        parameterHash,
+        status: "clarifying",
+      };
+      const finalized = await finalizeDraftTurn({
+        dependencies: input.dependencies,
+        scope: input.scope,
+        opened,
+        draft: draftInput,
+        expectedRevisionNumber: input.expectedRevisionNumber,
+        providerName: aiResult.providerName,
+      });
+      if (!finalized.ok) return finalized.failure;
+      const created = finalized.draft;
+      return Object.freeze({
+        ok: true,
+        kind: "clarifying",
+        conversationId: input.scope.conversationId,
+        draft: created,
+        diff: aiResult.diff,
+        duplicate: created.duplicate,
+      });
+    },
+  );
 }
 
 async function runConfirmationTransition(input: {
@@ -1075,299 +1112,312 @@ async function runConfirmationTransition(input: {
   opened?: OpenedAiTurn;
 }): Promise<CustomRuleAuthoringResult> {
   const scope = input.input;
-  const opened = input.opened ?? await openAiTurn({
-    dependencies: input.dependencies,
-    scope,
-    action: "confirm",
-    contractConfirmed: true,
-    currentContract: input.latest.businessContract,
-    currentAmbiguities: [],
-    catalog: input.catalog,
-    serviceRetryContext: createServiceRetryContext({
-      action: "confirm",
-      scope,
-      idempotencyKey: input.idempotencyKey,
-      expectedRevisionNumber: input.latest.revisionNumber + 1,
-      expectedDraftId: input.latest.id,
-      expectedContractHash: input.contractHash,
-      expectedCatalogVersion: input.catalog.version,
-      expectedFormulaHash: scope.expectedFormulaHash ?? null,
-      expectedEvidenceHash: scope.expectedEvidenceHash ?? null,
-      expectedDataSelectionHash: scope.expectedDataSelectionHash ?? null,
-      simulationSelection: scope.simulationSelection,
-    }),
-  });
-  const aiResult = await executeAi(input.dependencies.ai, opened.prepared);
-  if (!aiResult.ok) {
-    return handleAiFailure({
+  const opened =
+    input.opened ??
+    (await openAiTurn({
       dependencies: input.dependencies,
-      persistFailedRevisions: input.persistFailedRevisions,
       scope,
-      opened,
-      failure: aiResult,
+      action: "confirm",
+      contractConfirmed: true,
       currentContract: input.latest.businessContract,
       currentAmbiguities: [],
-      catalogVersion: input.catalog.version,
-      idempotencyKey: input.idempotencyKey,
-      expectedRevisionNumber: input.latest.revisionNumber + 1,
-    });
-  }
-  await markValidating(input.dependencies.conversation, scope, opened);
-  const failDomain = (
-    code: CustomRuleAuthoringServiceErrorCode,
-    message: string,
-    retryable: boolean,
-    cause?: unknown,
-  ) =>
-    handleDomainFailure({
-      dependencies: input.dependencies,
-      persistFailedRevisions: input.persistFailedRevisions,
-      scope,
-      opened,
-      code,
-      message,
-      retryable,
-      cause,
-      currentContract: aiResult.contract,
-      catalogVersion: input.catalog.version,
-      idempotencyKey: input.idempotencyKey,
-      expectedRevisionNumber: input.latest.revisionNumber + 1,
-      providerName: aiResult.providerName,
-    });
-  if (aiResult.diff.length > 0) {
-    return failDomain(
-      "invalid_transition",
-      "provider changed the contract during explicit confirmation",
-      false,
-    );
-  }
-  if (
-    aiResult.formulaProposal === null ||
-    aiResult.validation === null ||
-    aiResult.testCases.length === 0
-  ) {
-    return failDomain(
-      "formula_validation_failed",
-      "confirmed response has no complete formula evidence",
-      true,
-    );
-  }
-
-  const deterministic = validateCustomRuleFormula(aiResult.formulaProposal, {
-    scope: aiResult.contract.scope,
-    executionGrain: aiResult.contract.executionGrain,
-    parameters: aiResult.contract.parameters.map((parameter) => ({
-      name: parameter.name,
-      valueType: parameter.valueType,
-    })),
-  });
-  const normalized = parseCustomRuleFormula(aiResult.formulaProposal);
-  if (
-    !deterministic.ok ||
-    !normalized.ok ||
-    deterministic.formulaHash !== aiResult.validation.formulaHash ||
-    canonicalJson(normalized.ast) !==
-      canonicalJson(aiResult.validation.normalizedAst)
-  ) {
-    return failDomain(
-      "formula_validation_failed",
-      "formula failed authoritative deterministic validation",
-      true,
-    );
-  }
-  if (
-    scope.expectedFormulaHash &&
-    scope.expectedFormulaHash !== deterministic.formulaHash
-  ) {
-    return failDomain(
-      "formula_hash_mismatch",
-      "generated formula hash does not match the expected hash",
-      false,
-    );
-  }
-
-  let explanation: string;
-  try {
-    explanation = buildCustomRuleTemplateExplanation({
-      ast: deterministic.compiledAst,
-    });
-  } catch (error) {
-    return failDomain(
-      "formula_validation_failed",
-      "authoritative formula explanation failed",
-      true,
-      error,
-    );
-  }
-  const parameters = parameterValues(aiResult.contract);
-  const parameterHash = hashCustomRuleParameters(parameters);
-  const requirements = readinessRequirements(
-    aiResult.contract,
-    deterministic.variables,
-  );
-  let readiness: CustomRuleDataReadinessReport;
-  try {
-    readiness = input.dependencies.analyzeReadiness({
       catalog: input.catalog,
-      inputs: requirements,
-    });
-  } catch (error) {
-    return failDomain(
-      "readiness_failed",
-      "data readiness analysis failed",
-      true,
-      error,
-    );
-  }
-  if (
-    !readiness.readyForSimulation ||
-    readiness.catalogVersion !== input.catalog.version ||
-    readiness.businessTimezone !== aiResult.contract.businessTimezone
-  ) {
-    return failDomain(
-      "readiness_failed",
-      "project data is not ready for deterministic simulation",
-      false,
-    );
-  }
-
-  let evidence: AuthorizedCustomRuleSimulationEvidence;
-  try {
-    evidence = await loadAuthorizedSimulationEvidence(
-      input.dependencies.evidence,
-      scope,
-      scope.simulationSelection,
-    );
-  } catch (error) {
-    return failDomain(
-      "simulation_failed",
-      "authorized simulation evidence is invalid",
-      false,
-      error,
-    );
-  }
-  if (
-    scope.expectedEvidenceHash &&
-    scope.expectedEvidenceHash !== evidence.provenance.evidenceHash
-  ) {
-    return failDomain(
-      "evidence_hash_mismatch",
-      "authorized evidence hash does not match the expected hash",
-      false,
-    );
-  }
-
-  let summary: CustomRuleSimulationResult;
-  let calculatedSelectionHash: string;
-  try {
-    const simulationInput: CustomRuleSimulationInput = {
-      organizationId: scope.actor.organizationId,
-      actorId: scope.actor.userId,
-      projectId: scope.projectId,
-      contract: aiResult.contract,
-      compiledAst: deterministic.compiledAst,
-      parameters,
-      formulaHash: deterministic.formulaHash,
-      contractHash: input.contractHash,
-      parameterHash,
-      catalogVersion: input.catalog.version,
-      readiness,
-      ...evidence,
-      aiTestCases: aiResult.testCases,
-    };
-    calculatedSelectionHash = calculateCustomRuleDataSelectionHash(simulationInput);
-    summary = input.dependencies.simulate(simulationInput);
-  } catch (error) {
-    return failDomain(
-      "simulation_failed",
-      "deterministic simulation failed",
-      true,
-      error,
-    );
-  }
-  if (
-    summary.persistable.formulaHash !== deterministic.formulaHash ||
-    summary.persistable.ruleContractHash !== input.contractHash ||
-    summary.persistable.parameterHash !== parameterHash ||
-    summary.persistable.variableCatalogVersion !== input.catalog.version ||
-    summary.persistable.dataSelectionHash !== summary.dataSelectionHash ||
-    summary.dataSelectionHash !== calculatedSelectionHash
-  ) {
-    return failDomain(
-      "simulation_failed",
-      "simulation returned mismatched freshness hashes",
-      false,
-    );
-  }
-  if (
-    scope.expectedDataSelectionHash &&
-    scope.expectedDataSelectionHash !== summary.dataSelectionHash
-  ) {
-    return failDomain(
-      "selection_hash_mismatch",
-      "final data selection hash does not match the expected hash",
-      false,
-    );
-  }
-  if (summary.riskFlags.some((flag) => flag.severity === "block")) {
-    return failDomain(
-      "simulation_failed",
-      "deterministic scenario assertions or risk checks blocked confirmation",
-      false,
-    );
-  }
-
-  const draftInput: ContractReadyCustomRuleDraftInput = {
-    organizationId: scope.actor.organizationId,
-    projectId: scope.projectId,
-    conversationId: scope.conversationId,
-    idempotencyKey: input.idempotencyKey,
-    promptText: scope.promptText,
-    turnTrace: opened.turnTrace,
-    businessContract: aiResult.contract,
-    unresolvedAmbiguities: [],
-    variableCatalogVersion: input.catalog.version,
-    aiResponse: {
-      content: canonicalJson({
-        formulaProposal: aiResult.formulaProposal,
-        safetyFlags: aiResult.safetyFlags,
+      serviceRetryContext: createServiceRetryContext({
+        action: "confirm",
+        scope,
+        idempotencyKey: input.idempotencyKey,
+        expectedRevisionNumber: input.latest.revisionNumber + 1,
+        expectedDraftId: input.latest.id,
+        expectedContractHash: input.contractHash,
+        expectedCatalogVersion: input.catalog.version,
+        expectedFormulaHash: scope.expectedFormulaHash ?? null,
+        expectedEvidenceHash: scope.expectedEvidenceHash ?? null,
+        expectedDataSelectionHash: scope.expectedDataSelectionHash ?? null,
+        simulationSelection: scope.simulationSelection,
       }),
-      finishReason: "stop",
-      providerRequestId: null,
-    },
-    generatedFormula: {
-      expression: aiResult.formulaProposal,
-      normalizedAst: normalized.ast,
-    },
-    generatedExplanation: explanation,
-    generatedTestCases: nonEmptyTestCases(aiResult.testCases),
-    model: aiResult.providerName ?? input.dependencies.primaryProvider,
-    safetyFlags: mapSafetyFlags(aiResult.safetyFlags),
-    contractHash: input.contractHash,
-    formulaHash: deterministic.formulaHash,
-    parameterHash,
-    status: "contract_ready",
-  };
-  const finalized = await finalizeSimulationTurn({
-    dependencies: input.dependencies,
+    }));
+  return runOwnedOpenedTransition(
+    input.dependencies,
     scope,
     opened,
-    draft: draftInput,
-    summary,
-    expectedRevisionNumber: input.latest.revisionNumber + 1,
-    providerName: aiResult.providerName,
-  });
-  if (!finalized.ok) return finalized.failure;
-  const { draft: simulatedDraft, simulation } = finalized.value;
-  return Object.freeze({
-    ok: true,
-    kind: "simulated",
-    conversationId: scope.conversationId,
-    draft: simulatedDraft,
-    simulation,
-    summary,
-    duplicate: simulatedDraft.duplicate || simulation.duplicate,
-  });
+    async () => {
+      const aiResult = await executeAi(input.dependencies.ai, opened.prepared);
+      if (!aiResult.ok) {
+        return handleAiFailure({
+          dependencies: input.dependencies,
+          persistFailedRevisions: input.persistFailedRevisions,
+          scope,
+          opened,
+          failure: aiResult,
+          currentContract: input.latest.businessContract,
+          currentAmbiguities: [],
+          catalogVersion: input.catalog.version,
+          idempotencyKey: input.idempotencyKey,
+          expectedRevisionNumber: input.latest.revisionNumber + 1,
+        });
+      }
+      await markValidating(input.dependencies.conversation, scope, opened);
+      const failDomain = (
+        code: CustomRuleAuthoringServiceErrorCode,
+        message: string,
+        retryable: boolean,
+        cause?: unknown,
+      ) =>
+        handleDomainFailure({
+          dependencies: input.dependencies,
+          persistFailedRevisions: input.persistFailedRevisions,
+          scope,
+          opened,
+          code,
+          message,
+          retryable,
+          cause,
+          currentContract: aiResult.contract,
+          catalogVersion: input.catalog.version,
+          idempotencyKey: input.idempotencyKey,
+          expectedRevisionNumber: input.latest.revisionNumber + 1,
+          providerName: aiResult.providerName,
+        });
+      if (aiResult.diff.length > 0) {
+        return failDomain(
+          "invalid_transition",
+          "provider changed the contract during explicit confirmation",
+          false,
+        );
+      }
+      if (
+        aiResult.formulaProposal === null ||
+        aiResult.validation === null ||
+        aiResult.testCases.length === 0
+      ) {
+        return failDomain(
+          "formula_validation_failed",
+          "confirmed response has no complete formula evidence",
+          true,
+        );
+      }
+
+      const deterministic = validateCustomRuleFormula(
+        aiResult.formulaProposal,
+        {
+          scope: aiResult.contract.scope,
+          executionGrain: aiResult.contract.executionGrain,
+          parameters: aiResult.contract.parameters.map((parameter) => ({
+            name: parameter.name,
+            valueType: parameter.valueType,
+          })),
+        },
+      );
+      const normalized = parseCustomRuleFormula(aiResult.formulaProposal);
+      if (
+        !deterministic.ok ||
+        !normalized.ok ||
+        deterministic.formulaHash !== aiResult.validation.formulaHash ||
+        canonicalJson(normalized.ast) !==
+          canonicalJson(aiResult.validation.normalizedAst)
+      ) {
+        return failDomain(
+          "formula_validation_failed",
+          "formula failed authoritative deterministic validation",
+          true,
+        );
+      }
+      if (
+        scope.expectedFormulaHash &&
+        scope.expectedFormulaHash !== deterministic.formulaHash
+      ) {
+        return failDomain(
+          "formula_hash_mismatch",
+          "generated formula hash does not match the expected hash",
+          false,
+        );
+      }
+
+      let explanation: string;
+      try {
+        explanation = buildCustomRuleTemplateExplanation({
+          ast: deterministic.compiledAst,
+        });
+      } catch (error) {
+        return failDomain(
+          "formula_validation_failed",
+          "authoritative formula explanation failed",
+          true,
+          error,
+        );
+      }
+      const parameters = parameterValues(aiResult.contract);
+      const parameterHash = hashCustomRuleParameters(parameters);
+      const requirements = readinessRequirements(
+        aiResult.contract,
+        deterministic.variables,
+      );
+      let readiness: CustomRuleDataReadinessReport;
+      try {
+        readiness = input.dependencies.analyzeReadiness({
+          catalog: input.catalog,
+          inputs: requirements,
+        });
+      } catch (error) {
+        return failDomain(
+          "readiness_failed",
+          "data readiness analysis failed",
+          true,
+          error,
+        );
+      }
+      if (
+        !readiness.readyForSimulation ||
+        readiness.catalogVersion !== input.catalog.version ||
+        readiness.businessTimezone !== aiResult.contract.businessTimezone
+      ) {
+        return failDomain(
+          "readiness_failed",
+          "project data is not ready for deterministic simulation",
+          false,
+        );
+      }
+
+      let evidence: AuthorizedCustomRuleSimulationEvidence;
+      try {
+        evidence = await loadAuthorizedSimulationEvidence(
+          input.dependencies.evidence,
+          scope,
+          scope.simulationSelection,
+        );
+      } catch (error) {
+        return failDomain(
+          "simulation_failed",
+          "authorized simulation evidence is invalid",
+          false,
+          error,
+        );
+      }
+      if (
+        scope.expectedEvidenceHash &&
+        scope.expectedEvidenceHash !== evidence.provenance.evidenceHash
+      ) {
+        return failDomain(
+          "evidence_hash_mismatch",
+          "authorized evidence hash does not match the expected hash",
+          false,
+        );
+      }
+
+      let summary: CustomRuleSimulationResult;
+      let calculatedSelectionHash: string;
+      try {
+        const simulationInput: CustomRuleSimulationInput = {
+          organizationId: scope.actor.organizationId,
+          actorId: scope.actor.userId,
+          projectId: scope.projectId,
+          contract: aiResult.contract,
+          compiledAst: deterministic.compiledAst,
+          parameters,
+          formulaHash: deterministic.formulaHash,
+          contractHash: input.contractHash,
+          parameterHash,
+          catalogVersion: input.catalog.version,
+          readiness,
+          ...evidence,
+          aiTestCases: aiResult.testCases,
+        };
+        calculatedSelectionHash =
+          calculateCustomRuleDataSelectionHash(simulationInput);
+        summary = input.dependencies.simulate(simulationInput);
+      } catch (error) {
+        return failDomain(
+          "simulation_failed",
+          "deterministic simulation failed",
+          true,
+          error,
+        );
+      }
+      if (
+        summary.persistable.formulaHash !== deterministic.formulaHash ||
+        summary.persistable.ruleContractHash !== input.contractHash ||
+        summary.persistable.parameterHash !== parameterHash ||
+        summary.persistable.variableCatalogVersion !== input.catalog.version ||
+        summary.persistable.dataSelectionHash !== summary.dataSelectionHash ||
+        summary.dataSelectionHash !== calculatedSelectionHash
+      ) {
+        return failDomain(
+          "simulation_failed",
+          "simulation returned mismatched freshness hashes",
+          false,
+        );
+      }
+      if (
+        scope.expectedDataSelectionHash &&
+        scope.expectedDataSelectionHash !== summary.dataSelectionHash
+      ) {
+        return failDomain(
+          "selection_hash_mismatch",
+          "final data selection hash does not match the expected hash",
+          false,
+        );
+      }
+      if (summary.riskFlags.some((flag) => flag.severity === "block")) {
+        return failDomain(
+          "simulation_failed",
+          "deterministic scenario assertions or risk checks blocked confirmation",
+          false,
+        );
+      }
+
+      const draftInput: ContractReadyCustomRuleDraftInput = {
+        organizationId: scope.actor.organizationId,
+        projectId: scope.projectId,
+        conversationId: scope.conversationId,
+        idempotencyKey: input.idempotencyKey,
+        promptText: scope.promptText,
+        turnTrace: opened.turnTrace,
+        businessContract: aiResult.contract,
+        unresolvedAmbiguities: [],
+        variableCatalogVersion: input.catalog.version,
+        aiResponse: {
+          content: canonicalJson({
+            formulaProposal: aiResult.formulaProposal,
+            safetyFlags: aiResult.safetyFlags,
+          }),
+          finishReason: "stop",
+          providerRequestId: null,
+        },
+        generatedFormula: {
+          expression: aiResult.formulaProposal,
+          normalizedAst: normalized.ast,
+        },
+        generatedExplanation: explanation,
+        generatedTestCases: nonEmptyTestCases(aiResult.testCases),
+        model: aiResult.providerName ?? input.dependencies.primaryProvider,
+        safetyFlags: mapSafetyFlags(aiResult.safetyFlags),
+        contractHash: input.contractHash,
+        formulaHash: deterministic.formulaHash,
+        parameterHash,
+        status: "contract_ready",
+      };
+      const finalized = await finalizeSimulationTurn({
+        dependencies: input.dependencies,
+        scope,
+        opened,
+        draft: draftInput,
+        summary,
+        expectedRevisionNumber: input.latest.revisionNumber + 1,
+        providerName: aiResult.providerName,
+      });
+      if (!finalized.ok) return finalized.failure;
+      const { draft: simulatedDraft, simulation } = finalized.value;
+      return Object.freeze({
+        ok: true,
+        kind: "simulated",
+        conversationId: scope.conversationId,
+        draft: simulatedDraft,
+        simulation,
+        summary,
+        duplicate: simulatedDraft.duplicate || simulation.duplicate,
+      });
+    },
+  );
 }
 
 async function replaySimulatedConfirmation(input: {
@@ -1398,8 +1448,7 @@ async function replaySimulatedConfirmation(input: {
     selection: input.input.simulationSelection,
     expectedFormulaHash: input.input.expectedFormulaHash ?? null,
     expectedEvidenceHash: input.input.expectedEvidenceHash ?? null,
-    expectedDataSelectionHash:
-      input.input.expectedDataSelectionHash ?? null,
+    expectedDataSelectionHash: input.input.expectedDataSelectionHash ?? null,
   });
   const simulation = await readExistingSimulation(
     input.dependencies,
@@ -1620,10 +1669,19 @@ function createServiceRetryContext(input: {
 async function rejectAcceptedTurn(
   conversation: SettlementConversationPort,
   actor: { organizationId: string; userId: string },
-  accepted: SettlementConversationTurnRef,
+  accepted: CreatedConversationTurn,
   errorCode: string,
   publicMessage: string,
 ): Promise<never> {
+  if (accepted.duplicate) {
+    throw serviceError(
+      "conversation_failed",
+      "Duplicate generic conversation turn is owned by another request.",
+      true,
+      undefined,
+      accepted.turnId,
+    );
+  }
   try {
     await conversation.failTurn(actor, accepted.turnId, {
       errorCode,
@@ -1645,6 +1703,64 @@ async function rejectAcceptedTurn(
     true,
     undefined,
     accepted.turnId,
+  );
+}
+
+type ObservedConversationTurn = {
+  history: Awaited<ReturnType<SettlementConversationPort["getHistory"]>>;
+  turn: AiConversationTurnDto;
+};
+
+async function observeReturnedTurn(
+  conversation: SettlementConversationPort,
+  actor: { organizationId: string; userId: string },
+  conversationId: string,
+  returned: CreatedConversationTurn,
+  retryOfTurnId?: string,
+): Promise<ObservedConversationTurn> {
+  const history = await conversation.getHistory(actor, conversationId);
+  const turn = history.turns.find(
+    (candidate) => candidate.id === returned.turnId,
+  );
+  if (
+    history.conversation.id !== conversationId ||
+    history.conversation.status !== "active" ||
+    !turn ||
+    turn.conversationId !== conversationId ||
+    turn.userMessageId !== returned.userMessageId ||
+    turn.assistantMessageId !== returned.assistantMessageId ||
+    turn.attempt !== returned.attempt ||
+    (retryOfTurnId !== undefined && turn.retryOfTurnId !== retryOfTurnId)
+  ) {
+    throw new Error("generic conversation turn readback mismatch");
+  }
+  return { history, turn };
+}
+
+function duplicateTurnConflict(
+  returned: CreatedConversationTurn,
+  observed: AiConversationTurnDto,
+): never {
+  const active = isActiveConversationTurnStatus(observed.status);
+  throw serviceError(
+    "conversation_failed",
+    active
+      ? "Generic conversation turn is already in progress."
+      : "Generic conversation turn has already reached a terminal state.",
+    active,
+    undefined,
+    returned.turnId,
+  );
+}
+
+function isActiveConversationTurnStatus(
+  status: ConversationTurnStatus,
+): status is "accepted" | "grounding" | "generating" | "validating" {
+  return (
+    status === "accepted" ||
+    status === "grounding" ||
+    status === "generating" ||
+    status === "validating"
   );
 }
 
@@ -1678,10 +1794,40 @@ async function openAiTurn(input: {
       error,
     );
   }
+  let observed: ObservedConversationTurn;
+  try {
+    observed = await observeReturnedTurn(
+      input.dependencies.conversation,
+      input.scope.actor,
+      input.scope.conversationId,
+      accepted,
+    );
+  } catch (error) {
+    if (accepted.duplicate) {
+      throw serviceError(
+        "conversation_failed",
+        "Duplicate generic conversation turn could not be read back.",
+        false,
+        error,
+        accepted.turnId,
+      );
+    }
+    return rejectAcceptedTurn(
+      input.dependencies.conversation,
+      input.scope.actor,
+      accepted,
+      "settlement_turn_setup_failed",
+      "Settlement authoring turn setup failed.",
+    );
+  }
+  if (accepted.duplicate) {
+    duplicateTurnConflict(accepted, observed.turn);
+  }
   try {
     if (
       accepted.conversationId !== input.scope.conversationId ||
-      accepted.status !== "accepted"
+      accepted.status !== "accepted" ||
+      observed.turn.status !== "accepted"
     ) {
       throw new Error("accepted conversation turn scope or status mismatch");
     }
@@ -1726,12 +1872,13 @@ async function openAiTurn(input: {
         settlementServiceRetryContext: input.serviceRetryContext,
       },
     };
-    const captured = await input.dependencies.conversation.captureGatewayContext(
-      input.scope.actor,
-      accepted.turnId,
-      preparedTurn.snapshot,
-      gatewayContext,
-    );
+    const captured =
+      await input.dependencies.conversation.captureGatewayContext(
+        input.scope.actor,
+        accepted.turnId,
+        preparedTurn.snapshot,
+        gatewayContext,
+      );
     await input.dependencies.conversation.markGenerating(
       input.scope.actor,
       accepted.turnId,
@@ -1782,29 +1929,57 @@ async function openRetryTurn(
       error,
     );
   }
-  if (accepted.conversationId !== input.conversationId) {
-    if (accepted.status === "accepted") {
-      return rejectAcceptedTurn(
-        dependencies.conversation,
-        input.actor,
-        accepted,
-        "settlement_retry_setup_failed",
-        "Settlement authoring retry setup failed.",
+  let observed: ObservedConversationTurn;
+  try {
+    observed = await observeReturnedTurn(
+      dependencies.conversation,
+      input.actor,
+      input.conversationId,
+      accepted,
+      input.sourceTurnId,
+    );
+  } catch (error) {
+    if (accepted.duplicate) {
+      throw serviceError(
+        "conversation_failed",
+        "Duplicate generic retry could not be read back.",
+        false,
+        error,
+        accepted.turnId,
       );
     }
-    throw serviceError(
-      "conversation_failed",
-      "generic retry returned a mismatched conversation",
-      false,
-      undefined,
-      accepted.turnId,
+    return rejectAcceptedTurn(
+      dependencies.conversation,
+      input.actor,
+      accepted,
+      "settlement_retry_setup_failed",
+      "Settlement authoring retry setup failed.",
     );
   }
-  const turn = retryTurnDto(accepted);
+  if (accepted.conversationId !== input.conversationId) {
+    if (accepted.duplicate) {
+      throw serviceError(
+        "conversation_failed",
+        "Duplicate generic retry returned a mismatched conversation.",
+        false,
+        undefined,
+        accepted.turnId,
+      );
+    }
+    return rejectAcceptedTurn(
+      dependencies.conversation,
+      input.actor,
+      accepted,
+      "settlement_retry_setup_failed",
+      "Settlement authoring retry setup failed.",
+    );
+  }
+  const turn = retryTurnDto(accepted, observed.turn);
   if (
-    accepted.status === "grounding" ||
-    accepted.status === "generating" ||
-    accepted.status === "validating"
+    observed.turn.status === "grounding" ||
+    observed.turn.status === "generating" ||
+    observed.turn.status === "validating" ||
+    (observed.turn.status === "accepted" && accepted.duplicate)
   ) {
     return {
       kind: "result",
@@ -1812,16 +1987,21 @@ async function openRetryTurn(
         ok: true,
         kind: "retry_in_progress",
         conversationId: input.conversationId,
-        turn: { ...turn, status: accepted.status },
+        turn: { ...turn, status: observed.turn.status },
       }),
     };
   }
-  if (accepted.status === "completed") {
-    const draft = retryDomainDraft(drafts, accepted.turnId, input.sourceTurnId);
+  if (observed.turn.status === "completed") {
+    const refreshedDrafts = await listScopedDrafts(
+      dependencies.repository,
+      input,
+    );
+    const draft = retryDomainDraft(refreshedDrafts, accepted);
     if (
       !draft ||
       (draft.initialStatus === "clarifying" && draft.status !== "clarifying") ||
-      (draft.initialStatus === "contract_ready" && draft.status !== "simulated") ||
+      (draft.initialStatus === "contract_ready" &&
+        draft.status !== "simulated") ||
       draft.initialStatus === "failed"
     ) {
       throw serviceError(
@@ -1832,6 +2012,12 @@ async function openRetryTurn(
         accepted.turnId,
       );
     }
+    requireMatchingCompletedRetry(
+      observed,
+      accepted,
+      input.sourceTurnId,
+      draft,
+    );
     return {
       kind: "result",
       result: Object.freeze({
@@ -1843,8 +2029,8 @@ async function openRetryTurn(
       }),
     };
   }
-  if (accepted.status === "failed") {
-    if (accepted.retryable !== true) {
+  if (observed.turn.status === "failed") {
+    if (!observed.turn.retryable) {
       throw serviceError(
         "conversation_failed",
         "generic retry is already failed and not retryable",
@@ -1853,11 +2039,7 @@ async function openRetryTurn(
         accepted.turnId,
       );
     }
-    const failedDraft = retryDomainDraft(
-      drafts,
-      accepted.turnId,
-      input.sourceTurnId,
-    );
+    const failedDraft = retryDomainDraft(drafts, accepted);
     return {
       kind: "result",
       result: Object.freeze({
@@ -1872,10 +2054,19 @@ async function openRetryTurn(
       }),
     };
   }
-  if (accepted.status === "cancelled") {
+  if (observed.turn.status === "cancelled") {
     throw serviceError(
       "conversation_failed",
       "generic retry is cancelled",
+      false,
+      undefined,
+      accepted.turnId,
+    );
+  }
+  if (observed.turn.status !== "accepted") {
+    throw serviceError(
+      "conversation_failed",
+      "generic retry returned an unsupported turn state",
       false,
       undefined,
       accepted.turnId,
@@ -1953,26 +2144,74 @@ async function openRetryTurn(
 }
 
 function retryTurnDto(
-  turn: SettlementConversationTurnRef,
+  returned: CreatedConversationTurn,
+  observed: AiConversationTurnDto,
 ): CustomRuleRetryTurnDto {
   return Object.freeze({
-    turnId: turn.turnId,
-    status: turn.status,
-    attempt: turn.attempt,
-    duplicate: turn.duplicate,
+    turnId: returned.turnId,
+    status: observed.status,
+    attempt: observed.attempt,
+    duplicate: returned.duplicate,
   });
 }
 
 function retryDomainDraft(
   drafts: CustomRuleDraft[],
-  turnId: string,
-  sourceTurnId: string,
+  returned: CreatedConversationTurn,
 ): CustomRuleDraft | null {
   return (
-    drafts.find((draft) => draft.turnTrace.turnId === turnId) ??
-    drafts.find((draft) => draft.turnTrace.turnId === sourceTurnId) ??
-    null
+    drafts.find(
+      (draft) =>
+        draft.turnTrace.turnId === returned.turnId &&
+        draft.turnTrace.userMessageId === returned.userMessageId &&
+        draft.turnTrace.assistantMessageId === returned.assistantMessageId,
+    ) ?? null
   );
+}
+
+function requireMatchingCompletedRetry(
+  observed: ObservedConversationTurn,
+  returned: CreatedConversationTurn,
+  sourceTurnId: string,
+  draft: CustomRuleDraft,
+): void {
+  const assistant = observed.history.messages.find(
+    (message) => message.id === returned.assistantMessageId,
+  );
+  const metadata = atomicCompletionMetadataSchema.safeParse(
+    assistant?.metadata,
+  );
+  if (
+    observed.turn.status !== "completed" ||
+    observed.turn.retryOfTurnId !== sourceTurnId ||
+    observed.turn.errorCode !== null ||
+    observed.turn.retryable ||
+    draft.turnTrace.turnId !== returned.turnId ||
+    draft.turnTrace.userMessageId !== returned.userMessageId ||
+    draft.turnTrace.assistantMessageId !== returned.assistantMessageId ||
+    !assistant ||
+    assistant.conversationId !== returned.conversationId ||
+    assistant.role !== "assistant" ||
+    assistant.status !== "completed" ||
+    assistant.parentMessageId !== returned.userMessageId ||
+    assistant.content !== draft.aiResponse.content ||
+    !metadata.success ||
+    metadata.data.settlementIdempotencyKey !== draft.idempotencyKey ||
+    metadata.data.settlementInitialStatus !== draft.initialStatus ||
+    new Set(metadata.data.contextMessageIds).size !==
+      metadata.data.contextMessageIds.length ||
+    !metadata.data.contextMessageIds.every((messageId) =>
+      observed.history.messages.some((message) => message.id === messageId),
+    )
+  ) {
+    throw serviceError(
+      "conversation_failed",
+      "completed generic retry readback does not match its durable artifact",
+      false,
+      undefined,
+      returned.turnId,
+    );
+  }
 }
 
 async function executeAi(
@@ -2052,6 +2291,10 @@ async function handleAiFailure(input: {
       draft: failedInput,
       expectedRevisionNumber: input.expectedRevisionNumber,
       providerName: input.failure.providerName,
+      failureSemantics: failedTurnSemantics(
+        input.failure.code,
+        input.failure.retryable,
+      ),
     });
     if (!finalized.ok) return finalized.failure;
     failedDraft = finalized.draft;
@@ -2143,6 +2386,7 @@ async function handleDomainFailure(input: {
     draft: failedInput,
     expectedRevisionNumber: input.expectedRevisionNumber,
     providerName: input.providerName,
+    failureSemantics: failedTurnSemantics(input.code, input.retryable),
   });
   if (!finalized.ok) {
     throw serviceError(
@@ -2251,6 +2495,7 @@ async function finalizeFailedTurn(input: {
   draft: FailedCustomRuleDraftInput;
   expectedRevisionNumber: number;
   providerName?: AiProviderName;
+  failureSemantics: SettlementAiFailedTurnFailureSemantics;
 }): Promise<AtomicDraftFinalization> {
   const completion = atomicTurnCompletion(
     input.dependencies,
@@ -2262,6 +2507,7 @@ async function finalizeFailedTurn(input: {
     const draft = await input.dependencies.repository.finalizeFailedTurn({
       draft: input.draft,
       completion,
+      ...input.failureSemantics,
     });
     verifyAtomicDraft(draft, input.scope, input.draft, {
       initialStatus: "failed",
@@ -2274,9 +2520,21 @@ async function finalizeFailedTurn(input: {
       ...input,
       completion,
       terminalStatus: "failed",
+      failureSemantics: input.failureSemantics,
       cause: error,
     });
   }
+}
+
+function failedTurnSemantics(
+  errorCode: SettlementAiFailedTurnErrorCode,
+  retryable: boolean,
+): SettlementAiFailedTurnFailureSemantics {
+  return {
+    errorCode,
+    errorSummary: SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES[errorCode],
+    retryable,
+  };
 }
 
 function atomicTurnCompletion(
@@ -2304,10 +2562,7 @@ function atomicSimulationSummary(
   summary: CustomRuleSimulationResult,
 ): FinalizeSettlementAiSimulationTurnInput["simulation"] {
   return {
-    idempotencyKey: simulationIdempotencyKey(
-      draft.idempotencyKey,
-      summary,
-    ),
+    idempotencyKey: simulationIdempotencyKey(draft.idempotencyKey, summary),
     dataSelectionHash: summary.persistable.dataSelectionHash,
     sampleSource: summary.persistable.sampleSource,
     sampleSelection: summary.persistable.sampleSelection,
@@ -2328,6 +2583,7 @@ async function reconcileAtomicDraftFailure(input: {
   expectedRevisionNumber: number;
   completion: SettlementAiTurnCompletionInput;
   terminalStatus: "completed" | "failed";
+  failureSemantics?: SettlementAiFailedTurnFailureSemantics;
   cause: unknown;
 }): Promise<AtomicDraftFinalization> {
   const readback = await readAtomicState(input);
@@ -2346,6 +2602,7 @@ async function reconcileAtomicDraftFailure(input: {
         input.opened,
         input.completion,
         input.terminalStatus,
+        input.failureSemantics,
       );
       return {
         ok: true,
@@ -2400,14 +2657,11 @@ async function reconcileAtomicSimulationFailure(input: {
       currentStatus: "simulated",
       revisionNumber: input.expectedRevisionNumber,
     });
-    const simulations = await input.dependencies.repository.listSimulations({
-      organizationId: input.scope.actor.organizationId,
-      projectId: input.scope.projectId,
-      owner: { kind: "ai_draft", id: persisted.id },
-      limit: 100,
-    });
-    const simulation = simulations.find(
-      (candidate) => candidate.idempotencyKey === input.simulation.idempotencyKey,
+    const simulation = await readStableAtomicSimulation(
+      input.dependencies.repository,
+      input.scope,
+      persisted,
+      input.simulation.idempotencyKey,
     );
     if (!simulation) throw new Error("atomic simulation readback is partial");
     const duplicateSimulation = { ...simulation, duplicate: true };
@@ -2435,32 +2689,99 @@ async function reconcileAtomicSimulationFailure(input: {
   }
 }
 
+async function readStableAtomicSimulation(
+  repository: CustomRuleAuthoringRepositoryPort,
+  scope: ScopedTransition,
+  draft: CustomRuleDraft,
+  idempotencyKey: string,
+): Promise<SettlementFormulaSimulation | null> {
+  let previousFingerprint: string | null = null;
+  let latest: SettlementFormulaSimulation | null = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const simulations = await repository.listSimulations({
+      organizationId: scope.actor.organizationId,
+      projectId: scope.projectId,
+      owner: { kind: "ai_draft", id: draft.id },
+      limit: 100,
+    });
+    latest =
+      simulations.find(
+        (candidate) => candidate.idempotencyKey === idempotencyKey,
+      ) ?? null;
+    const fingerprint = canonicalJson(latest);
+    if (fingerprint === previousFingerprint) return latest;
+    previousFingerprint = fingerprint;
+  }
+  return latest;
+}
+
 async function readAtomicState(input: {
   dependencies: ServiceDependencies;
   scope: ScopedTransition;
   opened: OpenedAiTurn;
+  draft: { idempotencyKey: string };
 }): Promise<{
   drafts: CustomRuleDraft[];
   history: Awaited<ReturnType<SettlementConversationPort["getHistory"]>>;
 }> {
+  let previousFingerprint: string | null = null;
+  let latest: {
+    drafts: CustomRuleDraft[];
+    history: Awaited<ReturnType<SettlementConversationPort["getHistory"]>>;
+  } | null = null;
   try {
-    const [drafts, history] = await Promise.all([
-      listScopedDrafts(input.dependencies.repository, input.scope),
-      input.dependencies.conversation.getHistory(
-        input.scope.actor,
-        input.scope.conversationId,
-      ),
-    ]);
-    if (
-      history.conversation.id !== input.scope.conversationId ||
-      history.conversation.status !== "active"
-    ) {
-      throw new Error("atomic conversation readback scope mismatch");
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const [drafts, history] = await Promise.all([
+        listScopedDrafts(input.dependencies.repository, input.scope),
+        input.dependencies.conversation.getHistory(
+          input.scope.actor,
+          input.scope.conversationId,
+        ),
+      ]);
+      if (
+        history.conversation.id !== input.scope.conversationId ||
+        history.conversation.status !== "active"
+      ) {
+        throw new Error("atomic conversation readback scope mismatch");
+      }
+      latest = { drafts, history };
+      const fingerprint = atomicReadbackFingerprint(input, latest);
+      if (fingerprint === previousFingerprint) return latest;
+      previousFingerprint = fingerprint;
     }
-    return { drafts, history };
+    if (latest) return latest;
+    throw new Error("atomic readback returned no snapshots");
   } catch (error) {
     throw atomicReconciliationError(input.opened, error);
   }
+}
+
+function atomicReadbackFingerprint(
+  input: {
+    opened: OpenedAiTurn;
+    draft: { idempotencyKey: string };
+  },
+  state: {
+    drafts: CustomRuleDraft[];
+    history: Awaited<ReturnType<SettlementConversationPort["getHistory"]>>;
+  },
+): string {
+  const turn = state.history.turns.find(
+    (candidate) => candidate.id === input.opened.turnTrace.turnId,
+  );
+  const assistant = state.history.messages.find(
+    (message) => message.id === input.opened.turnTrace.assistantMessageId,
+  );
+  const drafts = state.drafts.filter(
+    (draft) =>
+      draft.idempotencyKey === input.draft.idempotencyKey ||
+      draft.turnTrace.turnId === input.opened.turnTrace.turnId,
+  );
+  return canonicalJson({
+    assistant: assistant ?? null,
+    drafts,
+    turn: turn ?? null,
+  });
 }
 
 function requireMatchingTerminalTurn(
@@ -2468,6 +2789,7 @@ function requireMatchingTerminalTurn(
   opened: OpenedAiTurn,
   completion: SettlementAiTurnCompletionInput,
   expectedStatus: "completed" | "failed",
+  failureSemantics?: SettlementAiFailedTurnFailureSemantics,
 ): void {
   const turn = history.turns.find(
     (candidate) => candidate.id === opened.turnTrace.turnId,
@@ -2481,11 +2803,16 @@ function requireMatchingTerminalTurn(
     turn.userMessageId !== opened.turnTrace.userMessageId ||
     turn.assistantMessageId !== opened.turnTrace.assistantMessageId ||
     turn.status !== expectedStatus ||
+    (expectedStatus === "failed" &&
+      (!failureSemantics ||
+        turn.errorCode !== failureSemantics.errorCode ||
+        turn.retryable !== failureSemantics.retryable)) ||
     !assistant ||
     assistant.conversationId !== history.conversation.id ||
     assistant.status !== expectedStatus ||
     assistant.content !== completion.content ||
-    canonicalJson(assistant.metadata ?? {}) !== canonicalJson(completion.metadata)
+    canonicalJson(assistant.metadata ?? {}) !==
+      canonicalJson(completion.metadata)
   ) {
     throw new Error("atomic generic turn readback mismatch");
   }
@@ -2500,13 +2827,13 @@ function isActiveAtomicTurn(
   );
   return Boolean(
     turn &&
-      turn.conversationId === history.conversation.id &&
-      turn.userMessageId === opened.turnTrace.userMessageId &&
-      turn.assistantMessageId === opened.turnTrace.assistantMessageId &&
-      (turn.status === "accepted" ||
-        turn.status === "grounding" ||
-        turn.status === "generating" ||
-        turn.status === "validating"),
+    turn.conversationId === history.conversation.id &&
+    turn.userMessageId === opened.turnTrace.userMessageId &&
+    turn.assistantMessageId === opened.turnTrace.assistantMessageId &&
+    (turn.status === "accepted" ||
+      turn.status === "grounding" ||
+      turn.status === "generating" ||
+      turn.status === "validating"),
   );
 }
 
@@ -2728,7 +3055,61 @@ async function failAndThrow(
     retryable,
     message,
   );
-  throw serviceError(code, message, retryable, cause);
+  throw serviceError(code, message, retryable, cause, opened.turnTrace.turnId);
+}
+
+async function runOwnedOpenedTransition<Result>(
+  dependencies: ServiceDependencies,
+  scope: ScopedTransition,
+  opened: OpenedAiTurn,
+  transition: () => Promise<Result>,
+): Promise<Result> {
+  try {
+    return await transition();
+  } catch (error) {
+    if (
+      error instanceof CustomRuleAuthoringServiceError &&
+      error.sourceTurnId === opened.turnTrace.turnId
+    ) {
+      throw error;
+    }
+    const retryable =
+      error instanceof CustomRuleAuthoringServiceError ? error.retryable : true;
+    try {
+      await failConversationTurn(
+        dependencies.conversation,
+        scope,
+        opened,
+        "settlement_post_open_validation_failed",
+        retryable,
+        "Settlement authoring validation failed before finalization.",
+      );
+    } catch (compensationError) {
+      throw serviceError(
+        "conversation_reconciliation_failed",
+        "Post-open settlement failure could not reconcile the generic turn.",
+        false,
+        compensationError,
+        opened.turnTrace.turnId,
+      );
+    }
+    if (error instanceof CustomRuleAuthoringServiceError) {
+      throw serviceError(
+        error.code,
+        error.message,
+        error.retryable,
+        error,
+        opened.turnTrace.turnId,
+      );
+    }
+    throw serviceError(
+      "conversation_failed",
+      "Settlement authoring failed before atomic finalization.",
+      true,
+      error,
+      opened.turnTrace.turnId,
+    );
+  }
 }
 
 async function markValidating(
@@ -2883,14 +3264,18 @@ async function loadAuthorizedSimulationEvidence(
   ) {
     throw new Error("authorized evidence scope or selection mismatch");
   }
-  if (calculateCustomRuleEvidenceHash(evidence) !== evidence.provenance.evidenceHash) {
+  if (
+    calculateCustomRuleEvidenceHash(evidence) !==
+    evidence.provenance.evidenceHash
+  ) {
     throw new Error("authorized evidence provenance hash mismatch");
   }
   return evidence;
 }
 
-function resolvedClarifyingAmbiguities(input: Extract<SettlementAiResult, { ok: true }> ):
-  [SettlementAiUnresolvedAmbiguity, ...SettlementAiUnresolvedAmbiguity[]] {
+function resolvedClarifyingAmbiguities(
+  input: Extract<SettlementAiResult, { ok: true }>,
+): [SettlementAiUnresolvedAmbiguity, ...SettlementAiUnresolvedAmbiguity[]] {
   if (input.unresolvedAmbiguities.length > 0) {
     const [first, ...rest] = input.unresolvedAmbiguities;
     return [first, ...rest];
@@ -3237,7 +3622,11 @@ function validateScopeInput(input: {
     input.clientRequestId.length < 8 ||
     !CLIENT_REQUEST_ID_PATTERN.test(input.clientRequestId)
   ) {
-    throw serviceError("invalid_input", "authoring scope input is invalid", false);
+    throw serviceError(
+      "invalid_input",
+      "authoring scope input is invalid",
+      false,
+    );
   }
 }
 
