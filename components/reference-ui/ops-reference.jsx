@@ -2166,14 +2166,58 @@ const OPS_SHELL_RESPONSIVE_CSS = `
   }
 `;
 
-const OPS_DRAWER_FOCUSABLE_SELECTOR = [
+const OPS_FOCUSABLE_SELECTOR = [
   "a[href]",
   "button:not([disabled])",
   "input:not([disabled])",
   "select:not([disabled])",
   "textarea:not([disabled])",
+  "summary",
   '[tabindex]:not([tabindex="-1"])',
 ].join(", ");
+
+function isVisiblyTabbableWithin(element, boundary) {
+  if (!element || element.tabIndex < 0) return false;
+
+  for (
+    let current = element;
+    current && boundary?.contains(current);
+    current = current.parentElement
+  ) {
+    if (
+      current.hidden ||
+      current.getAttribute?.("aria-hidden") === "true" ||
+      current.hasAttribute?.("inert")
+    ) {
+      return false;
+    }
+
+    if (current.tagName === "DETAILS" && !current.open) {
+      const summary = Array.from(current.children).find(
+        (child) => child.tagName === "SUMMARY",
+      );
+      if (!summary?.contains(element)) return false;
+    }
+
+    const style = globalThis.getComputedStyle?.(current);
+    const isOpenDrawerCloseButton =
+      current === element &&
+      element.classList?.contains("ops-sidebar-close") &&
+      boundary?.dataset.open === "true";
+    if (
+      !isOpenDrawerCloseButton &&
+      (style?.display === "none" ||
+        style?.visibility === "hidden" ||
+        style?.visibility === "collapse")
+    ) {
+      return false;
+    }
+
+    if (current === boundary) break;
+  }
+
+  return true;
+}
 
 export function Sidebar({
   route,
@@ -2186,8 +2230,10 @@ export function Sidebar({
   onUpdateAvatar,
   mobileNavigationOpen = false,
   onCloseMobileNavigation,
+  onPrepareOverlay,
   mobileCloseButtonRef,
   mobileDrawerRef,
+  mobileNavigationTriggerRef,
 }) {
   const displayUser = normalizeCurrentUser(currentUser);
   const orgSettings = normalizeOrganizationSettings(organizationSettings);
@@ -2196,12 +2242,36 @@ export function Sidebar({
     ? organizationMembers.length
     : null;
   const [accountPanel, setAccountPanel] = React.useState(null);
+  const accountSummaryRef = React.useRef(null);
+  const accountPanelWasOpenRef = React.useRef(false);
   const switcherMemberText =
     memberCount != null
       ? `当前组织 · ${memberCount} 名成员`
       : orgSettings.memberLimit != null
         ? `当前组织 · 配额 ${orgSettings.memberLimit}`
         : "当前组织 · 设置与权限";
+
+  React.useLayoutEffect(() => {
+    if (accountPanel) {
+      accountPanelWasOpenRef.current = true;
+      return;
+    }
+    if (!accountPanelWasOpenRef.current) return;
+
+    accountPanelWasOpenRef.current = false;
+    const isMobile = Boolean(
+      globalThis.matchMedia?.(OPS_MOBILE_NAVIGATION_QUERY).matches,
+    );
+    const focusTarget = isMobile
+      ? mobileNavigationTriggerRef?.current
+      : accountSummaryRef.current;
+    focusTarget?.focus();
+  }, [accountPanel, mobileNavigationTriggerRef]);
+
+  const openAccountPanel = (mode) => {
+    onPrepareOverlay?.();
+    setAccountPanel(mode);
+  };
 
   return (
     <aside
@@ -2549,6 +2619,7 @@ export function Sidebar({
           }}
         >
           <summary
+            ref={accountSummaryRef}
             role="button"
             aria-haspopup="menu"
             aria-label={`${displayUser.name} ${formatCurrentUserMeta(displayUser)} 账号菜单`}
@@ -2627,7 +2698,7 @@ export function Sidebar({
               label="个人资料"
               closeMenu
               onClick={() => {
-                setAccountPanel("profile");
+                openAccountPanel("profile");
               }}
             />
             <AccountMenuItem
@@ -2635,7 +2706,7 @@ export function Sidebar({
               label="账号安全"
               closeMenu
               onClick={() => {
-                setAccountPanel("security");
+                openAccountPanel("security");
               }}
             />
             <AccountMenuItem
@@ -2742,6 +2813,47 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
   const [avatarBusy, setAvatarBusy] = React.useState(false);
   const [avatarMessage, setAvatarMessage] = React.useState("");
   const fileInputRef = React.useRef(null);
+  const closeButtonRef = React.useRef(null);
+  const dialogRef = React.useRef(null);
+
+  React.useLayoutEffect(() => {
+    closeButtonRef.current?.focus();
+  }, []);
+
+  const handleDialogKeyDown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose?.();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const dialogElement = dialogRef.current;
+    if (!dialogElement) return;
+    const focusable = Array.from(
+      dialogElement.querySelectorAll(OPS_FOCUSABLE_SELECTOR),
+    ).filter((element) => isVisiblyTabbableWithin(element, dialogElement));
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+
+    const activeElement = globalThis.document?.activeElement;
+    if (event.shiftKey && activeElement === first) {
+      event.preventDefault();
+      event.stopPropagation();
+      last.focus();
+      return;
+    }
+    if (!event.shiftKey && activeElement === last) {
+      event.preventDefault();
+      event.stopPropagation();
+      first.focus();
+    }
+  };
 
   const pickImage = async (event) => {
     const file = event.target.files?.[0];
@@ -2778,6 +2890,7 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
 
   const dialog = (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label={title}
@@ -2791,6 +2904,7 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
         padding: 20,
       }}
       onClick={onClose}
+      onKeyDown={handleDialogKeyDown}
     >
       <div
         style={{
@@ -2839,6 +2953,7 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
             </div>
           </div>
           <button
+            ref={closeButtonRef}
             type="button"
             aria-label="关闭"
             onClick={onClose}
@@ -28115,11 +28230,12 @@ function Timeline({ events }) {
   );
 }
 
-function Drawer({ children, onClose, title }) {
+function Drawer({ children, onClose, onKeyDown, title }) {
   return (
     <div
       role="dialog"
       aria-label={typeof title === "string" ? title : undefined}
+      onKeyDown={onKeyDown}
       style={{
         position: "fixed",
         top: 0,
@@ -29362,7 +29478,12 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
   const [features, setFeatures] = React.useState(normalized.features);
   const [message, setMessage] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const firstControlRef = React.useRef(null);
   const enabledCount = countEnabledOrganizationFeatures({ features });
+
+  React.useLayoutEffect(() => {
+    firstControlRef.current?.focus();
+  }, []);
 
   const toggleFeature = (key) => {
     setFeatures((current) => ({ ...current, [key]: !current[key] }));
@@ -29405,7 +29526,16 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
   };
 
   return (
-    <Drawer title="组织功能设置" onClose={onClose}>
+    <Drawer
+      title="组织功能设置"
+      onClose={onClose}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onClose?.();
+      }}
+    >
       <div
         style={{
           padding: 16,
@@ -29467,6 +29597,7 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
 
         <OrgMemberField label="组织名称">
           <input
+            ref={firstControlRef}
             aria-label="组织名称"
             value={name}
             onChange={(event) => setName(event.target.value)}
@@ -32561,6 +32692,18 @@ function OpsReferenceInner({
     setMobileNavigationOpen(false);
   }, []);
 
+  const prepareMobileNavigationOverlay = React.useCallback(() => {
+    mobileNavigationFocusReturnRef.current = "overlay";
+    mobileNavigationMainRef.current?.removeAttribute("inert");
+    mobileNavigationMainRef.current?.removeAttribute("aria-hidden");
+    setMobileNavigationOpen(false);
+  }, []);
+
+  const openOrganizationSettingsFromNavigation = React.useCallback(() => {
+    prepareMobileNavigationOverlay();
+    setOrganizationSettingsOpen(true);
+  }, [prepareMobileNavigationOverlay]);
+
   const openMobileNavigation = React.useCallback(() => {
     const mediaQuery = globalThis.matchMedia?.(OPS_MOBILE_NAVIGATION_QUERY);
     if (mediaQuery && !mediaQuery.matches) return;
@@ -32580,12 +32723,12 @@ function OpsReferenceInner({
     main?.removeAttribute("inert");
     if (mobileNavigationWasOpenRef.current) {
       mobileNavigationWasOpenRef.current = false;
-      const focusTarget =
-        mobileNavigationFocusReturnRef.current === "main"
-          ? main
-          : mobileNavigationButtonRef.current;
+      const focusReturn = mobileNavigationFocusReturnRef.current;
       mobileNavigationFocusReturnRef.current = "trigger";
-      focusTarget?.focus();
+      if (focusReturn === "main") main?.focus();
+      if (focusReturn === "trigger") {
+        mobileNavigationButtonRef.current?.focus();
+      }
     }
 
     return () => {
@@ -32633,8 +32776,8 @@ function OpsReferenceInner({
       const drawer = mobileNavigationDrawerRef.current;
       if (!drawer) return;
       const focusable = Array.from(
-        drawer.querySelectorAll(OPS_DRAWER_FOCUSABLE_SELECTOR),
-      ).filter((element) => element.tabIndex >= 0);
+        drawer.querySelectorAll(OPS_FOCUSABLE_SELECTOR),
+      ).filter((element) => isVisiblyTabbableWithin(element, drawer));
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
       if (!first || !last) {
@@ -34158,12 +34301,14 @@ function OpsReferenceInner({
           currentUser={currentUserState}
           organizationSettings={organizationSettingsState}
           organizationMembers={organizationMembersState}
-          onOpenOrganizationSettings={() => setOrganizationSettingsOpen(true)}
+          onOpenOrganizationSettings={openOrganizationSettingsFromNavigation}
           onUpdateAvatar={updateProfileAvatar}
           mobileNavigationOpen={mobileNavigationOpen}
           onCloseMobileNavigation={closeMobileNavigation}
+          onPrepareOverlay={prepareMobileNavigationOverlay}
           mobileCloseButtonRef={mobileNavigationCloseButtonRef}
           mobileDrawerRef={mobileNavigationDrawerRef}
+          mobileNavigationTriggerRef={mobileNavigationButtonRef}
         />
         <main
           ref={mobileNavigationMainRef}

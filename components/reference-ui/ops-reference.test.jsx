@@ -178,6 +178,20 @@ describe("OpsReferenceApp responsive navigation shell", () => {
       />,
     );
 
+  const stubMobileViewport = () => {
+    const mediaQueryList = {
+      matches: true,
+      media: "(max-width: 720px)",
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mediaQueryList),
+    );
+    return mediaQueryList;
+  };
+
   it("exposes drawer state and closes from the close button", () => {
     renderShell();
 
@@ -222,29 +236,26 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     expect(main).not.toHaveAttribute("aria-hidden");
   });
 
-  it("loops Tab and Shift+Tab within the open drawer", () => {
+  it("loops focus through only the visibly tabbable drawer controls", () => {
     renderShell();
     fireEvent.click(screen.getByLabelText("打开主导航"));
 
-    const drawer = screen.getByRole("complementary", { name: "主导航" });
-    const focusable = Array.from(
-      drawer.querySelectorAll(
-        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      ),
-    );
-    const first = focusable[0];
-    const last = focusable.at(-1);
+    const closeButton = screen.getByLabelText("关闭主导航");
+    const accountSummary = screen.getByRole("button", { name: /账号菜单/ });
 
-    expect(first).toBe(screen.getByLabelText("关闭主导航"));
-    expect(first).toHaveFocus();
-
-    last.focus();
-    fireEvent.keyDown(document, { key: "Tab" });
-    expect(first).toHaveFocus();
-
-    first.focus();
+    expect(closeButton).toHaveFocus();
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
-    expect(last).toHaveFocus();
+    expect(accountSummary).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(closeButton).toHaveFocus();
+
+    fireEvent.click(accountSummary);
+    const logout = screen.getByRole("menuitem", { name: "退出登录" });
+    expect(closeButton).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(logout).toHaveFocus();
   });
 
   it("clears modal isolation when the viewport leaves the mobile breakpoint", () => {
@@ -295,6 +306,84 @@ describe("OpsReferenceApp responsive navigation shell", () => {
       "change",
       changeListener,
     );
+  });
+
+  it("hands mobile drawer focus to the profile dialog and lets it own Escape", () => {
+    stubMobileViewport();
+    const { container } = renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+    const main = container.querySelector(".ops-reference-main");
+
+    fireEvent.click(menuButton);
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "个人资料" }));
+
+    const dialog = screen.getByRole("dialog", { name: "个人资料" });
+    const dialogClose = within(dialog).getByRole("button", { name: "关闭" });
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+    expect(dialogClose).toHaveFocus();
+    expect(dialog).toContainElement(document.activeElement);
+
+    fireEvent.keyDown(dialogClose, { key: "Escape" });
+
+    expect(
+      screen.queryByRole("dialog", { name: "个人资料" }),
+    ).not.toBeInTheDocument();
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(menuButton).toHaveFocus();
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("contains profile dialog Tab navigation within visible controls", () => {
+    const { container } = renderShell();
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "个人资料" }));
+
+    const dialog = screen.getByRole("dialog", { name: "个人资料" });
+    const closeButton = within(dialog).getByRole("button", { name: "关闭" });
+    const saveButton = within(dialog).getByRole("button", {
+      name: "保存头像",
+    });
+    const hiddenFileInput = within(dialog).getByLabelText("上传头像图片");
+
+    expect(hiddenFileInput).toHaveStyle({ display: "none" });
+    expect(closeButton).toHaveFocus();
+
+    fireEvent.keyDown(closeButton, { key: "Tab", shiftKey: true });
+    expect(saveButton).toHaveFocus();
+
+    fireEvent.keyDown(saveButton, { key: "Tab" });
+    expect(closeButton).toHaveFocus();
+    expect(dialog).toContainElement(container.ownerDocument.activeElement);
+  });
+
+  it("deactivates the mobile drawer before opening organization settings", () => {
+    stubMobileViewport();
+    const { container } = renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+    const main = container.querySelector(".ops-reference-main");
+
+    fireEvent.click(menuButton);
+    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+
+    const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+    const organizationName = within(dialog).getByLabelText("组织名称");
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+    expect(organizationName).toHaveFocus();
+
+    fireEvent.keyDown(organizationName, { key: "Escape" });
+
+    expect(
+      screen.queryByRole("dialog", { name: "组织功能设置" }),
+    ).not.toBeInTheDocument();
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
   });
 
   it("closes the drawer with Escape", () => {
