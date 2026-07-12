@@ -916,6 +916,149 @@ describe("custom settlement rule API", () => {
     },
   );
 
+  it.each([
+    {
+      label: "confirmation coverage rate exponent",
+      endpoint: "confirmAndSimulate",
+      mutate(result) {
+        result.summary.coverage.ratePercent = "1e3";
+      },
+    },
+    {
+      label: "confirmation coverage rate without scale",
+      endpoint: "confirmAndSimulate",
+      mutate(result) {
+        result.summary.coverage.ratePercent = "90";
+      },
+    },
+    {
+      label: "summary old total exponent",
+      endpoint: "confirmAndSimulate",
+      mutate(result) {
+        result.summary.totalOldYuan = "1e3";
+      },
+    },
+    {
+      label: "summary new total with a leading plus",
+      endpoint: "confirmAndSimulate",
+      mutate(result) {
+        result.summary.totalNewYuan = "+1100.00";
+      },
+    },
+    {
+      label: "summary delta with multiple decimal points",
+      endpoint: "confirmAndSimulate",
+      mutate(result) {
+        result.summary.totalDeltaYuan = "1.0.0";
+      },
+    },
+    {
+      label: "full summary increase exponent",
+      endpoint: "confirmAndSimulate",
+      mutate(result) {
+        result.summary.largestIncreases = [
+          {
+            bucket: "authorized_ordinal:000001",
+            deltaYuan: "1e3",
+            direction: "increase",
+          },
+        ];
+      },
+    },
+    {
+      label: "full summary decrease NaN",
+      endpoint: "confirmAndSimulate",
+      mutate(result) {
+        result.summary.largestDecreases = [
+          {
+            bucket: "authorized_ordinal:000001",
+            deltaYuan: "NaN",
+            direction: "decrease",
+          },
+        ];
+      },
+    },
+    {
+      label: "persisted confirmation change infinity",
+      endpoint: "confirmAndSimulate",
+      mutate(result) {
+        result.simulation.largestChanges = [
+          {
+            dimension: "scenario",
+            key: "authorized_ordinal:000001",
+            deltaAmountYuan: "Infinity",
+            direction: "increase",
+          },
+        ];
+      },
+    },
+    {
+      label: "persisted refresh change exponent",
+      endpoint: "refreshSession",
+      mutate(result) {
+        result.simulation.largestChanges = [
+          {
+            dimension: "scenario",
+            key: "authorized_ordinal:000001",
+            deltaAmountYuan: "1e3",
+            direction: "increase",
+          },
+        ];
+      },
+    },
+    {
+      label: "persisted unchanged sign comparison with malformed sign",
+      endpoint: "refreshSession",
+      mutate(result) {
+        result.simulation.largestChanges = [
+          {
+            dimension: "scenario",
+            key: "authorized_ordinal:000001",
+            deltaAmountYuan: "--0.00",
+            direction: "unchanged",
+          },
+        ];
+      },
+    },
+  ])(
+    "classifies malformed decimal 2xx data as one-fetch protocol failure: $label",
+    async ({ endpoint, mutate }) => {
+      const result = simulationResult();
+      mutate(result);
+      const payload =
+        endpoint === "refreshSession"
+          ? {
+              session: simulatedSessionSummary({
+                draft: result.draft,
+                simulation: result.simulation,
+              }),
+            }
+          : { result };
+      const fetchImpl = vi.fn(async () => jsonResponse(payload));
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+      const request =
+        endpoint === "refreshSession"
+          ? api.refreshSession({
+              projectId: PROJECT_ID,
+              sessionId: SESSION_ID,
+            })
+          : api.confirmAndSimulate({
+              projectId: PROJECT_ID,
+              sessionId: SESSION_ID,
+              body: {},
+            });
+
+      await expect(request).rejects.toMatchObject({
+        name: "CustomSettlementRuleApiError",
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        message: "结算规则服务返回了无法识别的响应",
+        retryable: true,
+        status: 200,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("accepts exact signed decimal directions at the storage boundaries", async () => {
     const result = simulationResult();
     result.summary.largestIncreases = [

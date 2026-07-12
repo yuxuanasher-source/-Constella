@@ -119,26 +119,35 @@ const POSTGRES_BIGINT_MIN = BigInt("-9223372036854775808");
 const POSTGRES_BIGINT_MAX = BigInt("9223372036854775807");
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
+const ZERO_BIGINT = BigInt(0);
+const HUNDRED_BIGINT = BigInt(100);
+const TEN_THOUSAND_BIGINT = BigInt(10_000);
+const EXACT_TWO_DECIMAL_PATTERN = /^-?(?:0|[1-9]\d*)\.\d{2}$/u;
 
 function fixedTwoDecimal(value) {
-  const negative = value < 0;
+  const negative = value < ZERO_BIGINT;
   const absolute = negative ? -value : value;
-  const whole = absolute / BigInt(100);
-  const fraction = String(absolute % BigInt(100)).padStart(2, "0");
+  const whole = absolute / HUNDRED_BIGINT;
+  const fraction = String(absolute % HUNDRED_BIGINT).padStart(2, "0");
   return `${negative ? "-" : ""}${whole}.${fraction}`;
 }
 
-function isCanonicalScaledDecimal(value, minimum, maximum) {
-  if (!/^-?(?:0|[1-9]\d*)\.\d{2}$/u.test(value)) return false;
+function parseExactScaledDecimal(value, minimum, maximum) {
+  if (typeof value !== "string" || !EXACT_TWO_DECIMAL_PATTERN.test(value)) {
+    return null;
+  }
   try {
     const scaled = BigInt(value.replace(".", ""));
-    return (
-      scaled >= minimum &&
-      scaled <= maximum &&
-      fixedTwoDecimal(scaled) === value
-    );
+    if (
+      scaled < minimum ||
+      scaled > maximum ||
+      fixedTwoDecimal(scaled) !== value
+    ) {
+      return null;
+    }
+    return scaled;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -146,26 +155,39 @@ const yuanDecimalSchema = z
   .string()
   .refine(
     (value) =>
-      isCanonicalScaledDecimal(value, POSTGRES_BIGINT_MIN, POSTGRES_BIGINT_MAX),
+      parseExactScaledDecimal(
+        value,
+        POSTGRES_BIGINT_MIN,
+        POSTGRES_BIGINT_MAX,
+      ) !== null,
     { message: "must be a canonical yuan decimal" },
   );
 const percentDecimalSchema = z
   .string()
   .refine(
     (value) =>
-      isCanonicalScaledDecimal(value, MIN_SAFE_BIGINT, MAX_SAFE_BIGINT),
+      parseExactScaledDecimal(value, MIN_SAFE_BIGINT, MAX_SAFE_BIGINT) !== null,
     { message: "must be a canonical percentage decimal" },
   );
 const coveragePercentSchema = percentDecimalSchema.refine((value) => {
-  const basisPoints = BigInt(value.replace(".", ""));
-  return basisPoints >= BigInt(0) && basisPoints <= BigInt(10_000);
+  const basisPoints = parseExactScaledDecimal(
+    value,
+    ZERO_BIGINT,
+    TEN_THOUSAND_BIGINT,
+  );
+  return basisPoints !== null;
 });
 
 function decimalDirectionMatches(value, direction) {
-  const scaled = BigInt(value.replace(".", ""));
-  if (direction === "increase") return scaled > BigInt(0);
-  if (direction === "decrease") return scaled < BigInt(0);
-  return scaled === BigInt(0);
+  const scaled = parseExactScaledDecimal(
+    value,
+    POSTGRES_BIGINT_MIN,
+    POSTGRES_BIGINT_MAX,
+  );
+  if (scaled === null) return false;
+  if (direction === "increase") return scaled > ZERO_BIGINT;
+  if (direction === "decrease") return scaled < ZERO_BIGINT;
+  return scaled === ZERO_BIGINT;
 }
 
 const ambiguitySchema = z.strictObject({
@@ -514,11 +536,25 @@ const simulationSummarySchema = z
     if (summary.zeroPayCount > evaluatedCount) {
       context.addIssue({ code: "custom", path: ["zeroPayCount"] });
     }
+    const validCoverageCounts =
+      Number.isSafeInteger(totalCount) &&
+      totalCount >= 0 &&
+      Number.isSafeInteger(evaluatedCount) &&
+      evaluatedCount >= 0;
     const expectedBps =
-      totalCount === 0
-        ? BigInt(0)
-        : (BigInt(evaluatedCount) * BigInt(10_000)) / BigInt(totalCount);
-    if (ratePercent !== fixedTwoDecimal(expectedBps)) {
+      !validCoverageCounts || totalCount === 0
+        ? ZERO_BIGINT
+        : (BigInt(evaluatedCount) * TEN_THOUSAND_BIGINT) / BigInt(totalCount);
+    const actualBps = parseExactScaledDecimal(
+      ratePercent,
+      ZERO_BIGINT,
+      TEN_THOUSAND_BIGINT,
+    );
+    if (
+      !validCoverageCounts ||
+      actualBps === null ||
+      actualBps !== expectedBps
+    ) {
       context.addIssue({ code: "custom", path: ["coverage", "ratePercent"] });
     }
     for (const field of ["zeroPayCount", "reviewRoutedCount", "blockedCount"]) {
@@ -534,10 +570,27 @@ const simulationSummarySchema = z
       context.addIssue({ code: "custom", path: ["totalDeltaYuan"] });
     }
     if (verified) {
-      const oldCents = BigInt(summary.totalOldYuan.replace(".", ""));
-      const newCents = BigInt(summary.totalNewYuan.replace(".", ""));
-      const deltaCents = BigInt(summary.totalDeltaYuan.replace(".", ""));
-      if (newCents - oldCents !== deltaCents) {
+      const oldCents = parseExactScaledDecimal(
+        summary.totalOldYuan,
+        POSTGRES_BIGINT_MIN,
+        POSTGRES_BIGINT_MAX,
+      );
+      const newCents = parseExactScaledDecimal(
+        summary.totalNewYuan,
+        POSTGRES_BIGINT_MIN,
+        POSTGRES_BIGINT_MAX,
+      );
+      const deltaCents = parseExactScaledDecimal(
+        summary.totalDeltaYuan,
+        POSTGRES_BIGINT_MIN,
+        POSTGRES_BIGINT_MAX,
+      );
+      if (
+        oldCents === null ||
+        newCents === null ||
+        deltaCents === null ||
+        newCents - oldCents !== deltaCents
+      ) {
         context.addIssue({ code: "custom", path: ["totalDeltaYuan"] });
       }
     }
