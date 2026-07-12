@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GET } from "./route";
 
-import { ConversationServiceError } from "@/features/ai/conversation-service";
+import {
+  ConversationServiceError,
+  createConversationService,
+  type ConversationPersistence,
+} from "@/features/ai/conversation-service";
 import { getCustomRuleRouteContext } from "@/features/settlements/custom-rule-route-context";
 
 vi.mock(
@@ -18,6 +22,7 @@ vi.mock(
 
 const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
 const USER_ID = "22222222-2222-4222-8222-222222222222";
+const AUTHOR_ID = "12121212-1212-4121-8121-121212121212";
 const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
 const SESSION_ID = "44444444-4444-4444-8444-444444444444";
 const DRAFT_ID = "55555555-5555-4555-8555-555555555555";
@@ -25,8 +30,11 @@ const DRAFT_ID = "55555555-5555-4555-8555-555555555555";
 function latestDraft() {
   return {
     id: DRAFT_ID,
+    organizationId: ORGANIZATION_ID,
+    projectId: PROJECT_ID,
     conversationId: SESSION_ID,
     revisionNumber: 4,
+    createdBy: AUTHOR_ID,
     status: "simulated",
     initialStatus: "contract_ready",
     businessContract: { title: "最新确认合同" },
@@ -160,7 +168,7 @@ describe("settlement rule AI session detail route", () => {
         PROJECT_ID,
       );
       expect(routeContext.conversation.getHistory).toHaveBeenCalledWith(
-        routeContext.actor,
+        { organizationId: ORGANIZATION_ID, userId: AUTHOR_ID },
         SESSION_ID,
       );
       expect(routeContext.repository.listDrafts).toHaveBeenCalledWith({
@@ -301,4 +309,166 @@ describe("settlement rule AI session detail route", () => {
     expect(routeContext.conversation.getHistory).not.toHaveBeenCalled();
     expect(routeContext.repository.listDrafts).not.toHaveBeenCalled();
   });
+
+  it("restores author-owned generic history for an authorized finance viewer", async () => {
+    const conversation = createRealConversationService();
+    await conversation.createConversation(
+      { organizationId: ORGANIZATION_ID, userId: AUTHOR_ID },
+      "结算规则会话",
+    );
+    const getHistory = vi.spyOn(conversation, "getHistory");
+    const routeContext = context("finance");
+    routeContext.conversation = conversation as never;
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await GET(new Request("http://localhost"), {
+      params: routeParams(),
+    });
+
+    expect(response.status).toBe(200);
+    expect(getHistory).toHaveBeenCalledWith(
+      { organizationId: ORGANIZATION_ID, userId: AUTHOR_ID },
+      SESSION_ID,
+    );
+    expect(getHistory).not.toHaveBeenCalledWith(routeContext.actor, SESSION_ID);
+  });
+
+  it.each([
+    ["organizationId", "99999999-9999-4999-8999-999999999999"],
+    ["projectId", "99999999-9999-4999-8999-999999999999"],
+    ["conversationId", "99999999-9999-4999-8999-999999999999"],
+  ])("rejects a persisted draft with mismatched %s", async (field, value) => {
+    const conversation = createRealConversationService();
+    const getHistory = vi.spyOn(conversation, "getHistory");
+    const routeContext = context("finance");
+    routeContext.conversation = conversation as never;
+    routeContext.repository.listDrafts.mockResolvedValue([
+      { ...latestDraft(), [field]: value },
+    ]);
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await GET(new Request("http://localhost"), {
+      params: routeParams(),
+    });
+
+    expect(response.status).toBe(404);
+    expect(getHistory).not.toHaveBeenCalled();
+  });
+
+  it("preserves the streamer denial from route context", async () => {
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      Response.json(
+        {
+          error: {
+            code: "CUSTOM_RULE_FORBIDDEN",
+            message: "Settlement rule authoring is limited to MCN staff",
+            retryable: false,
+          },
+        },
+        { status: 403 },
+      ) as never,
+    );
+
+    const response = await GET(new Request("http://localhost"), {
+      params: routeParams(),
+    });
+
+    expect(response.status).toBe(403);
+  });
 });
+
+function createRealConversationService() {
+  let conversation: {
+    id: string;
+    organizationId: string;
+    ownerUserId: string;
+    title: string;
+    status: "active";
+    lastMessageAt: string;
+    createdAt: string;
+    updatedAt: string;
+  } | null = null;
+  const persistence: ConversationPersistence = {
+    async createConversation(input) {
+      const now = "2026-07-12T02:00:00.000Z";
+      conversation = {
+        id: SESSION_ID,
+        organizationId: input.organizationId,
+        ownerUserId: input.ownerUserId,
+        title: input.title,
+        status: "active",
+        lastMessageAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return {
+        id: conversation.id,
+        title: conversation.title,
+        status: conversation.status,
+        lastMessageAt: conversation.lastMessageAt,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+      };
+    },
+    async listConversations(input) {
+      return conversation &&
+        conversation.organizationId === input.organizationId &&
+        conversation.ownerUserId === input.ownerUserId
+        ? [
+            {
+              id: conversation.id,
+              title: conversation.title,
+              status: conversation.status,
+              lastMessageAt: conversation.lastMessageAt,
+              createdAt: conversation.createdAt,
+              updatedAt: conversation.updatedAt,
+            },
+          ]
+        : [];
+    },
+    async getConversation(input) {
+      return conversation &&
+        conversation.id === input.conversationId &&
+        conversation.organizationId === input.organizationId &&
+        conversation.ownerUserId === input.ownerUserId
+        ? {
+            id: conversation.id,
+            title: conversation.title,
+            status: conversation.status,
+            lastMessageAt: conversation.lastMessageAt,
+            createdAt: conversation.createdAt,
+            updatedAt: conversation.updatedAt,
+          }
+        : null;
+    },
+    async listMessages() {
+      return [];
+    },
+    async listTurns() {
+      return [];
+    },
+    async createTurn() {
+      return null;
+    },
+    async getTurn() {
+      return null;
+    },
+    async transitionTurn() {
+      return false;
+    },
+    async completeTurn() {
+      return false;
+    },
+    async failTurn() {
+      return false;
+    },
+    async renewLease() {
+      return false;
+    },
+  };
+  return createConversationService(persistence);
+}

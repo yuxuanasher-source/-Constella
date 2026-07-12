@@ -19,11 +19,6 @@ const clientRequestIdSchema = z
   .regex(/^[A-Za-z0-9._:-]+$/u);
 const selectionSchema = z
   .strictObject({
-    selectionToken: z
-      .string()
-      .min(8)
-      .max(500)
-      .regex(/^[A-Za-z0-9._:-]+$/u),
     periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
     periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
     criteriaCodes: z
@@ -81,6 +76,14 @@ export async function POST(
       organizationId: context.auth.organizationId,
       featureKey: "settlement",
     });
+    const authorizedSelection = await context.authorizeSimulationSelection({
+      actor: context.actor,
+      projectId: inputParams.projectId,
+      conversationId: body.sessionId,
+      draftId: body.draftId,
+      expectedRevisionNumber: body.expectedRevisionNumber,
+      selection: body.simulationSelection,
+    });
     const result = await context.simulation.simulateExistingDraft({
       actor: context.actor,
       projectId: inputParams.projectId,
@@ -88,7 +91,7 @@ export async function POST(
       draftId: body.draftId,
       expectedRevisionNumber: body.expectedRevisionNumber,
       clientRequestId: body.clientRequestId,
-      selection: body.simulationSelection,
+      selection: authorizedSelection,
     });
     await context.audit({
       organizationId: context.auth.organizationId,

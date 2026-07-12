@@ -105,11 +105,18 @@ function simulationResult() {
 }
 
 function context(role: string) {
+  const authorizedSelection = {
+    ...body().simulationSelection,
+    selectionToken: `server:${"f".repeat(64)}`,
+  };
   return {
     supabase: { client: "supabase" },
     auth: { userId: USER_ID, organizationId: ORGANIZATION_ID, role },
     actor: { userId: USER_ID, organizationId: ORGANIZATION_ID },
     requireProjectAccess: vi.fn().mockResolvedValue(undefined),
+    authorizeSimulationSelection: vi
+      .fn()
+      .mockResolvedValue(authorizedSelection),
     simulation: {
       simulateExistingDraft: vi.fn().mockResolvedValue(simulationResult()),
     },
@@ -124,7 +131,6 @@ function body() {
     expectedRevisionNumber: 3,
     clientRequestId: "simulate-request-0001",
     simulationSelection: {
-      selectionToken: "selection-token-0001",
       periodStart: "2026-07-01",
       periodEnd: "2026-07-10",
       criteriaCodes: ["approved_reports", "period_overlap", "project_scope"],
@@ -167,6 +173,14 @@ describe("settlement rule simulation route", () => {
         organizationId: ORGANIZATION_ID,
         featureKey: "settlement",
       });
+      expect(routeContext.authorizeSimulationSelection).toHaveBeenCalledWith({
+        actor: routeContext.actor,
+        projectId: PROJECT_ID,
+        conversationId: SESSION_ID,
+        draftId: DRAFT_ID,
+        expectedRevisionNumber: 3,
+        selection: body().simulationSelection,
+      });
       expect(
         routeContext.simulation.simulateExistingDraft,
       ).toHaveBeenCalledWith({
@@ -176,7 +190,10 @@ describe("settlement rule simulation route", () => {
         draftId: DRAFT_ID,
         expectedRevisionNumber: 3,
         clientRequestId: "simulate-request-0001",
-        selection: body().simulationSelection,
+        selection: {
+          ...body().simulationSelection,
+          selectionToken: `server:${"f".repeat(64)}`,
+        },
       });
     },
   );
@@ -220,6 +237,61 @@ describe("settlement rule simulation route", () => {
 
     expect(response.status).toBe(400);
     expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(
+      routeContext.simulation.simulateExistingDraft,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("rejects client-supplied selection tokens before billing", async () => {
+    const routeContext = context("finance");
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(
+      request({
+        ...body(),
+        simulationSelection: {
+          ...body().simulationSelection,
+          selectionToken: "client:spoofed-selection",
+        },
+      }),
+      { params: Promise.resolve({ projectId: PROJECT_ID }) },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "INVALID_REQUEST",
+        path: ["simulationSelection"],
+        retryable: false,
+      },
+    });
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(routeContext.authorizeSimulationSelection).not.toHaveBeenCalled();
+    expect(
+      routeContext.simulation.simulateExistingDraft,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("stops before authorization or simulation when billing rejects the write", async () => {
+    const routeContext = context("finance");
+    vi.mocked(assertBillingWriteAllowed).mockRejectedValue(
+      new Error("Organization is read-only because billing is past due"),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "BILLING_WRITE_BLOCKED", retryable: false },
+    });
+    expect(routeContext.authorizeSimulationSelection).not.toHaveBeenCalled();
     expect(
       routeContext.simulation.simulateExistingDraft,
     ).not.toHaveBeenCalled();
@@ -279,6 +351,35 @@ describe("settlement rule simulation route", () => {
 
     expect(response.status).toBe(404);
     expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(
+      routeContext.simulation.simulateExistingDraft,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the server cannot authorize the requested selection", async () => {
+    const routeContext = context("finance");
+    const { CustomRuleRouteError } =
+      await import("@/features/settlements/custom-rule-route-context");
+    routeContext.authorizeSimulationSelection.mockRejectedValue(
+      new CustomRuleRouteError({
+        code: "CUSTOM_RULE_SELECTION_UNSUPPORTED",
+        message: "Historical simulation selection is unsupported",
+        status: 422,
+        retryable: false,
+      }),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "CUSTOM_RULE_SELECTION_UNSUPPORTED" },
+    });
     expect(
       routeContext.simulation.simulateExistingDraft,
     ).not.toHaveBeenCalled();

@@ -5,6 +5,7 @@ import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import {
   assertCustomRuleAuthorRole,
   customRuleErrorResponse,
+  customRuleResolvedFailureResponse,
   getCustomRuleRouteContext,
   parseCustomRuleJson,
   parseCustomRuleParams,
@@ -53,6 +54,8 @@ export async function POST(
       conversationId: inputParams.sessionId,
       ...body,
     });
+    const failureResponse = customRuleResolvedFailureResponse(result);
+    if (failureResponse) return failureResponse;
     await context.audit({
       organizationId: context.auth.organizationId,
       actorUserId: context.auth.userId,

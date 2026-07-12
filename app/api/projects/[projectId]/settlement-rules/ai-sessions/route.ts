@@ -7,6 +7,7 @@ import { businessRuleContractSchema } from "@/features/settlements/custom-rule-c
 import {
   assertCustomRuleAuthorRole,
   customRuleErrorResponse,
+  customRuleResolvedFailureResponse,
   getCustomRuleRouteContext,
   parseCustomRuleJson,
   parseCustomRuleParams,
@@ -57,6 +58,8 @@ export async function POST(
       seedContract: body.seedContract,
       initialAmbiguities: body.initialAmbiguities,
     });
+    const failureResponse = customRuleResolvedFailureResponse(result);
+    if (failureResponse) return failureResponse;
     await context.audit({
       organizationId: context.auth.organizationId,
       actorUserId: context.auth.userId,

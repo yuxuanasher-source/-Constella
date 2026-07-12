@@ -28,18 +28,21 @@ export async function GET(
 
     const input = parseCustomRuleParams(await params, paramsSchema);
     await context.requireProjectAccess(input.projectId);
-    const [history, drafts] = await Promise.all([
-      context.conversation.getHistory(context.actor, input.sessionId),
-      context.repository.listDrafts({
-        organizationId: context.auth.organizationId,
-        projectId: input.projectId,
-        conversationId: input.sessionId,
-        revisionOrder: "desc",
-        limit: 1,
-      }),
-    ]);
+    const drafts = await context.repository.listDrafts({
+      organizationId: context.auth.organizationId,
+      projectId: input.projectId,
+      conversationId: input.sessionId,
+      revisionOrder: "desc",
+      limit: 1,
+    });
     const draft = drafts[0];
-    if (!draft) {
+    if (
+      !draft ||
+      draft.organizationId !== context.auth.organizationId ||
+      draft.projectId !== input.projectId ||
+      draft.conversationId !== input.sessionId ||
+      !z.string().uuid().safeParse(draft.createdBy).success
+    ) {
       throw new CustomRuleRouteError({
         code: "CUSTOM_RULE_SESSION_NOT_FOUND",
         message: "Settlement rule session not found",
@@ -47,6 +50,13 @@ export async function GET(
         retryable: false,
       });
     }
+    const history = await context.conversation.getHistory(
+      {
+        organizationId: context.auth.organizationId,
+        userId: draft.createdBy,
+      },
+      input.sessionId,
+    );
     const simulations = await context.repository.listSimulations({
       organizationId: context.auth.organizationId,
       projectId: input.projectId,

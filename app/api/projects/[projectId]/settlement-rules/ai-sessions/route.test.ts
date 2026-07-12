@@ -241,6 +241,27 @@ describe("settlement rule AI session start route", () => {
     expect(routeContext.authoring.startSession).not.toHaveBeenCalled();
   });
 
+  it("stops before conversation or authoring when billing rejects the write", async () => {
+    const routeContext = context("owner");
+    vi.mocked(assertBillingWriteAllowed).mockRejectedValue(
+      new Error("Organization is read-only because billing is past due"),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "BILLING_WRITE_BLOCKED", retryable: false },
+    });
+    expect(routeContext.conversation.createConversation).not.toHaveBeenCalled();
+    expect(routeContext.authoring.startSession).not.toHaveBeenCalled();
+  });
+
   it("returns a safe draft DTO without raw prompts or provider metadata", async () => {
     vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
       context("owner") as never,
@@ -329,5 +350,46 @@ describe("settlement rule AI session start route", () => {
       },
     });
     expect(JSON.stringify(payload)).not.toContain("sk-provider-secret");
+  });
+
+  it("maps a resolved provider failure to a safe non-2xx envelope", async () => {
+    const routeContext = context("owner");
+    routeContext.authoring.startSession.mockResolvedValue({
+      ok: false,
+      code: "SETTLEMENT_AI_PROVIDER_FAILED",
+      retryable: true,
+      conversationId: SESSION_ID,
+      sourceTurnId: "77777777-7777-4777-8777-777777777777",
+      turnTrace: {
+        turnId: "77777777-7777-4777-8777-777777777777",
+        userMessageId: "88888888-8888-4888-8888-888888888888",
+        assistantMessageId: "99999999-9999-4999-8999-999999999999",
+      },
+      failedDraft: {
+        ...authoringResult().draft,
+        promptText: "raw prompt secret amount 88888",
+        model: "provider-private-stack",
+      },
+    });
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+    const payload = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(payload).toEqual({
+      error: {
+        code: "CUSTOM_RULE_AI_UNAVAILABLE",
+        message: "Settlement rule AI is unavailable",
+        retryable: true,
+      },
+    });
+    expect(JSON.stringify(payload)).not.toContain("88888");
+    expect(JSON.stringify(payload)).not.toContain("provider-private-stack");
+    expect(routeContext.audit).not.toHaveBeenCalled();
   });
 });

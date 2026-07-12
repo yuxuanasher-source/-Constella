@@ -56,7 +56,7 @@ function result() {
       id: "77777777-7777-4777-8777-777777777777",
       createdAt: "2026-07-12T05:00:01.000Z",
       dataSelectionHash: "e".repeat(64),
-      sampleSource: { kind: "synthetic_scenarios" },
+      sampleSource: { kind: "approved_operations" },
       sampleSelection: {
         periodStart: "2026-07-01",
         periodEnd: "2026-07-10",
@@ -108,11 +108,18 @@ function result() {
 }
 
 function context(role: string) {
+  const authorizedSelection = {
+    ...body().simulationSelection,
+    selectionToken: `server:${"f".repeat(64)}`,
+  };
   return {
     supabase: { client: "supabase" },
     auth: { userId: USER_ID, organizationId: ORGANIZATION_ID, role },
     actor: { userId: USER_ID, organizationId: ORGANIZATION_ID },
     requireProjectAccess: vi.fn().mockResolvedValue(undefined),
+    authorizeSimulationSelection: vi
+      .fn()
+      .mockResolvedValue(authorizedSelection),
     authoring: { confirmContract: vi.fn().mockResolvedValue(result()) },
     audit: vi.fn().mockResolvedValue(undefined),
   };
@@ -129,7 +136,6 @@ function body() {
     expectedCatalogVersion: "b".repeat(64),
     expectedFormulaHash: "c".repeat(64),
     simulationSelection: {
-      selectionToken: "selection-token-0001",
       periodStart: "2026-07-01",
       periodEnd: "2026-07-10",
       criteriaCodes: ["approved_reports", "period_overlap", "project_scope"],
@@ -174,11 +180,23 @@ describe("settlement rule contract confirmation route", () => {
         organizationId: ORGANIZATION_ID,
         featureKey: "settlement",
       });
+      expect(routeContext.authorizeSimulationSelection).toHaveBeenCalledWith({
+        actor: routeContext.actor,
+        projectId: PROJECT_ID,
+        conversationId: SESSION_ID,
+        draftId: DRAFT_ID,
+        expectedRevisionNumber: 2,
+        selection: body().simulationSelection,
+      });
       expect(routeContext.authoring.confirmContract).toHaveBeenCalledWith({
         actor: routeContext.actor,
         projectId: PROJECT_ID,
         conversationId: SESSION_ID,
         ...body(),
+        simulationSelection: {
+          ...body().simulationSelection,
+          selectionToken: `server:${"f".repeat(64)}`,
+        },
       });
     },
   );
@@ -193,6 +211,25 @@ describe("settlement rule contract confirmation route", () => {
 
     expect(response.status).toBe(403);
     expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(routeContext.authoring.confirmContract).not.toHaveBeenCalled();
+  });
+
+  it("stops before selection or confirmation when billing rejects the write", async () => {
+    const routeContext = context("owner");
+    vi.mocked(assertBillingWriteAllowed).mockRejectedValue(
+      new Error("Organization is read-only because billing is past due"),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), { params: params() });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "BILLING_WRITE_BLOCKED", retryable: false },
+    });
+    expect(routeContext.authorizeSimulationSelection).not.toHaveBeenCalled();
     expect(routeContext.authoring.confirmContract).not.toHaveBeenCalled();
   });
 
@@ -229,6 +266,36 @@ describe("settlement rule contract confirmation route", () => {
       expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
       expect(routeContext.authoring.confirmContract).not.toHaveBeenCalled();
     }
+  });
+
+  it("rejects client-supplied selection tokens before billing", async () => {
+    const routeContext = context("owner");
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(
+      request({
+        ...body(),
+        simulationSelection: {
+          ...body().simulationSelection,
+          selectionToken: "client:spoofed-selection",
+        },
+      }),
+      { params: params() },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "INVALID_REQUEST",
+        path: ["simulationSelection"],
+        retryable: false,
+      },
+    });
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(routeContext.authorizeSimulationSelection).not.toHaveBeenCalled();
+    expect(routeContext.authoring.confirmContract).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -279,5 +346,72 @@ describe("settlement rule contract confirmation route", () => {
     expect(response.status).toBe(404);
     expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
     expect(routeContext.authoring.confirmContract).not.toHaveBeenCalled();
+  });
+
+  it("maps a resolved conversation failure to a safe non-2xx envelope", async () => {
+    const routeContext = context("owner");
+    routeContext.authoring.confirmContract.mockResolvedValue({
+      ok: false,
+      code: "conversation_failed",
+      retryable: true,
+      conversationId: SESSION_ID,
+      sourceTurnId: "88888888-8888-4888-8888-888888888888",
+      turnTrace: {
+        turnId: "88888888-8888-4888-8888-888888888888",
+        userMessageId: "99999999-9999-4999-8999-999999999999",
+        assistantMessageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      },
+      failedDraft: {
+        ...result().draft,
+        promptText: "raw confirmation secret 99999",
+        model: "private conversation stack",
+      },
+    });
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), { params: params() });
+    const payload = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(payload).toEqual({
+      error: {
+        code: "CUSTOM_RULE_AI_UNAVAILABLE",
+        message: "Settlement rule AI is unavailable",
+        retryable: true,
+      },
+    });
+    expect(JSON.stringify(payload)).not.toContain("99999");
+    expect(JSON.stringify(payload)).not.toContain("private conversation");
+    expect(routeContext.audit).not.toHaveBeenCalled();
+  });
+
+  it("maps reconciliation exceptions to a redacted stable conflict", async () => {
+    const routeContext = context("owner");
+    routeContext.authoring.confirmContract.mockRejectedValue(
+      new CustomRuleAuthoringServiceError(
+        "conversation_reconciliation_failed",
+        "provider key sk-secret and raw prompt stack",
+        false,
+      ),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), { params: params() });
+    const payload = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(payload).toEqual({
+      error: {
+        code: "CUSTOM_RULE_SESSION_CONFLICT",
+        message: "Settlement rule session state changed",
+        retryable: false,
+      },
+    });
+    expect(JSON.stringify(payload)).not.toContain("sk-secret");
+    expect(JSON.stringify(payload)).not.toContain("raw prompt");
   });
 });

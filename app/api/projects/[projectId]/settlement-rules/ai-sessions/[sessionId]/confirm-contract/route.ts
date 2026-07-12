@@ -5,6 +5,7 @@ import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import {
   assertCustomRuleAuthorRole,
   customRuleErrorResponse,
+  customRuleResolvedFailureResponse,
   getCustomRuleRouteContext,
   parseCustomRuleJson,
   parseCustomRuleParams,
@@ -14,11 +15,6 @@ import {
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const selectionSchema = z
   .strictObject({
-    selectionToken: z
-      .string()
-      .min(8)
-      .max(500)
-      .regex(/^[A-Za-z0-9._:-]+$/u),
     periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
     periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
     criteriaCodes: z
@@ -80,12 +76,23 @@ export async function POST(
       organizationId: context.auth.organizationId,
       featureKey: "settlement",
     });
+    const authorizedSelection = await context.authorizeSimulationSelection({
+      actor: context.actor,
+      projectId: inputParams.projectId,
+      conversationId: inputParams.sessionId,
+      draftId: body.expectedDraftId,
+      expectedRevisionNumber: body.expectedRevisionNumber,
+      selection: body.simulationSelection,
+    });
     const result = await context.authoring.confirmContract({
       actor: context.actor,
       projectId: inputParams.projectId,
       conversationId: inputParams.sessionId,
       ...body,
+      simulationSelection: authorizedSelection,
     });
+    const failureResponse = customRuleResolvedFailureResponse(result);
+    if (failureResponse) return failureResponse;
     await context.audit({
       organizationId: context.auth.organizationId,
       actorUserId: context.auth.userId,

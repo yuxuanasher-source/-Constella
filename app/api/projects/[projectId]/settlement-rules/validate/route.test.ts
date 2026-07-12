@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
 
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
+import { diffBusinessRuleContracts } from "@/features/settlements/custom-rule-contract";
+import { buildCustomRuleTemplateExplanation } from "@/features/settlements/custom-rule-explanation";
 import { getCustomRuleRouteContext } from "@/features/settlements/custom-rule-route-context";
 import { validateCustomRuleFormula } from "@/features/settlements/custom-rule-validator";
 
@@ -13,6 +15,28 @@ vi.mock("@/features/billing/route-guard", () => ({
 vi.mock("@/features/settlements/custom-rule-validator", () => ({
   validateCustomRuleFormula: vi.fn(),
 }));
+
+vi.mock(
+  "@/features/settlements/custom-rule-contract",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/features/settlements/custom-rule-contract")
+      >();
+    return { ...actual, diffBusinessRuleContracts: vi.fn() };
+  },
+);
+
+vi.mock(
+  "@/features/settlements/custom-rule-explanation",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/features/settlements/custom-rule-explanation")
+      >();
+    return { ...actual, buildCustomRuleTemplateExplanation: vi.fn() };
+  },
+);
 
 vi.mock(
   "@/features/settlements/custom-rule-route-context",
@@ -113,9 +137,12 @@ function request(body: unknown = validBody()) {
 }
 
 function validBody() {
+  const previousContract = contract();
+  previousContract.summary = "旧版按场结算说明。";
   return {
     formula: "money_result({ final: yuan(record.system_minutes * 100 / 60) })",
     contract: contract(),
+    previousContract,
   };
 }
 
@@ -130,6 +157,16 @@ describe("settlement rule validation route", () => {
       parameters: [],
       formulaHash: "a".repeat(64),
     } as never);
+    vi.mocked(buildCustomRuleTemplateExplanation).mockReturnValue(
+      "最终金额按系统直播时长和小时单价确定。",
+    );
+    vi.mocked(diffBusinessRuleContracts).mockReturnValue([
+      {
+        field: "summary",
+        before: "旧版按场结算说明。",
+        after: "每场直播按系统时长计算主播应付金额。",
+      },
+    ] as never);
   });
 
   it.each(["owner", "ops_manager", "operator_business"])(
@@ -148,11 +185,27 @@ describe("settlement rule validation route", () => {
       await expect(response.json()).resolves.toEqual({
         validation: {
           ok: true,
+          compiledAst: { kind: "literal", value: 1 },
+          explanation: "最终金额按系统直播时长和小时单价确定。",
+          contractDiff: [
+            {
+              field: "summary",
+              before: "旧版按场结算说明。",
+              after: "每场直播按系统时长计算主播应付金额。",
+            },
+          ],
           variables: ["system_minutes"],
           parameters: [],
           formulaHash: "a".repeat(64),
         },
       });
+      expect(buildCustomRuleTemplateExplanation).toHaveBeenCalledWith({
+        ast: { kind: "literal", value: 1 },
+      });
+      expect(diffBusinessRuleContracts).toHaveBeenCalledWith(
+        validBody().previousContract,
+        validBody().contract,
+      );
       expect(routeContext.requireProjectAccess).toHaveBeenCalledWith(
         PROJECT_ID,
       );
@@ -184,6 +237,28 @@ describe("settlement rule validation route", () => {
     });
     expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
     expect(validateCustomRuleFormula).not.toHaveBeenCalled();
+  });
+
+  it("stops before validation when billing rejects the write", async () => {
+    const routeContext = context("owner");
+    vi.mocked(assertBillingWriteAllowed).mockRejectedValue(
+      new Error("Organization is read-only because billing is past due"),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "BILLING_WRITE_BLOCKED", retryable: false },
+    });
+    expect(validateCustomRuleFormula).not.toHaveBeenCalled();
+    expect(buildCustomRuleTemplateExplanation).not.toHaveBeenCalled();
+    expect(diffBusinessRuleContracts).not.toHaveBeenCalled();
   });
 
   it("returns malformed JSON as a safe 400 instead of an empty object", async () => {

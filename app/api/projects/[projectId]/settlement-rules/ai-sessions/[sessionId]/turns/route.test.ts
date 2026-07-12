@@ -140,6 +140,24 @@ describe("settlement rule AI session turn route", () => {
     expect(routeContext.authoring.answerOrRevise).not.toHaveBeenCalled();
   });
 
+  it("stops before revision when billing rejects the write", async () => {
+    const routeContext = context("owner");
+    vi.mocked(assertBillingWriteAllowed).mockRejectedValue(
+      new Error("Organization is read-only because billing is past due"),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), { params: params() });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "BILLING_WRITE_BLOCKED", retryable: false },
+    });
+    expect(routeContext.authoring.answerOrRevise).not.toHaveBeenCalled();
+  });
+
   it("returns a safe revision DTO", async () => {
     vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
       context("owner") as never,
@@ -232,5 +250,43 @@ describe("settlement rule AI session turn route", () => {
     expect(response.status).toBe(404);
     expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
     expect(routeContext.authoring.answerOrRevise).not.toHaveBeenCalled();
+  });
+
+  it("maps a resolved persistence failure to a safe non-2xx envelope", async () => {
+    const routeContext = context("owner");
+    routeContext.authoring.answerOrRevise.mockResolvedValue({
+      ok: false,
+      code: "persistence_failed",
+      retryable: true,
+      conversationId: SESSION_ID,
+      sourceTurnId: "77777777-7777-4777-8777-777777777777",
+      turnTrace: {
+        turnId: "77777777-7777-4777-8777-777777777777",
+        userMessageId: "88888888-8888-4888-8888-888888888888",
+        assistantMessageId: "99999999-9999-4999-8999-999999999999",
+      },
+      failedDraft: {
+        ...result().draft,
+        promptText: "private persistence prompt",
+        model: "private persistence stack",
+      },
+    });
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), { params: params() });
+    const payload = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(payload).toEqual({
+      error: {
+        code: "CUSTOM_RULE_STORAGE_UNAVAILABLE",
+        message: "Settlement rule authoring storage is unavailable",
+        retryable: true,
+      },
+    });
+    expect(JSON.stringify(payload)).not.toContain("private persistence");
+    expect(routeContext.audit).not.toHaveBeenCalled();
   });
 });

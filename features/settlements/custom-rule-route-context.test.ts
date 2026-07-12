@@ -415,3 +415,369 @@ describe("custom rule route context", () => {
     expect(JSON.stringify(body)).not.toContain("raw prompt");
   });
 });
+
+type QueryChain = {
+  select: ReturnType<typeof vi.fn>;
+  eq: ReturnType<typeof vi.fn>;
+  gte: ReturnType<typeof vi.fn>;
+  lte: ReturnType<typeof vi.fn>;
+  in: ReturnType<typeof vi.fn>;
+  not: ReturnType<typeof vi.fn>;
+  order: ReturnType<typeof vi.fn>;
+  limit: ReturnType<typeof vi.fn>;
+  returns: ReturnType<typeof vi.fn>;
+};
+
+function queryChain(data: unknown[], error: unknown = null): QueryChain {
+  const query = {} as QueryChain;
+  query.select = vi.fn(() => query);
+  query.eq = vi.fn(() => query);
+  query.gte = vi.fn(() => query);
+  query.lte = vi.fn(() => query);
+  query.in = vi.fn(() => query);
+  query.not = vi.fn(() => query);
+  query.order = vi.fn(() => query);
+  query.limit = vi.fn(() => query);
+  query.returns = vi.fn().mockResolvedValue({ data, error });
+  return query;
+}
+
+function evidenceDraft(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "55555555-5555-4555-8555-555555555555",
+    organizationId: ORGANIZATION_ID,
+    projectId: PROJECT_ID,
+    conversationId: "44444444-4444-4444-8444-444444444444",
+    revisionNumber: 3,
+    createdBy: USER_ID,
+    status: "contract_ready",
+    initialStatus: "contract_ready",
+    businessContract: {
+      scope: "payable",
+      executionGrain: "report",
+      businessTimezone: "Asia/Shanghai",
+      requiredInputs: [{ name: "system_minutes" }],
+    },
+    ...overrides,
+  };
+}
+
+function approvedReport(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    organization_id: ORGANIZATION_ID,
+    project_id: PROJECT_ID,
+    streamer_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    system_duration: 60,
+    screenshot_duration: 59,
+    settlement_duration: 60,
+    evidence_level: "green",
+    time_source: "system",
+    viewers: 120,
+    reviewed_at: "2026-07-05T08:00:00.000Z",
+    created_at: "2026-07-05T07:00:00.000Z",
+    settled_batch_item_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    live_tasks: { system_started_at: "2026-07-05T06:00:00.000Z" },
+    ...overrides,
+  };
+}
+
+function lockedSettlementItem(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    organization_id: ORGANIZATION_ID,
+    project_id: PROJECT_ID,
+    live_report_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    computed_amount: "10.00",
+    manual_amount: "2.00",
+    adjustment_amount: "0.50",
+    settlement_batches: {
+      id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      status: "locked",
+      batch_type: "payable",
+      locked_at: "2026-07-10T00:00:00.000Z",
+    },
+    ...overrides,
+  };
+}
+
+function joinedStreamer(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    organization_id: ORGANIZATION_ID,
+    project_id: PROJECT_ID,
+    streamer_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    hourly_rate: "100.00",
+    base_salary: "1000.00",
+    cps_rate_bps: 2000,
+    collaboration_id: null,
+    streamers: { source_type: "external" },
+    ...overrides,
+  };
+}
+
+function selection() {
+  return {
+    periodStart: "2026-07-01",
+    periodEnd: "2026-07-10",
+    criteriaCodes: [
+      "approved_reports",
+      "period_overlap",
+      "complete_evidence",
+      "project_scope",
+    ] as const,
+  };
+}
+
+async function evidenceHarness(input?: {
+  reports?: unknown[];
+  items?: unknown[];
+  streamers?: unknown[];
+  draft?: ReturnType<typeof evidenceDraft>;
+}) {
+  const reports = queryChain(input?.reports ?? [approvedReport()]);
+  const items = queryChain(input?.items ?? [lockedSettlementItem()]);
+  const streamers = queryChain(input?.streamers ?? [joinedStreamer()]);
+  const client = {
+    from: vi.fn((table: string) => {
+      if (table === "live_reports") return reports;
+      if (table === "settlement_batch_items") return items;
+      if (table === "project_streamers") return streamers;
+      throw new Error(`Unexpected table: ${table}`);
+    }),
+  };
+  const repository = {
+    listDrafts: vi.fn().mockResolvedValue([input?.draft ?? evidenceDraft()]),
+  };
+  const routeModule = await import("./custom-rule-route-context");
+  const createAdapter = (
+    routeModule as typeof routeModule & {
+      createSupabaseCustomRuleEvidenceAdapter: (input: {
+        client: unknown;
+        repository: unknown;
+      }) => {
+        authorizeSelection(input: Record<string, unknown>): Promise<{
+          selectionToken: string;
+          periodStart: string;
+          periodEnd: string;
+          criteriaCodes: readonly string[];
+        }>;
+        loadAuthorizedEvidence(input: Record<string, unknown>): Promise<{
+          provenance: {
+            selectionToken: string;
+            evidenceHash: string;
+            immutableSourceVersions: Array<{
+              source: string;
+              version: string;
+            }>;
+          };
+          sampleSource: { kind: string };
+          sampleSelection: { populationCount: number };
+          records: Array<{
+            recordId: string;
+            sourceVersion: { version: string };
+            variables: Record<string, unknown>;
+            currentRuleResult: unknown;
+          }>;
+        }>;
+      };
+    }
+  ).createSupabaseCustomRuleEvidenceAdapter;
+  const adapter = createAdapter({ client, repository });
+  return { adapter, client, repository, reports, items, streamers };
+}
+
+function authorizationInput(
+  selectionInput: Record<string, unknown> = selection(),
+) {
+  return {
+    actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+    projectId: PROJECT_ID,
+    conversationId: "44444444-4444-4444-8444-444444444444",
+    draftId: "55555555-5555-4555-8555-555555555555",
+    expectedRevisionNumber: 3,
+    selection: selectionInput,
+  };
+}
+
+describe("Supabase custom-rule authorized evidence adapter", () => {
+  it("loads scoped approved history with locked current-rule values", async () => {
+    const harness = await evidenceHarness();
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(authorized.selectionToken).toMatch(/^server:[a-f0-9]{64}$/u);
+    expect(evidence.sampleSource).toEqual({ kind: "historical_settlements" });
+    expect(evidence.sampleSelection.populationCount).toBe(1);
+    expect(evidence.records).toHaveLength(1);
+    expect(evidence.records[0]).toMatchObject({
+      recordId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      variables: {
+        system_minutes: { type: "integer", value: 60 },
+        settlement_minutes: { type: "integer", value: 60 },
+        base_hourly_rate: { type: "money_cents", amountCents: 10_000 },
+        cps_rate: { type: "rate_bps", rateBps: 2000 },
+      },
+      currentRuleResult: {
+        unitSource: "current_rule_cents",
+        amountCents: "1250",
+      },
+    });
+    expect(evidence.provenance.selectionToken).toBe(authorized.selectionToken);
+    expect(evidence.provenance.evidenceHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(evidence.provenance.immutableSourceVersions).toHaveLength(1);
+    expect(harness.reports.eq).toHaveBeenCalledWith(
+      "organization_id",
+      ORGANIZATION_ID,
+    );
+    expect(harness.reports.eq).toHaveBeenCalledWith("project_id", PROJECT_ID);
+    expect(harness.reports.eq).toHaveBeenCalledWith("status", "approved");
+    expect(harness.reports.gte).toHaveBeenCalledWith(
+      "reviewed_at",
+      "2026-07-01T00:00:00.000Z",
+    );
+    expect(harness.reports.lte).toHaveBeenCalledWith(
+      "reviewed_at",
+      "2026-07-10T23:59:59.999Z",
+    );
+    expect(harness.items.eq).toHaveBeenCalledWith(
+      "settlement_batches.status",
+      "locked",
+    );
+  });
+
+  it("returns explicit approved-operation no-history semantics", async () => {
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [],
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.sampleSource).toEqual({ kind: "approved_operations" });
+    expect(evidence.sampleSelection.populationCount).toBe(1);
+    expect(evidence.records).toEqual([]);
+    expect(JSON.stringify(evidence)).not.toContain("synthetic_scenarios");
+  });
+
+  it("returns empty approved-operation evidence when the project has no history", async () => {
+    const harness = await evidenceHarness({ reports: [], items: [] });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.sampleSource).toEqual({ kind: "approved_operations" });
+    expect(evidence.sampleSelection.populationCount).toBe(0);
+    expect(evidence.records).toEqual([]);
+    expect(harness.client.from).not.toHaveBeenCalledWith("project_streamers");
+  });
+
+  it("changes the trusted token and source version when selected evidence changes", async () => {
+    const first = await evidenceHarness();
+    const second = await evidenceHarness({
+      items: [lockedSettlementItem({ adjustment_amount: "1.50" })],
+    });
+
+    const firstSelection =
+      await first.adapter.authorizeSelection(authorizationInput());
+    const secondSelection =
+      await second.adapter.authorizeSelection(authorizationInput());
+    const firstEvidence = await first.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: firstSelection,
+    });
+    const secondEvidence = await second.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: secondSelection,
+    });
+
+    expect(secondSelection.selectionToken).not.toBe(
+      firstSelection.selectionToken,
+    );
+    expect(secondEvidence.records[0]?.sourceVersion.version).not.toBe(
+      firstEvidence.records[0]?.sourceVersion.version,
+    );
+    expect(secondEvidence.provenance.evidenceHash).not.toBe(
+      firstEvidence.provenance.evidenceHash,
+    );
+  });
+
+  it.each([
+    [
+      "organization",
+      { organization_id: "99999999-9999-4999-8999-999999999999" },
+    ],
+    ["project", { project_id: "99999999-9999-4999-8999-999999999999" }],
+  ])(
+    "rejects a cross-%s row even if a query returns it",
+    async (_label, mismatch) => {
+      const harness = await evidenceHarness({
+        reports: [approvedReport(mismatch)],
+      });
+
+      await expect(
+        harness.adapter.authorizeSelection(authorizationInput()),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_PROJECT_NOT_FOUND",
+        status: 404,
+      });
+    },
+  );
+
+  it.each([
+    {
+      ...selection(),
+      criteriaCodes: ["approved_reports", "project_scope"],
+    },
+    selection(),
+  ])(
+    "fails closed for unsupported selection or execution grain",
+    async (value) => {
+      const draft =
+        value.criteriaCodes.length === 4
+          ? evidenceDraft({
+              businessContract: {
+                scope: "payable",
+                executionGrain: "project_period",
+                businessTimezone: "Asia/Shanghai",
+                requiredInputs: [{ name: "period_settlement_minutes" }],
+              },
+            })
+          : evidenceDraft();
+      const harness = await evidenceHarness({ draft });
+
+      await expect(
+        harness.adapter.authorizeSelection(authorizationInput(value)),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_SELECTION_UNSUPPORTED",
+        status: 422,
+        retryable: false,
+      });
+      expect(harness.client.from).not.toHaveBeenCalled();
+    },
+  );
+});
