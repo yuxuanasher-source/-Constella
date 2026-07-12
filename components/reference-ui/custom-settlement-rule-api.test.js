@@ -115,6 +115,28 @@ function draft(overrides = {}) {
   };
 }
 
+function confirmableDraft(overrides = {}) {
+  return draft({
+    unresolvedAmbiguities: [
+      {
+        code: "confirm_contract",
+        question: "请确认以上业务规则无误？",
+        required: true,
+      },
+    ],
+    ...overrides,
+  });
+}
+
+function supersededClarifyingDraft(overrides = {}) {
+  return confirmableDraft({
+    status: "superseded",
+    supersededByDraftId: "77777777-7777-4777-8777-777777777777",
+    supersededAt: "2026-07-12T01:01:00.000Z",
+    ...overrides,
+  });
+}
+
 function clarifyingResult(overrides = {}) {
   return {
     ok: true,
@@ -406,6 +428,76 @@ describe("custom settlement rule API", () => {
     );
   });
 
+  it.each([
+    [
+      "clarifying idempotent replay",
+      () => ({
+        ...clarifyingResult(),
+        draft: supersededClarifyingDraft(),
+        duplicate: true,
+      }),
+    ],
+    [
+      "completed retry readback",
+      () => ({
+        ok: true,
+        kind: "retry_readback",
+        conversationId: SESSION_ID,
+        draft: supersededClarifyingDraft(),
+        turn: {
+          turnId: "88888888-8888-4888-8888-888888888888",
+          status: "completed",
+          attempt: 2,
+          duplicate: true,
+        },
+      }),
+    ],
+  ])(
+    "accepts a real superseded clarifying draft from %s",
+    async (_label, result) => {
+      const fetchImpl = vi.fn(async () => jsonResponse({ result: result() }));
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+
+      await expect(
+        api.answerOrRevise({
+          projectId: PROJECT_ID,
+          sessionId: SESSION_ID,
+          body: {},
+        }),
+      ).resolves.toMatchObject({
+        result: {
+          draft: {
+            initialStatus: "clarifying",
+            status: "superseded",
+            supersededByDraftId: "77777777-7777-4777-8777-777777777777",
+          },
+        },
+      });
+    },
+  );
+
+  it("accepts persisted simulation counts when the sample and history match coverage", async () => {
+    const result = simulationResult();
+    const fetchImpl = vi.fn(async () => jsonResponse({ result }));
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.confirmAndSimulate({
+        projectId: PROJECT_ID,
+        sessionId: SESSION_ID,
+        body: {},
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        simulation: {
+          sampleSelection: { sampledCount: 10 },
+          coverage: { totalRecords: 10 },
+          historicalTotals: { recordCount: 10 },
+        },
+      },
+    });
+  });
+
   it("aborts the stale request when a newer request starts", async () => {
     let firstSignal;
     const fetchImpl = vi
@@ -438,71 +530,172 @@ describe("custom settlement rule API", () => {
   });
 
   it.each([
-    ["empty required contract array", (payload) => {
-      payload.result.draft.businessContract.calculationComponents = [];
-    }],
-    ["invalid business identifier", (payload) => {
-      payload.result.draft.businessContract.requiredInputs[0].name =
-        "bad identifier";
-    }],
-    ["invalid canonical timestamp", (payload) => {
-      payload.result.draft.businessContract.effectiveStartAt =
-        "2026-07-01 00:00:00";
-    }],
-    ["invalid IANA timezone", (payload) => {
-      payload.result.draft.businessContract.businessTimezone =
-        "Not/A_Timezone";
-    }],
-    ["mismatched typed parameter default", (payload) => {
-      payload.result.draft.businessContract.parameters[0].defaultValue = {
-        type: "rate_bps",
-        rateBps: 1_000,
-      };
-    }],
-    ["mismatched generated result type", (payload) => {
-      payload.result = simulationResult();
-      payload.result.draft.generatedTestCases[0].expectedResult = {
-        type: "integer",
-        value: 100,
-      };
-    }],
-    ["strict extra response key", (payload) => {
-      payload.result.draft.providerStack = "private-provider-stack";
-    }],
-    ["malformed hash", (payload) => {
-      payload.result.draft.contractHash = "not-a-sha256";
-    }],
-    ["unsafe numeric value", (payload) => {
-      payload.result.draft.businessContract.parameters[0].defaultValue = {
-        type: "money_cents",
-        amountCents: Number.MAX_SAFE_INTEGER + 1,
-      };
-    }],
-    ["malformed public decimal", (payload) => {
-      payload.result = simulationResult();
-      payload.result.simulation.deltas.payableAmountYuan = "1e3";
-    }],
-    ["invalid simulation count invariant", (payload) => {
-      payload.result = simulationResult();
-      payload.result.simulation.coverage.skippedRecords = 9;
-    }],
-    ["invalid summary status-count invariant", (payload) => {
-      payload.result = simulationResult();
-      payload.result.summary.reviewRoutedCount = 0;
-    }],
-    ["terminal retry-in-progress status", (payload) => {
-      payload.result = {
-        ok: true,
-        kind: "retry_in_progress",
-        conversationId: SESSION_ID,
-        turn: {
-          turnId: "77777777-7777-4777-8777-777777777777",
-          status: "completed",
-          attempt: 1,
-          duplicate: true,
-        },
-      };
-    }],
+    [
+      "empty required contract array",
+      (payload) => {
+        payload.result.draft.businessContract.calculationComponents = [];
+      },
+    ],
+    [
+      "invalid business identifier",
+      (payload) => {
+        payload.result.draft.businessContract.requiredInputs[0].name =
+          "bad identifier";
+      },
+    ],
+    [
+      "invalid canonical timestamp",
+      (payload) => {
+        payload.result.draft.businessContract.effectiveStartAt =
+          "2026-07-01 00:00:00";
+      },
+    ],
+    [
+      "invalid IANA timezone",
+      (payload) => {
+        payload.result.draft.businessContract.businessTimezone =
+          "Not/A_Timezone";
+      },
+    ],
+    [
+      "missing output schema version",
+      (payload) => {
+        delete payload.result.draft.businessContract.schemaVersion;
+      },
+    ],
+    [
+      "missing output business timezone",
+      (payload) => {
+        delete payload.result.draft.businessContract.businessTimezone;
+      },
+    ],
+    [
+      "missing required draft lifecycle field",
+      (payload) => {
+        delete payload.result.draft.supersedesDraftId;
+      },
+    ],
+    [
+      "mismatched typed parameter default",
+      (payload) => {
+        payload.result.draft.businessContract.parameters[0].defaultValue = {
+          type: "rate_bps",
+          rateBps: 1_000,
+        };
+      },
+    ],
+    [
+      "mismatched generated result type",
+      (payload) => {
+        payload.result = simulationResult();
+        payload.result.draft.generatedTestCases[0].expectedResult = {
+          type: "integer",
+          value: 100,
+        };
+      },
+    ],
+    [
+      "strict extra response key",
+      (payload) => {
+        payload.result.draft.providerStack = "private-provider-stack";
+      },
+    ],
+    [
+      "malformed hash",
+      (payload) => {
+        payload.result.draft.contractHash = "not-a-sha256";
+      },
+    ],
+    [
+      "unsafe numeric value",
+      (payload) => {
+        payload.result.draft.businessContract.parameters[0].defaultValue = {
+          type: "money_cents",
+          amountCents: Number.MAX_SAFE_INTEGER + 1,
+        };
+      },
+    ],
+    [
+      "malformed public decimal",
+      (payload) => {
+        payload.result = simulationResult();
+        payload.result.simulation.deltas.payableAmountYuan = "1e3";
+      },
+    ],
+    [
+      "invalid simulation count invariant",
+      (payload) => {
+        payload.result = simulationResult();
+        payload.result.simulation.coverage.skippedRecords = 9;
+      },
+    ],
+    [
+      "sample count does not match persisted coverage",
+      (payload) => {
+        payload.result = simulationResult();
+        payload.result.simulation.sampleSelection.sampledCount = 9;
+      },
+    ],
+    [
+      "historical count does not match persisted coverage",
+      (payload) => {
+        payload.result = simulationResult();
+        payload.result.simulation.historicalTotals.recordCount = 9;
+      },
+    ],
+    [
+      "tampered superseded lifecycle metadata",
+      (payload) => {
+        payload.result = {
+          ...clarifyingResult(),
+          draft: supersededClarifyingDraft({ supersededAt: null }),
+        };
+      },
+    ],
+    [
+      "failed draft in a successful retry readback",
+      (payload) => {
+        payload.result = {
+          ok: true,
+          kind: "retry_readback",
+          conversationId: SESSION_ID,
+          draft: draft({
+            status: "failed",
+            initialStatus: "failed",
+            unresolvedAmbiguities: [],
+          }),
+          turn: {
+            turnId: "88888888-8888-4888-8888-888888888888",
+            status: "completed",
+            attempt: 2,
+            duplicate: true,
+          },
+        };
+      },
+    ],
+    [
+      "invalid summary status-count invariant",
+      (payload) => {
+        payload.result = simulationResult();
+        payload.result.summary.reviewRoutedCount = 0;
+      },
+    ],
+    [
+      "terminal retry-in-progress status",
+      (payload) => {
+        payload.result = {
+          ok: true,
+          kind: "retry_in_progress",
+          conversationId: SESSION_ID,
+          turn: {
+            turnId: "77777777-7777-4777-8777-777777777777",
+            status: "completed",
+            attempt: 1,
+            duplicate: true,
+          },
+        };
+      },
+    ],
   ])("fails closed on malformed 2xx data: %s", async (_label, mutate) => {
     const payload = {
       session: {

@@ -99,35 +99,41 @@ function contract(overrides = {}) {
 }
 
 function draft(status = "clarifying", overrides = {}) {
-  const ready = status === "contract_ready" || status === "simulated";
+  const simulated = status === "simulated";
+  const failed = status === "failed";
   return {
     id: DRAFT_ID,
     conversationId: SESSION_ID,
     revisionNumber: 1,
     status,
-    initialStatus: ready ? "contract_ready" : "clarifying",
+    initialStatus: simulated
+      ? "contract_ready"
+      : failed
+        ? "failed"
+        : "clarifying",
     businessContract: contract(),
-    unresolvedAmbiguities: ready
-      ? []
-      : [
-          {
-            code: "hourly_rate",
-            question: "每小时按多少元结算？",
-            required: true,
-          },
-        ],
+    unresolvedAmbiguities:
+      simulated || failed
+        ? []
+        : [
+            {
+              code: "hourly_rate",
+              question: "每小时按多少元结算？",
+              required: true,
+            },
+          ],
     variableCatalogVersion: "a".repeat(64),
-    generatedFormula: ready
+    generatedFormula: simulated
       ? {
           expression:
             'money_result({ final: parameter("hourly_rate") * system_minutes })',
         }
       : null,
-    generatedExplanation: ready ? "按系统直播时长和已确认单价计算。" : null,
-    generatedTestCases: ready ? [generatedTestCase()] : [],
+    generatedExplanation: simulated ? "按系统直播时长和已确认单价计算。" : null,
+    generatedTestCases: simulated ? [generatedTestCase()] : [],
     safetyFlags: [],
     contractHash: "b".repeat(64),
-    formulaHash: ready ? "c".repeat(64) : null,
+    formulaHash: simulated ? "c".repeat(64) : null,
     parameterHash: "d".repeat(64),
     createdAt: "2026-07-12T01:00:00.000Z",
     supersedesDraftId: null,
@@ -135,6 +141,19 @@ function draft(status = "clarifying", overrides = {}) {
     supersededAt: null,
     ...overrides,
   };
+}
+
+function confirmableDraft(overrides = {}) {
+  return draft("clarifying", {
+    unresolvedAmbiguities: [
+      {
+        code: "confirm_contract",
+        question: "请确认以上业务规则无误？",
+        required: true,
+      },
+    ],
+    ...overrides,
+  });
 }
 
 function resultFor(nextDraft, overrides = {}) {
@@ -215,7 +234,7 @@ function simulationEnvelope({ noHistory = false } = {}) {
           periodStart: "2026-07-01",
           periodEnd: "2026-07-31",
           populationCount: 20,
-          sampledCount: 18,
+          sampledCount: 20,
           criteria: ["approved_reports"],
         },
         coverage: { totalRecords: 20, evaluatedRecords: 18, skippedRecords: 2 },
@@ -223,7 +242,7 @@ function simulationEnvelope({ noHistory = false } = {}) {
         historicalTotals: {
           payableAmountYuan: noHistory ? null : "1000.00",
           receivableAmountYuan: null,
-          recordCount: noHistory ? 0 : 20,
+          recordCount: 20,
         },
         deltas: {
           payableAmountYuan: "125.00",
@@ -239,13 +258,17 @@ function simulationEnvelope({ noHistory = false } = {}) {
         uncoveredCount: 2,
         zeroPayCount: 3,
         reviewRoutedCount: 2,
-        blockedCount: 1,
+        blockedCount: 0,
         largestIncreases: [
-          { bucket: "高时长场次", deltaYuan: "80.00", direction: "increase" },
+          {
+            bucket: "authorized_ordinal:000001",
+            deltaYuan: "80.00",
+            direction: "increase",
+          },
         ],
         largestDecreases: [
           {
-            bucket: "缺少证据场次",
+            bucket: "authorized_ordinal:000002",
             deltaYuan: "-30.00",
             direction: "decrease",
           },
@@ -378,7 +401,7 @@ function api(overrides = {}) {
     startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
     refreshSession: vi
       .fn()
-      .mockResolvedValue(authoritativeSession(draft("contract_ready"))),
+      .mockResolvedValue(authoritativeSession(confirmableDraft())),
     answerOrRevise: vi.fn().mockResolvedValue({ result: resultFor(draft()) }),
     confirmAndSimulate: vi.fn().mockResolvedValue(simulationEnvelope()),
     ...overrides,
@@ -482,8 +505,8 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
   });
 
-  it("keeps formulas collapsed and presents normal values only as yuan and percent", async () => {
-    const ready = draft("contract_ready");
+  it("derives confirmation readiness from the real clarifying confirmation DTO", async () => {
+    const ready = confirmableDraft();
     const apiClient = api({
       startSession: vi.fn().mockResolvedValue(startEnvelope(ready)),
     });
@@ -495,8 +518,11 @@ describe("CustomSettlementRuleWorkspace", () => {
       name: "业务规则草案",
     });
     expect(heading).toHaveFocus();
-    const advanced = screen.getByTestId("advanced-formula");
-    expect(advanced).not.toHaveAttribute("open");
+    expect(
+      screen.queryByText("请确认以上业务规则无误？"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("confirm_contract")).not.toBeInTheDocument();
+    expect(screen.queryByText("当前问题")).not.toBeInTheDocument();
     const normal = screen.getByTestId("business-contract");
     expect(normal).toHaveTextContent("¥100.00");
     expect(normal).toHaveTextContent("12.50%");
@@ -505,11 +531,52 @@ describe("CustomSettlementRuleWorkspace", () => {
     );
 
     const aiDraft = screen.getByRole("region", { name: "AI 业务草案" });
+    expect(aiDraft).toHaveAttribute("data-source", "ai");
+    expect(
+      screen.queryByRole("region", { name: "确定性引擎解释" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("advanced-formula")).not.toBeInTheDocument();
+    expect(screen.getByTestId("contract-field-summary")).toHaveAttribute(
+      "data-unresolved",
+      "false",
+    );
+    expectOnePrimary("确认业务规则并试算");
+  });
+
+  it("keeps the exact authoritative formula collapsed until advanced mode opens", async () => {
+    const ready = confirmableDraft();
+    const expression =
+      'money_result({ final: parameter("hourly_rate") * system_minutes })';
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(startEnvelope(ready)),
+      confirmAndSimulate: vi.fn().mockResolvedValue(simulationEnvelope()),
+    });
+    renderWorkspace(apiClient);
+
+    await startRule();
+    await screen.findByRole("heading", { name: "业务规则草案" });
+    fireEvent.click(screen.getByRole("button", { name: "确认业务规则并试算" }));
+    await screen.findByRole("heading", { name: "内部试算结果" });
+
+    const advanced = screen.getByTestId("advanced-formula");
+    const formula = screen.getByLabelText("高级公式内容");
+    expect(advanced).not.toHaveAttribute("open");
+    expect(formula).toHaveTextContent(expression);
+    expect(formula).not.toBeVisible();
+    expect(formula.tagName).toBe("PRE");
+    expect(within(advanced).queryByRole("textbox")).not.toBeInTheDocument();
+
+    fireEvent.click(within(advanced).getByText("高级公式"));
+
+    expect(advanced).toHaveAttribute("open");
+    expect(formula).toBeVisible();
+    expect(screen.queryByText("应用并提交审核")).not.toBeInTheDocument();
+    const aiDraft = screen.getByRole("region", { name: "AI 业务草案" });
     const engine = screen.getByRole("region", { name: "确定性引擎解释" });
     expect(aiDraft).toHaveAttribute("data-source", "ai");
     expect(engine).toHaveAttribute("data-source", "deterministic-engine");
     expect(engine).not.toEqual(aiDraft);
-    expectOnePrimary("确认业务规则并试算");
+    expectOnePrimary("修改规则");
   });
 
   it("renders the authoritative natural-language revision diff and names preserved fields", async () => {
@@ -518,7 +585,7 @@ describe("CustomSettlementRuleWorkspace", () => {
       title: "项目主播阶梯计费",
       summary: "按系统时长分档计算主播应付金额。",
     });
-    const revised = draft("contract_ready", {
+    const revised = confirmableDraft({
       revisionNumber: 2,
       businessContract: revisedContract,
     });
@@ -578,13 +645,11 @@ describe("CustomSettlementRuleWorkspace", () => {
     expectOnePrimary("确认业务规则并试算");
   });
 
-  it("shows the complete internal simulation and never offers activation", async () => {
-    const ready = draft("contract_ready");
+  it("confirms the real clarifying DTO and renders every authoritative simulation value", async () => {
+    const ready = confirmableDraft();
     const apiClient = api({
       startSession: vi.fn().mockResolvedValue(startEnvelope(ready)),
-      confirmAndSimulate: vi
-        .fn()
-        .mockResolvedValue(simulationEnvelope({ noHistory: true })),
+      confirmAndSimulate: vi.fn().mockResolvedValue(simulationEnvelope()),
     });
     renderWorkspace(apiClient);
     await startRule();
@@ -607,40 +672,64 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(simulation).toHaveTextContent("最大减少");
     expect(simulation).toHaveTextContent("风险");
     expect(simulation).toHaveTextContent("提醒");
-    expect(simulation).toHaveTextContent("无历史数据");
+    expect(screen.getByText("当前金额").parentElement).toHaveTextContent(
+      "¥1,000.00",
+    );
+    expect(screen.getByText("新规则金额").parentElement).toHaveTextContent(
+      "¥1,125.00",
+    );
+    expect(screen.getByText("差额").parentElement).toHaveTextContent("¥125.00");
+    expect(screen.getByText("覆盖率").parentElement).toHaveTextContent(
+      "90.00%",
+    );
+    expect(screen.getByText("覆盖率").parentElement).toHaveTextContent(
+      "18/20 条",
+    );
+    expect(screen.getByText("零金额").parentElement).toHaveTextContent("3 条");
+    expect(
+      within(simulation).getByText("转人工复核").parentElement,
+    ).toHaveTextContent("2 条");
+    expect(simulation).toHaveTextContent("第 1 条变更");
+    expect(simulation).toHaveTextContent("¥80.00");
+    expect(simulation).toHaveTextContent("第 2 条变更");
+    expect(simulation).toHaveTextContent("-¥30.00");
+    expect(simulation).toHaveTextContent("存在零金额记录");
+    expect(simulation).toHaveTextContent("两条记录未覆盖");
+    expect(simulation).toHaveTextContent("已通过历史数据验证");
+    expect(simulation).not.toHaveTextContent("authorized_ordinal");
+    expect(simulation).not.toHaveTextContent("无历史数据");
     expect(simulation).toHaveTextContent("内部预览");
     expect(screen.queryByText("应用并提交审核")).not.toBeInTheDocument();
     expectOnePrimary("修改规则");
-    expect(apiClient.confirmAndSimulate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        projectId: PROJECT_ID,
-        sessionId: SESSION_ID,
-        body: expect.objectContaining({
-          expectedDraftId: DRAFT_ID,
-          expectedRevisionNumber: 1,
-          contractConfirmed: true,
-          expectedContractHash: "b".repeat(64),
-          expectedCatalogVersion: "a".repeat(64),
-          expectedFormulaHash: "c".repeat(64),
-          simulationSelection: {
-            periodStart: "2026-07-01",
-            periodEnd: "2026-07-31",
-            criteriaCodes: [
-              "approved_reports",
-              "period_overlap",
-              "complete_evidence",
-              "project_scope",
-            ],
-          },
-        }),
-        signal: expect.any(AbortSignal),
-      }),
-    );
+    expect(apiClient.confirmAndSimulate).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      sessionId: SESSION_ID,
+      body: {
+        expectedDraftId: DRAFT_ID,
+        expectedRevisionNumber: 1,
+        clientRequestId: "task9:confirm:0001",
+        promptText: "确认当前业务规则并进行内部试算",
+        contractConfirmed: true,
+        expectedContractHash: "b".repeat(64),
+        expectedCatalogVersion: "a".repeat(64),
+        simulationSelection: {
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          criteriaCodes: [
+            "approved_reports",
+            "period_overlap",
+            "complete_evidence",
+            "project_scope",
+          ],
+        },
+      },
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it("refreshes from the authoritative session and focuses the new result", async () => {
     const first = draft();
-    const refreshed = draft("contract_ready", { revisionNumber: 4 });
+    const refreshed = confirmableDraft({ revisionNumber: 4 });
     const apiClient = api({
       startSession: vi.fn().mockResolvedValue(startEnvelope(first)),
       refreshSession: vi
@@ -663,6 +752,48 @@ describe("CustomSettlementRuleWorkspace", () => {
       sessionId: SESSION_ID,
       signal: expect.any(AbortSignal),
     });
+  });
+
+  it("refreshes a superseded clarifying replay before choosing the current UI state", async () => {
+    const superseded = draft("clarifying", {
+      revisionNumber: 2,
+      status: "superseded",
+      businessContract: contract({ title: "已被后续修订替代的规则" }),
+      supersededByDraftId: "77777777-7777-4777-8777-777777777777",
+      supersededAt: "2026-07-12T01:03:00.000Z",
+    });
+    const latest = confirmableDraft({
+      id: "77777777-7777-4777-8777-777777777777",
+      revisionNumber: 3,
+      businessContract: contract({ title: "权威最新结算规则" }),
+      supersedesDraftId: DRAFT_ID,
+    });
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
+      answerOrRevise: vi.fn().mockResolvedValue({
+        result: resultFor(superseded, { duplicate: true }),
+      }),
+      refreshSession: vi.fn().mockResolvedValue(authoritativeSession(latest)),
+    });
+    renderWorkspace(apiClient);
+    await startRule();
+    await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+
+    fireEvent.change(screen.getByLabelText("回复 AI"), {
+      target: { value: "按最新业务口径继续" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "回复 AI" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "业务规则草案" }),
+    ).toHaveFocus();
+    expect(screen.getByText("权威最新结算规则")).toBeInTheDocument();
+    expect(
+      screen.queryByText("已被后续修订替代的规则"),
+    ).not.toBeInTheDocument();
+    expect(apiClient.refreshSession).toHaveBeenCalledTimes(1);
+    expect(apiClient.answerOrRevise).toHaveBeenCalledTimes(1);
+    expectOnePrimary("确认业务规则并试算");
   });
 
   it("ignores a stale start response after the scope changes", async () => {
@@ -725,13 +856,15 @@ describe("CustomSettlementRuleWorkspace", () => {
     const refreshed = draft("simulated", { revisionNumber: 4 });
     const apiClient = api({
       startSession: vi.fn().mockResolvedValue(startEnvelope(first)),
-      refreshSession: vi.fn().mockResolvedValue(
-        authoritativeSessionWithTurns(
-          refreshed,
-          [conversationTurn("completed")],
-          persistedSimulation(),
+      refreshSession: vi
+        .fn()
+        .mockResolvedValue(
+          authoritativeSessionWithTurns(
+            refreshed,
+            [conversationTurn("completed")],
+            persistedSimulation(),
+          ),
         ),
-      ),
     });
     renderWorkspace(apiClient);
     await startRule();
@@ -780,7 +913,7 @@ describe("CustomSettlementRuleWorkspace", () => {
       historicalTotals: {
         payableAmountYuan: null,
         receivableAmountYuan: null,
-        recordCount: 0,
+        recordCount: 20,
       },
       deltas: {
         payableAmountYuan: "0.00",
@@ -790,13 +923,15 @@ describe("CustomSettlementRuleWorkspace", () => {
     });
     const apiClient = api({
       startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
-      refreshSession: vi.fn().mockResolvedValue(
-        authoritativeSessionWithTurns(
-          draft("simulated", { revisionNumber: 4 }),
-          [conversationTurn("completed")],
-          noHistorySimulation,
+      refreshSession: vi
+        .fn()
+        .mockResolvedValue(
+          authoritativeSessionWithTurns(
+            draft("simulated", { revisionNumber: 4 }),
+            [conversationTurn("completed")],
+            noHistorySimulation,
+          ),
         ),
-      ),
     });
     renderWorkspace(apiClient);
     await startRule();
@@ -811,6 +946,12 @@ describe("CustomSettlementRuleWorkspace", () => {
     );
     expect(screen.getByText("新规则金额").parentElement).toHaveTextContent(
       "服务端未提供",
+    );
+    expect(screen.getByText("差额").parentElement).toHaveTextContent(
+      "无历史对照",
+    );
+    expect(screen.getByText("差额").parentElement).not.toHaveTextContent(
+      "¥0.00",
     );
   });
 
@@ -838,11 +979,16 @@ describe("CustomSettlementRuleWorkspace", () => {
       refreshSession: vi
         .fn()
         .mockResolvedValueOnce(
-          authoritativeSessionWithTurns(draft(), [conversationTurn("generating")]),
+          authoritativeSessionWithTurns(draft(), [
+            conversationTurn("generating"),
+          ]),
         )
         .mockReturnValueOnce(terminal),
     });
-    renderWorkspace(apiClient, { retryPollDelayMs: 0, retryPollMaxAttempts: 3 });
+    renderWorkspace(apiClient, {
+      retryPollDelayMs: 0,
+      retryPollMaxAttempts: 3,
+    });
 
     await startRule();
 
@@ -885,11 +1031,18 @@ describe("CustomSettlementRuleWorkspace", () => {
     };
     const apiClient = api({
       startSession: vi.fn().mockResolvedValue(retryEnvelope),
-      refreshSession: vi.fn().mockResolvedValue(
-        authoritativeSessionWithTurns(draft(), [conversationTurn("validating")]),
-      ),
+      refreshSession: vi
+        .fn()
+        .mockResolvedValue(
+          authoritativeSessionWithTurns(draft(), [
+            conversationTurn("validating"),
+          ]),
+        ),
     });
-    renderWorkspace(apiClient, { retryPollDelayMs: 0, retryPollMaxAttempts: 2 });
+    renderWorkspace(apiClient, {
+      retryPollDelayMs: 0,
+      retryPollMaxAttempts: 2,
+    });
 
     await startRule();
 
@@ -897,7 +1050,9 @@ describe("CustomSettlementRuleWorkspace", () => {
       name: "AI 仍在处理",
     });
     expect(heading).toHaveFocus();
-    expect(screen.getByText("处理尚未完成，请刷新查看最新状态")).toBeInTheDocument();
+    expect(
+      screen.getByText("处理尚未完成，请刷新查看最新状态"),
+    ).toBeInTheDocument();
     expectOnePrimary("刷新处理状态");
     expect(apiClient.refreshSession).toHaveBeenCalledTimes(2);
     expect(apiClient.startSession).toHaveBeenCalledTimes(1);
@@ -922,13 +1077,15 @@ describe("CustomSettlementRuleWorkspace", () => {
           },
         },
       }),
-      refreshSession: vi.fn().mockResolvedValue(
-        authoritativeSessionWithTurns(
-          simulatedDraft,
-          [conversationTurn("completed")],
-          persistedSimulation(),
+      refreshSession: vi
+        .fn()
+        .mockResolvedValue(
+          authoritativeSessionWithTurns(
+            simulatedDraft,
+            [conversationTurn("completed")],
+            persistedSimulation(),
+          ),
         ),
-      ),
     });
     renderWorkspace(apiClient);
 
@@ -975,11 +1132,15 @@ describe("CustomSettlementRuleWorkspace", () => {
       name: "AI 草案生成失败",
     });
     expect(heading).toHaveFocus();
-    expect(screen.getByText("AI 未能生成可用草案，请重新开始")).toBeInTheDocument();
+    expect(
+      screen.getByText("AI 未能生成可用草案，请重新开始"),
+    ).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("AI 草案生成失败");
     expect(document.body).not.toHaveTextContent("sk-failed-secret");
     expect(document.body).not.toHaveTextContent("provider_raw_prompt_stack");
-    expect(screen.queryByRole("button", { name: "开始澄清" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "开始澄清" }),
+    ).not.toBeInTheDocument();
     expectOnePrimary("重新开始");
   });
 
@@ -1001,7 +1162,9 @@ describe("CustomSettlementRuleWorkspace", () => {
       name: "无法继续处理",
     });
     expect(heading).toHaveFocus();
-    expect(screen.getByText("结算规则服务暂时不可用，请稍后重试")).toBeInTheDocument();
+    expect(
+      screen.getByText("结算规则服务暂时不可用，请稍后重试"),
+    ).toBeInTheDocument();
     expect(document.body).not.toHaveTextContent("sk-ui-code");
     expect(document.body).not.toHaveTextContent("raw_prompt");
     expect(document.body).not.toHaveTextContent("sk-ui-message");
@@ -1009,7 +1172,7 @@ describe("CustomSettlementRuleWorkspace", () => {
     expectOnePrimary("重试");
   });
 
-  it("never renders Task8 internal identifiers or units anywhere in normal mode", async () => {
+  it("never exposes Task8 internal identifiers across visible normal-mode panels", async () => {
     const hostileContract = contract({
       calculationComponents: [
         {
@@ -1043,7 +1206,8 @@ describe("CustomSettlementRuleWorkspace", () => {
       revisionNumber: 3,
       businessContract: hostileContract,
       generatedFormula: {
-        expression: "money_result parameter hourly_rate system_minutes cents bps",
+        expression:
+          "money_result parameter hourly_rate system_minutes cents bps",
       },
       generatedExplanation:
         "money_result uses parameter(hourly_rate) and system_minutes cents bps",
@@ -1082,7 +1246,16 @@ describe("CustomSettlementRuleWorkspace", () => {
     await startRule();
     await screen.findByRole("heading", { name: "内部试算结果" });
 
-    const workspaceText = screen.getByTestId("custom-rule-workspace").textContent;
+    const formula = screen.getByLabelText("高级公式内容");
+    expect(screen.getByTestId("advanced-formula")).not.toHaveAttribute("open");
+    expect(formula).not.toBeVisible();
+    const workspaceText = [
+      screen.getByRole("region", { name: "AI 业务草案" }).textContent,
+      screen.getByTestId("business-contract").textContent,
+      screen.getByRole("region", { name: "确定性引擎解释" }).textContent,
+      screen.getByRole("region", { name: "内部试算" }).textContent,
+      screen.getByRole("status").textContent,
+    ].join(" ");
     for (const internalValue of [
       "authorized_ordinal",
       "final_component",
@@ -1188,7 +1361,9 @@ describe("CustomSettlementRuleWorkspace", () => {
       name: "业务时区待确认",
     });
     expect(heading).toHaveFocus();
-    expect(screen.getByText("请先确认项目业务时区后再开始")).toBeInTheDocument();
+    expect(
+      screen.getByText("请先确认项目业务时区后再开始"),
+    ).toBeInTheDocument();
     expectOnePrimary("重新读取时区");
     expect(apiClient.startSession).not.toHaveBeenCalled();
   });
@@ -1204,7 +1379,9 @@ describe("CustomSettlementRuleWorkspace", () => {
     renderWorkspace(apiClient);
 
     expect(screen.getByLabelText("规则说明")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "正在读取范围…" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "正在读取范围…" }),
+    ).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "正在读取范围…" }));
     expect(apiClient.startSession).not.toHaveBeenCalled();
 
@@ -1244,7 +1421,9 @@ describe("CustomSettlementRuleWorkspace", () => {
       name: "无法读取业务范围",
     });
     expect(heading).toHaveFocus();
-    expect(screen.getByText("变量目录暂时不可用，请稍后重试")).toBeInTheDocument();
+    expect(
+      screen.getByText("变量目录暂时不可用，请稍后重试"),
+    ).toBeInTheDocument();
     expectOnePrimary("重新读取范围");
     expect(screen.getByLabelText("规则说明")).toBeDisabled();
 

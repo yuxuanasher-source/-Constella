@@ -209,8 +209,8 @@ function businessDateBoundary(value, timeZone) {
 function catalogTimezoneReady(catalog) {
   return Boolean(
     catalog?.businessTimezone &&
-      catalog.businessTimezoneConfirmed &&
-      catalog.businessTimezoneSource !== "unresolved",
+    catalog.businessTimezoneConfirmed &&
+    catalog.businessTimezoneSource !== "unresolved",
   );
 }
 
@@ -325,6 +325,8 @@ const ACTIVE_TURN_STATUSES = new Set([
   "generating",
   "validating",
 ]);
+const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
+const CONFIRM_CONTRACT_AMBIGUITY = "confirm_contract";
 
 function latestTurn(authority) {
   return authority?.turns?.[authority.turns.length - 1] ?? null;
@@ -338,22 +340,51 @@ function authorityIsActive(authority) {
 
 function authorityHasFailed(authority) {
   return (
-    authority?.draft?.status === "failed" || latestTurn(authority)?.status === "failed"
+    authority?.draft?.status === "failed" ||
+    latestTurn(authority)?.status === "failed"
+  );
+}
+
+function draftIsConfirmationReady(draft) {
+  const ambiguities = draft?.unresolvedAmbiguities;
+  return Boolean(
+    draft?.status === "clarifying" &&
+    draft.initialStatus === "clarifying" &&
+    draft.businessContract &&
+    Array.isArray(ambiguities) &&
+    ambiguities.length === 1 &&
+    ambiguities[0]?.code === CONFIRM_CONTRACT_AMBIGUITY &&
+    ambiguities[0]?.required === true &&
+    draft.generatedFormula === null &&
+    draft.generatedExplanation === null &&
+    Array.isArray(draft.generatedTestCases) &&
+    draft.generatedTestCases.length === 0 &&
+    draft.formulaHash === null &&
+    SHA256_PATTERN.test(draft.contractHash) &&
+    SHA256_PATTERN.test(draft.variableCatalogVersion),
+  );
+}
+
+function visibleBusinessAmbiguities(draft) {
+  return (draft?.unresolvedAmbiguities ?? []).filter(
+    (ambiguity) => ambiguity.code !== CONFIRM_CONTRACT_AMBIGUITY,
   );
 }
 
 function focusTargetForAuthority(authority) {
   if (authorityHasFailed(authority)) return "error";
   const draft = authority?.draft;
-  if (draft?.status === "clarifying") return "question";
+  if (draft?.status === "clarifying" && !draftIsConfirmationReady(draft)) {
+    return "question";
+  }
   return "result";
 }
 
 function completionAnnouncement(authority) {
   if (authorityHasFailed(authority)) return "AI 草案生成失败";
   const draft = authority?.draft;
+  if (draftIsConfirmationReady(draft)) return "业务规则草案已就绪";
   if (draft?.status === "clarifying") return "AI 已提出新的待确认问题";
-  if (draft?.status === "contract_ready") return "业务规则草案已就绪";
   if (draft?.status === "simulated") return "内部试算已完成";
   return "结算规则会话已更新";
 }
@@ -521,6 +552,7 @@ function ambiguityFieldKeys(ambiguities) {
   const keys = new Set();
   for (const ambiguity of ambiguities ?? []) {
     const code = String(ambiguity.code ?? "").toLowerCase();
+    if (code === CONFIRM_CONTRACT_AMBIGUITY) continue;
     if (/scope/u.test(code)) keys.add("scope");
     if (/target|streamer|group/u.test(code)) keys.add("target");
     if (/grain|frequency|unit/u.test(code)) keys.add("executionGrain");
@@ -724,6 +756,9 @@ function SimulationView({ authority, headingRef }) {
     : scope === "receivable"
       ? persisted.historicalTotals.receivableAmountYuan
       : persisted.historicalTotals.payableAmountYuan;
+  const noHistory = summary
+    ? summary.historicalVerification.status === "unverified"
+    : currentAmount === null;
   const newAmount = summary?.totalNewYuan;
   const deltaAmount = summary
     ? summary.totalDeltaYuan
@@ -758,9 +793,9 @@ function SimulationView({ authority, headingRef }) {
           deltaYuan: item.deltaAmountYuan,
         }));
   const warnings = summary?.warnings ?? persisted?.warnings ?? [];
-  const noHistory = summary
-    ? summary.historicalVerification.status === "unverified"
-    : currentAmount === null;
+  const verifiedHistoryLabel = noHistory
+    ? null
+    : summary?.historicalVerification.label;
   const countValue = (value) =>
     value === null || value === undefined ? "服务端未提供" : `${value} 条`;
   const largest = (items, emptyLabel) =>
@@ -786,7 +821,11 @@ function SimulationView({ authority, headingRef }) {
           </h2>
           <span className="crw-preview-status">内部预览</span>
         </div>
-        {noHistory ? <span className="crw-no-history">无历史数据</span> : null}
+        {noHistory ? (
+          <span className="crw-no-history">无历史数据</span>
+        ) : verifiedHistoryLabel ? (
+          <span className="crw-history-verified">{verifiedHistoryLabel}</span>
+        ) : null}
       </div>
 
       <div className="crw-metrics">
@@ -800,7 +839,7 @@ function SimulationView({ authority, headingRef }) {
         </div>
         <div>
           <span>差额</span>
-          <strong>{formatYuan(deltaAmount)}</strong>
+          <strong>{noHistory ? "无历史对照" : formatYuan(deltaAmount)}</strong>
         </div>
         <div>
           <span>覆盖率</span>
@@ -920,9 +959,10 @@ function WorkspaceStyles() {
       .crw-preserved { margin: 10px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--ink-500, #64748b); }
       .crw-band-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
       .crw-band-heading > div { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-      .crw-preview-status, .crw-no-history { display: inline-flex; align-items: center; min-height: 22px; padding: 1px 7px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+      .crw-preview-status, .crw-no-history, .crw-history-verified { display: inline-flex; align-items: center; min-height: 22px; padding: 1px 7px; border-radius: 6px; font-size: 11px; font-weight: 600; }
       .crw-preview-status { background: var(--blue-50, #eff6ff); color: var(--blue-700, #1d4ed8); }
       .crw-no-history { background: var(--amber-50, #fffbeb); color: var(--amber-800, #92400e); }
+      .crw-history-verified { background: var(--green-50, #ecfdf5); color: var(--green-800, #166534); }
       .crw-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin-top: 14px; background: var(--line, #e2e8f0); }
       .crw-metrics > div { min-width: 0; min-height: 78px; display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 10px 12px; background: #fff; }
       .crw-metrics span, .crw-metrics small { font-size: 11px; color: var(--ink-500, #64748b); }
@@ -1338,7 +1378,10 @@ export default function CustomSettlementRuleWorkspace({
         nextSessionId = result.conversationId;
         if (result.kind === "retry_in_progress") {
           authority = await resolveAuthoritativeSession(nextSessionId);
-        } else if (result.kind === "retry_readback") {
+        } else if (
+          result.kind === "retry_readback" ||
+          result.draft?.status === "superseded"
+        ) {
           const refreshed = await apiClient.refreshSession({
             projectId,
             sessionId: nextSessionId,
@@ -1429,10 +1472,10 @@ export default function CustomSettlementRuleWorkspace({
   };
 
   const draft = viewState.authoritative?.draft ?? null;
-  const firstQuestion = draft?.unresolvedAmbiguities?.[0] ?? null;
+  const firstQuestion = visibleBusinessAmbiguities(draft)[0] ?? null;
   const simulated = draft?.status === "simulated";
-  const contractReady = draft?.status === "contract_ready";
-  const clarifying = draft?.status === "clarifying";
+  const contractReady = draftIsConfirmationReady(draft);
+  const clarifying = draft?.status === "clarifying" && !contractReady;
   const isLoading = viewState.status === "loading";
   const isProcessing = viewState.status === "processing";
   const requestHasError = viewState.status === "error";
@@ -1755,7 +1798,9 @@ export default function CustomSettlementRuleWorkspace({
                 <Calculator size={14} aria-hidden="true" />
                 高级公式
               </summary>
-              <p aria-label="高级公式内容">服务端已校验高级计算表达式</p>
+              <pre aria-label="高级公式内容">
+                {draft.generatedFormula.expression}
+              </pre>
             </details>
           ) : null}
 
