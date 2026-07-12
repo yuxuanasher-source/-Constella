@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
 
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
+import type {
+  InsertedSettlementFormulaSimulation,
+} from "@/features/settlements/custom-rule-repository";
 import { getCustomRuleRouteContext } from "@/features/settlements/custom-rule-route-context";
 
 vi.mock("@/features/billing/route-guard", () => ({
@@ -50,6 +53,14 @@ function simulationResult() {
     },
     simulation: {
       id: "66666666-6666-4666-8666-666666666666",
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      owner: { kind: "ai_draft", id: DRAFT_ID },
+      idempotencyKey: "simulate-request-0001",
+      formulaHash: "a".repeat(64),
+      ruleContractHash: "b".repeat(64),
+      parameterHash: "c".repeat(64),
+      variableCatalogVersion: "d".repeat(64),
       createdAt: "2026-07-12T01:01:00.000Z",
       dataSelectionHash: "e".repeat(64),
       sampleSource: { kind: "historical_settlements" },
@@ -60,22 +71,57 @@ function simulationResult() {
         sampledCount: 2,
         criteria: ["approved_reports"],
       },
-      coverage: { totalRecords: 2, evaluatedRecords: 2, skippedRecords: 0 },
-      scenarios: [],
+      summarySchemaVersion: 2,
+      summaryComplete: true,
+      summaryStatus: "complete",
+      coverage: {
+        summarySchemaVersion: 2,
+        totalRecords: 2,
+        evaluatedRecords: 2,
+        skippedRecords: 0,
+        uncoveredRecords: 0,
+        zeroAmountRecords: 0,
+        reviewRoutedRecords: 0,
+        blockedRecords: 0,
+      },
+      scenarios: [
+        {
+          id: "scenario:contract-example",
+          category: "contract_example",
+          outcome: "calculated",
+          amountCents: "12345",
+          expectedAmountCents: "12345",
+          passed: true,
+        },
+      ],
       historicalTotals: {
+        oldPayableAmountCents: "10000",
+        oldReceivableAmountCents: null,
+        newPayableAmountCents: "12345",
+        newReceivableAmountCents: null,
         payableAmountCents: "10000",
         receivableAmountCents: null,
         recordCount: 2,
+        verificationStatus: "verified",
       },
       deltas: {
         payableAmountCents: "2345",
-        receivableAmountCents: "0",
+        receivableAmountCents: null,
         percentageBps: 2345,
+        marginImpactCents: "-2345",
       },
       largestChanges: [],
-      warnings: [],
-      rawSampleRows: [{ streamerId: "private-streamer" }],
-    },
+      warnings: [
+        {
+          kind: "warning",
+          code: "CUSTOM_RULE_SIMULATION_FIXTURE",
+          severity: "info",
+          message: "Fixture warning",
+        },
+      ],
+      createdBy: USER_ID,
+      duplicate: false,
+    } satisfies InsertedSettlementFormulaSimulation,
     summary: {
       recordCount: 2,
       coverage: { totalCount: 2, evaluatedCount: 2, rateBps: 10_000 },
@@ -99,6 +145,7 @@ function simulationResult() {
       warnings: [],
       scenarios: [],
       persistable: {},
+      rawSampleRows: [{ streamerId: "private-streamer" }],
       records: [{ streamerId: "private-streamer", amountCents: "999" }],
     },
   };

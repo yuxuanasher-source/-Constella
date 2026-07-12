@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
 
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
+import type {
+  InsertedSettlementFormulaSimulation,
+} from "@/features/settlements/custom-rule-repository";
 import { getCustomRuleRouteContext } from "@/features/settlements/custom-rule-route-context";
 import { CustomRuleAuthoringServiceError } from "@/features/settlements/custom-rule-service";
 
@@ -54,6 +57,17 @@ function result() {
     },
     simulation: {
       id: "77777777-7777-4777-8777-777777777777",
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      owner: {
+        kind: "ai_draft",
+        id: "66666666-6666-4666-8666-666666666666",
+      },
+      idempotencyKey: "confirm-request-0001",
+      formulaHash: "c".repeat(64),
+      ruleContractHash: "a".repeat(64),
+      parameterHash: "d".repeat(64),
+      variableCatalogVersion: "b".repeat(64),
       createdAt: "2026-07-12T05:00:01.000Z",
       dataSelectionHash: "e".repeat(64),
       sampleSource: { kind: "approved_operations" },
@@ -64,21 +78,57 @@ function result() {
         sampledCount: 0,
         criteria: ["approved_reports"],
       },
-      coverage: { totalRecords: 0, evaluatedRecords: 0, skippedRecords: 0 },
-      scenarios: [],
+      summarySchemaVersion: 2,
+      summaryComplete: true,
+      summaryStatus: "complete",
+      coverage: {
+        summarySchemaVersion: 2,
+        totalRecords: 0,
+        evaluatedRecords: 0,
+        skippedRecords: 0,
+        uncoveredRecords: 0,
+        zeroAmountRecords: 0,
+        reviewRoutedRecords: 0,
+        blockedRecords: 0,
+      },
+      scenarios: [
+        {
+          id: "scenario:confirmed-contract",
+          category: "contract_example",
+          outcome: "calculated",
+          amountCents: "0",
+          expectedAmountCents: "0",
+          passed: true,
+        },
+      ],
       historicalTotals: {
+        oldPayableAmountCents: null,
+        oldReceivableAmountCents: null,
+        newPayableAmountCents: "0",
+        newReceivableAmountCents: null,
         payableAmountCents: null,
         receivableAmountCents: null,
         recordCount: 0,
+        verificationStatus: "unverified",
       },
       deltas: {
-        payableAmountCents: "0",
-        receivableAmountCents: "0",
-        percentageBps: 0,
+        payableAmountCents: null,
+        receivableAmountCents: null,
+        percentageBps: null,
+        marginImpactCents: null,
       },
       largestChanges: [],
-      warnings: [],
-    },
+      warnings: [
+        {
+          kind: "warning",
+          code: "CUSTOM_RULE_CONFIRMATION_FIXTURE",
+          severity: "info",
+          message: "Fixture warning",
+        },
+      ],
+      createdBy: USER_ID,
+      duplicate: false,
+    } satisfies InsertedSettlementFormulaSimulation,
     summary: {
       recordCount: 0,
       coverage: { totalCount: 0, evaluatedCount: 0, rateBps: 0 },
@@ -102,6 +152,7 @@ function result() {
       warnings: [],
       scenarios: [],
       persistable: {},
+      rawSampleRows: [{ streamerId: "private-streamer" }],
     },
     duplicate: false,
   };
@@ -322,6 +373,8 @@ describe("settlement rule contract confirmation route", () => {
     });
     expect(serialized).not.toContain("raw confirmation prompt");
     expect(serialized).not.toContain("private-provider-model");
+    expect(serialized).not.toContain("rawSampleRows");
+    expect(serialized).not.toContain("private-streamer");
     expect(serialized).not.toContain("amountCents");
     expect(serialized).not.toContain("rateBps");
   });

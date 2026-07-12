@@ -7,6 +7,9 @@ import {
   createConversationService,
   type ConversationPersistence,
 } from "@/features/ai/conversation-service";
+import type {
+  CompleteSettlementFormulaSimulation,
+} from "@/features/settlements/custom-rule-repository";
 import { getCustomRuleRouteContext } from "@/features/settlements/custom-rule-route-context";
 
 vi.mock(
@@ -54,9 +57,17 @@ function latestDraft() {
   };
 }
 
-function latestSimulation() {
+function latestSimulation(): CompleteSettlementFormulaSimulation {
   return {
     id: "66666666-6666-4666-8666-666666666666",
+    organizationId: ORGANIZATION_ID,
+    projectId: PROJECT_ID,
+    owner: { kind: "ai_draft", id: DRAFT_ID },
+    idempotencyKey: "session-simulation-0001",
+    formulaHash: "a".repeat(64),
+    ruleContractHash: "b".repeat(64),
+    parameterHash: "c".repeat(64),
+    variableCatalogVersion: "d".repeat(64),
     createdAt: "2026-07-12T03:01:00.000Z",
     dataSelectionHash: "e".repeat(64),
     sampleSource: { kind: "historical_settlements" },
@@ -67,21 +78,55 @@ function latestSimulation() {
       sampledCount: 1,
       criteria: ["approved_reports"],
     },
-    coverage: { totalRecords: 1, evaluatedRecords: 1, skippedRecords: 0 },
-    scenarios: [],
+    summarySchemaVersion: 2,
+    summaryComplete: true,
+    summaryStatus: "complete",
+    coverage: {
+      summarySchemaVersion: 2,
+      totalRecords: 1,
+      evaluatedRecords: 1,
+      skippedRecords: 0,
+      uncoveredRecords: 0,
+      zeroAmountRecords: 0,
+      reviewRoutedRecords: 0,
+      blockedRecords: 0,
+    },
+    scenarios: [
+      {
+        id: "scenario:latest-session",
+        category: "contract_example",
+        outcome: "calculated",
+        amountCents: "10100",
+        expectedAmountCents: "10100",
+        passed: true,
+      },
+    ],
     historicalTotals: {
+      oldPayableAmountCents: "10000",
+      oldReceivableAmountCents: null,
+      newPayableAmountCents: "10100",
+      newReceivableAmountCents: null,
       payableAmountCents: "10000",
       receivableAmountCents: null,
       recordCount: 1,
+      verificationStatus: "verified",
     },
     deltas: {
       payableAmountCents: "100",
-      receivableAmountCents: "0",
+      receivableAmountCents: null,
       percentageBps: 100,
+      marginImpactCents: "-100",
     },
     largestChanges: [],
-    warnings: [],
-    rawSampleRows: [{ streamerId: "private-streamer", amountCents: "10000" }],
+    warnings: [
+      {
+        kind: "warning",
+        code: "CUSTOM_RULE_SESSION_FIXTURE",
+        severity: "info",
+        message: "Fixture warning",
+      },
+    ],
+    createdBy: AUTHOR_ID,
   };
 }
 
@@ -210,14 +255,15 @@ describe("settlement rule AI session detail route", () => {
       turns: [{ status: "completed", attempt: 1 }],
       draft: { id: DRAFT_ID, revisionNumber: 4, status: "simulated" },
       simulation: {
+        version: 2,
+        complete: true,
+        status: "complete",
         id: "66666666-6666-4666-8666-666666666666",
-        historicalTotals: { payableAmountYuan: "100.00" },
+        summary: { totalOldYuan: "100.00", totalNewYuan: "101.00" },
       },
     });
     expect(routeContext.conversation.getHistory).toHaveBeenCalledTimes(2);
     expect(routeContext.repository.listDrafts).toHaveBeenCalledTimes(2);
-    expect(serialized).not.toContain("rawSampleRows");
-    expect(serialized).not.toContain("private-streamer");
     expect(serialized).not.toContain("raw settlement prompt");
     expect(serialized).not.toContain("raw model response");
     expect(serialized).not.toContain("providerName");
