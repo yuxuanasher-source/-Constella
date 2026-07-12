@@ -32,6 +32,8 @@ describe("settlement database regression CI contract", () => {
       "run: pnpm supabase:migrate",
       "run: docker start supabase_realtime_jingying-cabin",
       "run: pnpm exec vitest run lib/db/schema-contract.test.ts",
+      "run: docker stop supabase_realtime_jingying-cabin",
+      "run: pnpm exec vitest run lib/db/custom-settlement-runtime-upgrade.test.ts",
       "run: pnpm exec supabase stop --no-backup",
     ];
 
@@ -44,20 +46,24 @@ describe("settlement database regression CI contract", () => {
     expect(job).toContain("uses: actions/setup-node@v4");
     expect(job).toContain("run: pnpm install --frozen-lockfile");
 
+    let previousCommandIndex = -1;
     for (const command of orderedCommands) {
-      expect(job).toContain(command);
+      const commandIndex = job.indexOf(command, previousCommandIndex + 1);
+      expect(commandIndex, command).toBeGreaterThan(previousCommandIndex);
+      previousCommandIndex = commandIndex;
     }
-    expect(orderedCommands.map((command) => job.indexOf(command))).toEqual(
-      orderedCommands
-        .map((command) => job.indexOf(command))
-        .toSorted((left, right) => left - right),
-    );
 
     expect(job).toContain(
       "CUSTOM_SETTLEMENT_RUNTIME_DB_REGRESSION_CONTAINER: supabase_db_jingying-cabin",
     );
     expect(job).toContain(
       "SETTLEMENT_AI_DB_LOCK_REGRESSION_CONTAINER: supabase_db_jingying-cabin",
+    );
+    expect(job).toContain(
+      "CUSTOM_SETTLEMENT_RUNTIME_UPGRADE_REGRESSION_CONTAINER: supabase_db_jingying-cabin",
+    );
+    expect(job).toContain(
+      "CUSTOM_SETTLEMENT_RUNTIME_UPGRADE_REALTIME_CONTAINER: supabase_realtime_jingying-cabin",
     );
     expect(job).toMatch(
       /if: always\(\)[\s\S]+run: pnpm exec supabase stop --no-backup/u,

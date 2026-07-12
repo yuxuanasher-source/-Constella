@@ -7,6 +7,11 @@ import { parseCustomSettlementEvidenceSnapshot } from "../../features/settlement
 
 const upgradeContainer =
   process.env.CUSTOM_SETTLEMENT_RUNTIME_UPGRADE_REGRESSION_CONTAINER;
+const upgradeRealtimeContainer =
+  process.env.CUSTOM_SETTLEMENT_RUNTIME_UPGRADE_REALTIME_CONTAINER ??
+  (upgradeContainer?.startsWith("supabase_db_")
+    ? upgradeContainer.replace(/^supabase_db_/u, "supabase_realtime_")
+    : undefined);
 const pnpmEntrypoint =
   process.env.npm_execpath ??
   (process.platform === "win32" && process.env.APPDATA
@@ -46,6 +51,57 @@ function runSupabase(args: string[]): void {
     result.status,
     safeCommandOutput(`${result.stdout ?? ""}\n${result.stderr ?? ""}`),
   ).toBe(0);
+}
+
+function stopRealtimeIfRunning(): void {
+  if (!upgradeRealtimeContainer) {
+    return;
+  }
+
+  const running = spawnSync(
+    "docker",
+    [
+      "ps",
+      "--filter",
+      `name=^/${upgradeRealtimeContainer}$`,
+      "--format",
+      "{{.Names}}",
+    ],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      timeout: 30_000,
+      windowsHide: true,
+    },
+  );
+  expect(
+    running.status,
+    safeCommandOutput(
+      `${running.stdout ?? ""}\n${running.stderr ?? running.error?.message ?? ""}`,
+    ),
+  ).toBe(0);
+
+  if (running.stdout.trim() !== upgradeRealtimeContainer) {
+    return;
+  }
+
+  const stopped = spawnSync("docker", ["stop", upgradeRealtimeContainer], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    timeout: 30_000,
+    windowsHide: true,
+  });
+  expect(
+    stopped.status,
+    safeCommandOutput(
+      `${stopped.stdout ?? ""}\n${stopped.stderr ?? stopped.error?.message ?? ""}`,
+    ),
+  ).toBe(0);
+}
+
+function resetSupabase(args: string[] = []): void {
+  stopRealtimeIfRunning();
+  runSupabase(["db", "reset", ...args]);
 }
 
 function runSqlCapture(
@@ -137,13 +193,7 @@ describe.runIf(Boolean(upgradeContainer))(
       `;
 
       try {
-        runSupabase([
-          "db",
-          "reset",
-          "--version",
-          "20260711115000",
-          "--no-seed",
-        ]);
+        resetSupabase(["--version", "20260711115000", "--no-seed"]);
         expect(
           runSql(
             container,
@@ -372,7 +422,7 @@ describe.runIf(Boolean(upgradeContainer))(
           ),
         ).toBe("0");
       } finally {
-        runSupabase(["db", "reset"]);
+        resetSupabase();
       }
     }, 180_000);
   },
