@@ -8,6 +8,40 @@ import {
 const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
 const SESSION_ID = "44444444-4444-4444-8444-444444444444";
 const DRAFT_ID = "55555555-5555-4555-8555-555555555555";
+const START_PROGRESS_STATUSES = [
+  "accepted",
+  "grounding",
+  "generating",
+  "validating",
+];
+const VALID_START_PROGRESS_MATRIX = [
+  ...START_PROGRESS_STATUSES.map((status) => ({
+    attempt: 1,
+    status,
+    duplicate: true,
+  })),
+  ...START_PROGRESS_STATUSES.map((status) => ({
+    attempt: 2,
+    status,
+    duplicate: true,
+  })),
+  ...START_PROGRESS_STATUSES.filter((status) => status !== "accepted").map(
+    (status) => ({ attempt: 2, status, duplicate: false }),
+  ),
+];
+const INVALID_START_PROGRESS_MATRIX = [
+  ...START_PROGRESS_STATUSES.map((status) => ({
+    attempt: 1,
+    status,
+    duplicate: false,
+  })),
+  { attempt: 2, status: "accepted", duplicate: false },
+  ...[3, Number.MAX_SAFE_INTEGER].flatMap((attempt) =>
+    START_PROGRESS_STATUSES.flatMap((status) =>
+      [false, true].map((duplicate) => ({ attempt, status, duplicate })),
+    ),
+  ),
+];
 
 function generatedTestCase() {
   return {
@@ -513,10 +547,75 @@ describe("custom settlement rule API", () => {
     },
   );
 
-  it.each(["accepted", "grounding", "generating", "validating"])(
-    "accepts the legitimate start retry_in_progress status %s",
-    async (status) => {
+  it.each(["startSession", "answerOrRevise"])(
+    "rejects a non-duplicate superseded clarifying replay from %s",
+    async (endpoint) => {
+      const result = {
+        ...clarifyingResult(),
+        draft: supersededClarifyingDraft(),
+        duplicate: false,
+      };
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse(endpointPayload(endpoint, result)),
+      );
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+
+      await expect(callEndpoint(api, endpoint)).rejects.toMatchObject({
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        retryable: true,
+      });
+    },
+  );
+
+  it.each(
+    ["startSession", "answerOrRevise"].flatMap((endpoint) => [
+      [
+        endpoint,
+        "failed",
+        draft({
+          status: "failed",
+          initialStatus: "failed",
+          unresolvedAmbiguities: [],
+        }),
+      ],
+      [
+        endpoint,
+        "superseded failed",
+        draft({
+          status: "superseded",
+          initialStatus: "failed",
+          unresolvedAmbiguities: [],
+          supersededByDraftId: "77777777-7777-4777-8777-777777777777",
+          supersededAt: "2026-07-12T01:01:00.000Z",
+        }),
+      ],
+    ]),
+  )(
+    "%s rejects a %s draft in an otherwise valid clarifying envelope",
+    async (endpoint, _caseName, failedDraft) => {
+      const result = {
+        ...clarifyingResult(),
+        draft: failedDraft,
+        duplicate: true,
+      };
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse(endpointPayload(endpoint, result)),
+      );
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+
+      await expect(callEndpoint(api, endpoint)).rejects.toMatchObject({
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        retryable: true,
+      });
+    },
+  );
+
+  it.each(VALID_START_PROGRESS_MATRIX)(
+    "accepts start progress attempt=$attempt status=$status duplicate=$duplicate",
+    async ({ attempt, status, duplicate }) => {
       const result = retryInProgressResult(status);
+      result.turn.attempt = attempt;
+      result.turn.duplicate = duplicate;
       const fetchImpl = vi.fn(async () =>
         jsonResponse(endpointPayload("startSession", result), { status: 201 }),
       );
@@ -525,7 +624,7 @@ describe("custom settlement rule API", () => {
       await expect(callEndpoint(api, "startSession")).resolves.toMatchObject({
         result: {
           kind: "retry_in_progress",
-          turn: { status, duplicate: true },
+          turn: { attempt, status, duplicate },
         },
       });
     },
@@ -563,37 +662,23 @@ describe("custom settlement rule API", () => {
     },
   );
 
-  it("accepts a progressed non-duplicate start recovery", async () => {
-    const result = retryInProgressResult("generating");
-    result.turn.attempt = 2;
-    result.turn.duplicate = false;
-    const fetchImpl = vi.fn(async () =>
-      jsonResponse(endpointPayload("startSession", result)),
-    );
-    const api = createCustomSettlementRuleApi({ fetchImpl });
+  it.each(INVALID_START_PROGRESS_MATRIX)(
+    "rejects start progress attempt=$attempt status=$status duplicate=$duplicate",
+    async ({ attempt, status, duplicate }) => {
+      const result = retryInProgressResult(status);
+      result.turn.attempt = attempt;
+      result.turn.duplicate = duplicate;
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse(endpointPayload("startSession", result)),
+      );
+      const api = createCustomSettlementRuleApi({ fetchImpl });
 
-    await expect(callEndpoint(api, "startSession")).resolves.toMatchObject({
-      result: {
-        kind: "retry_in_progress",
-        turn: { status: "generating", attempt: 2, duplicate: false },
-      },
-    });
-  });
-
-  it("rejects an accepted non-duplicate start progress response", async () => {
-    const result = retryInProgressResult("accepted");
-    result.turn.attempt = 2;
-    result.turn.duplicate = false;
-    const fetchImpl = vi.fn(async () =>
-      jsonResponse(endpointPayload("startSession", result)),
-    );
-    const api = createCustomSettlementRuleApi({ fetchImpl });
-
-    await expect(callEndpoint(api, "startSession")).rejects.toMatchObject({
-      code: "CUSTOM_RULE_RESPONSE_INVALID",
-      retryable: true,
-    });
-  });
+      await expect(callEndpoint(api, "startSession")).rejects.toMatchObject({
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        retryable: true,
+      });
+    },
+  );
 
   it.each([
     [

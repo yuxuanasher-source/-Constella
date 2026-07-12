@@ -526,7 +526,7 @@ const startInProgressResultObjectSchema = z.strictObject({
   turn: z.strictObject({
     turnId: uuidSchema,
     status: z.enum(["accepted", "grounding", "generating", "validating"]),
-    attempt: positiveSafeIntegerSchema,
+    attempt: z.union([z.literal(1), z.literal(2)]),
     duplicate: z.boolean(),
   }),
 });
@@ -540,6 +540,9 @@ function validateClarifyingResult(result, context) {
     !["clarifying", "superseded"].includes(result.draft.status)
   ) {
     context.addIssue({ code: "custom", path: ["draft", "status"] });
+  }
+  if (result.draft.status === "superseded" && !result.duplicate) {
+    context.addIssue({ code: "custom", path: ["duplicate"] });
   }
 }
 
@@ -575,11 +578,14 @@ const startResultSchema = z
   .superRefine((result, context) => {
     if (result.kind === "clarifying") {
       validateClarifyingResult(result, context);
-    } else if (result.turn.status === "accepted" && !result.turn.duplicate) {
-      context.addIssue({
-        code: "custom",
-        path: ["turn", "duplicate"],
-      });
+    } else {
+      const { attempt, status, duplicate } = result.turn;
+      const validProgress =
+        (attempt === 1 && duplicate) ||
+        (attempt === 2 && (duplicate || status !== "accepted"));
+      if (!validProgress) {
+        context.addIssue({ code: "custom", path: ["turn"] });
+      }
     }
   });
 const answerResultSchema = clarifyingResultObjectSchema.superRefine(
