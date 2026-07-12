@@ -1724,6 +1724,11 @@ async function loadApprovedReportsByReviewPeriod(
       "approved live reports",
     ).sort((left, right) => left.id.localeCompare(right.id));
     assertApprovedReportSnapshots(page);
+    assertApprovedReportReviewPeriod(
+      page,
+      input.periodStartInclusive,
+      input.periodEndExclusive,
+    );
     rows.push(...page);
     if (rows.length > MAX_AUTHORIZED_SOURCE_REPORTS) {
       throw routeError(
@@ -1850,6 +1855,36 @@ function assertApprovedReportSnapshots(reports: ApprovedReportRow[]): void {
     throw routeError(
       "CUSTOM_RULE_EVIDENCE_INVALID",
       "Approved report evidence violates the immutable snapshot invariant",
+      500,
+      true,
+    );
+  }
+}
+
+function assertApprovedReportReviewPeriod(
+  reports: ApprovedReportRow[],
+  periodStartInclusive: string,
+  periodEndExclusive: string,
+): void {
+  const startEpoch = Date.parse(periodStartInclusive);
+  const endEpoch = Date.parse(periodEndExclusive);
+  if (
+    !Number.isFinite(startEpoch) ||
+    !Number.isFinite(endEpoch) ||
+    endEpoch <= startEpoch ||
+    reports.some((report) => {
+      if (report.reviewed_at === null) return true;
+      const reviewedAtEpoch = Date.parse(report.reviewed_at);
+      return (
+        !Number.isFinite(reviewedAtEpoch) ||
+        reviewedAtEpoch < startEpoch ||
+        reviewedAtEpoch >= endEpoch
+      );
+    })
+  ) {
+    throw routeError(
+      "CUSTOM_RULE_EVIDENCE_INVALID",
+      "Approved report evidence violates the authorized review period",
       500,
       true,
     );

@@ -1113,6 +1113,75 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
   });
 
   it.each([
+    ["at the inclusive start", "2026-06-30T16:00:00.000Z"],
+    ["just before the exclusive end", "2026-07-10T15:59:59.999Z"],
+  ] as const)(
+    "post-validates fallback reviewed_at %s when report filters are ignored",
+    async (_boundary, reviewedAt) => {
+      const report = approvedReport({
+        reviewed_at: reviewedAt,
+        settled_batch_item_id: null,
+      });
+      const harness = await evidenceHarness({
+        reports: [report],
+        items: [],
+        batches: [],
+        enforceReportFilters: false,
+      });
+
+      const authorized =
+        await harness.adapter.authorizeSelection(authorizationInput());
+      const evidence = await harness.adapter.loadAuthorizedEvidence({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        selection: authorized,
+      });
+
+      expect(evidence.sampleSource).toEqual({ kind: "approved_operations" });
+      expect(evidence.sampleSelection.populationCount).toBe(1);
+      expect(evidence.records.map((record) => record.recordId)).toEqual([
+        report.id,
+      ]);
+    },
+  );
+
+  it.each([
+    ["before the inclusive start", "2026-06-30T15:59:59.999Z"],
+    ["at the exclusive end", "2026-07-10T16:00:00.000Z"],
+    ["with a malformed timestamp", "not-a-timestamp"],
+    ["with a missing timestamp", null],
+  ] as const)(
+    "rejects fallback evidence %s when report filters are ignored",
+    async (_boundary, reviewedAt) => {
+      const validReport = approvedReport({
+        id: "02020202-0202-4202-8202-020202020202",
+        reviewed_at: "2026-06-30T16:00:00.000Z",
+        settled_batch_item_id: null,
+      });
+      const invalidReport = approvedReport({
+        id: "03030303-0303-4303-8303-030303030303",
+        reviewed_at: reviewedAt,
+        settled_batch_item_id: null,
+      });
+      const harness = await evidenceHarness({
+        reports: [validReport, invalidReport],
+        items: [],
+        batches: [],
+        enforceReportFilters: false,
+      });
+
+      await expect(
+        harness.adapter.authorizeSelection(authorizationInput()),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_EVIDENCE_INVALID",
+        status: 500,
+        retryable: true,
+      });
+    },
+  );
+
+  it.each([
     ["Asia/Shanghai", "2026-06-30T16:00:00.000Z", "2026-07-10T15:59:59.999Z"],
     [
       "America/St_Johns",
