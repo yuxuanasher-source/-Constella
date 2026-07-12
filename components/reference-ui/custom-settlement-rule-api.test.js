@@ -149,6 +149,47 @@ function clarifyingResult(overrides = {}) {
   };
 }
 
+function retryInProgressResult(status = "generating", overrides = {}) {
+  return {
+    ok: true,
+    kind: "retry_in_progress",
+    conversationId: SESSION_ID,
+    turn: {
+      turnId: "88888888-8888-4888-8888-888888888888",
+      status,
+      attempt: 1,
+      duplicate: true,
+    },
+    ...overrides,
+  };
+}
+
+function retryReadbackResult() {
+  return {
+    ok: true,
+    kind: "retry_readback",
+    conversationId: SESSION_ID,
+    draft: supersededClarifyingDraft(),
+    turn: {
+      turnId: "88888888-8888-4888-8888-888888888888",
+      status: "completed",
+      attempt: 2,
+      duplicate: true,
+    },
+  };
+}
+
+function claimedSession() {
+  return {
+    id: SESSION_ID,
+    title: "主播结算规则",
+    status: "active",
+    lastMessageAt: "2026-07-12T01:00:00.000Z",
+    createdAt: "2026-07-12T01:00:00.000Z",
+    updatedAt: "2026-07-12T01:00:00.000Z",
+  };
+}
+
 function sessionSummary() {
   return {
     conversation: {
@@ -250,6 +291,23 @@ function jsonResponse(payload, init = {}) {
   return new Response(JSON.stringify(payload), {
     status: init.status ?? 200,
     headers: { "Content-Type": "application/json" },
+  });
+}
+
+function endpointPayload(endpoint, result) {
+  return endpoint === "startSession"
+    ? { session: claimedSession(), result }
+    : { result };
+}
+
+function callEndpoint(api, endpoint) {
+  if (endpoint === "startSession") {
+    return api.startSession({ projectId: PROJECT_ID, body: {} });
+  }
+  return api[endpoint]({
+    projectId: PROJECT_ID,
+    sessionId: SESSION_ID,
+    body: {},
   });
 }
 
@@ -428,50 +486,147 @@ describe("custom settlement rule API", () => {
     );
   });
 
-  it.each([
-    [
-      "clarifying idempotent replay",
-      () => ({
+  it.each(["startSession", "answerOrRevise"])(
+    "accepts a superseded clarifying replay from %s",
+    async (endpoint) => {
+      const result = {
         ...clarifyingResult(),
         draft: supersededClarifyingDraft(),
         duplicate: true,
-      }),
-    ],
-    [
-      "completed retry readback",
-      () => ({
-        ok: true,
-        kind: "retry_readback",
-        conversationId: SESSION_ID,
-        draft: supersededClarifyingDraft(),
-        turn: {
-          turnId: "88888888-8888-4888-8888-888888888888",
-          status: "completed",
-          attempt: 2,
-          duplicate: true,
-        },
-      }),
-    ],
-  ])(
-    "accepts a real superseded clarifying draft from %s",
-    async (_label, result) => {
-      const fetchImpl = vi.fn(async () => jsonResponse({ result: result() }));
+      };
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse(endpointPayload(endpoint, result)),
+      );
       const api = createCustomSettlementRuleApi({ fetchImpl });
 
-      await expect(
-        api.answerOrRevise({
-          projectId: PROJECT_ID,
-          sessionId: SESSION_ID,
-          body: {},
-        }),
-      ).resolves.toMatchObject({
+      await expect(callEndpoint(api, endpoint)).resolves.toMatchObject({
         result: {
+          kind: "clarifying",
+          duplicate: true,
           draft: {
             initialStatus: "clarifying",
             status: "superseded",
             supersededByDraftId: "77777777-7777-4777-8777-777777777777",
           },
         },
+      });
+    },
+  );
+
+  it.each(["accepted", "grounding", "generating", "validating"])(
+    "accepts the legitimate start retry_in_progress status %s",
+    async (status) => {
+      const result = retryInProgressResult(status);
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse(endpointPayload("startSession", result), { status: 201 }),
+      );
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+
+      await expect(callEndpoint(api, "startSession")).resolves.toMatchObject({
+        result: {
+          kind: "retry_in_progress",
+          turn: { status, duplicate: true },
+        },
+      });
+    },
+  );
+
+  it.each([
+    ["startSession", "simulated", () => simulationResult()],
+    ["startSession", "retry_readback", () => retryReadbackResult()],
+    ["answerOrRevise", "simulated", () => simulationResult()],
+    ["answerOrRevise", "retry_in_progress", () => retryInProgressResult()],
+    ["answerOrRevise", "retry_readback", () => retryReadbackResult()],
+    [
+      "confirmAndSimulate",
+      "clarifying",
+      () => ({
+        ...clarifyingResult(),
+        draft: supersededClarifyingDraft(),
+        duplicate: true,
+      }),
+    ],
+    ["confirmAndSimulate", "retry_in_progress", () => retryInProgressResult()],
+    ["confirmAndSimulate", "retry_readback", () => retryReadbackResult()],
+  ])(
+    "%s rejects the impossible 2xx kind %s",
+    async (endpoint, _kind, resultFactory) => {
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse(endpointPayload(endpoint, resultFactory())),
+      );
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+
+      await expect(callEndpoint(api, endpoint)).rejects.toMatchObject({
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        retryable: true,
+      });
+    },
+  );
+
+  it("accepts a progressed non-duplicate start recovery", async () => {
+    const result = retryInProgressResult("generating");
+    result.turn.attempt = 2;
+    result.turn.duplicate = false;
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(endpointPayload("startSession", result)),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(callEndpoint(api, "startSession")).resolves.toMatchObject({
+      result: {
+        kind: "retry_in_progress",
+        turn: { status: "generating", attempt: 2, duplicate: false },
+      },
+    });
+  });
+
+  it("rejects an accepted non-duplicate start progress response", async () => {
+    const result = retryInProgressResult("accepted");
+    result.turn.attempt = 2;
+    result.turn.duplicate = false;
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(endpointPayload("startSession", result)),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(callEndpoint(api, "startSession")).rejects.toMatchObject({
+      code: "CUSTOM_RULE_RESPONSE_INVALID",
+      retryable: true,
+    });
+  });
+
+  it.each([
+    [
+      "startSession",
+      () => {
+        const result = retryInProgressResult();
+        delete result.turn;
+        return result;
+      },
+    ],
+    [
+      "answerOrRevise",
+      () => {
+        const result = clarifyingResult();
+        delete result.diff;
+        return result;
+      },
+    ],
+    [
+      "confirmAndSimulate",
+      () => ({ ...simulationResult(), turn: retryInProgressResult().turn }),
+    ],
+  ])(
+    "%s rejects missing fields or cross-kind extras",
+    async (endpoint, resultFactory) => {
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse(endpointPayload(endpoint, resultFactory())),
+      );
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+
+      await expect(callEndpoint(api, endpoint)).rejects.toMatchObject({
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        retryable: true,
       });
     },
   );
@@ -593,6 +748,7 @@ describe("custom settlement rule API", () => {
           value: 100,
         };
       },
+      "confirmAndSimulate",
     ],
     [
       "strict extra response key",
@@ -621,6 +777,7 @@ describe("custom settlement rule API", () => {
         payload.result = simulationResult();
         payload.result.simulation.deltas.payableAmountYuan = "1e3";
       },
+      "confirmAndSimulate",
     ],
     [
       "invalid simulation count invariant",
@@ -628,6 +785,7 @@ describe("custom settlement rule API", () => {
         payload.result = simulationResult();
         payload.result.simulation.coverage.skippedRecords = 9;
       },
+      "confirmAndSimulate",
     ],
     [
       "sample count does not match persisted coverage",
@@ -635,6 +793,7 @@ describe("custom settlement rule API", () => {
         payload.result = simulationResult();
         payload.result.simulation.sampleSelection.sampledCount = 9;
       },
+      "confirmAndSimulate",
     ],
     [
       "historical count does not match persisted coverage",
@@ -642,6 +801,7 @@ describe("custom settlement rule API", () => {
         payload.result = simulationResult();
         payload.result.simulation.historicalTotals.recordCount = 9;
       },
+      "confirmAndSimulate",
     ],
     [
       "tampered superseded lifecycle metadata",
@@ -653,32 +813,12 @@ describe("custom settlement rule API", () => {
       },
     ],
     [
-      "failed draft in a successful retry readback",
-      (payload) => {
-        payload.result = {
-          ok: true,
-          kind: "retry_readback",
-          conversationId: SESSION_ID,
-          draft: draft({
-            status: "failed",
-            initialStatus: "failed",
-            unresolvedAmbiguities: [],
-          }),
-          turn: {
-            turnId: "88888888-8888-4888-8888-888888888888",
-            status: "completed",
-            attempt: 2,
-            duplicate: true,
-          },
-        };
-      },
-    ],
-    [
       "invalid summary status-count invariant",
       (payload) => {
         payload.result = simulationResult();
         payload.result.summary.reviewRoutedCount = 0;
       },
+      "confirmAndSimulate",
     ],
     [
       "terminal retry-in-progress status",
@@ -696,31 +836,22 @@ describe("custom settlement rule API", () => {
         };
       },
     ],
-  ])("fails closed on malformed 2xx data: %s", async (_label, mutate) => {
-    const payload = {
-      session: {
-        id: SESSION_ID,
-        title: "主播结算规则",
-        status: "active",
-        lastMessageAt: "2026-07-12T01:00:00.000Z",
-        createdAt: "2026-07-12T01:00:00.000Z",
-        updatedAt: "2026-07-12T01:00:00.000Z",
-      },
-      result: clarifyingResult(),
-    };
-    mutate(payload);
-    const fetchImpl = vi.fn(async () => jsonResponse(payload));
-    const api = createCustomSettlementRuleApi({ fetchImpl });
+  ])(
+    "fails closed on malformed 2xx data: %s",
+    async (_label, mutate, endpoint = "startSession") => {
+      const payload = endpointPayload(endpoint, clarifyingResult());
+      mutate(payload);
+      const fetchImpl = vi.fn(async () => jsonResponse(payload));
+      const api = createCustomSettlementRuleApi({ fetchImpl });
 
-    await expect(
-      api.startSession({ projectId: PROJECT_ID, body: {} }),
-    ).rejects.toMatchObject({
-      name: "CustomSettlementRuleApiError",
-      code: "CUSTOM_RULE_RESPONSE_INVALID",
-      message: "结算规则服务返回了无法识别的响应",
-      retryable: true,
-    });
-  });
+      await expect(callEndpoint(api, endpoint)).rejects.toMatchObject({
+        name: "CustomSettlementRuleApiError",
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        message: "结算规则服务返回了无法识别的响应",
+        retryable: true,
+      });
+    },
+  );
 
   it("maps non-2xx errors to business-safe typed errors without raw details", async () => {
     const fetchImpl = vi.fn(async () =>
@@ -769,23 +900,15 @@ describe("custom settlement rule API", () => {
     };
     result.summary.uncoveredCount = 2;
     result.summary.reviewRoutedCount = 0;
-    const fetchImpl = vi.fn(async () =>
-      jsonResponse({
-        session: {
-          id: SESSION_ID,
-          title: "主播结算规则",
-          status: "active",
-          lastMessageAt: "2026-07-12T01:00:00.000Z",
-          createdAt: "2026-07-12T01:00:00.000Z",
-          updatedAt: "2026-07-12T01:00:00.000Z",
-        },
-        result,
-      }),
-    );
+    const fetchImpl = vi.fn(async () => jsonResponse({ result }));
     const api = createCustomSettlementRuleApi({ fetchImpl });
 
     await expect(
-      api.startSession({ projectId: PROJECT_ID, body: {} }),
+      api.confirmAndSimulate({
+        projectId: PROJECT_ID,
+        sessionId: SESSION_ID,
+        body: {},
+      }),
     ).resolves.toMatchObject({
       result: {
         summary: {

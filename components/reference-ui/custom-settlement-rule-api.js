@@ -500,96 +500,94 @@ const contractDiffSchema = z.strictObject({
   after: z.unknown(),
 });
 
-const retryTurnSchema = z.strictObject({
-  turnId: uuidSchema,
-  status: z.enum([
-    "accepted",
-    "grounding",
-    "generating",
-    "validating",
-    "completed",
-  ]),
-  attempt: positiveSafeIntegerSchema,
+const clarifyingResultObjectSchema = z.strictObject({
+  ok: z.literal(true),
+  kind: z.literal("clarifying"),
+  conversationId: uuidSchema,
+  draft: draftSchema,
+  diff: z.array(contractDiffSchema).max(17),
   duplicate: z.boolean(),
 });
 
-const authoringResultSchema = z
+const simulatedResultObjectSchema = z.strictObject({
+  ok: z.literal(true),
+  kind: z.literal("simulated"),
+  conversationId: uuidSchema,
+  draft: draftSchema,
+  simulation: simulationSchema,
+  summary: simulationSummarySchema,
+  duplicate: z.boolean(),
+});
+
+const startInProgressResultObjectSchema = z.strictObject({
+  ok: z.literal(true),
+  kind: z.literal("retry_in_progress"),
+  conversationId: uuidSchema,
+  turn: z.strictObject({
+    turnId: uuidSchema,
+    status: z.enum(["accepted", "grounding", "generating", "validating"]),
+    attempt: positiveSafeIntegerSchema,
+    duplicate: z.boolean(),
+  }),
+});
+
+function validateClarifyingResult(result, context) {
+  if (result.draft.conversationId !== result.conversationId) {
+    context.addIssue({ code: "custom", path: ["draft", "conversationId"] });
+  }
+  if (
+    result.draft.initialStatus !== "clarifying" ||
+    !["clarifying", "superseded"].includes(result.draft.status)
+  ) {
+    context.addIssue({ code: "custom", path: ["draft", "status"] });
+  }
+}
+
+function validateSimulatedResult(result, context) {
+  if (result.draft.conversationId !== result.conversationId) {
+    context.addIssue({ code: "custom", path: ["draft", "conversationId"] });
+  }
+  if (result.draft.status !== "simulated") {
+    context.addIssue({ code: "custom", path: ["draft", "status"] });
+  }
+  if (
+    result.simulation.dataSelectionHash !== result.summary.dataSelectionHash
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["summary", "dataSelectionHash"],
+    });
+  }
+  if (
+    result.simulation.coverage.totalRecords !== result.summary.recordCount ||
+    result.simulation.coverage.evaluatedRecords !==
+      result.summary.coverage.evaluatedCount
+  ) {
+    context.addIssue({ code: "custom", path: ["summary", "coverage"] });
+  }
+}
+
+const startResultSchema = z
   .discriminatedUnion("kind", [
-    z.strictObject({
-      ok: z.literal(true),
-      kind: z.literal("clarifying"),
-      conversationId: uuidSchema,
-      draft: draftSchema,
-      diff: z.array(contractDiffSchema).max(17),
-      duplicate: z.boolean(),
-    }),
-    z.strictObject({
-      ok: z.literal(true),
-      kind: z.literal("simulated"),
-      conversationId: uuidSchema,
-      draft: draftSchema,
-      simulation: simulationSchema,
-      summary: simulationSummarySchema,
-      duplicate: z.boolean(),
-    }),
-    z.strictObject({
-      ok: z.literal(true),
-      kind: z.literal("retry_in_progress"),
-      conversationId: uuidSchema,
-      turn: retryTurnSchema.extend({
-        status: z.enum(["accepted", "grounding", "generating", "validating"]),
-      }),
-    }),
-    z.strictObject({
-      ok: z.literal(true),
-      kind: z.literal("retry_readback"),
-      conversationId: uuidSchema,
-      draft: draftSchema,
-      turn: retryTurnSchema.extend({ status: z.literal("completed") }),
-    }),
+    clarifyingResultObjectSchema,
+    startInProgressResultObjectSchema,
   ])
   .superRefine((result, context) => {
-    if (result.kind === "retry_in_progress") return;
-    if (result.draft.conversationId !== result.conversationId) {
-      context.addIssue({ code: "custom", path: ["draft", "conversationId"] });
-    }
-    if (
-      result.kind === "clarifying" &&
-      (result.draft.initialStatus !== "clarifying" ||
-        !["clarifying", "superseded"].includes(result.draft.status))
-    ) {
-      context.addIssue({ code: "custom", path: ["draft", "status"] });
-    }
-    if (
-      result.kind === "retry_readback" &&
-      (result.draft.initialStatus === "failed" ||
-        (result.draft.initialStatus === "contract_ready" &&
-          !["simulated", "superseded"].includes(result.draft.status)))
-    ) {
-      context.addIssue({ code: "custom", path: ["draft", "status"] });
-    }
-    if (result.kind === "simulated") {
-      if (result.draft.status !== "simulated") {
-        context.addIssue({ code: "custom", path: ["draft", "status"] });
-      }
-      if (
-        result.simulation.dataSelectionHash !== result.summary.dataSelectionHash
-      ) {
-        context.addIssue({
-          code: "custom",
-          path: ["summary", "dataSelectionHash"],
-        });
-      }
-      if (
-        result.simulation.coverage.totalRecords !==
-          result.summary.recordCount ||
-        result.simulation.coverage.evaluatedRecords !==
-          result.summary.coverage.evaluatedCount
-      ) {
-        context.addIssue({ code: "custom", path: ["summary", "coverage"] });
-      }
+    if (result.kind === "clarifying") {
+      validateClarifyingResult(result, context);
+    } else if (result.turn.status === "accepted" && !result.turn.duplicate) {
+      context.addIssue({
+        code: "custom",
+        path: ["turn", "duplicate"],
+      });
     }
   });
+const answerResultSchema = clarifyingResultObjectSchema.superRefine(
+  validateClarifyingResult,
+);
+const confirmResultSchema = simulatedResultObjectSchema.superRefine(
+  validateSimulatedResult,
+);
 
 const claimedSessionSchema = z.strictObject({
   id: uuidSchema,
@@ -724,11 +722,21 @@ const catalogSchema = z
 
 const responseSchemas = {
   catalog: z.strictObject({ catalog: catalogSchema }),
-  start: z.strictObject({
-    session: claimedSessionSchema,
-    result: authoringResultSchema,
-  }),
-  authoring: z.strictObject({ result: authoringResultSchema }),
+  start: z
+    .strictObject({
+      session: claimedSessionSchema,
+      result: startResultSchema,
+    })
+    .superRefine((payload, context) => {
+      if (payload.session.id !== payload.result.conversationId) {
+        context.addIssue({
+          code: "custom",
+          path: ["result", "conversationId"],
+        });
+      }
+    }),
+  answer: z.strictObject({ result: answerResultSchema }),
+  confirm: z.strictObject({ result: confirmResultSchema }),
   session: z.strictObject({ session: authoritativeSessionSchema }),
 };
 
@@ -972,7 +980,7 @@ export function createCustomSettlementRuleApi({
       return post(
         `${baseUrl(projectId)}/ai-sessions/${pathSegment(sessionId)}/turns`,
         body,
-        responseSchemas.authoring,
+        responseSchemas.answer,
         signal,
       );
     },
@@ -980,7 +988,7 @@ export function createCustomSettlementRuleApi({
       return post(
         `${baseUrl(projectId)}/ai-sessions/${pathSegment(sessionId)}/confirm-contract`,
         body,
-        responseSchemas.authoring,
+        responseSchemas.confirm,
         signal,
       );
     },

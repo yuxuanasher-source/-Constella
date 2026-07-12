@@ -754,7 +754,7 @@ describe("CustomSettlementRuleWorkspace", () => {
     });
   });
 
-  it("refreshes a superseded clarifying replay before choosing the current UI state", async () => {
+  it("refreshes a superseded answer replay before choosing the current UI state", async () => {
     const superseded = draft("clarifying", {
       revisionNumber: 2,
       status: "superseded",
@@ -1059,44 +1059,48 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(apiClient.answerOrRevise).not.toHaveBeenCalled();
   });
 
-  it("refreshes a completed retry readback before rendering simulated state", async () => {
-    const simulatedDraft = draft("simulated", { revisionNumber: 4 });
+  it("refreshes a superseded start replay without ever rendering the stale draft", async () => {
+    let resolveRefresh;
+    const pendingRefresh = new Promise((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const superseded = confirmableDraft({
+      status: "superseded",
+      businessContract: contract({ title: "过期的首次规则草案" }),
+      supersededByDraftId: "77777777-7777-4777-8777-777777777777",
+      supersededAt: "2026-07-12T01:03:00.000Z",
+    });
+    const latest = confirmableDraft({
+      id: "77777777-7777-4777-8777-777777777777",
+      revisionNumber: 2,
+      businessContract: contract({ title: "权威首次规则草案" }),
+      supersedesDraftId: DRAFT_ID,
+    });
     const apiClient = api({
-      startSession: vi.fn().mockResolvedValue({
-        session: claimedSession(),
-        result: {
-          ok: true,
-          kind: "retry_readback",
-          conversationId: SESSION_ID,
-          draft: simulatedDraft,
-          turn: {
-            turnId: "77777777-7777-4777-8777-777777777777",
-            status: "completed",
-            attempt: 1,
-            duplicate: true,
-          },
-        },
-      }),
-      refreshSession: vi
+      startSession: vi
         .fn()
-        .mockResolvedValue(
-          authoritativeSessionWithTurns(
-            simulatedDraft,
-            [conversationTurn("completed")],
-            persistedSimulation(),
-          ),
-        ),
+        .mockResolvedValue(startEnvelope(superseded, { duplicate: true })),
+      refreshSession: vi.fn().mockReturnValue(pendingRefresh),
     });
     renderWorkspace(apiClient);
 
     await startRule();
 
+    await waitFor(() =>
+      expect(apiClient.refreshSession).toHaveBeenCalledTimes(1),
+    );
+    expect(screen.queryByText("过期的首次规则草案")).not.toBeInTheDocument();
+
+    resolveRefresh(authoritativeSession(latest));
+
     expect(
-      await screen.findByRole("heading", { name: "内部试算结果" }),
+      await screen.findByRole("heading", { name: "业务规则草案" }),
     ).toHaveFocus();
+    expect(screen.getByText("权威首次规则草案")).toBeInTheDocument();
+    expect(screen.queryByText("过期的首次规则草案")).not.toBeInTheDocument();
     expect(apiClient.refreshSession).toHaveBeenCalledTimes(1);
     expect(apiClient.answerOrRevise).not.toHaveBeenCalled();
-    expectOnePrimary("修改规则");
+    expectOnePrimary("确认业务规则并试算");
   });
 
   it("renders an authoritative failed draft as a focused safe error state", async () => {
@@ -1473,6 +1477,7 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(radii.length).toBeGreaterThan(0);
     expect(Math.max(...radii)).toBeLessThanOrEqual(8);
     expect(source).not.toContain("999px");
+    expect(source).not.toContain("retry_readback");
   });
 
   it("renders a complete empty state when project context is unavailable", () => {

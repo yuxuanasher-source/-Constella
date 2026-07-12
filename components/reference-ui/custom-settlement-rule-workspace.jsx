@@ -1378,10 +1378,7 @@ export default function CustomSettlementRuleWorkspace({
         nextSessionId = result.conversationId;
         if (result.kind === "retry_in_progress") {
           authority = await resolveAuthoritativeSession(nextSessionId);
-        } else if (
-          result.kind === "retry_readback" ||
-          result.draft?.status === "superseded"
-        ) {
+        } else if (result.draft?.status === "superseded") {
           const refreshed = await apiClient.refreshSession({
             projectId,
             sessionId: nextSessionId,
