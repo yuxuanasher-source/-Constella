@@ -2714,7 +2714,7 @@ export function Sidebar({
               label="组织设置"
               closeMenu
               onClick={() => {
-                onOpenOrganizationSettings?.();
+                onOpenOrganizationSettings?.(accountSummaryRef.current);
               }}
             />
             <div
@@ -28231,17 +28231,64 @@ function Timeline({ events }) {
 }
 
 function Drawer({ children, onClose, onKeyDown, title }) {
+  const drawerRef = React.useRef(null);
+  const titleId = React.useId();
+
+  const handleDrawerKeyDown = (event) => {
+    if (event.key === "Tab" || event.key === "Escape") {
+      event.stopPropagation();
+    }
+    onKeyDown?.(event);
+    if (event.defaultPrevented) return;
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose?.();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const drawerElement = drawerRef.current;
+    if (!drawerElement) return;
+    const focusable = Array.from(
+      drawerElement.querySelectorAll(OPS_FOCUSABLE_SELECTOR),
+    ).filter((element) => isVisiblyTabbableWithin(element, drawerElement));
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+
+    const activeElement = globalThis.document?.activeElement;
+    if (event.shiftKey) {
+      if (activeElement === first || !drawerElement.contains(activeElement)) {
+        event.preventDefault();
+        last.focus();
+      }
+      return;
+    }
+    if (activeElement === last || !drawerElement.contains(activeElement)) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
     <div
+      ref={drawerRef}
       role="dialog"
-      aria-label={typeof title === "string" ? title : undefined}
-      onKeyDown={onKeyDown}
+      aria-modal="true"
+      aria-labelledby={titleId}
+      onKeyDown={handleDrawerKeyDown}
       style={{
         position: "fixed",
         top: 0,
         right: 0,
         bottom: 0,
         width: 460,
+        maxWidth: "100vw",
+        boxSizing: "border-box",
         background: "#fff",
         borderLeft: "1px solid var(--line)",
         boxShadow: "-8px 0 24px rgba(15,23,42,0.08)",
@@ -28260,8 +28307,13 @@ function Drawer({ children, onClose, onKeyDown, title }) {
           gap: 10,
         }}
       >
-        <div style={{ flex: 1, minWidth: 0 }}>{title}</div>
+        <div id={titleId} style={{ flex: 1, minWidth: 0 }}>
+          {title}
+        </div>
         <button
+          type="button"
+          aria-label="关闭"
+          title="关闭"
           onClick={onClose}
           style={{
             width: 30,
@@ -29526,16 +29578,7 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
   };
 
   return (
-    <Drawer
-      title="组织功能设置"
-      onClose={onClose}
-      onKeyDown={(event) => {
-        if (event.key !== "Escape") return;
-        event.preventDefault();
-        event.stopPropagation();
-        onClose?.();
-      }}
-    >
+    <Drawer title="组织功能设置" onClose={onClose}>
       <div
         style={{
           padding: 16,
@@ -32620,6 +32663,8 @@ function OpsReferenceInner({
   const mobileNavigationMainRef = React.useRef(null);
   const mobileNavigationWasOpenRef = React.useRef(false);
   const mobileNavigationFocusReturnRef = React.useRef("trigger");
+  const organizationSettingsReturnFocusRef = React.useRef(null);
+  const organizationSettingsWasOpenRef = React.useRef(false);
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
   const [dashboardTarget, setDashboardTarget] = React.useState(null);
@@ -32699,10 +32744,27 @@ function OpsReferenceInner({
     setMobileNavigationOpen(false);
   }, []);
 
-  const openOrganizationSettingsFromNavigation = React.useCallback(() => {
-    prepareMobileNavigationOverlay();
+  const openOrganizationSettingsFromNavigation = React.useCallback(
+    (eventOrTarget) => {
+      const navigationTrigger =
+        eventOrTarget?.currentTarget ?? eventOrTarget ?? null;
+      organizationSettingsReturnFocusRef.current = mobileNavigationOpen
+        ? mobileNavigationButtonRef.current
+        : navigationTrigger;
+      prepareMobileNavigationOverlay();
+      setOrganizationSettingsOpen(true);
+    },
+    [mobileNavigationOpen, prepareMobileNavigationOverlay],
+  );
+
+  const openOrganizationSettingsFromScreen = React.useCallback((event) => {
+    organizationSettingsReturnFocusRef.current = event.currentTarget;
     setOrganizationSettingsOpen(true);
-  }, [prepareMobileNavigationOverlay]);
+  }, []);
+
+  const closeOrganizationSettings = React.useCallback(() => {
+    setOrganizationSettingsOpen(false);
+  }, []);
 
   const openMobileNavigation = React.useCallback(() => {
     const mediaQuery = globalThis.matchMedia?.(OPS_MOBILE_NAVIGATION_QUERY);
@@ -32735,6 +32797,19 @@ function OpsReferenceInner({
       main?.removeAttribute("inert");
     };
   }, [mobileNavigationOpen]);
+
+  React.useLayoutEffect(() => {
+    if (organizationSettingsOpen) {
+      organizationSettingsWasOpenRef.current = true;
+      return;
+    }
+    if (!organizationSettingsWasOpenRef.current) return;
+
+    organizationSettingsWasOpenRef.current = false;
+    const focusTarget = organizationSettingsReturnFocusRef.current;
+    organizationSettingsReturnFocusRef.current = null;
+    focusTarget?.focus();
+  }, [organizationSettingsOpen]);
 
   React.useEffect(() => {
     if (typeof globalThis.matchMedia !== "function") return undefined;
@@ -34373,9 +34448,7 @@ function OpsReferenceInner({
             {route === "org" && (
               <ScreenOrg
                 go={go}
-                onOpenOrganizationSettings={() =>
-                  setOrganizationSettingsOpen(true)
-                }
+                onOpenOrganizationSettings={openOrganizationSettingsFromScreen}
               />
             )}
             {route === "export" && <ScreenExport go={go} />}
@@ -34384,7 +34457,7 @@ function OpsReferenceInner({
         {organizationSettingsOpen ? (
           <OrganizationSettingsDrawer
             settings={organizationSettingsState}
-            onClose={() => setOrganizationSettingsOpen(false)}
+            onClose={closeOrganizationSettings}
             onSubmit={saveOrganizationSettings}
           />
         ) : null}

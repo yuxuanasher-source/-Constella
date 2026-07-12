@@ -371,10 +371,21 @@ describe("OpsReferenceApp responsive navigation shell", () => {
 
     const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
     const organizationName = within(dialog).getByLabelText("组织名称");
+    const closeButton = within(dialog).getByRole("button", { name: "关闭" });
+    const saveButton = within(dialog).getByRole("button", {
+      name: "保存功能设置",
+    });
     expect(menuButton).toHaveAttribute("aria-expanded", "false");
     expect(main).not.toHaveAttribute("inert");
     expect(main).not.toHaveAttribute("aria-hidden");
     expect(organizationName).toHaveFocus();
+
+    closeButton.focus();
+    fireEvent.keyDown(closeButton, { key: "Tab", shiftKey: true });
+    expect(saveButton).toHaveFocus();
+
+    fireEvent.keyDown(saveButton, { key: "Tab" });
+    expect(closeButton).toHaveFocus();
 
     fireEvent.keyDown(organizationName, { key: "Escape" });
 
@@ -382,8 +393,55 @@ describe("OpsReferenceApp responsive navigation shell", () => {
       screen.queryByRole("dialog", { name: "组织功能设置" }),
     ).not.toBeInTheDocument();
     expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(menuButton).toHaveFocus();
     expect(main).not.toHaveAttribute("inert");
     expect(main).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("exposes organization settings as a named modal drawer", () => {
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+
+    const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(
+      within(dialog).getByRole("button", { name: "关闭" }),
+    ).toHaveAttribute("type", "button");
+  });
+
+  it("keeps the organization settings drawer within the viewport width", () => {
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+
+    expect(
+      screen.getByRole("dialog", { name: "组织功能设置" }),
+    ).toHaveStyle({
+      width: "460px",
+      maxWidth: "100vw",
+      boxSizing: "border-box",
+    });
+  });
+
+  it("restores focus to the organization page trigger after closing settings", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="org"
+        organizationMembers={[]}
+        projectCards={[]}
+        streamerCards={[]}
+        billingStatus={{ plan: "free" }}
+      />,
+    );
+    const settingsButton = screen.getByRole("button", { name: "组织设置" });
+
+    fireEvent.click(settingsButton);
+    const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
+
+    expect(
+      screen.queryByRole("dialog", { name: "组织功能设置" }),
+    ).not.toBeInTheDocument();
+    expect(settingsButton).toHaveFocus();
   });
 
   it("closes the drawer with Escape", () => {
