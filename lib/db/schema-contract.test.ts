@@ -3,6 +3,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import {
+  createConversationService,
+  type ConversationPersistence,
+} from "../../features/ai/conversation-service";
+import type {
+  CreatedConversationTurn,
+  StoredConversationTurn,
+} from "../../features/ai/conversation-repository";
 import { businessRuleContractSchema } from "../../features/settlements/custom-rule-contract";
 import { SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES } from "../../features/settlements/custom-rule-repository";
 
@@ -31,10 +39,6 @@ const normalizedSettlementAiMigration = settlementAiMigration
   .toLowerCase()
   .replace(/\s+/gu, " ")
   .trim();
-const conversationServiceSource = readFileSync(
-  join(process.cwd(), "features", "ai", "conversation-service.ts"),
-  "utf8",
-);
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/gu, " ").trim();
@@ -121,41 +125,32 @@ function settlementAiFunctionBody(fn: string): string {
   return normalizeSql(extractSettlementAiFunction(fn).body);
 }
 
-function settlementAiForUpdateRelations(fn: string): string[] {
+type SettlementAiRowLock = {
+  relation: string;
+  mode: "key share" | "update";
+};
+
+function settlementAiRowLocks(fn: string): SettlementAiRowLock[] {
   return extractSettlementAiFunction(fn).body
     .split(";")
-    .filter((statement) => /\bfor\s+update\b/iu.test(statement))
-    .map((statement) => {
+    .flatMap((statement) => {
+      const mode = statement.match(/\bfor\s+(key\s+share|update)\b/iu)?.[1]
+        ?.toLowerCase()
+        .replace(/\s+/gu, " ");
+      if (mode !== "key share" && mode !== "update") return [];
       const relation = statement.match(/\bfrom\s+public\.([a-z_]+)/iu)?.[1];
       expect(relation, `missing locked relation in ${fn}`).toBeDefined();
-      return relation ?? "";
+      return [{ relation: relation ?? "", mode }];
     });
 }
 
-function settlementAiProjectLockContract(fn: string): {
-  projectLockIndex: number;
-  implicitProjectLockWrites: Array<{ index: number; relation: string }>;
-} {
-  const statements = extractSettlementAiFunction(fn).body
-    .split(";")
-    .map(normalizeSql);
-  const projectLockIndex = statements.findIndex(
-    (statement) =>
-      /\bfrom public\.projects\b/iu.test(statement) &&
-      /\bfor update\b/iu.test(statement),
+function settlementAiForeignKeyParents(table: string): string[] {
+  return Array.from(
+    settlementAiTableDefinition(table).matchAll(
+      /\breferences public\.([a-z_]+)/gu,
+    ),
+    (match) => match[1] ?? "",
   );
-  const implicitProjectLockWrites = statements.flatMap((statement, index) => {
-    if (
-      /\bupdate public\.ai_conversations set project_id\b/iu.test(statement)
-    ) {
-      return [{ index, relation: "ai_conversations" }];
-    }
-    const insert = statement.match(
-      /\binsert into public\.(ai_settlement_rule_drafts|settlement_formula_simulations)\b/iu,
-    );
-    return insert?.[1] ? [{ index, relation: insert[1] }] : [];
-  });
-  return { projectLockIndex, implicitProjectLockWrites };
 }
 
 function settlementAiAuthenticatedAuthoringRpcNames(): string[] {
@@ -869,26 +864,216 @@ describe("Phase 1 settlement AI persistence contract", () => {
     );
   });
 
-  it("uses one parent-before-child lock order across every settlement finalizer path", () => {
-    expect(
-      settlementAiForUpdateRelations("settlement_ai_lock_atomic_draft_turn"),
-    ).toEqual(["projects", "ai_conversations", "ai_chat_turns"]);
-    expect(
-      settlementAiForUpdateRelations("create_settlement_formula_simulation"),
-    ).toEqual([
-      "projects",
-      "settlement_formula_simulations",
-      "ai_settlement_rule_drafts",
+  it("enforces retry eligibility in ConversationService over lower-level persistence", async () => {
+    // The generic RPC stays lower-level; application retry eligibility lives here.
+    const actor = { organizationId: "org-1", userId: "user-1" };
+    const createStore = (retryable: boolean) => {
+      const source: StoredConversationTurn = {
+        id: "source-turn",
+        conversationId: "conversation-1",
+        userMessageId: "user-message-1",
+        assistantMessageId: "failed-message-1",
+        mode: "deep",
+        status: "failed",
+        attempt: 1,
+        contextSnapshot: null,
+        retryOfTurnId: null,
+        regenerateOfTurnId: null,
+        providerName: "openai",
+        errorCode: "SETTLEMENT_AI_PROVIDER_FAILED",
+        errorSummary: "Settlement AI provider is temporarily unavailable.",
+        retryable,
+      };
+      const state = { createAttempts: 0, createdSuccessors: 0 };
+      let successor: CreatedConversationTurn | null = null;
+      const persistence: ConversationPersistence = {
+        createConversation: async () => null,
+        listConversations: async () => [],
+        getConversation: async () => null,
+        listMessages: async () => [],
+        listTurns: async () => [source],
+        getTurn: async () => source,
+        createTurn: async (input) => {
+          state.createAttempts += 1;
+          if (input.kind !== "retry" || input.sourceTurnId !== source.id) {
+            return null;
+          }
+          if (successor) return { ...successor, duplicate: true };
+          state.createdSuccessors += 1;
+          successor = {
+            conversationId: source.conversationId,
+            turnId: "retry-turn-1",
+            userMessageId: source.userMessageId,
+            assistantMessageId: "retry-assistant-message-1",
+            status: "accepted",
+            attempt: 2,
+            duplicate: false,
+          };
+          return successor;
+        },
+        transitionTurn: async () => true,
+        completeTurn: async () => true,
+        failTurn: async () => true,
+        renewLease: async () => true,
+      };
+      return { persistence, state };
+    };
+
+    const retryable = createStore(true);
+    const retryableService = createConversationService(retryable.persistence);
+    const first = await retryableService.retryTurn(actor, "source-turn", {
+      clientRequestId: "retry-request-1",
+    });
+    const replay = await retryableService.retryTurn(actor, "source-turn", {
+      clientRequestId: "retry-request-1",
+    });
+    expect(first).toMatchObject({ turnId: "retry-turn-1", duplicate: false });
+    expect(replay).toMatchObject({ turnId: "retry-turn-1", duplicate: true });
+    expect(retryable.state).toEqual({
+      createAttempts: 2,
+      createdSuccessors: 1,
+    });
+
+    const nonRetryable = createStore(false);
+    const nonRetryableService = createConversationService(
+      nonRetryable.persistence,
+    );
+    await expect(
+      nonRetryableService.retryTurn(actor, "source-turn", {
+        clientRequestId: "retry-request-2",
+      }),
+    ).rejects.toMatchObject({ code: "turn_not_retryable" });
+    expect(nonRetryable.state).toEqual({
+      createAttempts: 0,
+      createdSuccessors: 0,
+    });
+  });
+
+  it("derives one complete parent-first lock graph from authoring foreign keys", () => {
+    const parentHelper = settlementAiFunctionDefinition(
+      "settlement_ai_lock_authoring_parents",
+    );
+    expect(parentHelper).toContain("security definer");
+    expect(parentHelper).toContain("set search_path = pg_catalog, public");
+    expect(settlementAiRowLocks("settlement_ai_lock_authoring_parents")).toEqual([
+      { relation: "organizations", mode: "key share" },
+      { relation: "profiles", mode: "key share" },
+      { relation: "projects", mode: "update" },
     ]);
     expect(
-      settlementAiForUpdateRelations("create_ai_settlement_rule_draft"),
+      Array.from(
+        new Set(settlementAiForeignKeyParents("ai_settlement_rule_drafts")),
+      ),
     ).toEqual([
+      "organizations",
+      "profiles",
       "projects",
       "ai_conversations",
       "ai_settlement_rule_drafts",
-      "ai_chat_turns",
-      "ai_chat_messages",
     ]);
+    expect(
+      Array.from(
+        new Set(
+          settlementAiForeignKeyParents("settlement_formula_simulations"),
+        ),
+      ),
+    ).toEqual([
+      "organizations",
+      "profiles",
+      "projects",
+      "ai_settlement_rule_drafts",
+    ]);
+
+    expect(settlementAiAuthenticatedAuthoringRpcNames()).toEqual([
+      "create_ai_settlement_rule_draft",
+      "create_settlement_formula_simulation",
+      "finalize_settlement_ai_draft_turn",
+      "finalize_settlement_ai_simulation_turn",
+      "finalize_settlement_ai_failed_turn",
+    ]);
+
+    for (const directRpc of [
+      "create_ai_settlement_rule_draft",
+      "create_settlement_formula_simulation",
+    ]) {
+      const body = settlementAiFunctionBody(directRpc);
+      const parentLock = body.indexOf(
+        "public.settlement_ai_lock_authoring_parents",
+      );
+      expect(parentLock, `${directRpc} must lock FK parents`).toBeGreaterThanOrEqual(
+        0,
+      );
+      expect(parentLock).toBeLessThan(body.indexOf("for update"));
+    }
+    const atomicLock = settlementAiFunctionBody(
+      "settlement_ai_lock_atomic_draft_turn",
+    );
+    expect(
+      atomicLock.indexOf("public.settlement_ai_lock_authoring_parents"),
+    ).toBeLessThan(atomicLock.indexOf("from public.ai_conversations"));
+    expect(settlementAiRowLocks("settlement_ai_lock_atomic_draft_turn")).toEqual([
+      { relation: "ai_conversations", mode: "update" },
+      { relation: "ai_chat_turns", mode: "update" },
+    ]);
+  });
+
+  it("keeps replay-only child locks terminal and first writes in canonical order", () => {
+    const draft = settlementAiFunctionBody("create_ai_settlement_rule_draft");
+    const draftParent = draft.indexOf(
+      "public.settlement_ai_lock_authoring_parents",
+    );
+    const conversation = draft.indexOf("from public.ai_conversations as c");
+    const replayDraft = draft.indexOf("select d.* into v_existing");
+    const replayDraftReturn = draft.indexOf(
+      "return pg_catalog.to_jsonb(v_existing)",
+      replayDraft,
+    );
+    const turn = draft.indexOf("from public.ai_chat_turns as trace_turn");
+    const messages = draft.indexOf("from public.ai_chat_messages as user_message");
+    const previousDraft = draft.indexOf("select d.* into v_previous");
+    const draftInsert = draft.indexOf(
+      "insert into public.ai_settlement_rule_drafts",
+    );
+    const draftPath = [
+      draftParent,
+      conversation,
+      replayDraft,
+      replayDraftReturn,
+      turn,
+      messages,
+      previousDraft,
+      draftInsert,
+    ];
+    expect(draftPath.every((index) => index >= 0)).toBe(true);
+    expect(draftPath).toEqual([...draftPath].sort((left, right) => left - right));
+    expect(draft.slice(previousDraft, draftInsert)).toContain("for update");
+
+    const simulation = settlementAiFunctionBody(
+      "create_settlement_formula_simulation",
+    );
+    const simulationParent = simulation.indexOf(
+      "public.settlement_ai_lock_authoring_parents",
+    );
+    const replaySimulation = simulation.indexOf("select s.* into v_existing");
+    const replaySimulationReturn = simulation.indexOf(
+      "return pg_catalog.to_jsonb(v_existing)",
+      replaySimulation,
+    );
+    const ownerDraft = simulation.indexOf("select d.* into v_draft");
+    const simulationInsert = simulation.indexOf(
+      "insert into public.settlement_formula_simulations",
+    );
+    const simulationPath = [
+      simulationParent,
+      replaySimulation,
+      replaySimulationReturn,
+      ownerDraft,
+      simulationInsert,
+    ];
+    expect(simulationPath.every((index) => index >= 0)).toBe(true);
+    expect(simulationPath).toEqual(
+      [...simulationPath].sort((left, right) => left - right),
+    );
 
     for (const finalizer of [
       "finalize_settlement_ai_draft_turn",
@@ -904,47 +1089,10 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "finalize_settlement_ai_simulation_turn",
     );
     expect(
-      simulationFinalizer.indexOf("public.settlement_ai_lock_atomic_draft_turn"),
+      simulationFinalizer.indexOf("public.create_ai_settlement_rule_draft"),
     ).toBeLessThan(
       simulationFinalizer.indexOf("public.create_settlement_formula_simulation"),
     );
-  });
-
-  it("locks project before every implicit project-FK lock in public authoring RPCs", () => {
-    expect(settlementAiAuthenticatedAuthoringRpcNames()).toEqual([
-      "create_ai_settlement_rule_draft",
-      "create_settlement_formula_simulation",
-      "finalize_settlement_ai_draft_turn",
-      "finalize_settlement_ai_simulation_turn",
-      "finalize_settlement_ai_failed_turn",
-    ]);
-
-    const draftContract = settlementAiProjectLockContract(
-      "create_ai_settlement_rule_draft",
-    );
-    expect(draftContract.implicitProjectLockWrites.map(({ relation }) => relation))
-      .toEqual(["ai_conversations", "ai_settlement_rule_drafts"]);
-    expect(draftContract.projectLockIndex).toBeGreaterThanOrEqual(0);
-    for (const write of draftContract.implicitProjectLockWrites) {
-      expect(
-        write.index,
-        `${write.relation} can acquire an implicit project FK lock`,
-      ).toBeGreaterThan(draftContract.projectLockIndex);
-    }
-
-    const simulationContract = settlementAiProjectLockContract(
-      "create_settlement_formula_simulation",
-    );
-    expect(
-      simulationContract.implicitProjectLockWrites.map(({ relation }) => relation),
-    ).toEqual(["settlement_formula_simulations"]);
-    expect(simulationContract.projectLockIndex).toBeGreaterThanOrEqual(0);
-    for (const write of simulationContract.implicitProjectLockWrites) {
-      expect(
-        write.index,
-        `${write.relation} can acquire an implicit project FK lock`,
-      ).toBeGreaterThan(simulationContract.projectLockIndex);
-    }
   });
 
   it("exposes only authenticated atomic finalizers and keeps helpers private", () => {
@@ -974,6 +1122,12 @@ describe("Phase 1 settlement AI persistence contract", () => {
     );
     expect(normalizedSettlementAiMigration).not.toMatch(
       /grant execute on function public\.settlement_ai_lock_atomic_draft_turn/u,
+    );
+    expect(normalizedSettlementAiMigration).toMatch(
+      /revoke all on function public\.settlement_ai_lock_authoring_parents\(uuid, uuid, uuid\)/u,
+    );
+    expect(normalizedSettlementAiMigration).not.toMatch(
+      /grant execute on function public\.settlement_ai_lock_authoring_parents/u,
     );
   });
 
@@ -1528,10 +1682,6 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(selfChecks).toMatch(
       /atomic_turn\.status = 'failed'[\s\S]+?not atomic_turn\.retryable[\s\S]+?atomic_nonretryable_failure_not_persisted/u,
     );
-    expect(normalizeSql(conversationServiceSource)).toContain(
-      'if (source.status !== "failed" || !source.retryable)',
-    );
-
     for (const policyName of [
       "ai_settlement_rule_drafts_mcn_project_read",
       "settlement_formula_simulations_mcn_project_read",
@@ -1970,6 +2120,206 @@ describe.runIf(Boolean(settlementAiLockRegressionContainer))(
         runDockerSql(container, cleanupSql);
       }
     }, 20_000);
+
+    it.each([
+      {
+        label: "organization",
+        parentRelation: "organizations",
+        actorId: "13000000-0000-4000-8000-000000000001",
+        organizationId: "23000000-0000-4000-8000-000000000001",
+        projectId: "33000000-0000-4000-8000-000000000001",
+        conversationId: "43000000-0000-4000-8000-000000000001",
+        userMessageId: "53000000-0000-4000-8000-000000000001",
+        assistantMessageId: "53000000-0000-4000-8000-000000000002",
+        turnId: "63000000-0000-4000-8000-000000000001",
+      },
+      {
+        label: "profile",
+        parentRelation: "profiles",
+        actorId: "14000000-0000-4000-8000-000000000001",
+        organizationId: "24000000-0000-4000-8000-000000000001",
+        projectId: "34000000-0000-4000-8000-000000000001",
+        conversationId: "44000000-0000-4000-8000-000000000001",
+        userMessageId: "54000000-0000-4000-8000-000000000001",
+        assistantMessageId: "54000000-0000-4000-8000-000000000002",
+        turnId: "64000000-0000-4000-8000-000000000001",
+      },
+    ])(
+      "locks $label before project when public draft creation races a parent writer",
+      async ({
+        label,
+        parentRelation,
+        actorId,
+        organizationId,
+        projectId,
+        conversationId,
+        userMessageId,
+        assistantMessageId,
+        turnId,
+      }) => {
+        const container = settlementAiLockRegressionContainer ?? "";
+        const suffix = `task6-${label}-project-lock`;
+        const parentId = parentRelation === "organizations"
+          ? organizationId
+          : actorId;
+        const draftInput = {
+          organizationId,
+          projectId,
+          conversationId,
+          idempotencyKey: `${suffix}-draft`,
+          promptText: "请生成需要澄清的项目结算规则。",
+          turnTrace: { turnId, userMessageId, assistantMessageId },
+          businessContract: settlementAiCanonicalBusinessContract(),
+          unresolvedAmbiguities: [
+            {
+              code: "confirm_rate",
+              question: "请确认分成比例。",
+              required: true,
+            },
+          ],
+          variableCatalogVersion: "a".repeat(64),
+          aiResponse: {
+            content: "请确认分成比例后继续。",
+            finishReason: "stop",
+            providerRequestId: null,
+          },
+          generatedFormula: null,
+          generatedExplanation: null,
+          generatedTestCases: [],
+          model: "parent-lock-regression-model",
+          safetyFlags: [],
+          contractHash: "b".repeat(64),
+          formulaHash: null,
+          parameterHash: "d".repeat(64),
+          status: "clarifying",
+        };
+        const cleanupSql = `
+          set session_replication_role = replica;
+          delete from public.settlement_formula_simulations
+          where organization_id = '${organizationId}'::uuid;
+          delete from public.ai_settlement_rule_drafts
+          where organization_id = '${organizationId}'::uuid;
+          set session_replication_role = origin;
+          delete from public.organizations where id = '${organizationId}'::uuid;
+          delete from public.profiles where id = '${actorId}'::uuid;
+          delete from auth.users where id = '${actorId}'::uuid;
+        `;
+        const setupSql = `
+          ${cleanupSql}
+          insert into auth.users (id, email)
+          values ('${actorId}'::uuid, '${suffix}@example.invalid');
+          insert into public.profiles (id, email, full_name)
+          values (
+            '${actorId}'::uuid,
+            '${suffix}@example.invalid',
+            'Task6 Parent Lock'
+          );
+          insert into public.organizations (id, name, code)
+          values (
+            '${organizationId}'::uuid,
+            'Task6 Parent Lock',
+            '${suffix}'
+          );
+          insert into public.organization_members (
+            organization_id, user_id, role, status
+          ) values (
+            '${organizationId}'::uuid, '${actorId}'::uuid, 'owner', 'active'
+          );
+          insert into public.projects (
+            id, organization_id, code, name, created_by, owner_id
+          ) values (
+            '${projectId}'::uuid,
+            '${organizationId}'::uuid,
+            '${suffix}',
+            'Task6 Parent Lock',
+            '${actorId}'::uuid,
+            '${actorId}'::uuid
+          );
+          insert into public.ai_conversations (
+            id, organization_id, owner_user_id, project_id, title
+          ) values (
+            '${conversationId}'::uuid,
+            '${organizationId}'::uuid,
+            '${actorId}'::uuid,
+            '${projectId}'::uuid,
+            'Task6 Parent Lock'
+          );
+          insert into public.ai_chat_messages (
+            id, organization_id, owner_user_id, conversation_id, sequence_no,
+            role, status, content, parent_message_id
+          ) values
+            (
+              '${userMessageId}'::uuid,
+              '${organizationId}'::uuid,
+              '${actorId}'::uuid,
+              '${conversationId}'::uuid,
+              1, 'user', 'completed', '请生成结算规则。', null
+            ),
+            (
+              '${assistantMessageId}'::uuid,
+              '${organizationId}'::uuid,
+              '${actorId}'::uuid,
+              '${conversationId}'::uuid,
+              2, 'assistant', 'completed',
+              ${sqlString(draftInput.aiResponse.content)},
+              '${userMessageId}'::uuid
+            );
+          insert into public.ai_chat_turns (
+            id, organization_id, owner_user_id, conversation_id,
+            user_message_id, assistant_message_id, status, idempotency_key,
+            completed_at
+          ) values (
+            '${turnId}'::uuid,
+            '${organizationId}'::uuid,
+            '${actorId}'::uuid,
+            '${conversationId}'::uuid,
+            '${userMessageId}'::uuid,
+            '${assistantMessageId}'::uuid,
+            'completed',
+            '${suffix}-turn',
+            pg_catalog.clock_timestamp()
+          );
+        `;
+        const parentWriterSql = `
+          begin;
+          set local deadlock_timeout = '200ms';
+          select id from public.${parentRelation}
+          where id = '${parentId}'::uuid for update;
+          select pg_catalog.pg_sleep(2);
+          select id from public.projects
+          where id = '${projectId}'::uuid for update;
+          commit;
+        `;
+        const publicDraftSql = `
+          begin;
+          set local deadlock_timeout = '200ms';
+          select pg_catalog.set_config(
+            'request.jwt.claim.sub', '${actorId}', true
+          );
+          ${createDraftRpcSql(draftInput)}
+          commit;
+        `;
+
+        runDockerSql(container, setupSql);
+        try {
+          const parentWriter = runDockerSqlAsync(container, parentWriterSql);
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          const publicDraft = runDockerSqlAsync(container, publicDraftSql);
+          const [parentResult, draftResult] = await Promise.all([
+            parentWriter,
+            publicDraft,
+          ]);
+          expect(
+            [parentResult.stderr, draftResult.stderr].join("\n"),
+          ).not.toContain("40P01");
+          expect(parentResult.code, parentResult.stderr).toBe(0);
+          expect(draftResult.code, draftResult.stderr).toBe(0);
+        } finally {
+          runDockerSql(container, cleanupSql);
+        }
+      },
+      20_000,
+    );
   },
 );
 

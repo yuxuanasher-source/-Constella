@@ -2183,6 +2183,53 @@ using (
   and public.can_access_project(project_id)
 );
 
+-- FK checks on the authoring rows lock organizations, actor profiles, and
+-- projects. Acquire those parents in one order before any child row so a
+-- parent writer can never wait on a project already held by this transaction.
+create or replace function public.settlement_ai_lock_authoring_parents(
+  p_organization_id uuid,
+  p_actor_id uuid,
+  p_project_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if auth.uid() is null
+     or p_actor_id is null
+     or auth.uid() is distinct from p_actor_id then
+    raise exception 'authentication_required';
+  end if;
+
+  perform 1
+  from public.organizations as organization
+  where organization.id = p_organization_id
+  for key share;
+  if not found then
+    raise exception 'settlement_ai_organization_scope_mismatch';
+  end if;
+
+  perform 1
+  from public.profiles as actor_profile
+  where actor_profile.id = p_actor_id
+  for key share;
+  if not found then
+    raise exception 'settlement_ai_actor_profile_missing';
+  end if;
+
+  perform 1
+  from public.projects as project
+  where project.id = p_project_id
+    and project.organization_id = p_organization_id
+  for update;
+  if not found then
+    raise exception 'settlement_ai_project_scope_mismatch';
+  end if;
+end;
+$$;
+
 create or replace function public.create_ai_settlement_rule_draft(
   p_organization_id uuid,
   p_project_id uuid,
@@ -2211,7 +2258,6 @@ set search_path = pg_catalog, public
 as $$
 declare
   v_actor_id uuid := auth.uid();
-  v_project_id uuid;
   v_conversation public.ai_conversations%rowtype;
   v_existing public.ai_settlement_rule_drafts%rowtype;
   v_previous public.ai_settlement_rule_drafts%rowtype;
@@ -2231,17 +2277,11 @@ begin
      or not public.can_access_project(p_project_id) then
     raise exception 'settlement_ai_project_access_denied';
   end if;
-  -- Parent-first locking also covers the implicit FOR KEY SHARE locks taken by
-  -- the conversation project update and draft insert foreign-key checks.
-  select p.id
-  into v_project_id
-  from public.projects as p
-  where p.id = p_project_id
-    and p.organization_id = p_organization_id
-  for update;
-  if not found then
-    raise exception 'settlement_ai_project_scope_mismatch';
-  end if;
+  perform public.settlement_ai_lock_authoring_parents(
+    p_organization_id,
+    v_actor_id,
+    p_project_id
+  );
   if p_status not in ('clarifying', 'contract_ready', 'failed') then
     raise exception 'settlement_ai_draft_status_invalid';
   end if;
@@ -2537,7 +2577,8 @@ begin
   from public.ai_settlement_rule_drafts as d
   where d.conversation_id = p_conversation_id
   order by d.revision_number desc
-  limit 1;
+  limit 1
+  for update;
 
   insert into public.ai_settlement_rule_drafts (
     organization_id,
@@ -2633,7 +2674,6 @@ set search_path = pg_catalog, public
 as $$
 declare
   v_actor_id uuid := auth.uid();
-  v_project_id uuid;
   v_existing public.settlement_formula_simulations%rowtype;
   v_draft public.ai_settlement_rule_drafts%rowtype;
   v_created public.settlement_formula_simulations%rowtype;
@@ -2646,15 +2686,11 @@ begin
      or not public.can_access_project(p_project_id) then
     raise exception 'settlement_ai_project_access_denied';
   end if;
-  select p.id
-  into v_project_id
-  from public.projects as p
-  where p.id = p_project_id
-    and p.organization_id = p_organization_id
-  for update;
-  if not found then
-    raise exception 'settlement_ai_project_scope_mismatch';
-  end if;
+  perform public.settlement_ai_lock_authoring_parents(
+    p_organization_id,
+    v_actor_id,
+    p_project_id
+  );
   if p_rule_version_id is not null then
     raise exception 'settlement_ai_rule_version_owner_phase1_unsupported';
   end if;
@@ -3312,9 +3348,8 @@ exception
 end;
 $$;
 
--- All atomic finalizers acquire project, conversation, then turn. Holding the
--- parent project lock before any draft can be locked keeps simulation replay
--- aligned with create_settlement_formula_simulation and avoids lock inversion.
+-- Atomic finalizers share the same FK-parent order as both direct authoring
+-- RPCs, then lock conversation and turn before domain children.
 create or replace function public.settlement_ai_lock_atomic_draft_turn(
   p_draft jsonb
 )
@@ -3354,14 +3389,11 @@ begin
      or not public.can_access_project(v_project_id) then
     raise exception 'settlement_ai_project_access_denied';
   end if;
-  perform 1
-    from public.projects as project
-    where project.id = v_project_id
-      and project.organization_id = v_organization_id
-  for update;
-  if not found then
-    raise exception 'settlement_ai_project_scope_mismatch';
-  end if;
+  perform public.settlement_ai_lock_authoring_parents(
+    v_organization_id,
+    v_actor_id,
+    v_project_id
+  );
 
   select conversation.project_id
   into v_conversation_project_id
@@ -5761,6 +5793,8 @@ revoke all on function public.settlement_ai_failure_semantics_are_valid(
   boolean
 ) from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_atomic_simulation_envelope_is_valid(jsonb)
+  from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_lock_authoring_parents(uuid, uuid, uuid)
   from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_lock_atomic_draft_turn(jsonb)
   from public, anon, authenticated, service_role;
