@@ -486,7 +486,10 @@ function DataTable({
   rowId,
 }) {
   return (
-    <div style={{ width: "100%", overflow: "auto" }}>
+    <div
+      className="ops-data-table-scroll"
+      style={{ width: "100%", overflow: "auto" }}
+    >
       <table
         style={{
           width: "100%",
@@ -1987,8 +1990,169 @@ const OPS_SHELL_RESPONSIVE_CSS = `
       width: 100%;
       max-width: 100vw;
       min-width: 0;
+      overflow-x: visible;
+    }
+
+    .ops-page-header {
+      padding: 16px 12px 12px !important;
+    }
+
+    .ops-page-header-inner {
+      flex-direction: column;
+      align-items: stretch !important;
+      gap: 12px !important;
+    }
+
+    .ops-page-header-heading,
+    .ops-page-header-title-row {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .ops-page-header-title-row {
+      flex-wrap: wrap;
+    }
+
+    .ops-page-header-title {
+      width: auto;
+      min-width: max-content;
+      white-space: nowrap;
+    }
+
+    .ops-page-header-actions {
+      width: 100%;
+      min-width: 0;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 8px;
+    }
+
+    .ops-page-header-actions > * {
+      max-width: 100%;
+    }
+
+    .ops-settlement-content {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      padding: 12px !important;
+      gap: 12px !important;
+    }
+
+    .ops-settlement-content > * {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .ops-settlement-project-header {
+      flex-direction: column;
+      align-items: stretch !important;
+      padding: 12px !important;
+    }
+
+    .ops-settlement-period-controls {
+      width: 100%;
+      min-width: 0;
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      justify-content: stretch !important;
+    }
+
+    .ops-settlement-period-controls input,
+    .ops-settlement-period-controls select {
+      width: 100% !important;
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .ops-settlement-period-controls select,
+    .ops-settlement-period-error {
+      grid-column: 1 / -1;
+    }
+
+    .ops-settlement-tabs-scroll {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
       overflow-x: auto;
       overscroll-behavior-x: contain;
+    }
+
+    .ops-settlement-tabs-scroll > div {
+      width: max-content;
+      min-width: 100%;
+    }
+
+    .ops-settlement-tabs-scroll button {
+      white-space: nowrap;
+    }
+
+    .ops-settlement-summary-grid {
+      grid-template-columns: minmax(0, 1fr) !important;
+      padding: 12px !important;
+    }
+
+    .ops-settlement-reconciliation-header {
+      flex-direction: column;
+      align-items: flex-start !important;
+    }
+
+    .ops-settlement-reconciliation-metrics {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .ops-settlement-new-batch-grid,
+    .ops-settlement-manual-form {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .ops-settlement-new-batch-form,
+    .ops-settlement-manual-form {
+      min-width: 0;
+      padding: 12px !important;
+    }
+
+    .ops-settlement-batch-layout {
+      grid-template-columns: minmax(0, 1fr) !important;
+      gap: 12px !important;
+    }
+
+    .ops-settlement-batch-detail {
+      position: static !important;
+      top: auto !important;
+      min-width: 0;
+      width: 100%;
+    }
+
+    .ops-settlement-batch-header {
+      flex-direction: column;
+      align-items: stretch !important;
+    }
+
+    .ops-settlement-batch-total {
+      width: 100%;
+      text-align: left !important;
+    }
+
+    .ops-settlement-batch-meta {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .ops-settlement-batch-items-header {
+      flex-direction: column;
+      align-items: flex-start !important;
+      gap: 8px;
+    }
+
+    .ops-settlement-batch-items-summary {
+      flex-wrap: wrap;
+      row-gap: 4px;
+    }
+
+    .ops-settlement-batch-actions {
+      justify-content: flex-start !important;
     }
   }
 
@@ -1999,6 +2163,15 @@ const OPS_SHELL_RESPONSIVE_CSS = `
     }
   }
 `;
+
+const OPS_DRAWER_FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
 
 export function Sidebar({
   route,
@@ -2012,6 +2185,7 @@ export function Sidebar({
   mobileNavigationOpen = false,
   onCloseMobileNavigation,
   mobileCloseButtonRef,
+  mobileDrawerRef,
 }) {
   const displayUser = normalizeCurrentUser(currentUser);
   const orgSettings = normalizeOrganizationSettings(organizationSettings);
@@ -2029,6 +2203,7 @@ export function Sidebar({
 
   return (
     <aside
+      ref={mobileDrawerRef}
       id="ops-sidebar-drawer"
       className="ops-reference-sidebar"
       aria-label="主导航"
@@ -3050,6 +3225,7 @@ function countUnreadNotifications(notificationItems) {
 function PageHeader({ title, subtitle, status, actions }) {
   return (
     <div
+      className="ops-page-header"
       style={{
         padding: "20px 24px 16px",
         background: "#fff",
@@ -3057,6 +3233,7 @@ function PageHeader({ title, subtitle, status, actions }) {
       }}
     >
       <div
+        className="ops-page-header-inner"
         style={{
           display: "flex",
           alignItems: "flex-start",
@@ -3064,9 +3241,13 @@ function PageHeader({ title, subtitle, status, actions }) {
           gap: 24,
         }}
       >
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div className="ops-page-header-heading">
+          <div
+            className="ops-page-header-title-row"
+            style={{ display: "flex", alignItems: "center", gap: 10 }}
+          >
             <h1
+              className="ops-page-header-title"
               style={{
                 margin: 0,
                 fontSize: 20,
@@ -3087,7 +3268,14 @@ function PageHeader({ title, subtitle, status, actions }) {
             </div>
           )}
         </div>
-        {actions && <div style={{ display: "flex", gap: 8 }}>{actions}</div>}
+        {actions && (
+          <div
+            className="ops-page-header-actions"
+            style={{ display: "flex", gap: 8 }}
+          >
+            {actions}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -19934,6 +20122,7 @@ function ScreenSettlement({ go }) {
       />
 
       <div
+        className="ops-settlement-content"
         style={{
           padding: 20,
           display: "flex",
@@ -20049,6 +20238,7 @@ function ScreenSettlement({ go }) {
             style={{ display: "flex", flexDirection: "column", gap: 12 }}
           >
             <div
+              className="ops-settlement-reconciliation-header"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -20071,6 +20261,7 @@ function ScreenSettlement({ go }) {
             {reconciliation ? (
               <>
                 <div
+                  className="ops-settlement-reconciliation-metrics"
                   style={{
                     display: "grid",
                     gridTemplateColumns: "repeat(3, 1fr)",
@@ -20194,6 +20385,7 @@ function ScreenSettlement({ go }) {
 
         <Card padded={false}>
           <div
+            className="ops-settlement-project-header"
             style={{
               padding: "12px 16px",
               borderBottom: "1px solid var(--line)",
@@ -20221,6 +20413,7 @@ function ScreenSettlement({ go }) {
               </div>
             </div>
             <div
+              className="ops-settlement-period-controls"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -20232,7 +20425,10 @@ function ScreenSettlement({ go }) {
               {settlementPeriod.start &&
               settlementPeriod.end &&
               settlementPeriod.start > settlementPeriod.end ? (
-                <span style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                <span
+                  className="ops-settlement-period-error"
+                  style={{ fontSize: 12, color: "var(--danger-600)" }}
+                >
                   周期开始需早于结束
                 </span>
               ) : null}
@@ -20266,6 +20462,7 @@ function ScreenSettlement({ go }) {
             </div>
           </div>
           <div
+            className="ops-settlement-tabs-scroll"
             style={{
               padding: "0 16px",
               borderBottom: "1px solid var(--line)",
@@ -20287,6 +20484,7 @@ function ScreenSettlement({ go }) {
           </div>
           {detailTab === "summary" && (
           <div
+            className="ops-settlement-summary-grid"
             style={{
               display: "grid",
               gridTemplateColumns: "minmax(0, 0.85fr) minmax(0, 1.35fr)",
@@ -20752,6 +20950,7 @@ function ScreenSettlement({ go }) {
 
         {batchFormOpen ? (
           <form
+            className="ops-settlement-new-batch-form"
             onSubmit={createBatch}
             style={{
               display: "flex",
@@ -20764,6 +20963,7 @@ function ScreenSettlement({ go }) {
             }}
           >
             <div
+              className="ops-settlement-new-batch-grid"
               style={{
                 display: "grid",
                 gridTemplateColumns:
@@ -20903,6 +21103,7 @@ function ScreenSettlement({ go }) {
 
         {manualFormOpen ? (
           <form
+            className="ops-settlement-manual-form"
             onSubmit={addManualItem}
             style={{
               display: "grid",
@@ -20991,6 +21192,7 @@ function ScreenSettlement({ go }) {
         ) : null}
 
         <div
+          className="ops-settlement-batch-layout"
           style={{
             display: "grid",
             // minmax(0,…)：批次详情里的明细表格/UUID 等宽内容不允许把列的
@@ -21002,6 +21204,7 @@ function ScreenSettlement({ go }) {
         >
           <Card padded={false}>
             <div
+              className="ops-settlement-tabs-scroll"
               style={{
                 padding: "0 12px",
                 borderBottom: "1px solid var(--line)",
@@ -21354,6 +21557,7 @@ function BatchDetail({
   if (!b) {
     return (
       <div
+        className="ops-settlement-batch-detail"
         style={{
           position: "sticky",
           top: 76,
@@ -21426,6 +21630,7 @@ function BatchDetail({
 
   return (
     <div
+      className="ops-settlement-batch-detail"
       style={{
         position: "sticky",
         top: 76,
@@ -21442,7 +21647,10 @@ function BatchDetail({
             borderBottom: "1px solid var(--line)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+          <div
+            className="ops-settlement-batch-header"
+            style={{ display: "flex", alignItems: "flex-start", gap: 12 }}
+          >
             <div style={{ flex: 1, minWidth: 0 }}>
               <div
                 className="mono"
@@ -21481,7 +21689,10 @@ function BatchDetail({
                 )}
               </div>
             </div>
-            <div style={{ textAlign: "right" }}>
+            <div
+              className="ops-settlement-batch-total"
+              style={{ textAlign: "right" }}
+            >
               <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
                 合计金额
               </div>
@@ -21500,6 +21711,7 @@ function BatchDetail({
           </div>
 
           <div
+            className="ops-settlement-batch-meta"
             style={{
               marginTop: 12,
               display: "grid",
@@ -21530,6 +21742,7 @@ function BatchDetail({
 
         {/* Items */}
         <div
+          className="ops-settlement-batch-items-header"
           style={{
             padding: "12px 16px 0",
             display: "flex",
@@ -21543,6 +21756,7 @@ function BatchDetail({
             结算明细
           </div>
           <div
+            className="ops-settlement-batch-items-summary"
             style={{
               display: "flex",
               gap: 6,
@@ -21699,6 +21913,7 @@ function BatchDetail({
 
         {/* Footer: actions（窄容器下按钮换行而不是把卡片顶出右缘） */}
         <div
+          className="ops-settlement-batch-actions"
           style={{
             padding: 12,
             borderTop: "1px solid var(--line)",
@@ -32268,6 +32483,9 @@ function OpsReferenceInner({
   const [mobileNavigationOpen, setMobileNavigationOpen] = React.useState(false);
   const mobileNavigationButtonRef = React.useRef(null);
   const mobileNavigationCloseButtonRef = React.useRef(null);
+  const mobileNavigationDrawerRef = React.useRef(null);
+  const mobileNavigationMainRef = React.useRef(null);
+  const mobileNavigationWasOpenRef = React.useRef(false);
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
   const [dashboardTarget, setDashboardTarget] = React.useState(null);
@@ -32330,22 +32548,75 @@ function OpsReferenceInner({
   );
   const closeMobileNavigation = React.useCallback(() => {
     setMobileNavigationOpen(false);
-    mobileNavigationButtonRef.current?.focus();
   }, []);
+
+  React.useLayoutEffect(() => {
+    const main = mobileNavigationMainRef.current;
+    if (mobileNavigationOpen) {
+      mobileNavigationWasOpenRef.current = true;
+      main?.setAttribute("inert", "");
+      mobileNavigationCloseButtonRef.current?.focus();
+      return undefined;
+    }
+
+    main?.removeAttribute("inert");
+    if (mobileNavigationWasOpenRef.current) {
+      mobileNavigationWasOpenRef.current = false;
+      mobileNavigationButtonRef.current?.focus();
+    }
+
+    return () => {
+      main?.removeAttribute("inert");
+    };
+  }, [mobileNavigationOpen]);
 
   React.useEffect(() => {
     if (!mobileNavigationOpen) return undefined;
 
-    mobileNavigationCloseButtonRef.current?.focus();
-    const closeOnEscape = (event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      closeMobileNavigation();
+    const containMobileNavigationFocus = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeMobileNavigation();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const drawer = mobileNavigationDrawerRef.current;
+      if (!drawer) return;
+      const focusable = Array.from(
+        drawer.querySelectorAll(OPS_DRAWER_FOCUSABLE_SELECTOR),
+      ).filter((element) => element.tabIndex >= 0);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) {
+        event.preventDefault();
+        drawer.focus?.();
+        return;
+      }
+
+      const activeElement = globalThis.document?.activeElement;
+      if (event.shiftKey) {
+        if (activeElement === first || !drawer.contains(activeElement)) {
+          event.preventDefault();
+          last.focus();
+        }
+        return;
+      }
+      if (activeElement === last || !drawer.contains(activeElement)) {
+        event.preventDefault();
+        first.focus();
+      }
     };
 
-    globalThis.document?.addEventListener("keydown", closeOnEscape);
+    globalThis.document?.addEventListener(
+      "keydown",
+      containMobileNavigationFocus,
+    );
     return () => {
-      globalThis.document?.removeEventListener("keydown", closeOnEscape);
+      globalThis.document?.removeEventListener(
+        "keydown",
+        containMobileNavigationFocus,
+      );
     };
   }, [closeMobileNavigation, mobileNavigationOpen]);
 
@@ -33843,9 +34114,12 @@ function OpsReferenceInner({
           mobileNavigationOpen={mobileNavigationOpen}
           onCloseMobileNavigation={closeMobileNavigation}
           mobileCloseButtonRef={mobileNavigationCloseButtonRef}
+          mobileDrawerRef={mobileNavigationDrawerRef}
         />
         <main
+          ref={mobileNavigationMainRef}
           className="ops-reference-main"
+          aria-hidden={mobileNavigationOpen ? "true" : undefined}
           style={{
             flex: 1,
             minWidth: 0,

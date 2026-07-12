@@ -190,11 +190,57 @@ describe("OpsReferenceApp responsive navigation shell", () => {
 
     expect(menuButton).toHaveAttribute("aria-expanded", "true");
     expect(drawer).toHaveAttribute("data-open", "true");
+    expect(screen.getByLabelText("关闭主导航")).toHaveFocus();
 
     fireEvent.click(screen.getByLabelText("关闭主导航"));
 
     expect(menuButton).toHaveAttribute("aria-expanded", "false");
     expect(drawer).toHaveAttribute("data-open", "false");
+    expect(menuButton).toHaveFocus();
+  });
+
+  it("makes the background inert and hidden from assistive tech while open", () => {
+    const { container } = renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+    const main = container.querySelector(".ops-reference-main");
+
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+
+    fireEvent.click(menuButton);
+
+    expect(main).toHaveAttribute("inert");
+    expect(main).toHaveAttribute("aria-hidden", "true");
+
+    fireEvent.click(screen.getByLabelText("关闭主导航"));
+
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("loops Tab and Shift+Tab within the open drawer", () => {
+    renderShell();
+    fireEvent.click(screen.getByLabelText("打开主导航"));
+
+    const drawer = screen.getByRole("complementary", { name: "主导航" });
+    const focusable = Array.from(
+      drawer.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    const first = focusable[0];
+    const last = focusable.at(-1);
+
+    expect(first).toBe(screen.getByLabelText("关闭主导航"));
+    expect(first).toHaveFocus();
+
+    last.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(first).toHaveFocus();
+
+    first.focus();
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(last).toHaveFocus();
   });
 
   it("closes the drawer with Escape", () => {
@@ -205,6 +251,7 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     fireEvent.keyDown(document, { key: "Escape" });
 
     expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(menuButton).toHaveFocus();
   });
 
   it("closes the drawer from its accessible backdrop", () => {
@@ -216,6 +263,7 @@ describe("OpsReferenceApp responsive navigation shell", () => {
 
     expect(menuButton).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByLabelText("关闭主导航遮罩")).not.toBeInTheDocument();
+    expect(menuButton).toHaveFocus();
   });
 
   it("closes the drawer after internal route navigation", () => {
@@ -227,6 +275,7 @@ describe("OpsReferenceApp responsive navigation shell", () => {
 
     expect(menuButton).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("全部项目")).toBeInTheDocument();
+    expect(menuButton).toHaveFocus();
   });
 });
 
@@ -7631,6 +7680,145 @@ describe("OpsReferenceApp settlement smoke", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+  });
+
+  const renderMobileSettlementLayout = () =>
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[
+          {
+            id: "batch-mobile-layout",
+            projectId: "project-alpha",
+            type: "streamer_payable",
+            name: "六月主播应付批次",
+            project: "Alpha Launch",
+            vendor: "Vendor A",
+            period: "2026-06-01 -> 2026-06-30",
+            items: 1,
+            amount: 1000,
+            status: "draft",
+            updated: "2026-06-30 12:00",
+            creator: "Finance Owner",
+          },
+        ]}
+        liveBatchDetails={{
+          "batch-mobile-layout": [
+            {
+              id: "item-mobile-layout",
+              streamer: "主播甲",
+              rule: "CPT",
+              hours: 10,
+              qty: "10 小时",
+              base: 0,
+              variable: 1000,
+              adjust: 0,
+              total: 1000,
+            },
+          ],
+        }}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+  it("exposes semantic hooks for the mobile settlement layout", () => {
+    const { container } = renderMobileSettlementLayout();
+
+    expect(
+      screen
+        .getByRole("heading", { name: "结算中心" })
+        .closest(".ops-page-header"),
+    ).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "结算中心" })).toHaveClass(
+      "ops-page-header-title",
+    );
+    expect(
+      screen
+        .getByRole("button", { name: "新建结算批次" })
+        .closest(".ops-page-header-actions"),
+    ).not.toBeNull();
+    expect(container.querySelector(".ops-settlement-content")).not.toBeNull();
+    expect(
+      screen
+        .getByLabelText("结算周期开始")
+        .closest(".ops-settlement-period-controls"),
+    ).not.toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "结算详情" })
+        .closest(".ops-settlement-tabs-scroll"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".ops-settlement-summary-grid"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".ops-settlement-reconciliation-header"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".ops-settlement-batch-layout"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".ops-settlement-batch-detail"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        ".ops-settlement-batch-detail .ops-data-table-scroll",
+      ),
+    ).toHaveStyle({ overflow: "auto" });
+
+    fireEvent.click(screen.getByRole("button", { name: "新建结算批次" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "导入 CPA / CPS 数据" }),
+    );
+
+    expect(
+      container.querySelector(".ops-settlement-new-batch-grid"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".ops-settlement-manual-form"),
+    ).not.toBeNull();
+  });
+
+  it("publishes a 720px settlement breakpoint without page-level scrolling", () => {
+    const { container } = renderMobileSettlementLayout();
+    const css = container.querySelector(
+      'style[data-ops-responsive-shell="true"]',
+    )?.textContent;
+
+    expect(css).toMatch(
+      /\.ops-page-header-inner\s*\{[^}]*flex-direction:\s*column;/s,
+    );
+    expect(css).toMatch(
+      /\.ops-page-header-actions\s*\{[^}]*flex-wrap:\s*wrap;/s,
+    );
+    expect(css).toMatch(
+      /\.ops-settlement-summary-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(css).toMatch(
+      /\.ops-settlement-reconciliation-metrics\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(css).toMatch(
+      /\.ops-settlement-new-batch-grid,\s*\.ops-settlement-manual-form\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(css).toMatch(
+      /\.ops-settlement-batch-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(css).toMatch(
+      /\.ops-settlement-batch-detail\s*\{[^}]*position:\s*static/s,
+    );
+    expect(css).toMatch(
+      /\.ops-settlement-tabs-scroll\s*\{[^}]*overflow-x:\s*auto;/s,
+    );
+    expect(css).toMatch(
+      /\.ops-reference-content\s*\{[^}]*overflow-x:\s*visible;/s,
+    );
   });
 
   it("gates the AI custom settlement tab with the public feature flag", async () => {
