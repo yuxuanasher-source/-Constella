@@ -2318,33 +2318,53 @@ function isRestorableFocusTarget(element) {
   );
 }
 
+const bodySiblingIsolationRegistry = new WeakMap();
+
+function acquireBodySiblingIsolation(element) {
+  const existingState = bodySiblingIsolationRegistry.get(element);
+  if (existingState) {
+    existingState.ownerCount += 1;
+    return;
+  }
+
+  bodySiblingIsolationRegistry.set(element, {
+    ownerCount: 1,
+    inert: element.getAttribute("inert"),
+    ariaHidden: element.getAttribute("aria-hidden"),
+  });
+  element.setAttribute("inert", "");
+  element.setAttribute("aria-hidden", "true");
+}
+
+function releaseBodySiblingIsolation(element) {
+  const state = bodySiblingIsolationRegistry.get(element);
+  if (!state) return;
+
+  state.ownerCount -= 1;
+  if (state.ownerCount > 0) return;
+
+  bodySiblingIsolationRegistry.delete(element);
+  if (state.inert == null) element.removeAttribute("inert");
+  else element.setAttribute("inert", state.inert);
+  if (state.ariaHidden == null) element.removeAttribute("aria-hidden");
+  else element.setAttribute("aria-hidden", state.ariaHidden);
+}
+
 function useModalLayerIsolation(layerRef, onActivate, onRestore) {
   React.useLayoutEffect(() => {
     const body = globalThis.document?.body;
     const layer = layerRef.current;
     if (!body || !layer) return undefined;
 
-    const siblingStates = Array.from(body.children)
-      .filter((element) => element !== layer)
-      .map((element) => ({
-        element,
-        inert: element.getAttribute("inert"),
-        ariaHidden: element.getAttribute("aria-hidden"),
-      }));
+    const siblings = Array.from(body.children).filter(
+      (element) => element !== layer,
+    );
 
-    siblingStates.forEach(({ element }) => {
-      element.setAttribute("inert", "");
-      element.setAttribute("aria-hidden", "true");
-    });
+    siblings.forEach(acquireBodySiblingIsolation);
     onActivate?.();
 
     return () => {
-      siblingStates.forEach(({ element, inert, ariaHidden }) => {
-        if (inert == null) element.removeAttribute("inert");
-        else element.setAttribute("inert", inert);
-        if (ariaHidden == null) element.removeAttribute("aria-hidden");
-        else element.setAttribute("aria-hidden", ariaHidden);
-      });
+      siblings.forEach(releaseBodySiblingIsolation);
       onRestore?.();
     };
   }, [layerRef, onActivate, onRestore]);

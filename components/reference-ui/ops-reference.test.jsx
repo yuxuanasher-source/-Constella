@@ -6714,7 +6714,7 @@ describe("OpsReferenceApp live task smoke", () => {
   });
 
   const openNestedLiveReview = () => {
-    render(
+    const view = render(
       <OpsReferenceApp
         initialRoute="tasks"
         liveTasks={[
@@ -6750,6 +6750,7 @@ describe("OpsReferenceApp live task smoke", () => {
       reviewDialog: screen.getByRole("dialog", { name: "直播复盘" }),
       reviewTrigger,
       taskDrawer,
+      ...view,
     };
   };
 
@@ -6822,6 +6823,32 @@ describe("OpsReferenceApp live task smoke", () => {
     fireEvent.click(within(taskDrawer).getByRole("button", { name: "关闭" }));
     expect(appContainer).not.toHaveAttribute("inert");
     expect(appContainer).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("restores original body isolation when the nested modal tree unmounts together", () => {
+    const preservedSibling = document.createElement("div");
+    preservedSibling.setAttribute("inert", "");
+    preservedSibling.setAttribute("aria-hidden", "false");
+    document.body.appendChild(preservedSibling);
+
+    try {
+      const { container, reviewDialog, unmount } = openNestedLiveReview();
+
+      expect(reviewDialog).toBeInTheDocument();
+      expect(container).toHaveAttribute("inert");
+      expect(container).toHaveAttribute("aria-hidden", "true");
+      expect(preservedSibling).toHaveAttribute("inert", "");
+      expect(preservedSibling).toHaveAttribute("aria-hidden", "true");
+
+      unmount();
+
+      expect(container).not.toHaveAttribute("inert");
+      expect(container).not.toHaveAttribute("aria-hidden");
+      expect(preservedSibling).toHaveAttribute("inert", "");
+      expect(preservedSibling).toHaveAttribute("aria-hidden", "false");
+    } finally {
+      preservedSibling.remove();
+    }
   });
 
   it("publishes a single-column mobile layout contract for live review", () => {
