@@ -6614,6 +6614,89 @@ describe("OpsReferenceApp live task smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  const openNestedLiveReview = () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[
+          {
+            id: "task-nested-review",
+            name: "Nested Review Task",
+            status: "pending_live",
+            project: "project-live",
+            projectId: "project-live",
+            projectName: "Fixture Project",
+            streamerId: "streamer-one",
+            streamerName: "Streamer One",
+            dayIdx: 1,
+            startHour: 20,
+            endHour: 22,
+            type: "project",
+          },
+        ]}
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+        applicationQueue={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByTitle("Nested Review Task"));
+    const taskDrawer = screen.getByRole("dialog");
+    const reviewTrigger = within(taskDrawer).getByRole("button", {
+      name: "直播复盘",
+    });
+    fireEvent.click(reviewTrigger);
+
+    return {
+      reviewDialog: screen.getByRole("dialog", { name: "直播复盘" }),
+      reviewTrigger,
+      taskDrawer,
+    };
+  };
+
+  it("opens live review as a modal and focuses its accessible close button", () => {
+    const { reviewDialog } = openNestedLiveReview();
+
+    expect(reviewDialog).toHaveAttribute("aria-modal", "true");
+    const closeButton = within(reviewDialog).getByRole("button", {
+      name: "关闭直播复盘",
+    });
+    expect(closeButton).toHaveAttribute("type", "button");
+    expect(closeButton).toHaveFocus();
+  });
+
+  it("loops live review focus without entering the underlying task drawer", () => {
+    const { reviewDialog, taskDrawer } = openNestedLiveReview();
+    const firstControl = within(reviewDialog).getByRole("button", {
+      name: "编辑",
+    });
+    const lastControl = within(reviewDialog).getByRole("button", {
+      name: "保存到组织知识库",
+    });
+
+    firstControl.focus();
+    fireEvent.keyDown(firstControl, { key: "Tab", shiftKey: true });
+    expect(lastControl).toHaveFocus();
+    expect(reviewDialog).toContainElement(document.activeElement);
+
+    fireEvent.keyDown(lastControl, { key: "Tab" });
+    expect(firstControl).toHaveFocus();
+    expect(reviewDialog).toContainElement(document.activeElement);
+    expect(taskDrawer).toBeInTheDocument();
+  });
+
+  it("closes only live review with Escape and restores its task trigger", () => {
+    const { reviewDialog, reviewTrigger, taskDrawer } = openNestedLiveReview();
+
+    fireEvent.keyDown(reviewDialog, { key: "Escape" });
+
+    expect(
+      screen.queryByRole("dialog", { name: "直播复盘" }),
+    ).not.toBeInTheDocument();
+    expect(taskDrawer).toBeInTheDocument();
+    expect(reviewTrigger).toHaveFocus();
+  });
+
   it("creates an ops live task without pulling historical tasks into the queue", async () => {
     const todayKey = new Date().toISOString().slice(0, 10);
     const createdTask = {

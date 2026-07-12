@@ -24508,6 +24508,7 @@ function TaskDrawer({
 }) {
   const [drawerMessage, setDrawerMessage] = React.useState("");
   const [reviewOpen, setReviewOpen] = React.useState(false);
+  const reviewTriggerRef = React.useRef(null);
   const actions = useOpsLiveActions();
   const currentUser = useOpsCurrentUser();
   const [operateBusy, setOperateBusy] = React.useState(false);
@@ -24522,6 +24523,18 @@ function TaskDrawer({
   });
   const [editBusy, setEditBusy] = React.useState(false);
   const [editError, setEditError] = React.useState("");
+
+  React.useLayoutEffect(() => {
+    if (reviewOpen || !reviewTriggerRef.current) return;
+    reviewTriggerRef.current.focus();
+    reviewTriggerRef.current = null;
+  }, [reviewOpen]);
+
+  const openReview = (event) => {
+    reviewTriggerRef.current = event.currentTarget;
+    setReviewOpen(true);
+  };
+
   const openEdit = () => {
     setEditForm({
       title: task.name || "",
@@ -25004,7 +25017,7 @@ function TaskDrawer({
         <Button
           kind="primary"
           icon={<Icon.Sparkles size={14} />}
-          onClick={() => setReviewOpen(true)}
+          onClick={openReview}
         >
           直播复盘
         </Button>
@@ -27367,6 +27380,8 @@ function LiveReviewDrawer({
   projectName,
   onClose,
 }) {
+  const dialogRef = React.useRef(null);
+  const closeButtonRef = React.useRef(null);
   const reviewContext = React.useMemo(() => {
     const day = SCHEDULE_WEEK?.days?.[task.dayIdx];
     return {
@@ -27408,6 +27423,47 @@ function LiveReviewDrawer({
   const [saveBusy, setSaveBusy] = React.useState(false);
   const [message, setMessage] = React.useState("");
   const [error, setError] = React.useState("");
+
+  React.useLayoutEffect(() => {
+    closeButtonRef.current?.focus();
+  }, []);
+
+  const handleReviewKeyDown = (event) => {
+    if (event.key === "Tab" || event.key === "Escape") {
+      event.stopPropagation();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose?.();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const dialogElement = dialogRef.current;
+    if (!dialogElement) return;
+    const focusable = Array.from(
+      dialogElement.querySelectorAll(OPS_FOCUSABLE_SELECTOR),
+    ).filter((element) => isVisiblyTabbableWithin(element, dialogElement));
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+
+    const activeElement = globalThis.document?.activeElement;
+    if (event.shiftKey) {
+      if (activeElement === first || !dialogElement.contains(activeElement)) {
+        event.preventDefault();
+        last.focus();
+      }
+      return;
+    }
+    if (activeElement === last || !dialogElement.contains(activeElement)) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
 
   const assistInput = {
     product: reviewContext.product,
@@ -27521,7 +27577,9 @@ function LiveReviewDrawer({
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
+      aria-modal="true"
       aria-label="直播复盘"
       style={{
         position: "fixed",
@@ -27534,6 +27592,7 @@ function LiveReviewDrawer({
         padding: "32px 24px",
       }}
       onClick={onClose}
+      onKeyDown={handleReviewKeyDown}
     >
       <style>{`
         .md-preview { font-size: 13px; color: var(--ink-700); line-height: 1.7; }
@@ -27610,6 +27669,10 @@ function LiveReviewDrawer({
             ))}
           </div>
           <button
+            ref={closeButtonRef}
+            type="button"
+            aria-label="关闭直播复盘"
+            title="关闭直播复盘"
             onClick={onClose}
             style={{
               width: 30,
@@ -28235,6 +28298,9 @@ function Drawer({ children, onClose, onKeyDown, title }) {
   const titleId = React.useId();
 
   const handleDrawerKeyDown = (event) => {
+    const sourceDialog = event.target?.closest?.('[role="dialog"]');
+    if (sourceDialog && sourceDialog !== event.currentTarget) return;
+
     if (event.key === "Tab" || event.key === "Escape") {
       event.stopPropagation();
     }
