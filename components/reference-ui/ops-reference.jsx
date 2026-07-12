@@ -15,6 +15,7 @@ import {
 } from "@/features/projects/project-ui-dto";
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
 import { resolvePaywall } from "@/features/funnel/paywall";
+import { isCustomSettlementRulesEnabled } from "@/features/settlements/custom-rule-feature-flag";
 import {
   toPricingResultDto,
   toProjectReviewDto,
@@ -32,6 +33,7 @@ import {
 } from "@/lib/markdown/render-markdown";
 
 import AiUsageDashboard from "./ai-usage-dashboard";
+import CustomSettlementRuleWorkspace from "./custom-settlement-rule-workspace";
 import SettlementRuleBuilder, {
   builderRuleFromStored,
   serializeBuilderRule,
@@ -19075,6 +19077,11 @@ function cleanSettlementText(value) {
 // ===== src\screen-settlement.jsx =====
 // ——— Screen: 结算中心 ————————————————————————————
 
+const CUSTOM_RULE_PROJECT_TARGET = Object.freeze({
+  targetType: "project",
+  targetId: null,
+});
+
 function ScreenSettlement({ go }) {
   const projects = useOpsProjects();
   const batches = useOpsSettlementBatches();
@@ -19084,6 +19091,7 @@ function ScreenSettlement({ go }) {
   const complexCost = useOpsComplexCost();
   const actions = useOpsLiveActions();
   const streamers = useOpsStreamers();
+  const customRulesEnabled = isCustomSettlementRulesEnabled();
   const projectOptions = React.useMemo(
     () =>
       settlementProjectOptions({
@@ -20114,6 +20122,9 @@ function ScreenSettlement({ go }) {
                 { key: "finance", label: "项目财务设置" },
                 { key: "payable", label: "主播应付规则" },
                 { key: "cost", label: "项目开支" },
+                ...(customRulesEnabled
+                  ? [{ key: "custom_rules", label: "AI 自定义规则" }]
+                  : []),
               ]}
             />
           </div>
@@ -20552,6 +20563,16 @@ function ScreenSettlement({ go }) {
           )}
           </div>
           )}
+
+          {customRulesEnabled && detailTab === "custom_rules" ? (
+            <div style={{ padding: "0 16px 16px", minWidth: 0 }}>
+              <CustomSettlementRuleWorkspace
+                project={selectedProject}
+                period={settlementPeriod}
+                target={CUSTOM_RULE_PROJECT_TARGET}
+              />
+            </div>
+          ) : null}
         </Card>
 
         {settlementMessage ? (

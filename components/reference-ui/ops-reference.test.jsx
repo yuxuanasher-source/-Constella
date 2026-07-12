@@ -7561,6 +7561,87 @@ describe("OpsReferenceApp settlement smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("gates the AI custom settlement tab with the public feature flag", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AI_CUSTOM_SETTLEMENT_RULES_ENABLED", "true");
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).includes("/settlement-rules/variable-catalog?")) {
+        return new Response(
+          JSON.stringify({
+            catalog: {
+              scope: "receivable",
+              executionGrain: "project_period",
+              businessTimezone: "Asia/Shanghai",
+              businessTimezoneConfirmed: true,
+              businessTimezoneSource: "contract_default",
+              hasHistory: false,
+              version: "a".repeat(64),
+              variables: [],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[]}
+        liveBatchDetails={{}}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "AI 自定义规则" }));
+
+    const workspace = await screen.findByTestId("custom-rule-workspace");
+    expect(within(workspace).getByText("Alpha Launch")).toBeInTheDocument();
+    expect(within(workspace).getByText("2026-07-01 至 2026-07-31")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-alpha/settlement-rules/variable-catalog?scope=receivable&executionGrain=project_period",
+      expect.objectContaining({ method: "GET", signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("keeps the existing settlement tabs unchanged when the public flag is off", () => {
+    vi.stubEnv("NEXT_PUBLIC_AI_CUSTOM_SETTLEMENT_RULES_ENABLED", "false");
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[]}
+        liveBatchDetails={{}}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "AI 自定义规则" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "结算详情" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "项目财务设置" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "主播应付规则" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "项目开支" })).toBeInTheDocument();
   });
 
   it("renders report badges for newer backend report statuses", () => {
