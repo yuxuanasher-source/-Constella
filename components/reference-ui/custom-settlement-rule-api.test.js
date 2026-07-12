@@ -7,6 +7,7 @@ import {
 
 const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
 const SESSION_ID = "44444444-4444-4444-8444-444444444444";
+const OTHER_SESSION_ID = "99999999-9999-4999-8999-999999999999";
 const DRAFT_ID = "55555555-5555-4555-8555-555555555555";
 const START_PROGRESS_STATUSES = [
   "accepted",
@@ -321,6 +322,16 @@ function simulationResult() {
   };
 }
 
+function simulatedSessionSummary(overrides = {}) {
+  const result = simulationResult();
+  return {
+    ...sessionSummary(),
+    draft: result.draft,
+    simulation: result.simulation,
+    ...overrides,
+  };
+}
+
 function jsonResponse(payload, init = {}) {
   return new Response(JSON.stringify(payload), {
     status: init.status ?? 200,
@@ -392,6 +403,35 @@ describe("custom settlement rule API", () => {
     );
   });
 
+  it("rejects an invalid IANA timezone from the catalog as a protocol error", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        catalog: {
+          scope: "payable",
+          executionGrain: "report",
+          businessTimezone: "Invalid/Timezone",
+          businessTimezoneConfirmed: true,
+          businessTimezoneSource: "organization_setting",
+          hasHistory: false,
+          version: "a".repeat(64),
+          variables: [],
+        },
+      }),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.getVariableCatalog({
+        projectId: PROJECT_ID,
+        scope: "payable",
+        executionGrain: "report",
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_RESPONSE_INVALID",
+      retryable: true,
+    });
+  });
+
   it("starts a session with the exact Task 8 body and returns a typed result", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(
@@ -437,7 +477,7 @@ describe("custom settlement rule API", () => {
     );
   });
 
-  it("encodes session IDs and validates authoritative session refreshes", async () => {
+  it("encodes project and session IDs and validates authoritative session refreshes", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({ session: sessionSummary() }),
     );
@@ -445,18 +485,65 @@ describe("custom settlement rule API", () => {
 
     const result = await api.refreshSession({
       projectId: "project / one",
-      sessionId: "session / current?#",
+      sessionId: SESSION_ID,
     });
 
     expect(result.session.draft.id).toBe(DRAFT_ID);
     expect(fetchImpl).toHaveBeenCalledWith(
-      "/api/projects/project%20%2F%20one/settlement-rules/ai-sessions/session%20%2F%20current%3F%23",
+      `/api/projects/project%20%2F%20one/settlement-rules/ai-sessions/${SESSION_ID}`,
       expect.objectContaining({
         method: "GET",
         signal: expect.any(AbortSignal),
       }),
     );
   });
+
+  it("rejects an authoritative refresh bound to a different requested session", async () => {
+    const session = sessionSummary();
+    session.conversation.id = OTHER_SESSION_ID;
+    session.draft.conversationId = OTHER_SESSION_ID;
+    const fetchImpl = vi.fn(async () => jsonResponse({ session }));
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.refreshSession({
+        projectId: PROJECT_ID,
+        sessionId: SESSION_ID,
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_RESPONSE_INVALID",
+      retryable: true,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["answerOrRevise", "confirmAndSimulate"])(
+    "%s rejects a result bound to a different requested session",
+    async (endpoint) => {
+      const result =
+        endpoint === "answerOrRevise"
+          ? clarifyingResult({
+              conversationId: OTHER_SESSION_ID,
+              draft: draft({ conversationId: OTHER_SESSION_ID }),
+            })
+          : {
+              ...simulationResult(),
+              conversationId: OTHER_SESSION_ID,
+              draft: {
+                ...simulationResult().draft,
+                conversationId: OTHER_SESSION_ID,
+              },
+            };
+      const fetchImpl = vi.fn(async () => jsonResponse({ result }));
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+
+      await expect(callEndpoint(api, endpoint)).rejects.toMatchObject({
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        retryable: true,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("posts answer and confirmation DTOs to their exact routes", async () => {
     const fetchImpl = vi
@@ -736,6 +823,226 @@ describe("custom settlement rule API", () => {
         },
       },
     });
+  });
+
+  it("accepts a simulated authoritative session only with its persisted artifact", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ session: simulatedSessionSummary() }),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.refreshSession({ projectId: PROJECT_ID, sessionId: SESSION_ID }),
+    ).resolves.toMatchObject({
+      session: {
+        conversation: { id: SESSION_ID },
+        draft: { status: "simulated" },
+        simulation: { id: "66666666-6666-4666-8666-666666666666" },
+      },
+    });
+  });
+
+  it.each([
+    [
+      "simulated draft without persisted artifact",
+      () => simulatedSessionSummary({ simulation: null }),
+    ],
+    [
+      "clarifying draft with persisted artifact",
+      () => ({
+        ...sessionSummary(),
+        simulation: simulationResult().simulation,
+      }),
+    ],
+  ])(
+    "rejects an impossible authoritative terminal shape: %s",
+    async (_label, makeSession) => {
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse({ session: makeSession() }),
+      );
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+
+      await expect(
+        api.refreshSession({ projectId: PROJECT_ID, sessionId: SESSION_ID }),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        retryable: true,
+      });
+    },
+  );
+
+  it.each([
+    ["summary increase is negative", "summary", "increase", "-0.01"],
+    ["summary decrease is positive", "summary", "decrease", "0.01"],
+    ["persisted increase is negative", "persisted", "increase", "-0.01"],
+    ["persisted decrease is positive", "persisted", "decrease", "0.01"],
+    ["persisted unchanged is nonzero", "persisted", "unchanged", "0.01"],
+  ])(
+    "rejects a financial direction mismatch: %s",
+    async (_label, source, direction, deltaYuan) => {
+      const result = simulationResult();
+      if (source === "summary") {
+        const change = {
+          bucket: "authorized_ordinal:000001",
+          deltaYuan,
+          direction,
+        };
+        if (direction === "increase")
+          result.summary.largestIncreases = [change];
+        else result.summary.largestDecreases = [change];
+      } else {
+        result.simulation.largestChanges = [
+          {
+            dimension: "scenario",
+            key: "authorized_ordinal:000001",
+            deltaAmountYuan: deltaYuan,
+            direction,
+          },
+        ];
+      }
+      const fetchImpl = vi.fn(async () => jsonResponse({ result }));
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+
+      await expect(
+        api.confirmAndSimulate({
+          projectId: PROJECT_ID,
+          sessionId: SESSION_ID,
+          body: {},
+        }),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        retryable: true,
+      });
+    },
+  );
+
+  it("accepts exact signed decimal directions at the storage boundaries", async () => {
+    const result = simulationResult();
+    result.summary.largestIncreases = [
+      {
+        bucket: "authorized_ordinal:000001",
+        deltaYuan: "92233720368547758.07",
+        direction: "increase",
+      },
+    ];
+    result.summary.largestDecreases = [
+      {
+        bucket: "authorized_ordinal:000002",
+        deltaYuan: "-92233720368547758.08",
+        direction: "decrease",
+      },
+    ];
+    result.simulation.largestChanges = [
+      {
+        dimension: "scenario",
+        key: "authorized_ordinal:000001",
+        deltaAmountYuan: "92233720368547758.07",
+        direction: "increase",
+      },
+      {
+        dimension: "scenario",
+        key: "authorized_ordinal:000002",
+        deltaAmountYuan: "-92233720368547758.08",
+        direction: "decrease",
+      },
+      {
+        dimension: "scenario",
+        key: "authorized_ordinal:000003",
+        deltaAmountYuan: "0.00",
+        direction: "unchanged",
+      },
+    ];
+    const fetchImpl = vi.fn(async () => jsonResponse({ result }));
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.confirmAndSimulate({
+        projectId: PROJECT_ID,
+        sessionId: SESSION_ID,
+        body: {},
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        summary: {
+          largestIncreases: [{ deltaYuan: "92233720368547758.07" }],
+          largestDecreases: [{ deltaYuan: "-92233720368547758.08" }],
+        },
+        simulation: {
+          largestChanges: expect.arrayContaining([
+            expect.objectContaining({
+              direction: "unchanged",
+              deltaAmountYuan: "0.00",
+            }),
+          ]),
+        },
+      },
+    });
+  });
+
+  it.each([
+    "__proto__",
+    "prototype",
+    "constructor",
+    "toString",
+    "hasOwnProperty",
+  ])(
+    "rejects the reserved generated input identifier %s before record parsing",
+    async (reservedKey) => {
+      const result = simulationResult();
+      const inputs = JSON.parse(
+        `{"${reservedKey}":{"type":"integer","value":1}}`,
+      );
+      result.draft.generatedTestCases[0].inputs = inputs;
+      const fetchImpl = vi.fn(async () => jsonResponse({ result }));
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+
+      await expect(
+        api.confirmAndSimulate({
+          projectId: PROJECT_ID,
+          sessionId: SESSION_ID,
+          body: {},
+        }),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        retryable: true,
+      });
+      expect(Object.prototype.hasOwnProperty.call(inputs, reservedKey)).toBe(
+        true,
+      );
+      expect({}.polluted).toBeUndefined();
+    },
+  );
+
+  it("rejects generated input accessors without executing them", async () => {
+    const result = simulationResult();
+    let accessorReads = 0;
+    const inputs = {};
+    Object.defineProperty(inputs, "system_minutes", {
+      enumerable: true,
+      get() {
+        accessorReads += 1;
+        return { type: "integer", value: 60 };
+      },
+    });
+    result.draft.generatedTestCases[0].inputs = inputs;
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ result }),
+    }));
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.confirmAndSimulate({
+        projectId: PROJECT_ID,
+        sessionId: SESSION_ID,
+        body: {},
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_RESPONSE_INVALID",
+      retryable: true,
+    });
+    expect(accessorReads).toBe(0);
   });
 
   it("aborts the stale request when a newer request starts", async () => {

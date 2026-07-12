@@ -29,9 +29,59 @@ const canonicalTextSchema = (maximum) =>
     .refine((value) => value === value.trim(), {
       message: "text must already be canonical",
     });
-const identifierSchema = canonicalTextSchema(120).regex(
-  /^[A-Za-z_][A-Za-z0-9_]*$/u,
-);
+const PROTOTYPE_SENSITIVE_IDENTIFIERS = new Set([
+  "__defineGetter__",
+  "__defineSetter__",
+  "__lookupGetter__",
+  "__lookupSetter__",
+  "__proto__",
+  "constructor",
+  "hasOwnProperty",
+  "isPrototypeOf",
+  "propertyIsEnumerable",
+  "prototype",
+  "toLocaleString",
+  "toString",
+  "valueOf",
+]);
+const identifierSchema = canonicalTextSchema(120)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/u)
+  .refine((value) => !PROTOTYPE_SENSITIVE_IDENTIFIERS.has(value), {
+    message: "identifier is reserved",
+  });
+
+function safeRecordSchema(keySchema, valueSchema) {
+  return z
+    .unknown()
+    .superRefine((value, context) => {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        return;
+      }
+      let descriptors;
+      try {
+        descriptors = Object.getOwnPropertyDescriptors(value);
+      } catch {
+        context.addIssue({
+          code: "custom",
+          message: "record is not inspectable",
+        });
+        return;
+      }
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (
+          !("value" in descriptor) ||
+          PROTOTYPE_SENSITIVE_IDENTIFIERS.has(key)
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: [key],
+            message: "record key is unsafe",
+          });
+        }
+      }
+    })
+    .pipe(z.record(keySchema, valueSchema));
+}
 
 function isValidBusinessDate(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
@@ -111,6 +161,13 @@ const coveragePercentSchema = percentDecimalSchema.refine((value) => {
   return basisPoints >= BigInt(0) && basisPoints <= BigInt(10_000);
 });
 
+function decimalDirectionMatches(value, direction) {
+  const scaled = BigInt(value.replace(".", ""));
+  if (direction === "increase") return scaled > BigInt(0);
+  if (direction === "decrease") return scaled < BigInt(0);
+  return scaled === BigInt(0);
+}
+
 const ambiguitySchema = z.strictObject({
   code: identifierSchema,
   question: canonicalTextSchema(500).refine((value) => {
@@ -123,7 +180,7 @@ const ambiguitySchema = z.strictObject({
 const generatedTestCaseSchema = z
   .strictObject({
     name: canonicalTextSchema(200),
-    inputs: z.record(identifierSchema, typedRuntimeValueSchema),
+    inputs: safeRecordSchema(identifierSchema, typedRuntimeValueSchema),
     expectedResult: typedRuntimeValueSchema.refine(
       (value) => value.type === "money_cents",
       { message: "settlement results must use money" },
@@ -306,6 +363,18 @@ const simulationCoverageSchema = z
       context.addIssue({ code: "custom", path: ["totalRecords"] });
     }
   });
+const persistedChangeSchema = z
+  .strictObject({
+    dimension: z.enum(["rule_component", "scenario", "period"]),
+    key: canonicalTextSchema(200),
+    deltaAmountYuan: yuanDecimalSchema,
+    direction: z.enum(["increase", "decrease", "unchanged"]),
+  })
+  .superRefine((change, context) => {
+    if (!decimalDirectionMatches(change.deltaAmountYuan, change.direction)) {
+      context.addIssue({ code: "custom", path: ["deltaAmountYuan"] });
+    }
+  });
 const simulationSchema = z
   .strictObject({
     id: uuidSchema,
@@ -340,16 +409,7 @@ const simulationSchema = z
       receivableAmountYuan: yuanDecimalSchema,
       percentagePercent: percentDecimalSchema,
     }),
-    largestChanges: z
-      .array(
-        z.strictObject({
-          dimension: z.enum(["rule_component", "scenario", "period"]),
-          key: canonicalTextSchema(200),
-          deltaAmountYuan: yuanDecimalSchema,
-          direction: z.enum(["increase", "decrease", "unchanged"]),
-        }),
-      )
-      .max(100),
+    largestChanges: z.array(persistedChangeSchema).max(100),
     warnings: z.array(warningSchema).max(100),
     duplicate: z.boolean().optional(),
   })
@@ -393,11 +453,17 @@ const summaryScenarioSchema = z.strictObject({
 });
 
 const summaryChangeSchema = (direction) =>
-  z.strictObject({
-    bucket: canonicalTextSchema(200),
-    deltaYuan: yuanDecimalSchema,
-    direction: z.literal(direction),
-  });
+  z
+    .strictObject({
+      bucket: canonicalTextSchema(200),
+      deltaYuan: yuanDecimalSchema,
+      direction: z.literal(direction),
+    })
+    .superRefine((change, context) => {
+      if (!decimalDirectionMatches(change.deltaYuan, direction)) {
+        context.addIssue({ code: "custom", path: ["deltaYuan"] });
+      }
+    });
 const simulationSummarySchema = z
   .strictObject({
     recordCount: nonnegativeSafeIntegerSchema,
@@ -667,7 +733,10 @@ const authoritativeSessionSchema = z
         });
       }
     }
-    if (session.simulation && session.draft.status !== "simulated") {
+    if (
+      Boolean(session.simulation) !==
+      (session.draft.status === "simulated")
+    ) {
       context.addIssue({ code: "custom", path: ["simulation"] });
     }
   });
@@ -746,6 +815,14 @@ const responseSchemas = {
   session: z.strictObject({ session: authoritativeSessionSchema }),
 };
 
+function bindResponseToSession(schema, sessionId, conversationId) {
+  return schema.superRefine((payload, context) => {
+    if (conversationId(payload) !== String(sessionId)) {
+      context.addIssue({ code: "custom", path: ["sessionId"] });
+    }
+  });
+}
+
 const publicErrorCodeSchema = z.enum([
   "CUSTOM_RULE_FEATURE_DISABLED",
   "UNAUTHENTICATED",
@@ -820,6 +897,8 @@ const SAFE_ERROR_MESSAGES = {
   CUSTOM_RULE_RESPONSE_INVALID: "结算规则服务返回了无法识别的响应",
   CUSTOM_RULE_NETWORK_ERROR: "网络连接异常，请稍后重试",
   CUSTOM_RULE_PROCESSING_TIMEOUT: "处理尚未完成，请刷新查看最新状态",
+  CUSTOM_RULE_BUSINESS_DATE_UNAVAILABLE:
+    "当前结算周期在业务时区中不存在，请调整结算周期后重试",
   CUSTOM_RULE_REQUEST_FAILED: "结算规则服务暂时不可用，请稍后重试",
   INVALID_REQUEST: "提交内容不完整，请检查后重试",
   INVALID_JSON: "提交内容不完整，请检查后重试",
@@ -828,6 +907,7 @@ const SAFE_ERROR_MESSAGES = {
 const SAFE_LOCAL_ERROR_CODES = new Set([
   "CUSTOM_RULE_NETWORK_ERROR",
   "CUSTOM_RULE_PROCESSING_TIMEOUT",
+  "CUSTOM_RULE_BUSINESS_DATE_UNAVAILABLE",
   "CUSTOM_RULE_REQUEST_FAILED",
 ]);
 
@@ -978,7 +1058,11 @@ export function createCustomSettlementRuleApi({
       return request(
         `${baseUrl(projectId)}/ai-sessions/${pathSegment(sessionId)}`,
         { method: "GET" },
-        responseSchemas.session,
+        bindResponseToSession(
+          responseSchemas.session,
+          sessionId,
+          (payload) => payload.session.conversation.id,
+        ),
         signal,
       );
     },
@@ -986,7 +1070,11 @@ export function createCustomSettlementRuleApi({
       return post(
         `${baseUrl(projectId)}/ai-sessions/${pathSegment(sessionId)}/turns`,
         body,
-        responseSchemas.answer,
+        bindResponseToSession(
+          responseSchemas.answer,
+          sessionId,
+          (payload) => payload.result.conversationId,
+        ),
         signal,
       );
     },
@@ -994,7 +1082,11 @@ export function createCustomSettlementRuleApi({
       return post(
         `${baseUrl(projectId)}/ai-sessions/${pathSegment(sessionId)}/confirm-contract`,
         body,
-        responseSchemas.confirm,
+        bindResponseToSession(
+          responseSchemas.confirm,
+          sessionId,
+          (payload) => payload.result.conversationId,
+        ),
         signal,
       );
     },

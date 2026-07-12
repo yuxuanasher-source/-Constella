@@ -85,7 +85,26 @@ const INITIAL_REQUEST_STATE = {
   error: null,
   announcement: "",
   focusTarget: null,
+  recovery: null,
 };
+
+const SESSION_SYNC_ERROR_CODES = new Set([
+  "CUSTOM_RULE_SESSION_CONFLICT",
+  "CUSTOM_RULE_IDEMPOTENCY_CONFLICT",
+  "CUSTOM_RULE_STALE_REVISION",
+  "CUSTOM_RULE_INVALID_TRANSITION",
+  "CUSTOM_RULE_UNRESOLVED_AMBIGUITIES",
+  "CUSTOM_RULE_DUPLICATE_CONFIRMATION",
+  "CUSTOM_RULE_STALE_CONTRACT",
+  "CUSTOM_RULE_STALE_FORMULA",
+  "CUSTOM_RULE_STALE_EVIDENCE",
+  "CUSTOM_RULE_STALE_SELECTION",
+  "CUSTOM_RULE_RESPONSE_INVALID",
+]);
+const CATALOG_SYNC_ERROR_CODES = new Set([
+  "CUSTOM_RULE_STALE_CATALOG",
+  "CUSTOM_RULE_CATALOG_UNAVAILABLE",
+]);
 
 function freshRequestState() {
   return { ...INITIAL_REQUEST_STATE };
@@ -143,18 +162,9 @@ function calendarUtcEpoch(parts) {
   return date.getTime();
 }
 
-function zonedCalendarParts(instant, timeZone) {
+function zonedCalendarParts(instant, formatter) {
   const values = {};
-  const parts = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).formatToParts(instant);
+  const parts = formatter.formatToParts(instant);
   for (const part of parts) {
     if (part.type !== "literal") values[part.type] = Number(part.value);
   }
@@ -171,39 +181,79 @@ function zonedCalendarParts(instant, timeZone) {
   return values;
 }
 
+function compareCalendarDate(left, right) {
+  if (left.year !== right.year) return left.year < right.year ? -1 : 1;
+  if (left.month !== right.month) return left.month < right.month ? -1 : 1;
+  if (left.day !== right.day) return left.day < right.day ? -1 : 1;
+  return 0;
+}
+
+function calendarPart(value) {
+  return String(value).padStart(2, "0");
+}
+
 function businessDateBoundary(value, timeZone) {
   const date = parseBusinessDate(value);
-  if (!date) throw new Error("business date is invalid");
-  const targetEpoch = calendarUtcEpoch(date);
-  let instant = targetEpoch;
-
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const local = zonedCalendarParts(instant, timeZone);
-    const adjustment = targetEpoch - calendarUtcEpoch(local);
-    instant += adjustment;
-    if (adjustment === 0) break;
+  if (!date) {
+    throw new CustomSettlementRuleApiError({
+      code: "CUSTOM_RULE_BUSINESS_DATE_UNAVAILABLE",
+      status: 0,
+      retryable: false,
+    });
+  }
+  let formatter;
+  try {
+    formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    throw new CustomSettlementRuleApiError({
+      code: "CUSTOM_RULE_RESPONSE_INVALID",
+      status: 200,
+      retryable: true,
+    });
   }
 
-  const resolved = zonedCalendarParts(instant, timeZone);
-  if (
-    resolved.year !== date.year ||
-    resolved.month !== date.month ||
-    resolved.day !== date.day ||
-    resolved.hour !== 0 ||
-    resolved.minute !== 0 ||
-    resolved.second !== 0
-  ) {
-    throw new Error("business timezone boundary is unavailable");
+  const targetEpochSeconds = Math.floor(calendarUtcEpoch(date) / 1_000);
+  const searchRadiusSeconds = 48 * 60 * 60;
+  let lower = targetEpochSeconds - searchRadiusSeconds;
+  let upper = targetEpochSeconds + searchRadiusSeconds;
+  while (lower < upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    const local = zonedCalendarParts(middle * 1_000, formatter);
+    if (compareCalendarDate(local, date) >= 0) upper = middle;
+    else lower = middle + 1;
   }
-  const offsetMinutes = (targetEpoch - instant) / 60_000;
+
+  const instant = lower * 1_000;
+  const resolved = zonedCalendarParts(instant, formatter);
+  if (compareCalendarDate(resolved, date) !== 0) {
+    throw new CustomSettlementRuleApiError({
+      code: "CUSTOM_RULE_BUSINESS_DATE_UNAVAILABLE",
+      status: 0,
+      retryable: false,
+    });
+  }
+  const offsetMinutes = (calendarUtcEpoch(resolved) - instant) / 60_000;
   if (!Number.isInteger(offsetMinutes) || Math.abs(offsetMinutes) > 24 * 60) {
-    throw new Error("business timezone offset is invalid");
+    throw new CustomSettlementRuleApiError({
+      code: "CUSTOM_RULE_RESPONSE_INVALID",
+      status: 200,
+      retryable: true,
+    });
   }
   const absoluteOffset = Math.abs(offsetMinutes);
   const offsetHours = String(Math.floor(absoluteOffset / 60)).padStart(2, "0");
   const offsetRemainder = String(absoluteOffset % 60).padStart(2, "0");
   const sign = offsetMinutes >= 0 ? "+" : "-";
-  return `${value}T00:00:00.000${sign}${offsetHours}:${offsetRemainder}`;
+  return `${value}T${calendarPart(resolved.hour)}:${calendarPart(resolved.minute)}:${calendarPart(resolved.second)}.000${sign}${offsetHours}:${offsetRemainder}`;
 }
 
 function catalogTimezoneReady(catalog) {
@@ -338,6 +388,27 @@ function authorityIsActive(authority) {
   );
 }
 
+function authorityNeedsRefresh(authority) {
+  return (
+    authorityIsActive(authority) || authority?.draft?.status === "superseded"
+  );
+}
+
+function authorityHasValidTerminalShape(authority) {
+  if (!authority?.draft) return false;
+  return (
+    Boolean(authority.simulation) === (authority.draft.status === "simulated")
+  );
+}
+
+function invalidAuthorityError() {
+  return new CustomSettlementRuleApiError({
+    code: "CUSTOM_RULE_RESPONSE_INVALID",
+    status: 200,
+    retryable: true,
+  });
+}
+
 function authorityHasFailed(authority) {
   return (
     authority?.draft?.status === "failed" ||
@@ -417,6 +488,13 @@ function safeWorkspaceError(error) {
     message: "结算规则服务暂时不可用，请稍后重试",
     retryable: true,
   };
+}
+
+function recoveryKindForError(code, hasSession) {
+  if (!hasSession) return null;
+  if (CATALOG_SYNC_ERROR_CODES.has(code)) return "catalog_session";
+  if (SESSION_SYNC_ERROR_CODES.has(code)) return "session";
+  return null;
 }
 
 function scopeLabel(scope) {
@@ -553,20 +631,41 @@ function ambiguityFieldKeys(ambiguities) {
   for (const ambiguity of ambiguities ?? []) {
     const code = String(ambiguity.code ?? "").toLowerCase();
     if (code === CONFIRM_CONTRACT_AMBIGUITY) continue;
-    if (/scope/u.test(code)) keys.add("scope");
-    if (/target|streamer|group/u.test(code)) keys.add("target");
-    if (/grain|frequency|unit/u.test(code)) keys.add("executionGrain");
+    let matched = false;
+    if (/scope/u.test(code)) {
+      keys.add("scope");
+      matched = true;
+    }
+    if (/target|streamer|group/u.test(code)) {
+      keys.add("target");
+      matched = true;
+    }
+    if (/grain|frequency|unit/u.test(code)) {
+      keys.add("executionGrain");
+      matched = true;
+    }
     if (/rate|price|amount|parameter|bonus|tier|floor|cap/u.test(code)) {
       keys.add("parameters");
+      matched = true;
     }
-    if (/input|source|evidence|data/u.test(code)) keys.add("requiredInputs");
+    if (/input|source|evidence|data/u.test(code)) {
+      keys.add("requiredInputs");
+      matched = true;
+    }
     if (/effective|period|date|start|end/u.test(code)) {
       keys.add("effectiveStartAt");
       keys.add("effectiveEndAt");
+      matched = true;
     }
-    if (/missing/u.test(code)) keys.add("missingDataPolicy");
-    if (keys.size === 0 || /rule|definition|summary/u.test(code))
+    if (/missing/u.test(code)) {
+      keys.add("missingDataPolicy");
+      matched = true;
+    }
+    if (/rule|definition|summary/u.test(code)) {
       keys.add("summary");
+      matched = true;
+    }
+    if (!matched) keys.add("summary");
   }
   return keys;
 }
@@ -724,18 +823,36 @@ function RevisionDiff({ diff }) {
     <section className="crw-band crw-diff" role="region" aria-label="本轮修改">
       <h3>本轮修改</h3>
       <div className="crw-diff-list">
-        {diff.map((item) => (
-          <div key={item.field} className="crw-diff-row">
-            <strong>{CONTRACT_FIELD_LABELS[item.field]}</strong>
-            <span className="crw-before">
-              {formatDiffValue(item.field, item.before)}
-            </span>
-            <span aria-hidden="true">→</span>
-            <span className="crw-after">
-              {formatDiffValue(item.field, item.after)}
-            </span>
-          </div>
-        ))}
+        {diff.map((item) => {
+          const label = CONTRACT_FIELD_LABELS[item.field];
+          const before = formatDiffValue(item.field, item.before);
+          const after = formatDiffValue(item.field, item.after);
+          return (
+            <div
+              key={item.field}
+              className="crw-diff-row"
+              role="group"
+              aria-label={`${label}变更`}
+            >
+              <strong>{label}</strong>
+              <span
+                className="crw-before"
+                role="group"
+                aria-label={`修改前：${before}`}
+              >
+                {before}
+              </span>
+              <span aria-hidden="true">→</span>
+              <span
+                className="crw-after"
+                role="group"
+                aria-label={`修改后：${after}`}
+              >
+                {after}
+              </span>
+            </div>
+          );
+        })}
       </div>
       <p className="crw-preserved">
         保持不变：
@@ -955,7 +1072,7 @@ function WorkspaceStyles() {
       .crw-diff-list { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
       .crw-diff-row { display: grid; grid-template-columns: minmax(100px, .55fr) minmax(0, 1fr) auto minmax(0, 1fr); gap: 9px; align-items: start; font-size: 12px; line-height: 1.55; }
       .crw-before { color: var(--ink-500, #64748b); text-decoration: line-through; overflow-wrap: anywhere; }
-      .crw-after { color: var(--ink-900, #172033); font-weight: 600; overflow-wrap: anywhere; }
+      .crw-after { color: var(--ink-900, #172033); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
       .crw-preserved { margin: 10px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--ink-500, #64748b); }
       .crw-band-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
       .crw-band-heading > div { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
@@ -1216,8 +1333,11 @@ export default function CustomSettlementRuleWorkspace({
       retry && viewState.requestId
         ? viewState.requestId
         : createRequestId(operation);
+    let recoverySessionId = sessionId;
 
     const showProcessing = (authority, nextSessionId) => {
+      const visibleAuthority =
+        authority?.draft?.status === "superseded" ? null : authority;
       setActiveSession({ contextKey: workspaceContextKey, id: nextSessionId });
       setRequestState((current) => ({
         ...(current.contextKey === workspaceContextKey
@@ -1227,8 +1347,14 @@ export default function CustomSettlementRuleWorkspace({
         status: "processing",
         operation: "refresh",
         lastOperation: "refresh",
-        authoritative: authority ?? current.authoritative ?? null,
+        authoritative:
+          visibleAuthority ??
+          (current.authoritative?.draft?.status === "superseded"
+            ? null
+            : current.authoritative) ??
+          null,
         error: null,
+        recovery: null,
         announcement: "AI 正在处理",
         focusTarget: "progress",
       }));
@@ -1243,7 +1369,10 @@ export default function CustomSettlementRuleWorkspace({
 
       while (true) {
         const authority = session ? authorityFromSession(session) : null;
-        if (authority && !authorityIsActive(authority)) return authority;
+        if (authority && !authorityHasValidTerminalShape(authority)) {
+          throw invalidAuthorityError();
+        }
+        if (authority && !authorityNeedsRefresh(authority)) return authority;
         if (refreshesUsed >= maximumPollAttempts) {
           throw new CustomSettlementRuleApiError({
             code: "CUSTOM_RULE_PROCESSING_TIMEOUT",
@@ -1279,6 +1408,7 @@ export default function CustomSettlementRuleWorkspace({
       lastOperation: operation,
       requestId: clientRequestId,
       error: null,
+      recovery: null,
       announcement:
         operation === "confirm" ? "正在运行内部试算" : "正在更新业务规则",
       focusTarget: null,
@@ -1369,6 +1499,7 @@ export default function CustomSettlementRuleWorkspace({
       let nextSessionId = sessionId;
       if (operation === "refresh") {
         nextSessionId = payload.session.conversation.id;
+        recoverySessionId = nextSessionId;
         authority = await resolveAuthoritativeSession(
           nextSessionId,
           payload.session,
@@ -1376,19 +1507,11 @@ export default function CustomSettlementRuleWorkspace({
       } else {
         const result = payload.result;
         nextSessionId = result.conversationId;
+        recoverySessionId = nextSessionId;
         if (result.kind === "retry_in_progress") {
           authority = await resolveAuthoritativeSession(nextSessionId);
         } else if (result.draft?.status === "superseded") {
-          const refreshed = await apiClient.refreshSession({
-            projectId,
-            sessionId: nextSessionId,
-            signal: controller.signal,
-          });
-          if (sequence !== requestSequenceRef.current) return;
-          authority = await resolveAuthoritativeSession(
-            nextSessionId,
-            refreshed.session,
-          );
+          authority = await resolveAuthoritativeSession(nextSessionId);
         } else {
           authority = authorityFromResult(
             result,
@@ -1398,17 +1521,13 @@ export default function CustomSettlementRuleWorkspace({
       }
 
       if (sequence !== requestSequenceRef.current || !authority) return;
-      if (!authority?.draft) {
-        throw new CustomSettlementRuleApiError({
-          code: "CUSTOM_RULE_RESPONSE_INVALID",
-          status: 200,
-          retryable: true,
-          message: "结算规则服务返回了无法识别的响应",
-        });
-      }
+      if (!authorityHasValidTerminalShape(authority))
+        throw invalidAuthorityError();
 
       setActiveSession({ contextKey: workspaceContextKey, id: nextSessionId });
-      setDraftInputState({ contextKey: workspaceContextKey, value: "" });
+      if (operation !== "refresh") {
+        setDraftInputState({ contextKey: workspaceContextKey, value: "" });
+      }
       setRequestState((current) => ({
         ...(current.contextKey === workspaceContextKey
           ? current
@@ -1420,6 +1539,7 @@ export default function CustomSettlementRuleWorkspace({
         requestId: null,
         authoritative: authority,
         error: null,
+        recovery: null,
         announcement: completionAnnouncement(authority),
         focusTarget: focusTargetForAuthority(authority),
       }));
@@ -1431,10 +1551,22 @@ export default function CustomSettlementRuleWorkspace({
         return;
       }
       const safeError = safeWorkspaceError(error);
+      const recovery = recoveryKindForError(
+        safeError.code,
+        Boolean(recoverySessionId),
+      );
       const retryOperation =
         safeError.code === "CUSTOM_RULE_PROCESSING_TIMEOUT"
           ? "refresh"
-          : operation;
+          : recovery
+            ? null
+            : operation;
+      if (recovery && recoverySessionId) {
+        setActiveSession({
+          contextKey: workspaceContextKey,
+          id: recoverySessionId,
+        });
+      }
       setRequestState((current) => ({
         ...(current.contextKey === workspaceContextKey
           ? current
@@ -1444,10 +1576,105 @@ export default function CustomSettlementRuleWorkspace({
         operation: null,
         lastOperation: retryOperation,
         error: safeError,
+        recovery,
         announcement:
           safeError.code === "CUSTOM_RULE_PROCESSING_TIMEOUT"
             ? "AI 仍在处理"
             : "请求未完成",
+        focusTarget: "error",
+      }));
+    }
+  };
+
+  const recoverCatalogAndSession = async () => {
+    const sessionId =
+      activeSessionId ?? viewState.authoritative?.draft?.conversationId ?? null;
+    if (!validContext || !sessionId) return;
+
+    requestControllerRef.current?.abort();
+    apiClient.abortActive?.();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
+    const sequence = ++requestSequenceRef.current;
+    setRequestState((current) => ({
+      ...(current.contextKey === workspaceContextKey
+        ? current
+        : freshRequestState()),
+      contextKey: workspaceContextKey,
+      status: "loading",
+      operation: "catalog_recovery",
+      lastOperation: null,
+      catalogStatus: "loading",
+      error: null,
+      recovery: null,
+      announcement: "正在同步业务范围",
+      focusTarget: null,
+    }));
+
+    try {
+      const payload = await apiClient.getVariableCatalog({
+        projectId,
+        scope: selectedScope,
+        executionGrain,
+        signal: controller.signal,
+      });
+      if (sequence !== requestSequenceRef.current) return;
+      if (
+        payload.catalog.scope !== selectedScope ||
+        payload.catalog.executionGrain !== executionGrain
+      ) {
+        throw invalidAuthorityError();
+      }
+      if (!catalogTimezoneReady(payload.catalog)) {
+        setRequestState((current) => ({
+          ...(current.contextKey === workspaceContextKey
+            ? current
+            : freshRequestState()),
+          contextKey: workspaceContextKey,
+          status: "idle",
+          operation: null,
+          catalogStatus: "timezone_error",
+          catalog: payload.catalog,
+          error: {
+            code: "CUSTOM_RULE_TIMEZONE_UNRESOLVED",
+            message: "请先确认项目业务时区后再开始",
+            retryable: true,
+          },
+          recovery: null,
+          announcement: "业务时区待确认",
+          focusTarget: "error",
+        }));
+        return;
+      }
+      setRequestState((current) => ({
+        ...(current.contextKey === workspaceContextKey
+          ? current
+          : freshRequestState()),
+        contextKey: workspaceContextKey,
+        catalogStatus: "ready",
+        catalog: payload.catalog,
+      }));
+      await performOperation("refresh");
+    } catch (error) {
+      if (
+        error?.name === "AbortError" ||
+        sequence !== requestSequenceRef.current
+      ) {
+        return;
+      }
+      const safeError = safeWorkspaceError(error);
+      setRequestState((current) => ({
+        ...(current.contextKey === workspaceContextKey
+          ? current
+          : freshRequestState()),
+        contextKey: workspaceContextKey,
+        status: "error",
+        operation: null,
+        lastOperation: null,
+        catalogStatus: "ready",
+        error: safeError,
+        recovery: "catalog_session",
+        announcement: "业务范围同步失败",
         focusTarget: "error",
       }));
     }
@@ -1486,11 +1713,20 @@ export default function CustomSettlementRuleWorkspace({
   const timeoutError =
     requestHasError &&
     viewState.error?.code === "CUSTOM_RULE_PROCESSING_TIMEOUT";
+  const businessDateError =
+    requestHasError &&
+    viewState.error?.code === "CUSTOM_RULE_BUSINESS_DATE_UNAVAILABLE";
+  const sessionRecovery = requestHasError && viewState.recovery === "session";
+  const catalogSessionRecovery =
+    requestHasError && viewState.recovery === "catalog_session";
 
   let errorHeading = "无法继续处理";
   let errorMessage = viewState.error?.message ?? "结算规则服务暂时不可用";
   if (catalogHasError) errorHeading = "无法读取业务范围";
   if (timezoneHasError) errorHeading = "业务时区待确认";
+  if (sessionRecovery) errorHeading = "规则状态需要同步";
+  if (catalogSessionRecovery) errorHeading = "业务范围需要同步";
+  if (businessDateError) errorHeading = "业务日期不可用";
   if (failedAuthority) {
     errorHeading = "AI 草案生成失败";
     errorMessage = "AI 未能生成可用草案，请重新开始";
@@ -1520,16 +1756,28 @@ export default function CustomSettlementRuleWorkspace({
     needsInput = false;
     showInput = false;
   } else if (requestHasError) {
-    actionLabel = timeoutError
-      ? "刷新处理状态"
-      : viewState.error?.retryable
-        ? "重试"
-        : "重新开始";
-    actionOperation = timeoutError
-      ? "refresh"
-      : viewState.error?.retryable
-        ? (viewState.lastOperation ?? "start")
-        : "restart";
+    actionLabel = sessionRecovery
+      ? "同步最新规则"
+      : catalogSessionRecovery
+        ? "同步业务范围"
+        : businessDateError
+          ? "重新校验日期"
+          : timeoutError
+            ? "刷新处理状态"
+            : viewState.error?.retryable
+              ? "重试"
+              : "重新开始";
+    actionOperation = sessionRecovery
+      ? "recover_session"
+      : catalogSessionRecovery
+        ? "recover_catalog_session"
+        : businessDateError
+          ? "business_date"
+          : timeoutError
+            ? "refresh"
+            : viewState.error?.retryable
+              ? (viewState.lastOperation ?? "start")
+              : "restart";
     ActionIcon = RefreshCw;
     needsInput = false;
     showInput = false;
@@ -1585,6 +1833,18 @@ export default function CustomSettlementRuleWorkspace({
     }
     if (actionOperation === "restart") {
       restartWorkspace();
+      return;
+    }
+    if (actionOperation === "recover_session") {
+      performOperation("refresh");
+      return;
+    }
+    if (actionOperation === "recover_catalog_session") {
+      recoverCatalogAndSession();
+      return;
+    }
+    if (actionOperation === "business_date") {
+      performOperation("start");
       return;
     }
     if (requestHasError) {

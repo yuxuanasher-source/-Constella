@@ -15,6 +15,23 @@ import CustomSettlementRuleWorkspace from "./custom-settlement-rule-workspace";
 const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
 const SESSION_ID = "44444444-4444-4444-8444-444444444444";
 const DRAFT_ID = "55555555-5555-4555-8555-555555555555";
+const SESSION_SYNC_ERROR_CODES = [
+  "CUSTOM_RULE_SESSION_CONFLICT",
+  "CUSTOM_RULE_IDEMPOTENCY_CONFLICT",
+  "CUSTOM_RULE_STALE_REVISION",
+  "CUSTOM_RULE_INVALID_TRANSITION",
+  "CUSTOM_RULE_UNRESOLVED_AMBIGUITIES",
+  "CUSTOM_RULE_DUPLICATE_CONFIRMATION",
+  "CUSTOM_RULE_STALE_CONTRACT",
+  "CUSTOM_RULE_STALE_FORMULA",
+  "CUSTOM_RULE_STALE_EVIDENCE",
+  "CUSTOM_RULE_STALE_SELECTION",
+  "CUSTOM_RULE_RESPONSE_INVALID",
+];
+const CATALOG_SYNC_ERROR_CODES = [
+  "CUSTOM_RULE_STALE_CATALOG",
+  "CUSTOM_RULE_CATALOG_UNAVAILABLE",
+];
 
 function generatedTestCase() {
   return {
@@ -505,6 +522,47 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
   });
 
+  it.each([
+    ["recognized then unknown", ["hourly_rate", "opaque_business_choice"]],
+    ["unknown then recognized", ["opaque_business_choice", "hourly_rate"]],
+  ])(
+    "maps each ambiguity independently when ordered %s",
+    async (_label, codes) => {
+      const ambiguities = codes.map((code) => ({
+        code,
+        question:
+          code === "hourly_rate"
+            ? "每小时按多少元结算？"
+            : "还需确认哪项业务口径？",
+        required: true,
+      }));
+      const apiClient = api({
+        startSession: vi
+          .fn()
+          .mockResolvedValue(
+            startEnvelope(
+              draft("clarifying", { unresolvedAmbiguities: ambiguities }),
+            ),
+          ),
+      });
+      renderWorkspace(apiClient);
+
+      await startRule();
+      await screen.findByRole("heading", {
+        name: ambiguities[0].question,
+      });
+
+      expect(screen.getByTestId("contract-field-parameters")).toHaveAttribute(
+        "data-unresolved",
+        "true",
+      );
+      expect(screen.getByTestId("contract-field-summary")).toHaveAttribute(
+        "data-unresolved",
+        "true",
+      );
+    },
+  );
+
   it("derives confirmation readiness from the real clarifying confirmation DTO", async () => {
     const ready = confirmableDraft();
     const apiClient = api({
@@ -623,6 +681,30 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(diff).toHaveTextContent("项目主播阶梯计费");
     expect(diff).toHaveTextContent("保持不变");
     expect(diff).toHaveTextContent("适用范围");
+    const titleRow = within(diff).getByRole("group", { name: "规则名称变更" });
+    expect(
+      within(titleRow).getByRole("group", {
+        name: "修改前：项目主播按场计费",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(titleRow).getByRole("group", {
+        name: "修改后：项目主播阶梯计费",
+      }),
+    ).toBeInTheDocument();
+    const summaryRow = within(diff).getByRole("group", {
+      name: "业务说明变更",
+    });
+    expect(
+      within(summaryRow).getByRole("group", {
+        name: "修改前：每场直播按系统时长计算主播应付金额。",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(summaryRow).getByRole("group", {
+        name: "修改后：按系统时长分档计算主播应付金额。",
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("contract-field-scope")).toHaveTextContent(
       "主播应付",
     );
@@ -752,6 +834,30 @@ describe("CustomSettlementRuleWorkspace", () => {
       sessionId: SESSION_ID,
       signal: expect.any(AbortSignal),
     });
+  });
+
+  it("fails closed instead of announcing a simulated draft without its artifact", async () => {
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
+      refreshSession: vi
+        .fn()
+        .mockResolvedValue(authoritativeSession(draft("simulated"), null)),
+    });
+    renderWorkspace(apiClient);
+    await startRule();
+    await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新会话" }));
+
+    const heading = await screen.findByRole("heading", {
+      name: "规则状态需要同步",
+    });
+    expect(heading).toHaveFocus();
+    expect(screen.queryByText("内部试算已完成")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "内部试算结果" }),
+    ).not.toBeInTheDocument();
+    expectOnePrimary("同步最新规则");
   });
 
   it("refreshes a superseded answer replay before choosing the current UI state", async () => {
@@ -1103,6 +1209,98 @@ describe("CustomSettlementRuleWorkspace", () => {
     expectOnePrimary("确认业务规则并试算");
   });
 
+  it("polls repeated superseded readbacks until the current draft appears", async () => {
+    let resolveCurrent;
+    const currentReadback = new Promise((resolve) => {
+      resolveCurrent = resolve;
+    });
+    const superseded = confirmableDraft({
+      status: "superseded",
+      businessContract: contract({ title: "第一份过期规则" }),
+      supersededByDraftId: "77777777-7777-4777-8777-777777777777",
+      supersededAt: "2026-07-12T01:03:00.000Z",
+    });
+    const repeatedSuperseded = confirmableDraft({
+      id: "77777777-7777-4777-8777-777777777777",
+      revisionNumber: 2,
+      status: "superseded",
+      businessContract: contract({ title: "第二份过期规则" }),
+      supersedesDraftId: DRAFT_ID,
+      supersededByDraftId: "88888888-8888-4888-8888-888888888888",
+      supersededAt: "2026-07-12T01:04:00.000Z",
+    });
+    const current = confirmableDraft({
+      id: "88888888-8888-4888-8888-888888888888",
+      revisionNumber: 3,
+      businessContract: contract({ title: "当前权威规则" }),
+      supersedesDraftId: repeatedSuperseded.id,
+    });
+    const apiClient = api({
+      startSession: vi
+        .fn()
+        .mockResolvedValue(startEnvelope(superseded, { duplicate: true })),
+      refreshSession: vi
+        .fn()
+        .mockResolvedValueOnce(authoritativeSession(repeatedSuperseded))
+        .mockReturnValueOnce(currentReadback),
+    });
+    renderWorkspace(apiClient, {
+      retryPollDelayMs: 0,
+      retryPollMaxAttempts: 3,
+    });
+
+    await startRule();
+    await waitFor(() =>
+      expect(apiClient.refreshSession).toHaveBeenCalledTimes(2),
+    );
+    expect(screen.queryByText("第一份过期规则")).not.toBeInTheDocument();
+    expect(screen.queryByText("第二份过期规则")).not.toBeInTheDocument();
+
+    resolveCurrent(authoritativeSession(current));
+
+    expect(
+      await screen.findByRole("heading", { name: "业务规则草案" }),
+    ).toHaveFocus();
+    expect(screen.getByText("当前权威规则")).toBeInTheDocument();
+    expect(screen.queryByText("第一份过期规则")).not.toBeInTheDocument();
+    expect(screen.queryByText("第二份过期规则")).not.toBeInTheDocument();
+    expect(apiClient.startSession).toHaveBeenCalledTimes(1);
+    expect(apiClient.answerOrRevise).not.toHaveBeenCalled();
+  });
+
+  it("fails safely after bounded superseded readbacks without rendering stale data", async () => {
+    const superseded = confirmableDraft({
+      status: "superseded",
+      businessContract: contract({ title: "持续过期的规则" }),
+      supersededByDraftId: "77777777-7777-4777-8777-777777777777",
+      supersededAt: "2026-07-12T01:03:00.000Z",
+    });
+    const apiClient = api({
+      startSession: vi
+        .fn()
+        .mockResolvedValue(startEnvelope(superseded, { duplicate: true })),
+      refreshSession: vi
+        .fn()
+        .mockResolvedValue(authoritativeSession(superseded)),
+    });
+    renderWorkspace(apiClient, {
+      retryPollDelayMs: 0,
+      retryPollMaxAttempts: 2,
+    });
+
+    await startRule();
+
+    const heading = await screen.findByRole("heading", {
+      name: "AI 仍在处理",
+    });
+    expect(heading).toHaveFocus();
+    expectOnePrimary("刷新处理状态");
+    expect(screen.queryByText("持续过期的规则")).not.toBeInTheDocument();
+    expect(apiClient.refreshSession).toHaveBeenCalledTimes(2);
+    expect(apiClient.startSession).toHaveBeenCalledTimes(1);
+    expect(apiClient.answerOrRevise).not.toHaveBeenCalled();
+  });
+
   it("renders an authoritative failed draft as a focused safe error state", async () => {
     const failed = draft("failed", {
       initialStatus: "failed",
@@ -1146,6 +1344,181 @@ describe("CustomSettlementRuleWorkspace", () => {
       screen.queryByRole("button", { name: "开始澄清" }),
     ).not.toBeInTheDocument();
     expectOnePrimary("重新开始");
+  });
+
+  it.each(SESSION_SYNC_ERROR_CODES)(
+    "recovers %s with one authoritative session GET and no repeated POST",
+    async (code) => {
+      const failure = new CustomSettlementRuleApiError({
+        code,
+        status: code === "CUSTOM_RULE_RESPONSE_INVALID" ? 200 : 409,
+        retryable: code === "CUSTOM_RULE_RESPONSE_INVALID",
+      });
+      const latest = draft("clarifying", {
+        revisionNumber: 2,
+        unresolvedAmbiguities: [
+          {
+            code: "bonus_rate",
+            question: "奖励比例是多少？",
+            required: true,
+          },
+        ],
+      });
+      const apiClient = api({
+        startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
+        answerOrRevise: vi.fn().mockRejectedValue(failure),
+        refreshSession: vi.fn().mockResolvedValue(authoritativeSession(latest)),
+      });
+      renderWorkspace(apiClient);
+      await startRule();
+      await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+      const catalogCallsBeforeFailure =
+        apiClient.getVariableCatalog.mock.calls.length;
+
+      fireEvent.change(screen.getByLabelText("回复 AI"), {
+        target: { value: "按百分之十计算奖励" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "回复 AI" }));
+
+      const errorHeading = await screen.findByRole("heading", {
+        name: "规则状态需要同步",
+      });
+      expect(errorHeading).toHaveFocus();
+      expectOnePrimary("同步最新规则");
+      expect(apiClient.answerOrRevise).toHaveBeenCalledTimes(1);
+      expect(apiClient.refreshSession).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "同步最新规则" }));
+
+      const question = await screen.findByRole("heading", {
+        name: "奖励比例是多少？",
+      });
+      expect(question).toHaveFocus();
+      expect(apiClient.refreshSession).toHaveBeenCalledTimes(1);
+      expect(apiClient.refreshSession).toHaveBeenCalledWith({
+        projectId: PROJECT_ID,
+        sessionId: SESSION_ID,
+        signal: expect.any(AbortSignal),
+      });
+      expect(apiClient.answerOrRevise).toHaveBeenCalledTimes(1);
+      expect(apiClient.getVariableCatalog).toHaveBeenCalledTimes(
+        catalogCallsBeforeFailure,
+      );
+      expect(screen.getByLabelText("回复 AI")).toHaveValue(
+        "按百分之十计算奖励",
+      );
+      expectOnePrimary("回复 AI");
+    },
+  );
+
+  it.each(CATALOG_SYNC_ERROR_CODES)(
+    "recovers %s with catalog reload plus session GET and no repeated POST",
+    async (code) => {
+      const failure = new CustomSettlementRuleApiError({
+        code,
+        status: code === "CUSTOM_RULE_STALE_CATALOG" ? 409 : 503,
+        retryable: code === "CUSTOM_RULE_CATALOG_UNAVAILABLE",
+      });
+      const latest = draft("clarifying", {
+        revisionNumber: 2,
+        unresolvedAmbiguities: [
+          {
+            code: "bonus_rate",
+            question: "奖励比例是多少？",
+            required: true,
+          },
+        ],
+      });
+      const apiClient = api({
+        startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
+        answerOrRevise: vi.fn().mockRejectedValue(failure),
+        refreshSession: vi.fn().mockResolvedValue(authoritativeSession(latest)),
+      });
+      renderWorkspace(apiClient);
+      await startRule();
+      await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+      const catalogCallsBeforeFailure =
+        apiClient.getVariableCatalog.mock.calls.length;
+
+      fireEvent.change(screen.getByLabelText("回复 AI"), {
+        target: { value: "按最新变量口径计算" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "回复 AI" }));
+
+      const errorHeading = await screen.findByRole("heading", {
+        name: "业务范围需要同步",
+      });
+      expect(errorHeading).toHaveFocus();
+      expectOnePrimary("同步业务范围");
+      expect(apiClient.answerOrRevise).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole("button", { name: "同步业务范围" }));
+
+      const question = await screen.findByRole("heading", {
+        name: "奖励比例是多少？",
+      });
+      expect(question).toHaveFocus();
+      expect(apiClient.getVariableCatalog).toHaveBeenCalledTimes(
+        catalogCallsBeforeFailure + 1,
+      );
+      expect(apiClient.getVariableCatalog).toHaveBeenLastCalledWith({
+        projectId: PROJECT_ID,
+        scope: "payable",
+        executionGrain: "report",
+        signal: expect.any(AbortSignal),
+      });
+      expect(apiClient.refreshSession).toHaveBeenCalledTimes(1);
+      expect(apiClient.refreshSession).toHaveBeenCalledWith({
+        projectId: PROJECT_ID,
+        sessionId: SESSION_ID,
+        signal: expect.any(AbortSignal),
+      });
+      expect(apiClient.answerOrRevise).toHaveBeenCalledTimes(1);
+      expectOnePrimary("回复 AI");
+    },
+  );
+
+  it("requires a fresh user command and request key after stale-state recovery", async () => {
+    const failure = new CustomSettlementRuleApiError({
+      code: "CUSTOM_RULE_STALE_REVISION",
+      status: 409,
+      retryable: false,
+    });
+    const latest = draft("clarifying", { revisionNumber: 2 });
+    const revised = confirmableDraft({ revisionNumber: 3 });
+    const answerOrRevise = vi
+      .fn()
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce({ result: resultFor(revised) });
+    let requestSequence = 0;
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
+      answerOrRevise,
+      refreshSession: vi.fn().mockResolvedValue(authoritativeSession(latest)),
+    });
+    renderWorkspace(apiClient, {
+      createRequestId: (operation) =>
+        `task9:${operation}:${String(++requestSequence).padStart(4, "0")}`,
+    });
+    await startRule();
+    await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+
+    fireEvent.change(screen.getByLabelText("回复 AI"), {
+      target: { value: "按新口径修订" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "回复 AI" }));
+    await screen.findByRole("heading", { name: "规则状态需要同步" });
+    fireEvent.click(screen.getByRole("button", { name: "同步最新规则" }));
+    await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+
+    expect(answerOrRevise).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "回复 AI" }));
+    await screen.findByRole("heading", { name: "业务规则草案" });
+
+    expect(answerOrRevise).toHaveBeenCalledTimes(2);
+    const firstKey = answerOrRevise.mock.calls[0][0].body.clientRequestId;
+    const secondKey = answerOrRevise.mock.calls[1][0].body.clientRequestId;
+    expect(secondKey).not.toBe(firstKey);
   });
 
   it("does not expose hostile error codes or messages through the workspace", async () => {
@@ -1344,6 +1717,78 @@ describe("CustomSettlementRuleWorkspace", () => {
       );
     },
   );
+
+  it.each([
+    ["America/Santiago", "2025-09-07", "2025-09-07T01:00:00.000-03:00"],
+    ["America/Havana", "2025-03-09", "2025-03-09T01:00:00.000-04:00"],
+    ["America/Asuncion", "2024-10-06", "2024-10-06T01:00:00.000-03:00"],
+    ["Asia/Beirut", "2025-03-30", "2025-03-30T01:00:00.000+03:00"],
+  ])(
+    "uses the earliest valid local instant for the midnight gap in %s",
+    async (businessTimezone, periodStart, expectedStart) => {
+      const apiClient = api({
+        getVariableCatalog: vi.fn(({ scope, executionGrain }) =>
+          Promise.resolve(
+            catalog(true, {
+              scope,
+              executionGrain,
+              businessTimezone,
+              businessTimezoneConfirmed: true,
+              businessTimezoneSource: "organization_setting",
+            }),
+          ),
+        ),
+      });
+      renderWorkspace(apiClient, {
+        period: { start: periodStart, end: periodStart },
+      });
+
+      await startRule();
+      await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+
+      expect(apiClient.startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            seedContract: expect.objectContaining({
+              effectiveStartAt: expectedStart,
+              businessTimezone,
+            }),
+          }),
+        }),
+      );
+    },
+  );
+
+  it("fails closed when the business timezone entirely skipped the civil date", async () => {
+    const apiClient = api({
+      getVariableCatalog: vi.fn(({ scope, executionGrain }) =>
+        Promise.resolve(
+          catalog(true, {
+            scope,
+            executionGrain,
+            businessTimezone: "Pacific/Apia",
+            businessTimezoneConfirmed: true,
+            businessTimezoneSource: "organization_setting",
+          }),
+        ),
+      ),
+    });
+    renderWorkspace(apiClient, {
+      period: { start: "2011-12-30", end: "2011-12-30" },
+    });
+
+    await startRule();
+
+    const heading = await screen.findByRole("heading", {
+      name: "业务日期不可用",
+    });
+    expect(heading).toHaveFocus();
+    expect(
+      screen.getByText("当前结算周期在业务时区中不存在，请调整结算周期后重试"),
+    ).toBeInTheDocument();
+    expect(apiClient.startSession).not.toHaveBeenCalled();
+    expectOnePrimary("重新校验日期");
+  });
 
   it("blocks session start while the catalog timezone is unresolved", async () => {
     const apiClient = api({
