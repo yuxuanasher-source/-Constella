@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { sanitizeAiAttachments } from "./attachment-validation";
 import type {
   AiConversationDto,
   AiConversationMessageDto,
@@ -264,14 +265,15 @@ export function createConversationService(
         turn.contextSnapshot,
       );
       if (frozenSnapshot?.gatewayContext) {
-        const contextHash = hashConversationSnapshot(frozenSnapshot);
+        const persistedSnapshot = requireConversationSnapshot(frozenSnapshot);
+        const contextHash = hashConversationSnapshot(persistedSnapshot);
         const transitioned = await persistence.transitionTurn({
           organizationId: actor.organizationId,
           ownerUserId: actor.userId,
           turnId,
           from: "accepted",
           to: "grounding",
-          patch: { contextSnapshot: frozenSnapshot, contextHash },
+          patch: { contextSnapshot: persistedSnapshot, contextHash },
         });
         if (!transitioned) {
           throw new ConversationServiceError(
@@ -281,7 +283,9 @@ export function createConversationService(
         }
         return {
           turn,
-          messages: frozenSnapshot.gatewayContext.messages,
+          messages: frozenSnapshot.gatewayContext.messages.map((message) => ({
+            ...message,
+          })),
           snapshot: frozenSnapshot,
         };
       }
@@ -308,7 +312,8 @@ export function createConversationService(
         groundingRefs: [...new Set(groundingRefs)],
         assembledAt: now().toISOString(),
       };
-      const contextHash = hashConversationSnapshot(snapshot);
+      const persistedSnapshot = requireConversationSnapshot(snapshot);
+      const contextHash = hashConversationSnapshot(persistedSnapshot);
 
       const transitioned = await persistence.transitionTurn({
         organizationId: actor.organizationId,
@@ -316,7 +321,7 @@ export function createConversationService(
         turnId,
         from: "accepted",
         to: "grounding",
-        patch: { contextSnapshot: snapshot, contextHash },
+        patch: { contextSnapshot: persistedSnapshot, contextHash },
       });
       if (!transitioned) {
         throw new ConversationServiceError(
@@ -342,13 +347,13 @@ export function createConversationService(
       gatewayContext: ConversationGatewayContext,
     ) {
       const trustedSnapshot = requireConversationSnapshot(snapshot);
-      if (!isConversationGatewayContext(gatewayContext)) {
-        throw new ConversationServiceError(
-          "turn_state_conflict",
-          "Conversation gateway context is structurally invalid",
-        );
-      }
-      const nextSnapshot = { ...trustedSnapshot, gatewayContext };
+      const trustedGatewayContext =
+        requireConversationGatewayContext(gatewayContext);
+      const nextSnapshot = {
+        ...trustedSnapshot,
+        gatewayContext: trustedGatewayContext,
+      };
+      const persistedSnapshot = requireConversationSnapshot(nextSnapshot);
       const captured = await persistence.transitionTurn({
         organizationId: actor.organizationId,
         ownerUserId: actor.userId,
@@ -356,8 +361,8 @@ export function createConversationService(
         from: "grounding",
         to: "grounding",
         patch: {
-          contextSnapshot: nextSnapshot,
-          contextHash: hashConversationSnapshot(nextSnapshot),
+          contextSnapshot: persistedSnapshot,
+          contextHash: hashConversationSnapshot(persistedSnapshot),
         },
       });
       if (!captured) {
@@ -530,17 +535,20 @@ function takeLatestWithinBudget(
 function normalizeStoredConversationSnapshot(
   value: unknown,
 ): ConversationContextSnapshot | null {
-  if (
-    value === null ||
-    value === undefined ||
-    (isRecord(value) && Object.keys(value).length === 0)
-  ) {
-    return null;
-  }
-  return requireConversationSnapshot(value);
+  if (value === null || value === undefined) return null;
+
+  const ownedValue = copyPlainJson(value);
+  if (isRecord(ownedValue) && Object.keys(ownedValue).length === 0) return null;
+  return requireOwnedConversationSnapshot(ownedValue);
 }
 
 function requireConversationSnapshot(
+  value: unknown,
+): ConversationContextSnapshot {
+  return requireOwnedConversationSnapshot(copyPlainJson(value));
+}
+
+function requireOwnedConversationSnapshot(
   value: unknown,
 ): ConversationContextSnapshot {
   if (!isConversationSnapshot(value)) {
@@ -550,6 +558,19 @@ function requireConversationSnapshot(
     );
   }
   return value;
+}
+
+function requireConversationGatewayContext(
+  value: unknown,
+): ConversationGatewayContext {
+  const ownedValue = copyPlainJson(value);
+  if (!isConversationGatewayContext(ownedValue)) {
+    throw new ConversationServiceError(
+      "turn_state_conflict",
+      "Conversation gateway context is structurally invalid",
+    );
+  }
+  return ownedValue;
 }
 
 function isConversationSnapshot(
@@ -578,11 +599,11 @@ function isConversationGatewayContext(
   return (
     Array.isArray(value.messages) &&
     value.messages.every(isAiMessage) &&
-    Array.isArray(value.attachments) &&
-    value.attachments.every(isAiAttachment) &&
+    hasExactSanitizedAttachments(value.attachments) &&
     (value.mode === "fast" || value.mode === "deep") &&
+    typeof value.primaryProvider === "string" &&
     ["openai", "hunyuan", "deepseek", "deterministic"].includes(
-      String(value.primaryProvider),
+      value.primaryProvider,
     ) &&
     typeof value.lastUserMessage === "string" &&
     isRecord(value.responseMetadata.grounding) &&
@@ -598,25 +619,15 @@ function isConversationGatewayContext(
 function isAiMessage(value: unknown): value is AiMessage {
   return (
     isRecord(value) &&
-    ["system", "user", "assistant", "tool"].includes(String(value.role)) &&
+    typeof value.role === "string" &&
+    ["system", "user", "assistant", "tool"].includes(value.role) &&
     typeof value.content === "string"
   );
 }
 
-function isAiAttachment(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    typeof value.name === "string" &&
-    typeof value.mimeType === "string" &&
-    (value.sizeBytes === undefined ||
-      (typeof value.sizeBytes === "number" &&
-        Number.isFinite(value.sizeBytes) &&
-        value.sizeBytes >= 0)) &&
-    optionalString(value.text) &&
-    optionalString(value.data) &&
-    optionalString(value.fileId) &&
-    optionalString(value.url)
-  );
+function hasExactSanitizedAttachments(value: unknown): boolean {
+  const result = sanitizeAiAttachments(value);
+  return result.ok && areJsonValuesEqual(value, result.attachments);
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -626,8 +637,110 @@ function isStringArray(value: unknown): value is string[] {
   );
 }
 
-function optionalString(value: unknown): boolean {
-  return value === undefined || typeof value === "string";
+function areJsonValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((item, index) => areJsonValuesEqual(item, right[index]))
+    );
+  }
+  if (!isRecord(left) || !isRecord(right)) return false;
+
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) =>
+        Object.prototype.hasOwnProperty.call(right, key) &&
+        areJsonValuesEqual(left[key], right[key]),
+    )
+  );
+}
+
+type PlainJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | PlainJsonValue[]
+  | { [key: string]: PlainJsonValue };
+
+function copyPlainJson(value: unknown): PlainJsonValue {
+  return copyPlainJsonValue(value, new Set<object>());
+}
+
+function copyPlainJsonValue(
+  value: unknown,
+  ancestors: Set<object>,
+): PlainJsonValue {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) return value;
+    return rejectUnsafeConversationContext();
+  }
+  if (typeof value !== "object") return rejectUnsafeConversationContext();
+  if (ancestors.has(value)) return rejectUnsafeConversationContext();
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) {
+        return rejectUnsafeConversationContext();
+      }
+      const keys = Reflect.ownKeys(value);
+      if (keys.length !== value.length + 1 || !keys.includes("length")) {
+        return rejectUnsafeConversationContext();
+      }
+      return Array.from({ length: value.length }, (_, index) => {
+        const descriptor = Object.getOwnPropertyDescriptor(
+          value,
+          String(index),
+        );
+        if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+          return rejectUnsafeConversationContext();
+        }
+        return copyPlainJsonValue(descriptor.value, ancestors);
+      });
+    }
+
+    if (Object.getPrototypeOf(value) !== Object.prototype) {
+      return rejectUnsafeConversationContext();
+    }
+    const copy: { [key: string]: PlainJsonValue } = {};
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string") return rejectUnsafeConversationContext();
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+        return rejectUnsafeConversationContext();
+      }
+      Object.defineProperty(copy, key, {
+        configurable: true,
+        enumerable: true,
+        value: copyPlainJsonValue(descriptor.value, ancestors),
+        writable: true,
+      });
+    }
+    return copy;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function rejectUnsafeConversationContext(): never {
+  throw new ConversationServiceError(
+    "turn_state_conflict",
+    "Conversation context must be owned plain JSON data",
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

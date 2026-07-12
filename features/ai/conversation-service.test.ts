@@ -316,6 +316,299 @@ describe("Xingyao conversation service", () => {
     expect(store.transitionTurn).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      name: "an array provider",
+      gatewayContext: {
+        ...trustedGatewayContext(),
+        primaryProvider: ["deepseek"],
+      },
+    },
+    {
+      name: "an object provider",
+      gatewayContext: {
+        ...trustedGatewayContext(),
+        primaryProvider: { toString: (): string => "deepseek" },
+      },
+    },
+    {
+      name: "an array message role",
+      gatewayContext: {
+        ...trustedGatewayContext(),
+        messages: [
+          { role: ["system"], content: "可信系统规则" },
+          { role: "user", content: "冻结的业务事实" },
+        ],
+      },
+    },
+    {
+      name: "an object message role",
+      gatewayContext: {
+        ...trustedGatewayContext(),
+        messages: [
+          {
+            role: { toString: (): string => "system" },
+            content: "可信系统规则",
+          },
+          { role: "user", content: "冻结的业务事实" },
+        ],
+      },
+    },
+  ])(
+    "rejects frozen gateway context with $name",
+    async ({ gatewayContext }) => {
+      const store = persistence({
+        getTurn: vi.fn().mockResolvedValue(
+          storedTurn({
+            contextSnapshot: frozenSnapshot(gatewayContext),
+          }),
+        ),
+      });
+      const service = createConversationService(store);
+
+      await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
+        code: "turn_state_conflict",
+      });
+      expect(store.listMessages).not.toHaveBeenCalled();
+      expect(store.transitionTurn).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    {
+      name: "more than five attachments",
+      attachments: Array.from({ length: 6 }, (_, index) =>
+        validAttachment(index),
+      ),
+    },
+    {
+      name: "an unsupported MIME type",
+      attachments: [validAttachment(0, { mimeType: "application/zip" })],
+    },
+    {
+      name: "a reported size above eight MiB",
+      attachments: [validAttachment(0, { sizeBytes: 8 * 1024 * 1024 + 1 })],
+    },
+    {
+      name: "text above the shared character limit",
+      attachments: [
+        validAttachment(0, { data: undefined, text: "x".repeat(200_001) }),
+      ],
+    },
+    {
+      name: "data above the shared character limit",
+      attachments: [validAttachment(0, { data: "A".repeat(12_000_000) })],
+    },
+    {
+      name: "no readable source",
+      attachments: [validAttachment(0, { data: undefined })],
+    },
+    {
+      name: "a MIME type that requires normalization",
+      attachments: [validAttachment(0, { mimeType: " Application/PDF " })],
+    },
+  ])("rejects frozen gateway context with $name", async ({ attachments }) => {
+    const store = persistence({
+      getTurn: vi.fn().mockResolvedValue(
+        storedTurn({
+          contextSnapshot: frozenSnapshot({
+            ...trustedGatewayContext(),
+            attachments,
+          }),
+        }),
+      ),
+    });
+    const service = createConversationService(store);
+
+    const error = await service.prepareTurn(actor, "turn-1").then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+
+    expect(error).toMatchObject({ code: "turn_state_conflict" });
+    expect(store.listMessages).not.toHaveBeenCalled();
+    expect(store.transitionTurn).not.toHaveBeenCalled();
+  });
+
+  it("restores a valid frozen attachment without normalizing it", async () => {
+    const attachment = validAttachment(0);
+    const snapshot = frozenSnapshot({
+      ...trustedGatewayContext(),
+      attachments: [attachment],
+    });
+    const store = persistence({
+      getTurn: vi
+        .fn()
+        .mockResolvedValue(storedTurn({ contextSnapshot: snapshot })),
+    });
+    const service = createConversationService(store);
+
+    const prepared = await service.prepareTurn(actor, "turn-1");
+
+    expect(prepared.snapshot.gatewayContext?.attachments).toEqual([attachment]);
+    expect(store.listMessages).not.toHaveBeenCalled();
+  });
+
+  it("rejects custom prototypes anywhere in a persisted snapshot", async () => {
+    const customGatewayContext = Object.assign(
+      Object.create({ inherited: true }),
+      trustedGatewayContext(),
+    );
+    const store = persistence({
+      getTurn: vi.fn().mockResolvedValue(
+        storedTurn({
+          contextSnapshot: frozenSnapshot(customGatewayContext),
+        }),
+      ),
+    });
+    const service = createConversationService(store);
+
+    await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
+      code: "turn_state_conflict",
+    });
+    expect(store.transitionTurn).not.toHaveBeenCalled();
+  });
+
+  it("rejects accessors without invoking them", async () => {
+    const gatewayContext = trustedGatewayContext();
+    const providerGetter = vi.fn(() => "deepseek");
+    Object.defineProperty(gatewayContext, "primaryProvider", {
+      configurable: true,
+      enumerable: true,
+      get: providerGetter,
+    });
+    const store = persistence({
+      getTurn: vi.fn().mockResolvedValue(
+        storedTurn({
+          contextSnapshot: frozenSnapshot(gatewayContext),
+        }),
+      ),
+    });
+    const service = createConversationService(store);
+
+    await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
+      code: "turn_state_conflict",
+    });
+    expect(providerGetter).not.toHaveBeenCalled();
+    expect(store.transitionTurn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "cyclic metadata",
+      gatewayContext: (() => {
+        const gatewayContext = trustedGatewayContext();
+        const metadata = gatewayContext.invocationMetadata as Record<
+          string,
+          unknown
+        >;
+        metadata.self = metadata;
+        return gatewayContext;
+      })(),
+    },
+    {
+      name: "BigInt metadata",
+      gatewayContext: {
+        ...trustedGatewayContext(),
+        invocationMetadata: { groundingFactCount: 0, unsafe: BigInt(1) },
+      },
+    },
+  ])(
+    "rejects capture with $name before hashing",
+    async ({ gatewayContext }) => {
+      const store = persistence();
+      const service = createConversationService(store);
+      const snapshot: NonNullable<StoredConversationTurn["contextSnapshot"]> = {
+        version: 1,
+        summaryVersion: 0,
+        messageIds: ["message-user-1"],
+        groundingRefs: ["dashboard:role-home"],
+        assembledAt: "2026-07-11T03:00:00.000Z",
+      };
+
+      await expect(
+        service.captureGatewayContext(
+          actor,
+          "turn-1",
+          snapshot,
+          gatewayContext,
+        ),
+      ).rejects.toMatchObject({ code: "turn_state_conflict" });
+      expect(store.transitionTurn).not.toHaveBeenCalled();
+    },
+  );
+
+  it("owns persisted snapshots and isolates them from later mutations", async () => {
+    const sourceGatewayContext = trustedGatewayContext();
+    const sourceSnapshot = frozenSnapshot(sourceGatewayContext);
+    const store = persistence({
+      getTurn: vi
+        .fn()
+        .mockResolvedValue(storedTurn({ contextSnapshot: sourceSnapshot })),
+    });
+    const service = createConversationService(store);
+
+    const prepared = await service.prepareTurn(actor, "turn-1");
+    const persistedSnapshot = vi.mocked(store.transitionTurn).mock.calls[0]?.[0]
+      .patch?.contextSnapshot;
+
+    sourceSnapshot.messageIds.push("source-mutation");
+    sourceGatewayContext.messages[0]!.content = "source mutation";
+    expect(prepared.snapshot.messageIds).toEqual(["message-user-1"]);
+    expect(prepared.snapshot.gatewayContext?.messages[0]?.content).toBe(
+      "可信系统规则",
+    );
+    expect(persistedSnapshot?.messageIds).toEqual(["message-user-1"]);
+    expect(persistedSnapshot?.gatewayContext?.messages[0]?.content).toBe(
+      "可信系统规则",
+    );
+
+    prepared.snapshot.messageIds.push("return-mutation");
+    prepared.snapshot.gatewayContext!.messages[0]!.content = "return mutation";
+    expect(persistedSnapshot?.messageIds).toEqual(["message-user-1"]);
+    expect(persistedSnapshot?.gatewayContext?.messages[0]?.content).toBe(
+      "可信系统规则",
+    );
+  });
+
+  it("owns capture inputs and isolates persistence from returned mutations", async () => {
+    const snapshot: NonNullable<StoredConversationTurn["contextSnapshot"]> = {
+      version: 1,
+      summaryVersion: 0,
+      messageIds: ["message-user-1"],
+      groundingRefs: ["dashboard:role-home"],
+      assembledAt: "2026-07-11T03:00:00.000Z",
+    };
+    const gatewayContext = trustedGatewayContext();
+    const store = persistence();
+    const service = createConversationService(store);
+
+    const captured = await service.captureGatewayContext(
+      actor,
+      "turn-1",
+      snapshot,
+      gatewayContext,
+    );
+    const persistedSnapshot = vi.mocked(store.transitionTurn).mock.calls[0]?.[0]
+      .patch?.contextSnapshot;
+
+    snapshot.messageIds.push("source-mutation");
+    gatewayContext.messages[0]!.content = "source mutation";
+    expect(captured.messageIds).toEqual(["message-user-1"]);
+    expect(captured.gatewayContext?.messages[0]?.content).toBe("可信系统规则");
+    expect(persistedSnapshot?.messageIds).toEqual(["message-user-1"]);
+    expect(persistedSnapshot?.gatewayContext?.messages[0]?.content).toBe(
+      "可信系统规则",
+    );
+
+    captured.messageIds.push("return-mutation");
+    captured.gatewayContext!.messages[0]!.content = "return mutation";
+    expect(persistedSnapshot?.messageIds).toEqual(["message-user-1"]);
+    expect(persistedSnapshot?.gatewayContext?.messages[0]?.content).toBe(
+      "可信系统规则",
+    );
+  });
+
   it("keeps the latest completed message when a long history exceeds the budget", async () => {
     const messages = Array.from({ length: 299 }, (_, index) =>
       message(
@@ -499,4 +792,29 @@ function trustedGatewayContext() {
     },
     invocationMetadata: { groundingFactCount: 0 },
   };
+}
+
+function frozenSnapshot(gatewayContext: unknown) {
+  return {
+    version: 1,
+    summaryVersion: 0,
+    messageIds: ["message-user-1"],
+    groundingRefs: ["dashboard:role-home"],
+    assembledAt: "2026-07-11T03:00:00.000Z",
+    gatewayContext,
+  } as unknown as NonNullable<StoredConversationTurn["contextSnapshot"]>;
+}
+
+function validAttachment(index: number, patch: Record<string, unknown> = {}) {
+  const attachment: Record<string, unknown> = {
+    name: `brief-${index + 1}.pdf`,
+    mimeType: "application/pdf",
+    sizeBytes: 1024,
+    data: "cGRm",
+    ...patch,
+  };
+  for (const key of Object.keys(attachment)) {
+    if (attachment[key] === undefined) delete attachment[key];
+  }
+  return attachment;
 }
