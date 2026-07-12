@@ -46,6 +46,7 @@ import {
   type AuthorizedSimulationSelectionRequest,
   type CustomRuleAuthoringRepositoryPort,
   type SettlementVariableCatalogPort,
+  type StartCustomRuleSessionInput,
 } from "./custom-rule-service";
 import {
   calculateCustomRuleEvidenceHash,
@@ -76,6 +77,40 @@ function retryContextSnapshot(): ConversationContextSnapshot {
     messageIds: [...RETRY_CONTEXT_MESSAGE_IDS],
     groundingRefs: [],
     assembledAt: "2026-07-12T00:00:00.000Z",
+  };
+}
+
+function startInput(
+  clientRequestId = "recoverable-start-request-0001",
+): StartCustomRuleSessionInput {
+  return {
+    actor,
+    projectId: PROJECT_ID,
+    conversationId: CONVERSATION_ID,
+    clientRequestId,
+    promptText: "Start a recoverable settlement draft.",
+    seedContract: contract(),
+    initialAmbiguities: [
+      {
+        code: "confirm_rate",
+        question: "Confirm the hourly rate?",
+        required: true,
+      },
+    ],
+  };
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolvePromise: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve() {
+      if (!resolvePromise) throw new Error("deferred promise is unavailable");
+      resolvePromise();
+    },
   };
 }
 
@@ -227,6 +262,330 @@ describe("custom rule authoring service", () => {
     expect(replay.repository.createDraftCalls).toHaveLength(1);
     expect(replay.conversation.acceptTurn).toHaveBeenCalledTimes(1);
     expect(replay.conversation.createConversation).not.toHaveBeenCalled();
+  });
+
+  it("recovers an expired start that crashed after accept without duplicating its user message", async () => {
+    const harness = createHarness([
+      clarificationOutput("Confirm the hourly rate?", "confirm_rate"),
+    ]);
+    const input = startInput("start-crash-before-prepare-0001");
+    const source = await harness.conversation.acceptTurn(
+      actor,
+      CONVERSATION_ID,
+      {
+        content: input.promptText,
+        mode: "fast",
+        clientRequestId: input.clientRequestId,
+        attachments: [],
+      },
+    );
+    harness.expireTurn(source.turnId);
+
+    const recovered = await harness.service.startSession(input);
+
+    expect(recovered).toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      duplicate: false,
+      draft: {
+        revisionNumber: 1,
+        turnTrace: { turnId: uuid(202), userMessageId: source.userMessageId },
+      },
+    });
+    expect(harness.conversation.retryTurn).toHaveBeenCalledWith(
+      actor,
+      source.turnId,
+      {
+        clientRequestId: expect.stringMatching(
+          /^settlement-start-recovery:[a-f0-9]{64}$/u,
+        ),
+      },
+    );
+    expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
+    expect(harness.events.filter((event) => event === "ai.prepare")).toHaveLength(
+      1,
+    );
+    expect(harness.events.filter((event) => event === "ai.restore")).toHaveLength(
+      0,
+    );
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(1);
+    const history = await harness.conversation.getHistory(
+      actor,
+      CONVERSATION_ID,
+    );
+    expect(history.turns.find((turn) => turn.id === source.turnId)).toMatchObject(
+      {
+        status: "failed",
+        errorCode: "turn_lease_expired",
+        retryable: true,
+      },
+    );
+    expect(history.turns.find((turn) => turn.id === uuid(202))).toMatchObject({
+      retryOfTurnId: source.turnId,
+      status: "completed",
+      attempt: 2,
+    });
+    expect(
+      history.messages.filter(
+        (message) =>
+          message.role === "user" && message.content === input.promptText,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("recovers a generating start only from its frozen gateway context", async () => {
+    const crashedGateway = deferred();
+    const harness = createHarness(
+      [
+        clarificationOutput("Original response is abandoned.", "confirm_rate"),
+        clarificationOutput("Recovered frozen response?", "confirm_rate"),
+      ],
+      { gatewayGates: [crashedGateway.promise, undefined] },
+    );
+    const input = startInput("start-crash-after-freeze-0001");
+    const abandoned = harness.service.startSession(input);
+    void abandoned.catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(harness.conversation.markGenerating).toHaveBeenCalledTimes(1);
+      expect(
+        harness.events.filter((event) => event === "gateway.execute"),
+      ).toHaveLength(1);
+    });
+    harness.expireTurn(uuid(201));
+
+    const recovered = await harness.service.startSession(input);
+
+    expect(recovered).toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      draft: { turnTrace: { turnId: uuid(202) } },
+    });
+    expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
+    expect(harness.events.filter((event) => event === "ai.prepare")).toHaveLength(
+      1,
+    );
+    expect(harness.events.filter((event) => event === "ai.restore")).toHaveLength(
+      1,
+    );
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(2);
+    expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns an unexpired duplicate start as in-progress without catalog or AI work", async () => {
+    const harness = createHarness([]);
+    const input = startInput("start-unexpired-duplicate-0001");
+    const source = await harness.conversation.acceptTurn(
+      actor,
+      CONVERSATION_ID,
+      {
+        content: input.promptText,
+        mode: "fast",
+        clientRequestId: input.clientRequestId,
+        attachments: [],
+      },
+    );
+
+    const pending = await harness.service.startSession(input);
+
+    expect(pending).toMatchObject({
+      ok: true,
+      kind: "retry_in_progress",
+      turn: {
+        turnId: source.turnId,
+        status: "accepted",
+        duplicate: true,
+      },
+    });
+    expect(harness.catalogPort.getCatalog).not.toHaveBeenCalled();
+    expect(harness.conversation.prepareTurn).not.toHaveBeenCalled();
+    expect(harness.conversation.retryTurn).not.toHaveBeenCalled();
+    expect(harness.events).not.toContain("gateway.execute");
+  });
+
+  it("shares one recovery successor across concurrent starts and replays its durable draft", async () => {
+    const recoveryGateway = deferred();
+    const harness = createHarness(
+      [clarificationOutput("Recovered once?", "confirm_rate")],
+      { gatewayGates: [recoveryGateway.promise] },
+    );
+    const input = startInput("start-concurrent-recovery-0001");
+    const source = await harness.conversation.acceptTurn(
+      actor,
+      CONVERSATION_ID,
+      {
+        content: input.promptText,
+        mode: "fast",
+        clientRequestId: input.clientRequestId,
+        attachments: [],
+      },
+    );
+    harness.expireTurn(source.turnId);
+
+    const owner = harness.service.startSession(input);
+    void owner.catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(
+        harness.events.filter((event) => event === "gateway.execute"),
+      ).toHaveLength(1);
+      expect(harness.conversation.markGenerating).toHaveBeenCalledTimes(1);
+    });
+    const concurrent = await harness.service.startSession(input);
+
+    expect(concurrent).toMatchObject({
+      ok: true,
+      kind: "retry_in_progress",
+      turn: { turnId: uuid(202), status: "generating", duplicate: true },
+    });
+    const activeHistory = await harness.conversation.getHistory(
+      actor,
+      CONVERSATION_ID,
+    );
+    expect(
+      activeHistory.turns.filter(
+        (turn) => turn.retryOfTurnId === source.turnId,
+      ),
+    ).toHaveLength(1);
+    expect(
+      activeHistory.messages.find(
+        (message) => message.id === source.assistantMessageId,
+      ),
+    ).toMatchObject({ status: "superseded" });
+    expect(harness.repository.finalizeDraftTurnCalls).toHaveLength(0);
+    recoveryGateway.resolve();
+    await expect(owner).resolves.toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      duplicate: false,
+    });
+
+    const replay = await harness.service.startSession(input);
+    expect(replay).toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      duplicate: true,
+      draft: { turnTrace: { turnId: uuid(202) } },
+    });
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(1);
+    expect(harness.repository.finalizeDraftTurnCalls).toHaveLength(1);
+  });
+
+  it("fails the recovery successor when frozen start metadata is tampered", async () => {
+    const crashedGateway = deferred();
+    const harness = createHarness(
+      [
+        clarificationOutput("Original response is abandoned.", "confirm_rate"),
+        clarificationOutput("Must never execute.", "confirm_rate"),
+      ],
+      { gatewayGates: [crashedGateway.promise, undefined] },
+    );
+    const input = startInput("start-tampered-frozen-recovery-0001");
+    const abandoned = harness.service.startSession(input);
+    void abandoned.catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(harness.conversation.markGenerating).toHaveBeenCalledTimes(1);
+    });
+    harness.expireTurn(uuid(201));
+    harness.tamperFrozenServiceContext(uuid(201), {
+      projectId: uuid(999),
+    });
+
+    await expect(harness.service.startSession(input)).rejects.toMatchObject({
+      code: "conversation_failed",
+      retryable: true,
+      sourceTurnId: uuid(202),
+    });
+    expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(1);
+    expect(harness.conversation.failTurn).toHaveBeenLastCalledWith(
+      actor,
+      uuid(202),
+      expect.objectContaining({ errorCode: "settlement_retry_setup_failed" }),
+    );
+  });
+
+  it("fails closed when a recovery successor is terminal without a durable draft", async () => {
+    for (const terminalStatus of ["completed", "failed"] as const) {
+      const recoveryGateway = deferred();
+      const harness = createHarness(
+        [clarificationOutput("Abandoned recovery.", "confirm_rate")],
+        { gatewayGates: [recoveryGateway.promise] },
+      );
+      const input = startInput(`start-${terminalStatus}-without-draft-0001`);
+      const source = await harness.conversation.acceptTurn(
+        actor,
+        CONVERSATION_ID,
+        {
+          content: input.promptText,
+          mode: "fast",
+          clientRequestId: input.clientRequestId,
+          attachments: [],
+        },
+      );
+      harness.expireTurn(source.turnId);
+      const abandoned = harness.service.startSession(input);
+      void abandoned.catch(() => undefined);
+      await vi.waitFor(() => {
+        expect(harness.conversation.markGenerating).toHaveBeenCalledTimes(1);
+      });
+      const history = await harness.conversation.getHistory(
+        actor,
+        CONVERSATION_ID,
+      );
+      const successor = history.turns.find(
+        (turn) => turn.retryOfTurnId === source.turnId,
+      );
+      if (!successor?.contextSnapshot) {
+        throw new Error("recovery successor snapshot is missing");
+      }
+      if (terminalStatus === "completed") {
+        harness.transitionTurnForTest(successor.id, "completed", {
+          providerName: "deterministic",
+          content: "Orphaned completed recovery.",
+          aiInvocationId: null,
+          metadata: {
+            contextSnapshotVersion: successor.contextSnapshot.version,
+            contextSummaryVersion: successor.contextSnapshot.summaryVersion,
+            contextMessageIds: [...successor.contextSnapshot.messageIds],
+            settlementIdempotencyKey: frozenRetryDraftIdempotencyKey(
+              history,
+              successor.id,
+            ),
+            settlementInitialStatus: "clarifying",
+          },
+        });
+      } else {
+        harness.transitionTurnForTest(successor.id, "failed", undefined, {
+          errorCode: "settlement_recovery_failed",
+          retryable: true,
+        });
+      }
+
+      await expect(harness.service.startSession(input)).rejects.toMatchObject({
+        code: "conversation_failed",
+        retryable: false,
+        sourceTurnId: successor.id,
+      });
+      const finalHistory = await harness.conversation.getHistory(
+        actor,
+        CONVERSATION_ID,
+      );
+      expect(
+        finalHistory.turns.filter(
+          (turn) => turn.retryOfTurnId === source.turnId,
+        ),
+      ).toHaveLength(1);
+      expect(
+        harness.events.filter((event) => event === "gateway.execute"),
+      ).toHaveLength(1);
+    }
   });
 
   it("replays a failed initial draft as a failure and rejects prompts over 4000 before AI", async () => {
@@ -992,27 +1351,20 @@ describe("custom rule authoring service", () => {
         clientRequestId: "persisted-revise-stale-retry-0001",
       }),
     ).rejects.toMatchObject({ code: "stale_revision", retryable: false });
-    expect(harness.conversation.failTurn).toHaveBeenLastCalledWith(
-      actor,
-      uuid(203),
-      expect.objectContaining({
-        errorCode: "settlement_post_open_validation_failed",
-        retryable: false,
-      }),
-    );
+    expect(harness.conversation.failTurn).not.toHaveBeenCalled();
     expect(harness.repository.createDraftCalls).toHaveLength(2);
     expect(
       harness.events.filter((event) => event === "gateway.execute"),
     ).toHaveLength(2);
   });
 
-  it("returns reconciliation failure when post-open stale compensation cannot persist", async () => {
+  it("rejects a completed retry semantic mismatch without compensating its nonowned successor", async () => {
     const harness = createHarness(
       [
         { providerFailure: true },
         clarificationOutput("Confirm the final contract?", "confirm_contract"),
       ],
-      { persistFailedRevisions: true, failFailTurn: true },
+      { persistFailedRevisions: true },
     );
     const previous = harness.repository.seedDraft(clarifyingDraft());
     const failed = await harness.service.answerOrRevise({
@@ -1042,10 +1394,11 @@ describe("custom rule authoring service", () => {
         clientRequestId: "post-open-reconciliation-failure-0001",
       }),
     ).rejects.toMatchObject({
-      code: "conversation_reconciliation_failed",
+      code: "stale_revision",
       retryable: false,
-      sourceTurnId: uuid(203),
+      sourceTurnId: uuid(202),
     });
+    expect(harness.conversation.failTurn).not.toHaveBeenCalled();
   });
 
   it("retries a failed confirmation provider turn from frozen context and runs AI only once more", async () => {
@@ -1350,12 +1703,15 @@ describe("custom rule authoring service", () => {
     const prepareCallsBeforeDuplicate = vi.mocked(
       duplicateStart.conversation.prepareTurn,
     ).mock.calls.length;
-    await expect(
-      duplicateStart.service.startSession(input),
-    ).rejects.toMatchObject({
-      code: "conversation_failed",
-      retryable: true,
-      sourceTurnId: uuid(201),
+    const duplicate = await duplicateStart.service.startSession(input);
+    expect(duplicate).toMatchObject({
+      ok: true,
+      kind: "retry_in_progress",
+      turn: {
+        turnId: uuid(201),
+        status: "generating",
+        duplicate: true,
+      },
     });
     expect(duplicateStart.conversation.prepareTurn).toHaveBeenCalledTimes(
       prepareCallsBeforeDuplicate,
@@ -2489,6 +2845,7 @@ function createHarness(
     retryTerminalCompletion?: SettlementAiTurnCompletionInput;
     retryContextSnapshot?: ConversationContextSnapshot;
     gatewayGate?: Promise<void>;
+    gatewayGates?: Array<Promise<void> | undefined>;
     retryConversationMismatch?: boolean;
   } = {},
 ) {
@@ -2504,6 +2861,11 @@ function createHarness(
     string,
     Awaited<ReturnType<SettlementConversationPort["acceptTurn"]>>
   >();
+  const retryRequests = new Map<
+    string,
+    Awaited<ReturnType<SettlementConversationPort["retryTurn"]>>
+  >();
+  const retrySuccessors = new Map<string, string>();
   const turns = new Map<string, StoredConversationTurn>();
   const messages = new Map<string, AiConversationMessageDto>();
   messages.set(RETRY_CONTEXT_MESSAGE_IDS[0], {
@@ -2679,9 +3041,14 @@ function createHarness(
       events.push("conversation.acceptTurn");
       const existing = acceptedRequests.get(command.clientRequestId);
       if (existing) {
+        const current = turns.get(existing.turnId);
         const duplicate: Awaited<
           ReturnType<SettlementConversationPort["acceptTurn"]>
-        > = { ...existing, status: "accepted", duplicate: true };
+        > = {
+          ...existing,
+          status: current?.status ?? existing.status,
+          duplicate: true,
+        };
         return duplicate;
       }
       acceptedContent = command.content;
@@ -2709,8 +3076,35 @@ function createHarness(
     }),
     retryTurn: vi.fn(async (_actor, sourceTurnId, command) => {
       events.push("conversation.retryTurn");
-      void command;
       const source = requireRetrySource(sourceTurnId);
+      const requestKey = `${sourceTurnId}:${command.clientRequestId}`;
+      const requested = retryRequests.get(requestKey);
+      const successorId = retrySuccessors.get(sourceTurnId);
+      const existing = requested ??
+        (successorId
+          ? (() => {
+              const turn = turns.get(successorId);
+              return turn
+                ? {
+                    conversationId: turn.conversationId,
+                    turnId: turn.id,
+                    userMessageId: turn.userMessageId,
+                    assistantMessageId: turn.assistantMessageId,
+                    status: turn.status,
+                    attempt: turn.attempt,
+                    duplicate: false,
+                  }
+                : undefined;
+            })()
+          : undefined);
+      if (existing) {
+        const current = turns.get(existing.turnId);
+        return {
+          ...existing,
+          status: current?.status ?? existing.status,
+          duplicate: true,
+        };
+      }
       turnNumber += 1;
       const turnId = uuid(200 + turnNumber);
       retrySources.set(turnId, sourceTurnId);
@@ -2725,6 +3119,14 @@ function createHarness(
         attempt: source.attempt + 1,
         duplicate: options.retryTurnDuplicate ?? false,
       };
+      const sourceAssistant = messages.get(source.assistantMessageId);
+      if (sourceAssistant?.status === "failed") {
+        messages.set(sourceAssistant.id, {
+          ...sourceAssistant,
+          status: "superseded",
+          updatedAt: "2026-07-12T00:00:01.000Z",
+        });
+      }
       registerTurn({
         turnId: result.turnId,
         userMessageId: result.userMessageId,
@@ -2741,6 +3143,8 @@ function createHarness(
       ) {
         transitionTurn(turnId, "completed", options.retryTerminalCompletion);
       }
+      retryRequests.set(requestKey, result);
+      retrySuccessors.set(sourceTurnId, turnId);
       return result;
     }),
     prepareTurn: vi.fn(async (_actor, turnId) => {
@@ -2752,11 +3156,27 @@ function createHarness(
       if (!turn) throw new Error("prepared fixture turn is missing");
       const sourceTurnId = retrySources.get(turnId);
       if (sourceTurnId) {
-        const frozen = capturedSnapshots.get(sourceTurnId);
-        if (!frozen?.gatewayContext) {
-          throw new Error("retry source has no frozen gateway context");
-        }
+        const frozen = turn.contextSnapshot ?? capturedSnapshots.get(sourceTurnId);
         transitionTurn(turnId, "grounding");
+        if (!frozen?.gatewayContext) {
+          const source = turns.get(sourceTurnId);
+          if (!source) throw new Error("retry source fixture is missing");
+          const sourceMessage = messages.get(source.userMessageId);
+          if (!sourceMessage) throw new Error("retry source message is missing");
+          return {
+            turn: structuredClone(turn),
+            messages: [
+              { role: "user" as const, content: sourceMessage.content },
+            ],
+            snapshot: frozen ?? {
+              version: 1,
+              summaryVersion: 0,
+              messageIds: [source.userMessageId],
+              groundingRefs: [],
+              assembledAt: "2026-07-12T00:00:00.000Z",
+            },
+          };
+        }
         return {
           turn: structuredClone(turn),
           messages: frozen.gatewayContext.messages,
@@ -2830,10 +3250,14 @@ function createHarness(
   };
 
   const queue = [...outputs];
+  const gatewayGates = [...(options.gatewayGates ?? [])];
   const gateway: SettlementStructuredGateway = async () => {
     events.push("gateway.execute");
-    if (options.gatewayGate) await options.gatewayGate;
     const output = queue.shift();
+    const gate = gatewayGates.length
+      ? gatewayGates.shift()
+      : options.gatewayGate;
+    if (gate) await gate;
     if (!output || "providerFailure" in output) {
       return gatewayResult(undefined, {
         status: "failed",
@@ -2875,12 +3299,14 @@ function createHarness(
     conversation,
     ai: {
       prepare(input) {
+        events.push("ai.prepare");
         if (options.acceptedSetupFailure === "ai_prepare") {
           throw new Error("raw-secret-provider-body");
         }
         return adapter.prepare(input);
       },
       restore(context) {
+        events.push("ai.restore");
         if (options.acceptedSetupFailure === "ai_restore") {
           throw new Error("raw-secret-provider-body");
         }
@@ -2909,6 +3335,54 @@ function createHarness(
     events,
     seedConversationMessage(message: AiConversationMessageDto) {
       messages.set(message.id, structuredClone(message));
+    },
+    expireTurn(turnId: string) {
+      transitionTurn(turnId, "failed", undefined, {
+        errorCode: "turn_lease_expired",
+        retryable: true,
+      });
+    },
+    transitionTurnForTest(
+      turnId: string,
+      status: AiConversationTurnDto["status"],
+      completion?: SettlementAiTurnCompletionInput,
+      failure?: { errorCode: string; retryable: boolean },
+    ) {
+      transitionTurn(turnId, status, completion, failure);
+    },
+    tamperFrozenServiceContext(
+      turnId: string,
+      patch: Record<string, unknown>,
+    ) {
+      const turn = turns.get(turnId);
+      const snapshot = turn?.contextSnapshot;
+      const gatewayContext = snapshot?.gatewayContext;
+      const serviceContext =
+        gatewayContext?.invocationMetadata.settlementServiceRetryContext;
+      if (
+        !turn ||
+        !snapshot ||
+        !gatewayContext ||
+        typeof serviceContext !== "object" ||
+        serviceContext === null
+      ) {
+        throw new Error("frozen service context fixture is missing");
+      }
+      const tampered = {
+        ...snapshot,
+        gatewayContext: {
+          ...gatewayContext,
+          invocationMetadata: {
+            ...gatewayContext.invocationMetadata,
+            settlementServiceRetryContext: {
+              ...serviceContext,
+              ...patch,
+            },
+          },
+        },
+      };
+      turns.set(turnId, { ...turn, contextSnapshot: structuredClone(tampered) });
+      capturedSnapshots.set(turnId, structuredClone(tampered));
     },
   };
 }
@@ -3309,6 +3783,7 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
       retryTerminalCompletion?: SettlementAiTurnCompletionInput;
       retryContextSnapshot?: ConversationContextSnapshot;
       gatewayGate?: Promise<void>;
+      gatewayGates?: Array<Promise<void> | undefined>;
       retryConversationMismatch?: boolean;
     },
     private readonly transitionTurn: (

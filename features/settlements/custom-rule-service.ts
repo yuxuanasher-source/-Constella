@@ -378,6 +378,11 @@ const frozenServiceRetryContextSchema: z.ZodType<FrozenServiceRetryContext> =
     simulationSelection: simulationSelectionSchema.nullable(),
   });
 
+const leaseExpiredMessageMetadataSchema = z.object({
+  errorCode: z.literal("turn_lease_expired"),
+  retryable: z.literal(true),
+});
+
 type OpenedAiTurn = {
   turnTrace: SettlementAiTurnTrace;
   prepared: PreparedSettlementAiRequest;
@@ -397,6 +402,16 @@ type OpenRetryTurnResult =
         | CustomRuleRetryInProgress
         | CustomRuleRetryReadback
         | CustomRuleRetryFailed;
+    };
+
+type OpenStartTurnResult =
+  | { kind: "opened"; opened: OpenedAiTurn }
+  | {
+      kind: "result";
+      result:
+        | CustomRuleClarifyingSuccess
+        | CustomRuleAiTransitionFailure
+        | CustomRuleRetryInProgress;
     };
 
 type ContractReadyDraft = Extract<
@@ -444,11 +459,14 @@ export function createCustomRuleAuthoringService(
           false,
         );
       }
-      const catalog = await loadCatalog(
-        dependencies.catalog,
+      const opened = await openStartAiTurn({
+        dependencies,
         scope,
-        input.seedContract,
-      );
+        currentContract: input.seedContract,
+        currentAmbiguities: input.initialAmbiguities,
+        draftIdempotencyKey: idempotencyKey,
+      });
+      if (opened.kind === "result") return opened.result;
       return runClarifyingTransition({
         dependencies,
         persistFailedRevisions,
@@ -456,10 +474,11 @@ export function createCustomRuleAuthoringService(
         scope,
         currentContract: input.seedContract,
         currentAmbiguities: input.initialAmbiguities,
-        catalog,
+        catalog: opened.opened.prepared.catalog,
         idempotencyKey,
         expectedRevisionNumber: 1,
         expectedDraftId: null,
+        opened: opened.opened,
       });
     },
 
@@ -1772,6 +1791,586 @@ function isActiveConversationTurnStatus(
   );
 }
 
+async function openStartAiTurn(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  currentContract: BusinessRuleContract;
+  currentAmbiguities: SettlementAiUnresolvedAmbiguity[];
+  draftIdempotencyKey: string;
+}): Promise<OpenStartTurnResult> {
+  let accepted: CreatedConversationTurn;
+  try {
+    accepted = await input.dependencies.conversation.acceptTurn(
+      input.scope.actor,
+      input.scope.conversationId,
+      {
+        content: input.scope.promptText,
+        mode: "fast",
+        clientRequestId: input.scope.clientRequestId,
+        attachments: [],
+      },
+    );
+  } catch (error) {
+    throw serviceError(
+      "conversation_failed",
+      "generic conversation turn could not be accepted",
+      true,
+      error,
+    );
+  }
+
+  let observed: ObservedConversationTurn;
+  try {
+    observed = await observeReturnedTurn(
+      input.dependencies.conversation,
+      input.scope.actor,
+      input.scope.conversationId,
+      accepted,
+    );
+  } catch (error) {
+    if (accepted.duplicate) {
+      throw serviceError(
+        "conversation_failed",
+        "Duplicate generic start turn could not be read back.",
+        false,
+        error,
+        accepted.turnId,
+      );
+    }
+    return rejectAcceptedTurn(
+      input.dependencies.conversation,
+      input.scope.actor,
+      accepted,
+      "settlement_turn_setup_failed",
+      "Settlement authoring turn setup failed.",
+    );
+  }
+
+  if (!accepted.duplicate) {
+    const catalog = await loadCatalogAfterAcceptedTurn({
+      dependencies: input.dependencies,
+      scope: input.scope,
+      accepted,
+      contract: input.currentContract,
+    });
+    return {
+      kind: "opened",
+      opened: await prepareFreshAcceptedAiTurn({
+        dependencies: input.dependencies,
+        scope: input.scope,
+        action: "clarify",
+        contractConfirmed: false,
+        currentContract: input.currentContract,
+        currentAmbiguities: input.currentAmbiguities,
+        catalog,
+        serviceRetryContext: createServiceRetryContext({
+          action: "clarify",
+          scope: input.scope,
+          idempotencyKey: input.draftIdempotencyKey,
+          expectedRevisionNumber: 1,
+          expectedDraftId: null,
+          expectedContractHash: hashCustomRuleContract(input.currentContract),
+          expectedCatalogVersion: catalog.version,
+        }),
+        accepted,
+        observed,
+      }),
+    };
+  }
+
+  const drafts = await listScopedDrafts(
+    input.dependencies.repository,
+    input.scope,
+  );
+  const replay = drafts.find(
+    (draft) => draft.idempotencyKey === input.draftIdempotencyKey,
+  );
+  if (replay) {
+    return {
+      kind: "result",
+      result:
+        replay.initialStatus === "failed"
+          ? replayFailure(replay)
+          : replayClarifying(replay, drafts),
+    };
+  }
+  if (drafts.length > 0) {
+    throw serviceError(
+      "invalid_transition",
+      "conversation already owns a settlement authoring session",
+      false,
+    );
+  }
+  if (isActiveConversationTurnStatus(observed.turn.status)) {
+    return {
+      kind: "result",
+      result: startTurnInProgress(input.scope, accepted, observed.turn),
+    };
+  }
+  if (!isVerifiedExpiredStartDuplicate(input, accepted, observed)) {
+    throw serviceError(
+      "conversation_failed",
+      "Terminal generic start turn cannot be recovered automatically.",
+      false,
+      undefined,
+      accepted.turnId,
+    );
+  }
+  return openExpiredStartRecovery({ ...input, source: observed });
+}
+
+async function loadCatalogAfterAcceptedTurn(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  accepted: CreatedConversationTurn;
+  contract: BusinessRuleContract;
+}): Promise<CustomRuleVariableCatalog> {
+  try {
+    return await loadCatalog(
+      input.dependencies.catalog,
+      input.scope,
+      input.contract,
+    );
+  } catch (error) {
+    try {
+      await input.dependencies.conversation.failTurn(
+        input.scope.actor,
+        input.accepted.turnId,
+        {
+          errorCode: "settlement_catalog_failed",
+          errorSummary: "Settlement catalog could not be loaded.",
+          retryable: true,
+        },
+      );
+    } catch (reconciliationError) {
+      throw serviceError(
+        "conversation_reconciliation_failed",
+        "Accepted settlement turn could not be reconciled after catalog failure.",
+        false,
+        reconciliationError,
+        input.accepted.turnId,
+      );
+    }
+    if (error instanceof CustomRuleAuthoringServiceError) {
+      throw serviceError(
+        error.code,
+        error.message,
+        error.retryable,
+        error,
+        input.accepted.turnId,
+        "owned_settled",
+      );
+    }
+    throw serviceError(
+      "catalog_failed",
+      "project variable catalog is unavailable",
+      true,
+      error,
+      input.accepted.turnId,
+      "owned_settled",
+    );
+  }
+}
+
+function startTurnInProgress(
+  scope: ScopedTransition,
+  returned: CreatedConversationTurn,
+  observed: SettlementConversationTurn,
+): CustomRuleRetryInProgress {
+  if (!isActiveConversationTurnStatus(observed.status)) {
+    throw new Error("start progress requires an active turn");
+  }
+  return Object.freeze({
+    ok: true,
+    kind: "retry_in_progress",
+    conversationId: scope.conversationId,
+    turn: {
+      ...retryTurnDto(returned, observed),
+      status: observed.status,
+    },
+  });
+}
+
+function isVerifiedExpiredStartDuplicate(
+  input: {
+    scope: ScopedTransition;
+  },
+  returned: CreatedConversationTurn,
+  observed: ObservedConversationTurn,
+): boolean {
+  const user = observed.history.messages.find(
+    (message) => message.id === returned.userMessageId,
+  );
+  const assistant = observed.history.messages.find(
+    (message) => message.id === returned.assistantMessageId,
+  );
+  const failureMetadata = leaseExpiredMessageMetadataSchema.safeParse(
+    assistant?.metadata,
+  );
+  return Boolean(
+    returned.duplicate &&
+    returned.status === "failed" &&
+    observed.turn.status === "failed" &&
+    observed.turn.errorCode === "turn_lease_expired" &&
+    observed.turn.retryable &&
+    observed.turn.attempt === 1 &&
+    observed.turn.retryOfTurnId === null &&
+    observed.turn.regenerateOfTurnId === null &&
+    user &&
+    user.conversationId === input.scope.conversationId &&
+    user.role === "user" &&
+    user.status === "completed" &&
+    user.parentMessageId === null &&
+    user.content === input.scope.promptText.trim() &&
+    assistant &&
+    assistant.conversationId === input.scope.conversationId &&
+    assistant.role === "assistant" &&
+    (assistant.status === "failed" || assistant.status === "superseded") &&
+    assistant.parentMessageId === returned.userMessageId &&
+    failureMetadata.success
+  );
+}
+
+async function openExpiredStartRecovery(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  currentContract: BusinessRuleContract;
+  currentAmbiguities: SettlementAiUnresolvedAmbiguity[];
+  draftIdempotencyKey: string;
+  source: ObservedConversationTurn;
+}): Promise<OpenStartTurnResult> {
+  const sourceTurnId = input.source.turn.id;
+  let accepted: CreatedConversationTurn;
+  try {
+    accepted = await input.dependencies.conversation.retryTurn(
+      input.scope.actor,
+      sourceTurnId,
+      {
+        clientRequestId: startRecoveryTurnIdempotencyKey(
+          input.scope,
+          sourceTurnId,
+        ),
+      },
+    );
+  } catch (error) {
+    throw serviceError(
+      "conversation_failed",
+      "expired settlement start recovery could not be accepted",
+      true,
+      error,
+      sourceTurnId,
+    );
+  }
+
+  let observed: ObservedConversationTurn;
+  try {
+    observed = await observeReturnedTurn(
+      input.dependencies.conversation,
+      input.scope.actor,
+      input.scope.conversationId,
+      accepted,
+      sourceTurnId,
+    );
+  } catch (error) {
+    if (accepted.duplicate) {
+      throw serviceError(
+        "conversation_failed",
+        "Duplicate settlement start recovery could not be read back.",
+        false,
+        error,
+        accepted.turnId,
+      );
+    }
+    return rejectAcceptedTurn(
+      input.dependencies.conversation,
+      input.scope.actor,
+      accepted,
+      "settlement_retry_setup_failed",
+      "Settlement authoring retry setup failed.",
+    );
+  }
+  if (accepted.conversationId !== input.scope.conversationId) {
+    if (accepted.duplicate) {
+      throw serviceError(
+        "conversation_failed",
+        "Duplicate settlement start recovery returned a mismatched conversation.",
+        false,
+        undefined,
+        accepted.turnId,
+      );
+    }
+    return rejectAcceptedTurn(
+      input.dependencies.conversation,
+      input.scope.actor,
+      accepted,
+      "settlement_retry_setup_failed",
+      "Settlement authoring retry setup failed.",
+    );
+  }
+  if (isActiveConversationTurnStatus(observed.turn.status)) {
+    if (accepted.duplicate || observed.turn.status !== "accepted") {
+      return {
+        kind: "result",
+        result: startTurnInProgress(input.scope, accepted, observed.turn),
+      };
+    }
+  } else if (
+    observed.turn.status === "completed" ||
+    observed.turn.status === "failed"
+  ) {
+    return {
+      kind: "result",
+      result: await readStartRecoveryArtifact({
+        ...input,
+        accepted,
+        sourceTurnId,
+        terminalStatus: observed.turn.status,
+      }),
+    };
+  } else {
+    throw serviceError(
+      "conversation_failed",
+      "Settlement start recovery reached an unsupported terminal state.",
+      false,
+      undefined,
+      accepted.turnId,
+    );
+  }
+
+  if (
+    accepted.duplicate ||
+    accepted.status !== "accepted" ||
+    observed.turn.status !== "accepted"
+  ) {
+    throw serviceError(
+      "conversation_failed",
+      "Settlement start recovery is not available for execution.",
+      false,
+      undefined,
+      accepted.turnId,
+    );
+  }
+
+  if (input.source.turn.contextSnapshot?.gatewayContext) {
+    return {
+      kind: "opened",
+      opened: await prepareFrozenStartRecovery({
+        ...input,
+        accepted,
+        observed,
+        sourceTurnId,
+      }),
+    };
+  }
+  const catalog = await loadCatalogAfterAcceptedTurn({
+    dependencies: input.dependencies,
+    scope: input.scope,
+    accepted,
+    contract: input.currentContract,
+  });
+  return {
+    kind: "opened",
+    opened: await prepareFreshAcceptedAiTurn({
+      dependencies: input.dependencies,
+      scope: input.scope,
+      action: "clarify",
+      contractConfirmed: false,
+      currentContract: input.currentContract,
+      currentAmbiguities: input.currentAmbiguities,
+      catalog,
+      serviceRetryContext: createServiceRetryContext({
+        action: "clarify",
+        scope: input.scope,
+        idempotencyKey: input.draftIdempotencyKey,
+        expectedRevisionNumber: 1,
+        expectedDraftId: null,
+        expectedContractHash: hashCustomRuleContract(input.currentContract),
+        expectedCatalogVersion: catalog.version,
+      }),
+      accepted,
+      observed,
+    }),
+  };
+}
+
+async function prepareFrozenStartRecovery(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  currentContract: BusinessRuleContract;
+  currentAmbiguities: SettlementAiUnresolvedAmbiguity[];
+  draftIdempotencyKey: string;
+  source: ObservedConversationTurn;
+  sourceTurnId: string;
+  accepted: CreatedConversationTurn;
+  observed: ObservedConversationTurn;
+}): Promise<OpenedAiTurn> {
+  try {
+    const preparedTurn = await input.dependencies.conversation.prepareTurn(
+      input.scope.actor,
+      input.accepted.turnId,
+    );
+    const gatewayContext = preparedTurn.snapshot.gatewayContext;
+    if (!gatewayContext) {
+      throw new Error("frozen settlement start recovery context is missing");
+    }
+    const serviceContextResult = frozenServiceRetryContextSchema.safeParse(
+      gatewayContext.invocationMetadata.settlementServiceRetryContext,
+    );
+    if (!serviceContextResult.success) {
+      throw new Error("frozen settlement start service context is invalid");
+    }
+    const serviceRetryContext = serviceContextResult.data;
+    const contractHash = hashCustomRuleContract(input.currentContract);
+    if (
+      serviceRetryContext.action !== "clarify" ||
+      serviceRetryContext.organizationId !== input.scope.actor.organizationId ||
+      serviceRetryContext.actorId !== input.scope.actor.userId ||
+      serviceRetryContext.projectId !== input.scope.projectId ||
+      serviceRetryContext.conversationId !== input.scope.conversationId ||
+      serviceRetryContext.promptText !== input.scope.promptText ||
+      serviceRetryContext.draftIdempotencyKey !== input.draftIdempotencyKey ||
+      serviceRetryContext.expectedRevisionNumber !== 1 ||
+      serviceRetryContext.expectedDraftId !== null ||
+      serviceRetryContext.expectedContractHash !== contractHash ||
+      serviceRetryContext.expectedCatalogVersion === null ||
+      serviceRetryContext.expectedFormulaHash !== null ||
+      serviceRetryContext.expectedEvidenceHash !== null ||
+      serviceRetryContext.expectedDataSelectionHash !== null ||
+      serviceRetryContext.simulationSelection !== null
+    ) {
+      throw new Error("frozen settlement start service context mismatch");
+    }
+    const prepared = input.dependencies.ai.restore(
+      gatewayContext.invocationMetadata.settlementAiRetryContext,
+    );
+    if (
+      prepared.action !== "clarify" ||
+      prepared.contractConfirmed ||
+      hashCustomRuleContract(prepared.currentContract) !== contractHash ||
+      canonicalJson(prepared.currentContract) !==
+        canonicalJson(input.currentContract) ||
+      prepared.catalog.version !== serviceRetryContext.expectedCatalogVersion ||
+      gatewayContext.lastUserMessage !== input.scope.promptText ||
+      gatewayContext.invocationMetadata.promptHash !== prepared.promptHash ||
+      gatewayContext.invocationMetadata.contextHash !== prepared.contextHash ||
+      canonicalJson(preparedTurn.messages) !==
+        canonicalJson(gatewayContext.messages) ||
+      canonicalJson(prepared.request.messages) !==
+        canonicalJson(gatewayContext.messages)
+    ) {
+      throw new Error("frozen settlement start AI context mismatch");
+    }
+    await input.dependencies.conversation.markGenerating(
+      input.scope.actor,
+      input.accepted.turnId,
+      input.dependencies.primaryProvider,
+    );
+    return {
+      turnTrace: {
+        turnId: input.accepted.turnId,
+        userMessageId: input.accepted.userMessageId,
+        assistantMessageId: input.accepted.assistantMessageId,
+      },
+      prepared,
+      snapshot: {
+        version: preparedTurn.snapshot.version,
+        summaryVersion: preparedTurn.snapshot.summaryVersion,
+        messageIds: [...preparedTurn.snapshot.messageIds],
+      },
+      serviceRetryContext,
+    };
+  } catch {
+    return rejectAcceptedTurn(
+      input.dependencies.conversation,
+      input.scope.actor,
+      input.accepted,
+      "settlement_retry_setup_failed",
+      "Settlement authoring retry setup failed.",
+    );
+  }
+}
+
+async function readStartRecoveryArtifact(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  draftIdempotencyKey: string;
+  accepted: CreatedConversationTurn;
+  sourceTurnId: string;
+  terminalStatus: "completed" | "failed";
+}): Promise<CustomRuleClarifyingSuccess | CustomRuleAiTransitionFailure> {
+  let previousFingerprint: string | null = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const [drafts, observed] = await Promise.all([
+      listScopedDrafts(input.dependencies.repository, input.scope),
+      observeReturnedTurn(
+        input.dependencies.conversation,
+        input.scope.actor,
+        input.scope.conversationId,
+        input.accepted,
+        input.sourceTurnId,
+      ),
+    ]);
+    const draft = retryDomainDraft(drafts, input.accepted);
+    if (draft) {
+      if (
+        draft.idempotencyKey !== input.draftIdempotencyKey ||
+        draft.revisionNumber !== 1
+      ) {
+        throw serviceError(
+          "conversation_failed",
+          "Settlement start recovery artifact does not match its operation.",
+          false,
+          undefined,
+          input.accepted.turnId,
+        );
+      }
+      if (
+        input.terminalStatus === "completed" &&
+        draft.initialStatus === "clarifying" &&
+        draft.status === "clarifying"
+      ) {
+        requireMatchingCompletedRetry(
+          observed,
+          input.accepted,
+          input.sourceTurnId,
+          draft,
+        );
+        return replayClarifying(draft, drafts);
+      }
+      if (
+        input.terminalStatus === "failed" &&
+        draft.initialStatus === "failed" &&
+        draft.status === "failed"
+      ) {
+        return replayFailure(draft);
+      }
+      throw serviceError(
+        "conversation_failed",
+        "Settlement start recovery terminal state conflicts with its artifact.",
+        false,
+        undefined,
+        input.accepted.turnId,
+      );
+    }
+    const assistant = observed.history.messages.find(
+      (message) => message.id === input.accepted.assistantMessageId,
+    );
+    const fingerprint = canonicalJson({
+      assistant: assistant ?? null,
+      terminalStatus: observed.turn.status,
+    });
+    if (fingerprint === previousFingerprint) break;
+    previousFingerprint = fingerprint;
+  }
+  throw serviceError(
+    "conversation_failed",
+    "Terminal settlement start recovery has no durable draft.",
+    false,
+    undefined,
+    input.accepted.turnId,
+  );
+}
+
 async function openAiTurn(input: {
   dependencies: ServiceDependencies;
   scope: ScopedTransition;
@@ -1831,11 +2430,32 @@ async function openAiTurn(input: {
   if (accepted.duplicate) {
     duplicateTurnConflict(accepted, observed.turn);
   }
+  return prepareFreshAcceptedAiTurn({
+    ...input,
+    accepted,
+    observed,
+  });
+}
+
+async function prepareFreshAcceptedAiTurn(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  action: "clarify" | "revise" | "confirm";
+  contractConfirmed: boolean;
+  currentContract: BusinessRuleContract;
+  currentAmbiguities: SettlementAiUnresolvedAmbiguity[];
+  catalog: CustomRuleVariableCatalog;
+  serviceRetryContext: FrozenServiceRetryContext;
+  accepted: CreatedConversationTurn;
+  observed: ObservedConversationTurn;
+}): Promise<OpenedAiTurn> {
+  const { accepted } = input;
   try {
     if (
       accepted.conversationId !== input.scope.conversationId ||
+      accepted.duplicate ||
       accepted.status !== "accepted" ||
-      observed.turn.status !== "accepted"
+      input.observed.turn.status !== "accepted"
     ) {
       throw new Error("accepted conversation turn scope or status mismatch");
     }
@@ -2026,6 +2646,12 @@ async function openRetryTurn(
       input.sourceTurnId,
       draft,
     );
+    requireMatchingManualRetrySemanticKey(
+      observed,
+      drafts,
+      input,
+      draft,
+    );
     return {
       kind: "result",
       result: Object.freeze({
@@ -2147,6 +2773,52 @@ async function openRetryTurn(
       accepted,
       "settlement_retry_setup_failed",
       "Settlement authoring retry setup failed.",
+    );
+  }
+}
+
+function requireMatchingManualRetrySemanticKey(
+  observed: ObservedConversationTurn,
+  drafts: CustomRuleDraft[],
+  input: RetryCustomRuleTurnInput,
+  draft: CustomRuleDraft,
+): void {
+  const sourceFailedDraft = drafts.find(
+    (candidate) =>
+      candidate.turnTrace.turnId === input.sourceTurnId &&
+      candidate.initialStatus === "failed",
+  );
+  if (!sourceFailedDraft) return;
+  const source = observed.history.turns.find(
+    (turn) => turn.id === input.sourceTurnId,
+  );
+  const serviceContextResult = frozenServiceRetryContextSchema.safeParse(
+    source?.contextSnapshot?.gatewayContext?.invocationMetadata
+      .settlementServiceRetryContext,
+  );
+  if (!source || !serviceContextResult.success) {
+    throw serviceError(
+      "conversation_failed",
+      "completed retry source context is unavailable",
+      false,
+      undefined,
+      draft.turnTrace.turnId,
+    );
+  }
+  const expectedKey = retryDraftIdempotencyKey(
+    serviceContextResult.data.draftIdempotencyKey,
+    input.sourceTurnId,
+    input.clientRequestId,
+  );
+  if (draft.idempotencyKey !== expectedKey) {
+    throw serviceError(
+      serviceContextResult.data.action === "confirm"
+        ? "invalid_transition"
+        : "stale_revision",
+      "retry request does not match the completed semantic successor",
+      false,
+      undefined,
+      draft.turnTrace.turnId,
     );
   }
 }
@@ -3533,6 +4205,21 @@ function retryDraftIdempotencyKey(
 ): string {
   return `settlement-retry:${sha256(
     canonicalJson({ clientRequestId, originalIdempotencyKey, sourceTurnId }),
+  )}`;
+}
+
+function startRecoveryTurnIdempotencyKey(
+  scope: ScopedTransition,
+  sourceTurnId: string,
+): string {
+  return `settlement-start-recovery:${sha256(
+    canonicalJson({
+      clientRequestId: scope.clientRequestId,
+      conversationId: scope.conversationId,
+      organizationId: scope.actor.organizationId,
+      projectId: scope.projectId,
+      sourceTurnId,
+    }),
   )}`;
 }
 
