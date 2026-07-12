@@ -674,6 +674,56 @@ describe("Xingyao conversation service", () => {
     expect(prepared.snapshot).toEqual(snapshot);
   });
 
+  it("restores a canonical frozen retry snapshot with a positive version above one", async () => {
+    const snapshot = {
+      ...frozenSnapshot(trustedGatewayContext()),
+      version: 11,
+      summaryVersion: 5,
+    };
+    const store = persistence({
+      getTurn: vi
+        .fn()
+        .mockResolvedValue(storedTurn({ contextSnapshot: snapshot })),
+    });
+    const service = createConversationService(store);
+
+    const prepared = await service.prepareTurn(actor, "turn-1");
+
+    expect(store.listMessages).not.toHaveBeenCalled();
+    expect(prepared.snapshot).toEqual(snapshot);
+    expect(store.transitionTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        from: "accepted",
+        to: "grounding",
+        patch: expect.objectContaining({ contextSnapshot: snapshot }),
+      }),
+    );
+  });
+
+  it.each([
+    { name: "zero", version: 0 },
+    { name: "negative", version: -1 },
+    { name: "fractional", version: 1.5 },
+    { name: "NaN", version: Number.NaN },
+    { name: "non-number", version: "11" },
+  ])("rejects a frozen snapshot with a $name version", async ({ version }) => {
+    const snapshot = {
+      ...frozenSnapshot(trustedGatewayContext()),
+      version,
+    } as unknown as NonNullable<StoredConversationTurn["contextSnapshot"]>;
+    const store = persistence({
+      getTurn: vi
+        .fn()
+        .mockResolvedValue(storedTurn({ contextSnapshot: snapshot })),
+    });
+    const service = createConversationService(store);
+
+    await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
+      code: "turn_state_conflict",
+    });
+    expect(store.transitionTurn).not.toHaveBeenCalled();
+  });
+
   it("refuses to commit punctuation-only assistant content", async () => {
     const store = persistence();
     const service = createConversationService(store);

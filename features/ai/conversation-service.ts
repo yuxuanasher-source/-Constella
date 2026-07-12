@@ -578,7 +578,9 @@ function isConversationSnapshot(
 ): value is ConversationContextSnapshot {
   return (
     isRecord(value) &&
-    value.version === 1 &&
+    typeof value.version === "number" &&
+    Number.isInteger(value.version) &&
+    value.version > 0 &&
     Number.isInteger(value.summaryVersion) &&
     Number(value.summaryVersion) >= 0 &&
     isStringArray(value.messageIds) &&
