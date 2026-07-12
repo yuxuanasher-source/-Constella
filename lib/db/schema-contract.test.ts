@@ -63,6 +63,19 @@ const settlementRuntimeHardeningMigration = readdirSync(migrationsDir).includes(
 const normalizedSettlementRuntimeHardeningMigration = normalizeSql(
   settlementRuntimeHardeningMigration,
 );
+const settlementAuthoringRoleHardeningMigrationName =
+  "20260711115700_custom_settlement_authoring_role_hardening.sql";
+const settlementAuthoringRoleHardeningMigration = readdirSync(
+  migrationsDir,
+).includes(settlementAuthoringRoleHardeningMigrationName)
+  ? readFileSync(
+      join(migrationsDir, settlementAuthoringRoleHardeningMigrationName),
+      "utf8",
+    )
+  : "";
+const normalizedSettlementAuthoringRoleHardeningMigration = normalizeSql(
+  settlementAuthoringRoleHardeningMigration,
+);
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/gu, " ").trim();
@@ -117,16 +130,67 @@ function settlementRuntimeFunctionBody(fn: string): string {
 function settlementRuntimeSelfCheckBlock(): string {
   const marker = "-- custom_settlement_runtime_self_checks";
   const start = settlementRuntimeHardeningMigration.indexOf(marker);
-  expect(start, "missing Task8 runtime self-check marker").toBeGreaterThanOrEqual(
-    0,
+  expect(
+    start,
+    "missing Task8 runtime self-check marker",
+  ).toBeGreaterThanOrEqual(0);
+  const blockStart = settlementRuntimeHardeningMigration.indexOf(
+    "do $$",
+    start,
   );
-  const blockStart = settlementRuntimeHardeningMigration.indexOf("do $$", start);
-  const blockEnd = settlementRuntimeHardeningMigration.indexOf("$$;", blockStart);
+  const blockEnd = settlementRuntimeHardeningMigration.indexOf(
+    "$$;",
+    blockStart,
+  );
   expect(blockStart).toBeGreaterThan(start);
   expect(blockEnd).toBeGreaterThan(blockStart);
   return normalizeSql(
     settlementRuntimeHardeningMigration.slice(blockStart, blockEnd + 3),
   );
+}
+
+function extractSettlementAuthoringRoleHardeningFunction(fn: string): {
+  definition: string;
+  body: string;
+} {
+  const marker = `create or replace function public.${fn}`;
+  const start = settlementAuthoringRoleHardeningMigration
+    .toLowerCase()
+    .indexOf(marker);
+  expect(
+    start,
+    `missing authoring role hardening function: ${fn}`,
+  ).toBeGreaterThanOrEqual(0);
+  const bodyMarker = /\bas\s+\$\$/giu;
+  bodyMarker.lastIndex = start;
+  const bodyStartMatch = bodyMarker.exec(
+    settlementAuthoringRoleHardeningMigration,
+  );
+  expect(
+    bodyStartMatch,
+    `missing authoring role hardening body: ${fn}`,
+  ).not.toBeNull();
+  const bodyStart = bodyStartMatch?.index ?? -1;
+  const bodyContentStart = bodyStart + (bodyStartMatch?.[0].length ?? 0);
+  const bodyEnd = settlementAuthoringRoleHardeningMigration.indexOf(
+    "$$;",
+    bodyContentStart,
+  );
+  expect(
+    bodyEnd,
+    `missing authoring role hardening terminator: ${fn}`,
+  ).toBeGreaterThan(bodyContentStart);
+  return {
+    definition: normalizeSql(
+      settlementAuthoringRoleHardeningMigration.slice(start, bodyEnd + 3),
+    ),
+    body: normalizeSql(
+      settlementAuthoringRoleHardeningMigration.slice(
+        bodyContentStart,
+        bodyEnd,
+      ),
+    ),
+  };
 }
 
 function gitBlobOid(content: string): string {
@@ -143,11 +207,14 @@ function extractBalancedSql(
 ): { full: string; inner: string } {
   const normalizedSql = sql.toLowerCase();
   const markerIndex = normalizedSql.indexOf(marker.toLowerCase());
-  expect(markerIndex, `missing SQL marker: ${marker}`).toBeGreaterThanOrEqual(0);
-  const openIndex = sql.indexOf("(", markerIndex + marker.length);
-  expect(openIndex, `missing opening parenthesis after: ${marker}`).toBeGreaterThan(
-    markerIndex,
+  expect(markerIndex, `missing SQL marker: ${marker}`).toBeGreaterThanOrEqual(
+    0,
   );
+  const openIndex = sql.indexOf("(", markerIndex + marker.length);
+  expect(
+    openIndex,
+    `missing opening parenthesis after: ${marker}`,
+  ).toBeGreaterThan(markerIndex);
 
   let depth = 0;
   let inString = false;
@@ -178,10 +245,8 @@ function extractBalancedSql(
 
 function settlementAiTableDefinition(table: string): string {
   return normalizeSql(
-    extractBalancedSql(
-      settlementAiMigration,
-      `create table public.${table}`,
-    ).inner,
+    extractBalancedSql(settlementAiMigration, `create table public.${table}`)
+      .inner,
   );
 }
 
@@ -224,10 +289,11 @@ type SettlementAiRowLock = {
 };
 
 function settlementAiRowLocks(fn: string): SettlementAiRowLock[] {
-  return extractSettlementAiFunction(fn).body
-    .split(";")
+  return extractSettlementAiFunction(fn)
+    .body.split(";")
     .flatMap((statement) => {
-      const mode = statement.match(/\bfor\s+(key\s+share|update)\b/iu)?.[1]
+      const mode = statement
+        .match(/\bfor\s+(key\s+share|update)\b/iu)?.[1]
         ?.toLowerCase()
         .replace(/\s+/gu, " ");
       if (mode !== "key share" && mode !== "update") return [];
@@ -270,17 +336,16 @@ function settlementAiCheckDefinition(
 ): string {
   const tableDefinition = settlementAiTableDefinition(table);
   return normalizeSql(
-    extractBalancedSql(
-      tableDefinition,
-      `constraint ${constraint} check`,
-    ).full,
+    extractBalancedSql(tableDefinition, `constraint ${constraint} check`).full,
   );
 }
 
 function settlementAiSelfCheckSource(): string {
   const marker = "-- settlement_ai_validator_self_checks";
   const start = settlementAiMigration.indexOf(marker);
-  expect(start, "missing validator self-check marker").toBeGreaterThanOrEqual(0);
+  expect(start, "missing validator self-check marker").toBeGreaterThanOrEqual(
+    0,
+  );
   const blockStart = settlementAiMigration.indexOf("do $$", start);
   const blockEnd = settlementAiMigration.indexOf("$$;", blockStart);
   expect(blockStart).toBeGreaterThan(start);
@@ -482,9 +547,13 @@ describe("P0 database contract", () => {
       );
     }
 
-    expect(allMigrations).toContain("ai_chat_messages_conversation_sequence_key");
+    expect(allMigrations).toContain(
+      "ai_chat_messages_conversation_sequence_key",
+    );
     expect(allMigrations).toContain("ai_chat_turns_owner_idempotency_key");
-    expect(allMigrations).toContain("ai_chat_turns_one_active_per_conversation");
+    expect(allMigrations).toContain(
+      "ai_chat_turns_one_active_per_conversation",
+    );
     expect(allMigrations).toContain("lease_expires_at timestamptz");
     expect(allMigrations).toContain("turn_lease_expired");
     expect(allMigrations).toContain("ai_chat_turns_one_retry_successor");
@@ -763,9 +832,7 @@ describe("Phase 1 settlement AI persistence contract", () => {
       expect(fn).toContain("settlement_ai_json_is_safe");
     }
     expect(createDraft).toContain("for update");
-    expect(createDraft).toContain(
-      "coalesce(max(d.revision_number), 0) + 1",
-    );
+    expect(createDraft).toContain("coalesce(max(d.revision_number), 0) + 1");
     expect(createDraft).toContain("owner_user_id = auth.uid()");
     expect(createSimulation).toContain(
       "((p_rule_version_id is not null)::integer + (p_ai_draft_id is not null)::integer) <> 1",
@@ -838,7 +905,12 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "finalize_settlement_ai_failed_turn",
     );
 
-    for (const fn of [lockTurn, finalizeDraft, finalizeSimulation, finalizeFailed]) {
+    for (const fn of [
+      lockTurn,
+      finalizeDraft,
+      finalizeSimulation,
+      finalizeFailed,
+    ]) {
       expect(fn).toContain("security definer");
       expect(fn).toContain("set search_path = pg_catalog, public");
     }
@@ -857,10 +929,18 @@ describe("Phase 1 settlement AI persistence contract", () => {
 
     expect(finalizeDraft).toContain("v_turn.status = 'completed'");
     expect(finalizeDraft).toContain("v_turn.status <> 'validating'");
-    expect(finalizeDraft).toContain("settlement_ai_atomic_completed_without_draft");
-    expect(finalizeDraft).toContain("settlement_ai_atomic_completion_replay_conflict");
-    expect(finalizeDraft).toContain("from public.ai_chat_messages as terminal_message");
-    expect(finalizeDraft).toContain("terminal_message.metadata is not distinct from");
+    expect(finalizeDraft).toContain(
+      "settlement_ai_atomic_completed_without_draft",
+    );
+    expect(finalizeDraft).toContain(
+      "settlement_ai_atomic_completion_replay_conflict",
+    );
+    expect(finalizeDraft).toContain(
+      "from public.ai_chat_messages as terminal_message",
+    );
+    expect(finalizeDraft).toContain(
+      "terminal_message.metadata is not distinct from",
+    );
     expect(finalizeDraft).toContain("v_turn.provider_name is distinct from");
     expect(finalizeDraft).toContain("public.finish_ai_chat_turn(");
     expect(finalizeDraft).toContain("public.create_ai_settlement_rule_draft(");
@@ -873,17 +953,23 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "settlement_ai_atomic_completed_without_simulation",
     );
     expect(finalizeSimulation).toContain("public.finish_ai_chat_turn(");
-    expect(finalizeSimulation).toContain("public.create_ai_settlement_rule_draft(");
+    expect(finalizeSimulation).toContain(
+      "public.create_ai_settlement_rule_draft(",
+    );
     expect(finalizeSimulation).toContain(
       "public.create_settlement_formula_simulation(",
     );
-    expect(finalizeSimulation.indexOf("public.finish_ai_chat_turn(")).toBeLessThan(
+    expect(
+      finalizeSimulation.indexOf("public.finish_ai_chat_turn("),
+    ).toBeLessThan(
       finalizeSimulation.indexOf("public.create_ai_settlement_rule_draft("),
     );
     expect(
       finalizeSimulation.indexOf("public.create_ai_settlement_rule_draft("),
     ).toBeLessThan(
-      finalizeSimulation.indexOf("public.create_settlement_formula_simulation("),
+      finalizeSimulation.indexOf(
+        "public.create_settlement_formula_simulation(",
+      ),
     );
 
     expect(finalizeFailed).toContain("v_turn.status = 'failed'");
@@ -926,7 +1012,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(body).toContain("pg_catalog.octet_length(p_error_code) <= 64");
     expect(body).toContain("pg_catalog.octet_length(p_error_summary) <= 120");
     expect(body).toContain("'settlement_ai_provider_failed'");
-    expect(body).toContain("'settlement ai provider is temporarily unavailable.'");
+    expect(body).toContain(
+      "'settlement ai provider is temporarily unavailable.'",
+    );
     expect(body).toContain("'settlement_ai_formula_invalid'");
     expect(body).toContain("'settlement ai formula did not pass validation.'");
     const allowedFailures = Object.entries(
@@ -934,9 +1022,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
     );
     expect(body.match(/\bwhen '/gu)?.length ?? 0).toBe(allowedFailures.length);
     for (const [errorCode, errorSummary] of allowedFailures) {
-      expect(new TextEncoder().encode(errorCode).byteLength).toBeLessThanOrEqual(
-        64,
-      );
+      expect(
+        new TextEncoder().encode(errorCode).byteLength,
+      ).toBeLessThanOrEqual(64);
       expect(
         new TextEncoder().encode(errorSummary).byteLength,
       ).toBeLessThanOrEqual(120);
@@ -1048,7 +1136,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
     );
     expect(parentHelper).toContain("security definer");
     expect(parentHelper).toContain("set search_path = pg_catalog, public");
-    expect(settlementAiRowLocks("settlement_ai_lock_authoring_parents")).toEqual([
+    expect(
+      settlementAiRowLocks("settlement_ai_lock_authoring_parents"),
+    ).toEqual([
       { relation: "organizations", mode: "key share" },
       { relation: "profiles", mode: "key share" },
       { relation: "projects", mode: "update" },
@@ -1093,9 +1183,10 @@ describe("Phase 1 settlement AI persistence contract", () => {
       const parentLock = body.indexOf(
         "public.settlement_ai_lock_authoring_parents",
       );
-      expect(parentLock, `${directRpc} must lock FK parents`).toBeGreaterThanOrEqual(
-        0,
-      );
+      expect(
+        parentLock,
+        `${directRpc} must lock FK parents`,
+      ).toBeGreaterThanOrEqual(0);
       expect(parentLock).toBeLessThan(body.indexOf("for update"));
     }
     const atomicLock = settlementAiFunctionBody(
@@ -1104,7 +1195,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(
       atomicLock.indexOf("public.settlement_ai_lock_authoring_parents"),
     ).toBeLessThan(atomicLock.indexOf("from public.ai_conversations"));
-    expect(settlementAiRowLocks("settlement_ai_lock_atomic_draft_turn")).toEqual([
+    expect(
+      settlementAiRowLocks("settlement_ai_lock_atomic_draft_turn"),
+    ).toEqual([
       { relation: "ai_conversations", mode: "update" },
       { relation: "ai_chat_turns", mode: "update" },
     ]);
@@ -1122,7 +1215,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
       replayDraft,
     );
     const turn = draft.indexOf("from public.ai_chat_turns as trace_turn");
-    const messages = draft.indexOf("from public.ai_chat_messages as user_message");
+    const messages = draft.indexOf(
+      "from public.ai_chat_messages as user_message",
+    );
     const previousDraft = draft.indexOf("select d.* into v_previous");
     const draftInsert = draft.indexOf(
       "insert into public.ai_settlement_rule_drafts",
@@ -1138,7 +1233,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
       draftInsert,
     ];
     expect(draftPath.every((index) => index >= 0)).toBe(true);
-    expect(draftPath).toEqual([...draftPath].sort((left, right) => left - right));
+    expect(draftPath).toEqual(
+      [...draftPath].sort((left, right) => left - right),
+    );
     expect(draft.slice(previousDraft, draftInsert)).toContain("for update");
 
     const simulation = settlementAiFunctionBody(
@@ -1174,9 +1271,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "finalize_settlement_ai_failed_turn",
     ]) {
       const body = settlementAiFunctionBody(finalizer);
-      expect(body.indexOf("public.settlement_ai_lock_atomic_draft_turn")).toBeLessThan(
-        body.indexOf("public.create_ai_settlement_rule_draft"),
-      );
+      expect(
+        body.indexOf("public.settlement_ai_lock_atomic_draft_turn"),
+      ).toBeLessThan(body.indexOf("public.create_ai_settlement_rule_draft"));
     }
     const simulationFinalizer = settlementAiFunctionBody(
       "finalize_settlement_ai_simulation_turn",
@@ -1184,7 +1281,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(
       simulationFinalizer.indexOf("public.create_ai_settlement_rule_draft"),
     ).toBeLessThan(
-      simulationFinalizer.indexOf("public.create_settlement_formula_simulation"),
+      simulationFinalizer.indexOf(
+        "public.create_settlement_formula_simulation",
+      ),
     );
   });
 
@@ -1264,7 +1363,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(body).toContain("trace_turn.conversation_id = p_conversation_id");
     expect(body).toContain("trace_turn.organization_id = p_organization_id");
     expect(body).toContain("trace_turn.owner_user_id = v_actor_id");
-    expect(body).toContain("trace_turn.user_message_id = v_trace_user_message_id");
+    expect(body).toContain(
+      "trace_turn.user_message_id = v_trace_user_message_id",
+    );
     expect(body).toContain(
       "trace_turn.assistant_message_id = v_trace_assistant_message_id",
     );
@@ -1273,9 +1374,7 @@ describe("Phase 1 settlement AI persistence contract", () => {
     );
     expect(body).toContain("for update of trace_turn");
     expect(body).toContain("from public.ai_chat_messages as user_message");
-    expect(body).toContain(
-      "join public.ai_chat_messages as assistant_message",
-    );
+    expect(body).toContain("join public.ai_chat_messages as assistant_message");
     expect(body).toContain("user_message.role = 'user'");
     expect(body).toContain("assistant_message.role = 'assistant'");
     expect(body).toContain("user_message.status = 'completed'");
@@ -1325,9 +1424,7 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(body).toContain("public.settlement_ai_runtime_type_is_valid");
     expect(body).toContain("public.settlement_ai_typed_value_is_valid");
     expect(body).toContain("public.settlement_ai_runtime_value_matches_type");
-    expect(normalizedSettlementAiMigration).not.toContain(
-      "pg_catalog.nullif(",
-    );
+    expect(normalizedSettlementAiMigration).not.toContain("pg_catalog.nullif(");
     expect(body).toContain("nullif(");
     expect(body).toContain("from pg_catalog.pg_timezone_names as timezone");
     expect(body).toContain("pg_catalog.jsonb_array_elements");
@@ -1359,7 +1456,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
       createDraft.indexOf(
         "public.settlement_ai_business_contract_is_valid(p_business_contract)",
       ),
-    ).toBeLessThan(createDraft.indexOf("insert into public.ai_settlement_rule_drafts"));
+    ).toBeLessThan(
+      createDraft.indexOf("insert into public.ai_settlement_rule_drafts"),
+    );
   });
 
   it("keeps every draft JSON value readable by the repository schemas", () => {
@@ -1387,15 +1486,22 @@ describe("Phase 1 settlement AI persistence contract", () => {
         `revoke all on function public.${validatorName}(`,
       );
       expect(normalizedSettlementAiMigration).not.toMatch(
-        new RegExp(`grant execute on function public\\.${validatorName}\\(`, "u"),
+        new RegExp(
+          `grant execute on function public\\.${validatorName}\\(`,
+          "u",
+        ),
       );
     }
 
     const ambiguities = settlementAiFunctionBody(
       "settlement_ai_unresolved_ambiguities_is_valid",
     );
-    expect(ambiguities).toContain("pg_catalog.jsonb_array_length(p_value) > 100");
-    expect(ambiguities).toContain("array['code', 'question', 'required']::text[]");
+    expect(ambiguities).toContain(
+      "pg_catalog.jsonb_array_length(p_value) > 100",
+    );
+    expect(ambiguities).toContain(
+      "array['code', 'question', 'required']::text[]",
+    );
     expect(ambiguities).toContain("v_item -> 'code') <> 'string'");
     expect(ambiguities).toContain("not between 1 and 120");
     expect(ambiguities).toContain("v_item -> 'question') <> 'string'");
@@ -1467,8 +1573,12 @@ describe("Phase 1 settlement AI persistence contract", () => {
     const safetyFlags = settlementAiFunctionBody(
       "settlement_ai_safety_flags_is_valid",
     );
-    expect(safetyFlags).toContain("pg_catalog.jsonb_array_length(p_value) > 100");
-    expect(safetyFlags).toContain("array['code', 'severity', 'message']::text[]");
+    expect(safetyFlags).toContain(
+      "pg_catalog.jsonb_array_length(p_value) > 100",
+    );
+    expect(safetyFlags).toContain(
+      "array['code', 'severity', 'message']::text[]",
+    );
     expect(safetyFlags).toContain("'info', 'warning', 'block'");
 
     const payloadCheck = settlementAiCheckDefinition(
@@ -1558,9 +1668,7 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "create_ai_settlement_rule_draft",
     );
     expect(draft).toContain("request_fingerprint text not null");
-    expect(draft).toContain(
-      "request_fingerprint ~ '^[0-9a-f]{64}$'",
-    );
+    expect(draft).toContain("request_fingerprint ~ '^[0-9a-f]{64}$'");
     expect(createDraft).toContain("v_request_fingerprint text");
     expect(createDraft).toContain("extensions.digest(");
     expect(createDraft).toContain("'status', p_status");
@@ -1717,10 +1825,12 @@ describe("Phase 1 settlement AI persistence contract", () => {
       /pg_catalog\.set_config\(\s*'request\.jwt\.claim\.sub'/u,
     );
     expect(
-      selfChecks.match(/public\.create_ai_settlement_rule_draft\(/gu)?.length ?? 0,
+      selfChecks.match(/public\.create_ai_settlement_rule_draft\(/gu)?.length ??
+        0,
     ).toBeGreaterThanOrEqual(5);
     expect(
-      selfChecks.match(/public\.create_settlement_formula_simulation\(/gu)?.length ?? 0,
+      selfChecks.match(/public\.create_settlement_formula_simulation\(/gu)
+        ?.length ?? 0,
     ).toBeGreaterThanOrEqual(2);
     for (const behaviorAssertion of [
       "actual_draft_shape_invalid",
@@ -1790,6 +1900,128 @@ describe("Phase 1 settlement AI persistence contract", () => {
   });
 });
 
+describe("Phase 1 settlement AI database authoring authorization", () => {
+  it("gates every draft insert by exact authoring role and claimed session scope", () => {
+    const migrationNames = readdirSync(migrationsDir)
+      .filter((file) => file.endsWith(".sql"))
+      .sort();
+    const runtimeHardeningIndex = migrationNames.indexOf(
+      settlementRuntimeHardeningMigrationName,
+    );
+    const authoringHardeningIndex = migrationNames.indexOf(
+      settlementAuthoringRoleHardeningMigrationName,
+    );
+    const phase2Index = migrationNames.findIndex(
+      (file) => file >= "20260711120000",
+    );
+
+    expect(authoringHardeningIndex).toBeGreaterThan(runtimeHardeningIndex);
+    if (phase2Index >= 0) {
+      expect(authoringHardeningIndex).toBeLessThan(phase2Index);
+    }
+
+    const insertGuard = extractSettlementAuthoringRoleHardeningFunction(
+      "guard_custom_settlement_ai_draft_authoring",
+    );
+    expect(insertGuard.definition).toContain("security definer");
+    expect(insertGuard.definition).toContain(
+      "set search_path = pg_catalog, public",
+    );
+    expect(insertGuard.body).toContain("v_actor_id uuid := auth.uid()");
+    expect(insertGuard.body).toContain("v_actor_id is null");
+    expect(insertGuard.body).toContain(
+      "new.created_by is distinct from v_actor_id",
+    );
+    const authorRoleList = insertGuard.body.match(
+      /public\.current_user_role\(new\.organization_id\) not in \(([^)]+)\)/u,
+    )?.[1];
+    expect(authorRoleList?.match(/'[a-z_]+'/gu)).toEqual([
+      "'owner'",
+      "'ops_manager'",
+      "'operator_business'",
+    ]);
+    expect(insertGuard.body).toContain(
+      "public.current_user_role(new.organization_id) is null",
+    );
+    const sessionLock = insertGuard.body.match(
+      /perform 1 from public\.custom_settlement_ai_sessions as session[\s\S]+session\.organization_id = new\.organization_id[\s\S]+session\.project_id = new\.project_id[\s\S]+session\.conversation_id = new\.conversation_id[\s\S]+session\.actor_id = new\.created_by[\s\S]+for key share/u,
+    )?.[0];
+    expect(sessionLock).toBeDefined();
+    expect(insertGuard.body.indexOf("if not found then")).toBeGreaterThan(
+      insertGuard.body.indexOf(sessionLock ?? "missing session lock"),
+    );
+    expect(insertGuard.body).not.toContain("if not exists (");
+    expect(insertGuard.body).toContain("return new");
+    const dropTrigger =
+      normalizedSettlementAuthoringRoleHardeningMigration.indexOf(
+        "drop trigger if exists ai_settlement_rule_drafts_authoring_guard on public.ai_settlement_rule_drafts",
+      );
+    const createTrigger =
+      normalizedSettlementAuthoringRoleHardeningMigration.indexOf(
+        "create trigger ai_settlement_rule_drafts_authoring_guard before insert on public.ai_settlement_rule_drafts for each row execute function public.guard_custom_settlement_ai_draft_authoring()",
+      );
+    expect(dropTrigger).toBeGreaterThanOrEqual(0);
+    expect(createTrigger).toBeGreaterThan(dropTrigger);
+    expect(normalizedSettlementAuthoringRoleHardeningMigration).toContain(
+      "revoke all on function public.guard_custom_settlement_ai_draft_authoring() from public, anon, authenticated, service_role",
+    );
+    expect(normalizedSettlementAuthoringRoleHardeningMigration).not.toMatch(
+      /grant execute on function public\.guard_custom_settlement_ai_draft_authoring/u,
+    );
+  });
+
+  it("gates direct and atomic draft entrypoints without removing finance simulation", () => {
+    expect(
+      settlementAiFunctionBody("create_ai_settlement_rule_draft"),
+    ).toContain("insert into public.ai_settlement_rule_drafts");
+
+    for (const finalizer of [
+      "finalize_settlement_ai_draft_turn",
+      "finalize_settlement_ai_simulation_turn",
+      "finalize_settlement_ai_failed_turn",
+    ]) {
+      expect(settlementAiFunctionBody(finalizer)).toContain(
+        "public.create_ai_settlement_rule_draft(",
+      );
+    }
+
+    const independentSimulation = settlementAiFunctionBody(
+      "create_settlement_formula_simulation",
+    );
+    expect(independentSimulation).toContain(
+      "public.is_mcn_staff(p_organization_id)",
+    );
+    expect(normalizedSettlementAiMigration).toMatch(
+      /grant execute on function public\.create_settlement_formula_simulation\([^;]+\) to authenticated;/u,
+    );
+    expect(normalizedSettlementAuthoringRoleHardeningMigration).not.toMatch(
+      /(?:alter function|create or replace function) public\.create_settlement_formula_simulation/u,
+    );
+    expect(normalizedSettlementAuthoringRoleHardeningMigration).not.toMatch(
+      /revoke all on function public\.create_settlement_formula_simulation/u,
+    );
+    expect(independentSimulation).not.toContain(
+      "insert into public.ai_settlement_rule_drafts",
+    );
+    expect(normalizedSettlementAuthoringRoleHardeningMigration).not.toMatch(
+      /(?:alter function|create or replace function) public\.settlement_ai_lock_authoring_parents/u,
+    );
+    for (const unchangedRpc of [
+      "create_ai_settlement_rule_draft",
+      "finalize_settlement_ai_draft_turn",
+      "finalize_settlement_ai_simulation_turn",
+      "finalize_settlement_ai_failed_turn",
+    ]) {
+      expect(normalizedSettlementAuthoringRoleHardeningMigration).not.toContain(
+        `create or replace function public.${unchangedRpc}`,
+      );
+      expect(normalizedSettlementAuthoringRoleHardeningMigration).not.toContain(
+        `alter function public.${unchangedRpc}`,
+      );
+    }
+  });
+});
+
 describe("Task8 custom settlement runtime database contract", () => {
   it("keeps immutable base history and orders the forward hardening before Phase 2", () => {
     const migrationNames = readdirSync(migrationsDir)
@@ -1810,16 +2042,16 @@ describe("Task8 custom settlement runtime database contract", () => {
     expect(normalizedSettlementRuntimeMigration).not.toContain(
       "p_max_record_count integer",
     );
-    expect(
-      settlementRuntimeMigrationName > settlementAiMigrationName,
-    ).toBe(true);
+    expect(settlementRuntimeMigrationName > settlementAiMigrationName).toBe(
+      true,
+    );
     expect(
       settlementRuntimeMigrationName <
         "20260711115500_xingyao_duplicate_lease_recovery.sql" &&
         "20260711115500_xingyao_duplicate_lease_recovery.sql" <
           settlementRuntimeHardeningMigrationName &&
         settlementRuntimeHardeningMigrationName <
-        "20260711120000_custom_settlement_rule_governance.sql",
+          "20260711120000_custom_settlement_rule_governance.sql",
     ).toBe(true);
     expect(migrationNames).not.toContain(
       "20260712130000_custom_settlement_runtime_snapshot.sql",
@@ -1834,7 +2066,9 @@ describe("Task8 custom settlement runtime database contract", () => {
     expect(normalizedSettlementRuntimeHardeningMigration).toContain(
       "pg_catalog.to_regprocedure( 'public.read_custom_settlement_evidence_snapshot(uuid,uuid,text,date,date,integer)' ) is not null",
     );
-    expect(normalizedSettlementRuntimeHardeningMigration).toContain(legacyRevoke);
+    expect(normalizedSettlementRuntimeHardeningMigration).toContain(
+      legacyRevoke,
+    );
     expect(normalizedSettlementRuntimeHardeningMigration).toContain(legacyDrop);
     expect(
       normalizedSettlementRuntimeHardeningMigration.indexOf(legacyRevoke),
@@ -1918,16 +2152,18 @@ describe("Task8 custom settlement runtime database contract", () => {
     );
     expect(body).toContain("pg_catalog.pg_advisory_xact_lock");
     expect(body).toContain("pg_catalog.hashtextextended");
-    expect(body).toContain("v_request_fingerprint text := p_request_fingerprint");
+    expect(body).toContain(
+      "v_request_fingerprint text := p_request_fingerprint",
+    );
     expect(body).toContain("p_request_fingerprint is null");
     expect(body).toMatch(/p_request_fingerprint !~ '\^\[0-9a-f\]\{64\}\$'/u);
     expect(body).not.toContain("extensions.digest");
     expect(body).toMatch(
       /from public\.custom_settlement_ai_sessions[\s\S]+organization_id = p_organization_id[\s\S]+project_id = p_project_id[\s\S]+actor_id = v_actor_id[\s\S]+client_request_id = v_client_request_id/u,
     );
-    expect(body.indexOf("from public.custom_settlement_ai_sessions")).toBeLessThan(
-      body.indexOf("insert into public.ai_conversations"),
-    );
+    expect(
+      body.indexOf("from public.custom_settlement_ai_sessions"),
+    ).toBeLessThan(body.indexOf("insert into public.ai_conversations"));
     expect(body).toContain("custom_settlement_session_replay_mismatch");
     expect(body).toContain("insert into public.ai_conversations");
     expect(body).toContain("insert into public.custom_settlement_ai_sessions");
@@ -2011,9 +2247,10 @@ describe("Task8 custom settlement runtime database contract", () => {
       expect(cte, `${sourceCte} must be bounded`).toContain(
         "limit p_max_sources + 1",
       );
-      expect(cte, `${sourceCte} must preserve its MVCC row version`).not.toContain(
-        "for update",
-      );
+      expect(
+        cte,
+        `${sourceCte} must preserve its MVCC row version`,
+      ).not.toContain("for update");
       expect(cte, `${sourceCte} must select explicit safe fields`).not.toMatch(
         /select (?:batch|item|report|cost|project_streamer)\.\*/u,
       );
@@ -2022,9 +2259,7 @@ describe("Task8 custom settlement runtime database contract", () => {
       /source_counts as materialized[\s\S]+record_counts as materialized[\s\S]+selection_guard as materialized[\s\S]+batch_payload as materialized/u,
     );
     expect(body).toContain("batch.status = 'locked'");
-    expect(body).toContain(
-      "batch.batch_type in ('payable', 'receivable')",
-    );
+    expect(body).toContain("batch.batch_type in ('payable', 'receivable')");
     expect(body).toContain("batch.period_start <= p_period_end");
     expect(body).toContain("batch.period_end >= p_period_start");
     expect(body).toContain("requested_batches as materialized");
@@ -2058,9 +2293,7 @@ describe("Task8 custom settlement runtime database contract", () => {
     expect(body).not.toContain("source_payload");
     expect(body).toContain("cost.amount_cents::text");
     expect(
-      settlementRuntimeFunctionBody(
-        "custom_settlement_snapshot_numeric_text",
-      ),
+      settlementRuntimeFunctionBody("custom_settlement_snapshot_numeric_text"),
     ).toContain("pg_catalog.trim_scale");
     expect(body).toContain("at time zone p_business_timezone");
     expect(body).toContain("'business_timezone', p_business_timezone");
@@ -2104,7 +2337,10 @@ describe("Task8 custom settlement runtime database contract", () => {
 
   it("exposes only the two authenticated RPCs and leaves tables/helpers private", () => {
     for (const [rpc, source] of [
-      ["claim_custom_settlement_ai_session", normalizedSettlementRuntimeMigration],
+      [
+        "claim_custom_settlement_ai_session",
+        normalizedSettlementRuntimeMigration,
+      ],
       [
         "read_custom_settlement_evidence_snapshot",
         normalizedSettlementRuntimeHardeningMigration,
@@ -2299,10 +2535,13 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
         const resultRows = [firstResult.stdout, secondResult.stdout]
           .flatMap((output) => output.split(/\r?\n/gu))
           .filter((line) => line.trim().startsWith("{"))
-          .map((line) => JSON.parse(line) as {
-            id: string;
-            duplicate: boolean;
-          });
+          .map(
+            (line) =>
+              JSON.parse(line) as {
+                id: string;
+                duplicate: boolean;
+              },
+          );
         expect(resultRows).toHaveLength(2);
         expect(resultRows.map((row) => row.duplicate).sort()).toEqual([
           false,
@@ -3020,9 +3259,8 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
           expect(returnedCostAmounts).not.toContain(forbiddenAmount);
         }
 
-        const routeModule = await import(
-          "../../features/settlements/custom-rule-route-context"
-        );
+        const routeModule =
+          await import("../../features/settlements/custom-rule-route-context");
         const parseSnapshot = (
           routeModule as typeof routeModule & {
             parseCustomSettlementEvidenceSnapshot: (
@@ -3279,7 +3517,9 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
         const concurrentLine = concurrentResult.stdout
           .split(/\r?\n/gu)
           .find((line) => line.trim().startsWith("{"));
-        const concurrent = JSON.parse(concurrentLine ?? "null") as typeof initial;
+        const concurrent = JSON.parse(
+          concurrentLine ?? "null",
+        ) as typeof initial;
         expect(concurrent.hash_valid).toBe(true);
         expect(
           concurrent.snapshot.settlement_batches.every(
@@ -3292,12 +3532,10 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             cost.amount_cents === "9007199254740994",
         );
         expect(linkedCost).toBeDefined();
-        expect(
-          [
-            linkedCost?.amount_cents,
-            linkedCost?.settlement_batch_id,
-          ],
-        ).toEqual(
+        expect([
+          linkedCost?.amount_cents,
+          linkedCost?.settlement_batch_id,
+        ]).toEqual(
           linkedCost?.amount_cents === "9007199254740993"
             ? ["9007199254740993", null]
             : ["9007199254740994", payableBatchId],
@@ -3419,6 +3657,722 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
 );
 
 describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
+  "Phase 1 settlement AI authoring authorization PostgreSQL regression",
+  () => {
+    it("rejects finance authoring while preserving claimed author drafts and finance simulation", async () => {
+      const container = settlementRuntimeRegressionContainer ?? "";
+      const organizationId = "9e120000-0000-4000-8000-000000000001";
+      const projectId = "9e130000-0000-4000-8000-000000000001";
+      const unclaimedConversationId = "9e140000-0000-4000-8000-000000000099";
+      const unclaimedUserMessageId = "9e150000-0000-4000-8000-000000000099";
+      const unclaimedAssistantMessageId =
+        "9e150000-0000-4000-8000-00000000009a";
+      const unclaimedTurnId = "9e160000-0000-4000-8000-000000000099";
+      const authorFixtures = [
+        {
+          id: "9e110000-0000-4000-8000-000000000001",
+          role: "owner",
+          key: "owner",
+          userMessageId: "9e150000-0000-4000-8000-000000000001",
+          assistantMessageId: "9e150000-0000-4000-8000-000000000002",
+          turnId: "9e160000-0000-4000-8000-000000000001",
+        },
+        {
+          id: "9e110000-0000-4000-8000-000000000002",
+          role: "ops_manager",
+          key: "ops",
+          userMessageId: "9e150000-0000-4000-8000-000000000003",
+          assistantMessageId: "9e150000-0000-4000-8000-000000000004",
+          turnId: "9e160000-0000-4000-8000-000000000002",
+        },
+        {
+          id: "9e110000-0000-4000-8000-000000000003",
+          role: "operator_business",
+          key: "operator",
+          userMessageId: "9e150000-0000-4000-8000-000000000005",
+          assistantMessageId: "9e150000-0000-4000-8000-000000000006",
+          turnId: "9e160000-0000-4000-8000-000000000003",
+        },
+      ] as const;
+      const financeId = "9e110000-0000-4000-8000-000000000004";
+      const streamerId = "9e110000-0000-4000-8000-000000000005";
+      const financeConversationId = "9e140000-0000-4000-8000-000000000004";
+      const financeDirectUserMessageId = "9e150000-0000-4000-8000-000000000007";
+      const financeDirectAssistantMessageId =
+        "9e150000-0000-4000-8000-000000000008";
+      const financeDirectTurnId = "9e160000-0000-4000-8000-000000000004";
+      const financeAtomicUserMessageId = "9e150000-0000-4000-8000-000000000009";
+      const financeAtomicAssistantMessageId =
+        "9e150000-0000-4000-8000-00000000000a";
+      const financeAtomicTurnId = "9e160000-0000-4000-8000-000000000005";
+      const actorIds = [
+        ...authorFixtures.map((actor) => actor.id),
+        financeId,
+        streamerId,
+      ];
+      const cleanupSql = `
+        set session_replication_role = replica;
+        delete from public.settlement_formula_simulations
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.ai_settlement_rule_drafts
+        where organization_id = '${organizationId}'::uuid;
+        set session_replication_role = origin;
+        delete from public.custom_settlement_ai_sessions
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.ai_conversations
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.projects
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.organization_members
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.organizations
+        where id = '${organizationId}'::uuid;
+        delete from public.profiles
+        where id in (${actorIds.map((id) => `'${id}'::uuid`).join(", ")});
+        delete from auth.users
+        where id in (${actorIds.map((id) => `'${id}'::uuid`).join(", ")});
+      `;
+      const setupSql = `
+        ${cleanupSql}
+        insert into auth.users (id, email) values
+          ${actorIds
+            .map(
+              (id, index) =>
+                `('${id}'::uuid, 'authoring-role-${index + 1}@example.invalid')`,
+            )
+            .join(",\n          ")};
+        insert into public.profiles (id, email, full_name) values
+          ${actorIds
+            .map(
+              (id, index) =>
+                `('${id}'::uuid, 'authoring-role-${index + 1}@example.invalid', 'Authoring Role ${index + 1}')`,
+            )
+            .join(",\n          ")};
+        insert into public.organizations (id, name, code) values (
+          '${organizationId}'::uuid,
+          'Settlement Authoring Role Regression',
+          'settlement-authoring-role-regression'
+        );
+        insert into public.organization_members (
+          organization_id, user_id, role, status
+        ) values
+          ${[
+            ...authorFixtures.map((actor) => ({
+              id: actor.id,
+              role: actor.role,
+            })),
+            { id: financeId, role: "finance" },
+            { id: streamerId, role: "streamer" },
+          ]
+            .map(
+              (actor) =>
+                `('${organizationId}'::uuid, '${actor.id}'::uuid, '${actor.role}', 'active')`,
+            )
+            .join(",\n          ")};
+        insert into public.projects (
+          id, organization_id, code, name, created_by, owner_id
+        ) values (
+          '${projectId}'::uuid,
+          '${organizationId}'::uuid,
+          'settlement-authoring-role-regression',
+          'Settlement Authoring Role Regression',
+          '${authorFixtures[0].id}'::uuid,
+          '${authorFixtures[0].id}'::uuid
+        );
+        insert into public.project_assignments (
+          organization_id, project_id, user_id
+        ) values (
+          '${organizationId}'::uuid,
+          '${projectId}'::uuid,
+          '${authorFixtures[2].id}'::uuid
+        );
+        insert into public.ai_conversations (
+          id, organization_id, owner_user_id, project_id, title
+        ) values (
+          '${unclaimedConversationId}'::uuid,
+          '${organizationId}'::uuid,
+          '${authorFixtures[0].id}'::uuid,
+          '${projectId}'::uuid,
+          'Unclaimed authoring conversation'
+        );
+      `;
+
+      runDockerSql(container, setupSql);
+      try {
+        const unclaimedDraftContent = "已生成未绑定 session 的结算规则。";
+        const financeDirectDraftContent = "已生成 finance 结算规则。";
+        runDockerSql(
+          container,
+          `
+            insert into public.ai_conversations (
+              id, organization_id, owner_user_id, project_id, title
+            ) values (
+              '${financeConversationId}'::uuid,
+              '${organizationId}'::uuid,
+              '${financeId}'::uuid,
+              '${projectId}'::uuid,
+              'Finance guard reachability fixture'
+            );
+            insert into public.custom_settlement_ai_sessions (
+              organization_id, project_id, actor_id, client_request_id,
+              title, request_fingerprint, conversation_id
+            ) values (
+              '${organizationId}'::uuid,
+              '${projectId}'::uuid,
+              '${financeId}'::uuid,
+              'authoring-role-finance-fixture-0001',
+              'Finance guard reachability fixture',
+              '${"9".repeat(64)}',
+              '${financeConversationId}'::uuid
+            );
+            insert into public.ai_chat_messages (
+              id, organization_id, owner_user_id, conversation_id,
+              sequence_no, role, status, content, parent_message_id
+            ) values
+              (
+                '${unclaimedUserMessageId}'::uuid,
+                '${organizationId}'::uuid,
+                '${authorFixtures[0].id}'::uuid,
+                '${unclaimedConversationId}'::uuid,
+                1, 'user', 'completed',
+                '请生成并确认未绑定 session 的结算规则。', null
+              ),
+              (
+                '${unclaimedAssistantMessageId}'::uuid,
+                '${organizationId}'::uuid,
+                '${authorFixtures[0].id}'::uuid,
+                '${unclaimedConversationId}'::uuid,
+                2, 'assistant', 'completed',
+                ${sqlString(unclaimedDraftContent)},
+                '${unclaimedUserMessageId}'::uuid
+              ),
+              (
+                '${financeDirectUserMessageId}'::uuid,
+                '${organizationId}'::uuid,
+                '${financeId}'::uuid,
+                '${financeConversationId}'::uuid,
+                1, 'user', 'completed',
+                '请生成 finance 结算规则。', null
+              ),
+              (
+                '${financeDirectAssistantMessageId}'::uuid,
+                '${organizationId}'::uuid,
+                '${financeId}'::uuid,
+                '${financeConversationId}'::uuid,
+                2, 'assistant', 'completed',
+                ${sqlString(financeDirectDraftContent)},
+                '${financeDirectUserMessageId}'::uuid
+              ),
+              (
+                '${financeAtomicUserMessageId}'::uuid,
+                '${organizationId}'::uuid,
+                '${financeId}'::uuid,
+                '${financeConversationId}'::uuid,
+                3, 'user', 'completed',
+                '请通过 finalizer 生成 finance 结算规则。', null
+              ),
+              (
+                '${financeAtomicAssistantMessageId}'::uuid,
+                '${organizationId}'::uuid,
+                '${financeId}'::uuid,
+                '${financeConversationId}'::uuid,
+                4, 'assistant', 'streaming', '',
+                '${financeAtomicUserMessageId}'::uuid
+              );
+            insert into public.ai_chat_turns (
+              id, organization_id, owner_user_id, conversation_id,
+              user_message_id, assistant_message_id, status,
+              idempotency_key, completed_at
+            ) values
+              (
+                '${unclaimedTurnId}'::uuid,
+                '${organizationId}'::uuid,
+                '${authorFixtures[0].id}'::uuid,
+                '${unclaimedConversationId}'::uuid,
+                '${unclaimedUserMessageId}'::uuid,
+                '${unclaimedAssistantMessageId}'::uuid,
+                'completed', 'authoring-role-unclaimed-turn-0001',
+                pg_catalog.clock_timestamp()
+              ),
+              (
+                '${financeDirectTurnId}'::uuid,
+                '${organizationId}'::uuid,
+                '${financeId}'::uuid,
+                '${financeConversationId}'::uuid,
+                '${financeDirectUserMessageId}'::uuid,
+                '${financeDirectAssistantMessageId}'::uuid,
+                'completed', 'authoring-role-finance-direct-turn-0001',
+                pg_catalog.clock_timestamp()
+              );
+            insert into public.ai_chat_turns (
+              id, organization_id, owner_user_id, conversation_id,
+              user_message_id, assistant_message_id, status, idempotency_key
+            ) values (
+              '${financeAtomicTurnId}'::uuid,
+              '${organizationId}'::uuid,
+              '${financeId}'::uuid,
+              '${financeConversationId}'::uuid,
+              '${financeAtomicUserMessageId}'::uuid,
+              '${financeAtomicAssistantMessageId}'::uuid,
+              'validating', 'authoring-role-finance-atomic-turn-0001'
+            );
+          `,
+        );
+        const claimedAuthors = authorFixtures.map((actor) => {
+          const clientRequestId = `authoring-role-${actor.key}-claim-0001`;
+          runDockerSql(
+            container,
+            `
+              begin;
+              set local role authenticated;
+              select pg_catalog.set_config(
+                'request.jwt.claim.sub', '${actor.id}', true
+              );
+              select public.claim_custom_settlement_ai_session(
+                '${organizationId}'::uuid,
+                '${projectId}'::uuid,
+                '${clientRequestId}',
+                'Authoring Role ${actor.key}',
+                '${"a".repeat(64)}'
+              );
+              commit;
+            `,
+          );
+          const conversationId = runDockerSqlText(
+            container,
+            `
+              select conversation_id::text
+              from public.custom_settlement_ai_sessions
+              where organization_id = '${organizationId}'::uuid
+                and project_id = '${projectId}'::uuid
+                and actor_id = '${actor.id}'::uuid
+                and client_request_id = '${clientRequestId}';
+            `,
+          );
+          return { ...actor, conversationId };
+        });
+        const draftInputs = claimedAuthors.map((actor) => ({
+          actor,
+          input: {
+            organizationId,
+            projectId,
+            conversationId: actor.conversationId,
+            idempotencyKey: `authoring-role-${actor.key}-draft-0001`,
+            promptText: "请生成并确认项目结算规则。",
+            turnTrace: {
+              turnId: actor.turnId,
+              userMessageId: actor.userMessageId,
+              assistantMessageId: actor.assistantMessageId,
+            },
+            businessContract: settlementAiCanonicalBusinessContract(),
+            unresolvedAmbiguities: [],
+            variableCatalogVersion: "b".repeat(64),
+            aiResponse: {
+              content: `已生成 ${actor.key} 结算规则。`,
+              finishReason: "stop",
+              providerRequestId: null,
+            },
+            generatedFormula: {
+              expression: "grossRevenue",
+              normalizedAst: { kind: "identifier", name: "grossRevenue" },
+            },
+            generatedExplanation: "项目确认收入直接作为本周期应收金额。",
+            generatedTestCases: [
+              {
+                name: "标准场景",
+                inputs: {
+                  grossRevenue: {
+                    type: "money_cents",
+                    amountCents: 10_000,
+                  },
+                },
+                expectedResult: {
+                  type: "money_cents",
+                  amountCents: 10_000,
+                },
+              },
+            ],
+            model: "authoring-role-regression-model",
+            safetyFlags: [],
+            contractHash: "c".repeat(64),
+            formulaHash: "d".repeat(64),
+            parameterHash: "e".repeat(64),
+            status: "contract_ready",
+          },
+        }));
+        runDockerSql(
+          container,
+          draftInputs
+            .map(
+              ({ actor, input }) => `
+                insert into public.ai_chat_messages (
+                  id, organization_id, owner_user_id, conversation_id,
+                  sequence_no, role, status, content, parent_message_id
+                ) values
+                  (
+                    '${actor.userMessageId}'::uuid,
+                    '${organizationId}'::uuid,
+                    '${actor.id}'::uuid,
+                    '${actor.conversationId}'::uuid,
+                    1, 'user', 'completed', '请生成并确认项目结算规则。', null
+                  ),
+                  (
+                    '${actor.assistantMessageId}'::uuid,
+                    '${organizationId}'::uuid,
+                    '${actor.id}'::uuid,
+                    '${actor.conversationId}'::uuid,
+                    2, 'assistant', 'completed',
+                    ${sqlString(input.aiResponse.content)},
+                    '${actor.userMessageId}'::uuid
+                  );
+                insert into public.ai_chat_turns (
+                  id, organization_id, owner_user_id, conversation_id,
+                  user_message_id, assistant_message_id, status,
+                  idempotency_key, completed_at
+                ) values (
+                  '${actor.turnId}'::uuid,
+                  '${organizationId}'::uuid,
+                  '${actor.id}'::uuid,
+                  '${actor.conversationId}'::uuid,
+                  '${actor.userMessageId}'::uuid,
+                  '${actor.assistantMessageId}'::uuid,
+                  'completed',
+                  'authoring-role-${actor.key}-turn-0001',
+                  pg_catalog.clock_timestamp()
+                );
+              `,
+            )
+            .join("\n"),
+        );
+
+        for (const { actor, input } of draftInputs) {
+          const created = await runDockerSqlAsyncCapture(
+            container,
+            `
+              begin;
+              set local role authenticated;
+              select pg_catalog.set_config(
+                'request.jwt.claim.sub', '${actor.id}', true
+              );
+              ${createDraftRpcSql(input)}
+              commit;
+            `,
+          );
+          expect(created.code, created.stderr).toBe(0);
+        }
+
+        const ownerDraftInput = draftInputs[0].input;
+        const unclaimedDraft = await runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            set local role authenticated;
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${authorFixtures[0].id}', true
+            );
+            ${createDraftRpcSql({
+              ...ownerDraftInput,
+              conversationId: unclaimedConversationId,
+              idempotencyKey: "authoring-role-unclaimed-draft-0001",
+              promptText: "请生成并确认未绑定 session 的结算规则。",
+              turnTrace: {
+                turnId: unclaimedTurnId,
+                userMessageId: unclaimedUserMessageId,
+                assistantMessageId: unclaimedAssistantMessageId,
+              },
+              aiResponse: {
+                ...ownerDraftInput.aiResponse,
+                content: unclaimedDraftContent,
+              },
+            })}
+            commit;
+          `,
+        );
+        expect(unclaimedDraft.code).not.toBe(0);
+        expect(unclaimedDraft.stderr).toContain(
+          "settlement_ai_authoring_session_required",
+        );
+
+        const financeDirectDraftInput = {
+          ...ownerDraftInput,
+          conversationId: financeConversationId,
+          idempotencyKey: "authoring-role-finance-direct-draft-0001",
+          promptText: "请生成 finance 结算规则。",
+          turnTrace: {
+            turnId: financeDirectTurnId,
+            userMessageId: financeDirectUserMessageId,
+            assistantMessageId: financeDirectAssistantMessageId,
+          },
+          aiResponse: {
+            ...ownerDraftInput.aiResponse,
+            content: financeDirectDraftContent,
+          },
+        };
+        const financeDraft = await runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            set local role authenticated;
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${financeId}', true
+            );
+            ${createDraftRpcSql(financeDirectDraftInput)}
+            commit;
+          `,
+        );
+        expect(financeDraft.code).not.toBe(0);
+        expect(financeDraft.stderr).toContain(
+          "settlement_ai_authoring_role_denied",
+        );
+
+        const streamerDraft = await runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            set local role authenticated;
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${streamerId}', true
+            );
+            ${createDraftRpcSql({
+              ...financeDirectDraftInput,
+              idempotencyKey: "authoring-role-streamer-direct-draft-0001",
+            })}
+            commit;
+          `,
+        );
+        expect(streamerDraft.code).not.toBe(0);
+        expect(streamerDraft.stderr).toContain(
+          "settlement_ai_project_access_denied",
+        );
+
+        const unauthenticatedInsert = await runDockerSqlAsyncCapture(
+          container,
+          `
+            select pg_catalog.set_config('request.jwt.claim.sub', '', false);
+            insert into public.ai_settlement_rule_drafts (
+              organization_id, project_id, conversation_id, created_by
+            ) values (
+              '${organizationId}'::uuid,
+              '${projectId}'::uuid,
+              '${financeConversationId}'::uuid,
+              '${financeId}'::uuid
+            );
+          `,
+        );
+        expect(unauthenticatedInsert.code).not.toBe(0);
+        expect(unauthenticatedInsert.stderr).toContain(
+          "settlement_ai_authoring_authentication_required",
+        );
+
+        const actorMismatchInsert = await runDockerSqlAsyncCapture(
+          container,
+          `
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${authorFixtures[0].id}', false
+            );
+            insert into public.ai_settlement_rule_drafts (
+              organization_id, project_id, conversation_id, created_by
+            ) values (
+              '${organizationId}'::uuid,
+              '${projectId}'::uuid,
+              '${financeConversationId}'::uuid,
+              '${financeId}'::uuid
+            );
+          `,
+        );
+        expect(actorMismatchInsert.code).not.toBe(0);
+        expect(actorMismatchInsert.stderr).toContain(
+          "settlement_ai_authoring_actor_mismatch",
+        );
+
+        for (const deniedActorId of [financeId, streamerId]) {
+          const deniedInsert = await runDockerSqlAsyncCapture(
+            container,
+            `
+              select pg_catalog.set_config(
+                'request.jwt.claim.sub', '${deniedActorId}', false
+              );
+              insert into public.ai_settlement_rule_drafts (
+                organization_id, project_id, conversation_id, created_by
+              ) values (
+                '${organizationId}'::uuid,
+                '${projectId}'::uuid,
+                '${financeConversationId}'::uuid,
+                '${deniedActorId}'::uuid
+              );
+            `,
+          );
+          expect(deniedInsert.code).not.toBe(0);
+          expect(deniedInsert.stderr).toContain(
+            "settlement_ai_authoring_role_denied",
+          );
+        }
+
+        const financeAtomicDraftInput = {
+          ...ownerDraftInput,
+          conversationId: financeConversationId,
+          idempotencyKey: "authoring-role-finance-atomic-draft-0001",
+          promptText: "请通过 finalizer 生成 finance 结算规则。",
+          turnTrace: {
+            turnId: financeAtomicTurnId,
+            userMessageId: financeAtomicUserMessageId,
+            assistantMessageId: financeAtomicAssistantMessageId,
+          },
+          aiResponse: {
+            ...ownerDraftInput.aiResponse,
+            content: "已通过 finalizer 生成 finance 结算规则。",
+          },
+        };
+        const completion = {
+          providerName: "authoring-role-regression-provider",
+          content: financeAtomicDraftInput.aiResponse.content,
+          aiInvocationId: null,
+          metadata: { regression: "authoring_role_gate" },
+        };
+        const simulation = {
+          idempotencyKey: "authoring-role-atomic-simulation-0001",
+          dataSelectionHash: "f".repeat(64),
+          sampleSource: { kind: "historical_settlements" },
+          sampleSelection: {
+            periodStart: "2026-06-01",
+            periodEnd: "2026-06-30",
+            populationCount: 20,
+            sampledCount: 20,
+            criteria: ["confirmed"],
+          },
+          coverage: {
+            totalRecords: 20,
+            evaluatedRecords: 20,
+            skippedRecords: 0,
+          },
+          scenarios: [{ name: "标准场景", kind: "normal", result: "passed" }],
+          historicalTotals: {
+            payableAmountCents: "10000",
+            receivableAmountCents: null,
+            recordCount: 20,
+          },
+          deltas: {
+            payableAmountCents: "0",
+            receivableAmountCents: "0",
+            percentageBps: 0,
+          },
+          largestChanges: [],
+          warnings: [],
+        };
+        const failedDraftInput = {
+          ...financeAtomicDraftInput,
+          idempotencyKey: "authoring-role-failed-finalizer-0001",
+          unresolvedAmbiguities: [],
+          aiResponse: {
+            content: "结算规则生成失败，请稍后重试。",
+            finishReason: "stop",
+            providerRequestId: null,
+          },
+          generatedFormula: null,
+          generatedExplanation: null,
+          generatedTestCases: [],
+          formulaHash: null,
+          status: "failed",
+        };
+        const financeFinalizerCalls = [
+          `select public.finalize_settlement_ai_draft_turn(
+            ${sqlJson(financeAtomicDraftInput)}, ${sqlJson(completion)}
+          );`,
+          `select public.finalize_settlement_ai_simulation_turn(
+            ${sqlJson(financeAtomicDraftInput)},
+            ${sqlJson(completion)},
+            ${sqlJson(simulation)}
+          );`,
+          `select public.finalize_settlement_ai_failed_turn(
+            ${sqlJson(failedDraftInput)},
+            ${sqlJson({ ...completion, content: failedDraftInput.aiResponse.content })},
+            'SETTLEMENT_AI_PROVIDER_FAILED',
+            ${sqlString(
+              SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES.SETTLEMENT_AI_PROVIDER_FAILED,
+            )},
+            true
+          );`,
+        ];
+        for (const call of financeFinalizerCalls) {
+          const deniedFinalizer = await runDockerSqlAsyncCapture(
+            container,
+            `
+              begin;
+              set local role authenticated;
+              select pg_catalog.set_config(
+                'request.jwt.claim.sub', '${financeId}', true
+              );
+              ${call}
+              commit;
+            `,
+          );
+          expect(deniedFinalizer.code).not.toBe(0);
+          expect(deniedFinalizer.stderr).toContain(
+            "settlement_ai_authoring_role_denied",
+          );
+        }
+
+        const ownerDraftId = runDockerSqlText(
+          container,
+          `
+            select id::text
+            from public.ai_settlement_rule_drafts
+            where organization_id = '${organizationId}'::uuid
+              and created_by = '${authorFixtures[0].id}'::uuid
+              and idempotency_key = '${ownerDraftInput.idempotencyKey}';
+          `,
+        );
+        const financeSimulation = await runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            set local role authenticated;
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${financeId}', true
+            );
+            ${createSimulationRpcSql({
+              organizationId,
+              projectId,
+              aiDraftId: ownerDraftId,
+              idempotencyKey: "authoring-role-finance-simulation-0001",
+              formulaHash: ownerDraftInput.formulaHash ?? "",
+              ruleContractHash: ownerDraftInput.contractHash,
+              parameterHash: ownerDraftInput.parameterHash,
+              variableCatalogVersion: ownerDraftInput.variableCatalogVersion,
+              dataSelectionHash: simulation.dataSelectionHash,
+              sampleSource: simulation.sampleSource,
+              sampleSelection: simulation.sampleSelection,
+              coverage: simulation.coverage,
+              scenarios: simulation.scenarios,
+              historicalTotals: simulation.historicalTotals,
+              deltas: simulation.deltas,
+              largestChanges: simulation.largestChanges,
+              warnings: simulation.warnings,
+            })}
+            commit;
+          `,
+        );
+        expect(financeSimulation.code, financeSimulation.stderr).toBe(0);
+        expect(
+          runDockerSqlText(
+            container,
+            `
+              select pg_catalog.count(*)::text
+              from public.settlement_formula_simulations
+              where organization_id = '${organizationId}'::uuid
+                and ai_draft_id = '${ownerDraftId}'::uuid
+                and created_by = '${financeId}'::uuid;
+            `,
+          ),
+        ).toBe("1");
+      } finally {
+        runDockerSql(container, cleanupSql);
+      }
+    }, 60_000);
+  },
+);
+
+describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
   "Phase 1 conversation context PostgreSQL regression",
   () => {
     it("keeps context hashes stable after a real jsonb key-reordering round trip", async () => {
@@ -3510,8 +4464,7 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
 
       expect(
         Object.keys(
-          roundTrippedSnapshot.gatewayContext.invocationMetadata
-            .nestedMetadata,
+          roundTrippedSnapshot.gatewayContext.invocationMetadata.nestedMetadata,
         ),
       ).not.toEqual(Object.keys(nestedMetadata));
       expect(roundTrippedSnapshot).toEqual(originalSnapshot);
@@ -3524,9 +4477,7 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
       ).toEqual(unicodeMetadata);
 
       const contextHashFor = async (
-        contextSnapshot: NonNullable<
-          StoredConversationTurn["contextSnapshot"]
-        >,
+        contextSnapshot: NonNullable<StoredConversationTurn["contextSnapshot"]>,
       ): Promise<string> => {
         let contextHash: string | undefined;
         const turn: StoredConversationTurn = {
@@ -3715,6 +4666,18 @@ describe.runIf(Boolean(settlementAiLockRegressionContainer))(
           '${projectId}'::uuid,
           'Task6 Lock Order'
         );
+        insert into public.custom_settlement_ai_sessions (
+          organization_id, project_id, actor_id, client_request_id,
+          title, request_fingerprint, conversation_id
+        ) values (
+          '${organizationId}'::uuid,
+          '${projectId}'::uuid,
+          '${actorId}'::uuid,
+          'task6-lock-order-session-0001',
+          'Task6 Lock Order',
+          '${"1".repeat(64)}',
+          '${conversationId}'::uuid
+        );
         insert into public.ai_chat_messages (
           id, organization_id, owner_user_id, conversation_id, sequence_no,
           role, status, content, parent_message_id
@@ -3802,7 +4765,10 @@ describe.runIf(Boolean(settlementAiLockRegressionContainer))(
         const direct = runDockerSqlAsync(container, directSimulationSql);
         await new Promise((resolve) => setTimeout(resolve, 400));
         const replay = runDockerSqlAsync(container, atomicReplaySql);
-        const [directResult, replayResult] = await Promise.all([direct, replay]);
+        const [directResult, replayResult] = await Promise.all([
+          direct,
+          replay,
+        ]);
         expect(
           [directResult.stderr, replayResult.stderr].join("\n"),
         ).not.toContain("40P01");
@@ -3913,8 +4879,20 @@ describe.runIf(Boolean(settlementAiLockRegressionContainer))(
           '${conversationId}'::uuid,
           '${organizationId}'::uuid,
           '${actorId}'::uuid,
-          null,
+          '${projectId}'::uuid,
           'Task6 FK Lock Order'
+        );
+        insert into public.custom_settlement_ai_sessions (
+          organization_id, project_id, actor_id, client_request_id,
+          title, request_fingerprint, conversation_id
+        ) values (
+          '${organizationId}'::uuid,
+          '${projectId}'::uuid,
+          '${actorId}'::uuid,
+          'task6-fk-lock-order-session-0001',
+          'Task6 FK Lock Order',
+          '${"2".repeat(64)}',
+          '${conversationId}'::uuid
         );
         insert into public.ai_chat_messages (
           id, organization_id, owner_user_id, conversation_id, sequence_no,
@@ -4040,9 +5018,8 @@ describe.runIf(Boolean(settlementAiLockRegressionContainer))(
       }) => {
         const container = settlementAiLockRegressionContainer ?? "";
         const suffix = `task6-${label}-project-lock`;
-        const parentId = parentRelation === "organizations"
-          ? organizationId
-          : actorId;
+        const parentId =
+          parentRelation === "organizations" ? organizationId : actorId;
         const draftInput = {
           organizationId,
           projectId,
@@ -4124,6 +5101,18 @@ describe.runIf(Boolean(settlementAiLockRegressionContainer))(
             '${actorId}'::uuid,
             '${projectId}'::uuid,
             'Task6 Parent Lock'
+          );
+          insert into public.custom_settlement_ai_sessions (
+            organization_id, project_id, actor_id, client_request_id,
+            title, request_fingerprint, conversation_id
+          ) values (
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            '${actorId}'::uuid,
+            '${suffix}-session-0001',
+            'Task6 Parent Lock',
+            '${"3".repeat(64)}',
+            '${conversationId}'::uuid
           );
           insert into public.ai_chat_messages (
             id, organization_id, owner_user_id, conversation_id, sequence_no,
@@ -4254,6 +5243,49 @@ function createDraftRpcSql(input: {
       ${input.formulaHash === null ? "null" : sqlString(input.formulaHash)},
       ${sqlString(input.parameterHash)},
       ${sqlString(input.status)}
+    );
+  `;
+}
+
+function createSimulationRpcSql(input: {
+  organizationId: string;
+  projectId: string;
+  aiDraftId: string;
+  idempotencyKey: string;
+  formulaHash: string;
+  ruleContractHash: string;
+  parameterHash: string;
+  variableCatalogVersion: string;
+  dataSelectionHash: string;
+  sampleSource: unknown;
+  sampleSelection: unknown;
+  coverage: unknown;
+  scenarios: unknown;
+  historicalTotals: unknown;
+  deltas: unknown;
+  largestChanges: unknown;
+  warnings: unknown;
+}): string {
+  return `
+    select public.create_settlement_formula_simulation(
+      '${input.organizationId}'::uuid,
+      '${input.projectId}'::uuid,
+      null,
+      '${input.aiDraftId}'::uuid,
+      ${sqlString(input.idempotencyKey)},
+      ${sqlString(input.formulaHash)},
+      ${sqlString(input.ruleContractHash)},
+      ${sqlString(input.parameterHash)},
+      ${sqlString(input.variableCatalogVersion)},
+      ${sqlString(input.dataSelectionHash)},
+      ${sqlJson(input.sampleSource)},
+      ${sqlJson(input.sampleSelection)},
+      ${sqlJson(input.coverage)},
+      ${sqlJson(input.scenarios)},
+      ${sqlJson(input.historicalTotals)},
+      ${sqlJson(input.deltas)},
+      ${sqlJson(input.largestChanges)},
+      ${sqlJson(input.warnings)}
     );
   `;
 }
