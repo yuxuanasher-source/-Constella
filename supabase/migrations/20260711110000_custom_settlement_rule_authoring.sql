@@ -2211,6 +2211,7 @@ set search_path = pg_catalog, public
 as $$
 declare
   v_actor_id uuid := auth.uid();
+  v_project_id uuid;
   v_conversation public.ai_conversations%rowtype;
   v_existing public.ai_settlement_rule_drafts%rowtype;
   v_previous public.ai_settlement_rule_drafts%rowtype;
@@ -2230,12 +2231,15 @@ begin
      or not public.can_access_project(p_project_id) then
     raise exception 'settlement_ai_project_access_denied';
   end if;
-  if not exists (
-    select 1
-    from public.projects as p
-    where p.id = p_project_id
-      and p.organization_id = p_organization_id
-  ) then
+  -- Parent-first locking also covers the implicit FOR KEY SHARE locks taken by
+  -- the conversation project update and draft insert foreign-key checks.
+  select p.id
+  into v_project_id
+  from public.projects as p
+  where p.id = p_project_id
+    and p.organization_id = p_organization_id
+  for update;
+  if not found then
     raise exception 'settlement_ai_project_scope_mismatch';
   end if;
   if p_status not in ('clarifying', 'contract_ready', 'failed') then

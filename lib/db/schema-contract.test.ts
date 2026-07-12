@@ -127,6 +127,41 @@ function settlementAiForUpdateRelations(fn: string): string[] {
     });
 }
 
+function settlementAiProjectLockContract(fn: string): {
+  projectLockIndex: number;
+  implicitProjectLockWrites: Array<{ index: number; relation: string }>;
+} {
+  const statements = extractSettlementAiFunction(fn).body
+    .split(";")
+    .map(normalizeSql);
+  const projectLockIndex = statements.findIndex(
+    (statement) =>
+      /\bfrom public\.projects\b/iu.test(statement) &&
+      /\bfor update\b/iu.test(statement),
+  );
+  const implicitProjectLockWrites = statements.flatMap((statement, index) => {
+    if (
+      /\bupdate public\.ai_conversations set project_id\b/iu.test(statement)
+    ) {
+      return [{ index, relation: "ai_conversations" }];
+    }
+    const insert = statement.match(
+      /\binsert into public\.(ai_settlement_rule_drafts|settlement_formula_simulations)\b/iu,
+    );
+    return insert?.[1] ? [{ index, relation: insert[1] }] : [];
+  });
+  return { projectLockIndex, implicitProjectLockWrites };
+}
+
+function settlementAiAuthenticatedAuthoringRpcNames(): string[] {
+  return Array.from(
+    normalizedSettlementAiMigration.matchAll(
+      /grant execute on function public\.((?:create_ai_settlement_rule_draft|create_settlement_formula_simulation|finalize_settlement_ai_(?:draft|simulation|failed)_turn))\(/gu,
+    ),
+    (match) => match[1] ?? "",
+  );
+}
+
 function settlementAiPolicyDefinition(policy: string): string {
   const marker = `create policy ${policy}`;
   const start = normalizedSettlementAiMigration.indexOf(marker);
@@ -783,6 +818,7 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(
       settlementAiForUpdateRelations("create_ai_settlement_rule_draft"),
     ).toEqual([
+      "projects",
       "ai_conversations",
       "ai_settlement_rule_drafts",
       "ai_chat_turns",
@@ -807,6 +843,43 @@ describe("Phase 1 settlement AI persistence contract", () => {
     ).toBeLessThan(
       simulationFinalizer.indexOf("public.create_settlement_formula_simulation"),
     );
+  });
+
+  it("locks project before every implicit project-FK lock in public authoring RPCs", () => {
+    expect(settlementAiAuthenticatedAuthoringRpcNames()).toEqual([
+      "create_ai_settlement_rule_draft",
+      "create_settlement_formula_simulation",
+      "finalize_settlement_ai_draft_turn",
+      "finalize_settlement_ai_simulation_turn",
+      "finalize_settlement_ai_failed_turn",
+    ]);
+
+    const draftContract = settlementAiProjectLockContract(
+      "create_ai_settlement_rule_draft",
+    );
+    expect(draftContract.implicitProjectLockWrites.map(({ relation }) => relation))
+      .toEqual(["ai_conversations", "ai_settlement_rule_drafts"]);
+    expect(draftContract.projectLockIndex).toBeGreaterThanOrEqual(0);
+    for (const write of draftContract.implicitProjectLockWrites) {
+      expect(
+        write.index,
+        `${write.relation} can acquire an implicit project FK lock`,
+      ).toBeGreaterThan(draftContract.projectLockIndex);
+    }
+
+    const simulationContract = settlementAiProjectLockContract(
+      "create_settlement_formula_simulation",
+    );
+    expect(
+      simulationContract.implicitProjectLockWrites.map(({ relation }) => relation),
+    ).toEqual(["settlement_formula_simulations"]);
+    expect(simulationContract.projectLockIndex).toBeGreaterThanOrEqual(0);
+    for (const write of simulationContract.implicitProjectLockWrites) {
+      expect(
+        write.index,
+        `${write.relation} can acquire an implicit project FK lock`,
+      ).toBeGreaterThan(simulationContract.projectLockIndex);
+    }
   });
 
   it("exposes only authenticated atomic finalizers and keeps helpers private", () => {
@@ -1624,11 +1697,250 @@ describe.runIf(Boolean(settlementAiLockRegressionContainer))(
         runDockerSql(container, cleanupSql);
       }
     }, 20_000);
+
+    it("completes public draft creation beside atomic replay without FK-lock 40P01", async () => {
+      const container = settlementAiLockRegressionContainer ?? "";
+      const actorId = "12000000-0000-4000-8000-000000000001";
+      const organizationId = "22000000-0000-4000-8000-000000000001";
+      const projectId = "32000000-0000-4000-8000-000000000001";
+      const conversationId = "42000000-0000-4000-8000-000000000001";
+      const userMessageId = "52000000-0000-4000-8000-000000000001";
+      const assistantMessageId = "52000000-0000-4000-8000-000000000002";
+      const turnId = "62000000-0000-4000-8000-000000000001";
+      const draftInput = {
+        organizationId,
+        projectId,
+        conversationId,
+        idempotencyKey: "task6-fk-lock-order-draft-1",
+        promptText: "请生成需要澄清的项目结算规则。",
+        turnTrace: { turnId, userMessageId, assistantMessageId },
+        businessContract: settlementAiCanonicalBusinessContract(),
+        unresolvedAmbiguities: [
+          {
+            code: "confirm_rate",
+            question: "请确认分成比例。",
+            required: true,
+          },
+        ],
+        variableCatalogVersion: "a".repeat(64),
+        aiResponse: {
+          content: "\n请确认分成比例后继续。\n",
+          finishReason: "stop",
+          providerRequestId: null,
+        },
+        generatedFormula: null,
+        generatedExplanation: null,
+        generatedTestCases: [],
+        model: "fk-lock-regression-model",
+        safetyFlags: [],
+        contractHash: "b".repeat(64),
+        formulaHash: null,
+        parameterHash: "d".repeat(64),
+        status: "clarifying",
+      };
+      const completion = {
+        providerName: "fk-lock-regression-provider",
+        content: draftInput.aiResponse.content,
+        aiInvocationId: null,
+        metadata: { regression: "implicit_project_fk_lock" },
+      };
+      const secondDraftInput = {
+        ...draftInput,
+        idempotencyKey: "task6-fk-lock-order-draft-2",
+      };
+      const draftJson = sqlJson(draftInput);
+      const completionJson = sqlJson(completion);
+      const cleanupSql = `
+        set session_replication_role = replica;
+        delete from public.settlement_formula_simulations
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.ai_settlement_rule_drafts
+        where organization_id = '${organizationId}'::uuid;
+        set session_replication_role = origin;
+        delete from public.organizations where id = '${organizationId}'::uuid;
+        delete from public.profiles where id = '${actorId}'::uuid;
+        delete from auth.users where id = '${actorId}'::uuid;
+      `;
+      const setupSql = `
+        ${cleanupSql}
+        insert into auth.users (id, email)
+        values ('${actorId}'::uuid, 'task6-fk-lock-order@example.invalid');
+        insert into public.profiles (id, email, full_name)
+        values (
+          '${actorId}'::uuid,
+          'task6-fk-lock-order@example.invalid',
+          'Task6 FK Lock Order'
+        );
+        insert into public.organizations (id, name, code)
+        values (
+          '${organizationId}'::uuid,
+          'Task6 FK Lock Order',
+          'task6-fk-lock-order-regression'
+        );
+        insert into public.organization_members (
+          organization_id, user_id, role, status
+        ) values (
+          '${organizationId}'::uuid, '${actorId}'::uuid, 'owner', 'active'
+        );
+        insert into public.projects (
+          id, organization_id, code, name, created_by, owner_id
+        ) values (
+          '${projectId}'::uuid,
+          '${organizationId}'::uuid,
+          'task6-fk-lock-order-regression',
+          'Task6 FK Lock Order',
+          '${actorId}'::uuid,
+          '${actorId}'::uuid
+        );
+        insert into public.ai_conversations (
+          id, organization_id, owner_user_id, project_id, title
+        ) values (
+          '${conversationId}'::uuid,
+          '${organizationId}'::uuid,
+          '${actorId}'::uuid,
+          null,
+          'Task6 FK Lock Order'
+        );
+        insert into public.ai_chat_messages (
+          id, organization_id, owner_user_id, conversation_id, sequence_no,
+          role, status, content, parent_message_id, metadata
+        ) values
+          (
+            '${userMessageId}'::uuid,
+            '${organizationId}'::uuid,
+            '${actorId}'::uuid,
+            '${conversationId}'::uuid,
+            1, 'user', 'completed', '请生成结算规则。', null, '{}'::jsonb
+          ),
+          (
+            '${assistantMessageId}'::uuid,
+            '${organizationId}'::uuid,
+            '${actorId}'::uuid,
+            '${conversationId}'::uuid,
+            2, 'assistant', 'completed',
+            ${sqlString(draftInput.aiResponse.content)},
+            '${userMessageId}'::uuid,
+            ${sqlJson(completion.metadata)}
+          );
+        insert into public.ai_chat_turns (
+          id, organization_id, owner_user_id, conversation_id,
+          user_message_id, assistant_message_id, status, idempotency_key,
+          provider_name, retryable, completed_at
+        ) values (
+          '${turnId}'::uuid,
+          '${organizationId}'::uuid,
+          '${actorId}'::uuid,
+          '${conversationId}'::uuid,
+          '${userMessageId}'::uuid,
+          '${assistantMessageId}'::uuid,
+          'completed',
+          'task6-fk-lock-order-turn',
+          ${sqlString(completion.providerName)},
+          false,
+          pg_catalog.clock_timestamp()
+        );
+        select pg_catalog.set_config(
+          'request.jwt.claim.sub', '${actorId}', false
+        );
+        ${createDraftRpcSql(draftInput)}
+      `;
+      const parentFirstAtomicSql = `
+        begin;
+        set local deadlock_timeout = '200ms';
+        select pg_catalog.set_config(
+          'request.jwt.claim.sub', '${actorId}', true
+        );
+        select id from public.projects
+        where id = '${projectId}'::uuid for update;
+        select pg_catalog.pg_sleep(2);
+        select public.finalize_settlement_ai_draft_turn(
+          ${draftJson}, ${completionJson}
+        );
+        commit;
+      `;
+      const publicDraftSql = `
+        begin;
+        set local deadlock_timeout = '200ms';
+        select pg_catalog.set_config(
+          'request.jwt.claim.sub', '${actorId}', true
+        );
+        ${createDraftRpcSql(secondDraftInput)}
+        commit;
+      `;
+
+      runDockerSql(container, setupSql);
+      try {
+        const atomic = runDockerSqlAsync(container, parentFirstAtomicSql);
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        const publicDraft = runDockerSqlAsync(container, publicDraftSql);
+        const [atomicResult, publicDraftResult] = await Promise.all([
+          atomic,
+          publicDraft,
+        ]);
+        expect(
+          [atomicResult.stderr, publicDraftResult.stderr].join("\n"),
+        ).not.toContain("40P01");
+        expect(atomicResult.code, atomicResult.stderr).toBe(0);
+        expect(publicDraftResult.code, publicDraftResult.stderr).toBe(0);
+      } finally {
+        runDockerSql(container, cleanupSql);
+      }
+    }, 20_000);
   },
 );
 
 function sqlJson(value: unknown): string {
   return `$json$${JSON.stringify(value)}$json$::jsonb`;
+}
+
+function sqlString(value: string): string {
+  return `$text$${value}$text$`;
+}
+
+function createDraftRpcSql(input: {
+  organizationId: string;
+  projectId: string;
+  conversationId: string;
+  idempotencyKey: string;
+  promptText: string;
+  turnTrace: unknown;
+  businessContract: unknown;
+  unresolvedAmbiguities: unknown;
+  variableCatalogVersion: string;
+  aiResponse: unknown;
+  generatedFormula: unknown | null;
+  generatedExplanation: string | null;
+  generatedTestCases: unknown;
+  model: string;
+  safetyFlags: unknown;
+  contractHash: string;
+  formulaHash: string | null;
+  parameterHash: string;
+  status: string;
+}): string {
+  return `
+    select public.create_ai_settlement_rule_draft(
+      '${input.organizationId}'::uuid,
+      '${input.projectId}'::uuid,
+      '${input.conversationId}'::uuid,
+      ${sqlString(input.idempotencyKey)},
+      ${sqlString(input.promptText)},
+      ${sqlJson(input.turnTrace)},
+      ${sqlJson(input.businessContract)},
+      ${sqlJson(input.unresolvedAmbiguities)},
+      ${sqlString(input.variableCatalogVersion)},
+      ${sqlJson(input.aiResponse)},
+      ${input.generatedFormula === null ? "null" : sqlJson(input.generatedFormula)},
+      ${input.generatedExplanation === null ? "null" : sqlString(input.generatedExplanation)},
+      ${sqlJson(input.generatedTestCases)},
+      ${sqlString(input.model)},
+      ${sqlJson(input.safetyFlags)},
+      ${sqlString(input.contractHash)},
+      ${input.formulaHash === null ? "null" : sqlString(input.formulaHash)},
+      ${sqlString(input.parameterHash)},
+      ${sqlString(input.status)}
+    );
+  `;
 }
 
 function runDockerSql(container: string, sql: string): void {
