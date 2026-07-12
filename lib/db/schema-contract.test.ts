@@ -3474,16 +3474,39 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
       const roundTrippedText = runDockerSqlText(
         container,
         `
-          with persisted(context_snapshot) as (
-            values (${sqlJson(originalSnapshot)})
-          )
-          select context_snapshot::text
-          from persisted;
+          create temp table conversation_context_jsonb_round_trip (
+            id integer generated always as identity primary key,
+            context_snapshot jsonb not null
+          );
+          insert into conversation_context_jsonb_round_trip (
+            context_snapshot
+          ) values (${sqlJson(originalSnapshot)});
+          select pg_catalog.jsonb_build_object(
+            'contextSnapshot', persisted.context_snapshot,
+            'isTemporaryTable', (
+              select relation.relpersistence = 't'
+              from pg_catalog.pg_class as relation
+              where relation.oid = pg_catalog.to_regclass(
+                'pg_temp.conversation_context_jsonb_round_trip'
+              )
+            ),
+            'persistedRows', (
+              select pg_catalog.count(*)
+              from pg_temp.conversation_context_jsonb_round_trip
+            )
+          )::text
+          from pg_temp.conversation_context_jsonb_round_trip as persisted;
         `,
       );
-      const roundTrippedSnapshot = JSON.parse(
-        roundTrippedText,
-      ) as typeof originalSnapshot;
+      const persistedRoundTrip = JSON.parse(roundTrippedText) as {
+        contextSnapshot: typeof originalSnapshot;
+        isTemporaryTable: boolean;
+        persistedRows: number;
+      };
+
+      expect(persistedRoundTrip.isTemporaryTable).toBe(true);
+      expect(persistedRoundTrip.persistedRows).toBe(1);
+      const roundTrippedSnapshot = persistedRoundTrip.contextSnapshot;
 
       expect(
         Object.keys(
