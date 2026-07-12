@@ -28,6 +28,13 @@ import {
 } from "./conversation-repository";
 import { hasMeaningfulAiContent } from "./response-quality";
 
+const MAX_SNAPSHOT_VERSION = 2_147_483_647;
+const MAX_CONTEXT_DEPTH = 64;
+const MAX_CONTEXT_VISITED_OBJECTS = 100_000;
+const MAX_CONTEXT_EXPANDED_NODES = 100_000;
+// Five max-size canonical attachments serialize below 60 MiB, leaving ample metadata headroom.
+const MAX_CONTEXT_ESTIMATED_JSON_BYTES = 128 * 1024 * 1024;
+
 export type ConversationActor = {
   organizationId: string;
   userId: string;
@@ -581,6 +588,7 @@ function isConversationSnapshot(
     typeof value.version === "number" &&
     Number.isInteger(value.version) &&
     value.version > 0 &&
+    value.version <= MAX_SNAPSHOT_VERSION &&
     Number.isInteger(value.summaryVersion) &&
     Number(value.summaryVersion) >= 0 &&
     isStringArray(value.messageIds) &&
@@ -672,70 +680,178 @@ type PlainJsonValue =
   | { [key: string]: PlainJsonValue };
 
 function copyPlainJson(value: unknown): PlainJsonValue {
-  return copyPlainJsonValue(value, new Set<object>());
+  return copyPlainJsonValue(
+    value,
+    {
+      estimatedJsonBytes: 0,
+      expandedNodes: 0,
+      seenObjects: new WeakSet<object>(),
+      visitedObjects: 0,
+    },
+    0,
+  );
 }
+
+type PlainJsonCopyState = {
+  estimatedJsonBytes: number;
+  expandedNodes: number;
+  seenObjects: WeakSet<object>;
+  visitedObjects: number;
+};
 
 function copyPlainJsonValue(
   value: unknown,
-  ancestors: Set<object>,
+  state: PlainJsonCopyState,
+  depth: number,
 ): PlainJsonValue {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
+  if (depth > MAX_CONTEXT_DEPTH) return rejectUnsafeConversationContext();
+  reserveExpandedNode(state);
+
+  if (value === null) {
+    reserveEstimatedJsonBytes(state, 4);
+    return value;
+  }
+  if (typeof value === "boolean") {
+    reserveEstimatedJsonBytes(state, value ? 4 : 5);
+    return value;
+  }
+  if (typeof value === "string") {
+    reserveJsonStringBytes(state, value);
     return value;
   }
   if (typeof value === "number") {
-    if (Number.isFinite(value)) return value;
-    return rejectUnsafeConversationContext();
+    if (!Number.isFinite(value)) return rejectUnsafeConversationContext();
+    reserveEstimatedJsonBytes(state, JSON.stringify(value).length);
+    return value;
   }
   if (typeof value !== "object") return rejectUnsafeConversationContext();
-  if (ancestors.has(value)) return rejectUnsafeConversationContext();
+  if (state.seenObjects.has(value)) return rejectUnsafeConversationContext();
+  state.seenObjects.add(value);
+  state.visitedObjects += 1;
+  if (state.visitedObjects > MAX_CONTEXT_VISITED_OBJECTS) {
+    return rejectUnsafeConversationContext();
+  }
 
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) {
-      if (Object.getPrototypeOf(value) !== Array.prototype) {
-        return rejectUnsafeConversationContext();
-      }
-      const keys = Reflect.ownKeys(value);
-      if (keys.length !== value.length + 1 || !keys.includes("length")) {
-        return rejectUnsafeConversationContext();
-      }
-      return Array.from({ length: value.length }, (_, index) => {
-        const descriptor = Object.getOwnPropertyDescriptor(
-          value,
-          String(index),
-        );
-        if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
-          return rejectUnsafeConversationContext();
-        }
-        return copyPlainJsonValue(descriptor.value, ancestors);
-      });
-    }
-
-    if (Object.getPrototypeOf(value) !== Object.prototype) {
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype) {
       return rejectUnsafeConversationContext();
     }
-    const copy: { [key: string]: PlainJsonValue } = {};
-    for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== "string") return rejectUnsafeConversationContext();
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    preflightChildCount(state, value.length);
+    reserveEstimatedJsonBytes(state, 2 + Math.max(0, value.length - 1));
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== value.length + 1 || !keys.includes("length")) {
+      return rejectUnsafeConversationContext();
+    }
+    return Array.from({ length: value.length }, (_, index) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
       if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
         return rejectUnsafeConversationContext();
       }
-      Object.defineProperty(copy, key, {
-        configurable: true,
-        enumerable: true,
-        value: copyPlainJsonValue(descriptor.value, ancestors),
-        writable: true,
-      });
-    }
-    return copy;
-  } finally {
-    ancestors.delete(value);
+      return copyPlainJsonValue(descriptor.value, state, depth + 1);
+    });
   }
+
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    return rejectUnsafeConversationContext();
+  }
+  const keys = Reflect.ownKeys(value);
+  preflightChildCount(state, keys.length);
+  reserveEstimatedJsonBytes(
+    state,
+    2 + Math.max(0, keys.length - 1) + keys.length,
+  );
+  const descriptors: Array<[string, PropertyDescriptor]> = [];
+  for (const key of keys) {
+    if (typeof key !== "string") return rejectUnsafeConversationContext();
+    reserveJsonStringBytes(state, key);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+      return rejectUnsafeConversationContext();
+    }
+    descriptors.push([key, descriptor]);
+  }
+  const copy: { [key: string]: PlainJsonValue } = {};
+  for (const [key, descriptor] of descriptors) {
+    Object.defineProperty(copy, key, {
+      configurable: true,
+      enumerable: true,
+      value: copyPlainJsonValue(descriptor.value, state, depth + 1),
+      writable: true,
+    });
+  }
+  return copy;
+}
+
+function reserveExpandedNode(state: PlainJsonCopyState): void {
+  state.expandedNodes += 1;
+  if (state.expandedNodes > MAX_CONTEXT_EXPANDED_NODES) {
+    rejectUnsafeConversationContext();
+  }
+}
+
+function preflightChildCount(
+  state: PlainJsonCopyState,
+  childCount: number,
+): void {
+  if (childCount > MAX_CONTEXT_EXPANDED_NODES - state.expandedNodes) {
+    rejectUnsafeConversationContext();
+  }
+}
+
+function reserveEstimatedJsonBytes(
+  state: PlainJsonCopyState,
+  bytes: number,
+): void {
+  if (bytes > MAX_CONTEXT_ESTIMATED_JSON_BYTES - state.estimatedJsonBytes) {
+    rejectUnsafeConversationContext();
+  }
+  state.estimatedJsonBytes += bytes;
+}
+
+function reserveJsonStringBytes(
+  state: PlainJsonCopyState,
+  value: string,
+): void {
+  const remaining = MAX_CONTEXT_ESTIMATED_JSON_BYTES - state.estimatedJsonBytes;
+  let bytes = 2;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0) return rejectUnsafeConversationContext();
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (
+        !Number.isInteger(nextCodeUnit) ||
+        nextCodeUnit < 0xdc00 ||
+        nextCodeUnit > 0xdfff
+      ) {
+        return rejectUnsafeConversationContext();
+      }
+      bytes += 4;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return rejectUnsafeConversationContext();
+    } else if (
+      codeUnit === 0x22 ||
+      codeUnit === 0x5c ||
+      codeUnit === 0x08 ||
+      codeUnit === 0x09 ||
+      codeUnit === 0x0a ||
+      codeUnit === 0x0c ||
+      codeUnit === 0x0d
+    ) {
+      bytes += 2;
+    } else if (codeUnit <= 0x1f) {
+      bytes += 6;
+    } else if (codeUnit <= 0x7f) {
+      bytes += 1;
+    } else if (codeUnit <= 0x7ff) {
+      bytes += 2;
+    } else {
+      bytes += 3;
+    }
+    if (bytes > remaining) return rejectUnsafeConversationContext();
+  }
+  reserveEstimatedJsonBytes(state, bytes);
 }
 
 function rejectUnsafeConversationContext(): never {
@@ -752,5 +868,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function hashConversationSnapshot(
   snapshot: ConversationContextSnapshot,
 ): string {
-  return createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+  const canonicalSnapshot = canonicalizePlainJson(
+    snapshot as unknown as PlainJsonValue,
+  );
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalSnapshot))
+    .digest("hex");
+}
+
+function canonicalizePlainJson(value: PlainJsonValue): PlainJsonValue {
+  if (Array.isArray(value)) return value.map(canonicalizePlainJson);
+  if (value === null || typeof value !== "object") return value;
+
+  const canonical: { [key: string]: PlainJsonValue } = {};
+  for (const key of Object.keys(value).sort()) {
+    Object.defineProperty(canonical, key, {
+      configurable: true,
+      enumerable: true,
+      value: canonicalizePlainJson(value[key]!),
+      writable: true,
+    });
+  }
+  return canonical;
 }

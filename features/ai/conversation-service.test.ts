@@ -538,6 +538,251 @@ describe("Xingyao conversation service", () => {
     },
   );
 
+  it.each([
+    {
+      name: "NUL in attachment text",
+      gatewayContext: {
+        ...trustedGatewayContext(),
+        attachments: [
+          {
+            name: "nul.txt",
+            mimeType: "text/plain",
+            text: "prefix\u0000suffix",
+          },
+        ],
+      },
+    },
+    {
+      name: "NUL in an object key",
+      gatewayContext: {
+        ...trustedGatewayContext(),
+        invocationMetadata: { ["nul\u0000key"]: "value" },
+      },
+    },
+    {
+      name: "an unpaired high surrogate in a value",
+      gatewayContext: {
+        ...trustedGatewayContext(),
+        invocationMetadata: { unsafe: "high-\uD800" },
+      },
+    },
+    {
+      name: "an unpaired low surrogate in a value",
+      gatewayContext: {
+        ...trustedGatewayContext(),
+        invocationMetadata: { unsafe: "low-\uDC00" },
+      },
+    },
+    {
+      name: "an unpaired high surrogate in a key",
+      gatewayContext: {
+        ...trustedGatewayContext(),
+        invocationMetadata: { ["high-\uD800"]: "value" },
+      },
+    },
+    {
+      name: "an unpaired low surrogate in a key",
+      gatewayContext: {
+        ...trustedGatewayContext(),
+        invocationMetadata: { ["low-\uDC00"]: "value" },
+      },
+    },
+  ])(
+    "rejects capture with $name before transition",
+    async ({ gatewayContext }) => {
+      const store = persistence();
+      const service = createConversationService(store);
+      const snapshot: NonNullable<StoredConversationTurn["contextSnapshot"]> = {
+        version: 1,
+        summaryVersion: 0,
+        messageIds: ["message-user-1"],
+        groundingRefs: ["dashboard:role-home"],
+        assembledAt: "2026-07-11T03:00:00.000Z",
+      };
+
+      await expect(
+        service.captureGatewayContext(
+          actor,
+          "turn-1",
+          snapshot,
+          gatewayContext as unknown as Parameters<
+            typeof service.captureGatewayContext
+          >[3],
+        ),
+      ).rejects.toMatchObject({ code: "turn_state_conflict" });
+      expect(store.transitionTurn).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts paired emoji and non-NUL JSON control escapes", async () => {
+    const emojiKey = "emoji-\uD83D\uDE80";
+    const gatewayContext = {
+      ...trustedGatewayContext(),
+      invocationMetadata: {
+        [emojiKey]: "paired-\uD83D\uDE80",
+        controls: "line\ncolumn\tunit-\u0001",
+      },
+    };
+    const store = persistence();
+    const service = createConversationService(store);
+    const snapshot: NonNullable<StoredConversationTurn["contextSnapshot"]> = {
+      version: 1,
+      summaryVersion: 0,
+      messageIds: ["message-user-1"],
+      groundingRefs: ["dashboard:role-home"],
+      assembledAt: "2026-07-11T03:00:00.000Z",
+    };
+
+    const captured = await service.captureGatewayContext(
+      actor,
+      "turn-1",
+      snapshot,
+      gatewayContext,
+    );
+
+    expect(captured.gatewayContext?.invocationMetadata).toEqual(
+      gatewayContext.invocationMetadata,
+    );
+    expect(store.transitionTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      name: "a tree deeper than the context limit",
+      buildMetadata: () => {
+        let tree: Record<string, unknown> = { leaf: "value" };
+        for (let depth = 0; depth < 70; depth += 1) tree = { child: tree };
+        return { tree };
+      },
+    },
+    {
+      name: "an array beyond the expanded-node limit",
+      buildMetadata: () => ({
+        values: Array.from({ length: 100_001 }, () => 0),
+      }),
+    },
+    {
+      name: "an object beyond the visited-node limit",
+      buildMetadata: () => {
+        const values: Record<string, unknown> = {};
+        for (let index = 0; index < 100_001; index += 1) {
+          values[`key-${index}`] = index;
+        }
+        return { values };
+      },
+    },
+    {
+      name: "a compact shared-reference DAG",
+      buildMetadata: () => {
+        let node: Record<string, unknown> = { leaf: "value" };
+        for (let depth = 0; depth < 16; depth += 1) {
+          node = { left: node, right: node };
+        }
+        return { node };
+      },
+    },
+    {
+      name: "serialized JSON beyond the byte budget",
+      buildMetadata: () => ({
+        payload: "\u0001".repeat(Math.floor((128 * 1024 * 1024) / 6) + 1),
+      }),
+    },
+  ])(
+    "rejects capture with $name before transition",
+    async ({ buildMetadata }) => {
+      const store = persistence();
+      const service = createConversationService(store);
+      const snapshot: NonNullable<StoredConversationTurn["contextSnapshot"]> = {
+        version: 1,
+        summaryVersion: 0,
+        messageIds: ["message-user-1"],
+        groundingRefs: ["dashboard:role-home"],
+        assembledAt: "2026-07-11T03:00:00.000Z",
+      };
+      const gatewayContext = {
+        ...trustedGatewayContext(),
+        invocationMetadata: buildMetadata(),
+      };
+
+      const error = await service
+        .captureGatewayContext(actor, "turn-1", snapshot, gatewayContext)
+        .then(
+          () => null,
+          (reason: unknown) => reason,
+        );
+
+      expect(error).toMatchObject({ code: "turn_state_conflict" });
+      expect(store.transitionTurn).not.toHaveBeenCalled();
+    },
+    30_000,
+  );
+
+  it("admits the shared five-attachment maximum within the JSON byte budget", async () => {
+    const maxDataChars = Math.ceil((8 * 1024 * 1024 * 4) / 3) + 1024;
+    const attachments = Array.from({ length: 5 }, (_, index) => ({
+      name: `max-${index + 1}.txt`,
+      mimeType: "text/plain",
+      sizeBytes: 8 * 1024 * 1024,
+      text: "t".repeat(200_000),
+      data: "A".repeat(maxDataChars),
+    }));
+    const store = persistence();
+    const service = createConversationService(store);
+    const snapshot: NonNullable<StoredConversationTurn["contextSnapshot"]> = {
+      version: 1,
+      summaryVersion: 0,
+      messageIds: ["message-user-1"],
+      groundingRefs: ["dashboard:role-home"],
+      assembledAt: "2026-07-11T03:00:00.000Z",
+    };
+
+    const captured = await service.captureGatewayContext(
+      actor,
+      "turn-1",
+      snapshot,
+      { ...trustedGatewayContext(), attachments },
+    );
+
+    expect(captured.gatewayContext?.attachments).toHaveLength(5);
+    expect(store.transitionTurn).toHaveBeenCalledTimes(1);
+  }, 30_000);
+
+  it("accepts a near-normal context comfortably within resource bounds", async () => {
+    let nested: Record<string, unknown> = { leaf: "value" };
+    for (let depth = 0; depth < 12; depth += 1) nested = { child: nested };
+    const gatewayContext = {
+      ...trustedGatewayContext(),
+      invocationMetadata: {
+        nested,
+        rows: Array.from({ length: 250 }, (_, index) => ({
+          index,
+          label: `row-${index}`,
+        })),
+      },
+    };
+    const store = persistence();
+    const service = createConversationService(store);
+    const snapshot: NonNullable<StoredConversationTurn["contextSnapshot"]> = {
+      version: 1,
+      summaryVersion: 0,
+      messageIds: ["message-user-1"],
+      groundingRefs: ["dashboard:role-home"],
+      assembledAt: "2026-07-11T03:00:00.000Z",
+    };
+
+    const captured = await service.captureGatewayContext(
+      actor,
+      "turn-1",
+      snapshot,
+      gatewayContext,
+    );
+
+    expect(captured.gatewayContext?.invocationMetadata).toEqual(
+      gatewayContext.invocationMetadata,
+    );
+    expect(store.transitionTurn).toHaveBeenCalledTimes(1);
+  });
+
   it("owns persisted snapshots and isolates them from later mutations", async () => {
     const sourceGatewayContext = trustedGatewayContext();
     const sourceSnapshot = frozenSnapshot(sourceGatewayContext);
@@ -700,12 +945,103 @@ describe("Xingyao conversation service", () => {
     );
   });
 
+  it("hashes reordered snapshot objects canonically and still detects semantic changes", async () => {
+    const gatewayA = {
+      ...trustedGatewayContext(),
+      responseMetadata: {
+        grounding: { alpha: 1, nested: { first: "A", second: "B" } },
+        knowledge: { passages: [], source: "kb" },
+        retrospectiveDraft: { status: "draft", score: 9 },
+      },
+      invocationMetadata: {
+        requestId: "request-1",
+        nested: { first: "A", second: "B" },
+      },
+    };
+    const gatewayB = {
+      invocationMetadata: {
+        nested: { second: "B", first: "A" },
+        requestId: "request-1",
+      },
+      responseMetadata: {
+        retrospectiveDraft: { score: 9, status: "draft" },
+        knowledge: { source: "kb", passages: [] },
+        grounding: { nested: { second: "B", first: "A" }, alpha: 1 },
+      },
+      lastUserMessage: "冻结的业务事实",
+      primaryProvider: "deepseek" as const,
+      mode: "fast" as const,
+      attachments: [],
+      messages: [
+        { content: "可信系统规则", role: "system" as const },
+        { content: "冻结的业务事实", role: "user" as const },
+      ],
+    };
+    const snapshotA = {
+      version: 11,
+      summaryVersion: 5,
+      messageIds: ["message-user-1", "message-assistant-1"],
+      groundingRefs: ["dashboard:role-home"],
+      assembledAt: "2026-07-11T03:00:00.000Z",
+      gatewayContext: gatewayA,
+    };
+    const snapshotB = {
+      gatewayContext: gatewayB,
+      assembledAt: "2026-07-11T03:00:00.000Z",
+      groundingRefs: ["dashboard:role-home"],
+      messageIds: ["message-user-1", "message-assistant-1"],
+      summaryVersion: 5,
+      version: 11,
+    };
+    const changedSnapshot = {
+      ...snapshotB,
+      gatewayContext: {
+        ...gatewayB,
+        invocationMetadata: {
+          ...gatewayB.invocationMetadata,
+          nested: { second: "changed", first: "A" },
+        },
+      },
+    };
+    const reorderedArraySnapshot = {
+      ...snapshotB,
+      messageIds: ["message-assistant-1", "message-user-1"],
+    };
+    const transitionHash = async (
+      snapshot: NonNullable<StoredConversationTurn["contextSnapshot"]>,
+    ) => {
+      const store = persistence({
+        getTurn: vi
+          .fn()
+          .mockResolvedValue(storedTurn({ contextSnapshot: snapshot })),
+      });
+      const service = createConversationService(store);
+
+      await service.prepareTurn(actor, "turn-1");
+
+      return vi.mocked(store.transitionTurn).mock.calls[0]?.[0].patch
+        ?.contextHash;
+    };
+
+    const hashA = await transitionHash(snapshotA);
+    const hashB = await transitionHash(snapshotB);
+    const changedHash = await transitionHash(changedSnapshot);
+    const reorderedArrayHash = await transitionHash(reorderedArraySnapshot);
+
+    expect(hashA).toEqual(expect.any(String));
+    expect(hashA).toBe(hashB);
+    expect(changedHash).not.toBe(hashA);
+    expect(reorderedArrayHash).not.toBe(hashA);
+  });
+
   it.each([
     { name: "zero", version: 0 },
     { name: "negative", version: -1 },
     { name: "fractional", version: 1.5 },
     { name: "NaN", version: Number.NaN },
     { name: "non-number", version: "11" },
+    { name: "PostgreSQL integer overflow", version: 2_147_483_648 },
+    { name: "unsafe huge integer", version: Number.MAX_SAFE_INTEGER + 1 },
   ])("rejects a frozen snapshot with a $name version", async ({ version }) => {
     const snapshot = {
       ...frozenSnapshot(trustedGatewayContext()),
@@ -722,6 +1058,29 @@ describe("Xingyao conversation service", () => {
       code: "turn_state_conflict",
     });
     expect(store.transitionTurn).not.toHaveBeenCalled();
+  });
+
+  it("restores the maximum PostgreSQL integer snapshot version", async () => {
+    const snapshot = {
+      ...frozenSnapshot(trustedGatewayContext()),
+      version: 2_147_483_647,
+      summaryVersion: 5,
+    };
+    const store = persistence({
+      getTurn: vi
+        .fn()
+        .mockResolvedValue(storedTurn({ contextSnapshot: snapshot })),
+    });
+    const service = createConversationService(store);
+
+    const prepared = await service.prepareTurn(actor, "turn-1");
+
+    expect(prepared.snapshot.version).toBe(2_147_483_647);
+    expect(store.transitionTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        patch: expect.objectContaining({ contextSnapshot: snapshot }),
+      }),
+    );
   });
 
   it("refuses to commit punctuation-only assistant content", async () => {
