@@ -905,6 +905,7 @@ const approvedReportRowSchema = z.strictObject({
   settled_batch_item_id: z.string().uuid().nullable(),
   live_tasks: liveTaskRelationSchema,
 });
+const canonicalOffsetDateTimeSchema = z.iso.datetime({ offset: true });
 const settlementBatchRowSchema = z.strictObject({
   id: z.string().uuid(),
   organization_id: z.string().uuid(),
@@ -1866,17 +1867,16 @@ function assertApprovedReportReviewPeriod(
   periodStartInclusive: string,
   periodEndExclusive: string,
 ): void {
-  const startEpoch = Date.parse(periodStartInclusive);
-  const endEpoch = Date.parse(periodEndExclusive);
+  const startEpoch = canonicalOffsetDateTimeEpoch(periodStartInclusive);
+  const endEpoch = canonicalOffsetDateTimeEpoch(periodEndExclusive);
   if (
-    !Number.isFinite(startEpoch) ||
-    !Number.isFinite(endEpoch) ||
+    startEpoch === null ||
+    endEpoch === null ||
     endEpoch <= startEpoch ||
     reports.some((report) => {
-      if (report.reviewed_at === null) return true;
-      const reviewedAtEpoch = Date.parse(report.reviewed_at);
+      const reviewedAtEpoch = canonicalOffsetDateTimeEpoch(report.reviewed_at);
       return (
-        !Number.isFinite(reviewedAtEpoch) ||
+        reviewedAtEpoch === null ||
         reviewedAtEpoch < startEpoch ||
         reviewedAtEpoch >= endEpoch
       );
@@ -1889,6 +1889,13 @@ function assertApprovedReportReviewPeriod(
       true,
     );
   }
+}
+
+function canonicalOffsetDateTimeEpoch(value: unknown): number | null {
+  const parsed = canonicalOffsetDateTimeSchema.safeParse(value);
+  if (!parsed.success) return null;
+  const epoch = Date.parse(parsed.data);
+  return Number.isFinite(epoch) ? epoch : null;
 }
 
 async function loadLockedSettlementBatches(

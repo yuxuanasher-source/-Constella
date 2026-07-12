@@ -1115,6 +1115,15 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
   it.each([
     ["at the inclusive start", "2026-06-30T16:00:00.000Z"],
     ["just before the exclusive end", "2026-07-10T15:59:59.999Z"],
+    ["as canonical Z", "2026-07-05T08:00:00Z"],
+    [
+      "with a positive HH:MM offset and fractional seconds",
+      "2026-07-05T13:45:30.123456+05:30",
+    ],
+    [
+      "with a negative HH:MM offset and fractional seconds",
+      "2026-07-05T04:00:00.5-04:00",
+    ],
   ] as const)(
     "post-validates fallback reviewed_at %s when report filters are ignored",
     async (_boundary, reviewedAt) => {
@@ -1149,7 +1158,12 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
   it.each([
     ["before the inclusive start", "2026-06-30T15:59:59.999Z"],
     ["at the exclusive end", "2026-07-10T16:00:00.000Z"],
-    ["with a malformed timestamp", "not-a-timestamp"],
+    ["with an offset-less local timestamp", "2026-07-05T08:00:00"],
+    ["with a calendar-invalid timestamp", "2026-06-31T16:00:00.000Z"],
+    ["with a date-only timestamp", "2026-07-05"],
+    ["with a space-separated timestamp", "2026-07-05 08:00:00.000Z"],
+    ["with a noncanonical offset", "2026-07-05T16:00:00.000+0800"],
+    ["with a non-finite timestamp", "not-a-timestamp"],
     ["with a missing timestamp", null],
   ] as const)(
     "rejects fallback evidence %s when report filters are ignored",
