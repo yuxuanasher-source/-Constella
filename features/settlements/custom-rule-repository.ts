@@ -332,6 +332,47 @@ export type SettlementAiTurnCompletionInput = {
   metadata: Record<string, SettlementAiJsonValue>;
 };
 
+export const SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES = {
+  SETTLEMENT_AI_PROVIDER_FAILED:
+    "Settlement AI provider is temporarily unavailable.",
+  SETTLEMENT_AI_OUTPUT_INVALID:
+    "Settlement AI output did not pass validation.",
+  SETTLEMENT_AI_CONTRACT_INVALID:
+    "Settlement AI contract did not pass validation.",
+  SETTLEMENT_AI_FORMULA_INVALID:
+    "Settlement AI formula did not pass validation.",
+  invalid_input: "Settlement AI input is invalid.",
+  conversation_failed: "Settlement AI conversation failed.",
+  conversation_reconciliation_failed:
+    "Settlement AI conversation reconciliation failed.",
+  catalog_failed: "Settlement AI variable catalog failed.",
+  persistence_failed: "Settlement AI persistence failed.",
+  draft_not_found: "Settlement AI draft was not found.",
+  invalid_transition: "Settlement AI transition is invalid.",
+  stale_revision: "Settlement AI draft revision is stale.",
+  unresolved_ambiguities: "Settlement AI requires ambiguity resolution.",
+  duplicate_confirmation: "Settlement AI confirmation was already processed.",
+  contract_hash_mismatch: "Settlement AI contract freshness check failed.",
+  catalog_hash_mismatch:
+    "Settlement AI variable catalog freshness check failed.",
+  formula_hash_mismatch: "Settlement AI formula freshness check failed.",
+  evidence_hash_mismatch: "Settlement AI evidence freshness check failed.",
+  selection_hash_mismatch: "Settlement AI selection freshness check failed.",
+  formula_validation_failed: "Settlement AI formula validation failed.",
+  readiness_failed: "Settlement AI data readiness check failed.",
+  simulation_failed: "Settlement AI simulation failed.",
+  settlement_ai_generation_failed: "Settlement AI generation failed.",
+} as const;
+
+export type SettlementAiFailedTurnErrorCode =
+  keyof typeof SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES;
+export type SettlementAiFailedTurnFailureSemantics = {
+  errorCode: SettlementAiFailedTurnErrorCode;
+  errorSummary:
+    (typeof SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES)[SettlementAiFailedTurnErrorCode];
+  retryable: boolean;
+};
+
 export type FinalizeSettlementAiDraftTurnInput = {
   draft: ClarifyingCustomRuleDraftInput | ContractReadyCustomRuleDraftInput;
   completion: SettlementAiTurnCompletionInput;
@@ -340,7 +381,7 @@ export type FinalizeSettlementAiDraftTurnInput = {
 export type FinalizeSettlementAiFailedTurnInput = {
   draft: FailedCustomRuleDraftInput;
   completion: SettlementAiTurnCompletionInput;
-};
+} & SettlementAiFailedTurnFailureSemantics;
 
 export type FinalizeSettlementAiSimulationSummaryInput = Omit<
   InsertSettlementFormulaSimulationInput,
@@ -995,6 +1036,12 @@ const turnCompletionInputSchema = z.strictObject({
   aiInvocationId: uuidSchema.nullable(),
   metadata: z.record(z.string(), jsonValueSchema),
 });
+const failedTurnErrorCodeSchema = z.enum(
+  Object.keys(SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES) as [
+    SettlementAiFailedTurnErrorCode,
+    ...SettlementAiFailedTurnErrorCode[],
+  ],
+);
 const finalizeDraftTurnInputSchema = z
   .strictObject({
     draft: z.union([
@@ -1008,8 +1055,23 @@ const finalizeFailedTurnInputSchema = z
   .strictObject({
     draft: failedDraftInputSchema,
     completion: turnCompletionInputSchema,
+    errorCode: failedTurnErrorCodeSchema,
+    errorSummary: z.string().min(1).max(120),
+    retryable: z.boolean(),
   })
-  .superRefine(validateAtomicCompletionContent);
+  .superRefine(validateAtomicCompletionContent)
+  .superRefine((input, context) => {
+    if (
+      input.errorSummary !==
+      SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES[input.errorCode]
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["errorSummary"],
+        message: "must match the allowlisted summary for errorCode",
+      });
+    }
+  });
 const finalizeSimulationSummaryInputSchema = z.strictObject(
   SIMULATION_SUMMARY_INPUT_SHAPE,
 );
@@ -1285,7 +1347,13 @@ export class SupabaseCustomRuleReadRepository
     );
     const { data, error } = await this.client.rpc(
       "finalize_settlement_ai_failed_turn",
-      { p_draft: input.draft, p_completion: input.completion },
+      {
+        p_draft: input.draft,
+        p_completion: input.completion,
+        p_error_code: input.errorCode,
+        p_error_summary: input.errorSummary,
+        p_retryable: input.retryable,
+      },
     );
     if (error) {
       throw new CustomRulePersistenceQueryError("finalize_failed_turn", error);

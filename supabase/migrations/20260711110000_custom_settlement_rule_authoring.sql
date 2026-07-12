@@ -3194,6 +3194,72 @@ exception
 end;
 $$;
 
+create or replace function public.settlement_ai_failure_semantics_are_valid(
+  p_error_code text,
+  p_error_summary text,
+  p_retryable boolean
+)
+returns boolean
+language sql
+immutable
+set search_path = pg_catalog, public
+as $$
+  select p_retryable is not null
+    and p_error_code is not null
+    and p_error_summary is not null
+    and pg_catalog.octet_length(p_error_code) <= 64
+    and pg_catalog.octet_length(p_error_summary) <= 120
+    and case p_error_code
+      when 'SETTLEMENT_AI_PROVIDER_FAILED' then
+        p_error_summary = 'Settlement AI provider is temporarily unavailable.'
+      when 'SETTLEMENT_AI_OUTPUT_INVALID' then
+        p_error_summary = 'Settlement AI output did not pass validation.'
+      when 'SETTLEMENT_AI_CONTRACT_INVALID' then
+        p_error_summary = 'Settlement AI contract did not pass validation.'
+      when 'SETTLEMENT_AI_FORMULA_INVALID' then
+        p_error_summary = 'Settlement AI formula did not pass validation.'
+      when 'invalid_input' then
+        p_error_summary = 'Settlement AI input is invalid.'
+      when 'conversation_failed' then
+        p_error_summary = 'Settlement AI conversation failed.'
+      when 'conversation_reconciliation_failed' then
+        p_error_summary = 'Settlement AI conversation reconciliation failed.'
+      when 'catalog_failed' then
+        p_error_summary = 'Settlement AI variable catalog failed.'
+      when 'persistence_failed' then
+        p_error_summary = 'Settlement AI persistence failed.'
+      when 'draft_not_found' then
+        p_error_summary = 'Settlement AI draft was not found.'
+      when 'invalid_transition' then
+        p_error_summary = 'Settlement AI transition is invalid.'
+      when 'stale_revision' then
+        p_error_summary = 'Settlement AI draft revision is stale.'
+      when 'unresolved_ambiguities' then
+        p_error_summary = 'Settlement AI requires ambiguity resolution.'
+      when 'duplicate_confirmation' then
+        p_error_summary = 'Settlement AI confirmation was already processed.'
+      when 'contract_hash_mismatch' then
+        p_error_summary = 'Settlement AI contract freshness check failed.'
+      when 'catalog_hash_mismatch' then
+        p_error_summary = 'Settlement AI variable catalog freshness check failed.'
+      when 'formula_hash_mismatch' then
+        p_error_summary = 'Settlement AI formula freshness check failed.'
+      when 'evidence_hash_mismatch' then
+        p_error_summary = 'Settlement AI evidence freshness check failed.'
+      when 'selection_hash_mismatch' then
+        p_error_summary = 'Settlement AI selection freshness check failed.'
+      when 'formula_validation_failed' then
+        p_error_summary = 'Settlement AI formula validation failed.'
+      when 'readiness_failed' then
+        p_error_summary = 'Settlement AI data readiness check failed.'
+      when 'simulation_failed' then
+        p_error_summary = 'Settlement AI simulation failed.'
+      when 'settlement_ai_generation_failed' then
+        p_error_summary = 'Settlement AI generation failed.'
+      else false
+    end;
+$$;
+
 create or replace function public.settlement_ai_atomic_simulation_envelope_is_valid(
   p_simulation jsonb
 )
@@ -3592,7 +3658,10 @@ $$;
 
 create or replace function public.finalize_settlement_ai_failed_turn(
   p_draft jsonb,
-  p_completion jsonb
+  p_completion jsonb,
+  p_error_code text,
+  p_error_summary text,
+  p_retryable boolean
 )
 returns jsonb
 language plpgsql
@@ -3604,6 +3673,13 @@ declare
   v_turn public.ai_chat_turns%rowtype;
   v_draft jsonb;
 begin
+  if not public.settlement_ai_failure_semantics_are_valid(
+    p_error_code,
+    p_error_summary,
+    p_retryable
+  ) then
+    raise exception 'settlement_ai_atomic_failure_semantics_invalid';
+  end if;
   if not public.settlement_ai_atomic_draft_envelope_is_valid(p_draft)
      or not public.settlement_ai_atomic_completion_is_valid(
        p_draft,
@@ -3638,9 +3714,9 @@ begin
        )
        or v_turn.ai_invocation_id is distinct from
          (p_completion ->> 'aiInvocationId')::uuid
-       or v_turn.error_code <> 'settlement_ai_generation_failed'
-       or v_turn.error_summary <> 'Settlement AI generation failed'
-       or v_turn.retryable
+       or v_turn.error_code is distinct from p_error_code
+       or v_turn.error_summary is distinct from p_error_summary
+       or v_turn.retryable is distinct from p_retryable
        or not exists (
          select 1
          from public.ai_chat_messages as terminal_message
@@ -3667,9 +3743,9 @@ begin
     p_completion ->> 'content',
     pg_catalog.btrim(p_completion ->> 'providerName'),
     (p_completion ->> 'aiInvocationId')::uuid,
-    'settlement_ai_generation_failed',
-    'Settlement AI generation failed',
-    false,
+    p_error_code,
+    p_error_summary,
+    p_retryable,
     p_completion -> 'metadata'
   ) then
     raise exception 'settlement_ai_atomic_turn_failure_failed';
@@ -3801,6 +3877,7 @@ declare
   v_atomic_invalid_draft_conversation_id uuid := '40000000-0000-4000-8000-000000000005'::uuid;
   v_atomic_invalid_simulation_conversation_id uuid := '40000000-0000-4000-8000-000000000006'::uuid;
   v_atomic_failed_conversation_id uuid := '40000000-0000-4000-8000-000000000007'::uuid;
+  v_atomic_nonretryable_conversation_id uuid := '40000000-0000-4000-8000-000000000008'::uuid;
   v_user_message_id uuid := '50000000-0000-4000-8000-000000000001'::uuid;
   v_assistant_message_id uuid := '50000000-0000-4000-8000-000000000002'::uuid;
   v_atomic_draft_user_message_id uuid := '50000000-0000-4000-8000-000000000010'::uuid;
@@ -3813,12 +3890,15 @@ declare
   v_atomic_invalid_simulation_assistant_message_id uuid := '50000000-0000-4000-8000-000000000017'::uuid;
   v_atomic_failed_user_message_id uuid := '50000000-0000-4000-8000-000000000018'::uuid;
   v_atomic_failed_assistant_message_id uuid := '50000000-0000-4000-8000-000000000019'::uuid;
+  v_atomic_nonretryable_user_message_id uuid := '50000000-0000-4000-8000-000000000020'::uuid;
+  v_atomic_nonretryable_assistant_message_id uuid := '50000000-0000-4000-8000-000000000021'::uuid;
   v_turn_id uuid := '60000000-0000-4000-8000-000000000001'::uuid;
   v_atomic_draft_turn_id uuid := '60000000-0000-4000-8000-000000000002'::uuid;
   v_atomic_simulation_turn_id uuid := '60000000-0000-4000-8000-000000000003'::uuid;
   v_atomic_invalid_draft_turn_id uuid := '60000000-0000-4000-8000-000000000004'::uuid;
   v_atomic_invalid_simulation_turn_id uuid := '60000000-0000-4000-8000-000000000005'::uuid;
   v_atomic_failed_turn_id uuid := '60000000-0000-4000-8000-000000000006'::uuid;
+  v_atomic_nonretryable_turn_id uuid := '60000000-0000-4000-8000-000000000007'::uuid;
   v_turn_trace jsonb;
   v_valid_ambiguities jsonb := '[{"code":"confirm_rate","question":"请确认分成比例。","required":true}]'::jsonb;
   v_valid_ai_response jsonb := '{"content":"\n已生成结算规则。\n","finishReason":"stop","providerRequestId":null}'::jsonb;
@@ -3831,10 +3911,12 @@ declare
   v_atomic_invalid_draft_input jsonb;
   v_atomic_invalid_simulation_draft_input jsonb;
   v_atomic_failed_draft_input jsonb;
+  v_atomic_nonretryable_draft_input jsonb;
   v_atomic_completion jsonb;
   v_atomic_simulation_input jsonb;
   v_atomic_result jsonb;
   v_atomic_replay jsonb;
+  v_atomic_retry jsonb;
   v_draft_one jsonb;
   v_draft_two jsonb;
   v_draft_replay jsonb;
@@ -4068,6 +4150,27 @@ begin
   ) then
     raise exception 'invalid_selection_amount_cents';
   end if;
+  if not public.settlement_ai_failure_semantics_are_valid(
+    'SETTLEMENT_AI_PROVIDER_FAILED',
+    'Settlement AI provider is temporarily unavailable.',
+    true
+  ) then
+    raise exception 'valid_failure_semantics_rejected';
+  end if;
+  if public.settlement_ai_failure_semantics_are_valid(
+    'SETTLEMENT_AI_PROVIDER_FAILED',
+    'Authorization: Bearer secret-token at provider.ts:42',
+    true
+  ) then
+    raise exception 'unsafe_failure_summary_accepted';
+  end if;
+  if public.settlement_ai_failure_semantics_are_valid(
+    'RAW_PROVIDER_EXCEPTION',
+    'Settlement AI provider is temporarily unavailable.',
+    true
+  ) then
+    raise exception 'unsafe_failure_code_accepted';
+  end if;
 
   begin
     insert into auth.users (id, email)
@@ -4170,6 +4273,13 @@ begin
         v_actor_id,
         v_fixture_project_id,
         'Task6 原子失败会话'
+      ),
+      (
+        v_atomic_nonretryable_conversation_id,
+        v_organization_id,
+        v_actor_id,
+        v_fixture_project_id,
+        'Task6 原子不可重试失败会话'
       );
 
     insert into public.ai_chat_messages (
@@ -4314,6 +4424,28 @@ begin
         'streaming',
         '',
         v_atomic_failed_user_message_id
+      ),
+      (
+        v_atomic_nonretryable_user_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_nonretryable_conversation_id,
+        1,
+        'user',
+        'completed',
+        '请生成不可重试的结算规则。',
+        null
+      ),
+      (
+        v_atomic_nonretryable_assistant_message_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_nonretryable_conversation_id,
+        2,
+        'assistant',
+        'streaming',
+        '',
+        v_atomic_nonretryable_user_message_id
       );
 
     insert into public.ai_chat_turns (
@@ -4391,6 +4523,17 @@ begin
         v_atomic_failed_assistant_message_id,
         'validating',
         'task6-settlement-ai-atomic-failed-turn',
+        null
+      ),
+      (
+        v_atomic_nonretryable_turn_id,
+        v_organization_id,
+        v_actor_id,
+        v_atomic_nonretryable_conversation_id,
+        v_atomic_nonretryable_user_message_id,
+        v_atomic_nonretryable_assistant_message_id,
+        'validating',
+        'task6-settlement-ai-atomic-nonretryable-turn',
         null
       );
 
@@ -4487,6 +4630,17 @@ begin
         'aiResponse', v_failed_ai_response,
         'safetyFlags', '[{"code":"generation_failed","severity":"block","message":"未生成可执行公式。"}]'::jsonb,
         'status', 'failed'
+      );
+    v_atomic_nonretryable_draft_input := v_atomic_failed_draft_input
+      || pg_catalog.jsonb_build_object(
+        'conversationId', v_atomic_nonretryable_conversation_id,
+        'idempotencyKey',
+          'task6-settlement-ai-atomic-nonretryable-draft',
+        'turnTrace', pg_catalog.jsonb_build_object(
+          'turnId', v_atomic_nonretryable_turn_id,
+          'userMessageId', v_atomic_nonretryable_user_message_id,
+          'assistantMessageId', v_atomic_nonretryable_assistant_message_id
+        )
       );
     v_atomic_simulation_input := pg_catalog.jsonb_build_object(
       'idempotencyKey', 'task6-settlement-ai-atomic-simulation',
@@ -4660,7 +4814,10 @@ begin
       v_atomic_failed_draft_input,
       v_atomic_completion || pg_catalog.jsonb_build_object(
         'content', v_failed_ai_response ->> 'content'
-      )
+      ),
+      'SETTLEMENT_AI_PROVIDER_FAILED',
+      'Settlement AI provider is temporarily unavailable.',
+      true
     );
     if v_atomic_result ->> 'initial_status' <> 'failed'
        or v_atomic_result ->> 'status' <> 'failed'
@@ -4674,14 +4831,68 @@ begin
         on atomic_message.id = atomic_turn.assistant_message_id
       where atomic_turn.id = v_atomic_failed_turn_id
         and atomic_turn.status = 'failed'
-        and atomic_turn.error_code = 'settlement_ai_generation_failed'
-        and atomic_turn.error_summary = 'Settlement AI generation failed'
-        and not atomic_turn.retryable
+        and atomic_turn.error_code = 'SETTLEMENT_AI_PROVIDER_FAILED'
+        and atomic_turn.error_summary =
+          'Settlement AI provider is temporarily unavailable.'
+        and atomic_turn.retryable
         and atomic_message.status = 'failed'
         and atomic_message.content = v_failed_ai_response ->> 'content'
     ) then
       raise exception 'atomic_failed_turn_not_failed';
     end if;
+
+    v_atomic_replay := public.finalize_settlement_ai_failed_turn(
+      v_atomic_failed_draft_input,
+      v_atomic_completion || pg_catalog.jsonb_build_object(
+        'content', v_failed_ai_response ->> 'content'
+      ),
+      'SETTLEMENT_AI_PROVIDER_FAILED',
+      'Settlement AI provider is temporarily unavailable.',
+      true
+    );
+    if not (v_atomic_replay ->> 'duplicate')::boolean
+       or v_atomic_replay ->> 'id' <> v_atomic_result ->> 'id' then
+      raise exception 'atomic_failed_replay_invalid';
+    end if;
+
+    begin
+      perform public.finalize_settlement_ai_failed_turn(
+        v_atomic_failed_draft_input,
+        v_atomic_completion || pg_catalog.jsonb_build_object(
+          'content', v_failed_ai_response ->> 'content'
+        ),
+        'SETTLEMENT_AI_PROVIDER_FAILED',
+        'Settlement AI provider is temporarily unavailable.',
+        false
+      );
+      raise exception 'atomic_failed_retryable_mismatch_accepted';
+    exception
+      when others then
+        if sqlerrm = 'atomic_failed_retryable_mismatch_accepted' then raise; end if;
+        if sqlerrm <> 'settlement_ai_atomic_completion_replay_conflict' then
+          raise exception 'atomic_failed_retryable_mismatch_unexpected: %',
+            sqlerrm;
+        end if;
+    end;
+    begin
+      perform public.finalize_settlement_ai_failed_turn(
+        v_atomic_failed_draft_input,
+        v_atomic_completion || pg_catalog.jsonb_build_object(
+          'content', v_failed_ai_response ->> 'content'
+        ),
+        'SETTLEMENT_AI_FORMULA_INVALID',
+        'Settlement AI formula did not pass validation.',
+        true
+      );
+      raise exception 'atomic_failed_semantics_mismatch_accepted';
+    exception
+      when others then
+        if sqlerrm = 'atomic_failed_semantics_mismatch_accepted' then raise; end if;
+        if sqlerrm <> 'settlement_ai_atomic_completion_replay_conflict' then
+          raise exception 'atomic_failed_semantics_mismatch_unexpected: %',
+            sqlerrm;
+        end if;
+    end;
 
     begin
       perform public.finalize_settlement_ai_draft_turn(
@@ -4702,6 +4913,88 @@ begin
           raise exception 'atomic_failed_source_unexpected: %', sqlerrm;
         end if;
     end;
+
+    v_atomic_retry := public.create_ai_chat_turn(
+      v_organization_id,
+      v_actor_id,
+      v_atomic_failed_conversation_id,
+      'task6-settlement-ai-atomic-retry-turn',
+      'fast',
+      'retry',
+      null,
+      v_atomic_failed_turn_id
+    );
+    if (v_atomic_retry ->> 'duplicate')::boolean
+       or v_atomic_retry ->> 'status' <> 'accepted'
+       or not exists (
+         select 1
+         from public.ai_chat_turns as retry_turn
+         where retry_turn.id = (v_atomic_retry ->> 'turn_id')::uuid
+           and retry_turn.conversation_id = v_atomic_failed_conversation_id
+           and retry_turn.retry_of_turn_id = v_atomic_failed_turn_id
+           and retry_turn.status = 'accepted'
+           and retry_turn.attempt_no = 2
+       ) then
+      raise exception 'atomic_retry_turn_not_accepted';
+    end if;
+
+    begin
+      perform public.finalize_settlement_ai_failed_turn(
+        v_atomic_nonretryable_draft_input,
+        v_atomic_completion || pg_catalog.jsonb_build_object(
+          'content', v_failed_ai_response ->> 'content'
+        ),
+        'SETTLEMENT_AI_PROVIDER_FAILED',
+        'Authorization: Bearer secret-token at provider.ts:42',
+        true
+      );
+      raise exception 'unsafe_failure_semantics_rpc_accepted';
+    exception
+      when others then
+        if sqlerrm = 'unsafe_failure_semantics_rpc_accepted' then raise; end if;
+        if sqlerrm <> 'settlement_ai_atomic_failure_semantics_invalid' then
+          raise exception 'unsafe_failure_semantics_rpc_unexpected: %', sqlerrm;
+        end if;
+    end;
+    if not exists (
+         select 1
+         from public.ai_chat_turns as atomic_turn
+         where atomic_turn.id = v_atomic_nonretryable_turn_id
+           and atomic_turn.status = 'validating'
+       )
+       or exists (
+         select 1
+         from public.ai_settlement_rule_drafts as atomic_draft
+         where atomic_draft.idempotency_key =
+           'task6-settlement-ai-atomic-nonretryable-draft'
+       ) then
+      raise exception 'unsafe_failure_semantics_rollback_failed';
+    end if;
+
+    v_atomic_result := public.finalize_settlement_ai_failed_turn(
+      v_atomic_nonretryable_draft_input,
+      v_atomic_completion || pg_catalog.jsonb_build_object(
+        'content', v_failed_ai_response ->> 'content'
+      ),
+      'SETTLEMENT_AI_FORMULA_INVALID',
+      'Settlement AI formula did not pass validation.',
+      false
+    );
+    if v_atomic_result ->> 'initial_status' <> 'failed'
+       or v_atomic_result ->> 'status' <> 'failed'
+       or (v_atomic_result ->> 'duplicate')::boolean
+       or not exists (
+         select 1
+         from public.ai_chat_turns as atomic_turn
+         where atomic_turn.id = v_atomic_nonretryable_turn_id
+           and atomic_turn.status = 'failed'
+           and atomic_turn.error_code = 'SETTLEMENT_AI_FORMULA_INVALID'
+           and atomic_turn.error_summary =
+             'Settlement AI formula did not pass validation.'
+           and not atomic_turn.retryable
+       ) then
+      raise exception 'atomic_nonretryable_failure_not_persisted';
+    end if;
 
     v_draft_one := public.create_ai_settlement_rule_draft(
       v_organization_id,
@@ -5462,6 +5755,11 @@ revoke all on function public.settlement_ai_atomic_draft_envelope_is_valid(jsonb
   from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_atomic_completion_is_valid(jsonb, jsonb)
   from public, anon, authenticated, service_role;
+revoke all on function public.settlement_ai_failure_semantics_are_valid(
+  text,
+  text,
+  boolean
+) from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_atomic_simulation_envelope_is_valid(jsonb)
   from public, anon, authenticated, service_role;
 revoke all on function public.settlement_ai_lock_atomic_draft_turn(jsonb)
@@ -5569,9 +5867,21 @@ grant execute on function public.finalize_settlement_ai_simulation_turn(
   jsonb
 ) to authenticated;
 
-revoke all on function public.finalize_settlement_ai_failed_turn(jsonb, jsonb)
+revoke all on function public.finalize_settlement_ai_failed_turn(
+  jsonb,
+  jsonb,
+  text,
+  text,
+  boolean
+)
   from public, anon, authenticated, service_role;
-grant execute on function public.finalize_settlement_ai_failed_turn(jsonb, jsonb)
+grant execute on function public.finalize_settlement_ai_failed_turn(
+  jsonb,
+  jsonb,
+  text,
+  text,
+  boolean
+)
   to authenticated;
 
 comment on table public.ai_settlement_rule_drafts is

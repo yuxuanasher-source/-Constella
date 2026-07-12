@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { businessRuleContractSchema } from "../../features/settlements/custom-rule-contract";
+import { SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES } from "../../features/settlements/custom-rule-repository";
 
 const migration = readFileSync(
   join(
@@ -30,6 +31,10 @@ const normalizedSettlementAiMigration = settlementAiMigration
   .toLowerCase()
   .replace(/\s+/gu, " ")
   .trim();
+const conversationServiceSource = readFileSync(
+  join(process.cwd(), "features", "ai", "conversation-service.ts"),
+  "utf8",
+);
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/gu, " ").trim();
@@ -797,10 +802,70 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(finalizeFailed).toContain("v_turn.status <> 'validating'");
     expect(finalizeFailed).toContain("public.finish_ai_chat_turn(");
     expect(finalizeFailed).toContain("false,");
-    expect(finalizeFailed).toContain("'settlement_ai_generation_failed'");
-    expect(finalizeFailed).toContain("'settlement ai generation failed'");
+    expect(finalizeFailed).toContain(
+      "public.settlement_ai_failure_semantics_are_valid( p_error_code, p_error_summary, p_retryable )",
+    );
+    expect(finalizeFailed).toContain(
+      "v_turn.error_code is distinct from p_error_code",
+    );
+    expect(finalizeFailed).toContain(
+      "v_turn.error_summary is distinct from p_error_summary",
+    );
+    expect(finalizeFailed).toContain(
+      "v_turn.retryable is distinct from p_retryable",
+    );
+    expect(finalizeFailed).toMatch(
+      /false, p_completion ->> 'content', pg_catalog\.btrim\(p_completion ->> 'providername'\), \(p_completion ->> 'aiinvocationid'\)::uuid, p_error_code, p_error_summary, p_retryable, p_completion -> 'metadata'/u,
+    );
     expect(finalizeFailed.indexOf("public.finish_ai_chat_turn(")).toBeLessThan(
       finalizeFailed.indexOf("public.create_ai_settlement_rule_draft("),
+    );
+  });
+
+  it("allowlists bounded settlement failure semantics and keeps the helper private", () => {
+    const validator = extractSettlementAiFunction(
+      "settlement_ai_failure_semantics_are_valid",
+    );
+    const header = normalizeSql(validator.header);
+    const body = normalizeSql(validator.body);
+
+    expect(header).toContain("p_error_code text");
+    expect(header).toContain("p_error_summary text");
+    expect(header).toContain("p_retryable boolean");
+    expect(header).toContain("returns boolean");
+    expect(header).toContain("immutable");
+    expect(header).toContain("set search_path = pg_catalog, public");
+    expect(body).toContain("pg_catalog.octet_length(p_error_code) <= 64");
+    expect(body).toContain("pg_catalog.octet_length(p_error_summary) <= 120");
+    expect(body).toContain("'settlement_ai_provider_failed'");
+    expect(body).toContain("'settlement ai provider is temporarily unavailable.'");
+    expect(body).toContain("'settlement_ai_formula_invalid'");
+    expect(body).toContain("'settlement ai formula did not pass validation.'");
+    const allowedFailures = Object.entries(
+      SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES,
+    );
+    expect(body.match(/\bwhen '/gu)?.length ?? 0).toBe(allowedFailures.length);
+    for (const [errorCode, errorSummary] of allowedFailures) {
+      expect(new TextEncoder().encode(errorCode).byteLength).toBeLessThanOrEqual(
+        64,
+      );
+      expect(
+        new TextEncoder().encode(errorSummary).byteLength,
+      ).toBeLessThanOrEqual(120);
+      expect(body).toContain(`when '${errorCode.toLowerCase()}' then`);
+      expect(body).toContain(
+        `p_error_summary = '${errorSummary.toLowerCase()}'`,
+      );
+    }
+    expect(body).not.toMatch(/^select true;$/u);
+    expect(normalizedSettlementAiMigration).toMatch(
+      /revoke all on function public\.settlement_ai_failure_semantics_are_valid\(\s*text, text, boolean\s*\)/u,
+    );
+    expect(normalizedSettlementAiMigration).not.toMatch(
+      /grant execute on function public\.settlement_ai_failure_semantics_are_valid/u,
+    );
+    expect(normalizedSettlementAiMigration).toMatch(
+      /grant execute on function public\.finalize_settlement_ai_failed_turn\(\s*jsonb, jsonb, text, text, boolean\s*\) to authenticated;/u,
     );
   });
 
@@ -1435,6 +1500,13 @@ describe("Phase 1 settlement AI persistence contract", () => {
       "atomic_invalid_simulation_rollback_failed",
       "atomic_failed_turn_not_failed",
       "atomic_failed_draft_shape_invalid",
+      "atomic_failed_replay_invalid",
+      "atomic_failed_retryable_mismatch_accepted",
+      "atomic_failed_semantics_mismatch_accepted",
+      "atomic_retry_turn_not_accepted",
+      "unsafe_failure_semantics_rpc_accepted",
+      "unsafe_failure_semantics_rollback_failed",
+      "atomic_nonretryable_failure_not_persisted",
       "atomic_success_accepted_failed_turn",
       "raw_criteria_rpc_accepted",
       "settlement_ai_rpc_fixture_rollback",
@@ -1446,6 +1518,18 @@ describe("Phase 1 settlement AI persistence contract", () => {
     expect(selfChecks).toContain("sqlerrm");
     expect(selfChecks).toMatch(
       /update public\.ai_chat_messages\s+set status = 'superseded'\s+where id = v_assistant_message_id/u,
+    );
+    expect(selfChecks).toMatch(
+      /public\.finalize_settlement_ai_failed_turn\([\s\S]+?'settlement_ai_provider_failed'[\s\S]+?'settlement ai provider is temporarily unavailable\.'[\s\S]+?true/u,
+    );
+    expect(selfChecks).toMatch(
+      /public\.create_ai_chat_turn\([\s\S]+?'retry'[\s\S]+?v_atomic_failed_turn_id/u,
+    );
+    expect(selfChecks).toMatch(
+      /atomic_turn\.status = 'failed'[\s\S]+?not atomic_turn\.retryable[\s\S]+?atomic_nonretryable_failure_not_persisted/u,
+    );
+    expect(normalizeSql(conversationServiceSource)).toContain(
+      'if (source.status !== "failed" || !source.retryable)',
     );
 
     for (const policyName of [

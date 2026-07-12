@@ -1187,7 +1187,24 @@ describe("custom-rule draft and simulation persistence", () => {
     });
   });
 
-  it("atomically fails a turn and persists sanitized failure evidence", async () => {
+  it.each([
+    [
+      "retryable provider failure",
+      {
+        errorCode: "SETTLEMENT_AI_PROVIDER_FAILED" as const,
+        errorSummary: "Settlement AI provider is temporarily unavailable." as const,
+        retryable: true,
+      },
+    ],
+    [
+      "non-retryable formula failure",
+      {
+        errorCode: "SETTLEMENT_AI_FORMULA_INVALID" as const,
+        errorSummary: "Settlement AI formula did not pass validation." as const,
+        retryable: false,
+      },
+    ],
+  ])("atomically persists sanitized %s semantics", async (_label, failure) => {
     const draft = validFailedDraftInput();
     const completion = validTurnCompletion(draft.aiResponse.content);
     const mock = createPersistenceClient({
@@ -1208,11 +1225,21 @@ describe("custom-rule draft and simulation persistence", () => {
     const repository: CustomRuleRepository =
       new SupabaseCustomRuleReadRepository(mock.client);
 
-    const result = await repository.finalizeFailedTurn({ draft, completion });
+    const result = await repository.finalizeFailedTurn({
+      draft,
+      completion,
+      ...failure,
+    });
 
     expect(mock.rpc).toHaveBeenCalledWith(
       "finalize_settlement_ai_failed_turn",
-      { p_draft: draft, p_completion: completion },
+      {
+        p_draft: draft,
+        p_completion: completion,
+        p_error_code: failure.errorCode,
+        p_error_summary: failure.errorSummary,
+        p_retryable: failure.retryable,
+      },
     );
     expect(mock.from).not.toHaveBeenCalled();
     expect(result).toMatchObject({
@@ -1221,6 +1248,54 @@ describe("custom-rule draft and simulation persistence", () => {
       aiResponse: draft.aiResponse,
       duplicate: false,
     });
+  });
+
+  it.each([
+    [
+      "unknown error code",
+      {
+        errorCode: "RAW_PROVIDER_EXCEPTION",
+        errorSummary: "Settlement AI provider is temporarily unavailable.",
+        retryable: true,
+      },
+    ],
+    [
+      "mismatched summary",
+      {
+        errorCode: "SETTLEMENT_AI_PROVIDER_FAILED",
+        errorSummary: "Settlement AI formula did not pass validation.",
+        retryable: true,
+      },
+    ],
+    [
+      "raw secret or stack text",
+      {
+        errorCode: "SETTLEMENT_AI_PROVIDER_FAILED",
+        errorSummary: "Authorization: Bearer secret-token at provider.ts:42",
+        retryable: true,
+      },
+    ],
+    [
+      "oversized summary",
+      {
+        errorCode: "SETTLEMENT_AI_PROVIDER_FAILED",
+        errorSummary: "x".repeat(121),
+        retryable: true,
+      },
+    ],
+  ])("rejects unsafe atomic failure semantics before RPC: %s", async (_label, failure) => {
+    const draft = validFailedDraftInput();
+    const mock = createPersistenceClient();
+    const repository = new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(
+      repository.finalizeFailedTurn({
+        draft,
+        completion: validTurnCompletion(draft.aiResponse.content),
+        ...failure,
+      } as never),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(mock.rpc).not.toHaveBeenCalled();
   });
 
   it.each([
