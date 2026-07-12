@@ -356,6 +356,33 @@ function callEndpoint(api, endpoint) {
   });
 }
 
+function catalogEnvelope(latestSampledPeriod) {
+  return {
+    catalog: {
+      scope: "receivable",
+      executionGrain: "project_period",
+      businessTimezone: null,
+      businessTimezoneConfirmed: false,
+      businessTimezoneSource: "unresolved",
+      hasHistory: true,
+      version: "a".repeat(64),
+      variables: [
+        {
+          id: "system_minutes",
+          label: "System minutes",
+          runtimeType: { kind: "scalar", scalarType: "integer" },
+          unit: "minutes",
+          sourceLabel: "Live report",
+          availability: "available",
+          coverageNumerator: 1,
+          coverageDenominator: 1,
+          latestSampledPeriod,
+        },
+      ],
+    },
+  };
+}
+
 describe("custom settlement rule API", () => {
   it("returns a validated catalog and encodes the project and query values", async () => {
     const fetchImpl = vi.fn(async () =>
@@ -431,6 +458,131 @@ describe("custom settlement rule API", () => {
       retryable: true,
     });
   });
+
+  it("accepts canonical offset timestamp periods from the live variable catalog", async () => {
+    const latestSampledPeriod = {
+      start: "2026-07-12T15:18:03.37728+00:00",
+      end: "2026-07-12T16:18:03.37728+00:00",
+    };
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(catalogEnvelope(latestSampledPeriod)),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.getVariableCatalog({
+        projectId: "7a130000-0000-4000-8000-000000000001",
+        scope: "receivable",
+        executionGrain: "project_period",
+      }),
+    ).resolves.toMatchObject({
+      catalog: {
+        variables: [{ latestSampledPeriod }],
+      },
+    });
+  });
+
+  it("continues to accept canonical business-date catalog periods", async () => {
+    const latestSampledPeriod = {
+      start: "2026-07-01",
+      end: "2026-07-31",
+    };
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(catalogEnvelope(latestSampledPeriod)),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.getVariableCatalog({
+        projectId: PROJECT_ID,
+        scope: "receivable",
+        executionGrain: "project_period",
+      }),
+    ).resolves.toMatchObject({
+      catalog: {
+        variables: [{ latestSampledPeriod }],
+      },
+    });
+  });
+
+  it.each([
+    ["missing offset", "2026-07-12T15:18:03.37728"],
+    ["space separator", "2026-07-12 15:18:03.37728+00:00"],
+    ["compact offset", "2026-07-12T15:18:03.37728+0000"],
+    ["impossible date", "2026-02-30T15:18:03.37728+00:00"],
+  ])(
+    "rejects a malformed or noncanonical catalog timestamp: %s",
+    async (_label, start) => {
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse(
+          catalogEnvelope({
+            start,
+            end: "2026-07-12T16:18:03.37728+00:00",
+          }),
+        ),
+      );
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+
+      await expect(
+        api.getVariableCatalog({
+          projectId: PROJECT_ID,
+          scope: "receivable",
+          executionGrain: "project_period",
+        }),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        status: 200,
+        retryable: true,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    ["business dates", { start: "2026-07-31", end: "2026-07-01" }],
+    [
+      "offset instants whose lexical order is misleading",
+      {
+        start: "2026-07-12T09:00:00+00:00",
+        end: "2026-07-12T10:00:00+02:00",
+      },
+    ],
+    [
+      "sub-millisecond offset instants",
+      {
+        start: "2026-07-12T15:18:03.37729+00:00",
+        end: "2026-07-12T15:18:03.37728+00:00",
+      },
+    ],
+    [
+      "mixed date and timestamp representations",
+      {
+        start: "2026-07-12",
+        end: "2026-07-12T16:18:03.37728+00:00",
+      },
+    ],
+  ])(
+    "rejects a reversed or mixed catalog period: %s",
+    async (_label, period) => {
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse(catalogEnvelope(period)),
+      );
+      const api = createCustomSettlementRuleApi({ fetchImpl });
+
+      await expect(
+        api.getVariableCatalog({
+          projectId: PROJECT_ID,
+          scope: "receivable",
+          executionGrain: "project_period",
+        }),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        status: 200,
+        retryable: true,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("starts a session with the exact Task 8 body and returns a typed result", async () => {
     const fetchImpl = vi.fn(async () =>

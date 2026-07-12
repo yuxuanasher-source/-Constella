@@ -794,9 +794,48 @@ const authoritativeSessionSchema = z
     }
   });
 
-const catalogPeriodSchema = z
+function fractionalSecondDigits(value) {
+  return /\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/u.exec(value)?.[1] ?? "";
+}
+
+function compareFractionalSeconds(left, right) {
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftDigit = index < left.length ? left.charCodeAt(index) : 48;
+    const rightDigit = index < right.length ? right.charCodeAt(index) : 48;
+    if (leftDigit !== rightDigit) return leftDigit - rightDigit;
+  }
+  return 0;
+}
+
+function isOrderedTimestampPeriod(period) {
+  const startMillis = Date.parse(period.start);
+  const endMillis = Date.parse(period.end);
+  if (!Number.isFinite(startMillis) || !Number.isFinite(endMillis)) {
+    return false;
+  }
+  if (startMillis !== endMillis) return startMillis < endMillis;
+  return (
+    compareFractionalSeconds(
+      fractionalSecondDigits(period.start),
+      fractionalSecondDigits(period.end),
+    ) <= 0
+  );
+}
+
+const businessDateCatalogPeriodSchema = z
   .strictObject({ start: businessDateSchema, end: businessDateSchema })
   .refine((period) => period.start <= period.end);
+const timestampCatalogPeriodSchema = z
+  .strictObject({
+    start: canonicalTimestampSchema,
+    end: canonicalTimestampSchema,
+  })
+  .refine(isOrderedTimestampPeriod);
+const catalogPeriodSchema = z.union([
+  businessDateCatalogPeriodSchema,
+  timestampCatalogPeriodSchema,
+]);
 const catalogVariableSchema = z
   .strictObject({
     id: identifierSchema,
