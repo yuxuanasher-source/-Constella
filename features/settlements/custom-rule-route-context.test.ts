@@ -523,6 +523,7 @@ function approvedReport(overrides: Record<string, unknown> = {}) {
     id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     organization_id: ORGANIZATION_ID,
     project_id: PROJECT_ID,
+    live_task_id: "abababab-abab-4aba-8aba-abababababab",
     streamer_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     status: "approved",
     system_duration: 60,
@@ -653,6 +654,10 @@ async function evidenceHarness(input?: {
   snapshot?: unknown;
   rpcError?: unknown;
   snapshotAt?: string;
+  businessTimezoneSource?:
+    | "contract_default"
+    | "organization_setting"
+    | "confirmed_contract";
 }) {
   const reportRows = flattenFixtureRows(input?.reports ?? [approvedReport()]);
   const itemRows = [
@@ -687,6 +692,8 @@ async function evidenceHarness(input?: {
       streamers: snapshotRows.streamers,
       draft,
       snapshotAt: input?.snapshotAt,
+      businessTimezoneSource:
+        input?.businessTimezoneSource ?? "confirmed_contract",
     });
   const client = {
     rpc: vi.fn().mockResolvedValue({
@@ -828,11 +835,19 @@ function selectSnapshotFixtureRows(input: {
     contract && typeof contract === "object"
       ? String(Reflect.get(contract, "businessTimezone") ?? "Asia/Shanghai")
       : "Asia/Shanghai";
+  const requestedScope =
+    contract && typeof contract === "object"
+      ? Reflect.get(contract, "scope")
+      : "payable";
+  const hasRequestedLockedBatch = batches.some(
+    (batch) => fixtureValue(batch, "batch_type") === requestedScope,
+  );
   const reports = input.enforceReportFilters
     ? input.reports.filter((row) => {
         if (fixtureValue(row, "status") !== "approved") return false;
         const id = fixtureValue(row, "id");
         if (typeof id === "string" && linkedReportIds.has(id)) return true;
+        if (hasRequestedLockedBatch) return false;
         const businessDate = fixtureBusinessDate(
           fixtureValue(row, "reviewed_at"),
           timezone,
@@ -894,6 +909,10 @@ function evidenceSnapshot(input: {
   streamers: unknown[];
   draft: unknown;
   snapshotAt?: string;
+  businessTimezoneSource:
+    | "contract_default"
+    | "organization_setting"
+    | "confirmed_contract";
 }) {
   const contract =
     input.draft && typeof input.draft === "object"
@@ -913,7 +932,9 @@ function evidenceSnapshot(input: {
     const version = fixtureHash(source);
     return {
       ...source,
-      title: source.title ?? "Settlement batch",
+      title: Object.prototype.hasOwnProperty.call(source, "title")
+        ? source.title
+        : "Settlement batch",
       created_at: source.created_at ?? "2026-07-01T00:00:00.000Z",
       updated_at: source.updated_at ?? "2026-07-10T00:00:00.000Z",
       computed_amount: canonicalNumericFixture(
@@ -1000,13 +1021,36 @@ function evidenceSnapshot(input: {
             : "external",
       };
     });
-  const sourceCount =
-    batches.length +
-    items.length +
-    input.reports.length * 2 +
-    costs.length +
-    projectStreamers.length +
-    streamers.length;
+  const liveTaskCount = new Set(
+    input.reports.flatMap((report) => {
+      const liveTaskId = fixtureValue(report, "live_task_id");
+      return typeof liveTaskId === "string" ? [liveTaskId] : [];
+    }),
+  ).size;
+  const sourceCounts = {
+    settlement_batches: batches.length,
+    settlement_batch_items: items.length,
+    live_reports: input.reports.length,
+    live_tasks: liveTaskCount,
+    project_cost_items: costs.length,
+    project_streamers: projectStreamers.length,
+    streamers: streamers.length,
+  };
+  const sourceCount = Object.values(sourceCounts).reduce(
+    (total, count) => total + count,
+    0,
+  );
+  const executionGrain =
+    contract && typeof contract === "object"
+      ? String(Reflect.get(contract, "executionGrain") ?? "report")
+      : "report";
+  const recordCount = fixtureProspectiveRecordCount({
+    executionGrain,
+    scope: String(scope),
+    reports: input.reports,
+    batches,
+    items,
+  });
   const payload = {
     schema_version: 1,
     snapshot_version: 1,
@@ -1019,8 +1063,10 @@ function evidenceSnapshot(input: {
     period_end: "2026-07-10",
     business_timezone: businessTimezone,
     business_timezone_confirmed: true,
-    business_timezone_source: "contract_default",
+    business_timezone_source: input.businessTimezoneSource,
     source_count: sourceCount,
+    source_counts: { ...sourceCounts, total: sourceCount },
+    record_count: recordCount,
     project: {
       id: PROJECT_ID,
       organization_id: ORGANIZATION_ID,
@@ -1030,7 +1076,7 @@ function evidenceSnapshot(input: {
       updated_at: "2026-07-12T11:59:00.000Z",
       business_timezone: businessTimezone,
       business_timezone_confirmed: true,
-      business_timezone_source: "contract_default",
+      business_timezone_source: input.businessTimezoneSource,
     },
     settlement_batches: batches,
     settlement_batch_items: items,
@@ -1040,6 +1086,66 @@ function evidenceSnapshot(input: {
     streamers,
   };
   return { ...payload, snapshot_hash: fixtureHash(payload) };
+}
+
+function fixtureProspectiveRecordCount(input: {
+  executionGrain: string;
+  scope: string;
+  reports: unknown[];
+  batches: Array<Record<string, unknown>>;
+  items: Array<Record<string, unknown>>;
+}): number {
+  const requestedBatches = input.batches.filter(
+    (batch) => fixtureValue(batch, "batch_type") === input.scope,
+  );
+  const requestedBatchIds = new Set(
+    requestedBatches.map((batch) => String(fixtureValue(batch, "id"))),
+  );
+  const requestedItems = input.items.filter((item) =>
+    requestedBatchIds.has(String(fixtureValue(item, "settlement_batch_id"))),
+  );
+  const linkedReportIds = new Set(
+    requestedItems.flatMap((item) => {
+      const reportId = fixtureValue(item, "live_report_id");
+      return typeof reportId === "string" ? [reportId] : [];
+    }),
+  );
+  const effectiveReports = requestedBatches.length
+    ? input.reports.filter((report) =>
+        linkedReportIds.has(String(fixtureValue(report, "id"))),
+      )
+    : input.reports;
+  if (input.executionGrain === "report") return effectiveReports.length;
+  if (input.executionGrain === "project_streamer_period") {
+    return new Set([
+      ...effectiveReports.flatMap((report) => {
+        const streamerId = fixtureValue(report, "streamer_id");
+        return typeof streamerId === "string" ? [streamerId] : [];
+      }),
+      ...requestedItems.flatMap((item) => {
+        const streamerId = fixtureValue(item, "streamer_id");
+        return fixtureValue(item, "live_report_id") === null &&
+          typeof streamerId === "string"
+          ? [streamerId]
+          : [];
+      }),
+    ]).size;
+  }
+  if (input.executionGrain === "batch") {
+    if (requestedBatches.length === 0) return effectiveReports.length;
+    const batchIdsWithItems = new Set(
+      requestedItems.map((item) =>
+        String(fixtureValue(item, "settlement_batch_id")),
+      ),
+    );
+    return requestedBatches.filter((batch) =>
+      batchIdsWithItems.has(String(fixtureValue(batch, "id"))),
+    ).length;
+  }
+  if (input.executionGrain === "project_period") {
+    return effectiveReports.length > 0 || requestedItems.length > 0 ? 1 : 0;
+  }
+  return 0;
 }
 
 function fixtureHash(value: unknown): string {
@@ -1191,10 +1297,80 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
         p_scope: "payable",
         p_period_start: "2026-07-01",
         p_period_end: "2026-07-10",
+        p_business_timezone: "Asia/Shanghai",
+        p_business_timezone_source: "confirmed_contract",
+        p_execution_grain: "report",
         p_max_sources: 10_000,
+        p_max_record_count: 500,
       },
     );
     expect(harness.client.from).not.toHaveBeenCalled();
+  });
+
+  it("accepts nullable legacy batch titles and counts shared live tasks exactly", async () => {
+    const sharedTaskId = "12121212-1212-4212-8212-121212121212";
+    const secondReportId = "13131313-1313-4313-8313-131313131313";
+    const batch = lockedSettlementBatch({ title: null });
+    const harness = await evidenceHarness({
+      reports: [
+        approvedReport({ live_task_id: sharedTaskId }),
+        approvedReport({
+          id: secondReportId,
+          live_task_id: sharedTaskId,
+          settled_batch_item_id: null,
+        }),
+      ],
+      items: [
+        lockedSettlementItem({ settlement_batches: batch }),
+        lockedSettlementItem({
+          id: "14141414-1414-4414-8414-141414141414",
+          live_report_id: secondReportId,
+          settlement_batches: batch,
+        }),
+      ],
+      batches: [batch],
+    });
+
+    const authorized = await harness.adapter.authorizeSelection(
+      authorizationInput(),
+    );
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.records).toHaveLength(2);
+    expect(harness.snapshot).toMatchObject({
+      source_counts: {
+        settlement_batches: 1,
+        settlement_batch_items: 2,
+        live_reports: 2,
+        live_tasks: 1,
+      },
+      record_count: 2,
+      settlement_batches: [{ title: null }],
+    });
+  });
+
+  it("rejects an RPC record count above the execution cap before parsing payload rows", async () => {
+    const harness = await evidenceHarness();
+    harness.client.rpc.mockResolvedValue({
+      data: {
+        ...(harness.snapshot as Record<string, unknown>),
+        record_count: 501,
+      },
+      error: null,
+    });
+
+    await expect(
+      harness.adapter.authorizeSelection(authorizationInput()),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_SELECTION_TOO_LARGE",
+      status: 422,
+      retryable: false,
+    });
   });
 
   it.each([
@@ -1205,6 +1381,38 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
         ...snapshot,
         source_count: Number(snapshot.source_count) + 1,
       }),
+    ],
+    [
+      "source-count-fractured",
+      (snapshot: Record<string, unknown>) => {
+        const sourceCounts = snapshot.source_counts as Record<string, unknown>;
+        return {
+          ...snapshot,
+          source_counts: {
+            ...sourceCounts,
+            live_tasks: Number(sourceCounts.live_tasks) + 1,
+          },
+        };
+      },
+    ],
+    [
+      "record-count-fractured",
+      (snapshot: Record<string, unknown>) => ({
+        ...snapshot,
+        record_count: Number(snapshot.record_count) + 1,
+      }),
+    ],
+    [
+      "batch-version-fractured",
+      (snapshot: Record<string, unknown>) => {
+        const items = structuredClone(
+          snapshot.settlement_batch_items,
+        ) as Array<{
+          settlement_batches: { version: string };
+        }>;
+        if (items[0]) items[0].settlement_batches.version = "f".repeat(64);
+        return { ...snapshot, settlement_batch_items: items };
+      },
     ],
     [
       "stale",
@@ -1526,6 +1734,15 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
         period_start: { type: "timestamp", value: expectedStart },
         period_end: { type: "timestamp", value: expectedEnd },
       });
+      expect(harness.client.rpc).toHaveBeenCalledWith(
+        "read_custom_settlement_evidence_snapshot",
+        expect.objectContaining({
+          p_business_timezone: businessTimezone,
+          p_business_timezone_source: "confirmed_contract",
+          p_execution_grain: "project_period",
+          p_max_record_count: 500,
+        }),
+      );
       const result = simulateCustomSettlementRule({
         organizationId: ORGANIZATION_ID,
         actorId: USER_ID,
@@ -3887,6 +4104,8 @@ async function simulationServiceHarness(
     requestedItems?: unknown[];
     pairedItems?: unknown[];
     costs?: unknown[];
+    additionalReports?: unknown[];
+    enforceFilters?: boolean;
   } = {},
 ) {
   const draft = simulationDraft(executionGrain);
@@ -3906,6 +4125,7 @@ async function simulationServiceHarness(
             id: secondReportId,
             settled_batch_item_id: null,
           }),
+          ...(options.additionalReports ?? []),
         ];
   const allItems = [
     lockedSettlementItem({ settlement_batches: batch }),
@@ -3923,6 +4143,7 @@ async function simulationServiceHarness(
         : (options.requestedItems ?? allItems),
     pairedItems: options.pairedItems,
     costs: options.costs,
+    enforceFilters: options.enforceFilters,
     streamers: history === "empty" ? [] : [joinedStreamer()],
     draft,
   });
@@ -4002,6 +4223,76 @@ async function simulationServiceHarness(
 }
 
 describe("custom-rule evidence and Task 7 simulation integration", () => {
+  it.each(["report", "batch", "project_period"] as const)(
+    "ignores unrelated approved-report costs for %s margin and warnings",
+    async (executionGrain) => {
+      const secondReportId = "91919191-9191-4919-8919-919191919191";
+      const unrelatedReportId = "71717171-7171-4717-8717-717171717171";
+      const receivableBatch = {
+        id: "72727272-7272-4727-8727-727272727272",
+        status: "locked",
+        batch_type: "receivable",
+        locked_at: "2026-07-10T00:00:00.000Z",
+      };
+      const pairedItems = [
+        lockedSettlementItem({
+          id: "73737373-7373-4737-8737-737373737373",
+          computed_amount: "30.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+        lockedSettlementItem({
+          id: "74747474-7474-4747-8747-747474747474",
+          live_report_id: secondReportId,
+          computed_amount: "30.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+      ];
+      const baseline = await simulationServiceHarness(
+        executionGrain,
+        "full",
+        [],
+        { pairedItems },
+      );
+      const withUnrelatedCost = await simulationServiceHarness(
+        executionGrain,
+        "full",
+        [],
+        {
+          pairedItems,
+          additionalReports: [
+            approvedReport({
+              id: unrelatedReportId,
+              settled_batch_item_id: null,
+            }),
+          ],
+          costs: [
+            confirmedCostItem({
+              id: "76767676-7676-4767-8767-767676767676",
+              live_report_id: unrelatedReportId,
+              settlement_batch_id: null,
+              amount_cents: "99999999",
+            }),
+          ],
+          enforceFilters: false,
+        },
+      );
+
+      expect(withUnrelatedCost.summary.warnings).toEqual(
+        baseline.summary.warnings,
+      );
+      expect(withUnrelatedCost.summary.riskFlags).toEqual(
+        baseline.summary.riskFlags,
+      );
+      expect(withUnrelatedCost.summary.warnings).not.toContainEqual(
+        expect.objectContaining({ code: "CUSTOM_RULE_MARGIN_PROVISIONAL" }),
+      );
+    },
+  );
+
   it("adds an explicit warning when paired margin evidence is unavailable", async () => {
     const result = await simulationServiceHarness("report", "full");
 

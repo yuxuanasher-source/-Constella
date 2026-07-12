@@ -268,7 +268,11 @@ create or replace function public.read_custom_settlement_evidence_snapshot(
   p_scope text,
   p_period_start date,
   p_period_end date,
-  p_max_sources integer
+  p_business_timezone text,
+  p_business_timezone_source text,
+  p_execution_grain text,
+  p_max_sources integer,
+  p_max_record_count integer
 )
 returns jsonb
 language plpgsql
@@ -283,6 +287,7 @@ declare
   v_captured_at timestamptz := pg_catalog.statement_timestamp();
   v_snapshot jsonb;
   v_source_count integer;
+  v_record_count integer;
 begin
   if auth.uid() is null or v_actor_id is null then
     raise exception 'authentication_required';
@@ -303,6 +308,43 @@ begin
      or p_max_sources < 1
      or p_max_sources > 10000 then
     raise exception 'custom_settlement_snapshot_max_sources_invalid';
+  end if;
+  if p_max_record_count is null
+     or p_max_record_count < 1
+     or p_max_record_count > 500 then
+    raise exception 'custom_settlement_snapshot_max_record_count_invalid';
+  end if;
+  if p_business_timezone is null
+     or p_business_timezone <> pg_catalog.btrim(p_business_timezone)
+     or pg_catalog.char_length(p_business_timezone) < 1
+     or pg_catalog.char_length(p_business_timezone) > 100
+     or not exists (
+       select 1
+       from pg_catalog.pg_timezone_names as timezone_name
+       where timezone_name.name = p_business_timezone
+     ) then
+    raise exception 'custom_settlement_snapshot_timezone_invalid';
+  end if;
+  if p_business_timezone_source is null
+     or p_business_timezone_source not in (
+       'contract_default',
+       'organization_setting',
+       'confirmed_contract'
+     )
+     or (
+       p_business_timezone_source = 'contract_default'
+       and p_business_timezone <> 'Asia/Shanghai'
+     ) then
+    raise exception 'custom_settlement_snapshot_timezone_source_invalid';
+  end if;
+  if p_execution_grain is null
+     or p_execution_grain not in (
+       'report',
+       'project_streamer_period',
+       'batch',
+       'project_period'
+     ) then
+    raise exception 'custom_settlement_snapshot_execution_grain_invalid';
   end if;
   if not public.is_org_member(p_organization_id)
      or public.current_user_role(p_organization_id) not in (
@@ -331,15 +373,49 @@ begin
   end if;
 
   v_window_start := p_period_start::timestamp
-    at time zone 'Asia/Shanghai';
+    at time zone p_business_timezone;
   v_window_end := (p_period_end + 1)::timestamp
-    at time zone 'Asia/Shanghai';
+    at time zone p_business_timezone;
 
-  -- This single bounded SQL statement is the evidence snapshot boundary.
-  -- Candidate row locks are capped; all arrays, counts, metadata, and the hash
-  -- are derived from the same MVCC statement snapshot.
+  -- All arrays, counts, metadata, and the hash are materialized by this one
+  -- bounded statement, so they share one READ COMMITTED statement snapshot.
+  -- Child rows are not locked; attachment writers need not share an advisory
+  -- protocol, and row locks here would reintroduce lock-order deadlocks.
   with selected_batches as materialized (
-    select batch.*
+    select
+      batch.id,
+      batch.organization_id,
+      batch.project_id,
+      batch.title,
+      batch.status,
+      batch.batch_type,
+      batch.period_start,
+      batch.period_end,
+      batch.computed_amount,
+      batch.manual_amount,
+      batch.adjustment_amount,
+      batch.locked_at,
+      batch.created_at,
+      batch.updated_at,
+      pg_catalog.encode(
+        extensions.digest(
+          pg_catalog.jsonb_build_object(
+            'id', batch.id,
+            'title', batch.title,
+            'status', batch.status,
+            'batchType', batch.batch_type,
+            'periodStart', batch.period_start,
+            'periodEnd', batch.period_end,
+            'lockedAt', batch.locked_at,
+            'updatedAt', batch.updated_at,
+            'computedAmount', public.custom_settlement_snapshot_numeric_text(batch.computed_amount),
+            'manualAmount', public.custom_settlement_snapshot_numeric_text(batch.manual_amount),
+            'adjustmentAmount', public.custom_settlement_snapshot_numeric_text(batch.adjustment_amount)
+          )::text,
+          'sha256'
+        ),
+        'hex'
+      ) as version
     from public.settlement_batches as batch
     where batch.organization_id = p_organization_id
       and batch.project_id = p_project_id
@@ -350,8 +426,40 @@ begin
     order by batch.period_start, batch.period_end, batch.batch_type, batch.id
     limit p_max_sources + 1
   ),
+  requested_batches as materialized (
+    select
+      batch.id,
+      batch.organization_id,
+      batch.project_id,
+      batch.title,
+      batch.status,
+      batch.batch_type,
+      batch.period_start,
+      batch.period_end,
+      batch.computed_amount,
+      batch.manual_amount,
+      batch.adjustment_amount,
+      batch.locked_at,
+      batch.created_at,
+      batch.updated_at,
+      batch.version
+    from selected_batches as batch
+    where batch.batch_type::text = p_scope
+  ),
   selected_items as materialized (
-    select item.*
+    select
+      item.id,
+      item.organization_id,
+      item.project_id,
+      item.settlement_batch_id,
+      item.streamer_id,
+      item.live_report_id,
+      item.item_type,
+      item.computed_amount,
+      item.manual_amount,
+      item.adjustment_amount,
+      item.evidence_level,
+      item.created_at
     from public.settlement_batch_items as item
     join selected_batches as batch
       on batch.id = item.settlement_batch_id
@@ -360,8 +468,42 @@ begin
     order by item.settlement_batch_id, item.id
     limit p_max_sources + 1
   ),
+  requested_items as materialized (
+    select
+      item.id,
+      item.organization_id,
+      item.project_id,
+      item.settlement_batch_id,
+      item.streamer_id,
+      item.live_report_id,
+      item.item_type,
+      item.computed_amount,
+      item.manual_amount,
+      item.adjustment_amount,
+      item.evidence_level,
+      item.created_at
+    from selected_items as item
+    join requested_batches as batch
+      on batch.id = item.settlement_batch_id
+  ),
   selected_reports as materialized (
-    select report.*, task.system_started_at
+    select
+      report.id,
+      report.organization_id,
+      report.project_id,
+      report.live_task_id,
+      report.streamer_id,
+      report.status,
+      report.system_duration,
+      report.screenshot_duration,
+      report.settlement_duration,
+      report.evidence_level,
+      report.time_source,
+      report.viewers,
+      report.reviewed_at,
+      report.created_at,
+      report.settled_batch_item_id,
+      task.system_started_at
     from public.live_reports as report
     join public.live_tasks as task
       on task.id = report.live_task_id
@@ -377,6 +519,8 @@ begin
           where item.live_report_id = report.id
         )
         or (
+          not exists (select 1 from requested_batches)
+          and
           report.reviewed_at >= v_window_start
           and report.reviewed_at < v_window_end
         )
@@ -384,23 +528,75 @@ begin
     order by report.reviewed_at, report.id
     limit p_max_sources + 1
   ),
+  effective_reports as materialized (
+    select
+      report.id,
+      report.organization_id,
+      report.project_id,
+      report.live_task_id,
+      report.streamer_id,
+      report.status,
+      report.system_duration,
+      report.screenshot_duration,
+      report.settlement_duration,
+      report.evidence_level,
+      report.time_source,
+      report.viewers,
+      report.reviewed_at,
+      report.created_at,
+      report.settled_batch_item_id,
+      report.system_started_at
+    from selected_reports as report
+    where (
+      exists (select 1 from requested_batches)
+      and exists (
+        select 1
+        from requested_items as item
+        where item.live_report_id = report.id
+      )
+    ) or (
+      not exists (select 1 from requested_batches)
+      and report.reviewed_at >= v_window_start
+      and report.reviewed_at < v_window_end
+    )
+  ),
   selected_costs as materialized (
-    select cost.*
+    select
+      cost.id,
+      cost.organization_id,
+      cost.project_id,
+      cost.streamer_id,
+      cost.live_report_id,
+      cost.settlement_batch_id,
+      cost.amount_cents,
+      cost.direction,
+      cost.status,
+      cost.created_at
     from public.project_cost_items as cost
     where cost.organization_id = p_organization_id
       and cost.project_id = p_project_id
       and cost.status = 'confirmed'
       and (
-        cost.live_report_id = any (
-          coalesce(
-            (select pg_catalog.array_agg(report.id) from selected_reports as report),
-            '{}'::uuid[]
+        (
+          (
+            cost.live_report_id is not null
+            or cost.settlement_batch_id is not null
           )
-        )
-        or cost.settlement_batch_id = any (
-          coalesce(
-            (select pg_catalog.array_agg(batch.id) from selected_batches as batch),
-            '{}'::uuid[]
+          and (
+            cost.live_report_id is null
+            or exists (
+              select 1
+              from selected_reports as report
+              where report.id = cost.live_report_id
+            )
+          )
+          and (
+            cost.settlement_batch_id is null
+            or exists (
+              select 1
+              from selected_batches as batch
+              where batch.id = cost.settlement_batch_id
+            )
           )
         )
         or (
@@ -423,7 +619,17 @@ begin
     where cost.streamer_id is not null
   ),
   selected_project_streamers as materialized (
-    select project_streamer.*, streamer.source_type
+    select
+      project_streamer.id,
+      project_streamer.organization_id,
+      project_streamer.project_id,
+      project_streamer.streamer_id,
+      project_streamer.status,
+      project_streamer.hourly_rate,
+      project_streamer.base_salary,
+      project_streamer.cps_rate_bps,
+      project_streamer.collaboration_id,
+      streamer.source_type
     from public.project_streamers as project_streamer
     join selected_streamer_ids as selected_streamer
       on selected_streamer.id = project_streamer.streamer_id
@@ -454,114 +660,93 @@ begin
   ),
   source_counts as materialized (
     select
-      (
-        (select pg_catalog.count(*) from selected_batches) +
-        (select pg_catalog.count(*) from selected_items) +
-        (select pg_catalog.count(*) from selected_reports) +
-        (select pg_catalog.count(*) from selected_costs) +
-        (select pg_catalog.count(*) from selected_project_streamers) +
-        (select pg_catalog.count(*) from selected_streamers) +
-        (select pg_catalog.count(*) from selected_tasks)
-      )::integer as source_count
+      (select pg_catalog.count(*) from selected_batches)::integer
+        as settlement_batches,
+      (select pg_catalog.count(*) from selected_items)::integer
+        as settlement_batch_items,
+      (select pg_catalog.count(*) from selected_reports)::integer
+        as live_reports,
+      (select pg_catalog.count(*) from selected_tasks)::integer
+        as live_tasks,
+      (select pg_catalog.count(*) from selected_costs)::integer
+        as project_cost_items,
+      (select pg_catalog.count(*) from selected_project_streamers)::integer
+        as project_streamers,
+      (select pg_catalog.count(*) from selected_streamers)::integer
+        as streamers
   ),
-  source_guard as materialized (
+  record_counts as materialized (
     select
-      source_count,
-      source_count <= p_max_sources as within_limit
+      case p_execution_grain
+        when 'report' then
+          (select pg_catalog.count(*) from effective_reports)
+        when 'project_streamer_period' then
+          (
+            select pg_catalog.count(*)
+            from (
+              select report.streamer_id
+              from effective_reports as report
+              union
+              select item.streamer_id
+              from requested_items as item
+              where item.live_report_id is null
+                and item.streamer_id is not null
+            ) as selected_record_streamers
+          )
+        when 'batch' then
+          case
+            when not exists (select 1 from requested_batches) then
+              (select pg_catalog.count(*) from effective_reports)
+            else (
+              select pg_catalog.count(*)
+              from requested_batches as batch
+              where exists (
+                select 1
+                from requested_items as item
+                where item.settlement_batch_id = batch.id
+              )
+            )
+          end
+        when 'project_period' then
+          case
+            when exists (select 1 from effective_reports)
+              or exists (select 1 from requested_items)
+            then 1
+            else 0
+          end
+      end::integer as record_count
+  ),
+  selection_guard as materialized (
+    select
+      source_counts.settlement_batches,
+      source_counts.settlement_batch_items,
+      source_counts.live_reports,
+      source_counts.live_tasks,
+      source_counts.project_cost_items,
+      source_counts.project_streamers,
+      source_counts.streamers,
+      (
+        source_counts.settlement_batches +
+        source_counts.settlement_batch_items +
+        source_counts.live_reports +
+        source_counts.live_tasks +
+        source_counts.project_cost_items +
+        source_counts.project_streamers +
+        source_counts.streamers
+      )::integer as source_count,
+      record_counts.record_count,
+      (
+        source_counts.settlement_batches +
+        source_counts.settlement_batch_items +
+        source_counts.live_reports +
+        source_counts.live_tasks +
+        source_counts.project_cost_items +
+        source_counts.project_streamers +
+        source_counts.streamers
+      ) <= p_max_sources
+      and record_counts.record_count <= p_max_record_count as within_limits
     from source_counts
-  ),
-  locked_batches as materialized (
-    select batch.id
-    from public.settlement_batches as batch
-    join selected_batches as selected_batch on selected_batch.id = batch.id
-    cross join source_guard
-    where source_guard.within_limit
-    order by batch.id
-    for update of batch
-  ),
-  locked_items as materialized (
-    select item.id
-    from public.settlement_batch_items as item
-    join selected_items as selected_item on selected_item.id = item.id
-    cross join (
-      select pg_catalog.count(*) as locked_count from locked_batches
-    ) as previous_lock
-    cross join source_guard
-    where previous_lock.locked_count >= 0
-      and source_guard.within_limit
-    order by item.id
-    for update of item
-  ),
-  locked_reports as materialized (
-    select report.id
-    from public.live_reports as report
-    join selected_reports as selected_report on selected_report.id = report.id
-    cross join (
-      select pg_catalog.count(*) as locked_count from locked_items
-    ) as previous_lock
-    cross join source_guard
-    where previous_lock.locked_count >= 0
-      and source_guard.within_limit
-    order by report.id
-    for update of report
-  ),
-  locked_tasks as materialized (
-    select task.id
-    from public.live_tasks as task
-    join selected_tasks as selected_task on selected_task.id = task.id
-    cross join (
-      select pg_catalog.count(*) as locked_count from locked_reports
-    ) as previous_lock
-    cross join source_guard
-    where previous_lock.locked_count >= 0
-      and source_guard.within_limit
-    order by task.id
-    for update of task
-  ),
-  locked_costs as materialized (
-    select cost.id
-    from public.project_cost_items as cost
-    join selected_costs as selected_cost on selected_cost.id = cost.id
-    cross join (
-      select pg_catalog.count(*) as locked_count from locked_tasks
-    ) as previous_lock
-    cross join source_guard
-    where previous_lock.locked_count >= 0
-      and source_guard.within_limit
-    order by cost.id
-    for update of cost
-  ),
-  locked_project_streamers as materialized (
-    select project_streamer.id
-    from public.project_streamers as project_streamer
-    join selected_project_streamers as selected_project_streamer
-      on selected_project_streamer.id = project_streamer.id
-    cross join (
-      select pg_catalog.count(*) as locked_count from locked_costs
-    ) as previous_lock
-    cross join source_guard
-    where previous_lock.locked_count >= 0
-      and source_guard.within_limit
-    order by project_streamer.id
-    for update of project_streamer
-  ),
-  locked_streamers as materialized (
-    select streamer.id
-    from public.streamers as streamer
-    join selected_streamers as selected_streamer
-      on selected_streamer.id = streamer.id
-    cross join (
-      select pg_catalog.count(*) as locked_count
-      from locked_project_streamers
-    ) as previous_lock
-    cross join source_guard
-    where previous_lock.locked_count >= 0
-      and source_guard.within_limit
-    order by streamer.id
-    for update of streamer
-  ),
-  lock_barrier as materialized (
-    select pg_catalog.count(*) as locked_count from locked_streamers
+    cross join record_counts
   ),
   batch_payload as materialized (
     select coalesce(
@@ -581,29 +766,14 @@ begin
           'locked_at', batch.locked_at,
           'created_at', batch.created_at,
           'updated_at', batch.updated_at,
-          'version', pg_catalog.encode(
-            extensions.digest(
-              pg_catalog.jsonb_build_object(
-                'id', batch.id,
-                'status', batch.status,
-                'lockedAt', batch.locked_at,
-                'updatedAt', batch.updated_at,
-                'computedAmount', public.custom_settlement_snapshot_numeric_text(batch.computed_amount),
-                'manualAmount', public.custom_settlement_snapshot_numeric_text(batch.manual_amount),
-                'adjustmentAmount', public.custom_settlement_snapshot_numeric_text(batch.adjustment_amount)
-              )::text,
-              'sha256'
-            ),
-            'hex'
-          )
+          'version', batch.version
         ) order by batch.period_start, batch.period_end, batch.batch_type, batch.id
       ),
       '[]'::jsonb
     ) as value
     from selected_batches as batch
-    cross join source_guard
-    cross join lock_barrier
-    where source_guard.within_limit
+    cross join selection_guard
+    where selection_guard.within_limits
   ),
   item_payload as materialized (
     select coalesce(
@@ -628,18 +798,7 @@ begin
             'locked_at', batch.locked_at,
             'period_start', batch.period_start,
             'period_end', batch.period_end,
-            'version', pg_catalog.encode(
-              extensions.digest(
-                pg_catalog.jsonb_build_object(
-                  'id', batch.id,
-                  'status', batch.status,
-                  'lockedAt', batch.locked_at,
-                  'updatedAt', batch.updated_at
-                )::text,
-                'sha256'
-              ),
-              'hex'
-            )
+            'version', batch.version
           )
         ) order by item.settlement_batch_id, item.id
       ),
@@ -647,9 +806,8 @@ begin
     ) as value
     from selected_items as item
     join selected_batches as batch on batch.id = item.settlement_batch_id
-    cross join source_guard
-    cross join lock_barrier
-    where source_guard.within_limit
+    cross join selection_guard
+    where selection_guard.within_limits
   ),
   report_payload as materialized (
     select coalesce(
@@ -658,6 +816,7 @@ begin
           'id', report.id,
           'organization_id', report.organization_id,
           'project_id', report.project_id,
+          'live_task_id', report.live_task_id,
           'streamer_id', report.streamer_id,
           'status', report.status,
           'system_duration', report.system_duration,
@@ -677,9 +836,8 @@ begin
       '[]'::jsonb
     ) as value
     from selected_reports as report
-    cross join source_guard
-    cross join lock_barrier
-    where source_guard.within_limit
+    cross join selection_guard
+    where selection_guard.within_limits
   ),
   cost_payload as materialized (
     select coalesce(
@@ -700,9 +858,8 @@ begin
       '[]'::jsonb
     ) as value
     from selected_costs as cost
-    cross join source_guard
-    cross join lock_barrier
-    where source_guard.within_limit
+    cross join selection_guard
+    where selection_guard.within_limits
   ),
   project_streamer_payload as materialized (
     select coalesce(
@@ -731,9 +888,8 @@ begin
       '[]'::jsonb
     ) as value
     from selected_project_streamers as project_streamer
-    cross join source_guard
-    cross join lock_barrier
-    where source_guard.within_limit
+    cross join selection_guard
+    where selection_guard.within_limits
   ),
   streamer_payload as materialized (
     select coalesce(
@@ -747,15 +903,15 @@ begin
       '[]'::jsonb
     ) as value
     from selected_streamers as streamer
-    cross join source_guard
-    cross join lock_barrier
-    where source_guard.within_limit
+    cross join selection_guard
+    where selection_guard.within_limits
   ),
   base_payload as materialized (
     select
-      source_guard.source_count,
+      selection_guard.source_count,
+      selection_guard.record_count,
       case
-      when source_guard.within_limit then pg_catalog.jsonb_build_object(
+      when selection_guard.within_limits then pg_catalog.jsonb_build_object(
         'schema_version', 1,
         'snapshot_version', 1,
         'organization_id', p_organization_id,
@@ -764,11 +920,22 @@ begin
         'scope', p_scope,
         'period_start', p_period_start,
         'period_end', p_period_end,
-        'business_timezone', 'Asia/Shanghai',
+        'business_timezone', p_business_timezone,
         'business_timezone_confirmed', true,
-        'business_timezone_source', 'contract_default',
+        'business_timezone_source', p_business_timezone_source,
         'captured_at', v_captured_at,
-        'source_count', source_guard.source_count,
+        'source_count', selection_guard.source_count,
+        'source_counts', pg_catalog.jsonb_build_object(
+          'settlement_batches', selection_guard.settlement_batches,
+          'settlement_batch_items', selection_guard.settlement_batch_items,
+          'live_reports', selection_guard.live_reports,
+          'live_tasks', selection_guard.live_tasks,
+          'project_cost_items', selection_guard.project_cost_items,
+          'project_streamers', selection_guard.project_streamers,
+          'streamers', selection_guard.streamers,
+          'total', selection_guard.source_count
+        ),
+        'record_count', selection_guard.record_count,
         'project', pg_catalog.jsonb_build_object(
           'id', v_project.id,
           'organization_id', v_project.organization_id,
@@ -776,9 +943,9 @@ begin
           'name', v_project.name,
           'status', v_project.status,
           'updated_at', v_project.updated_at,
-          'business_timezone', 'Asia/Shanghai',
+          'business_timezone', p_business_timezone,
           'business_timezone_confirmed', true,
-          'business_timezone_source', 'contract_default'
+          'business_timezone_source', p_business_timezone_source
         ),
         'settlement_batches', batch_payload.value,
         'settlement_batch_items', item_payload.value,
@@ -789,10 +956,11 @@ begin
       )
       else pg_catalog.jsonb_build_object(
         '__limit_exceeded', true,
-        'source_count', source_guard.source_count
+        'source_count', selection_guard.source_count,
+        'record_count', selection_guard.record_count
       )
       end as payload
-    from source_guard
+    from selection_guard
     cross join batch_payload
     cross join item_payload
     cross join report_payload
@@ -808,13 +976,19 @@ begin
         'hex'
       )
     ),
-    base_payload.source_count
-  into v_snapshot, v_source_count
+    base_payload.source_count,
+    base_payload.record_count
+  into v_snapshot, v_source_count, v_record_count
   from base_payload;
 
-  if v_source_count > p_max_sources
-     or coalesce((v_snapshot ->> '__limit_exceeded')::boolean, false) then
+  if v_source_count > p_max_sources then
     raise exception 'custom_settlement_snapshot_source_limit_exceeded';
+  end if;
+  if v_record_count > p_max_record_count then
+    raise exception 'custom_settlement_snapshot_record_limit_exceeded';
+  end if;
+  if coalesce((v_snapshot ->> '__limit_exceeded')::boolean, false) then
+    raise exception 'custom_settlement_snapshot_limit_exceeded';
   end if;
 
   return v_snapshot;
@@ -842,6 +1016,10 @@ revoke all on function public.read_custom_settlement_evidence_snapshot(
   text,
   date,
   date,
+  text,
+  text,
+  text,
+  integer,
   integer
 ) from public, anon, authenticated, service_role;
 grant execute on function public.read_custom_settlement_evidence_snapshot(
@@ -850,6 +1028,10 @@ grant execute on function public.read_custom_settlement_evidence_snapshot(
   text,
   date,
   date,
+  text,
+  text,
+  text,
+  integer,
   integer
 ) to authenticated;
 
@@ -1247,12 +1429,35 @@ begin
     'payable',
     '2026-07-01'::date,
     '2026-07-31'::date,
-    10000
+    'Asia/Shanghai',
+    'contract_default',
+    'report',
+    10000,
+    500
   );
   if pg_catalog.jsonb_array_length(v_snapshot -> 'settlement_batches') <> 2
      or pg_catalog.jsonb_array_length(v_snapshot -> 'settlement_batch_items') <> 2
      or pg_catalog.jsonb_array_length(v_snapshot -> 'live_reports') <> 1
-     or pg_catalog.jsonb_array_length(v_snapshot -> 'project_cost_items') <> 2 then
+     or pg_catalog.jsonb_array_length(v_snapshot -> 'project_cost_items') <> 2
+     or (v_snapshot #>> '{source_counts,live_reports}')::integer <> 1
+     or (v_snapshot #>> '{source_counts,live_tasks}')::integer <> 1
+     or (v_snapshot #>> '{source_counts,total}')::integer
+       <> (v_snapshot ->> 'source_count')::integer
+     or (v_snapshot ->> 'record_count')::integer <> 1
+     or v_snapshot ->> 'business_timezone' <> 'Asia/Shanghai'
+     or v_snapshot ->> 'business_timezone_source' <> 'contract_default'
+     or exists (
+       select 1
+       from pg_catalog.jsonb_array_elements(
+         v_snapshot -> 'settlement_batch_items'
+       ) as item(value)
+       join pg_catalog.jsonb_array_elements(
+         v_snapshot -> 'settlement_batches'
+       ) as batch(value)
+         on batch.value ->> 'id' = item.value ->> 'settlement_batch_id'
+       where item.value #>> '{settlement_batches,version}'
+         is distinct from batch.value ->> 'version'
+     ) then
     raise exception 'runtime_finance_snapshot_failed';
   end if;
   if pg_catalog.jsonb_typeof(
@@ -1281,7 +1486,11 @@ begin
       null,
       '2026-07-01'::date,
       '2026-07-31'::date,
-      10000
+      'Asia/Shanghai',
+      'contract_default',
+      'report',
+      10000,
+      500
     );
     raise exception 'runtime_snapshot_null_scope_accepted';
   exception
@@ -1297,7 +1506,11 @@ begin
     'payable',
     '2025-01-01'::date,
     '2026-01-01'::date,
-    10000
+    'Asia/Shanghai',
+    'contract_default',
+    'report',
+    10000,
+    500
   );
 
   begin
@@ -1307,7 +1520,11 @@ begin
       'payable',
       '2025-01-01'::date,
       '2026-01-02'::date,
-      10000
+      'Asia/Shanghai',
+      'contract_default',
+      'report',
+      10000,
+      500
     );
     raise exception 'runtime_snapshot_367_day_period_accepted';
   exception
@@ -1324,7 +1541,11 @@ begin
       'payable',
       '2026-07-01'::date,
       '2026-07-31'::date,
-      1
+      'Asia/Shanghai',
+      'contract_default',
+      'report',
+      1,
+      500
     );
     raise exception 'runtime_snapshot_limit_accepted';
   exception
@@ -1340,9 +1561,15 @@ begin
     'receivable',
     '2026-07-01'::date,
     '2026-07-31'::date,
-    10000
+    'Asia/Shanghai',
+    'contract_default',
+    'report',
+    10000,
+    500
   );
   if (v_empty_snapshot ->> 'source_count')::integer <> 0
+     or (v_empty_snapshot #>> '{source_counts,total}')::integer <> 0
+     or (v_empty_snapshot ->> 'record_count')::integer <> 0
      or v_empty_snapshot -> 'settlement_batches' <> '[]'::jsonb
      or v_empty_snapshot -> 'settlement_batch_items' <> '[]'::jsonb
      or v_empty_snapshot -> 'live_reports' <> '[]'::jsonb
@@ -1357,7 +1584,11 @@ begin
       'payable',
       '2026-07-01'::date,
       '2026-07-31'::date,
-      10000
+      'Asia/Shanghai',
+      'contract_default',
+      'report',
+      10000,
+      500
     );
     raise exception 'runtime_cross_scope_snapshot_accepted';
   exception

@@ -1898,9 +1898,22 @@ describe("Task8 custom settlement runtime database contract", () => {
     expect(definition).toContain("returns jsonb");
     expect(definition).toContain("security definer");
     expect(definition).toContain("set search_path = pg_catalog, public");
+    for (const parameter of [
+      "p_business_timezone text",
+      "p_business_timezone_source text",
+      "p_execution_grain text",
+      "p_max_record_count integer",
+    ]) {
+      expect(definition).toContain(parameter);
+    }
     expect(body).toContain("p_scope is null");
     expect(body).toContain("p_scope not in ('payable', 'receivable')");
     expect(body).toContain("p_max_sources > 10000");
+    expect(body).toContain("p_max_record_count > 500");
+    expect(body).toContain("p_business_timezone is null");
+    expect(body).toContain("from pg_catalog.pg_timezone_names");
+    expect(body).toContain("p_business_timezone_source not in (");
+    expect(body).toContain("p_execution_grain not in (");
     expect(body).toContain("p_period_end - p_period_start > 365");
     expect(body).not.toContain("p_period_end - p_period_start > 366");
     expect(body).toContain(
@@ -1910,9 +1923,9 @@ describe("Task8 custom settlement runtime database contract", () => {
       "public.settlement_ai_lock_authoring_parents( p_organization_id, v_actor_id, p_project_id )",
     );
 
-    expect(body).not.toMatch(
-      /perform (?:batch|item|report|task|cost|project_streamer|streamer)\.id[\s\S]+?for update/u,
-    );
+    expect(body).not.toContain("lock_barrier as materialized");
+    expect(body).not.toMatch(/locked_[a-z_]+ as materialized/u);
+    expect(body).not.toContain("for update of");
     for (const sourceCte of [
       "selected_batches",
       "selected_items",
@@ -1932,32 +1945,12 @@ describe("Task8 custom settlement runtime database contract", () => {
       expect(cte, `${sourceCte} must preserve its MVCC row version`).not.toContain(
         "for update",
       );
-    }
-    for (const [lockCte, sourceCte] of [
-      ["locked_batches", "selected_batches"],
-      ["locked_items", "selected_items"],
-      ["locked_reports", "selected_reports"],
-      ["locked_tasks", "selected_tasks"],
-      ["locked_costs", "selected_costs"],
-      ["locked_project_streamers", "selected_project_streamers"],
-      ["locked_streamers", "selected_streamers"],
-    ]) {
-      const cte = extractBalancedSql(
-        body,
-        `${lockCte} as materialized`,
-      ).inner;
-      expect(cte, `${lockCte} must lock only bounded IDs`).toContain(
-        `join ${sourceCte}`,
-      );
-      expect(cte, `${lockCte} must skip over-limit requests`).toContain(
-        "source_guard.within_limit",
-      );
-      expect(cte, `${lockCte} must stabilize selected rows`).toContain(
-        "for update",
+      expect(cte, `${sourceCte} must select explicit safe fields`).not.toMatch(
+        /select (?:batch|item|report|cost|project_streamer)\.\*/u,
       );
     }
     expect(body).toMatch(
-      /source_counts as materialized[\s\S]+source_guard as materialized[\s\S]+locked_batches as materialized[\s\S]+locked_items as materialized[\s\S]+locked_reports as materialized[\s\S]+locked_tasks as materialized[\s\S]+locked_costs as materialized[\s\S]+locked_project_streamers as materialized[\s\S]+locked_streamers as materialized[\s\S]+lock_barrier as materialized/u,
+      /source_counts as materialized[\s\S]+record_counts as materialized[\s\S]+selection_guard as materialized[\s\S]+batch_payload as materialized/u,
     );
     expect(body).toContain("batch.status = 'locked'");
     expect(body).toContain(
@@ -1965,6 +1958,10 @@ describe("Task8 custom settlement runtime database contract", () => {
     );
     expect(body).toContain("batch.period_start <= p_period_end");
     expect(body).toContain("batch.period_end >= p_period_start");
+    expect(body).toContain("requested_batches as materialized");
+    expect(body).toMatch(
+      /not exists \(\s*select 1 from requested_batches\s*\)[\s\S]+report\.reviewed_at >= v_window_start/u,
+    );
     const selectedItems = extractBalancedSql(
       body,
       "selected_items as materialized",
@@ -1973,9 +1970,21 @@ describe("Task8 custom settlement runtime database contract", () => {
     expect(body).toMatch(
       /report\.status = 'approved'[\s\S]+item\.live_report_id = report\.id[\s\S]+report\.reviewed_at >= v_window_start/u,
     );
-    expect(body).toMatch(
-      /cost\.status = 'confirmed'[\s\S]+cost\.live_report_id = any[\s\S]+cost\.settlement_batch_id = any[\s\S]+cost\.live_report_id is null[\s\S]+cost\.settlement_batch_id is null[\s\S]+cost\.created_at >= v_window_start/u,
+    const selectedCosts = extractBalancedSql(
+      body,
+      "selected_costs as materialized",
+    ).inner;
+    expect(selectedCosts).toContain("cost.status = 'confirmed'");
+    expect(selectedCosts).toMatch(
+      /cost\.live_report_id is null[\s\S]+from selected_reports as report[\s\S]+report\.id = cost\.live_report_id/u,
     );
+    expect(selectedCosts).toMatch(
+      /cost\.settlement_batch_id is null[\s\S]+from selected_batches as batch[\s\S]+batch\.id = cost\.settlement_batch_id/u,
+    );
+    expect(selectedCosts).toMatch(
+      /cost\.live_report_id is null[\s\S]+cost\.settlement_batch_id is null[\s\S]+cost\.created_at >= v_window_start/u,
+    );
+    expect(selectedCosts).not.toContain(" = any (");
     expect(body).not.toContain("source_payload");
     expect(body).toContain("cost.amount_cents::text");
     expect(
@@ -1983,18 +1992,30 @@ describe("Task8 custom settlement runtime database contract", () => {
         "custom_settlement_snapshot_numeric_text",
       ),
     ).toContain("pg_catalog.trim_scale");
-    expect(body).toContain("'asia/shanghai'");
+    expect(body).toContain("at time zone p_business_timezone");
+    expect(body).toContain("'business_timezone', p_business_timezone");
+    expect(body).toContain(
+      "'business_timezone_source', p_business_timezone_source",
+    );
     expect(body).toContain("custom_settlement_snapshot_source_limit_exceeded");
-    expect(body).toContain("source_guard as materialized");
-    expect(body).toContain("source_count <= p_max_sources as within_limit");
+    expect(body).toContain("custom_settlement_snapshot_record_limit_exceeded");
+    expect(body).toContain("record_count <= p_max_record_count");
+    expect(body).toContain("'source_counts'");
+    expect(body).toContain("'record_count'");
     expect(body).toMatch(
-      /batch_payload as materialized[\s\S]+cross join lock_barrier[\s\S]+where source_guard\.within_limit[\s\S]+base_payload as materialized/u,
+      /batch_payload as materialized[\s\S]+where selection_guard\.within_limits[\s\S]+base_payload as materialized/u,
     );
     expect(body).toContain("'__limit_exceeded'");
     expect(body).toContain("'snapshot_hash'");
     expect(body).toContain("extensions.digest");
     expect(body).toMatch(
       /with selected_batches as materialized[\s\S]+selected_items as materialized[\s\S]+selected_reports as materialized[\s\S]+selected_costs as materialized[\s\S]+base_payload as materialized[\s\S]+select[\s\S]+into v_snapshot[\s\S]+from base_payload/u,
+    );
+    expect(body).toContain("'version', batch.version");
+    expect(body.match(/'version', batch\.version/gu)).toHaveLength(2);
+    expect(body).toContain("'live_task_id', report.live_task_id");
+    expect(body).not.toMatch(
+      /select (?:batch|item|report|cost|project_streamer)\.\*/u,
     );
     expect(body).not.toMatch(
       /select[\s\S]+jsonb_agg[\s\S]+into v_(?:batches|items|reports|costs|streamers)/u,
@@ -2343,14 +2364,18 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
       const streamerId = "8d140000-0000-4000-8000-000000000001";
       const projectStreamerId = "8d150000-0000-4000-8000-000000000001";
       const taskId = "8d160000-0000-4000-8000-000000000001";
+      const capTaskId = "8d160000-0000-4000-8000-000000000002";
       const reportId = "8d170000-0000-4000-8000-000000000001";
+      const secondReportId = "8d170000-0000-4000-8000-000000000002";
+      const unrelatedReportId = "8d170000-0000-4000-8000-000000000003";
       const payableBatchId = "8d180000-0000-4000-8000-000000000001";
       const receivableBatchId = "8d180000-0000-4000-8000-000000000002";
       const linkedItemId = "8d190000-0000-4000-8000-000000000001";
       const manualItemId = "8d190000-0000-4000-8000-000000000002";
+      const secondLinkedItemId = "8d190000-0000-4000-8000-000000000004";
       const linkedCostId = "8d1a0000-0000-4000-8000-000000000001";
       const unlinkedCostId = "8d1a0000-0000-4000-8000-000000000002";
-      const insertedItemId = "8d190000-0000-4000-8000-000000000003";
+      const unrelatedCostId = "8d1a0000-0000-4000-8000-000000000003";
       const cleanupSql = `
         delete from public.project_cost_items
         where organization_id = '${organizationId}'::uuid;
@@ -2546,23 +2571,58 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
           system_duration, screenshot_duration, settlement_duration,
           time_source, evidence_level, viewers, reviewed_by, reviewed_at,
           created_by
-        ) values (
-          '${reportId}'::uuid,
-          '${organizationId}'::uuid,
-          '${taskId}'::uuid,
-          '${projectId}'::uuid,
-          '${streamerId}'::uuid,
-          'approved',
-          3600,
-          3580,
-          3600,
-          'system',
-          'green',
-          4200,
-          '${ownerId}'::uuid,
-          '2026-07-02T04:00:00Z'::timestamptz,
-          '${ownerId}'::uuid
-        );
+        ) values
+          (
+            '${reportId}'::uuid,
+            '${organizationId}'::uuid,
+            '${taskId}'::uuid,
+            '${projectId}'::uuid,
+            '${streamerId}'::uuid,
+            'approved',
+            3600,
+            3580,
+            3600,
+            'system',
+            'green',
+            4200,
+            '${ownerId}'::uuid,
+            '2026-07-02T04:00:00Z'::timestamptz,
+            '${ownerId}'::uuid
+          ),
+          (
+            '${secondReportId}'::uuid,
+            '${organizationId}'::uuid,
+            '${taskId}'::uuid,
+            '${projectId}'::uuid,
+            '${streamerId}'::uuid,
+            'approved',
+            1800,
+            1790,
+            1800,
+            'system',
+            'green',
+            2100,
+            '${ownerId}'::uuid,
+            '2026-07-02T05:00:00Z'::timestamptz,
+            '${ownerId}'::uuid
+          ),
+          (
+            '${unrelatedReportId}'::uuid,
+            '${organizationId}'::uuid,
+            '${taskId}'::uuid,
+            '${projectId}'::uuid,
+            '${streamerId}'::uuid,
+            'approved',
+            900,
+            900,
+            900,
+            'system',
+            'green',
+            1000,
+            '${ownerId}'::uuid,
+            '2026-07-02T06:00:00Z'::timestamptz,
+            '${ownerId}'::uuid
+          );
         insert into public.settlement_batches (
           id, organization_id, project_id, batch_type, status, period_start,
           period_end, computed_amount, locked_at, created_by, title
@@ -2591,7 +2651,7 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             200.00,
             '2026-08-01T00:00:00Z'::timestamptz,
             '${ownerId}'::uuid,
-            'Task8 Receivable'
+            null
           );
         insert into public.settlement_batch_items (
           id, organization_id, settlement_batch_id, project_id, streamer_id,
@@ -2618,6 +2678,17 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             'manual',
             200.00,
             'yellow'
+          ),
+          (
+            '${secondLinkedItemId}'::uuid,
+            '${organizationId}'::uuid,
+            '${receivableBatchId}'::uuid,
+            '${projectId}'::uuid,
+            '${streamerId}'::uuid,
+            '${secondReportId}'::uuid,
+            'live_report',
+            61.70,
+            'green'
           );
         insert into public.project_cost_items (
           id, organization_id, project_id, streamer_id, live_report_id,
@@ -2629,7 +2700,7 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             '${organizationId}'::uuid,
             '${projectId}'::uuid,
             '${streamerId}'::uuid,
-            '${reportId}'::uuid,
+            '${secondReportId}'::uuid,
             null,
             'manual',
             9007199254740993,
@@ -2657,6 +2728,23 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             'confirmed',
             '${ownerId}'::uuid,
             '2026-07-03T00:00:00Z'::timestamptz
+          ),
+          (
+            '${unrelatedCostId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            '${streamerId}'::uuid,
+            '${unrelatedReportId}'::uuid,
+            null,
+            'manual',
+            777,
+            'cost',
+            'green',
+            'manual',
+            'Task8 unrelated fallback cost',
+            'confirmed',
+            '${ownerId}'::uuid,
+            '2026-07-03T00:00:00Z'::timestamptz
           );
       `;
       const snapshotCallSql = `
@@ -2667,7 +2755,11 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             'payable',
             '2026-07-01'::date,
             '2026-07-31'::date,
-            10000
+            'America/St_Johns',
+            'confirmed_contract',
+            'report',
+            10000,
+            500
           ) as value
         )
         select pg_catalog.jsonb_build_object(
@@ -2702,11 +2794,30 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
         const initial = JSON.parse(initialLine ?? "null") as {
           hash_valid: boolean;
           snapshot: {
+            captured_at: string;
             source_count: number;
-            settlement_batches: Array<{ batch_type: string; status: string }>;
-            settlement_batch_items: Array<{ live_report_id: string | null }>;
-            live_reports: Array<{ id: string }>;
-            project_cost_items: Array<{ amount_cents: string }>;
+            source_counts: {
+              live_reports: number;
+              live_tasks: number;
+              total: number;
+            };
+            record_count: number;
+            settlement_batches: Array<{
+              batch_type: string;
+              status: string;
+              title: string | null;
+              version: string;
+            }>;
+            settlement_batch_items: Array<{
+              live_report_id: string | null;
+              settlement_batch_id: string;
+            }>;
+            live_reports: Array<{ id: string; live_task_id: string }>;
+            project_cost_items: Array<{
+              amount_cents: string;
+              live_report_id: string | null;
+              settlement_batch_id: string | null;
+            }>;
             project_streamers: Array<{
               streamers: { source_type: string };
             }>;
@@ -2715,16 +2826,96 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
         };
         expect(initial.hash_valid).toBe(true);
         expect(initial.snapshot.settlement_batches).toHaveLength(2);
-        expect(initial.snapshot.settlement_batch_items).toHaveLength(2);
+        expect(initial.snapshot.settlement_batch_items).toHaveLength(3);
         expect(
           initial.snapshot.settlement_batch_items.some(
             (item) => item.live_report_id === null,
           ),
         ).toBe(true);
-        expect(initial.snapshot.live_reports).toHaveLength(1);
+        expect(initial.snapshot.live_reports).toHaveLength(2);
+        expect(
+          initial.snapshot.live_reports.map((report) => report.id),
+        ).not.toContain(unrelatedReportId);
+        expect(initial.snapshot.source_counts).toMatchObject({
+          live_reports: 2,
+          live_tasks: 1,
+          total: initial.snapshot.source_count,
+        });
+        expect(initial.snapshot.record_count).toBe(1);
+        expect(
+          initial.snapshot.settlement_batches.some(
+            (batch) => batch.title === null,
+          ),
+        ).toBe(true);
         expect(
           initial.snapshot.project_cost_items.map((cost) => cost.amount_cents),
         ).toContain("9007199254740993");
+        expect(initial.snapshot.project_cost_items).toContainEqual(
+          expect.objectContaining({
+            amount_cents: "9007199254740993",
+            live_report_id: secondReportId,
+          }),
+        );
+        expect(initial.snapshot.settlement_batch_items).toContainEqual(
+          expect.objectContaining({
+            live_report_id: secondReportId,
+            settlement_batch_id: receivableBatchId,
+          }),
+        );
+        expect(
+          initial.snapshot.project_cost_items.map((cost) => cost.amount_cents),
+        ).not.toContain("777");
+
+        const routeModule = await import(
+          "../../features/settlements/custom-rule-route-context"
+        );
+        const parseSnapshot = (
+          routeModule as typeof routeModule & {
+            parseCustomSettlementEvidenceSnapshot: (
+              data: unknown,
+              expected: {
+                organizationId: string;
+                actorId: string;
+                projectId: string;
+                scope: "payable" | "receivable";
+                periodStart: string;
+                periodEnd: string;
+                businessTimezone: string;
+                businessTimezoneSource:
+                  | "contract_default"
+                  | "organization_setting"
+                  | "confirmed_contract";
+                executionGrain:
+                  | "report"
+                  | "project_streamer_period"
+                  | "batch"
+                  | "project_period";
+                periodStartInclusive: string;
+                periodEndExclusive: string;
+              },
+              now: () => Date,
+            ) => unknown;
+          }
+        ).parseCustomSettlementEvidenceSnapshot;
+        expect(
+          parseSnapshot(
+            initial.snapshot,
+            {
+              organizationId,
+              actorId: financeId,
+              projectId,
+              scope: "payable",
+              periodStart: "2026-07-01",
+              periodEnd: "2026-07-31",
+              businessTimezone: "America/St_Johns",
+              businessTimezoneSource: "confirmed_contract",
+              executionGrain: "report",
+              periodStartInclusive: "2026-07-01T02:30:00.000Z",
+              periodEndExclusive: "2026-08-01T02:30:00.000Z",
+            },
+            () => new Date(initial.snapshot.captured_at),
+          ),
+        ).toBeDefined();
 
         const emptyText = runDockerSqlText(
           container,
@@ -2738,7 +2929,11 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
               'receivable',
               '2026-07-01'::date,
               '2026-07-31'::date,
-              10000
+              'America/St_Johns',
+              'confirmed_contract',
+              'project_period',
+              10000,
+              500
             );
           `,
         );
@@ -2766,7 +2961,11 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
               'payable',
               '2025-01-01'::date,
               '2026-01-01'::date,
-              10000
+              'America/St_Johns',
+              'confirmed_contract',
+              'project_period',
+              10000,
+              500
             );
           `,
         );
@@ -2793,7 +2992,11 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
               null,
               '2026-07-01'::date,
               '2026-07-31'::date,
-              10000
+              'America/St_Johns',
+              'confirmed_contract',
+              'project_period',
+              10000,
+              500
             );
           `,
         );
@@ -2814,7 +3017,11 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
               'payable',
               '2025-01-01'::date,
               '2026-01-02'::date,
-              10000
+              'America/St_Johns',
+              'confirmed_contract',
+              'project_period',
+              10000,
+              500
             );
           `,
         );
@@ -2834,7 +3041,11 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
               'payable',
               '2026-07-01'::date,
               '2026-07-31'::date,
-              10000
+              'America/St_Johns',
+              'confirmed_contract',
+              'report',
+              10000,
+              500
             );
           `,
           `
@@ -2847,7 +3058,11 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
               'payable',
               '2026-07-01'::date,
               '2026-07-31'::date,
-              10000
+              'America/St_Johns',
+              'confirmed_contract',
+              'report',
+              10000,
+              500
             );
           `,
           `
@@ -2860,7 +3075,11 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
               'payable',
               '2026-07-01'::date,
               '2026-07-31'::date,
-              1
+              'America/St_Johns',
+              'confirmed_contract',
+              'report',
+              1,
+              500
             );
           `,
         ]) {
@@ -2868,21 +3087,6 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
           expect(denied.code).not.toBe(0);
         }
 
-        const streamerMutation = runDockerSqlAsyncCapture(
-          container,
-          `
-            begin;
-            select id from public.streamers
-            where id = '${streamerId}'::uuid
-            for update;
-            select pg_catalog.pg_sleep(0.8);
-            update public.streamers
-            set source_type = 'signed'
-            where id = '${streamerId}'::uuid;
-            commit;
-          `,
-        );
-        await new Promise((resolve) => setTimeout(resolve, 150));
         const concurrentSnapshot = runDockerSqlAsyncCapture(
           container,
           `
@@ -2896,53 +3100,24 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             commit;
           `,
         );
-        const mutationResult = await streamerMutation;
-        expect(mutationResult.code, mutationResult.stderr).toBe(0);
-        await new Promise((resolve) => setTimeout(resolve, 200));
-
-        const writerSql = [
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const costAttachment = await runDockerSqlAsyncCapture(
+          container,
           `
             begin;
-            set local lock_timeout = '400ms';
-            update public.settlement_batches
-            set status = 'reopened', reopen_reason = 'runtime probe'
-            where id = '${payableBatchId}'::uuid;
-            commit;
-          `,
-          `
-            begin;
-            set local lock_timeout = '400ms';
+            set local deadlock_timeout = '200ms';
+            set local lock_timeout = '2s';
             update public.project_cost_items
-            set amount_cents = amount_cents + 1
+            set
+              amount_cents = amount_cents + 1,
+              settlement_batch_id = '${payableBatchId}'::uuid
             where id = '${linkedCostId}'::uuid;
             commit;
           `,
-          `
-            begin;
-            set local lock_timeout = '400ms';
-            insert into public.settlement_batch_items (
-              id, organization_id, settlement_batch_id, project_id,
-              streamer_id, live_report_id, item_type, computed_amount
-            ) values (
-              '${insertedItemId}'::uuid,
-              '${organizationId}'::uuid,
-              '${payableBatchId}'::uuid,
-              '${projectId}'::uuid,
-              '${streamerId}'::uuid,
-              null,
-              'manual',
-              1.00
-            );
-            commit;
-          `,
-        ];
-        const writerResults = await Promise.all(
-          writerSql.map((sql) => runDockerSqlAsyncCapture(container, sql)),
         );
-        for (const writerResult of writerResults) {
-          expect(writerResult.code).not.toBe(0);
-          expect(writerResult.stderr).toContain("55P03");
-        }
+        expect(costAttachment.code, costAttachment.stderr).toBe(0);
+        expect(costAttachment.stderr).not.toContain("40P01");
+        expect(costAttachment.stderr).not.toContain("55P03");
 
         const concurrentResult = await concurrentSnapshot;
         expect(concurrentResult.code, concurrentResult.stderr).toBe(0);
@@ -2957,12 +3132,23 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             (batch) => batch.status === "locked",
           ),
         ).toBe(true);
+        const linkedCost = concurrent.snapshot.project_cost_items.find(
+          (cost) =>
+            cost.amount_cents === "9007199254740993" ||
+            cost.amount_cents === "9007199254740994",
+        );
+        expect(linkedCost).toBeDefined();
         expect(
-          concurrent.snapshot.project_cost_items.map(
-            (cost) => cost.amount_cents,
-          ),
-        ).toContain("9007199254740993");
-        expect(concurrent.snapshot.settlement_batch_items).toHaveLength(2);
+          [
+            linkedCost?.amount_cents,
+            linkedCost?.settlement_batch_id,
+          ],
+        ).toEqual(
+          linkedCost?.amount_cents === "9007199254740993"
+            ? ["9007199254740993", null]
+            : ["9007199254740994", payableBatchId],
+        );
+        expect(concurrent.snapshot.settlement_batch_items).toHaveLength(3);
         expect(
           concurrent.snapshot.project_streamers.every(
             (row) => row.streamers.source_type === "external",
@@ -2977,12 +3163,100 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
           runDockerSqlText(
             container,
             `
-              select source_type::text
-              from public.streamers
-              where id = '${streamerId}'::uuid;
+              select amount_cents::text || '|' || settlement_batch_id::text
+              from public.project_cost_items
+              where id = '${linkedCostId}'::uuid;
             `,
           ),
-        ).toBe("signed");
+        ).toBe(`9007199254740994|${payableBatchId}`);
+
+        runDockerSql(
+          container,
+          `
+            insert into public.live_tasks (
+              id, organization_id, project_id, streamer_id, title, status,
+              system_started_at, system_stopped_at, system_duration, created_by
+            ) values (
+              '${capTaskId}'::uuid,
+              '${organizationId}'::uuid,
+              '${emptyProjectId}'::uuid,
+              '${streamerId}'::uuid,
+              'Task8 Record Cap',
+              'completed',
+              '2026-07-04T02:00:00Z'::timestamptz,
+              '2026-07-04T03:00:00Z'::timestamptz,
+              3600,
+              '${ownerId}'::uuid
+            );
+            insert into public.live_reports (
+              id, organization_id, live_task_id, project_id, streamer_id,
+              status, system_duration, screenshot_duration,
+              settlement_duration, time_source, evidence_level, viewers,
+              reviewed_by, reviewed_at, created_by
+            )
+            select
+              extensions.gen_random_uuid(),
+              '${organizationId}'::uuid,
+              '${capTaskId}'::uuid,
+              '${emptyProjectId}'::uuid,
+              '${streamerId}'::uuid,
+              'approved',
+              60,
+              60,
+              60,
+              'system',
+              'green',
+              series.value,
+              '${ownerId}'::uuid,
+              '2026-07-04T04:00:00Z'::timestamptz,
+              '${ownerId}'::uuid
+            from pg_catalog.generate_series(1, 501) as series(value);
+          `,
+        );
+        const heldReport = runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            select id
+            from public.live_reports
+            where live_task_id = '${capTaskId}'::uuid
+            order by id
+            limit 1
+            for update;
+            select pg_catalog.pg_sleep(1.2);
+            commit;
+          `,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const recordLimit = await runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            set local lock_timeout = '300ms';
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${financeId}', true
+            );
+            select public.read_custom_settlement_evidence_snapshot(
+              '${organizationId}'::uuid,
+              '${emptyProjectId}'::uuid,
+              'payable',
+              '2026-07-01'::date,
+              '2026-07-31'::date,
+              'America/St_Johns',
+              'confirmed_contract',
+              'report',
+              10000,
+              500
+            );
+            commit;
+          `,
+        );
+        expect(recordLimit.code).not.toBe(0);
+        expect(recordLimit.stderr).toContain(
+          "custom_settlement_snapshot_record_limit_exceeded",
+        );
+        expect(recordLimit.stderr).not.toContain("55P03");
+        expect((await heldReport).code).toBe(0);
       } finally {
         runDockerSql(container, cleanupSql);
       }

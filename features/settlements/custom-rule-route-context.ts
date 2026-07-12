@@ -985,6 +985,11 @@ const MAX_SELECTION_INCLUSIVE_CALENDAR_DAYS = 366;
 const SNAPSHOT_MAX_AGE_MS = 5 * 60 * 1_000;
 const SNAPSHOT_MAX_FUTURE_SKEW_MS = 60 * 1_000;
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
+const confirmedBusinessTimezoneSourceSchema = z.enum([
+  "contract_default",
+  "organization_setting",
+  "confirmed_contract",
+]);
 const canonicalNumericTextSchema = z
   .string()
   .regex(/^-?(?:0|[1-9]\d*)(?:\.\d*[1-9])?$/u)
@@ -1000,6 +1005,7 @@ const approvedReportRowSchema = z.strictObject({
   id: z.string().uuid(),
   organization_id: z.string().uuid(),
   project_id: z.string().uuid(),
+  live_task_id: z.string().uuid(),
   streamer_id: z.string().uuid(),
   status: z.string().min(1),
   system_duration: z.number().int().nonnegative().nullable(),
@@ -1019,7 +1025,7 @@ const settlementBatchRowSchema = z.strictObject({
   project_id: z.string().uuid(),
   status: z.literal("locked"),
   batch_type: z.enum(["payable", "receivable"]),
-  title: z.string().min(1).max(200),
+  title: z.string().min(1).max(200).nullable(),
   computed_amount: canonicalNumericTextSchema,
   manual_amount: canonicalNumericTextSchema,
   adjustment_amount: canonicalNumericTextSchema,
@@ -1111,14 +1117,32 @@ const evidenceSnapshotSchema = z.strictObject({
   period_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
   business_timezone: z.string().min(1).max(100),
   business_timezone_confirmed: z.boolean(),
-  business_timezone_source: z.enum([
-    "contract_default",
-    "organization_setting",
-    "confirmed_contract",
-    "unresolved",
-  ]),
+  business_timezone_source: confirmedBusinessTimezoneSourceSchema,
   captured_at: canonicalOffsetDateTimeSchema,
   source_count: z.number().int().min(0).max(MAX_AUTHORIZED_SOURCE_REPORTS),
+  source_counts: z.strictObject({
+    settlement_batches: z.number().int().min(0).max(MAX_AUTHORIZED_SOURCE_REPORTS),
+    settlement_batch_items: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_AUTHORIZED_SOURCE_REPORTS),
+    live_reports: z.number().int().min(0).max(MAX_AUTHORIZED_SOURCE_REPORTS),
+    live_tasks: z.number().int().min(0).max(MAX_AUTHORIZED_SOURCE_REPORTS),
+    project_cost_items: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_AUTHORIZED_SOURCE_REPORTS),
+    project_streamers: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_AUTHORIZED_SOURCE_REPORTS),
+    streamers: z.number().int().min(0).max(MAX_AUTHORIZED_SOURCE_REPORTS),
+    total: z.number().int().min(0).max(MAX_AUTHORIZED_SOURCE_REPORTS),
+  }),
+  record_count: z.number().int().min(0).max(MAX_AUTHORIZED_SIMULATION_RECORDS),
   project: z.strictObject({
     id: z.string().uuid(),
     organization_id: z.string().uuid(),
@@ -1128,12 +1152,7 @@ const evidenceSnapshotSchema = z.strictObject({
     updated_at: canonicalOffsetDateTimeSchema,
     business_timezone: z.string().min(1).max(100),
     business_timezone_confirmed: z.boolean(),
-    business_timezone_source: z.enum([
-      "contract_default",
-      "organization_setting",
-      "confirmed_contract",
-      "unresolved",
-    ]),
+    business_timezone_source: confirmedBusinessTimezoneSourceSchema,
   }),
   settlement_batches: z
     .array(settlementBatchRowSchema)
@@ -1162,6 +1181,22 @@ type SettlementItemRow = z.infer<typeof settlementItemRowSchema>;
 type ProjectCostRow = z.infer<typeof projectCostRowSchema>;
 type ProjectStreamerRow = z.infer<typeof projectStreamerRowSchema>;
 type EvidenceSnapshot = z.infer<typeof evidenceSnapshotSchema>;
+type ConfirmedBusinessTimezoneSource = z.infer<
+  typeof confirmedBusinessTimezoneSourceSchema
+>;
+type EvidenceSnapshotExpectation = {
+  organizationId: string;
+  actorId: string;
+  projectId: string;
+  scope: "payable" | "receivable";
+  periodStart: string;
+  periodEnd: string;
+  businessTimezone: string;
+  businessTimezoneSource: ConfirmedBusinessTimezoneSource;
+  executionGrain: CustomRuleDraft["businessContract"]["executionGrain"];
+  periodStartInclusive: string;
+  periodEndExclusive: string;
+};
 type AuthorizedSimulationRecord =
   AuthorizedCustomRuleSimulationEvidence["records"][number];
 
@@ -1234,6 +1269,7 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
       if (
         !catalog.businessTimezoneConfirmed ||
         !catalog.businessTimezone ||
+        catalog.businessTimezoneSource === "unresolved" ||
         catalog.businessTimezone !== draft.businessContract.businessTimezone
       ) {
         throw routeError(
@@ -1257,6 +1293,8 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           periodStart: unsafeInput.selection.periodStart,
           periodEnd: unsafeInput.selection.periodEnd,
           businessTimezone: catalog.businessTimezone,
+          businessTimezoneSource: catalog.businessTimezoneSource,
+          executionGrain: draft.businessContract.executionGrain,
           periodStartInclusive: businessPeriod.startInclusive,
           periodEndExclusive: businessPeriod.endExclusive,
         },
@@ -1341,9 +1379,59 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         requestedItemsByReport: itemsByReport,
         pairedItemsByReport,
       });
-      const costs = [...snapshot.project_cost_items].sort((left, right) =>
-        left.id.localeCompare(right.id),
+      const expectedRecordCount = prospectiveAuthorizedRecordCount({
+        executionGrain: draft.businessContract.executionGrain,
+        reports,
+        batches: requestedBatches,
+        items,
+      });
+      if (snapshot.record_count !== expectedRecordCount) {
+        throw routeError(
+          "CUSTOM_RULE_EVIDENCE_INVALID",
+          "Settlement rule evidence record count is invalid",
+          500,
+          true,
+        );
+      }
+      const selectedBatchIds = new Set(
+        [...requestedBatches, ...pairedBatches].map((batch) => batch.id),
       );
+      const selectedReportIds = new Set([
+        ...reports.map((report) => report.id),
+        ...[...items, ...pairedItems].flatMap((item) =>
+          item.live_report_id === null ? [] : [item.live_report_id],
+        ),
+      ]);
+      const periodStartEpoch = Date.parse(businessPeriod.startInclusive);
+      const periodEndEpoch = Date.parse(businessPeriod.endExclusive);
+      const costs = snapshot.project_cost_items
+        .filter((cost) => {
+          if (
+            cost.live_report_id !== null &&
+            selectedReportIds.has(cost.live_report_id)
+          ) {
+            return true;
+          }
+          if (
+            cost.settlement_batch_id !== null &&
+            selectedBatchIds.has(cost.settlement_batch_id)
+          ) {
+            return true;
+          }
+          if (
+            cost.live_report_id !== null ||
+            cost.settlement_batch_id !== null
+          ) {
+            return false;
+          }
+          const createdAt = canonicalOffsetDateTimeEpoch(cost.created_at);
+          return (
+            createdAt !== null &&
+            createdAt >= periodStartEpoch &&
+            createdAt < periodEndEpoch
+          );
+        })
+        .sort((left, right) => left.id.localeCompare(right.id));
       const costSelection = {
         usesUnlinkedPeriodFallback: costs.some(
           (cost) =>
@@ -1407,6 +1495,14 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           ),
         },
       }));
+      if (records.length !== snapshot.record_count) {
+        throw routeError(
+          "CUSTOM_RULE_EVIDENCE_INVALID",
+          "Settlement rule evidence record count changed during mapping",
+          500,
+          true,
+        );
+      }
       assertRequiredRecordVariables(records, requiredVariables);
       if (records.length > MAX_AUTHORIZED_SIMULATION_RECORDS) {
         throw routeError(
@@ -1861,17 +1957,7 @@ function canonicalOffsetDateTimeEpoch(value: unknown): number | null {
 
 async function readCustomSettlementEvidenceSnapshot(
   client: SupabaseClient,
-  input: {
-    organizationId: string;
-    actorId: string;
-    projectId: string;
-    scope: "payable" | "receivable";
-    periodStart: string;
-    periodEnd: string;
-    businessTimezone: string;
-    periodStartInclusive: string;
-    periodEndExclusive: string;
-  },
+  input: EvidenceSnapshotExpectation,
   now: () => Date,
 ): Promise<EvidenceSnapshot> {
   const { data, error } = await client.rpc(
@@ -1882,7 +1968,11 @@ async function readCustomSettlementEvidenceSnapshot(
       p_scope: input.scope,
       p_period_start: input.periodStart,
       p_period_end: input.periodEnd,
+      p_business_timezone: input.businessTimezone,
+      p_business_timezone_source: input.businessTimezoneSource,
+      p_execution_grain: input.executionGrain,
       p_max_sources: MAX_AUTHORIZED_SOURCE_REPORTS,
+      p_max_record_count: MAX_AUTHORIZED_SIMULATION_RECORDS,
     },
   );
   if (error) {
@@ -1891,6 +1981,13 @@ async function readCustomSettlementEvidenceSnapshot(
       throw routeError(
         "CUSTOM_RULE_SELECTION_TOO_LARGE",
         "Authorized simulation selection has too many sources",
+        422,
+      );
+    }
+    if (text.includes("snapshot_record_limit_exceeded")) {
+      throw routeError(
+        "CUSTOM_RULE_SELECTION_TOO_LARGE",
+        "Authorized simulation selection has too many execution records",
         422,
       );
     }
@@ -1923,6 +2020,27 @@ async function readCustomSettlementEvidenceSnapshot(
       422,
     );
   }
+  if (
+    data &&
+    typeof data === "object" &&
+    Number.isInteger(Reflect.get(data, "record_count")) &&
+    Number(Reflect.get(data, "record_count")) >
+      MAX_AUTHORIZED_SIMULATION_RECORDS
+  ) {
+    throw routeError(
+      "CUSTOM_RULE_SELECTION_TOO_LARGE",
+      "Authorized simulation selection has too many execution records",
+      422,
+    );
+  }
+  return parseCustomSettlementEvidenceSnapshot(data, input, now);
+}
+
+export function parseCustomSettlementEvidenceSnapshot(
+  data: unknown,
+  expected: EvidenceSnapshotExpectation,
+  now: () => Date,
+): EvidenceSnapshot {
   const parsed = evidenceSnapshotSchema.safeParse(data);
   if (!parsed.success) {
     throw routeError(
@@ -1933,34 +2051,68 @@ async function readCustomSettlementEvidenceSnapshot(
     );
   }
   const snapshot = parsed.data;
-  validateEvidenceSnapshot(snapshot, input, now);
+  validateEvidenceSnapshot(snapshot, expected, now);
   return snapshot;
 }
 
 function validateEvidenceSnapshot(
   snapshot: EvidenceSnapshot,
-  expected: {
-    organizationId: string;
-    actorId: string;
-    projectId: string;
-    scope: "payable" | "receivable";
-    periodStart: string;
-    periodEnd: string;
-    businessTimezone: string;
-    periodStartInclusive: string;
-    periodEndExclusive: string;
-  },
+  expected: EvidenceSnapshotExpectation,
   now: () => Date,
 ): void {
   const capturedAt = canonicalOffsetDateTimeEpoch(snapshot.captured_at);
   const nowEpoch = now().getTime();
-  const countedSources =
-    snapshot.settlement_batches.length +
-    snapshot.settlement_batch_items.length +
-    snapshot.live_reports.length * 2 +
-    snapshot.project_cost_items.length +
-    snapshot.project_streamers.length +
-    snapshot.streamers.length;
+  const periodStart = canonicalOffsetDateTimeEpoch(
+    expected.periodStartInclusive,
+  );
+  const periodEnd = canonicalOffsetDateTimeEpoch(expected.periodEndExclusive);
+  const countedSources = {
+    settlement_batches: snapshot.settlement_batches.length,
+    settlement_batch_items: snapshot.settlement_batch_items.length,
+    live_reports: snapshot.live_reports.length,
+    live_tasks: new Set(
+      snapshot.live_reports.map((report) => report.live_task_id),
+    ).size,
+    project_cost_items: snapshot.project_cost_items.length,
+    project_streamers: snapshot.project_streamers.length,
+    streamers: snapshot.streamers.length,
+  };
+  const totalCountedSources = Object.values(countedSources).reduce(
+    (total, count) => total + count,
+    0,
+  );
+  const requestedBatches = snapshot.settlement_batches.filter(
+    (batch) => batch.batch_type === expected.scope,
+  );
+  const requestedBatchIds = new Set(requestedBatches.map((batch) => batch.id));
+  const requestedItems = snapshot.settlement_batch_items.filter((item) =>
+    requestedBatchIds.has(item.settlement_batch_id),
+  );
+  const requestedReportIds = new Set(
+    requestedItems.flatMap((item) =>
+      item.live_report_id === null ? [] : [item.live_report_id],
+    ),
+  );
+  const effectiveReports = requestedBatches.length
+    ? snapshot.live_reports.filter((report) =>
+        requestedReportIds.has(report.id),
+      )
+    : snapshot.live_reports.filter((report) => {
+        const reviewedAt = canonicalOffsetDateTimeEpoch(report.reviewed_at);
+        return (
+          reviewedAt !== null &&
+          periodStart !== null &&
+          periodEnd !== null &&
+          reviewedAt >= periodStart &&
+          reviewedAt < periodEnd
+        );
+      });
+  const expectedRecordCount = prospectiveAuthorizedRecordCount({
+    executionGrain: expected.executionGrain,
+    reports: effectiveReports,
+    batches: requestedBatches,
+    items: requestedItems,
+  });
   if (
     snapshot.organization_id !== expected.organizationId ||
     snapshot.project_id !== expected.projectId ||
@@ -1969,16 +2121,30 @@ function validateEvidenceSnapshot(
     snapshot.period_start !== expected.periodStart ||
     snapshot.period_end !== expected.periodEnd ||
     snapshot.business_timezone !== expected.businessTimezone ||
+    snapshot.business_timezone_source !== expected.businessTimezoneSource ||
     !snapshot.business_timezone_confirmed ||
     snapshot.project.id !== expected.projectId ||
     snapshot.project.organization_id !== expected.organizationId ||
     snapshot.project.business_timezone !== expected.businessTimezone ||
+    snapshot.project.business_timezone_source !==
+      expected.businessTimezoneSource ||
     !snapshot.project.business_timezone_confirmed ||
     capturedAt === null ||
+    periodStart === null ||
+    periodEnd === null ||
+    periodEnd <= periodStart ||
     !Number.isFinite(nowEpoch) ||
     capturedAt < nowEpoch - SNAPSHOT_MAX_AGE_MS ||
     capturedAt > nowEpoch + SNAPSHOT_MAX_FUTURE_SKEW_MS ||
-    snapshot.source_count !== countedSources
+    snapshot.source_count !== totalCountedSources ||
+    snapshot.source_counts.total !== totalCountedSources ||
+    Object.entries(countedSources).some(
+      ([source, count]) =>
+        snapshot.source_counts[
+          source as keyof typeof countedSources
+        ] !== count,
+    ) ||
+    snapshot.record_count !== expectedRecordCount
   ) {
     throw routeError(
       "CUSTOM_RULE_EVIDENCE_INVALID",
@@ -2087,18 +2253,6 @@ function validateEvidenceSnapshot(
   const batchIds = new Set(
     snapshot.settlement_batches.map((batch) => batch.id),
   );
-  const periodStart = canonicalOffsetDateTimeEpoch(
-    expected.periodStartInclusive,
-  );
-  const periodEnd = canonicalOffsetDateTimeEpoch(expected.periodEndExclusive);
-  if (periodStart === null || periodEnd === null) {
-    throw routeError(
-      "CUSTOM_RULE_EVIDENCE_INVALID",
-      "Settlement rule evidence period is invalid",
-      500,
-      true,
-    );
-  }
   for (const cost of snapshot.project_cost_items) {
     const linkedReportValid =
       cost.live_report_id === null || reportIds.has(cost.live_report_id);
@@ -2406,6 +2560,37 @@ function sameStringPopulation(left: string[], right: string[]): boolean {
     sortedLeft.length === sortedRight.length &&
     sortedLeft.every((value, index) => value === sortedRight[index])
   );
+}
+
+function prospectiveAuthorizedRecordCount(input: {
+  executionGrain: CustomRuleDraft["businessContract"]["executionGrain"];
+  reports: ApprovedReportRow[];
+  batches: SettlementBatchRow[];
+  items: SettlementItemRow[];
+}): number {
+  if (input.executionGrain === "report") return input.reports.length;
+  if (input.executionGrain === "project_streamer_period") {
+    return new Set([
+      ...input.reports.map((report) => report.streamer_id),
+      ...input.items.flatMap((item) =>
+        item.live_report_id === null && item.streamer_id !== null
+          ? [item.streamer_id]
+          : [],
+      ),
+    ]).size;
+  }
+  if (input.executionGrain === "batch") {
+    if (input.batches.length === 0) return input.reports.length;
+    const batchIdsWithItems = new Set(
+      input.items.map((item) => item.settlement_batch_id),
+    );
+    return input.batches.filter((batch) => batchIdsWithItems.has(batch.id))
+      .length;
+  }
+  if (input.executionGrain === "project_period") {
+    return input.reports.length > 0 || input.items.length > 0 ? 1 : 0;
+  }
+  return 0;
 }
 
 function buildAuthorizedSimulationRecords(input: {
