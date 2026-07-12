@@ -3416,6 +3416,99 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     expect(evidence.currentMarginCents).toBe("2550");
   });
 
+  it("excludes costs unless every non-null link belongs to selected item evidence", async () => {
+    const payableBatch = lockedSettlementBatch();
+    const receivableBatch = lockedSettlementBatch({
+      id: "53535353-5353-4353-8353-535353535353",
+      batch_type: "receivable",
+    });
+    const emptyOverlappingBatch = lockedSettlementBatch({
+      id: "54545454-5454-4454-8454-545454545454",
+      period_start: "2026-07-02",
+      period_end: "2026-07-09",
+    });
+    const emptyPairedBatch = lockedSettlementBatch({
+      id: "54545454-5454-4454-8454-545454545455",
+      batch_type: "receivable",
+      period_start: "2026-07-02",
+      period_end: "2026-07-09",
+    });
+    const unrelatedReportId = "55555555-5555-4555-8555-555555555555";
+    const requestedItem = lockedSettlementItem({
+      settlement_batches: payableBatch,
+    });
+    const pairedItem = lockedSettlementItem({
+      id: "56565656-5656-4656-8656-565656565656",
+      computed_amount: "30.00",
+      manual_amount: "0.00",
+      adjustment_amount: "0.00",
+      settlement_batches: receivableBatch,
+    });
+    const common = {
+      reports: [
+        approvedReport(),
+        approvedReport({
+          id: unrelatedReportId,
+          settled_batch_item_id: null,
+        }),
+      ],
+      items: [requestedItem],
+      pairedItems: [pairedItem],
+      batches: [
+        payableBatch,
+        receivableBatch,
+        emptyOverlappingBatch,
+        emptyPairedBatch,
+      ],
+      streamers: [],
+      enforceFilters: false,
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "project_period",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [{ name: "period_report_count" }],
+        },
+      }),
+    };
+    const loadMargin = async (costs: unknown[]) => {
+      const harness = await evidenceHarness({ ...common, costs });
+      const authorized = await harness.adapter.authorizeSelection(
+        authorizationInput(),
+      );
+      const evidence = await harness.adapter.loadAuthorizedEvidence({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        selection: authorized,
+      });
+      return evidence.currentMarginCents;
+    };
+    const baselineMargin = await loadMargin([]);
+    const mismatchedMargin = await loadMargin([
+      confirmedCostItem({
+        id: "57575757-5757-4757-8757-575757575757",
+        live_report_id: null,
+        settlement_batch_id: emptyOverlappingBatch.id,
+        amount_cents: "101",
+      }),
+      confirmedCostItem({
+        id: "58585858-5858-4858-8858-585858585858",
+        settlement_batch_id: emptyOverlappingBatch.id,
+        amount_cents: "102",
+      }),
+      confirmedCostItem({
+        id: "59595959-5959-4959-8959-595959595959",
+        live_report_id: unrelatedReportId,
+        settlement_batch_id: payableBatch.id,
+        amount_cents: "103",
+      }),
+    ]);
+
+    expect(baselineMargin).not.toBeNull();
+    expect(mismatchedMargin).toBe(baselineMargin);
+  });
+
   it.each(["batch", "project_period"] as const)(
     "includes every in-period confirmed project cost once for %s margin",
     async (executionGrain) => {

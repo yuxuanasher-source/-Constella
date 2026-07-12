@@ -1394,7 +1394,7 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         );
       }
       const selectedBatchIds = new Set(
-        [...requestedBatches, ...pairedBatches].map((batch) => batch.id),
+        [...items, ...pairedItems].map((item) => item.settlement_batch_id),
       );
       const selectedReportIds = new Set([
         ...reports.map((report) => report.id),
@@ -1407,22 +1407,15 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
       const costs = snapshot.project_cost_items
         .filter((cost) => {
           if (
-            cost.live_report_id !== null &&
-            selectedReportIds.has(cost.live_report_id)
-          ) {
-            return true;
-          }
-          if (
-            cost.settlement_batch_id !== null &&
-            selectedBatchIds.has(cost.settlement_batch_id)
-          ) {
-            return true;
-          }
-          if (
             cost.live_report_id !== null ||
             cost.settlement_batch_id !== null
           ) {
-            return false;
+            return (
+              (cost.live_report_id === null ||
+                selectedReportIds.has(cost.live_report_id)) &&
+              (cost.settlement_batch_id === null ||
+                selectedBatchIds.has(cost.settlement_batch_id))
+            );
           }
           const createdAt = canonicalOffsetDateTimeEpoch(cost.created_at);
           return (

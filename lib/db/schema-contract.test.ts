@@ -1979,12 +1979,13 @@ describe("Task8 custom settlement runtime database contract", () => {
       /cost\.live_report_id is null[\s\S]+from selected_reports as report[\s\S]+report\.id = cost\.live_report_id/u,
     );
     expect(selectedCosts).toMatch(
-      /cost\.settlement_batch_id is null[\s\S]+from selected_batches as batch[\s\S]+batch\.id = cost\.settlement_batch_id/u,
+      /cost\.settlement_batch_id is null[\s\S]+from selected_items as item[\s\S]+item\.settlement_batch_id = cost\.settlement_batch_id/u,
     );
     expect(selectedCosts).toMatch(
       /cost\.live_report_id is null[\s\S]+cost\.settlement_batch_id is null[\s\S]+cost\.created_at >= v_window_start/u,
     );
     expect(selectedCosts).not.toContain(" = any (");
+    expect(selectedCosts).not.toContain("from selected_batches as batch");
     expect(body).not.toContain("source_payload");
     expect(body).toContain("cost.amount_cents::text");
     expect(
@@ -2370,12 +2371,18 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
       const unrelatedReportId = "8d170000-0000-4000-8000-000000000003";
       const payableBatchId = "8d180000-0000-4000-8000-000000000001";
       const receivableBatchId = "8d180000-0000-4000-8000-000000000002";
+      const emptyOverlappingBatchId = "8d180000-0000-4000-8000-000000000003";
       const linkedItemId = "8d190000-0000-4000-8000-000000000001";
       const manualItemId = "8d190000-0000-4000-8000-000000000002";
       const secondLinkedItemId = "8d190000-0000-4000-8000-000000000004";
       const linkedCostId = "8d1a0000-0000-4000-8000-000000000001";
       const unlinkedCostId = "8d1a0000-0000-4000-8000-000000000002";
       const unrelatedCostId = "8d1a0000-0000-4000-8000-000000000003";
+      const emptyBatchCostId = "8d1a0000-0000-4000-8000-000000000004";
+      const validReportEmptyBatchCostId =
+        "8d1a0000-0000-4000-8000-000000000005";
+      const unrelatedReportValidBatchCostId =
+        "8d1a0000-0000-4000-8000-000000000006";
       const cleanupSql = `
         delete from public.project_cost_items
         where organization_id = '${organizationId}'::uuid;
@@ -2652,6 +2659,19 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             '2026-08-01T00:00:00Z'::timestamptz,
             '${ownerId}'::uuid,
             null
+          ),
+          (
+            '${emptyOverlappingBatchId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            'payable',
+            'locked',
+            '2026-07-02'::date,
+            '2026-07-30'::date,
+            0.00,
+            '2026-08-01T00:00:00Z'::timestamptz,
+            '${ownerId}'::uuid,
+            'Task8 Empty Overlap'
           );
         insert into public.settlement_batch_items (
           id, organization_id, settlement_batch_id, project_id, streamer_id,
@@ -2745,6 +2765,57 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             'confirmed',
             '${ownerId}'::uuid,
             '2026-07-03T00:00:00Z'::timestamptz
+          ),
+          (
+            '${emptyBatchCostId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            '${streamerId}'::uuid,
+            null,
+            '${emptyOverlappingBatchId}'::uuid,
+            'manual',
+            880,
+            'cost',
+            'green',
+            'manual',
+            'Task8 empty batch cost',
+            'confirmed',
+            '${ownerId}'::uuid,
+            '2026-07-03T00:00:00Z'::timestamptz
+          ),
+          (
+            '${validReportEmptyBatchCostId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            '${streamerId}'::uuid,
+            '${reportId}'::uuid,
+            '${emptyOverlappingBatchId}'::uuid,
+            'manual',
+            881,
+            'cost',
+            'green',
+            'manual',
+            'Task8 valid report empty batch cost',
+            'confirmed',
+            '${ownerId}'::uuid,
+            '2026-07-03T00:00:00Z'::timestamptz
+          ),
+          (
+            '${unrelatedReportValidBatchCostId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            '${streamerId}'::uuid,
+            '${unrelatedReportId}'::uuid,
+            '${payableBatchId}'::uuid,
+            'manual',
+            882,
+            'cost',
+            'green',
+            'manual',
+            'Task8 unrelated report valid batch cost',
+            'confirmed',
+            '${ownerId}'::uuid,
+            '2026-07-03T00:00:00Z'::timestamptz
           );
       `;
       const snapshotCallSql = `
@@ -2803,6 +2874,7 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             };
             record_count: number;
             settlement_batches: Array<{
+              id: string;
               batch_type: string;
               status: string;
               title: string | null;
@@ -2825,7 +2897,13 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
           };
         };
         expect(initial.hash_valid).toBe(true);
-        expect(initial.snapshot.settlement_batches).toHaveLength(2);
+        expect(initial.snapshot.settlement_batches).toHaveLength(3);
+        expect(initial.snapshot.settlement_batches).toContainEqual(
+          expect.objectContaining({
+            id: emptyOverlappingBatchId,
+            title: "Task8 Empty Overlap",
+          }),
+        );
         expect(initial.snapshot.settlement_batch_items).toHaveLength(3);
         expect(
           initial.snapshot.settlement_batch_items.some(
@@ -2862,9 +2940,13 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             settlement_batch_id: receivableBatchId,
           }),
         );
-        expect(
-          initial.snapshot.project_cost_items.map((cost) => cost.amount_cents),
-        ).not.toContain("777");
+        const returnedCostAmounts = initial.snapshot.project_cost_items.map(
+          (cost) => cost.amount_cents,
+        );
+        expect(returnedCostAmounts).toHaveLength(2);
+        for (const forbiddenAmount of ["777", "880", "881", "882"]) {
+          expect(returnedCostAmounts).not.toContain(forbiddenAmount);
+        }
 
         const routeModule = await import(
           "../../features/settlements/custom-rule-route-context"

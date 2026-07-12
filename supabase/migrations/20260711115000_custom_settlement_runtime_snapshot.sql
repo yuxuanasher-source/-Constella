@@ -560,6 +560,8 @@ begin
       and report.reviewed_at < v_window_end
     )
   ),
+  -- Every non-null link must resolve independently. A batch is authorized by
+  -- selected locked items, never merely by overlapping the requested period.
   selected_costs as materialized (
     select
       cost.id,
@@ -594,8 +596,8 @@ begin
             cost.settlement_batch_id is null
             or exists (
               select 1
-              from selected_batches as batch
-              where batch.id = cost.settlement_batch_id
+              from selected_items as item
+              where item.settlement_batch_id = cost.settlement_batch_id
             )
           )
         )
