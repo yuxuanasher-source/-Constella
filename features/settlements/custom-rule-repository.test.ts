@@ -1978,10 +1978,134 @@ describe("custom-rule draft and simulation persistence", () => {
     );
     expect(mock.from).not.toHaveBeenCalled();
     expect(result.owner).toEqual(owner);
-    expect(result.historicalTotals.payableAmountCents).toBe(
+    expect(result.historicalTotals.oldPayableAmountCents).toBe(
       "9007199254740993",
     );
-    expect(typeof result.historicalTotals.payableAmountCents).toBe("string");
+    expect(typeof result.historicalTotals.oldPayableAmountCents).toBe("string");
+  });
+
+  it("writes and decodes a complete v2 summary without Number coercion", async () => {
+    const owner = { kind: "ai_draft" as const, id: DRAFT_ID };
+    const input = validV2SimulationInput(owner);
+    const mock = createPersistenceClient({
+      simulationRpcData: simulationRow(owner, {
+        coverage: input.coverage,
+        scenarios: input.scenarios,
+        historical_totals: input.historicalTotals,
+        deltas: input.deltas,
+        warnings: input.warnings,
+        duplicate: false,
+      }),
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const result = await repository.insertSimulation(input as never);
+
+    expect(result).toMatchObject({
+      summarySchemaVersion: 2,
+      summaryComplete: true,
+      summaryStatus: "complete",
+      coverage: input.coverage,
+      scenarios: input.scenarios,
+      historicalTotals: input.historicalTotals,
+      deltas: input.deltas,
+      warnings: input.warnings,
+    });
+    expect(result.historicalTotals.oldPayableAmountCents).toBe(
+      "9007199254740993",
+    );
+    expect(typeof result.historicalTotals.oldPayableAmountCents).toBe("string");
+    expect(mock.rpc).toHaveBeenCalledWith(
+      "create_settlement_formula_simulation",
+      expect.objectContaining({
+        p_coverage: input.coverage,
+        p_scenarios: input.scenarios,
+        p_historical_totals: input.historicalTotals,
+        p_deltas: input.deltas,
+        p_warnings: input.warnings,
+      }),
+    );
+  });
+
+  it.each([
+    [
+      "negative historical total",
+      {
+        historicalTotals: {
+          ...validHistoricalTotals(),
+          oldPayableAmountCents: "-100",
+          newPayableAmountCents: "50",
+        },
+        deltas: {
+          payableAmountCents: "150",
+          receivableAmountCents: null,
+          percentageBps: 15_000,
+          marginImpactCents: "-150",
+        },
+      },
+    ],
+    [
+      "negative final total",
+      {
+        historicalTotals: {
+          ...validHistoricalTotals(),
+          oldPayableAmountCents: "100",
+          newPayableAmountCents: "-50",
+        },
+        deltas: {
+          payableAmountCents: "-150",
+          receivableAmountCents: null,
+          percentageBps: -15_000,
+          marginImpactCents: "150",
+        },
+      },
+    ],
+    [
+      "negative scenario actual and expected amounts",
+      {
+        scenarios: [
+          {
+            id: "contract:negative",
+            category: "contract_example" as const,
+            outcome: "calculated" as const,
+            amountCents: "-1",
+            expectedAmountCents: "-1",
+            passed: true,
+          },
+        ],
+      },
+    ],
+  ])("rejects v2 %s before RPC", async (_label, patch) => {
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(
+      repository.insertSimulation({
+        ...validSimulationInput({ kind: "ai_draft", id: DRAFT_ID }),
+        ...patch,
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(mock.rpc).not.toHaveBeenCalled();
+  });
+
+  it("requires every skipped v2 record to be review-routed or blocked", async () => {
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+    const input = validSimulationInput({ kind: "ai_draft", id: DRAFT_ID });
+
+    await expect(
+      repository.insertSimulation({
+        ...input,
+        coverage: {
+          ...input.coverage,
+          reviewRoutedRecords: 0,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(mock.rpc).not.toHaveBeenCalled();
   });
 
   it("rejects Phase 1 rule-version simulation writes before RPC", async () => {
@@ -2038,6 +2162,54 @@ describe("custom-rule draft and simulation persistence", () => {
         ["settlement_formula_simulations", "eq", ["id", SIMULATION_ID]],
       ]),
     );
+  });
+
+  it("decodes v1 rows as incomplete legacy summaries and preserves unknown deltas", async () => {
+    const owner = { kind: "ai_draft" as const, id: DRAFT_ID };
+    const mock = createPersistenceClient({
+      simulationRows: [
+        legacySimulationRow(owner, {
+          historical_totals: {
+            payableAmountCents: null,
+            receivableAmountCents: null,
+            recordCount: 0,
+          },
+          deltas: {
+            payableAmountCents: "0",
+            receivableAmountCents: "0",
+            percentageBps: 0,
+          },
+        }),
+      ],
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const [legacy] = await repository.listSimulations({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      owner,
+    });
+
+    expect(legacy).toMatchObject({
+      summarySchemaVersion: 1,
+      summaryComplete: false,
+      summaryStatus: "legacy",
+      historicalTotals: {
+        oldPayableAmountCents: null,
+        oldReceivableAmountCents: null,
+        newPayableAmountCents: null,
+        newReceivableAmountCents: null,
+        recordCount: 0,
+        verificationStatus: "legacy_unknown",
+      },
+      deltas: {
+        payableAmountCents: null,
+        receivableAmountCents: null,
+        percentageBps: null,
+        marginImpactCents: null,
+      },
+    });
   });
 
   it("retains future rule-version simulation read compatibility", async () => {
@@ -2206,6 +2378,7 @@ describe("custom-rule draft and simulation persistence", () => {
       repository.insertSimulation({
         ...validSimulationInput({ kind: "ai_draft", id: DRAFT_ID }),
         warnings: Array.from({ length: 16 }, (_, index) => ({
+          kind: "warning" as const,
           code: `warning_${index}`,
           severity: "warning" as const,
           message: "x".repeat(4_000),
@@ -2222,6 +2395,7 @@ describe("custom-rule draft and simulation persistence", () => {
 
   it("allows a warning subcontainer clearly below the conservative limit", async () => {
     const warnings = Array.from({ length: 8 }, (_, index) => ({
+      kind: "warning" as const,
       code: `warning_${index}`,
       severity: "warning" as const,
       message: "x".repeat(4_000),
@@ -2297,7 +2471,7 @@ describe("custom-rule draft and simulation persistence", () => {
       {
         historical_totals: {
           ...validHistoricalTotals(),
-          payableAmountCents: 9_007_199_254_740_992,
+          oldPayableAmountCents: 9_007_199_254_740_992,
         },
       },
     ],
@@ -3046,9 +3220,12 @@ function validSampleSelection() {
 
 function validHistoricalTotals() {
   return {
-    payableAmountCents: "9007199254740993",
-    receivableAmountCents: null,
+    oldPayableAmountCents: "9007199254740993",
+    oldReceivableAmountCents: null,
+    newPayableAmountCents: "9007199254741993",
+    newReceivableAmountCents: null,
     recordCount: 20,
+    verificationStatus: "verified" as const,
   };
 }
 
@@ -3067,16 +3244,40 @@ function validSimulationInput(
     dataSelectionHash: HASH_E,
     sampleSource: { kind: "historical_settlements" },
     sampleSelection: validSampleSelection(),
-    coverage: { totalRecords: 20, evaluatedRecords: 18, skippedRecords: 2 },
+    coverage: {
+      summarySchemaVersion: 2,
+      totalRecords: 20,
+      evaluatedRecords: 18,
+      skippedRecords: 2,
+      uncoveredRecords: 3,
+      zeroAmountRecords: 2,
+      reviewRoutedRecords: 1,
+      blockedRecords: 1,
+    },
     scenarios: [
-      { name: "标准场景", kind: "normal", result: "passed" },
-      { name: "缺失值场景", kind: "missing_data", result: "warning" },
+      {
+        id: "synthetic:zero",
+        category: "zero",
+        outcome: "calculated",
+        amountCents: "0",
+        expectedAmountCents: null,
+        passed: true,
+      },
+      {
+        id: "derived:missing:route_item_to_review",
+        category: "missing_data_policy",
+        outcome: "review_routed",
+        amountCents: null,
+        expectedAmountCents: null,
+        passed: true,
+      },
     ],
     historicalTotals: validHistoricalTotals(),
     deltas: {
       payableAmountCents: "1000",
-      receivableAmountCents: "0",
-      percentageBps: 125,
+      receivableAmountCents: null,
+      percentageBps: 0,
+      marginImpactCents: "-1000",
     },
     largestChanges: [
       {
@@ -3087,6 +3288,20 @@ function validSimulationInput(
       },
     ],
     warnings: [],
+  };
+}
+
+function validV2SimulationInput(owner: SettlementSimulationOwner) {
+  return {
+    ...validSimulationInput(owner),
+    warnings: [
+      {
+        kind: "risk" as const,
+        code: "CUSTOM_RULE_ZERO_PAY_RECORDS",
+        severity: "warning" as const,
+        message: "新规则产生了零应付样本。",
+      },
+    ],
   };
 }
 
@@ -3136,6 +3351,31 @@ function simulationRow(
     idempotency_key: "simulation-request-1",
     created_by: CREATOR_ID,
     created_at: "2026-07-11T11:05:00.000Z",
+    ...overrides,
+  };
+}
+
+function legacySimulationRow(
+  owner: SettlementSimulationOwner,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    ...simulationRow(owner),
+    coverage: { totalRecords: 20, evaluatedRecords: 18, skippedRecords: 2 },
+    scenarios: [
+      { name: "标准场景", kind: "normal", result: "passed" },
+    ],
+    historical_totals: {
+      payableAmountCents: "9007199254740993",
+      receivableAmountCents: null,
+      recordCount: 20,
+    },
+    deltas: {
+      payableAmountCents: "1000",
+      receivableAmountCents: "0",
+      percentageBps: 0,
+    },
+    warnings: [],
     ...overrides,
   };
 }

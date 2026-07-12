@@ -20,6 +20,7 @@ import { buildCustomRuleExecutionExplanation } from "./custom-rule-explanation";
 import type {
   InsertSettlementFormulaSimulationInput,
   SettlementAiGeneratedTestCase,
+  SettlementSimulationPersistedFinding,
   SettlementSimulationWarning,
 } from "./custom-rule-repository";
 import {
@@ -76,6 +77,10 @@ const canonicalBigintSchema = z.string().refine(
   },
   { message: "must be a canonical Postgres bigint decimal string" },
 );
+const nonnegativeCanonicalBigintSchema = canonicalBigintSchema.refine(
+  (value) => !value.startsWith("-"),
+  { message: "must be a nonnegative canonical Postgres bigint decimal string" },
+);
 const businessDateSchema = z.string().refine(isValidBusinessDate, {
   message: "must be a valid YYYY-MM-DD business date",
 });
@@ -92,11 +97,11 @@ const immutableSourceVersionSchema = z.strictObject({
 const currentRuleResultSchema = z.discriminatedUnion("unitSource", [
   z.strictObject({
     unitSource: z.literal("current_rule_cents"),
-    amountCents: canonicalBigintSchema,
+    amountCents: nonnegativeCanonicalBigintSchema,
   }),
   z.strictObject({
     unitSource: z.literal("legacy_yuan"),
-    amountYuan: z.number().finite(),
+    amountYuan: z.number().finite().nonnegative(),
   }),
 ]);
 const missingInputSchema = z.strictObject({
@@ -322,6 +327,12 @@ const moneyResultSchema = z
     (result) =>
       Object.prototype.hasOwnProperty.call(result.componentsCents, "final"),
     { message: "engine output must include final" },
+  )
+  .refine(
+    (result) =>
+      !Object.prototype.hasOwnProperty.call(result.componentsCents, "final") ||
+      result.componentsCents.final >= 0,
+    { message: "engine final settlement amount must be nonnegative" },
   );
 const executionOutputSchema = z.strictObject({
   result: moneyResultSchema,
@@ -661,7 +672,7 @@ export function simulateCustomSettlementRule(
       ? null
       : serializePostgresBigintCents(marginImpact);
   const percentageBps =
-    delta === null ? 0 : calculatePercentageBps(delta, oldTotal);
+    delta === null ? null : calculatePercentageBps(delta, oldTotal);
   const largestIncreases = changes
     .filter((change) => change.delta > BigInt(0))
     .sort(
@@ -705,8 +716,16 @@ export function simulateCustomSettlementRule(
     }),
     ...scenarioRun.riskFlags,
   ].sort((left, right) => left.code.localeCompare(right.code));
-  const persistedWarnings = mergePersistedWarnings(warnings, riskFlags);
-  const persistedDelta = totalDeltaCents ?? "0";
+  if (
+    input.contract.scope !== "payable" &&
+    input.contract.scope !== "receivable"
+  ) {
+    throw new CustomRuleSimulationError(
+      "Phase 1 simulation summaries require payable or receivable scope",
+    );
+  }
+  const persistedWarnings = mergePersistedFindings(warnings, riskFlags);
+  const payableScope = input.contract.scope === "payable";
   const persistable: PersistableCustomRuleSimulationSummary = {
     formulaHash: input.formulaHash,
     ruleContractHash: input.contractHash,
@@ -727,39 +746,29 @@ export function simulateCustomSettlementRule(
       ],
     },
     coverage: {
+      summarySchemaVersion: 2,
       totalRecords: sortedRecords.length,
       evaluatedRecords: evaluatedCount,
       skippedRecords: sortedRecords.length - evaluatedCount,
+      uncoveredRecords: uncoveredCount,
+      zeroAmountRecords: zeroPayCount,
+      reviewRoutedRecords: reviewRoutedCount,
+      blockedRecords: blockedCount,
     },
-    scenarios: scenarios.map((scenario, index) => ({
-      name: `scenario:${String(index + 1).padStart(6, "0")}`,
-      kind:
-        scenario.category === "user_example"
-          ? "normal"
-          : scenario.category === "missing_data_policy"
-            ? "missing_data"
-            : "boundary",
-      result:
-        !scenario.passed || scenario.outcome === "blocked"
-          ? "failed"
-          : scenario.outcome === "review_routed" ||
-              scenario.id.includes("use_explicit_default")
-            ? "warning"
-            : "passed",
-    })),
+    scenarios: scenarios.map((scenario) => ({ ...scenario })),
     historicalTotals: {
-      payableAmountCents:
-        input.contract.scope === "payable" ? totalOldCents : null,
-      receivableAmountCents:
-        input.contract.scope === "receivable" ? totalOldCents : null,
+      oldPayableAmountCents: payableScope ? totalOldCents : null,
+      oldReceivableAmountCents: payableScope ? null : totalOldCents,
+      newPayableAmountCents: payableScope ? totalNewCents : null,
+      newReceivableAmountCents: payableScope ? null : totalNewCents,
       recordCount: sortedRecords.length,
+      verificationStatus: verified ? "verified" : "unverified",
     },
     deltas: {
-      payableAmountCents:
-        input.contract.scope === "payable" ? persistedDelta : "0",
-      receivableAmountCents:
-        input.contract.scope === "receivable" ? persistedDelta : "0",
+      payableAmountCents: payableScope ? totalDeltaCents : null,
+      receivableAmountCents: payableScope ? null : totalDeltaCents,
       percentageBps,
+      marginImpactCents,
     },
     largestChanges: [...largestIncreases, ...largestDecreases].map(
       (change) => ({
@@ -1805,7 +1814,13 @@ function expectedMoneyCents(value: TypedRuntimeValue): string {
       "scenario expected result must be money cents",
     );
   }
-  return serializePostgresBigintCents(value.amountCents);
+  const amountCents = serializePostgresBigintCents(value.amountCents);
+  if (amountCents.startsWith("-")) {
+    throw new CustomRuleSimulationError(
+      "scenario expected settlement amount must be nonnegative",
+    );
+  }
+  return amountCents;
 }
 
 function scenarioIdentity(scenario: {
@@ -1910,7 +1925,7 @@ function buildRiskFlags(input: {
   zeroPayCount: number;
   redEvidencePriced: boolean;
   delta: bigint | null;
-  percentageBps: number;
+  percentageBps: number | null;
   currentMarginCents: string | null;
   marginImpact: bigint | null;
   assertionMismatchCount: number;
@@ -1930,7 +1945,12 @@ function buildRiskFlags(input: {
       message: "存在触发整批阻断策略的样本。",
     });
   }
-  if (input.percentageBps > 5_000 && input.delta !== null && input.delta > BigInt(0)) {
+  if (
+    input.percentageBps !== null &&
+    input.percentageBps > 5_000 &&
+    input.delta !== null &&
+    input.delta > BigInt(0)
+  ) {
     flags.push({
       code: "CUSTOM_RULE_ABNORMAL_INCREASE",
       severity: "warning",
@@ -1974,19 +1994,32 @@ function buildRiskFlags(input: {
   return flags.sort((left, right) => left.code.localeCompare(right.code));
 }
 
-function mergePersistedWarnings(
+function mergePersistedFindings(
   warnings: SettlementSimulationWarning[],
   riskFlags: CustomRuleSimulationRiskFlag[],
-): SettlementSimulationWarning[] {
-  const byCode = new Map<string, SettlementSimulationWarning>();
-  for (const item of [...warnings, ...riskFlags]) {
-    const existing = byCode.get(item.code);
-    if (!existing || severityRank(item.severity) > severityRank(existing.severity)) {
-      byCode.set(item.code, { ...item });
+): SettlementSimulationPersistedFinding[] {
+  const bySourceAndCode = new Map<
+    string,
+    SettlementSimulationPersistedFinding
+  >();
+  for (const [kind, items] of [
+    ["warning", warnings],
+    ["risk", riskFlags],
+  ] as const) {
+    for (const item of items) {
+      const key = `${kind}\u0000${item.code}`;
+      const existing = bySourceAndCode.get(key);
+      if (
+        !existing ||
+        severityRank(item.severity) > severityRank(existing.severity)
+      ) {
+        bySourceAndCode.set(key, { kind, ...item });
+      }
     }
   }
-  return [...byCode.values()].sort((left, right) =>
-    left.code.localeCompare(right.code),
+  return [...bySourceAndCode.values()].sort(
+    (left, right) =>
+      left.kind.localeCompare(right.kind) || left.code.localeCompare(right.code),
   );
 }
 

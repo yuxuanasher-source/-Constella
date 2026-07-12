@@ -249,27 +249,47 @@ export type SettlementSimulationSampleSelection = {
 };
 
 export type SettlementSimulationCoverage = {
+  summarySchemaVersion: 2;
   totalRecords: number;
   evaluatedRecords: number;
   skippedRecords: number;
+  uncoveredRecords: number;
+  zeroAmountRecords: number;
+  reviewRoutedRecords: number;
+  blockedRecords: number;
 };
 
 export type SettlementSimulationScenario = {
-  name: string;
-  kind: "normal" | "boundary" | "missing_data";
-  result: "passed" | "warning" | "failed";
+  id: string;
+  category:
+    | "zero"
+    | "threshold_edge"
+    | "configured_maximum"
+    | "evidence_level"
+    | "missing_data_policy"
+    | "contract_example"
+    | "ai_test_case"
+    | "user_example";
+  outcome: "calculated" | "review_routed" | "blocked";
+  amountCents: string | null;
+  expectedAmountCents: string | null;
+  passed: boolean;
 };
 
 export type SettlementSimulationHistoricalTotals = {
-  payableAmountCents: string | null;
-  receivableAmountCents: string | null;
+  oldPayableAmountCents: string | null;
+  oldReceivableAmountCents: string | null;
+  newPayableAmountCents: string | null;
+  newReceivableAmountCents: string | null;
   recordCount: number;
+  verificationStatus: "verified" | "unverified";
 };
 
 export type SettlementSimulationDeltas = {
-  payableAmountCents: string;
-  receivableAmountCents: string;
-  percentageBps: number;
+  payableAmountCents: string | null;
+  receivableAmountCents: string | null;
+  percentageBps: number | null;
+  marginImpactCents: string | null;
 };
 
 export type SettlementSimulationLargestChange = {
@@ -283,6 +303,24 @@ export type SettlementSimulationWarning = {
   code: string;
   severity: "info" | "warning" | "block";
   message: string;
+};
+
+export type SettlementSimulationPersistedFinding = SettlementSimulationWarning & {
+  kind: "warning" | "risk";
+};
+
+export type SettlementSimulationPersistedFindingInput = SettlementSimulationWarning & {
+  kind?: "warning" | "risk";
+};
+
+export type LegacySettlementSimulationScenario = {
+  name: string;
+  kind: "normal" | "boundary" | "missing_data";
+  result: "passed" | "warning" | "failed";
+};
+
+export type LegacySettlementSimulationWarning = SettlementSimulationWarning & {
+  kind: "legacy";
 };
 
 export type InsertSettlementFormulaSimulationInput = {
@@ -302,15 +340,95 @@ export type InsertSettlementFormulaSimulationInput = {
   historicalTotals: SettlementSimulationHistoricalTotals;
   deltas: SettlementSimulationDeltas;
   largestChanges: SettlementSimulationLargestChange[];
-  warnings: SettlementSimulationWarning[];
+  warnings: SettlementSimulationPersistedFindingInput[];
 };
 
-export type SettlementFormulaSimulation =
-  InsertSettlementFormulaSimulationInput & {
-    id: string;
-    createdBy: string;
-    createdAt: string;
+type SettlementFormulaSimulationBase = Pick<
+  InsertSettlementFormulaSimulationInput,
+  | "organizationId"
+  | "projectId"
+  | "owner"
+  | "idempotencyKey"
+  | "formulaHash"
+  | "ruleContractHash"
+  | "parameterHash"
+  | "variableCatalogVersion"
+  | "dataSelectionHash"
+  | "sampleSource"
+  | "sampleSelection"
+  | "largestChanges"
+> & {
+  id: string;
+  createdBy: string;
+  createdAt: string;
+};
+
+export type CompleteSettlementFormulaSimulation =
+  SettlementFormulaSimulationBase & {
+    summarySchemaVersion: 2;
+    summaryComplete: true;
+    summaryStatus: "complete";
+    coverage: SettlementSimulationCoverage;
+    scenarios: SettlementSimulationScenario[];
+    historicalTotals: SettlementSimulationHistoricalTotals & {
+      payableAmountCents: string | null;
+      receivableAmountCents: string | null;
+    };
+    deltas: SettlementSimulationDeltas;
+    warnings: SettlementSimulationPersistedFinding[];
   };
+
+export type LegacySettlementFormulaSimulation =
+  SettlementFormulaSimulationBase & {
+    summarySchemaVersion: 1;
+    summaryComplete: false;
+    summaryStatus: "legacy";
+    coverage: {
+      summarySchemaVersion: 1;
+      totalRecords: number;
+      evaluatedRecords: number;
+      skippedRecords: number;
+      uncoveredRecords: null;
+      zeroAmountRecords: null;
+      reviewRoutedRecords: null;
+      blockedRecords: null;
+    };
+    scenarios: LegacySettlementSimulationScenario[];
+    historicalTotals: {
+      oldPayableAmountCents: string | null;
+      oldReceivableAmountCents: string | null;
+      newPayableAmountCents: null;
+      newReceivableAmountCents: null;
+      recordCount: number;
+      verificationStatus: "legacy_unknown";
+      payableAmountCents: string | null;
+      receivableAmountCents: string | null;
+    };
+    deltas: SettlementSimulationDeltas;
+    warnings: LegacySettlementSimulationWarning[];
+  };
+
+export type SettlementFormulaSimulation = SettlementFormulaSimulationBase & {
+  summarySchemaVersion?: 1 | 2;
+  summaryComplete?: boolean;
+  summaryStatus?: "complete" | "legacy";
+  coverage:
+    | CompleteSettlementFormulaSimulation["coverage"]
+    | LegacySettlementFormulaSimulation["coverage"];
+  scenarios:
+    | CompleteSettlementFormulaSimulation["scenarios"]
+    | LegacySettlementFormulaSimulation["scenarios"];
+  // Transitional compatibility for the existing route mapper. Runtime rows
+  // are still parsed and returned as one of the strict versioned types above.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  historicalTotals: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  deltas: any;
+  warnings:
+    | CompleteSettlementFormulaSimulation["warnings"]
+    | LegacySettlementFormulaSimulation["warnings"]
+    | SettlementSimulationPersistedFindingInput[];
+};
 
 export type InsertedSettlementFormulaSimulation =
   SettlementFormulaSimulation & {
@@ -704,7 +822,6 @@ const FORBIDDEN_DRAFT_JSON_KEYS = new Set([
   "tax",
 ]);
 const FORBIDDEN_SIMULATION_JSON_KEYS = new Set([
-  "amountcents",
   "conversationid",
   "importpayload",
   "internalmargin",
@@ -817,6 +934,11 @@ const postgresBigintDecimalSchema = z.string().refine(
   },
   "must be a canonical Postgres bigint decimal string",
 );
+const nonnegativePostgresBigintDecimalSchema =
+  postgresBigintDecimalSchema.refine(
+    (value) => !value.startsWith("-"),
+    "must be a nonnegative canonical Postgres bigint decimal string",
+  );
 const businessDateSchema = z
   .string()
   .refine(isValidBusinessDate, "must be a valid YYYY-MM-DD business date");
@@ -944,7 +1066,7 @@ const sampleSelectionSchema = z
       });
     }
   });
-const simulationCoverageSchema = z
+const legacySimulationCoverageSchema = z
   .strictObject({
     totalRecords: nonnegativeSafeIntegerSchema,
     evaluatedRecords: nonnegativeSafeIntegerSchema,
@@ -962,20 +1084,110 @@ const simulationCoverageSchema = z
       });
     }
   });
-const simulationScenarioSchema = z.strictObject({
+const simulationCoverageSchema = z
+  .strictObject({
+    summarySchemaVersion: z.literal(2),
+    totalRecords: nonnegativeSafeIntegerSchema,
+    evaluatedRecords: nonnegativeSafeIntegerSchema,
+    skippedRecords: nonnegativeSafeIntegerSchema,
+    uncoveredRecords: nonnegativeSafeIntegerSchema,
+    zeroAmountRecords: nonnegativeSafeIntegerSchema,
+    reviewRoutedRecords: nonnegativeSafeIntegerSchema,
+    blockedRecords: nonnegativeSafeIntegerSchema,
+  })
+  .superRefine((coverageValue, context) => {
+    if (
+      coverageValue.evaluatedRecords + coverageValue.skippedRecords !==
+      coverageValue.totalRecords
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["totalRecords"],
+        message: "evaluatedRecords plus skippedRecords must equal totalRecords",
+      });
+    }
+    if (coverageValue.uncoveredRecords > coverageValue.totalRecords) {
+      context.addIssue({
+        code: "custom",
+        path: ["uncoveredRecords"],
+        message: "uncoveredRecords cannot exceed totalRecords",
+      });
+    }
+    if (coverageValue.zeroAmountRecords > coverageValue.evaluatedRecords) {
+      context.addIssue({
+        code: "custom",
+        path: ["zeroAmountRecords"],
+        message: "zeroAmountRecords cannot exceed evaluatedRecords",
+      });
+    }
+    if (
+      coverageValue.reviewRoutedRecords + coverageValue.blockedRecords !==
+      coverageValue.skippedRecords
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["reviewRoutedRecords"],
+        message: "review-routed and blocked records must equal skippedRecords",
+      });
+    }
+  });
+const legacySimulationScenarioSchema = z.strictObject({
   name: nonemptyTextSchema.max(200),
   kind: z.enum(["normal", "boundary", "missing_data"]),
   result: z.enum(["passed", "warning", "failed"]),
 });
-const historicalTotalsSchema = z.strictObject({
+const simulationScenarioSchema = z
+  .strictObject({
+    id: nonemptyTextSchema.max(120),
+    category: z.enum([
+      "zero",
+      "threshold_edge",
+      "configured_maximum",
+      "evidence_level",
+      "missing_data_policy",
+      "contract_example",
+      "ai_test_case",
+      "user_example",
+    ]),
+    outcome: z.enum(["calculated", "review_routed", "blocked"]),
+    amountCents: nonnegativePostgresBigintDecimalSchema.nullable(),
+    expectedAmountCents: nonnegativePostgresBigintDecimalSchema.nullable(),
+    passed: z.boolean(),
+  })
+  .superRefine((scenario, context) => {
+    if (
+      (scenario.outcome === "calculated") !== (scenario.amountCents !== null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["amountCents"],
+        message: "calculated scenarios require an amount; routed scenarios forbid it",
+      });
+    }
+  });
+const legacyHistoricalTotalsSchema = z.strictObject({
   payableAmountCents: postgresBigintDecimalSchema.nullable(),
   receivableAmountCents: postgresBigintDecimalSchema.nullable(),
   recordCount: nonnegativeSafeIntegerSchema,
 });
-const simulationDeltasSchema = z.strictObject({
+const historicalTotalsSchema = z.strictObject({
+  oldPayableAmountCents: nonnegativePostgresBigintDecimalSchema.nullable(),
+  oldReceivableAmountCents: nonnegativePostgresBigintDecimalSchema.nullable(),
+  newPayableAmountCents: nonnegativePostgresBigintDecimalSchema.nullable(),
+  newReceivableAmountCents: nonnegativePostgresBigintDecimalSchema.nullable(),
+  recordCount: nonnegativeSafeIntegerSchema,
+  verificationStatus: z.enum(["verified", "unverified"]),
+});
+const legacySimulationDeltasSchema = z.strictObject({
   payableAmountCents: postgresBigintDecimalSchema,
   receivableAmountCents: postgresBigintDecimalSchema,
   percentageBps: signedSafeIntegerSchema,
+});
+const simulationDeltasSchema = z.strictObject({
+  payableAmountCents: postgresBigintDecimalSchema.nullable(),
+  receivableAmountCents: postgresBigintDecimalSchema.nullable(),
+  percentageBps: signedSafeIntegerSchema.nullable(),
+  marginImpactCents: postgresBigintDecimalSchema.nullable(),
 });
 const largestChangeSchema = z.strictObject({
   dimension: z.enum(["rule_component", "scenario", "period"]),
@@ -988,6 +1200,12 @@ const simulationWarningSchema = z.strictObject({
   severity: z.enum(["info", "warning", "block"]),
   message: boundedTextSchema,
 });
+const persistedSimulationFindingSchema = simulationWarningSchema.extend({
+  kind: z.enum(["warning", "risk"]),
+});
+const persistedSimulationFindingInputSchema = simulationWarningSchema.extend({
+  kind: z.enum(["warning", "risk"]).default("warning"),
+});
 const SIMULATION_SUMMARY_INPUT_SHAPE = {
   idempotencyKey: nonemptyTextSchema.max(200),
   dataSelectionHash: hashSchema,
@@ -998,7 +1216,7 @@ const SIMULATION_SUMMARY_INPUT_SHAPE = {
   historicalTotals: historicalTotalsSchema,
   deltas: simulationDeltasSchema,
   largestChanges: z.array(largestChangeSchema).max(100),
-  warnings: z.array(simulationWarningSchema).max(100),
+  warnings: z.array(persistedSimulationFindingInputSchema).max(100),
 };
 const insertSimulationInputSchema = z
   .strictObject({
@@ -1011,6 +1229,7 @@ const insertSimulationInputSchema = z
     variableCatalogVersion: hashSchema,
     ...SIMULATION_SUMMARY_INPUT_SHAPE,
   })
+  .superRefine(validateSimulationV2SummaryConsistency)
   .superRefine((input, context) => {
     if (input.owner.kind === "rule_version") {
       context.addIssue({
@@ -1072,9 +1291,9 @@ const finalizeFailedTurnInputSchema = z
       });
     }
   });
-const finalizeSimulationSummaryInputSchema = z.strictObject(
-  SIMULATION_SUMMARY_INPUT_SHAPE,
-);
+const finalizeSimulationSummaryInputSchema = z
+  .strictObject(SIMULATION_SUMMARY_INPUT_SHAPE)
+  .superRefine(validateSimulationV2SummaryConsistency);
 const finalizeSimulationTurnInputSchema = z
   .strictObject({
     draft: contractReadyDraftInputSchema,
@@ -1094,6 +1313,133 @@ const getSimulationInputSchema = z.strictObject({
   simulationId: uuidSchema,
   owner: simulationOwnerSchema,
 });
+
+function validateSimulationV2SummaryConsistency(
+  input: {
+    sampleSource: SettlementSimulationSampleSource;
+    sampleSelection: SettlementSimulationSampleSelection;
+    coverage: SettlementSimulationCoverage;
+    scenarios: SettlementSimulationScenario[];
+    historicalTotals: SettlementSimulationHistoricalTotals;
+    deltas: SettlementSimulationDeltas;
+    warnings: SettlementSimulationPersistedFindingInput[];
+  },
+  context: z.RefinementCtx,
+): void {
+  const issue = (path: PropertyKey[], message: string): void => {
+    context.addIssue({ code: "custom", path, message });
+  };
+  if (input.sampleSelection.sampledCount !== input.coverage.totalRecords) {
+    issue(
+      ["sampleSelection", "sampledCount"],
+      "sampledCount must equal coverage.totalRecords",
+    );
+  }
+  if (input.historicalTotals.recordCount !== input.coverage.totalRecords) {
+    issue(
+      ["historicalTotals", "recordCount"],
+      "recordCount must equal coverage.totalRecords",
+    );
+  }
+
+  const totals = input.historicalTotals;
+  const deltas = input.deltas;
+  const payableActive = totals.newPayableAmountCents !== null;
+  const receivableActive = totals.newReceivableAmountCents !== null;
+  if (payableActive === receivableActive) {
+    issue(
+      ["historicalTotals"],
+      "exactly one new payable or receivable total is required",
+    );
+    return;
+  }
+
+  if (totals.verificationStatus === "unverified") {
+    if (
+      totals.oldPayableAmountCents !== null ||
+      totals.oldReceivableAmountCents !== null
+    ) {
+      issue(
+        ["historicalTotals"],
+        "unverified summaries must keep both old totals null",
+      );
+    }
+    if (
+      deltas.payableAmountCents !== null ||
+      deltas.receivableAmountCents !== null ||
+      deltas.percentageBps !== null ||
+      deltas.marginImpactCents !== null
+    ) {
+      issue(["deltas"], "unverified summaries must keep every delta null");
+    }
+  } else {
+    const oldAmount = payableActive
+      ? totals.oldPayableAmountCents
+      : totals.oldReceivableAmountCents;
+    const newAmount = payableActive
+      ? totals.newPayableAmountCents
+      : totals.newReceivableAmountCents;
+    const deltaAmount = payableActive
+      ? deltas.payableAmountCents
+      : deltas.receivableAmountCents;
+    const inactiveOldAmount = payableActive
+      ? totals.oldReceivableAmountCents
+      : totals.oldPayableAmountCents;
+    const inactiveDeltaAmount = payableActive
+      ? deltas.receivableAmountCents
+      : deltas.payableAmountCents;
+    if (
+      input.sampleSource.kind === "synthetic_scenarios" ||
+      totals.recordCount === 0 ||
+      oldAmount === null ||
+      newAmount === null ||
+      deltaAmount === null ||
+      deltas.percentageBps === null ||
+      deltas.marginImpactCents === null ||
+      inactiveOldAmount !== null ||
+      inactiveDeltaAmount !== null
+    ) {
+      issue(
+        ["historicalTotals"],
+        "verified summaries require one complete active comparison",
+      );
+    } else {
+      const oldValue = BigInt(oldAmount);
+      const newValue = BigInt(newAmount);
+      const deltaValue = BigInt(deltaAmount);
+      if (newValue - oldValue !== deltaValue) {
+        issue(["deltas"], "active delta must equal new total minus old total");
+      }
+      const expectedMargin = payableActive ? -deltaValue : deltaValue;
+      if (BigInt(deltas.marginImpactCents) !== expectedMargin) {
+        issue(
+          ["deltas", "marginImpactCents"],
+          "margin impact must match the active settlement scope",
+        );
+      }
+      const expectedPercentage = oldValue === BigInt(0)
+        ? BigInt(0)
+        : (deltaValue * BigInt(10_000)) /
+          (oldValue < BigInt(0) ? -oldValue : oldValue);
+      if (BigInt(deltas.percentageBps) !== expectedPercentage) {
+        issue(
+          ["deltas", "percentageBps"],
+          "percentageBps must match the checked active comparison",
+        );
+      }
+    }
+  }
+
+  if (new Set(input.scenarios.map((scenario) => scenario.id)).size !== input.scenarios.length) {
+    issue(["scenarios"], "scenario ids must be unique");
+  }
+  const findingKeys = input.warnings.map(
+    (finding) => `${finding.kind ?? "warning"}\u0000${finding.code}`,
+  );
+  if (new Set(findingKeys).size !== findingKeys.length) {
+    issue(["warnings"], "finding kind and code pairs must be unique");
+  }
+}
 
 const DRAFT_ROW_COMMON_SHAPE = {
   id: uuidSchema,
@@ -1213,7 +1559,7 @@ const createdFailedDraftRowSchema = z.union([
   failedDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
   supersededFailedDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
 ]);
-const SIMULATION_ROW_SHAPE = {
+const SIMULATION_ROW_BASE_SHAPE = {
   id: uuidSchema,
   organization_id: uuidSchema,
   project_id: uuidSchema,
@@ -1226,22 +1572,71 @@ const SIMULATION_ROW_SHAPE = {
   data_selection_hash: hashSchema,
   sample_source: sampleSourceSchema,
   sample_selection: sampleSelectionSchema,
-  coverage: simulationCoverageSchema,
-  scenarios: z.array(simulationScenarioSchema).min(1).max(200),
-  historical_totals: historicalTotalsSchema,
-  deltas: simulationDeltasSchema,
   largest_changes: z.array(largestChangeSchema).max(100),
-  warnings: z.array(simulationWarningSchema).max(100),
   idempotency_key: nonemptyTextSchema.max(200),
   created_by: uuidSchema,
   created_at: timestampSchema,
 };
-const simulationRowSchema = z
-  .strictObject(SIMULATION_ROW_SHAPE)
+const LEGACY_SIMULATION_ROW_SHAPE = {
+  ...SIMULATION_ROW_BASE_SHAPE,
+  coverage: legacySimulationCoverageSchema,
+  scenarios: z.array(legacySimulationScenarioSchema).min(1).max(200),
+  historical_totals: legacyHistoricalTotalsSchema,
+  deltas: legacySimulationDeltasSchema,
+  warnings: z.array(simulationWarningSchema).max(100),
+};
+const COMPLETE_SIMULATION_ROW_SHAPE = {
+  ...SIMULATION_ROW_BASE_SHAPE,
+  coverage: simulationCoverageSchema,
+  scenarios: z.array(simulationScenarioSchema).min(1).max(200),
+  historical_totals: historicalTotalsSchema,
+  deltas: simulationDeltasSchema,
+  warnings: z.array(persistedSimulationFindingSchema).max(100),
+};
+const legacySimulationRowSchema = z
+  .strictObject(LEGACY_SIMULATION_ROW_SHAPE)
   .superRefine(validateSimulationRowOwner);
+const completeSimulationRowSchema = z
+  .strictObject(COMPLETE_SIMULATION_ROW_SHAPE)
+  .superRefine(validateSimulationRowOwner)
+  .superRefine((row, context) => {
+    validateSimulationV2SummaryConsistency(
+      {
+        sampleSource: row.sample_source,
+        sampleSelection: row.sample_selection,
+        coverage: row.coverage,
+        scenarios: row.scenarios,
+        historicalTotals: row.historical_totals,
+        deltas: row.deltas,
+        warnings: row.warnings,
+      },
+      context,
+    );
+  });
+const simulationRowSchema = z.union([
+  completeSimulationRowSchema,
+  legacySimulationRowSchema,
+]);
 const insertedSimulationRowSchema = z
-  .strictObject({ ...SIMULATION_ROW_SHAPE, duplicate: z.boolean() })
-  .superRefine(validateSimulationRowOwner);
+  .strictObject({
+    ...COMPLETE_SIMULATION_ROW_SHAPE,
+    duplicate: z.boolean(),
+  })
+  .superRefine(validateSimulationRowOwner)
+  .superRefine((row, context) => {
+    validateSimulationV2SummaryConsistency(
+      {
+        sampleSource: row.sample_source,
+        sampleSelection: row.sample_selection,
+        coverage: row.coverage,
+        scenarios: row.scenarios,
+        historicalTotals: row.historical_totals,
+        deltas: row.deltas,
+        warnings: row.warnings,
+      },
+      context,
+    );
+  });
 const finalizedSimulationTurnRowSchema = z.strictObject({
   draft: z.union([
     readyDraftRowSchema.extend(CREATED_DRAFT_ROW_SHAPE),
@@ -1251,6 +1646,8 @@ const finalizedSimulationTurnRowSchema = z.strictObject({
 });
 type DraftRow = z.infer<typeof draftRowSchema>;
 type CreatedDraftRow = z.infer<typeof createdDraftRowSchema>;
+type LegacySimulationRow = z.infer<typeof legacySimulationRowSchema>;
+type CompleteSimulationRow = z.infer<typeof completeSimulationRowSchema>;
 type SimulationRow = z.infer<typeof simulationRowSchema>;
 type InsertedSimulationRow = z.infer<typeof insertedSimulationRowSchema>;
 
@@ -3259,12 +3656,21 @@ function requireNonemptyDraftArray<Value>(
 }
 
 function toSettlementFormulaSimulation(
+  row: CompleteSimulationRow | InsertedSimulationRow,
+): CompleteSettlementFormulaSimulation;
+function toSettlementFormulaSimulation(
+  row: LegacySimulationRow,
+): LegacySettlementFormulaSimulation;
+function toSettlementFormulaSimulation(
+  row: SimulationRow | InsertedSimulationRow,
+): SettlementFormulaSimulation;
+function toSettlementFormulaSimulation(
   row: SimulationRow | InsertedSimulationRow,
 ): SettlementFormulaSimulation {
   const owner: SettlementSimulationOwner = row.ai_draft_id !== null
     ? { kind: "ai_draft", id: row.ai_draft_id }
     : { kind: "rule_version", id: row.rule_version_id as string };
-  return {
+  const common = {
     id: row.id,
     organizationId: row.organization_id,
     projectId: row.project_id,
@@ -3277,15 +3683,83 @@ function toSettlementFormulaSimulation(
     dataSelectionHash: row.data_selection_hash,
     sampleSource: row.sample_source,
     sampleSelection: row.sample_selection,
-    coverage: row.coverage,
-    scenarios: row.scenarios,
-    historicalTotals: row.historical_totals,
-    deltas: row.deltas,
     largestChanges: row.largest_changes,
-    warnings: row.warnings,
     createdBy: row.created_by,
     createdAt: row.created_at,
   };
+  if (isCompleteSimulationRow(row)) {
+    return {
+      ...common,
+      summarySchemaVersion: 2,
+      summaryComplete: true,
+      summaryStatus: "complete",
+      coverage: row.coverage,
+      scenarios: row.scenarios,
+      historicalTotals: {
+        ...row.historical_totals,
+        payableAmountCents: row.historical_totals.oldPayableAmountCents,
+        receivableAmountCents: row.historical_totals.oldReceivableAmountCents,
+      },
+      deltas: row.deltas,
+      warnings: row.warnings,
+    };
+  }
+
+  const hasPayableHistory = row.historical_totals.payableAmountCents !== null;
+  const hasReceivableHistory =
+    row.historical_totals.receivableAmountCents !== null;
+  return {
+    ...common,
+    summarySchemaVersion: 1,
+    summaryComplete: false,
+    summaryStatus: "legacy",
+    coverage: {
+      summarySchemaVersion: 1,
+      totalRecords: row.coverage.totalRecords,
+      evaluatedRecords: row.coverage.evaluatedRecords,
+      skippedRecords: row.coverage.skippedRecords,
+      uncoveredRecords: null,
+      zeroAmountRecords: null,
+      reviewRoutedRecords: null,
+      blockedRecords: null,
+    },
+    scenarios: row.scenarios,
+    historicalTotals: {
+      oldPayableAmountCents: row.historical_totals.payableAmountCents,
+      oldReceivableAmountCents: row.historical_totals.receivableAmountCents,
+      newPayableAmountCents: null,
+      newReceivableAmountCents: null,
+      recordCount: row.historical_totals.recordCount,
+      verificationStatus: "legacy_unknown",
+      payableAmountCents: row.historical_totals.payableAmountCents,
+      receivableAmountCents: row.historical_totals.receivableAmountCents,
+    },
+    deltas: {
+      payableAmountCents: hasPayableHistory
+        ? row.deltas.payableAmountCents
+        : null,
+      receivableAmountCents: hasReceivableHistory
+        ? row.deltas.receivableAmountCents
+        : null,
+      percentageBps: hasPayableHistory || hasReceivableHistory
+        ? row.deltas.percentageBps
+        : null,
+      marginImpactCents: null,
+    },
+    warnings: row.warnings.map((warning) => ({
+      kind: "legacy" as const,
+      ...warning,
+    })),
+  };
+}
+
+function isCompleteSimulationRow(
+  row: SimulationRow | InsertedSimulationRow,
+): row is CompleteSimulationRow | InsertedSimulationRow {
+  return (
+    "summarySchemaVersion" in row.coverage &&
+    row.coverage.summarySchemaVersion === 2
+  );
 }
 
 function scopeSimulationOwnerQuery<

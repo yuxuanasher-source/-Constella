@@ -76,6 +76,19 @@ const settlementAuthoringRoleHardeningMigration = readdirSync(
 const normalizedSettlementAuthoringRoleHardeningMigration = normalizeSql(
   settlementAuthoringRoleHardeningMigration,
 );
+const settlementSimulationSummaryV2MigrationName =
+  "20260711115800_custom_settlement_simulation_summary_v2.sql";
+const settlementSimulationSummaryV2Migration = readdirSync(
+  migrationsDir,
+).includes(settlementSimulationSummaryV2MigrationName)
+  ? readFileSync(
+      join(migrationsDir, settlementSimulationSummaryV2MigrationName),
+      "utf8",
+    )
+  : "";
+const normalizedSettlementSimulationSummaryV2Migration = normalizeSql(
+  settlementSimulationSummaryV2Migration,
+);
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/gu, " ").trim();
@@ -1770,6 +1783,88 @@ describe("Phase 1 settlement AI persistence contract", () => {
       createSimulation.indexOf(
         "insert into public.settlement_formula_simulations",
       ),
+    );
+  });
+
+  it("versions complete simulation summaries and guards all new inserts at v2", () => {
+    expect(
+      readdirSync(migrationsDir),
+    ).toContain(settlementSimulationSummaryV2MigrationName);
+    expect(normalizedSettlementSimulationSummaryV2Migration).toContain(
+      "alter function public.settlement_ai_simulation_summary_is_valid",
+    );
+    expect(normalizedSettlementSimulationSummaryV2Migration).toContain(
+      "rename to settlement_ai_simulation_summary_v1_is_valid",
+    );
+    expect(normalizedSettlementSimulationSummaryV2Migration).toContain(
+      "create or replace function public.settlement_ai_simulation_summary_v2_is_valid",
+    );
+    expect(normalizedSettlementSimulationSummaryV2Migration).toContain(
+      "immutable set search_path = pg_catalog, public",
+    );
+    expect(normalizedSettlementSimulationSummaryV2Migration).toContain(
+      "'summaryschemaversion'",
+    );
+    expect(normalizedSettlementSimulationSummaryV2Migration).toContain(
+      "create trigger settlement_formula_simulations_require_v2 before insert on public.settlement_formula_simulations",
+    );
+    expect(normalizedSettlementSimulationSummaryV2Migration).toContain(
+      "public.settlement_ai_simulation_summary_v2_is_valid(",
+    );
+    expect(normalizedSettlementSimulationSummaryV2Migration).toMatch(
+      /revoke all on function public\.settlement_ai_simulation_summary_v2_is_valid\(/u,
+    );
+    expect(normalizedSettlementSimulationSummaryV2Migration).toMatch(
+      /revoke all on function public\.require_settlement_formula_simulation_summary_v2\(\)/u,
+    );
+    const rpcStart = normalizedSettlementSimulationSummaryV2Migration.indexOf(
+      "create or replace function public.create_settlement_formula_simulation(",
+    );
+    const rpcEnd = normalizedSettlementSimulationSummaryV2Migration.indexOf(
+      "revoke all on function public.settlement_ai_simulation_json_is_safe",
+      rpcStart,
+    );
+    const rpc = normalizedSettlementSimulationSummaryV2Migration.slice(
+      rpcStart,
+      rpcEnd,
+    );
+    const wrapperValidation = rpc.indexOf(
+      "public.settlement_ai_simulation_summary_is_valid(",
+    );
+    const existingLookup = rpc.indexOf("select s.* into v_existing");
+    const duplicateReturn = rpc.indexOf(
+      "return pg_catalog.to_jsonb(v_existing)",
+    );
+    const v2InsertGate = rpc.indexOf(
+      "public.settlement_ai_simulation_summary_v2_is_valid(",
+    );
+    const insert = rpc.indexOf(
+      "insert into public.settlement_formula_simulations",
+    );
+    expect([
+      wrapperValidation,
+      existingLookup,
+      duplicateReturn,
+      v2InsertGate,
+      insert,
+    ].every((index) => index >= 0)).toBe(true);
+    expect([
+      wrapperValidation,
+      existingLookup,
+      duplicateReturn,
+      v2InsertGate,
+      insert,
+    ]).toEqual(
+      [
+        wrapperValidation,
+        existingLookup,
+        duplicateReturn,
+        v2InsertGate,
+        insert,
+      ].sort((left, right) => left - right),
+    );
+    expect(normalizedSettlementSimulationSummaryV2Migration).toMatch(
+      /\(p_coverage ->> 'reviewroutedrecords'\)::numeric \+ \(p_coverage ->> 'blockedrecords'\)::numeric <> \(p_coverage ->> 'skippedrecords'\)::numeric/u,
     );
   });
 
@@ -4241,20 +4336,38 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             criteria: ["confirmed"],
           },
           coverage: {
+            summarySchemaVersion: 2,
             totalRecords: 20,
             evaluatedRecords: 20,
             skippedRecords: 0,
+            uncoveredRecords: 0,
+            zeroAmountRecords: 0,
+            reviewRoutedRecords: 0,
+            blockedRecords: 0,
           },
-          scenarios: [{ name: "标准场景", kind: "normal", result: "passed" }],
+          scenarios: [
+            {
+              id: "contract:000001",
+              category: "contract_example",
+              outcome: "calculated",
+              amountCents: "10000",
+              expectedAmountCents: "10000",
+              passed: true,
+            },
+          ],
           historicalTotals: {
-            payableAmountCents: "10000",
-            receivableAmountCents: null,
+            oldPayableAmountCents: null,
+            oldReceivableAmountCents: "10000",
+            newPayableAmountCents: null,
+            newReceivableAmountCents: "10000",
             recordCount: 20,
+            verificationStatus: "verified",
           },
           deltas: {
-            payableAmountCents: "0",
+            payableAmountCents: null,
             receivableAmountCents: "0",
             percentageBps: 0,
+            marginImpactCents: "0",
           },
           largestChanges: [],
           warnings: [],
@@ -4365,6 +4478,103 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
             `,
           ),
         ).toBe("1");
+
+        const negativeTotalsSimulation = {
+          ...simulation,
+          idempotencyKey: "authoring-role-negative-total-0001",
+          historicalTotals: {
+            ...simulation.historicalTotals,
+            oldReceivableAmountCents: "-100",
+            newReceivableAmountCents: "-50",
+          },
+          deltas: {
+            ...simulation.deltas,
+            receivableAmountCents: "50",
+            percentageBps: 5_000,
+            marginImpactCents: "50",
+          },
+        };
+        const negativeScenarioSimulation = {
+          ...simulation,
+          idempotencyKey: "authoring-role-negative-scenario-0001",
+          scenarios: [
+            {
+              ...simulation.scenarios[0],
+              amountCents: "-1",
+              expectedAmountCents: "-1",
+            },
+          ],
+        };
+        const coverageGapSimulation = {
+          ...simulation,
+          idempotencyKey: "authoring-role-coverage-gap-0001",
+          coverage: {
+            ...simulation.coverage,
+            evaluatedRecords: 18,
+            skippedRecords: 2,
+            reviewRoutedRecords: 0,
+            blockedRecords: 1,
+          },
+        };
+        for (const invalid of [
+          negativeTotalsSimulation,
+          negativeScenarioSimulation,
+          coverageGapSimulation,
+        ]) {
+          expect(
+            runDockerSqlText(
+              container,
+              `
+                select public.settlement_ai_simulation_summary_v2_is_valid(
+                  '${projectId}'::uuid,
+                  ${sqlJson(invalid.sampleSource)},
+                  ${sqlJson(invalid.sampleSelection)},
+                  ${sqlJson(invalid.coverage)},
+                  ${sqlJson(invalid.scenarios)},
+                  ${sqlJson(invalid.historicalTotals)},
+                  ${sqlJson(invalid.deltas)},
+                  ${sqlJson(invalid.largestChanges)},
+                  ${sqlJson(invalid.warnings)}
+                )::text;
+              `,
+            ),
+          ).toBe("false");
+        }
+
+        const negativeRpc = await runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            set local role authenticated;
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${financeId}', true
+            );
+            ${createSimulationRpcSql({
+              organizationId,
+              projectId,
+              aiDraftId: ownerDraftId,
+              formulaHash: ownerDraftInput.formulaHash ?? "",
+              ruleContractHash: ownerDraftInput.contractHash,
+              parameterHash: ownerDraftInput.parameterHash,
+              variableCatalogVersion: ownerDraftInput.variableCatalogVersion,
+              dataSelectionHash: negativeTotalsSimulation.dataSelectionHash,
+              sampleSource: negativeTotalsSimulation.sampleSource,
+              sampleSelection: negativeTotalsSimulation.sampleSelection,
+              coverage: negativeTotalsSimulation.coverage,
+              scenarios: negativeTotalsSimulation.scenarios,
+              historicalTotals: negativeTotalsSimulation.historicalTotals,
+              deltas: negativeTotalsSimulation.deltas,
+              largestChanges: negativeTotalsSimulation.largestChanges,
+              warnings: negativeTotalsSimulation.warnings,
+              idempotencyKey: negativeTotalsSimulation.idempotencyKey,
+            })}
+            commit;
+          `,
+        );
+        expect(negativeRpc.code).not.toBe(0);
+        expect(negativeRpc.stderr).toContain(
+          "settlement_ai_simulation_summary_invalid",
+        );
       } finally {
         runDockerSql(container, cleanupSql);
       }
@@ -4597,11 +4807,59 @@ describe.runIf(Boolean(settlementAiLockRegressionContainer))(
           sampledCount: 20,
           criteria: ["confirmed"],
         },
-        coverage: { totalRecords: 20, evaluatedRecords: 20, skippedRecords: 0 },
-        scenarios: [{ name: "标准场景", kind: "normal", result: "passed" }],
+        coverage: {
+          summarySchemaVersion: 2,
+          totalRecords: 20,
+          evaluatedRecords: 20,
+          skippedRecords: 0,
+          uncoveredRecords: 0,
+          zeroAmountRecords: 0,
+          reviewRoutedRecords: 0,
+          blockedRecords: 0,
+        },
+        scenarios: [
+          {
+            id: "contract:000001",
+            category: "contract_example",
+            outcome: "calculated",
+            amountCents: "10000",
+            expectedAmountCents: "10000",
+            passed: true,
+          },
+        ],
         historicalTotals: {
-          payableAmountCents: "10000",
-          receivableAmountCents: null,
+          oldPayableAmountCents: null,
+          oldReceivableAmountCents: "10000",
+          newPayableAmountCents: null,
+          newReceivableAmountCents: "10000",
+          recordCount: 20,
+          verificationStatus: "verified",
+        },
+        deltas: {
+          payableAmountCents: null,
+          receivableAmountCents: "0",
+          percentageBps: 0,
+          marginImpactCents: "0",
+        },
+        largestChanges: [],
+        warnings: [],
+      };
+      const legacySimulation = {
+        idempotencyKey: simulation.idempotencyKey,
+        dataSelectionHash: simulation.dataSelectionHash,
+        sampleSource: simulation.sampleSource,
+        sampleSelection: simulation.sampleSelection,
+        coverage: {
+          totalRecords: 20,
+          evaluatedRecords: 20,
+          skippedRecords: 0,
+        },
+        scenarios: [
+          { name: "legacy standard", kind: "normal", result: "passed" },
+        ],
+        historicalTotals: {
+          payableAmountCents: null,
+          receivableAmountCents: "10000",
           recordCount: 20,
         },
         deltas: {
@@ -4615,6 +4873,7 @@ describe.runIf(Boolean(settlementAiLockRegressionContainer))(
       const draftJson = sqlJson(draftInput);
       const completionJson = sqlJson(completion);
       const simulationJson = sqlJson(simulation);
+      const legacySimulationJson = sqlJson(legacySimulation);
       const cleanupSql = `
         set session_replication_role = replica;
         delete from public.settlement_formula_simulations
@@ -4774,6 +5033,152 @@ describe.runIf(Boolean(settlementAiLockRegressionContainer))(
         ).not.toContain("40P01");
         expect(directResult.code, directResult.stderr).toBe(0);
         expect(replayResult.code, replayResult.stderr).toBe(0);
+
+        const draftId = runDockerSqlText(
+          container,
+          `
+            select id::text
+            from public.ai_settlement_rule_drafts
+            where organization_id = '${organizationId}'::uuid
+              and idempotency_key = '${draftInput.idempotencyKey}';
+          `,
+        );
+        runDockerSql(
+          container,
+          `
+            set session_replication_role = replica;
+            update public.settlement_formula_simulations
+            set coverage = ${sqlJson(legacySimulation.coverage)},
+                scenarios = ${sqlJson(legacySimulation.scenarios)},
+                historical_totals = ${sqlJson(legacySimulation.historicalTotals)},
+                deltas = ${sqlJson(legacySimulation.deltas)},
+                largest_changes = ${sqlJson(legacySimulation.largestChanges)},
+                warnings = ${sqlJson(legacySimulation.warnings)}
+            where organization_id = '${organizationId}'::uuid
+              and idempotency_key = '${legacySimulation.idempotencyKey}';
+            set session_replication_role = origin;
+          `,
+        );
+
+        const directLegacyReplay = await runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            set local role authenticated;
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${actorId}', true
+            );
+            ${createSimulationRpcSql({
+              organizationId,
+              projectId,
+              aiDraftId: draftId,
+              idempotencyKey: legacySimulation.idempotencyKey,
+              formulaHash: draftInput.formulaHash ?? "",
+              ruleContractHash: draftInput.contractHash,
+              parameterHash: draftInput.parameterHash,
+              variableCatalogVersion: draftInput.variableCatalogVersion,
+              dataSelectionHash: legacySimulation.dataSelectionHash,
+              sampleSource: legacySimulation.sampleSource,
+              sampleSelection: legacySimulation.sampleSelection,
+              coverage: legacySimulation.coverage,
+              scenarios: legacySimulation.scenarios,
+              historicalTotals: legacySimulation.historicalTotals,
+              deltas: legacySimulation.deltas,
+              largestChanges: legacySimulation.largestChanges,
+              warnings: legacySimulation.warnings,
+            })}
+            commit;
+          `,
+        );
+        expect(directLegacyReplay.code, directLegacyReplay.stderr).toBe(0);
+        expect(directLegacyReplay.stdout).toContain('"duplicate": true');
+
+        const atomicLegacyReplay = await runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            set local role authenticated;
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${actorId}', true
+            );
+            select public.finalize_settlement_ai_simulation_turn(
+              ${draftJson}, ${completionJson}, ${legacySimulationJson}
+            );
+            commit;
+          `,
+        );
+        expect(atomicLegacyReplay.code, atomicLegacyReplay.stderr).toBe(0);
+        expect(atomicLegacyReplay.stdout).toContain('"duplicate": true');
+
+        const legacyMismatch = await runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            set local role authenticated;
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${actorId}', true
+            );
+            ${createSimulationRpcSql({
+              organizationId,
+              projectId,
+              aiDraftId: draftId,
+              idempotencyKey: legacySimulation.idempotencyKey,
+              formulaHash: draftInput.formulaHash ?? "",
+              ruleContractHash: draftInput.contractHash,
+              parameterHash: draftInput.parameterHash,
+              variableCatalogVersion: draftInput.variableCatalogVersion,
+              dataSelectionHash: "9".repeat(64),
+              sampleSource: legacySimulation.sampleSource,
+              sampleSelection: legacySimulation.sampleSelection,
+              coverage: legacySimulation.coverage,
+              scenarios: legacySimulation.scenarios,
+              historicalTotals: legacySimulation.historicalTotals,
+              deltas: legacySimulation.deltas,
+              largestChanges: legacySimulation.largestChanges,
+              warnings: legacySimulation.warnings,
+            })}
+            commit;
+          `,
+        );
+        expect(legacyMismatch.code).not.toBe(0);
+        expect(legacyMismatch.stderr).toContain(
+          "settlement_ai_simulation_idempotency_conflict",
+        );
+
+        const newLegacyWrite = await runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            set local role authenticated;
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${actorId}', true
+            );
+            ${createSimulationRpcSql({
+              organizationId,
+              projectId,
+              aiDraftId: draftId,
+              idempotencyKey: "task6-lock-order-new-v1-simulation",
+              formulaHash: draftInput.formulaHash ?? "",
+              ruleContractHash: draftInput.contractHash,
+              parameterHash: draftInput.parameterHash,
+              variableCatalogVersion: draftInput.variableCatalogVersion,
+              dataSelectionHash: legacySimulation.dataSelectionHash,
+              sampleSource: legacySimulation.sampleSource,
+              sampleSelection: legacySimulation.sampleSelection,
+              coverage: legacySimulation.coverage,
+              scenarios: legacySimulation.scenarios,
+              historicalTotals: legacySimulation.historicalTotals,
+              deltas: legacySimulation.deltas,
+              largestChanges: legacySimulation.largestChanges,
+              warnings: legacySimulation.warnings,
+            })}
+            commit;
+          `,
+        );
+        expect(newLegacyWrite.code).not.toBe(0);
+        expect(newLegacyWrite.stderr).toContain(
+          "settlement_ai_simulation_summary_v2_required",
+        );
       } finally {
         runDockerSql(container, cleanupSql);
       }

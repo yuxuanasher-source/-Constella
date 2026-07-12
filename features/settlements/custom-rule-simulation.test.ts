@@ -139,7 +139,32 @@ describe("simulateCustomSettlementRule", () => {
     expect(result.warnings).toContainEqual(
       expect.objectContaining({ code: "CUSTOM_RULE_NO_HISTORICAL_COMPARISON" }),
     );
-    expect(result.persistable.historicalTotals.payableAmountCents).toBeNull();
+    expect(result.persistable).toMatchObject({
+      coverage: {
+        summarySchemaVersion: 2,
+        totalRecords: 0,
+        evaluatedRecords: 0,
+        skippedRecords: 0,
+        uncoveredRecords: 0,
+        zeroAmountRecords: 0,
+        reviewRoutedRecords: 0,
+        blockedRecords: 0,
+      },
+      historicalTotals: {
+        oldPayableAmountCents: null,
+        oldReceivableAmountCents: null,
+        newPayableAmountCents: "0",
+        newReceivableAmountCents: null,
+        recordCount: 0,
+        verificationStatus: "unverified",
+      },
+      deltas: {
+        payableAmountCents: null,
+        receivableAmountCents: null,
+        percentageBps: null,
+        marginImpactCents: null,
+      },
+    });
   });
 
   it("forces an empty authorized population to unverified even when readiness claims verified history", () => {
@@ -609,6 +634,41 @@ describe("simulateCustomSettlementRule", () => {
           trace: [],
         }),
         explain: () => "不应执行到这里",
+      }),
+    ).toThrow(CustomRuleSimulationError);
+  });
+
+  it("rejects negative historical, scenario, and calculated settlement amounts", () => {
+    const negativeHistory = simulationInput();
+    negativeHistory.records[0] = record("private-streamer-a", {
+      currentRuleResult: {
+        unitSource: "current_rule_cents",
+        amountCents: "-1",
+      },
+    });
+    expect(() => simulateAuthorized(negativeHistory)).toThrow(
+      CustomRuleSimulationError,
+    );
+
+    const negativeExpected = simulationInput();
+    negativeExpected.userExamples[0] = {
+      ...negativeExpected.userExamples[0],
+      expectedResult: { type: "money_cents", amountCents: -1 },
+    };
+    expect(() => simulateAuthorized(negativeExpected)).toThrow(
+      CustomRuleSimulationError,
+    );
+
+    expect(() =>
+      simulateAuthorized(simulationInput(), {
+        execute: () => ({
+          result: {
+            kind: "money_result",
+            componentsCents: { final: -1 },
+          },
+          trace: [],
+        }),
+        explain: () => "负结算金额不允许持久化。",
       }),
     ).toThrow(CustomRuleSimulationError);
   });
