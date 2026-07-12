@@ -1250,7 +1250,43 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     });
   });
 
-  it("rejects a selection wider than 366 elapsed days before storage reads", async () => {
+  it("allows a 366-calendar-day inclusive range to reach repository and snapshot RPC", async () => {
+    const harness = await evidenceHarness({
+      reports: [],
+      items: [],
+      batches: [],
+      costs: [],
+      streamers: [],
+    });
+    harness.client.rpc.mockResolvedValue({
+      data: {
+        ...harness.snapshot,
+        period_start: "2025-01-01",
+        period_end: "2026-01-01",
+      },
+      error: null,
+    });
+
+    await expect(
+      harness.adapter.authorizeSelection(
+        authorizationInput({
+          ...selection(),
+          periodStart: "2025-01-01",
+          periodEnd: "2026-01-01",
+        }),
+      ),
+    ).resolves.toBeDefined();
+    expect(harness.repository.listDrafts).toHaveBeenCalledTimes(1);
+    expect(harness.client.rpc).toHaveBeenCalledWith(
+      "read_custom_settlement_evidence_snapshot",
+      expect.objectContaining({
+        p_period_start: "2025-01-01",
+        p_period_end: "2026-01-01",
+      }),
+    );
+  });
+
+  it("rejects a 367-calendar-day inclusive range before repository or snapshot RPC", async () => {
     const harness = await evidenceHarness();
 
     await expect(
@@ -1258,7 +1294,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
         authorizationInput({
           ...selection(),
           periodStart: "2025-01-01",
-          periodEnd: "2026-01-03",
+          periodEnd: "2026-01-02",
         }),
       ),
     ).rejects.toMatchObject({

@@ -981,7 +981,7 @@ const REQUIRED_SELECTION_CRITERIA = [
 ] as const;
 const MAX_AUTHORIZED_SOURCE_REPORTS = 10_000;
 const MAX_AUTHORIZED_SIMULATION_RECORDS = 500;
-const MAX_SELECTION_PERIOD_DAYS = 366;
+const MAX_SELECTION_INCLUSIVE_CALENDAR_DAYS = 366;
 const SNAPSHOT_MAX_AGE_MS = 5 * 60 * 1_000;
 const SNAPSHOT_MAX_FUTURE_SKEW_MS = 60 * 1_000;
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -1611,13 +1611,14 @@ function assertSupportedSelection(
     );
   }
   if (!start || !end) return;
-  const elapsedDays =
+  const calendarDayDifference =
     (calendarUtcEpoch({ ...end, hour: 0, minute: 0, second: 0 }) -
       calendarUtcEpoch({ ...start, hour: 0, minute: 0, second: 0 })) /
     86_400_000;
+  const inclusiveCalendarDays = calendarDayDifference + 1;
   if (
-    !Number.isSafeInteger(elapsedDays) ||
-    elapsedDays > MAX_SELECTION_PERIOD_DAYS
+    !Number.isSafeInteger(inclusiveCalendarDays) ||
+    inclusiveCalendarDays > MAX_SELECTION_INCLUSIVE_CALENDAR_DAYS
   ) {
     throw routeError(
       "CUSTOM_RULE_SELECTION_TOO_LARGE",
