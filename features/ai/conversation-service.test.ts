@@ -196,6 +196,18 @@ describe("Xingyao conversation service", () => {
     );
   });
 
+  it("keeps a rejected turn transition as a state conflict", async () => {
+    const store = persistence({
+      transitionTurn: vi.fn().mockResolvedValue(false),
+    });
+    const service = createConversationService(store);
+
+    await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
+      code: "turn_state_conflict",
+    });
+    expect(store.transitionTurn).toHaveBeenCalledTimes(1);
+  });
+
   it("normalizes an empty persisted snapshot before capturing gateway context", async () => {
     const messages: AiConversationMessageDto[] = [
       message("message-user-1", 1, "user", "completed", "当前问题"),
@@ -291,7 +303,7 @@ describe("Xingyao conversation service", () => {
       const service = createConversationService(store);
 
       await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
-        code: "turn_state_conflict",
+        code: "invalid_conversation_context",
       });
       expect(store.listMessages).not.toHaveBeenCalled();
       expect(store.transitionTurn).not.toHaveBeenCalled();
@@ -312,7 +324,7 @@ describe("Xingyao conversation service", () => {
         incompleteSnapshot,
         trustedGatewayContext(),
       ),
-    ).rejects.toMatchObject({ code: "turn_state_conflict" });
+    ).rejects.toMatchObject({ code: "invalid_conversation_context" });
     expect(store.transitionTurn).not.toHaveBeenCalled();
   });
 
@@ -367,7 +379,7 @@ describe("Xingyao conversation service", () => {
       const service = createConversationService(store);
 
       await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
-        code: "turn_state_conflict",
+        code: "invalid_conversation_context",
       });
       expect(store.listMessages).not.toHaveBeenCalled();
       expect(store.transitionTurn).not.toHaveBeenCalled();
@@ -425,7 +437,7 @@ describe("Xingyao conversation service", () => {
       (reason: unknown) => reason,
     );
 
-    expect(error).toMatchObject({ code: "turn_state_conflict" });
+    expect(error).toMatchObject({ code: "invalid_conversation_context" });
     expect(store.listMessages).not.toHaveBeenCalled();
     expect(store.transitionTurn).not.toHaveBeenCalled();
   });
@@ -464,10 +476,85 @@ describe("Xingyao conversation service", () => {
     const service = createConversationService(store);
 
     await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
-      code: "turn_state_conflict",
+      code: "invalid_conversation_context",
     });
     expect(store.transitionTurn).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      name: "root",
+      buildSnapshot: () =>
+        new Proxy(frozenSnapshot(trustedGatewayContext()), {}),
+    },
+    {
+      name: "nested",
+      buildSnapshot: () =>
+        frozenSnapshot({
+          ...trustedGatewayContext(),
+          invocationMetadata: new Proxy({ groundingFactCount: 0 }, {}),
+        }),
+    },
+  ])(
+    "rejects a transparent $name proxy before transition",
+    async ({ buildSnapshot }) => {
+      const store = persistence({
+        getTurn: vi.fn().mockResolvedValue(
+          storedTurn({
+            contextSnapshot: buildSnapshot(),
+          }),
+        ),
+      });
+      const service = createConversationService(store);
+
+      await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
+        code: "invalid_conversation_context",
+      });
+      expect(store.transitionTurn).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    {
+      name: "getPrototypeOf trap on the root",
+      buildSnapshot: (trap: () => never) =>
+        new Proxy(frozenSnapshot(trustedGatewayContext()), {
+          getPrototypeOf: trap,
+        }),
+    },
+    {
+      name: "ownKeys trap on a nested object",
+      buildSnapshot: (trap: () => never) =>
+        frozenSnapshot({
+          ...trustedGatewayContext(),
+          invocationMetadata: new Proxy(
+            { groundingFactCount: 0 },
+            { ownKeys: trap },
+          ),
+        }),
+    },
+  ])(
+    "rejects a hostile $name without executing it",
+    async ({ buildSnapshot }) => {
+      const trap = vi.fn((): never => {
+        throw new Error("Proxy trap executed");
+      });
+      const store = persistence({
+        getTurn: vi.fn().mockResolvedValue(
+          storedTurn({
+            contextSnapshot: buildSnapshot(trap),
+          }),
+        ),
+      });
+      const service = createConversationService(store);
+
+      await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
+        code: "invalid_conversation_context",
+      });
+      expect(trap).not.toHaveBeenCalled();
+      expect(store.transitionTurn).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects accessors without invoking them", async () => {
     const gatewayContext = trustedGatewayContext();
@@ -487,7 +574,7 @@ describe("Xingyao conversation service", () => {
     const service = createConversationService(store);
 
     await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
-      code: "turn_state_conflict",
+      code: "invalid_conversation_context",
     });
     expect(providerGetter).not.toHaveBeenCalled();
     expect(store.transitionTurn).not.toHaveBeenCalled();
@@ -533,7 +620,7 @@ describe("Xingyao conversation service", () => {
           snapshot,
           gatewayContext,
         ),
-      ).rejects.toMatchObject({ code: "turn_state_conflict" });
+      ).rejects.toMatchObject({ code: "invalid_conversation_context" });
       expect(store.transitionTurn).not.toHaveBeenCalled();
     },
   );
@@ -609,7 +696,7 @@ describe("Xingyao conversation service", () => {
             typeof service.captureGatewayContext
           >[3],
         ),
-      ).rejects.toMatchObject({ code: "turn_state_conflict" });
+      ).rejects.toMatchObject({ code: "invalid_conversation_context" });
       expect(store.transitionTurn).not.toHaveBeenCalled();
     },
   );
@@ -711,7 +798,7 @@ describe("Xingyao conversation service", () => {
           (reason: unknown) => reason,
         );
 
-      expect(error).toMatchObject({ code: "turn_state_conflict" });
+      expect(error).toMatchObject({ code: "invalid_conversation_context" });
       expect(store.transitionTurn).not.toHaveBeenCalled();
     },
     30_000,
@@ -1055,7 +1142,7 @@ describe("Xingyao conversation service", () => {
     const service = createConversationService(store);
 
     await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
-      code: "turn_state_conflict",
+      code: "invalid_conversation_context",
     });
     expect(store.transitionTurn).not.toHaveBeenCalled();
   });

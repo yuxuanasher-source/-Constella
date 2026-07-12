@@ -72,4 +72,44 @@ describe("AI conversation route context", () => {
     if (!(result instanceof Response)) throw new Error("Expected Response");
     expect(result.status).toBe(503);
   });
+
+  it("maps invalid persisted conversation context to 422", async () => {
+    const { ConversationServiceError } = await import(
+      "@/features/ai/conversation-service"
+    );
+    const { conversationRouteErrorResponse } = await import(
+      "./conversation-route-context"
+    );
+
+    const response = conversationRouteErrorResponse(
+      new ConversationServiceError(
+        "invalid_conversation_context",
+        "Conversation context is invalid",
+      ),
+    );
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({
+      error: "Conversation context is invalid",
+      code: "invalid_conversation_context",
+    });
+  });
+
+  it("keeps turn state conflicts mapped to 409", async () => {
+    const { ConversationServiceError } = await import(
+      "@/features/ai/conversation-service"
+    );
+    const { conversationRouteErrorResponse } = await import(
+      "./conversation-route-context"
+    );
+
+    const response = conversationRouteErrorResponse(
+      new ConversationServiceError(
+        "turn_state_conflict",
+        "Turn state changed",
+      ),
+    );
+
+    expect(response.status).toBe(409);
+  });
 });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isProxy } from "node:util/types";
 
 import { sanitizeAiAttachments } from "./attachment-validation";
 import type {
@@ -98,6 +99,7 @@ export class ConversationServiceError extends Error {
       | "turn_not_retryable"
       | "turn_not_regeneratable"
       | "turn_state_conflict"
+      | "invalid_conversation_context"
       | "invalid_assistant_content",
     message: string,
   ) {
@@ -560,7 +562,7 @@ function requireOwnedConversationSnapshot(
 ): ConversationContextSnapshot {
   if (!isConversationSnapshot(value)) {
     throw new ConversationServiceError(
-      "turn_state_conflict",
+      "invalid_conversation_context",
       "Conversation context snapshot is structurally invalid",
     );
   }
@@ -573,7 +575,7 @@ function requireConversationGatewayContext(
   const ownedValue = copyPlainJson(value);
   if (!isConversationGatewayContext(ownedValue)) {
     throw new ConversationServiceError(
-      "turn_state_conflict",
+      "invalid_conversation_context",
       "Conversation gateway context is structurally invalid",
     );
   }
@@ -725,6 +727,7 @@ function copyPlainJsonValue(
     return value;
   }
   if (typeof value !== "object") return rejectUnsafeConversationContext();
+  if (isProxy(value)) return rejectUnsafeConversationContext();
   if (state.seenObjects.has(value)) return rejectUnsafeConversationContext();
   state.seenObjects.add(value);
   state.visitedObjects += 1;
@@ -856,7 +859,7 @@ function reserveJsonStringBytes(
 
 function rejectUnsafeConversationContext(): never {
   throw new ConversationServiceError(
-    "turn_state_conflict",
+    "invalid_conversation_context",
     "Conversation context must be owned plain JSON data",
   );
 }

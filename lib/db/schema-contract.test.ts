@@ -3418,6 +3418,143 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
   },
 );
 
+describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
+  "Phase 1 conversation context PostgreSQL regression",
+  () => {
+    it("keeps context hashes stable after a real jsonb key-reordering round trip", async () => {
+      const container = settlementRuntimeRegressionContainer ?? "";
+      const nestedMetadata = {
+        longestPropertyName: { zebra: "终", alpha: "始" },
+        medium: "中间",
+        a: "短",
+      };
+      const representativeNumbers = [
+        0,
+        -42,
+        123.456,
+        1e-7,
+        Number.MAX_SAFE_INTEGER,
+      ];
+      const unicodeMetadata = {
+        chinese: "星耀会话",
+        emoji: "火箭🚀",
+        composed: "café",
+      };
+      const originalSnapshot = {
+        gatewayContext: {
+          invocationMetadata: {
+            nestedMetadata,
+            representativeNumbers,
+            unicodeMetadata,
+          },
+          responseMetadata: {
+            retrospectiveDraft: { status: "草稿", score: 9.25 },
+            knowledge: { passages: [], source: "知识库" },
+            grounding: { beta: 2, alpha: 1 },
+          },
+          lastUserMessage: "核对 PostgreSQL 冻结上下文 🚀",
+          primaryProvider: "deepseek" as const,
+          mode: "deep" as const,
+          attachments: [],
+          messages: [
+            { content: "系统规则：保持语义一致", role: "system" as const },
+            {
+              content: "核对 PostgreSQL 冻结上下文 🚀",
+              role: "user" as const,
+            },
+          ],
+        },
+        assembledAt: "2026-07-13T00:00:00.000Z",
+        groundingRefs: ["dashboard:role-home"],
+        messageIds: ["message-user-jsonb"],
+        summaryVersion: 7,
+        version: 11,
+      } satisfies NonNullable<StoredConversationTurn["contextSnapshot"]>;
+
+      const roundTrippedText = runDockerSqlText(
+        container,
+        `
+          with persisted(context_snapshot) as (
+            values (${sqlJson(originalSnapshot)})
+          )
+          select context_snapshot::text
+          from persisted;
+        `,
+      );
+      const roundTrippedSnapshot = JSON.parse(
+        roundTrippedText,
+      ) as typeof originalSnapshot;
+
+      expect(
+        Object.keys(
+          roundTrippedSnapshot.gatewayContext.invocationMetadata
+            .nestedMetadata,
+        ),
+      ).not.toEqual(Object.keys(nestedMetadata));
+      expect(roundTrippedSnapshot).toEqual(originalSnapshot);
+      expect(
+        roundTrippedSnapshot.gatewayContext.invocationMetadata
+          .representativeNumbers,
+      ).toEqual(representativeNumbers);
+      expect(
+        roundTrippedSnapshot.gatewayContext.invocationMetadata.unicodeMetadata,
+      ).toEqual(unicodeMetadata);
+
+      const contextHashFor = async (
+        contextSnapshot: NonNullable<
+          StoredConversationTurn["contextSnapshot"]
+        >,
+      ): Promise<string> => {
+        let contextHash: string | undefined;
+        const turn: StoredConversationTurn = {
+          id: "turn-jsonb-round-trip",
+          conversationId: "conversation-jsonb-round-trip",
+          userMessageId: "message-user-jsonb",
+          assistantMessageId: "message-assistant-jsonb",
+          mode: "deep",
+          status: "accepted",
+          attempt: 1,
+          contextSnapshot,
+          retryOfTurnId: null,
+          regenerateOfTurnId: null,
+          providerName: null,
+          errorCode: null,
+          errorSummary: null,
+          retryable: true,
+        };
+        const persistence: ConversationPersistence = {
+          createConversation: async () => null,
+          listConversations: async () => [],
+          getConversation: async () => null,
+          listMessages: async () => [],
+          listTurns: async () => [turn],
+          createTurn: async () => null,
+          getTurn: async () => turn,
+          transitionTurn: async (input) => {
+            contextHash = input.patch?.contextHash;
+            return true;
+          },
+          completeTurn: async () => true,
+          failTurn: async () => true,
+          renewLease: async () => true,
+        };
+
+        await createConversationService(persistence).prepareTurn(
+          { organizationId: "org-jsonb", userId: "user-jsonb" },
+          turn.id,
+        );
+        expect(contextHash).toMatch(/^[a-f0-9]{64}$/u);
+        return contextHash ?? "";
+      };
+
+      const originalHash = await contextHashFor(originalSnapshot);
+      const roundTrippedHash = await contextHashFor(roundTrippedSnapshot);
+
+      expect(roundTrippedHash).toBe(originalHash);
+    });
+  },
+);
+
 const settlementAiLockRegressionContainer =
   process.env.SETTLEMENT_AI_DB_LOCK_REGRESSION_CONTAINER;
 
