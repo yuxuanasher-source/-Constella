@@ -1,0 +1,286 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { POST } from "./route";
+
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
+import { getCustomRuleRouteContext } from "@/features/settlements/custom-rule-route-context";
+
+vi.mock("@/features/billing/route-guard", () => ({
+  assertBillingWriteAllowed: vi.fn(),
+}));
+
+vi.mock(
+  "@/features/settlements/custom-rule-route-context",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/features/settlements/custom-rule-route-context")
+      >();
+    return { ...actual, getCustomRuleRouteContext: vi.fn() };
+  },
+);
+
+const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
+const USER_ID = "22222222-2222-4222-8222-222222222222";
+const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
+const SESSION_ID = "44444444-4444-4444-8444-444444444444";
+const DRAFT_ID = "55555555-5555-4555-8555-555555555555";
+
+function simulationResult() {
+  return {
+    draft: {
+      id: DRAFT_ID,
+      conversationId: SESSION_ID,
+      revisionNumber: 3,
+      status: "simulated",
+      initialStatus: "contract_ready",
+      businessContract: { title: "项目主播按场计费" },
+      unresolvedAmbiguities: [],
+      generatedFormula: { expression: "money_result({ final: yuan(1) })" },
+      generatedExplanation: "按确认公式计算。",
+      generatedTestCases: [],
+      safetyFlags: [],
+      formulaHash: "a".repeat(64),
+      contractHash: "b".repeat(64),
+      parameterHash: "c".repeat(64),
+      variableCatalogVersion: "d".repeat(64),
+      createdAt: "2026-07-12T01:00:00.000Z",
+      promptText: "sensitive prompt value",
+      model: "provider-secret-model",
+    },
+    simulation: {
+      id: "66666666-6666-4666-8666-666666666666",
+      createdAt: "2026-07-12T01:01:00.000Z",
+      dataSelectionHash: "e".repeat(64),
+      sampleSource: { kind: "historical_settlements" },
+      sampleSelection: {
+        periodStart: "2026-07-01",
+        periodEnd: "2026-07-10",
+        populationCount: 2,
+        sampledCount: 2,
+        criteria: ["approved_reports"],
+      },
+      coverage: { totalRecords: 2, evaluatedRecords: 2, skippedRecords: 0 },
+      scenarios: [],
+      historicalTotals: {
+        payableAmountCents: "10000",
+        receivableAmountCents: null,
+        recordCount: 2,
+      },
+      deltas: {
+        payableAmountCents: "2345",
+        receivableAmountCents: "0",
+        percentageBps: 2345,
+      },
+      largestChanges: [],
+      warnings: [],
+      rawSampleRows: [{ streamerId: "private-streamer" }],
+    },
+    summary: {
+      recordCount: 2,
+      coverage: { totalCount: 2, evaluatedCount: 2, rateBps: 10_000 },
+      uncoveredCount: 0,
+      zeroPayCount: 0,
+      reviewRoutedCount: 0,
+      blockedCount: 0,
+      largestIncreases: [],
+      largestDecreases: [],
+      totalOldCents: "10000",
+      totalNewCents: "12345",
+      totalDeltaCents: "2345",
+      marginImpactCents: "-2345",
+      historicalVerification: {
+        status: "verified",
+        label: "已通过历史数据验证",
+      },
+      unitSources: ["current_rule_cents"],
+      dataSelectionHash: "e".repeat(64),
+      riskFlags: [],
+      warnings: [],
+      scenarios: [],
+      persistable: {},
+      records: [{ streamerId: "private-streamer", amountCents: "999" }],
+    },
+  };
+}
+
+function context(role: string) {
+  return {
+    supabase: { client: "supabase" },
+    auth: { userId: USER_ID, organizationId: ORGANIZATION_ID, role },
+    actor: { userId: USER_ID, organizationId: ORGANIZATION_ID },
+    requireProjectAccess: vi.fn().mockResolvedValue(undefined),
+    simulation: {
+      simulateExistingDraft: vi.fn().mockResolvedValue(simulationResult()),
+    },
+    audit: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function body() {
+  return {
+    sessionId: SESSION_ID,
+    draftId: DRAFT_ID,
+    expectedRevisionNumber: 3,
+    clientRequestId: "simulate-request-0001",
+    simulationSelection: {
+      selectionToken: "selection-token-0001",
+      periodStart: "2026-07-01",
+      periodEnd: "2026-07-10",
+      criteriaCodes: ["approved_reports", "period_overlap", "project_scope"],
+    },
+  };
+}
+
+function request(value: unknown = body()) {
+  return new Request("http://localhost", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: typeof value === "string" ? value : JSON.stringify(value),
+  });
+}
+
+describe("settlement rule simulation route", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(assertBillingWriteAllowed).mockResolvedValue(undefined);
+  });
+
+  it.each(["owner", "ops_manager", "operator_business", "finance"])(
+    "allows %s to simulate an existing authorized draft",
+    async (role) => {
+      const routeContext = context(role);
+      vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+        routeContext as never,
+      );
+
+      const response = await POST(request(), {
+        params: Promise.resolve({ projectId: PROJECT_ID }),
+      });
+
+      expect(response.status).toBe(201);
+      expect(routeContext.requireProjectAccess).toHaveBeenCalledWith(
+        PROJECT_ID,
+      );
+      expect(assertBillingWriteAllowed).toHaveBeenCalledWith({
+        client: routeContext.supabase,
+        organizationId: ORGANIZATION_ID,
+        featureKey: "settlement",
+      });
+      expect(
+        routeContext.simulation.simulateExistingDraft,
+      ).toHaveBeenCalledWith({
+        actor: routeContext.actor,
+        projectId: PROJECT_ID,
+        conversationId: SESSION_ID,
+        draftId: DRAFT_ID,
+        expectedRevisionNumber: 3,
+        clientRequestId: "simulate-request-0001",
+        selection: body().simulationSelection,
+      });
+    },
+  );
+
+  it("returns a typed summary without raw rows or cents/bps internals", async () => {
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      context("finance") as never,
+    );
+
+    const response = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+    const payload = await response.json();
+    const serialized = JSON.stringify(payload);
+
+    expect(payload.summary).toMatchObject({
+      recordCount: 2,
+      totalOldYuan: "100.00",
+      totalNewYuan: "123.45",
+      totalDeltaYuan: "23.45",
+      marginImpactYuan: "-23.45",
+      coverage: { totalCount: 2, evaluatedCount: 2, ratePercent: "100.00" },
+    });
+    expect(serialized).not.toContain("private-streamer");
+    expect(serialized).not.toContain("amountCents");
+    expect(serialized).not.toContain("rateBps");
+    expect(serialized).not.toContain("percentageBps");
+    expect(serialized).not.toContain("sensitive prompt value");
+    expect(serialized).not.toContain("provider-secret-model");
+  });
+
+  it("returns malformed JSON as 400 before billing", async () => {
+    const routeContext = context("finance");
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request("{"), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(
+      routeContext.simulation.simulateExistingDraft,
+    ).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["CUSTOM_RULE_SESSION_NOT_FOUND", 404],
+    ["CUSTOM_RULE_STALE_REVISION", 409],
+  ] as const)("maps %s to a stable status", async (code, status) => {
+    const routeContext = context("finance");
+    const { CustomRuleRouteError } =
+      await import("@/features/settlements/custom-rule-route-context");
+    routeContext.simulation.simulateExistingDraft.mockRejectedValue(
+      new CustomRuleRouteError({
+        code,
+        message:
+          code === "CUSTOM_RULE_SESSION_NOT_FOUND"
+            ? "Settlement rule session not found"
+            : "Settlement rule draft is stale",
+        status,
+        retryable: false,
+      }),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+
+    expect(response.status).toBe(status);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code, retryable: false },
+    });
+  });
+
+  it("does not touch evidence when project scope is rejected", async () => {
+    const routeContext = context("finance");
+    const { CustomRuleRouteError } =
+      await import("@/features/settlements/custom-rule-route-context");
+    routeContext.requireProjectAccess.mockRejectedValue(
+      new CustomRuleRouteError({
+        code: "CUSTOM_RULE_PROJECT_NOT_FOUND",
+        message: "Project not found",
+        status: 404,
+        retryable: false,
+      }),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(
+      routeContext.simulation.simulateExistingDraft,
+    ).not.toHaveBeenCalled();
+  });
+});
