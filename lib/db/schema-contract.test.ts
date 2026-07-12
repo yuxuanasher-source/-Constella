@@ -39,9 +39,76 @@ const normalizedSettlementAiMigration = settlementAiMigration
   .toLowerCase()
   .replace(/\s+/gu, " ")
   .trim();
+const settlementRuntimeMigrationName =
+  "20260711115000_custom_settlement_runtime_snapshot.sql";
+const settlementRuntimeMigration = readdirSync(migrationsDir).includes(
+  settlementRuntimeMigrationName,
+)
+  ? readFileSync(join(migrationsDir, settlementRuntimeMigrationName), "utf8")
+  : "";
+const normalizedSettlementRuntimeMigration = normalizeSql(
+  settlementRuntimeMigration,
+);
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/gu, " ").trim();
+}
+
+function settlementRuntimeTableDefinition(table: string): string {
+  return normalizeSql(
+    extractBalancedSql(
+      settlementRuntimeMigration,
+      `create table public.${table}`,
+    ).inner,
+  );
+}
+
+function extractSettlementRuntimeFunction(fn: string): {
+  definition: string;
+  header: string;
+  body: string;
+} {
+  const marker = `create or replace function public.${fn}`;
+  const start = settlementRuntimeMigration.toLowerCase().indexOf(marker);
+  expect(start, `missing Task8 SQL function: ${fn}`).toBeGreaterThanOrEqual(0);
+  const bodyMarker = /\bas\s+\$\$/giu;
+  bodyMarker.lastIndex = start;
+  const bodyStartMatch = bodyMarker.exec(settlementRuntimeMigration);
+  expect(bodyStartMatch, `missing Task8 function body: ${fn}`).not.toBeNull();
+  const bodyStart = bodyStartMatch?.index ?? -1;
+  const bodyContentStart = bodyStart + (bodyStartMatch?.[0].length ?? 0);
+  const bodyEnd = settlementRuntimeMigration.indexOf("$$;", bodyContentStart);
+  expect(bodyEnd, `missing Task8 function terminator: ${fn}`).toBeGreaterThan(
+    bodyContentStart,
+  );
+  return {
+    definition: settlementRuntimeMigration.slice(start, bodyEnd + 3),
+    header: settlementRuntimeMigration.slice(start, bodyStart),
+    body: settlementRuntimeMigration.slice(bodyContentStart, bodyEnd),
+  };
+}
+
+function settlementRuntimeFunctionDefinition(fn: string): string {
+  return normalizeSql(extractSettlementRuntimeFunction(fn).definition);
+}
+
+function settlementRuntimeFunctionBody(fn: string): string {
+  return normalizeSql(extractSettlementRuntimeFunction(fn).body);
+}
+
+function settlementRuntimeSelfCheckBlock(): string {
+  const marker = "-- custom_settlement_runtime_self_checks";
+  const start = settlementRuntimeMigration.indexOf(marker);
+  expect(start, "missing Task8 runtime self-check marker").toBeGreaterThanOrEqual(
+    0,
+  );
+  const blockStart = settlementRuntimeMigration.indexOf("do $$", start);
+  const blockEnd = settlementRuntimeMigration.indexOf("$$;", blockStart);
+  expect(blockStart).toBeGreaterThan(start);
+  expect(blockEnd).toBeGreaterThan(blockStart);
+  return normalizeSql(
+    settlementRuntimeMigration.slice(blockStart, blockEnd + 3),
+  );
 }
 
 function extractBalancedSql(
@@ -1697,6 +1764,1138 @@ describe("Phase 1 settlement AI persistence contract", () => {
   });
 });
 
+describe("Task8 custom settlement runtime database contract", () => {
+  it("reserves the additive migration between Phase 1 and planned Phase 2", () => {
+    const migrationNames = readdirSync(migrationsDir)
+      .filter((file) => file.endsWith(".sql"))
+      .sort();
+
+    expect(migrationNames).toContain(settlementRuntimeMigrationName);
+    expect(
+      settlementRuntimeMigrationName > settlementAiMigrationName,
+    ).toBe(true);
+    expect(
+      settlementRuntimeMigrationName <
+        "20260711120000_custom_settlement_rule_governance.sql",
+    ).toBe(true);
+    expect(migrationNames).not.toContain(
+      "20260712130000_custom_settlement_runtime_snapshot.sql",
+    );
+  });
+
+  it("keeps session claims service-owned, scope-bound, and uniquely idempotent", () => {
+    const table = settlementRuntimeTableDefinition(
+      "custom_settlement_ai_sessions",
+    );
+
+    for (const column of [
+      "id uuid primary key",
+      "organization_id uuid not null",
+      "project_id uuid not null",
+      "actor_id uuid not null",
+      "client_request_id text not null",
+      "title text not null",
+      "request_fingerprint text not null",
+      "conversation_id uuid not null",
+      "created_at timestamptz not null",
+    ]) {
+      expect(table).toContain(column);
+    }
+    expect(table).toContain(
+      "unique (organization_id, project_id, actor_id, client_request_id)",
+    );
+    expect(table).toContain(
+      "foreign key (project_id, organization_id) references public.projects(id, organization_id)",
+    );
+    expect(table).toContain(
+      "foreign key ( conversation_id, organization_id, actor_id ) references public.ai_conversations( id, organization_id, owner_user_id )",
+    );
+    expect(table).toContain(
+      "foreign key ( conversation_id, organization_id, project_id ) references public.ai_conversations( id, organization_id, project_id )",
+    );
+    expect(table).toMatch(/client_request_id.+char_length.+between 8 and 128/u);
+    expect(table).toMatch(/request_fingerprint.+\^\[0-9a-f\].+64/u);
+    expect(normalizedSettlementRuntimeMigration).toContain(
+      "alter table public.custom_settlement_ai_sessions enable row level security",
+    );
+    expect(normalizedSettlementRuntimeMigration).not.toContain(
+      "create policy custom_settlement_ai_sessions",
+    );
+    expect(normalizedSettlementRuntimeMigration).toContain(
+      "unique index custom_settlement_ai_sessions_conversation_idx",
+    );
+  });
+
+  it("claims exactly one generic conversation under a scope-safe advisory lock", () => {
+    const definition = settlementRuntimeFunctionDefinition(
+      "claim_custom_settlement_ai_session",
+    );
+    const body = settlementRuntimeFunctionBody(
+      "claim_custom_settlement_ai_session",
+    );
+
+    expect(definition).toContain("returns jsonb");
+    expect(definition).toContain("security definer");
+    expect(definition).toContain("set search_path = pg_catalog, public");
+    expect(definition).toContain("p_request_fingerprint text");
+    expect(body).toContain("v_actor_id uuid := auth.uid()");
+    expect(body).toContain(
+      "public.current_user_role(p_organization_id) not in ( 'owner', 'ops_manager', 'operator_business' )",
+    );
+    expect(body).toContain("public.is_org_member(p_organization_id)");
+    expect(body).toContain("public.can_access_project(p_project_id)");
+    expect(body).toContain(
+      "public.settlement_ai_lock_authoring_parents( p_organization_id, v_actor_id, p_project_id )",
+    );
+    expect(body).toContain("pg_catalog.pg_advisory_xact_lock");
+    expect(body).toContain("pg_catalog.hashtextextended");
+    expect(body).toContain("v_request_fingerprint text := p_request_fingerprint");
+    expect(body).toContain("p_request_fingerprint is null");
+    expect(body).toMatch(/p_request_fingerprint !~ '\^\[0-9a-f\]\{64\}\$'/u);
+    expect(body).not.toContain("extensions.digest");
+    expect(body).toMatch(
+      /from public\.custom_settlement_ai_sessions[\s\S]+organization_id = p_organization_id[\s\S]+project_id = p_project_id[\s\S]+actor_id = v_actor_id[\s\S]+client_request_id = v_client_request_id/u,
+    );
+    expect(body.indexOf("from public.custom_settlement_ai_sessions")).toBeLessThan(
+      body.indexOf("insert into public.ai_conversations"),
+    );
+    expect(body).toContain("custom_settlement_session_replay_mismatch");
+    expect(body).toContain("insert into public.ai_conversations");
+    expect(body).toContain("insert into public.custom_settlement_ai_sessions");
+    expect(body).toContain("'duplicate', true");
+    expect(body).toContain("'duplicate', false");
+    for (const key of [
+      "'id'",
+      "'title'",
+      "'status'",
+      "'last_message_at'",
+      "'created_at'",
+      "'updated_at'",
+      "'duplicate'",
+    ]) {
+      expect(body).toContain(key);
+    }
+    for (const forbiddenKey of [
+      "'conversation_id'",
+      "'organization_id'",
+      "'project_id'",
+      "'actor_id'",
+      "'client_request_id'",
+    ]) {
+      expect(body).not.toContain(forbiddenKey);
+    }
+    expect(body).not.toContain("create_ai_conversation");
+  });
+
+  it("reads one bounded lock-consistent evidence snapshot with safe fields", () => {
+    const definition = settlementRuntimeFunctionDefinition(
+      "read_custom_settlement_evidence_snapshot",
+    );
+    const body = settlementRuntimeFunctionBody(
+      "read_custom_settlement_evidence_snapshot",
+    );
+
+    expect(definition).toContain("returns jsonb");
+    expect(definition).toContain("security definer");
+    expect(definition).toContain("set search_path = pg_catalog, public");
+    expect(body).toContain("p_scope not in ('payable', 'receivable')");
+    expect(body).toContain("p_max_sources > 10000");
+    expect(body).toContain("p_period_end - p_period_start > 366");
+    expect(body).toContain(
+      "public.current_user_role(p_organization_id) not in ( 'owner', 'ops_manager', 'operator_business', 'finance' )",
+    );
+    expect(body).toContain(
+      "public.settlement_ai_lock_authoring_parents( p_organization_id, v_actor_id, p_project_id )",
+    );
+
+    expect(body).not.toMatch(
+      /perform (?:batch|item|report|task|cost|project_streamer|streamer)\.id[\s\S]+?for update/u,
+    );
+    for (const sourceCte of [
+      "selected_batches",
+      "selected_items",
+      "selected_reports",
+      "selected_costs",
+      "selected_project_streamers",
+      "selected_streamers",
+      "selected_tasks",
+    ]) {
+      const cte = extractBalancedSql(
+        body,
+        `${sourceCte} as materialized`,
+      ).inner;
+      expect(cte, `${sourceCte} must be bounded`).toContain(
+        "limit p_max_sources + 1",
+      );
+      expect(cte, `${sourceCte} must preserve its MVCC row version`).not.toContain(
+        "for update",
+      );
+    }
+    for (const [lockCte, sourceCte] of [
+      ["locked_batches", "selected_batches"],
+      ["locked_items", "selected_items"],
+      ["locked_reports", "selected_reports"],
+      ["locked_tasks", "selected_tasks"],
+      ["locked_costs", "selected_costs"],
+      ["locked_project_streamers", "selected_project_streamers"],
+      ["locked_streamers", "selected_streamers"],
+    ]) {
+      const cte = extractBalancedSql(
+        body,
+        `${lockCte} as materialized`,
+      ).inner;
+      expect(cte, `${lockCte} must lock only bounded IDs`).toContain(
+        `join ${sourceCte}`,
+      );
+      expect(cte, `${lockCte} must skip over-limit requests`).toContain(
+        "source_guard.within_limit",
+      );
+      expect(cte, `${lockCte} must stabilize selected rows`).toContain(
+        "for update",
+      );
+    }
+    expect(body).toMatch(
+      /source_counts as materialized[\s\S]+source_guard as materialized[\s\S]+locked_batches as materialized[\s\S]+locked_items as materialized[\s\S]+locked_reports as materialized[\s\S]+locked_tasks as materialized[\s\S]+locked_costs as materialized[\s\S]+locked_project_streamers as materialized[\s\S]+locked_streamers as materialized[\s\S]+lock_barrier as materialized/u,
+    );
+    expect(body).toContain("batch.status = 'locked'");
+    expect(body).toContain(
+      "batch.batch_type in ('payable', 'receivable')",
+    );
+    expect(body).toContain("batch.period_start <= p_period_end");
+    expect(body).toContain("batch.period_end >= p_period_start");
+    const selectedItems = extractBalancedSql(
+      body,
+      "selected_items as materialized",
+    ).inner;
+    expect(selectedItems).not.toContain("live_report_id is not null");
+    expect(body).toMatch(
+      /report\.status = 'approved'[\s\S]+item\.live_report_id = report\.id[\s\S]+report\.reviewed_at >= v_window_start/u,
+    );
+    expect(body).toMatch(
+      /cost\.status = 'confirmed'[\s\S]+cost\.live_report_id = any[\s\S]+cost\.settlement_batch_id = any[\s\S]+cost\.live_report_id is null[\s\S]+cost\.settlement_batch_id is null[\s\S]+cost\.created_at >= v_window_start/u,
+    );
+    expect(body).not.toContain("source_payload");
+    expect(body).toContain("cost.amount_cents::text");
+    expect(
+      settlementRuntimeFunctionBody(
+        "custom_settlement_snapshot_numeric_text",
+      ),
+    ).toContain("pg_catalog.trim_scale");
+    expect(body).toContain("'asia/shanghai'");
+    expect(body).toContain("custom_settlement_snapshot_source_limit_exceeded");
+    expect(body).toContain("source_guard as materialized");
+    expect(body).toContain("source_count <= p_max_sources as within_limit");
+    expect(body).toMatch(
+      /batch_payload as materialized[\s\S]+cross join lock_barrier[\s\S]+where source_guard\.within_limit[\s\S]+base_payload as materialized/u,
+    );
+    expect(body).toContain("'__limit_exceeded'");
+    expect(body).toContain("'snapshot_hash'");
+    expect(body).toContain("extensions.digest");
+    expect(body).toMatch(
+      /with selected_batches as materialized[\s\S]+selected_items as materialized[\s\S]+selected_reports as materialized[\s\S]+selected_costs as materialized[\s\S]+base_payload as materialized[\s\S]+select[\s\S]+into v_snapshot[\s\S]+from base_payload/u,
+    );
+    expect(body).not.toMatch(
+      /select[\s\S]+jsonb_agg[\s\S]+into v_(?:batches|items|reports|costs|streamers)/u,
+    );
+    for (const key of [
+      "settlement_batches",
+      "settlement_batch_items",
+      "live_reports",
+      "project_cost_items",
+      "project_streamers",
+    ]) {
+      expect(body).toContain(`'${key}'`);
+    }
+    expect(body).toMatch(/jsonb_agg\(.+order by/u);
+  });
+
+  it("exposes only the two authenticated RPCs and leaves tables/helpers private", () => {
+    for (const rpc of [
+      "claim_custom_settlement_ai_session",
+      "read_custom_settlement_evidence_snapshot",
+    ]) {
+      expect(normalizedSettlementRuntimeMigration).toMatch(
+        new RegExp(
+          `revoke all on function public\\.${rpc}\\([\\s\\S]+?from public, anon, authenticated, service_role;`,
+          "u",
+        ),
+      );
+      expect(normalizedSettlementRuntimeMigration).toMatch(
+        new RegExp(
+          `grant execute on function public\\.${rpc}\\([\\s\\S]+?to authenticated;`,
+          "u",
+        ),
+      );
+      expect(normalizedSettlementRuntimeMigration).not.toMatch(
+        new RegExp(
+          `grant execute on function public\\.${rpc}\\([\\s\\S]+?to (?:anon|service_role|public);`,
+          "u",
+        ),
+      );
+    }
+    expect(normalizedSettlementRuntimeMigration).toContain(
+      "revoke all on table public.custom_settlement_ai_sessions from public, anon, authenticated, service_role",
+    );
+    expect(normalizedSettlementRuntimeMigration).not.toMatch(
+      /grant (?:select|insert|update|delete|all).+custom_settlement_ai_sessions/u,
+    );
+    expect(normalizedSettlementRuntimeMigration).toContain(
+      "revoke all on function public.custom_settlement_snapshot_numeric_text(numeric) from public, anon, authenticated, service_role",
+    );
+  });
+
+  it("executes real claim and snapshot assertions and removes every fixture", () => {
+    const selfCheck = settlementRuntimeSelfCheckBlock();
+
+    for (const marker of [
+      "public.claim_custom_settlement_ai_session(",
+      "public.read_custom_settlement_evidence_snapshot(",
+      "runtime_claim_duplicate_failed",
+      "runtime_claim_mismatch_accepted",
+      "runtime_finance_claim_accepted",
+      "runtime_finance_snapshot_failed",
+      "runtime_cross_scope_snapshot_accepted",
+      "runtime_snapshot_amount_not_text",
+      "runtime_snapshot_limit_accepted",
+      "runtime_empty_snapshot_failed",
+      "runtime_snapshot_fixture_cleanup_failed",
+    ]) {
+      expect(selfCheck).toContain(marker);
+    }
+    expect(selfCheck).toContain("when others then");
+    expect(selfCheck).toMatch(
+      /delete from public\.custom_settlement_ai_sessions[\s\S]+delete from public\.ai_conversations/u,
+    );
+  });
+});
+
+const settlementRuntimeRegressionContainer =
+  process.env.CUSTOM_SETTLEMENT_RUNTIME_DB_REGRESSION_CONTAINER;
+
+describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
+  "Task8 custom settlement runtime database behavior",
+  () => {
+    it("serializes equal claims without orphan conversations and rejects unsafe callers", async () => {
+      const container = settlementRuntimeRegressionContainer ?? "";
+      const ownerId = "8e110000-0000-4000-8000-000000000001";
+      const financeId = "8e110000-0000-4000-8000-000000000002";
+      const streamerId = "8e110000-0000-4000-8000-000000000003";
+      const organizationId = "8e120000-0000-4000-8000-000000000001";
+      const projectId = "8e130000-0000-4000-8000-000000000001";
+      const requestId = "task8-concurrent-claim-0001";
+      const title = "Task8 Concurrent Claim";
+      const requestFingerprint = "a".repeat(64);
+      const cleanupSql = `
+        delete from public.custom_settlement_ai_sessions
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.ai_conversations
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.projects
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.organization_members
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.organizations
+        where id = '${organizationId}'::uuid;
+        delete from public.profiles
+        where id in (
+          '${ownerId}'::uuid,
+          '${financeId}'::uuid,
+          '${streamerId}'::uuid
+        );
+        delete from auth.users
+        where id in (
+          '${ownerId}'::uuid,
+          '${financeId}'::uuid,
+          '${streamerId}'::uuid
+        );
+      `;
+      const setupSql = `
+        ${cleanupSql}
+        insert into auth.users (id, email) values
+          ('${ownerId}'::uuid, 'task8-claim-owner@example.invalid'),
+          ('${financeId}'::uuid, 'task8-claim-finance@example.invalid'),
+          ('${streamerId}'::uuid, 'task8-claim-streamer@example.invalid');
+        insert into public.profiles (id, email, full_name) values
+          (
+            '${ownerId}'::uuid,
+            'task8-claim-owner@example.invalid',
+            'Task8 Claim Owner'
+          ),
+          (
+            '${financeId}'::uuid,
+            'task8-claim-finance@example.invalid',
+            'Task8 Claim Finance'
+          ),
+          (
+            '${streamerId}'::uuid,
+            'task8-claim-streamer@example.invalid',
+            'Task8 Claim Streamer'
+          );
+        insert into public.organizations (id, name, code) values (
+          '${organizationId}'::uuid,
+          'Task8 Claim Runtime',
+          'task8-claim-runtime'
+        );
+        insert into public.organization_members (
+          organization_id, user_id, role, status
+        ) values
+          (
+            '${organizationId}'::uuid,
+            '${ownerId}'::uuid,
+            'owner',
+            'active'
+          ),
+          (
+            '${organizationId}'::uuid,
+            '${financeId}'::uuid,
+            'finance',
+            'active'
+          ),
+          (
+            '${organizationId}'::uuid,
+            '${streamerId}'::uuid,
+            'streamer',
+            'active'
+          );
+        insert into public.projects (
+          id, organization_id, code, name, created_by, owner_id
+        ) values (
+          '${projectId}'::uuid,
+          '${organizationId}'::uuid,
+          'task8-claim-runtime',
+          'Task8 Claim Runtime',
+          '${ownerId}'::uuid,
+          '${ownerId}'::uuid
+        );
+      `;
+      const claimSql = (holdSeconds: number) => `
+        begin;
+        set local deadlock_timeout = '200ms';
+        select pg_catalog.set_config(
+          'request.jwt.claim.sub', '${ownerId}', true
+        );
+        select public.claim_custom_settlement_ai_session(
+          '${organizationId}'::uuid,
+          '${projectId}'::uuid,
+          '${requestId}',
+          '${title}',
+          '${requestFingerprint}'
+        );
+        select pg_catalog.pg_sleep(${holdSeconds});
+        commit;
+      `;
+
+      runDockerSql(container, setupSql);
+      try {
+        const first = runDockerSqlAsyncCapture(container, claimSql(1));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const second = runDockerSqlAsyncCapture(container, claimSql(0));
+        const [firstResult, secondResult] = await Promise.all([first, second]);
+        expect(
+          [firstResult.stderr, secondResult.stderr].join("\n"),
+        ).not.toContain("40P01");
+        expect(firstResult.code, firstResult.stderr).toBe(0);
+        expect(secondResult.code, secondResult.stderr).toBe(0);
+
+        const resultRows = [firstResult.stdout, secondResult.stdout]
+          .flatMap((output) => output.split(/\r?\n/gu))
+          .filter((line) => line.trim().startsWith("{"))
+          .map((line) => JSON.parse(line) as {
+            id: string;
+            duplicate: boolean;
+          });
+        expect(resultRows).toHaveLength(2);
+        expect(resultRows.map((row) => row.duplicate).sort()).toEqual([
+          false,
+          true,
+        ]);
+        expect(new Set(resultRows.map((row) => row.id)).size).toBe(1);
+        for (const row of resultRows) {
+          expect(Object.keys(row).sort()).toEqual(
+            [
+              "created_at",
+              "duplicate",
+              "id",
+              "last_message_at",
+              "status",
+              "title",
+              "updated_at",
+            ].sort(),
+          );
+        }
+
+        expect(
+          runDockerSqlText(
+            container,
+            `
+              select
+                (
+                  select pg_catalog.count(*)
+                  from public.custom_settlement_ai_sessions
+                  where organization_id = '${organizationId}'::uuid
+                )::text || '|' ||
+                (
+                  select pg_catalog.count(*)
+                  from public.ai_conversations
+                  where organization_id = '${organizationId}'::uuid
+                    and project_id = '${projectId}'::uuid
+                )::text;
+            `,
+          ),
+        ).toBe("1|1");
+
+        const mismatch = await runDockerSqlAsyncCapture(
+          container,
+          `
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${ownerId}', false
+            );
+            select public.claim_custom_settlement_ai_session(
+              '${organizationId}'::uuid,
+              '${projectId}'::uuid,
+              '${requestId}',
+              '${title}',
+              '${"b".repeat(64)}'
+            );
+          `,
+        );
+        expect(mismatch.code).not.toBe(0);
+        expect(mismatch.stderr).toContain(
+          "custom_settlement_session_replay_mismatch",
+        );
+
+        for (const deniedActorId of [financeId, streamerId]) {
+          const denied = await runDockerSqlAsyncCapture(
+            container,
+            `
+              select pg_catalog.set_config(
+                'request.jwt.claim.sub', '${deniedActorId}', false
+              );
+              select public.claim_custom_settlement_ai_session(
+                '${organizationId}'::uuid,
+                '${projectId}'::uuid,
+                'task8-denied-claim-0001',
+                'Task8 Denied Claim',
+                '${requestFingerprint}'
+              );
+            `,
+          );
+          expect(denied.code).not.toBe(0);
+          expect(denied.stderr).toContain(
+            "custom_settlement_session_access_denied",
+          );
+        }
+
+        const directRead = await runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            set local role authenticated;
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${ownerId}', true
+            );
+            select * from public.custom_settlement_ai_sessions;
+            rollback;
+          `,
+        );
+        expect(directRead.code).not.toBe(0);
+        expect(directRead.stderr).toContain("permission denied");
+      } finally {
+        runDockerSql(container, cleanupSql);
+      }
+    }, 20_000);
+
+    it("returns one bounded finance snapshot while concurrent source writes stay coherent", async () => {
+      const container = settlementRuntimeRegressionContainer ?? "";
+      const ownerId = "8d110000-0000-4000-8000-000000000001";
+      const financeId = "8d110000-0000-4000-8000-000000000002";
+      const streamerUserId = "8d110000-0000-4000-8000-000000000003";
+      const organizationId = "8d120000-0000-4000-8000-000000000001";
+      const otherOrganizationId = "8d120000-0000-4000-8000-000000000002";
+      const projectId = "8d130000-0000-4000-8000-000000000001";
+      const emptyProjectId = "8d130000-0000-4000-8000-000000000002";
+      const otherProjectId = "8d130000-0000-4000-8000-000000000003";
+      const streamerId = "8d140000-0000-4000-8000-000000000001";
+      const projectStreamerId = "8d150000-0000-4000-8000-000000000001";
+      const taskId = "8d160000-0000-4000-8000-000000000001";
+      const reportId = "8d170000-0000-4000-8000-000000000001";
+      const payableBatchId = "8d180000-0000-4000-8000-000000000001";
+      const receivableBatchId = "8d180000-0000-4000-8000-000000000002";
+      const linkedItemId = "8d190000-0000-4000-8000-000000000001";
+      const manualItemId = "8d190000-0000-4000-8000-000000000002";
+      const linkedCostId = "8d1a0000-0000-4000-8000-000000000001";
+      const unlinkedCostId = "8d1a0000-0000-4000-8000-000000000002";
+      const insertedItemId = "8d190000-0000-4000-8000-000000000003";
+      const cleanupSql = `
+        delete from public.project_cost_items
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.settlement_batch_items
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.live_reports
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.live_tasks
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.project_streamers
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.streamers
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.settlement_batches
+        where organization_id = '${organizationId}'::uuid;
+        delete from public.custom_settlement_ai_sessions
+        where organization_id in (
+          '${organizationId}'::uuid,
+          '${otherOrganizationId}'::uuid
+        );
+        delete from public.ai_conversations
+        where organization_id in (
+          '${organizationId}'::uuid,
+          '${otherOrganizationId}'::uuid
+        );
+        delete from public.projects
+        where organization_id in (
+          '${organizationId}'::uuid,
+          '${otherOrganizationId}'::uuid
+        );
+        delete from public.organization_members
+        where organization_id in (
+          '${organizationId}'::uuid,
+          '${otherOrganizationId}'::uuid
+        );
+        delete from public.organizations
+        where id in (
+          '${organizationId}'::uuid,
+          '${otherOrganizationId}'::uuid
+        );
+        delete from public.profiles
+        where id in (
+          '${ownerId}'::uuid,
+          '${financeId}'::uuid,
+          '${streamerUserId}'::uuid
+        );
+        delete from auth.users
+        where id in (
+          '${ownerId}'::uuid,
+          '${financeId}'::uuid,
+          '${streamerUserId}'::uuid
+        );
+      `;
+      const setupSql = `
+        ${cleanupSql}
+        insert into auth.users (id, email) values
+          ('${ownerId}'::uuid, 'task8-snapshot-owner@example.invalid'),
+          ('${financeId}'::uuid, 'task8-snapshot-finance@example.invalid'),
+          (
+            '${streamerUserId}'::uuid,
+            'task8-snapshot-streamer@example.invalid'
+          );
+        insert into public.profiles (id, email, full_name) values
+          (
+            '${ownerId}'::uuid,
+            'task8-snapshot-owner@example.invalid',
+            'Task8 Snapshot Owner'
+          ),
+          (
+            '${financeId}'::uuid,
+            'task8-snapshot-finance@example.invalid',
+            'Task8 Snapshot Finance'
+          ),
+          (
+            '${streamerUserId}'::uuid,
+            'task8-snapshot-streamer@example.invalid',
+            'Task8 Snapshot Streamer'
+          );
+        insert into public.organizations (id, name, code) values
+          (
+            '${organizationId}'::uuid,
+            'Task8 Snapshot Runtime',
+            'task8-snapshot-runtime'
+          ),
+          (
+            '${otherOrganizationId}'::uuid,
+            'Task8 Snapshot Other',
+            'task8-snapshot-other'
+          );
+        insert into public.organization_members (
+          organization_id, user_id, role, status
+        ) values
+          (
+            '${organizationId}'::uuid,
+            '${ownerId}'::uuid,
+            'owner',
+            'active'
+          ),
+          (
+            '${organizationId}'::uuid,
+            '${financeId}'::uuid,
+            'finance',
+            'active'
+          ),
+          (
+            '${organizationId}'::uuid,
+            '${streamerUserId}'::uuid,
+            'streamer',
+            'active'
+          ),
+          (
+            '${otherOrganizationId}'::uuid,
+            '${ownerId}'::uuid,
+            'owner',
+            'active'
+          ),
+          (
+            '${otherOrganizationId}'::uuid,
+            '${financeId}'::uuid,
+            'finance',
+            'active'
+          );
+        insert into public.projects (
+          id, organization_id, code, name, created_by, owner_id
+        ) values
+          (
+            '${projectId}'::uuid,
+            '${organizationId}'::uuid,
+            'task8-snapshot-source',
+            'Task8 Snapshot Source',
+            '${ownerId}'::uuid,
+            '${ownerId}'::uuid
+          ),
+          (
+            '${emptyProjectId}'::uuid,
+            '${organizationId}'::uuid,
+            'task8-snapshot-empty',
+            'Task8 Snapshot Empty',
+            '${ownerId}'::uuid,
+            '${ownerId}'::uuid
+          ),
+          (
+            '${otherProjectId}'::uuid,
+            '${otherOrganizationId}'::uuid,
+            'task8-snapshot-other',
+            'Task8 Snapshot Other',
+            '${ownerId}'::uuid,
+            '${ownerId}'::uuid
+          );
+        insert into public.streamers (
+          id, organization_id, user_id, display_name, source_type, created_by
+        ) values (
+          '${streamerId}'::uuid,
+          '${organizationId}'::uuid,
+          '${streamerUserId}'::uuid,
+          'Task8 Snapshot Streamer',
+          'external',
+          '${ownerId}'::uuid
+        );
+        insert into public.project_streamers (
+          id, organization_id, project_id, streamer_id, status, joined_at,
+          settlement_method, hourly_rate, base_salary, cps_rate_bps, created_by
+        ) values (
+          '${projectStreamerId}'::uuid,
+          '${organizationId}'::uuid,
+          '${projectId}'::uuid,
+          '${streamerId}'::uuid,
+          'joined',
+          '2026-07-01T00:00:00Z'::timestamptz,
+          'cpt',
+          123.40,
+          5000.00,
+          1250,
+          '${ownerId}'::uuid
+        );
+        insert into public.live_tasks (
+          id, organization_id, project_id, streamer_id, title, status,
+          system_started_at, system_stopped_at, system_duration, created_by
+        ) values (
+          '${taskId}'::uuid,
+          '${organizationId}'::uuid,
+          '${projectId}'::uuid,
+          '${streamerId}'::uuid,
+          'Task8 Snapshot Live',
+          'completed',
+          '2026-07-02T02:00:00Z'::timestamptz,
+          '2026-07-02T03:00:00Z'::timestamptz,
+          3600,
+          '${ownerId}'::uuid
+        );
+        insert into public.live_reports (
+          id, organization_id, live_task_id, project_id, streamer_id, status,
+          system_duration, screenshot_duration, settlement_duration,
+          time_source, evidence_level, viewers, reviewed_by, reviewed_at,
+          created_by
+        ) values (
+          '${reportId}'::uuid,
+          '${organizationId}'::uuid,
+          '${taskId}'::uuid,
+          '${projectId}'::uuid,
+          '${streamerId}'::uuid,
+          'approved',
+          3600,
+          3580,
+          3600,
+          'system',
+          'green',
+          4200,
+          '${ownerId}'::uuid,
+          '2026-07-02T04:00:00Z'::timestamptz,
+          '${ownerId}'::uuid
+        );
+        insert into public.settlement_batches (
+          id, organization_id, project_id, batch_type, status, period_start,
+          period_end, computed_amount, locked_at, created_by, title
+        ) values
+          (
+            '${payableBatchId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            'payable',
+            'locked',
+            '2026-07-01'::date,
+            '2026-07-31'::date,
+            123.40,
+            '2026-08-01T00:00:00Z'::timestamptz,
+            '${ownerId}'::uuid,
+            'Task8 Payable'
+          ),
+          (
+            '${receivableBatchId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            'receivable',
+            'locked',
+            '2026-07-01'::date,
+            '2026-07-31'::date,
+            200.00,
+            '2026-08-01T00:00:00Z'::timestamptz,
+            '${ownerId}'::uuid,
+            'Task8 Receivable'
+          );
+        insert into public.settlement_batch_items (
+          id, organization_id, settlement_batch_id, project_id, streamer_id,
+          live_report_id, item_type, computed_amount, evidence_level
+        ) values
+          (
+            '${linkedItemId}'::uuid,
+            '${organizationId}'::uuid,
+            '${payableBatchId}'::uuid,
+            '${projectId}'::uuid,
+            '${streamerId}'::uuid,
+            '${reportId}'::uuid,
+            'live_report',
+            123.40,
+            'green'
+          ),
+          (
+            '${manualItemId}'::uuid,
+            '${organizationId}'::uuid,
+            '${receivableBatchId}'::uuid,
+            '${projectId}'::uuid,
+            '${streamerId}'::uuid,
+            null,
+            'manual',
+            200.00,
+            'yellow'
+          );
+        insert into public.project_cost_items (
+          id, organization_id, project_id, streamer_id, live_report_id,
+          settlement_batch_id, item_type, amount_cents, direction,
+          evidence_level, source, reason, status, created_by, created_at
+        ) values
+          (
+            '${linkedCostId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            '${streamerId}'::uuid,
+            '${reportId}'::uuid,
+            null,
+            'manual',
+            9007199254740993,
+            'cost',
+            'green',
+            'manual',
+            'Task8 linked cost',
+            'confirmed',
+            '${ownerId}'::uuid,
+            '2025-01-01T00:00:00Z'::timestamptz
+          ),
+          (
+            '${unlinkedCostId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            '${streamerId}'::uuid,
+            null,
+            null,
+            'manual',
+            42,
+            'adjustment',
+            'yellow',
+            'manual',
+            'Task8 fallback cost',
+            'confirmed',
+            '${ownerId}'::uuid,
+            '2026-07-03T00:00:00Z'::timestamptz
+          );
+      `;
+      const snapshotCallSql = `
+        with evidence as (
+          select public.read_custom_settlement_evidence_snapshot(
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            'payable',
+            '2026-07-01'::date,
+            '2026-07-31'::date,
+            10000
+          ) as value
+        )
+        select pg_catalog.jsonb_build_object(
+          'snapshot', evidence.value,
+          'hash_valid',
+          evidence.value ->> 'snapshot_hash' = pg_catalog.encode(
+            extensions.digest(
+              (evidence.value - 'snapshot_hash')::text,
+              'sha256'
+            ),
+            'hex'
+          )
+        )
+        from evidence;
+      `;
+
+      runDockerSql(container, setupSql);
+      try {
+        const initialText = runDockerSqlText(
+          container,
+          `
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${financeId}', false
+            );
+            ${snapshotCallSql}
+          `,
+        );
+        const initialLine = initialText
+          .split(/\r?\n/gu)
+          .find((line) => line.trim().startsWith("{"));
+        expect(initialLine).toBeDefined();
+        const initial = JSON.parse(initialLine ?? "null") as {
+          hash_valid: boolean;
+          snapshot: {
+            source_count: number;
+            settlement_batches: Array<{ batch_type: string; status: string }>;
+            settlement_batch_items: Array<{ live_report_id: string | null }>;
+            live_reports: Array<{ id: string }>;
+            project_cost_items: Array<{ amount_cents: string }>;
+            project_streamers: Array<{
+              streamers: { source_type: string };
+            }>;
+            streamers: Array<{ source_type: string }>;
+          };
+        };
+        expect(initial.hash_valid).toBe(true);
+        expect(initial.snapshot.settlement_batches).toHaveLength(2);
+        expect(initial.snapshot.settlement_batch_items).toHaveLength(2);
+        expect(
+          initial.snapshot.settlement_batch_items.some(
+            (item) => item.live_report_id === null,
+          ),
+        ).toBe(true);
+        expect(initial.snapshot.live_reports).toHaveLength(1);
+        expect(
+          initial.snapshot.project_cost_items.map((cost) => cost.amount_cents),
+        ).toContain("9007199254740993");
+
+        const emptyText = runDockerSqlText(
+          container,
+          `
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${financeId}', false
+            );
+            select public.read_custom_settlement_evidence_snapshot(
+              '${organizationId}'::uuid,
+              '${emptyProjectId}'::uuid,
+              'receivable',
+              '2026-07-01'::date,
+              '2026-07-31'::date,
+              10000
+            );
+          `,
+        );
+        const emptyLine = emptyText
+          .split(/\r?\n/gu)
+          .find((line) => line.trim().startsWith("{"));
+        const emptySnapshot = JSON.parse(emptyLine ?? "null") as {
+          source_count: number;
+          settlement_batches: unknown[];
+          project_cost_items: unknown[];
+        };
+        expect(emptySnapshot.source_count).toBe(0);
+        expect(emptySnapshot.settlement_batches).toEqual([]);
+        expect(emptySnapshot.project_cost_items).toEqual([]);
+
+        for (const deniedSql of [
+          `
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${streamerUserId}', false
+            );
+            select public.read_custom_settlement_evidence_snapshot(
+              '${organizationId}'::uuid,
+              '${projectId}'::uuid,
+              'payable',
+              '2026-07-01'::date,
+              '2026-07-31'::date,
+              10000
+            );
+          `,
+          `
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${financeId}', false
+            );
+            select public.read_custom_settlement_evidence_snapshot(
+              '${organizationId}'::uuid,
+              '${otherProjectId}'::uuid,
+              'payable',
+              '2026-07-01'::date,
+              '2026-07-31'::date,
+              10000
+            );
+          `,
+          `
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${financeId}', false
+            );
+            select public.read_custom_settlement_evidence_snapshot(
+              '${organizationId}'::uuid,
+              '${projectId}'::uuid,
+              'payable',
+              '2026-07-01'::date,
+              '2026-07-31'::date,
+              1
+            );
+          `,
+        ]) {
+          const denied = await runDockerSqlAsyncCapture(container, deniedSql);
+          expect(denied.code).not.toBe(0);
+        }
+
+        const streamerMutation = runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            select id from public.streamers
+            where id = '${streamerId}'::uuid
+            for update;
+            select pg_catalog.pg_sleep(0.8);
+            update public.streamers
+            set source_type = 'signed'
+            where id = '${streamerId}'::uuid;
+            commit;
+          `,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const concurrentSnapshot = runDockerSqlAsyncCapture(
+          container,
+          `
+            begin;
+            set local deadlock_timeout = '200ms';
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${financeId}', true
+            );
+            ${snapshotCallSql}
+            select pg_catalog.pg_sleep(1.2);
+            commit;
+          `,
+        );
+        const mutationResult = await streamerMutation;
+        expect(mutationResult.code, mutationResult.stderr).toBe(0);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        const writerSql = [
+          `
+            begin;
+            set local lock_timeout = '400ms';
+            update public.settlement_batches
+            set status = 'reopened', reopen_reason = 'runtime probe'
+            where id = '${payableBatchId}'::uuid;
+            commit;
+          `,
+          `
+            begin;
+            set local lock_timeout = '400ms';
+            update public.project_cost_items
+            set amount_cents = amount_cents + 1
+            where id = '${linkedCostId}'::uuid;
+            commit;
+          `,
+          `
+            begin;
+            set local lock_timeout = '400ms';
+            insert into public.settlement_batch_items (
+              id, organization_id, settlement_batch_id, project_id,
+              streamer_id, live_report_id, item_type, computed_amount
+            ) values (
+              '${insertedItemId}'::uuid,
+              '${organizationId}'::uuid,
+              '${payableBatchId}'::uuid,
+              '${projectId}'::uuid,
+              '${streamerId}'::uuid,
+              null,
+              'manual',
+              1.00
+            );
+            commit;
+          `,
+        ];
+        const writerResults = await Promise.all(
+          writerSql.map((sql) => runDockerSqlAsyncCapture(container, sql)),
+        );
+        for (const writerResult of writerResults) {
+          expect(writerResult.code).not.toBe(0);
+          expect(writerResult.stderr).toContain("55P03");
+        }
+
+        const concurrentResult = await concurrentSnapshot;
+        expect(concurrentResult.code, concurrentResult.stderr).toBe(0);
+        expect(concurrentResult.stderr).not.toContain("40P01");
+        const concurrentLine = concurrentResult.stdout
+          .split(/\r?\n/gu)
+          .find((line) => line.trim().startsWith("{"));
+        const concurrent = JSON.parse(concurrentLine ?? "null") as typeof initial;
+        expect(concurrent.hash_valid).toBe(true);
+        expect(
+          concurrent.snapshot.settlement_batches.every(
+            (batch) => batch.status === "locked",
+          ),
+        ).toBe(true);
+        expect(
+          concurrent.snapshot.project_cost_items.map(
+            (cost) => cost.amount_cents,
+          ),
+        ).toContain("9007199254740993");
+        expect(concurrent.snapshot.settlement_batch_items).toHaveLength(2);
+        expect(
+          concurrent.snapshot.project_streamers.every(
+            (row) => row.streamers.source_type === "external",
+          ),
+        ).toBe(true);
+        expect(
+          concurrent.snapshot.streamers.every(
+            (row) => row.source_type === "external",
+          ),
+        ).toBe(true);
+        expect(
+          runDockerSqlText(
+            container,
+            `
+              select source_type::text
+              from public.streamers
+              where id = '${streamerId}'::uuid;
+            `,
+          ),
+        ).toBe("signed");
+      } finally {
+        runDockerSql(container, cleanupSql);
+      }
+    }, 30_000);
+  },
+);
+
 const settlementAiLockRegressionContainer =
   process.env.SETTLEMENT_AI_DB_LOCK_REGRESSION_CONTAINER;
 
@@ -2400,6 +3599,72 @@ function runDockerSql(container: string, sql: string): void {
     { encoding: "utf8" },
   );
   expect(result.status, result.stderr || result.error?.message).toBe(0);
+}
+
+function runDockerSqlText(container: string, sql: string): string {
+  const result = spawnSync(
+    "docker",
+    [
+      "exec",
+      container,
+      "psql",
+      "-U",
+      "postgres",
+      "-d",
+      "postgres",
+      "-X",
+      "-qAt",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-v",
+      "VERBOSITY=verbose",
+      "-c",
+      sql,
+    ],
+    { encoding: "utf8" },
+  );
+  expect(result.status, result.stderr || result.error?.message).toBe(0);
+  return result.stdout.trim();
+}
+
+function runDockerSqlAsyncCapture(
+  container: string,
+  sql: string,
+): Promise<{ code: number | null; stderr: string; stdout: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      "docker",
+      [
+        "exec",
+        container,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "postgres",
+        "-X",
+        "-qAt",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-v",
+        "VERBOSITY=verbose",
+        "-c",
+        sql,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("close", (code) => resolve({ code, stderr, stdout }));
+  });
 }
 
 function runDockerSqlAsync(
