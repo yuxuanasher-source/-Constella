@@ -9,6 +9,7 @@ import {
   hashCustomRuleParameters,
   simulateCustomSettlementRule,
 } from "./custom-rule-simulation";
+import { getCustomRuleSystemTemplate } from "./custom-rule-system-templates";
 import { validateCustomRuleFormula } from "./custom-rule-validator";
 
 const mocks = vi.hoisted(() => ({
@@ -429,78 +430,260 @@ describe("custom rule route context", () => {
 type QueryChain = {
   select: ReturnType<typeof vi.fn>;
   eq: ReturnType<typeof vi.fn>;
+  neq: ReturnType<typeof vi.fn>;
   gt: ReturnType<typeof vi.fn>;
   gte: ReturnType<typeof vi.fn>;
   lte: ReturnType<typeof vi.fn>;
+  lt: ReturnType<typeof vi.fn>;
   in: ReturnType<typeof vi.fn>;
   not: ReturnType<typeof vi.fn>;
   order: ReturnType<typeof vi.fn>;
   limit: ReturnType<typeof vi.fn>;
+  range: ReturnType<typeof vi.fn>;
   returns: ReturnType<typeof vi.fn>;
 };
 
-function queryChain(
-  data: unknown[] | unknown[][],
-  error: unknown = null,
-): QueryChain {
-  const query = {} as QueryChain;
-  let page = 0;
-  query.select = vi.fn(() => query);
-  query.eq = vi.fn(() => query);
-  query.gt = vi.fn(() => query);
-  query.gte = vi.fn(() => query);
-  query.lte = vi.fn(() => query);
-  query.in = vi.fn(() => query);
-  query.not = vi.fn(() => query);
-  query.order = vi.fn(() => query);
-  query.limit = vi.fn(() => query);
-  query.returns = vi.fn().mockImplementation(async () => {
-    const pages = Array.isArray(data[0]) ? (data as unknown[][]) : null;
-    const result = pages ? (pages[page] ?? []) : data;
-    page += 1;
-    return { data: result, error };
-  });
-  return query;
-}
+type TableQueryMock = QueryChain & { createQuery(): QueryChain };
 
-function scopedSettlementQuery(
-  requested: unknown[] | unknown[][],
-  paired: unknown[] | unknown[][] = [],
-): QueryChain {
-  const rows = [requested, paired].flatMap((source) =>
-    Array.isArray(source[0]) ? (source as unknown[][]).flat() : source,
-  );
-  const pages = new Map<string, unknown[][]>();
-  for (const scope of ["payable", "receivable"]) {
-    const matching = rows.filter((row) => {
-      if (!row || typeof row !== "object") return false;
-      const relation = Reflect.get(row, "settlement_batches") as
-        | { batch_type?: unknown }
-        | Array<{ batch_type?: unknown }>
-        | undefined;
-      const batch = Array.isArray(relation) ? relation[0] : relation;
-      return batch?.batch_type === scope;
-    });
-    pages.set(
-      scope,
-      Array.from({ length: Math.ceil(matching.length / 500) }, (_, index) =>
-        matching.slice(index * 500, (index + 1) * 500),
+function tableQuery(
+  fixtureData: unknown[] | unknown[][],
+  options: { error?: unknown; enforceFilters?: boolean } = {},
+): TableQueryMock {
+  const rows = (
+    Array.isArray(fixtureData[0])
+      ? (fixtureData as unknown[][]).flat()
+      : fixtureData
+  ).filter((row) => row !== undefined);
+  const tracker = {
+    select: vi.fn(),
+    eq: vi.fn(),
+    neq: vi.fn(),
+    gt: vi.fn(),
+    gte: vi.fn(),
+    lte: vi.fn(),
+    lt: vi.fn(),
+    in: vi.fn(),
+    not: vi.fn(),
+    order: vi.fn(),
+    limit: vi.fn(),
+    range: vi.fn(),
+    returns: vi.fn(),
+  } as QueryChain;
+
+  const createQuery = (): QueryChain => {
+    const filters: Array<(row: unknown) => boolean> = [];
+    let selectedColumns: string | null = null;
+    let orderedColumn: string | null = null;
+    let ascending = true;
+    let maximumRows: number | null = null;
+    let selectedRange: { from: number; to: number } | null = null;
+    let exactCount = false;
+    const query = {} as QueryChain;
+    const filter = (
+      spy: ReturnType<typeof vi.fn>,
+      column: string,
+      predicate: (value: unknown) => boolean,
+      args: unknown[],
+    ) => {
+      recordMockCall(spy, column, ...args);
+      if (options.enforceFilters !== false) {
+        filters.push((row) => valuesAtPath(row, column).some(predicate));
+      }
+      return query;
+    };
+
+    query.select = vi.fn(
+      (columns: string, selectOptions?: { count?: string }) => {
+        recordMockCall(tracker.select, columns, selectOptions);
+        selectedColumns = columns;
+        exactCount = selectOptions?.count === "exact";
+        return query;
+      },
+    );
+    query.eq = vi.fn((column: string, value: unknown) =>
+      filter(tracker.eq, column, (candidate) => candidate === value, [value]),
+    );
+    query.neq = vi.fn((column: string, value: unknown) =>
+      filter(tracker.neq, column, (candidate) => candidate !== value, [value]),
+    );
+    query.gt = vi.fn((column: string, value: unknown) =>
+      filter(
+        tracker.gt,
+        column,
+        (candidate) => compareValues(candidate, value) > 0,
+        [value],
       ),
     );
-  }
-  const pageByScope = new Map<string, number>();
-  let scope = "payable";
-  const query = queryChain([]);
-  query.eq.mockImplementation((column: string, value: unknown) => {
-    if (column === "settlement_batches.batch_type") scope = String(value);
+    query.gte = vi.fn((column: string, value: unknown) =>
+      filter(
+        tracker.gte,
+        column,
+        (candidate) => compareValues(candidate, value) >= 0,
+        [value],
+      ),
+    );
+    query.lte = vi.fn((column: string, value: unknown) =>
+      filter(
+        tracker.lte,
+        column,
+        (candidate) => compareValues(candidate, value) <= 0,
+        [value],
+      ),
+    );
+    query.lt = vi.fn((column: string, value: unknown) =>
+      filter(
+        tracker.lt,
+        column,
+        (candidate) => compareValues(candidate, value) < 0,
+        [value],
+      ),
+    );
+    query.in = vi.fn((column: string, values: unknown[]) => {
+      const allowed = new Set(values);
+      return filter(tracker.in, column, (candidate) => allowed.has(candidate), [
+        values,
+      ]);
+    });
+    query.not = vi.fn((column: string, operator: string, value: unknown) => {
+      recordMockCall(tracker.not, column, operator, value);
+      if (options.enforceFilters !== false) {
+        filters.push((row) => {
+          const candidates = valuesAtPath(row, column);
+          if (operator === "is" && value === null) {
+            return candidates.some((candidate) => candidate !== null);
+          }
+          return candidates.every((candidate) => candidate !== value);
+        });
+      }
+      return query;
+    });
+    query.order = vi.fn(
+      (column: string, orderOptions?: { ascending?: boolean }) => {
+        recordMockCall(tracker.order, column, orderOptions);
+        orderedColumn = column;
+        ascending = orderOptions?.ascending !== false;
+        return query;
+      },
+    );
+    query.limit = vi.fn((value: number) => {
+      recordMockCall(tracker.limit, value);
+      maximumRows = value;
+      return query;
+    });
+    query.range = vi.fn((from: number, to: number) => {
+      recordMockCall(tracker.range, from, to);
+      selectedRange = { from, to };
+      return query;
+    });
+    query.returns = vi.fn(async () => {
+      recordMockCall(tracker.returns);
+      if (options.error) {
+        return { data: null, error: options.error, count: null };
+      }
+      let selected = rows.filter((row) =>
+        filters.every((predicate) => predicate(row)),
+      );
+      const count = selected.length;
+      if (orderedColumn) {
+        selected = [...selected].sort((left, right) => {
+          const comparison = compareValues(
+            valuesAtPath(left, orderedColumn ?? "")[0],
+            valuesAtPath(right, orderedColumn ?? "")[0],
+          );
+          return ascending ? comparison : -comparison;
+        });
+      }
+      if (selectedRange) {
+        selected = selected.slice(selectedRange.from, selectedRange.to + 1);
+      }
+      if (maximumRows !== null) selected = selected.slice(0, maximumRows);
+      return {
+        data: selectedColumns
+          ? selected.map((row) =>
+              projectSelectedRow(row, selectedColumns ?? ""),
+            )
+          : selected,
+        error: null,
+        count: exactCount ? count : null,
+      };
+    });
     return query;
-  });
-  query.returns.mockImplementation(async () => {
-    const index = pageByScope.get(scope) ?? 0;
-    pageByScope.set(scope, index + 1);
-    return { data: pages.get(scope)?.[index] ?? [], error: null };
-  });
-  return query;
+  };
+
+  return Object.assign(tracker, { createQuery });
+}
+
+function recordMockCall(
+  mock: ReturnType<typeof vi.fn>,
+  ...args: unknown[]
+): void {
+  (mock as unknown as (...values: unknown[]) => unknown)(...args);
+}
+
+function valuesAtPath(row: unknown, path: string): unknown[] {
+  let values = [row];
+  for (const segment of path.split(".")) {
+    values = values.flatMap((value) => {
+      if (Array.isArray(value)) return value;
+      if (!value || typeof value !== "object") return [];
+      const next = Reflect.get(value, segment);
+      return Array.isArray(next) ? next : [next];
+    });
+  }
+  return values;
+}
+
+function compareValues(left: unknown, right: unknown): number {
+  if (typeof left === "number" && typeof right === "number") {
+    return left - right;
+  }
+  if (
+    typeof left === "string" &&
+    typeof right === "string" &&
+    /^\d{4}-\d{2}-\d{2}(?:T|$)/u.test(left) &&
+    /^\d{4}-\d{2}-\d{2}(?:T|$)/u.test(right)
+  ) {
+    return Date.parse(left) - Date.parse(right);
+  }
+  return String(left).localeCompare(String(right));
+}
+
+function projectSelectedRow(row: unknown, columns: string): unknown {
+  if (!row || typeof row !== "object") return row;
+  const projected: Record<string, unknown> = {};
+  for (const token of splitSelectedColumns(columns)) {
+    const key = token.split("!", 1)[0]?.split("(", 1)[0]?.trim();
+    if (key && Object.prototype.hasOwnProperty.call(row, key)) {
+      const value = Reflect.get(row, key);
+      const opening = token.indexOf("(");
+      const nestedColumns =
+        opening >= 0 && token.endsWith(")")
+          ? token.slice(opening + 1, -1)
+          : null;
+      projected[key] = nestedColumns
+        ? Array.isArray(value)
+          ? value.map((item) => projectSelectedRow(item, nestedColumns))
+          : projectSelectedRow(value, nestedColumns)
+        : value;
+    }
+  }
+  return projected;
+}
+
+function splitSelectedColumns(columns: string): string[] {
+  const tokens: string[] = [];
+  let start = 0;
+  let depth = 0;
+  for (const [index, character] of [...columns].entries()) {
+    if (character === "(") depth += 1;
+    if (character === ")") depth -= 1;
+    if (character === "," && depth === 0) {
+      tokens.push(columns.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  tokens.push(columns.slice(start).trim());
+  return tokens.filter(Boolean);
 }
 
 function evidenceDraft(overrides: Record<string, unknown> = {}) {
@@ -529,6 +712,7 @@ function approvedReport(overrides: Record<string, unknown> = {}) {
     organization_id: ORGANIZATION_ID,
     project_id: PROJECT_ID,
     streamer_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    status: "approved",
     system_duration: 60,
     screenshot_duration: 59,
     settlement_duration: 60,
@@ -543,23 +727,48 @@ function approvedReport(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function lockedSettlementItem(overrides: Record<string, unknown> = {}) {
+function lockedSettlementBatch(overrides: Record<string, unknown> = {}) {
   return {
+    id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    organization_id: ORGANIZATION_ID,
+    project_id: PROJECT_ID,
+    status: "locked",
+    batch_type: "payable",
+    locked_at: "2026-07-10T00:00:00.000Z",
+    period_start: "2026-07-01",
+    period_end: "2026-07-10",
+    ...overrides,
+  };
+}
+
+function lockedSettlementItem(overrides: Record<string, unknown> = {}) {
+  const row: Record<string, unknown> = {
     id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
     organization_id: ORGANIZATION_ID,
     project_id: PROJECT_ID,
+    settlement_batch_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    streamer_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     live_report_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     computed_amount: "10.00",
     manual_amount: "2.00",
     adjustment_amount: "0.50",
-    settlement_batches: {
-      id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-      status: "locked",
-      batch_type: "payable",
-      locked_at: "2026-07-10T00:00:00.000Z",
-    },
+    settlement_batches: lockedSettlementBatch(),
     ...overrides,
   };
+  const unsafeRelation = row.settlement_batches;
+  const normalizedRelations = (
+    Array.isArray(unsafeRelation) ? unsafeRelation : [unsafeRelation]
+  ).map((relation) => ({
+    ...lockedSettlementBatch(),
+    ...(relation && typeof relation === "object" ? relation : {}),
+  }));
+  row.settlement_batches = Array.isArray(unsafeRelation)
+    ? normalizedRelations
+    : normalizedRelations[0];
+  if (!Object.prototype.hasOwnProperty.call(overrides, "settlement_batch_id")) {
+    row.settlement_batch_id = normalizedRelations[0]?.id ?? null;
+  }
+  return row;
 }
 
 function confirmedCostItem(overrides: Record<string, unknown> = {}) {
@@ -572,6 +781,7 @@ function confirmedCostItem(overrides: Record<string, unknown> = {}) {
     amount_cents: "200",
     direction: "cost",
     status: "confirmed",
+    created_at: "2026-07-05T08:00:00.000Z",
     ...overrides,
   };
 }
@@ -613,23 +823,38 @@ async function evidenceHarness(input?: {
   reports?: unknown[];
   items?: unknown[];
   pairedItems?: unknown[];
+  batches?: unknown[];
   costs?: unknown[];
   streamers?: unknown[];
   draft?: unknown;
+  enforceFilters?: boolean;
+  catalog?: unknown;
 }) {
-  const reports = queryChain(input?.reports ?? [approvedReport()]);
-  const items = scopedSettlementQuery(
-    input?.items ?? [lockedSettlementItem()],
-    input?.pairedItems ?? [],
+  const itemRows = [
+    ...flattenFixtureRows(input?.items ?? [lockedSettlementItem()]),
+    ...flattenFixtureRows(input?.pairedItems ?? []),
+  ];
+  const batchRows =
+    input?.batches ?? deriveSettlementBatchesFromItems(itemRows);
+  const queryOptions = { enforceFilters: input?.enforceFilters };
+  const reports = tableQuery(
+    input?.reports ?? [approvedReport()],
+    queryOptions,
   );
-  const costs = queryChain(input?.costs ?? []);
-  const streamers = queryChain(input?.streamers ?? [joinedStreamer()]);
+  const items = tableQuery(itemRows, queryOptions);
+  const batches = tableQuery(batchRows, queryOptions);
+  const costs = tableQuery(input?.costs ?? [], queryOptions);
+  const streamers = tableQuery(
+    input?.streamers ?? [joinedStreamer()],
+    queryOptions,
+  );
   const client = {
     from: vi.fn((table: string) => {
-      if (table === "live_reports") return reports;
-      if (table === "settlement_batch_items") return items;
-      if (table === "project_cost_items") return costs;
-      if (table === "project_streamers") return streamers;
+      if (table === "live_reports") return reports.createQuery();
+      if (table === "settlement_batches") return batches.createQuery();
+      if (table === "settlement_batch_items") return items.createQuery();
+      if (table === "project_cost_items") return costs.createQuery();
+      if (table === "project_streamers") return streamers.createQuery();
       throw new Error(`Unexpected table: ${table}`);
     }),
   };
@@ -648,12 +873,18 @@ async function evidenceHarness(input?: {
       createSupabaseCustomRuleEvidenceAdapter: (input: {
         client: unknown;
         repository: unknown;
+        catalog: unknown;
       }) => {
         authorizeSelection(input: Record<string, unknown>): Promise<{
           selectionToken: string;
           periodStart: string;
           periodEnd: string;
-          criteriaCodes: readonly string[];
+          criteriaCodes: readonly (
+            | "approved_reports"
+            | "period_overlap"
+            | "complete_evidence"
+            | "project_scope"
+          )[];
         }>;
         loadAuthorizedEvidence(input: Record<string, unknown>): Promise<{
           provenance: {
@@ -682,8 +913,52 @@ async function evidenceHarness(input?: {
       };
     }
   ).createSupabaseCustomRuleEvidenceAdapter;
-  const adapter = createAdapter({ client, repository });
-  return { adapter, client, repository, reports, items, costs, streamers };
+  const catalog = input?.catalog ?? {
+    getCatalog: vi.fn().mockResolvedValue({
+      businessTimezone: "Asia/Shanghai",
+      businessTimezoneConfirmed: true,
+      businessTimezoneSource: "confirmed_contract",
+      variables: [],
+    }),
+  };
+  const adapter = createAdapter({ client, repository, catalog });
+  return {
+    adapter,
+    client,
+    repository,
+    catalog,
+    reports,
+    batches,
+    items,
+    costs,
+    streamers,
+  };
+}
+
+function flattenFixtureRows(rows: unknown[] | unknown[][]): unknown[] {
+  return Array.isArray(rows[0]) ? (rows as unknown[][]).flat() : rows;
+}
+
+function deriveSettlementBatchesFromItems(items: unknown[]): unknown[] {
+  const rowsById = new Map<string, unknown>();
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const unsafeRelation = Reflect.get(item, "settlement_batches");
+    const relation = Array.isArray(unsafeRelation)
+      ? unsafeRelation[0]
+      : unsafeRelation;
+    if (!relation || typeof relation !== "object") continue;
+    const id = Reflect.get(relation, "id");
+    if (typeof id !== "string") continue;
+    rowsById.set(id, {
+      organization_id: Reflect.get(item, "organization_id"),
+      project_id: Reflect.get(item, "project_id"),
+      ...relation,
+      period_start: Reflect.get(relation, "period_start") ?? "2026-07-01",
+      period_end: Reflect.get(relation, "period_end") ?? "2026-07-10",
+    });
+  }
+  return [...rowsById.values()];
 }
 
 function authorizationInput(
@@ -700,6 +975,142 @@ function authorizationInput(
 }
 
 describe("Supabase custom-rule authorized evidence adapter", () => {
+  it("uses confirmed Asia/Shanghai midnight boundaries for approved-operation fallback", async () => {
+    const beforeStart = approvedReport({
+      id: "01010101-0101-4101-8101-010101010101",
+      reviewed_at: "2026-06-30T15:59:59.999Z",
+      settled_batch_item_id: null,
+    });
+    const atStart = approvedReport({
+      id: "02020202-0202-4202-8202-020202020202",
+      reviewed_at: "2026-06-30T16:00:00.000Z",
+      settled_batch_item_id: null,
+    });
+    const beforeEnd = approvedReport({
+      id: "03030303-0303-4303-8303-030303030303",
+      reviewed_at: "2026-07-10T15:59:59.999Z",
+      settled_batch_item_id: null,
+    });
+    const atEnd = approvedReport({
+      id: "04040404-0404-4404-8404-040404040404",
+      reviewed_at: "2026-07-10T16:00:00.000Z",
+      settled_batch_item_id: null,
+    });
+    const harness = await evidenceHarness({
+      reports: [beforeStart, atStart, beforeEnd, atEnd],
+      items: [],
+      batches: [],
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(harness.reports.gte).toHaveBeenCalledWith(
+      "reviewed_at",
+      "2026-07-01T00:00:00.000+08:00",
+    );
+    expect(harness.reports.lt).toHaveBeenCalledWith(
+      "reviewed_at",
+      "2026-07-11T00:00:00.000+08:00",
+    );
+    expect(evidence.sampleSource).toEqual({ kind: "approved_operations" });
+    expect(evidence.records.map((record) => record.recordId)).toEqual([
+      atStart.id,
+      beforeEnd.id,
+    ]);
+  });
+
+  it("excludes a non-overlapping locked batch even when its report review is in-window", async () => {
+    const batch = lockedSettlementBatch({
+      period_start: "2026-06-01",
+      period_end: "2026-06-30",
+    });
+    const harness = await evidenceHarness({
+      reports: [approvedReport({ settled_batch_item_id: null })],
+      items: [lockedSettlementItem({ settlement_batches: batch })],
+      batches: [batch],
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(harness.batches.lte).toHaveBeenCalledWith(
+      "period_start",
+      "2026-07-10",
+    );
+    expect(harness.batches.gte).toHaveBeenCalledWith(
+      "period_end",
+      "2026-07-01",
+    );
+    expect(evidence.sampleSource).toEqual({ kind: "approved_operations" });
+    expect(evidence.records[0]?.currentRuleResult).toBeNull();
+  });
+
+  it("includes an overlapping locked batch when its report review is out-of-window", async () => {
+    const report = approvedReport({
+      reviewed_at: "2026-06-01T08:00:00.000Z",
+      settled_batch_item_id: null,
+    });
+    const batch = lockedSettlementBatch({
+      period_start: "2026-06-25",
+      period_end: "2026-07-02",
+    });
+    const harness = await evidenceHarness({
+      reports: [report],
+      items: [lockedSettlementItem({ settlement_batches: batch })],
+      batches: [batch],
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.sampleSource).toEqual({ kind: "historical_settlements" });
+    expect(evidence.records).toHaveLength(1);
+    expect(evidence.records[0]?.currentRuleResult).toEqual({
+      unitSource: "current_rule_cents",
+      amountCents: "1250",
+    });
+  });
+
+  it("rejects a non-overlapping locked batch returned despite production filters", async () => {
+    const batch = lockedSettlementBatch({
+      period_start: "2026-05-01",
+      period_end: "2026-05-31",
+    });
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [lockedSettlementItem({ settlement_batches: batch })],
+      batches: [batch],
+      enforceFilters: false,
+    });
+
+    await expect(
+      harness.adapter.authorizeSelection(authorizationInput()),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_EVIDENCE_INVALID",
+      status: 500,
+      retryable: true,
+    });
+  });
+
   it("matches a locked item by live_report_id when the report pointer is empty", async () => {
     const report = approvedReport({ settled_batch_item_id: null });
     const harness = await evidenceHarness({ reports: [report] });
@@ -713,8 +1124,8 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
-    expect(harness.items.in).toHaveBeenCalledWith("live_report_id", [
-      report.id,
+    expect(harness.items.in).toHaveBeenCalledWith("settlement_batch_id", [
+      "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
     ]);
     expect(evidence.sampleSource).toEqual({ kind: "historical_settlements" });
     expect(evidence.records[0]?.currentRuleResult).toEqual({
@@ -759,10 +1170,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
-    expect(harness.items.eq).toHaveBeenCalledWith(
-      "settlement_batches.batch_type",
-      "receivable",
-    );
+    expect(harness.batches.eq).toHaveBeenCalledWith("batch_type", "receivable");
     expect(evidence.records[0]?.currentRuleResult).toEqual({
       unitSource: "current_rule_cents",
       amountCents: "2500",
@@ -809,7 +1217,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     );
   });
 
-  it("keeps an entire mixed population unverified instead of partially comparing it", async () => {
+  it("keeps an approved-operation fallback population wholly unverified", async () => {
     const secondReportId = "12121212-1212-4212-8212-121212121212";
     const harness = await evidenceHarness({
       reports: [
@@ -820,7 +1228,8 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
           reviewed_at: "2026-07-06T08:00:00.000Z",
         }),
       ],
-      items: [lockedSettlementItem()],
+      items: [],
+      batches: [],
     });
 
     const authorized =
@@ -933,7 +1342,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: secondSelection,
     });
 
-    expect(first.reports.gt).toHaveBeenCalledWith("id", reports[499]?.id);
+    expect(first.batches.gt).toHaveBeenCalledWith("id", fixtureUuid(500, "4"));
     expect(firstEvidence.sampleSelection.populationCount).toBe(501);
     expect(firstEvidence.records).toHaveLength(1);
     expect(firstEvidence.records[0]).toMatchObject({
@@ -1119,6 +1528,457 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     ]);
   });
 
+  it("includes null-report manual items in complete project-period totals", async () => {
+    const batch = lockedSettlementBatch();
+    const manualItem = lockedSettlementItem({
+      id: "51515151-5151-4151-8151-515151515151",
+      live_report_id: null,
+      streamer_id: null,
+      computed_amount: "5.00",
+      manual_amount: "0.00",
+      adjustment_amount: "0.00",
+      settlement_batches: batch,
+    });
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [lockedSettlementItem({ settlement_batches: batch }), manualItem],
+      batches: [batch],
+      streamers: [],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "project_period",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [{ name: "period_report_count" }],
+        },
+      }),
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.sampleSource).toEqual({ kind: "historical_settlements" });
+    expect(evidence.sampleSelection.populationCount).toBe(2);
+    expect(evidence.records[0]?.currentRuleResult).toEqual({
+      unitSource: "current_rule_cents",
+      amountCents: "1750",
+    });
+  });
+
+  it("builds a complete manual-only batch record without fabricating reports", async () => {
+    const batch = lockedSettlementBatch();
+    const harness = await evidenceHarness({
+      reports: [],
+      items: [
+        lockedSettlementItem({
+          live_report_id: null,
+          streamer_id: null,
+          computed_amount: "5.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: batch,
+        }),
+      ],
+      batches: [batch],
+      streamers: [],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "batch",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [{ name: "period_report_count" }],
+        },
+      }),
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.sampleSelection.populationCount).toBe(1);
+    expect(evidence.records).toEqual([
+      expect.objectContaining({
+        recordId: `batch:${batch.id}`,
+        variables: expect.objectContaining({
+          period_report_count: { type: "integer", value: 0 },
+        }),
+        currentRuleResult: {
+          unitSource: "current_rule_cents",
+          amountCents: "500",
+        },
+      }),
+    ]);
+  });
+
+  it("keeps report history unverified when its batch contains a manual aggregate item", async () => {
+    const batch = lockedSettlementBatch();
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [
+        lockedSettlementItem({ settlement_batches: batch }),
+        lockedSettlementItem({
+          id: "52525252-5252-4252-8252-525252525252",
+          live_report_id: null,
+          streamer_id: null,
+          computed_amount: "5.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: batch,
+        }),
+      ],
+      batches: [batch],
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.sampleSource).toEqual({ kind: "approved_operations" });
+    expect(evidence.sampleSelection.populationCount).toBe(2);
+    expect(evidence.records[0]?.currentRuleResult).toBeNull();
+  });
+
+  it("attributes a manual item by streamer for project-streamer-period totals", async () => {
+    const batch = lockedSettlementBatch();
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [
+        lockedSettlementItem({ settlement_batches: batch }),
+        lockedSettlementItem({
+          id: "53535353-5353-4353-8353-535353535353",
+          live_report_id: null,
+          computed_amount: "5.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: batch,
+        }),
+      ],
+      batches: [batch],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "project_streamer_period",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [
+            { name: "period_report_count" },
+            { name: "streamer_id" },
+          ],
+        },
+      }),
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.sampleSource).toEqual({ kind: "historical_settlements" });
+    expect(evidence.records[0]?.currentRuleResult).toEqual({
+      unitSource: "current_rule_cents",
+      amountCents: "1750",
+    });
+  });
+
+  it("keeps project-streamer-period history unverified for unattributable manual items", async () => {
+    const batch = lockedSettlementBatch();
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [
+        lockedSettlementItem({ settlement_batches: batch }),
+        lockedSettlementItem({
+          id: "54545454-5454-4454-8454-545454545454",
+          live_report_id: null,
+          streamer_id: null,
+          computed_amount: "5.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: batch,
+        }),
+      ],
+      batches: [batch],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "project_streamer_period",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [
+            { name: "period_report_count" },
+            { name: "streamer_id" },
+          ],
+        },
+      }),
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.sampleSource).toEqual({ kind: "approved_operations" });
+    expect(evidence.records[0]?.currentRuleResult).toBeNull();
+  });
+
+  it("fails closed instead of double-counting duplicate settlement item IDs", async () => {
+    const batch = lockedSettlementBatch();
+    const item = lockedSettlementItem({ settlement_batches: batch });
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [item, item],
+      batches: [batch],
+    });
+
+    await expect(
+      harness.adapter.authorizeSelection(authorizationInput()),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_EVIDENCE_INVALID",
+      status: 500,
+      retryable: true,
+    });
+  });
+
+  it("binds manual item IDs and amounts into selection and source hashes", async () => {
+    const batch = lockedSettlementBatch();
+    const draft = evidenceDraft({
+      businessContract: {
+        scope: "payable",
+        executionGrain: "project_period",
+        businessTimezone: "Asia/Shanghai",
+        requiredInputs: [{ name: "period_report_count" }],
+      },
+    });
+    const first = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [
+        lockedSettlementItem({ settlement_batches: batch }),
+        lockedSettlementItem({
+          id: "55555555-5555-4555-8555-555555555556",
+          live_report_id: null,
+          streamer_id: null,
+          computed_amount: "5.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: batch,
+        }),
+      ],
+      batches: [batch],
+      streamers: [],
+      draft,
+    });
+    const second = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [
+        lockedSettlementItem({ settlement_batches: batch }),
+        lockedSettlementItem({
+          id: "55555555-5555-4555-8555-555555555556",
+          live_report_id: null,
+          streamer_id: null,
+          computed_amount: "6.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: batch,
+        }),
+      ],
+      batches: [batch],
+      streamers: [],
+      draft,
+    });
+
+    const firstSelection =
+      await first.adapter.authorizeSelection(authorizationInput());
+    const secondSelection =
+      await second.adapter.authorizeSelection(authorizationInput());
+    const firstEvidence = await first.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: firstSelection,
+    });
+    const secondEvidence = await second.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: secondSelection,
+    });
+
+    expect(secondSelection.selectionToken).not.toBe(
+      firstSelection.selectionToken,
+    );
+    expect(secondEvidence.records[0]?.sourceVersion.version).not.toBe(
+      firstEvidence.records[0]?.sourceVersion.version,
+    );
+    expect(secondEvidence.provenance.evidenceHash).not.toBe(
+      firstEvidence.provenance.evidenceHash,
+    );
+  });
+
+  it("paginates more than 500 manual items without truncating batch totals", async () => {
+    const batch = lockedSettlementBatch();
+    const items = Array.from({ length: 501 }, (_, index) =>
+      lockedSettlementItem({
+        id: fixtureUuid(index + 1, "6"),
+        live_report_id: null,
+        streamer_id: null,
+        computed_amount: "0.01",
+        manual_amount: "0.00",
+        adjustment_amount: "0.00",
+        settlement_batches: batch,
+      }),
+    );
+    const harness = await evidenceHarness({
+      reports: [],
+      items,
+      batches: [batch],
+      streamers: [],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "project_period",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [{ name: "period_report_count" }],
+        },
+      }),
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(harness.items.gt).toHaveBeenCalledWith("id", items[499]?.id);
+    expect(evidence.sampleSelection.populationCount).toBe(501);
+    expect(evidence.records[0]?.currentRuleResult).toEqual({
+      unitSource: "current_rule_cents",
+      amountCents: "501",
+    });
+  });
+
+  it("fails closed above 10,000 authorized manual source items", async () => {
+    const batch = lockedSettlementBatch();
+    const items = Array.from({ length: 10_001 }, (_, index) =>
+      lockedSettlementItem({
+        id: fixtureUuid(index + 1, "7"),
+        live_report_id: null,
+        streamer_id: null,
+        computed_amount: "0.01",
+        manual_amount: "0.00",
+        adjustment_amount: "0.00",
+        settlement_batches: batch,
+      }),
+    );
+    const harness = await evidenceHarness({
+      reports: [],
+      items,
+      batches: [batch],
+      streamers: [],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "project_period",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [{ name: "period_report_count" }],
+        },
+      }),
+    });
+
+    await expect(
+      harness.adapter.authorizeSelection(authorizationInput()),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_SELECTION_TOO_LARGE",
+      status: 422,
+      retryable: false,
+    });
+  });
+
+  it("includes paired manual scope totals once in project-period margin", async () => {
+    const payableBatch = lockedSettlementBatch();
+    const receivableBatch = lockedSettlementBatch({
+      id: "56565656-5656-4656-8656-565656565656",
+      batch_type: "receivable",
+    });
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [
+        lockedSettlementItem({ settlement_batches: payableBatch }),
+        lockedSettlementItem({
+          id: "57575757-5757-4757-8757-575757575757",
+          live_report_id: null,
+          streamer_id: null,
+          computed_amount: "5.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: payableBatch,
+        }),
+      ],
+      pairedItems: [
+        lockedSettlementItem({
+          id: "58585858-5858-4858-8858-585858585858",
+          computed_amount: "30.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+        lockedSettlementItem({
+          id: "59595959-5959-4959-8959-595959595959",
+          live_report_id: null,
+          streamer_id: null,
+          computed_amount: "10.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+      ],
+      batches: [payableBatch, receivableBatch],
+      streamers: [],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "project_period",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [{ name: "period_report_count" }],
+        },
+      }),
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.currentMarginCents).toBe("2250");
+  });
+
   it.each([
     ["report", 2],
     ["project_streamer_period", 1],
@@ -1136,7 +1996,8 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
             settled_batch_item_id: null,
           }),
         ],
-        items: [lockedSettlementItem()],
+        items: [],
+        batches: [],
         draft: evidenceDraft({
           businessContract: {
             scope: "payable",
@@ -1251,18 +2112,14 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     );
     expect(harness.reports.eq).toHaveBeenCalledWith("project_id", PROJECT_ID);
     expect(harness.reports.eq).toHaveBeenCalledWith("status", "approved");
-    expect(harness.reports.gte).toHaveBeenCalledWith(
+    expect(harness.reports.in).toHaveBeenCalledWith("id", [
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    ]);
+    expect(harness.reports.gte).not.toHaveBeenCalledWith(
       "reviewed_at",
-      "2026-07-01T00:00:00.000Z",
+      expect.anything(),
     );
-    expect(harness.reports.lte).toHaveBeenCalledWith(
-      "reviewed_at",
-      "2026-07-10T23:59:59.999Z",
-    );
-    expect(harness.items.eq).toHaveBeenCalledWith(
-      "settlement_batches.status",
-      "locked",
-    );
+    expect(harness.batches.eq).toHaveBeenCalledWith("status", "locked");
   });
 
   it("returns explicit approved-operation no-history semantics", async () => {
@@ -1446,6 +2303,392 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     expect(evidence.currentMarginCents).toBe("1550");
   });
 
+  it.each(["batch", "project_period"] as const)(
+    "includes every in-period confirmed project cost once for %s margin",
+    async (executionGrain) => {
+      const payableBatch = lockedSettlementBatch();
+      const receivableBatch = lockedSettlementBatch({
+        id: "60606060-6060-4060-8060-606060606060",
+        batch_type: "receivable",
+      });
+      const harness = await evidenceHarness({
+        reports: [approvedReport()],
+        items: [lockedSettlementItem({ settlement_batches: payableBatch })],
+        pairedItems: [
+          lockedSettlementItem({
+            id: "61616161-6161-4161-8161-616161616161",
+            computed_amount: "30.00",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: receivableBatch,
+          }),
+        ],
+        batches: [payableBatch, receivableBatch],
+        costs: [
+          confirmedCostItem({
+            id: "62626262-6262-4262-8262-626262626262",
+            live_report_id: null,
+            settlement_batch_id: null,
+            amount_cents: "100",
+            created_at: "2026-06-30T16:00:00.000Z",
+          }),
+          confirmedCostItem({
+            id: "63636363-6363-4363-8363-636363636363",
+            live_report_id: null,
+            settlement_batch_id: null,
+            amount_cents: "200",
+            created_at: "2026-07-10T15:59:59.999Z",
+          }),
+          confirmedCostItem({
+            id: "64646464-6464-4464-8464-646464646464",
+            live_report_id: approvedReport().id,
+            settlement_batch_id: payableBatch.id,
+            amount_cents: "300",
+            created_at: "2026-07-05T08:00:00.000Z",
+          }),
+          confirmedCostItem({
+            id: "65656565-6565-4565-8565-656565656565",
+            live_report_id: null,
+            settlement_batch_id: null,
+            amount_cents: "10000",
+            created_at: "2026-06-30T15:59:59.999Z",
+          }),
+          confirmedCostItem({
+            id: "66666666-6666-4666-8666-666666666666",
+            live_report_id: null,
+            settlement_batch_id: null,
+            amount_cents: "10000",
+            created_at: "2026-07-10T16:00:00.000Z",
+          }),
+        ],
+        streamers: executionGrain === "batch" ? [] : undefined,
+        draft: evidenceDraft({
+          businessContract: {
+            scope: "payable",
+            executionGrain,
+            businessTimezone: "Asia/Shanghai",
+            requiredInputs: [{ name: "period_report_count" }],
+          },
+        }),
+      });
+
+      const authorized =
+        await harness.adapter.authorizeSelection(authorizationInput());
+      const evidence = await harness.adapter.loadAuthorizedEvidence({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        selection: authorized,
+      });
+
+      expect(harness.costs.gte).toHaveBeenCalledWith(
+        "created_at",
+        "2026-07-01T00:00:00.000+08:00",
+      );
+      expect(harness.costs.lt).toHaveBeenCalledWith(
+        "created_at",
+        "2026-07-11T00:00:00.000+08:00",
+      );
+      expect(evidence.currentMarginCents).toBe("1150");
+    },
+  );
+
+  it.each(["report", "project_streamer_period"] as const)(
+    "keeps %s margin unavailable when an in-period cost has no allocation link",
+    async (executionGrain) => {
+      const payableBatch = lockedSettlementBatch();
+      const receivableBatch = lockedSettlementBatch({
+        id: "67676767-6767-4767-8767-676767676767",
+        batch_type: "receivable",
+      });
+      const harness = await evidenceHarness({
+        reports: [approvedReport()],
+        items: [lockedSettlementItem({ settlement_batches: payableBatch })],
+        pairedItems: [
+          lockedSettlementItem({
+            id: "68686868-6868-4868-8868-686868686868",
+            computed_amount: "30.00",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: receivableBatch,
+          }),
+        ],
+        batches: [payableBatch, receivableBatch],
+        costs: [
+          confirmedCostItem({
+            live_report_id: null,
+            settlement_batch_id: null,
+          }),
+        ],
+        draft: evidenceDraft({
+          businessContract: {
+            scope: "payable",
+            executionGrain,
+            businessTimezone: "Asia/Shanghai",
+            requiredInputs: [
+              {
+                name:
+                  executionGrain === "report"
+                    ? "system_minutes"
+                    : "period_report_count",
+              },
+            ],
+          },
+        }),
+      });
+
+      const authorized =
+        await harness.adapter.authorizeSelection(authorizationInput());
+      const evidence = await harness.adapter.loadAuthorizedEvidence({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        selection: authorized,
+      });
+
+      expect(evidence.currentMarginCents).toBeNull();
+    },
+  );
+
+  it.each(["linked", "unlinked"] as const)(
+    "keeps margin unavailable for a %s direction-ambiguous adjustment",
+    async (linkage) => {
+      const payableBatch = lockedSettlementBatch();
+      const receivableBatch = lockedSettlementBatch({
+        id: "69696969-6969-4969-8969-696969696969",
+        batch_type: "receivable",
+      });
+      const harness = await evidenceHarness({
+        reports: [approvedReport()],
+        items: [lockedSettlementItem({ settlement_batches: payableBatch })],
+        pairedItems: [
+          lockedSettlementItem({
+            id: "70707070-7070-4070-8070-707070707070",
+            computed_amount: "30.00",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: receivableBatch,
+          }),
+        ],
+        batches: [payableBatch, receivableBatch],
+        costs: [
+          confirmedCostItem({
+            direction: "adjustment",
+            live_report_id: linkage === "linked" ? approvedReport().id : null,
+            settlement_batch_id: null,
+          }),
+        ],
+        streamers: [],
+        draft: evidenceDraft({
+          businessContract: {
+            scope: "payable",
+            executionGrain: "project_period",
+            businessTimezone: "Asia/Shanghai",
+            requiredInputs: [{ name: "period_report_count" }],
+          },
+        }),
+      });
+
+      const authorized =
+        await harness.adapter.authorizeSelection(authorizationInput());
+      const evidence = await harness.adapter.loadAuthorizedEvidence({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        selection: authorized,
+      });
+
+      expect(evidence.currentMarginCents).toBeNull();
+    },
+  );
+
+  it("counts a cost linked to both report and batch exactly once", async () => {
+    const payableBatch = lockedSettlementBatch();
+    const receivableBatch = lockedSettlementBatch({
+      id: "71717171-7171-4171-8171-717171717171",
+      batch_type: "receivable",
+    });
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [lockedSettlementItem({ settlement_batches: payableBatch })],
+      pairedItems: [
+        lockedSettlementItem({
+          id: "72727272-7272-4272-8272-727272727272",
+          computed_amount: "30.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+      ],
+      batches: [payableBatch, receivableBatch],
+      costs: [
+        confirmedCostItem({
+          live_report_id: approvedReport().id,
+          settlement_batch_id: payableBatch.id,
+        }),
+      ],
+      streamers: [],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "project_period",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [{ name: "period_report_count" }],
+        },
+      }),
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.currentMarginCents).toBe("1550");
+  });
+
+  it("paginates all confirmed period costs before deriving aggregate margin", async () => {
+    const payableBatch = lockedSettlementBatch();
+    const receivableBatch = lockedSettlementBatch({
+      id: "73737373-7373-4373-8373-737373737373",
+      batch_type: "receivable",
+    });
+    const costs = Array.from({ length: 501 }, (_, index) =>
+      confirmedCostItem({
+        id: fixtureUuid(index + 1, "8"),
+        live_report_id: null,
+        settlement_batch_id: null,
+        amount_cents: "1",
+      }),
+    );
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [lockedSettlementItem({ settlement_batches: payableBatch })],
+      pairedItems: [
+        lockedSettlementItem({
+          id: "74747474-7474-4474-8474-747474747474",
+          computed_amount: "30.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+      ],
+      batches: [payableBatch, receivableBatch],
+      costs,
+      streamers: [],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "project_period",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [{ name: "period_report_count" }],
+        },
+      }),
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(harness.costs.gt).toHaveBeenCalledWith("id", costs[499]?.id);
+    expect(evidence.currentMarginCents).toBe("1249");
+  });
+
+  it("keeps margin unavailable when paired locked scopes cover different periods", async () => {
+    const payableBatch = lockedSettlementBatch();
+    const receivableBatch = lockedSettlementBatch({
+      id: "75757575-7575-4757-8757-757575757576",
+      batch_type: "receivable",
+      period_start: "2026-07-02",
+    });
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [lockedSettlementItem({ settlement_batches: payableBatch })],
+      pairedItems: [
+        lockedSettlementItem({
+          id: "76767676-7676-4767-8767-767676767677",
+          computed_amount: "30.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+      ],
+      batches: [payableBatch, receivableBatch],
+      costs: [],
+      streamers: [],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "project_period",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [{ name: "period_report_count" }],
+        },
+      }),
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.currentMarginCents).toBeNull();
+  });
+
+  it("keeps report margin unavailable when the paired batch has an extra report", async () => {
+    const payableBatch = lockedSettlementBatch();
+    const receivableBatch = lockedSettlementBatch({
+      id: "77777777-7777-4777-8777-777777777778",
+      batch_type: "receivable",
+    });
+    const harness = await evidenceHarness({
+      reports: [approvedReport()],
+      items: [lockedSettlementItem({ settlement_batches: payableBatch })],
+      pairedItems: [
+        lockedSettlementItem({
+          id: "78787878-7878-4787-8787-787878787879",
+          computed_amount: "30.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+        lockedSettlementItem({
+          id: "79797979-7979-4797-8797-797979797979",
+          live_report_id: "80808080-8080-4080-8080-808080808080",
+          streamer_id: "81818181-8181-4181-8181-818181818181",
+          computed_amount: "10.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+      ],
+      batches: [payableBatch, receivableBatch],
+      costs: [],
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.currentMarginCents).toBeNull();
+  });
+
   it("keeps margin unavailable when the opposite locked scope is incomplete", async () => {
     const harness = await evidenceHarness();
 
@@ -1472,6 +2715,9 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     async (_label, mismatch) => {
       const harness = await evidenceHarness({
         reports: [approvedReport(mismatch)],
+        items: [],
+        batches: [],
+        enforceFilters: false,
       });
 
       await expect(
@@ -1623,6 +2869,125 @@ function simulationDraft(executionGrain: SupportedGrain) {
   };
 }
 
+async function realPeriodTemplateFixture(templateId: string) {
+  const template = getCustomRuleSystemTemplate(templateId);
+  if (!template) throw new Error(`Missing system template: ${templateId}`);
+  const actualCatalog = await vi.importActual<
+    typeof import("./custom-rule-variable-catalog")
+  >("./custom-rule-variable-catalog");
+  const coverageItem = {
+    numerator: 1,
+    denominator: 1,
+    latestSampledPeriod: { start: "2026-07-01", end: "2026-07-10" },
+  };
+  const catalog = actualCatalog.buildCustomRuleVariableCatalog({
+    scope: template.contract.scope,
+    executionGrain: template.contract.executionGrain,
+    coverage: {
+      hasHistory: true,
+      businessTimezone: "Asia/Shanghai",
+      businessTimezoneConfirmed: true,
+      businessTimezoneSource: "confirmed_contract",
+      variables: {
+        project_id: coverageItem,
+        settlement_minutes: coverageItem,
+      },
+    },
+  });
+  const formulas: Record<string, string> = {
+    "system:floor-cap:v1": `money_result({
+      base: round_money(parameter("hourly_rate") * (period_settlement_minutes / 60)),
+      final: clamp(base, parameter("minimum_guarantee"), parameter("maximum_cap"))
+    })`,
+    "system:group-bonus:v1":
+      'money_result({ final: parameter("group_bonus") * period_report_count })',
+    "system:base-plus-performance:v1": `money_result({
+      final: parameter("base_salary") + parameter("order_bonus") * period_orders_count
+    })`,
+  };
+  const formula = formulas[templateId];
+  if (!formula) throw new Error(`Missing formula fixture: ${templateId}`);
+  const validation = validateCustomRuleFormula(formula, {
+    scope: template.contract.scope,
+    executionGrain: template.contract.executionGrain,
+    parameters: template.contract.parameters.map((parameter) => ({
+      name: parameter.name,
+      valueType: parameter.valueType,
+    })),
+  });
+  const parsed = parseCustomRuleFormula(formula);
+  if (!validation.ok || !parsed.ok) {
+    throw new Error(`Invalid system template formula fixture: ${templateId}`);
+  }
+  const parameters = Object.fromEntries(
+    template.contract.parameters.map((parameter) => [
+      parameter.name,
+      parameter.defaultValue,
+    ]),
+  );
+  const draft = {
+    id: "55555555-5555-4555-8555-555555555555",
+    organizationId: ORGANIZATION_ID,
+    projectId: PROJECT_ID,
+    conversationId: "44444444-4444-4444-8444-444444444444",
+    idempotencyKey: `template-${templateId}`,
+    revisionNumber: 3,
+    createdBy: USER_ID,
+    createdAt: "2026-07-12T05:00:00.000Z",
+    supersedesDraftId: null,
+    supersededByDraftId: null,
+    supersededAt: null,
+    status: "contract_ready",
+    initialStatus: "contract_ready",
+    promptText: `Use ${templateId}`,
+    turnTrace: {
+      turnId: "61616161-6161-4616-8616-616161616161",
+      userMessageId: "62626262-6262-4626-8626-626262626262",
+      assistantMessageId: "63636363-6363-4636-8636-636363636363",
+    },
+    businessContract: template.contract,
+    variableCatalogVersion: catalog.version,
+    aiResponse: { kind: "system_template", templateId },
+    model: "deterministic-system-template",
+    safetyFlags: [],
+    contractHash: hashCustomRuleContract(template.contract),
+    parameterHash: hashCustomRuleParameters(parameters),
+    unresolvedAmbiguities: [],
+    generatedFormula: { expression: formula, normalizedAst: parsed.ast },
+    generatedExplanation: buildCustomRuleTemplateExplanation({
+      ast: validation.compiledAst,
+    }),
+    generatedTestCases: template.contract.examples.map((example) => ({
+      name: example.name,
+      inputs: example.inputs,
+      expectedResult: example.expectedResult,
+    })),
+    formulaHash: validation.formulaHash,
+  };
+  return { catalog, draft };
+}
+
+async function realPeriodTemplateHarness(templateId: string) {
+  const fixture = await realPeriodTemplateFixture(templateId);
+  const catalog = {
+    getCatalog: vi.fn().mockResolvedValue(fixture.catalog),
+  };
+  const harness = await evidenceHarness({
+    reports: [approvedReport()],
+    items: [lockedSettlementItem()],
+    streamers: [joinedStreamer()],
+    draft: fixture.draft,
+    catalog,
+  });
+  const routeModule = await import("./custom-rule-route-context");
+  const service = routeModule.createCustomRuleExistingDraftSimulationService({
+    repository: harness.repository as never,
+    catalog,
+    evidence: harness.adapter as never,
+  });
+  return { ...fixture, ...harness, catalog, service };
+}
+
 async function simulationServiceHarness(
   executionGrain: SupportedGrain,
   history: "empty" | "partial" | "full",
@@ -1662,11 +3027,9 @@ async function simulationServiceHarness(
   const harness = await evidenceHarness({
     reports,
     items:
-      history === "empty"
+      history === "empty" || history === "partial"
         ? []
-        : history === "partial"
-          ? allItems.slice(0, 1)
-          : (options.requestedItems ?? allItems),
+        : (options.requestedItems ?? allItems),
     pairedItems: options.pairedItems,
     costs: options.costs,
     streamers: history === "empty" ? [] : [joinedStreamer()],
@@ -1756,6 +3119,15 @@ describe("custom-rule evidence and Task 7 simulation integration", () => {
     );
   });
 
+  it("warns that margin is unavailable for approved-operation fallback", async () => {
+    const result = await simulationServiceHarness("report", "partial");
+
+    expect(result.summary.historicalVerification.status).toBe("unverified");
+    expect(result.summary.warnings).toContainEqual(
+      expect.objectContaining({ code: "CUSTOM_RULE_MARGIN_UNAVAILABLE" }),
+    );
+  });
+
   it("triggers negative-margin risk with complete paired evidence", async () => {
     const batch = {
       id: "82828282-8282-4828-8828-828282828282",
@@ -1805,6 +3177,115 @@ describe("custom-rule evidence and Task 7 simulation integration", () => {
         }),
       ],
     });
+
+    expect(result.summary.riskFlags).toContainEqual(
+      expect.objectContaining({
+        code: "CUSTOM_RULE_NEGATIVE_MARGIN",
+        severity: "block",
+      }),
+    );
+  });
+
+  it("warns instead of exposing report margin when a period cost is unlinked", async () => {
+    const receivableBatch = {
+      id: "87878787-8787-4787-8787-878787878787",
+      status: "locked",
+      batch_type: "receivable",
+      locked_at: "2026-07-10T00:00:00.000Z",
+    };
+    const secondReportId = "91919191-9191-4919-8919-919191919191";
+    const result = await simulationServiceHarness("report", "full", [], {
+      pairedItems: [
+        lockedSettlementItem({
+          id: "88888888-8888-4888-8888-888888888888",
+          computed_amount: "30.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+        lockedSettlementItem({
+          id: "89898989-8989-4898-8989-898989898980",
+          live_report_id: secondReportId,
+          computed_amount: "30.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: receivableBatch,
+        }),
+      ],
+      costs: [
+        confirmedCostItem({
+          live_report_id: null,
+          settlement_batch_id: null,
+        }),
+      ],
+    });
+
+    expect(result.summary.warnings).toContainEqual(
+      expect.objectContaining({ code: "CUSTOM_RULE_MARGIN_UNAVAILABLE" }),
+    );
+  });
+
+  it("triggers negative-margin risk from an unlinked project-period cost", async () => {
+    const payableBatch = {
+      id: "90909090-9090-4090-8090-909090909090",
+      status: "locked",
+      batch_type: "payable",
+      locked_at: "2026-07-10T00:00:00.000Z",
+    };
+    const receivableBatch = {
+      id: "91919191-9191-4191-8191-919191919190",
+      status: "locked",
+      batch_type: "receivable",
+      locked_at: "2026-07-10T00:00:00.000Z",
+    };
+    const secondReportId = "91919191-9191-4919-8919-919191919191";
+    const result = await simulationServiceHarness(
+      "project_period",
+      "full",
+      [],
+      {
+        requestedItems: [
+          lockedSettlementItem({
+            computed_amount: "0.00",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: payableBatch,
+          }),
+          lockedSettlementItem({
+            id: "92929292-9292-4292-8292-929292929292",
+            live_report_id: secondReportId,
+            computed_amount: "0.00",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: payableBatch,
+          }),
+        ],
+        pairedItems: [
+          lockedSettlementItem({
+            id: "93939393-9393-4393-8393-939393939393",
+            computed_amount: "0.50",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: receivableBatch,
+          }),
+          lockedSettlementItem({
+            id: "94949494-9494-4494-8494-949494949494",
+            live_report_id: secondReportId,
+            computed_amount: "0.50",
+            manual_amount: "0.00",
+            adjustment_amount: "0.00",
+            settlement_batches: receivableBatch,
+          }),
+        ],
+        costs: [
+          confirmedCostItem({
+            live_report_id: null,
+            settlement_batch_id: null,
+            amount_cents: "200",
+          }),
+        ],
+      },
+    );
 
     expect(result.summary.riskFlags).toContainEqual(
       expect.objectContaining({
@@ -1873,5 +3354,54 @@ describe("custom-rule evidence and Task 7 simulation integration", () => {
     expect(result.summary.historicalVerification.status).toBe("unverified");
     expect(result.summary.totalOldCents).toBeNull();
     expect(result.summary.totalNewCents).toBe("0");
+  });
+
+  it.each([
+    ["system:floor-cap:v1", "50000"],
+    ["system:group-bonus:v1", "2000"],
+  ] as const)(
+    "simulates the real %s period template through catalog and readiness",
+    async (templateId, expectedTotal) => {
+      const harness = await realPeriodTemplateHarness(templateId);
+      const authorized =
+        await harness.adapter.authorizeSelection(authorizationInput());
+      const result = await harness.service.simulateExistingDraft({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        projectId: PROJECT_ID,
+        conversationId: harness.draft.conversationId,
+        draftId: harness.draft.id,
+        expectedRevisionNumber: harness.draft.revisionNumber,
+        clientRequestId: `request-${templateId}`,
+        selection: authorized,
+      });
+
+      expect(harness.draft.status).toBe("contract_ready");
+      expect(result.summary.historicalVerification.status).toBe("verified");
+      expect(result.summary.totalNewCents).toBe(expectedTotal);
+    },
+  );
+
+  it("keeps the order-count template contract-ready but blocks on unavailable readiness input", async () => {
+    const harness = await realPeriodTemplateHarness(
+      "system:base-plus-performance:v1",
+    );
+
+    expect(harness.draft.status).toBe("contract_ready");
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    await expect(
+      harness.service.simulateExistingDraft({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        projectId: PROJECT_ID,
+        conversationId: harness.draft.conversationId,
+        draftId: harness.draft.id,
+        expectedRevisionNumber: harness.draft.revisionNumber,
+        clientRequestId: "request-order-count-template",
+        selection: authorized,
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_DATA_NOT_READY",
+      status: 422,
+    });
   });
 });
