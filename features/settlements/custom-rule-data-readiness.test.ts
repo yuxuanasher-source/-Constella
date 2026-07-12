@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { CustomRuleMissingDataPolicy } from "./custom-rule-types";
 import {
   analyzeCustomRuleDataReadiness,
+  calculateCustomRuleOptionalPolicyHash,
   CustomRuleReadinessInputError,
   isCustomRuleSimulationReadinessFresh,
 } from "./custom-rule-data-readiness";
@@ -121,6 +122,90 @@ describe("analyzeCustomRuleDataReadiness", () => {
       ready: false,
       code: "CUSTOM_RULE_MISSING_DATA_POLICY_REQUIRED",
     });
+  });
+
+  it("binds the optional missing-data policy into the readiness hash", () => {
+    const catalog = payableReportCatalog();
+    const routeToReview = analyzeCustomRuleDataReadiness({
+      catalog,
+      inputs: [
+        {
+          variableId: "gift_amount",
+          required: false,
+          missingDataPolicy: { action: "route_item_to_review" },
+        },
+      ],
+    });
+    const blockBatch = analyzeCustomRuleDataReadiness({
+      catalog,
+      inputs: [
+        {
+          variableId: "gift_amount",
+          required: false,
+          missingDataPolicy: { action: "block_batch" },
+        },
+      ],
+    });
+
+    expect(routeToReview.readyForSimulation).toBe(true);
+    expect(blockBatch.readyForSimulation).toBe(true);
+    expect(routeToReview.readinessHash).not.toBe(blockBatch.readinessHash);
+    expect(
+      isCustomRuleSimulationReadinessFresh(
+        {
+          catalogVersion: routeToReview.catalogVersion,
+          readinessHash: routeToReview.readinessHash,
+          businessTimezone: routeToReview.businessTimezone,
+        },
+        blockBatch,
+      ),
+    ).toBe(false);
+  });
+
+  it("hashes declared optional policies independently of requirement order", () => {
+    const routeRequirements = [
+      {
+        variableId: "views",
+        required: false as const,
+        missingDataPolicy: { action: "route_item_to_review" as const },
+      },
+      { variableId: "system_minutes", required: true as const },
+      {
+        variableId: "base_hourly_rate",
+        required: false as const,
+        missingDataPolicy: { action: "route_item_to_review" as const },
+      },
+    ];
+    const blockRequirements = routeRequirements.map((requirement) =>
+      requirement.required
+        ? requirement
+        : {
+            ...requirement,
+            missingDataPolicy: { action: "block_batch" as const },
+          },
+    );
+    const defaultRequirements = routeRequirements.map((requirement) =>
+      requirement.required
+        ? requirement
+        : {
+            ...requirement,
+            missingDataPolicy: {
+              action: "use_explicit_default" as const,
+              defaultValue: { type: "integer" as const, value: 0 },
+            },
+          },
+    );
+
+    expect(calculateCustomRuleOptionalPolicyHash(routeRequirements)).toBe(
+      calculateCustomRuleOptionalPolicyHash([...routeRequirements].reverse()),
+    );
+    expect(
+      new Set([
+        calculateCustomRuleOptionalPolicyHash(routeRequirements),
+        calculateCustomRuleOptionalPolicyHash(blockRequirements),
+        calculateCustomRuleOptionalPolicyHash(defaultRequirements),
+      ]),
+    ).toHaveLength(3);
   });
 
   it.each([

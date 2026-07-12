@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { BusinessRuleContract } from "./custom-rule-contract";
-import type { CustomRuleDataReadinessReport } from "./custom-rule-data-readiness";
+import {
+  calculateCustomRuleOptionalPolicyHash,
+  type CustomRuleDataReadinessReport,
+  type CustomRuleInputRequirement,
+} from "./custom-rule-data-readiness";
 import {
   CustomRuleSimulationError,
   calculateCustomRuleEvidenceHash,
@@ -489,6 +493,75 @@ describe("simulateCustomSettlementRule", () => {
     );
   });
 
+  it("blocks the entire batch without retaining partial totals when any record uses block_batch", () => {
+    const input = simulationInput();
+    input.records = [
+      record("record-a-calculable", {
+        currentRuleResult: {
+          unitSource: "current_rule_cents",
+          amountCents: "1000",
+        },
+      }),
+      record("record-z-blocked", {
+        missingInputs: [
+          {
+            variableId: "base_hourly_rate",
+            policy: { action: "block_batch" },
+          },
+        ],
+        currentRuleResult: {
+          unitSource: "current_rule_cents",
+          amountCents: "500",
+        },
+      }),
+    ];
+    input.sampleSelection.populationCount = 2;
+
+    const result = simulateAuthorized(input);
+
+    expect(result).toMatchObject({
+      recordCount: 2,
+      coverage: { totalCount: 2, evaluatedCount: 0, rateBps: 0 },
+      uncoveredCount: 1,
+      zeroPayCount: 0,
+      reviewRoutedCount: 0,
+      blockedCount: 2,
+      largestIncreases: [],
+      largestDecreases: [],
+      totalOldCents: null,
+      totalNewCents: "0",
+      totalDeltaCents: null,
+      marginImpactCents: null,
+      historicalVerification: { status: "unverified" },
+      unitSources: [],
+    });
+    expect(result.riskFlags).toContainEqual(
+      expect.objectContaining({
+        code: "CUSTOM_RULE_BLOCKED_RECORDS",
+        severity: "block",
+      }),
+    );
+    expect(result.persistable).toMatchObject({
+      coverage: {
+        totalRecords: 2,
+        evaluatedRecords: 0,
+        skippedRecords: 2,
+        blockedRecords: 2,
+      },
+      historicalTotals: {
+        oldPayableAmountCents: null,
+        newPayableAmountCents: "0",
+        verificationStatus: "unverified",
+      },
+      deltas: {
+        payableAmountCents: null,
+        percentageBps: null,
+        marginImpactCents: null,
+      },
+      largestChanges: [],
+    });
+  });
+
   it("changes freshness hash for source version, timezone, catalog, formula, contract, or parameters", () => {
     const base = simulationInput();
     const baseHash = simulateAuthorized(base).dataSelectionHash;
@@ -557,6 +630,85 @@ describe("simulateCustomSettlementRule", () => {
     expect(highResult.dataSelectionHash).not.toBe(
       lowResult.dataSelectionHash,
     );
+  });
+
+  it("binds record missing-input policies into evidence and final selection hashes", () => {
+    const routeToReview = simulationInput();
+    routeToReview.records[0].missingInputs = [
+      {
+        variableId: "base_hourly_rate",
+        policy: { action: "route_item_to_review" },
+      },
+    ];
+    const blockBatch = structuredClone(routeToReview);
+    blockBatch.records[0].missingInputs[0].policy = {
+      action: "block_batch",
+    };
+    const routeResult = simulateAuthorized(routeToReview);
+    const blockResult = simulateAuthorized(blockBatch);
+
+    expect(routeToReview.provenance.evidenceHash).not.toBe(
+      blockBatch.provenance.evidenceHash,
+    );
+    expect(routeResult.dataSelectionHash).not.toBe(
+      blockResult.dataSelectionHash,
+    );
+  });
+
+  it("changes evidence and selection freshness for declared policies even when every record has a value", () => {
+    const requirements = (
+      policy: CustomRuleInputRequirement & { required: false },
+    ) => [policy];
+    const routeRequirements = requirements({
+      variableId: "base_hourly_rate",
+      required: false,
+      missingDataPolicy: { action: "route_item_to_review" },
+    });
+    const blockRequirements = requirements({
+      variableId: "base_hourly_rate",
+      required: false,
+      missingDataPolicy: { action: "block_batch" },
+    });
+    const defaultRequirements = requirements({
+      variableId: "base_hourly_rate",
+      required: false,
+      missingDataPolicy: {
+        action: "use_explicit_default",
+        defaultValue: { type: "money_cents", amountCents: 0 },
+      },
+    });
+    const run = (declared: CustomRuleInputRequirement[]) => {
+      const input = simulationInput();
+      input.records[0].variables.base_hourly_rate = {
+        type: "money_cents",
+        amountCents: 10_000,
+      };
+      input.provenance.optionalPolicyHash =
+        calculateCustomRuleOptionalPolicyHash(declared);
+      return { input, result: simulateAuthorized(input) };
+    };
+
+    const route = run(routeRequirements);
+    const block = run(blockRequirements);
+    const explicitDefault = run(defaultRequirements);
+
+    expect(route.input.records[0].missingInputs).toEqual([]);
+    expect(block.input.records[0].missingInputs).toEqual([]);
+    expect(explicitDefault.input.records[0].missingInputs).toEqual([]);
+    expect(
+      new Set([
+        route.input.provenance.evidenceHash,
+        block.input.provenance.evidenceHash,
+        explicitDefault.input.provenance.evidenceHash,
+      ]),
+    ).toHaveLength(3);
+    expect(
+      new Set([
+        route.result.dataSelectionHash,
+        block.result.dataSelectionHash,
+        explicitDefault.result.dataSelectionHash,
+      ]),
+    ).toHaveLength(3);
   });
 
   it("fails closed on duplicates, cross-project rows, mutable versions, malformed inputs, and bounds", () => {
@@ -714,6 +866,7 @@ function simulationInput(
       actorId: "actor-1",
       selectionToken: "selection-token-0001",
       evidenceHash: "0".repeat(64),
+      optionalPolicyHash: calculateCustomRuleOptionalPolicyHash([]),
       immutableSourceVersions: [
         {
           kind: "immutable",

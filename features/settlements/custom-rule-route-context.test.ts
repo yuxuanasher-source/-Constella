@@ -4,9 +4,14 @@ import { beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { z } from "zod";
 
 import { businessRuleContractSchema } from "./custom-rule-contract";
+import {
+  calculateCustomRuleOptionalPolicyHash,
+  type CustomRuleInputRequirement,
+} from "./custom-rule-data-readiness";
 import { buildCustomRuleTemplateExplanation } from "./custom-rule-explanation";
 import { parseCustomRuleFormula } from "./custom-rule-parser";
 import {
+  calculateCustomRuleEvidenceHash,
   hashCustomRuleContract,
   hashCustomRuleParameters,
   simulateCustomSettlementRule,
@@ -20,6 +25,7 @@ import type {
   LegacySettlementFormulaSimulation,
 } from "./custom-rule-repository";
 import type { CustomRuleRouteContext } from "./custom-rule-route-context";
+import type { CustomRuleMissingDataPolicy } from "./custom-rule-types";
 
 const mocks = vi.hoisted(() => ({
   isEnabled: vi.fn(),
@@ -1559,6 +1565,169 @@ function periodBoundaryFixture(
 }
 
 describe("Supabase custom-rule authorized evidence adapter", () => {
+  it("binds declared optional policies when all evidence values are present", async () => {
+    const harness = await evidenceHarness();
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const common = {
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    };
+    const routeInputs = [
+      {
+        variableId: "base_hourly_rate",
+        required: false as const,
+        missingDataPolicy: { action: "route_item_to_review" as const },
+      },
+    ];
+    const blockInputs = [
+      {
+        variableId: "base_hourly_rate",
+        required: false as const,
+        missingDataPolicy: { action: "block_batch" as const },
+      },
+    ];
+    const defaultInputs = [
+      {
+        variableId: "base_hourly_rate",
+        required: false as const,
+        missingDataPolicy: {
+          action: "use_explicit_default" as const,
+          defaultValue: { type: "money_cents" as const, amountCents: 0 },
+        },
+      },
+    ];
+    const load = (inputs: readonly CustomRuleInputRequirement[]) =>
+      harness.adapter.loadAuthorizedEvidence({ ...common, inputs });
+
+    const route = await load(routeInputs);
+    const reorderedRoute = await load([...routeInputs].reverse());
+    const block = await load(blockInputs);
+    const explicitDefault = await load(defaultInputs);
+
+    expect(route.records[0]?.missingInputs).toEqual([]);
+    expect(route.provenance.optionalPolicyHash).toBe(
+      calculateCustomRuleOptionalPolicyHash(routeInputs),
+    );
+    expect(reorderedRoute.provenance.optionalPolicyHash).toBe(
+      route.provenance.optionalPolicyHash,
+    );
+    expect(reorderedRoute.provenance.evidenceHash).toBe(
+      route.provenance.evidenceHash,
+    );
+    expect(
+      new Set([
+        route.provenance.evidenceHash,
+        block.provenance.evidenceHash,
+        explicitDefault.provenance.evidenceHash,
+      ]),
+    ).toHaveLength(3);
+  });
+
+  it("maps absent optional formula inputs into stable, duplicate-free evidence policies", async () => {
+    const harness = await evidenceHarness({ streamers: [] });
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const common = {
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    };
+    const routeToReview = await harness.adapter.loadAuthorizedEvidence({
+      ...common,
+      inputs: [
+        {
+          variableId: "base_salary",
+          required: false,
+          missingDataPolicy: { action: "route_item_to_review" },
+        },
+        {
+          variableId: "base_hourly_rate",
+          required: false,
+          missingDataPolicy: { action: "route_item_to_review" },
+        },
+        {
+          variableId: "base_salary",
+          required: false,
+          missingDataPolicy: { action: "route_item_to_review" },
+        },
+        {
+          variableId: "views",
+          required: false,
+          missingDataPolicy: { action: "route_item_to_review" },
+        },
+        { variableId: "system_minutes", required: true },
+      ],
+    });
+    const blockBatch = await harness.adapter.loadAuthorizedEvidence({
+      ...common,
+      inputs: [
+        {
+          variableId: "base_hourly_rate",
+          required: false,
+          missingDataPolicy: { action: "block_batch" },
+        },
+      ],
+    });
+
+    expect(routeToReview.records[0]?.missingInputs).toEqual([
+      {
+        variableId: "base_hourly_rate",
+        policy: { action: "route_item_to_review" },
+      },
+      {
+        variableId: "base_salary",
+        policy: { action: "route_item_to_review" },
+      },
+    ]);
+    expect(routeToReview.provenance.evidenceHash).toBe(
+      calculateCustomRuleEvidenceHash(routeToReview),
+    );
+    expect(blockBatch.provenance.evidenceHash).not.toBe(
+      routeToReview.provenance.evidenceHash,
+    );
+  });
+
+  it("still rejects a missing contract-required variable instead of defaulting it", async () => {
+    const harness = await evidenceHarness({
+      streamers: [],
+      draft: evidenceDraft({
+        businessContract: {
+          scope: "payable",
+          executionGrain: "report",
+          businessTimezone: "Asia/Shanghai",
+          requiredInputs: [{ name: "base_hourly_rate" }],
+        },
+      }),
+      catalog: {
+        getCatalog: vi.fn().mockResolvedValue({
+          businessTimezone: "Asia/Shanghai",
+          businessTimezoneConfirmed: true,
+          businessTimezoneSource: "confirmed_contract",
+          variables: [
+            {
+              id: "base_hourly_rate",
+              availability: "available",
+              coverageNumerator: 1,
+              coverageDenominator: 1,
+            },
+          ],
+        }),
+      },
+    });
+
+    await expect(
+      harness.adapter.authorizeSelection(authorizationInput()),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_EVIDENCE_FIELD_UNAVAILABLE",
+      status: 422,
+      retryable: false,
+    });
+  });
+
   it("reads exactly one bounded lock-consistent snapshot RPC", async () => {
     const harness = await evidenceHarness();
 
@@ -4353,6 +4522,121 @@ function simulationDraft(executionGrain: SupportedGrain) {
   };
 }
 
+function optionalPolicySimulationDraft(
+  missingDataPolicy: CustomRuleMissingDataPolicy,
+  variableId: "base_hourly_rate" | "system_minutes" = "base_hourly_rate",
+) {
+  const base = simulationContract("report");
+  const variableValue =
+    variableId === "base_hourly_rate"
+      ? ({ type: "money_cents", amountCents: 1_000 } as const)
+      : ({ type: "integer", value: 60 } as const);
+  const expectedResult =
+    variableId === "base_hourly_rate"
+      ? ({ type: "money_cents", amountCents: 1_000 } as const)
+      : ({ type: "money_cents", amountCents: 6_000 } as const);
+  const contract = businessRuleContractSchema.parse({
+    ...base,
+    requiredInputs: [
+      {
+        name: "evidence_level",
+        description: "授权凭证等级",
+        source: "authorized.evidence_level",
+        valueType: { kind: "scalar", scalarType: "string" },
+        userFacingUnit: "等级",
+      },
+    ],
+    missingDataPolicy,
+    examples: ["标准示例", "零值边界", "单值边界"].map((name, index) => ({
+      name,
+      kind: index === 0 ? "normal" : "boundary",
+      description: "公式变量在示例中显式提供。",
+      inputs: {
+        evidence_level: { type: "string", value: "green" },
+        [variableId]: variableValue,
+      },
+      expectedResult,
+    })),
+  });
+  const formula =
+    variableId === "base_hourly_rate"
+      ? "money_result({ final: base_hourly_rate })"
+      : "money_result({ final: yuan(1) * system_minutes })";
+  const validation = validateCustomRuleFormula(formula, {
+    scope: contract.scope,
+    executionGrain: contract.executionGrain,
+    parameters: contract.parameters.map((parameter) => ({
+      name: parameter.name,
+      valueType: parameter.valueType,
+    })),
+  });
+  const parsed = parseCustomRuleFormula(formula);
+  if (!validation.ok || !parsed.ok) throw new Error("Expected valid fixture");
+  const parameters = Object.fromEntries(
+    contract.parameters.map((parameter) => [
+      parameter.name,
+      parameter.defaultValue,
+    ]),
+  );
+  return {
+    ...simulationDraft("report"),
+    businessContract: contract,
+    contractHash: hashCustomRuleContract(contract),
+    parameterHash: hashCustomRuleParameters(parameters),
+    generatedFormula: { expression: formula, normalizedAst: parsed.ast },
+    generatedExplanation: buildCustomRuleTemplateExplanation({
+      ast: validation.compiledAst,
+    }),
+    generatedTestCases: contract.examples.map((example) => ({
+      name: example.name,
+      inputs: example.inputs,
+      expectedResult: example.expectedResult,
+    })),
+    formulaHash: validation.formulaHash,
+  };
+}
+
+function optionalPolicyCatalog(
+  variableId: "base_hourly_rate" | "system_minutes" = "base_hourly_rate",
+) {
+  return {
+    scope: "payable" as const,
+    executionGrain: "report" as const,
+    businessTimezone: "Asia/Shanghai",
+    businessTimezoneConfirmed: true,
+    businessTimezoneSource: "confirmed_contract" as const,
+    hasHistory: true,
+    version: "a".repeat(64),
+    variables: [
+      {
+        id: "evidence_level",
+        label: "凭证等级",
+        runtimeType: { kind: "scalar" as const, scalarType: "string" as const },
+        unit: "等级",
+        sourceLabel: "直播报告凭证等级",
+        availability: "available" as const,
+        coverageNumerator: 1,
+        coverageDenominator: 1,
+        latestSampledPeriod: { start: "2026-07-01", end: "2026-07-10" },
+      },
+      {
+        id: variableId,
+        label: variableId,
+        runtimeType:
+          variableId === "base_hourly_rate"
+            ? ({ kind: "scalar", scalarType: "money_cents" } as const)
+            : ({ kind: "scalar", scalarType: "integer" } as const),
+        unit: variableId === "base_hourly_rate" ? "元/小时" : "分钟",
+        sourceLabel: "授权历史证据",
+        availability: "partial" as const,
+        coverageNumerator: 0,
+        coverageDenominator: 1,
+        latestSampledPeriod: { start: "2026-07-01", end: "2026-07-10" },
+      },
+    ],
+  };
+}
+
 async function realPeriodTemplateFixture(templateId: string) {
   const template = getCustomRuleSystemTemplate(templateId);
   if (!template) throw new Error(`Missing system template: ${templateId}`);
@@ -4598,7 +4882,158 @@ async function simulationServiceHarness(
   });
 }
 
+async function optionalPolicyServiceHarness(
+  missingDataPolicy: CustomRuleMissingDataPolicy,
+  variableId: "base_hourly_rate" | "system_minutes" = "base_hourly_rate",
+  options: { forgeOptionalPolicyHash?: boolean } = {},
+) {
+  const draft = optionalPolicySimulationDraft(
+    missingDataPolicy,
+    variableId,
+  );
+  const catalogValue = optionalPolicyCatalog(variableId);
+  const catalog = { getCatalog: vi.fn().mockResolvedValue(catalogValue) };
+  const harness = await evidenceHarness({
+    draft,
+    catalog,
+    streamers: variableId === "base_hourly_rate" ? [] : [joinedStreamer()],
+  });
+  const authorized = await harness.adapter.authorizeSelection(
+    authorizationInput(),
+  );
+  const routeModule = await import("./custom-rule-route-context");
+  const evidence = options.forgeOptionalPolicyHash
+    ? {
+        ...harness.adapter,
+        async loadAuthorizedEvidence(input: Record<string, unknown>) {
+          const loaded = await harness.adapter.loadAuthorizedEvidence(input);
+          const forged = structuredClone(loaded);
+          forged.provenance.optionalPolicyHash = "f".repeat(64);
+          forged.provenance.evidenceHash =
+            calculateCustomRuleEvidenceHash(forged);
+          return forged;
+        },
+      }
+    : harness.adapter;
+  const service = routeModule.createCustomRuleExistingDraftSimulationService({
+    repository: harness.repository as never,
+    catalog,
+    evidence: evidence as never,
+  });
+  return {
+    ...harness,
+    draft,
+    authorized,
+    simulate: () =>
+      service.simulateExistingDraft({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        projectId: PROJECT_ID,
+        conversationId: draft.conversationId,
+        draftId: draft.id,
+        expectedRevisionNumber: draft.revisionNumber,
+        clientRequestId: `optional-policy-${missingDataPolicy.action}-${variableId}`,
+        selection: authorized,
+      }),
+  };
+}
+
 describe("custom-rule evidence and Task 7 simulation integration", () => {
+  it("rejects an existing-draft adapter with a forged optional-policy snapshot", async () => {
+    const harness = await optionalPolicyServiceHarness(
+      { action: "route_item_to_review" },
+      "base_hourly_rate",
+      { forgeOptionalPolicyHash: true },
+    );
+
+    await expect(harness.simulate()).rejects.toMatchObject({
+      code: "CUSTOM_RULE_SIMULATION_INVALID",
+      status: 422,
+      retryable: false,
+    });
+    expect(harness.repository.insertSimulation).not.toHaveBeenCalled();
+  });
+
+  it("routes a record with a missing optional formula input to review without pricing it", async () => {
+    const harness = await optionalPolicyServiceHarness({
+      action: "route_item_to_review",
+    });
+
+    const result = await harness.simulate();
+
+    expect(result.summary).toMatchObject({
+      recordCount: 1,
+      coverage: { totalCount: 1, evaluatedCount: 0, rateBps: 0 },
+      uncoveredCount: 1,
+      reviewRoutedCount: 1,
+      blockedCount: 0,
+      totalNewCents: "0",
+    });
+    expect(result.summary.riskFlags).toContainEqual(
+      expect.objectContaining({
+        code: "CUSTOM_RULE_REVIEW_ROUTED_RECORDS",
+        severity: "warning",
+      }),
+    );
+  });
+
+  it("blocks a record with a missing optional formula input under block_batch", async () => {
+    const harness = await optionalPolicyServiceHarness({
+      action: "block_batch",
+    });
+
+    const result = await harness.simulate();
+
+    expect(result.summary).toMatchObject({
+      recordCount: 1,
+      coverage: { totalCount: 1, evaluatedCount: 0, rateBps: 0 },
+      uncoveredCount: 1,
+      reviewRoutedCount: 0,
+      blockedCount: 1,
+      totalNewCents: "0",
+    });
+    expect(result.summary.riskFlags).toContainEqual(
+      expect.objectContaining({
+        code: "CUSTOM_RULE_BLOCKED_RECORDS",
+        severity: "block",
+      }),
+    );
+  });
+
+  it("applies a type-matched explicit default to a missing optional formula input", async () => {
+    const harness = await optionalPolicyServiceHarness({
+      action: "use_explicit_default",
+      defaultValue: { type: "money_cents", amountCents: 375 },
+    });
+
+    const result = await harness.simulate();
+
+    expect(result.summary).toMatchObject({
+      recordCount: 1,
+      coverage: { totalCount: 1, evaluatedCount: 1, rateBps: 10_000 },
+      uncoveredCount: 1,
+      reviewRoutedCount: 0,
+      blockedCount: 0,
+      totalNewCents: "375",
+    });
+  });
+
+  it("rejects an explicit default for a formula-only evidence variable", async () => {
+    const harness = await optionalPolicyServiceHarness(
+      {
+        action: "use_explicit_default",
+        defaultValue: { type: "integer", value: 1 },
+      },
+      "system_minutes",
+    );
+
+    await expect(harness.simulate()).rejects.toMatchObject({
+      code: "CUSTOM_RULE_DATA_NOT_READY",
+      status: 422,
+      retryable: false,
+    });
+    expect(harness.repository.insertSimulation).not.toHaveBeenCalled();
+  });
+
   it.each(["report", "batch", "project_period"] as const)(
     "ignores unrelated approved-report costs for %s margin and warnings",
     async (executionGrain) => {

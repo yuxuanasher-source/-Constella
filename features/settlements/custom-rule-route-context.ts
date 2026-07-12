@@ -31,6 +31,8 @@ import {
 } from "./custom-rule-contract";
 import {
   analyzeCustomRuleDataReadiness,
+  buildCustomRuleInputRequirements,
+  calculateCustomRuleOptionalPolicyHash,
   type CustomRuleDataReadinessReport,
   type CustomRuleInputRequirement,
 } from "./custom-rule-data-readiness";
@@ -60,7 +62,10 @@ import {
   type AuthorizedCustomRuleSimulationEvidence,
   type CustomRuleSimulationResult,
 } from "./custom-rule-simulation";
-import type { TypedRuntimeValue } from "./custom-rule-types";
+import type {
+  CustomRuleMissingDataPolicy,
+  TypedRuntimeValue,
+} from "./custom-rule-types";
 import { validateCustomRuleFormula } from "./custom-rule-validator";
 import {
   buildCustomRuleVariableCatalog,
@@ -998,10 +1003,14 @@ export function createCustomRuleExistingDraftSimulationService(input: {
           retryable: false,
         });
       }
+      const requirements = readinessRequirements(
+        contract,
+        validation.variables,
+      );
       const readiness = input.evidence.adjustReadiness(
         (input.analyzeReadiness ?? analyzeCustomRuleDataReadiness)({
           catalog,
-          inputs: readinessRequirements(contract, validation.variables),
+          inputs: requirements,
         }),
       );
       if (
@@ -1020,7 +1029,19 @@ export function createCustomRuleExistingDraftSimulationService(input: {
         organizationId: scope.actor.organizationId,
         projectId: scope.projectId,
         selection: scope.selection,
+        inputs: requirements,
       });
+      if (
+        evidence.provenance.optionalPolicyHash !==
+        calculateCustomRuleOptionalPolicyHash(requirements)
+      ) {
+        throw new CustomRuleRouteError({
+          code: "CUSTOM_RULE_SIMULATION_INVALID",
+          message: "Settlement rule evidence policy snapshot is invalid",
+          status: 422,
+          retryable: false,
+        });
+      }
       const simulationInput = {
         organizationId: scope.actor.organizationId,
         actorId: scope.actor.userId,
@@ -1637,6 +1658,7 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           actorId: unsafeInput.actor.userId,
           selectionToken,
           evidenceHash: "0".repeat(64),
+          optionalPolicyHash: calculateCustomRuleOptionalPolicyHash([]),
           immutableSourceVersions: records.map(
             (record) => record.sourceVersion,
           ),
@@ -1700,7 +1722,10 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           422,
         );
       }
-      return evidence;
+      return applyInputRequirementsToEvidence(
+        evidence,
+        loadInput.inputs ?? [],
+      );
     },
 
     adjustReadiness(readiness) {
@@ -3009,6 +3034,64 @@ function periodAggregateRecord(input: {
   };
 }
 
+function applyInputRequirementsToEvidence(
+  evidence: AuthorizedCustomRuleSimulationEvidence,
+  inputs: readonly CustomRuleInputRequirement[],
+): AuthorizedCustomRuleSimulationEvidence {
+  if (inputs.length === 0) return evidence;
+
+  const requiredVariables = new Set(
+    inputs.flatMap((requirement) =>
+      requirement.required ? [requirement.variableId] : [],
+    ),
+  );
+  assertRequiredRecordVariables(evidence.records, requiredVariables);
+
+  const optionalPolicies = new Map<string, CustomRuleMissingDataPolicy>();
+  for (const requirement of inputs) {
+    if (
+      !requirement.required &&
+      requirement.missingDataPolicy &&
+      !requiredVariables.has(requirement.variableId)
+    ) {
+      optionalPolicies.set(
+        requirement.variableId,
+        requirement.missingDataPolicy,
+      );
+    }
+  }
+  const records = evidence.records.map((record) => {
+    const missingByVariable = new Map<string, CustomRuleMissingDataPolicy>();
+    for (const missing of record.missingInputs) {
+      if (!Object.hasOwn(record.variables, missing.variableId)) {
+        missingByVariable.set(missing.variableId, missing.policy);
+      }
+    }
+    for (const [variableId, policy] of optionalPolicies) {
+      if (!Object.hasOwn(record.variables, variableId)) {
+        missingByVariable.set(variableId, policy);
+      }
+    }
+    return {
+      ...record,
+      missingInputs: [...missingByVariable]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([variableId, policy]) => ({ variableId, policy })),
+    };
+  });
+  const mapped: AuthorizedCustomRuleSimulationEvidence = {
+    ...evidence,
+    provenance: {
+      ...evidence.provenance,
+      evidenceHash: "0".repeat(64),
+      optionalPolicyHash: calculateCustomRuleOptionalPolicyHash(inputs),
+    },
+    records,
+  };
+  mapped.provenance.evidenceHash = calculateCustomRuleEvidenceHash(mapped);
+  return freezeAuthorizedCustomRuleSimulationEvidence(mapped);
+}
+
 function assertRequiredRecordVariables(
   records: AuthorizedSimulationRecord[],
   requiredVariables: Set<string>,
@@ -3624,14 +3707,13 @@ function readinessRequirements(
   contract: z.infer<typeof businessRuleContractSchema>,
   formulaVariables: string[],
 ): CustomRuleInputRequirement[] {
-  return [
-    ...new Set([
-      ...contract.requiredInputs.map((required) => required.name),
-      ...formulaVariables,
-    ]),
-  ]
-    .sort((left, right) => left.localeCompare(right))
-    .map((variableId) => ({ variableId, required: true as const }));
+  return buildCustomRuleInputRequirements({
+    requiredVariableIds: contract.requiredInputs.map(
+      (required) => required.name,
+    ),
+    formulaVariableIds: formulaVariables,
+    missingDataPolicy: contract.missingDataPolicy,
+  });
 }
 
 function parameterValues(

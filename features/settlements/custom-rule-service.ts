@@ -23,9 +23,11 @@ import {
   type BusinessRuleContract,
   type BusinessRuleContractChange,
 } from "./custom-rule-contract";
-import type {
-  CustomRuleDataReadinessReport,
-  CustomRuleInputRequirement,
+import {
+  buildCustomRuleInputRequirements,
+  calculateCustomRuleOptionalPolicyHash,
+  type CustomRuleDataReadinessReport,
+  type CustomRuleInputRequirement,
 } from "./custom-rule-data-readiness";
 import { buildCustomRuleTemplateExplanation } from "./custom-rule-explanation";
 import { parseCustomRuleFormula } from "./custom-rule-parser";
@@ -154,6 +156,7 @@ export type AuthorizedSimulationEvidencePort = {
     organizationId: string;
     projectId: string;
     selection: AuthorizedSimulationSelectionRequest;
+    inputs?: readonly CustomRuleInputRequirement[];
   }): Promise<AuthorizedCustomRuleSimulationEvidence>;
 };
 
@@ -1401,6 +1404,7 @@ async function runConfirmationTransition(input: {
           input.dependencies.evidence,
           scope,
           scope.simulationSelection,
+          requirements,
         );
       } catch (error) {
         return failDomain(
@@ -1662,12 +1666,13 @@ async function buildExistingDraftSimulation(input: {
       false,
     );
   }
+  const requirements = readinessRequirements(
+    input.draft.businessContract,
+    deterministic.variables,
+  );
   const readiness = input.dependencies.analyzeReadiness({
     catalog: input.catalog,
-    inputs: readinessRequirements(
-      input.draft.businessContract,
-      deterministic.variables,
-    ),
+    inputs: requirements,
   });
   if (
     !readiness.readyForSimulation ||
@@ -1684,6 +1689,7 @@ async function buildExistingDraftSimulation(input: {
     input.dependencies.evidence,
     input.scope,
     input.selection,
+    requirements,
   );
   if (
     input.expectedEvidenceHash !== null &&
@@ -4466,12 +4472,14 @@ async function loadAuthorizedSimulationEvidence(
   port: AuthorizedSimulationEvidencePort,
   scope: Pick<ScopedTransition, "actor" | "projectId">,
   selection: AuthorizedSimulationSelectionRequest,
+  inputs: readonly CustomRuleInputRequirement[],
 ): Promise<AuthorizedCustomRuleSimulationEvidence> {
   const unsafeEvidence = await port.loadAuthorizedEvidence({
     actor: scope.actor,
     organizationId: scope.actor.organizationId,
     projectId: scope.projectId,
     selection,
+    inputs,
   });
   const evidence = freezeAuthorizedCustomRuleSimulationEvidence(unsafeEvidence);
   if (
@@ -4485,6 +4493,12 @@ async function loadAuthorizedSimulationEvidence(
       canonicalJson([...selection.criteriaCodes].sort())
   ) {
     throw new Error("authorized evidence scope or selection mismatch");
+  }
+  if (
+    evidence.provenance.optionalPolicyHash !==
+    calculateCustomRuleOptionalPolicyHash(inputs)
+  ) {
+    throw new Error("authorized evidence optional-policy hash mismatch");
   }
   if (
     calculateCustomRuleEvidenceHash(evidence) !==
@@ -4522,13 +4536,13 @@ function readinessRequirements(
   contract: BusinessRuleContract,
   formulaVariables: string[],
 ): CustomRuleInputRequirement[] {
-  const ids = new Set([
-    ...contract.requiredInputs.map((required) => required.name),
-    ...formulaVariables,
-  ]);
-  return [...ids]
-    .sort((left, right) => left.localeCompare(right))
-    .map((variableId) => ({ variableId, required: true as const }));
+  return buildCustomRuleInputRequirements({
+    requiredVariableIds: contract.requiredInputs.map(
+      (required) => required.name,
+    ),
+    formulaVariableIds: formulaVariables,
+    missingDataPolicy: contract.missingDataPolicy,
+  });
 }
 
 function parameterValues(

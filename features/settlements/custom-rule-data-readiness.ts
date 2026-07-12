@@ -101,6 +101,62 @@ const MAX_REQUIREMENTS = 300;
 const MAX_RUNTIME_VALUE_DEPTH = 20;
 const MAX_RUNTIME_VALUE_NODES = 300;
 
+export function buildCustomRuleInputRequirements(input: {
+  requiredVariableIds: readonly string[];
+  formulaVariableIds: readonly string[];
+  missingDataPolicy: CustomRuleMissingDataPolicy;
+}): CustomRuleInputRequirement[] {
+  const requiredIds = new Set(input.requiredVariableIds);
+  return [...new Set([...requiredIds, ...input.formulaVariableIds])]
+    .sort((left, right) => left.localeCompare(right))
+    .map((variableId) =>
+      requiredIds.has(variableId)
+        ? { variableId, required: true as const }
+        : {
+            variableId,
+            required: false as const,
+            missingDataPolicy: input.missingDataPolicy,
+          },
+    );
+}
+
+export function calculateCustomRuleOptionalPolicyHash(
+  inputs: readonly CustomRuleInputRequirement[],
+): string {
+  const requiredIds = new Set(
+    inputs.flatMap((requirement) =>
+      requirement.required ? [requirement.variableId] : [],
+    ),
+  );
+  const snapshots = inputs.flatMap((requirement) =>
+    !requirement.required && !requiredIds.has(requirement.variableId)
+      ? [
+          {
+            variableId: requirement.variableId,
+            missingDataPolicy: requirement.missingDataPolicy ?? null,
+          },
+        ]
+      : [],
+  );
+  const unique = new Map(
+    snapshots.map((snapshot) => [canonicalJson(snapshot), snapshot]),
+  );
+  const canonical = [...unique.values()].sort(
+    (left, right) =>
+      left.variableId.localeCompare(right.variableId) ||
+      canonicalJson(left.missingDataPolicy).localeCompare(
+        canonicalJson(right.missingDataPolicy),
+      ),
+  );
+  return createHash("sha256").update(canonicalJson(canonical)).digest("hex");
+}
+
+export function isCustomRuleExplicitDefaultForbiddenVariable(
+  variableId: string,
+): boolean {
+  return EXPLICIT_DEFAULT_FORBIDDEN_VARIABLES.has(variableId);
+}
+
 export function analyzeCustomRuleDataReadiness(unsafeInput: {
   catalog: CustomRuleVariableCatalog;
   inputs: readonly CustomRuleInputRequirement[];
@@ -292,7 +348,7 @@ function evaluateInputReadiness(input: {
             : "已明确：该变量缺失时阻断整个结算批次。",
       });
     case "use_explicit_default":
-      if (EXPLICIT_DEFAULT_FORBIDDEN_VARIABLES.has(variable.id)) {
+      if (isCustomRuleExplicitDefaultForbiddenVariable(variable.id)) {
         return evaluatedVariable({
           requirement: input.requirement,
           variable,

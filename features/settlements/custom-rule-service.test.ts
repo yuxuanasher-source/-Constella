@@ -22,7 +22,11 @@ import type {
   SettlementStructuredGateway,
 } from "./custom-rule-ai";
 import type { BusinessRuleContract } from "./custom-rule-contract";
-import { analyzeCustomRuleDataReadiness } from "./custom-rule-data-readiness";
+import {
+  analyzeCustomRuleDataReadiness,
+  calculateCustomRuleOptionalPolicyHash,
+  type CustomRuleInputRequirement,
+} from "./custom-rule-data-readiness";
 import type {
   CreateCustomRuleDraftInput,
   CreatedCustomRuleDraft,
@@ -2851,12 +2855,14 @@ describe("custom rule authoring service", () => {
       actor,
       CONVERSATION_ID,
     );
-    expect(harness.evidencePort.loadAuthorizedEvidence).toHaveBeenCalledWith({
-      actor,
-      organizationId: ORGANIZATION_ID,
-      projectId: PROJECT_ID,
-      selection: safeSelection(),
-    });
+    expect(harness.evidencePort.loadAuthorizedEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor,
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        selection: safeSelection(),
+      }),
+    );
     expect(harness.simulationInputs).toHaveLength(1);
     expect(Object.isFrozen(harness.simulationInputs[0].records)).toBe(true);
     expect(harness.simulationInputs[0].provenance).toMatchObject({
@@ -2865,6 +2871,30 @@ describe("custom rule authoring service", () => {
       actorId: USER_ID,
       selectionToken: "selection-token-0001",
     });
+  });
+
+  it("classifies formula-only inputs as optional for confirmation and existing-draft recovery", async () => {
+    const harness = createHarness([optionalFormulaOutput()]);
+    const previous = harness.repository.seedDraft(confirmableDraft());
+    const confirmation = confirmInput(previous);
+
+    await harness.service.confirmContract(confirmation);
+    await harness.service.confirmContract(confirmation);
+
+    expect(harness.readinessInputs).toHaveLength(2);
+    for (const inputs of harness.readinessInputs) {
+      expect(inputs).toEqual([
+        {
+          variableId: "evidence_level",
+          required: false,
+          missingDataPolicy: { action: "route_item_to_review" },
+        },
+        { variableId: "system_minutes", required: true },
+      ]);
+    }
+    expect(harness.evidenceInputs.map((input) => input.inputs)).toEqual(
+      harness.readinessInputs,
+    );
   });
 
   it("returns an idempotent simulated success for the same durable confirmation key", async () => {
@@ -3081,6 +3111,21 @@ describe("custom rule authoring service", () => {
       expect(harness.repository.createDraftCalls).toHaveLength(0);
       expect(harness.conversation.failTurn).toHaveBeenCalledTimes(1);
     }
+  });
+
+  it("rejects an adapter-forged optional-policy snapshot before simulation", async () => {
+    const harness = createHarness([optionalFormulaOutput()], {
+      evidenceFailure: "optional_policy_hash",
+    });
+    const draft = harness.repository.seedDraft(confirmableDraft());
+
+    await expect(
+      harness.service.confirmContract(confirmInput(draft)),
+    ).rejects.toMatchObject({ code: "simulation_failed" });
+    expect(harness.evidencePort.loadAuthorizedEvidence).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(harness.simulationInputs).toHaveLength(0);
   });
 
   it("blocks confirmation when an AI expected result disagrees with deterministic execution", async () => {
@@ -3348,7 +3393,11 @@ function createHarness(
     atomicFailedFailure?: "before_write" | "after_commit" | "partial";
     transientDraftReadbackMisses?: number;
     transientSimulationReadbackMisses?: number;
-    evidenceFailure?: "scope" | "hash" | "selection_token";
+    evidenceFailure?:
+      | "scope"
+      | "hash"
+      | "selection_token"
+      | "optional_policy_hash";
     currentMarginCents?: string;
     failFailTurn?: boolean;
     acceptedSetupFailure?:
@@ -3377,6 +3426,10 @@ function createHarness(
   } = {},
 ) {
   const events: string[] = [];
+  const readinessInputs: CustomRuleInputRequirement[][] = [];
+  const evidenceInputs: Array<
+    Parameters<AuthorizedSimulationEvidencePort["loadAuthorizedEvidence"]>[0]
+  > = [];
   let acceptedContent = "";
   let turnNumber = 0;
   const capturedSnapshots = new Map<
@@ -3811,6 +3864,7 @@ function createHarness(
   const evidencePort: AuthorizedSimulationEvidencePort = {
     loadAuthorizedEvidence: vi.fn(async (input) => {
       events.push("evidence.loadAuthorizedEvidence");
+      evidenceInputs.push(structuredClone(input));
       const evidence = structuredClone(
         authorizedEvidence(input, options.currentMarginCents ?? "5000"),
       );
@@ -3820,6 +3874,10 @@ function createHarness(
         evidence.provenance.evidenceHash = "f".repeat(64);
       } else if (options.evidenceFailure === "selection_token") {
         evidence.provenance.selectionToken = "selection-token-other";
+      } else if (options.evidenceFailure === "optional_policy_hash") {
+        evidence.provenance.optionalPolicyHash = "f".repeat(64);
+        evidence.provenance.evidenceHash =
+          calculateCustomRuleEvidenceHash(evidence);
       }
       return deepFreezeFixture(evidence);
     }),
@@ -3848,7 +3906,10 @@ function createHarness(
     repository,
     catalog: catalogPort,
     evidence: evidencePort,
-    analyzeReadiness: analyzeCustomRuleDataReadiness,
+    analyzeReadiness: (input) => {
+      readinessInputs.push(structuredClone([...input.inputs]));
+      return analyzeCustomRuleDataReadiness(input);
+    },
     simulate: (input) => {
       simulationInputs.push(input);
       return simulateCustomSettlementRule(input);
@@ -3863,6 +3924,8 @@ function createHarness(
     catalogPort,
     evidencePort,
     simulationInputs,
+    readinessInputs,
+    evidenceInputs,
     events,
     seedConversationMessage(message: AiConversationMessageDto) {
       messages.set(message.id, structuredClone(message));
@@ -4408,7 +4471,11 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
       atomicFailedFailure?: "before_write" | "after_commit" | "partial";
       transientDraftReadbackMisses?: number;
       transientSimulationReadbackMisses?: number;
-      evidenceFailure?: "scope" | "hash" | "selection_token";
+      evidenceFailure?:
+        | "scope"
+        | "hash"
+        | "selection_token"
+        | "optional_policy_hash";
       currentMarginCents?: string;
       failFailTurn?: boolean;
       acceptedSetupFailure?:
@@ -4860,6 +4927,22 @@ function confirmedFormulaOutput() {
   };
 }
 
+function optionalFormulaOutput() {
+  const output = confirmedFormulaOutput();
+  return {
+    ...output,
+    formulaProposal:
+      "payable = money_result({ final: if(evidence_level == evidence_level, yuan(20), yuan(20)) })",
+    testCases: output.testCases.map((testCase) => ({
+      ...testCase,
+      inputs: {
+        ...testCase.inputs,
+        evidence_level: { type: "string", value: "green" },
+      },
+    })),
+  };
+}
+
 function clarifyingDraft(
   options: {
     unresolvedAmbiguities?: [
@@ -5066,6 +5149,9 @@ function authorizedEvidence(
       actorId: input.actor.userId,
       selectionToken: input.selection.selectionToken,
       evidenceHash: "0".repeat(64),
+      optionalPolicyHash: calculateCustomRuleOptionalPolicyHash(
+        input.inputs ?? [],
+      ),
       immutableSourceVersions: [
         {
           kind: "immutable",

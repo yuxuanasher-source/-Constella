@@ -218,6 +218,7 @@ const evidenceProvenanceSchema = z.strictObject({
   actorId: canonicalTextSchema(500),
   selectionToken: canonicalTextSchema(500).regex(/^[A-Za-z0-9._:-]+$/u),
   evidenceHash: hashSchema,
+  optionalPolicyHash: hashSchema,
   immutableSourceVersions: z.array(immutableSourceVersionSchema).max(MAX_RECORDS),
 });
 const simulationEvidenceSchema = z.strictObject({
@@ -357,6 +358,7 @@ export type CustomRuleSimulationInput = {
     actorId: string;
     selectionToken: string;
     evidenceHash: string;
+    optionalPolicyHash: string;
     immutableSourceVersions: Array<{
       kind: "immutable";
       source: string;
@@ -583,7 +585,13 @@ export function simulateCustomSettlementRule(
     left.recordId.localeCompare(right.recordId),
   );
   const dataSelectionHash = hashDataSelection(input);
+  const batchBlocked = sortedRecords.some((record) =>
+    record.missingInputs.some(
+      (missing) => missing.policy.action === "block_batch",
+    ),
+  );
   const verified =
+    !batchBlocked &&
     input.sampleSource.kind !== "synthetic_scenarios" &&
     input.readiness.historicalVerification === "verified" &&
     sortedRecords.length > 0 &&
@@ -602,54 +610,63 @@ export function simulateCustomSettlementRule(
   let blockedCount = 0;
   let redEvidencePriced = false;
 
-  for (const [index, record] of sortedRecords.entries()) {
-    const missingDecision = applyMissingPolicies(
-      record.variables,
-      record.missingInputs,
-    );
-    if (record.missingInputs.length > 0) uncoveredCount += 1;
-    if (missingDecision.outcome === "review_routed") {
-      reviewRoutedCount += 1;
-      continue;
-    }
-    if (missingDecision.outcome === "blocked") {
-      blockedCount += 1;
-      continue;
-    }
+  if (batchBlocked) {
+    uncoveredCount = sortedRecords.filter(
+      (record) => record.missingInputs.length > 0,
+    ).length;
+    blockedCount = sortedRecords.length;
+  }
 
-    const execution = executeAndExplain(
-      input.compiledAst,
-      missingDecision.variables,
-      input.parameters,
-      runtime,
-    );
-    const nextAmount = BigInt(execution.result.componentsCents.final);
-    newTotal = checkedAdd(newTotal, nextAmount);
-    evaluatedCount += 1;
-    if (nextAmount === BigInt(0)) zeroPayCount += 1;
-    if (
-      nextAmount > BigInt(0) &&
-      missingDecision.variables.evidence_level?.type === "string" &&
-      missingDecision.variables.evidence_level.value === "red"
-    ) {
-      redEvidencePriced = true;
-    }
-
-    if (verified) {
-      if (record.currentRuleResult === null) {
-        throw new CustomRuleSimulationError(
-          "verified records require a current-rule result",
-        );
+  if (!batchBlocked) {
+    for (const [index, record] of sortedRecords.entries()) {
+      const missingDecision = applyMissingPolicies(
+        record.variables,
+        record.missingInputs,
+      );
+      if (record.missingInputs.length > 0) uncoveredCount += 1;
+      if (missingDecision.outcome === "review_routed") {
+        reviewRoutedCount += 1;
+        continue;
       }
-      const previousAmount = parseCurrentRuleResult(record.currentRuleResult);
-      unitSources.add(record.currentRuleResult.unitSource);
-      oldTotal = checkedAdd(oldTotal, previousAmount);
-      const delta = nextAmount - previousAmount;
-      if (delta !== BigInt(0)) {
-        changes.push({
-          bucket: `authorized_ordinal:${String(index + 1).padStart(6, "0")}`,
-          delta,
-        });
+      if (missingDecision.outcome === "blocked") {
+        blockedCount += 1;
+        continue;
+      }
+
+      const execution = executeAndExplain(
+        input.compiledAst,
+        missingDecision.variables,
+        input.parameters,
+        runtime,
+      );
+      const nextAmount = BigInt(execution.result.componentsCents.final);
+      newTotal = checkedAdd(newTotal, nextAmount);
+      evaluatedCount += 1;
+      if (nextAmount === BigInt(0)) zeroPayCount += 1;
+      if (
+        nextAmount > BigInt(0) &&
+        missingDecision.variables.evidence_level?.type === "string" &&
+        missingDecision.variables.evidence_level.value === "red"
+      ) {
+        redEvidencePriced = true;
+      }
+
+      if (verified) {
+        if (record.currentRuleResult === null) {
+          throw new CustomRuleSimulationError(
+            "verified records require a current-rule result",
+          );
+        }
+        const previousAmount = parseCurrentRuleResult(record.currentRuleResult);
+        unitSources.add(record.currentRuleResult.unitSource);
+        oldTotal = checkedAdd(oldTotal, previousAmount);
+        const delta = nextAmount - previousAmount;
+        if (delta !== BigInt(0)) {
+          changes.push({
+            bucket: `authorized_ordinal:${String(index + 1).padStart(6, "0")}`,
+            delta,
+          });
+        }
       }
     }
   }
@@ -918,6 +935,7 @@ function hashEvidence(
       provenance: {
         actorId: evidence.provenance.actorId,
         organizationId: evidence.provenance.organizationId,
+        optionalPolicyHash: evidence.provenance.optionalPolicyHash,
         projectId: evidence.provenance.projectId,
         selectionToken: evidence.provenance.selectionToken,
         immutableSourceVersions: [
