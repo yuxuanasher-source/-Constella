@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -232,26 +234,83 @@ describe("custom rule route context", () => {
     expect(mocks.createAdminClient).not.toHaveBeenCalled();
   });
 
-  it("fails safely when generic conversation storage is unavailable", async () => {
+  it("keeps the RLS catalog available when generic conversation storage is unavailable", async () => {
     mocks.createAdminClient.mockReturnValue(null);
     const { getCustomRuleRouteContext } =
       await import("./custom-rule-route-context");
 
-    const response = await getCustomRuleRouteContext();
+    const context = await getCustomRuleRouteContext();
 
-    expect(response).toBeInstanceOf(Response);
-    if (!(response instanceof Response)) throw new Error("Expected response");
-    expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({
-      error: {
-        code: "CUSTOM_RULE_STORAGE_UNAVAILABLE",
-        message: "Settlement rule authoring storage is unavailable",
-        retryable: true,
-      },
+    expect(context).not.toBeInstanceOf(Response);
+    if (context instanceof Response) throw new Error("Expected route context");
+    await context.catalog.getCatalog({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      scope: "payable",
+      executionGrain: "report",
+    });
+    expect(mocks.createAdminClient).not.toHaveBeenCalled();
+
+    let caught: unknown;
+    try {
+      void context.conversation;
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      code: "CUSTOM_RULE_STORAGE_UNAVAILABLE",
+      status: 503,
+      retryable: true,
     });
   });
 
-  it("composes fresh scoped services without a mutable singleton", async () => {
+  it("keeps the RLS catalog available when AI providers are unconfigured", async () => {
+    mocks.createProviders.mockReturnValue([]);
+    const { getCustomRuleRouteContext } =
+      await import("./custom-rule-route-context");
+
+    const context = await getCustomRuleRouteContext();
+
+    expect(context).not.toBeInstanceOf(Response);
+    if (context instanceof Response) throw new Error("Expected route context");
+    await context.catalog.getCatalog({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      scope: "payable",
+      executionGrain: "report",
+    });
+    expect(mocks.createProviders).not.toHaveBeenCalled();
+
+    let caught: unknown;
+    try {
+      void context.authoring;
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      code: "CUSTOM_RULE_AI_UNAVAILABLE",
+      status: 503,
+      retryable: true,
+    });
+  });
+
+  it("builds evidence and simulation without admin or AI dependencies", async () => {
+    mocks.createAdminClient.mockReturnValue(null);
+    mocks.createProviders.mockReturnValue([]);
+    const { getCustomRuleRouteContext } =
+      await import("./custom-rule-route-context");
+
+    const context = await getCustomRuleRouteContext();
+
+    expect(context).not.toBeInstanceOf(Response);
+    if (context instanceof Response) throw new Error("Expected route context");
+    expect(context.evidence).toBeDefined();
+    expect(context.simulation).toBeDefined();
+    expect(mocks.createAdminClient).not.toHaveBeenCalled();
+    expect(mocks.createProviders).not.toHaveBeenCalled();
+  });
+
+  it("memoizes specialized services per request without a mutable singleton", async () => {
     const { getCustomRuleRouteContext } =
       await import("./custom-rule-route-context");
 
@@ -263,9 +322,20 @@ describe("custom rule route context", () => {
     if (first instanceof Response || second instanceof Response) {
       throw new Error("Expected route contexts");
     }
-    expect(first.authoring).not.toBe(second.authoring);
-    expect(first.conversation).not.toBe(second.conversation);
     expect(mocks.repositoryConstructor).toHaveBeenCalledTimes(2);
+    expect(mocks.createAdminClient).not.toHaveBeenCalled();
+    expect(mocks.createProviders).not.toHaveBeenCalled();
+    expect(mocks.createConversationPersistence).not.toHaveBeenCalled();
+    expect(mocks.createConversationService).not.toHaveBeenCalled();
+    expect(mocks.createAuthoringService).not.toHaveBeenCalled();
+
+    const firstAuthoring = first.authoring;
+    expect(first.authoring).toBe(firstAuthoring);
+    const secondAuthoring = second.authoring;
+    expect(second.authoring).toBe(secondAuthoring);
+    expect(firstAuthoring).not.toBe(secondAuthoring);
+    expect(first.conversation).not.toBe(second.conversation);
+    expect(mocks.createAdminClient).toHaveBeenCalledTimes(2);
     expect(mocks.createConversationPersistence).toHaveBeenCalledTimes(2);
     expect(mocks.createConversationService).toHaveBeenCalledTimes(2);
     expect(mocks.createProviders).toHaveBeenCalledTimes(2);
@@ -428,270 +498,6 @@ describe("custom rule route context", () => {
   });
 });
 
-type QueryChain = {
-  select: ReturnType<typeof vi.fn>;
-  eq: ReturnType<typeof vi.fn>;
-  neq: ReturnType<typeof vi.fn>;
-  gt: ReturnType<typeof vi.fn>;
-  gte: ReturnType<typeof vi.fn>;
-  lte: ReturnType<typeof vi.fn>;
-  lt: ReturnType<typeof vi.fn>;
-  is: ReturnType<typeof vi.fn>;
-  in: ReturnType<typeof vi.fn>;
-  not: ReturnType<typeof vi.fn>;
-  order: ReturnType<typeof vi.fn>;
-  limit: ReturnType<typeof vi.fn>;
-  range: ReturnType<typeof vi.fn>;
-  returns: ReturnType<typeof vi.fn>;
-};
-
-type TableQueryMock = QueryChain & { createQuery(): QueryChain };
-
-function tableQuery(
-  fixtureData: unknown[] | unknown[][],
-  options: { error?: unknown; enforceFilters?: boolean } = {},
-): TableQueryMock {
-  const rows = (
-    Array.isArray(fixtureData[0])
-      ? (fixtureData as unknown[][]).flat()
-      : fixtureData
-  ).filter((row) => row !== undefined);
-  const tracker = {
-    select: vi.fn(),
-    eq: vi.fn(),
-    neq: vi.fn(),
-    gt: vi.fn(),
-    gte: vi.fn(),
-    lte: vi.fn(),
-    lt: vi.fn(),
-    is: vi.fn(),
-    in: vi.fn(),
-    not: vi.fn(),
-    order: vi.fn(),
-    limit: vi.fn(),
-    range: vi.fn(),
-    returns: vi.fn(),
-  } as QueryChain;
-
-  const createQuery = (): QueryChain => {
-    const filters: Array<(row: unknown) => boolean> = [];
-    let selectedColumns: string | null = null;
-    let orderedColumn: string | null = null;
-    let ascending = true;
-    let maximumRows: number | null = null;
-    let selectedRange: { from: number; to: number } | null = null;
-    let exactCount = false;
-    const query = {} as QueryChain;
-    const filter = (
-      spy: ReturnType<typeof vi.fn>,
-      column: string,
-      predicate: (value: unknown) => boolean,
-      args: unknown[],
-    ) => {
-      recordMockCall(spy, column, ...args);
-      if (options.enforceFilters !== false) {
-        filters.push((row) => valuesAtPath(row, column).some(predicate));
-      }
-      return query;
-    };
-
-    query.select = vi.fn(
-      (columns: string, selectOptions?: { count?: string }) => {
-        recordMockCall(tracker.select, columns, selectOptions);
-        selectedColumns = columns;
-        exactCount = selectOptions?.count === "exact";
-        return query;
-      },
-    );
-    query.eq = vi.fn((column: string, value: unknown) =>
-      filter(tracker.eq, column, (candidate) => candidate === value, [value]),
-    );
-    query.neq = vi.fn((column: string, value: unknown) =>
-      filter(tracker.neq, column, (candidate) => candidate !== value, [value]),
-    );
-    query.gt = vi.fn((column: string, value: unknown) =>
-      filter(
-        tracker.gt,
-        column,
-        (candidate) => compareValues(candidate, value) > 0,
-        [value],
-      ),
-    );
-    query.gte = vi.fn((column: string, value: unknown) =>
-      filter(
-        tracker.gte,
-        column,
-        (candidate) => compareValues(candidate, value) >= 0,
-        [value],
-      ),
-    );
-    query.lte = vi.fn((column: string, value: unknown) =>
-      filter(
-        tracker.lte,
-        column,
-        (candidate) => compareValues(candidate, value) <= 0,
-        [value],
-      ),
-    );
-    query.lt = vi.fn((column: string, value: unknown) =>
-      filter(
-        tracker.lt,
-        column,
-        (candidate) => compareValues(candidate, value) < 0,
-        [value],
-      ),
-    );
-    query.is = vi.fn((column: string, value: unknown) =>
-      filter(tracker.is, column, (candidate) => candidate === value, [value]),
-    );
-    query.in = vi.fn((column: string, values: unknown[]) => {
-      const allowed = new Set(values);
-      return filter(tracker.in, column, (candidate) => allowed.has(candidate), [
-        values,
-      ]);
-    });
-    query.not = vi.fn((column: string, operator: string, value: unknown) => {
-      recordMockCall(tracker.not, column, operator, value);
-      if (options.enforceFilters !== false) {
-        filters.push((row) => {
-          const candidates = valuesAtPath(row, column);
-          if (operator === "is" && value === null) {
-            return candidates.some((candidate) => candidate !== null);
-          }
-          return candidates.every((candidate) => candidate !== value);
-        });
-      }
-      return query;
-    });
-    query.order = vi.fn(
-      (column: string, orderOptions?: { ascending?: boolean }) => {
-        recordMockCall(tracker.order, column, orderOptions);
-        orderedColumn = column;
-        ascending = orderOptions?.ascending !== false;
-        return query;
-      },
-    );
-    query.limit = vi.fn((value: number) => {
-      recordMockCall(tracker.limit, value);
-      maximumRows = value;
-      return query;
-    });
-    query.range = vi.fn((from: number, to: number) => {
-      recordMockCall(tracker.range, from, to);
-      selectedRange = { from, to };
-      return query;
-    });
-    query.returns = vi.fn(async () => {
-      recordMockCall(tracker.returns);
-      if (options.error) {
-        return { data: null, error: options.error, count: null };
-      }
-      let selected = rows.filter((row) =>
-        filters.every((predicate) => predicate(row)),
-      );
-      const count = selected.length;
-      if (orderedColumn) {
-        selected = [...selected].sort((left, right) => {
-          const comparison = compareValues(
-            valuesAtPath(left, orderedColumn ?? "")[0],
-            valuesAtPath(right, orderedColumn ?? "")[0],
-          );
-          return ascending ? comparison : -comparison;
-        });
-      }
-      if (selectedRange) {
-        selected = selected.slice(selectedRange.from, selectedRange.to + 1);
-      }
-      if (maximumRows !== null) selected = selected.slice(0, maximumRows);
-      return {
-        data: selectedColumns
-          ? selected.map((row) =>
-              projectSelectedRow(row, selectedColumns ?? ""),
-            )
-          : selected,
-        error: null,
-        count: exactCount ? count : null,
-      };
-    });
-    return query;
-  };
-
-  return Object.assign(tracker, { createQuery });
-}
-
-function recordMockCall(
-  mock: ReturnType<typeof vi.fn>,
-  ...args: unknown[]
-): void {
-  (mock as unknown as (...values: unknown[]) => unknown)(...args);
-}
-
-function valuesAtPath(row: unknown, path: string): unknown[] {
-  let values = [row];
-  for (const segment of path.split(".")) {
-    values = values.flatMap((value) => {
-      if (Array.isArray(value)) return value;
-      if (!value || typeof value !== "object") return [];
-      const next = Reflect.get(value, segment);
-      return Array.isArray(next) ? next : [next];
-    });
-  }
-  return values;
-}
-
-function compareValues(left: unknown, right: unknown): number {
-  if (typeof left === "number" && typeof right === "number") {
-    return left - right;
-  }
-  if (
-    typeof left === "string" &&
-    typeof right === "string" &&
-    /^\d{4}-\d{2}-\d{2}(?:T|$)/u.test(left) &&
-    /^\d{4}-\d{2}-\d{2}(?:T|$)/u.test(right)
-  ) {
-    return Date.parse(left) - Date.parse(right);
-  }
-  return String(left).localeCompare(String(right));
-}
-
-function projectSelectedRow(row: unknown, columns: string): unknown {
-  if (!row || typeof row !== "object") return row;
-  const projected: Record<string, unknown> = {};
-  for (const token of splitSelectedColumns(columns)) {
-    const key = token.split("!", 1)[0]?.split("(", 1)[0]?.trim();
-    if (key && Object.prototype.hasOwnProperty.call(row, key)) {
-      const value = Reflect.get(row, key);
-      const opening = token.indexOf("(");
-      const nestedColumns =
-        opening >= 0 && token.endsWith(")")
-          ? token.slice(opening + 1, -1)
-          : null;
-      projected[key] = nestedColumns
-        ? Array.isArray(value)
-          ? value.map((item) => projectSelectedRow(item, nestedColumns))
-          : projectSelectedRow(value, nestedColumns)
-        : value;
-    }
-  }
-  return projected;
-}
-
-function splitSelectedColumns(columns: string): string[] {
-  const tokens: string[] = [];
-  let start = 0;
-  let depth = 0;
-  for (const [index, character] of [...columns].entries()) {
-    if (character === "(") depth += 1;
-    if (character === ")") depth -= 1;
-    if (character === "," && depth === 0) {
-      tokens.push(columns.slice(start, index).trim());
-      start = index + 1;
-    }
-  }
-  tokens.push(columns.slice(start).trim());
-  return tokens.filter(Boolean);
-}
-
 function evidenceDraft(overrides: Record<string, unknown> = {}) {
   return {
     id: "55555555-5555-4555-8555-555555555555",
@@ -821,6 +627,14 @@ function selection() {
   };
 }
 
+function simulationUserExample(index: number) {
+  return {
+    id: `user-example-${index}`,
+    inputs: { system_minutes: { type: "integer", value: index } },
+    expectedResult: { type: "money_cents", amountCents: index },
+  };
+}
+
 function fixtureUuid(index: number, family = "1") {
   return `${family.repeat(8)}-0000-4000-8000-${String(index).padStart(12, "0")}`;
 }
@@ -836,36 +650,55 @@ async function evidenceHarness(input?: {
   enforceFilters?: boolean;
   enforceReportFilters?: boolean;
   catalog?: unknown;
+  snapshot?: unknown;
+  rpcError?: unknown;
+  snapshotAt?: string;
 }) {
+  const reportRows = flattenFixtureRows(input?.reports ?? [approvedReport()]);
   const itemRows = [
     ...flattenFixtureRows(input?.items ?? [lockedSettlementItem()]),
     ...flattenFixtureRows(input?.pairedItems ?? []),
   ];
   const batchRows =
     input?.batches ?? deriveSettlementBatchesFromItems(itemRows);
-  const queryOptions = { enforceFilters: input?.enforceFilters };
-  const reports = tableQuery(input?.reports ?? [approvedReport()], {
-    enforceFilters: input?.enforceReportFilters ?? input?.enforceFilters,
-  });
-  const items = tableQuery(itemRows, queryOptions);
-  const batches = tableQuery(batchRows, queryOptions);
-  const costs = tableQuery(input?.costs ?? [], queryOptions);
-  const streamers = tableQuery(
+  const costRows = flattenFixtureRows(input?.costs ?? []);
+  const streamerRows = flattenFixtureRows(
     input?.streamers ?? [joinedStreamer()],
-    queryOptions,
   );
+  const draft = input?.draft ?? evidenceDraft();
+  const snapshotRows = selectSnapshotFixtureRows({
+    reports: reportRows,
+    items: itemRows,
+    batches: batchRows,
+    costs: costRows,
+    streamers: streamerRows,
+    draft,
+    enforceFilters: input?.enforceFilters !== false,
+    enforceReportFilters:
+      (input?.enforceReportFilters ?? input?.enforceFilters) !== false,
+  });
+  const snapshot =
+    input?.snapshot ??
+    evidenceSnapshot({
+      reports: snapshotRows.reports,
+      items: snapshotRows.items,
+      batches: snapshotRows.batches,
+      costs: snapshotRows.costs,
+      streamers: snapshotRows.streamers,
+      draft,
+      snapshotAt: input?.snapshotAt,
+    });
   const client = {
-    from: vi.fn((table: string) => {
-      if (table === "live_reports") return reports.createQuery();
-      if (table === "settlement_batches") return batches.createQuery();
-      if (table === "settlement_batch_items") return items.createQuery();
-      if (table === "project_cost_items") return costs.createQuery();
-      if (table === "project_streamers") return streamers.createQuery();
-      throw new Error(`Unexpected table: ${table}`);
+    rpc: vi.fn().mockResolvedValue({
+      data: input?.rpcError ? null : snapshot,
+      error: input?.rpcError ?? null,
+    }),
+    from: vi.fn(() => {
+      throw new Error("Evidence adapter must not issue table reads");
     }),
   };
   const repository = {
-    listDrafts: vi.fn().mockResolvedValue([input?.draft ?? evidenceDraft()]),
+    listDrafts: vi.fn().mockResolvedValue([draft]),
     insertSimulation: vi.fn().mockImplementation(async (simulation) => ({
       id: "78787878-7878-4787-8787-787878787878",
       createdAt: "2026-07-12T06:00:00.000Z",
@@ -880,6 +713,7 @@ async function evidenceHarness(input?: {
         client: unknown;
         repository: unknown;
         catalog: unknown;
+        now?: () => Date;
       }) => {
         authorizeSelection(input: Record<string, unknown>): Promise<{
           selectionToken: string;
@@ -906,17 +740,18 @@ async function evidenceHarness(input?: {
       variables: [],
     }),
   };
-  const adapter = createAdapter({ client, repository, catalog });
+  const adapter = createAdapter({
+    client,
+    repository,
+    catalog,
+    now: () => new Date("2026-07-12T12:00:00.000Z"),
+  });
   return {
     adapter,
     client,
     repository,
     catalog,
-    reports,
-    batches,
-    items,
-    costs,
-    streamers,
+    snapshot,
   };
 }
 
@@ -944,6 +779,280 @@ function deriveSettlementBatchesFromItems(items: unknown[]): unknown[] {
     });
   }
   return [...rowsById.values()];
+}
+
+function selectSnapshotFixtureRows(input: {
+  reports: unknown[];
+  items: unknown[];
+  batches: unknown[];
+  costs: unknown[];
+  streamers: unknown[];
+  draft: unknown;
+  enforceFilters: boolean;
+  enforceReportFilters: boolean;
+}) {
+  if (!input.enforceFilters) {
+    return {
+      reports: input.reports,
+      items: input.items,
+      batches: input.batches,
+      costs: input.costs,
+      streamers: input.streamers,
+    };
+  }
+  const batches = input.batches.filter(
+    (row) =>
+      fixtureValue(row, "organization_id") === ORGANIZATION_ID &&
+      fixtureValue(row, "project_id") === PROJECT_ID &&
+      fixtureValue(row, "status") === "locked" &&
+      String(fixtureValue(row, "period_start")) <= "2026-07-10" &&
+      String(fixtureValue(row, "period_end")) >= "2026-07-01",
+  );
+  const batchIds = new Set(
+    batches.map((row) => String(fixtureValue(row, "id"))),
+  );
+  const items = input.items.filter((row) =>
+    batchIds.has(String(fixtureValue(row, "settlement_batch_id"))),
+  );
+  const linkedReportIds = new Set(
+    items.flatMap((row) => {
+      const id = fixtureValue(row, "live_report_id");
+      return typeof id === "string" ? [id] : [];
+    }),
+  );
+  const contract =
+    input.draft && typeof input.draft === "object"
+      ? Reflect.get(input.draft, "businessContract")
+      : null;
+  const timezone =
+    contract && typeof contract === "object"
+      ? String(Reflect.get(contract, "businessTimezone") ?? "Asia/Shanghai")
+      : "Asia/Shanghai";
+  const reports = input.enforceReportFilters
+    ? input.reports.filter((row) => {
+        if (fixtureValue(row, "status") !== "approved") return false;
+        const id = fixtureValue(row, "id");
+        if (typeof id === "string" && linkedReportIds.has(id)) return true;
+        const businessDate = fixtureBusinessDate(
+          fixtureValue(row, "reviewed_at"),
+          timezone,
+        );
+        return businessDate >= "2026-07-01" && businessDate <= "2026-07-10";
+      })
+    : input.reports;
+  const reportIds = new Set(
+    reports.map((row) => String(fixtureValue(row, "id"))),
+  );
+  const costs = input.costs.filter((row) => {
+    if (fixtureValue(row, "status") !== "confirmed") return false;
+    const reportId = fixtureValue(row, "live_report_id");
+    const batchId = fixtureValue(row, "settlement_batch_id");
+    if (typeof reportId === "string" && reportIds.has(reportId)) return true;
+    if (typeof batchId === "string" && batchIds.has(batchId)) return true;
+    if (reportId !== null || batchId !== null) return false;
+    const businessDate = fixtureBusinessDate(
+      fixtureValue(row, "created_at"),
+      timezone,
+    );
+    return businessDate >= "2026-07-01" && businessDate <= "2026-07-10";
+  });
+  const selectedStreamerIds = new Set<string>();
+  for (const row of [...reports, ...items, ...costs]) {
+    const id = fixtureValue(row, "streamer_id");
+    if (typeof id === "string") selectedStreamerIds.add(id);
+  }
+  const streamers = input.streamers.filter((row) =>
+    selectedStreamerIds.has(String(fixtureValue(row, "streamer_id"))),
+  );
+  return { reports, items, batches, costs, streamers };
+}
+
+function fixtureValue(row: unknown, key: string): unknown {
+  return row && typeof row === "object" ? Reflect.get(row, key) : undefined;
+}
+
+function fixtureBusinessDate(value: unknown, timezone: string): string {
+  if (typeof value !== "string") return "";
+  const instant = new Date(value);
+  if (!Number.isFinite(instant.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(instant);
+  const part = (type: "year" | "month" | "day") =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function evidenceSnapshot(input: {
+  reports: unknown[];
+  items: unknown[];
+  batches: unknown[];
+  costs: unknown[];
+  streamers: unknown[];
+  draft: unknown;
+  snapshotAt?: string;
+}) {
+  const contract =
+    input.draft && typeof input.draft === "object"
+      ? Reflect.get(input.draft, "businessContract")
+      : null;
+  const scope =
+    contract && typeof contract === "object"
+      ? Reflect.get(contract, "scope")
+      : "payable";
+  const businessTimezone =
+    contract && typeof contract === "object"
+      ? String(Reflect.get(contract, "businessTimezone") ?? "Asia/Shanghai")
+      : "Asia/Shanghai";
+  const batches: Array<Record<string, unknown>> = input.batches.map((row) => {
+    const source: Record<string, unknown> =
+      row && typeof row === "object" ? { ...row } : {};
+    const version = fixtureHash(source);
+    return {
+      ...source,
+      title: source.title ?? "Settlement batch",
+      created_at: source.created_at ?? "2026-07-01T00:00:00.000Z",
+      updated_at: source.updated_at ?? "2026-07-10T00:00:00.000Z",
+      computed_amount: canonicalNumericFixture(
+        Reflect.get(source, "computed_amount") ?? "0",
+      ),
+      manual_amount: canonicalNumericFixture(
+        Reflect.get(source, "manual_amount") ?? "0",
+      ),
+      adjustment_amount: canonicalNumericFixture(
+        Reflect.get(source, "adjustment_amount") ?? "0",
+      ),
+      version,
+    };
+  });
+  const batchVersions = new Map(
+    batches.map((batch) => [String(batch.id), String(batch.version)]),
+  );
+  const items = input.items.map((row) => {
+    const source: Record<string, unknown> =
+      row && typeof row === "object" ? { ...row } : {};
+    const batchId = String(Reflect.get(source, "settlement_batch_id") ?? "");
+    const batch = batches.find(
+      (candidate) => fixtureValue(candidate, "id") === batchId,
+    );
+    return {
+      item_type: "live_report",
+      evidence_level: "green",
+      created_at: "2026-07-10T00:00:00.000Z",
+      ...source,
+      computed_amount: canonicalNumericFixture(
+        Reflect.get(source, "computed_amount"),
+      ),
+      manual_amount: canonicalNumericFixture(
+        Reflect.get(source, "manual_amount"),
+      ),
+      adjustment_amount: canonicalNumericFixture(
+        Reflect.get(source, "adjustment_amount"),
+      ),
+      settlement_batches: {
+        id: fixtureValue(batch, "id"),
+        status: fixtureValue(batch, "status"),
+        batch_type: fixtureValue(batch, "batch_type"),
+        locked_at: fixtureValue(batch, "locked_at"),
+        period_start: fixtureValue(batch, "period_start"),
+        period_end: fixtureValue(batch, "period_end"),
+        version: batchVersions.get(batchId) ?? "0".repeat(64),
+      },
+    };
+  });
+  const costs = input.costs.map((row) => ({
+    streamer_id: null,
+    ...(row && typeof row === "object" ? row : {}),
+  }));
+  const projectStreamers: Array<Record<string, unknown>> = input.streamers.map(
+    (row) => ({
+      ...(row && typeof row === "object" ? row : {}),
+      status: fixtureValue(row, "status") ?? "active",
+      hourly_rate: canonicalNumericFixture(fixtureValue(row, "hourly_rate")),
+      base_salary: canonicalNumericFixture(fixtureValue(row, "base_salary")),
+    }),
+  );
+  const streamerIds = new Set<string>();
+  for (const row of [...input.reports, ...items, ...costs]) {
+    if (!row || typeof row !== "object") continue;
+    const streamerId = Reflect.get(row, "streamer_id");
+    if (typeof streamerId === "string") streamerIds.add(streamerId);
+  }
+  const streamers = [...streamerIds]
+    .sort((left, right) => left.localeCompare(right))
+    .map((id) => {
+      const projectStreamer = projectStreamers.find(
+        (row) => fixtureValue(row, "streamer_id") === id,
+      );
+      const relation = fixtureValue(projectStreamer, "streamers");
+      const normalizedRelation = Array.isArray(relation)
+        ? relation[0]
+        : relation;
+      return {
+        id,
+        organization_id: ORGANIZATION_ID,
+        source_type:
+          normalizedRelation && typeof normalizedRelation === "object"
+            ? Reflect.get(normalizedRelation, "source_type")
+            : "external",
+      };
+    });
+  const sourceCount =
+    batches.length +
+    items.length +
+    input.reports.length * 2 +
+    costs.length +
+    projectStreamers.length +
+    streamers.length;
+  const payload = {
+    schema_version: 1,
+    snapshot_version: 1,
+    captured_at: input.snapshotAt ?? "2026-07-12T12:00:00.000Z",
+    organization_id: ORGANIZATION_ID,
+    project_id: PROJECT_ID,
+    actor_id: USER_ID,
+    scope,
+    period_start: "2026-07-01",
+    period_end: "2026-07-10",
+    business_timezone: businessTimezone,
+    business_timezone_confirmed: true,
+    business_timezone_source: "contract_default",
+    source_count: sourceCount,
+    project: {
+      id: PROJECT_ID,
+      organization_id: ORGANIZATION_ID,
+      code: "PRJ-001",
+      name: "Settlement project",
+      status: "active",
+      updated_at: "2026-07-12T11:59:00.000Z",
+      business_timezone: businessTimezone,
+      business_timezone_confirmed: true,
+      business_timezone_source: "contract_default",
+    },
+    settlement_batches: batches,
+    settlement_batch_items: items,
+    live_reports: input.reports,
+    project_cost_items: costs,
+    project_streamers: projectStreamers,
+    streamers,
+  };
+  return { ...payload, snapshot_hash: fixtureHash(payload) };
+}
+
+function fixtureHash(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function canonicalNumericFixture(value: unknown): unknown {
+  if (typeof value !== "string" || !/^-?\d+(?:\.\d+)?$/u.test(value)) {
+    return value;
+  }
+  const [whole, fraction = ""] = value.split(".");
+  const trimmedFraction = fraction.replace(/0+$/u, "");
+  return trimmedFraction ? `${whole}.${trimmedFraction}` : whole;
 }
 
 function authorizationInput(
@@ -1061,6 +1170,149 @@ function periodBoundaryFixture(
 }
 
 describe("Supabase custom-rule authorized evidence adapter", () => {
+  it("reads exactly one bounded lock-consistent snapshot RPC", async () => {
+    const harness = await evidenceHarness();
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(harness.client.rpc).toHaveBeenCalledTimes(1);
+    expect(harness.client.rpc).toHaveBeenCalledWith(
+      "read_custom_settlement_evidence_snapshot",
+      {
+        p_organization_id: ORGANIZATION_ID,
+        p_project_id: PROJECT_ID,
+        p_scope: "payable",
+        p_period_start: "2026-07-01",
+        p_period_end: "2026-07-10",
+        p_max_sources: 10_000,
+      },
+    );
+    expect(harness.client.from).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["malformed", () => ({})],
+    [
+      "fractured",
+      (snapshot: Record<string, unknown>) => ({
+        ...snapshot,
+        source_count: Number(snapshot.source_count) + 1,
+      }),
+    ],
+    [
+      "stale",
+      (snapshot: Record<string, unknown>) => ({
+        ...snapshot,
+        captured_at: "2026-07-12T11:54:59.999Z",
+      }),
+    ],
+    [
+      "mismatched",
+      (snapshot: Record<string, unknown>) => ({
+        ...snapshot,
+        project_id: "99999999-9999-4999-8999-999999999999",
+      }),
+    ],
+  ] as const)("rejects a %s evidence snapshot", async (_kind, mutate) => {
+    const harness = await evidenceHarness();
+    const malformed = mutate(
+      structuredClone(harness.snapshot) as Record<string, unknown>,
+    );
+    harness.client.rpc.mockResolvedValue({ data: malformed, error: null });
+
+    await expect(
+      harness.adapter.authorizeSelection(authorizationInput()),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_EVIDENCE_INVALID",
+      status: 500,
+      retryable: true,
+    });
+  });
+
+  it("maps snapshot RPC failures to a safe retryable storage error", async () => {
+    const harness = await evidenceHarness({
+      rpcError: { message: "database internal secret stack" },
+    });
+
+    await expect(
+      harness.adapter.authorizeSelection(authorizationInput()),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_STORAGE_UNAVAILABLE",
+      status: 503,
+      retryable: true,
+    });
+  });
+
+  it("rejects a selection wider than 366 elapsed days before storage reads", async () => {
+    const harness = await evidenceHarness();
+
+    await expect(
+      harness.adapter.authorizeSelection(
+        authorizationInput({
+          ...selection(),
+          periodStart: "2025-01-01",
+          periodEnd: "2026-01-03",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_SELECTION_TOO_LARGE",
+      status: 422,
+      retryable: false,
+    });
+    expect(harness.repository.listDrafts).not.toHaveBeenCalled();
+    expect(harness.client.rpc).not.toHaveBeenCalled();
+    expect(harness.client.from).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversized user examples before draft, snapshot, or AI work", async () => {
+    const harness = await evidenceHarness();
+
+    await expect(
+      harness.adapter.authorizeSelection(
+        authorizationInput({
+          ...selection(),
+          userExamples: Array.from({ length: 51 }, (_, index) =>
+            simulationUserExample(index),
+          ),
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+      status: 400,
+      retryable: false,
+    });
+    expect(harness.repository.listDrafts).not.toHaveBeenCalled();
+    expect(harness.client.rpc).not.toHaveBeenCalled();
+    expect(harness.client.from).not.toHaveBeenCalled();
+  });
+
+  it("rejects a snapshot that exceeds the bounded source contract", async () => {
+    const harness = await evidenceHarness();
+    harness.client.rpc.mockResolvedValue({
+      data: {
+        ...(harness.snapshot as Record<string, unknown>),
+        source_count: 10_001,
+      },
+      error: null,
+    });
+
+    await expect(
+      harness.adapter.authorizeSelection(authorizationInput()),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_SELECTION_TOO_LARGE",
+      status: 422,
+      retryable: false,
+    });
+    expect(harness.client.rpc).toHaveBeenCalledTimes(1);
+  });
+
   it("uses confirmed Asia/Shanghai midnight boundaries for approved-operation fallback", async () => {
     const beforeStart = approvedReport({
       id: "01010101-0101-4101-8101-010101010101",
@@ -1097,13 +1349,12 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
-    expect(harness.reports.gte).toHaveBeenCalledWith(
-      "reviewed_at",
-      "2026-07-01T00:00:00.000+08:00",
-    );
-    expect(harness.reports.lt).toHaveBeenCalledWith(
-      "reviewed_at",
-      "2026-07-11T00:00:00.000+08:00",
+    expect(harness.client.rpc).toHaveBeenCalledWith(
+      "read_custom_settlement_evidence_snapshot",
+      expect.objectContaining({
+        p_period_start: "2026-07-01",
+        p_period_end: "2026-07-10",
+      }),
     );
     expect(evidence.sampleSource).toEqual({ kind: "approved_operations" });
     expect(evidence.records.map((record) => record.recordId)).toEqual([
@@ -1359,14 +1610,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
-    expect(harness.batches.lte).toHaveBeenCalledWith(
-      "period_start",
-      "2026-07-10",
-    );
-    expect(harness.batches.gte).toHaveBeenCalledWith(
-      "period_end",
-      "2026-07-01",
-    );
+    expect(harness.client.rpc).toHaveBeenCalledTimes(1);
     expect(evidence.sampleSource).toEqual({ kind: "approved_operations" });
     expect(evidence.records[0]?.currentRuleResult).toBeNull();
   });
@@ -1424,19 +1668,16 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     });
   });
 
-  it("selects approved report status as part of the immutable snapshot", async () => {
+  it("requires approved report status in the immutable snapshot", async () => {
     const harness = await evidenceHarness();
 
     await harness.adapter.authorizeSelection(authorizationInput());
 
     expect(
-      harness.reports.select.mock.calls.some(([columns]) =>
-        String(columns)
-          .split(",")
-          .map((column) => column.trim())
-          .includes("status"),
-      ),
-    ).toBe(true);
+      (harness.snapshot as { live_reports: Array<{ status: string }> })
+        .live_reports[0]?.status,
+    ).toBe("approved");
+    expect(harness.client.rpc).toHaveBeenCalledTimes(1);
   });
 
   it.each(["draft", "pending_review", "rejected"])(
@@ -1511,9 +1752,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
-    expect(harness.items.in).toHaveBeenCalledWith("settlement_batch_id", [
-      "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-    ]);
+    expect(harness.client.rpc).toHaveBeenCalledTimes(1);
     expect(evidence.sampleSource).toEqual({ kind: "historical_settlements" });
     expect(evidence.records[0]?.currentRuleResult).toEqual({
       unitSource: "current_rule_cents",
@@ -1557,14 +1796,17 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
-    expect(harness.batches.eq).toHaveBeenCalledWith("batch_type", "receivable");
+    expect(harness.client.rpc).toHaveBeenCalledWith(
+      "read_custom_settlement_evidence_snapshot",
+      expect.objectContaining({ p_scope: "receivable" }),
+    );
     expect(evidence.records[0]?.currentRuleResult).toEqual({
       unitSource: "current_rule_cents",
       amountCents: "2500",
     });
   });
 
-  it("keeps token and source hashes stable when only the report pointer changes", async () => {
+  it("binds report pointer snapshot changes without changing accounting", async () => {
     const withoutPointer = await evidenceHarness({
       reports: [approvedReport({ settled_batch_item_id: null })],
     });
@@ -1595,12 +1837,14 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       },
     );
 
-    expect(secondSelection.selectionToken).toBe(firstSelection.selectionToken);
-    expect(secondEvidence.records[0]?.sourceVersion.version).toBe(
+    expect(secondSelection.selectionToken).not.toBe(
+      firstSelection.selectionToken,
+    );
+    expect(secondEvidence.records[0]?.sourceVersion.version).not.toBe(
       firstEvidence.records[0]?.sourceVersion.version,
     );
-    expect(secondEvidence.provenance.evidenceHash).toBe(
-      firstEvidence.provenance.evidenceHash,
+    expect(secondEvidence.records[0]?.currentRuleResult).toEqual(
+      firstEvidence.records[0]?.currentRuleResult,
     );
   });
 
@@ -1729,7 +1973,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: secondSelection,
     });
 
-    expect(first.batches.gt).toHaveBeenCalledWith("id", fixtureUuid(500, "4"));
+    expect(first.client.rpc).toHaveBeenCalledTimes(1);
     expect(firstEvidence.sampleSelection.populationCount).toBe(501);
     expect(firstEvidence.records).toHaveLength(1);
     expect(firstEvidence.records[0]).toMatchObject({
@@ -2259,7 +2503,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
-    expect(harness.items.gt).toHaveBeenCalledWith("id", items[499]?.id);
+    expect(harness.client.rpc).toHaveBeenCalledTimes(1);
     expect(evidence.sampleSelection.populationCount).toBe(501);
     expect(evidence.records[0]?.currentRuleResult).toEqual({
       unitSource: "current_rule_cents",
@@ -2493,20 +2737,8 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     expect(evidence.provenance.selectionToken).toBe(authorized.selectionToken);
     expect(evidence.provenance.evidenceHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(evidence.provenance.immutableSourceVersions).toHaveLength(1);
-    expect(harness.reports.eq).toHaveBeenCalledWith(
-      "organization_id",
-      ORGANIZATION_ID,
-    );
-    expect(harness.reports.eq).toHaveBeenCalledWith("project_id", PROJECT_ID);
-    expect(harness.reports.eq).toHaveBeenCalledWith("status", "approved");
-    expect(harness.reports.in).toHaveBeenCalledWith("id", [
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-    ]);
-    expect(harness.reports.gte).not.toHaveBeenCalledWith(
-      "reviewed_at",
-      expect.anything(),
-    );
-    expect(harness.batches.eq).toHaveBeenCalledWith("status", "locked");
+    expect(harness.client.rpc).toHaveBeenCalledTimes(1);
+    expect(harness.client.from).not.toHaveBeenCalled();
   });
 
   it("returns explicit approved-operation no-history semantics", async () => {
@@ -2686,8 +2918,56 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
-    expect(harness.costs.eq).toHaveBeenCalledWith("status", "confirmed");
+    expect(harness.client.rpc).toHaveBeenCalledTimes(1);
     expect(evidence.currentMarginCents).toBe("1550");
+  });
+
+  it("preserves costs above MAX_SAFE_INTEGER as exact bigint cents", async () => {
+    const amountCents = "9007199254740993";
+    const harness = await evidenceHarness({
+      pairedItems: [
+        lockedSettlementItem({
+          id: "89898989-8989-4989-8989-898989898989",
+          computed_amount: "30.00",
+          manual_amount: "0.00",
+          adjustment_amount: "0.00",
+          settlement_batches: {
+            id: "90909090-9090-4090-8090-909090909090",
+            status: "locked",
+            batch_type: "receivable",
+            locked_at: "2026-07-10T00:00:00.000Z",
+          },
+        }),
+      ],
+      costs: [confirmedCostItem({ amount_cents: amountCents })],
+    });
+
+    const authorized =
+      await harness.adapter.authorizeSelection(authorizationInput());
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(evidence.currentMarginCents).toBe(
+      (BigInt(1750) - BigInt(amountCents)).toString(),
+    );
+  });
+
+  it("rejects JSON numbers for snapshot cost cents", async () => {
+    const harness = await evidenceHarness({
+      costs: [confirmedCostItem({ amount_cents: 200 })],
+    });
+
+    await expect(
+      harness.adapter.authorizeSelection(authorizationInput()),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_EVIDENCE_INVALID",
+      status: 500,
+      retryable: true,
+    });
   });
 
   it.each([
@@ -2711,7 +2991,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     ],
   ] as const)(
     "includes a confirmed cost linked to the %s regardless of created_at",
-    async (_label, expectedColumn, costOverrides) => {
+    async (_label, _expectedColumn, costOverrides) => {
       const payableBatch = lockedSettlementBatch();
       const receivableBatch = lockedSettlementBatch({
         id: "42424242-4242-4242-8242-424242424242",
@@ -2751,10 +3031,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
         selection: authorized,
       });
 
-      expect(harness.costs.in).toHaveBeenCalledWith(
-        expectedColumn,
-        expect.any(Array),
-      );
+      expect(harness.client.rpc).toHaveBeenCalledTimes(1);
       expect(evidence.currentMarginCents).toBe("1550");
     },
   );
@@ -2814,8 +3091,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
-    expect(harness.costs.is).toHaveBeenCalledWith("live_report_id", null);
-    expect(harness.costs.is).toHaveBeenCalledWith("settlement_batch_id", null);
+    expect(harness.client.rpc).toHaveBeenCalledTimes(1);
     expect(evidence.currentMarginCents).toBe("1550");
   });
 
@@ -2827,7 +3103,14 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     });
     const pairedOnlyReportId = "49494949-4949-4949-8949-494949494949";
     const harness = await evidenceHarness({
-      reports: [approvedReport()],
+      reports: [
+        approvedReport(),
+        approvedReport({
+          id: pairedOnlyReportId,
+          streamer_id: "52525252-5252-4252-8252-525252525252",
+          settled_batch_item_id: null,
+        }),
+      ],
       items: [lockedSettlementItem({ settlement_batches: payableBatch })],
       pairedItems: [
         lockedSettlementItem({
@@ -2876,10 +3159,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
-    expect(harness.costs.in).toHaveBeenCalledWith(
-      "live_report_id",
-      expect.arrayContaining([pairedOnlyReportId]),
-    );
+    expect(harness.client.rpc).toHaveBeenCalledTimes(1);
     expect(evidence.currentMarginCents).toBe("2550");
   });
 
@@ -2961,14 +3241,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
         selection: authorized,
       });
 
-      expect(harness.costs.gte).toHaveBeenCalledWith(
-        "created_at",
-        "2026-07-01T00:00:00.000+08:00",
-      );
-      expect(harness.costs.lt).toHaveBeenCalledWith(
-        "created_at",
-        "2026-07-11T00:00:00.000+08:00",
-      );
+      expect(harness.client.rpc).toHaveBeenCalledTimes(1);
       expect(evidence.currentMarginCents).toBe("1150");
     },
   );
@@ -3128,13 +3401,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
-    expect(harness.costs.in).toHaveBeenCalledWith("live_report_id", [
-      approvedReport().id,
-    ]);
-    expect(harness.costs.in).toHaveBeenCalledWith(
-      "settlement_batch_id",
-      expect.arrayContaining([payableBatch.id]),
-    );
+    expect(harness.client.rpc).toHaveBeenCalledTimes(1);
     expect(evidence.currentMarginCents).toBe("1550");
   });
 
@@ -3186,7 +3453,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       selection: authorized,
     });
 
-    expect(harness.costs.gt).toHaveBeenCalledWith("id", costs[499]?.id);
+    expect(harness.client.rpc).toHaveBeenCalledTimes(1);
     expect(evidence.currentMarginCents).toBe("1249");
   });
 

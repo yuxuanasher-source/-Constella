@@ -6,8 +6,10 @@ import { settlementAmbiguitySchema } from "@/features/settlements/custom-rule-ai
 import { businessRuleContractSchema } from "@/features/settlements/custom-rule-contract";
 import {
   assertCustomRuleAuthorRole,
+  CustomRuleRouteError,
   customRuleErrorResponse,
   customRuleResolvedFailureResponse,
+  createCustomRuleStartRequestIdentity,
   getCustomRuleRouteContext,
   parseCustomRuleJson,
   parseCustomRuleParams,
@@ -44,20 +46,33 @@ export async function POST(
       organizationId: context.auth.organizationId,
       featureKey: "settlement",
     });
-    const session = await context.conversation.createConversation(
-      context.actor,
-      body.title ?? "结算规则会话",
-    );
-    const result = await context.authoring.startSession({
+    const authoring = context.authoring;
+    const requestIdentity = createCustomRuleStartRequestIdentity(body);
+    const claimed = await context.claimAiSession({
+      projectId: inputParams.projectId,
+      clientRequestId: body.clientRequestId,
+      requestFingerprint: requestIdentity.requestFingerprint,
+      title: body.title,
+    });
+    const session = claimed.session;
+    const result = await authoring.startSession({
       actor: context.actor,
       projectId: inputParams.projectId,
       conversationId: session.id,
       title: body.title,
-      clientRequestId: body.clientRequestId,
+      clientRequestId: requestIdentity.task7ClientRequestId,
       promptText: body.promptText,
       seedContract: body.seedContract,
       initialAmbiguities: body.initialAmbiguities,
     });
+    if (result.conversationId !== session.id) {
+      throw new CustomRuleRouteError({
+        code: "CUSTOM_RULE_IDEMPOTENCY_CONFLICT",
+        message: "Settlement rule start replay returned a different session",
+        status: 409,
+        retryable: false,
+      });
+    }
     const failureResponse = customRuleResolvedFailureResponse(result);
     if (failureResponse) return failureResponse;
     await context.audit({

@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
 
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
-import { getCustomRuleRouteContext } from "@/features/settlements/custom-rule-route-context";
+import {
+  CustomRuleRouteError,
+  getCustomRuleRouteContext,
+} from "@/features/settlements/custom-rule-route-context";
+import { CustomRuleAuthoringServiceError } from "@/features/settlements/custom-rule-service";
 
 vi.mock("@/features/billing/route-guard", () => ({
   assertBillingWriteAllowed: vi.fn(),
@@ -129,6 +133,20 @@ function authoringResult() {
   };
 }
 
+function claimedSession(duplicate = false) {
+  return {
+    session: {
+      id: SESSION_ID,
+      title: "Settlement authoring",
+      status: "active",
+      lastMessageAt: "2026-07-12T01:00:00.000Z",
+      createdAt: "2026-07-12T01:00:00.000Z",
+      updatedAt: "2026-07-12T01:00:00.000Z",
+    },
+    duplicate,
+  };
+}
+
 function context(role: string) {
   return {
     supabase: { client: "supabase" },
@@ -140,6 +158,7 @@ function context(role: string) {
     },
     actor: { userId: USER_ID, organizationId: ORGANIZATION_ID },
     requireProjectAccess: vi.fn().mockResolvedValue(undefined),
+    claimAiSession: vi.fn().mockResolvedValue(claimedSession()),
     conversation: {
       createConversation: vi.fn().mockResolvedValue({
         id: SESSION_ID,
@@ -155,6 +174,62 @@ function context(role: string) {
     },
     audit: vi.fn().mockResolvedValue(undefined),
   };
+}
+
+function installIdempotentStartBehavior(
+  routeContext: ReturnType<typeof context>,
+) {
+  let claimed = false;
+  let claimedFingerprint: string | null = null;
+  let aiInvocations = 0;
+  const transitions = new Map<
+    string,
+    Promise<ReturnType<typeof authoringResult>>
+  >();
+
+  routeContext.claimAiSession.mockImplementation(
+    async (input: { requestFingerprint: string }) => {
+      if (
+        claimedFingerprint !== null &&
+        claimedFingerprint !== input.requestFingerprint
+      ) {
+        throw new CustomRuleRouteError({
+          code: "CUSTOM_RULE_IDEMPOTENCY_CONFLICT",
+          message:
+            "Settlement rule start request conflicts with an earlier request",
+          status: 409,
+          retryable: false,
+        });
+      }
+      claimedFingerprint = input.requestFingerprint;
+      const duplicate = claimed;
+      claimed = true;
+      return claimedSession(duplicate);
+    },
+  );
+  routeContext.authoring.startSession.mockImplementation(
+    (input: { clientRequestId: string }) => {
+      const existing = transitions.get(input.clientRequestId);
+      if (existing) {
+        return existing.then((result) => ({ ...result, duplicate: true }));
+      }
+      if (transitions.size > 0) {
+        return Promise.reject(
+          new CustomRuleAuthoringServiceError(
+            "invalid_transition",
+            "conversation already owns a different start request",
+            false,
+          ),
+        );
+      }
+      aiInvocations += 1;
+      const transition = Promise.resolve(authoringResult());
+      transitions.set(input.clientRequestId, transition);
+      return transition;
+    },
+  );
+
+  return { aiInvocations: () => aiInvocations };
 }
 
 function body() {
@@ -208,16 +283,23 @@ describe("settlement rule AI session start route", () => {
         organizationId: ORGANIZATION_ID,
         featureKey: "settlement",
       });
-      expect(routeContext.conversation.createConversation).toHaveBeenCalledWith(
-        routeContext.actor,
-        "主播按场结算",
-      );
+      expect(routeContext.claimAiSession).toHaveBeenCalledWith({
+        projectId: PROJECT_ID,
+        clientRequestId: "start-request-0001",
+        title: body().title,
+        requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      });
+      expect(
+        routeContext.conversation.createConversation,
+      ).not.toHaveBeenCalled();
       expect(routeContext.authoring.startSession).toHaveBeenCalledWith({
         actor: routeContext.actor,
         projectId: PROJECT_ID,
         conversationId: SESSION_ID,
         title: "主播按场结算",
-        clientRequestId: "start-request-0001",
+        clientRequestId: expect.stringMatching(
+          /^settlement-start:[a-f0-9]{64}$/u,
+        ),
         promptText: "每场按系统直播时长和小时单价结算",
         seedContract: body().seedContract,
         initialAmbiguities: body().initialAmbiguities,
@@ -237,7 +319,7 @@ describe("settlement rule AI session start route", () => {
 
     expect(response.status).toBe(403);
     expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
-    expect(routeContext.conversation.createConversation).not.toHaveBeenCalled();
+    expect(routeContext.claimAiSession).not.toHaveBeenCalled();
     expect(routeContext.authoring.startSession).not.toHaveBeenCalled();
   });
 
@@ -258,7 +340,7 @@ describe("settlement rule AI session start route", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "BILLING_WRITE_BLOCKED", retryable: false },
     });
-    expect(routeContext.conversation.createConversation).not.toHaveBeenCalled();
+    expect(routeContext.claimAiSession).not.toHaveBeenCalled();
     expect(routeContext.authoring.startSession).not.toHaveBeenCalled();
   });
 
@@ -286,6 +368,187 @@ describe("settlement rule AI session start route", () => {
     expect(serialized).not.toContain("provider-secret-model");
   });
 
+  it("shares one claimed conversation and one Task7 transition for concurrent retries", async () => {
+    const routeContext = context("owner");
+    const state = installIdempotentStartBehavior(routeContext);
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const responses = await Promise.all([
+      POST(request(), { params: Promise.resolve({ projectId: PROJECT_ID }) }),
+      POST(request(), { params: Promise.resolve({ projectId: PROJECT_ID }) }),
+    ]);
+    const payloads = await Promise.all(
+      responses.map((response) => response.json()),
+    );
+
+    expect(responses.map((response) => response.status)).toEqual([201, 201]);
+    expect(payloads.map((payload) => payload.session.id)).toEqual([
+      SESSION_ID,
+      SESSION_ID,
+    ]);
+    expect(routeContext.claimAiSession).toHaveBeenCalledTimes(2);
+    expect(routeContext.authoring.startSession).toHaveBeenCalledTimes(2);
+    expect(
+      routeContext.authoring.startSession.mock.calls.map(
+        ([input]) => input.clientRequestId,
+      ),
+    ).toEqual([
+      expect.stringMatching(/^settlement-start:[a-f0-9]{64}$/u),
+      expect.stringMatching(/^settlement-start:[a-f0-9]{64}$/u),
+    ]);
+    expect(
+      routeContext.authoring.startSession.mock.calls[0]?.[0].clientRequestId,
+    ).toBe(
+      routeContext.authoring.startSession.mock.calls[1]?.[0].clientRequestId,
+    );
+    expect(state.aiInvocations()).toBe(1);
+  });
+
+  it("replays the same claimed session after an audit failure without another AI invocation", async () => {
+    const routeContext = context("owner");
+    const state = installIdempotentStartBehavior(routeContext);
+    routeContext.audit
+      .mockRejectedValueOnce(new Error("audit sink unavailable"))
+      .mockResolvedValue(undefined);
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const failedResponse = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+    const replayResponse = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+    const replayPayload = await replayResponse.json();
+
+    expect(failedResponse.status).toBe(500);
+    expect(replayResponse.status).toBe(201);
+    expect(replayPayload.session.id).toBe(SESSION_ID);
+    expect(replayPayload.result.duplicate).toBe(true);
+    expect(routeContext.claimAiSession).toHaveBeenCalledTimes(2);
+    expect(state.aiInvocations()).toBe(1);
+  });
+
+  it("rejects a changed payload when the first claim committed but failed before Task7", async () => {
+    const routeContext = context("owner");
+    let claimCommitted = false;
+    let committedFingerprint: string | null = null;
+    routeContext.claimAiSession.mockImplementation(
+      async (input: { requestFingerprint: string }) => {
+        if (!claimCommitted) {
+          claimCommitted = true;
+          committedFingerprint = input.requestFingerprint;
+          throw new Error("network response lost after committed claim");
+        }
+        if (input.requestFingerprint !== committedFingerprint) {
+          throw new CustomRuleRouteError({
+            code: "CUSTOM_RULE_IDEMPOTENCY_CONFLICT",
+            message:
+              "Settlement rule start request conflicts with an earlier request",
+            status: 409,
+            retryable: false,
+          });
+        }
+        return claimedSession(true);
+      },
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const lostResponse = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+    const changedBody = {
+      ...body(),
+      promptText: `${body().promptText} changed before Task7`,
+      initialAmbiguities: [
+        {
+          code: "settlement_source",
+          question: "使用哪个结算来源？",
+          required: true,
+        },
+      ],
+    };
+    const mismatchResponse = await POST(request(changedBody), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+
+    expect(lostResponse.status).toBe(500);
+    expect(mismatchResponse.status).toBe(409);
+    await expect(mismatchResponse.json()).resolves.toEqual({
+      error: {
+        code: "CUSTOM_RULE_IDEMPOTENCY_CONFLICT",
+        message:
+          "Settlement rule start request conflicts with an earlier request",
+        retryable: false,
+      },
+    });
+    expect(routeContext.claimAiSession).toHaveBeenCalledTimes(2);
+    expect(routeContext.authoring.startSession).not.toHaveBeenCalled();
+  });
+
+  it("replays a post-success response with the same conversation and no repeated AI", async () => {
+    const routeContext = context("owner");
+    const state = installIdempotentStartBehavior(routeContext);
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const firstResponse = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+    const replayResponse = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+    const [firstPayload, replayPayload] = await Promise.all([
+      firstResponse.json(),
+      replayResponse.json(),
+    ]);
+
+    expect(firstResponse.status).toBe(201);
+    expect(replayResponse.status).toBe(201);
+    expect(firstPayload.session.id).toBe(SESSION_ID);
+    expect(replayPayload.session.id).toBe(SESSION_ID);
+    expect(replayPayload.result.duplicate).toBe(true);
+    expect(state.aiInvocations()).toBe(1);
+  });
+
+  it("fails safely when the same claim key is replayed with a different payload", async () => {
+    const routeContext = context("owner");
+    const state = installIdempotentStartBehavior(routeContext);
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const firstResponse = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+    const mismatchedBody = {
+      ...body(),
+      promptText: `${body().promptText} changed`,
+    };
+    const mismatchResponse = await POST(request(mismatchedBody), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+
+    expect(firstResponse.status).toBe(201);
+    expect(mismatchResponse.status).toBe(409);
+    await expect(mismatchResponse.json()).resolves.toEqual({
+      error: {
+        code: "CUSTOM_RULE_IDEMPOTENCY_CONFLICT",
+        message:
+          "Settlement rule start request conflicts with an earlier request",
+        retryable: false,
+      },
+    });
+    expect(routeContext.claimAiSession).toHaveBeenCalledTimes(2);
+    expect(state.aiInvocations()).toBe(1);
+  });
+
   it("rejects malformed JSON before project, billing, or conversation writes", async () => {
     const routeContext = context("owner");
     vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
@@ -299,7 +562,7 @@ describe("settlement rule AI session start route", () => {
     expect(response.status).toBe(400);
     expect(routeContext.requireProjectAccess).not.toHaveBeenCalled();
     expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
-    expect(routeContext.conversation.createConversation).not.toHaveBeenCalled();
+    expect(routeContext.claimAiSession).not.toHaveBeenCalled();
   });
 
   it("stops before creating a conversation for a cross-organization project", async () => {
@@ -324,7 +587,7 @@ describe("settlement rule AI session start route", () => {
 
     expect(response.status).toBe(404);
     expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
-    expect(routeContext.conversation.createConversation).not.toHaveBeenCalled();
+    expect(routeContext.claimAiSession).not.toHaveBeenCalled();
   });
 
   it("sanitizes unexpected provider failures", async () => {

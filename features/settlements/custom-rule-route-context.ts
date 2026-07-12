@@ -71,6 +71,16 @@ const AUTHOR_ROLES = new Set<AppRole>([
   "ops_manager",
   "operator_business",
 ]);
+const canonicalOffsetDateTimeSchema = z.iso.datetime({ offset: true });
+const claimedAiSessionRowSchema = z.strictObject({
+  id: z.string().uuid(),
+  title: z.string().min(1).max(120),
+  status: z.enum(["active", "archived"]),
+  last_message_at: canonicalOffsetDateTimeSchema,
+  created_at: canonicalOffsetDateTimeSchema,
+  updated_at: canonicalOffsetDateTimeSchema,
+  duplicate: z.boolean(),
+});
 
 const userExampleInputsSchema = z
   .record(
@@ -148,6 +158,37 @@ export class CustomRuleRouteError extends Error {
 type ConversationService = ReturnType<typeof createConversationService>;
 type AuthoringService = ReturnType<typeof createCustomRuleAuthoringService>;
 
+export function createCustomRuleStartRequestIdentity(input: {
+  clientRequestId: string;
+  title?: string;
+  promptText: string;
+  seedContract: CustomRuleDraft["businessContract"];
+  initialAmbiguities: Array<{
+    code: string;
+    question: string;
+    required: boolean;
+  }>;
+}): { requestFingerprint: string; task7ClientRequestId: string } {
+  const requestFingerprint = sha256(
+    JSON.stringify({
+      version: 1,
+      clientRequestId: input.clientRequestId,
+      title: input.title ?? null,
+      promptText: input.promptText,
+      contractHash: hashCustomRuleContract(input.seedContract),
+      initialAmbiguities: input.initialAmbiguities.map((ambiguity) => ({
+        code: ambiguity.code,
+        question: ambiguity.question,
+        required: ambiguity.required,
+      })),
+    }),
+  );
+  return {
+    requestFingerprint,
+    task7ClientRequestId: `settlement-start:${requestFingerprint}`,
+  };
+}
+
 export type SimulateExistingDraftInput = {
   actor: { organizationId: string; userId: string };
   projectId: string;
@@ -183,6 +224,15 @@ export type CustomRuleRouteContext = {
   supabase: SupabaseClient;
   auth: AuthContext;
   actor: { organizationId: string; userId: string };
+  claimAiSession(input: {
+    projectId: string;
+    clientRequestId: string;
+    requestFingerprint: string;
+    title?: string;
+  }): Promise<{
+    session: Awaited<ReturnType<ConversationService["createConversation"]>>;
+    duplicate: boolean;
+  }>;
   conversation: ConversationService;
   repository: SupabaseCustomRuleReadRepository;
   catalog: {
@@ -246,27 +296,10 @@ export async function getCustomRuleRouteContext(): Promise<
     );
   }
 
-  const admin = createSupabaseAdminClient();
-  if (!admin) {
-    return safeErrorResponse(
-      {
-        code: "CUSTOM_RULE_STORAGE_UNAVAILABLE",
-        message: "Settlement rule authoring storage is unavailable",
-        retryable: true,
-      },
-      503,
-    );
-  }
-
   const actor = {
     organizationId: auth.organizationId,
     userId: auth.userId,
   };
-  const conversation = createConversationService(
-    createSupabaseConversationPersistence(
-      admin as unknown as ConversationRepositoryClient,
-    ),
-  );
   const repository = new SupabaseCustomRuleReadRepository(supabase);
   const catalog = {
     async getCatalog(input: {
@@ -286,61 +319,128 @@ export async function getCustomRuleRouteContext(): Promise<
       });
     },
   };
-  const evidence = createSupabaseCustomRuleEvidenceAdapter({
-    client: supabase,
-    repository,
-    catalog,
-  });
-  const providers = createConfiguredAiProviders();
-  const routing = resolveAiProviderRouting();
-  const primaryProvider =
-    providers.find((provider) => provider.name === routing.primaryProvider)
-      ?.name ?? providers[0]?.name;
-  if (!primaryProvider) {
-    return safeErrorResponse(
-      {
-        code: "CUSTOM_RULE_AI_UNAVAILABLE",
-        message: "Settlement rule AI is unavailable",
-        retryable: true,
-      },
-      503,
-    );
-  }
-  const ai = createSettlementRuleAiAdapter({
-    gateway: (request) => runAiGateway({ providers, primaryProvider, request }),
-  });
-  const authoring = createCustomRuleAuthoringService({
-    conversation,
-    ai,
-    repository,
-    catalog,
-    evidence,
-    analyzeReadiness: (readinessInput) =>
-      evidence.adjustReadiness(analyzeCustomRuleDataReadiness(readinessInput)),
-    simulate: (simulationInput) =>
-      evidence.decorateSimulationResult(
-        simulateCustomSettlementRule(simulationInput),
+  let conversation: ConversationService | undefined;
+  let evidence: CustomRuleEvidenceAdapter | undefined;
+  let authoring: AuthoringService | undefined;
+  let simulation: CustomRuleRouteContext["simulation"] | undefined;
+
+  const getConversation = (): ConversationService => {
+    if (conversation) return conversation;
+    const admin = createSupabaseAdminClient();
+    if (!admin) {
+      throw routeError(
+        "CUSTOM_RULE_STORAGE_UNAVAILABLE",
+        "Settlement rule authoring storage is unavailable",
+        503,
+        true,
+      );
+    }
+    conversation = createConversationService(
+      createSupabaseConversationPersistence(
+        admin as unknown as ConversationRepositoryClient,
       ),
-    primaryProvider,
-    persistFailedRevisions: true,
-  });
-  const simulation = createCustomRuleExistingDraftSimulationService({
-    repository,
-    catalog,
-    evidence,
-  });
+    );
+    return conversation;
+  };
+
+  const getEvidence = (): CustomRuleEvidenceAdapter => {
+    evidence ??= createSupabaseCustomRuleEvidenceAdapter({
+      client: supabase,
+      repository,
+      catalog,
+    });
+    return evidence;
+  };
+
+  const getAuthoring = (): AuthoringService => {
+    if (authoring) return authoring;
+    const scopedConversation = getConversation();
+    let providers: ReturnType<typeof createConfiguredAiProviders>;
+    let routing: ReturnType<typeof resolveAiProviderRouting>;
+    try {
+      providers = createConfiguredAiProviders();
+      routing = resolveAiProviderRouting();
+    } catch {
+      throw routeError(
+        "CUSTOM_RULE_AI_UNAVAILABLE",
+        "Settlement rule AI is unavailable",
+        503,
+        true,
+      );
+    }
+    const primaryProvider =
+      providers.find((provider) => provider.name === routing.primaryProvider)
+        ?.name ?? providers[0]?.name;
+    if (!primaryProvider) {
+      throw routeError(
+        "CUSTOM_RULE_AI_UNAVAILABLE",
+        "Settlement rule AI is unavailable",
+        503,
+        true,
+      );
+    }
+    const scopedEvidence = getEvidence();
+    const ai = createSettlementRuleAiAdapter({
+      gateway: (request) =>
+        runAiGateway({ providers, primaryProvider, request }),
+    });
+    authoring = createCustomRuleAuthoringService({
+      conversation: scopedConversation,
+      ai,
+      repository,
+      catalog,
+      evidence: scopedEvidence,
+      analyzeReadiness: (readinessInput) =>
+        scopedEvidence.adjustReadiness(
+          analyzeCustomRuleDataReadiness(readinessInput),
+        ),
+      simulate: (simulationInput) =>
+        scopedEvidence.decorateSimulationResult(
+          simulateCustomSettlementRule(simulationInput),
+        ),
+      primaryProvider,
+      persistFailedRevisions: true,
+    });
+    return authoring;
+  };
+
+  const getSimulation = (): CustomRuleRouteContext["simulation"] => {
+    simulation ??= createCustomRuleExistingDraftSimulationService({
+      repository,
+      catalog,
+      evidence: getEvidence(),
+    });
+    return simulation;
+  };
 
   return {
     supabase,
     auth,
     actor,
-    conversation,
+    claimAiSession: (input) =>
+      claimCustomSettlementAiSession(supabase, {
+        organizationId: actor.organizationId,
+        projectId: input.projectId,
+        clientRequestId: input.clientRequestId,
+        requestFingerprint: input.requestFingerprint,
+        title: input.title ?? "结算规则会话",
+      }),
+    get conversation() {
+      return getConversation();
+    },
     repository,
     catalog,
-    evidence,
-    authorizeSimulationSelection: (input) => evidence.authorizeSelection(input),
-    authoring,
-    simulation,
+    get evidence() {
+      return getEvidence();
+    },
+    authorizeSimulationSelection: (input) =>
+      getEvidence().authorizeSelection(input),
+    get authoring() {
+      return getAuthoring();
+    },
+    get simulation() {
+      return getSimulation();
+    },
     requireProjectAccess: (projectId) =>
       requireProjectAccess(supabase, auth.organizationId, projectId),
     audit: (input) => writeAuditLog(supabase, input),
@@ -879,11 +979,19 @@ const REQUIRED_SELECTION_CRITERIA = [
   "period_overlap",
   "project_scope",
 ] as const;
-const EVIDENCE_PAGE_SIZE = 500;
-const EVIDENCE_ID_CHUNK_SIZE = 100;
 const MAX_AUTHORIZED_SOURCE_REPORTS = 10_000;
 const MAX_AUTHORIZED_SIMULATION_RECORDS = 500;
-const numericColumnSchema = z.union([z.string(), z.number()]);
+const MAX_SELECTION_PERIOD_DAYS = 366;
+const SNAPSHOT_MAX_AGE_MS = 5 * 60 * 1_000;
+const SNAPSHOT_MAX_FUTURE_SKEW_MS = 60 * 1_000;
+const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
+const canonicalNumericTextSchema = z
+  .string()
+  .regex(/^-?(?:0|[1-9]\d*)(?:\.\d*[1-9])?$/u)
+  .refine((value) => value !== "-0", {
+    message: "numeric text must be canonical",
+  });
+const canonicalIntegerTextSchema = z.string().regex(/^(?:0|-?[1-9]\d*)$/u);
 const liveTaskRelationSchema = z.union([
   z.strictObject({ system_started_at: z.string().nullable() }),
   z.array(z.strictObject({ system_started_at: z.string().nullable() })),
@@ -905,16 +1013,22 @@ const approvedReportRowSchema = z.strictObject({
   settled_batch_item_id: z.string().uuid().nullable(),
   live_tasks: liveTaskRelationSchema,
 });
-const canonicalOffsetDateTimeSchema = z.iso.datetime({ offset: true });
 const settlementBatchRowSchema = z.strictObject({
   id: z.string().uuid(),
   organization_id: z.string().uuid(),
   project_id: z.string().uuid(),
   status: z.literal("locked"),
   batch_type: z.enum(["payable", "receivable"]),
+  title: z.string().min(1).max(200),
+  computed_amount: canonicalNumericTextSchema,
+  manual_amount: canonicalNumericTextSchema,
+  adjustment_amount: canonicalNumericTextSchema,
   locked_at: z.string().nullable(),
   period_start: z.string(),
   period_end: z.string(),
+  created_at: canonicalOffsetDateTimeSchema,
+  updated_at: canonicalOffsetDateTimeSchema,
+  version: hashSchema,
 });
 const batchRelationSchema = z.union([
   z.strictObject({
@@ -924,6 +1038,7 @@ const batchRelationSchema = z.union([
     locked_at: z.string().nullable(),
     period_start: z.string().optional(),
     period_end: z.string().optional(),
+    version: hashSchema,
   }),
   z.array(
     z.strictObject({
@@ -933,6 +1048,7 @@ const batchRelationSchema = z.union([
       locked_at: z.string().nullable(),
       period_start: z.string().optional(),
       period_end: z.string().optional(),
+      version: hashSchema,
     }),
   ),
 ]);
@@ -943,18 +1059,22 @@ const settlementItemRowSchema = z.strictObject({
   settlement_batch_id: z.string().uuid(),
   streamer_id: z.string().uuid().nullable(),
   live_report_id: z.string().uuid().nullable(),
-  computed_amount: numericColumnSchema,
-  manual_amount: numericColumnSchema,
-  adjustment_amount: numericColumnSchema,
+  item_type: z.string().min(1).max(100),
+  computed_amount: canonicalNumericTextSchema,
+  manual_amount: canonicalNumericTextSchema,
+  adjustment_amount: canonicalNumericTextSchema,
+  evidence_level: z.enum(["green", "yellow", "red"]).nullable(),
+  created_at: canonicalOffsetDateTimeSchema,
   settlement_batches: batchRelationSchema,
 });
 const projectCostRowSchema = z.strictObject({
   id: z.string().uuid(),
   organization_id: z.string().uuid(),
   project_id: z.string().uuid(),
+  streamer_id: z.string().uuid().nullable(),
   live_report_id: z.string().uuid().nullable(),
   settlement_batch_id: z.string().uuid().nullable(),
-  amount_cents: numericColumnSchema,
+  amount_cents: canonicalIntegerTextSchema,
   direction: z.enum(["cost", "revenue_offset", "adjustment"]),
   status: z.literal("confirmed"),
   created_at: z.string(),
@@ -968,11 +1088,72 @@ const projectStreamerRowSchema = z.strictObject({
   organization_id: z.string().uuid(),
   project_id: z.string().uuid(),
   streamer_id: z.string().uuid(),
-  hourly_rate: numericColumnSchema.nullable(),
-  base_salary: numericColumnSchema.nullable(),
+  status: z.string().min(1).max(100),
+  hourly_rate: canonicalNumericTextSchema.nullable(),
+  base_salary: canonicalNumericTextSchema.nullable(),
   cps_rate_bps: z.number().int().min(0).max(10_000).nullable(),
   collaboration_id: z.string().uuid().nullable(),
   streamers: streamerRelationSchema,
+});
+const snapshotStreamerRowSchema = z.strictObject({
+  id: z.string().uuid(),
+  organization_id: z.string().uuid(),
+  source_type: z.string().min(1).max(100),
+});
+const evidenceSnapshotSchema = z.strictObject({
+  schema_version: z.literal(1),
+  snapshot_version: z.literal(1),
+  organization_id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  actor_id: z.string().uuid(),
+  scope: z.enum(["payable", "receivable"]),
+  period_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
+  period_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
+  business_timezone: z.string().min(1).max(100),
+  business_timezone_confirmed: z.boolean(),
+  business_timezone_source: z.enum([
+    "contract_default",
+    "organization_setting",
+    "confirmed_contract",
+    "unresolved",
+  ]),
+  captured_at: canonicalOffsetDateTimeSchema,
+  source_count: z.number().int().min(0).max(MAX_AUTHORIZED_SOURCE_REPORTS),
+  project: z.strictObject({
+    id: z.string().uuid(),
+    organization_id: z.string().uuid(),
+    code: z.string().min(1).max(200),
+    name: z.string().min(1).max(500),
+    status: z.string().min(1).max(100),
+    updated_at: canonicalOffsetDateTimeSchema,
+    business_timezone: z.string().min(1).max(100),
+    business_timezone_confirmed: z.boolean(),
+    business_timezone_source: z.enum([
+      "contract_default",
+      "organization_setting",
+      "confirmed_contract",
+      "unresolved",
+    ]),
+  }),
+  settlement_batches: z
+    .array(settlementBatchRowSchema)
+    .max(MAX_AUTHORIZED_SOURCE_REPORTS),
+  settlement_batch_items: z
+    .array(settlementItemRowSchema)
+    .max(MAX_AUTHORIZED_SOURCE_REPORTS),
+  live_reports: z
+    .array(approvedReportRowSchema)
+    .max(MAX_AUTHORIZED_SOURCE_REPORTS),
+  project_cost_items: z
+    .array(projectCostRowSchema)
+    .max(MAX_AUTHORIZED_SOURCE_REPORTS),
+  project_streamers: z
+    .array(projectStreamerRowSchema)
+    .max(MAX_AUTHORIZED_SOURCE_REPORTS),
+  streamers: z
+    .array(snapshotStreamerRowSchema)
+    .max(MAX_AUTHORIZED_SOURCE_REPORTS),
+  snapshot_hash: hashSchema,
 });
 
 type ApprovedReportRow = z.infer<typeof approvedReportRowSchema>;
@@ -980,6 +1161,7 @@ type SettlementBatchRow = z.infer<typeof settlementBatchRowSchema>;
 type SettlementItemRow = z.infer<typeof settlementItemRowSchema>;
 type ProjectCostRow = z.infer<typeof projectCostRowSchema>;
 type ProjectStreamerRow = z.infer<typeof projectStreamerRowSchema>;
+type EvidenceSnapshot = z.infer<typeof evidenceSnapshotSchema>;
 type AuthorizedSimulationRecord =
   AuthorizedCustomRuleSimulationEvidence["records"][number];
 
@@ -987,7 +1169,9 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
   client: SupabaseClient;
   repository: Pick<SupabaseCustomRuleReadRepository, "listDrafts">;
   catalog: CustomRuleRouteContext["catalog"];
+  now?: () => Date;
 }): CustomRuleEvidenceAdapter {
+  const now = input.now ?? (() => new Date());
   const authorizedEvidence = new Map<
     string,
     {
@@ -1002,7 +1186,10 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
   return {
     async authorizeSelection(unsafeInput) {
       assertSupportedSelection(unsafeInput.selection);
-      const userExamples = unsafeInput.selection.userExamples ?? [];
+      const userExamples = parseWithSchema(
+        unsafeInput.selection.userExamples ?? [],
+        customRuleUserExamplesSchema,
+      );
       const drafts = await input.repository.listDrafts({
         organizationId: unsafeInput.actor.organizationId,
         projectId: unsafeInput.projectId,
@@ -1060,30 +1247,51 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         unsafeInput.selection.periodEnd,
         catalog.businessTimezone,
       );
-      const requestedBatches = await loadLockedSettlementBatches(input.client, {
-        organizationId: unsafeInput.actor.organizationId,
-        projectId: unsafeInput.projectId,
-        periodStart: unsafeInput.selection.periodStart,
-        periodEnd: unsafeInput.selection.periodEnd,
-        scope: draft.businessContract.scope,
-      });
-      assertRowsInScope(
-        requestedBatches,
-        unsafeInput.actor.organizationId,
-        unsafeInput.projectId,
+      const snapshot = await readCustomSettlementEvidenceSnapshot(
+        input.client,
+        {
+          organizationId: unsafeInput.actor.organizationId,
+          actorId: unsafeInput.actor.userId,
+          projectId: unsafeInput.projectId,
+          scope: draft.businessContract.scope,
+          periodStart: unsafeInput.selection.periodStart,
+          periodEnd: unsafeInput.selection.periodEnd,
+          businessTimezone: catalog.businessTimezone,
+          periodStartInclusive: businessPeriod.startInclusive,
+          periodEndExclusive: businessPeriod.endExclusive,
+        },
+        now,
       );
-      const items = requestedBatches.length
-        ? await loadLockedSettlementItems(input.client, {
-            organizationId: unsafeInput.actor.organizationId,
-            projectId: unsafeInput.projectId,
-            batches: requestedBatches,
-            scope: draft.businessContract.scope,
-          })
-        : [];
-      assertRowsInScope(
-        items,
-        unsafeInput.actor.organizationId,
-        unsafeInput.projectId,
+      const allBatches = [...snapshot.settlement_batches].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      );
+      const requestedBatches = allBatches.filter(
+        (batch) => batch.batch_type === draft.businessContract.scope,
+      );
+      const oppositeScope =
+        draft.businessContract.scope === "payable" ? "receivable" : "payable";
+      const pairedBatches = allBatches.filter(
+        (batch) => batch.batch_type === oppositeScope,
+      );
+      const batchScopeById = new Map(
+        allBatches.map((batch) => [batch.id, batch.batch_type]),
+      );
+      const allItems = [...snapshot.settlement_batch_items].sort(
+        (left, right) => left.id.localeCompare(right.id),
+      );
+      const items = allItems.filter(
+        (item) =>
+          batchScopeById.get(item.settlement_batch_id) ===
+          draft.businessContract.scope,
+      );
+      const pairedItems = allItems.filter(
+        (item) =>
+          batchScopeById.get(item.settlement_batch_id) === oppositeScope,
+      );
+      const snapshotLinkedReportIds = new Set(
+        allItems.flatMap((item) =>
+          item.live_report_id ? [item.live_report_id] : [],
+        ),
       );
       const reportIdsFromItems = [
         ...new Set(
@@ -1092,27 +1300,27 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           ),
         ),
       ].sort((left, right) => left.localeCompare(right));
+      const reportsById = new Map(
+        snapshot.live_reports.map((report) => [report.id, report]),
+      );
       const reports = requestedBatches.length
-        ? await loadApprovedReportsByIds(input.client, {
-            organizationId: unsafeInput.actor.organizationId,
-            projectId: unsafeInput.projectId,
-            reportIds: reportIdsFromItems,
-            completeEvidence:
-              unsafeInput.selection.criteriaCodes.includes("complete_evidence"),
+        ? reportIdsFromItems.map((reportId) => {
+            const report = reportsById.get(reportId);
+            if (!report) {
+              throw routeError(
+                "CUSTOM_RULE_EVIDENCE_INVALID",
+                "Locked settlement evidence references an unavailable approved report",
+                500,
+                true,
+              );
+            }
+            return report;
           })
-        : await loadApprovedReportsByReviewPeriod(input.client, {
-            organizationId: unsafeInput.actor.organizationId,
-            projectId: unsafeInput.projectId,
+        : selectApprovedReportsWithinPeriod(snapshot.live_reports, {
             periodStartInclusive: businessPeriod.startInclusive,
             periodEndExclusive: businessPeriod.endExclusive,
-            completeEvidence:
-              unsafeInput.selection.criteriaCodes.includes("complete_evidence"),
+            allowedOutOfWindowReportIds: snapshotLinkedReportIds,
           });
-      assertRowsInScope(
-        reports,
-        unsafeInput.actor.organizationId,
-        unsafeInput.projectId,
-      );
       const reportIds = reports.map((report) => report.id);
       const itemsByReport = groupLockedItemsByReport(items, reportIds);
       const historicalComplete = historicalAttributionComplete({
@@ -1122,33 +1330,6 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         reports,
         itemsByReport,
       });
-      const oppositeScope =
-        draft.businessContract.scope === "payable" ? "receivable" : "payable";
-      const pairedBatches = await loadLockedSettlementBatches(input.client, {
-        organizationId: unsafeInput.actor.organizationId,
-        projectId: unsafeInput.projectId,
-        periodStart: unsafeInput.selection.periodStart,
-        periodEnd: unsafeInput.selection.periodEnd,
-        scope: oppositeScope,
-      });
-      assertRowsInScope(
-        pairedBatches,
-        unsafeInput.actor.organizationId,
-        unsafeInput.projectId,
-      );
-      const pairedItems = pairedBatches.length
-        ? await loadLockedSettlementItems(input.client, {
-            organizationId: unsafeInput.actor.organizationId,
-            projectId: unsafeInput.projectId,
-            batches: pairedBatches,
-            scope: oppositeScope,
-          })
-        : [];
-      assertRowsInScope(
-        pairedItems,
-        unsafeInput.actor.organizationId,
-        unsafeInput.projectId,
-      );
       const pairedItemsByReport = groupLockedItemsByReport(pairedItems);
       const pairedComplete = pairedScopeComplete({
         executionGrain: draft.businessContract.executionGrain,
@@ -1160,30 +1341,15 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         requestedItemsByReport: itemsByReport,
         pairedItemsByReport,
       });
-      const costReportIds = [
-        ...new Set([
-          ...reportIds,
-          ...[...items, ...pairedItems].flatMap((item) =>
-            item.live_report_id ? [item.live_report_id] : [],
-          ),
-        ]),
-      ].sort((left, right) => left.localeCompare(right));
-      const costSelection = await loadAuthorizedConfirmedCosts(input.client, {
-        organizationId: unsafeInput.actor.organizationId,
-        projectId: unsafeInput.projectId,
-        reportIds: costReportIds,
-        batchIds: [...requestedBatches, ...pairedBatches]
-          .map((batch) => batch.id)
-          .sort((left, right) => left.localeCompare(right)),
-        periodStartInclusive: businessPeriod.startInclusive,
-        periodEndExclusive: businessPeriod.endExclusive,
-      });
-      const costs = costSelection.rows;
-      assertRowsInScope(
-        costs,
-        unsafeInput.actor.organizationId,
-        unsafeInput.projectId,
+      const costs = [...snapshot.project_cost_items].sort((left, right) =>
+        left.id.localeCompare(right.id),
       );
+      const costSelection = {
+        usesUnlinkedPeriodFallback: costs.some(
+          (cost) =>
+            cost.live_report_id === null && cost.settlement_batch_id === null,
+        ),
+      };
       const margin = deriveCurrentMargin({
         scope: draft.businessContract.scope,
         executionGrain: draft.businessContract.executionGrain,
@@ -1197,30 +1363,8 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         costs,
         pairedComplete,
       });
-      const needsStreamerSnapshot =
-        draft.businessContract.executionGrain === "report" ||
-        draft.businessContract.executionGrain === "project_streamer_period";
-      const streamerIds = needsStreamerSnapshot
-        ? [
-            ...new Set([
-              ...reports.map((report) => report.streamer_id),
-              ...items.flatMap((item) =>
-                item.streamer_id ? [item.streamer_id] : [],
-              ),
-            ]),
-          ]
-        : [];
-      const streamers = streamerIds.length
-        ? await loadProjectStreamers(input.client, {
-            organizationId: unsafeInput.actor.organizationId,
-            projectId: unsafeInput.projectId,
-            streamerIds,
-          })
-        : [];
-      assertRowsInScope(
-        streamers,
-        unsafeInput.actor.organizationId,
-        unsafeInput.projectId,
+      const streamers = [...snapshot.project_streamers].sort((left, right) =>
+        left.streamer_id.localeCompare(right.streamer_id),
       );
       const streamersById = new Map(
         streamers.map((streamer) => [streamer.streamer_id, streamer]),
@@ -1238,17 +1382,6 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
             : [];
         }),
       );
-      const selectedSnapshots = reports.map((report) => ({
-        id: report.id,
-        version: reportSnapshotVersion(
-          report,
-          itemsByReport.get(report.id) ?? null,
-          streamersById.get(report.streamer_id) ?? null,
-        ),
-        pairedVersion: pairedItemsByReport.has(report.id)
-          ? sha256(JSON.stringify(pairedItemsByReport.get(report.id)))
-          : null,
-      }));
       const records = buildAuthorizedSimulationRecords({
         organizationId: unsafeInput.actor.organizationId,
         projectId: unsafeInput.projectId,
@@ -1261,7 +1394,19 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         streamersById,
         historicalComplete,
         periodBoundaries: businessPeriod,
-      });
+      }).map((record) => ({
+        ...record,
+        sourceVersion: {
+          ...record.sourceVersion,
+          version: sha256(
+            JSON.stringify({
+              snapshotHash: snapshot.snapshot_hash,
+              source: record.sourceVersion.source,
+              version: record.sourceVersion.version,
+            }),
+          ),
+        },
+      }));
       assertRequiredRecordVariables(records, requiredVariables);
       if (records.length > MAX_AUTHORIZED_SIMULATION_RECORDS) {
         throw routeError(
@@ -1287,21 +1432,7 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
             : "linked_only",
           criteriaCodes: [...unsafeInput.selection.criteriaCodes].sort(),
           userExamples,
-          selectedSnapshots,
-          batchSnapshots: [...requestedBatches, ...pairedBatches].map(
-            (batch) => ({
-              id: batch.id,
-              version: sha256(JSON.stringify(batch)),
-            }),
-          ),
-          itemSnapshots: [...items, ...pairedItems].map((item) => ({
-            id: item.id,
-            version: sha256(JSON.stringify(item)),
-          })),
-          costSnapshots: costs.map((cost) => ({
-            id: cost.id,
-            version: sha256(JSON.stringify(cost)),
-          })),
+          snapshotHash: snapshot.snapshot_hash,
         }),
       )}`;
       const authorizedSelection: AuthorizedSimulationSelectionRequest = {
@@ -1461,9 +1592,11 @@ function assertSupportedSelection(
 ): void {
   const criteria = [...selection.criteriaCodes];
   const unique = new Set(criteria);
+  const start = parseBusinessDate(selection.periodStart);
+  const end = parseBusinessDate(selection.periodEnd);
   const supported =
-    /^\d{4}-\d{2}-\d{2}$/u.test(selection.periodStart) &&
-    /^\d{4}-\d{2}-\d{2}$/u.test(selection.periodEnd) &&
+    start !== null &&
+    end !== null &&
     selection.periodStart <= selection.periodEnd &&
     unique.size === criteria.length &&
     criteria.every((criterion) =>
@@ -1474,6 +1607,21 @@ function assertSupportedSelection(
     throw routeError(
       "CUSTOM_RULE_SELECTION_UNSUPPORTED",
       "Historical simulation selection is unsupported",
+      422,
+    );
+  }
+  if (!start || !end) return;
+  const elapsedDays =
+    (calendarUtcEpoch({ ...end, hour: 0, minute: 0, second: 0 }) -
+      calendarUtcEpoch({ ...start, hour: 0, minute: 0, second: 0 })) /
+    86_400_000;
+  if (
+    !Number.isSafeInteger(elapsedDays) ||
+    elapsedDays > MAX_SELECTION_PERIOD_DAYS
+  ) {
+    throw routeError(
+      "CUSTOM_RULE_SELECTION_TOO_LARGE",
+      "Historical simulation period exceeds the Phase 1 limit",
       422,
     );
   }
@@ -1684,165 +1832,6 @@ function calendarUtcEpoch(input: {
   return date.getTime();
 }
 
-async function loadApprovedReportsByReviewPeriod(
-  client: SupabaseClient,
-  input: {
-    organizationId: string;
-    projectId: string;
-    periodStartInclusive: string;
-    periodEndExclusive: string;
-    completeEvidence: boolean;
-  },
-): Promise<ApprovedReportRow[]> {
-  const rows: ApprovedReportRow[] = [];
-  let cursor: string | null = null;
-  while (true) {
-    let query = client
-      .from("live_reports")
-      .select(
-        "id, organization_id, project_id, streamer_id, status, system_duration, screenshot_duration, settlement_duration, evidence_level, time_source, viewers, reviewed_at, created_at, settled_batch_item_id, live_tasks!inner(system_started_at)",
-      )
-      .eq("organization_id", input.organizationId)
-      .eq("project_id", input.projectId)
-      .eq("status", "approved")
-      .gte("reviewed_at", input.periodStartInclusive)
-      .lt("reviewed_at", input.periodEndExclusive);
-    if (input.completeEvidence) {
-      query = query
-        .not("settlement_duration", "is", null)
-        .not("evidence_level", "is", null)
-        .not("time_source", "is", null);
-    }
-    if (cursor) query = query.gt("id", cursor);
-    const { data, error } = await query
-      .order("id", { ascending: true })
-      .limit(EVIDENCE_PAGE_SIZE)
-      .returns<unknown[]>();
-    const page = parseEvidenceRows(
-      approvedReportRowSchema,
-      data,
-      error,
-      "approved live reports",
-    ).sort((left, right) => left.id.localeCompare(right.id));
-    assertApprovedReportSnapshots(page);
-    assertApprovedReportReviewPeriod(
-      page,
-      input.periodStartInclusive,
-      input.periodEndExclusive,
-    );
-    rows.push(...page);
-    if (rows.length > MAX_AUTHORIZED_SOURCE_REPORTS) {
-      throw routeError(
-        "CUSTOM_RULE_SELECTION_TOO_LARGE",
-        "Authorized simulation selection has too many source reports",
-        422,
-      );
-    }
-    if (page.length < EVIDENCE_PAGE_SIZE) break;
-    const nextCursor = page.at(-1)?.id;
-    if (!nextCursor || nextCursor === cursor) {
-      throw routeError(
-        "CUSTOM_RULE_EVIDENCE_INVALID",
-        "Settlement rule evidence pagination is not deterministic",
-        500,
-        true,
-      );
-    }
-    cursor = nextCursor;
-  }
-  return rows;
-}
-
-async function loadApprovedReportsByIds(
-  client: SupabaseClient,
-  input: {
-    organizationId: string;
-    projectId: string;
-    reportIds: string[];
-    completeEvidence: boolean;
-  },
-): Promise<ApprovedReportRow[]> {
-  if (input.reportIds.length === 0) return [];
-  const rowsById = new Map<string, ApprovedReportRow>();
-  for (const reportIds of chunks(input.reportIds, EVIDENCE_ID_CHUNK_SIZE)) {
-    let cursor: string | null = null;
-    while (true) {
-      let query = client
-        .from("live_reports")
-        .select(
-          "id, organization_id, project_id, streamer_id, status, system_duration, screenshot_duration, settlement_duration, evidence_level, time_source, viewers, reviewed_at, created_at, settled_batch_item_id, live_tasks!inner(system_started_at)",
-        )
-        .eq("organization_id", input.organizationId)
-        .eq("project_id", input.projectId)
-        .eq("status", "approved")
-        .in("id", reportIds);
-      if (input.completeEvidence) {
-        query = query
-          .not("settlement_duration", "is", null)
-          .not("evidence_level", "is", null)
-          .not("time_source", "is", null);
-      }
-      if (cursor) query = query.gt("id", cursor);
-      const { data, error } = await query
-        .order("id", { ascending: true })
-        .limit(EVIDENCE_PAGE_SIZE)
-        .returns<unknown[]>();
-      const page = parseEvidenceRows(
-        approvedReportRowSchema,
-        data,
-        error,
-        "approved live reports",
-      ).sort((left, right) => left.id.localeCompare(right.id));
-      assertApprovedReportSnapshots(page);
-      for (const row of page) {
-        if (rowsById.has(row.id)) {
-          throw routeError(
-            "CUSTOM_RULE_EVIDENCE_INVALID",
-            "Approved report evidence contains duplicate rows",
-            500,
-            true,
-          );
-        }
-        rowsById.set(row.id, row);
-      }
-      if (rowsById.size > MAX_AUTHORIZED_SOURCE_REPORTS) {
-        throw routeError(
-          "CUSTOM_RULE_SELECTION_TOO_LARGE",
-          "Authorized simulation selection has too many source reports",
-          422,
-        );
-      }
-      if (page.length < EVIDENCE_PAGE_SIZE) break;
-      const nextCursor = page.at(-1)?.id;
-      if (!nextCursor || nextCursor === cursor) {
-        throw routeError(
-          "CUSTOM_RULE_EVIDENCE_INVALID",
-          "Settlement rule evidence pagination is not deterministic",
-          500,
-          true,
-        );
-      }
-      cursor = nextCursor;
-    }
-  }
-  const selectedIds = new Set(input.reportIds);
-  const rows = [...rowsById.values()].sort((left, right) =>
-    left.id.localeCompare(right.id),
-  );
-  if (
-    rows.length !== selectedIds.size ||
-    rows.some((row) => !selectedIds.has(row.id))
-  ) {
-    throw routeError(
-      "CUSTOM_RULE_EVIDENCE_INVALID",
-      "Locked settlement evidence references an unavailable approved report",
-      500,
-      true,
-    );
-  }
-  return rows;
-}
-
 function assertApprovedReportSnapshots(reports: ApprovedReportRow[]): void {
   if (
     reports.some(
@@ -1862,35 +1851,6 @@ function assertApprovedReportSnapshots(reports: ApprovedReportRow[]): void {
   }
 }
 
-function assertApprovedReportReviewPeriod(
-  reports: ApprovedReportRow[],
-  periodStartInclusive: string,
-  periodEndExclusive: string,
-): void {
-  const startEpoch = canonicalOffsetDateTimeEpoch(periodStartInclusive);
-  const endEpoch = canonicalOffsetDateTimeEpoch(periodEndExclusive);
-  if (
-    startEpoch === null ||
-    endEpoch === null ||
-    endEpoch <= startEpoch ||
-    reports.some((report) => {
-      const reviewedAtEpoch = canonicalOffsetDateTimeEpoch(report.reviewed_at);
-      return (
-        reviewedAtEpoch === null ||
-        reviewedAtEpoch < startEpoch ||
-        reviewedAtEpoch >= endEpoch
-      );
-    })
-  ) {
-    throw routeError(
-      "CUSTOM_RULE_EVIDENCE_INVALID",
-      "Approved report evidence violates the authorized review period",
-      500,
-      true,
-    );
-  }
-}
-
 function canonicalOffsetDateTimeEpoch(value: unknown): number | null {
   const parsed = canonicalOffsetDateTimeSchema.safeParse(value);
   if (!parsed.success) return null;
@@ -1898,397 +1858,324 @@ function canonicalOffsetDateTimeEpoch(value: unknown): number | null {
   return Number.isFinite(epoch) ? epoch : null;
 }
 
-async function loadLockedSettlementBatches(
+async function readCustomSettlementEvidenceSnapshot(
   client: SupabaseClient,
   input: {
     organizationId: string;
+    actorId: string;
     projectId: string;
+    scope: "payable" | "receivable";
     periodStart: string;
     periodEnd: string;
-    scope: "payable" | "receivable";
+    businessTimezone: string;
+    periodStartInclusive: string;
+    periodEndExclusive: string;
   },
-): Promise<SettlementBatchRow[]> {
-  const rows: SettlementBatchRow[] = [];
-  const seenIds = new Set<string>();
-  let cursor: string | null = null;
-  while (true) {
-    let query = client
-      .from("settlement_batches")
-      .select(
-        "id, organization_id, project_id, status, batch_type, locked_at, period_start, period_end",
-      )
-      .eq("organization_id", input.organizationId)
-      .eq("project_id", input.projectId)
-      .eq("status", "locked")
-      .eq("batch_type", input.scope)
-      .lte("period_start", input.periodEnd)
-      .gte("period_end", input.periodStart);
-    if (cursor) query = query.gt("id", cursor);
-    const { data, error } = await query
-      .order("id", { ascending: true })
-      .limit(EVIDENCE_PAGE_SIZE)
-      .returns<unknown[]>();
-    const page = parseEvidenceRows(
-      settlementBatchRowSchema,
-      data,
-      error,
-      "locked settlement batches",
-    ).sort((left, right) => left.id.localeCompare(right.id));
-    for (const row of page) {
-      if (
-        row.status !== "locked" ||
-        row.batch_type !== input.scope ||
-        row.period_start > input.periodEnd ||
-        row.period_end < input.periodStart
-      ) {
-        throw routeError(
-          "CUSTOM_RULE_EVIDENCE_INVALID",
-          "Locked settlement batch is outside the authorized period",
-          500,
-          true,
-        );
-      }
-      if (!row.locked_at) {
-        throw new CustomRuleRouteError({
-          code: "CUSTOM_RULE_EVIDENCE_FIELD_UNAVAILABLE",
-          message:
-            "Authorized historical evidence is missing required field: settlement_batches.locked_at",
-          status: 422,
-          retryable: false,
-          path: ["settlement_batches", "locked_at"],
-        });
-      }
-      if (seenIds.has(row.id)) {
-        throw routeError(
-          "CUSTOM_RULE_EVIDENCE_INVALID",
-          "Locked settlement batch evidence contains duplicate rows",
-          500,
-          true,
-        );
-      }
-      seenIds.add(row.id);
-      rows.push(row);
-    }
-    if (rows.length > MAX_AUTHORIZED_SOURCE_REPORTS) {
+  now: () => Date,
+): Promise<EvidenceSnapshot> {
+  const { data, error } = await client.rpc(
+    "read_custom_settlement_evidence_snapshot",
+    {
+      p_organization_id: input.organizationId,
+      p_project_id: input.projectId,
+      p_scope: input.scope,
+      p_period_start: input.periodStart,
+      p_period_end: input.periodEnd,
+      p_max_sources: MAX_AUTHORIZED_SOURCE_REPORTS,
+    },
+  );
+  if (error) {
+    const text = safeRpcErrorText(error);
+    if (text.includes("snapshot_source_limit_exceeded")) {
       throw routeError(
         "CUSTOM_RULE_SELECTION_TOO_LARGE",
-        "Authorized simulation selection has too many source batches",
+        "Authorized simulation selection has too many sources",
         422,
       );
     }
-    if (page.length < EVIDENCE_PAGE_SIZE) break;
-    const nextCursor = page.at(-1)?.id;
-    if (!nextCursor || nextCursor === cursor) {
-      throw routeError(
-        "CUSTOM_RULE_EVIDENCE_INVALID",
-        "Settlement rule batch pagination is not deterministic",
-        500,
-        true,
-      );
-    }
-    cursor = nextCursor;
-  }
-  return rows.sort((left, right) => left.id.localeCompare(right.id));
-}
-
-async function loadLockedSettlementItems(
-  client: SupabaseClient,
-  input: {
-    organizationId: string;
-    projectId: string;
-    batches: SettlementBatchRow[];
-    scope: "payable" | "receivable";
-  },
-): Promise<SettlementItemRow[]> {
-  const rowsById = new Map<string, SettlementItemRow>();
-  const batchIds = input.batches.map((batch) => batch.id);
-  const selectedBatches = new Map(
-    input.batches.map((batch) => [batch.id, batch]),
-  );
-  for (const selectedBatchIds of chunks(batchIds, EVIDENCE_ID_CHUNK_SIZE)) {
-    let cursor: string | null = null;
-    while (true) {
-      let query = client
-        .from("settlement_batch_items")
-        .select(
-          "id, organization_id, project_id, settlement_batch_id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches!inner(id, status, batch_type, locked_at, period_start, period_end)",
-        )
-        .eq("organization_id", input.organizationId)
-        .eq("project_id", input.projectId)
-        .in("settlement_batch_id", selectedBatchIds)
-        .eq("settlement_batches.status", "locked")
-        .eq("settlement_batches.batch_type", input.scope);
-      if (cursor) query = query.gt("id", cursor);
-      const { data, error } = await query
-        .order("id", { ascending: true })
-        .limit(EVIDENCE_PAGE_SIZE)
-        .returns<unknown[]>();
-      const page = parseEvidenceRows(
-        settlementItemRowSchema,
-        data,
-        error,
-        "locked settlement items",
-      ).sort((left, right) => left.id.localeCompare(right.id));
-      for (const row of page) {
-        if (rowsById.has(row.id)) {
-          throw routeError(
-            "CUSTOM_RULE_EVIDENCE_INVALID",
-            "Locked settlement item evidence contains duplicate rows",
-            500,
-            true,
-          );
-        }
-        rowsById.set(row.id, row);
-      }
-      if (rowsById.size > MAX_AUTHORIZED_SOURCE_REPORTS) {
-        throw routeError(
-          "CUSTOM_RULE_SELECTION_TOO_LARGE",
-          "Authorized simulation selection has too many source settlement items",
-          422,
-        );
-      }
-      if (page.length < EVIDENCE_PAGE_SIZE) break;
-      const nextCursor = page.at(-1)?.id;
-      if (!nextCursor || nextCursor === cursor) {
-        throw routeError(
-          "CUSTOM_RULE_EVIDENCE_INVALID",
-          "Settlement rule evidence pagination is not deterministic",
-          500,
-          true,
-        );
-      }
-      cursor = nextCursor;
-    }
-  }
-  const rows = [...rowsById.values()].sort((left, right) =>
-    left.id.localeCompare(right.id),
-  );
-  for (const row of rows) {
-    const batch = oneRelation(row.settlement_batches);
-    const selectedBatch = selectedBatches.get(row.settlement_batch_id);
     if (
-      !batch ||
-      !selectedBatch ||
-      batch.id !== selectedBatch.id ||
-      batch.status !== "locked" ||
-      batch.batch_type !== input.scope ||
-      !batch.locked_at ||
-      batch.period_start !== selectedBatch.period_start ||
-      batch.period_end !== selectedBatch.period_end
+      text.includes("snapshot_access_denied") ||
+      text.includes("snapshot_project_scope_mismatch")
     ) {
       throw routeError(
-        "CUSTOM_RULE_EVIDENCE_INVALID",
-        "Locked settlement item is outside the authorized batch population",
-        500,
-        true,
+        "CUSTOM_RULE_PROJECT_NOT_FOUND",
+        "Project not found",
+        404,
       );
     }
+    throw routeError(
+      "CUSTOM_RULE_STORAGE_UNAVAILABLE",
+      "Settlement rule evidence storage is unavailable",
+      503,
+      true,
+    );
   }
-  return rows;
-}
-
-async function loadAuthorizedConfirmedCosts(
-  client: SupabaseClient,
-  input: {
-    organizationId: string;
-    projectId: string;
-    reportIds: string[];
-    batchIds: string[];
-    periodStartInclusive: string;
-    periodEndExclusive: string;
-  },
-): Promise<{
-  rows: ProjectCostRow[];
-  usesUnlinkedPeriodFallback: boolean;
-}> {
-  const rowsById = new Map<string, ProjectCostRow>();
-  const reportRows = await loadConfirmedCostsByAuthorizedIds(client, {
-    organizationId: input.organizationId,
-    projectId: input.projectId,
-    column: "live_report_id",
-    ids: input.reportIds,
-  });
-  const batchRows = await loadConfirmedCostsByAuthorizedIds(client, {
-    organizationId: input.organizationId,
-    projectId: input.projectId,
-    column: "settlement_batch_id",
-    ids: input.batchIds,
-  });
-  const unlinkedRows = await loadUnlinkedConfirmedPeriodCosts(client, input);
-  for (const row of [...reportRows, ...batchRows, ...unlinkedRows]) {
-    mergeAuthorizedCostRow(rowsById, row);
+  if (
+    data &&
+    typeof data === "object" &&
+    Number.isInteger(Reflect.get(data, "source_count")) &&
+    Number(Reflect.get(data, "source_count")) > MAX_AUTHORIZED_SOURCE_REPORTS
+  ) {
+    throw routeError(
+      "CUSTOM_RULE_SELECTION_TOO_LARGE",
+      "Authorized simulation selection has too many sources",
+      422,
+    );
   }
-  return {
-    rows: [...rowsById.values()].sort((left, right) =>
-      left.id.localeCompare(right.id),
-    ),
-    usesUnlinkedPeriodFallback: unlinkedRows.length > 0,
-  };
-}
-
-async function loadConfirmedCostsByAuthorizedIds(
-  client: SupabaseClient,
-  input: {
-    organizationId: string;
-    projectId: string;
-    column: "live_report_id" | "settlement_batch_id";
-    ids: string[];
-  },
-): Promise<ProjectCostRow[]> {
-  if (input.ids.length === 0) return [];
-  const authorizedIds = new Set(input.ids);
-  const rowsById = new Map<string, ProjectCostRow>();
-  for (const ids of chunks(input.ids, EVIDENCE_ID_CHUNK_SIZE)) {
-    let cursor: string | null = null;
-    while (true) {
-      let query = client
-        .from("project_cost_items")
-        .select(
-          "id, organization_id, project_id, live_report_id, settlement_batch_id, amount_cents, direction, status, created_at",
-        )
-        .eq("organization_id", input.organizationId)
-        .eq("project_id", input.projectId)
-        .eq("status", "confirmed")
-        .in(input.column, ids);
-      if (cursor) query = query.gt("id", cursor);
-      const { data, error } = await query
-        .order("id", { ascending: true })
-        .limit(EVIDENCE_PAGE_SIZE)
-        .returns<unknown[]>();
-      const page = parseEvidenceRows(
-        projectCostRowSchema,
-        data,
-        error,
-        "linked confirmed project costs",
-      ).sort((left, right) => left.id.localeCompare(right.id));
-      assertRowsInScope(page, input.organizationId, input.projectId);
-      for (const row of page) {
-        const linkedId = row[input.column];
-        if (
-          linkedId === null ||
-          !authorizedIds.has(linkedId) ||
-          !Number.isFinite(Date.parse(row.created_at))
-        ) {
-          throw routeError(
-            "CUSTOM_RULE_EVIDENCE_INVALID",
-            "Linked confirmed cost evidence is outside the authorized selection",
-            500,
-            true,
-          );
-        }
-        mergeAuthorizedCostRow(rowsById, row);
-      }
-      if (page.length < EVIDENCE_PAGE_SIZE) break;
-      const nextCursor = page.at(-1)?.id;
-      if (!nextCursor || nextCursor === cursor) {
-        throw routeError(
-          "CUSTOM_RULE_EVIDENCE_INVALID",
-          "Settlement rule linked cost pagination is not deterministic",
-          500,
-          true,
-        );
-      }
-      cursor = nextCursor;
-    }
-  }
-  return [...rowsById.values()].sort((left, right) =>
-    left.id.localeCompare(right.id),
-  );
-}
-
-async function loadUnlinkedConfirmedPeriodCosts(
-  client: SupabaseClient,
-  input: {
-    organizationId: string;
-    projectId: string;
-    periodStartInclusive: string;
-    periodEndExclusive: string;
-  },
-): Promise<ProjectCostRow[]> {
-  const rowsById = new Map<string, ProjectCostRow>();
-  let cursor: string | null = null;
-  while (true) {
-    let query = client
-      .from("project_cost_items")
-      .select(
-        "id, organization_id, project_id, live_report_id, settlement_batch_id, amount_cents, direction, status, created_at",
-      )
-      .eq("organization_id", input.organizationId)
-      .eq("project_id", input.projectId)
-      .eq("status", "confirmed")
-      .is("live_report_id", null)
-      .is("settlement_batch_id", null)
-      .gte("created_at", input.periodStartInclusive)
-      .lt("created_at", input.periodEndExclusive);
-    if (cursor) query = query.gt("id", cursor);
-    const { data, error } = await query
-      .order("id", { ascending: true })
-      .limit(EVIDENCE_PAGE_SIZE)
-      .returns<unknown[]>();
-    const page = parseEvidenceRows(
-      projectCostRowSchema,
-      data,
-      error,
-      "confirmed project costs",
-    ).sort((left, right) => left.id.localeCompare(right.id));
-    assertRowsInScope(page, input.organizationId, input.projectId);
-    for (const row of page) {
-      const createdAt = Date.parse(row.created_at);
-      if (
-        row.live_report_id !== null ||
-        row.settlement_batch_id !== null ||
-        !Number.isFinite(createdAt) ||
-        createdAt < Date.parse(input.periodStartInclusive) ||
-        createdAt >= Date.parse(input.periodEndExclusive)
-      ) {
-        throw routeError(
-          "CUSTOM_RULE_EVIDENCE_INVALID",
-          "Unlinked confirmed cost evidence is outside the authorized period",
-          500,
-          true,
-        );
-      }
-      mergeAuthorizedCostRow(rowsById, row);
-    }
-    if (page.length < EVIDENCE_PAGE_SIZE) break;
-    const nextCursor = page.at(-1)?.id;
-    if (!nextCursor || nextCursor === cursor) {
-      throw routeError(
-        "CUSTOM_RULE_EVIDENCE_INVALID",
-        "Settlement rule cost pagination is not deterministic",
-        500,
-        true,
-      );
-    }
-    cursor = nextCursor;
-  }
-  const rows = [...rowsById.values()].sort((left, right) =>
-    left.id.localeCompare(right.id),
-  );
-  return rows;
-}
-
-function mergeAuthorizedCostRow(
-  rowsById: Map<string, ProjectCostRow>,
-  row: ProjectCostRow,
-): void {
-  const existing = rowsById.get(row.id);
-  if (existing && JSON.stringify(existing) !== JSON.stringify(row)) {
+  const parsed = evidenceSnapshotSchema.safeParse(data);
+  if (!parsed.success) {
     throw routeError(
       "CUSTOM_RULE_EVIDENCE_INVALID",
-      "Confirmed cost evidence has conflicting immutable snapshots",
+      "Settlement rule evidence snapshot is invalid",
       500,
       true,
     );
   }
-  rowsById.set(row.id, row);
-  if (rowsById.size > MAX_AUTHORIZED_SOURCE_REPORTS) {
+  const snapshot = parsed.data;
+  validateEvidenceSnapshot(snapshot, input, now);
+  return snapshot;
+}
+
+function validateEvidenceSnapshot(
+  snapshot: EvidenceSnapshot,
+  expected: {
+    organizationId: string;
+    actorId: string;
+    projectId: string;
+    scope: "payable" | "receivable";
+    periodStart: string;
+    periodEnd: string;
+    businessTimezone: string;
+    periodStartInclusive: string;
+    periodEndExclusive: string;
+  },
+  now: () => Date,
+): void {
+  const capturedAt = canonicalOffsetDateTimeEpoch(snapshot.captured_at);
+  const nowEpoch = now().getTime();
+  const countedSources =
+    snapshot.settlement_batches.length +
+    snapshot.settlement_batch_items.length +
+    snapshot.live_reports.length * 2 +
+    snapshot.project_cost_items.length +
+    snapshot.project_streamers.length +
+    snapshot.streamers.length;
+  if (
+    snapshot.organization_id !== expected.organizationId ||
+    snapshot.project_id !== expected.projectId ||
+    snapshot.actor_id !== expected.actorId ||
+    snapshot.scope !== expected.scope ||
+    snapshot.period_start !== expected.periodStart ||
+    snapshot.period_end !== expected.periodEnd ||
+    snapshot.business_timezone !== expected.businessTimezone ||
+    !snapshot.business_timezone_confirmed ||
+    snapshot.project.id !== expected.projectId ||
+    snapshot.project.organization_id !== expected.organizationId ||
+    snapshot.project.business_timezone !== expected.businessTimezone ||
+    !snapshot.project.business_timezone_confirmed ||
+    capturedAt === null ||
+    !Number.isFinite(nowEpoch) ||
+    capturedAt < nowEpoch - SNAPSHOT_MAX_AGE_MS ||
+    capturedAt > nowEpoch + SNAPSHOT_MAX_FUTURE_SKEW_MS ||
+    snapshot.source_count !== countedSources
+  ) {
     throw routeError(
-      "CUSTOM_RULE_SELECTION_TOO_LARGE",
-      "Authorized simulation selection has too many source cost items",
-      422,
+      "CUSTOM_RULE_EVIDENCE_INVALID",
+      "Settlement rule evidence snapshot metadata is invalid",
+      500,
+      true,
     );
   }
+
+  assertUniqueSnapshotRows(snapshot.settlement_batches, "batches");
+  assertUniqueSnapshotRows(snapshot.settlement_batch_items, "items");
+  assertUniqueSnapshotRows(snapshot.live_reports, "reports");
+  assertUniqueSnapshotRows(snapshot.project_cost_items, "costs");
+  assertUniqueSnapshotRows(snapshot.project_streamers, "project streamers");
+  assertUniqueSnapshotRows(snapshot.streamers, "streamers");
+  assertRowsInScope(
+    snapshot.settlement_batches,
+    expected.organizationId,
+    expected.projectId,
+  );
+  assertRowsInScope(
+    snapshot.settlement_batch_items,
+    expected.organizationId,
+    expected.projectId,
+  );
+  assertRowsInScope(
+    snapshot.live_reports,
+    expected.organizationId,
+    expected.projectId,
+  );
+  assertRowsInScope(
+    snapshot.project_cost_items,
+    expected.organizationId,
+    expected.projectId,
+  );
+  assertRowsInScope(
+    snapshot.project_streamers,
+    expected.organizationId,
+    expected.projectId,
+  );
+  if (
+    snapshot.streamers.some(
+      (streamer) => streamer.organization_id !== expected.organizationId,
+    )
+  ) {
+    throw routeError(
+      "CUSTOM_RULE_EVIDENCE_INVALID",
+      "Settlement rule evidence snapshot streamer scope is invalid",
+      500,
+      true,
+    );
+  }
+
+  const batchesById = new Map(
+    snapshot.settlement_batches.map((batch) => [batch.id, batch]),
+  );
+  for (const batch of snapshot.settlement_batches) {
+    if (
+      batch.period_start > expected.periodEnd ||
+      batch.period_end < expected.periodStart ||
+      batch.locked_at === null
+    ) {
+      throw routeError(
+        "CUSTOM_RULE_EVIDENCE_INVALID",
+        "Locked settlement batch is outside the authorized snapshot",
+        500,
+        true,
+      );
+    }
+  }
+  for (const item of snapshot.settlement_batch_items) {
+    const batch = batchesById.get(item.settlement_batch_id);
+    const relation = oneRelation(item.settlement_batches);
+    if (
+      !batch ||
+      !relation ||
+      relation.id !== batch.id ||
+      relation.status !== batch.status ||
+      relation.batch_type !== batch.batch_type ||
+      relation.locked_at !== batch.locked_at ||
+      relation.period_start !== batch.period_start ||
+      relation.period_end !== batch.period_end ||
+      relation.version !== batch.version
+    ) {
+      throw routeError(
+        "CUSTOM_RULE_EVIDENCE_INVALID",
+        "Settlement item snapshot is fractured from its locked batch",
+        500,
+        true,
+      );
+    }
+  }
+
+  assertApprovedReportSnapshots(snapshot.live_reports);
+  for (const report of snapshot.live_reports) {
+    if (canonicalOffsetDateTimeEpoch(report.reviewed_at) === null) {
+      throw routeError(
+        "CUSTOM_RULE_EVIDENCE_INVALID",
+        "Approved report snapshot timestamp is invalid",
+        500,
+        true,
+      );
+    }
+  }
+  const reportIds = new Set(snapshot.live_reports.map((report) => report.id));
+  const batchIds = new Set(
+    snapshot.settlement_batches.map((batch) => batch.id),
+  );
+  const periodStart = canonicalOffsetDateTimeEpoch(
+    expected.periodStartInclusive,
+  );
+  const periodEnd = canonicalOffsetDateTimeEpoch(expected.periodEndExclusive);
+  if (periodStart === null || periodEnd === null) {
+    throw routeError(
+      "CUSTOM_RULE_EVIDENCE_INVALID",
+      "Settlement rule evidence period is invalid",
+      500,
+      true,
+    );
+  }
+  for (const cost of snapshot.project_cost_items) {
+    const linkedReportValid =
+      cost.live_report_id === null || reportIds.has(cost.live_report_id);
+    const linkedBatchValid =
+      cost.settlement_batch_id === null ||
+      batchIds.has(cost.settlement_batch_id);
+    const createdAt = canonicalOffsetDateTimeEpoch(cost.created_at);
+    const unlinkedInPeriod =
+      cost.live_report_id !== null ||
+      cost.settlement_batch_id !== null ||
+      (createdAt !== null && createdAt >= periodStart && createdAt < periodEnd);
+    if (!linkedReportValid || !linkedBatchValid || !unlinkedInPeriod) {
+      throw routeError(
+        "CUSTOM_RULE_EVIDENCE_INVALID",
+        "Confirmed cost snapshot is outside the authorized selection",
+        500,
+        true,
+      );
+    }
+  }
+}
+
+function assertUniqueSnapshotRows(
+  rows: ReadonlyArray<{ id: string }>,
+  source: string,
+): void {
+  const ids = rows.map((row) => row.id);
+  if (new Set(ids).size !== ids.length) {
+    throw routeError(
+      "CUSTOM_RULE_EVIDENCE_INVALID",
+      `Settlement rule evidence snapshot contains duplicate ${source}`,
+      500,
+      true,
+    );
+  }
+}
+
+function selectApprovedReportsWithinPeriod(
+  reports: ApprovedReportRow[],
+  input: {
+    periodStartInclusive: string;
+    periodEndExclusive: string;
+    allowedOutOfWindowReportIds: ReadonlySet<string>;
+  },
+): ApprovedReportRow[] {
+  const startEpoch = canonicalOffsetDateTimeEpoch(input.periodStartInclusive);
+  const endEpoch = canonicalOffsetDateTimeEpoch(input.periodEndExclusive);
+  if (startEpoch === null || endEpoch === null || endEpoch <= startEpoch) {
+    throw routeError(
+      "CUSTOM_RULE_EVIDENCE_INVALID",
+      "Approved report review period is invalid",
+      500,
+      true,
+    );
+  }
+  return reports
+    .filter((report) => {
+      const reviewedAt = canonicalOffsetDateTimeEpoch(report.reviewed_at);
+      if (reviewedAt === null) {
+        throw routeError(
+          "CUSTOM_RULE_EVIDENCE_INVALID",
+          "Approved report snapshot timestamp is invalid",
+          500,
+          true,
+        );
+      }
+      const inPeriod = reviewedAt >= startEpoch && reviewedAt < endEpoch;
+      if (!inPeriod && !input.allowedOutOfWindowReportIds.has(report.id)) {
+        throw routeError(
+          "CUSTOM_RULE_EVIDENCE_INVALID",
+          "Approved report snapshot is outside the authorized review period",
+          500,
+          true,
+        );
+      }
+      return inPeriod;
+    })
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function deriveCurrentMargin(input: {
@@ -2357,59 +2244,6 @@ function deriveCurrentMargin(input: {
     amount += cost.direction === "revenue_offset" ? costAmount : -costAmount;
   }
   return { amount, status: "available" };
-}
-
-async function loadProjectStreamers(
-  client: SupabaseClient,
-  input: {
-    organizationId: string;
-    projectId: string;
-    streamerIds: string[];
-  },
-): Promise<ProjectStreamerRow[]> {
-  const { data, error } = await client
-    .from("project_streamers")
-    .select(
-      "id, organization_id, project_id, streamer_id, hourly_rate, base_salary, cps_rate_bps, collaboration_id, streamers!inner(source_type)",
-    )
-    .eq("organization_id", input.organizationId)
-    .eq("project_id", input.projectId)
-    .in("streamer_id", input.streamerIds)
-    .order("streamer_id", { ascending: true })
-    .limit(EVIDENCE_PAGE_SIZE)
-    .returns<unknown[]>();
-  return parseEvidenceRows(
-    projectStreamerRowSchema,
-    data,
-    error,
-    "project streamer snapshots",
-  );
-}
-
-function parseEvidenceRows<Schema extends z.ZodType>(
-  schema: Schema,
-  data: unknown,
-  error: unknown,
-  source: string,
-): Array<z.output<Schema>> {
-  if (error) {
-    throw routeError(
-      "CUSTOM_RULE_STORAGE_UNAVAILABLE",
-      "Settlement rule evidence storage is unavailable",
-      503,
-      true,
-    );
-  }
-  const parsed = z.array(schema).safeParse(data);
-  if (!parsed.success) {
-    throw routeError(
-      "CUSTOM_RULE_EVIDENCE_INVALID",
-      `Settlement rule evidence source is invalid: ${source}`,
-      500,
-      true,
-    );
-  }
-  return parsed.data;
 }
 
 function assertRowsInScope(
@@ -3247,14 +3081,6 @@ function oneRelation<Value>(value: Value | Value[]): Value | null {
   return Array.isArray(value) ? (value[0] ?? null) : value;
 }
 
-function chunks<Value>(values: Value[], size: number): Value[][] {
-  const result: Value[][] = [];
-  for (let index = 0; index < values.length; index += size) {
-    result.push(values.slice(index, index + size));
-  }
-  return result;
-}
-
 function routeError(
   code: string,
   message: string,
@@ -3262,6 +3088,78 @@ function routeError(
   retryable = false,
 ): CustomRuleRouteError {
   return new CustomRuleRouteError({ code, message, status, retryable });
+}
+
+async function claimCustomSettlementAiSession(
+  client: SupabaseClient,
+  input: {
+    organizationId: string;
+    projectId: string;
+    clientRequestId: string;
+    requestFingerprint: string;
+    title: string;
+  },
+) {
+  const { data, error } = await client.rpc(
+    "claim_custom_settlement_ai_session",
+    {
+      p_organization_id: input.organizationId,
+      p_project_id: input.projectId,
+      p_client_request_id: input.clientRequestId,
+      p_title: input.title,
+      p_request_fingerprint: input.requestFingerprint,
+    },
+  );
+  if (error) {
+    const text = safeRpcErrorText(error);
+    if (
+      text.includes("idempotency") ||
+      text.includes("request_mismatch") ||
+      text.includes("session_replay_mismatch")
+    ) {
+      throw routeError(
+        "CUSTOM_RULE_IDEMPOTENCY_CONFLICT",
+        "Settlement rule start request conflicts with an earlier request",
+        409,
+      );
+    }
+    throw routeError(
+      "CUSTOM_RULE_STORAGE_UNAVAILABLE",
+      "Settlement rule authoring storage is unavailable",
+      503,
+      true,
+    );
+  }
+  const parsed = claimedAiSessionRowSchema.safeParse(data);
+  if (!parsed.success) {
+    throw routeError(
+      "CUSTOM_RULE_STORAGE_UNAVAILABLE",
+      "Settlement rule authoring storage is unavailable",
+      503,
+      true,
+    );
+  }
+  const row = parsed.data;
+  return {
+    session: {
+      id: row.id,
+      title: row.title,
+      status: row.status,
+      lastMessageAt: row.last_message_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    },
+    duplicate: row.duplicate,
+  };
+}
+
+function safeRpcErrorText(error: unknown): string {
+  if (!error || typeof error !== "object") return "";
+  const message = Reflect.get(error, "message");
+  const details = Reflect.get(error, "details");
+  return `${typeof message === "string" ? message : ""} ${
+    typeof details === "string" ? details : ""
+  }`.toLowerCase();
 }
 
 async function requireProjectAccess(
