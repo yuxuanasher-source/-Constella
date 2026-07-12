@@ -289,13 +289,14 @@ begin
   end if;
   if p_organization_id is null
      or p_project_id is null
+     or p_scope is null
      or p_scope not in ('payable', 'receivable') then
     raise exception 'custom_settlement_snapshot_scope_invalid';
   end if;
   if p_period_start is null
      or p_period_end is null
      or p_period_end < p_period_start
-     or p_period_end - p_period_start > 366 then
+     or p_period_end - p_period_start > 365 then
     raise exception 'custom_settlement_snapshot_period_invalid';
   end if;
   if p_max_sources is null
@@ -1203,6 +1204,22 @@ begin
       end if;
   end;
 
+  begin
+    perform public.claim_custom_settlement_ai_session(
+      v_organization_id,
+      v_project_id,
+      'task8-runtime-claim-0001',
+      'Task8 Runtime Different Title',
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    );
+    raise exception 'runtime_claim_title_mismatch_accepted';
+  exception
+    when others then
+      if sqlerrm = 'runtime_claim_title_mismatch_accepted' then
+        raise;
+      end if;
+  end;
+
   perform pg_catalog.set_config(
     'request.jwt.claim.sub',
     v_finance_id::text,
@@ -1256,6 +1273,49 @@ begin
   ) then
     raise exception 'runtime_snapshot_hash_mismatch';
   end if;
+
+  begin
+    perform public.read_custom_settlement_evidence_snapshot(
+      v_organization_id,
+      v_empty_project_id,
+      null,
+      '2026-07-01'::date,
+      '2026-07-31'::date,
+      10000
+    );
+    raise exception 'runtime_snapshot_null_scope_accepted';
+  exception
+    when others then
+      if sqlerrm = 'runtime_snapshot_null_scope_accepted' then
+        raise;
+      end if;
+  end;
+
+  perform public.read_custom_settlement_evidence_snapshot(
+    v_organization_id,
+    v_empty_project_id,
+    'payable',
+    '2025-01-01'::date,
+    '2026-01-01'::date,
+    10000
+  );
+
+  begin
+    perform public.read_custom_settlement_evidence_snapshot(
+      v_organization_id,
+      v_empty_project_id,
+      'payable',
+      '2025-01-01'::date,
+      '2026-01-02'::date,
+      10000
+    );
+    raise exception 'runtime_snapshot_367_day_period_accepted';
+  exception
+    when others then
+      if sqlerrm = 'runtime_snapshot_367_day_period_accepted' then
+        raise;
+      end if;
+  end;
 
   begin
     perform public.read_custom_settlement_evidence_snapshot(

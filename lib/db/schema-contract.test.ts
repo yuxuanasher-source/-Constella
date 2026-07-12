@@ -1898,9 +1898,11 @@ describe("Task8 custom settlement runtime database contract", () => {
     expect(definition).toContain("returns jsonb");
     expect(definition).toContain("security definer");
     expect(definition).toContain("set search_path = pg_catalog, public");
+    expect(body).toContain("p_scope is null");
     expect(body).toContain("p_scope not in ('payable', 'receivable')");
     expect(body).toContain("p_max_sources > 10000");
-    expect(body).toContain("p_period_end - p_period_start > 366");
+    expect(body).toContain("p_period_end - p_period_start > 365");
+    expect(body).not.toContain("p_period_end - p_period_start > 366");
     expect(body).toContain(
       "public.current_user_role(p_organization_id) not in ( 'owner', 'ops_manager', 'operator_business', 'finance' )",
     );
@@ -2052,8 +2054,11 @@ describe("Task8 custom settlement runtime database contract", () => {
       "public.read_custom_settlement_evidence_snapshot(",
       "runtime_claim_duplicate_failed",
       "runtime_claim_mismatch_accepted",
+      "runtime_claim_title_mismatch_accepted",
       "runtime_finance_claim_accepted",
       "runtime_finance_snapshot_failed",
+      "runtime_snapshot_null_scope_accepted",
+      "runtime_snapshot_367_day_period_accepted",
       "runtime_cross_scope_snapshot_accepted",
       "runtime_snapshot_amount_not_text",
       "runtime_snapshot_limit_accepted",
@@ -2261,6 +2266,26 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
         );
         expect(mismatch.code).not.toBe(0);
         expect(mismatch.stderr).toContain(
+          "custom_settlement_session_replay_mismatch",
+        );
+
+        const titleMismatch = await runDockerSqlAsyncCapture(
+          container,
+          `
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${ownerId}', false
+            );
+            select public.claim_custom_settlement_ai_session(
+              '${organizationId}'::uuid,
+              '${projectId}'::uuid,
+              '${requestId}',
+              'Task8 Different Replay Title',
+              '${requestFingerprint}'
+            );
+          `,
+        );
+        expect(titleMismatch.code).not.toBe(0);
+        expect(titleMismatch.stderr).toContain(
           "custom_settlement_session_replay_mismatch",
         );
 
@@ -2728,6 +2753,75 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
         expect(emptySnapshot.source_count).toBe(0);
         expect(emptySnapshot.settlement_batches).toEqual([]);
         expect(emptySnapshot.project_cost_items).toEqual([]);
+
+        const inclusive366DayText = runDockerSqlText(
+          container,
+          `
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${financeId}', false
+            );
+            select public.read_custom_settlement_evidence_snapshot(
+              '${organizationId}'::uuid,
+              '${emptyProjectId}'::uuid,
+              'payable',
+              '2025-01-01'::date,
+              '2026-01-01'::date,
+              10000
+            );
+          `,
+        );
+        const inclusive366DayLine = inclusive366DayText
+          .split(/\r?\n/gu)
+          .find((line) => line.trim().startsWith("{"));
+        const inclusive366DaySnapshot = JSON.parse(
+          inclusive366DayLine ?? "null",
+        ) as { period_start: string; period_end: string };
+        expect(inclusive366DaySnapshot).toMatchObject({
+          period_start: "2025-01-01",
+          period_end: "2026-01-01",
+        });
+
+        const nullScope = await runDockerSqlAsyncCapture(
+          container,
+          `
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${financeId}', false
+            );
+            select public.read_custom_settlement_evidence_snapshot(
+              '${organizationId}'::uuid,
+              '${emptyProjectId}'::uuid,
+              null,
+              '2026-07-01'::date,
+              '2026-07-31'::date,
+              10000
+            );
+          `,
+        );
+        expect(nullScope.code).not.toBe(0);
+        expect(nullScope.stderr).toContain(
+          "custom_settlement_snapshot_scope_invalid",
+        );
+
+        const inclusive367Days = await runDockerSqlAsyncCapture(
+          container,
+          `
+            select pg_catalog.set_config(
+              'request.jwt.claim.sub', '${financeId}', false
+            );
+            select public.read_custom_settlement_evidence_snapshot(
+              '${organizationId}'::uuid,
+              '${emptyProjectId}'::uuid,
+              'payable',
+              '2025-01-01'::date,
+              '2026-01-02'::date,
+              10000
+            );
+          `,
+        );
+        expect(inclusive367Days.code).not.toBe(0);
+        expect(inclusive367Days.stderr).toContain(
+          "custom_settlement_snapshot_period_invalid",
+        );
 
         for (const deniedSql of [
           `
