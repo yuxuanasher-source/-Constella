@@ -1,4 +1,12 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { CustomSettlementRuleApiError } from "./custom-settlement-rule-api";
@@ -7,6 +15,14 @@ import CustomSettlementRuleWorkspace from "./custom-settlement-rule-workspace";
 const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
 const SESSION_ID = "44444444-4444-4444-8444-444444444444";
 const DRAFT_ID = "55555555-5555-4555-8555-555555555555";
+
+function generatedTestCase() {
+  return {
+    name: "标准一小时",
+    inputs: { system_minutes: { type: "integer", value: 60 } },
+    expectedResult: { type: "money_cents", amountCents: 10_000 },
+  };
+}
 
 function contract(overrides = {}) {
   return {
@@ -108,7 +124,7 @@ function draft(status = "clarifying", overrides = {}) {
         }
       : null,
     generatedExplanation: ready ? "按系统直播时长和已确认单价计算。" : null,
-    generatedTestCases: [],
+    generatedTestCases: ready ? [generatedTestCase()] : [],
     safetyFlags: [],
     contractHash: "b".repeat(64),
     formulaHash: ready ? "c".repeat(64) : null,
@@ -151,7 +167,7 @@ function startEnvelope(nextDraft, resultOverrides = {}) {
   };
 }
 
-function catalog(hasHistory = true) {
+function catalog(hasHistory = true, overrides = {}) {
   return {
     catalog: {
       scope: "payable",
@@ -161,7 +177,23 @@ function catalog(hasHistory = true) {
       businessTimezoneSource: "contract_default",
       hasHistory,
       version: "a".repeat(64),
-      variables: [],
+      variables: [
+        {
+          id: "system_minutes",
+          label: "系统直播时长",
+          runtimeType: { kind: "scalar", scalarType: "integer" },
+          unit: "分钟",
+          sourceLabel: "直播报告",
+          availability: "available",
+          coverageNumerator: 20,
+          coverageDenominator: 20,
+          latestSampledPeriod: {
+            start: "2026-07-01",
+            end: "2026-07-31",
+          },
+        },
+      ],
+      ...overrides,
     },
   };
 }
@@ -187,7 +219,7 @@ function simulationEnvelope({ noHistory = false } = {}) {
           criteria: ["approved_reports"],
         },
         coverage: { totalRecords: 20, evaluatedRecords: 18, skippedRecords: 2 },
-        scenarios: [],
+        scenarios: [{ name: "标准场景", kind: "normal", result: "passed" }],
         historicalTotals: {
           payableAmountYuan: noHistory ? null : "1000.00",
           receivableAmountYuan: null,
@@ -233,7 +265,16 @@ function simulationEnvelope({ noHistory = false } = {}) {
         warnings: [
           { code: "LOW_COVERAGE", severity: "info", message: "两条记录未覆盖" },
         ],
-        scenarios: [],
+        scenarios: [
+          {
+            id: "scenario:000001",
+            category: "contract_example",
+            outcome: "calculated",
+            amountYuan: "1125.00",
+            expectedAmountYuan: "1125.00",
+            passed: true,
+          },
+        ],
       },
       duplicate: false,
     },
@@ -252,10 +293,88 @@ function authoritativeSession(nextDraft, simulation = null) {
   };
 }
 
+function conversationTurn(status, overrides = {}) {
+  return {
+    id: "77777777-7777-4777-8777-777777777777",
+    conversationId: SESSION_ID,
+    userMessageId: "88888888-8888-4888-8888-888888888888",
+    assistantMessageId: "99999999-9999-4999-8999-999999999999",
+    mode: "deep",
+    status,
+    attempt: 1,
+    retryOfTurnId: null,
+    regenerateOfTurnId: null,
+    errorCode: null,
+    retryable: false,
+    ...overrides,
+  };
+}
+
+function authoritativeSessionWithTurns(nextDraft, turns, simulation = null) {
+  const envelope = authoritativeSession(nextDraft, simulation);
+  envelope.session.turns = turns;
+  return envelope;
+}
+
+function persistedSimulation(overrides = {}) {
+  return {
+    id: "66666666-6666-4666-8666-666666666666",
+    createdAt: "2026-07-12T01:02:00.000Z",
+    dataSelectionHash: "e".repeat(64),
+    sampleSource: { kind: "historical_settlements" },
+    sampleSelection: {
+      periodStart: "2026-07-01",
+      periodEnd: "2026-07-31",
+      populationCount: 20,
+      sampledCount: 20,
+      criteria: [
+        "approved_reports",
+        "selection_token_sha256:" + "f".repeat(64),
+      ],
+    },
+    coverage: { totalRecords: 20, evaluatedRecords: 18, skippedRecords: 2 },
+    scenarios: [{ name: "scenario:000001", kind: "normal", result: "passed" }],
+    historicalTotals: {
+      payableAmountYuan: "1000.00",
+      receivableAmountYuan: null,
+      recordCount: 20,
+    },
+    deltas: {
+      payableAmountYuan: "125.00",
+      receivableAmountYuan: "0.00",
+      percentagePercent: "12.50",
+    },
+    largestChanges: [
+      {
+        dimension: "period",
+        key: "authorized_ordinal:000001",
+        deltaAmountYuan: "80.00",
+        direction: "increase",
+      },
+      {
+        dimension: "period",
+        key: "authorized_ordinal:000002",
+        deltaAmountYuan: "-30.00",
+        direction: "decrease",
+      },
+    ],
+    warnings: [
+      {
+        code: "CUSTOM_RULE_INCOMPLETE_COVERAGE",
+        severity: "warning",
+        message: "两条记录需要复核",
+      },
+    ],
+    ...overrides,
+  };
+}
+
 function api(overrides = {}) {
   return {
     abortActive: vi.fn(),
-    getVariableCatalog: vi.fn().mockResolvedValue(catalog()),
+    getVariableCatalog: vi.fn(({ scope, executionGrain }) =>
+      Promise.resolve(catalog(true, { scope, executionGrain })),
+    ),
     startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
     refreshSession: vi
       .fn()
@@ -286,6 +405,13 @@ function expectOnePrimary(name) {
 }
 
 async function startRule(prompt = "每场按直播时长和单价结算") {
+  const payableScope = screen.getByRole("button", { name: "主播应付" });
+  if (payableScope.getAttribute("aria-pressed") !== "true") {
+    fireEvent.click(payableScope);
+  }
+  await waitFor(() =>
+    expect(screen.getByLabelText("规则说明")).not.toBeDisabled(),
+  );
   fireEvent.change(screen.getByLabelText("规则说明"), {
     target: { value: prompt },
   });
@@ -295,7 +421,9 @@ async function startRule(prompt = "每场按直播时长和单价结算") {
 describe("CustomSettlementRuleWorkspace", () => {
   it("offers only Phase 1 business scopes on a full-width operational surface", async () => {
     const apiClient = api({
-      getVariableCatalog: vi.fn().mockResolvedValue(catalog(false)),
+      getVariableCatalog: vi.fn(({ scope, executionGrain }) =>
+        Promise.resolve(catalog(false, { scope, executionGrain })),
+      ),
     });
     renderWorkspace(apiClient);
 
@@ -312,8 +440,8 @@ describe("CustomSettlementRuleWorkspace", () => {
       "data-layout",
       "full-width",
     );
-    expectOnePrimary("开始澄清");
     expect(await screen.findByText("无历史数据")).toBeInTheDocument();
+    expectOnePrimary("开始澄清");
   });
 
   it("shows one focused AI question and highlights every unresolved contract field", async () => {
@@ -550,7 +678,7 @@ describe("CustomSettlementRuleWorkspace", () => {
     await startRule();
     expectOnePrimary("正在生成…");
 
-    fireEvent.click(screen.getByRole("button", { name: "主播应付" }));
+    fireEvent.click(screen.getByRole("button", { name: "客户应收" }));
     resolveStart(startEnvelope(draft()));
 
     await waitFor(() => expect(apiClient.abortActive).toHaveBeenCalled());
@@ -590,6 +718,582 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(question).toHaveFocus();
     expect(apiClient.startSession).toHaveBeenCalledTimes(2);
     expectOnePrimary("回复 AI");
+  });
+
+  it("renders exact authoritative persisted simulation metrics without fabricating missing ones", async () => {
+    const first = draft();
+    const refreshed = draft("simulated", { revisionNumber: 4 });
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(startEnvelope(first)),
+      refreshSession: vi.fn().mockResolvedValue(
+        authoritativeSessionWithTurns(
+          refreshed,
+          [conversationTurn("completed")],
+          persistedSimulation(),
+        ),
+      ),
+    });
+    renderWorkspace(apiClient);
+    await startRule();
+    await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新会话" }));
+
+    const simulation = await screen.findByRole("region", { name: "内部试算" });
+    expect(screen.getByRole("heading", { name: "内部试算结果" })).toHaveFocus();
+    expect(screen.getByText("当前金额").parentElement).toHaveTextContent(
+      "¥1,000.00",
+    );
+    expect(screen.getByText("新规则金额").parentElement).toHaveTextContent(
+      "服务端未提供",
+    );
+    expect(screen.getByText("差额").parentElement).toHaveTextContent("¥125.00");
+    expect(screen.getByText("覆盖率").parentElement).toHaveTextContent(
+      "服务端未提供",
+    );
+    expect(screen.getByText("覆盖率").parentElement).toHaveTextContent(
+      "18/20 条",
+    );
+    expect(screen.getByText("零金额").parentElement).toHaveTextContent(
+      "服务端未提供",
+    );
+    expect(
+      within(simulation).getByText("转人工复核").parentElement,
+    ).toHaveTextContent("服务端未提供");
+    expect(simulation).toHaveTextContent("第 1 条变更");
+    expect(simulation).toHaveTextContent("¥80.00");
+    expect(simulation).toHaveTextContent("第 2 条变更");
+    expect(simulation).toHaveTextContent("-¥30.00");
+    expect(simulation).toHaveTextContent("两条记录需要复核");
+    expect(screen.getByText("风险").parentElement).toHaveTextContent(
+      "服务端未提供",
+    );
+    expect(simulation).not.toHaveTextContent("已通过历史数据验证");
+    expect(simulation).not.toHaveTextContent("无新增风险");
+    expect(simulation).not.toHaveTextContent("authorized_ordinal");
+    expectOnePrimary("修改规则");
+  });
+
+  it("uses the authoritative no-history marker after session refresh", async () => {
+    const noHistorySimulation = persistedSimulation({
+      sampleSource: { kind: "approved_operations" },
+      historicalTotals: {
+        payableAmountYuan: null,
+        receivableAmountYuan: null,
+        recordCount: 0,
+      },
+      deltas: {
+        payableAmountYuan: "0.00",
+        receivableAmountYuan: "0.00",
+        percentagePercent: "0.00",
+      },
+    });
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
+      refreshSession: vi.fn().mockResolvedValue(
+        authoritativeSessionWithTurns(
+          draft("simulated", { revisionNumber: 4 }),
+          [conversationTurn("completed")],
+          noHistorySimulation,
+        ),
+      ),
+    });
+    renderWorkspace(apiClient);
+    await startRule();
+    await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新会话" }));
+
+    const simulation = await screen.findByRole("region", { name: "内部试算" });
+    expect(simulation).toHaveTextContent("无历史数据");
+    expect(screen.getByText("当前金额").parentElement).toHaveTextContent(
+      "无历史数据",
+    );
+    expect(screen.getByText("新规则金额").parentElement).toHaveTextContent(
+      "服务端未提供",
+    );
+  });
+
+  it("keeps retry-in-progress visible across authoritative refreshes until terminal", async () => {
+    let resolveTerminal;
+    const terminal = new Promise((resolve) => {
+      resolveTerminal = resolve;
+    });
+    const retryEnvelope = {
+      session: claimedSession(),
+      result: {
+        ok: true,
+        kind: "retry_in_progress",
+        conversationId: SESSION_ID,
+        turn: {
+          turnId: "77777777-7777-4777-8777-777777777777",
+          status: "generating",
+          attempt: 1,
+          duplicate: true,
+        },
+      },
+    };
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(retryEnvelope),
+      refreshSession: vi
+        .fn()
+        .mockResolvedValueOnce(
+          authoritativeSessionWithTurns(draft(), [conversationTurn("generating")]),
+        )
+        .mockReturnValueOnce(terminal),
+    });
+    renderWorkspace(apiClient, { retryPollDelayMs: 0, retryPollMaxAttempts: 3 });
+
+    await startRule();
+
+    const progressHeading = await screen.findByRole("heading", {
+      name: "AI 正在处理",
+    });
+    expect(progressHeading).toHaveFocus();
+    expectOnePrimary("正在处理…");
+    expect(apiClient.startSession).toHaveBeenCalledTimes(1);
+    expect(apiClient.answerOrRevise).not.toHaveBeenCalled();
+
+    resolveTerminal(
+      authoritativeSessionWithTurns(draft(), [conversationTurn("completed")]),
+    );
+
+    const question = await screen.findByRole("heading", {
+      name: "每小时按多少元结算？",
+    });
+    expect(question).toHaveFocus();
+    expect(apiClient.refreshSession).toHaveBeenCalledTimes(2);
+    expect(apiClient.startSession).toHaveBeenCalledTimes(1);
+    expect(apiClient.answerOrRevise).not.toHaveBeenCalled();
+    expectOnePrimary("回复 AI");
+  });
+
+  it("fails safely after bounded active refreshes without duplicating an AI turn", async () => {
+    const retryEnvelope = {
+      session: claimedSession(),
+      result: {
+        ok: true,
+        kind: "retry_in_progress",
+        conversationId: SESSION_ID,
+        turn: {
+          turnId: "77777777-7777-4777-8777-777777777777",
+          status: "validating",
+          attempt: 1,
+          duplicate: true,
+        },
+      },
+    };
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(retryEnvelope),
+      refreshSession: vi.fn().mockResolvedValue(
+        authoritativeSessionWithTurns(draft(), [conversationTurn("validating")]),
+      ),
+    });
+    renderWorkspace(apiClient, { retryPollDelayMs: 0, retryPollMaxAttempts: 2 });
+
+    await startRule();
+
+    const heading = await screen.findByRole("heading", {
+      name: "AI 仍在处理",
+    });
+    expect(heading).toHaveFocus();
+    expect(screen.getByText("处理尚未完成，请刷新查看最新状态")).toBeInTheDocument();
+    expectOnePrimary("刷新处理状态");
+    expect(apiClient.refreshSession).toHaveBeenCalledTimes(2);
+    expect(apiClient.startSession).toHaveBeenCalledTimes(1);
+    expect(apiClient.answerOrRevise).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a completed retry readback before rendering simulated state", async () => {
+    const simulatedDraft = draft("simulated", { revisionNumber: 4 });
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue({
+        session: claimedSession(),
+        result: {
+          ok: true,
+          kind: "retry_readback",
+          conversationId: SESSION_ID,
+          draft: simulatedDraft,
+          turn: {
+            turnId: "77777777-7777-4777-8777-777777777777",
+            status: "completed",
+            attempt: 1,
+            duplicate: true,
+          },
+        },
+      }),
+      refreshSession: vi.fn().mockResolvedValue(
+        authoritativeSessionWithTurns(
+          simulatedDraft,
+          [conversationTurn("completed")],
+          persistedSimulation(),
+        ),
+      ),
+    });
+    renderWorkspace(apiClient);
+
+    await startRule();
+
+    expect(
+      await screen.findByRole("heading", { name: "内部试算结果" }),
+    ).toHaveFocus();
+    expect(apiClient.refreshSession).toHaveBeenCalledTimes(1);
+    expect(apiClient.answerOrRevise).not.toHaveBeenCalled();
+    expectOnePrimary("修改规则");
+  });
+
+  it("renders an authoritative failed draft as a focused safe error state", async () => {
+    const failed = draft("failed", {
+      initialStatus: "failed",
+      unresolvedAmbiguities: [],
+      safetyFlags: [
+        {
+          code: "ai_generation_failed",
+          severity: "warning",
+          message: "provider stack raw prompt sk-failed-secret",
+        },
+      ],
+    });
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
+      refreshSession: vi.fn().mockResolvedValue(
+        authoritativeSessionWithTurns(failed, [
+          conversationTurn("failed", {
+            errorCode: "provider_raw_prompt_stack",
+            retryable: true,
+          }),
+        ]),
+      ),
+    });
+    renderWorkspace(apiClient);
+    await startRule();
+    await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新会话" }));
+
+    const heading = await screen.findByRole("heading", {
+      name: "AI 草案生成失败",
+    });
+    expect(heading).toHaveFocus();
+    expect(screen.getByText("AI 未能生成可用草案，请重新开始")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("AI 草案生成失败");
+    expect(document.body).not.toHaveTextContent("sk-failed-secret");
+    expect(document.body).not.toHaveTextContent("provider_raw_prompt_stack");
+    expect(screen.queryByRole("button", { name: "开始澄清" })).not.toBeInTheDocument();
+    expectOnePrimary("重新开始");
+  });
+
+  it("does not expose hostile error codes or messages through the workspace", async () => {
+    const failure = new CustomSettlementRuleApiError({
+      code: "provider-code-sk-ui-code raw_prompt",
+      status: 503,
+      retryable: true,
+      message: "provider-message-sk-ui-message internal stack",
+    });
+    const apiClient = api({
+      startSession: vi.fn().mockRejectedValue(failure),
+    });
+    renderWorkspace(apiClient);
+
+    await startRule();
+
+    const heading = await screen.findByRole("heading", {
+      name: "无法继续处理",
+    });
+    expect(heading).toHaveFocus();
+    expect(screen.getByText("结算规则服务暂时不可用，请稍后重试")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("sk-ui-code");
+    expect(document.body).not.toHaveTextContent("raw_prompt");
+    expect(document.body).not.toHaveTextContent("sk-ui-message");
+    expect(document.body).not.toHaveTextContent("internal stack");
+    expectOnePrimary("重试");
+  });
+
+  it("never renders Task8 internal identifiers or units anywhere in normal mode", async () => {
+    const hostileContract = contract({
+      calculationComponents: [
+        {
+          name: "final_component",
+          description: "money_result parameter hourly_rate money_cents",
+          expression: "money_result({ final: parameter(hourly_rate) })",
+          resultType: { kind: "scalar", scalarType: "money_cents" },
+        },
+      ],
+      requiredInputs: [
+        {
+          name: "system_minutes",
+          description: "system_minutes cents provider_internal",
+          source: "provider_stack_source",
+          valueType: { kind: "scalar", scalarType: "integer" },
+          userFacingUnit: "cents",
+        },
+      ],
+      parameters: [
+        {
+          name: "bonus_rate",
+          description: "bonus_rate rate_bps",
+          valueType: { kind: "scalar", scalarType: "rate_bps" },
+          userFacingUnit: "bps",
+          defaultValue: { type: "rate_bps", rateBps: 1_250 },
+        },
+      ],
+      businessTimezone: "America/New_York",
+    });
+    const hostileDraft = draft("simulated", {
+      revisionNumber: 3,
+      businessContract: hostileContract,
+      generatedFormula: {
+        expression: "money_result parameter hourly_rate system_minutes cents bps",
+      },
+      generatedExplanation:
+        "money_result uses parameter(hourly_rate) and system_minutes cents bps",
+    });
+    const envelope = simulationEnvelope();
+    envelope.result.draft = hostileDraft;
+    envelope.result.summary.largestIncreases = [
+      {
+        bucket: "authorized_ordinal:000001",
+        deltaYuan: "80.00",
+        direction: "increase",
+      },
+    ];
+    envelope.result.summary.riskFlags = [
+      {
+        code: "RAW_PROVIDER_RISK",
+        severity: "warning",
+        message: "provider_stack risk hourly_rate",
+      },
+    ];
+    envelope.result.summary.warnings = [
+      {
+        code: "RAW_PROMPT_WARNING",
+        severity: "info",
+        message: "raw_prompt system_minutes money_cents",
+      },
+    ];
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue({
+        session: claimedSession(),
+        result: envelope.result,
+      }),
+    });
+    renderWorkspace(apiClient);
+
+    await startRule();
+    await screen.findByRole("heading", { name: "内部试算结果" });
+
+    const workspaceText = screen.getByTestId("custom-rule-workspace").textContent;
+    for (const internalValue of [
+      "authorized_ordinal",
+      "final_component",
+      "money_result",
+      "parameter",
+      "hourly_rate",
+      "system_minutes",
+      "provider_internal",
+      "provider_stack",
+      "raw_prompt",
+      "money_cents",
+      "rate_bps",
+      "cents",
+      "bps",
+      "America/New_York",
+    ]) {
+      expect(workspaceText).not.toContain(internalValue);
+    }
+    expect(workspaceText).toContain("第 1 条变更");
+    expect(workspaceText).toContain("按已确认的业务条件计算");
+    expect(workspaceText).toContain("一项业务风险需复核");
+    expect(workspaceText).toContain("一项试算提醒需复核");
+  });
+
+  it("renders canonical large yuan amounts without numeric rounding", async () => {
+    const envelope = simulationEnvelope();
+    envelope.result.summary.totalOldYuan = "92233720368547758.07";
+    envelope.result.summary.totalNewYuan = "92233720368547758.07";
+    envelope.result.summary.totalDeltaYuan = "0.00";
+    envelope.result.summary.marginImpactYuan = "0.00";
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue({
+        session: claimedSession(),
+        result: envelope.result,
+      }),
+    });
+    renderWorkspace(apiClient);
+
+    await startRule();
+    await screen.findByRole("heading", { name: "内部试算结果" });
+
+    expect(screen.getByText("当前金额").parentElement).toHaveTextContent(
+      "¥92,233,720,368,547,758.07",
+    );
+  });
+
+  it.each([
+    ["2026-07-01", "2026-07-01T00:00:00.000-04:00"],
+    ["2026-01-15", "2026-01-15T00:00:00.000-05:00"],
+  ])(
+    "uses the confirmed catalog timezone offset for %s",
+    async (periodStart, expectedStart) => {
+      const apiClient = api({
+        getVariableCatalog: vi.fn(({ scope, executionGrain }) =>
+          Promise.resolve(
+            catalog(true, {
+              scope,
+              executionGrain,
+              businessTimezone: "America/New_York",
+              businessTimezoneConfirmed: true,
+              businessTimezoneSource: "organization_setting",
+            }),
+          ),
+        ),
+      });
+      renderWorkspace(apiClient, {
+        period: { start: periodStart, end: periodStart },
+      });
+
+      await startRule();
+      await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+
+      expect(apiClient.startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            seedContract: expect.objectContaining({
+              effectiveStartAt: expectedStart,
+              businessTimezone: "America/New_York",
+            }),
+          }),
+        }),
+      );
+    },
+  );
+
+  it("blocks session start while the catalog timezone is unresolved", async () => {
+    const apiClient = api({
+      getVariableCatalog: vi.fn(({ scope, executionGrain }) =>
+        Promise.resolve(
+          catalog(false, {
+            scope,
+            executionGrain,
+            businessTimezone: null,
+            businessTimezoneConfirmed: false,
+            businessTimezoneSource: "unresolved",
+          }),
+        ),
+      ),
+    });
+    renderWorkspace(apiClient);
+
+    const heading = await screen.findByRole("heading", {
+      name: "业务时区待确认",
+    });
+    expect(heading).toHaveFocus();
+    expect(screen.getByText("请先确认项目业务时区后再开始")).toBeInTheDocument();
+    expectOnePrimary("重新读取时区");
+    expect(apiClient.startSession).not.toHaveBeenCalled();
+  });
+
+  it("cannot start before the variable catalog resolves", async () => {
+    let resolveCatalog;
+    const pendingCatalog = new Promise((resolve) => {
+      resolveCatalog = resolve;
+    });
+    const apiClient = api({
+      getVariableCatalog: vi.fn().mockReturnValue(pendingCatalog),
+    });
+    renderWorkspace(apiClient);
+
+    expect(screen.getByLabelText("规则说明")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "正在读取范围…" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "正在读取范围…" }));
+    expect(apiClient.startSession).not.toHaveBeenCalled();
+
+    resolveCatalog(
+      catalog(true, {
+        scope: "receivable",
+        executionGrain: "project_period",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("规则说明")).toBeEnabled(),
+    );
+    expectOnePrimary("开始澄清");
+  });
+
+  it("focuses a catalog failure and retries only the authoritative catalog", async () => {
+    const catalogFailure = new CustomSettlementRuleApiError({
+      code: "CUSTOM_RULE_CATALOG_UNAVAILABLE",
+      status: 503,
+      retryable: true,
+      message: "变量目录暂时不可用，请稍后重试",
+    });
+    const apiClient = api({
+      getVariableCatalog: vi
+        .fn()
+        .mockRejectedValueOnce(catalogFailure)
+        .mockResolvedValueOnce(
+          catalog(true, {
+            scope: "receivable",
+            executionGrain: "project_period",
+          }),
+        ),
+    });
+    renderWorkspace(apiClient);
+
+    const heading = await screen.findByRole("heading", {
+      name: "无法读取业务范围",
+    });
+    expect(heading).toHaveFocus();
+    expect(screen.getByText("变量目录暂时不可用，请稍后重试")).toBeInTheDocument();
+    expectOnePrimary("重新读取范围");
+    expect(screen.getByLabelText("规则说明")).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新读取范围" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("规则说明")).toBeEnabled(),
+    );
+    expectOnePrimary("开始澄清");
+    expect(apiClient.getVariableCatalog).toHaveBeenCalledTimes(2);
+    expect(apiClient.startSession).not.toHaveBeenCalled();
+  });
+
+  it("treats a click on the selected scope as a no-op during a request", async () => {
+    let resolveStart;
+    const apiClient = api({
+      startSession: vi.fn().mockReturnValue(
+        new Promise((resolve) => {
+          resolveStart = resolve;
+        }),
+      ),
+    });
+    renderWorkspace(apiClient);
+    await startRule();
+    expectOnePrimary("正在生成…");
+    const abortCount = apiClient.abortActive.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "主播应付" }));
+    expect(apiClient.abortActive).toHaveBeenCalledTimes(abortCount);
+    resolveStart(startEnvelope(draft()));
+
+    expect(
+      await screen.findByRole("heading", { name: "每小时按多少元结算？" }),
+    ).toHaveFocus();
+    expectOnePrimary("回复 AI");
+  });
+
+  it("keeps every Task9 border radius at eight pixels or less", () => {
+    const source = readFileSync(
+      `${process.cwd()}/components/reference-ui/custom-settlement-rule-workspace.jsx`,
+      "utf8",
+    );
+    const radii = [...source.matchAll(/border-radius:\s*(\d+)px/gu)].map(
+      (match) => Number(match[1]),
+    );
+
+    expect(radii.length).toBeGreaterThan(0);
+    expect(Math.max(...radii)).toBeLessThanOrEqual(8);
+    expect(source).not.toContain("999px");
   });
 
   it("renders a complete empty state when project context is unavailable", () => {

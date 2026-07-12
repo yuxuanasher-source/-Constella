@@ -9,6 +9,14 @@ const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
 const SESSION_ID = "44444444-4444-4444-8444-444444444444";
 const DRAFT_ID = "55555555-5555-4555-8555-555555555555";
 
+function generatedTestCase() {
+  return {
+    name: "标准一小时",
+    inputs: { system_minutes: { type: "integer", value: 60 } },
+    expectedResult: { type: "money_cents", amountCents: 10_000 },
+  };
+}
+
 function contract(overrides = {}) {
   return {
     schemaVersion: 1,
@@ -150,6 +158,7 @@ function simulationResult() {
         expression: 'money_result({ final: parameter("hourly_rate") })',
       },
       generatedExplanation: "按确认后的小时单价计算。",
+      generatedTestCases: [generatedTestCase()],
       formulaHash: "d".repeat(64),
     }),
     simulation: {
@@ -165,7 +174,7 @@ function simulationResult() {
         criteria: ["approved_reports"],
       },
       coverage: { totalRecords: 10, evaluatedRecords: 9, skippedRecords: 1 },
-      scenarios: [],
+      scenarios: [{ name: "标准场景", kind: "normal", result: "passed" }],
       historicalTotals: {
         payableAmountYuan: "1000.00",
         receivableAmountYuan: null,
@@ -192,7 +201,7 @@ function simulationResult() {
       totalOldYuan: "1000.00",
       totalNewYuan: "1100.00",
       totalDeltaYuan: "100.00",
-      marginImpactYuan: null,
+      marginImpactYuan: "-100.00",
       historicalVerification: {
         status: "verified",
         label: "已通过历史数据验证",
@@ -200,7 +209,16 @@ function simulationResult() {
       dataSelectionHash: "e".repeat(64),
       riskFlags: [],
       warnings: [],
-      scenarios: [],
+      scenarios: [
+        {
+          id: "scenario:000001",
+          category: "contract_example",
+          outcome: "calculated",
+          amountYuan: "1100.00",
+          expectedAmountYuan: "1100.00",
+          passed: true,
+        },
+      ],
     },
     duplicate: false,
   };
@@ -250,6 +268,7 @@ describe("custom settlement rule API", () => {
     });
 
     expect(result.catalog.hasHistory).toBe(false);
+    expect(result.catalog.businessTimezone).toBeNull();
     expect(fetchImpl).toHaveBeenCalledWith(
       "/api/projects/%E9%A1%B9%E7%9B%AE%20%2F%20A%3F%23/settlement-rules/variable-catalog?scope=payable&executionGrain=report",
       expect.objectContaining({
@@ -418,17 +437,90 @@ describe("custom settlement rule API", () => {
     });
   });
 
-  it("fails closed on malformed success responses", async () => {
-    const fetchImpl = vi.fn(async () =>
-      jsonResponse({
-        session: { rawPrompt: "secret prompt" },
-        providerStack: "private stack",
-      }),
-    );
+  it.each([
+    ["empty required contract array", (payload) => {
+      payload.result.draft.businessContract.calculationComponents = [];
+    }],
+    ["invalid business identifier", (payload) => {
+      payload.result.draft.businessContract.requiredInputs[0].name =
+        "bad identifier";
+    }],
+    ["invalid canonical timestamp", (payload) => {
+      payload.result.draft.businessContract.effectiveStartAt =
+        "2026-07-01 00:00:00";
+    }],
+    ["invalid IANA timezone", (payload) => {
+      payload.result.draft.businessContract.businessTimezone =
+        "Not/A_Timezone";
+    }],
+    ["mismatched typed parameter default", (payload) => {
+      payload.result.draft.businessContract.parameters[0].defaultValue = {
+        type: "rate_bps",
+        rateBps: 1_000,
+      };
+    }],
+    ["mismatched generated result type", (payload) => {
+      payload.result = simulationResult();
+      payload.result.draft.generatedTestCases[0].expectedResult = {
+        type: "integer",
+        value: 100,
+      };
+    }],
+    ["strict extra response key", (payload) => {
+      payload.result.draft.providerStack = "private-provider-stack";
+    }],
+    ["malformed hash", (payload) => {
+      payload.result.draft.contractHash = "not-a-sha256";
+    }],
+    ["unsafe numeric value", (payload) => {
+      payload.result.draft.businessContract.parameters[0].defaultValue = {
+        type: "money_cents",
+        amountCents: Number.MAX_SAFE_INTEGER + 1,
+      };
+    }],
+    ["malformed public decimal", (payload) => {
+      payload.result = simulationResult();
+      payload.result.simulation.deltas.payableAmountYuan = "1e3";
+    }],
+    ["invalid simulation count invariant", (payload) => {
+      payload.result = simulationResult();
+      payload.result.simulation.coverage.skippedRecords = 9;
+    }],
+    ["invalid summary status-count invariant", (payload) => {
+      payload.result = simulationResult();
+      payload.result.summary.reviewRoutedCount = 0;
+    }],
+    ["terminal retry-in-progress status", (payload) => {
+      payload.result = {
+        ok: true,
+        kind: "retry_in_progress",
+        conversationId: SESSION_ID,
+        turn: {
+          turnId: "77777777-7777-4777-8777-777777777777",
+          status: "completed",
+          attempt: 1,
+          duplicate: true,
+        },
+      };
+    }],
+  ])("fails closed on malformed 2xx data: %s", async (_label, mutate) => {
+    const payload = {
+      session: {
+        id: SESSION_ID,
+        title: "主播结算规则",
+        status: "active",
+        lastMessageAt: "2026-07-12T01:00:00.000Z",
+        createdAt: "2026-07-12T01:00:00.000Z",
+        updatedAt: "2026-07-12T01:00:00.000Z",
+      },
+      result: clarifyingResult(),
+    };
+    mutate(payload);
+    const fetchImpl = vi.fn(async () => jsonResponse(payload));
     const api = createCustomSettlementRuleApi({ fetchImpl });
 
     await expect(
-      api.refreshSession({ projectId: PROJECT_ID, sessionId: SESSION_ID }),
+      api.startSession({ projectId: PROJECT_ID, body: {} }),
     ).rejects.toMatchObject({
       name: "CustomSettlementRuleApiError",
       code: "CUSTOM_RULE_RESPONSE_INVALID",
@@ -468,5 +560,108 @@ describe("custom settlement rule API", () => {
     });
     expect(JSON.stringify(caught)).not.toContain("sk-secret");
     expect(caught.stack).not.toContain("provider sk-secret");
+  });
+
+  it("accepts uncovered records that were evaluated through an explicit default", async () => {
+    const result = simulationResult();
+    result.simulation.coverage = {
+      totalRecords: 10,
+      evaluatedRecords: 10,
+      skippedRecords: 0,
+    };
+    result.summary.coverage = {
+      totalCount: 10,
+      evaluatedCount: 10,
+      ratePercent: "100.00",
+    };
+    result.summary.uncoveredCount = 2;
+    result.summary.reviewRoutedCount = 0;
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        session: {
+          id: SESSION_ID,
+          title: "主播结算规则",
+          status: "active",
+          lastMessageAt: "2026-07-12T01:00:00.000Z",
+          createdAt: "2026-07-12T01:00:00.000Z",
+          updatedAt: "2026-07-12T01:00:00.000Z",
+        },
+        result,
+      }),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.startSession({ projectId: PROJECT_ID, body: {} }),
+    ).resolves.toMatchObject({
+      result: {
+        summary: {
+          uncoveredCount: 2,
+          coverage: { evaluatedCount: 10 },
+        },
+      },
+    });
+  });
+
+  it("preserves an allowlisted Task8 protocol error code without its message", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(
+        {
+          error: {
+            code: "CUSTOM_RULE_RESPONSE_INVALID",
+            message: "provider stack raw prompt sk-protocol-secret",
+            retryable: true,
+          },
+        },
+        { status: 500 },
+      ),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.startSession({ projectId: PROJECT_ID, body: {} }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_RESPONSE_INVALID",
+      message: "结算规则服务返回了无法识别的响应",
+      retryable: true,
+    });
+  });
+
+  it("redacts unknown server codes independently from hostile messages", async () => {
+    const codeSecret = "provider-code-sk-code-secret raw_prompt_dump";
+    const messageSecret = "provider-message-sk-message-secret internal stack";
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(
+        {
+          error: {
+            code: codeSecret,
+            message: messageSecret,
+            retryable: true,
+          },
+        },
+        { status: 503 },
+      ),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    let caught;
+    try {
+      await api.startSession({ projectId: PROJECT_ID, body: {} });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(CustomSettlementRuleApiError);
+    expect(caught).toMatchObject({
+      code: "CUSTOM_RULE_REQUEST_FAILED",
+      status: 503,
+      retryable: true,
+      message: "结算规则服务暂时不可用，请稍后重试",
+    });
+    const visibleError = `${caught.code} ${caught.message} ${caught.stack} ${JSON.stringify(caught)}`;
+    expect(visibleError).not.toContain("sk-code-secret");
+    expect(visibleError).not.toContain("raw_prompt_dump");
+    expect(visibleError).not.toContain("sk-message-secret");
+    expect(visibleError).not.toContain("internal stack");
   });
 });

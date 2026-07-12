@@ -1,188 +1,274 @@
 import { z } from "zod";
 
+import {
+  businessRuleContractSchema,
+  customRuleExecutionGrainSchema,
+  customRuleScopeSchema,
+  runtimeValueTypeSchema,
+  typedRuntimeValueSchema,
+} from "../../features/settlements/custom-rule-contract";
+
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
-const scalarTypeSchema = z.enum([
-  "money_cents",
-  "rate_bps",
-  "number",
-  "integer",
-  "boolean",
-  "string",
-  "timestamp",
-]);
-
-const runtimeValueTypeSchema = z.lazy(() =>
-  z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("scalar"), scalarType: scalarTypeSchema }),
-    z.strictObject({
-      kind: z.literal("array"),
-      itemType: runtimeValueTypeSchema,
-    }),
-    z.strictObject({
-      kind: z.literal("object"),
-      fields: z.record(z.string(), runtimeValueTypeSchema),
-    }),
-  ]),
+const uuidSchema = z.string().uuid();
+const canonicalTimestampSchema = z.iso.datetime({ offset: true });
+const nonnegativeSafeIntegerSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .refine(Number.isSafeInteger, { message: "must be a safe integer" });
+const positiveSafeIntegerSchema = z
+  .number()
+  .int()
+  .positive()
+  .refine(Number.isSafeInteger, { message: "must be a safe integer" });
+const canonicalTextSchema = (maximum) =>
+  z
+    .string()
+    .min(1)
+    .max(maximum)
+    .refine((value) => value === value.trim(), {
+      message: "text must already be canonical",
+    });
+const identifierSchema = canonicalTextSchema(120).regex(
+  /^[A-Za-z_][A-Za-z0-9_]*$/u,
 );
 
-const typedRuntimeValueSchema = z.lazy(() =>
-  z.discriminatedUnion("type", [
-    z.strictObject({ type: z.literal("money_cents"), amountCents: z.number() }),
-    z.strictObject({ type: z.literal("rate_bps"), rateBps: z.number() }),
-    z.strictObject({ type: z.literal("number"), value: z.number() }),
-    z.strictObject({ type: z.literal("integer"), value: z.number().int() }),
-    z.strictObject({ type: z.literal("boolean"), value: z.boolean() }),
-    z.strictObject({ type: z.literal("string"), value: z.string() }),
-    z.strictObject({ type: z.literal("timestamp"), value: z.string() }),
-    z.strictObject({
-      type: z.literal("array"),
-      items: z.array(typedRuntimeValueSchema),
-    }),
-    z.strictObject({
-      type: z.literal("object"),
-      fields: z.record(z.string(), typedRuntimeValueSchema),
-    }),
-  ]),
+function isValidBusinessDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(0, 0, 0, 0);
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+function isValidIanaTimezone(value) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const businessDateSchema = z.string().refine(isValidBusinessDate, {
+  message: "must be a valid business date",
+});
+const ianaTimezoneSchema = canonicalTextSchema(100).refine(
+  isValidIanaTimezone,
+  { message: "must be a valid IANA timezone" },
 );
+const POSTGRES_BIGINT_MIN = BigInt("-9223372036854775808");
+const POSTGRES_BIGINT_MAX = BigInt("9223372036854775807");
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
 
-const targetSchema = z.discriminatedUnion("targetType", [
-  z.strictObject({ targetType: z.literal("project"), targetId: z.null() }),
-  z.strictObject({
-    targetType: z.literal("streamer_group"),
-    targetId: z.string(),
-  }),
-  z.strictObject({
-    targetType: z.literal("project_streamer"),
-    targetId: z.string(),
-  }),
-]);
+function fixedTwoDecimal(value) {
+  const negative = value < 0;
+  const absolute = negative ? -value : value;
+  const whole = absolute / BigInt(100);
+  const fraction = String(absolute % BigInt(100)).padStart(2, "0");
+  return `${negative ? "-" : ""}${whole}.${fraction}`;
+}
 
-const calculationComponentSchema = z.strictObject({
-  name: z.string(),
-  description: z.string(),
-  expression: z.string(),
-  resultType: runtimeValueTypeSchema,
-});
+function isCanonicalScaledDecimal(value, minimum, maximum) {
+  if (!/^-?(?:0|[1-9]\d*)\.\d{2}$/u.test(value)) return false;
+  try {
+    const scaled = BigInt(value.replace(".", ""));
+    return (
+      scaled >= minimum &&
+      scaled <= maximum &&
+      fixedTwoDecimal(scaled) === value
+    );
+  } catch {
+    return false;
+  }
+}
 
-const requiredInputSchema = z.strictObject({
-  name: z.string(),
-  description: z.string(),
-  source: z.string(),
-  valueType: runtimeValueTypeSchema,
-  userFacingUnit: z.string(),
-});
-
-const parameterSchema = z.strictObject({
-  name: z.string(),
-  description: z.string(),
-  valueType: runtimeValueTypeSchema,
-  userFacingUnit: z.string(),
-  defaultValue: typedRuntimeValueSchema,
-});
-
-const exampleSchema = z.strictObject({
-  name: z.string(),
-  kind: z.enum(["normal", "boundary"]),
-  description: z.string(),
-  inputs: z.record(z.string(), typedRuntimeValueSchema),
-  expectedResult: typedRuntimeValueSchema,
-});
-
-const generatedTestCaseSchema = z.strictObject({
-  name: z.string(),
-  inputs: z.record(z.string(), typedRuntimeValueSchema),
-  expectedResult: typedRuntimeValueSchema,
-});
-
-const missingDataPolicySchema = z.discriminatedUnion("action", [
-  z.strictObject({ action: z.literal("route_item_to_review") }),
-  z.strictObject({ action: z.literal("block_batch") }),
-  z.strictObject({
-    action: z.literal("use_explicit_default"),
-    defaultValue: typedRuntimeValueSchema,
-  }),
-]);
-
-const businessContractSchema = z.strictObject({
-  schemaVersion: z.literal(1),
-  scope: z.enum(["payable", "receivable"]),
-  target: targetSchema,
-  executionGrain: z.enum([
-    "report",
-    "project_streamer_period",
-    "batch",
-    "project_period",
-  ]),
-  compositionMode: z.enum([
-    "replace",
-    "add",
-    "multiply",
-    "clamp",
-    "emit_items",
-    "check",
-  ]),
-  title: z.string(),
-  summary: z.string(),
-  calculationComponents: z.array(calculationComponentSchema),
-  requiredInputs: z.array(requiredInputSchema),
-  parameters: z.array(parameterSchema),
-  effectiveStartAt: z.string(),
-  effectiveEndAt: z.string().nullable(),
-  missingDataPolicy: missingDataPolicySchema,
-  compositionDescription: z.string(),
-  businessTimezone: z.string(),
-  examples: z.array(exampleSchema),
+const yuanDecimalSchema = z.string().refine(
+  (value) =>
+    isCanonicalScaledDecimal(value, POSTGRES_BIGINT_MIN, POSTGRES_BIGINT_MAX),
+  { message: "must be a canonical yuan decimal" },
+);
+const percentDecimalSchema = z.string().refine(
+  (value) =>
+    isCanonicalScaledDecimal(value, MIN_SAFE_BIGINT, MAX_SAFE_BIGINT),
+  { message: "must be a canonical percentage decimal" },
+);
+const coveragePercentSchema = percentDecimalSchema.refine((value) => {
+  const basisPoints = BigInt(value.replace(".", ""));
+  return basisPoints >= BigInt(0) && basisPoints <= BigInt(10_000);
 });
 
 const ambiguitySchema = z.strictObject({
-  code: z.string(),
-  question: z.string(),
+  code: identifierSchema,
+  question: canonicalTextSchema(500).refine((value) => {
+    if (/\r|\n/u.test(value)) return false;
+    return (value.match(/[?？]/gu)?.length ?? 0) === 1;
+  }),
   required: z.boolean(),
 });
 
+const generatedTestCaseSchema = z
+  .strictObject({
+    name: canonicalTextSchema(200),
+    inputs: z.record(identifierSchema, typedRuntimeValueSchema),
+    expectedResult: typedRuntimeValueSchema.refine(
+      (value) => value.type === "money_cents",
+      { message: "settlement results must use money" },
+    ),
+  })
+  .superRefine((testCase, context) => {
+    if (Object.keys(testCase.inputs).length > 100) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputs"],
+        message: "too many test case inputs",
+      });
+    }
+  });
+
 const safetyFlagSchema = z.strictObject({
-  code: z.string(),
+  code: canonicalTextSchema(120),
   severity: z.enum(["info", "warning", "block"]),
-  message: z.string(),
+  message: canonicalTextSchema(4_000),
 });
 
-const draftSchema = z.strictObject({
-  id: z.string(),
-  conversationId: z.string(),
-  revisionNumber: z.number().int().positive(),
-  status: z.enum([
-    "clarifying",
-    "failed",
-    "contract_ready",
-    "simulated",
-    "superseded",
-  ]),
-  initialStatus: z.enum(["clarifying", "failed", "contract_ready"]),
-  businessContract: businessContractSchema,
-  unresolvedAmbiguities: z.array(ambiguitySchema),
-  variableCatalogVersion: hashSchema,
-  generatedFormula: z.strictObject({ expression: z.string() }).nullable(),
-  generatedExplanation: z.string().nullable(),
-  generatedTestCases: z.array(generatedTestCaseSchema),
-  safetyFlags: z.array(safetyFlagSchema),
-  contractHash: hashSchema,
-  formulaHash: hashSchema.nullable(),
-  parameterHash: hashSchema,
-  createdAt: z.string(),
-  supersedesDraftId: z.string().nullable().optional(),
-  supersededByDraftId: z.string().nullable().optional(),
-  supersededAt: z.string().nullable().optional(),
-});
+const draftSchema = z
+  .strictObject({
+    id: uuidSchema,
+    conversationId: uuidSchema,
+    revisionNumber: positiveSafeIntegerSchema,
+    status: z.enum([
+      "clarifying",
+      "failed",
+      "contract_ready",
+      "simulated",
+      "superseded",
+    ]),
+    initialStatus: z.enum(["clarifying", "failed", "contract_ready"]),
+    businessContract: businessRuleContractSchema,
+    unresolvedAmbiguities: z.array(ambiguitySchema).max(100),
+    variableCatalogVersion: hashSchema,
+    generatedFormula: z
+      .strictObject({ expression: canonicalTextSchema(20_000) })
+      .nullable(),
+    generatedExplanation: canonicalTextSchema(100_000).nullable(),
+    generatedTestCases: z.array(generatedTestCaseSchema).max(200),
+    safetyFlags: z.array(safetyFlagSchema).max(100),
+    contractHash: hashSchema,
+    formulaHash: hashSchema.nullable(),
+    parameterHash: hashSchema,
+    createdAt: canonicalTimestampSchema,
+    supersedesDraftId: uuidSchema.nullable().optional(),
+    supersededByDraftId: uuidSchema.nullable().optional(),
+    supersededAt: canonicalTimestampSchema.nullable().optional(),
+  })
+  .superRefine((draft, context) => {
+    const readyShape = draft.initialStatus === "contract_ready";
+    const clarifyingShape = draft.initialStatus === "clarifying";
+    const allowedStatuses = readyShape
+      ? ["contract_ready", "simulated", "superseded"]
+      : clarifyingShape
+        ? ["clarifying", "superseded"]
+        : ["failed", "superseded"];
+    if (!allowedStatuses.includes(draft.status)) {
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: "draft status does not match its initial state",
+      });
+    }
+
+    if (readyShape) {
+      if (draft.unresolvedAmbiguities.length !== 0) {
+        context.addIssue({ code: "custom", path: ["unresolvedAmbiguities"] });
+      }
+      if (
+        !draft.generatedFormula ||
+        !draft.generatedExplanation ||
+        draft.generatedTestCases.length === 0 ||
+        !draft.formulaHash
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["generatedFormula"],
+          message: "ready drafts require deterministic artifacts",
+        });
+      }
+    } else {
+      if (clarifyingShape && draft.unresolvedAmbiguities.length === 0) {
+        context.addIssue({ code: "custom", path: ["unresolvedAmbiguities"] });
+      }
+      if (
+        draft.generatedFormula !== null ||
+        draft.generatedExplanation !== null ||
+        draft.generatedTestCases.length !== 0 ||
+        draft.formulaHash !== null
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["generatedFormula"],
+          message: "unready drafts cannot expose deterministic artifacts",
+        });
+      }
+    }
+
+    const superseded = draft.status === "superseded";
+    if (superseded !== Boolean(draft.supersededByDraftId)) {
+      context.addIssue({ code: "custom", path: ["supersededByDraftId"] });
+    }
+    if (superseded !== Boolean(draft.supersededAt)) {
+      context.addIssue({ code: "custom", path: ["supersededAt"] });
+    }
+  });
 
 const warningSchema = z.strictObject({
-  code: z.string(),
+  code: canonicalTextSchema(120),
   severity: z.enum(["info", "warning", "block"]),
-  message: z.string(),
+  message: canonicalTextSchema(4_000),
 });
 
+const sampleSelectionSchema = z
+  .strictObject({
+    periodStart: businessDateSchema,
+    periodEnd: businessDateSchema,
+    populationCount: nonnegativeSafeIntegerSchema,
+    sampledCount: nonnegativeSafeIntegerSchema,
+    criteria: z.array(canonicalTextSchema(200)).max(100),
+  })
+  .superRefine((selection, context) => {
+    if (selection.periodStart > selection.periodEnd) {
+      context.addIssue({ code: "custom", path: ["periodStart"] });
+    }
+    if (selection.sampledCount > selection.populationCount) {
+      context.addIssue({ code: "custom", path: ["sampledCount"] });
+    }
+  });
+const simulationCoverageSchema = z
+  .strictObject({
+    totalRecords: nonnegativeSafeIntegerSchema,
+    evaluatedRecords: nonnegativeSafeIntegerSchema,
+    skippedRecords: nonnegativeSafeIntegerSchema,
+  })
+  .superRefine((coverage, context) => {
+    if (
+      coverage.evaluatedRecords + coverage.skippedRecords !==
+      coverage.totalRecords
+    ) {
+      context.addIssue({ code: "custom", path: ["totalRecords"] });
+    }
+  });
 const simulationSchema = z.strictObject({
-  id: z.string(),
-  createdAt: z.string(),
+  id: uuidSchema,
+  createdAt: canonicalTimestampSchema,
   dataSelectionHash: hashSchema,
   sampleSource: z.strictObject({
     kind: z.enum([
@@ -191,49 +277,44 @@ const simulationSchema = z.strictObject({
       "synthetic_scenarios",
     ]),
   }),
-  sampleSelection: z.strictObject({
-    periodStart: z.string(),
-    periodEnd: z.string(),
-    populationCount: z.number().int().nonnegative(),
-    sampledCount: z.number().int().nonnegative(),
-    criteria: z.array(z.string()),
-  }),
-  coverage: z.strictObject({
-    totalRecords: z.number().int().nonnegative(),
-    evaluatedRecords: z.number().int().nonnegative(),
-    skippedRecords: z.number().int().nonnegative(),
-  }),
-  scenarios: z.array(
-    z.strictObject({
-      name: z.string(),
-      kind: z.enum(["normal", "boundary", "missing_data"]),
-      result: z.enum(["passed", "warning", "failed"]),
-    }),
-  ),
+  sampleSelection: sampleSelectionSchema,
+  coverage: simulationCoverageSchema,
+  scenarios: z
+    .array(
+      z.strictObject({
+        name: canonicalTextSchema(200),
+        kind: z.enum(["normal", "boundary", "missing_data"]),
+        result: z.enum(["passed", "warning", "failed"]),
+      }),
+    )
+    .min(1)
+    .max(200),
   historicalTotals: z.strictObject({
-    payableAmountYuan: z.string().nullable(),
-    receivableAmountYuan: z.string().nullable(),
-    recordCount: z.number().int().nonnegative(),
+    payableAmountYuan: yuanDecimalSchema.nullable(),
+    receivableAmountYuan: yuanDecimalSchema.nullable(),
+    recordCount: nonnegativeSafeIntegerSchema,
   }),
   deltas: z.strictObject({
-    payableAmountYuan: z.string(),
-    receivableAmountYuan: z.string(),
-    percentagePercent: z.string(),
+    payableAmountYuan: yuanDecimalSchema,
+    receivableAmountYuan: yuanDecimalSchema,
+    percentagePercent: percentDecimalSchema,
   }),
-  largestChanges: z.array(
-    z.strictObject({
-      dimension: z.enum(["rule_component", "scenario", "period"]),
-      key: z.string(),
-      deltaAmountYuan: z.string(),
-      direction: z.enum(["increase", "decrease", "unchanged"]),
-    }),
-  ),
-  warnings: z.array(warningSchema),
+  largestChanges: z
+    .array(
+      z.strictObject({
+        dimension: z.enum(["rule_component", "scenario", "period"]),
+        key: canonicalTextSchema(200),
+        deltaAmountYuan: yuanDecimalSchema,
+        direction: z.enum(["increase", "decrease", "unchanged"]),
+      }),
+    )
+    .max(100),
+  warnings: z.array(warningSchema).max(100),
   duplicate: z.boolean().optional(),
 });
 
 const summaryScenarioSchema = z.strictObject({
-  id: z.string(),
+  id: canonicalTextSchema(200),
   category: z.enum([
     "zero",
     "threshold_edge",
@@ -245,49 +326,95 @@ const summaryScenarioSchema = z.strictObject({
     "user_example",
   ]),
   outcome: z.enum(["calculated", "review_routed", "blocked"]),
-  amountYuan: z.string().nullable(),
-  expectedAmountYuan: z.string().nullable(),
+  amountYuan: yuanDecimalSchema.nullable(),
+  expectedAmountYuan: yuanDecimalSchema.nullable(),
   passed: z.boolean(),
 });
 
-const simulationSummarySchema = z.strictObject({
-  recordCount: z.number().int().nonnegative(),
-  coverage: z.strictObject({
-    totalCount: z.number().int().nonnegative(),
-    evaluatedCount: z.number().int().nonnegative(),
-    ratePercent: z.string(),
-  }),
-  uncoveredCount: z.number().int().nonnegative(),
-  zeroPayCount: z.number().int().nonnegative(),
-  reviewRoutedCount: z.number().int().nonnegative(),
-  blockedCount: z.number().int().nonnegative(),
-  largestIncreases: z.array(
-    z.strictObject({
-      bucket: z.string(),
-      deltaYuan: z.string(),
-      direction: z.literal("increase"),
+const summaryChangeSchema = (direction) =>
+  z.strictObject({
+    bucket: canonicalTextSchema(200),
+    deltaYuan: yuanDecimalSchema,
+    direction: z.literal(direction),
+  });
+const simulationSummarySchema = z
+  .strictObject({
+    recordCount: nonnegativeSafeIntegerSchema,
+    coverage: z.strictObject({
+      totalCount: nonnegativeSafeIntegerSchema,
+      evaluatedCount: nonnegativeSafeIntegerSchema,
+      ratePercent: coveragePercentSchema,
     }),
-  ),
-  largestDecreases: z.array(
-    z.strictObject({
-      bucket: z.string(),
-      deltaYuan: z.string(),
-      direction: z.literal("decrease"),
-    }),
-  ),
-  totalOldYuan: z.string().nullable(),
-  totalNewYuan: z.string(),
-  totalDeltaYuan: z.string().nullable(),
-  marginImpactYuan: z.string().nullable(),
-  historicalVerification: z.strictObject({
-    status: z.enum(["verified", "unverified"]),
-    label: z.string(),
-  }),
-  dataSelectionHash: hashSchema,
-  riskFlags: z.array(warningSchema),
-  warnings: z.array(warningSchema),
-  scenarios: z.array(summaryScenarioSchema),
-});
+    uncoveredCount: nonnegativeSafeIntegerSchema,
+    zeroPayCount: nonnegativeSafeIntegerSchema,
+    reviewRoutedCount: nonnegativeSafeIntegerSchema,
+    blockedCount: nonnegativeSafeIntegerSchema,
+    largestIncreases: z.array(summaryChangeSchema("increase")).max(100),
+    largestDecreases: z.array(summaryChangeSchema("decrease")).max(100),
+    totalOldYuan: yuanDecimalSchema.nullable(),
+    totalNewYuan: yuanDecimalSchema,
+    totalDeltaYuan: yuanDecimalSchema.nullable(),
+    marginImpactYuan: yuanDecimalSchema.nullable(),
+    historicalVerification: z.discriminatedUnion("status", [
+      z.strictObject({
+        status: z.literal("verified"),
+        label: z.literal("已通过历史数据验证"),
+      }),
+      z.strictObject({
+        status: z.literal("unverified"),
+        label: z.literal("未经过历史数据验证"),
+      }),
+    ]),
+    dataSelectionHash: hashSchema,
+    riskFlags: z.array(warningSchema).max(100),
+    warnings: z.array(warningSchema).max(100),
+    scenarios: z.array(summaryScenarioSchema).min(1).max(500),
+  })
+  .superRefine((summary, context) => {
+    const { totalCount, evaluatedCount, ratePercent } = summary.coverage;
+    if (totalCount !== summary.recordCount || evaluatedCount > totalCount) {
+      context.addIssue({ code: "custom", path: ["coverage"] });
+    }
+    if (summary.uncoveredCount > totalCount) {
+      context.addIssue({ code: "custom", path: ["uncoveredCount"] });
+    }
+    if (
+      evaluatedCount + summary.reviewRoutedCount + summary.blockedCount !==
+      totalCount
+    ) {
+      context.addIssue({ code: "custom", path: ["coverage"] });
+    }
+    if (summary.zeroPayCount > evaluatedCount) {
+      context.addIssue({ code: "custom", path: ["zeroPayCount"] });
+    }
+    const expectedBps =
+      totalCount === 0
+        ? BigInt(0)
+        : (BigInt(evaluatedCount) * BigInt(10_000)) / BigInt(totalCount);
+    if (ratePercent !== fixedTwoDecimal(expectedBps)) {
+      context.addIssue({ code: "custom", path: ["coverage", "ratePercent"] });
+    }
+    for (const field of ["zeroPayCount", "reviewRoutedCount", "blockedCount"]) {
+      if (summary[field] > summary.recordCount) {
+        context.addIssue({ code: "custom", path: [field] });
+      }
+    }
+    const verified = summary.historicalVerification.status === "verified";
+    if (verified !== (summary.totalOldYuan !== null)) {
+      context.addIssue({ code: "custom", path: ["totalOldYuan"] });
+    }
+    if (verified !== (summary.totalDeltaYuan !== null)) {
+      context.addIssue({ code: "custom", path: ["totalDeltaYuan"] });
+    }
+    if (verified) {
+      const oldCents = BigInt(summary.totalOldYuan.replace(".", ""));
+      const newCents = BigInt(summary.totalNewYuan.replace(".", ""));
+      const deltaCents = BigInt(summary.totalDeltaYuan.replace(".", ""));
+      if (newCents - oldCents !== deltaCents) {
+        context.addIssue({ code: "custom", path: ["totalDeltaYuan"] });
+      }
+    }
+  });
 
 const contractDiffSchema = z.strictObject({
   field: z.enum([
@@ -313,7 +440,7 @@ const contractDiffSchema = z.strictObject({
 });
 
 const retryTurnSchema = z.strictObject({
-  turnId: z.string(),
+  turnId: uuidSchema,
   status: z.enum([
     "accepted",
     "grounding",
@@ -321,120 +448,201 @@ const retryTurnSchema = z.strictObject({
     "validating",
     "completed",
   ]),
-  attempt: z.number().int().positive(),
+  attempt: positiveSafeIntegerSchema,
   duplicate: z.boolean(),
 });
 
-const authoringResultSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    ok: z.literal(true),
-    kind: z.literal("clarifying"),
-    conversationId: z.string(),
-    draft: draftSchema,
-    diff: z.array(contractDiffSchema),
-    duplicate: z.boolean(),
-  }),
-  z.strictObject({
-    ok: z.literal(true),
-    kind: z.literal("simulated"),
-    conversationId: z.string(),
-    draft: draftSchema,
-    simulation: simulationSchema,
-    summary: simulationSummarySchema,
-    duplicate: z.boolean(),
-  }),
-  z.strictObject({
-    ok: z.literal(true),
-    kind: z.literal("retry_in_progress"),
-    conversationId: z.string(),
-    turn: retryTurnSchema,
-  }),
-  z.strictObject({
-    ok: z.literal(true),
-    kind: z.literal("retry_readback"),
-    conversationId: z.string(),
-    draft: draftSchema,
-    turn: retryTurnSchema,
-  }),
-]);
+const authoringResultSchema = z
+  .discriminatedUnion("kind", [
+    z.strictObject({
+      ok: z.literal(true),
+      kind: z.literal("clarifying"),
+      conversationId: uuidSchema,
+      draft: draftSchema,
+      diff: z.array(contractDiffSchema).max(17),
+      duplicate: z.boolean(),
+    }),
+    z.strictObject({
+      ok: z.literal(true),
+      kind: z.literal("simulated"),
+      conversationId: uuidSchema,
+      draft: draftSchema,
+      simulation: simulationSchema,
+      summary: simulationSummarySchema,
+      duplicate: z.boolean(),
+    }),
+    z.strictObject({
+      ok: z.literal(true),
+      kind: z.literal("retry_in_progress"),
+      conversationId: uuidSchema,
+      turn: retryTurnSchema.extend({
+        status: z.enum(["accepted", "grounding", "generating", "validating"]),
+      }),
+    }),
+    z.strictObject({
+      ok: z.literal(true),
+      kind: z.literal("retry_readback"),
+      conversationId: uuidSchema,
+      draft: draftSchema,
+      turn: retryTurnSchema.extend({ status: z.literal("completed") }),
+    }),
+  ])
+  .superRefine((result, context) => {
+    if (result.kind === "retry_in_progress") return;
+    if (result.draft.conversationId !== result.conversationId) {
+      context.addIssue({ code: "custom", path: ["draft", "conversationId"] });
+    }
+    if (result.kind === "clarifying" && result.draft.status !== "clarifying") {
+      context.addIssue({ code: "custom", path: ["draft", "status"] });
+    }
+    if (result.kind === "simulated") {
+      if (result.draft.status !== "simulated") {
+        context.addIssue({ code: "custom", path: ["draft", "status"] });
+      }
+      if (result.simulation.dataSelectionHash !== result.summary.dataSelectionHash) {
+        context.addIssue({ code: "custom", path: ["summary", "dataSelectionHash"] });
+      }
+      if (
+        result.simulation.coverage.totalRecords !== result.summary.recordCount ||
+        result.simulation.coverage.evaluatedRecords !==
+          result.summary.coverage.evaluatedCount
+      ) {
+        context.addIssue({ code: "custom", path: ["summary", "coverage"] });
+      }
+    }
+  });
 
 const claimedSessionSchema = z.strictObject({
-  id: z.string(),
-  title: z.string(),
+  id: uuidSchema,
+  title: canonicalTextSchema(120),
   status: z.enum(["active", "archived"]),
-  lastMessageAt: z.string(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
+  lastMessageAt: canonicalTimestampSchema,
+  createdAt: canonicalTimestampSchema,
+  updatedAt: canonicalTimestampSchema,
 });
 
 const conversationMessageSchema = z.strictObject({
-  id: z.string(),
-  conversationId: z.string(),
-  sequence: z.number().int().nonnegative(),
-  role: z.string(),
-  status: z.string(),
-  content: z.string(),
-  parentMessageId: z.string().nullable(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
+  id: uuidSchema,
+  conversationId: uuidSchema,
+  sequence: nonnegativeSafeIntegerSchema,
+  role: z.enum(["user", "assistant", "system", "tool"]),
+  status: z.enum(["pending", "streaming", "completed", "failed", "superseded"]),
+  content: z.string().max(100_000),
+  parentMessageId: uuidSchema.nullable(),
+  createdAt: canonicalTimestampSchema,
+  updatedAt: canonicalTimestampSchema,
 });
 
 const conversationTurnSchema = z.strictObject({
-  id: z.string(),
-  conversationId: z.string(),
-  userMessageId: z.string(),
-  assistantMessageId: z.string().nullable(),
-  mode: z.string(),
-  status: z.string(),
-  attempt: z.number().int().positive(),
-  retryOfTurnId: z.string().nullable(),
-  regenerateOfTurnId: z.string().nullable(),
-  errorCode: z.string().nullable(),
+  id: uuidSchema,
+  conversationId: uuidSchema,
+  userMessageId: uuidSchema,
+  assistantMessageId: uuidSchema.nullable(),
+  mode: z.enum(["fast", "deep"]),
+  status: z.enum([
+    "accepted",
+    "grounding",
+    "generating",
+    "validating",
+    "completed",
+    "failed",
+    "cancelled",
+  ]),
+  attempt: positiveSafeIntegerSchema,
+  retryOfTurnId: uuidSchema.nullable(),
+  regenerateOfTurnId: uuidSchema.nullable(),
+  errorCode: canonicalTextSchema(200).nullable(),
   retryable: z.boolean(),
 });
 
-const authoritativeSessionSchema = z.strictObject({
-  conversation: claimedSessionSchema,
-  messages: z.array(conversationMessageSchema),
-  turns: z.array(conversationTurnSchema),
-  draft: draftSchema,
-  simulation: simulationSchema.nullable(),
-});
+const authoritativeSessionSchema = z
+  .strictObject({
+    conversation: claimedSessionSchema,
+    messages: z.array(conversationMessageSchema).max(500),
+    turns: z.array(conversationTurnSchema).max(500),
+    draft: draftSchema,
+    simulation: simulationSchema.nullable(),
+  })
+  .superRefine((session, context) => {
+    const conversationId = session.conversation.id;
+    if (session.draft.conversationId !== conversationId) {
+      context.addIssue({ code: "custom", path: ["draft", "conversationId"] });
+    }
+    for (const [index, message] of session.messages.entries()) {
+      if (message.conversationId !== conversationId) {
+        context.addIssue({
+          code: "custom",
+          path: ["messages", index, "conversationId"],
+        });
+      }
+    }
+    for (const [index, turn] of session.turns.entries()) {
+      if (turn.conversationId !== conversationId) {
+        context.addIssue({
+          code: "custom",
+          path: ["turns", index, "conversationId"],
+        });
+      }
+    }
+    if (session.simulation && session.draft.status !== "simulated") {
+      context.addIssue({ code: "custom", path: ["simulation"] });
+    }
+  });
 
-const catalogSchema = z.strictObject({
-  scope: z.enum(["payable", "receivable"]),
-  executionGrain: z.enum([
-    "report",
-    "project_streamer_period",
-    "batch",
-    "project_period",
-  ]),
-  businessTimezone: z.string().nullable(),
-  businessTimezoneConfirmed: z.boolean(),
-  businessTimezoneSource: z.enum([
-    "contract_default",
-    "organization_setting",
-    "confirmed_contract",
-    "unresolved",
-  ]),
-  hasHistory: z.boolean(),
-  version: hashSchema,
-  variables: z.array(
-    z.strictObject({
-      id: z.string(),
-      label: z.string(),
-      runtimeType: runtimeValueTypeSchema,
-      unit: z.string(),
-      sourceLabel: z.string(),
-      availability: z.enum(["available", "partial", "unavailable"]),
-      coverageNumerator: z.number().int().nonnegative(),
-      coverageDenominator: z.number().int().nonnegative(),
-      latestSampledPeriod: z
-        .strictObject({ start: z.string(), end: z.string() })
-        .nullable(),
-    }),
-  ),
-});
+const catalogPeriodSchema = z
+  .strictObject({ start: businessDateSchema, end: businessDateSchema })
+  .refine((period) => period.start <= period.end);
+const catalogVariableSchema = z
+  .strictObject({
+    id: identifierSchema,
+    label: canonicalTextSchema(500),
+    runtimeType: runtimeValueTypeSchema,
+    unit: canonicalTextSchema(100),
+    sourceLabel: canonicalTextSchema(500),
+    availability: z.enum(["available", "partial", "unavailable"]),
+    coverageNumerator: nonnegativeSafeIntegerSchema,
+    coverageDenominator: nonnegativeSafeIntegerSchema,
+    latestSampledPeriod: catalogPeriodSchema.nullable(),
+  })
+  .refine(
+    (variable) =>
+      variable.coverageNumerator <= variable.coverageDenominator,
+    { path: ["coverageNumerator"] },
+  );
+const catalogSchema = z
+  .strictObject({
+    scope: customRuleScopeSchema,
+    executionGrain: customRuleExecutionGrainSchema,
+    businessTimezone: ianaTimezoneSchema.nullable(),
+    businessTimezoneConfirmed: z.boolean(),
+    businessTimezoneSource: z.enum([
+      "contract_default",
+      "organization_setting",
+      "confirmed_contract",
+      "unresolved",
+    ]),
+    hasHistory: z.boolean(),
+    version: hashSchema,
+    variables: z.array(catalogVariableSchema).max(300),
+  })
+  .superRefine((catalog, context) => {
+    const ids = new Set();
+    for (const [index, variable] of catalog.variables.entries()) {
+      if (ids.has(variable.id)) {
+        context.addIssue({ code: "custom", path: ["variables", index, "id"] });
+      }
+      ids.add(variable.id);
+    }
+    if (
+      catalog.businessTimezoneConfirmed &&
+      (!catalog.businessTimezone ||
+        catalog.businessTimezoneSource === "unresolved" ||
+        (catalog.businessTimezoneSource === "contract_default" &&
+          catalog.businessTimezone !== "Asia/Shanghai"))
+    ) {
+      context.addIssue({ code: "custom", path: ["businessTimezoneConfirmed"] });
+    }
+  });
 
 const responseSchemas = {
   catalog: z.strictObject({ catalog: catalogSchema }),
@@ -446,14 +654,62 @@ const responseSchemas = {
   session: z.strictObject({ session: authoritativeSessionSchema }),
 };
 
-const errorEnvelopeSchema = z.strictObject({
-  error: z.strictObject({
-    code: z.string(),
-    message: z.string(),
-    path: z.array(z.union([z.string(), z.number()])).optional(),
-    retryable: z.boolean(),
-  }),
-});
+const publicErrorCodeSchema = z.enum([
+  "CUSTOM_RULE_FEATURE_DISABLED",
+  "UNAUTHENTICATED",
+  "CUSTOM_RULE_FORBIDDEN",
+  "CUSTOM_RULE_AUTHOR_ROLE_REQUIRED",
+  "BILLING_WRITE_BLOCKED",
+  "CUSTOM_RULE_SESSION_NOT_FOUND",
+  "CUSTOM_RULE_SESSION_CONFLICT",
+  "CUSTOM_RULE_IDEMPOTENCY_CONFLICT",
+  "CUSTOM_RULE_AI_UNAVAILABLE",
+  "CUSTOM_RULE_AI_OUTPUT_INVALID",
+  "CUSTOM_RULE_AI_CONTRACT_INVALID",
+  "CUSTOM_RULE_FORMULA_INVALID",
+  "CUSTOM_RULE_PROJECT_NOT_FOUND",
+  "CUSTOM_RULE_STORAGE_UNAVAILABLE",
+  "CUSTOM_RULE_CATALOG_UNAVAILABLE",
+  "CUSTOM_RULE_INVALID_TRANSITION",
+  "CUSTOM_RULE_STALE_REVISION",
+  "CUSTOM_RULE_UNRESOLVED_AMBIGUITIES",
+  "CUSTOM_RULE_DUPLICATE_CONFIRMATION",
+  "CUSTOM_RULE_STALE_CONTRACT",
+  "CUSTOM_RULE_STALE_CATALOG",
+  "CUSTOM_RULE_STALE_FORMULA",
+  "CUSTOM_RULE_STALE_EVIDENCE",
+  "CUSTOM_RULE_STALE_SELECTION",
+  "CUSTOM_RULE_DATA_NOT_READY",
+  "CUSTOM_RULE_SIMULATION_INVALID",
+  "CUSTOM_RULE_SELECTION_UNSUPPORTED",
+  "CUSTOM_RULE_SELECTION_TOO_LARGE",
+  "CUSTOM_RULE_EVIDENCE_AMBIGUOUS",
+  "CUSTOM_RULE_EVIDENCE_FIELD_UNAVAILABLE",
+  "CUSTOM_RULE_EVIDENCE_INVALID",
+  "CUSTOM_RULE_EVIDENCE_UNAVAILABLE",
+  "CUSTOM_RULE_UNIT_MISMATCH",
+  "CUSTOM_RULE_RESPONSE_INVALID",
+  "CUSTOM_RULE_INTERNAL_ERROR",
+  "INVALID_REQUEST",
+  "INVALID_JSON",
+]);
+const errorEnvelopeSchema = z
+  .strictObject({
+    error: z.strictObject({
+      code: z.unknown(),
+      message: z.string(),
+      path: z.array(z.union([z.string(), z.number()])).optional(),
+      retryable: z.boolean(),
+    }),
+  })
+  .transform(({ error }) => ({
+    error: {
+      code:
+        publicErrorCodeSchema.safeParse(error.code).data ??
+        "CUSTOM_RULE_REQUEST_FAILED",
+      retryable: error.retryable,
+    },
+  }));
 
 const SAFE_ERROR_MESSAGES = {
   CUSTOM_RULE_FEATURE_DISABLED: "AI 结算规则当前未启用",
@@ -468,18 +724,38 @@ const SAFE_ERROR_MESSAGES = {
   CUSTOM_RULE_AI_OUTPUT_INVALID: "AI 草案未通过业务校验，请修改说明后重试",
   CUSTOM_RULE_AI_CONTRACT_INVALID: "AI 草案未通过业务校验，请修改说明后重试",
   CUSTOM_RULE_FORMULA_INVALID: "AI 草案未通过业务校验，请修改说明后重试",
+  CUSTOM_RULE_CATALOG_UNAVAILABLE: "变量目录暂时不可用，请稍后重试",
+  CUSTOM_RULE_RESPONSE_INVALID: "结算规则服务返回了无法识别的响应",
+  CUSTOM_RULE_NETWORK_ERROR: "网络连接异常，请稍后重试",
+  CUSTOM_RULE_PROCESSING_TIMEOUT: "处理尚未完成，请刷新查看最新状态",
+  CUSTOM_RULE_REQUEST_FAILED: "结算规则服务暂时不可用，请稍后重试",
   INVALID_REQUEST: "提交内容不完整，请检查后重试",
   INVALID_JSON: "提交内容不完整，请检查后重试",
 };
 
+const SAFE_LOCAL_ERROR_CODES = new Set([
+  "CUSTOM_RULE_NETWORK_ERROR",
+  "CUSTOM_RULE_PROCESSING_TIMEOUT",
+  "CUSTOM_RULE_REQUEST_FAILED",
+]);
+
 export class CustomSettlementRuleApiError extends Error {
-  constructor({ code, status, retryable, message }) {
-    super(message);
+  constructor({ code, status, retryable }) {
+    const safeCode = safeErrorCode(code);
+    super(safeErrorMessage(safeCode));
     this.name = "CustomSettlementRuleApiError";
-    this.code = code;
+    this.code = safeCode;
     this.status = status;
     this.retryable = retryable;
   }
+}
+
+function safeErrorCode(code) {
+  const publicCode = publicErrorCodeSchema.safeParse(code);
+  if (publicCode.success) return publicCode.data;
+  return SAFE_LOCAL_ERROR_CODES.has(code)
+    ? code
+    : "CUSTOM_RULE_REQUEST_FAILED";
 }
 
 function safeErrorMessage(code) {

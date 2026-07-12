@@ -118,7 +118,109 @@ function contextIsValid(project, period) {
   );
 }
 
-function createSeedContract({ scope, target, projectName, periodStart }) {
+function parseBusinessDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
+  if (!match) return null;
+  const parts = {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+  };
+  const date = new Date(0);
+  date.setUTCFullYear(parts.year, parts.month - 1, parts.day);
+  date.setUTCHours(0, 0, 0, 0);
+  return date.getUTCFullYear() === parts.year &&
+    date.getUTCMonth() === parts.month - 1 &&
+    date.getUTCDate() === parts.day
+    ? parts
+    : null;
+}
+
+function calendarUtcEpoch(parts) {
+  const date = new Date(0);
+  date.setUTCFullYear(parts.year, parts.month - 1, parts.day);
+  date.setUTCHours(parts.hour ?? 0, parts.minute ?? 0, parts.second ?? 0, 0);
+  return date.getTime();
+}
+
+function zonedCalendarParts(instant, timeZone) {
+  const values = {};
+  const parts = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(instant);
+  for (const part of parts) {
+    if (part.type !== "literal") values[part.type] = Number(part.value);
+  }
+  if (
+    !Number.isInteger(values.year) ||
+    !Number.isInteger(values.month) ||
+    !Number.isInteger(values.day) ||
+    !Number.isInteger(values.hour) ||
+    !Number.isInteger(values.minute) ||
+    !Number.isInteger(values.second)
+  ) {
+    throw new Error("business timezone could not be resolved");
+  }
+  return values;
+}
+
+function businessDateBoundary(value, timeZone) {
+  const date = parseBusinessDate(value);
+  if (!date) throw new Error("business date is invalid");
+  const targetEpoch = calendarUtcEpoch(date);
+  let instant = targetEpoch;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const local = zonedCalendarParts(instant, timeZone);
+    const adjustment = targetEpoch - calendarUtcEpoch(local);
+    instant += adjustment;
+    if (adjustment === 0) break;
+  }
+
+  const resolved = zonedCalendarParts(instant, timeZone);
+  if (
+    resolved.year !== date.year ||
+    resolved.month !== date.month ||
+    resolved.day !== date.day ||
+    resolved.hour !== 0 ||
+    resolved.minute !== 0 ||
+    resolved.second !== 0
+  ) {
+    throw new Error("business timezone boundary is unavailable");
+  }
+  const offsetMinutes = (targetEpoch - instant) / 60_000;
+  if (!Number.isInteger(offsetMinutes) || Math.abs(offsetMinutes) > 24 * 60) {
+    throw new Error("business timezone offset is invalid");
+  }
+  const absoluteOffset = Math.abs(offsetMinutes);
+  const offsetHours = String(Math.floor(absoluteOffset / 60)).padStart(2, "0");
+  const offsetRemainder = String(absoluteOffset % 60).padStart(2, "0");
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  return `${value}T00:00:00.000${sign}${offsetHours}:${offsetRemainder}`;
+}
+
+function catalogTimezoneReady(catalog) {
+  return Boolean(
+    catalog?.businessTimezone &&
+      catalog.businessTimezoneConfirmed &&
+      catalog.businessTimezoneSource !== "unresolved",
+  );
+}
+
+function createSeedContract({
+  scope,
+  target,
+  projectName,
+  effectiveStartAt,
+  businessTimezone,
+}) {
   const payable = scope === "payable";
   const inputName = payable ? "system_minutes" : "period_report_count";
   const inputDescription = payable ? "系统直播时长" : "周期内已审核报告数";
@@ -177,13 +279,13 @@ function createSeedContract({ scope, target, projectName, periodStart }) {
         defaultValue: { type: "money_cents", amountCents: 0 },
       },
     ],
-    effectiveStartAt: `${periodStart}T00:00:00+08:00`,
+    effectiveStartAt,
     effectiveEndAt: null,
     missingDataPolicy: { action: "route_item_to_review" },
     compositionDescription: payable
       ? "替换当前项目的主播应付基础规则。"
       : "替换当前项目的客户应收基础规则。",
-    businessTimezone: "Asia/Shanghai",
+    businessTimezone,
     examples: [
       example("标准情况", "normal", "按一个标准单位计算。", 1, 0),
       example("零值情况", "boundary", "业务数量为零时金额为零。", 0, 0),
@@ -217,17 +319,58 @@ function authorityFromSession(session) {
   };
 }
 
-function focusTargetForDraft(draft) {
+const ACTIVE_TURN_STATUSES = new Set([
+  "accepted",
+  "grounding",
+  "generating",
+  "validating",
+]);
+
+function latestTurn(authority) {
+  return authority?.turns?.[authority.turns.length - 1] ?? null;
+}
+
+function authorityIsActive(authority) {
+  return authority?.turns?.some((turn) =>
+    ACTIVE_TURN_STATUSES.has(turn.status),
+  );
+}
+
+function authorityHasFailed(authority) {
+  return (
+    authority?.draft?.status === "failed" || latestTurn(authority)?.status === "failed"
+  );
+}
+
+function focusTargetForAuthority(authority) {
+  if (authorityHasFailed(authority)) return "error";
+  const draft = authority?.draft;
   if (draft?.status === "clarifying") return "question";
-  if (draft?.status === "failed") return "error";
   return "result";
 }
 
-function completionAnnouncement(draft) {
+function completionAnnouncement(authority) {
+  if (authorityHasFailed(authority)) return "AI 草案生成失败";
+  const draft = authority?.draft;
   if (draft?.status === "clarifying") return "AI 已提出新的待确认问题";
   if (draft?.status === "contract_ready") return "业务规则草案已就绪";
   if (draft?.status === "simulated") return "内部试算已完成";
   return "结算规则会话已更新";
+}
+
+function waitForRetryDelay(milliseconds, signal) {
+  if (milliseconds <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = globalThis.setTimeout(resolve, milliseconds);
+    signal.addEventListener(
+      "abort",
+      () => {
+        globalThis.clearTimeout(timeout);
+        reject(new DOMException("Aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
 }
 
 function safeWorkspaceError(error) {
@@ -292,26 +435,85 @@ function formatDate(value) {
   return date || "未设置";
 }
 
-function formatYuan(value) {
-  if (value === null || value === undefined || value === "")
-    return "无历史数据";
-  const number = Number(value);
-  if (!Number.isFinite(number)) return "金额不可用";
-  return `¥${number.toLocaleString("zh-CN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+function formatYuan(value, nullLabel = "无历史数据") {
+  if (value === undefined || value === "") return "服务端未提供";
+  if (value === null) return nullLabel;
+  const decimal =
+    typeof value === "string" && /^-?(?:0|[1-9]\d*)\.\d{2}$/u.test(value)
+      ? value
+      : typeof value === "number" && Number.isFinite(value)
+        ? value.toFixed(2)
+        : null;
+  if (!decimal) return "金额不可用";
+  const negative = decimal.startsWith("-");
+  const unsigned = negative ? decimal.slice(1) : decimal;
+  const [whole, fraction] = unsigned.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/gu, ",");
+  return `${negative ? "-" : ""}¥${grouped}.${fraction}`;
+}
+
+function formatSafeHundredths(value) {
+  if (!Number.isSafeInteger(value)) return null;
+  const integer = BigInt(value);
+  const negative = integer < 0;
+  const absolute = negative ? -integer : integer;
+  const whole = absolute / BigInt(100);
+  const fraction = String(absolute % BigInt(100)).padStart(2, "0");
+  return `${negative ? "-" : ""}${whole}.${fraction}`;
+}
+
+function safeBusinessText(value, fallback) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (
+    text.length === 0 ||
+    !/[\u3400-\u9fff]/u.test(text) ||
+    /[A-Za-z_(){}]/u.test(text) ||
+    text.includes("[") ||
+    text.includes("]")
+  ) {
+    return fallback;
+  }
+  return text;
+}
+
+function safeBusinessQuestion(value) {
+  const question = safeBusinessText(value, "请确认这项业务条件？");
+  return /[?？]$/u.test(question) ? question : `${question}？`;
+}
+
+function safeBusinessUnit(value) {
+  const units = new Set([
+    "%",
+    "个",
+    "份",
+    "元",
+    "元/小时",
+    "分钟",
+    "天",
+    "小时",
+    "条",
+    "次",
+    "百分比",
+  ]);
+  return units.has(value) ? value : "业务单位";
 }
 
 function formatTypedValue(value) {
   if (!value || typeof value !== "object") return "未设置";
-  if (value.type === "money_cents") return formatYuan(value.amountCents / 100);
-  if (value.type === "rate_bps") return `${(value.rateBps / 100).toFixed(2)}%`;
+  if (value.type === "money_cents") {
+    const yuan = formatSafeHundredths(value.amountCents);
+    return yuan === null ? "金额不可用" : formatYuan(yuan);
+  }
+  if (value.type === "rate_bps") {
+    const percent = formatSafeHundredths(value.rateBps);
+    return percent === null ? "比例不可用" : `${percent}%`;
+  }
   if (value.type === "boolean") return value.value ? "是" : "否";
   if (value.type === "timestamp") return formatDate(value.value);
   if (value.type === "array") return `${value.items.length} 项`;
   if (value.type === "object")
     return `${Object.keys(value.fields).length} 项组合值`;
+  if (value.type === "string") return "已设置文本值";
   return String(value.value ?? "未设置");
 }
 
@@ -349,12 +551,20 @@ function contractRows(contract) {
       key: "compositionMode",
       value: compositionModeLabel(contract.compositionMode),
     },
-    { key: "title", value: contract.title },
-    { key: "summary", value: contract.summary },
+    {
+      key: "title",
+      value: safeBusinessText(contract.title, "已确认业务规则"),
+    },
+    {
+      key: "summary",
+      value: safeBusinessText(contract.summary, "按已确认的业务条件计算"),
+    },
     {
       key: "calculationComponents",
       value: contract.calculationComponents
-        .map((item) => item.description)
+        .map((item) =>
+          safeBusinessText(item.description, "按已确认的业务条件计算"),
+        )
         .join("；"),
     },
     {
@@ -362,7 +572,7 @@ function contractRows(contract) {
       value: contract.requiredInputs
         .map(
           (item) =>
-            `${item.description}（${item.source}，${item.userFacingUnit}）`,
+            `${safeBusinessText(item.description, "已确认业务输入")}（${safeBusinessText(item.source, "已授权业务数据")}，${safeBusinessUnit(item.userFacingUnit)}）`,
         )
         .join("；"),
     },
@@ -371,7 +581,7 @@ function contractRows(contract) {
       value: contract.parameters
         .map(
           (item) =>
-            `${item.description} ${formatTypedValue(item.defaultValue)}`,
+            `${safeBusinessText(item.description, "已确认业务参数")} ${formatTypedValue(item.defaultValue)}`,
         )
         .join("；"),
     },
@@ -381,8 +591,14 @@ function contractRows(contract) {
       key: "missingDataPolicy",
       value: missingDataLabel(contract.missingDataPolicy),
     },
-    { key: "compositionDescription", value: contract.compositionDescription },
-    { key: "businessTimezone", value: contract.businessTimezone },
+    {
+      key: "compositionDescription",
+      value: safeBusinessText(
+        contract.compositionDescription,
+        "按已确认方式与现有规则组合",
+      ),
+    },
+    { key: "businessTimezone", value: "已确认业务时区" },
     { key: "examples", value: `${contract.examples.length} 个已校验业务样例` },
   ];
 }
@@ -395,64 +611,44 @@ function formatDiffValue(field, value) {
   if (field === "effectiveStartAt" || field === "effectiveEndAt") {
     return formatDate(value);
   }
+  if (field === "businessTimezone") return "业务时区已调整";
   if (field === "missingDataPolicy") return missingDataLabel(value);
   if (field === "parameters" && Array.isArray(value)) {
     return value
       .map(
-        (item) => `${item.description} ${formatTypedValue(item.defaultValue)}`,
+        (item) =>
+          `${safeBusinessText(item.description, "已确认业务参数")} ${formatTypedValue(item.defaultValue)}`,
       )
       .join("；");
   }
   if (Array.isArray(value)) return `${value.length} 项`;
   if (value && typeof value === "object") return "业务对象已调整";
-  return String(value ?? "未设置");
+  return safeBusinessText(value, value == null ? "未设置" : "业务内容已调整");
 }
 
-function summaryFromPersistedSimulation(simulation, scope) {
-  if (!simulation) return null;
-  const current =
-    scope === "receivable"
-      ? simulation.historicalTotals.receivableAmountYuan
-      : simulation.historicalTotals.payableAmountYuan;
-  const delta =
-    scope === "receivable"
-      ? simulation.deltas.receivableAmountYuan
-      : simulation.deltas.payableAmountYuan;
-  const increases = simulation.largestChanges
-    .filter((item) => item.direction === "increase")
-    .map((item) => ({ bucket: item.key, deltaYuan: item.deltaAmountYuan }));
-  const decreases = simulation.largestChanges
-    .filter((item) => item.direction === "decrease")
-    .map((item) => ({ bucket: item.key, deltaYuan: item.deltaAmountYuan }));
+function deterministicExplanation(contract) {
+  const descriptions = contract.calculationComponents.map((component) =>
+    safeBusinessText(component.description, "按已确认的业务条件计算"),
+  );
+  return `${descriptions.join("；")}。缺少数据时${missingDataLabel(contract.missingDataPolicy)}。`;
+}
 
-  return {
-    coverage: {
-      totalCount: simulation.coverage.totalRecords,
-      evaluatedCount: simulation.coverage.evaluatedRecords,
-      ratePercent:
-        simulation.coverage.totalRecords > 0
-          ? (
-              (simulation.coverage.evaluatedRecords /
-                simulation.coverage.totalRecords) *
-              100
-            ).toFixed(2)
-          : "0.00",
-    },
-    zeroPayCount: null,
-    reviewRoutedCount: null,
-    blockedCount: null,
-    totalOldYuan: current,
-    totalNewYuan: null,
-    totalDeltaYuan: delta,
-    historicalVerification: {
-      status: current === null ? "unverified" : "verified",
-      label: current === null ? "未经过历史数据验证" : "历史结果已载入",
-    },
-    largestIncreases: increases,
-    largestDecreases: decreases,
-    riskFlags: [],
-    warnings: simulation.warnings,
-  };
+function businessChangeLabel(value) {
+  const match = /^authorized_ordinal:(\d+)$/u.exec(String(value));
+  if (match) {
+    const ordinal = Number(match[1]);
+    if (Number.isSafeInteger(ordinal) && ordinal > 0) {
+      return `第 ${ordinal} 条变更`;
+    }
+  }
+  return safeBusinessText(value, "一项业务变更");
+}
+
+function safeRiskMessage(message, kind) {
+  return safeBusinessText(
+    message,
+    kind === "risk" ? "一项业务风险需复核" : "一项试算提醒需复核",
+  );
 }
 
 function ContractView({ draft }) {
@@ -519,21 +715,59 @@ function RevisionDiff({ diff }) {
 
 function SimulationView({ authority, headingRef }) {
   const scope = authority.draft.businessContract.scope;
-  const summary =
-    authority.summary ??
-    summaryFromPersistedSimulation(authority.simulation, scope);
-  if (!summary) return null;
+  const summary = authority.summary;
+  const persisted = authority.simulation;
+  if (!summary && !persisted) return null;
 
-  const noHistory =
-    summary.historicalVerification?.status === "unverified" ||
-    summary.totalOldYuan === null;
+  const currentAmount = summary
+    ? summary.totalOldYuan
+    : scope === "receivable"
+      ? persisted.historicalTotals.receivableAmountYuan
+      : persisted.historicalTotals.payableAmountYuan;
+  const newAmount = summary?.totalNewYuan;
+  const deltaAmount = summary
+    ? summary.totalDeltaYuan
+    : scope === "receivable"
+      ? persisted.deltas.receivableAmountYuan
+      : persisted.deltas.payableAmountYuan;
+  const coverage = summary
+    ? {
+        totalCount: summary.coverage.totalCount,
+        evaluatedCount: summary.coverage.evaluatedCount,
+        ratePercent: summary.coverage.ratePercent,
+      }
+    : {
+        totalCount: persisted.coverage.totalRecords,
+        evaluatedCount: persisted.coverage.evaluatedRecords,
+        ratePercent: null,
+      };
+  const increases = summary
+    ? summary.largestIncreases
+    : persisted.largestChanges
+        .filter((item) => item.direction === "increase")
+        .map((item) => ({
+          bucket: item.key,
+          deltaYuan: item.deltaAmountYuan,
+        }));
+  const decreases = summary
+    ? summary.largestDecreases
+    : persisted.largestChanges
+        .filter((item) => item.direction === "decrease")
+        .map((item) => ({
+          bucket: item.key,
+          deltaYuan: item.deltaAmountYuan,
+        }));
+  const warnings = summary?.warnings ?? persisted?.warnings ?? [];
+  const noHistory = summary
+    ? summary.historicalVerification.status === "unverified"
+    : currentAmount === null;
   const countValue = (value) =>
-    value === null ? "服务端未提供" : `${value} 条`;
+    value === null || value === undefined ? "服务端未提供" : `${value} 条`;
   const largest = (items, emptyLabel) =>
     items?.length
-      ? items.map((item) => (
-          <li key={`${item.bucket}-${item.deltaYuan}`}>
-            <span>{item.bucket}</span>
+      ? items.map((item, index) => (
+          <li key={`${index}-${item.deltaYuan}`}>
+            <span>{businessChangeLabel(item.bucket)}</span>
             <strong>{formatYuan(item.deltaYuan)}</strong>
           </li>
         ))
@@ -558,30 +792,34 @@ function SimulationView({ authority, headingRef }) {
       <div className="crw-metrics">
         <div>
           <span>当前金额</span>
-          <strong>{formatYuan(summary.totalOldYuan)}</strong>
+          <strong>{formatYuan(currentAmount)}</strong>
         </div>
         <div>
           <span>新规则金额</span>
-          <strong>{formatYuan(summary.totalNewYuan)}</strong>
+          <strong>{formatYuan(newAmount)}</strong>
         </div>
         <div>
           <span>差额</span>
-          <strong>{formatYuan(summary.totalDeltaYuan)}</strong>
+          <strong>{formatYuan(deltaAmount)}</strong>
         </div>
         <div>
           <span>覆盖率</span>
-          <strong>{summary.coverage.ratePercent}%</strong>
+          <strong>
+            {coverage.ratePercent === null
+              ? "服务端未提供"
+              : `${coverage.ratePercent}%`}
+          </strong>
           <small>
-            {summary.coverage.evaluatedCount}/{summary.coverage.totalCount} 条
+            {coverage.evaluatedCount}/{coverage.totalCount} 条
           </small>
         </div>
         <div>
           <span>零金额</span>
-          <strong>{countValue(summary.zeroPayCount)}</strong>
+          <strong>{countValue(summary?.zeroPayCount)}</strong>
         </div>
         <div>
           <span>转人工复核</span>
-          <strong>{countValue(summary.reviewRoutedCount)}</strong>
+          <strong>{countValue(summary?.reviewRoutedCount)}</strong>
         </div>
       </div>
 
@@ -591,36 +829,38 @@ function SimulationView({ authority, headingRef }) {
             <TrendingUp size={15} aria-hidden="true" />
             最大增加
           </h3>
-          <ul>{largest(summary.largestIncreases, "无增加项")}</ul>
+          <ul>{largest(increases, "无增加项")}</ul>
         </div>
         <div>
           <h3>
             <TrendingDown size={15} aria-hidden="true" />
             最大减少
           </h3>
-          <ul>{largest(summary.largestDecreases, "无减少项")}</ul>
+          <ul>{largest(decreases, "无减少项")}</ul>
         </div>
       </div>
 
       <div className="crw-risk-columns">
         <div>
           <h3>风险</h3>
-          {summary.riskFlags?.length ? (
+          {summary?.riskFlags?.length ? (
             <ul>
-              {summary.riskFlags.map((item) => (
-                <li key={item.code}>{item.message}</li>
+              {summary.riskFlags.map((item, index) => (
+                <li key={index}>{safeRiskMessage(item.message, "risk")}</li>
               ))}
             </ul>
-          ) : (
+          ) : summary ? (
             <p>无新增风险</p>
+          ) : (
+            <p>服务端未提供</p>
           )}
         </div>
         <div>
           <h3>提醒</h3>
-          {summary.warnings?.length ? (
+          {warnings.length ? (
             <ul>
-              {summary.warnings.map((item) => (
-                <li key={item.code}>{item.message}</li>
+              {warnings.map((item, index) => (
+                <li key={index}>{safeRiskMessage(item.message, "warning")}</li>
               ))}
             </ul>
           ) : (
@@ -680,7 +920,7 @@ function WorkspaceStyles() {
       .crw-preserved { margin: 10px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--ink-500, #64748b); }
       .crw-band-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
       .crw-band-heading > div { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-      .crw-preview-status, .crw-no-history { display: inline-flex; align-items: center; min-height: 22px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+      .crw-preview-status, .crw-no-history { display: inline-flex; align-items: center; min-height: 22px; padding: 1px 7px; border-radius: 6px; font-size: 11px; font-weight: 600; }
       .crw-preview-status { background: var(--blue-50, #eff6ff); color: var(--blue-700, #1d4ed8); }
       .crw-no-history { background: var(--amber-50, #fffbeb); color: var(--amber-800, #92400e); }
       .crw-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin-top: 14px; background: var(--line, #e2e8f0); }
@@ -696,6 +936,9 @@ function WorkspaceStyles() {
       .crw-empty h2, .crw-error h2 { margin: 0; font-size: 14px; }
       .crw-empty p, .crw-error p { margin: 4px 0 0; font-size: 12px; color: var(--ink-600, #475569); }
       .crw-error { color: var(--danger-700, #b91c1c); }
+      .crw-processing { display: flex; align-items: flex-start; gap: 10px; padding: 16px 0; border-bottom: 1px solid var(--line, #e2e8f0); color: var(--blue-700, #1d4ed8); }
+      .crw-processing h2 { margin: 0; font-size: 14px; color: var(--ink-900, #172033); }
+      .crw-processing p { margin: 4px 0 0; font-size: 12px; color: var(--ink-600, #475569); }
       .crw-loading { display: grid; gap: 8px; padding: 16px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
       .crw-loading span { height: 10px; border-radius: 4px; background: var(--ink-100, #e2e8f0); animation: crw-pulse 1.2s ease-in-out infinite; }
       .crw-loading span:nth-child(2) { width: 72%; }
@@ -736,6 +979,8 @@ export default function CustomSettlementRuleWorkspace({
   target,
   api,
   createRequestId = defaultRequestId,
+  retryPollDelayMs = 250,
+  retryPollMaxAttempts = 3,
 }) {
   const apiClient = React.useMemo(
     () => api ?? createCustomSettlementRuleApi(),
@@ -763,6 +1008,7 @@ export default function CustomSettlementRuleWorkspace({
   const questionHeadingRef = React.useRef(null);
   const resultHeadingRef = React.useRef(null);
   const errorHeadingRef = React.useRef(null);
+  const progressHeadingRef = React.useRef(null);
 
   const validContext = contextIsValid(
     { id: projectId },
@@ -790,15 +1036,22 @@ export default function CustomSettlementRuleWorkspace({
       : "";
   const activeSessionId =
     activeSession.contextKey === workspaceContextKey ? activeSession.id : null;
+  const maximumPollAttempts =
+    Number.isSafeInteger(retryPollMaxAttempts) && retryPollMaxAttempts > 0
+      ? Math.min(retryPollMaxAttempts, 10)
+      : 3;
+  const pollDelay =
+    Number.isFinite(retryPollDelayMs) && retryPollDelayMs >= 0
+      ? Math.min(retryPollDelayMs, 5_000)
+      : 250;
 
-  React.useEffect(() => {
-    requestSequenceRef.current += 1;
+  const loadCatalog = React.useCallback(() => {
+    const sequence = ++requestSequenceRef.current;
     requestControllerRef.current?.abort();
     apiClient.abortActive?.();
 
-    if (!validContext) return undefined;
+    if (!validContext) return null;
 
-    const sequence = requestSequenceRef.current;
     const controller = new AbortController();
     requestControllerRef.current = controller;
 
@@ -811,11 +1064,39 @@ export default function CustomSettlementRuleWorkspace({
       })
       .then((payload) => {
         if (sequence !== requestSequenceRef.current) return;
+        if (
+          payload.catalog.scope !== selectedScope ||
+          payload.catalog.executionGrain !== executionGrain
+        ) {
+          throw new CustomSettlementRuleApiError({
+            code: "CUSTOM_RULE_RESPONSE_INVALID",
+            status: 200,
+            retryable: true,
+            message: "结算规则服务返回了无法识别的响应",
+          });
+        }
+        if (!catalogTimezoneReady(payload.catalog)) {
+          setRequestState({
+            ...freshRequestState(),
+            contextKey: workspaceContextKey,
+            catalogStatus: "timezone_error",
+            catalog: payload.catalog,
+            error: {
+              code: "CUSTOM_RULE_TIMEZONE_UNRESOLVED",
+              message: "请先确认项目业务时区后再开始",
+              retryable: true,
+            },
+            announcement: "业务时区待确认",
+            focusTarget: "error",
+          });
+          return;
+        }
         setRequestState({
           ...freshRequestState(),
           contextKey: workspaceContextKey,
           catalogStatus: "ready",
           catalog: payload.catalog,
+          announcement: "业务范围已就绪",
         });
       })
       .catch((error) => {
@@ -825,25 +1106,32 @@ export default function CustomSettlementRuleWorkspace({
         ) {
           return;
         }
+        const safeError = safeWorkspaceError(error);
         setRequestState({
           ...freshRequestState(),
           contextKey: workspaceContextKey,
           catalogStatus: "error",
           catalog: null,
+          error: safeError,
+          announcement: "业务范围读取失败",
+          focusTarget: "error",
         });
       });
 
-    return () => controller.abort();
+    return controller;
   }, [
     apiClient,
     executionGrain,
     projectId,
     selectedScope,
-    selectedTarget.targetId,
-    selectedTarget.targetType,
     validContext,
     workspaceContextKey,
   ]);
+
+  React.useEffect(() => {
+    const controller = loadCatalog();
+    return () => controller?.abort();
+  }, [loadCatalog]);
 
   React.useEffect(
     () => () => {
@@ -860,9 +1148,11 @@ export default function CustomSettlementRuleWorkspace({
         ? questionHeadingRef
         : viewState.focusTarget === "error"
           ? errorHeadingRef
-          : viewState.focusTarget === "result"
-            ? resultHeadingRef
-            : null;
+          : viewState.focusTarget === "progress"
+            ? progressHeadingRef
+            : viewState.focusTarget === "result"
+              ? resultHeadingRef
+              : null;
     targetRef?.current?.focus();
   }, [
     viewState.focusTarget,
@@ -872,7 +1162,7 @@ export default function CustomSettlementRuleWorkspace({
   ]);
 
   const performOperation = async (operation, { retry = false } = {}) => {
-    if (!validContext) return;
+    if (!validContext || viewState.catalogStatus !== "ready") return;
     const currentDraft = viewState.authoritative?.draft ?? null;
     const sessionId = activeSessionId ?? currentDraft?.conversationId ?? null;
     if (operation !== "start" && !sessionId) return;
@@ -886,6 +1176,58 @@ export default function CustomSettlementRuleWorkspace({
       retry && viewState.requestId
         ? viewState.requestId
         : createRequestId(operation);
+
+    const showProcessing = (authority, nextSessionId) => {
+      setActiveSession({ contextKey: workspaceContextKey, id: nextSessionId });
+      setRequestState((current) => ({
+        ...(current.contextKey === workspaceContextKey
+          ? current
+          : freshRequestState()),
+        contextKey: workspaceContextKey,
+        status: "processing",
+        operation: "refresh",
+        lastOperation: "refresh",
+        authoritative: authority ?? current.authoritative ?? null,
+        error: null,
+        announcement: "AI 正在处理",
+        focusTarget: "progress",
+      }));
+    };
+
+    const resolveAuthoritativeSession = async (
+      nextSessionId,
+      firstSession = null,
+    ) => {
+      let session = firstSession;
+      let refreshesUsed = firstSession ? 1 : 0;
+
+      while (true) {
+        const authority = session ? authorityFromSession(session) : null;
+        if (authority && !authorityIsActive(authority)) return authority;
+        if (refreshesUsed >= maximumPollAttempts) {
+          throw new CustomSettlementRuleApiError({
+            code: "CUSTOM_RULE_PROCESSING_TIMEOUT",
+            status: 0,
+            retryable: true,
+            message: "处理尚未完成，请刷新查看最新状态",
+          });
+        }
+
+        showProcessing(authority, nextSessionId);
+        await waitForRetryDelay(
+          refreshesUsed === 0 ? 0 : pollDelay * refreshesUsed,
+          controller.signal,
+        );
+        const refreshed = await apiClient.refreshSession({
+          projectId,
+          sessionId: nextSessionId,
+          signal: controller.signal,
+        });
+        if (sequence !== requestSequenceRef.current) return null;
+        session = refreshed.session;
+        refreshesUsed += 1;
+      }
+    };
 
     setRequestState((current) => ({
       ...(current.contextKey === workspaceContextKey
@@ -905,6 +1247,11 @@ export default function CustomSettlementRuleWorkspace({
     try {
       let payload;
       if (operation === "start") {
+        const businessTimezone = viewState.catalog.businessTimezone;
+        const effectiveStartAt = businessDateBoundary(
+          periodStart,
+          businessTimezone,
+        );
         payload = await apiClient.startSession({
           projectId,
           body: {
@@ -915,7 +1262,8 @@ export default function CustomSettlementRuleWorkspace({
               scope: selectedScope,
               target: selectedTarget,
               projectName,
-              periodStart,
+              effectiveStartAt,
+              businessTimezone,
             }),
             initialAmbiguities: [
               {
@@ -980,19 +1328,27 @@ export default function CustomSettlementRuleWorkspace({
       let authority;
       let nextSessionId = sessionId;
       if (operation === "refresh") {
-        authority = authorityFromSession(payload.session);
         nextSessionId = payload.session.conversation.id;
+        authority = await resolveAuthoritativeSession(
+          nextSessionId,
+          payload.session,
+        );
       } else {
-        let result = payload.result;
+        const result = payload.result;
         nextSessionId = result.conversationId;
         if (result.kind === "retry_in_progress") {
+          authority = await resolveAuthoritativeSession(nextSessionId);
+        } else if (result.kind === "retry_readback") {
           const refreshed = await apiClient.refreshSession({
             projectId,
             sessionId: nextSessionId,
             signal: controller.signal,
           });
           if (sequence !== requestSequenceRef.current) return;
-          authority = authorityFromSession(refreshed.session);
+          authority = await resolveAuthoritativeSession(
+            nextSessionId,
+            refreshed.session,
+          );
         } else {
           authority = authorityFromResult(
             result,
@@ -1001,6 +1357,7 @@ export default function CustomSettlementRuleWorkspace({
         }
       }
 
+      if (sequence !== requestSequenceRef.current || !authority) return;
       if (!authority?.draft) {
         throw new CustomSettlementRuleApiError({
           code: "CUSTOM_RULE_RESPONSE_INVALID",
@@ -1023,8 +1380,8 @@ export default function CustomSettlementRuleWorkspace({
         requestId: null,
         authoritative: authority,
         error: null,
-        announcement: completionAnnouncement(authority.draft),
-        focusTarget: focusTargetForDraft(authority.draft),
+        announcement: completionAnnouncement(authority),
+        focusTarget: focusTargetForAuthority(authority),
       }));
     } catch (error) {
       if (
@@ -1034,6 +1391,10 @@ export default function CustomSettlementRuleWorkspace({
         return;
       }
       const safeError = safeWorkspaceError(error);
+      const retryOperation =
+        safeError.code === "CUSTOM_RULE_PROCESSING_TIMEOUT"
+          ? "refresh"
+          : operation;
       setRequestState((current) => ({
         ...(current.contextKey === workspaceContextKey
           ? current
@@ -1041,11 +1402,30 @@ export default function CustomSettlementRuleWorkspace({
         contextKey: workspaceContextKey,
         status: "error",
         operation: null,
+        lastOperation: retryOperation,
         error: safeError,
-        announcement: "请求未完成",
+        announcement:
+          safeError.code === "CUSTOM_RULE_PROCESSING_TIMEOUT"
+            ? "AI 仍在处理"
+            : "请求未完成",
         focusTarget: "error",
       }));
     }
+  };
+
+  const restartWorkspace = () => {
+    requestControllerRef.current?.abort();
+    apiClient.abortActive?.();
+    requestSequenceRef.current += 1;
+    setActiveSession({ contextKey: workspaceContextKey, id: null });
+    setDraftInputState({ contextKey: workspaceContextKey, value: "" });
+    setRequestState({
+      ...freshRequestState(),
+      contextKey: workspaceContextKey,
+      catalogStatus: viewState.catalogStatus,
+      catalog: viewState.catalog,
+      announcement: "可以重新开始业务规则澄清",
+    });
   };
 
   const draft = viewState.authoritative?.draft ?? null;
@@ -1054,21 +1434,71 @@ export default function CustomSettlementRuleWorkspace({
   const contractReady = draft?.status === "contract_ready";
   const clarifying = draft?.status === "clarifying";
   const isLoading = viewState.status === "loading";
-  const hasError = viewState.status === "error";
+  const isProcessing = viewState.status === "processing";
+  const requestHasError = viewState.status === "error";
+  const failedAuthority = authorityHasFailed(viewState.authoritative);
+  const catalogIsLoading = viewState.catalogStatus === "loading";
+  const catalogHasError = viewState.catalogStatus === "error";
+  const timezoneHasError = viewState.catalogStatus === "timezone_error";
+  const catalogReady = viewState.catalogStatus === "ready";
+  const errorVisible =
+    requestHasError || failedAuthority || catalogHasError || timezoneHasError;
+  const timeoutError =
+    requestHasError &&
+    viewState.error?.code === "CUSTOM_RULE_PROCESSING_TIMEOUT";
+
+  let errorHeading = "无法继续处理";
+  let errorMessage = viewState.error?.message ?? "结算规则服务暂时不可用";
+  if (catalogHasError) errorHeading = "无法读取业务范围";
+  if (timezoneHasError) errorHeading = "业务时区待确认";
+  if (failedAuthority) {
+    errorHeading = "AI 草案生成失败";
+    errorMessage = "AI 未能生成可用草案，请重新开始";
+  }
+  if (timeoutError) errorHeading = "AI 仍在处理";
 
   let actionLabel = "开始澄清";
   let actionOperation = "start";
   let ActionIcon = Send;
   let inputLabel = "规则说明";
   let needsInput = true;
+  let showInput = true;
 
-  if (hasError) {
-    actionLabel = viewState.error?.retryable ? "重试" : "重新开始";
-    actionOperation = viewState.error?.retryable
-      ? (viewState.lastOperation ?? "start")
-      : "start";
+  if (catalogIsLoading) {
+    actionLabel = "正在读取范围…";
+    actionOperation = "catalog_wait";
+    ActionIcon = RefreshCw;
+  } else if (catalogHasError || timezoneHasError) {
+    actionLabel = timezoneHasError ? "重新读取时区" : "重新读取范围";
+    actionOperation = "catalog";
     ActionIcon = RefreshCw;
     needsInput = false;
+  } else if (isProcessing) {
+    actionLabel = "正在处理…";
+    actionOperation = "processing";
+    ActionIcon = RefreshCw;
+    needsInput = false;
+    showInput = false;
+  } else if (requestHasError) {
+    actionLabel = timeoutError
+      ? "刷新处理状态"
+      : viewState.error?.retryable
+        ? "重试"
+        : "重新开始";
+    actionOperation = timeoutError
+      ? "refresh"
+      : viewState.error?.retryable
+        ? (viewState.lastOperation ?? "start")
+        : "restart";
+    ActionIcon = RefreshCw;
+    needsInput = false;
+    showInput = false;
+  } else if (failedAuthority) {
+    actionLabel = "重新开始";
+    actionOperation = "restart";
+    ActionIcon = RefreshCw;
+    needsInput = false;
+    showInput = false;
   } else if (simulated) {
     actionLabel = "修改规则";
     actionOperation = "answer";
@@ -1079,6 +1509,7 @@ export default function CustomSettlementRuleWorkspace({
     actionOperation = "confirm";
     ActionIcon = CheckCircle2;
     needsInput = false;
+    showInput = false;
   } else if (clarifying) {
     actionLabel = "回复 AI";
     actionOperation = "answer";
@@ -1093,12 +1524,31 @@ export default function CustomSettlementRuleWorkspace({
 
   const actionDisabled =
     !validContext ||
+    catalogIsLoading ||
     isLoading ||
+    isProcessing ||
+    (actionOperation !== "catalog" &&
+      actionOperation !== "restart" &&
+      !catalogReady) ||
     (needsInput && draftInput.trim().length === 0);
 
   const handlePrimaryAction = () => {
-    if (hasError) {
-      performOperation(actionOperation, { retry: viewState.error?.retryable });
+    if (actionOperation === "catalog") {
+      setRequestState({
+        ...freshRequestState(),
+        contextKey: workspaceContextKey,
+        catalogStatus: "loading",
+        announcement: "正在读取业务范围",
+      });
+      loadCatalog();
+      return;
+    }
+    if (actionOperation === "restart") {
+      restartWorkspace();
+      return;
+    }
+    if (requestHasError) {
+      performOperation(actionOperation, { retry: !timeoutError });
       return;
     }
     performOperation(actionOperation);
@@ -1125,7 +1575,7 @@ export default function CustomSettlementRuleWorkspace({
             <span>{targetLabel(selectedTarget, selectedScope)}</span>
           </div>
         </div>
-        {activeSessionId ? (
+        {activeSessionId && !errorVisible && !isProcessing ? (
           <button
             type="button"
             className="crw-refresh"
@@ -1145,9 +1595,9 @@ export default function CustomSettlementRuleWorkspace({
           <div
             className={`crw-history${viewState.catalog?.hasHistory === false ? " no-history" : ""}`}
           >
-            {viewState.catalogStatus === "loading"
+            {catalogIsLoading
               ? "正在读取历史数据"
-              : viewState.catalogStatus === "error"
+              : catalogHasError
                 ? "历史数据状态不可用"
                 : viewState.catalog?.hasHistory === false
                   ? "无历史数据"
@@ -1165,6 +1615,7 @@ export default function CustomSettlementRuleWorkspace({
                 type="button"
                 aria-pressed={selectedScope === option.value}
                 onClick={() => {
+                  if (selectedScope === option.value) return;
                   requestSequenceRef.current += 1;
                   requestControllerRef.current?.abort();
                   apiClient.abortActive?.();
@@ -1191,14 +1642,26 @@ export default function CustomSettlementRuleWorkspace({
         </div>
       ) : null}
 
-      {hasError ? (
+      {errorVisible ? (
         <div className="crw-error">
           <AlertCircle size={18} aria-hidden="true" />
           <div>
             <h2 ref={errorHeadingRef} tabIndex={-1}>
-              无法继续处理
+              {errorHeading}
             </h2>
-            <p>{viewState.error.message}</p>
+            <p>{errorMessage}</p>
+          </div>
+        </div>
+      ) : null}
+
+      {isProcessing ? (
+        <div className="crw-processing">
+          <RefreshCw size={18} aria-hidden="true" />
+          <div>
+            <h2 ref={progressHeadingRef} tabIndex={-1}>
+              AI 正在处理
+            </h2>
+            <p>正在读取最新业务草案</p>
           </div>
         </div>
       ) : null}
@@ -1211,7 +1674,7 @@ export default function CustomSettlementRuleWorkspace({
         </div>
       ) : null}
 
-      {!hasError && draft ? (
+      {!errorVisible && !isProcessing && !isLoading && draft ? (
         <>
           {clarifying && firstQuestion ? (
             <section className="crw-band crw-ai">
@@ -1225,7 +1688,12 @@ export default function CustomSettlementRuleWorkspace({
                   <Bot size={15} aria-hidden="true" />
                   AI 业务草案
                 </div>
-                <p>{draft.businessContract.summary}</p>
+                <p>
+                  {safeBusinessText(
+                    draft.businessContract.summary,
+                    "按已确认的业务条件计算",
+                  )}
+                </p>
               </div>
               <div className="crw-question">
                 <div className="crw-source-label">
@@ -1233,7 +1701,7 @@ export default function CustomSettlementRuleWorkspace({
                   当前问题
                 </div>
                 <h2 ref={questionHeadingRef} tabIndex={-1}>
-                  {firstQuestion.question}
+                  {safeBusinessQuestion(firstQuestion.question)}
                 </h2>
               </div>
             </section>
@@ -1253,7 +1721,12 @@ export default function CustomSettlementRuleWorkspace({
                   业务规则草案
                 </h2>
               ) : null}
-              <p className="crw-ai-copy">{draft.businessContract.summary}</p>
+              <p className="crw-ai-copy">
+                {safeBusinessText(
+                  draft.businessContract.summary,
+                  "按已确认的业务条件计算",
+                )}
+              </p>
             </section>
           )}
 
@@ -1261,7 +1734,7 @@ export default function CustomSettlementRuleWorkspace({
             <ContractView draft={draft} />
           </section>
 
-          {draft.generatedExplanation ? (
+          {draft.generatedFormula ? (
             <section
               className="crw-band crw-engine"
               role="region"
@@ -1272,7 +1745,7 @@ export default function CustomSettlementRuleWorkspace({
                 <ShieldCheck size={15} aria-hidden="true" />
                 确定性引擎解释
               </div>
-              <p>{draft.generatedExplanation}</p>
+              <p>{deterministicExplanation(draft.businessContract)}</p>
             </section>
           ) : null}
 
@@ -1282,9 +1755,7 @@ export default function CustomSettlementRuleWorkspace({
                 <Calculator size={14} aria-hidden="true" />
                 高级公式
               </summary>
-              <pre aria-label="高级公式内容">
-                {draft.generatedFormula.expression}
-              </pre>
+              <p aria-label="高级公式内容">服务端已校验高级计算表达式</p>
             </details>
           ) : null}
 
@@ -1299,14 +1770,16 @@ export default function CustomSettlementRuleWorkspace({
       ) : null}
 
       <div className="crw-compose">
-        {needsInput ? (
+        {showInput ? (
           <label>
             {inputLabel}
             <textarea
               aria-label={inputLabel}
               value={draftInput}
               maxLength={4000}
-              disabled={!validContext || isLoading}
+              disabled={
+                !validContext || !catalogReady || isLoading || isProcessing
+              }
               onChange={(event) =>
                 setDraftInputState({
                   contextKey: workspaceContextKey,
