@@ -143,6 +143,17 @@ function body() {
   };
 }
 
+function userExample(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "user-confirmed",
+    inputs: {
+      period_report_count: { type: "integer", value: 10 },
+    },
+    expectedResult: { type: "money_cents", amountCents: 2000 },
+    ...overrides,
+  };
+}
+
 function request(value: unknown = body()) {
   return new Request("http://localhost", {
     method: "POST",
@@ -200,6 +211,68 @@ describe("settlement rule contract confirmation route", () => {
       });
     },
   );
+
+  it("authorizes user examples before confirming with the server selection", async () => {
+    const routeContext = context("owner");
+    const selectionWithExamples = {
+      ...body().simulationSelection,
+      userExamples: [userExample()],
+    };
+    routeContext.authorizeSimulationSelection.mockResolvedValue({
+      ...body().simulationSelection,
+      selectionToken: `server:${"f".repeat(64)}`,
+    });
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(
+      request({ ...body(), simulationSelection: selectionWithExamples }),
+      { params: params() },
+    );
+
+    expect(response.status).toBe(200);
+    expect(routeContext.authorizeSimulationSelection).toHaveBeenCalledWith(
+      expect.objectContaining({ selection: selectionWithExamples }),
+    );
+    expect(routeContext.authoring.confirmContract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        simulationSelection: {
+          ...body().simulationSelection,
+          selectionToken: `server:${"f".repeat(64)}`,
+        },
+      }),
+    );
+  });
+
+  it("rejects an invalid user example type before billing", async () => {
+    const routeContext = context("owner");
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(
+      request({
+        ...body(),
+        simulationSelection: {
+          ...body().simulationSelection,
+          userExamples: [
+            userExample({
+              inputs: {
+                period_report_count: { type: "integer", value: 1.5 },
+              },
+            }),
+          ],
+        },
+      }),
+      { params: params() },
+    );
+
+    expect(response.status).toBe(400);
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(routeContext.authorizeSimulationSelection).not.toHaveBeenCalled();
+    expect(routeContext.authoring.confirmContract).not.toHaveBeenCalled();
+  });
 
   it("prevents finance from confirming a contract", async () => {
     const routeContext = context("finance");

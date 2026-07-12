@@ -4,6 +4,7 @@ import { z } from "zod";
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import {
   customRuleErrorResponse,
+  customRuleUserExamplesSchema,
   getCustomRuleRouteContext,
   parseCustomRuleJson,
   parseCustomRuleParams,
@@ -32,6 +33,7 @@ const selectionSchema = z
       )
       .min(1)
       .max(4),
+    userExamples: customRuleUserExamplesSchema.optional(),
   })
   .superRefine((selection, context) => {
     if (selection.periodStart > selection.periodEnd) {

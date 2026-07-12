@@ -25,9 +25,13 @@ import {
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
 
 import { createSettlementRuleAiAdapter } from "./custom-rule-ai";
-import { businessRuleContractSchema } from "./custom-rule-contract";
+import {
+  businessRuleContractSchema,
+  typedRuntimeValueSchema,
+} from "./custom-rule-contract";
 import {
   analyzeCustomRuleDataReadiness,
+  type CustomRuleDataReadinessReport,
   type CustomRuleInputRequirement,
 } from "./custom-rule-data-readiness";
 import { buildCustomRuleTemplateExplanation } from "./custom-rule-explanation";
@@ -67,6 +71,56 @@ const AUTHOR_ROLES = new Set<AppRole>([
   "ops_manager",
   "operator_business",
 ]);
+
+const userExampleInputsSchema = z
+  .record(
+    z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u),
+    typedRuntimeValueSchema,
+  )
+  .superRefine((inputs, context) => {
+    if (Object.keys(inputs).length > 100) {
+      context.addIssue({
+        code: "too_big",
+        maximum: 100,
+        origin: "object",
+        message: "user example inputs exceed the supported limit",
+      });
+    }
+  });
+
+export const customRuleUserExampleSchema = z.strictObject({
+  id: z.string().trim().min(1).max(120),
+  inputs: userExampleInputsSchema,
+  expectedResult: typedRuntimeValueSchema.refine(
+    (value) => value.type === "money_cents",
+    { message: "user examples must expect money" },
+  ),
+});
+
+export const customRuleUserExamplesSchema = z
+  .array(customRuleUserExampleSchema)
+  .max(50)
+  .superRefine((examples, context) => {
+    const ids = new Set<string>();
+    for (const [index, example] of examples.entries()) {
+      if (ids.has(example.id)) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "id"],
+          message: "user example ids must be unique",
+        });
+      }
+      ids.add(example.id);
+    }
+    if (JSON.stringify(examples).length > 64_000) {
+      context.addIssue({
+        code: "too_big",
+        maximum: 64_000,
+        origin: "array",
+        message: "user examples exceed the supported payload size",
+      });
+    }
+  });
 
 export type SafeCustomRuleError = {
   code: string;
@@ -108,13 +162,21 @@ export type AuthorizeCustomRuleSelectionInput = Omit<
   SimulateExistingDraftInput,
   "clientRequestId" | "selection"
 > & {
-  selection: Omit<AuthorizedSimulationSelectionRequest, "selectionToken">;
+  selection: Omit<AuthorizedSimulationSelectionRequest, "selectionToken"> & {
+    userExamples?: AuthorizedCustomRuleSimulationEvidence["userExamples"];
+  };
 };
 
 export type CustomRuleEvidenceAdapter = AuthorizedSimulationEvidencePort & {
   authorizeSelection(
     input: AuthorizeCustomRuleSelectionInput,
   ): Promise<AuthorizedSimulationSelectionRequest>;
+  adjustReadiness(
+    readiness: CustomRuleDataReadinessReport,
+  ): CustomRuleDataReadinessReport;
+  decorateSimulationResult(
+    result: CustomRuleSimulationResult,
+  ): CustomRuleSimulationResult;
 };
 
 export type CustomRuleRouteContext = {
@@ -252,12 +314,16 @@ export async function getCustomRuleRouteContext(): Promise<
     repository,
     catalog,
     evidence,
-    analyzeReadiness: analyzeCustomRuleDataReadiness,
-    simulate: simulateCustomSettlementRule,
+    analyzeReadiness: (readinessInput) =>
+      evidence.adjustReadiness(analyzeCustomRuleDataReadiness(readinessInput)),
+    simulate: (simulationInput) =>
+      evidence.decorateSimulationResult(
+        simulateCustomSettlementRule(simulationInput),
+      ),
     primaryProvider,
     persistFailedRevisions: true,
   });
-  const simulation = createExistingDraftSimulationService({
+  const simulation = createCustomRuleExistingDraftSimulationService({
     repository,
     catalog,
     evidence,
@@ -631,10 +697,15 @@ export function toCustomRuleSessionDto(input: {
   };
 }
 
-function createExistingDraftSimulationService(input: {
-  repository: SupabaseCustomRuleReadRepository;
+export function createCustomRuleExistingDraftSimulationService(input: {
+  repository: Pick<
+    SupabaseCustomRuleReadRepository,
+    "listDrafts" | "insertSimulation"
+  >;
   catalog: CustomRuleRouteContext["catalog"];
-  evidence: AuthorizedSimulationEvidencePort;
+  evidence: CustomRuleEvidenceAdapter;
+  analyzeReadiness?: typeof analyzeCustomRuleDataReadiness;
+  simulate?: typeof simulateCustomSettlementRule;
 }): CustomRuleRouteContext["simulation"] {
   return {
     async simulateExistingDraft(scope) {
@@ -726,10 +797,12 @@ function createExistingDraftSimulationService(input: {
           retryable: false,
         });
       }
-      const readiness = analyzeCustomRuleDataReadiness({
-        catalog,
-        inputs: readinessRequirements(contract, validation.variables),
-      });
+      const readiness = input.evidence.adjustReadiness(
+        (input.analyzeReadiness ?? analyzeCustomRuleDataReadiness)({
+          catalog,
+          inputs: readinessRequirements(contract, validation.variables),
+        }),
+      );
       if (
         !readiness.readyForSimulation ||
         readiness.businessTimezone !== contract.businessTimezone
@@ -764,7 +837,9 @@ function createExistingDraftSimulationService(input: {
       };
       const expectedSelectionHash =
         calculateCustomRuleDataSelectionHash(simulationInput);
-      const summary = simulateCustomSettlementRule(simulationInput);
+      const summary = input.evidence.decorateSimulationResult(
+        (input.simulate ?? simulateCustomSettlementRule)(simulationInput),
+      );
       if (summary.dataSelectionHash !== expectedSelectionHash) {
         throw new CustomRuleRouteError({
           code: "CUSTOM_RULE_SIMULATION_INVALID",
@@ -803,7 +878,10 @@ const REQUIRED_SELECTION_CRITERIA = [
   "period_overlap",
   "project_scope",
 ] as const;
-const MAX_AUTHORIZED_REPORTS = 500;
+const EVIDENCE_PAGE_SIZE = 500;
+const EVIDENCE_ID_CHUNK_SIZE = 100;
+const MAX_AUTHORIZED_SOURCE_REPORTS = 10_000;
+const MAX_AUTHORIZED_SIMULATION_RECORDS = 500;
 const numericColumnSchema = z.union([z.string(), z.number()]);
 const liveTaskRelationSchema = z.union([
   z.strictObject({ system_started_at: z.string().nullable() }),
@@ -831,6 +909,8 @@ const batchRelationSchema = z.union([
     status: z.literal("locked"),
     batch_type: z.enum(["payable", "receivable"]),
     locked_at: z.string().nullable(),
+    period_start: z.string().optional(),
+    period_end: z.string().optional(),
   }),
   z.array(
     z.strictObject({
@@ -838,6 +918,8 @@ const batchRelationSchema = z.union([
       status: z.literal("locked"),
       batch_type: z.enum(["payable", "receivable"]),
       locked_at: z.string().nullable(),
+      period_start: z.string().optional(),
+      period_end: z.string().optional(),
     }),
   ),
 ]);
@@ -850,6 +932,16 @@ const settlementItemRowSchema = z.strictObject({
   manual_amount: numericColumnSchema,
   adjustment_amount: numericColumnSchema,
   settlement_batches: batchRelationSchema,
+});
+const projectCostRowSchema = z.strictObject({
+  id: z.string().uuid(),
+  organization_id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  live_report_id: z.string().uuid().nullable(),
+  settlement_batch_id: z.string().uuid().nullable(),
+  amount_cents: numericColumnSchema,
+  direction: z.enum(["cost", "revenue_offset", "adjustment"]),
+  status: z.literal("confirmed"),
 });
 const streamerRelationSchema = z.union([
   z.strictObject({ source_type: z.string() }),
@@ -869,7 +961,10 @@ const projectStreamerRowSchema = z.strictObject({
 
 type ApprovedReportRow = z.infer<typeof approvedReportRowSchema>;
 type SettlementItemRow = z.infer<typeof settlementItemRowSchema>;
+type ProjectCostRow = z.infer<typeof projectCostRowSchema>;
 type ProjectStreamerRow = z.infer<typeof projectStreamerRowSchema>;
+type AuthorizedSimulationRecord =
+  AuthorizedCustomRuleSimulationEvidence["records"][number];
 
 export function createSupabaseCustomRuleEvidenceAdapter(input: {
   client: SupabaseClient;
@@ -877,12 +972,18 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
 }): CustomRuleEvidenceAdapter {
   const authorizedEvidence = new Map<
     string,
-    AuthorizedCustomRuleSimulationEvidence
+    {
+      evidence: AuthorizedCustomRuleSimulationEvidence;
+      historicalComplete: boolean;
+      marginStatus: "available" | "unavailable" | "not_applicable";
+    }
   >();
+  let latestSelectionToken: string | null = null;
 
   return {
     async authorizeSelection(unsafeInput) {
       assertSupportedSelection(unsafeInput.selection);
+      const userExamples = unsafeInput.selection.userExamples ?? [];
       const drafts = await input.repository.listDrafts({
         organizationId: unsafeInput.actor.organizationId,
         projectId: unsafeInput.projectId,
@@ -909,13 +1010,12 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         );
       }
       if (
-        draft.businessContract.executionGrain !== "report" ||
-        (draft.businessContract.scope !== "payable" &&
-          draft.businessContract.scope !== "receivable")
+        draft.businessContract.scope !== "payable" &&
+        draft.businessContract.scope !== "receivable"
       ) {
         throw routeError(
           "CUSTOM_RULE_SELECTION_UNSUPPORTED",
-          "Historical simulation is unsupported for this execution grain",
+          "Historical simulation is unsupported for this rule scope",
           422,
         );
       }
@@ -933,14 +1033,12 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         unsafeInput.actor.organizationId,
         unsafeInput.projectId,
       );
-      const itemIds = reports.flatMap((report) =>
-        report.settled_batch_item_id ? [report.settled_batch_item_id] : [],
-      );
-      const items = itemIds.length
+      const reportIds = reports.map((report) => report.id);
+      const items = reportIds.length
         ? await loadLockedSettlementItems(input.client, {
             organizationId: unsafeInput.actor.organizationId,
             projectId: unsafeInput.projectId,
-            itemIds,
+            reportIds,
             scope: draft.businessContract.scope,
           })
         : [];
@@ -949,15 +1047,67 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         unsafeInput.actor.organizationId,
         unsafeInput.projectId,
       );
-      const itemsById = new Map(items.map((item) => [item.id, item]));
-      const comparableReports = reports.filter(
-        (report) =>
-          report.settled_batch_item_id !== null &&
-          itemsById.has(report.settled_batch_item_id),
+      const itemsByReport = groupLockedItemsByReport(items, reportIds);
+      const historicalComplete =
+        reports.length > 0 &&
+        reports.every((report) => itemsByReport.has(report.id));
+      const oppositeScope =
+        draft.businessContract.scope === "payable" ? "receivable" : "payable";
+      const pairedItems = reportIds.length
+        ? await loadLockedSettlementItems(input.client, {
+            organizationId: unsafeInput.actor.organizationId,
+            projectId: unsafeInput.projectId,
+            reportIds,
+            scope: oppositeScope,
+          })
+        : [];
+      assertRowsInScope(
+        pairedItems,
+        unsafeInput.actor.organizationId,
+        unsafeInput.projectId,
       );
-      const streamerIds = [
-        ...new Set(comparableReports.map((report) => report.streamer_id)),
-      ];
+      const pairedItemsByReport = groupLockedItemsByReport(
+        pairedItems,
+        reportIds,
+      );
+      const pairedComplete =
+        reports.length > 0 &&
+        reports.every((report) => pairedItemsByReport.has(report.id));
+      const selectedBatchIds = [
+        ...new Set(
+          [...items, ...pairedItems].flatMap((item) => {
+            const batch = oneRelation(item.settlement_batches);
+            return batch ? [batch.id] : [];
+          }),
+        ),
+      ].sort((left, right) => left.localeCompare(right));
+      const costs = pairedComplete
+        ? await loadConfirmedLinkedCosts(input.client, {
+            organizationId: unsafeInput.actor.organizationId,
+            projectId: unsafeInput.projectId,
+            reportIds,
+            batchIds: selectedBatchIds,
+          })
+        : [];
+      assertRowsInScope(
+        costs,
+        unsafeInput.actor.organizationId,
+        unsafeInput.projectId,
+      );
+      const margin = deriveCurrentMargin({
+        scope: draft.businessContract.scope,
+        reports,
+        itemsByReport,
+        pairedItemsByReport,
+        costs,
+        pairedComplete,
+      });
+      const needsStreamerSnapshot =
+        draft.businessContract.executionGrain === "report" ||
+        draft.businessContract.executionGrain === "project_streamer_period";
+      const streamerIds = needsStreamerSnapshot
+        ? [...new Set(reports.map((report) => report.streamer_id))]
+        : [];
       const streamers = streamerIds.length
         ? await loadProjectStreamers(input.client, {
             organizationId: unsafeInput.actor.organizationId,
@@ -980,55 +1130,31 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         id: report.id,
         version: reportSnapshotVersion(
           report,
-          report.settled_batch_item_id
-            ? (itemsById.get(report.settled_batch_item_id) ?? null)
-            : null,
+          itemsByReport.get(report.id) ?? null,
           streamersById.get(report.streamer_id) ?? null,
         ),
+        pairedVersion: pairedItemsByReport.has(report.id)
+          ? sha256(JSON.stringify(pairedItemsByReport.get(report.id)))
+          : null,
       }));
-      const records = comparableReports.map((report) => {
-        const item = itemsById.get(report.settled_batch_item_id!);
-        if (!item) {
-          throw routeError(
-            "CUSTOM_RULE_EVIDENCE_UNAVAILABLE",
-            "Locked settlement evidence is unavailable",
-            422,
-          );
-        }
-        const streamer = streamersById.get(report.streamer_id) ?? null;
-        const variables = reportVariables(
-          report,
-          streamer,
-          draft.businessContract.businessTimezone,
-        );
-        for (const variableId of requiredVariables) {
-          if (!Object.prototype.hasOwnProperty.call(variables, variableId)) {
-            throw new CustomRuleRouteError({
-              code: "CUSTOM_RULE_EVIDENCE_FIELD_UNAVAILABLE",
-              message: `Authorized historical evidence is missing required field: ${variableId}`,
-              status: 422,
-              retryable: false,
-              path: ["businessContract", "requiredInputs", variableId],
-            });
-          }
-        }
-        const version = reportSnapshotVersion(report, item, streamer);
-        return {
-          recordId: report.id,
-          projectId: unsafeInput.projectId,
-          sourceVersion: {
-            kind: "immutable" as const,
-            source: "locked_settlement_report",
-            version,
-          },
-          variables,
-          missingInputs: [],
-          currentRuleResult: {
-            unitSource: "current_rule_cents" as const,
-            amountCents: settlementItemTotalCents(item),
-          },
-        };
+      const records = buildAuthorizedSimulationRecords({
+        organizationId: unsafeInput.actor.organizationId,
+        projectId: unsafeInput.projectId,
+        contract: draft.businessContract,
+        selection: unsafeInput.selection,
+        reports,
+        itemsByReport,
+        streamersById,
+        historicalComplete,
       });
+      assertRequiredRecordVariables(records, requiredVariables);
+      if (records.length > MAX_AUTHORIZED_SIMULATION_RECORDS) {
+        throw routeError(
+          "CUSTOM_RULE_SELECTION_TOO_LARGE",
+          "Authorized simulation selection has too many execution records",
+          422,
+        );
+      }
       const selectionToken = `server:${sha256(
         JSON.stringify({
           organizationId: unsafeInput.actor.organizationId,
@@ -1039,7 +1165,12 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           periodStart: unsafeInput.selection.periodStart,
           periodEnd: unsafeInput.selection.periodEnd,
           criteriaCodes: [...unsafeInput.selection.criteriaCodes].sort(),
+          userExamples,
           selectedSnapshots,
+          costSnapshots: costs.map((cost) => ({
+            id: cost.id,
+            version: sha256(JSON.stringify(cost)),
+          })),
         }),
       )}`;
       const authorizedSelection: AuthorizedSimulationSelectionRequest = {
@@ -1060,7 +1191,7 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           ),
         },
         sampleSource: {
-          kind: records.length
+          kind: historicalComplete
             ? "historical_settlements"
             : "approved_operations",
         },
@@ -1071,15 +1202,18 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           criteria: [...unsafeInput.selection.criteriaCodes],
         },
         records,
-        userExamples: [],
-        currentMarginCents: null,
+        userExamples: [...userExamples],
+        currentMarginCents:
+          margin.amount === null ? null : String(margin.amount),
       };
       evidence.provenance.evidenceHash =
         calculateCustomRuleEvidenceHash(evidence);
-      authorizedEvidence.set(
-        selectionToken,
-        freezeAuthorizedCustomRuleSimulationEvidence(evidence),
-      );
+      authorizedEvidence.set(selectionToken, {
+        evidence: freezeAuthorizedCustomRuleSimulationEvidence(evidence),
+        historicalComplete,
+        marginStatus: margin.status,
+      });
+      latestSelectionToken = selectionToken;
       return authorizedSelection;
     },
 
@@ -1094,9 +1228,8 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           404,
         );
       }
-      const evidence = authorizedEvidence.get(
-        loadInput.selection.selectionToken,
-      );
+      const state = authorizedEvidence.get(loadInput.selection.selectionToken);
+      const evidence = state?.evidence;
       if (
         !evidence ||
         evidence.provenance.organizationId !== loadInput.organizationId ||
@@ -1115,6 +1248,61 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         );
       }
       return evidence;
+    },
+
+    adjustReadiness(readiness) {
+      const state = latestSelectionToken
+        ? authorizedEvidence.get(latestSelectionToken)
+        : null;
+      if (!state || state.historicalComplete) return readiness;
+      const warnings = readiness.warnings.some(
+        (warning) => warning.code === "CUSTOM_RULE_PROJECT_NO_HISTORY",
+      )
+        ? readiness.warnings
+        : [
+            ...readiness.warnings,
+            {
+              code: "CUSTOM_RULE_PROJECT_NO_HISTORY" as const,
+              reasonZh:
+                "授权周期缺少完整锁定结算结果，本次试算不作为历史金额比较。",
+            },
+          ];
+      return {
+        ...readiness,
+        historicalVerification: "unverified",
+        readyForActivation: false,
+        warnings,
+      };
+    },
+
+    decorateSimulationResult(result) {
+      const state = latestSelectionToken
+        ? authorizedEvidence.get(latestSelectionToken)
+        : null;
+      if (!state || state.marginStatus !== "unavailable") return result;
+      const warning = {
+        code: "CUSTOM_RULE_MARGIN_UNAVAILABLE",
+        severity: "warning" as const,
+        message:
+          "授权周期缺少完整的应收、应付或可定向成本证据，未验证毛利影响。",
+      };
+      const warnings = [...result.warnings, warning].sort((left, right) =>
+        left.code.localeCompare(right.code),
+      );
+      const persistedWarnings = [
+        ...result.persistable.warnings.filter(
+          (item) => item.code !== warning.code,
+        ),
+        warning,
+      ].sort((left, right) => left.code.localeCompare(right.code));
+      return {
+        ...result,
+        warnings,
+        persistable: {
+          ...result.persistable,
+          warnings: persistedWarnings,
+        },
+      };
     },
   };
 }
@@ -1152,32 +1340,57 @@ async function loadApprovedReports(
     completeEvidence: boolean;
   },
 ): Promise<ApprovedReportRow[]> {
-  let query = client
-    .from("live_reports")
-    .select(
-      "id, organization_id, project_id, streamer_id, system_duration, screenshot_duration, settlement_duration, evidence_level, time_source, viewers, reviewed_at, created_at, settled_batch_item_id, live_tasks!inner(system_started_at)",
-    )
-    .eq("organization_id", input.organizationId)
-    .eq("project_id", input.projectId)
-    .eq("status", "approved")
-    .gte("reviewed_at", `${input.periodStart}T00:00:00.000Z`)
-    .lte("reviewed_at", `${input.periodEnd}T23:59:59.999Z`);
-  if (input.completeEvidence) {
-    query = query
-      .not("settlement_duration", "is", null)
-      .not("evidence_level", "is", null)
-      .not("time_source", "is", null);
+  const rows: ApprovedReportRow[] = [];
+  let cursor: string | null = null;
+  while (true) {
+    let query = client
+      .from("live_reports")
+      .select(
+        "id, organization_id, project_id, streamer_id, system_duration, screenshot_duration, settlement_duration, evidence_level, time_source, viewers, reviewed_at, created_at, settled_batch_item_id, live_tasks!inner(system_started_at)",
+      )
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("status", "approved")
+      .gte("reviewed_at", `${input.periodStart}T00:00:00.000Z`)
+      .lte("reviewed_at", `${input.periodEnd}T23:59:59.999Z`);
+    if (input.completeEvidence) {
+      query = query
+        .not("settlement_duration", "is", null)
+        .not("evidence_level", "is", null)
+        .not("time_source", "is", null);
+    }
+    if (cursor) query = query.gt("id", cursor);
+    const { data, error } = await query
+      .order("id", { ascending: true })
+      .limit(EVIDENCE_PAGE_SIZE)
+      .returns<unknown[]>();
+    const page = parseEvidenceRows(
+      approvedReportRowSchema,
+      data,
+      error,
+      "approved live reports",
+    ).sort((left, right) => left.id.localeCompare(right.id));
+    rows.push(...page);
+    if (rows.length > MAX_AUTHORIZED_SOURCE_REPORTS) {
+      throw routeError(
+        "CUSTOM_RULE_SELECTION_TOO_LARGE",
+        "Authorized simulation selection has too many source reports",
+        422,
+      );
+    }
+    if (page.length < EVIDENCE_PAGE_SIZE) break;
+    const nextCursor = page.at(-1)?.id;
+    if (!nextCursor || nextCursor === cursor) {
+      throw routeError(
+        "CUSTOM_RULE_EVIDENCE_INVALID",
+        "Settlement rule evidence pagination is not deterministic",
+        500,
+        true,
+      );
+    }
+    cursor = nextCursor;
   }
-  const { data, error } = await query
-    .order("id", { ascending: true })
-    .limit(MAX_AUTHORIZED_REPORTS)
-    .returns<unknown[]>();
-  return parseEvidenceRows(
-    approvedReportRowSchema,
-    data,
-    error,
-    "approved live reports",
-  ).sort((left, right) => left.id.localeCompare(right.id));
+  return rows;
 }
 
 async function loadLockedSettlementItems(
@@ -1185,28 +1398,51 @@ async function loadLockedSettlementItems(
   input: {
     organizationId: string;
     projectId: string;
-    itemIds: string[];
+    reportIds: string[];
     scope: "payable" | "receivable";
   },
 ): Promise<SettlementItemRow[]> {
-  const { data, error } = await client
-    .from("settlement_batch_items")
-    .select(
-      "id, organization_id, project_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches!inner(id, status, batch_type, locked_at)",
-    )
-    .eq("organization_id", input.organizationId)
-    .eq("project_id", input.projectId)
-    .in("id", input.itemIds)
-    .eq("settlement_batches.status", "locked")
-    .eq("settlement_batches.batch_type", input.scope)
-    .order("id", { ascending: true })
-    .limit(MAX_AUTHORIZED_REPORTS)
-    .returns<unknown[]>();
-  const rows = parseEvidenceRows(
-    settlementItemRowSchema,
-    data,
-    error,
-    "locked settlement items",
+  const rowsById = new Map<string, SettlementItemRow>();
+  for (const reportIds of chunks(input.reportIds, EVIDENCE_ID_CHUNK_SIZE)) {
+    let cursor: string | null = null;
+    while (true) {
+      let query = client
+        .from("settlement_batch_items")
+        .select(
+          "id, organization_id, project_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches!inner(id, status, batch_type, locked_at, period_start, period_end)",
+        )
+        .eq("organization_id", input.organizationId)
+        .eq("project_id", input.projectId)
+        .in("live_report_id", reportIds)
+        .eq("settlement_batches.status", "locked")
+        .eq("settlement_batches.batch_type", input.scope);
+      if (cursor) query = query.gt("id", cursor);
+      const { data, error } = await query
+        .order("id", { ascending: true })
+        .limit(EVIDENCE_PAGE_SIZE)
+        .returns<unknown[]>();
+      const page = parseEvidenceRows(
+        settlementItemRowSchema,
+        data,
+        error,
+        "locked settlement items",
+      ).sort((left, right) => left.id.localeCompare(right.id));
+      for (const row of page) rowsById.set(row.id, row);
+      if (page.length < EVIDENCE_PAGE_SIZE) break;
+      const nextCursor = page.at(-1)?.id;
+      if (!nextCursor || nextCursor === cursor) {
+        throw routeError(
+          "CUSTOM_RULE_EVIDENCE_INVALID",
+          "Settlement rule evidence pagination is not deterministic",
+          500,
+          true,
+        );
+      }
+      cursor = nextCursor;
+    }
+  }
+  const rows = [...rowsById.values()].sort((left, right) =>
+    left.id.localeCompare(right.id),
   );
   for (const row of rows) {
     const batch = oneRelation(row.settlement_batches);
@@ -1229,6 +1465,129 @@ async function loadLockedSettlementItems(
   return rows;
 }
 
+async function loadConfirmedLinkedCosts(
+  client: SupabaseClient,
+  input: {
+    organizationId: string;
+    projectId: string;
+    reportIds: string[];
+    batchIds: string[];
+  },
+): Promise<ProjectCostRow[]> {
+  const rowsById = new Map<string, ProjectCostRow>();
+  const filters: Array<{ column: string; ids: string[] }> = [
+    { column: "live_report_id", ids: input.reportIds },
+    { column: "settlement_batch_id", ids: input.batchIds },
+  ];
+  for (const filter of filters) {
+    for (const ids of chunks(filter.ids, EVIDENCE_ID_CHUNK_SIZE)) {
+      let cursor: string | null = null;
+      while (true) {
+        let query = client
+          .from("project_cost_items")
+          .select(
+            "id, organization_id, project_id, live_report_id, settlement_batch_id, amount_cents, direction, status",
+          )
+          .eq("organization_id", input.organizationId)
+          .eq("project_id", input.projectId)
+          .eq("status", "confirmed")
+          .in(filter.column, ids);
+        if (cursor) query = query.gt("id", cursor);
+        const { data, error } = await query
+          .order("id", { ascending: true })
+          .limit(EVIDENCE_PAGE_SIZE)
+          .returns<unknown[]>();
+        const page = parseEvidenceRows(
+          projectCostRowSchema,
+          data,
+          error,
+          "confirmed project costs",
+        ).sort((left, right) => left.id.localeCompare(right.id));
+        for (const row of page) rowsById.set(row.id, row);
+        if (page.length < EVIDENCE_PAGE_SIZE) break;
+        const nextCursor = page.at(-1)?.id;
+        if (!nextCursor || nextCursor === cursor) {
+          throw routeError(
+            "CUSTOM_RULE_EVIDENCE_INVALID",
+            "Settlement rule cost pagination is not deterministic",
+            500,
+            true,
+          );
+        }
+        cursor = nextCursor;
+      }
+    }
+  }
+  const selectedReports = new Set(input.reportIds);
+  const selectedBatches = new Set(input.batchIds);
+  const rows = [...rowsById.values()].sort((left, right) =>
+    left.id.localeCompare(right.id),
+  );
+  if (
+    rows.some(
+      (row) =>
+        !(
+          (row.live_report_id !== null &&
+            selectedReports.has(row.live_report_id)) ||
+          (row.settlement_batch_id !== null &&
+            selectedBatches.has(row.settlement_batch_id))
+        ),
+    )
+  ) {
+    throw routeError(
+      "CUSTOM_RULE_EVIDENCE_INVALID",
+      "Confirmed cost evidence is outside the authorized selection",
+      500,
+      true,
+    );
+  }
+  return rows;
+}
+
+function deriveCurrentMargin(input: {
+  scope: "payable" | "receivable";
+  reports: ApprovedReportRow[];
+  itemsByReport: Map<string, SettlementItemRow>;
+  pairedItemsByReport: Map<string, SettlementItemRow>;
+  costs: ProjectCostRow[];
+  pairedComplete: boolean;
+}): {
+  amount: bigint | null;
+  status: "available" | "unavailable" | "not_applicable";
+} {
+  if (input.reports.length === 0) {
+    return { amount: null, status: "not_applicable" };
+  }
+  if (
+    !input.pairedComplete ||
+    input.reports.some(
+      (report) =>
+        !input.itemsByReport.has(report.id) ||
+        !input.pairedItemsByReport.has(report.id),
+    ) ||
+    input.costs.some((cost) => cost.direction === "adjustment")
+  ) {
+    return { amount: null, status: "unavailable" };
+  }
+  const requested = input.reports.map((report) =>
+    requiredItem(input.itemsByReport, report),
+  );
+  const paired = input.reports.map((report) =>
+    requiredItem(input.pairedItemsByReport, report),
+  );
+  const payable = input.scope === "payable" ? requested : paired;
+  const receivable = input.scope === "receivable" ? requested : paired;
+
+  // Contribution margin for the authorized selection: receivable - payable - costs + offsets.
+  let amount =
+    sumSettlementItemsCents(receivable) - sumSettlementItemsCents(payable);
+  for (const cost of input.costs) {
+    const costAmount = bigintCents(cost.amount_cents);
+    amount += cost.direction === "revenue_offset" ? costAmount : -costAmount;
+  }
+  return { amount, status: "available" };
+}
+
 async function loadProjectStreamers(
   client: SupabaseClient,
   input: {
@@ -1246,7 +1605,7 @@ async function loadProjectStreamers(
     .eq("project_id", input.projectId)
     .in("streamer_id", input.streamerIds)
     .order("streamer_id", { ascending: true })
-    .limit(MAX_AUTHORIZED_REPORTS)
+    .limit(EVIDENCE_PAGE_SIZE)
     .returns<unknown[]>();
   return parseEvidenceRows(
     projectStreamerRowSchema,
@@ -1297,6 +1656,373 @@ function assertRowsInScope(
   }
 }
 
+function groupLockedItemsByReport(
+  items: SettlementItemRow[],
+  selectedReportIds: string[],
+): Map<string, SettlementItemRow> {
+  const selected = new Set(selectedReportIds);
+  const grouped = new Map<string, SettlementItemRow>();
+  for (const item of items) {
+    if (!selected.has(item.live_report_id)) {
+      throw routeError(
+        "CUSTOM_RULE_EVIDENCE_INVALID",
+        "Locked settlement evidence references an unauthorized report",
+        500,
+        true,
+      );
+    }
+    if (grouped.has(item.live_report_id)) {
+      throw routeError(
+        "CUSTOM_RULE_EVIDENCE_AMBIGUOUS",
+        "Authorized report has multiple locked current-rule results",
+        422,
+      );
+    }
+    grouped.set(item.live_report_id, item);
+  }
+  return grouped;
+}
+
+function buildAuthorizedSimulationRecords(input: {
+  organizationId: string;
+  projectId: string;
+  contract: CustomRuleDraft["businessContract"];
+  selection: AuthorizeCustomRuleSelectionInput["selection"];
+  reports: ApprovedReportRow[];
+  itemsByReport: Map<string, SettlementItemRow>;
+  streamersById: Map<string, ProjectStreamerRow>;
+  historicalComplete: boolean;
+}): AuthorizedSimulationRecord[] {
+  if (input.contract.executionGrain === "report") {
+    return input.reports.map((report) => {
+      const item = input.itemsByReport.get(report.id) ?? null;
+      const streamer = input.streamersById.get(report.streamer_id) ?? null;
+      return {
+        recordId: report.id,
+        projectId: input.projectId,
+        sourceVersion: {
+          kind: "immutable",
+          source: "locked_settlement_report",
+          version: reportSnapshotVersion(report, item, streamer),
+        },
+        variables: reportVariables(
+          report,
+          streamer,
+          input.contract.businessTimezone,
+        ),
+        missingInputs: [],
+        currentRuleResult:
+          input.historicalComplete && item
+            ? {
+                unitSource: "current_rule_cents",
+                amountCents: settlementItemTotalCents(item),
+              }
+            : null,
+      };
+    });
+  }
+  if (input.contract.executionGrain === "project_streamer_period") {
+    const grouped = groupReports(input.reports, (report) => report.streamer_id);
+    return [...grouped.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([streamerId, reports]) => {
+        const streamer = input.streamersById.get(streamerId) ?? null;
+        const groupItems = input.historicalComplete
+          ? reports.map((report) => requiredItem(input.itemsByReport, report))
+          : [];
+        const currentAmount = input.historicalComplete
+          ? sumSettlementItemsCents(groupItems)
+          : null;
+        const periodComputedAmount = input.historicalComplete
+          ? sumSettlementComputedCents(groupItems)
+          : null;
+        const variables = periodAggregateVariables({
+          projectId: input.projectId,
+          scope: input.contract.scope,
+          selection: input.selection,
+          reports,
+          periodComputedAmount,
+        });
+        variables.streamer_id = { type: "string", value: streamerId };
+        addProjectStreamerVariables(variables, streamer);
+        return periodAggregateRecord({
+          recordId: `project_streamer_period:${streamerId}:${input.selection.periodStart}:${input.selection.periodEnd}`,
+          projectId: input.projectId,
+          source: "locked_settlement_project_streamer_period",
+          reports,
+          itemsByReport: input.itemsByReport,
+          streamersById: input.streamersById,
+          variables,
+          currentAmount,
+        });
+      });
+  }
+  if (input.contract.executionGrain === "batch") {
+    const grouped = groupReports(input.reports, (report) => {
+      const item = input.itemsByReport.get(report.id) ?? null;
+      const batch = item ? oneRelation(item.settlement_batches) : null;
+      return batch ? batch.id : `unmatched:${report.id}`;
+    });
+    return [...grouped.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([batchKey, reports]) => {
+        const groupItems = input.historicalComplete
+          ? reports.map((report) => requiredItem(input.itemsByReport, report))
+          : [];
+        const currentAmount = input.historicalComplete
+          ? sumSettlementItemsCents(groupItems)
+          : null;
+        const periodComputedAmount = input.historicalComplete
+          ? sumSettlementComputedCents(groupItems)
+          : null;
+        return periodAggregateRecord({
+          recordId: `batch:${batchKey}`,
+          projectId: input.projectId,
+          source: "locked_settlement_batch",
+          reports,
+          itemsByReport: input.itemsByReport,
+          streamersById: input.streamersById,
+          variables: periodAggregateVariables({
+            projectId: input.projectId,
+            scope: input.contract.scope,
+            selection: input.selection,
+            reports,
+            periodComputedAmount,
+          }),
+          currentAmount,
+        });
+      });
+  }
+  if (input.contract.executionGrain === "project_period") {
+    if (input.reports.length === 0) return [];
+    const items = input.reports.flatMap((report) => {
+      const item = input.itemsByReport.get(report.id);
+      return item ? [item] : [];
+    });
+    const currentAmount = input.historicalComplete
+      ? sumSettlementItemsCents(items)
+      : null;
+    const periodComputedAmount = input.historicalComplete
+      ? sumSettlementComputedCents(items)
+      : null;
+    return [
+      periodAggregateRecord({
+        recordId: `project_period:${input.projectId}:${input.selection.periodStart}:${input.selection.periodEnd}`,
+        projectId: input.projectId,
+        source: "locked_settlement_project_period",
+        reports: input.reports,
+        itemsByReport: input.itemsByReport,
+        streamersById: input.streamersById,
+        variables: periodAggregateVariables({
+          projectId: input.projectId,
+          scope: input.contract.scope,
+          selection: input.selection,
+          reports: input.reports,
+          periodComputedAmount,
+        }),
+        currentAmount,
+      }),
+    ];
+  }
+  throw routeError(
+    "CUSTOM_RULE_SELECTION_UNSUPPORTED",
+    "Historical simulation is unsupported for this execution grain",
+    422,
+  );
+}
+
+function groupReports(
+  reports: ApprovedReportRow[],
+  keyFor: (report: ApprovedReportRow) => string,
+): Map<string, ApprovedReportRow[]> {
+  const grouped = new Map<string, ApprovedReportRow[]>();
+  for (const report of reports) {
+    const key = keyFor(report);
+    const group = grouped.get(key) ?? [];
+    group.push(report);
+    grouped.set(key, group);
+  }
+  return grouped;
+}
+
+function requiredItem(
+  itemsByReport: Map<string, SettlementItemRow>,
+  report: ApprovedReportRow,
+): SettlementItemRow {
+  const item = itemsByReport.get(report.id);
+  if (!item) {
+    throw routeError(
+      "CUSTOM_RULE_EVIDENCE_UNAVAILABLE",
+      "Locked settlement evidence is unavailable",
+      422,
+    );
+  }
+  return item;
+}
+
+function periodAggregateRecord(input: {
+  recordId: string;
+  projectId: string;
+  source: string;
+  reports: ApprovedReportRow[];
+  itemsByReport: Map<string, SettlementItemRow>;
+  streamersById: Map<string, ProjectStreamerRow>;
+  variables: Record<string, TypedRuntimeValue>;
+  currentAmount: bigint | null;
+}): AuthorizedSimulationRecord {
+  const sourceVersions = input.reports.map((report) =>
+    reportSnapshotVersion(
+      report,
+      input.itemsByReport.get(report.id) ?? null,
+      input.streamersById.get(report.streamer_id) ?? null,
+    ),
+  );
+  return {
+    recordId: input.recordId,
+    projectId: input.projectId,
+    sourceVersion: {
+      kind: "immutable",
+      source: input.source,
+      version: sha256(JSON.stringify(sourceVersions)),
+    },
+    variables: input.variables,
+    missingInputs: [],
+    currentRuleResult:
+      input.currentAmount === null
+        ? null
+        : {
+            unitSource: "current_rule_cents",
+            amountCents: String(input.currentAmount),
+          },
+  };
+}
+
+function assertRequiredRecordVariables(
+  records: AuthorizedSimulationRecord[],
+  requiredVariables: Set<string>,
+): void {
+  for (const record of records) {
+    for (const variableId of requiredVariables) {
+      if (!Object.prototype.hasOwnProperty.call(record.variables, variableId)) {
+        throw new CustomRuleRouteError({
+          code: "CUSTOM_RULE_EVIDENCE_FIELD_UNAVAILABLE",
+          message: `Authorized historical evidence is missing required field: ${variableId}`,
+          status: 422,
+          retryable: false,
+          path: ["businessContract", "requiredInputs", variableId],
+        });
+      }
+    }
+  }
+}
+
+function periodAggregateVariables(input: {
+  projectId: string;
+  scope: CustomRuleDraft["businessContract"]["scope"];
+  selection: AuthorizeCustomRuleSelectionInput["selection"];
+  reports: ApprovedReportRow[];
+  periodComputedAmount: bigint | null;
+}): Record<string, TypedRuntimeValue> {
+  const variables: Record<string, TypedRuntimeValue> = {
+    project_id: { type: "string", value: input.projectId },
+    period_start: {
+      type: "timestamp",
+      value: `${input.selection.periodStart}T00:00:00.000Z`,
+    },
+    period_end: {
+      type: "timestamp",
+      value: `${input.selection.periodEnd}T23:59:59.999Z`,
+    },
+    period_report_count: { type: "integer", value: input.reports.length },
+  };
+  addCompleteIntegerSum(
+    variables,
+    "period_system_minutes",
+    input.reports.map((report) => report.system_duration),
+  );
+  addCompleteIntegerSum(
+    variables,
+    "period_settlement_minutes",
+    input.reports.map((report) => report.settlement_duration),
+  );
+  if (input.reports.every((report) => report.evidence_level !== null)) {
+    variables.red_evidence_count = {
+      type: "integer",
+      value: input.reports.filter((report) => report.evidence_level === "red")
+        .length,
+    };
+    variables.yellow_evidence_count = {
+      type: "integer",
+      value: input.reports.filter(
+        (report) => report.evidence_level === "yellow",
+      ).length,
+    };
+  }
+  if (input.periodComputedAmount !== null) {
+    const variableId =
+      input.scope === "payable"
+        ? "period_payable_amount"
+        : input.scope === "receivable"
+          ? "period_receivable_amount"
+          : null;
+    if (variableId) {
+      variables[variableId] = {
+        type: "money_cents",
+        amountCents: bigintAsSafeNumber(input.periodComputedAmount),
+      };
+    }
+  }
+  return variables;
+}
+
+function addCompleteIntegerSum(
+  variables: Record<string, TypedRuntimeValue>,
+  variableId: string,
+  values: Array<number | null>,
+): void {
+  let total = 0;
+  for (const value of values) {
+    if (value === null) return;
+    total += value;
+  }
+  if (!Number.isSafeInteger(total)) {
+    throw routeError(
+      "CUSTOM_RULE_EVIDENCE_INVALID",
+      "Settlement rule evidence aggregate is out of range",
+      500,
+      true,
+    );
+  }
+  variables[variableId] = { type: "integer", value: total };
+}
+
+function sumSettlementItemsCents(items: SettlementItemRow[]): bigint {
+  return items.reduce(
+    (sum, item) => sum + BigInt(settlementItemTotalCents(item)),
+    BigInt(0),
+  );
+}
+
+function sumSettlementComputedCents(items: SettlementItemRow[]): bigint {
+  return items.reduce(
+    (sum, item) => sum + decimalYuanToCents(item.computed_amount),
+    BigInt(0),
+  );
+}
+
+function bigintAsSafeNumber(value: bigint): number {
+  const numeric = Number(value);
+  if (!Number.isSafeInteger(numeric)) {
+    throw routeError(
+      "CUSTOM_RULE_EVIDENCE_INVALID",
+      "Settlement rule evidence amount is out of range",
+      500,
+      true,
+    );
+  }
+  return numeric;
+}
+
 function reportVariables(
   report: ApprovedReportRow,
   streamer: ProjectStreamerRow | null,
@@ -1336,40 +2062,46 @@ function reportVariables(
     variables.weekday = { type: "integer", value: local.weekday };
     variables.hour_of_day = { type: "integer", value: local.hour };
   }
-  if (streamer) {
-    if (streamer.hourly_rate !== null) {
-      variables.base_hourly_rate = {
-        type: "money_cents",
-        amountCents: decimalCentsAsSafeNumber(streamer.hourly_rate),
-      };
-    }
-    if (streamer.base_salary !== null) {
-      variables.base_salary = {
-        type: "money_cents",
-        amountCents: decimalCentsAsSafeNumber(streamer.base_salary),
-      };
-    }
-    if (streamer.cps_rate_bps !== null) {
-      variables.cps_rate = {
-        type: "rate_bps",
-        rateBps: streamer.cps_rate_bps,
-      };
-    }
-    if (streamer.collaboration_id) {
-      variables.collaboration_id = {
-        type: "string",
-        value: streamer.collaboration_id,
-      };
-    }
-    const relation = oneRelation(streamer.streamers);
-    if (relation) {
-      variables.streamer_source = {
-        type: "string",
-        value: relation.source_type,
-      };
-    }
-  }
+  addProjectStreamerVariables(variables, streamer);
   return variables;
+}
+
+function addProjectStreamerVariables(
+  variables: Record<string, TypedRuntimeValue>,
+  streamer: ProjectStreamerRow | null,
+): void {
+  if (!streamer) return;
+  if (streamer.hourly_rate !== null) {
+    variables.base_hourly_rate = {
+      type: "money_cents",
+      amountCents: decimalCentsAsSafeNumber(streamer.hourly_rate),
+    };
+  }
+  if (streamer.base_salary !== null) {
+    variables.base_salary = {
+      type: "money_cents",
+      amountCents: decimalCentsAsSafeNumber(streamer.base_salary),
+    };
+  }
+  if (streamer.cps_rate_bps !== null) {
+    variables.cps_rate = {
+      type: "rate_bps",
+      rateBps: streamer.cps_rate_bps,
+    };
+  }
+  if (streamer.collaboration_id) {
+    variables.collaboration_id = {
+      type: "string",
+      value: streamer.collaboration_id,
+    };
+  }
+  const relation = oneRelation(streamer.streamers);
+  if (relation) {
+    variables.streamer_source = {
+      type: "string",
+      value: relation.source_type,
+    };
+  }
 }
 
 function addIntegerVariable(
@@ -1434,9 +2166,24 @@ function reportSnapshotVersion(
   item: SettlementItemRow | null,
   streamer: ProjectStreamerRow | null,
 ): string {
+  const reportSnapshot = {
+    id: report.id,
+    organization_id: report.organization_id,
+    project_id: report.project_id,
+    streamer_id: report.streamer_id,
+    system_duration: report.system_duration,
+    screenshot_duration: report.screenshot_duration,
+    settlement_duration: report.settlement_duration,
+    evidence_level: report.evidence_level,
+    time_source: report.time_source,
+    viewers: report.viewers,
+    reviewed_at: report.reviewed_at,
+    created_at: report.created_at,
+    live_tasks: report.live_tasks,
+  };
   return sha256(
     JSON.stringify({
-      report,
+      report: reportSnapshot,
       item,
       streamer,
     }),
@@ -1482,8 +2229,29 @@ function decimalYuanToCents(value: string | number): bigint {
   return sign * (whole + fraction);
 }
 
+function bigintCents(value: string | number): bigint {
+  const text = String(value);
+  if (!/^-?\d+$/u.test(text)) {
+    throw routeError(
+      "CUSTOM_RULE_EVIDENCE_INVALID",
+      "Settlement rule cost amount is invalid",
+      500,
+      true,
+    );
+  }
+  return BigInt(text);
+}
+
 function oneRelation<Value>(value: Value | Value[]): Value | null {
   return Array.isArray(value) ? (value[0] ?? null) : value;
+}
+
+function chunks<Value>(values: Value[], size: number): Value[][] {
+  const result: Value[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size));
+  }
+  return result;
 }
 
 function routeError(

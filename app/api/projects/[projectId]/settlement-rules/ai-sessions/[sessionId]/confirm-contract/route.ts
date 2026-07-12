@@ -6,6 +6,7 @@ import {
   assertCustomRuleAuthorRole,
   customRuleErrorResponse,
   customRuleResolvedFailureResponse,
+  customRuleUserExamplesSchema,
   getCustomRuleRouteContext,
   parseCustomRuleJson,
   parseCustomRuleParams,
@@ -28,6 +29,7 @@ const selectionSchema = z
       )
       .min(1)
       .max(4),
+    userExamples: customRuleUserExamplesSchema.optional(),
   })
   .refine((selection) => selection.periodStart <= selection.periodEnd, {
     path: ["periodStart"],

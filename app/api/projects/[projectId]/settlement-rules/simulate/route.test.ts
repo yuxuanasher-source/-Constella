@@ -138,6 +138,18 @@ function body() {
   };
 }
 
+function userExample(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "user-standard",
+    inputs: {
+      system_minutes: { type: "integer", value: 60 },
+      evidence_level: { type: "string", value: "green" },
+    },
+    expectedResult: { type: "money_cents", amountCents: 100 },
+    ...overrides,
+  };
+}
+
 function request(value: unknown = body()) {
   return new Request("http://localhost", {
     method: "POST",
@@ -197,6 +209,92 @@ describe("settlement rule simulation route", () => {
       });
     },
   );
+
+  it("authorizes typed user examples but passes only the server token to simulation", async () => {
+    const routeContext = context("finance");
+    const selectionWithExamples = {
+      ...body().simulationSelection,
+      userExamples: [userExample()],
+    };
+    routeContext.authorizeSimulationSelection.mockResolvedValue({
+      ...body().simulationSelection,
+      selectionToken: `server:${"f".repeat(64)}`,
+    });
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(
+      request({ ...body(), simulationSelection: selectionWithExamples }),
+      { params: Promise.resolve({ projectId: PROJECT_ID }) },
+    );
+
+    expect(response.status).toBe(201);
+    expect(routeContext.authorizeSimulationSelection).toHaveBeenCalledWith(
+      expect.objectContaining({ selection: selectionWithExamples }),
+    );
+    expect(routeContext.simulation.simulateExistingDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selection: {
+          ...body().simulationSelection,
+          selectionToken: `server:${"f".repeat(64)}`,
+        },
+      }),
+    );
+  });
+
+  it.each([
+    [
+      "too many examples",
+      Array.from({ length: 51 }, (_, index) =>
+        userExample({ id: `example-${index}` }),
+      ),
+    ],
+    [
+      "non-money expectation",
+      [
+        userExample({
+          expectedResult: { type: "rate_bps", rateBps: 1000 },
+        }),
+      ],
+    ],
+    [
+      "too many input values",
+      [
+        userExample({
+          inputs: Object.fromEntries(
+            Array.from({ length: 101 }, (_, index) => [
+              `input_${index}`,
+              { type: "integer", value: index },
+            ]),
+          ),
+        }),
+      ],
+    ],
+  ])("rejects %s before billing", async (_label, userExamples) => {
+    const routeContext = context("finance");
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(
+      request({
+        ...body(),
+        simulationSelection: {
+          ...body().simulationSelection,
+          userExamples,
+        },
+      }),
+      { params: Promise.resolve({ projectId: PROJECT_ID }) },
+    );
+
+    expect(response.status).toBe(400);
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(routeContext.authorizeSimulationSelection).not.toHaveBeenCalled();
+    expect(
+      routeContext.simulation.simulateExistingDraft,
+    ).not.toHaveBeenCalled();
+  });
 
   it("returns a typed summary without raw rows or cents/bps internals", async () => {
     vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
