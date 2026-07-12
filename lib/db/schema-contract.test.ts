@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -49,6 +50,19 @@ const settlementRuntimeMigration = readdirSync(migrationsDir).includes(
 const normalizedSettlementRuntimeMigration = normalizeSql(
   settlementRuntimeMigration,
 );
+const settlementRuntimeHardeningMigrationName =
+  "20260711115600_custom_settlement_runtime_snapshot_hardening.sql";
+const settlementRuntimeHardeningMigration = readdirSync(migrationsDir).includes(
+  settlementRuntimeHardeningMigrationName,
+)
+  ? readFileSync(
+      join(migrationsDir, settlementRuntimeHardeningMigrationName),
+      "utf8",
+    )
+  : "";
+const normalizedSettlementRuntimeHardeningMigration = normalizeSql(
+  settlementRuntimeHardeningMigration,
+);
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/gu, " ").trim();
@@ -68,23 +82,27 @@ function extractSettlementRuntimeFunction(fn: string): {
   header: string;
   body: string;
 } {
+  const source =
+    fn === "read_custom_settlement_evidence_snapshot"
+      ? settlementRuntimeHardeningMigration
+      : settlementRuntimeMigration;
   const marker = `create or replace function public.${fn}`;
-  const start = settlementRuntimeMigration.toLowerCase().indexOf(marker);
+  const start = source.toLowerCase().indexOf(marker);
   expect(start, `missing Task8 SQL function: ${fn}`).toBeGreaterThanOrEqual(0);
   const bodyMarker = /\bas\s+\$\$/giu;
   bodyMarker.lastIndex = start;
-  const bodyStartMatch = bodyMarker.exec(settlementRuntimeMigration);
+  const bodyStartMatch = bodyMarker.exec(source);
   expect(bodyStartMatch, `missing Task8 function body: ${fn}`).not.toBeNull();
   const bodyStart = bodyStartMatch?.index ?? -1;
   const bodyContentStart = bodyStart + (bodyStartMatch?.[0].length ?? 0);
-  const bodyEnd = settlementRuntimeMigration.indexOf("$$;", bodyContentStart);
+  const bodyEnd = source.indexOf("$$;", bodyContentStart);
   expect(bodyEnd, `missing Task8 function terminator: ${fn}`).toBeGreaterThan(
     bodyContentStart,
   );
   return {
-    definition: settlementRuntimeMigration.slice(start, bodyEnd + 3),
-    header: settlementRuntimeMigration.slice(start, bodyStart),
-    body: settlementRuntimeMigration.slice(bodyContentStart, bodyEnd),
+    definition: source.slice(start, bodyEnd + 3),
+    header: source.slice(start, bodyStart),
+    body: source.slice(bodyContentStart, bodyEnd),
   };
 }
 
@@ -98,17 +116,25 @@ function settlementRuntimeFunctionBody(fn: string): string {
 
 function settlementRuntimeSelfCheckBlock(): string {
   const marker = "-- custom_settlement_runtime_self_checks";
-  const start = settlementRuntimeMigration.indexOf(marker);
+  const start = settlementRuntimeHardeningMigration.indexOf(marker);
   expect(start, "missing Task8 runtime self-check marker").toBeGreaterThanOrEqual(
     0,
   );
-  const blockStart = settlementRuntimeMigration.indexOf("do $$", start);
-  const blockEnd = settlementRuntimeMigration.indexOf("$$;", blockStart);
+  const blockStart = settlementRuntimeHardeningMigration.indexOf("do $$", start);
+  const blockEnd = settlementRuntimeHardeningMigration.indexOf("$$;", blockStart);
   expect(blockStart).toBeGreaterThan(start);
   expect(blockEnd).toBeGreaterThan(blockStart);
   return normalizeSql(
-    settlementRuntimeMigration.slice(blockStart, blockEnd + 3),
+    settlementRuntimeHardeningMigration.slice(blockStart, blockEnd + 3),
   );
+}
+
+function gitBlobOid(content: string): string {
+  const size = Buffer.byteLength(content, "utf8");
+  return createHash("sha1")
+    .update(`blob ${size}\0`, "utf8")
+    .update(content, "utf8")
+    .digest("hex");
 }
 
 function extractBalancedSql(
@@ -1765,21 +1791,64 @@ describe("Phase 1 settlement AI persistence contract", () => {
 });
 
 describe("Task8 custom settlement runtime database contract", () => {
-  it("reserves the additive migration between Phase 1 and planned Phase 2", () => {
+  it("keeps immutable base history and orders the forward hardening before Phase 2", () => {
     const migrationNames = readdirSync(migrationsDir)
       .filter((file) => file.endsWith(".sql"))
       .sort();
 
     expect(migrationNames).toContain(settlementRuntimeMigrationName);
+    expect(migrationNames).toContain(
+      "20260711115500_xingyao_duplicate_lease_recovery.sql",
+    );
+    expect(migrationNames).toContain(settlementRuntimeHardeningMigrationName);
+    expect(gitBlobOid(settlementRuntimeMigration)).toBe(
+      "11519949a46a67ba41c31bb891174a99442ed322",
+    );
+    expect(normalizedSettlementRuntimeMigration).toContain(
+      "create or replace function public.read_custom_settlement_evidence_snapshot( p_organization_id uuid, p_project_id uuid, p_scope text, p_period_start date, p_period_end date, p_max_sources integer )",
+    );
+    expect(normalizedSettlementRuntimeMigration).not.toContain(
+      "p_max_record_count integer",
+    );
     expect(
       settlementRuntimeMigrationName > settlementAiMigrationName,
     ).toBe(true);
     expect(
       settlementRuntimeMigrationName <
+        "20260711115500_xingyao_duplicate_lease_recovery.sql" &&
+        "20260711115500_xingyao_duplicate_lease_recovery.sql" <
+          settlementRuntimeHardeningMigrationName &&
+        settlementRuntimeHardeningMigrationName <
         "20260711120000_custom_settlement_rule_governance.sql",
     ).toBe(true);
     expect(migrationNames).not.toContain(
       "20260712130000_custom_settlement_runtime_snapshot.sql",
+    );
+  });
+
+  it("removes the recorded six-argument overload before granting the hardened RPC", () => {
+    const legacyRevoke =
+      "execute 'revoke all on function public.read_custom_settlement_evidence_snapshot(uuid, uuid, text, date, date, integer) from public, anon, authenticated, service_role'";
+    const legacyDrop =
+      "drop function if exists public.read_custom_settlement_evidence_snapshot( uuid, uuid, text, date, date, integer );";
+    expect(normalizedSettlementRuntimeHardeningMigration).toContain(
+      "pg_catalog.to_regprocedure( 'public.read_custom_settlement_evidence_snapshot(uuid,uuid,text,date,date,integer)' ) is not null",
+    );
+    expect(normalizedSettlementRuntimeHardeningMigration).toContain(legacyRevoke);
+    expect(normalizedSettlementRuntimeHardeningMigration).toContain(legacyDrop);
+    expect(
+      normalizedSettlementRuntimeHardeningMigration.indexOf(legacyRevoke),
+    ).toBeLessThan(
+      normalizedSettlementRuntimeHardeningMigration.indexOf(legacyDrop),
+    );
+    expect(normalizedSettlementRuntimeHardeningMigration).toContain(
+      "create or replace function public.read_custom_settlement_evidence_snapshot( p_organization_id uuid, p_project_id uuid, p_scope text, p_period_start date, p_period_end date, p_business_timezone text, p_business_timezone_source text, p_execution_grain text, p_max_sources integer, p_max_record_count integer )",
+    );
+    expect(normalizedSettlementRuntimeHardeningMigration).toContain(
+      "grant execute on function public.read_custom_settlement_evidence_snapshot( uuid, uuid, text, date, date, text, text, text, integer, integer ) to authenticated",
+    );
+    expect(normalizedSettlementRuntimeHardeningMigration).not.toMatch(
+      /grant execute on function public\.read_custom_settlement_evidence_snapshot\([\s\S]+?to (?:anon|service_role|public);/u,
     );
   });
 
@@ -2034,23 +2103,26 @@ describe("Task8 custom settlement runtime database contract", () => {
   });
 
   it("exposes only the two authenticated RPCs and leaves tables/helpers private", () => {
-    for (const rpc of [
-      "claim_custom_settlement_ai_session",
-      "read_custom_settlement_evidence_snapshot",
-    ]) {
-      expect(normalizedSettlementRuntimeMigration).toMatch(
+    for (const [rpc, source] of [
+      ["claim_custom_settlement_ai_session", normalizedSettlementRuntimeMigration],
+      [
+        "read_custom_settlement_evidence_snapshot",
+        normalizedSettlementRuntimeHardeningMigration,
+      ],
+    ] as const) {
+      expect(source).toMatch(
         new RegExp(
           `revoke all on function public\\.${rpc}\\([\\s\\S]+?from public, anon, authenticated, service_role;`,
           "u",
         ),
       );
-      expect(normalizedSettlementRuntimeMigration).toMatch(
+      expect(source).toMatch(
         new RegExp(
           `grant execute on function public\\.${rpc}\\([\\s\\S]+?to authenticated;`,
           "u",
         ),
       );
-      expect(normalizedSettlementRuntimeMigration).not.toMatch(
+      expect(source).not.toMatch(
         new RegExp(
           `grant execute on function public\\.${rpc}\\([\\s\\S]+?to (?:anon|service_role|public);`,
           "u",
