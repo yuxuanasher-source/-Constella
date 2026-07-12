@@ -4652,12 +4652,33 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
     const existing = this.simulations.find(
       (simulation) => simulation.idempotencyKey === input.idempotencyKey,
     );
-    if (existing) return { ...structuredClone(existing), duplicate: true };
-    const simulation: SettlementFormulaSimulation = {
+    if (existing) {
+      if (
+        existing.summarySchemaVersion !== 2 ||
+        !existing.summaryComplete
+      ) {
+        throw new Error("legacy simulation cannot satisfy a current write");
+      }
+      return { ...structuredClone(existing), duplicate: true };
+    }
+    const simulation: InsertedSettlementFormulaSimulation = {
       ...structuredClone(input),
       id: uuid(500 + this.simulations.length + 1),
+      summarySchemaVersion: 2,
+      summaryComplete: true,
+      summaryStatus: "complete",
+      historicalTotals: {
+        ...structuredClone(input.historicalTotals),
+        payableAmountCents: input.historicalTotals.oldPayableAmountCents,
+        receivableAmountCents: input.historicalTotals.oldReceivableAmountCents,
+      },
+      warnings: input.warnings.map((warning) => ({
+        ...structuredClone(warning),
+        kind: warning.kind ?? "warning",
+      })),
       createdBy: USER_ID,
       createdAt: "2026-07-12T00:00:00.000Z",
+      duplicate: false,
     };
     this.simulations.push(simulation);
     if (input.owner.kind === "ai_draft") {
@@ -4667,7 +4688,7 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
       if (draft && draft.status === "contract_ready")
         draft.status = "simulated";
     }
-    return { ...structuredClone(simulation), duplicate: false };
+    return structuredClone(simulation);
   }
 
   private takeAtomicFailure(

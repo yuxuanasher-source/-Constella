@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { z } from "zod";
 
 import { businessRuleContractSchema } from "./custom-rule-contract";
@@ -14,6 +14,12 @@ import {
 } from "./custom-rule-simulation";
 import { getCustomRuleSystemTemplate } from "./custom-rule-system-templates";
 import { validateCustomRuleFormula } from "./custom-rule-validator";
+import type {
+  CompleteSettlementFormulaSimulation,
+  InsertedSettlementFormulaSimulation,
+  LegacySettlementFormulaSimulation,
+} from "./custom-rule-repository";
+import type { CustomRuleRouteContext } from "./custom-rule-route-context";
 
 const mocks = vi.hoisted(() => ({
   isEnabled: vi.fn(),
@@ -498,6 +504,132 @@ describe("custom rule route context", () => {
   });
 });
 
+describe("custom rule simulation session DTOs", () => {
+  it("types immediate simulations as newly inserted complete v2 artifacts", async () => {
+    type ImmediateResult = Awaited<
+      ReturnType<
+        CustomRuleRouteContext["simulation"]["simulateExistingDraft"]
+      >
+    >;
+    expectTypeOf<ImmediateResult["simulation"]>().toEqualTypeOf<
+      InsertedSettlementFormulaSimulation
+    >();
+
+    const { toCustomRuleSimulationDto } =
+      await import("./custom-rule-route-context");
+    const inserted: InsertedSettlementFormulaSimulation = {
+      ...completeSimulationFixture(),
+      duplicate: false,
+    };
+    const dto = toCustomRuleSimulationDto(inserted);
+
+    expectTypeOf(dto.version).toEqualTypeOf<2>();
+    expectTypeOf(dto.complete).toEqualTypeOf<true>();
+    expect(dto).toMatchObject({ version: 2, complete: true, duplicate: false });
+  });
+
+  it("restores a complete v2 business summary without raw persistence fields", async () => {
+    const { toCustomRuleSessionDto } =
+      await import("./custom-rule-route-context");
+    const simulation = completeSimulationFixture();
+
+    const dto = toCustomRuleSessionDto({
+      history: sessionHistoryFixture() as never,
+      draft: simulationDraft("report") as never,
+      simulation,
+    });
+
+    expect(dto.simulation).toEqual({
+      version: 2,
+      complete: true,
+      status: "complete",
+      id: simulation.id,
+      createdAt: simulation.createdAt,
+      summary: {
+        recordCount: 20,
+        coverage: {
+          totalCount: 20,
+          evaluatedCount: 18,
+          ratePercent: "90.00",
+        },
+        uncoveredCount: 3,
+        zeroPayCount: 2,
+        reviewRoutedCount: 1,
+        blockedCount: 1,
+        largestIncreases: [
+          {
+            bucket: "authorized_ordinal:000001",
+            deltaYuan: "10.00",
+            direction: "increase",
+          },
+        ],
+        largestDecreases: [],
+        totalOldYuan: "90071992547409.93",
+        totalNewYuan: "90071992547419.93",
+        totalDeltaYuan: "10.00",
+        marginImpactYuan: "-10.00",
+        historicalVerification: {
+          status: "verified",
+          label: "已通过历史数据验证",
+        },
+        dataSelectionHash: "e".repeat(64),
+        riskFlags: [
+          {
+            code: "CUSTOM_RULE_ZERO_PAY_RECORDS",
+            severity: "warning",
+            message: "新规则产生了零应付样本。",
+          },
+        ],
+        warnings: [
+          {
+            code: "CUSTOM_RULE_INCOMPLETE_COVERAGE",
+            severity: "info",
+            message: "一条记录需要人工复核。",
+          },
+        ],
+        scenarios: [
+          {
+            id: "scenario:000001",
+            category: "contract_example",
+            outcome: "calculated",
+            amountYuan: "10.00",
+            expectedAmountYuan: "10.00",
+            passed: true,
+          },
+        ],
+      },
+    });
+    expect(dto.summary).toEqual(dto.simulation?.summary);
+    expect(JSON.stringify(dto.simulation)).not.toMatch(
+      /(?:amountCents|percentageBps|organizationId|projectId|createdBy|rawRows)/u,
+    );
+  });
+
+  it("marks legacy summaries incomplete without manufacturing historical deltas", async () => {
+    const { toCustomRuleSessionDto } =
+      await import("./custom-rule-route-context");
+
+    const dto = toCustomRuleSessionDto({
+      history: sessionHistoryFixture() as never,
+      draft: simulationDraft("report") as never,
+      simulation: legacySimulationFixture(),
+    });
+
+    expect(dto).toMatchObject({
+      simulation: {
+        version: 1,
+        complete: false,
+        status: "legacy",
+        summary: null,
+        message: "旧版摘要不完整，请重新试算",
+      },
+      summary: null,
+    });
+    expect(dto.simulation).not.toHaveProperty("deltas");
+    expect(dto.simulation).not.toHaveProperty("historicalTotals");
+  });
+});
+
 function evidenceDraft(overrides: Record<string, unknown> = {}) {
   return {
     id: "55555555-5555-4555-8555-555555555555",
@@ -515,6 +647,157 @@ function evidenceDraft(overrides: Record<string, unknown> = {}) {
       requiredInputs: [{ name: "system_minutes" }],
     },
     ...overrides,
+  };
+}
+
+function sessionHistoryFixture() {
+  return {
+    conversation: {
+      id: "44444444-4444-4444-8444-444444444444",
+      title: "结算规则试算",
+      status: "active",
+      lastMessageAt: "2026-07-12T05:00:00.000Z",
+      createdAt: "2026-07-12T05:00:00.000Z",
+      updatedAt: "2026-07-12T05:00:00.000Z",
+    },
+    messages: [],
+    turns: [],
+  };
+}
+
+function completeSimulationFixture(): CompleteSettlementFormulaSimulation {
+  return {
+    id: "66666666-6666-4666-8666-666666666666",
+    organizationId: ORGANIZATION_ID,
+    projectId: PROJECT_ID,
+    owner: {
+      kind: "ai_draft",
+      id: "55555555-5555-4555-8555-555555555555",
+    },
+    idempotencyKey: "simulation-request-1",
+    formulaHash: "a".repeat(64),
+    ruleContractHash: "b".repeat(64),
+    parameterHash: "c".repeat(64),
+    variableCatalogVersion: "d".repeat(64),
+    dataSelectionHash: "e".repeat(64),
+    sampleSource: { kind: "historical_settlements" },
+    sampleSelection: {
+      periodStart: "2026-07-01",
+      periodEnd: "2026-07-10",
+      populationCount: 20,
+      sampledCount: 20,
+      criteria: ["approved_reports"],
+    },
+    summarySchemaVersion: 2,
+    summaryComplete: true,
+    summaryStatus: "complete",
+    coverage: {
+      summarySchemaVersion: 2,
+      totalRecords: 20,
+      evaluatedRecords: 18,
+      skippedRecords: 2,
+      uncoveredRecords: 3,
+      zeroAmountRecords: 2,
+      reviewRoutedRecords: 1,
+      blockedRecords: 1,
+    },
+    scenarios: [
+      {
+        id: "scenario:000001",
+        category: "contract_example",
+        outcome: "calculated",
+        amountCents: "1000",
+        expectedAmountCents: "1000",
+        passed: true,
+      },
+    ],
+    historicalTotals: {
+      oldPayableAmountCents: "9007199254740993",
+      oldReceivableAmountCents: null,
+      newPayableAmountCents: "9007199254741993",
+      newReceivableAmountCents: null,
+      recordCount: 20,
+      verificationStatus: "verified",
+      payableAmountCents: "9007199254740993",
+      receivableAmountCents: null,
+    },
+    deltas: {
+      payableAmountCents: "1000",
+      receivableAmountCents: null,
+      percentageBps: 0,
+      marginImpactCents: "-1000",
+    },
+    largestChanges: [
+      {
+        dimension: "period",
+        key: "authorized_ordinal:000001",
+        deltaAmountCents: "1000",
+        direction: "increase",
+      },
+    ],
+    warnings: [
+      {
+        kind: "risk",
+        code: "CUSTOM_RULE_ZERO_PAY_RECORDS",
+        severity: "warning",
+        message: "新规则产生了零应付样本。",
+      },
+      {
+        kind: "warning",
+        code: "CUSTOM_RULE_INCOMPLETE_COVERAGE",
+        severity: "info",
+        message: "一条记录需要人工复核。",
+      },
+    ],
+    createdBy: USER_ID,
+    createdAt: "2026-07-12T05:01:00.000Z",
+  };
+}
+
+function legacySimulationFixture(): LegacySettlementFormulaSimulation {
+  const complete = completeSimulationFixture();
+  return {
+    ...complete,
+    summarySchemaVersion: 1,
+    summaryComplete: false,
+    summaryStatus: "legacy",
+    coverage: {
+      summarySchemaVersion: 1,
+      totalRecords: 20,
+      evaluatedRecords: 18,
+      skippedRecords: 2,
+      uncoveredRecords: null,
+      zeroAmountRecords: null,
+      reviewRoutedRecords: null,
+      blockedRecords: null,
+    },
+    scenarios: [
+      { name: "标准场景", kind: "normal", result: "passed" },
+    ],
+    historicalTotals: {
+      oldPayableAmountCents: null,
+      oldReceivableAmountCents: null,
+      newPayableAmountCents: null,
+      newReceivableAmountCents: null,
+      recordCount: 20,
+      verificationStatus: "legacy_unknown",
+      payableAmountCents: null,
+      receivableAmountCents: null,
+    },
+    deltas: {
+      payableAmountCents: null,
+      receivableAmountCents: null,
+      percentageBps: null,
+      marginImpactCents: null,
+    },
+    warnings: [
+      {
+        kind: "legacy",
+        code: "LEGACY_SUMMARY",
+        severity: "warning",
+        message: "旧版摘要",
+      },
+    ],
   };
 }
 

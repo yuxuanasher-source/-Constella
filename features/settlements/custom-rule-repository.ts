@@ -408,30 +408,12 @@ export type LegacySettlementFormulaSimulation =
     warnings: LegacySettlementSimulationWarning[];
   };
 
-export type SettlementFormulaSimulation = SettlementFormulaSimulationBase & {
-  summarySchemaVersion?: 1 | 2;
-  summaryComplete?: boolean;
-  summaryStatus?: "complete" | "legacy";
-  coverage:
-    | CompleteSettlementFormulaSimulation["coverage"]
-    | LegacySettlementFormulaSimulation["coverage"];
-  scenarios:
-    | CompleteSettlementFormulaSimulation["scenarios"]
-    | LegacySettlementFormulaSimulation["scenarios"];
-  // Transitional compatibility for the existing route mapper. Runtime rows
-  // are still parsed and returned as one of the strict versioned types above.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  historicalTotals: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  deltas: any;
-  warnings:
-    | CompleteSettlementFormulaSimulation["warnings"]
-    | LegacySettlementFormulaSimulation["warnings"]
-    | SettlementSimulationPersistedFindingInput[];
-};
+export type SettlementFormulaSimulation =
+  | CompleteSettlementFormulaSimulation
+  | LegacySettlementFormulaSimulation;
 
 export type InsertedSettlementFormulaSimulation =
-  SettlementFormulaSimulation & {
+  CompleteSettlementFormulaSimulation & {
     duplicate: boolean;
   };
 

@@ -39,6 +39,7 @@ import { isCustomSettlementRulesEnabled } from "./custom-rule-feature-flag";
 import { parseCustomRuleFormula } from "./custom-rule-parser";
 import {
   SupabaseCustomRuleReadRepository,
+  type InsertedSettlementFormulaSimulation,
   type CustomRuleDraft,
   type SettlementFormulaSimulation,
 } from "./custom-rule-repository";
@@ -251,7 +252,7 @@ export type CustomRuleRouteContext = {
   simulation: {
     simulateExistingDraft(input: SimulateExistingDraftInput): Promise<{
       draft: CustomRuleDraft;
-      simulation: SettlementFormulaSimulation & { duplicate?: boolean };
+      simulation: InsertedSettlementFormulaSimulation;
       summary: CustomRuleSimulationResult;
     }>;
   };
@@ -720,44 +721,141 @@ export function toCustomRuleSimulationSummaryDto(
   };
 }
 
-export function toCustomRuleSimulationDto(
+function mapCustomRuleSimulationDto(
   simulation: SettlementFormulaSimulation & { duplicate?: boolean },
 ) {
+  if (
+    simulation.summarySchemaVersion === 1 &&
+    !simulation.summaryComplete
+  ) {
+    return {
+      version: 1 as const,
+      complete: false as const,
+      status: "legacy" as const,
+      id: simulation.id,
+      createdAt: simulation.createdAt,
+      summary: null,
+      message: "旧版摘要不完整，请重新试算" as const,
+      ...(simulation.duplicate === undefined
+        ? {}
+        : { duplicate: simulation.duplicate }),
+    };
+  }
+
+  const payableScope =
+    simulation.historicalTotals.newPayableAmountCents !== null;
+  const totalOldCents = payableScope
+    ? simulation.historicalTotals.oldPayableAmountCents
+    : simulation.historicalTotals.oldReceivableAmountCents;
+  const totalNewCents = payableScope
+    ? simulation.historicalTotals.newPayableAmountCents
+    : simulation.historicalTotals.newReceivableAmountCents;
+  const totalDeltaCents = payableScope
+    ? simulation.deltas.payableAmountCents
+    : simulation.deltas.receivableAmountCents;
+  if (totalNewCents === null) {
+    throw new CustomRuleRouteError({
+      code: "CUSTOM_RULE_RESPONSE_INVALID",
+      message: "Settlement rule response is invalid",
+      status: 500,
+      retryable: true,
+    });
+  }
+  const findingDto = (
+    finding: (typeof simulation.warnings)[number],
+  ) => ({
+    code: finding.code,
+    severity: finding.severity,
+    message: finding.message,
+  });
+  const summary = {
+    recordCount: simulation.historicalTotals.recordCount,
+    coverage: {
+      totalCount: simulation.coverage.totalRecords,
+      evaluatedCount: simulation.coverage.evaluatedRecords,
+      ratePercent: coverageRatePercent(
+        simulation.coverage.evaluatedRecords,
+        simulation.coverage.totalRecords,
+      ),
+    },
+    uncoveredCount: simulation.coverage.uncoveredRecords,
+    zeroPayCount: simulation.coverage.zeroAmountRecords,
+    reviewRoutedCount: simulation.coverage.reviewRoutedRecords,
+    blockedCount: simulation.coverage.blockedRecords,
+    largestIncreases: simulation.largestChanges
+      .filter((change) => change.direction === "increase")
+      .map((change) => ({
+        bucket: change.key,
+        deltaYuan: centsToYuan(change.deltaAmountCents),
+        direction: change.direction,
+      })),
+    largestDecreases: simulation.largestChanges
+      .filter((change) => change.direction === "decrease")
+      .map((change) => ({
+        bucket: change.key,
+        deltaYuan: centsToYuan(change.deltaAmountCents),
+        direction: change.direction,
+      })),
+    totalOldYuan: centsToYuan(totalOldCents),
+    totalNewYuan: centsToYuan(totalNewCents),
+    totalDeltaYuan: centsToYuan(totalDeltaCents),
+    marginImpactYuan: centsToYuan(simulation.deltas.marginImpactCents),
+    historicalVerification:
+      simulation.historicalTotals.verificationStatus === "verified"
+        ? {
+            status: "verified" as const,
+            label: "已通过历史数据验证" as const,
+          }
+        : {
+            status: "unverified" as const,
+            label: "未经过历史数据验证" as const,
+          },
+    dataSelectionHash: simulation.dataSelectionHash,
+    riskFlags: simulation.warnings
+      .filter((finding) => finding.kind === "risk")
+      .map(findingDto),
+    warnings: simulation.warnings
+      .filter((finding) => finding.kind === "warning")
+      .map(findingDto),
+    scenarios: simulation.scenarios.map((scenario) => ({
+      id: scenario.id,
+      category: scenario.category,
+      outcome: scenario.outcome,
+      amountYuan: centsToYuan(scenario.amountCents),
+      expectedAmountYuan: centsToYuan(scenario.expectedAmountCents),
+      passed: scenario.passed,
+    })),
+  };
+
   return {
+    version: 2 as const,
+    complete: true as const,
+    status: "complete" as const,
     id: simulation.id,
     createdAt: simulation.createdAt,
-    dataSelectionHash: simulation.dataSelectionHash,
-    sampleSource: simulation.sampleSource,
-    sampleSelection: simulation.sampleSelection,
-    coverage: simulation.coverage,
-    scenarios: simulation.scenarios,
-    historicalTotals: {
-      payableAmountYuan: centsToYuan(
-        simulation.historicalTotals.payableAmountCents,
-      ),
-      receivableAmountYuan: centsToYuan(
-        simulation.historicalTotals.receivableAmountCents,
-      ),
-      recordCount: simulation.historicalTotals.recordCount,
-    },
-    deltas: {
-      payableAmountYuan: centsToYuan(simulation.deltas.payableAmountCents),
-      receivableAmountYuan: centsToYuan(
-        simulation.deltas.receivableAmountCents,
-      ),
-      percentagePercent: bpsToPercent(simulation.deltas.percentageBps),
-    },
-    largestChanges: simulation.largestChanges.map((change) => ({
-      dimension: change.dimension,
-      key: change.key,
-      deltaAmountYuan: centsToYuan(change.deltaAmountCents),
-      direction: change.direction,
-    })),
-    warnings: simulation.warnings,
+    summary,
     ...(simulation.duplicate === undefined
       ? {}
       : { duplicate: simulation.duplicate }),
   };
+}
+
+type CustomRuleSimulationDto = ReturnType<typeof mapCustomRuleSimulationDto>;
+type CompleteCustomRuleSimulationDto = Extract<
+  CustomRuleSimulationDto,
+  { version: 2 }
+>;
+
+export function toCustomRuleSimulationDto(
+  simulation: InsertedSettlementFormulaSimulation,
+): CompleteCustomRuleSimulationDto;
+export function toCustomRuleSimulationDto(
+  simulation: SettlementFormulaSimulation & { duplicate?: boolean },
+): CustomRuleSimulationDto;
+export function toCustomRuleSimulationDto(
+  simulation: SettlementFormulaSimulation & { duplicate?: boolean },
+): CustomRuleSimulationDto {
+  return mapCustomRuleSimulationDto(simulation);
 }
 
 export function toCustomRuleSessionDto(input: {
@@ -765,6 +863,9 @@ export function toCustomRuleSessionDto(input: {
   draft: CustomRuleDraft;
   simulation: SettlementFormulaSimulation | null;
 }) {
+  const simulation = input.simulation
+    ? toCustomRuleSimulationDto(input.simulation)
+    : null;
   return {
     conversation: input.history.conversation,
     messages: input.history.messages.map((message) => ({
@@ -792,9 +893,8 @@ export function toCustomRuleSessionDto(input: {
       retryable: turn.retryable,
     })),
     draft: toCustomRuleDraftDto(input.draft),
-    simulation: input.simulation
-      ? toCustomRuleSimulationDto(input.simulation)
-      : null,
+    simulation,
+    summary: simulation?.version === 2 ? simulation.summary : null,
   };
 }
 
@@ -3545,6 +3645,9 @@ function parameterValues(
   );
 }
 
+function centsToYuan(cents: string): string;
+function centsToYuan(cents: null): null;
+function centsToYuan(cents: string | null): string | null;
 function centsToYuan(cents: string | null): string | null {
   if (cents === null) return null;
   if (!/^-?\d+$/u.test(cents)) {
@@ -3565,6 +3668,13 @@ function centsToYuan(cents: string | null): string | null {
 
 function bpsToPercent(bps: number): string {
   return (bps / 100).toFixed(2);
+}
+
+function coverageRatePercent(evaluatedCount: number, totalCount: number): string {
+  if (totalCount === 0) return "0.00";
+  const rateBps =
+    (BigInt(evaluatedCount) * BigInt(10_000)) / BigInt(totalCount);
+  return bpsToPercent(Number(rateBps));
 }
 
 function sha256(value: string): string {

@@ -239,11 +239,12 @@ function sessionSummary() {
     turns: [],
     draft: draft(),
     simulation: null,
+    summary: null,
   };
 }
 
 function simulationResult() {
-  return {
+  const result = {
     ok: true,
     kind: "simulated",
     conversationId: SESSION_ID,
@@ -320,6 +321,16 @@ function simulationResult() {
     },
     duplicate: false,
   };
+  result.simulation = {
+    version: 2,
+    complete: true,
+    status: "complete",
+    id: result.simulation.id,
+    createdAt: result.simulation.createdAt,
+    summary: structuredClone(result.summary),
+    duplicate: result.simulation.duplicate,
+  };
+  return result;
 }
 
 function simulatedSessionSummary(overrides = {}) {
@@ -328,6 +339,49 @@ function simulatedSessionSummary(overrides = {}) {
     ...sessionSummary(),
     draft: result.draft,
     simulation: result.simulation,
+    summary: structuredClone(result.summary),
+    ...overrides,
+  };
+}
+
+function completeV2Simulation(result = simulationResult()) {
+  return {
+    version: 2,
+    complete: true,
+    status: "complete",
+    id: result.simulation.id,
+    createdAt: result.simulation.createdAt,
+    summary: structuredClone(result.summary),
+  };
+}
+
+function completeV2SessionSummary(overrides = {}) {
+  const result = simulationResult();
+  const simulation = completeV2Simulation(result);
+  return {
+    ...sessionSummary(),
+    draft: result.draft,
+    simulation,
+    summary: structuredClone(simulation.summary),
+    ...overrides,
+  };
+}
+
+function legacyV1SessionSummary(overrides = {}) {
+  const result = simulationResult();
+  return {
+    ...sessionSummary(),
+    draft: result.draft,
+    simulation: {
+      version: 1,
+      complete: false,
+      status: "legacy",
+      id: result.simulation.id,
+      createdAt: result.simulation.createdAt,
+      summary: null,
+      message: "旧版摘要不完整，请重新试算",
+    },
+    summary: null,
     ...overrides,
   };
 }
@@ -969,9 +1023,12 @@ describe("custom settlement rule API", () => {
     ).resolves.toMatchObject({
       result: {
         simulation: {
-          sampleSelection: { sampledCount: 10 },
-          coverage: { totalRecords: 10 },
-          historicalTotals: { recordCount: 10 },
+          version: 2,
+          complete: true,
+          summary: {
+            recordCount: 10,
+            coverage: { totalCount: 10, evaluatedCount: 9 },
+          },
         },
       },
     });
@@ -992,6 +1049,72 @@ describe("custom settlement rule API", () => {
         simulation: { id: "66666666-6666-4666-8666-666666666666" },
       },
     });
+  });
+
+  it("parses complete v2 and incomplete legacy session summaries by version", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ session: completeV2SessionSummary() }))
+      .mockResolvedValueOnce(jsonResponse({ session: legacyV1SessionSummary() }));
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.refreshSession({ projectId: PROJECT_ID, sessionId: SESSION_ID }),
+    ).resolves.toMatchObject({
+      session: {
+        simulation: {
+          version: 2,
+          complete: true,
+          summary: { totalNewYuan: "1100.00", zeroPayCount: 2 },
+        },
+        summary: { totalNewYuan: "1100.00", zeroPayCount: 2 },
+      },
+    });
+    await expect(
+      api.refreshSession({ projectId: PROJECT_ID, sessionId: SESSION_ID }),
+    ).resolves.toMatchObject({
+      session: {
+        simulation: {
+          version: 1,
+          complete: false,
+          summary: null,
+          message: "旧版摘要不完整，请重新试算",
+        },
+        summary: null,
+      },
+    });
+  });
+
+  it.each([
+    ["extra key", (session) => (session.simulation.extra = true)],
+    ["raw rows", (session) => (session.simulation.rawRows = [{ id: "raw" }])],
+    [
+      "raw cents",
+      (session) => (session.simulation.summary.totalNewCents = "110000"),
+    ],
+  ])("rejects %s from a v2 session simulation", async (_label, mutate) => {
+    const session = completeV2SessionSummary();
+    mutate(session);
+    const fetchImpl = vi.fn(async () => jsonResponse({ session }));
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.refreshSession({ projectId: PROJECT_ID, sessionId: SESSION_ID }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_RESPONSE_INVALID",
+      retryable: true,
+    });
+  });
+
+  it("rejects a v2 session whose authoritative summaries disagree", async () => {
+    const session = completeV2SessionSummary();
+    session.summary.totalNewYuan = "1100.01";
+    const fetchImpl = vi.fn(async () => jsonResponse({ session }));
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.refreshSession({ projectId: PROJECT_ID, sessionId: SESSION_ID }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_RESPONSE_INVALID" });
   });
 
   it.each([
@@ -1043,14 +1166,14 @@ describe("custom settlement rule API", () => {
           result.summary.largestIncreases = [change];
         else result.summary.largestDecreases = [change];
       } else {
-        result.simulation.largestChanges = [
-          {
-            dimension: "scenario",
-            key: "authorized_ordinal:000001",
-            deltaAmountYuan: deltaYuan,
-            direction,
-          },
-        ];
+        const change = {
+          bucket: "authorized_ordinal:000001",
+          deltaYuan,
+          direction: direction === "unchanged" ? "increase" : direction,
+        };
+        if (direction === "decrease")
+          result.simulation.summary.largestDecreases = [change];
+        else result.simulation.summary.largestIncreases = [change];
       }
       const fetchImpl = vi.fn(async () => jsonResponse({ result }));
       const api = createCustomSettlementRuleApi({ fetchImpl });
@@ -1134,11 +1257,10 @@ describe("custom settlement rule API", () => {
       label: "persisted confirmation change infinity",
       endpoint: "confirmAndSimulate",
       mutate(result) {
-        result.simulation.largestChanges = [
+        result.simulation.summary.largestIncreases = [
           {
-            dimension: "scenario",
-            key: "authorized_ordinal:000001",
-            deltaAmountYuan: "Infinity",
+            bucket: "authorized_ordinal:000001",
+            deltaYuan: "Infinity",
             direction: "increase",
           },
         ];
@@ -1148,11 +1270,10 @@ describe("custom settlement rule API", () => {
       label: "persisted refresh change exponent",
       endpoint: "refreshSession",
       mutate(result) {
-        result.simulation.largestChanges = [
+        result.simulation.summary.largestIncreases = [
           {
-            dimension: "scenario",
-            key: "authorized_ordinal:000001",
-            deltaAmountYuan: "1e3",
+            bucket: "authorized_ordinal:000001",
+            deltaYuan: "1e3",
             direction: "increase",
           },
         ];
@@ -1162,14 +1283,7 @@ describe("custom settlement rule API", () => {
       label: "persisted unchanged sign comparison with malformed sign",
       endpoint: "refreshSession",
       mutate(result) {
-        result.simulation.largestChanges = [
-          {
-            dimension: "scenario",
-            key: "authorized_ordinal:000001",
-            deltaAmountYuan: "--0.00",
-            direction: "unchanged",
-          },
-        ];
+        result.simulation.summary.totalDeltaYuan = "--0.00";
       },
     },
   ])(
@@ -1227,26 +1341,7 @@ describe("custom settlement rule API", () => {
         direction: "decrease",
       },
     ];
-    result.simulation.largestChanges = [
-      {
-        dimension: "scenario",
-        key: "authorized_ordinal:000001",
-        deltaAmountYuan: "92233720368547758.07",
-        direction: "increase",
-      },
-      {
-        dimension: "scenario",
-        key: "authorized_ordinal:000002",
-        deltaAmountYuan: "-92233720368547758.08",
-        direction: "decrease",
-      },
-      {
-        dimension: "scenario",
-        key: "authorized_ordinal:000003",
-        deltaAmountYuan: "0.00",
-        direction: "unchanged",
-      },
-    ];
+    result.simulation.summary = structuredClone(result.summary);
     const fetchImpl = vi.fn(async () => jsonResponse({ result }));
     const api = createCustomSettlementRuleApi({ fetchImpl });
 
@@ -1263,12 +1358,10 @@ describe("custom settlement rule API", () => {
           largestDecreases: [{ deltaYuan: "-92233720368547758.08" }],
         },
         simulation: {
-          largestChanges: expect.arrayContaining([
-            expect.objectContaining({
-              direction: "unchanged",
-              deltaAmountYuan: "0.00",
-            }),
-          ]),
+          summary: {
+            largestIncreases: [{ deltaYuan: "92233720368547758.07" }],
+            largestDecreases: [{ deltaYuan: "-92233720368547758.08" }],
+          },
         },
       },
     });
@@ -1462,7 +1555,7 @@ describe("custom settlement rule API", () => {
       "malformed public decimal",
       (payload) => {
         payload.result = simulationResult();
-        payload.result.simulation.deltas.payableAmountYuan = "1e3";
+        payload.result.simulation.summary.totalDeltaYuan = "1e3";
       },
       "confirmAndSimulate",
     ],
@@ -1470,7 +1563,7 @@ describe("custom settlement rule API", () => {
       "invalid simulation count invariant",
       (payload) => {
         payload.result = simulationResult();
-        payload.result.simulation.coverage.skippedRecords = 9;
+        payload.result.simulation.summary.coverage.evaluatedCount = 11;
       },
       "confirmAndSimulate",
     ],
@@ -1478,7 +1571,7 @@ describe("custom settlement rule API", () => {
       "sample count does not match persisted coverage",
       (payload) => {
         payload.result = simulationResult();
-        payload.result.simulation.sampleSelection.sampledCount = 9;
+        payload.result.simulation.sampleSelection = { sampledCount: 9 };
       },
       "confirmAndSimulate",
     ],
@@ -1486,7 +1579,7 @@ describe("custom settlement rule API", () => {
       "historical count does not match persisted coverage",
       (payload) => {
         payload.result = simulationResult();
-        payload.result.simulation.historicalTotals.recordCount = 9;
+        payload.result.simulation.historicalTotals = { recordCount: 9 };
       },
       "confirmAndSimulate",
     ],
@@ -1575,11 +1668,6 @@ describe("custom settlement rule API", () => {
 
   it("accepts uncovered records that were evaluated through an explicit default", async () => {
     const result = simulationResult();
-    result.simulation.coverage = {
-      totalRecords: 10,
-      evaluatedRecords: 10,
-      skippedRecords: 0,
-    };
     result.summary.coverage = {
       totalCount: 10,
       evaluatedCount: 10,
@@ -1587,6 +1675,7 @@ describe("custom settlement rule API", () => {
     };
     result.summary.uncoveredCount = 2;
     result.summary.reviewRoutedCount = 0;
+    result.simulation.summary = structuredClone(result.summary);
     const fetchImpl = vi.fn(async () => jsonResponse({ result }));
     const api = createCustomSettlementRuleApi({ fetchImpl });
 

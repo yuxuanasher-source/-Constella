@@ -3863,7 +3863,13 @@ async function reconcileAtomicSimulationFailure(input: {
       persisted,
       input.simulation.idempotencyKey,
     );
-    if (!simulation) throw new Error("atomic simulation readback is partial");
+    if (
+      !simulation ||
+      simulation.summarySchemaVersion !== 2 ||
+      !simulation.summaryComplete
+    ) {
+      throw new Error("atomic simulation readback is incomplete or legacy");
+    }
     const duplicateSimulation = { ...simulation, duplicate: true };
     verifySimulation(
       duplicateSimulation,
@@ -4201,10 +4207,14 @@ async function readExistingSimulation(
   const simulation = simulations.find(
     (candidate) => candidate.idempotencyKey === idempotencyKey,
   );
-  if (!simulation) {
+  if (
+    !simulation ||
+    simulation.summarySchemaVersion !== 2 ||
+    !simulation.summaryComplete
+  ) {
     throw serviceError(
       "persistence_failed",
-      "simulated draft has no matching immutable simulation",
+      "simulated draft has no matching complete v2 simulation",
       true,
     );
   }

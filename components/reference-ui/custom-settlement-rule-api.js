@@ -355,107 +355,6 @@ const warningSchema = z.strictObject({
   message: canonicalTextSchema(4_000),
 });
 
-const sampleSelectionSchema = z
-  .strictObject({
-    periodStart: businessDateSchema,
-    periodEnd: businessDateSchema,
-    populationCount: nonnegativeSafeIntegerSchema,
-    sampledCount: nonnegativeSafeIntegerSchema,
-    criteria: z.array(canonicalTextSchema(200)).max(100),
-  })
-  .superRefine((selection, context) => {
-    if (selection.periodStart > selection.periodEnd) {
-      context.addIssue({ code: "custom", path: ["periodStart"] });
-    }
-    if (selection.sampledCount > selection.populationCount) {
-      context.addIssue({ code: "custom", path: ["sampledCount"] });
-    }
-  });
-const simulationCoverageSchema = z
-  .strictObject({
-    totalRecords: nonnegativeSafeIntegerSchema,
-    evaluatedRecords: nonnegativeSafeIntegerSchema,
-    skippedRecords: nonnegativeSafeIntegerSchema,
-  })
-  .superRefine((coverage, context) => {
-    if (
-      coverage.evaluatedRecords + coverage.skippedRecords !==
-      coverage.totalRecords
-    ) {
-      context.addIssue({ code: "custom", path: ["totalRecords"] });
-    }
-  });
-const persistedChangeSchema = z
-  .strictObject({
-    dimension: z.enum(["rule_component", "scenario", "period"]),
-    key: canonicalTextSchema(200),
-    deltaAmountYuan: yuanDecimalSchema,
-    direction: z.enum(["increase", "decrease", "unchanged"]),
-  })
-  .superRefine((change, context) => {
-    if (!decimalDirectionMatches(change.deltaAmountYuan, change.direction)) {
-      context.addIssue({ code: "custom", path: ["deltaAmountYuan"] });
-    }
-  });
-const simulationSchema = z
-  .strictObject({
-    id: uuidSchema,
-    createdAt: canonicalTimestampSchema,
-    dataSelectionHash: hashSchema,
-    sampleSource: z.strictObject({
-      kind: z.enum([
-        "historical_settlements",
-        "approved_operations",
-        "synthetic_scenarios",
-      ]),
-    }),
-    sampleSelection: sampleSelectionSchema,
-    coverage: simulationCoverageSchema,
-    scenarios: z
-      .array(
-        z.strictObject({
-          name: canonicalTextSchema(200),
-          kind: z.enum(["normal", "boundary", "missing_data"]),
-          result: z.enum(["passed", "warning", "failed"]),
-        }),
-      )
-      .min(1)
-      .max(200),
-    historicalTotals: z.strictObject({
-      payableAmountYuan: yuanDecimalSchema.nullable(),
-      receivableAmountYuan: yuanDecimalSchema.nullable(),
-      recordCount: nonnegativeSafeIntegerSchema,
-    }),
-    deltas: z.strictObject({
-      payableAmountYuan: yuanDecimalSchema,
-      receivableAmountYuan: yuanDecimalSchema,
-      percentagePercent: percentDecimalSchema,
-    }),
-    largestChanges: z.array(persistedChangeSchema).max(100),
-    warnings: z.array(warningSchema).max(100),
-    duplicate: z.boolean().optional(),
-  })
-  .superRefine((simulation, context) => {
-    if (
-      simulation.sampleSelection.sampledCount !==
-      simulation.coverage.totalRecords
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["sampleSelection", "sampledCount"],
-      });
-    }
-    if (
-      simulation.historicalTotals.recordCount !==
-      simulation.coverage.totalRecords
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["historicalTotals", "recordCount"],
-      });
-    }
-  });
-
 const summaryScenarioSchema = z.strictObject({
   id: canonicalTextSchema(200),
   category: z.enum([
@@ -596,6 +495,30 @@ const simulationSummarySchema = z
     }
   });
 
+const completeSimulationSchema = z.strictObject({
+  version: z.literal(2),
+  complete: z.literal(true),
+  status: z.literal("complete"),
+  id: uuidSchema,
+  createdAt: canonicalTimestampSchema,
+  summary: simulationSummarySchema,
+  duplicate: z.boolean().optional(),
+});
+const legacySimulationSchema = z.strictObject({
+  version: z.literal(1),
+  complete: z.literal(false),
+  status: z.literal("legacy"),
+  id: uuidSchema,
+  createdAt: canonicalTimestampSchema,
+  summary: z.null(),
+  message: z.literal("旧版摘要不完整，请重新试算"),
+  duplicate: z.boolean().optional(),
+});
+const simulationSchema = z.discriminatedUnion("version", [
+  completeSimulationSchema,
+  legacySimulationSchema,
+]);
+
 const contractDiffSchema = z.strictObject({
   field: z.enum([
     "schemaVersion",
@@ -650,6 +573,10 @@ const startInProgressResultObjectSchema = z.strictObject({
   }),
 });
 
+function summariesMatch(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function validateClarifyingResult(result, context) {
   if (result.draft.conversationId !== result.conversationId) {
     context.addIssue({ code: "custom", path: ["draft", "conversationId"] });
@@ -672,20 +599,15 @@ function validateSimulatedResult(result, context) {
   if (result.draft.status !== "simulated") {
     context.addIssue({ code: "custom", path: ["draft", "status"] });
   }
-  if (
-    result.simulation.dataSelectionHash !== result.summary.dataSelectionHash
-  ) {
+  if (result.simulation.version !== 2) {
     context.addIssue({
       code: "custom",
-      path: ["summary", "dataSelectionHash"],
+      path: ["simulation", "version"],
     });
+    return;
   }
-  if (
-    result.simulation.coverage.totalRecords !== result.summary.recordCount ||
-    result.simulation.coverage.evaluatedRecords !==
-      result.summary.coverage.evaluatedCount
-  ) {
-    context.addIssue({ code: "custom", path: ["summary", "coverage"] });
+  if (!summariesMatch(result.simulation.summary, result.summary)) {
+    context.addIssue({ code: "custom", path: ["summary"] });
   }
 }
 
@@ -764,6 +686,7 @@ const authoritativeSessionSchema = z
     turns: z.array(conversationTurnSchema).max(500),
     draft: draftSchema,
     simulation: simulationSchema.nullable(),
+    summary: simulationSummarySchema.nullable(),
   })
   .superRefine((session, context) => {
     const conversationId = session.conversation.id;
@@ -786,11 +709,22 @@ const authoritativeSessionSchema = z
         });
       }
     }
-    if (
-      Boolean(session.simulation) !==
-      (session.draft.status === "simulated")
-    ) {
+    const simulated = session.draft.status === "simulated";
+    if (Boolean(session.simulation) !== simulated) {
       context.addIssue({ code: "custom", path: ["simulation"] });
+    }
+    if (!simulated && session.summary !== null) {
+      context.addIssue({ code: "custom", path: ["summary"] });
+    }
+    if (session.simulation?.version === 1 && session.summary !== null) {
+      context.addIssue({ code: "custom", path: ["summary"] });
+    }
+    if (
+      session.simulation?.version === 2 &&
+      (session.summary === null ||
+        !summariesMatch(session.simulation.summary, session.summary))
+    ) {
+      context.addIssue({ code: "custom", path: ["summary"] });
     }
   });
 

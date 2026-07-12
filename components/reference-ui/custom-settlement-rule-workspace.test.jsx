@@ -321,7 +321,7 @@ function simulationEnvelope({ noHistory = false } = {}) {
   };
 }
 
-function authoritativeSession(nextDraft, simulation = null) {
+function authoritativeSession(nextDraft, simulation = null, summary = null) {
   return {
     session: {
       conversation: claimedSession(),
@@ -329,6 +329,7 @@ function authoritativeSession(nextDraft, simulation = null) {
       turns: [],
       draft: nextDraft,
       simulation,
+      summary,
     },
   };
 }
@@ -350,10 +351,51 @@ function conversationTurn(status, overrides = {}) {
   };
 }
 
-function authoritativeSessionWithTurns(nextDraft, turns, simulation = null) {
-  const envelope = authoritativeSession(nextDraft, simulation);
+function authoritativeSessionWithTurns(
+  nextDraft,
+  turns,
+  simulation = null,
+  summary = null,
+) {
+  const envelope = authoritativeSession(nextDraft, simulation, summary);
   envelope.session.turns = turns;
   return envelope;
+}
+
+function completeV2AuthoritativeSession({ noHistory = false } = {}) {
+  const result = simulationEnvelope({ noHistory }).result;
+  const simulation = {
+    version: 2,
+    complete: true,
+    status: "complete",
+    id: result.simulation.id,
+    createdAt: result.simulation.createdAt,
+    summary: structuredClone(result.summary),
+  };
+  return authoritativeSessionWithTurns(
+    result.draft,
+    [conversationTurn("completed")],
+    simulation,
+    structuredClone(result.summary),
+  );
+}
+
+function legacyV1AuthoritativeSession() {
+  const result = simulationEnvelope().result;
+  return authoritativeSessionWithTurns(
+    result.draft,
+    [conversationTurn("completed")],
+    {
+      version: 1,
+      complete: false,
+      status: "legacy",
+      id: result.simulation.id,
+      createdAt: result.simulation.createdAt,
+      summary: null,
+      message: "旧版摘要不完整，请重新试算",
+    },
+    null,
+  );
 }
 
 function persistedSimulation(overrides = {}) {
@@ -1059,6 +1101,82 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(screen.getByText("差额").parentElement).not.toHaveTextContent(
       "¥0.00",
     );
+  });
+
+  it("restores complete v2 summary parity from one authoritative session GET", async () => {
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
+      refreshSession: vi.fn().mockResolvedValue(completeV2AuthoritativeSession()),
+    });
+    renderWorkspace(apiClient);
+    await startRule();
+    await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新会话" }));
+
+    const simulation = await screen.findByRole("region", { name: "内部试算" });
+    expect(screen.getByText("新规则金额").parentElement).toHaveTextContent(
+      "¥1,125.00",
+    );
+    expect(screen.getByText("覆盖率").parentElement).toHaveTextContent("90.00%");
+    expect(screen.getByText("零金额").parentElement).toHaveTextContent("3 条");
+    expect(
+      within(simulation).getByText("转人工复核").parentElement,
+    ).toHaveTextContent("2 条");
+    expect(within(simulation).getByText("阻止执行").parentElement).toHaveTextContent(
+      "0 条",
+    );
+    expect(simulation).toHaveTextContent("¥80.00");
+    expect(simulation).toHaveTextContent("存在零金额记录");
+    expect(simulation).toHaveTextContent("两条记录未覆盖");
+    expect(simulation).toHaveTextContent("已通过历史数据验证");
+    expect(simulation).not.toHaveTextContent("authorized_ordinal");
+    expect(simulation).not.toHaveTextContent("amountCents");
+    expect(simulation).not.toHaveTextContent("percentageBps");
+  });
+
+  it("restores the v2 unverified label and never turns a missing delta into zero", async () => {
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
+      refreshSession: vi
+        .fn()
+        .mockResolvedValue(completeV2AuthoritativeSession({ noHistory: true })),
+    });
+    renderWorkspace(apiClient);
+    await startRule();
+    await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新会话" }));
+
+    const simulation = await screen.findByRole("region", { name: "内部试算" });
+    expect(simulation).toHaveTextContent("无历史数据");
+    expect(screen.getByText("新规则金额").parentElement).toHaveTextContent(
+      "¥1,125.00",
+    );
+    expect(screen.getByText("差额").parentElement).toHaveTextContent(
+      "无历史对照",
+    );
+    expect(screen.getByText("差额").parentElement).not.toHaveTextContent(
+      "¥0.00",
+    );
+  });
+
+  it("prompts legacy sessions to rerun without showing fabricated amounts", async () => {
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(startEnvelope(draft())),
+      refreshSession: vi.fn().mockResolvedValue(legacyV1AuthoritativeSession()),
+    });
+    renderWorkspace(apiClient);
+    await startRule();
+    await screen.findByRole("heading", { name: "每小时按多少元结算？" });
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新会话" }));
+
+    const simulation = await screen.findByRole("region", { name: "内部试算" });
+    expect(simulation).toHaveTextContent("旧版摘要不完整，请重新试算");
+    expect(simulation).not.toHaveTextContent("¥0.00");
+    expect(simulation).not.toHaveTextContent("当前金额");
+    expect(simulation).not.toHaveTextContent("差额");
   });
 
   it("keeps retry-in-progress visible across authoritative refreshes until terminal", async () => {

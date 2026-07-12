@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import { analyzeCustomRuleDataReadiness } from "./custom-rule-data-readiness";
 import { buildCustomRuleVariableCatalog } from "./custom-rule-variable-catalog";
@@ -12,8 +12,11 @@ import {
   type CustomRuleReadRepository,
   type FailedCustomRuleDraftInput,
   type FinalizeSettlementAiSimulationSummaryInput,
+  type CompleteSettlementFormulaSimulation,
   type InsertSettlementFormulaSimulationInput,
+  type LegacySettlementFormulaSimulation,
   type SettlementAiFormulaDraft,
+  type SettlementFormulaSimulation,
   type SettlementSimulationOwner,
 } from "./custom-rule-repository";
 
@@ -2026,6 +2029,31 @@ describe("custom-rule draft and simulation persistence", () => {
         p_warnings: input.warnings,
       }),
     );
+    expectTypeOf(result).toEqualTypeOf<
+      CompleteSettlementFormulaSimulation & { duplicate: boolean }
+    >();
+  });
+
+  it("narrows persisted simulations by their required summary discriminator", () => {
+    const assertNarrowed = (simulation: SettlementFormulaSimulation) => {
+      if (
+        simulation.summarySchemaVersion === 2 &&
+        simulation.summaryComplete
+      ) {
+        expectTypeOf(simulation).toEqualTypeOf<
+          CompleteSettlementFormulaSimulation
+        >();
+        expect(simulation.historicalTotals.verificationStatus).not.toBe(
+          "legacy_unknown",
+        );
+        return;
+      }
+
+      expectTypeOf(simulation).toEqualTypeOf<LegacySettlementFormulaSimulation>();
+      expect(simulation.historicalTotals.newPayableAmountCents).toBeNull();
+    };
+
+    expect(assertNarrowed).toBeTypeOf("function");
   });
 
   it.each([

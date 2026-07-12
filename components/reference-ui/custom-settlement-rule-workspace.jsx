@@ -365,7 +365,9 @@ function authorityFromSession(session) {
     draft: session.draft,
     diff: [],
     simulation: session.simulation,
-    summary: null,
+    summary:
+      session.summary ??
+      (session.simulation?.version === 2 ? session.simulation.summary : null),
   };
 }
 
@@ -867,6 +869,25 @@ function SimulationView({ authority, headingRef }) {
   const summary = authority.summary;
   const persisted = authority.simulation;
   if (!summary && !persisted) return null;
+  if (persisted?.version === 1 && !persisted.complete) {
+    return (
+      <section
+        className="crw-band crw-simulation"
+        role="region"
+        aria-label="内部试算"
+      >
+        <div className="crw-band-heading">
+          <div>
+            <h2 ref={headingRef} tabIndex={-1} data-focus-heading="result">
+              内部试算结果
+            </h2>
+            <span className="crw-preview-status">需要重新试算</span>
+          </div>
+        </div>
+        <p>{persisted.message}</p>
+      </section>
+    );
+  }
 
   const currentAmount = summary
     ? summary.totalOldYuan
@@ -976,6 +997,10 @@ function SimulationView({ authority, headingRef }) {
         <div>
           <span>转人工复核</span>
           <strong>{countValue(summary?.reviewRoutedCount)}</strong>
+        </div>
+        <div>
+          <span>阻止执行</span>
+          <strong>{countValue(summary?.blockedCount)}</strong>
         </div>
       </div>
 
