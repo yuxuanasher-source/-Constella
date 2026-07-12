@@ -3242,8 +3242,9 @@ exception
 end;
 $$;
 
--- All atomic finalizers acquire the conversation before the turn. The called
--- Xingyao and settlement RPCs then re-enter the same locks in the same order.
+-- All atomic finalizers acquire project, conversation, then turn. Holding the
+-- parent project lock before any draft can be locked keeps simulation replay
+-- aligned with create_settlement_formula_simulation and avoids lock inversion.
 create or replace function public.settlement_ai_lock_atomic_draft_turn(
   p_draft jsonb
 )
@@ -3283,12 +3284,12 @@ begin
      or not public.can_access_project(v_project_id) then
     raise exception 'settlement_ai_project_access_denied';
   end if;
-  if not exists (
-    select 1
+  perform 1
     from public.projects as project
     where project.id = v_project_id
       and project.organization_id = v_organization_id
-  ) then
+  for update;
+  if not found then
     raise exception 'settlement_ai_project_scope_mismatch';
   end if;
 
