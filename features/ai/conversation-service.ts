@@ -260,7 +260,9 @@ export function createConversationService(
         );
       }
 
-      const frozenSnapshot = turn.contextSnapshot;
+      const frozenSnapshot = normalizeStoredConversationSnapshot(
+        turn.contextSnapshot,
+      );
       if (frozenSnapshot?.gatewayContext) {
         const contextHash = hashConversationSnapshot(frozenSnapshot);
         const transitioned = await persistence.transitionTurn({
@@ -294,15 +296,12 @@ export function createConversationService(
           message.status === "completed" &&
           (message.role === "user" || message.role === "assistant"),
       );
-      const snapshotIds = turn.contextSnapshot?.messageIds ?? [];
+      const snapshotIds = frozenSnapshot?.messageIds ?? [];
       const eligible = snapshotIds.length
         ? completed.filter((message) => snapshotIds.includes(message.id))
         : completed;
-      const selected = takeLatestWithinBudget(
-        eligible,
-        contextCharacterBudget,
-      );
-      const snapshot = turn.contextSnapshot ?? {
+      const selected = takeLatestWithinBudget(eligible, contextCharacterBudget);
+      const snapshot = frozenSnapshot ?? {
         version: 1,
         summaryVersion: 0,
         messageIds: selected.map((message) => message.id),
@@ -342,7 +341,14 @@ export function createConversationService(
       snapshot: ConversationContextSnapshot,
       gatewayContext: ConversationGatewayContext,
     ) {
-      const nextSnapshot = { ...snapshot, gatewayContext };
+      const trustedSnapshot = requireConversationSnapshot(snapshot);
+      if (!isConversationGatewayContext(gatewayContext)) {
+        throw new ConversationServiceError(
+          "turn_state_conflict",
+          "Conversation gateway context is structurally invalid",
+        );
+      }
+      const nextSnapshot = { ...trustedSnapshot, gatewayContext };
       const captured = await persistence.transitionTurn({
         organizationId: actor.organizationId,
         ownerUserId: actor.userId,
@@ -519,6 +525,113 @@ function takeLatestWithinBudget(
   }
 
   return selected.reverse();
+}
+
+function normalizeStoredConversationSnapshot(
+  value: unknown,
+): ConversationContextSnapshot | null {
+  if (
+    value === null ||
+    value === undefined ||
+    (isRecord(value) && Object.keys(value).length === 0)
+  ) {
+    return null;
+  }
+  return requireConversationSnapshot(value);
+}
+
+function requireConversationSnapshot(
+  value: unknown,
+): ConversationContextSnapshot {
+  if (!isConversationSnapshot(value)) {
+    throw new ConversationServiceError(
+      "turn_state_conflict",
+      "Conversation context snapshot is structurally invalid",
+    );
+  }
+  return value;
+}
+
+function isConversationSnapshot(
+  value: unknown,
+): value is ConversationContextSnapshot {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    Number.isInteger(value.summaryVersion) &&
+    Number(value.summaryVersion) >= 0 &&
+    isStringArray(value.messageIds) &&
+    isStringArray(value.groundingRefs) &&
+    typeof value.assembledAt === "string" &&
+    value.assembledAt.trim().length > 0 &&
+    Number.isFinite(Date.parse(value.assembledAt)) &&
+    (value.gatewayContext === undefined ||
+      isConversationGatewayContext(value.gatewayContext))
+  );
+}
+
+function isConversationGatewayContext(
+  value: unknown,
+): value is ConversationGatewayContext {
+  if (!isRecord(value) || !isRecord(value.responseMetadata)) return false;
+
+  return (
+    Array.isArray(value.messages) &&
+    value.messages.every(isAiMessage) &&
+    Array.isArray(value.attachments) &&
+    value.attachments.every(isAiAttachment) &&
+    (value.mode === "fast" || value.mode === "deep") &&
+    ["openai", "hunyuan", "deepseek", "deterministic"].includes(
+      String(value.primaryProvider),
+    ) &&
+    typeof value.lastUserMessage === "string" &&
+    isRecord(value.responseMetadata.grounding) &&
+    isRecord(value.responseMetadata.knowledge) &&
+    Object.prototype.hasOwnProperty.call(
+      value.responseMetadata,
+      "retrospectiveDraft",
+    ) &&
+    isRecord(value.invocationMetadata)
+  );
+}
+
+function isAiMessage(value: unknown): value is AiMessage {
+  return (
+    isRecord(value) &&
+    ["system", "user", "assistant", "tool"].includes(String(value.role)) &&
+    typeof value.content === "string"
+  );
+}
+
+function isAiAttachment(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    typeof value.mimeType === "string" &&
+    (value.sizeBytes === undefined ||
+      (typeof value.sizeBytes === "number" &&
+        Number.isFinite(value.sizeBytes) &&
+        value.sizeBytes >= 0)) &&
+    optionalString(value.text) &&
+    optionalString(value.data) &&
+    optionalString(value.fileId) &&
+    optionalString(value.url)
+  );
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === "string" && item.trim().length > 0)
+  );
+}
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function hashConversationSnapshot(

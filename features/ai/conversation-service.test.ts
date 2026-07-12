@@ -179,7 +179,11 @@ describe("Xingyao conversation service", () => {
     expect(prepared.snapshot).toEqual({
       version: 1,
       summaryVersion: 0,
-      messageIds: ["message-user-old", "message-assistant-old", "message-user-1"],
+      messageIds: [
+        "message-user-old",
+        "message-assistant-old",
+        "message-user-1",
+      ],
       groundingRefs: ["dashboard:role-home"],
       assembledAt: "2026-07-11T03:00:00.000Z",
     });
@@ -190,6 +194,152 @@ describe("Xingyao conversation service", () => {
         patch: expect.objectContaining({ contextSnapshot: prepared.snapshot }),
       }),
     );
+  });
+
+  it("normalizes an empty persisted snapshot before capturing gateway context", async () => {
+    const messages: AiConversationMessageDto[] = [
+      message("message-user-1", 1, "user", "completed", "当前问题"),
+      message("message-assistant-1", 2, "assistant", "pending", ""),
+    ];
+    const store = persistence({
+      listMessages: vi.fn().mockResolvedValue(messages),
+      getTurn: vi.fn().mockResolvedValue(
+        storedTurn({
+          contextSnapshot: {} as unknown as NonNullable<
+            StoredConversationTurn["contextSnapshot"]
+          >,
+        }),
+      ),
+    });
+    const service = createConversationService(store, {
+      now: () => new Date("2026-07-12T06:00:00.000Z"),
+    });
+    const gatewayContext = trustedGatewayContext();
+    const expectedSnapshot = {
+      version: 1,
+      summaryVersion: 0,
+      messageIds: ["message-user-1"],
+      groundingRefs: ["dashboard:role-home"],
+      assembledAt: "2026-07-12T06:00:00.000Z",
+    };
+
+    const prepared = await service.prepareTurn(actor, "turn-1", [
+      "dashboard:role-home",
+      "dashboard:role-home",
+    ]);
+
+    expect(prepared.snapshot).toEqual(expectedSnapshot);
+    expect(prepared.messages).toEqual([{ role: "user", content: "当前问题" }]);
+    expect(store.transitionTurn).toHaveBeenNthCalledWith(1, {
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      turnId: "turn-1",
+      from: "accepted",
+      to: "grounding",
+      patch: {
+        contextSnapshot: expectedSnapshot,
+        contextHash: expect.any(String),
+      },
+    });
+
+    const captured = await service.captureGatewayContext(
+      actor,
+      "turn-1",
+      prepared.snapshot,
+      gatewayContext,
+    );
+
+    expect(captured).toEqual({ ...expectedSnapshot, gatewayContext });
+    expect(store.transitionTurn).toHaveBeenNthCalledWith(2, {
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      turnId: "turn-1",
+      from: "grounding",
+      to: "grounding",
+      patch: {
+        contextSnapshot: { ...expectedSnapshot, gatewayContext },
+        contextHash: expect.any(String),
+      },
+    });
+  });
+
+  it.each([
+    {
+      name: "missing required base fields",
+      snapshot: {
+        version: 1,
+        summaryVersion: 0,
+        messageIds: ["message-user-1"],
+      },
+    },
+    {
+      name: "gateway context without required base fields",
+      snapshot: { gatewayContext: trustedGatewayContext() },
+    },
+  ])(
+    "rejects a non-empty persisted snapshot with $name",
+    async ({ snapshot }) => {
+      const store = persistence({
+        getTurn: vi.fn().mockResolvedValue(
+          storedTurn({
+            contextSnapshot: snapshot as unknown as NonNullable<
+              StoredConversationTurn["contextSnapshot"]
+            >,
+          }),
+        ),
+      });
+      const service = createConversationService(store);
+
+      await expect(service.prepareTurn(actor, "turn-1")).rejects.toMatchObject({
+        code: "turn_state_conflict",
+      });
+      expect(store.listMessages).not.toHaveBeenCalled();
+      expect(store.transitionTurn).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects gateway capture when the base snapshot is incomplete", async () => {
+    const store = persistence();
+    const service = createConversationService(store);
+    const incompleteSnapshot = {
+      gatewayContext: trustedGatewayContext(),
+    } as unknown as NonNullable<StoredConversationTurn["contextSnapshot"]>;
+
+    await expect(
+      service.captureGatewayContext(
+        actor,
+        "turn-1",
+        incompleteSnapshot,
+        trustedGatewayContext(),
+      ),
+    ).rejects.toMatchObject({ code: "turn_state_conflict" });
+    expect(store.transitionTurn).not.toHaveBeenCalled();
+  });
+
+  it("keeps the latest completed message when a long history exceeds the budget", async () => {
+    const messages = Array.from({ length: 299 }, (_, index) =>
+      message(
+        `message-${index + 1}`,
+        index + 1,
+        index % 2 === 0 ? "user" : "assistant",
+        "completed",
+        "历史消息内容",
+      ),
+    );
+    messages.push(
+      message("message-user-latest", 300, "user", "completed", "最新问题"),
+    );
+    const store = persistence({
+      listMessages: vi.fn().mockResolvedValue(messages),
+    });
+    const service = createConversationService(store, {
+      contextCharacterBudget: 4,
+    });
+
+    const prepared = await service.prepareTurn(actor, "turn-1");
+
+    expect(prepared.messages).toEqual([{ role: "user", content: "最新问题" }]);
+    expect(prepared.snapshot.messageIds).toEqual(["message-user-latest"]);
   });
 
   it("uses the frozen gateway context without reloading a truncated message window", async () => {
@@ -218,7 +368,9 @@ describe("Xingyao conversation service", () => {
       gatewayContext,
     };
     const store = persistence({
-      getTurn: vi.fn().mockResolvedValue(storedTurn({ contextSnapshot: snapshot })),
+      getTurn: vi
+        .fn()
+        .mockResolvedValue(storedTurn({ contextSnapshot: snapshot })),
     });
     const service = createConversationService(store);
 
@@ -327,5 +479,24 @@ function message(
     parentMessageId: null,
     createdAt: "2026-07-11T03:00:00.000Z",
     updatedAt: "2026-07-11T03:00:00.000Z",
+  };
+}
+
+function trustedGatewayContext() {
+  return {
+    messages: [
+      { role: "system" as const, content: "可信系统规则" },
+      { role: "user" as const, content: "冻结的业务事实" },
+    ],
+    attachments: [],
+    mode: "fast" as const,
+    primaryProvider: "deepseek" as const,
+    lastUserMessage: "冻结的业务事实",
+    responseMetadata: {
+      grounding: { facts: [] },
+      knowledge: { passages: [] },
+      retrospectiveDraft: {},
+    },
+    invocationMetadata: { groundingFactCount: 0 },
   };
 }
