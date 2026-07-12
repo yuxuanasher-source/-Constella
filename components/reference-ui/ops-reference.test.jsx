@@ -192,6 +192,29 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     return mediaQueryList;
   };
 
+  const stubResponsiveViewport = (initialMatches) => {
+    const listeners = new Set();
+    const mediaQueryList = {
+      matches: initialMatches,
+      media: "(max-width: 720px)",
+      addEventListener: vi.fn((type, listener) => {
+        if (type === "change") listeners.add(listener);
+      }),
+      removeEventListener: vi.fn((type, listener) => {
+        if (type === "change") listeners.delete(listener);
+      }),
+    };
+    vi.stubGlobal("matchMedia", vi.fn(() => mediaQueryList));
+    return {
+      setMatches(matches) {
+        mediaQueryList.matches = matches;
+        listeners.forEach((listener) =>
+          listener({ matches, media: mediaQueryList.media }),
+        );
+      },
+    };
+  };
+
   it("exposes drawer state and closes from the close button", () => {
     renderShell();
 
@@ -409,6 +432,47 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     ).toHaveAttribute("type", "button");
   });
 
+  it("portals shared drawers and restores exact body isolation from the backdrop", () => {
+    const preservedSibling = document.createElement("div");
+    preservedSibling.setAttribute("inert", "");
+    preservedSibling.setAttribute("aria-hidden", "false");
+    document.body.appendChild(preservedSibling);
+
+    try {
+      const { container } = renderShell();
+      const opener = screen.getByRole("button", { name: /未配置组织/ });
+      opener.focus();
+      fireEvent.click(opener);
+
+      const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+      const layer = dialog.closest(".ops-drawer-layer");
+      expect(layer?.parentElement).toBe(document.body);
+      expect(layer).not.toHaveAttribute("inert");
+      expect(layer).not.toHaveAttribute("aria-hidden");
+      expect(container).toHaveAttribute("inert");
+      expect(container).toHaveAttribute("aria-hidden", "true");
+      expect(preservedSibling).toHaveAttribute("inert");
+      expect(preservedSibling).toHaveAttribute("aria-hidden", "true");
+
+      const backdrop = within(layer).getByRole("button", {
+        name: "关闭抽屉遮罩",
+      });
+      expect(backdrop).toHaveAttribute("tabindex", "-1");
+      fireEvent.click(backdrop);
+
+      expect(
+        screen.queryByRole("dialog", { name: "组织功能设置" }),
+      ).not.toBeInTheDocument();
+      expect(container).not.toHaveAttribute("inert");
+      expect(container).not.toHaveAttribute("aria-hidden");
+      expect(preservedSibling).toHaveAttribute("inert");
+      expect(preservedSibling).toHaveAttribute("aria-hidden", "false");
+      expect(opener).toHaveFocus();
+    } finally {
+      preservedSibling.remove();
+    }
+  });
+
   it("keeps the organization settings drawer within the viewport width", () => {
     renderShell();
     fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
@@ -442,6 +506,41 @@ describe("OpsReferenceApp responsive navigation shell", () => {
       screen.queryByRole("dialog", { name: "组织功能设置" }),
     ).not.toBeInTheDocument();
     expect(settingsButton).toHaveFocus();
+  });
+
+  it("falls back to main when organization settings crosses mobile to desktop", () => {
+    const viewport = stubResponsiveViewport(true);
+    const { container } = renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+    const main = container.querySelector(".ops-reference-main");
+
+    fireEvent.click(menuButton);
+    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+    const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+
+    act(() => viewport.setMatches(false));
+    fireEvent.keyDown(dialog, { key: "Escape" });
+
+    expect(main).toHaveFocus();
+    expect(menuButton).not.toHaveFocus();
+    expect(document.body).not.toHaveFocus();
+  });
+
+  it("falls back to mobile navigation when a desktop sidebar opener becomes hidden", () => {
+    const viewport = stubResponsiveViewport(false);
+    renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+    const sidebarOpener = screen.getByRole("button", { name: /未配置组织/ });
+    sidebarOpener.focus();
+    fireEvent.click(sidebarOpener);
+    const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+
+    act(() => viewport.setMatches(true));
+    fireEvent.keyDown(dialog, { key: "Escape" });
+
+    expect(menuButton).toHaveFocus();
+    expect(sidebarOpener).not.toHaveFocus();
+    expect(document.body).not.toHaveFocus();
   });
 
   it("closes the drawer with Escape", () => {
@@ -6697,6 +6796,87 @@ describe("OpsReferenceApp live task smoke", () => {
     expect(reviewTrigger).toHaveFocus();
   });
 
+  it("portals nested live review and preserves the outer modal isolation stack", () => {
+    const { reviewDialog, reviewTrigger, taskDrawer } = openNestedLiveReview();
+    const outerLayer = taskDrawer.closest(".ops-drawer-layer");
+    const appContainer = document.querySelector(".ops-reference-shell")?.parentElement;
+
+    expect(reviewDialog.parentElement).toBe(document.body);
+    expect(reviewDialog).not.toHaveAttribute("inert");
+    expect(reviewDialog).not.toHaveAttribute("aria-hidden");
+    expect(outerLayer).toHaveAttribute("inert");
+    expect(outerLayer).toHaveAttribute("aria-hidden", "true");
+    expect(taskDrawer).not.toHaveAttribute("aria-modal");
+    expect(appContainer).toHaveAttribute("inert");
+    expect(appContainer).toHaveAttribute("aria-hidden", "true");
+
+    fireEvent.keyDown(reviewDialog, { key: "Escape" });
+
+    expect(reviewTrigger).toHaveFocus();
+    expect(taskDrawer).toHaveAttribute("aria-modal", "true");
+    expect(outerLayer).not.toHaveAttribute("inert");
+    expect(outerLayer).not.toHaveAttribute("aria-hidden");
+    expect(appContainer).toHaveAttribute("inert");
+    expect(appContainer).toHaveAttribute("aria-hidden", "true");
+
+    fireEvent.click(within(taskDrawer).getByRole("button", { name: "关闭" }));
+    expect(appContainer).not.toHaveAttribute("inert");
+    expect(appContainer).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("publishes a single-column mobile layout contract for live review", () => {
+    const { reviewDialog } = openNestedLiveReview();
+
+    expect(reviewDialog).toHaveClass("ops-live-review-overlay");
+    expect(
+      reviewDialog.querySelector(".ops-live-review-panel"),
+    ).not.toBeNull();
+    expect(
+      reviewDialog.querySelector(".ops-live-review-header"),
+    ).not.toBeNull();
+    expect(reviewDialog.querySelector(".ops-live-review-body")).not.toBeNull();
+    expect(
+      reviewDialog.querySelector(".ops-live-review-editor"),
+    ).not.toBeNull();
+    expect(
+      reviewDialog.querySelector(".ops-live-review-sidebar"),
+    ).not.toBeNull();
+
+    const css = reviewDialog.querySelector("style")?.textContent;
+    expect(css).toMatch(/@media\s*\(max-width:\s*720px\)/);
+    expect(css).toMatch(
+      /\.ops-live-review-body\s*\{[^}]*flex-direction:\s*column;/s,
+    );
+    expect(css).toMatch(
+      /\.ops-live-review-editor\s*\{[^}]*width:\s*100%;[^}]*min-height:\s*280px;/s,
+    );
+    expect(css).toMatch(
+      /\.ops-live-review-sidebar\s*\{[^}]*width:\s*100%\s*!important;[^}]*max-height:/s,
+    );
+  });
+
+  it("focuses a shared drawer fallback and restores its visible opener", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[]}
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+        applicationQueue={[]}
+      />,
+    );
+    const opener = screen.getByRole("button", { name: "新建任务" });
+    opener.focus();
+    fireEvent.click(opener);
+
+    const dialog = screen.getByRole("dialog", { name: "新建任务" });
+    const closeButton = within(dialog).getByRole("button", { name: "关闭" });
+    expect(closeButton).toHaveFocus();
+
+    fireEvent.click(closeButton);
+    expect(opener).toHaveFocus();
+  });
+
   it("creates an ops live task without pulling historical tasks into the queue", async () => {
     const todayKey = new Date().toISOString().slice(0, 10);
     const createdTask = {
@@ -8102,6 +8282,26 @@ describe("OpsReferenceApp settlement smoke", () => {
     );
     expect(css).toMatch(
       /\.ops-reference-content\s*\{[^}]*overflow-x:\s*visible;/s,
+    );
+  });
+
+  it("publishes an independent tablet settlement breakpoint above mobile navigation", () => {
+    const { container } = renderMobileSettlementLayout();
+    const css = container.querySelector(
+      'style[data-ops-responsive-shell="true"]',
+    )?.textContent;
+
+    expect(css).toMatch(
+      /@media\s*\(min-width:\s*721px\)\s*and\s*\(max-width:\s*1100px\)/,
+    );
+    expect(css).toMatch(
+      /@media\s*\(min-width:\s*721px\)[\s\S]*?\.ops-settlement-new-batch-grid,\s*\.ops-settlement-manual-form\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(css).toMatch(
+      /@media\s*\(min-width:\s*721px\)[\s\S]*?\.ops-settlement-batch-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(css).toMatch(
+      /@media\s*\(min-width:\s*721px\)[\s\S]*?\.ops-settlement-batch-detail\s*\{[^}]*position:\s*static/s,
     );
   });
 

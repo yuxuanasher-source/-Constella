@@ -1922,6 +1922,87 @@ const NAV = [
 const OPS_MOBILE_NAVIGATION_QUERY = "(max-width: 720px)";
 
 const OPS_SHELL_RESPONSIVE_CSS = `
+  @media (min-width: 721px) and (max-width: 1100px) {
+    .ops-reference-main,
+    .ops-reference-content {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .ops-reference-content {
+      overflow-x: hidden;
+    }
+
+    .ops-settlement-content {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      padding: 16px !important;
+      gap: 14px !important;
+    }
+
+    .ops-settlement-content > * {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .ops-settlement-project-header,
+    .ops-settlement-period-controls,
+    .ops-settlement-batch-header,
+    .ops-settlement-batch-items-header {
+      flex-wrap: wrap;
+    }
+
+    .ops-settlement-period-controls {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .ops-settlement-period-controls input,
+    .ops-settlement-period-controls select {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .ops-settlement-summary-grid,
+    .ops-settlement-reconciliation-metrics {
+      grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    }
+
+    .ops-settlement-new-batch-grid,
+    .ops-settlement-manual-form {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .ops-settlement-new-batch-form,
+    .ops-settlement-manual-form {
+      min-width: 0;
+      max-width: 100%;
+      padding: 14px !important;
+    }
+
+    .ops-settlement-batch-layout {
+      grid-template-columns: minmax(0, 1fr) !important;
+      gap: 14px !important;
+    }
+
+    .ops-settlement-batch-detail {
+      position: static !important;
+      top: auto !important;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .ops-settlement-batch-meta {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .ops-settlement-content .ops-data-table-scroll {
+      max-width: 100%;
+      overflow-x: auto;
+    }
+  }
+
   @media ${OPS_MOBILE_NAVIGATION_QUERY} {
     .ops-reference-shell {
       width: 100%;
@@ -2217,6 +2298,56 @@ function isVisiblyTabbableWithin(element, boundary) {
   }
 
   return true;
+}
+
+function isRestorableFocusTarget(element) {
+  const body = globalThis.document?.body;
+  const isMobile = Boolean(
+    globalThis.matchMedia?.(OPS_MOBILE_NAVIGATION_QUERY).matches,
+  );
+  if (element?.classList?.contains("ops-mobile-nav-trigger")) {
+    return Boolean(element.isConnected && isMobile);
+  }
+  const sidebar = element?.closest?.(".ops-reference-sidebar");
+  if (sidebar && isMobile && sidebar.dataset.open !== "true") return false;
+
+  return Boolean(
+    element?.isConnected &&
+      body?.contains(element) &&
+      isVisiblyTabbableWithin(element, body),
+  );
+}
+
+function useModalLayerIsolation(layerRef, onActivate, onRestore) {
+  React.useLayoutEffect(() => {
+    const body = globalThis.document?.body;
+    const layer = layerRef.current;
+    if (!body || !layer) return undefined;
+
+    const siblingStates = Array.from(body.children)
+      .filter((element) => element !== layer)
+      .map((element) => ({
+        element,
+        inert: element.getAttribute("inert"),
+        ariaHidden: element.getAttribute("aria-hidden"),
+      }));
+
+    siblingStates.forEach(({ element }) => {
+      element.setAttribute("inert", "");
+      element.setAttribute("aria-hidden", "true");
+    });
+    onActivate?.();
+
+    return () => {
+      siblingStates.forEach(({ element, inert, ariaHidden }) => {
+        if (inert == null) element.removeAttribute("inert");
+        else element.setAttribute("inert", inert);
+        if (ariaHidden == null) element.removeAttribute("aria-hidden");
+        else element.setAttribute("aria-hidden", ariaHidden);
+      });
+      onRestore?.();
+    };
+  }, [layerRef, onActivate, onRestore]);
 }
 
 export function Sidebar({
@@ -24628,6 +24759,7 @@ function TaskDrawer({
   return (
     <Drawer
       onClose={onClose}
+      suspended={reviewOpen}
       title={
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span
@@ -27424,6 +27556,8 @@ function LiveReviewDrawer({
   const [message, setMessage] = React.useState("");
   const [error, setError] = React.useState("");
 
+  useModalLayerIsolation(dialogRef);
+
   React.useLayoutEffect(() => {
     closeButtonRef.current?.focus();
   }, []);
@@ -27575,9 +27709,10 @@ function LiveReviewDrawer({
   const knowledge = assist?.knowledge;
   const built = assist?.assist;
 
-  return (
+  const dialog = (
     <div
       ref={dialogRef}
+      className="ops-live-review-overlay"
       role="dialog"
       aria-modal="true"
       aria-label="直播复盘"
@@ -27590,6 +27725,8 @@ function LiveReviewDrawer({
         justifyContent: "center",
         alignItems: "stretch",
         padding: "32px 24px",
+        boxSizing: "border-box",
+        overflow: "hidden",
       }}
       onClick={onClose}
       onKeyDown={handleReviewKeyDown}
@@ -27606,11 +27743,63 @@ function LiveReviewDrawer({
         .md-preview th, .md-preview td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
         .md-preview th { background: var(--bg-soft); font-weight: 600; color: var(--ink-900); }
         .md-preview strong { color: var(--ink-900); }
+        @media (max-width: 720px) {
+          .ops-live-review-overlay { padding: 8px !important; }
+          .ops-live-review-panel {
+            width: 100% !important;
+            max-width: 100%;
+            height: 100%;
+            max-height: 100%;
+            border-radius: 8px !important;
+          }
+          .ops-live-review-header {
+            height: auto !important;
+            min-height: 56px;
+            padding: 8px 10px !important;
+            flex-wrap: wrap;
+          }
+          .ops-live-review-meta {
+            flex: 1 1 150px;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+          .ops-live-review-header-spacer { display: none; }
+          .ops-live-review-modes { margin-left: auto; max-width: calc(100% - 42px); }
+          .ops-live-review-body {
+            width: 100%;
+            min-width: 0;
+            min-height: 0;
+            flex-direction: column;
+            overflow-y: auto;
+          }
+          .ops-live-review-editor {
+            width: 100%;
+            min-height: 280px;
+            height: min(46dvh, 380px);
+            flex: 0 0 auto !important;
+            box-sizing: border-box;
+            border-right: none !important;
+            border-bottom: 1px solid var(--line);
+          }
+          .ops-live-review-editor > * { max-width: 100%; }
+          .ops-live-review-sidebar {
+            width: 100% !important;
+            max-height: min(32dvh, 260px);
+            flex: 0 0 auto !important;
+            box-sizing: border-box;
+          }
+          .ops-live-review-footer { flex-wrap: wrap; }
+          .ops-live-review-footer-message { flex-basis: 100%; }
+        }
       `}</style>
       <div
+        className="ops-live-review-panel"
         onClick={(e) => e.stopPropagation()}
         style={{
           width: "min(1040px, 100%)",
+          maxWidth: "100%",
           maxHeight: "100%",
           background: "#fff",
           borderRadius: 12,
@@ -27622,6 +27811,7 @@ function LiveReviewDrawer({
       >
         {/* Header */}
         <div
+          className="ops-live-review-header"
           style={{
             height: 56,
             padding: "0 16px",
@@ -27635,11 +27825,15 @@ function LiveReviewDrawer({
           <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
             直播复盘
           </div>
-          <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+          <span
+            className="ops-live-review-meta"
+            style={{ fontSize: 12, color: "var(--ink-400)" }}
+          >
             {projectName} · {streamerName}
           </span>
-          <div style={{ flex: 1 }} />
+          <div className="ops-live-review-header-spacer" style={{ flex: 1 }} />
           <div
+            className="ops-live-review-modes"
             style={{
               display: "inline-flex",
               border: "1px solid var(--line)",
@@ -27689,8 +27883,12 @@ function LiveReviewDrawer({
         </div>
 
         {/* Body: editor/preview + AI sidebar */}
-        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+        <div
+          className="ops-live-review-body"
+          style={{ flex: 1, display: "flex", minHeight: 0 }}
+        >
           <div
+            className="ops-live-review-editor"
             style={{
               flex: 1,
               minWidth: 0,
@@ -27727,6 +27925,7 @@ function LiveReviewDrawer({
 
           {/* AI assistant sidebar */}
           <div
+            className="ops-live-review-sidebar"
             style={{
               width: 320,
               flexShrink: 0,
@@ -27814,6 +28013,7 @@ function LiveReviewDrawer({
 
         {/* Footer */}
         <div
+          className="ops-live-review-footer"
           style={{
             padding: 12,
             borderTop: "1px solid var(--line)",
@@ -27822,7 +28022,10 @@ function LiveReviewDrawer({
             gap: 12,
           }}
         >
-          <div style={{ flex: 1, fontSize: 12 }}>
+          <div
+            className="ops-live-review-footer-message"
+            style={{ flex: 1, fontSize: 12 }}
+          >
             {error ? (
               <span style={{ color: "var(--danger-600)" }}>{error}</span>
             ) : message ? (
@@ -27848,6 +28051,9 @@ function LiveReviewDrawer({
       </div>
     </div>
   );
+
+  if (typeof document === "undefined") return dialog;
+  return createPortal(dialog, document.body);
 }
 
 function ReviewAssistList({ title, items, tone }) {
@@ -28293,9 +28499,41 @@ function Timeline({ events }) {
   );
 }
 
-function Drawer({ children, onClose, onKeyDown, title }) {
+function Drawer({ children, onClose, onKeyDown, suspended = false, title }) {
+  const layerRef = React.useRef(null);
   const drawerRef = React.useRef(null);
+  const closeButtonRef = React.useRef(null);
+  const openerRef = React.useRef(null);
   const titleId = React.useId();
+
+  const setLayerRef = React.useCallback((element) => {
+    if (element && !layerRef.current) {
+      const activeElement = globalThis.document?.activeElement;
+      if (
+        activeElement &&
+        activeElement !== globalThis.document?.body &&
+        !element.contains(activeElement)
+      ) {
+        openerRef.current = activeElement;
+      }
+    }
+    layerRef.current = element;
+  }, []);
+
+  const focusDrawer = React.useCallback(() => {
+    const drawerElement = drawerRef.current;
+    if (!drawerElement?.contains(globalThis.document?.activeElement)) {
+      closeButtonRef.current?.focus();
+    }
+  }, []);
+
+  const restoreDrawerFocus = React.useCallback(() => {
+    const opener = openerRef.current;
+    openerRef.current = null;
+    if (isRestorableFocusTarget(opener)) opener.focus();
+  }, []);
+
+  useModalLayerIsolation(layerRef, focusDrawer, restoreDrawerFocus);
 
   const handleDrawerKeyDown = (event) => {
     const sourceDialog = event.target?.closest?.('[role="dialog"]');
@@ -28340,66 +28578,97 @@ function Drawer({ children, onClose, onKeyDown, title }) {
     }
   };
 
-  return (
+  const layer = (
     <div
-      ref={drawerRef}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={titleId}
-      onKeyDown={handleDrawerKeyDown}
+      ref={setLayerRef}
+      className="ops-drawer-layer"
       style={{
         position: "fixed",
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: 460,
-        maxWidth: "100vw",
-        boxSizing: "border-box",
-        background: "#fff",
-        borderLeft: "1px solid var(--line)",
-        boxShadow: "-8px 0 24px rgba(15,23,42,0.08)",
-        display: "flex",
-        flexDirection: "column",
+        inset: 0,
         zIndex: 50,
       }}
     >
-      <div
+      <button
+        type="button"
+        aria-label="关闭抽屉遮罩"
+        tabIndex={-1}
+        onClick={onClose}
         style={{
-          height: 56,
-          padding: "0 16px",
-          borderBottom: "1px solid var(--line)",
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          padding: 0,
+          border: "none",
+          borderRadius: 0,
+          background: "rgba(15,23,42,0.24)",
+          cursor: "pointer",
+        }}
+      />
+      <div
+        ref={drawerRef}
+        role="dialog"
+        aria-modal={suspended ? undefined : "true"}
+        aria-labelledby={titleId}
+        onKeyDown={handleDrawerKeyDown}
+        style={{
+          position: "absolute",
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: 460,
+          maxWidth: "100vw",
+          boxSizing: "border-box",
+          background: "#fff",
+          borderLeft: "1px solid var(--line)",
+          boxShadow: "-8px 0 24px rgba(15,23,42,0.08)",
           display: "flex",
-          alignItems: "center",
-          gap: 10,
+          flexDirection: "column",
+          zIndex: 1,
         }}
       >
-        <div id={titleId} style={{ flex: 1, minWidth: 0 }}>
-          {title}
-        </div>
-        <button
-          type="button"
-          aria-label="关闭"
-          title="关闭"
-          onClick={onClose}
+        <div
           style={{
-            width: 30,
-            height: 30,
-            borderRadius: 6,
-            border: "none",
-            background: "transparent",
-            cursor: "pointer",
-            color: "var(--ink-400)",
-            display: "inline-flex",
+            height: 56,
+            padding: "0 16px",
+            borderBottom: "1px solid var(--line)",
+            display: "flex",
             alignItems: "center",
-            justifyContent: "center",
+            gap: 10,
           }}
         >
-          <Icon.X size={16} />
-        </button>
+          <div id={titleId} style={{ flex: 1, minWidth: 0 }}>
+            {title}
+          </div>
+          <button
+            ref={closeButtonRef}
+            type="button"
+            aria-label="关闭"
+            title="关闭"
+            onClick={onClose}
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 6,
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              color: "var(--ink-400)",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Icon.X size={16} />
+          </button>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto" }}>{children}</div>
       </div>
-      <div style={{ flex: 1, overflowY: "auto" }}>{children}</div>
     </div>
   );
+
+  if (typeof document === "undefined") return layer;
+  return createPortal(layer, document.body);
 }
 
 // ===== src\screen-org.jsx =====
@@ -32872,8 +33141,16 @@ function OpsReferenceInner({
     if (!organizationSettingsWasOpenRef.current) return;
 
     organizationSettingsWasOpenRef.current = false;
-    const focusTarget = organizationSettingsReturnFocusRef.current;
+    const preferredTarget = organizationSettingsReturnFocusRef.current;
     organizationSettingsReturnFocusRef.current = null;
+    const isMobile = Boolean(
+      globalThis.matchMedia?.(OPS_MOBILE_NAVIGATION_QUERY).matches,
+    );
+    const focusTarget = isRestorableFocusTarget(preferredTarget)
+      ? preferredTarget
+      : isMobile
+        ? mobileNavigationButtonRef.current
+        : mobileNavigationMainRef.current;
     focusTarget?.focus();
   }, [organizationSettingsOpen]);
 
