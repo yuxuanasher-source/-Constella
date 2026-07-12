@@ -3,10 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import type { AiProviderName } from "@/features/ai/contracts";
-import type {
-  AiConversationTurnDto,
-  ConversationTurnStatus,
-} from "@/features/ai/conversation-contracts";
+import type { ConversationTurnStatus } from "@/features/ai/conversation-contracts";
 import type { CreatedConversationTurn } from "@/features/ai/conversation-repository";
 
 import type {
@@ -15,6 +12,7 @@ import type {
   SettlementAiFailure,
   SettlementAiResult,
   SettlementConversationPort,
+  SettlementConversationTurn,
 } from "./custom-rule-ai";
 import {
   diffBusinessRuleContracts,
@@ -298,19 +296,27 @@ export type CustomRuleAuthoringServiceErrorCode =
   | "readiness_failed"
   | "simulation_failed";
 
+type TurnErrorDisposition = "not_owned" | "owned_unsettled" | "owned_settled";
+
 export class CustomRuleAuthoringServiceError extends Error {
   constructor(
     readonly code: CustomRuleAuthoringServiceErrorCode,
     message: string,
     readonly retryable: boolean,
-    options?: { cause?: unknown; sourceTurnId?: string },
+    options?: {
+      cause?: unknown;
+      sourceTurnId?: string;
+      turnDisposition?: TurnErrorDisposition;
+    },
   ) {
     super(message, options);
     this.name = "CustomRuleAuthoringServiceError";
     this.sourceTurnId = options?.sourceTurnId ?? null;
+    this.turnDisposition = options?.turnDisposition ?? "not_owned";
   }
 
   readonly sourceTurnId: string | null;
+  readonly turnDisposition: TurnErrorDisposition;
 }
 
 type ServiceDependencies = {
@@ -989,6 +995,7 @@ async function rejectFrozenRetryArtifact(
     false,
     undefined,
     opened.turnTrace.turnId,
+    "owned_settled",
   );
 }
 
@@ -1703,12 +1710,13 @@ async function rejectAcceptedTurn(
     true,
     undefined,
     accepted.turnId,
+    "owned_settled",
   );
 }
 
 type ObservedConversationTurn = {
   history: Awaited<ReturnType<SettlementConversationPort["getHistory"]>>;
-  turn: AiConversationTurnDto;
+  turn: SettlementConversationTurn;
 };
 
 async function observeReturnedTurn(
@@ -1739,7 +1747,7 @@ async function observeReturnedTurn(
 
 function duplicateTurnConflict(
   returned: CreatedConversationTurn,
-  observed: AiConversationTurnDto,
+  observed: SettlementConversationTurn,
 ): never {
   const active = isActiveConversationTurnStatus(observed.status);
   throw serviceError(
@@ -2145,7 +2153,7 @@ async function openRetryTurn(
 
 function retryTurnDto(
   returned: CreatedConversationTurn,
-  observed: AiConversationTurnDto,
+  observed: SettlementConversationTurn,
 ): CustomRuleRetryTurnDto {
   return Object.freeze({
     turnId: returned.turnId,
@@ -2181,6 +2189,7 @@ function requireMatchingCompletedRetry(
   const metadata = atomicCompletionMetadataSchema.safeParse(
     assistant?.metadata,
   );
+  const snapshot = observed.turn.contextSnapshot;
   if (
     observed.turn.status !== "completed" ||
     observed.turn.retryOfTurnId !== sourceTurnId ||
@@ -2196,6 +2205,11 @@ function requireMatchingCompletedRetry(
     assistant.parentMessageId !== returned.userMessageId ||
     assistant.content !== draft.aiResponse.content ||
     !metadata.success ||
+    !snapshot ||
+    metadata.data.contextSnapshotVersion !== snapshot.version ||
+    metadata.data.contextSummaryVersion !== snapshot.summaryVersion ||
+    canonicalJson(metadata.data.contextMessageIds) !==
+      canonicalJson(snapshot.messageIds) ||
     metadata.data.settlementIdempotencyKey !== draft.idempotencyKey ||
     metadata.data.settlementInitialStatus !== draft.initialStatus ||
     new Set(metadata.data.contextMessageIds).size !==
@@ -2395,6 +2409,7 @@ async function handleDomainFailure(input: {
       true,
       input.cause,
       input.opened.turnTrace.turnId,
+      "owned_settled",
     );
   }
   throw serviceError(
@@ -2403,6 +2418,7 @@ async function handleDomainFailure(input: {
     input.retryable,
     input.cause,
     input.opened.turnTrace.turnId,
+    "owned_settled",
   );
 }
 
@@ -2882,6 +2898,7 @@ function atomicReconciliationError(
     false,
     cause,
     opened.turnTrace.turnId,
+    "owned_unsettled",
   );
 }
 
@@ -3055,7 +3072,14 @@ async function failAndThrow(
     retryable,
     message,
   );
-  throw serviceError(code, message, retryable, cause, opened.turnTrace.turnId);
+  throw serviceError(
+    code,
+    message,
+    retryable,
+    cause,
+    opened.turnTrace.turnId,
+    "owned_settled",
+  );
 }
 
 async function runOwnedOpenedTransition<Result>(
@@ -3069,7 +3093,7 @@ async function runOwnedOpenedTransition<Result>(
   } catch (error) {
     if (
       error instanceof CustomRuleAuthoringServiceError &&
-      error.sourceTurnId === opened.turnTrace.turnId
+      error.turnDisposition === "owned_settled"
     ) {
       throw error;
     }
@@ -3100,6 +3124,7 @@ async function runOwnedOpenedTransition<Result>(
         error.retryable,
         error,
         opened.turnTrace.turnId,
+        "owned_settled",
       );
     }
     throw serviceError(
@@ -3108,6 +3133,7 @@ async function runOwnedOpenedTransition<Result>(
       true,
       error,
       opened.turnTrace.turnId,
+      "owned_settled",
     );
   }
 }
@@ -3144,6 +3170,7 @@ async function markValidating(
       true,
       error,
       opened.turnTrace.turnId,
+      "owned_settled",
     );
   }
 }
@@ -3644,10 +3671,12 @@ function serviceError(
   retryable: boolean,
   cause?: unknown,
   sourceTurnId?: string,
+  turnDisposition?: TurnErrorDisposition,
 ): CustomRuleAuthoringServiceError {
   return new CustomRuleAuthoringServiceError(code, message, retryable, {
     cause,
     sourceTurnId,
+    turnDisposition,
   });
 }
 

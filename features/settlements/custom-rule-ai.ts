@@ -3,17 +3,7 @@ import { types as nodeTypes } from "node:util";
 
 import { z } from "zod";
 
-import type {
-  AiConversationDto,
-  AiConversationMessageDto,
-  AiConversationTurnDto,
-  ConversationContextSnapshot,
-  ConversationGatewayContext,
-  CreateTurnCommand,
-  RetryTurnCommand,
-} from "@/features/ai/conversation-contracts";
-import type { ConversationActor } from "@/features/ai/conversation-service";
-import type { CreatedConversationTurn } from "@/features/ai/conversation-repository";
+import type { createConversationService } from "@/features/ai/conversation-service";
 import type {
   AiGatewayRequest,
   AiGatewayResult,
@@ -288,73 +278,27 @@ const frozenRetryContextSchema = z.strictObject({
 });
 
 /** Public Xingyao service surface used by settlement authoring. */
-export type SettlementConversationPort = {
-  createConversation(
-    actor: ConversationActor,
-    title?: string,
-  ): Promise<AiConversationDto>;
-  getHistory(
-    actor: ConversationActor,
-    conversationId: string,
-  ): Promise<{
-    conversation: AiConversationDto;
-    messages: AiConversationMessageDto[];
-    turns: AiConversationTurnDto[];
-  }>;
-  acceptTurn(
-    actor: ConversationActor,
-    conversationId: string,
-    command: CreateTurnCommand,
-  ): Promise<CreatedConversationTurn>;
-  retryTurn(
-    actor: ConversationActor,
-    sourceTurnId: string,
-    command: RetryTurnCommand,
-  ): Promise<CreatedConversationTurn>;
-  prepareTurn(
-    actor: ConversationActor,
-    turnId: string,
-    groundingRefs?: string[],
-  ): Promise<{
-    messages: AiMessage[];
-    snapshot: ConversationContextSnapshot;
-  }>;
-  captureGatewayContext(
-    actor: ConversationActor,
-    turnId: string,
-    snapshot: ConversationContextSnapshot,
-    gatewayContext: ConversationGatewayContext,
-  ): Promise<ConversationContextSnapshot>;
-  markGenerating(
-    actor: ConversationActor,
-    turnId: string,
-    providerName?: AiProviderName,
-    invocationId?: string,
-  ): Promise<void>;
-  markValidating(actor: ConversationActor, turnId: string): Promise<void>;
-  completeTurn(
-    actor: ConversationActor,
-    turnId: string,
-    input: {
-      content: string;
-      providerName?: AiProviderName;
-      invocationId?: string;
-      metadata?: Record<string, unknown>;
-    },
-  ): Promise<void>;
-  failTurn(
-    actor: ConversationActor,
-    turnId: string,
-    input: {
-      content?: string;
-      providerName?: AiProviderName;
-      invocationId?: string;
-      errorCode: string;
-      errorSummary: string;
-      retryable: boolean;
-    },
-  ): Promise<void>;
-};
+type PublicConversationService = ReturnType<typeof createConversationService>;
+
+export type SettlementConversationPort = Pick<
+  PublicConversationService,
+  | "createConversation"
+  | "getHistory"
+  | "acceptTurn"
+  | "retryTurn"
+  | "prepareTurn"
+  | "captureGatewayContext"
+  | "markGenerating"
+  | "markValidating"
+  | "completeTurn"
+  | "failTurn"
+>;
+
+export type SettlementConversationHistory = Awaited<
+  ReturnType<SettlementConversationPort["getHistory"]>
+>;
+export type SettlementConversationTurn =
+  SettlementConversationHistory["turns"][number];
 
 export type SettlementStructuredGatewayRequest = Extract<
   AiGatewayRequest,

@@ -127,6 +127,22 @@ describe("SettlementConversationPort", () => {
         duplicate: false,
       }),
       prepareTurn: async () => ({
+        turn: {
+          id: "turn-1",
+          conversationId: "conversation-1",
+          userMessageId: "user-message-1",
+          assistantMessageId: "assistant-message-1",
+          mode: "fast",
+          status: "accepted",
+          attempt: 1,
+          contextSnapshot: null,
+          retryOfTurnId: null,
+          regenerateOfTurnId: null,
+          providerName: null,
+          errorCode: null,
+          errorSummary: null,
+          retryable: true,
+        },
         messages: [],
         snapshot: {
           version: 1,
@@ -136,7 +152,12 @@ describe("SettlementConversationPort", () => {
           assembledAt: "2026-07-12T00:00:00.000Z",
         },
       }),
-      captureGatewayContext: async (_actor, _turnId, snapshot) => snapshot,
+      captureGatewayContext: async (
+        _actor,
+        _turnId,
+        snapshot,
+        gatewayContext,
+      ) => ({ ...snapshot, gatewayContext }),
       markGenerating: async () => undefined,
       markValidating: async () => undefined,
       completeTurn: async () => undefined,
@@ -367,7 +388,8 @@ describe("createSettlementRuleAiAdapter", () => {
     });
     const input = baseInput();
     input.currentContract.parameters[0].description = "known10000";
-    input.currentContract.examples[0].description = "private-example-known10000";
+    input.currentContract.examples[0].description =
+      "private-example-known10000";
 
     const prepared = adapter.prepare(input);
     const prompt = prepared.request.messages.at(-1)?.content ?? "";
@@ -544,7 +566,9 @@ describe("createSettlementRuleAiAdapter", () => {
     const exception = await exceptionAdapter.execute(
       exceptionAdapter.prepare(baseInput()),
     );
-    const failed = await failedAdapter.execute(failedAdapter.prepare(baseInput()));
+    const failed = await failedAdapter.execute(
+      failedAdapter.prepare(baseInput()),
+    );
 
     for (const result of [exception, failed]) {
       expect(result).toMatchObject({
@@ -586,7 +610,9 @@ describe("createSettlementRuleAiAdapter", () => {
     expect(() =>
       adapter.prepare({ ...baseInput(), catalog: unsafeCatalog as never }),
     ).toThrow(SettlementAiInputError);
-    expect(() => adapter.prepare(accessorInput)).toThrow(SettlementAiInputError);
+    expect(() => adapter.prepare(accessorInput)).toThrow(
+      SettlementAiInputError,
+    );
 
     const result = await adapter.execute(adapter.prepare(baseInput()));
     expect(result).toMatchObject({

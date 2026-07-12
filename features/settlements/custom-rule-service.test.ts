@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+  AiConversationDto,
   AiConversationMessageDto,
   AiConversationTurnDto,
+  ConversationContextSnapshot,
 } from "@/features/ai/conversation-contracts";
 import type { AiGatewayResult } from "@/features/ai/contracts";
+import type {
+  CreatedConversationTurn,
+  StoredConversationTurn,
+} from "@/features/ai/conversation-repository";
+import {
+  createConversationService,
+  type ConversationPersistence,
+} from "@/features/ai/conversation-service";
 
 import { createSettlementRuleAiAdapter } from "./custom-rule-ai";
 import type {
@@ -55,6 +65,37 @@ const CONVERSATION_ID = "00000000-0000-4000-8000-000000000004";
 const FIRST_DRAFT_ID = "00000000-0000-4000-8000-000000000101";
 const CATALOG_VERSION = "a".repeat(64);
 const actor = { organizationId: ORGANIZATION_ID, userId: USER_ID };
+
+const STANDALONE_RETRY_SOURCE_TURN_ID = uuid(210);
+const RETRY_CONTEXT_MESSAGE_IDS = [uuid(298), uuid(299), uuid(301)];
+
+function retryContextSnapshot(): ConversationContextSnapshot {
+  return {
+    version: 7,
+    summaryVersion: 3,
+    messageIds: [...RETRY_CONTEXT_MESSAGE_IDS],
+    groundingRefs: [],
+    assembledAt: "2026-07-12T00:00:00.000Z",
+  };
+}
+
+function frozenRetryDraftIdempotencyKey(
+  history: Awaited<ReturnType<SettlementConversationPort["getHistory"]>>,
+  turnId: string,
+): string {
+  const metadata = history.turns.find((turn) => turn.id === turnId)
+    ?.contextSnapshot?.gatewayContext?.invocationMetadata
+    .settlementServiceRetryContext;
+  if (
+    typeof metadata !== "object" ||
+    metadata === null ||
+    !("draftIdempotencyKey" in metadata) ||
+    typeof metadata.draftIdempotencyKey !== "string"
+  ) {
+    throw new Error("frozen retry draft key is missing");
+  }
+  return metadata.draftIdempotencyKey;
+}
 
 describe("custom rule authoring service", () => {
   it("atomically finalizes revision one without directly completing the turn", async () => {
@@ -349,6 +390,151 @@ describe("custom rule authoring service", () => {
       retryable: false,
       sourceTurnId: uuid(201),
     });
+  });
+
+  it("fails the owned retry turn when a clarifying atomic partial artifact remains", async () => {
+    const harness = createHarness([{ providerFailure: true }]);
+    const failed = await harness.service.startSession({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      clientRequestId: "clarifying-partial-source-0001",
+      promptText: "Clarify the settlement rule.",
+      seedContract: contract(),
+      initialAmbiguities: [
+        {
+          code: "confirm_rate",
+          question: "Confirm the hourly rate?",
+          required: true,
+        },
+      ],
+    });
+    if (failed.ok) throw new Error("clarifying source unexpectedly passed");
+    const sourceHistory = await harness.conversation.getHistory(
+      actor,
+      CONVERSATION_ID,
+    );
+    harness.repository.seedDraft(
+      clarifyingDraft({
+        idempotencyKey: frozenRetryDraftIdempotencyKey(
+          sourceHistory,
+          failed.sourceTurnId,
+        ),
+        turnTrace: {
+          turnId: uuid(611),
+          userMessageId: uuid(612),
+          assistantMessageId: uuid(613),
+        },
+      }),
+    );
+
+    await expect(
+      harness.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: failed.sourceTurnId,
+        clientRequestId: "clarifying-partial-retry-0001",
+      }),
+    ).rejects.toMatchObject({
+      code: "conversation_reconciliation_failed",
+      sourceTurnId: uuid(202),
+    });
+
+    const history = await harness.conversation.getHistory(
+      actor,
+      CONVERSATION_ID,
+    );
+    expect(history.turns.find((turn) => turn.id === uuid(202))).toMatchObject({
+      status: "failed",
+      errorCode: "settlement_post_open_validation_failed",
+      retryable: false,
+    });
+    expect(harness.conversation.failTurn).toHaveBeenLastCalledWith(
+      actor,
+      uuid(202),
+      expect.objectContaining({
+        errorCode: "settlement_post_open_validation_failed",
+        retryable: false,
+      }),
+    );
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(1);
+    expect(harness.repository.finalizeDraftTurnCalls).toHaveLength(0);
+  });
+
+  it("fails the owned retry turn when a contract-ready partial artifact remains", async () => {
+    const harness = createHarness([{ providerFailure: true }]);
+    const previous = harness.repository.seedDraft(confirmableDraft());
+    const failed = await harness.service.confirmContract({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      expectedDraftId: previous.id,
+      expectedRevisionNumber: previous.revisionNumber,
+      clientRequestId: "contract-partial-source-0001",
+      promptText: "Confirm this settlement contract.",
+      contractConfirmed: true,
+      expectedContractHash: previous.contractHash,
+      expectedCatalogVersion: previous.variableCatalogVersion,
+      simulationSelection: safeSelection(),
+    });
+    if (failed.ok) throw new Error("confirmation source unexpectedly passed");
+    const sourceHistory = await harness.conversation.getHistory(
+      actor,
+      CONVERSATION_ID,
+    );
+    const partial = simulatedDraft();
+    partial.id = uuid(620);
+    partial.idempotencyKey = frozenRetryDraftIdempotencyKey(
+      sourceHistory,
+      failed.sourceTurnId,
+    );
+    partial.turnTrace = {
+      turnId: uuid(621),
+      userMessageId: uuid(622),
+      assistantMessageId: uuid(623),
+    };
+    partial.status = "contract_ready";
+    partial.revisionNumber = 2;
+    partial.supersedesDraftId = previous.id;
+    harness.repository.seedDraft(partial);
+
+    await expect(
+      harness.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: failed.sourceTurnId,
+        clientRequestId: "contract-partial-retry-0001",
+      }),
+    ).rejects.toMatchObject({
+      code: "conversation_reconciliation_failed",
+      sourceTurnId: uuid(202),
+    });
+
+    const history = await harness.conversation.getHistory(
+      actor,
+      CONVERSATION_ID,
+    );
+    expect(history.turns.find((turn) => turn.id === uuid(202))).toMatchObject({
+      status: "failed",
+      errorCode: "settlement_post_open_validation_failed",
+      retryable: false,
+    });
+    expect(harness.conversation.failTurn).toHaveBeenLastCalledWith(
+      actor,
+      uuid(202),
+      expect.objectContaining({
+        errorCode: "settlement_post_open_validation_failed",
+        retryable: false,
+      }),
+    );
+    expect(
+      harness.events.filter((event) => event === "gateway.execute"),
+    ).toHaveLength(1);
+    expect(harness.repository.finalizeSimulationTurnCalls).toHaveLength(0);
   });
 
   it("revises by appending the generic turn first, preserves prior evidence, and replays idempotently", async () => {
@@ -1238,7 +1424,7 @@ describe("custom rule authoring service", () => {
         metadata: {
           contextSnapshotVersion: 7,
           contextSummaryVersion: 3,
-          contextMessageIds: [uuid(301)],
+          contextMessageIds: [...RETRY_CONTEXT_MESSAGE_IDS],
           settlementIdempotencyKey: completedIdempotencyKey,
           settlementInitialStatus: "clarifying",
         },
@@ -1259,7 +1445,7 @@ describe("custom rule authoring service", () => {
       actor,
       projectId: PROJECT_ID,
       conversationId: CONVERSATION_ID,
-      sourceTurnId: completedDraft.turnTrace.turnId,
+      sourceTurnId: STANDALONE_RETRY_SOURCE_TURN_ID,
       clientRequestId: "completed-retry-readback-0001",
     });
     expect(readback).toMatchObject({
@@ -1322,7 +1508,7 @@ describe("custom rule authoring service", () => {
       metadata: {
         contextSnapshotVersion: 7,
         contextSummaryVersion: 3,
-        contextMessageIds: [uuid(301)],
+        contextMessageIds: [...RETRY_CONTEXT_MESSAGE_IDS],
         settlementIdempotencyKey: completionIdempotencyKey,
         settlementInitialStatus: "clarifying",
       },
@@ -1386,7 +1572,7 @@ describe("custom rule authoring service", () => {
         metadata: {
           contextSnapshotVersion: 7,
           contextSummaryVersion: 3,
-          contextMessageIds: [uuid(301)],
+          contextMessageIds: [...RETRY_CONTEXT_MESSAGE_IDS],
           settlementIdempotencyKey:
             tamper === "metadata" ? "wrong-retry-key-0001" : expectedKey,
           settlementInitialStatus: "clarifying",
@@ -1422,6 +1608,278 @@ describe("custom rule authoring service", () => {
       });
       expect(harness.conversation.failTurn).not.toHaveBeenCalled();
     }
+  });
+
+  it("requires completed retry metadata to exactly match the frozen turn context", async () => {
+    const expectedKey = "completed-retry-exact-context-0001";
+    const expectedContent = "Exact frozen-context retry content.";
+    const snapshot = retryContextSnapshot();
+    const exactMetadata: SettlementAiTurnCompletionInput["metadata"] = {
+      contextSnapshotVersion: snapshot.version,
+      contextSummaryVersion: snapshot.summaryVersion,
+      contextMessageIds: [...snapshot.messageIds],
+      settlementIdempotencyKey: expectedKey,
+      settlementInitialStatus: "clarifying",
+    };
+    const tamperedMetadata = [
+      {
+        name: "snapshot-version",
+        value: { ...exactMetadata, contextSnapshotVersion: 8 },
+      },
+      {
+        name: "summary-version",
+        value: { ...exactMetadata, contextSummaryVersion: 4 },
+      },
+      {
+        name: "missing-message-id",
+        value: {
+          ...exactMetadata,
+          contextMessageIds: [
+            RETRY_CONTEXT_MESSAGE_IDS[0],
+            RETRY_CONTEXT_MESSAGE_IDS[2],
+          ],
+        },
+      },
+      {
+        name: "extra-message-id",
+        value: {
+          ...exactMetadata,
+          contextMessageIds: [...RETRY_CONTEXT_MESSAGE_IDS, uuid(401)],
+        },
+      },
+      {
+        name: "reordered-message-ids",
+        value: {
+          ...exactMetadata,
+          contextMessageIds: [
+            RETRY_CONTEXT_MESSAGE_IDS[1],
+            RETRY_CONTEXT_MESSAGE_IDS[0],
+            RETRY_CONTEXT_MESSAGE_IDS[2],
+          ],
+        },
+      },
+    ];
+
+    for (const tamper of tamperedMetadata) {
+      const harness = createHarness([], {
+        retryTurnStatus: "completed",
+        retryTurnDuplicate: true,
+        retryContextSnapshot: snapshot,
+        retryTerminalCompletion: {
+          providerName: "deterministic",
+          content: expectedContent,
+          aiInvocationId: null,
+          metadata: tamper.value,
+        },
+      });
+      harness.seedConversationMessage({
+        id: RETRY_CONTEXT_MESSAGE_IDS[0],
+        conversationId: CONVERSATION_ID,
+        sequence: 1,
+        role: "user",
+        status: "completed",
+        content: "Earlier settlement question.",
+        parentMessageId: null,
+        createdAt: "2026-07-12T00:00:00.000Z",
+        updatedAt: "2026-07-12T00:00:00.000Z",
+      });
+      harness.seedConversationMessage({
+        id: RETRY_CONTEXT_MESSAGE_IDS[1],
+        conversationId: CONVERSATION_ID,
+        sequence: 2,
+        role: "assistant",
+        status: "completed",
+        content: "Earlier settlement answer.",
+        parentMessageId: RETRY_CONTEXT_MESSAGE_IDS[0],
+        createdAt: "2026-07-12T00:00:00.000Z",
+        updatedAt: "2026-07-12T00:00:00.000Z",
+      });
+      harness.repository.seedDraft(
+        clarifyingDraft({
+          idempotencyKey: expectedKey,
+          aiResponseContent: expectedContent,
+          turnTrace: {
+            turnId: uuid(201),
+            userMessageId: uuid(301),
+            assistantMessageId: uuid(401),
+          },
+        }),
+      );
+
+      await expect(
+        harness.service.retryTurn({
+          actor,
+          projectId: PROJECT_ID,
+          conversationId: CONVERSATION_ID,
+          sourceTurnId: uuid(210),
+          clientRequestId: `completed-${tamper.name}-0001`,
+        }),
+      ).rejects.toMatchObject({
+        code: "conversation_failed",
+        retryable: false,
+        sourceTurnId: uuid(201),
+      });
+      expect(harness.conversation.failTurn).not.toHaveBeenCalled();
+    }
+  });
+
+  it("integrates real Xingyao retry eligibility, lineage, and completed Task7 readback", async () => {
+    const persistence = new InMemoryConversationPersistence();
+    const conversation = createConversationService(persistence, {
+      now: () => new Date("2026-07-12T00:00:00.000Z"),
+    });
+    const createdConversation = await conversation.createConversation(
+      actor,
+      "Settlement authoring integration",
+    );
+    const sourceTurnId = uuid(650);
+    const sourceUserMessageId = uuid(651);
+    const sourceSnapshot: ConversationContextSnapshot = {
+      version: 11,
+      summaryVersion: 5,
+      messageIds: [sourceUserMessageId],
+      groundingRefs: [],
+      assembledAt: "2026-07-12T00:00:00.000Z",
+      gatewayContext: {
+        messages: [
+          { role: "user", content: "Retry this settlement authoring turn." },
+        ],
+        attachments: [],
+        mode: "fast",
+        primaryProvider: "deterministic",
+        lastUserMessage: "Retry this settlement authoring turn.",
+        responseMetadata: {
+          grounding: {},
+          knowledge: {},
+          retrospectiveDraft: null,
+        },
+        invocationMetadata: {},
+      },
+    };
+    persistence.seedFailedTurn({
+      turnId: sourceTurnId,
+      userMessageId: sourceUserMessageId,
+      assistantMessageId: uuid(652),
+      retryable: true,
+      contextSnapshot: sourceSnapshot,
+    });
+    const nonRetryableSourceTurnId = uuid(660);
+    persistence.seedFailedTurn({
+      turnId: nonRetryableSourceTurnId,
+      userMessageId: uuid(661),
+      assistantMessageId: uuid(662),
+      retryable: false,
+      contextSnapshot: {
+        ...sourceSnapshot,
+        messageIds: [uuid(661)],
+      },
+    });
+
+    const clientRequestId = "real-conversation-retry-0001";
+    const successor = await conversation.retryTurn(actor, sourceTurnId, {
+      clientRequestId,
+    });
+    expect(successor).toMatchObject({
+      conversationId: createdConversation.id,
+      userMessageId: sourceUserMessageId,
+      attempt: 2,
+      duplicate: false,
+    });
+    expect(successor.turnId).not.toBe(sourceTurnId);
+
+    const prepared = await conversation.prepareTurn(actor, successor.turnId);
+    expect(prepared.snapshot).toEqual(sourceSnapshot);
+    await conversation.markGenerating(actor, successor.turnId, "deterministic");
+    await conversation.markValidating(actor, successor.turnId);
+    const draftIdempotencyKey = "real-completed-retry-draft-0001";
+    const assistantContent = "Persisted exact assistant response.";
+    await conversation.completeTurn(actor, successor.turnId, {
+      providerName: "deterministic",
+      content: assistantContent,
+      metadata: {
+        contextSnapshotVersion: sourceSnapshot.version,
+        contextSummaryVersion: sourceSnapshot.summaryVersion,
+        contextMessageIds: [...sourceSnapshot.messageIds],
+        settlementIdempotencyKey: draftIdempotencyKey,
+        settlementInitialStatus: "clarifying",
+      },
+    });
+
+    const repository = new InMemoryAuthoringRepository([], {}, () => {});
+    const persistedDraft = repository.seedDraft(
+      clarifyingDraft({
+        idempotencyKey: draftIdempotencyKey,
+        aiResponseContent: assistantContent,
+        turnTrace: {
+          turnId: successor.turnId,
+          userMessageId: successor.userMessageId,
+          assistantMessageId: successor.assistantMessageId,
+        },
+      }),
+    );
+    const adapter = createSettlementRuleAiAdapter({
+      gateway: async () => {
+        throw new Error("completed readback must not invoke the gateway");
+      },
+    });
+    const service = createCustomRuleAuthoringService({
+      conversation,
+      ai: adapter,
+      repository,
+      catalog: { getCatalog: async () => catalog() },
+      evidence: {
+        loadAuthorizedEvidence: async (input) =>
+          authorizedEvidence(input, "5000"),
+      },
+      analyzeReadiness: analyzeCustomRuleDataReadiness,
+      simulate: simulateCustomSettlementRule,
+      primaryProvider: "deterministic",
+    });
+
+    const readback = await service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: createdConversation.id,
+      sourceTurnId,
+      clientRequestId,
+    });
+    expect(readback).toMatchObject({
+      ok: true,
+      kind: "retry_readback",
+      draft: { id: persistedDraft.id },
+      turn: {
+        turnId: successor.turnId,
+        status: "completed",
+        attempt: 2,
+        duplicate: true,
+      },
+    });
+
+    const history = await conversation.getHistory(
+      actor,
+      createdConversation.id,
+    );
+    const successorTurns = history.turns.filter(
+      (turn) => turn.retryOfTurnId === sourceTurnId,
+    );
+    expect(successorTurns).toHaveLength(1);
+    expect(successorTurns[0]).toMatchObject({
+      id: successor.turnId,
+      userMessageId: sourceUserMessageId,
+      status: "completed",
+      retryable: false,
+    });
+
+    await expect(
+      conversation.retryTurn(actor, nonRetryableSourceTurnId, {
+        clientRequestId: "real-nonretryable-source-0001",
+      }),
+    ).rejects.toMatchObject({ code: "turn_not_retryable" });
+    expect(
+      (
+        await conversation.getHistory(actor, createdConversation.id)
+      ).turns.filter((turn) => turn.retryOfTurnId === nonRetryableSourceTurnId),
+    ).toHaveLength(0);
   });
 
   it("atomically finalizes a validated contract, simulation, and generic turn", async () => {
@@ -1975,7 +2433,23 @@ describe("custom rule authoring service", () => {
     expect(harness.repository.drafts).toHaveLength(2);
     expect(harness.repository.simulations).toHaveLength(0);
     expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
-    expect(harness.conversation.failTurn).not.toHaveBeenCalled();
+    expect(harness.conversation.failTurn).toHaveBeenLastCalledWith(
+      actor,
+      uuid(201),
+      expect.objectContaining({
+        errorCode: "settlement_post_open_validation_failed",
+        retryable: false,
+      }),
+    );
+    const history = await harness.conversation.getHistory(
+      actor,
+      CONVERSATION_ID,
+    );
+    expect(history.turns.find((turn) => turn.id === uuid(201))).toMatchObject({
+      status: "failed",
+      errorCode: "settlement_post_open_validation_failed",
+      retryable: false,
+    });
   });
 });
 
@@ -2013,6 +2487,7 @@ function createHarness(
     retryTurnDuplicate?: boolean;
     retryTurnRetryable?: boolean;
     retryTerminalCompletion?: SettlementAiTurnCompletionInput;
+    retryContextSnapshot?: ConversationContextSnapshot;
     gatewayGate?: Promise<void>;
     retryConversationMismatch?: boolean;
   } = {},
@@ -2029,8 +2504,30 @@ function createHarness(
     string,
     Awaited<ReturnType<SettlementConversationPort["acceptTurn"]>>
   >();
-  const turns = new Map<string, AiConversationTurnDto>();
+  const turns = new Map<string, StoredConversationTurn>();
   const messages = new Map<string, AiConversationMessageDto>();
+  messages.set(RETRY_CONTEXT_MESSAGE_IDS[0], {
+    id: RETRY_CONTEXT_MESSAGE_IDS[0],
+    conversationId: CONVERSATION_ID,
+    sequence: 1,
+    role: "user",
+    status: "completed",
+    content: "Earlier settlement question.",
+    parentMessageId: null,
+    createdAt: "2026-07-12T00:00:00.000Z",
+    updatedAt: "2026-07-12T00:00:00.000Z",
+  });
+  messages.set(RETRY_CONTEXT_MESSAGE_IDS[1], {
+    id: RETRY_CONTEXT_MESSAGE_IDS[1],
+    conversationId: CONVERSATION_ID,
+    sequence: 2,
+    role: "assistant",
+    status: "completed",
+    content: "Earlier settlement answer.",
+    parentMessageId: RETRY_CONTEXT_MESSAGE_IDS[0],
+    createdAt: "2026-07-12T00:00:00.000Z",
+    updatedAt: "2026-07-12T00:00:00.000Z",
+  });
   const registerTurn = (input: {
     turnId: string;
     userMessageId: string;
@@ -2040,6 +2537,7 @@ function createHarness(
     retryOfTurnId: string | null;
     retryable?: boolean;
     userContent?: string;
+    contextSnapshot?: ConversationContextSnapshot | null;
   }) => {
     turns.set(input.turnId, {
       id: input.turnId,
@@ -2049,22 +2547,27 @@ function createHarness(
       mode: "fast",
       status: input.status,
       attempt: input.attempt,
+      contextSnapshot: input.contextSnapshot ?? null,
       retryOfTurnId: input.retryOfTurnId,
       regenerateOfTurnId: null,
+      providerName: null,
       errorCode: null,
+      errorSummary: null,
       retryable: input.retryable ?? false,
     });
-    messages.set(input.userMessageId, {
-      id: input.userMessageId,
-      conversationId: CONVERSATION_ID,
-      sequence: turnNumber * 2 - 1,
-      role: "user",
-      status: "completed",
-      content: input.userContent ?? "Retry requested.",
-      parentMessageId: null,
-      createdAt: "2026-07-12T00:00:00.000Z",
-      updatedAt: "2026-07-12T00:00:00.000Z",
-    });
+    if (!messages.has(input.userMessageId)) {
+      messages.set(input.userMessageId, {
+        id: input.userMessageId,
+        conversationId: CONVERSATION_ID,
+        sequence: turnNumber * 2 - 1,
+        role: "user",
+        status: "completed",
+        content: input.userContent ?? "Retry requested.",
+        parentMessageId: null,
+        createdAt: "2026-07-12T00:00:00.000Z",
+        updatedAt: "2026-07-12T00:00:00.000Z",
+      });
+    }
     messages.set(input.assistantMessageId, {
       id: input.assistantMessageId,
       conversationId: CONVERSATION_ID,
@@ -2104,7 +2607,44 @@ function createHarness(
         metadata: structuredClone(completion.metadata),
         updatedAt: "2026-07-12T00:00:01.000Z",
       });
+    } else if (status === "failed") {
+      const assistant = messages.get(turn.assistantMessageId);
+      if (!assistant) throw new Error("atomic fixture assistant is missing");
+      messages.set(turn.assistantMessageId, {
+        ...assistant,
+        status: "failed",
+        metadata: {
+          errorCode: failure?.errorCode ?? "conversation_failed",
+          retryable: failure?.retryable ?? false,
+        },
+        updatedAt: "2026-07-12T00:00:01.000Z",
+      });
     }
+  };
+  const requireRetrySource = (sourceTurnId: string): StoredConversationTurn => {
+    let source = turns.get(sourceTurnId);
+    if (!source && sourceTurnId === STANDALONE_RETRY_SOURCE_TURN_ID) {
+      registerTurn({
+        turnId: sourceTurnId,
+        userMessageId: uuid(301),
+        assistantMessageId: uuid(410),
+        status: "failed",
+        attempt: 1,
+        retryOfTurnId: null,
+        retryable: true,
+        userContent: "Retry the failed settlement turn.",
+        contextSnapshot: retryContextSnapshot(),
+      });
+      transitionTurn(sourceTurnId, "failed", undefined, {
+        errorCode: "settlement_source_failed",
+        retryable: true,
+      });
+      source = turns.get(sourceTurnId);
+    }
+    if (!source || source.status !== "failed" || !source.retryable) {
+      throw new Error("Only failed retryable turns can be retried");
+    }
+    return source;
   };
   const conversation: SettlementConversationPort = {
     createConversation: vi.fn(async () => {
@@ -2170,6 +2710,7 @@ function createHarness(
     retryTurn: vi.fn(async (_actor, sourceTurnId, command) => {
       events.push("conversation.retryTurn");
       void command;
+      const source = requireRetrySource(sourceTurnId);
       turnNumber += 1;
       const turnId = uuid(200 + turnNumber);
       retrySources.set(turnId, sourceTurnId);
@@ -2178,10 +2719,10 @@ function createHarness(
           ? uuid(999)
           : CONVERSATION_ID,
         turnId,
-        userMessageId: uuid(300 + turnNumber),
+        userMessageId: source.userMessageId,
         assistantMessageId: uuid(400 + turnNumber),
         status: options.retryReturnedStatus ?? "accepted",
-        attempt: 2,
+        attempt: source.attempt + 1,
         duplicate: options.retryTurnDuplicate ?? false,
       };
       registerTurn({
@@ -2192,6 +2733,7 @@ function createHarness(
         attempt: result.attempt,
         retryOfTurnId: sourceTurnId,
         retryable: options.retryTurnRetryable,
+        contextSnapshot: options.retryContextSnapshot ?? source.contextSnapshot,
       });
       if (
         (options.retryTurnStatus ?? result.status) === "completed" &&
@@ -2206,6 +2748,8 @@ function createHarness(
       if (options.acceptedSetupFailure === "prepare_turn") {
         throw new Error("raw-secret-provider-body");
       }
+      const turn = turns.get(turnId);
+      if (!turn) throw new Error("prepared fixture turn is missing");
       const sourceTurnId = retrySources.get(turnId);
       if (sourceTurnId) {
         const frozen = capturedSnapshots.get(sourceTurnId);
@@ -2214,12 +2758,14 @@ function createHarness(
         }
         transitionTurn(turnId, "grounding");
         return {
+          turn: structuredClone(turn),
           messages: frozen.gatewayContext.messages,
           snapshot: structuredClone(frozen),
         };
       }
       transitionTurn(turnId, "grounding");
       return {
+        turn: structuredClone(turn),
         messages: [{ role: "user" as const, content: acceptedContent }],
         snapshot: {
           version: 7,
@@ -2239,6 +2785,12 @@ function createHarness(
         }
         const captured = { ...snapshot, gatewayContext };
         capturedSnapshots.set(turnId, structuredClone(captured));
+        const turn = turns.get(turnId);
+        if (!turn) throw new Error("captured fixture turn is missing");
+        turns.set(turnId, {
+          ...turn,
+          contextSnapshot: structuredClone(captured),
+        });
         return captured;
       },
     ),
@@ -2355,7 +2907,347 @@ function createHarness(
     evidencePort,
     simulationInputs,
     events,
+    seedConversationMessage(message: AiConversationMessageDto) {
+      messages.set(message.id, structuredClone(message));
+    },
   };
+}
+
+class InMemoryConversationPersistence implements ConversationPersistence {
+  private conversation: AiConversationDto | null = null;
+  private readonly messages = new Map<string, AiConversationMessageDto>();
+  private readonly turns = new Map<string, StoredConversationTurn>();
+  private readonly requestTurns = new Map<string, string>();
+  private turnSequence = 0;
+  private messageSequence = 0;
+
+  async createConversation(
+    input: Parameters<ConversationPersistence["createConversation"]>[0],
+  ): Promise<AiConversationDto | null> {
+    if (
+      input.organizationId !== ORGANIZATION_ID ||
+      input.ownerUserId !== USER_ID
+    ) {
+      return null;
+    }
+    const now = "2026-07-12T00:00:00.000Z";
+    this.conversation = {
+      id: CONVERSATION_ID,
+      title: input.title,
+      status: "active",
+      lastMessageAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+    return structuredClone(this.conversation);
+  }
+
+  async listConversations(
+    input: Parameters<ConversationPersistence["listConversations"]>[0],
+  ): Promise<AiConversationDto[]> {
+    return this.matchesActor(input) && this.conversation
+      ? [structuredClone(this.conversation)]
+      : [];
+  }
+
+  async getConversation(
+    input: Parameters<ConversationPersistence["getConversation"]>[0],
+  ): Promise<AiConversationDto | null> {
+    return this.matchesScope(input) && this.conversation
+      ? structuredClone(this.conversation)
+      : null;
+  }
+
+  async listMessages(
+    input: Parameters<ConversationPersistence["listMessages"]>[0],
+  ): Promise<AiConversationMessageDto[]> {
+    if (!this.matchesScope(input)) return [];
+    return [...this.messages.values()]
+      .sort((left, right) => left.sequence - right.sequence)
+      .slice(-(input.limit ?? 200))
+      .map((message) => structuredClone(message));
+  }
+
+  async listTurns(
+    input: Parameters<ConversationPersistence["listTurns"]>[0],
+  ): Promise<StoredConversationTurn[]> {
+    if (!this.matchesScope(input)) return [];
+    return [...this.turns.values()]
+      .slice(-(input.limit ?? 200))
+      .map((turn) => structuredClone(turn));
+  }
+
+  async createTurn(
+    input: Parameters<ConversationPersistence["createTurn"]>[0],
+  ): Promise<CreatedConversationTurn | null> {
+    if (!this.matchesScope(input)) return null;
+    const requestTurnId = this.requestTurns.get(input.clientRequestId);
+    if (requestTurnId) {
+      const duplicate = this.turns.get(requestTurnId);
+      return duplicate ? this.createdTurn(duplicate, true) : null;
+    }
+
+    const source = input.sourceTurnId
+      ? this.turns.get(input.sourceTurnId)
+      : undefined;
+    if (input.kind !== "user" && !source) return null;
+    if (source) {
+      const successor = [...this.turns.values()].find((turn) =>
+        input.kind === "retry"
+          ? turn.retryOfTurnId === source.id
+          : turn.regenerateOfTurnId === source.id,
+      );
+      if (successor) return this.createdTurn(successor, true);
+    }
+
+    this.turnSequence += 1;
+    const turnId = uuid(700 + this.turnSequence);
+    let userMessageId: string;
+    let attempt = 1;
+    let contextSnapshot: ConversationContextSnapshot | null = null;
+    if (input.kind === "user") {
+      this.messageSequence += 1;
+      userMessageId = uuid(800 + this.messageSequence);
+      this.messages.set(userMessageId, {
+        id: userMessageId,
+        conversationId: input.conversationId,
+        sequence: this.messageSequence,
+        role: "user",
+        status: "completed",
+        content: input.content ?? "",
+        parentMessageId: null,
+        createdAt: "2026-07-12T00:00:00.000Z",
+        updatedAt: "2026-07-12T00:00:00.000Z",
+      });
+    } else {
+      userMessageId = source!.userMessageId;
+      attempt = source!.attempt + 1;
+      contextSnapshot = source!.contextSnapshot
+        ? structuredClone(source!.contextSnapshot)
+        : null;
+      if (input.kind === "retry") {
+        const sourceAssistant = this.messages.get(source!.assistantMessageId);
+        if (sourceAssistant?.status === "failed") {
+          this.messages.set(sourceAssistant.id, {
+            ...sourceAssistant,
+            status: "superseded",
+            updatedAt: "2026-07-12T00:00:01.000Z",
+          });
+        }
+      }
+    }
+
+    this.messageSequence += 1;
+    const assistantMessageId = uuid(800 + this.messageSequence);
+    this.messages.set(assistantMessageId, {
+      id: assistantMessageId,
+      conversationId: input.conversationId,
+      sequence: this.messageSequence,
+      role: "assistant",
+      status: "pending",
+      content: "",
+      parentMessageId: userMessageId,
+      createdAt: "2026-07-12T00:00:00.000Z",
+      updatedAt: "2026-07-12T00:00:00.000Z",
+    });
+    const turn: StoredConversationTurn = {
+      id: turnId,
+      conversationId: input.conversationId,
+      userMessageId,
+      assistantMessageId,
+      mode: input.mode,
+      status: "accepted",
+      attempt,
+      contextSnapshot,
+      retryOfTurnId: input.kind === "retry" ? source!.id : null,
+      regenerateOfTurnId: input.kind === "regenerate" ? source!.id : null,
+      providerName: null,
+      errorCode: null,
+      errorSummary: null,
+      retryable: true,
+    };
+    this.turns.set(turn.id, turn);
+    this.requestTurns.set(input.clientRequestId, turn.id);
+    return this.createdTurn(turn, false);
+  }
+
+  async getTurn(
+    input: Parameters<ConversationPersistence["getTurn"]>[0],
+  ): Promise<StoredConversationTurn | null> {
+    if (!this.matchesActor(input)) return null;
+    const turn = this.turns.get(input.turnId);
+    return turn ? structuredClone(turn) : null;
+  }
+
+  async transitionTurn(
+    input: Parameters<ConversationPersistence["transitionTurn"]>[0],
+  ): Promise<boolean> {
+    if (!this.matchesActor(input)) return false;
+    const turn = this.turns.get(input.turnId);
+    if (!turn || turn.status !== input.from) return false;
+    this.turns.set(turn.id, {
+      ...turn,
+      status: input.to,
+      contextSnapshot: input.patch?.contextSnapshot
+        ? structuredClone(input.patch.contextSnapshot)
+        : turn.contextSnapshot,
+      providerName: input.patch?.providerName ?? turn.providerName,
+    });
+    return true;
+  }
+
+  async completeTurn(
+    input: Parameters<ConversationPersistence["completeTurn"]>[0],
+  ): Promise<boolean> {
+    if (!this.matchesActor(input)) return false;
+    const turn = this.turns.get(input.turnId);
+    const assistant = turn
+      ? this.messages.get(turn.assistantMessageId)
+      : undefined;
+    if (!turn || !assistant || turn.status !== "validating") return false;
+    this.turns.set(turn.id, {
+      ...turn,
+      status: "completed",
+      providerName: input.providerName ?? turn.providerName,
+      errorCode: null,
+      errorSummary: null,
+      retryable: false,
+    });
+    this.messages.set(assistant.id, {
+      ...assistant,
+      status: "completed",
+      content: input.content,
+      metadata: structuredClone(input.metadata ?? {}),
+      updatedAt: "2026-07-12T00:00:02.000Z",
+    });
+    return true;
+  }
+
+  async failTurn(
+    input: Parameters<ConversationPersistence["failTurn"]>[0],
+  ): Promise<boolean> {
+    if (!this.matchesActor(input)) return false;
+    const turn = this.turns.get(input.turnId);
+    const assistant = turn
+      ? this.messages.get(turn.assistantMessageId)
+      : undefined;
+    if (!turn || !assistant) return false;
+    this.turns.set(turn.id, {
+      ...turn,
+      status: "failed",
+      providerName: input.providerName ?? turn.providerName,
+      errorCode: input.errorCode,
+      errorSummary: input.errorSummary,
+      retryable: input.retryable,
+    });
+    this.messages.set(assistant.id, {
+      ...assistant,
+      status: "failed",
+      content: input.content ?? assistant.content,
+      metadata: {
+        ...(assistant.metadata ?? {}),
+        errorCode: input.errorCode,
+        retryable: input.retryable,
+      },
+      updatedAt: "2026-07-12T00:00:02.000Z",
+    });
+    return true;
+  }
+
+  async renewLease(
+    input: Parameters<ConversationPersistence["renewLease"]>[0],
+  ): Promise<boolean> {
+    return this.matchesActor(input) && this.turns.has(input.turnId);
+  }
+
+  seedFailedTurn(input: {
+    turnId: string;
+    userMessageId: string;
+    assistantMessageId: string;
+    retryable: boolean;
+    contextSnapshot: ConversationContextSnapshot;
+  }): void {
+    if (!this.conversation)
+      throw new Error("conversation must be created first");
+    this.messageSequence += 1;
+    this.messages.set(input.userMessageId, {
+      id: input.userMessageId,
+      conversationId: this.conversation.id,
+      sequence: this.messageSequence,
+      role: "user",
+      status: "completed",
+      content: "Retry this settlement authoring turn.",
+      parentMessageId: null,
+      createdAt: "2026-07-12T00:00:00.000Z",
+      updatedAt: "2026-07-12T00:00:00.000Z",
+    });
+    this.messageSequence += 1;
+    this.messages.set(input.assistantMessageId, {
+      id: input.assistantMessageId,
+      conversationId: this.conversation.id,
+      sequence: this.messageSequence,
+      role: "assistant",
+      status: "failed",
+      content: "",
+      parentMessageId: input.userMessageId,
+      metadata: {
+        errorCode: "settlement_source_failed",
+        retryable: input.retryable,
+      },
+      createdAt: "2026-07-12T00:00:00.000Z",
+      updatedAt: "2026-07-12T00:00:00.000Z",
+    });
+    this.turns.set(input.turnId, {
+      id: input.turnId,
+      conversationId: this.conversation.id,
+      userMessageId: input.userMessageId,
+      assistantMessageId: input.assistantMessageId,
+      mode: "fast",
+      status: "failed",
+      attempt: 1,
+      contextSnapshot: structuredClone(input.contextSnapshot),
+      retryOfTurnId: null,
+      regenerateOfTurnId: null,
+      providerName: "deterministic",
+      errorCode: "settlement_source_failed",
+      errorSummary: "Settlement source failed.",
+      retryable: input.retryable,
+    });
+  }
+
+  private matchesActor(input: {
+    organizationId: string;
+    ownerUserId: string;
+  }): boolean {
+    return (
+      input.organizationId === ORGANIZATION_ID && input.ownerUserId === USER_ID
+    );
+  }
+
+  private matchesScope(input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+  }): boolean {
+    return (
+      this.matchesActor(input) && this.conversation?.id === input.conversationId
+    );
+  }
+
+  private createdTurn(
+    turn: StoredConversationTurn,
+    duplicate: boolean,
+  ): CreatedConversationTurn {
+    return {
+      conversationId: turn.conversationId,
+      turnId: turn.id,
+      userMessageId: turn.userMessageId,
+      assistantMessageId: turn.assistantMessageId,
+      status: turn.status,
+      attempt: turn.attempt,
+      duplicate,
+    };
+  }
 }
 
 class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
@@ -2415,6 +3307,7 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
       retryTurnDuplicate?: boolean;
       retryTurnRetryable?: boolean;
       retryTerminalCompletion?: SettlementAiTurnCompletionInput;
+      retryContextSnapshot?: ConversationContextSnapshot;
       gatewayGate?: Promise<void>;
       retryConversationMismatch?: boolean;
     },
