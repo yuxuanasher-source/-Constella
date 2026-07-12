@@ -161,6 +161,75 @@ const projectManagementCards = [
   },
 ];
 
+describe("OpsReferenceApp responsive navigation shell", () => {
+  const renderShell = () =>
+    render(
+      <OpsReferenceApp
+        initialRoute="export"
+        projectCards={[]}
+        collaborationProjectCards={[]}
+        streamerCards={[]}
+        applicationQueue={[]}
+        auditEntries={[]}
+      />,
+    );
+
+  it("exposes drawer state and closes from the close button", () => {
+    renderShell();
+
+    const menuButton = screen.getByLabelText("打开主导航");
+    const drawer = screen.getByRole("complementary", { name: "主导航" });
+
+    expect(menuButton).toHaveAttribute("title", "打开主导航");
+    expect(menuButton).toHaveAttribute("aria-controls", "ops-sidebar-drawer");
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(drawer).toHaveAttribute("id", "ops-sidebar-drawer");
+    expect(drawer).toHaveAttribute("data-open", "false");
+
+    fireEvent.click(menuButton);
+
+    expect(menuButton).toHaveAttribute("aria-expanded", "true");
+    expect(drawer).toHaveAttribute("data-open", "true");
+
+    fireEvent.click(screen.getByLabelText("关闭主导航"));
+
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(drawer).toHaveAttribute("data-open", "false");
+  });
+
+  it("closes the drawer with Escape", () => {
+    renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+
+    fireEvent.click(menuButton);
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("closes the drawer from its accessible backdrop", () => {
+    renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+
+    fireEvent.click(menuButton);
+    fireEvent.click(screen.getByLabelText("关闭主导航遮罩"));
+
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("关闭主导航遮罩")).not.toBeInTheDocument();
+  });
+
+  it("closes the drawer after internal route navigation", () => {
+    renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+
+    fireEvent.click(menuButton);
+    fireEvent.click(screen.getByRole("button", { name: "项目管理" }));
+
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("全部项目")).toBeInTheDocument();
+  });
+});
+
 describe("OpsReferenceApp role dashboard contract", () => {
   afterEach(() => {
     vi.doUnmock("react");

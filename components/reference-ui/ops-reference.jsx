@@ -2,6 +2,7 @@
 /* eslint-disable */
 import React from "react";
 import { createPortal } from "react-dom";
+import { Menu as MenuIcon, X as XIcon } from "lucide-react";
 
 import { OverviewBoard } from "@/components/dashboard/overview-board";
 import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
@@ -1915,6 +1916,90 @@ const NAV = [
   },
 ];
 
+const OPS_SHELL_RESPONSIVE_CSS = `
+  @media (max-width: 720px) {
+    .ops-reference-shell {
+      width: 100%;
+      max-width: 100vw;
+      overflow-x: hidden;
+    }
+
+    .ops-reference-sidebar {
+      position: fixed !important;
+      inset: 0 auto 0 0;
+      z-index: 40;
+      width: min(82vw, 300px) !important;
+      max-width: calc(100vw - 48px);
+      height: 100vh !important;
+      height: 100dvh !important;
+      transform: translateX(-100%);
+      visibility: hidden;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+      transition:
+        transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        visibility 0s linear 180ms;
+    }
+
+    .ops-reference-sidebar[data-open="true"] {
+      transform: translateX(0);
+      visibility: visible;
+      transition:
+        transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        visibility 0s;
+    }
+
+    .ops-sidebar-backdrop {
+      display: block !important;
+    }
+
+    .ops-mobile-nav-trigger,
+    .ops-sidebar-close {
+      display: inline-flex !important;
+    }
+
+    .ops-reference-main {
+      width: 100%;
+      max-width: 100vw;
+      max-height: 100dvh !important;
+    }
+
+    .ops-reference-topbar {
+      padding: 0 8px !important;
+    }
+
+    .ops-reference-breadcrumbs {
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .ops-reference-breadcrumbs span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ops-global-search {
+      display: none;
+    }
+
+    .ops-reference-content {
+      width: 100%;
+      max-width: 100vw;
+      min-width: 0;
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+    }
+  }
+
+  @media (max-width: 720px) and (prefers-reduced-motion: reduce) {
+    .ops-reference-sidebar,
+    .ops-reference-sidebar[data-open="true"] {
+      transition: none;
+    }
+  }
+`;
+
 export function Sidebar({
   route,
   onNav,
@@ -1924,6 +2009,9 @@ export function Sidebar({
   organizationMembers,
   onOpenOrganizationSettings,
   onUpdateAvatar,
+  mobileNavigationOpen = false,
+  onCloseMobileNavigation,
+  mobileCloseButtonRef,
 }) {
   const displayUser = normalizeCurrentUser(currentUser);
   const orgSettings = normalizeOrganizationSettings(organizationSettings);
@@ -1941,6 +2029,10 @@ export function Sidebar({
 
   return (
     <aside
+      id="ops-sidebar-drawer"
+      className="ops-reference-sidebar"
+      aria-label="主导航"
+      data-open={mobileNavigationOpen ? "true" : "false"}
       style={{
         width: 232,
         flexShrink: 0,
@@ -1999,7 +2091,12 @@ export function Sidebar({
           )}
         </div>
         <div
-          style={{ display: "flex", flexDirection: "column", lineHeight: 1.15 }}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            minWidth: 0,
+            lineHeight: 1.15,
+          }}
         >
           <span
             style={{
@@ -2021,6 +2118,30 @@ export function Sidebar({
             {orgSettings.brandTagline}
           </span>
         </div>
+        <button
+          ref={mobileCloseButtonRef}
+          type="button"
+          className="ops-sidebar-close"
+          aria-label="关闭主导航"
+          title="关闭主导航"
+          onClick={onCloseMobileNavigation}
+          style={{
+            display: "none",
+            width: 44,
+            height: 44,
+            flex: "0 0 44px",
+            marginLeft: "auto",
+            alignItems: "center",
+            justifyContent: "center",
+            border: "none",
+            borderRadius: 8,
+            background: "transparent",
+            color: "var(--ink-500)",
+            cursor: "pointer",
+          }}
+        >
+          <XIcon size={20} aria-hidden="true" />
+        </button>
       </div>
 
       {/* Org switcher */}
@@ -2706,10 +2827,18 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
   return createPortal(dialog, document.body);
 }
 
-export function TopBar({ breadcrumbs = [], notificationCount = 0, extra }) {
+export function TopBar({
+  breadcrumbs = [],
+  notificationCount = 0,
+  extra,
+  navigationOpen = false,
+  onOpenNavigation,
+  navigationButtonRef,
+}) {
   const hasUnreadNotifications = notificationCount > 0;
   return (
     <div
+      className="ops-reference-topbar"
       style={{
         height: 56,
         flexShrink: 0,
@@ -2723,8 +2852,36 @@ export function TopBar({ breadcrumbs = [], notificationCount = 0, extra }) {
         zIndex: 10,
       }}
     >
+      <button
+        ref={navigationButtonRef}
+        type="button"
+        className="ops-mobile-nav-trigger"
+        aria-label="打开主导航"
+        aria-expanded={navigationOpen}
+        aria-controls="ops-sidebar-drawer"
+        title="打开主导航"
+        onClick={onOpenNavigation}
+        style={{
+          display: "none",
+          width: 44,
+          height: 44,
+          flex: "0 0 44px",
+          marginRight: 4,
+          alignItems: "center",
+          justifyContent: "center",
+          border: "none",
+          borderRadius: 8,
+          background: "transparent",
+          color: "var(--ink-600)",
+          cursor: "pointer",
+        }}
+      >
+        <MenuIcon size={20} aria-hidden="true" />
+      </button>
+
       {/* Breadcrumbs */}
       <div
+        className="ops-reference-breadcrumbs"
         style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}
       >
         {breadcrumbs.map((b, i) => (
@@ -2748,7 +2905,7 @@ export function TopBar({ breadcrumbs = [], notificationCount = 0, extra }) {
       <div style={{ flex: 1 }} />
 
       {/* Global search */}
-      <div style={{ marginRight: 12 }}>
+      <div className="ops-global-search" style={{ marginRight: 12 }}>
         <SearchInput placeholder="搜索项目 / 主播 / 任务编号…" width={280} />
       </div>
 
@@ -32108,6 +32265,9 @@ function OpsReferenceInner({
 }) {
   // route can be: 'home' | 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'billing' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
+  const [mobileNavigationOpen, setMobileNavigationOpen] = React.useState(false);
+  const mobileNavigationButtonRef = React.useRef(null);
+  const mobileNavigationCloseButtonRef = React.useRef(null);
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
   const [dashboardTarget, setDashboardTarget] = React.useState(null);
@@ -32168,6 +32328,26 @@ function OpsReferenceInner({
   const [applicationsState, setApplicationsState] = React.useState(
     applicationQueue ?? null,
   );
+  const closeMobileNavigation = React.useCallback(() => {
+    setMobileNavigationOpen(false);
+    mobileNavigationButtonRef.current?.focus();
+  }, []);
+
+  React.useEffect(() => {
+    if (!mobileNavigationOpen) return undefined;
+
+    mobileNavigationCloseButtonRef.current?.focus();
+    const closeOnEscape = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeMobileNavigation();
+    };
+
+    globalThis.document?.addEventListener("keydown", closeOnEscape);
+    return () => {
+      globalThis.document?.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [closeMobileNavigation, mobileNavigationOpen]);
 
   React.useEffect(() => {
     setTasksState(liveTasks ?? null);
@@ -33440,6 +33620,7 @@ function OpsReferenceInner({
   }, [actions, route]);
 
   const go = (r, arg) => {
+    if (mobileNavigationOpen) closeMobileNavigation();
     if (r === "project") {
       setRoute("project");
       setProjectId(arg || null);
@@ -33627,8 +33808,29 @@ function OpsReferenceInner({
       }}
     >
       <div
+        className="ops-reference-shell"
         style={{ display: "flex", minHeight: "100vh", background: "var(--bg)" }}
       >
+        <style data-ops-responsive-shell="true">{OPS_SHELL_RESPONSIVE_CSS}</style>
+        {mobileNavigationOpen ? (
+          <button
+            type="button"
+            className="ops-sidebar-backdrop"
+            aria-label="关闭主导航遮罩"
+            tabIndex={-1}
+            onClick={closeMobileNavigation}
+            style={{
+              display: "none",
+              position: "fixed",
+              inset: 0,
+              zIndex: 30,
+              padding: 0,
+              border: "none",
+              background: "rgba(15, 23, 42, 0.42)",
+              cursor: "pointer",
+            }}
+          />
+        ) : null}
         <Sidebar
           route={navKey}
           onNav={go}
@@ -33638,8 +33840,12 @@ function OpsReferenceInner({
           organizationMembers={organizationMembersState}
           onOpenOrganizationSettings={() => setOrganizationSettingsOpen(true)}
           onUpdateAvatar={updateProfileAvatar}
+          mobileNavigationOpen={mobileNavigationOpen}
+          onCloseMobileNavigation={closeMobileNavigation}
+          mobileCloseButtonRef={mobileNavigationCloseButtonRef}
         />
         <main
+          className="ops-reference-main"
           style={{
             flex: 1,
             minWidth: 0,
@@ -33651,8 +33857,15 @@ function OpsReferenceInner({
           <TopBar
             breadcrumbs={crumbs}
             notificationCount={unreadNotificationCount}
+            navigationOpen={mobileNavigationOpen}
+            onOpenNavigation={() => setMobileNavigationOpen(true)}
+            navigationButtonRef={mobileNavigationButtonRef}
           />
-          <div id="content-scroll" style={{ flex: 1, overflowY: "auto" }}>
+          <div
+            id="content-scroll"
+            className="ops-reference-content"
+            style={{ flex: 1, minWidth: 0, overflowY: "auto" }}
+          >
             {dashboardTarget?.route === route ? (
               <DashboardTargetContextBanner target={dashboardTarget} />
             ) : null}
