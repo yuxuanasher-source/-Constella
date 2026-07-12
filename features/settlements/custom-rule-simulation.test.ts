@@ -159,6 +159,25 @@ describe("simulateCustomSettlementRule", () => {
     );
   });
 
+  it("forces synthetic sample sources to unverified regardless of readiness and records", () => {
+    const input = simulationInput();
+    input.sampleSource = { kind: "synthetic_scenarios" };
+    input.readiness = readiness(true);
+
+    const result = simulateAuthorized(input);
+
+    expect(result.historicalVerification).toEqual({
+      status: "unverified",
+      label: "未经过历史数据验证",
+    });
+    expect(result.totalOldCents).toBeNull();
+    expect(result.totalDeltaCents).toBeNull();
+    expect(result.marginImpactCents).toBeNull();
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({ code: "CUSTOM_RULE_NO_HISTORICAL_COMPARISON" }),
+    );
+  });
+
   it("runs derived zero and missing policies plus contract, AI, and user assertions", () => {
     const result = simulateAuthorized(simulationInput());
 

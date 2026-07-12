@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type {
+  AiConversationMessageDto,
+  AiConversationTurnDto,
+} from "@/features/ai/conversation-contracts";
 import type { AiGatewayResult } from "@/features/ai/contracts";
 
 import { createSettlementRuleAiAdapter } from "./custom-rule-ai";
@@ -14,8 +18,13 @@ import type {
   CreatedCustomRuleDraft,
   CustomRuleDraft,
   CustomRuleRepository,
+  FinalizeSettlementAiDraftTurnInput,
+  FinalizeSettlementAiFailedTurnInput,
+  FinalizeSettlementAiSimulationTurnInput,
+  FinalizedSettlementAiSimulationTurn,
   InsertedSettlementFormulaSimulation,
   InsertSettlementFormulaSimulationInput,
+  SettlementAiTurnCompletionInput,
   SettlementAiUnresolvedAmbiguity,
   SettlementFormulaSimulation,
 } from "./custom-rule-repository";
@@ -47,7 +56,7 @@ const CATALOG_VERSION = "a".repeat(64);
 const actor = { organizationId: ORGANIZATION_ID, userId: USER_ID };
 
 describe("custom rule authoring service", () => {
-  it("starts from an existing scoped conversation and durably persists revision one before completing the turn", async () => {
+  it("atomically finalizes revision one without directly completing the turn", async () => {
     const harness = createHarness([
       clarificationOutput("请确认每小时结算单价？", "confirm_rate"),
     ]);
@@ -84,7 +93,8 @@ describe("custom rule authoring service", () => {
         formulaHash: null,
       },
     });
-    const draftInput = harness.repository.createDraftCalls[0];
+    const atomicInput = harness.repository.finalizeDraftTurnCalls[0];
+    const draftInput = atomicInput.draft;
     expect(draftInput).toMatchObject({
       organizationId: ORGANIZATION_ID,
       projectId: PROJECT_ID,
@@ -107,23 +117,23 @@ describe("custom rule authoring service", () => {
       expect.objectContaining({ content: promptText }),
     );
     expect(harness.conversation.createConversation).not.toHaveBeenCalled();
-    expect(harness.events.indexOf("repository.createDraft")).toBeLessThan(
-      harness.events.indexOf("conversation.completeTurn"),
-    );
-    expect(harness.conversation.completeTurn).toHaveBeenCalledWith(
-      actor,
-      "00000000-0000-4000-8000-000000000201",
-      expect.objectContaining({
-        metadata: expect.objectContaining({
-          contextSnapshotVersion: 7,
-          contextSummaryVersion: 3,
-          contextMessageIds: [
-            "00000000-0000-4000-8000-000000000301",
-          ],
-          settlementRevisionNumber: 1,
-        }),
-      }),
-    );
+    expect(atomicInput.completion).toMatchObject({
+      providerName: "deterministic",
+      content: draftInput.aiResponse.content,
+      aiInvocationId: null,
+      metadata: {
+        contextSnapshotVersion: 7,
+        contextSummaryVersion: 3,
+        contextMessageIds: ["00000000-0000-4000-8000-000000000301"],
+        settlementIdempotencyKey: draftInput.idempotencyKey,
+        settlementInitialStatus: "clarifying",
+      },
+    });
+    expectOrdered(harness.events, [
+      "conversation.markValidating",
+      "repository.finalizeDraftTurn",
+    ]);
+    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
   });
 
   it("requires an existing conversation id and replays the same durable start key", async () => {
@@ -177,10 +187,62 @@ describe("custom rule authoring service", () => {
     expect(replay.conversation.createConversation).not.toHaveBeenCalled();
   });
 
-  it("retries a durably persisted start only by completing the new generic turn", async () => {
+  it("replays a failed initial draft as a failure and rejects prompts over 4000 before AI", async () => {
+    const failedStart = createHarness([{ providerFailure: true }], {
+      persistFailedRevisions: true,
+    });
+    const input = {
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      clientRequestId: "failed-start-replay-0001",
+      promptText: "Start a settlement draft.",
+      seedContract: contract(),
+      initialAmbiguities: [
+        {
+          code: "confirm_rate",
+          question: "Confirm the hourly rate?",
+          required: true,
+        },
+      ],
+    };
+
+    const first = await failedStart.service.startSession(input);
+    const replay = await failedStart.service.startSession(input);
+
+    expect(first).toMatchObject({
+      ok: false,
+      code: "SETTLEMENT_AI_PROVIDER_FAILED",
+      failedDraft: { initialStatus: "failed", revisionNumber: 1 },
+    });
+    expect(replay).toMatchObject({
+      ok: false,
+      code: "SETTLEMENT_AI_PROVIDER_FAILED",
+      failedDraft: { initialStatus: "failed", revisionNumber: 1 },
+    });
+    expect(failedStart.repository.createDraftCalls).toHaveLength(1);
+    expect(failedStart.conversation.acceptTurn).toHaveBeenCalledTimes(1);
+    expect(failedStart.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+
+    const oversized = createHarness([
+      clarificationOutput("Confirm the hourly rate?", "confirm_rate"),
+    ]);
+    await expect(
+      oversized.service.startSession({
+        ...input,
+        clientRequestId: "oversized-start-prompt-0001",
+        promptText: "x".repeat(4_001),
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(oversized.conversation.getHistory).not.toHaveBeenCalled();
+    expect(oversized.conversation.acceptTurn).not.toHaveBeenCalled();
+    expect(oversized.events).not.toContain("gateway.execute");
+  });
+
+  it("reconciles unknown atomic start commits and retries rollback with the frozen operation key", async () => {
     const harness = createHarness(
       [clarificationOutput("Confirm the hourly rate?", "confirm_rate")],
-      { failCompleteTurnOnce: true },
+      { atomicDraftFailure: "after_commit" },
     );
     const input = {
       actor,
@@ -198,55 +260,82 @@ describe("custom rule authoring service", () => {
       ],
     };
 
-    const failed = await harness.service.startSession(input);
+    const committed = await harness.service.startSession(input);
+    expect(committed).toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      duplicate: true,
+      draft: { revisionNumber: 1, status: "clarifying" },
+    });
+    expect(harness.repository.finalizeDraftTurnCalls).toHaveLength(1);
+    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
+    expect(harness.conversation.failTurn).not.toHaveBeenCalled();
+
+    const rolledBack = createHarness(
+      [
+        clarificationOutput("Confirm the hourly rate?", "confirm_rate"),
+        clarificationOutput("Confirm the hourly rate?", "confirm_rate"),
+      ],
+      { atomicDraftFailure: "before_write" },
+    );
+    const failed = await rolledBack.service.startSession({
+      ...input,
+      clientRequestId: "start-atomic-rollback-0001",
+    });
     expect(failed).toMatchObject({
       ok: false,
-      code: "conversation_failed",
+      code: "persistence_failed",
       retryable: true,
       sourceTurnId: uuid(201),
-      failedDraft: {
-        revisionNumber: 1,
-        initialStatus: "clarifying",
-        status: "clarifying",
-      },
+      failedDraft: null,
     });
-    if (failed.ok || !failed.failedDraft) {
-      throw new Error("start completion failure fixture unexpectedly passed");
-    }
+    if (failed.ok) throw new Error("atomic rollback fixture unexpectedly passed");
+    expect(rolledBack.repository.atomicFailureSnapshots).toEqual([
+      {
+        kind: "draft",
+        draftCount: 0,
+        simulationCount: 0,
+        turnStatus: "validating",
+      },
+    ]);
 
-    const recovered = await harness.service.retryTurn({
+    const recovered = await rolledBack.service.retryTurn({
       actor,
       projectId: PROJECT_ID,
       conversationId: CONVERSATION_ID,
       sourceTurnId: failed.sourceTurnId,
-      clientRequestId: "start-completion-only-retry-0001",
+      clientRequestId: "start-atomic-rollback-retry-0001",
     });
 
     expect(recovered).toMatchObject({
       ok: true,
       kind: "clarifying",
-      duplicate: true,
-      draft: { id: failed.failedDraft.id, revisionNumber: 1 },
+      duplicate: false,
+      draft: { revisionNumber: 1 },
     });
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
-    expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
-    expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
-    expect(harness.repository.createDraftCalls).toHaveLength(1);
-    expect(harness.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
-    expect(harness.conversation.completeTurn).toHaveBeenCalledTimes(2);
+    expect(rolledBack.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+    expect(rolledBack.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
+    expect(rolledBack.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
+    expect(rolledBack.repository.finalizeDraftTurnCalls).toHaveLength(2);
+    expect(rolledBack.repository.finalizeDraftTurnCalls[1].draft.idempotencyKey).toBe(
+      rolledBack.repository.finalizeDraftTurnCalls[0].draft.idempotencyKey,
+    );
+    expect(rolledBack.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
+    expect(rolledBack.conversation.completeTurn).not.toHaveBeenCalled();
 
     const nonrecoverable = createHarness(
       [clarificationOutput("Confirm the hourly rate?", "confirm_rate")],
-      { failCompleteTurnOnce: true, failFailTurn: true },
+      { atomicDraftFailure: "before_write", failFailTurn: true },
     );
     await expect(
       nonrecoverable.service.startSession({
         ...input,
-        clientRequestId: "start-completion-nonrecoverable-0001",
+        clientRequestId: "start-atomic-nonrecoverable-0001",
       }),
     ).rejects.toMatchObject({
       code: "conversation_reconciliation_failed",
       retryable: false,
+      sourceTurnId: uuid(201),
     });
   });
 
@@ -307,19 +396,22 @@ describe("custom rule authoring service", () => {
     expect(replay).toMatchObject({
       ok: true,
       duplicate: true,
-      draft: { id: first.ok ? first.draft.id : "" },
+      draft: {
+        id: first.ok && first.kind === "clarifying" ? first.draft.id : "",
+      },
     });
     expect(harness.conversation.acceptTurn).toHaveBeenCalledTimes(1);
     expect(harness.repository.createDraftCalls).toHaveLength(1);
     expect(harness.events.indexOf("conversation.acceptTurn")).toBeLessThan(
-      harness.events.indexOf("repository.createDraft"),
+      harness.events.indexOf("repository.finalizeDraftTurn"),
     );
+    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
     expect(previous.businessContract).toEqual(previousEvidence.businessContract);
     expect(previous.generatedFormula).toEqual(previousEvidence.generatedFormula);
     expect(previous.generatedTestCases).toEqual(previousEvidence.generatedTestCases);
   });
 
-  it("retries a durably persisted revision by validated completion-only readback", async () => {
+  it("reads back a matching atomic revision after the commit response is lost", async () => {
     const output = {
       contractPatch: {
         summary: "每场直播按系统时长结算，其他已确认条件保持不变。",
@@ -330,7 +422,9 @@ describe("custom rule authoring service", () => {
       testCases: [],
       safetyFlags: [],
     };
-    const harness = createHarness([output], { failCompleteTurnOnce: true });
+    const harness = createHarness([output], {
+      atomicDraftFailure: "after_commit",
+    });
     const previous = harness.repository.seedDraft(clarifyingDraft());
     const revision = {
       actor,
@@ -342,73 +436,46 @@ describe("custom rule authoring service", () => {
       promptText: "Update only the summary.",
     };
 
-    const failed = await harness.service.answerOrRevise(revision);
-    expect(failed).toMatchObject({
-      ok: false,
-      code: "conversation_failed",
-      sourceTurnId: uuid(201),
-      failedDraft: {
+    const recovered = await harness.service.answerOrRevise(revision);
+    expect(recovered).toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      duplicate: true,
+      draft: {
         revisionNumber: 2,
         initialStatus: "clarifying",
         status: "clarifying",
       },
     });
-    if (failed.ok || !failed.failedDraft) {
-      throw new Error("revision completion failure fixture unexpectedly passed");
-    }
-
-    const recovered = await harness.service.retryTurn({
-      actor,
-      projectId: PROJECT_ID,
-      conversationId: CONVERSATION_ID,
-      sourceTurnId: failed.sourceTurnId,
-      clientRequestId: "revise-completion-only-retry-0001",
-    });
-    expect(recovered).toMatchObject({
-      ok: true,
-      kind: "clarifying",
-      duplicate: true,
-      draft: { id: failed.failedDraft.id, revisionNumber: 2 },
-    });
     expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
     expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
     expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
-    expect(harness.repository.createDraftCalls).toHaveLength(1);
+    expect(harness.repository.finalizeDraftTurnCalls).toHaveLength(1);
     expect(harness.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
+    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
+    expect(harness.conversation.failTurn).not.toHaveBeenCalled();
 
     const mismatch = createHarness([structuredClone(output)], {
-      failCompleteTurnOnce: true,
+      atomicDraftFailure: "partial",
     });
     const mismatchPrevious = mismatch.repository.seedDraft(clarifyingDraft());
-    const mismatchFailed = await mismatch.service.answerOrRevise({
-      ...revision,
-      expectedDraftId: mismatchPrevious.id,
-      clientRequestId: "revise-completion-mismatch-0001",
-    });
-    if (mismatchFailed.ok || !mismatchFailed.failedDraft) {
-      throw new Error("revision mismatch fixture unexpectedly passed");
-    }
-    const stored = mismatch.repository.drafts.find(
-      (draft) => draft.id === mismatchFailed.failedDraft?.id,
-    );
-    if (!stored) throw new Error("persisted revision fixture is missing");
-    stored.contractHash = "f".repeat(64);
-
     await expect(
-      mismatch.service.retryTurn({
-        actor,
-        projectId: PROJECT_ID,
-        conversationId: CONVERSATION_ID,
-        sourceTurnId: mismatchFailed.sourceTurnId,
-        clientRequestId: "revise-completion-mismatch-retry-0001",
+      mismatch.service.answerOrRevise({
+        ...revision,
+        expectedDraftId: mismatchPrevious.id,
+        clientRequestId: "revise-atomic-partial-0001",
       }),
-    ).rejects.toMatchObject({ code: "conversation_failed", retryable: false });
+    ).rejects.toMatchObject({
+      code: "conversation_reconciliation_failed",
+      retryable: false,
+      sourceTurnId: uuid(201),
+    });
     expect(mismatch.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
-    expect(mismatch.repository.createDraftCalls).toHaveLength(1);
+    expect(mismatch.repository.finalizeDraftTurnCalls).toHaveLength(1);
     expect(mismatch.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
   });
 
-  it("completes with the persisted selected question instead of re-deriving ambiguity order", async () => {
+  it("atomically completes with the selected question and rejects tampered readback", async () => {
     const selectedQuestion = "请确认规则生效日期？";
     const output = {
       contractPatch: {},
@@ -429,10 +496,10 @@ describe("custom rule authoring service", () => {
       testCases: [],
       safetyFlags: [],
     };
-    const harness = createHarness([output], { failCompleteTurnOnce: true });
+    const harness = createHarness([output]);
     const previous = harness.repository.seedDraft(clarifyingDraft());
 
-    const failed = await harness.service.answerOrRevise({
+    const result = await harness.service.answerOrRevise({
       actor,
       projectId: PROJECT_ID,
       conversationId: CONVERSATION_ID,
@@ -441,10 +508,10 @@ describe("custom rule authoring service", () => {
       clientRequestId: "revise-selected-question-0001",
       promptText: "Keep both ambiguities and ask about the date first.",
     });
-    expect(failed).toMatchObject({
-      ok: false,
-      code: "conversation_failed",
-      failedDraft: {
+    expect(result).toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      draft: {
         aiResponse: { content: selectedQuestion },
         unresolvedAmbiguities: [
           { code: "a_rate" },
@@ -452,68 +519,41 @@ describe("custom rule authoring service", () => {
         ],
       },
     });
-    if (failed.ok || !failed.failedDraft) {
-      throw new Error("selected question completion fixture unexpectedly passed");
-    }
-
-    const recovered = await harness.service.retryTurn({
-      actor,
-      projectId: PROJECT_ID,
-      conversationId: CONVERSATION_ID,
-      sourceTurnId: failed.sourceTurnId,
-      clientRequestId: "revise-selected-question-retry-0001",
+    expect(harness.repository.finalizeDraftTurnCalls[0]).toMatchObject({
+      draft: { aiResponse: { content: selectedQuestion } },
+      completion: { content: selectedQuestion },
     });
-    expect(recovered).toMatchObject({ ok: true, kind: "clarifying" });
-    expect(harness.conversation.completeTurn).toHaveBeenNthCalledWith(
-      2,
-      actor,
-      uuid(202),
-      expect.objectContaining({ content: selectedQuestion }),
-    );
+    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
     expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
     expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
-    expect(harness.repository.createDraftCalls).toHaveLength(1);
+    expect(harness.repository.finalizeDraftTurnCalls).toHaveLength(1);
     expect(harness.evidencePort.loadAuthorizedEvidence).not.toHaveBeenCalled();
     expect(harness.repository.insertSimulationCalls).toHaveLength(0);
 
     const tampered = createHarness([structuredClone(output)], {
-      failCompleteTurnOnce: true,
+      atomicDraftFailure: "after_commit",
+      tamperAtomicDraftAfterCommit: "content",
     });
     const tamperedPrevious = tampered.repository.seedDraft(clarifyingDraft());
-    const tamperedFailure = await tampered.service.answerOrRevise({
-      actor,
-      projectId: PROJECT_ID,
-      conversationId: CONVERSATION_ID,
-      expectedDraftId: tamperedPrevious.id,
-      expectedRevisionNumber: 1,
-      clientRequestId: "revise-selected-question-tampered-0001",
-      promptText: "Keep both ambiguities and ask about the date first.",
-    });
-    if (tamperedFailure.ok || !tamperedFailure.failedDraft) {
-      throw new Error("tampered content fixture unexpectedly passed");
-    }
-    const tamperedDraft = tampered.repository.drafts.find(
-      (draft) => draft.id === tamperedFailure.failedDraft?.id,
-    );
-    if (!tamperedDraft || tamperedDraft.initialStatus !== "clarifying") {
-      throw new Error("tampered clarifying draft fixture is missing");
-    }
-    tamperedDraft.aiResponse.content = "篡改后的非授权问题";
-
     await expect(
-      tampered.service.retryTurn({
+      tampered.service.answerOrRevise({
         actor,
         projectId: PROJECT_ID,
         conversationId: CONVERSATION_ID,
-        sourceTurnId: tamperedFailure.sourceTurnId,
-        clientRequestId: "revise-selected-question-tampered-retry-0001",
+        expectedDraftId: tamperedPrevious.id,
+        expectedRevisionNumber: 1,
+        clientRequestId: "revise-selected-question-tampered-0001",
+        promptText: "Keep both ambiguities and ask about the date first.",
       }),
-    ).rejects.toMatchObject({ code: "conversation_failed", retryable: false });
+    ).rejects.toMatchObject({
+      code: "conversation_reconciliation_failed",
+      retryable: false,
+    });
     expect(tampered.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
-    expect(tampered.repository.createDraftCalls).toHaveLength(1);
+    expect(tampered.repository.finalizeDraftTurnCalls).toHaveLength(1);
   });
 
-  it("records an explicitly owned failed revision before failing the generic turn", async () => {
+  it("atomically records an explicitly owned failed revision and generic failure", async () => {
     const harness = createHarness([{ providerFailure: true }], {
       persistFailedRevisions: true,
     });
@@ -543,11 +583,73 @@ describe("custom rule authoring service", () => {
       },
     });
     expect(harness.repository.createDraftCalls[0].status).toBe("failed");
-    expect(harness.events.indexOf("repository.createDraft")).toBeLessThan(
-      harness.events.indexOf("conversation.failTurn"),
-    );
+    expect(harness.repository.finalizeFailedTurnCalls).toHaveLength(1);
+    expect(harness.repository.finalizeFailedTurnCalls[0]).toMatchObject({
+      draft: { status: "failed" },
+      completion: {
+        content: "Settlement AI provider is temporarily unavailable.",
+      },
+    });
+    expectOrdered(harness.events, [
+      "conversation.markValidating",
+      "repository.finalizeFailedTurn",
+    ]);
+    expect(harness.conversation.failTurn).not.toHaveBeenCalled();
+    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
     expect(previous.businessContract).toEqual(priorSnapshot.businessContract);
     expect(previous.generatedFormula).toEqual(priorSnapshot.generatedFormula);
+  });
+
+  it("reconciles failed-turn atomic transport outcomes without split writes", async () => {
+    const committed = createHarness([{ providerFailure: true }], {
+      persistFailedRevisions: true,
+      atomicFailedFailure: "after_commit",
+    });
+    const committedPrevious = committed.repository.seedDraft(clarifyingDraft());
+
+    const readback = await committed.service.answerOrRevise({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      expectedDraftId: committedPrevious.id,
+      expectedRevisionNumber: 1,
+      clientRequestId: "failed-atomic-readback-0001",
+      promptText: "Continue authoring the rule.",
+    });
+
+    expect(readback).toMatchObject({
+      ok: false,
+      code: "SETTLEMENT_AI_PROVIDER_FAILED",
+      failedDraft: { initialStatus: "failed", duplicate: true },
+    });
+    expect(committed.repository.finalizeFailedTurnCalls).toHaveLength(1);
+    expect(committed.conversation.failTurn).not.toHaveBeenCalled();
+    expect(committed.conversation.completeTurn).not.toHaveBeenCalled();
+
+    const rolledBack = createHarness([{ providerFailure: true }], {
+      persistFailedRevisions: true,
+      atomicFailedFailure: "before_write",
+    });
+    const rolledBackPrevious = rolledBack.repository.seedDraft(clarifyingDraft());
+    const failed = await rolledBack.service.answerOrRevise({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      expectedDraftId: rolledBackPrevious.id,
+      expectedRevisionNumber: 1,
+      clientRequestId: "failed-atomic-rollback-0001",
+      promptText: "Continue authoring the rule.",
+    });
+
+    expect(failed).toMatchObject({
+      ok: false,
+      code: "persistence_failed",
+      sourceTurnId: uuid(201),
+      failedDraft: null,
+    });
+    expect(rolledBack.repository.drafts).toHaveLength(1);
+    expect(rolledBack.conversation.failTurn).toHaveBeenCalledTimes(1);
+    expect(rolledBack.conversation.completeTurn).not.toHaveBeenCalled();
   });
 
   it("retries a provider failure from the public frozen conversation turn without live re-grounding", async () => {
@@ -742,7 +844,8 @@ describe("custom rule authoring service", () => {
     expect(supersededFailure).toMatchObject({
       initialStatus: "failed",
       status: "superseded",
-      supersededByDraftId: retried.ok ? retried.draft.id : null,
+      supersededByDraftId:
+        retried.ok && retried.kind === "simulated" ? retried.draft.id : null,
       supersededAt: expect.any(String),
     });
     expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
@@ -787,7 +890,221 @@ describe("custom rule authoring service", () => {
     expect(harness.repository.createDraftCalls).toHaveLength(0);
   });
 
-  it("confirms, validates, explains, checks readiness, persists contract-ready, inserts simulation, then completes", async () => {
+  it("best-effort fails every accepted turn when setup or frozen restore fails", async () => {
+    const startInput = {
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      clientRequestId: "accepted-setup-failure-0001",
+      promptText: "Start a settlement draft.",
+      seedContract: contract(),
+      initialAmbiguities: [
+        {
+          code: "confirm_rate",
+          question: "Confirm the hourly rate?",
+          required: true,
+        },
+      ],
+    };
+    for (const failure of [
+      "prepare_turn",
+      "ai_prepare",
+      "capture",
+      "mark_generating",
+      "mark_validating",
+    ] as const) {
+      const harness = createHarness(
+        [clarificationOutput("Confirm the hourly rate?", "confirm_rate")],
+        { acceptedSetupFailure: failure },
+      );
+      await expect(
+        harness.service.startSession({
+          ...startInput,
+          clientRequestId: `accepted-${failure}-0001`,
+        }),
+      ).rejects.toMatchObject({
+        code: "conversation_failed",
+        sourceTurnId: uuid(201),
+      });
+      expect(harness.conversation.failTurn).toHaveBeenCalledWith(
+        actor,
+        uuid(201),
+        expect.objectContaining({
+          errorCode: "settlement_turn_setup_failed",
+          retryable: true,
+        }),
+      );
+      expect(JSON.stringify(vi.mocked(harness.conversation.failTurn).mock.calls)).not.toContain(
+        "raw-secret-provider-body",
+      );
+      expect(harness.repository.createDraftCalls).toHaveLength(0);
+    }
+
+    const reconciliation = createHarness(
+      [clarificationOutput("Confirm the hourly rate?", "confirm_rate")],
+      { acceptedSetupFailure: "capture", failFailTurn: true },
+    );
+    await expect(
+      reconciliation.service.startSession({
+        ...startInput,
+        clientRequestId: "accepted-reconciliation-failure-0001",
+      }),
+    ).rejects.toMatchObject({
+      code: "conversation_reconciliation_failed",
+      retryable: false,
+      sourceTurnId: uuid(201),
+    });
+
+    const restore = createHarness([{ providerFailure: true }], {
+      acceptedSetupFailure: "ai_restore",
+    });
+    const previous = restore.repository.seedDraft(clarifyingDraft());
+    const providerFailure = await restore.service.answerOrRevise({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      expectedDraftId: previous.id,
+      expectedRevisionNumber: 1,
+      clientRequestId: "restore-source-failure-0001",
+      promptText: "Continue the settlement draft.",
+    });
+    if (providerFailure.ok) throw new Error("restore source unexpectedly passed");
+    await expect(
+      restore.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: providerFailure.sourceTurnId,
+        clientRequestId: "restore-compensation-retry-0001",
+      }),
+    ).rejects.toMatchObject({
+      code: "conversation_failed",
+      sourceTurnId: uuid(202),
+    });
+    expect(restore.conversation.failTurn).toHaveBeenLastCalledWith(
+      actor,
+      uuid(202),
+      expect.objectContaining({ errorCode: "settlement_retry_setup_failed" }),
+    );
+
+    const mismatch = createHarness([{ providerFailure: true }], {
+      retryConversationMismatch: true,
+    });
+    const mismatchPrevious = mismatch.repository.seedDraft(clarifyingDraft());
+    const mismatchSource = await mismatch.service.answerOrRevise({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      expectedDraftId: mismatchPrevious.id,
+      expectedRevisionNumber: 1,
+      clientRequestId: "retry-scope-source-0001",
+      promptText: "Continue the settlement draft.",
+    });
+    if (mismatchSource.ok) throw new Error("retry scope source unexpectedly passed");
+    await expect(
+      mismatch.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: mismatchSource.sourceTurnId,
+        clientRequestId: "retry-scope-mismatch-0001",
+      }),
+    ).rejects.toMatchObject({
+      code: "conversation_failed",
+      sourceTurnId: uuid(202),
+    });
+    expect(mismatch.conversation.prepareTurn).toHaveBeenCalledTimes(1);
+    expect(mismatch.conversation.failTurn).toHaveBeenLastCalledWith(
+      actor,
+      uuid(202),
+      expect.objectContaining({ errorCode: "settlement_retry_setup_failed" }),
+    );
+  });
+
+  it("branches on the real retry turn DTO before preparing accepted context", async () => {
+    for (const status of ["grounding", "generating", "validating"] as const) {
+      const active = createHarness([], {
+        retryTurnStatus: status,
+        retryTurnDuplicate: true,
+      });
+      const result = await active.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: uuid(210),
+        clientRequestId: `active-${status}-retry-0001`,
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        kind: "retry_in_progress",
+        turn: { status, duplicate: true, attempt: 2 },
+      });
+      expect(active.conversation.prepareTurn).not.toHaveBeenCalled();
+    }
+
+    const completed = createHarness([], {
+      retryTurnStatus: "completed",
+      retryTurnDuplicate: true,
+    });
+    const completedDraft = completed.repository.seedDraft(clarifyingDraft());
+    const readback = await completed.service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      sourceTurnId: completedDraft.turnTrace.turnId,
+      clientRequestId: "completed-retry-readback-0001",
+    });
+    expect(readback).toMatchObject({
+      ok: true,
+      kind: "retry_readback",
+      draft: { id: completedDraft.id },
+      turn: { status: "completed", duplicate: true, attempt: 2 },
+    });
+    expect(completed.conversation.prepareTurn).not.toHaveBeenCalled();
+
+    const retryableFailure = createHarness([], {
+      retryTurnStatus: "failed",
+      retryTurnDuplicate: true,
+      retryTurnRetryable: true,
+    });
+    const failed = await retryableFailure.service.retryTurn({
+      actor,
+      projectId: PROJECT_ID,
+      conversationId: CONVERSATION_ID,
+      sourceTurnId: uuid(210),
+      clientRequestId: "failed-retry-readback-0001",
+    });
+    expect(failed).toMatchObject({
+      ok: false,
+      kind: "retry_failed",
+      code: "conversation_failed",
+      retryable: true,
+      turn: { status: "failed", duplicate: true, attempt: 2 },
+    });
+    expect(retryableFailure.conversation.prepareTurn).not.toHaveBeenCalled();
+
+    const conflict = createHarness([], {
+      retryTurnStatus: "failed",
+      retryTurnDuplicate: true,
+      retryTurnRetryable: false,
+    });
+    await expect(
+      conflict.service.retryTurn({
+        actor,
+        projectId: PROJECT_ID,
+        conversationId: CONVERSATION_ID,
+        sourceTurnId: uuid(210),
+        clientRequestId: "failed-retry-conflict-0001",
+      }),
+    ).rejects.toMatchObject({
+      code: "conversation_failed",
+      retryable: false,
+      sourceTurnId: uuid(201),
+    });
+    expect(conflict.conversation.prepareTurn).not.toHaveBeenCalled();
+  });
+
+  it("atomically finalizes a validated contract, simulation, and generic turn", async () => {
     const harness = createHarness([confirmedFormulaOutput()]);
     const previous = harness.repository.seedDraft(confirmableDraft());
 
@@ -851,17 +1168,23 @@ describe("custom rule authoring service", () => {
       parameterHash: readyInput.parameterHash,
       variableCatalogVersion: CATALOG_VERSION,
     });
+    expect(harness.repository.finalizeSimulationTurnCalls[0]).toMatchObject({
+      draft: readyInput,
+      completion: { content: readyInput.aiResponse.content },
+      simulation: {
+        idempotencyKey: expect.stringMatching(/^settlement-simulation:/),
+        dataSelectionHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
     expectOrdered(harness.events, [
       "conversation.acceptTurn",
       "conversation.prepareTurn",
       "conversation.captureGatewayContext",
       "conversation.markGenerating",
       "conversation.markValidating",
-      "repository.createDraft",
-      "repository.insertSimulation",
-      "repository.getDraft",
-      "conversation.completeTurn",
+      "repository.finalizeSimulationTurn",
     ]);
+    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
     expect(harness.conversation.captureGatewayContext).toHaveBeenCalledTimes(1);
     expect(harness.conversation.getHistory).toHaveBeenCalledWith(
       actor,
@@ -902,7 +1225,8 @@ describe("custom rule authoring service", () => {
     expect(harness.repository.insertSimulationCalls).toHaveLength(1);
     expect(harness.repository.listSimulationCalls).toHaveLength(1);
     expect(harness.conversation.retryTurn).not.toHaveBeenCalled();
-    expect(harness.conversation.completeTurn).toHaveBeenCalledTimes(1);
+    expect(harness.repository.finalizeSimulationTurnCalls).toHaveLength(1);
+    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
   });
 
   it("rejects invalid, stale, unresolved, and duplicate confirmation transitions before persistence", async () => {
@@ -1107,10 +1431,43 @@ describe("custom rule authoring service", () => {
     expect(harness.conversation.failTurn).toHaveBeenCalledTimes(1);
   });
 
-  it("does not claim completion when simulation persistence or readback fails", async () => {
-    const harness = createHarness([confirmedFormulaOutput()], {
-      failSimulationInsert: true,
+  it("atomically persists a failed revision for a deterministic domain failure", async () => {
+    const output = confirmedFormulaOutput();
+    output.testCases[0].expectedResult.amountCents = 99_999;
+    const harness = createHarness([output], {
+      persistFailedRevisions: true,
     });
+    const draft = harness.repository.seedDraft(confirmableDraft());
+
+    await expect(
+      harness.service.confirmContract(confirmInput(draft)),
+    ).rejects.toMatchObject({ code: "simulation_failed" });
+
+    expect(harness.repository.finalizeFailedTurnCalls).toHaveLength(1);
+    expect(harness.repository.finalizeFailedTurnCalls[0]).toMatchObject({
+      draft: {
+        status: "failed",
+        generatedFormula: null,
+        generatedExplanation: null,
+        generatedTestCases: [],
+        formulaHash: null,
+      },
+      completion: {
+        content: "deterministic scenario assertions or risk checks blocked confirmation",
+      },
+    });
+    expect(harness.repository.finalizeSimulationTurnCalls).toHaveLength(0);
+    expect(harness.conversation.failTurn).not.toHaveBeenCalled();
+    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
+  });
+
+  it("retries a rollback-like atomic simulation failure with the same keys", async () => {
+    const harness = createHarness(
+      [confirmedFormulaOutput(), confirmedFormulaOutput()],
+      {
+        atomicSimulationFailure: "before_write",
+      },
+    );
     const previous = harness.repository.seedDraft(confirmableDraft());
     const confirmation = confirmInput(previous);
 
@@ -1120,103 +1477,88 @@ describe("custom rule authoring service", () => {
       code: "persistence_failed",
       retryable: true,
       sourceTurnId: uuid(201),
-      failedDraft: { initialStatus: "contract_ready", status: "contract_ready" },
+      failedDraft: null,
     });
-    expect(harness.repository.createDraftCalls).toHaveLength(1);
-    expect(harness.repository.insertSimulationCalls).toHaveLength(1);
-    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
-    expect(harness.conversation.failTurn).toHaveBeenCalledTimes(1);
-    expect(harness.events.indexOf("repository.insertSimulation")).toBeLessThan(
-      harness.events.indexOf("conversation.failTurn"),
-    );
-
-    const recovered = await harness.service.confirmContract(confirmation);
-    expect(recovered).toMatchObject({
-      ok: true,
-      kind: "simulated",
-      draft: { initialStatus: "contract_ready", status: "simulated" },
-    });
-    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
-    expect(harness.repository.createDraftCalls).toHaveLength(1);
-    expect(harness.repository.insertSimulationCalls).toHaveLength(2);
-    expect(harness.repository.insertSimulationCalls[0].idempotencyKey).toBe(
-      harness.repository.insertSimulationCalls[1].idempotencyKey,
-    );
-    expect(harness.conversation.retryTurn).toHaveBeenCalledWith(
-      actor,
-      uuid(201),
-      expect.objectContaining({ clientRequestId: expect.any(String) }),
-    );
-    expect(harness.conversation.completeTurn).toHaveBeenCalledTimes(1);
-
-    const readback = createHarness([confirmedFormulaOutput()], {
-      skipSimulatedTransition: true,
-    });
-    const readbackDraft = readback.repository.seedDraft(confirmableDraft());
-    const readbackFailure = await readback.service.confirmContract(
-      confirmInput(readbackDraft),
-    );
-    expect(readbackFailure).toMatchObject({
-      ok: false,
-      code: "persistence_failed",
-      sourceTurnId: uuid(201),
-    });
-    expect(readback.repository.insertSimulationCalls).toHaveLength(1);
-    expect(readback.conversation.completeTurn).not.toHaveBeenCalled();
-    expect(readback.conversation.failTurn).toHaveBeenCalledTimes(1);
-    expectOrdered(readback.events, [
-      "repository.insertSimulation",
-      "repository.getDraft",
-      "conversation.failTurn",
+    if (failed.ok) throw new Error("atomic simulation rollback unexpectedly passed");
+    expect(harness.repository.drafts).toHaveLength(1);
+    expect(harness.repository.simulations).toHaveLength(0);
+    expect(harness.repository.atomicFailureSnapshots).toEqual([
+      {
+        kind: "simulation",
+        draftCount: 1,
+        simulationCount: 0,
+        turnStatus: "validating",
+      },
     ]);
-  });
-
-  it("reconciles a post-persistence completeTurn failure without repeating AI or simulation insertion", async () => {
-    const harness = createHarness([confirmedFormulaOutput()], {
-      failCompleteTurnOnce: true,
-    });
-    const previous = harness.repository.seedDraft(confirmableDraft());
-
-    const failed = await harness.service.confirmContract(confirmInput(previous));
-    expect(failed).toMatchObject({
-      ok: false,
-      code: "conversation_failed",
-      retryable: true,
-      sourceTurnId: uuid(201),
-      failedDraft: { initialStatus: "contract_ready", status: "simulated" },
-    });
-    if (failed.ok) throw new Error("completion failure fixture unexpectedly passed");
-    expect(harness.repository.insertSimulationCalls).toHaveLength(1);
-    expect(harness.conversation.failTurn).toHaveBeenCalledWith(
-      actor,
-      uuid(201),
-      expect.objectContaining({ retryable: true }),
-    );
+    expect(harness.conversation.failTurn).toHaveBeenCalledTimes(1);
+    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
 
     const recovered = await harness.service.retryTurn({
       actor,
       projectId: PROJECT_ID,
       conversationId: CONVERSATION_ID,
       sourceTurnId: failed.sourceTurnId,
-      clientRequestId: "complete-reconciliation-retry-0001",
+      clientRequestId: "atomic-simulation-retry-0001",
     });
-
     expect(recovered).toMatchObject({
+      ok: true,
+      kind: "simulated",
+      draft: { initialStatus: "contract_ready", status: "simulated" },
+    });
+    expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(2);
+    expect(harness.repository.finalizeSimulationTurnCalls).toHaveLength(2);
+    expect(harness.repository.insertSimulationCalls).toHaveLength(1);
+    expect(
+      harness.repository.finalizeSimulationTurnCalls[0].draft.idempotencyKey,
+    ).toBe(
+      harness.repository.finalizeSimulationTurnCalls[1].draft.idempotencyKey,
+    );
+    expect(
+      harness.repository.finalizeSimulationTurnCalls[0].simulation.idempotencyKey,
+    ).toBe(
+      harness.repository.finalizeSimulationTurnCalls[1].simulation.idempotencyKey,
+    );
+
+    const nonrecoverable = createHarness([confirmedFormulaOutput()], {
+      atomicSimulationFailure: "before_write",
+      failFailTurn: true,
+    });
+    const nonrecoverableDraft = nonrecoverable.repository.seedDraft(
+      confirmableDraft(),
+    );
+    await expect(
+      nonrecoverable.service.confirmContract(confirmInput(nonrecoverableDraft)),
+    ).rejects.toMatchObject({
+      code: "conversation_reconciliation_failed",
+      retryable: false,
+      sourceTurnId: uuid(201),
+    });
+  });
+
+  it("reads back a completed atomic simulation when the RPC response is lost", async () => {
+    const harness = createHarness([confirmedFormulaOutput()], {
+      atomicSimulationFailure: "after_commit",
+    });
+    const previous = harness.repository.seedDraft(confirmableDraft());
+
+    const result = await harness.service.confirmContract(confirmInput(previous));
+    expect(result).toMatchObject({
       ok: true,
       kind: "simulated",
       duplicate: true,
       draft: { status: "simulated" },
     });
     expect(harness.events.filter((event) => event === "gateway.execute")).toHaveLength(1);
+    expect(harness.repository.finalizeSimulationTurnCalls).toHaveLength(1);
     expect(harness.repository.insertSimulationCalls).toHaveLength(1);
     expect(harness.repository.listSimulationCalls).toHaveLength(1);
-    expect(harness.conversation.completeTurn).toHaveBeenCalledTimes(2);
+    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
+    expect(harness.conversation.failTurn).not.toHaveBeenCalled();
   });
 
-  it("surfaces an explicit nonrecoverable error when completion reconciliation also fails", async () => {
+  it("fails closed on an impossible partial atomic simulation state", async () => {
     const harness = createHarness([confirmedFormulaOutput()], {
-      failCompleteTurnOnce: true,
-      failFailTurn: true,
+      atomicSimulationFailure: "partial",
     });
     const previous = harness.repository.seedDraft(confirmableDraft());
 
@@ -1225,10 +1567,13 @@ describe("custom rule authoring service", () => {
     ).rejects.toMatchObject({
       code: "conversation_reconciliation_failed",
       retryable: false,
+      sourceTurnId: uuid(201),
     });
-    expect(harness.repository.insertSimulationCalls).toHaveLength(1);
-    expect(harness.conversation.completeTurn).toHaveBeenCalledTimes(1);
-    expect(harness.conversation.failTurn).toHaveBeenCalledTimes(1);
+    expect(harness.repository.finalizeSimulationTurnCalls).toHaveLength(1);
+    expect(harness.repository.drafts).toHaveLength(2);
+    expect(harness.repository.simulations).toHaveLength(0);
+    expect(harness.conversation.completeTurn).not.toHaveBeenCalled();
+    expect(harness.conversation.failTurn).not.toHaveBeenCalled();
   });
 });
 
@@ -1240,12 +1585,31 @@ function createHarness(
   outputs: ProviderOutput[],
   options: {
     persistFailedRevisions?: boolean;
-    failSimulationInsert?: boolean;
-    skipSimulatedTransition?: boolean;
+    atomicDraftFailure?: "before_write" | "after_commit" | "partial";
+    tamperAtomicDraftAfterCommit?: "content" | "hash";
+    atomicSimulationFailure?: "before_write" | "after_commit" | "partial";
+    atomicFailedFailure?: "before_write" | "after_commit" | "partial";
     evidenceFailure?: "scope" | "hash" | "selection_token";
     currentMarginCents?: string;
-    failCompleteTurnOnce?: boolean;
     failFailTurn?: boolean;
+    acceptedSetupFailure?:
+      | "prepare_turn"
+      | "ai_prepare"
+      | "capture"
+      | "mark_generating"
+      | "mark_validating"
+      | "ai_restore";
+    retryTurnStatus?:
+      | "accepted"
+      | "grounding"
+      | "generating"
+      | "validating"
+      | "completed"
+      | "failed"
+      | "cancelled";
+    retryTurnDuplicate?: boolean;
+    retryTurnRetryable?: boolean;
+    retryConversationMismatch?: boolean;
   } = {},
 ) {
   const events: string[] = [];
@@ -1256,7 +1620,66 @@ function createHarness(
     Awaited<ReturnType<SettlementConversationPort["captureGatewayContext"]>>
   >();
   const retrySources = new Map<string, string>();
-  let failedCompleteTurns = 0;
+  const turns = new Map<string, AiConversationTurnDto>();
+  const messages = new Map<string, AiConversationMessageDto>();
+  const registerTurn = (input: {
+    turnId: string;
+    userMessageId: string;
+    assistantMessageId: string;
+    status: AiConversationTurnDto["status"];
+    attempt: number;
+    retryOfTurnId: string | null;
+  }) => {
+    turns.set(input.turnId, {
+      id: input.turnId,
+      conversationId: CONVERSATION_ID,
+      userMessageId: input.userMessageId,
+      assistantMessageId: input.assistantMessageId,
+      mode: "fast",
+      status: input.status,
+      attempt: input.attempt,
+      retryOfTurnId: input.retryOfTurnId,
+      regenerateOfTurnId: null,
+      errorCode: null,
+      retryable: false,
+    });
+    messages.set(input.assistantMessageId, {
+      id: input.assistantMessageId,
+      conversationId: CONVERSATION_ID,
+      sequence: turnNumber * 2,
+      role: "assistant",
+      status: "pending",
+      content: "",
+      parentMessageId: input.userMessageId,
+      createdAt: "2026-07-12T00:00:00.000Z",
+      updatedAt: "2026-07-12T00:00:00.000Z",
+    });
+  };
+  const transitionTurn = (
+    turnId: string,
+    status: AiConversationTurnDto["status"],
+    completion?: SettlementAiTurnCompletionInput,
+  ) => {
+    const turn = turns.get(turnId);
+    if (!turn) throw new Error("atomic fixture turn is missing");
+    turns.set(turnId, {
+      ...turn,
+      status,
+      errorCode: status === "failed" ? "settlement_ai_generation_failed" : null,
+      retryable: false,
+    });
+    if (completion) {
+      const assistant = messages.get(turn.assistantMessageId);
+      if (!assistant) throw new Error("atomic fixture assistant is missing");
+      messages.set(turn.assistantMessageId, {
+        ...assistant,
+        status: status === "failed" ? "failed" : "completed",
+        content: completion.content,
+        metadata: structuredClone(completion.metadata),
+        updatedAt: "2026-07-12T00:00:01.000Z",
+      });
+    }
+  };
   const conversation: SettlementConversationPort = {
     createConversation: vi.fn(async () => {
       events.push("conversation.createConversation");
@@ -1280,14 +1703,15 @@ function createHarness(
           createdAt: "2026-07-12T00:00:00.000Z",
           updatedAt: "2026-07-12T00:00:00.000Z",
         },
-        messages: [],
+        messages: [...messages.values()].map((message) => structuredClone(message)),
+        turns: [...turns.values()].map((turn) => structuredClone(turn)),
       };
     }),
     acceptTurn: vi.fn(async (_actor, _conversationId, command) => {
       events.push("conversation.acceptTurn");
       acceptedContent = command.content;
       turnNumber += 1;
-      return {
+      const result = {
         conversationId: CONVERSATION_ID,
         turnId: uuid(200 + turnNumber),
         userMessageId: uuid(300 + turnNumber),
@@ -1296,6 +1720,15 @@ function createHarness(
         attempt: 1,
         duplicate: false,
       };
+      registerTurn({
+        turnId: result.turnId,
+        userMessageId: result.userMessageId,
+        assistantMessageId: result.assistantMessageId,
+        status: result.status,
+        attempt: result.attempt,
+        retryOfTurnId: null,
+      });
+      return result;
     }),
     retryTurn: vi.fn(async (_actor, sourceTurnId, command) => {
       events.push("conversation.retryTurn");
@@ -1303,29 +1736,46 @@ function createHarness(
       turnNumber += 1;
       const turnId = uuid(200 + turnNumber);
       retrySources.set(turnId, sourceTurnId);
-      return {
-        conversationId: CONVERSATION_ID,
+      const result = {
+        conversationId: options.retryConversationMismatch
+          ? uuid(999)
+          : CONVERSATION_ID,
         turnId,
         userMessageId: uuid(300 + turnNumber),
         assistantMessageId: uuid(400 + turnNumber),
-        status: "accepted" as const,
+        status: options.retryTurnStatus ?? "accepted",
         attempt: 2,
-        duplicate: false,
+        duplicate: options.retryTurnDuplicate ?? false,
+        retryable: options.retryTurnRetryable,
       };
+      registerTurn({
+        turnId: result.turnId,
+        userMessageId: result.userMessageId,
+        assistantMessageId: result.assistantMessageId,
+        status: result.status,
+        attempt: result.attempt,
+        retryOfTurnId: sourceTurnId,
+      });
+      return result;
     }),
     prepareTurn: vi.fn(async (_actor, turnId) => {
       events.push("conversation.prepareTurn");
+      if (options.acceptedSetupFailure === "prepare_turn") {
+        throw new Error("raw-secret-provider-body");
+      }
       const sourceTurnId = retrySources.get(turnId);
       if (sourceTurnId) {
         const frozen = capturedSnapshots.get(sourceTurnId);
         if (!frozen?.gatewayContext) {
           throw new Error("retry source has no frozen gateway context");
         }
+        transitionTurn(turnId, "grounding");
         return {
           messages: frozen.gatewayContext.messages,
           snapshot: structuredClone(frozen),
         };
       }
+      transitionTurn(turnId, "grounding");
       return {
         messages: [{ role: "user" as const, content: acceptedContent }],
         snapshot: {
@@ -1340,26 +1790,40 @@ function createHarness(
     captureGatewayContext: vi.fn(async (_actor, turnId, snapshot, gatewayContext) => {
       void _actor;
       events.push("conversation.captureGatewayContext");
+      if (options.acceptedSetupFailure === "capture") {
+        throw new Error("raw-secret-provider-body");
+      }
       const captured = { ...snapshot, gatewayContext };
       capturedSnapshots.set(turnId, structuredClone(captured));
       return captured;
     }),
-    markGenerating: vi.fn(async () => {
+    markGenerating: vi.fn(async (_actor, turnId) => {
       events.push("conversation.markGenerating");
-    }),
-    markValidating: vi.fn(async () => {
-      events.push("conversation.markValidating");
-    }),
-    completeTurn: vi.fn(async () => {
-      events.push("conversation.completeTurn");
-      if (options.failCompleteTurnOnce && failedCompleteTurns === 0) {
-        failedCompleteTurns += 1;
-        throw new Error("conversation completion failed");
+      if (options.acceptedSetupFailure === "mark_generating") {
+        throw new Error("raw-secret-provider-body");
       }
+      transitionTurn(turnId, "generating");
     }),
-    failTurn: vi.fn(async () => {
+    markValidating: vi.fn(async (_actor, turnId) => {
+      events.push("conversation.markValidating");
+      if (options.acceptedSetupFailure === "mark_validating") {
+        throw new Error("raw-secret-provider-body");
+      }
+      transitionTurn(turnId, "validating");
+    }),
+    completeTurn: vi.fn(async (_actor, turnId, input) => {
+      events.push("conversation.completeTurn");
+      transitionTurn(turnId, "completed", {
+        providerName: input.providerName ?? "deterministic",
+        content: input.content,
+        aiInvocationId: input.invocationId ?? null,
+        metadata: (input.metadata ?? {}) as SettlementAiTurnCompletionInput["metadata"],
+      });
+    }),
+    failTurn: vi.fn(async (_actor, turnId) => {
       events.push("conversation.failTurn");
       if (options.failFailTurn) throw new Error("conversation failure persistence failed");
+      transitionTurn(turnId, "failed");
     }),
   };
 
@@ -1375,7 +1839,11 @@ function createHarness(
     }
     return gatewayResult(output);
   };
-  const repository = new InMemoryAuthoringRepository(events, options);
+  const repository = new InMemoryAuthoringRepository(
+    events,
+    options,
+    transitionTurn,
+  );
   const catalogPort: SettlementVariableCatalogPort = {
     getCatalog: vi.fn(async () => {
       events.push("catalog.getCatalog");
@@ -1399,9 +1867,24 @@ function createHarness(
     }),
   };
   const simulationInputs: CustomRuleSimulationInput[] = [];
+  const adapter = createSettlementRuleAiAdapter({ gateway });
   const service = createCustomRuleAuthoringService({
     conversation,
-    ai: createSettlementRuleAiAdapter({ gateway }),
+    ai: {
+      prepare(input) {
+        if (options.acceptedSetupFailure === "ai_prepare") {
+          throw new Error("raw-secret-provider-body");
+        }
+        return adapter.prepare(input);
+      },
+      restore(context) {
+        if (options.acceptedSetupFailure === "ai_restore") {
+          throw new Error("raw-secret-provider-body");
+        }
+        return adapter.restore(context);
+      },
+      execute: adapter.execute,
+    },
     repository,
     catalog: catalogPort,
     evidence: evidencePort,
@@ -1429,19 +1912,54 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
   readonly simulations: SettlementFormulaSimulation[] = [];
   readonly createDraftCalls: CreateCustomRuleDraftInput[] = [];
   readonly insertSimulationCalls: InsertSettlementFormulaSimulationInput[] = [];
+  readonly finalizeDraftTurnCalls: FinalizeSettlementAiDraftTurnInput[] = [];
+  readonly finalizeSimulationTurnCalls: FinalizeSettlementAiSimulationTurnInput[] = [];
+  readonly finalizeFailedTurnCalls: FinalizeSettlementAiFailedTurnInput[] = [];
+  readonly atomicFailureSnapshots: Array<{
+    kind: "draft" | "simulation" | "failed";
+    draftCount: number;
+    simulationCount: number;
+    turnStatus: AiConversationTurnDto["status"];
+  }> = [];
   readonly listSimulationCalls: Parameters<CustomRuleRepository["listSimulations"]>[0][] = [];
-  private failedSimulationInserts = 0;
+  private atomicDraftFailures = 0;
+  private atomicSimulationFailures = 0;
+  private atomicFailedFailures = 0;
 
   constructor(
     private readonly events: string[],
     private readonly options: {
-      failSimulationInsert?: boolean;
-      skipSimulatedTransition?: boolean;
+      atomicDraftFailure?: "before_write" | "after_commit" | "partial";
+      tamperAtomicDraftAfterCommit?: "content" | "hash";
+      atomicSimulationFailure?: "before_write" | "after_commit" | "partial";
+      atomicFailedFailure?: "before_write" | "after_commit" | "partial";
       evidenceFailure?: "scope" | "hash" | "selection_token";
       currentMarginCents?: string;
-      failCompleteTurnOnce?: boolean;
       failFailTurn?: boolean;
+      acceptedSetupFailure?:
+        | "prepare_turn"
+        | "ai_prepare"
+        | "capture"
+        | "mark_generating"
+        | "mark_validating"
+        | "ai_restore";
+      retryTurnStatus?:
+        | "accepted"
+        | "grounding"
+        | "generating"
+        | "validating"
+        | "completed"
+        | "failed"
+        | "cancelled";
+      retryTurnDuplicate?: boolean;
+      retryTurnRetryable?: boolean;
+      retryConversationMismatch?: boolean;
     },
+    private readonly transitionTurn: (
+      turnId: string,
+      status: AiConversationTurnDto["status"],
+      completion?: SettlementAiTurnCompletionInput,
+    ) => void,
   ) {}
 
   seedDraft(draft: CustomRuleDraft): CustomRuleDraft {
@@ -1450,11 +1968,104 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
     return copy;
   }
 
-  async createDraft(
-    input: CreateCustomRuleDraftInput,
+  async finalizeDraftTurn(
+    input: FinalizeSettlementAiDraftTurnInput,
   ): Promise<CreatedCustomRuleDraft> {
-    this.events.push("repository.createDraft");
-    this.createDraftCalls.push(structuredClone(input));
+    this.events.push("repository.finalizeDraftTurn");
+    this.finalizeDraftTurnCalls.push(structuredClone(input));
+    this.createDraftCalls.push(structuredClone(input.draft));
+    const failure = this.takeAtomicFailure("draft");
+    if (failure === "before_write") {
+      this.recordAtomicFailure("draft");
+      throw new Error("atomic draft transport failure before commit");
+    }
+    const created = this.persistDraft(input.draft);
+    if (failure === "partial") {
+      throw new Error("atomic draft partial-state fixture");
+    }
+    this.transitionTurn(input.draft.turnTrace.turnId, "completed", input.completion);
+    if (this.options.tamperAtomicDraftAfterCommit) {
+      const stored = this.drafts.find((draft) => draft.id === created.id);
+      if (!stored) throw new Error("atomic draft tamper fixture is missing");
+      if (this.options.tamperAtomicDraftAfterCommit === "content") {
+        stored.aiResponse.content = "tampered persisted assistant content";
+      } else {
+        stored.contractHash = "f".repeat(64);
+      }
+    }
+    if (failure === "after_commit") {
+      throw new Error("atomic draft response lost after commit");
+    }
+    return created;
+  }
+
+  async finalizeSimulationTurn(
+    input: FinalizeSettlementAiSimulationTurnInput,
+  ): Promise<FinalizedSettlementAiSimulationTurn> {
+    this.events.push("repository.finalizeSimulationTurn");
+    this.finalizeSimulationTurnCalls.push(structuredClone(input));
+    this.createDraftCalls.push(structuredClone(input.draft));
+    const failure = this.takeAtomicFailure("simulation");
+    if (failure === "before_write") {
+      this.recordAtomicFailure("simulation");
+      throw new Error("atomic simulation transport failure before commit");
+    }
+    const created = this.persistDraft(input.draft);
+    if (failure === "partial") {
+      throw new Error("atomic simulation partial-state fixture");
+    }
+    const simulationInput: InsertSettlementFormulaSimulationInput = {
+      organizationId: input.draft.organizationId,
+      projectId: input.draft.projectId,
+      owner: { kind: "ai_draft", id: created.id },
+      formulaHash: input.draft.formulaHash,
+      ruleContractHash: input.draft.contractHash,
+      parameterHash: input.draft.parameterHash,
+      variableCatalogVersion: input.draft.variableCatalogVersion,
+      ...input.simulation,
+    };
+    this.insertSimulationCalls.push(structuredClone(simulationInput));
+    const simulation = this.persistSimulation(simulationInput);
+    const draft = this.drafts.find((candidate) => candidate.id === created.id);
+    if (!draft || draft.initialStatus !== "contract_ready") {
+      throw new Error("atomic simulation draft fixture is invalid");
+    }
+    draft.status = "simulated";
+    this.transitionTurn(input.draft.turnTrace.turnId, "completed", input.completion);
+    if (failure === "after_commit") {
+      throw new Error("atomic simulation response lost after commit");
+    }
+    return {
+      draft: { ...structuredClone(draft), duplicate: created.duplicate },
+      simulation,
+    };
+  }
+
+  async finalizeFailedTurn(
+    input: FinalizeSettlementAiFailedTurnInput,
+  ): Promise<CreatedCustomRuleDraft> {
+    this.events.push("repository.finalizeFailedTurn");
+    this.finalizeFailedTurnCalls.push(structuredClone(input));
+    this.createDraftCalls.push(structuredClone(input.draft));
+    const failure = this.takeAtomicFailure("failed");
+    if (failure === "before_write") {
+      this.recordAtomicFailure("failed");
+      throw new Error("atomic failed-turn transport failure before commit");
+    }
+    const created = this.persistDraft(input.draft);
+    if (failure === "partial") {
+      throw new Error("atomic failed-turn partial-state fixture");
+    }
+    this.transitionTurn(input.draft.turnTrace.turnId, "failed", input.completion);
+    if (failure === "after_commit") {
+      throw new Error("atomic failed-turn response lost after commit");
+    }
+    return created;
+  }
+
+  private persistDraft(
+    input: CreateCustomRuleDraftInput,
+  ): CreatedCustomRuleDraft {
     const duplicate = this.drafts.find(
       (draft) => draft.idempotencyKey === input.idempotencyKey,
     );
@@ -1513,18 +2124,9 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
     return draft ? structuredClone(draft) : null;
   }
 
-  async insertSimulation(
+  private persistSimulation(
     input: InsertSettlementFormulaSimulationInput,
-  ): Promise<InsertedSettlementFormulaSimulation> {
-    this.events.push("repository.insertSimulation");
-    this.insertSimulationCalls.push(structuredClone(input));
-    if (
-      this.options.failSimulationInsert &&
-      this.failedSimulationInserts === 0
-    ) {
-      this.failedSimulationInserts += 1;
-      throw new Error("simulation persistence failed");
-    }
+  ): InsertedSettlementFormulaSimulation {
     const existing = this.simulations.find(
       (simulation) => simulation.idempotencyKey === input.idempotencyKey,
     );
@@ -1536,11 +2138,40 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
       createdAt: "2026-07-12T00:00:00.000Z",
     };
     this.simulations.push(simulation);
-    if (input.owner.kind === "ai_draft" && !this.options.skipSimulatedTransition) {
+    if (input.owner.kind === "ai_draft") {
       const draft = this.drafts.find((candidate) => candidate.id === input.owner.id);
       if (draft && draft.status === "contract_ready") draft.status = "simulated";
     }
     return { ...structuredClone(simulation), duplicate: false };
+  }
+
+  private takeAtomicFailure(
+    kind: "draft" | "simulation" | "failed",
+  ): "before_write" | "after_commit" | "partial" | undefined {
+    if (kind === "draft") {
+      if (this.atomicDraftFailures > 0) return undefined;
+      this.atomicDraftFailures += 1;
+      return this.options.atomicDraftFailure;
+    }
+    if (kind === "simulation") {
+      if (this.atomicSimulationFailures > 0) return undefined;
+      this.atomicSimulationFailures += 1;
+      return this.options.atomicSimulationFailure;
+    }
+    if (this.atomicFailedFailures > 0) return undefined;
+    this.atomicFailedFailures += 1;
+    return this.options.atomicFailedFailure;
+  }
+
+  private recordAtomicFailure(
+    kind: "draft" | "simulation" | "failed",
+  ): void {
+    this.atomicFailureSnapshots.push({
+      kind,
+      draftCount: this.drafts.length,
+      simulationCount: this.simulations.length,
+      turnStatus: "validating",
+    });
   }
 
   async listSimulations(

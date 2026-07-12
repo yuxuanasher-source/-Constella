@@ -10,6 +10,7 @@ import type {
   SettlementAiFailure,
   SettlementAiResult,
   SettlementConversationPort,
+  SettlementConversationTurnRef,
 } from "./custom-rule-ai";
 import {
   diffBusinessRuleContracts,
@@ -30,11 +31,16 @@ import type {
   CustomRuleDraft,
   CustomRuleRepository,
   FailedCustomRuleDraftInput,
+  FinalizeSettlementAiDraftTurnInput,
+  FinalizeSettlementAiFailedTurnInput,
+  FinalizeSettlementAiSimulationTurnInput,
+  FinalizedSettlementAiSimulationTurn,
   InsertedSettlementFormulaSimulation,
   SettlementFormulaSimulation,
   SettlementAiGeneratedTestCase,
   SettlementAiSafetyFlag,
   SettlementAiTurnTrace,
+  SettlementAiTurnCompletionInput,
   SettlementAiUnresolvedAmbiguity,
 } from "./custom-rule-repository";
 import {
@@ -55,6 +61,8 @@ import type { CustomRuleVariableCatalog } from "./custom-rule-variable-catalog";
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]+$/u;
 const CONFIRM_CONTRACT_AMBIGUITY = "confirm_contract";
+const AI_PROVIDER_FAILURE_MESSAGE =
+  "Settlement AI provider is temporarily unavailable.";
 const simulationCriteriaCodeSchema = z.enum([
   "approved_reports",
   "period_overlap",
@@ -85,14 +93,20 @@ const simulationSelectionSchema = z
     }
   });
 
-export type CustomRuleAuthoringRepositoryPort = Pick<
-  CustomRuleRepository,
-  | "createDraft"
-  | "listDrafts"
-  | "getDraft"
-  | "insertSimulation"
-  | "listSimulations"
->;
+export type CustomRuleAuthoringRepositoryPort = {
+  finalizeDraftTurn(
+    input: FinalizeSettlementAiDraftTurnInput,
+  ): Promise<CreatedCustomRuleDraft>;
+  finalizeSimulationTurn(
+    input: FinalizeSettlementAiSimulationTurnInput,
+  ): Promise<FinalizedSettlementAiSimulationTurn>;
+  finalizeFailedTurn(
+    input: FinalizeSettlementAiFailedTurnInput,
+  ): Promise<CreatedCustomRuleDraft>;
+  listDrafts: CustomRuleRepository["listDrafts"];
+  getDraft: CustomRuleRepository["getDraft"];
+  listSimulations: CustomRuleRepository["listSimulations"];
+};
 
 export type SettlementVariableCatalogPort = {
   getCatalog(input: {
@@ -192,6 +206,41 @@ export type CustomRuleSimulatedSuccess = Readonly<{
   duplicate: boolean;
 }>;
 
+type CustomRuleRetryTurnDto = Readonly<{
+  turnId: string;
+  status: SettlementConversationTurnRef["status"];
+  attempt: number;
+  duplicate: boolean;
+}>;
+
+export type CustomRuleRetryInProgress = Readonly<{
+  ok: true;
+  kind: "retry_in_progress";
+  conversationId: string;
+  turn: CustomRuleRetryTurnDto & {
+    status: "grounding" | "generating" | "validating";
+  };
+}>;
+
+export type CustomRuleRetryReadback = Readonly<{
+  ok: true;
+  kind: "retry_readback";
+  conversationId: string;
+  draft: CustomRuleDraft;
+  turn: CustomRuleRetryTurnDto & { status: "completed" };
+}>;
+
+export type CustomRuleRetryFailed = Readonly<{
+  ok: false;
+  kind: "retry_failed";
+  code: "conversation_failed";
+  retryable: true;
+  conversationId: string;
+  sourceTurnId: string;
+  failedDraft: CustomRuleDraft | null;
+  turn: CustomRuleRetryTurnDto & { status: "failed" };
+}>;
+
 export type CustomRuleAiTransitionFailure = Readonly<{
   ok: false;
   code:
@@ -208,7 +257,10 @@ export type CustomRuleAiTransitionFailure = Readonly<{
 export type CustomRuleAuthoringResult =
   | CustomRuleClarifyingSuccess
   | CustomRuleSimulatedSuccess
-  | CustomRuleAiTransitionFailure;
+  | CustomRuleAiTransitionFailure
+  | CustomRuleRetryInProgress
+  | CustomRuleRetryReadback
+  | CustomRuleRetryFailed;
 
 export type CustomRuleAuthoringServiceErrorCode =
   | "invalid_input"
@@ -235,11 +287,14 @@ export class CustomRuleAuthoringServiceError extends Error {
     readonly code: CustomRuleAuthoringServiceErrorCode,
     message: string,
     readonly retryable: boolean,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; sourceTurnId?: string },
   ) {
     super(message, options);
     this.name = "CustomRuleAuthoringServiceError";
+    this.sourceTurnId = options?.sourceTurnId ?? null;
   }
+
+  readonly sourceTurnId: string | null;
 }
 
 type ServiceDependencies = {
@@ -289,7 +344,7 @@ const frozenServiceRetryContextSchema: z.ZodType<FrozenServiceRetryContext> =
     actorId: z.string().min(1).max(500),
     projectId: z.string().min(1).max(500),
     conversationId: z.string().min(1).max(500),
-    promptText: z.string().min(1).max(12_000),
+    promptText: z.string().min(1).max(4_000),
     draftIdempotencyKey: z.string().min(1).max(500),
     expectedRevisionNumber: z.number().int().safe().positive(),
     expectedDraftId: z.string().min(1).max(500).nullable(),
@@ -311,6 +366,16 @@ type OpenedAiTurn = {
   };
   serviceRetryContext: FrozenServiceRetryContext;
 };
+
+type OpenRetryTurnResult =
+  | { kind: "opened"; opened: OpenedAiTurn }
+  | {
+      kind: "result";
+      result:
+        | CustomRuleRetryInProgress
+        | CustomRuleRetryReadback
+        | CustomRuleRetryFailed;
+    };
 
 type ContractReadyDraft = Extract<
   CustomRuleDraft,
@@ -343,7 +408,11 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
       const replay = drafts.find(
         (draft) => draft.idempotencyKey === idempotencyKey,
       );
-      if (replay) return replayClarifying(replay, drafts);
+      if (replay) {
+        return replay.initialStatus === "failed"
+          ? replayFailure(replay)
+          : replayClarifying(replay, drafts);
+      }
       if (drafts.length > 0) {
         throw serviceError(
           "invalid_transition",
@@ -430,7 +499,10 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
         input.actor,
         input.conversationId,
       );
-      const opened = await openRetryTurn(dependencies, input);
+      const drafts = await listScopedDrafts(dependencies.repository, input);
+      const retryTurn = await openRetryTurn(dependencies, input, drafts);
+      if (retryTurn.kind === "result") return retryTurn.result;
+      const opened = retryTurn.opened;
       const retryContext = opened.serviceRetryContext;
       const scope: ScopedTransition = {
         actor: input.actor,
@@ -439,7 +511,6 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
         clientRequestId: input.clientRequestId,
         promptText: retryContext.promptText,
       };
-      const drafts = await listScopedDrafts(dependencies.repository, scope);
       if (retryContext.action === "confirm") {
         return retryConfirmationTransition({
           dependencies,
@@ -455,22 +526,10 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
         (draft) => draft.idempotencyKey === retryContext.draftIdempotencyKey,
       );
       if (persisted?.initialStatus === "clarifying") {
-        if (persisted.status !== "clarifying" || latest?.id !== persisted.id) {
-          throw serviceError(
-            "stale_revision",
-            "durable clarifying retry artifact is no longer current",
-            false,
-          );
-        }
-        return resumeClarifyingCompletion({
-          dependencies,
-          scope,
+        throw atomicReconciliationError(
           opened,
-          retryContext,
-          drafts,
-          draft: persisted,
-          sourceTurnId: input.sourceTurnId,
-        });
+          new Error("accepted retry conflicts with an atomic clarifying artifact"),
+        );
       }
       let idempotencyKey = retryContext.draftIdempotencyKey;
       let expectedRevisionNumber = retryContext.expectedRevisionNumber;
@@ -548,24 +607,13 @@ export function createCustomRuleAuthoringService(dependencies: ServiceDependenci
           });
         }
         if (existing.status === "contract_ready") {
-          const opened = await openRetryTurn(dependencies, {
-            actor: input.actor,
-            projectId: input.projectId,
-            conversationId: input.conversationId,
-            sourceTurnId: existing.turnTrace.turnId,
-            clientRequestId: technicalRetryClientRequestId(
-              input.clientRequestId,
-              existing.turnTrace.turnId,
-            ),
-          });
-          return retryConfirmationTransition({
-            dependencies,
-            scope: input,
-            opened,
-            retryContext: opened.serviceRetryContext,
-            drafts,
-            sourceTurnId: existing.turnTrace.turnId,
-          });
+          throw serviceError(
+            "conversation_reconciliation_failed",
+            "Atomic confirmation has a partial contract-ready artifact.",
+            false,
+            undefined,
+            existing.turnTrace.turnId,
+          );
         }
       }
       if (existing) {
@@ -667,17 +715,10 @@ async function retryConfirmationTransition(input: {
     (draft) => draft.idempotencyKey === context.draftIdempotencyKey,
   );
   if (existing?.initialStatus === "contract_ready") {
-    return resumeContractReadyConfirmation({
-      dependencies: input.dependencies,
-      scope: input.scope,
-      opened: input.opened,
-      draft: existing,
-      catalog: input.opened.prepared.catalog,
-      selection: context.simulationSelection,
-      expectedFormulaHash: context.expectedFormulaHash,
-      expectedEvidenceHash: context.expectedEvidenceHash,
-      expectedDataSelectionHash: context.expectedDataSelectionHash,
-    });
+    throw atomicReconciliationError(
+      input.opened,
+      new Error("accepted retry conflicts with an atomic confirmation artifact"),
+    );
   }
   if (existing?.initialStatus === "failed") {
     const retryIdempotencyKey = retryDraftIdempotencyKey(
@@ -689,17 +730,10 @@ async function retryConfirmationTransition(input: {
       (draft) => draft.idempotencyKey === retryIdempotencyKey,
     );
     if (retriedDraft?.initialStatus === "contract_ready") {
-      return resumeContractReadyConfirmation({
-        dependencies: input.dependencies,
-        scope: input.scope,
-        opened: input.opened,
-        draft: retriedDraft,
-        catalog: input.opened.prepared.catalog,
-        selection: context.simulationSelection,
-        expectedFormulaHash: context.expectedFormulaHash,
-        expectedEvidenceHash: context.expectedEvidenceHash,
-        expectedDataSelectionHash: context.expectedDataSelectionHash,
-      });
+      throw atomicReconciliationError(
+        input.opened,
+        new Error("accepted retry conflicts with a retried atomic artifact"),
+      );
     }
     if (retriedDraft) {
       throw serviceError(
@@ -825,40 +859,6 @@ async function retryConfirmationTransition(input: {
   });
 }
 
-async function resumeClarifyingCompletion(input: {
-  dependencies: ServiceDependencies;
-  scope: ScopedTransition;
-  opened: OpenedAiTurn;
-  retryContext: FrozenServiceRetryContext;
-  drafts: CustomRuleDraft[];
-  draft: ClarifyingDraft;
-  sourceTurnId: string;
-}): Promise<CustomRuleAuthoringResult> {
-  const mismatch = frozenClarifyingArtifactMismatch(input);
-  if (mismatch) {
-    return rejectFrozenRetryArtifact(
-      input.dependencies,
-      input.scope,
-      input.opened,
-      mismatch,
-    );
-  }
-  await markValidating(
-    input.dependencies.conversation,
-    input.scope,
-    input.opened,
-  );
-  const completionFailure = await completeConversationTurn(
-    input.dependencies.conversation,
-    input.scope,
-    input.opened,
-    input.draft,
-    input.draft.aiResponse.content,
-  );
-  if (completionFailure) return completionFailure;
-  return replayClarifying(input.draft, input.drafts);
-}
-
 async function assertFrozenFailedRetryArtifact(input: {
   dependencies: ServiceDependencies;
   scope: ScopedTransition;
@@ -877,26 +877,6 @@ async function assertFrozenFailedRetryArtifact(input: {
       mismatch,
     );
   }
-}
-
-function frozenClarifyingArtifactMismatch(input: {
-  opened: OpenedAiTurn;
-  retryContext: FrozenServiceRetryContext;
-  drafts: CustomRuleDraft[];
-  draft: ClarifyingDraft;
-  sourceTurnId: string;
-}): string | null {
-  const mismatch = frozenRetryArtifactMismatch(input, false);
-  if (mismatch) return mismatch;
-  if (
-    input.draft.unresolvedAmbiguities.length === 0 ||
-    !input.draft.unresolvedAmbiguities.some(
-      (ambiguity) => ambiguity.question === input.draft.aiResponse.content,
-    )
-  ) {
-    return "persisted clarifying content does not match its focused question";
-  }
-  return null;
 }
 
 function frozenRetryArtifactMismatch(
@@ -1064,26 +1044,16 @@ async function runClarifyingTransition(input: {
     parameterHash,
     status: "clarifying",
   };
-  const created = await persistDraftOrFailTurn(
-    input.dependencies,
-    input.scope,
+  const finalized = await finalizeDraftTurn({
+    dependencies: input.dependencies,
+    scope: input.scope,
     opened,
-    draftInput,
-  );
-  verifyCreatedDraft(created, input.scope, {
-    initialStatus: "clarifying",
-    revisionNumber: input.expectedRevisionNumber,
-    idempotencyKey: input.idempotencyKey,
+    draft: draftInput,
+    expectedRevisionNumber: input.expectedRevisionNumber,
+    providerName: aiResult.providerName,
   });
-  const completionFailure = await completeConversationTurn(
-    input.dependencies.conversation,
-    input.scope,
-    opened,
-    created,
-    draftInput.aiResponse.content,
-    aiResult.providerName,
-  );
-  if (completionFailure) return completionFailure;
+  if (!finalized.ok) return finalized.failure;
+  const created = finalized.draft;
   return Object.freeze({
     ok: true,
     kind: "clarifying",
@@ -1143,11 +1113,29 @@ async function runConfirmationTransition(input: {
     });
   }
   await markValidating(input.dependencies.conversation, scope, opened);
-  if (aiResult.diff.length > 0) {
-    return failAndThrow(
-      input.dependencies.conversation,
+  const failDomain = (
+    code: CustomRuleAuthoringServiceErrorCode,
+    message: string,
+    retryable: boolean,
+    cause?: unknown,
+  ) =>
+    handleDomainFailure({
+      dependencies: input.dependencies,
+      persistFailedRevisions: input.persistFailedRevisions,
       scope,
       opened,
+      code,
+      message,
+      retryable,
+      cause,
+      currentContract: aiResult.contract,
+      catalogVersion: input.catalog.version,
+      idempotencyKey: input.idempotencyKey,
+      expectedRevisionNumber: input.latest.revisionNumber + 1,
+      providerName: aiResult.providerName,
+    });
+  if (aiResult.diff.length > 0) {
+    return failDomain(
       "invalid_transition",
       "provider changed the contract during explicit confirmation",
       false,
@@ -1158,10 +1146,7 @@ async function runConfirmationTransition(input: {
     aiResult.validation === null ||
     aiResult.testCases.length === 0
   ) {
-    return failAndThrow(
-      input.dependencies.conversation,
-      scope,
-      opened,
+    return failDomain(
       "formula_validation_failed",
       "confirmed response has no complete formula evidence",
       true,
@@ -1184,10 +1169,7 @@ async function runConfirmationTransition(input: {
     canonicalJson(normalized.ast) !==
       canonicalJson(aiResult.validation.normalizedAst)
   ) {
-    return failAndThrow(
-      input.dependencies.conversation,
-      scope,
-      opened,
+    return failDomain(
       "formula_validation_failed",
       "formula failed authoritative deterministic validation",
       true,
@@ -1197,10 +1179,7 @@ async function runConfirmationTransition(input: {
     scope.expectedFormulaHash &&
     scope.expectedFormulaHash !== deterministic.formulaHash
   ) {
-    return failAndThrow(
-      input.dependencies.conversation,
-      scope,
-      opened,
+    return failDomain(
       "formula_hash_mismatch",
       "generated formula hash does not match the expected hash",
       false,
@@ -1213,10 +1192,7 @@ async function runConfirmationTransition(input: {
       ast: deterministic.compiledAst,
     });
   } catch (error) {
-    return failAndThrow(
-      input.dependencies.conversation,
-      scope,
-      opened,
+    return failDomain(
       "formula_validation_failed",
       "authoritative formula explanation failed",
       true,
@@ -1236,10 +1212,7 @@ async function runConfirmationTransition(input: {
       inputs: requirements,
     });
   } catch (error) {
-    return failAndThrow(
-      input.dependencies.conversation,
-      scope,
-      opened,
+    return failDomain(
       "readiness_failed",
       "data readiness analysis failed",
       true,
@@ -1251,10 +1224,7 @@ async function runConfirmationTransition(input: {
     readiness.catalogVersion !== input.catalog.version ||
     readiness.businessTimezone !== aiResult.contract.businessTimezone
   ) {
-    return failAndThrow(
-      input.dependencies.conversation,
-      scope,
-      opened,
+    return failDomain(
       "readiness_failed",
       "project data is not ready for deterministic simulation",
       false,
@@ -1269,10 +1239,7 @@ async function runConfirmationTransition(input: {
       scope.simulationSelection,
     );
   } catch (error) {
-    return failAndThrow(
-      input.dependencies.conversation,
-      scope,
-      opened,
+    return failDomain(
       "simulation_failed",
       "authorized simulation evidence is invalid",
       false,
@@ -1283,10 +1250,7 @@ async function runConfirmationTransition(input: {
     scope.expectedEvidenceHash &&
     scope.expectedEvidenceHash !== evidence.provenance.evidenceHash
   ) {
-    return failAndThrow(
-      input.dependencies.conversation,
-      scope,
-      opened,
+    return failDomain(
       "evidence_hash_mismatch",
       "authorized evidence hash does not match the expected hash",
       false,
@@ -1314,10 +1278,7 @@ async function runConfirmationTransition(input: {
     calculatedSelectionHash = calculateCustomRuleDataSelectionHash(simulationInput);
     summary = input.dependencies.simulate(simulationInput);
   } catch (error) {
-    return failAndThrow(
-      input.dependencies.conversation,
-      scope,
-      opened,
+    return failDomain(
       "simulation_failed",
       "deterministic simulation failed",
       true,
@@ -1332,10 +1293,7 @@ async function runConfirmationTransition(input: {
     summary.persistable.dataSelectionHash !== summary.dataSelectionHash ||
     summary.dataSelectionHash !== calculatedSelectionHash
   ) {
-    return failAndThrow(
-      input.dependencies.conversation,
-      scope,
-      opened,
+    return failDomain(
       "simulation_failed",
       "simulation returned mismatched freshness hashes",
       false,
@@ -1345,20 +1303,14 @@ async function runConfirmationTransition(input: {
     scope.expectedDataSelectionHash &&
     scope.expectedDataSelectionHash !== summary.dataSelectionHash
   ) {
-    return failAndThrow(
-      input.dependencies.conversation,
-      scope,
-      opened,
+    return failDomain(
       "selection_hash_mismatch",
       "final data selection hash does not match the expected hash",
       false,
     );
   }
   if (summary.riskFlags.some((flag) => flag.severity === "block")) {
-    return failAndThrow(
-      input.dependencies.conversation,
-      scope,
-      opened,
+    return failDomain(
       "simulation_failed",
       "deterministic scenario assertions or risk checks blocked confirmation",
       false,
@@ -1396,68 +1348,17 @@ async function runConfirmationTransition(input: {
     parameterHash,
     status: "contract_ready",
   };
-  const created = await persistDraftOrFailTurn(
-    input.dependencies,
+  const finalized = await finalizeSimulationTurn({
+    dependencies: input.dependencies,
     scope,
     opened,
-    draftInput,
-  );
-  verifyCreatedDraft(created, scope, {
-    initialStatus: "contract_ready",
-    revisionNumber: input.latest.revisionNumber + 1,
-    idempotencyKey: input.idempotencyKey,
+    draft: draftInput,
+    summary,
+    expectedRevisionNumber: input.latest.revisionNumber + 1,
+    providerName: aiResult.providerName,
   });
-
-  let simulation: InsertedSettlementFormulaSimulation;
-  try {
-    simulation = await input.dependencies.repository.insertSimulation({
-      organizationId: scope.actor.organizationId,
-      projectId: scope.projectId,
-      owner: { kind: "ai_draft", id: created.id },
-      idempotencyKey: simulationIdempotencyKey(created.id, summary),
-      ...summary.persistable,
-    });
-  } catch (error) {
-    await failConversationTurn(
-      input.dependencies.conversation,
-      scope,
-      opened,
-      "settlement_simulation_persistence_failed",
-      true,
-      "immutable simulation persistence failed",
-    );
-    void error;
-    return recoverablePersistenceFailure(scope, opened, created);
-  }
-  verifySimulation(simulation, scope, created, summary);
-  let simulatedDraft: CustomRuleDraft;
-  try {
-    simulatedDraft = await getSimulatedDraft(
-      input.dependencies,
-      scope,
-      created.id,
-    );
-  } catch (error) {
-    await failConversationTurn(
-      input.dependencies.conversation,
-      scope,
-      opened,
-      "settlement_simulation_readback_failed",
-      true,
-      "simulated draft readback did not confirm the durable transition",
-    );
-    void error;
-    return recoverablePersistenceFailure(scope, opened, created);
-  }
-  const completionFailure = await completeConversationTurn(
-    input.dependencies.conversation,
-    scope,
-    opened,
-    simulatedDraft,
-    explanation,
-    aiResult.providerName,
-  );
-  if (completionFailure) return completionFailure;
+  if (!finalized.ok) return finalized.failure;
+  const { draft: simulatedDraft, simulation } = finalized.value;
   return Object.freeze({
     ok: true,
     kind: "simulated",
@@ -1465,174 +1366,7 @@ async function runConfirmationTransition(input: {
     draft: simulatedDraft,
     simulation,
     summary,
-    duplicate: created.duplicate || simulation.duplicate,
-  });
-}
-
-async function resumeContractReadyConfirmation(input: {
-  dependencies: ServiceDependencies;
-  scope: ScopedTransition;
-  opened: OpenedAiTurn;
-  draft: ContractReadyDraft;
-  catalog: CustomRuleVariableCatalog;
-  selection: AuthorizedSimulationSelectionRequest;
-  expectedFormulaHash: string | null;
-  expectedEvidenceHash: string | null;
-  expectedDataSelectionHash: string | null;
-}): Promise<CustomRuleAuthoringResult> {
-  await markValidating(
-    input.dependencies.conversation,
-    input.scope,
-    input.opened,
-  );
-  let summary: CustomRuleSimulationResult;
-  try {
-    summary = await buildExistingDraftSimulation({
-      dependencies: input.dependencies,
-      scope: input.scope,
-      draft: input.draft,
-      catalog: input.catalog,
-      selection: input.selection,
-      expectedFormulaHash: input.expectedFormulaHash,
-      expectedEvidenceHash: input.expectedEvidenceHash,
-      expectedDataSelectionHash: input.expectedDataSelectionHash,
-    });
-  } catch (error) {
-    const failure =
-      error instanceof CustomRuleAuthoringServiceError
-        ? error
-        : serviceError(
-            "simulation_failed",
-            "contract-ready simulation recovery failed",
-            true,
-            error,
-          );
-    return failAndThrow(
-      input.dependencies.conversation,
-      input.scope,
-      input.opened,
-      failure.code,
-      failure.message,
-      failure.retryable,
-      failure,
-    );
-  }
-  let simulation: InsertedSettlementFormulaSimulation;
-  if (input.draft.status === "simulated") {
-    try {
-      simulation = await readExistingSimulation(
-        input.dependencies,
-        input.scope,
-        input.draft,
-        summary,
-      );
-    } catch (error) {
-      const failure =
-        error instanceof CustomRuleAuthoringServiceError
-          ? error
-          : serviceError(
-              "persistence_failed",
-              "durable simulation readback failed during retry",
-              true,
-              error,
-            );
-      return failAndThrow(
-        input.dependencies.conversation,
-        input.scope,
-        input.opened,
-        failure.code,
-        failure.message,
-        failure.retryable,
-        failure,
-      );
-    }
-    const simulatedDraft = await getSimulatedDraft(
-      input.dependencies,
-      input.scope,
-      input.draft.id,
-    );
-    const completionFailure = await completeConversationTurn(
-      input.dependencies.conversation,
-      input.scope,
-      input.opened,
-      simulatedDraft,
-      input.draft.generatedExplanation,
-    );
-    if (completionFailure) return completionFailure;
-    return Object.freeze({
-      ok: true,
-      kind: "simulated",
-      conversationId: input.scope.conversationId,
-      draft: simulatedDraft,
-      simulation,
-      summary,
-      duplicate: true,
-    });
-  }
-  try {
-    simulation = await input.dependencies.repository.insertSimulation({
-      organizationId: input.scope.actor.organizationId,
-      projectId: input.scope.projectId,
-      owner: { kind: "ai_draft", id: input.draft.id },
-      idempotencyKey: simulationIdempotencyKey(input.draft.id, summary),
-      ...summary.persistable,
-    });
-  } catch (error) {
-    await failConversationTurn(
-      input.dependencies.conversation,
-      input.scope,
-      input.opened,
-      "settlement_simulation_persistence_failed",
-      true,
-      "immutable simulation persistence failed during retry",
-    );
-    void error;
-    return recoverablePersistenceFailure(
-      input.scope,
-      input.opened,
-      input.draft,
-    );
-  }
-  verifySimulation(simulation, input.scope, input.draft, summary);
-  let simulatedDraft: CustomRuleDraft;
-  try {
-    simulatedDraft = await getSimulatedDraft(
-      input.dependencies,
-      input.scope,
-      input.draft.id,
-    );
-  } catch (error) {
-    await failConversationTurn(
-      input.dependencies.conversation,
-      input.scope,
-      input.opened,
-      "settlement_simulation_readback_failed",
-      true,
-      "simulated draft readback failed during retry",
-    );
-    void error;
-    return recoverablePersistenceFailure(
-      input.scope,
-      input.opened,
-      input.draft,
-    );
-  }
-  const completionFailure = await completeConversationTurn(
-    input.dependencies.conversation,
-    input.scope,
-    input.opened,
-    simulatedDraft,
-    input.draft.generatedExplanation,
-  );
-  if (completionFailure) return completionFailure;
-  return Object.freeze({
-    ok: true,
-    kind: "simulated",
-    conversationId: input.scope.conversationId,
-    draft: simulatedDraft,
-    simulation,
-    summary,
-    duplicate: true,
+    duplicate: simulatedDraft.duplicate || simulation.duplicate,
   });
 }
 
@@ -1883,6 +1617,37 @@ function createServiceRetryContext(input: {
   });
 }
 
+async function rejectAcceptedTurn(
+  conversation: SettlementConversationPort,
+  actor: { organizationId: string; userId: string },
+  accepted: SettlementConversationTurnRef,
+  errorCode: string,
+  publicMessage: string,
+): Promise<never> {
+  try {
+    await conversation.failTurn(actor, accepted.turnId, {
+      errorCode,
+      errorSummary: publicMessage,
+      retryable: true,
+    });
+  } catch {
+    throw serviceError(
+      "conversation_reconciliation_failed",
+      "Accepted generic conversation turn could not be reconciled.",
+      false,
+      undefined,
+      accepted.turnId,
+    );
+  }
+  throw serviceError(
+    "conversation_failed",
+    publicMessage,
+    true,
+    undefined,
+    accepted.turnId,
+  );
+}
+
 async function openAiTurn(input: {
   dependencies: ServiceDependencies;
   scope: ScopedTransition;
@@ -1913,16 +1678,14 @@ async function openAiTurn(input: {
       error,
     );
   }
-  if (accepted.conversationId !== input.scope.conversationId) {
-    throw serviceError(
-      "conversation_failed",
-      "generic conversation returned a mismatched conversation",
-      false,
-    );
-  }
-  let preparedTurn;
   try {
-    preparedTurn = await input.dependencies.conversation.prepareTurn(
+    if (
+      accepted.conversationId !== input.scope.conversationId ||
+      accepted.status !== "accepted"
+    ) {
+      throw new Error("accepted conversation turn scope or status mismatch");
+    }
+    const preparedTurn = await input.dependencies.conversation.prepareTurn(
       input.scope.actor,
       accepted.turnId,
       [
@@ -1930,50 +1693,40 @@ async function openAiTurn(input: {
         `settlement-contract:${hashCustomRuleContract(input.currentContract)}`,
       ],
     );
-  } catch (error) {
-    throw serviceError(
-      "conversation_failed",
-      "generic conversation context could not be prepared",
-      true,
-      error,
-    );
-  }
-  const prepared = input.dependencies.ai.prepare({
-    action: input.action,
-    contractConfirmed: input.contractConfirmed,
-    userMessage: input.scope.promptText,
-    currentContract: input.currentContract,
-    unresolvedAmbiguities: input.currentAmbiguities,
-    catalog: input.catalog,
-    conversationMessages: preparedTurn.messages,
-  });
-  const gatewayContext = {
-    messages: prepared.request.messages.map((message) => ({ ...message })),
-    attachments: [],
-    mode: "fast" as const,
-    primaryProvider: input.dependencies.primaryProvider,
-    lastUserMessage: input.scope.promptText,
-    responseMetadata: {
-      grounding: {
-        catalogVersion: input.catalog.version,
-        scope: input.catalog.scope,
-        executionGrain: input.catalog.executionGrain,
+    const prepared = input.dependencies.ai.prepare({
+      action: input.action,
+      contractConfirmed: input.contractConfirmed,
+      userMessage: input.scope.promptText,
+      currentContract: input.currentContract,
+      unresolvedAmbiguities: input.currentAmbiguities,
+      catalog: input.catalog,
+      conversationMessages: preparedTurn.messages,
+    });
+    const gatewayContext = {
+      messages: prepared.request.messages.map((message) => ({ ...message })),
+      attachments: [],
+      mode: "fast" as const,
+      primaryProvider: input.dependencies.primaryProvider,
+      lastUserMessage: input.scope.promptText,
+      responseMetadata: {
+        grounding: {
+          catalogVersion: input.catalog.version,
+          scope: input.catalog.scope,
+          executionGrain: input.catalog.executionGrain,
+        },
+        knowledge: {},
+        retrospectiveDraft: null,
       },
-      knowledge: {},
-      retrospectiveDraft: null,
-    },
-    invocationMetadata: {
-      promptHash: prepared.promptHash,
-      contextHash: prepared.contextHash,
-      snapshotVersion: preparedTurn.snapshot.version,
-      summaryVersion: preparedTurn.snapshot.summaryVersion,
-      settlementAiRetryContext: prepared.retryContext,
-      settlementServiceRetryContext: input.serviceRetryContext,
-    },
-  };
-  let captured;
-  try {
-    captured = await input.dependencies.conversation.captureGatewayContext(
+      invocationMetadata: {
+        promptHash: prepared.promptHash,
+        contextHash: prepared.contextHash,
+        snapshotVersion: preparedTurn.snapshot.version,
+        summaryVersion: preparedTurn.snapshot.summaryVersion,
+        settlementAiRetryContext: prepared.retryContext,
+        settlementServiceRetryContext: input.serviceRetryContext,
+      },
+    };
+    const captured = await input.dependencies.conversation.captureGatewayContext(
       input.scope.actor,
       accepted.turnId,
       preparedTurn.snapshot,
@@ -1984,34 +1737,36 @@ async function openAiTurn(input: {
       accepted.turnId,
       input.dependencies.primaryProvider,
     );
-  } catch (error) {
-    throw serviceError(
-      "conversation_failed",
-      "generic conversation could not freeze gateway context",
-      true,
-      error,
+    return {
+      turnTrace: {
+        turnId: accepted.turnId,
+        userMessageId: accepted.userMessageId,
+        assistantMessageId: accepted.assistantMessageId,
+      },
+      prepared,
+      snapshot: {
+        version: captured.version,
+        summaryVersion: captured.summaryVersion,
+        messageIds: [...captured.messageIds],
+      },
+      serviceRetryContext: input.serviceRetryContext,
+    };
+  } catch {
+    return rejectAcceptedTurn(
+      input.dependencies.conversation,
+      input.scope.actor,
+      accepted,
+      "settlement_turn_setup_failed",
+      "Settlement authoring turn setup failed.",
     );
   }
-  return {
-    turnTrace: {
-      turnId: accepted.turnId,
-      userMessageId: accepted.userMessageId,
-      assistantMessageId: accepted.assistantMessageId,
-    },
-    prepared,
-    snapshot: {
-      version: captured.version,
-      summaryVersion: captured.summaryVersion,
-      messageIds: [...captured.messageIds],
-    },
-    serviceRetryContext: input.serviceRetryContext,
-  };
 }
 
 async function openRetryTurn(
   dependencies: ServiceDependencies,
   input: RetryCustomRuleTurnInput,
-): Promise<OpenedAiTurn> {
+  drafts: CustomRuleDraft[],
+): Promise<OpenRetryTurnResult> {
   let accepted;
   try {
     accepted = await dependencies.conversation.retryTurn(
@@ -2028,113 +1783,196 @@ async function openRetryTurn(
     );
   }
   if (accepted.conversationId !== input.conversationId) {
+    if (accepted.status === "accepted") {
+      return rejectAcceptedTurn(
+        dependencies.conversation,
+        input.actor,
+        accepted,
+        "settlement_retry_setup_failed",
+        "Settlement authoring retry setup failed.",
+      );
+    }
     throw serviceError(
       "conversation_failed",
       "generic retry returned a mismatched conversation",
       false,
+      undefined,
+      accepted.turnId,
     );
   }
-  let preparedTurn;
+  const turn = retryTurnDto(accepted);
+  if (
+    accepted.status === "grounding" ||
+    accepted.status === "generating" ||
+    accepted.status === "validating"
+  ) {
+    return {
+      kind: "result",
+      result: Object.freeze({
+        ok: true,
+        kind: "retry_in_progress",
+        conversationId: input.conversationId,
+        turn: { ...turn, status: accepted.status },
+      }),
+    };
+  }
+  if (accepted.status === "completed") {
+    const draft = retryDomainDraft(drafts, accepted.turnId, input.sourceTurnId);
+    if (
+      !draft ||
+      (draft.initialStatus === "clarifying" && draft.status !== "clarifying") ||
+      (draft.initialStatus === "contract_ready" && draft.status !== "simulated") ||
+      draft.initialStatus === "failed"
+    ) {
+      throw serviceError(
+        "conversation_failed",
+        "completed generic retry has no matching durable settlement artifact",
+        false,
+        undefined,
+        accepted.turnId,
+      );
+    }
+    return {
+      kind: "result",
+      result: Object.freeze({
+        ok: true,
+        kind: "retry_readback",
+        conversationId: input.conversationId,
+        draft,
+        turn: { ...turn, status: "completed" as const },
+      }),
+    };
+  }
+  if (accepted.status === "failed") {
+    if (accepted.retryable !== true) {
+      throw serviceError(
+        "conversation_failed",
+        "generic retry is already failed and not retryable",
+        false,
+        undefined,
+        accepted.turnId,
+      );
+    }
+    const failedDraft = retryDomainDraft(
+      drafts,
+      accepted.turnId,
+      input.sourceTurnId,
+    );
+    return {
+      kind: "result",
+      result: Object.freeze({
+        ok: false,
+        kind: "retry_failed",
+        code: "conversation_failed",
+        retryable: true,
+        conversationId: input.conversationId,
+        sourceTurnId: accepted.turnId,
+        failedDraft,
+        turn: { ...turn, status: "failed" as const },
+      }),
+    };
+  }
+  if (accepted.status === "cancelled") {
+    throw serviceError(
+      "conversation_failed",
+      "generic retry is cancelled",
+      false,
+      undefined,
+      accepted.turnId,
+    );
+  }
   try {
-    preparedTurn = await dependencies.conversation.prepareTurn(
+    const preparedTurn = await dependencies.conversation.prepareTurn(
       input.actor,
       accepted.turnId,
     );
-  } catch (error) {
-    throw serviceError(
-      "conversation_failed",
-      "generic retry context could not be restored",
-      true,
-      error,
+    const gatewayContext = preparedTurn.snapshot.gatewayContext;
+    if (!gatewayContext) {
+      throw new Error("generic retry has no frozen gateway context");
+    }
+    const serviceContextResult = frozenServiceRetryContextSchema.safeParse(
+      gatewayContext.invocationMetadata.settlementServiceRetryContext,
     );
-  }
-  const gatewayContext = preparedTurn.snapshot.gatewayContext;
-  if (!gatewayContext) {
-    throw serviceError(
-      "conversation_failed",
-      "generic retry has no frozen gateway context",
-      false,
-    );
-  }
-  const serviceContextResult = frozenServiceRetryContextSchema.safeParse(
-    gatewayContext.invocationMetadata.settlementServiceRetryContext,
-  );
-  if (!serviceContextResult.success) {
-    throw serviceError(
-      "conversation_failed",
-      "settlement retry metadata is invalid",
-      false,
-    );
-  }
-  const serviceRetryContext = serviceContextResult.data;
-  if (
-    serviceRetryContext.organizationId !== input.actor.organizationId ||
-    serviceRetryContext.actorId !== input.actor.userId ||
-    serviceRetryContext.projectId !== input.projectId ||
-    serviceRetryContext.conversationId !== input.conversationId ||
-    (serviceRetryContext.action === "confirm") !==
-      (serviceRetryContext.simulationSelection !== null)
-  ) {
-    throw serviceError(
-      "conversation_failed",
-      "settlement retry metadata scope mismatch",
-      false,
-    );
-  }
-  let prepared: PreparedSettlementAiRequest;
-  try {
-    prepared = dependencies.ai.restore(
+    if (!serviceContextResult.success) {
+      throw new Error("settlement retry metadata is invalid");
+    }
+    const serviceRetryContext = serviceContextResult.data;
+    if (
+      serviceRetryContext.organizationId !== input.actor.organizationId ||
+      serviceRetryContext.actorId !== input.actor.userId ||
+      serviceRetryContext.projectId !== input.projectId ||
+      serviceRetryContext.conversationId !== input.conversationId ||
+      (serviceRetryContext.action === "confirm") !==
+        (serviceRetryContext.simulationSelection !== null)
+    ) {
+      throw new Error("settlement retry metadata scope mismatch");
+    }
+    const prepared = dependencies.ai.restore(
       gatewayContext.invocationMetadata.settlementAiRetryContext,
     );
-  } catch (error) {
-    throw serviceError(
-      "conversation_failed",
-      "frozen settlement AI context could not be restored",
-      false,
-      error,
-    );
-  }
-  if (
-    prepared.action !== serviceRetryContext.action ||
-    canonicalJson(preparedTurn.messages) !==
-      canonicalJson(gatewayContext.messages) ||
-    canonicalJson(prepared.request.messages) !==
-      canonicalJson(gatewayContext.messages)
-  ) {
-    throw serviceError(
-      "conversation_failed",
-      "frozen settlement retry context mismatch",
-      false,
-    );
-  }
-  try {
+    if (
+      prepared.action !== serviceRetryContext.action ||
+      canonicalJson(preparedTurn.messages) !==
+        canonicalJson(gatewayContext.messages) ||
+      canonicalJson(prepared.request.messages) !==
+        canonicalJson(gatewayContext.messages)
+    ) {
+      throw new Error("frozen settlement retry context mismatch");
+    }
     await dependencies.conversation.markGenerating(
       input.actor,
       accepted.turnId,
       dependencies.primaryProvider,
     );
-  } catch (error) {
-    throw serviceError(
-      "conversation_failed",
-      "generic retry could not enter generation",
-      true,
-      error,
+    return {
+      kind: "opened",
+      opened: {
+        turnTrace: {
+          turnId: accepted.turnId,
+          userMessageId: accepted.userMessageId,
+          assistantMessageId: accepted.assistantMessageId,
+        },
+        prepared,
+        snapshot: {
+          version: preparedTurn.snapshot.version,
+          summaryVersion: preparedTurn.snapshot.summaryVersion,
+          messageIds: [...preparedTurn.snapshot.messageIds],
+        },
+        serviceRetryContext,
+      },
+    };
+  } catch {
+    return rejectAcceptedTurn(
+      dependencies.conversation,
+      input.actor,
+      accepted,
+      "settlement_retry_setup_failed",
+      "Settlement authoring retry setup failed.",
     );
   }
-  return {
-    turnTrace: {
-      turnId: accepted.turnId,
-      userMessageId: accepted.userMessageId,
-      assistantMessageId: accepted.assistantMessageId,
-    },
-    prepared,
-    snapshot: {
-      version: preparedTurn.snapshot.version,
-      summaryVersion: preparedTurn.snapshot.summaryVersion,
-      messageIds: [...preparedTurn.snapshot.messageIds],
-    },
-    serviceRetryContext,
-  };
+}
+
+function retryTurnDto(
+  turn: SettlementConversationTurnRef,
+): CustomRuleRetryTurnDto {
+  return Object.freeze({
+    turnId: turn.turnId,
+    status: turn.status,
+    attempt: turn.attempt,
+    duplicate: turn.duplicate,
+  });
+}
+
+function retryDomainDraft(
+  drafts: CustomRuleDraft[],
+  turnId: string,
+  sourceTurnId: string,
+): CustomRuleDraft | null {
+  return (
+    drafts.find((draft) => draft.turnTrace.turnId === turnId) ??
+    drafts.find((draft) => draft.turnTrace.turnId === sourceTurnId) ??
+    null
+  );
 }
 
 async function executeAi(
@@ -2143,13 +1981,12 @@ async function executeAi(
 ): Promise<SettlementAiResult> {
   try {
     return await ai.execute(prepared);
-  } catch (error) {
+  } catch {
     return {
       ok: false,
       code: "SETTLEMENT_AI_PROVIDER_FAILED",
       retryable: true,
-      message:
-        error instanceof Error ? error.message : "settlement AI adapter failed",
+      message: AI_PROVIDER_FAILURE_MESSAGE,
       promptHash: prepared.promptHash,
       contextHash: prepared.contextHash,
     };
@@ -2170,6 +2007,11 @@ async function handleAiFailure(input: {
 }): Promise<CustomRuleAiTransitionFailure> {
   let failedDraft: CustomRuleDraft | null = null;
   if (input.persistFailedRevisions) {
+    await markValidating(
+      input.dependencies.conversation,
+      input.scope,
+      input.opened,
+    );
     const failedInput: FailedCustomRuleDraftInput = {
       organizationId: input.scope.actor.organizationId,
       projectId: input.scope.projectId,
@@ -2203,40 +2045,27 @@ async function handleAiFailure(input: {
       ),
       status: "failed",
     };
-    try {
-      const created = await input.dependencies.repository.createDraft(failedInput);
-      verifyCreatedDraft(created, input.scope, {
-        initialStatus: "failed",
-        revisionNumber: input.expectedRevisionNumber,
-        idempotencyKey: input.idempotencyKey,
-      });
-      failedDraft = created;
-    } catch (error) {
-      await failConversationTurn(
-        input.dependencies.conversation,
-        input.scope,
-        input.opened,
-        "settlement_ai_failed_revision_persistence",
-        true,
-        input.failure.message,
-      );
-      throw serviceError(
-        "persistence_failed",
-        "failed AI revision could not be persisted",
-        true,
-        error,
-      );
-    }
+    const finalized = await finalizeFailedTurn({
+      dependencies: input.dependencies,
+      scope: input.scope,
+      opened: input.opened,
+      draft: failedInput,
+      expectedRevisionNumber: input.expectedRevisionNumber,
+      providerName: input.failure.providerName,
+    });
+    if (!finalized.ok) return finalized.failure;
+    failedDraft = finalized.draft;
+  } else {
+    await failConversationTurn(
+      input.dependencies.conversation,
+      input.scope,
+      input.opened,
+      input.failure.code,
+      input.failure.retryable,
+      input.failure.message,
+      input.failure.providerName,
+    );
   }
-  await failConversationTurn(
-    input.dependencies.conversation,
-    input.scope,
-    input.opened,
-    input.failure.code,
-    input.failure.retryable,
-    input.failure.message,
-    input.failure.providerName,
-  );
   return Object.freeze({
     ok: false,
     code: input.failure.code,
@@ -2248,30 +2077,540 @@ async function handleAiFailure(input: {
   });
 }
 
-async function persistDraftOrFailTurn(
-  dependencies: ServiceDependencies,
-  scope: ScopedTransition,
-  opened: OpenedAiTurn,
-  input: CreateCustomRuleDraftInput,
-): Promise<CreatedCustomRuleDraft> {
-  try {
-    return await dependencies.repository.createDraft(input);
-  } catch (error) {
-    await failConversationTurn(
-      dependencies.conversation,
-      scope,
-      opened,
-      "settlement_draft_persistence_failed",
-      true,
-      "settlement draft persistence failed",
-    );
-    throw serviceError(
-      "persistence_failed",
-      "settlement draft persistence failed",
-      true,
-      error,
+async function handleDomainFailure(input: {
+  dependencies: ServiceDependencies;
+  persistFailedRevisions: boolean;
+  scope: ScopedTransition;
+  opened: OpenedAiTurn;
+  code: CustomRuleAuthoringServiceErrorCode;
+  message: string;
+  retryable: boolean;
+  cause?: unknown;
+  currentContract: BusinessRuleContract;
+  catalogVersion: string;
+  idempotencyKey: string;
+  expectedRevisionNumber: number;
+  providerName?: AiProviderName;
+}): Promise<never> {
+  if (!input.persistFailedRevisions) {
+    return failAndThrow(
+      input.dependencies.conversation,
+      input.scope,
+      input.opened,
+      input.code,
+      input.message,
+      input.retryable,
+      input.cause,
     );
   }
+  const failedInput: FailedCustomRuleDraftInput = {
+    organizationId: input.scope.actor.organizationId,
+    projectId: input.scope.projectId,
+    conversationId: input.scope.conversationId,
+    idempotencyKey: input.idempotencyKey,
+    promptText: input.scope.promptText,
+    turnTrace: input.opened.turnTrace,
+    businessContract: input.currentContract,
+    unresolvedAmbiguities: [],
+    variableCatalogVersion: input.catalogVersion,
+    aiResponse: {
+      content: input.message,
+      finishReason: "stop",
+      providerRequestId: null,
+    },
+    generatedFormula: null,
+    generatedExplanation: null,
+    generatedTestCases: [],
+    model: input.providerName ?? input.dependencies.primaryProvider,
+    safetyFlags: [
+      {
+        code: `domain_${input.code}`,
+        severity: "warning",
+        message: input.message,
+      },
+    ],
+    contractHash: hashCustomRuleContract(input.currentContract),
+    formulaHash: null,
+    parameterHash: hashCustomRuleParameters(
+      parameterValues(input.currentContract),
+    ),
+    status: "failed",
+  };
+  const finalized = await finalizeFailedTurn({
+    dependencies: input.dependencies,
+    scope: input.scope,
+    opened: input.opened,
+    draft: failedInput,
+    expectedRevisionNumber: input.expectedRevisionNumber,
+    providerName: input.providerName,
+  });
+  if (!finalized.ok) {
+    throw serviceError(
+      "persistence_failed",
+      "Atomic failed revision did not commit.",
+      true,
+      input.cause,
+      input.opened.turnTrace.turnId,
+    );
+  }
+  throw serviceError(
+    input.code,
+    input.message,
+    input.retryable,
+    input.cause,
+    input.opened.turnTrace.turnId,
+  );
+}
+
+type AtomicDraftFinalization =
+  | { ok: true; draft: CreatedCustomRuleDraft }
+  | { ok: false; failure: CustomRuleAiTransitionFailure };
+
+type AtomicSimulationFinalization =
+  | { ok: true; value: FinalizedSettlementAiSimulationTurn }
+  | { ok: false; failure: CustomRuleAiTransitionFailure };
+
+async function finalizeDraftTurn(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  opened: OpenedAiTurn;
+  draft: ClarifyingCustomRuleDraftInput;
+  expectedRevisionNumber: number;
+  providerName?: AiProviderName;
+}): Promise<AtomicDraftFinalization> {
+  const completion = atomicTurnCompletion(
+    input.dependencies,
+    input.opened,
+    input.draft,
+    input.providerName,
+  );
+  try {
+    const draft = await input.dependencies.repository.finalizeDraftTurn({
+      draft: input.draft,
+      completion,
+    });
+    verifyAtomicDraft(draft, input.scope, input.draft, {
+      initialStatus: "clarifying",
+      currentStatus: "clarifying",
+      revisionNumber: input.expectedRevisionNumber,
+    });
+    return { ok: true, draft };
+  } catch (error) {
+    return reconcileAtomicDraftFailure({
+      ...input,
+      completion,
+      terminalStatus: "completed",
+      cause: error,
+    });
+  }
+}
+
+async function finalizeSimulationTurn(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  opened: OpenedAiTurn;
+  draft: ContractReadyCustomRuleDraftInput;
+  summary: CustomRuleSimulationResult;
+  expectedRevisionNumber: number;
+  providerName?: AiProviderName;
+}): Promise<AtomicSimulationFinalization> {
+  const completion = atomicTurnCompletion(
+    input.dependencies,
+    input.opened,
+    input.draft,
+    input.providerName,
+  );
+  const simulation = atomicSimulationSummary(input.draft, input.summary);
+  try {
+    const value = await input.dependencies.repository.finalizeSimulationTurn({
+      draft: input.draft,
+      completion,
+      simulation,
+    });
+    verifyAtomicDraft(value.draft, input.scope, input.draft, {
+      initialStatus: "contract_ready",
+      currentStatus: "simulated",
+      revisionNumber: input.expectedRevisionNumber,
+    });
+    verifySimulation(value.simulation, input.scope, value.draft, input.summary);
+    return { ok: true, value };
+  } catch (error) {
+    return reconcileAtomicSimulationFailure({
+      ...input,
+      completion,
+      simulation,
+      cause: error,
+    });
+  }
+}
+
+async function finalizeFailedTurn(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  opened: OpenedAiTurn;
+  draft: FailedCustomRuleDraftInput;
+  expectedRevisionNumber: number;
+  providerName?: AiProviderName;
+}): Promise<AtomicDraftFinalization> {
+  const completion = atomicTurnCompletion(
+    input.dependencies,
+    input.opened,
+    input.draft,
+    input.providerName,
+  );
+  try {
+    const draft = await input.dependencies.repository.finalizeFailedTurn({
+      draft: input.draft,
+      completion,
+    });
+    verifyAtomicDraft(draft, input.scope, input.draft, {
+      initialStatus: "failed",
+      currentStatus: "failed",
+      revisionNumber: input.expectedRevisionNumber,
+    });
+    return { ok: true, draft };
+  } catch (error) {
+    return reconcileAtomicDraftFailure({
+      ...input,
+      completion,
+      terminalStatus: "failed",
+      cause: error,
+    });
+  }
+}
+
+function atomicTurnCompletion(
+  dependencies: ServiceDependencies,
+  opened: OpenedAiTurn,
+  draft: CreateCustomRuleDraftInput,
+  providerName?: AiProviderName,
+): SettlementAiTurnCompletionInput {
+  return {
+    providerName: providerName ?? dependencies.primaryProvider,
+    content: draft.aiResponse.content,
+    aiInvocationId: null,
+    metadata: {
+      contextSnapshotVersion: opened.snapshot.version,
+      contextSummaryVersion: opened.snapshot.summaryVersion,
+      contextMessageIds: [...opened.snapshot.messageIds],
+      settlementIdempotencyKey: draft.idempotencyKey,
+      settlementInitialStatus: draft.status,
+    },
+  };
+}
+
+function atomicSimulationSummary(
+  draft: ContractReadyCustomRuleDraftInput,
+  summary: CustomRuleSimulationResult,
+): FinalizeSettlementAiSimulationTurnInput["simulation"] {
+  return {
+    idempotencyKey: simulationIdempotencyKey(
+      draft.idempotencyKey,
+      summary,
+    ),
+    dataSelectionHash: summary.persistable.dataSelectionHash,
+    sampleSource: summary.persistable.sampleSource,
+    sampleSelection: summary.persistable.sampleSelection,
+    coverage: summary.persistable.coverage,
+    scenarios: summary.persistable.scenarios,
+    historicalTotals: summary.persistable.historicalTotals,
+    deltas: summary.persistable.deltas,
+    largestChanges: summary.persistable.largestChanges,
+    warnings: summary.persistable.warnings,
+  };
+}
+
+async function reconcileAtomicDraftFailure(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  opened: OpenedAiTurn;
+  draft: ClarifyingCustomRuleDraftInput | FailedCustomRuleDraftInput;
+  expectedRevisionNumber: number;
+  completion: SettlementAiTurnCompletionInput;
+  terminalStatus: "completed" | "failed";
+  cause: unknown;
+}): Promise<AtomicDraftFinalization> {
+  const readback = await readAtomicState(input);
+  const persisted = readback.drafts.find(
+    (draft) => draft.idempotencyKey === input.draft.idempotencyKey,
+  );
+  if (persisted) {
+    try {
+      verifyAtomicDraft(persisted, input.scope, input.draft, {
+        initialStatus: input.draft.status,
+        currentStatus: input.draft.status,
+        revisionNumber: input.expectedRevisionNumber,
+      });
+      requireMatchingTerminalTurn(
+        readback.history,
+        input.opened,
+        input.completion,
+        input.terminalStatus,
+      );
+      return {
+        ok: true,
+        draft: { ...persisted, duplicate: true },
+      };
+    } catch (error) {
+      throw atomicReconciliationError(input.opened, error);
+    }
+  }
+  if (hasTurnBoundDraft(readback.drafts, input.opened.turnTrace.turnId)) {
+    throw atomicReconciliationError(input.opened, input.cause);
+  }
+  if (isActiveAtomicTurn(readback.history, input.opened)) {
+    return {
+      ok: false,
+      failure: await failUncommittedAtomicTurn(input),
+    };
+  }
+  throw atomicReconciliationError(input.opened, input.cause);
+}
+
+async function reconcileAtomicSimulationFailure(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  opened: OpenedAiTurn;
+  draft: ContractReadyCustomRuleDraftInput;
+  summary: CustomRuleSimulationResult;
+  expectedRevisionNumber: number;
+  completion: SettlementAiTurnCompletionInput;
+  simulation: FinalizeSettlementAiSimulationTurnInput["simulation"];
+  cause: unknown;
+}): Promise<AtomicSimulationFinalization> {
+  const readback = await readAtomicState(input);
+  const persisted = readback.drafts.find(
+    (draft) => draft.idempotencyKey === input.draft.idempotencyKey,
+  );
+  if (!persisted) {
+    if (hasTurnBoundDraft(readback.drafts, input.opened.turnTrace.turnId)) {
+      throw atomicReconciliationError(input.opened, input.cause);
+    }
+    if (isActiveAtomicTurn(readback.history, input.opened)) {
+      return {
+        ok: false,
+        failure: await failUncommittedAtomicTurn(input),
+      };
+    }
+    throw atomicReconciliationError(input.opened, input.cause);
+  }
+  try {
+    verifyAtomicDraft(persisted, input.scope, input.draft, {
+      initialStatus: "contract_ready",
+      currentStatus: "simulated",
+      revisionNumber: input.expectedRevisionNumber,
+    });
+    const simulations = await input.dependencies.repository.listSimulations({
+      organizationId: input.scope.actor.organizationId,
+      projectId: input.scope.projectId,
+      owner: { kind: "ai_draft", id: persisted.id },
+      limit: 100,
+    });
+    const simulation = simulations.find(
+      (candidate) => candidate.idempotencyKey === input.simulation.idempotencyKey,
+    );
+    if (!simulation) throw new Error("atomic simulation readback is partial");
+    const duplicateSimulation = { ...simulation, duplicate: true };
+    verifySimulation(
+      duplicateSimulation,
+      input.scope,
+      persisted,
+      input.summary,
+    );
+    requireMatchingTerminalTurn(
+      readback.history,
+      input.opened,
+      input.completion,
+      "completed",
+    );
+    return {
+      ok: true,
+      value: {
+        draft: { ...persisted, duplicate: true },
+        simulation: duplicateSimulation,
+      },
+    };
+  } catch (error) {
+    throw atomicReconciliationError(input.opened, error);
+  }
+}
+
+async function readAtomicState(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  opened: OpenedAiTurn;
+}): Promise<{
+  drafts: CustomRuleDraft[];
+  history: Awaited<ReturnType<SettlementConversationPort["getHistory"]>>;
+}> {
+  try {
+    const [drafts, history] = await Promise.all([
+      listScopedDrafts(input.dependencies.repository, input.scope),
+      input.dependencies.conversation.getHistory(
+        input.scope.actor,
+        input.scope.conversationId,
+      ),
+    ]);
+    if (
+      history.conversation.id !== input.scope.conversationId ||
+      history.conversation.status !== "active"
+    ) {
+      throw new Error("atomic conversation readback scope mismatch");
+    }
+    return { drafts, history };
+  } catch (error) {
+    throw atomicReconciliationError(input.opened, error);
+  }
+}
+
+function requireMatchingTerminalTurn(
+  history: Awaited<ReturnType<SettlementConversationPort["getHistory"]>>,
+  opened: OpenedAiTurn,
+  completion: SettlementAiTurnCompletionInput,
+  expectedStatus: "completed" | "failed",
+): void {
+  const turn = history.turns.find(
+    (candidate) => candidate.id === opened.turnTrace.turnId,
+  );
+  const assistant = history.messages.find(
+    (message) => message.id === opened.turnTrace.assistantMessageId,
+  );
+  if (
+    !turn ||
+    turn.conversationId !== history.conversation.id ||
+    turn.userMessageId !== opened.turnTrace.userMessageId ||
+    turn.assistantMessageId !== opened.turnTrace.assistantMessageId ||
+    turn.status !== expectedStatus ||
+    !assistant ||
+    assistant.conversationId !== history.conversation.id ||
+    assistant.status !== expectedStatus ||
+    assistant.content !== completion.content ||
+    canonicalJson(assistant.metadata ?? {}) !== canonicalJson(completion.metadata)
+  ) {
+    throw new Error("atomic generic turn readback mismatch");
+  }
+}
+
+function isActiveAtomicTurn(
+  history: Awaited<ReturnType<SettlementConversationPort["getHistory"]>>,
+  opened: OpenedAiTurn,
+): boolean {
+  const turn = history.turns.find(
+    (candidate) => candidate.id === opened.turnTrace.turnId,
+  );
+  return Boolean(
+    turn &&
+      turn.conversationId === history.conversation.id &&
+      turn.userMessageId === opened.turnTrace.userMessageId &&
+      turn.assistantMessageId === opened.turnTrace.assistantMessageId &&
+      (turn.status === "accepted" ||
+        turn.status === "grounding" ||
+        turn.status === "generating" ||
+        turn.status === "validating"),
+  );
+}
+
+function hasTurnBoundDraft(drafts: CustomRuleDraft[], turnId: string): boolean {
+  return drafts.some((draft) => draft.turnTrace.turnId === turnId);
+}
+
+async function failUncommittedAtomicTurn(input: {
+  dependencies: ServiceDependencies;
+  scope: ScopedTransition;
+  opened: OpenedAiTurn;
+}): Promise<CustomRuleAiTransitionFailure> {
+  try {
+    await failConversationTurn(
+      input.dependencies.conversation,
+      input.scope,
+      input.opened,
+      "settlement_atomic_finalize_failed",
+      true,
+      "Atomic settlement finalization did not commit.",
+    );
+  } catch (error) {
+    throw serviceError(
+      "conversation_reconciliation_failed",
+      "Atomic settlement failure could not reconcile the generic turn.",
+      false,
+      error,
+      input.opened.turnTrace.turnId,
+    );
+  }
+  return recoverableTurnFailure(
+    "persistence_failed",
+    input.scope,
+    input.opened,
+    null,
+  );
+}
+
+function atomicReconciliationError(
+  opened: OpenedAiTurn,
+  cause: unknown,
+): CustomRuleAuthoringServiceError {
+  return serviceError(
+    "conversation_reconciliation_failed",
+    "Atomic settlement finalization could not be reconciled.",
+    false,
+    cause,
+    opened.turnTrace.turnId,
+  );
+}
+
+function verifyAtomicDraft(
+  draft: CustomRuleDraft,
+  scope: ScopedTransition,
+  input: CreateCustomRuleDraftInput,
+  expected: {
+    initialStatus: CustomRuleDraft["initialStatus"];
+    currentStatus: "clarifying" | "failed" | "simulated";
+    revisionNumber: number;
+  },
+): void {
+  verifyCreatedDraft({ ...draft, duplicate: false }, scope, {
+    initialStatus: expected.initialStatus,
+    revisionNumber: expected.revisionNumber,
+    idempotencyKey: input.idempotencyKey,
+  });
+  if (
+    draft.status !== expected.currentStatus ||
+    canonicalJson(draftInputEnvelope(draft)) !==
+      canonicalJson(draftInputEnvelope(input))
+  ) {
+    throw serviceError(
+      "persistence_failed",
+      "repository returned a mismatched atomic draft",
+      false,
+    );
+  }
+}
+
+function draftInputEnvelope(
+  draft: CreateCustomRuleDraftInput | CustomRuleDraft,
+): Record<string, unknown> {
+  const status = "initialStatus" in draft ? draft.initialStatus : draft.status;
+  return {
+    organizationId: draft.organizationId,
+    projectId: draft.projectId,
+    conversationId: draft.conversationId,
+    idempotencyKey: draft.idempotencyKey,
+    promptText: draft.promptText,
+    turnTrace: draft.turnTrace,
+    businessContract: draft.businessContract,
+    unresolvedAmbiguities: draft.unresolvedAmbiguities,
+    variableCatalogVersion: draft.variableCatalogVersion,
+    aiResponse: draft.aiResponse,
+    generatedFormula: draft.generatedFormula,
+    generatedExplanation: draft.generatedExplanation,
+    generatedTestCases: draft.generatedTestCases,
+    model: draft.model,
+    safetyFlags: draft.safetyFlags,
+    contractHash: draft.contractHash,
+    formulaHash: draft.formulaHash,
+    parameterHash: draft.parameterHash,
+    status,
+  };
 }
 
 async function getSimulatedDraft(
@@ -2327,7 +2666,10 @@ async function readExistingSimulation(
       error,
     );
   }
-  const idempotencyKey = simulationIdempotencyKey(draft.id, summary);
+  const idempotencyKey = simulationIdempotencyKey(
+    draft.idempotencyKey,
+    summary,
+  );
   const simulation = simulations.find(
     (candidate) => candidate.idempotencyKey === idempotencyKey,
   );
@@ -2341,52 +2683,6 @@ async function readExistingSimulation(
   const readback = { ...simulation, duplicate: true };
   verifySimulation(readback, scope, draft, summary);
   return readback;
-}
-
-async function completeConversationTurn(
-  conversation: SettlementConversationPort,
-  scope: ScopedTransition,
-  opened: OpenedAiTurn,
-  draft: CustomRuleDraft,
-  content: string,
-  providerName?: AiProviderName,
-): Promise<CustomRuleAiTransitionFailure | null> {
-  try {
-    await conversation.completeTurn(scope.actor, opened.turnTrace.turnId, {
-      content,
-      providerName,
-      metadata: {
-        contextSnapshotVersion: opened.snapshot.version,
-        contextSummaryVersion: opened.snapshot.summaryVersion,
-        contextMessageIds: [...opened.snapshot.messageIds],
-        settlementDraftId: draft.id,
-        settlementRevisionNumber: draft.revisionNumber,
-        settlementInitialStatus: draft.initialStatus,
-      },
-    });
-    return null;
-  } catch (error) {
-    try {
-      await failConversationTurn(
-        conversation,
-        scope,
-        opened,
-        "settlement_turn_completion_failed",
-        true,
-        "durable settlement artifacts exist but turn completion failed",
-        providerName,
-      );
-    } catch (reconciliationError) {
-      throw serviceError(
-        "conversation_reconciliation_failed",
-        "generic turn could not be reconciled after durable settlement persistence",
-        false,
-        reconciliationError,
-      );
-    }
-    void error;
-    return recoverableTurnFailure("conversation_failed", scope, opened, draft);
-  }
 }
 
 async function failConversationTurn(
@@ -2443,11 +2739,30 @@ async function markValidating(
   try {
     await conversation.markValidating(scope.actor, opened.turnTrace.turnId);
   } catch (error) {
+    try {
+      await failConversationTurn(
+        conversation,
+        scope,
+        opened,
+        "settlement_turn_setup_failed",
+        true,
+        "Settlement authoring turn setup failed.",
+      );
+    } catch (reconciliationError) {
+      throw serviceError(
+        "conversation_reconciliation_failed",
+        "Generic turn validation setup could not be reconciled.",
+        false,
+        reconciliationError,
+        opened.turnTrace.turnId,
+      );
+    }
     throw serviceError(
       "conversation_failed",
       "generic conversation could not enter validation",
       true,
       error,
+      opened.turnTrace.turnId,
     );
   }
 }
@@ -2755,19 +3070,11 @@ function replayFailure(draft: CustomRuleDraft): CustomRuleAiTransitionFailure {
   });
 }
 
-function recoverablePersistenceFailure(
-  scope: ScopedTransition,
-  opened: OpenedAiTurn,
-  draft: CustomRuleDraft,
-): CustomRuleAiTransitionFailure {
-  return recoverableTurnFailure("persistence_failed", scope, opened, draft);
-}
-
 function recoverableTurnFailure(
   code: "persistence_failed" | "conversation_failed",
   scope: ScopedTransition,
   opened: OpenedAiTurn,
-  draft: CustomRuleDraft,
+  draft: CustomRuleDraft | null,
 ): CustomRuleAiTransitionFailure {
   return Object.freeze({
     ok: false,
@@ -2795,13 +3102,13 @@ function draftIdempotencyKey(
 }
 
 function simulationIdempotencyKey(
-  draftId: string,
+  draftIdempotencyKey: string,
   summary: CustomRuleSimulationResult,
 ): string {
   return `settlement-simulation:${sha256(
     canonicalJson({
       dataSelectionHash: summary.dataSelectionHash,
-      draftId,
+      draftIdempotencyKey,
       formulaHash: summary.persistable.formulaHash,
     }),
   )}`;
@@ -2817,15 +3124,6 @@ function retryDraftIdempotencyKey(
   )}`;
 }
 
-function technicalRetryClientRequestId(
-  clientRequestId: string,
-  sourceTurnId: string,
-): string {
-  return `settlement-confirm-retry:${sha256(
-    canonicalJson({ clientRequestId, sourceTurnId }),
-  )}`;
-}
-
 function validateDependencies(input: ServiceDependencies): void {
   if (
     !input ||
@@ -2833,7 +3131,11 @@ function validateDependencies(input: ServiceDependencies): void {
     typeof input.conversation?.retryTurn !== "function" ||
     typeof input.ai?.prepare !== "function" ||
     typeof input.ai?.restore !== "function" ||
-    typeof input.repository?.createDraft !== "function" ||
+    typeof input.repository?.finalizeDraftTurn !== "function" ||
+    typeof input.repository?.finalizeSimulationTurn !== "function" ||
+    typeof input.repository?.finalizeFailedTurn !== "function" ||
+    typeof input.repository?.listDrafts !== "function" ||
+    typeof input.repository?.getDraft !== "function" ||
     typeof input.repository?.listSimulations !== "function" ||
     typeof input.catalog?.getCatalog !== "function" ||
     typeof input.evidence?.loadAuthorizedEvidence !== "function" ||
@@ -2930,7 +3232,7 @@ function validateScopeInput(input: {
     !canonicalText(input.actor?.organizationId, 500) ||
     !canonicalText(input.actor?.userId, 500) ||
     !canonicalText(input.projectId, 500) ||
-    !canonicalText(input.promptText, 12_000) ||
+    !canonicalText(input.promptText, 4_000) ||
     !canonicalText(input.clientRequestId, 128) ||
     input.clientRequestId.length < 8 ||
     !CLIENT_REQUEST_ID_PATTERN.test(input.clientRequestId)
@@ -2952,9 +3254,11 @@ function serviceError(
   message: string,
   retryable: boolean,
   cause?: unknown,
+  sourceTurnId?: string,
 ): CustomRuleAuthoringServiceError {
   return new CustomRuleAuthoringServiceError(code, message, retryable, {
     cause,
+    sourceTurnId,
   });
 }
 

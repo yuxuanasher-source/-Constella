@@ -106,6 +106,7 @@ describe("SettlementConversationPort", () => {
           updatedAt: "2026-07-12T00:00:00.000Z",
         },
         messages: [],
+        turns: [],
       }),
       acceptTurn: async () => ({
         conversationId: "conversation-1",
@@ -516,8 +517,48 @@ describe("createSettlementRuleAiAdapter", () => {
       ok: false,
       code: "SETTLEMENT_AI_PROVIDER_FAILED",
       retryable: true,
+      message: "Settlement AI provider is temporarily unavailable.",
     });
     expect(existing).toEqual(snapshot);
+  });
+
+  it("never exposes provider exceptions or error summaries and logs only classifications", async () => {
+    const secret = "Authorization: Bearer secret-token raw-body model-output";
+    const events: unknown[] = [];
+    const exceptionAdapter = createSettlementRuleAiAdapter({
+      gateway: async () => {
+        throw new Error(secret);
+      },
+      internalLogger: (event) => events.push(event),
+    });
+    const failedAdapter = createSettlementRuleAiAdapter({
+      gateway: async () =>
+        gatewayResult(undefined, {
+          status: "failed",
+          errorSummary: secret,
+          degradedReason: secret,
+        }),
+      internalLogger: (event) => events.push(event),
+    });
+
+    const exception = await exceptionAdapter.execute(
+      exceptionAdapter.prepare(baseInput()),
+    );
+    const failed = await failedAdapter.execute(failedAdapter.prepare(baseInput()));
+
+    for (const result of [exception, failed]) {
+      expect(result).toMatchObject({
+        ok: false,
+        code: "SETTLEMENT_AI_PROVIDER_FAILED",
+        message: "Settlement AI provider is temporarily unavailable.",
+      });
+      expect(JSON.stringify(result)).not.toContain(secret);
+    }
+    expect(events).toEqual([
+      { category: "provider_exception" },
+      { category: "provider_result_failed", providerName: "deterministic" },
+    ]);
+    expect(JSON.stringify(events)).not.toContain(secret);
   });
 
   it("fails closed on prompt budgets, unsafe catalog keys, accessors, and proxy output", async () => {
@@ -537,7 +578,10 @@ describe("createSettlementRuleAiAdapter", () => {
     });
 
     expect(() =>
-      adapter.prepare({ ...baseInput(), userMessage: "x".repeat(12_001) }),
+      adapter.prepare({ ...baseInput(), userMessage: "x".repeat(4_000) }),
+    ).not.toThrow();
+    expect(() =>
+      adapter.prepare({ ...baseInput(), userMessage: "x".repeat(4_001) }),
     ).toThrow(SettlementAiInputError);
     expect(() =>
       adapter.prepare({ ...baseInput(), catalog: unsafeCatalog as never }),

@@ -6,6 +6,7 @@ import { z } from "zod";
 import type {
   AiConversationDto,
   AiConversationMessageDto,
+  AiConversationTurnDto,
   ConversationContextSnapshot,
   ConversationGatewayContext,
   CreateTurnCommand,
@@ -41,7 +42,7 @@ import {
 } from "./custom-rule-validator";
 import type { CustomRuleVariableCatalog } from "./custom-rule-variable-catalog";
 
-const MAX_USER_MESSAGE_CHARS = 12_000;
+const MAX_USER_MESSAGE_CHARS = 4_000;
 const MAX_CONVERSATION_MESSAGES = 200;
 const MAX_CONVERSATION_CHARS = 50_000;
 const MAX_PROMPT_CHARS = 100_000;
@@ -54,6 +55,8 @@ const MAX_TEST_CASES = 100;
 const MAX_TEST_CASE_INPUTS = 100;
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+const PROVIDER_FAILURE_MESSAGE =
+  "Settlement AI provider is temporarily unavailable.";
 
 const SYSTEM_PROMPT = [
   "你是结算规则澄清助手，只负责把用户确认的业务含义转换为结构化草案。",
@@ -251,6 +254,10 @@ const conversationMessageSchema = z.strictObject({
   role: z.enum(["system", "user", "assistant", "tool"]),
   content: z.string().max(MAX_USER_MESSAGE_CHARS),
 });
+const preparedMessageSchema = z.strictObject({
+  role: z.enum(["system", "user", "assistant", "tool"]),
+  content: z.string().max(MAX_PROMPT_CHARS),
+});
 const prepareInputSchema = z.strictObject({
   action: z.enum(["clarify", "revise", "confirm"]),
   contractConfirmed: z.boolean(),
@@ -275,7 +282,7 @@ const frozenRetryContextSchema = z.strictObject({
     .max(MAX_UNRESOLVED_AMBIGUITIES),
   catalog: safeCatalogSchema,
   messages: z
-    .array(conversationMessageSchema)
+    .array(preparedMessageSchema)
     .max(MAX_CONVERSATION_MESSAGES + 2),
   promptHash: z.string().regex(HASH_PATTERN),
   contextHash: z.string().regex(HASH_PATTERN),
@@ -289,6 +296,8 @@ export type SettlementConversationTurnRef = {
   status: "accepted" | "grounding" | "generating" | "validating" | "completed" | "failed" | "cancelled";
   attempt: number;
   duplicate: boolean;
+  errorCode?: string | null;
+  retryable?: boolean;
 };
 
 /** Public Xingyao service surface used by settlement authoring. */
@@ -303,6 +312,7 @@ export type SettlementConversationPort = {
   ): Promise<{
     conversation: AiConversationDto;
     messages: AiConversationMessageDto[];
+    turns: AiConversationTurnDto[];
   }>;
   acceptTurn(
     actor: ConversationActor,
@@ -366,6 +376,15 @@ export type SettlementStructuredGatewayRequest = Extract<
 export type SettlementStructuredGateway = (
   request: SettlementStructuredGatewayRequest,
 ) => Promise<AiGatewayResult>;
+
+export type SettlementAiInternalLogEvent = Readonly<{
+  category: "provider_exception" | "provider_result_failed";
+  providerName?: AiProviderName;
+}>;
+
+export type SettlementAiInternalLogger = (
+  event: SettlementAiInternalLogEvent,
+) => void;
 
 export type PrepareSettlementAiInput = {
   action: "clarify" | "revise" | "confirm";
@@ -449,11 +468,17 @@ export class SettlementAiInputError extends TypeError {
 
 export function createSettlementRuleAiAdapter(input: {
   gateway: SettlementStructuredGateway;
+  internalLogger?: SettlementAiInternalLogger;
 }) {
-  if (typeof input?.gateway !== "function") {
+  if (
+    typeof input?.gateway !== "function" ||
+    (input.internalLogger !== undefined &&
+      typeof input.internalLogger !== "function")
+  ) {
     throw new SettlementAiInputError("a structured AI gateway is required");
   }
   const gateway = input.gateway;
+  const internalLogger = input.internalLogger;
 
   return Object.freeze({
     prepare(unsafeInput: PrepareSettlementAiInput): PreparedSettlementAiRequest {
@@ -517,7 +542,7 @@ export function createSettlementRuleAiAdapter(input: {
       });
     },
 
-    restore(unsafeContext: FrozenSettlementAiContext): PreparedSettlementAiRequest {
+    restore(unsafeContext: unknown): PreparedSettlementAiRequest {
       const snapshot = snapshotForValidation(unsafeContext, MAX_PROMPT_CHARS * 2);
       const parsed = frozenRetryContextSchema.safeParse(snapshot);
       if (!parsed.success) {
@@ -567,21 +592,24 @@ export function createSettlementRuleAiAdapter(input: {
       let gatewayResult: AiGatewayResult;
       try {
         gatewayResult = await gateway(toMutableGatewayRequest(prepared.request));
-      } catch (error) {
+      } catch {
+        logInternal(internalLogger, { category: "provider_exception" });
         return failure(
           prepared,
           "SETTLEMENT_AI_PROVIDER_FAILED",
-          error instanceof Error ? error.message : "structured provider failed",
+          PROVIDER_FAILURE_MESSAGE,
         );
       }
 
       if (gatewayResult.status !== "succeeded") {
+        logInternal(internalLogger, {
+          category: "provider_result_failed",
+          providerName: gatewayResult.providerName,
+        });
         return failure(
           prepared,
           "SETTLEMENT_AI_PROVIDER_FAILED",
-          gatewayResult.errorSummary ??
-            gatewayResult.degradedReason ??
-            "structured provider failed",
+          PROVIDER_FAILURE_MESSAGE,
           gatewayResult.providerName,
         );
       }
@@ -705,6 +733,22 @@ export function createSettlementRuleAiAdapter(input: {
   });
 }
 
+function logInternal(
+  logger: SettlementAiInternalLogger | undefined,
+  event: SettlementAiInternalLogEvent,
+): void {
+  if (!logger) return;
+  try {
+    logger(
+      event.providerName === undefined
+        ? { category: event.category }
+        : { category: event.category, providerName: event.providerName },
+    );
+  } catch {
+    // Internal observability must not affect the authoring result.
+  }
+}
+
 function toMutableGatewayRequest(
   frozen: SettlementStructuredGatewayRequest,
 ): SettlementStructuredGatewayRequest {
@@ -811,7 +855,7 @@ function createPreparedRequest(input: {
     ),
   );
   const frozenMessages = deepFreezeOwned(
-    z.array(conversationMessageSchema).parse(
+    z.array(preparedMessageSchema).parse(
       snapshotForValidation(input.messages, MAX_PROMPT_CHARS),
     ),
   );

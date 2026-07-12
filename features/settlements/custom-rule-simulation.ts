@@ -573,6 +573,7 @@ export function simulateCustomSettlementRule(
   );
   const dataSelectionHash = hashDataSelection(input);
   const verified =
+    input.sampleSource.kind !== "synthetic_scenarios" &&
     input.readiness.historicalVerification === "verified" &&
     sortedRecords.length > 0 &&
     input.sampleSelection.populationCount > 0;
@@ -851,6 +852,7 @@ function validateSimulationState(
     }
     recordIds.add(record.recordId);
     if (
+      input.sampleSource.kind !== "synthetic_scenarios" &&
       input.readiness.historicalVerification === "verified" &&
       record.currentRuleResult === null
     ) {
