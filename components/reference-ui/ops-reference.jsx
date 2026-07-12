@@ -1919,8 +1919,10 @@ const NAV = [
   },
 ];
 
+const OPS_MOBILE_NAVIGATION_QUERY = "(max-width: 720px)";
+
 const OPS_SHELL_RESPONSIVE_CSS = `
-  @media (max-width: 720px) {
+  @media ${OPS_MOBILE_NAVIGATION_QUERY} {
     .ops-reference-shell {
       width: 100%;
       max-width: 100vw;
@@ -2156,7 +2158,7 @@ const OPS_SHELL_RESPONSIVE_CSS = `
     }
   }
 
-  @media (max-width: 720px) and (prefers-reduced-motion: reduce) {
+  @media ${OPS_MOBILE_NAVIGATION_QUERY} and (prefers-reduced-motion: reduce) {
     .ops-reference-sidebar,
     .ops-reference-sidebar[data-open="true"] {
       transition: none;
@@ -32486,6 +32488,7 @@ function OpsReferenceInner({
   const mobileNavigationDrawerRef = React.useRef(null);
   const mobileNavigationMainRef = React.useRef(null);
   const mobileNavigationWasOpenRef = React.useRef(false);
+  const mobileNavigationFocusReturnRef = React.useRef("trigger");
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
   const [dashboardTarget, setDashboardTarget] = React.useState(null);
@@ -32547,7 +32550,22 @@ function OpsReferenceInner({
     applicationQueue ?? null,
   );
   const closeMobileNavigation = React.useCallback(() => {
+    mobileNavigationFocusReturnRef.current = "trigger";
     setMobileNavigationOpen(false);
+  }, []);
+
+  const closeMobileNavigationForDesktop = React.useCallback(() => {
+    mobileNavigationFocusReturnRef.current = "main";
+    mobileNavigationMainRef.current?.removeAttribute("inert");
+    mobileNavigationMainRef.current?.removeAttribute("aria-hidden");
+    setMobileNavigationOpen(false);
+  }, []);
+
+  const openMobileNavigation = React.useCallback(() => {
+    const mediaQuery = globalThis.matchMedia?.(OPS_MOBILE_NAVIGATION_QUERY);
+    if (mediaQuery && !mediaQuery.matches) return;
+    mobileNavigationFocusReturnRef.current = "trigger";
+    setMobileNavigationOpen(true);
   }, []);
 
   React.useLayoutEffect(() => {
@@ -32562,13 +32580,44 @@ function OpsReferenceInner({
     main?.removeAttribute("inert");
     if (mobileNavigationWasOpenRef.current) {
       mobileNavigationWasOpenRef.current = false;
-      mobileNavigationButtonRef.current?.focus();
+      const focusTarget =
+        mobileNavigationFocusReturnRef.current === "main"
+          ? main
+          : mobileNavigationButtonRef.current;
+      mobileNavigationFocusReturnRef.current = "trigger";
+      focusTarget?.focus();
     }
 
     return () => {
       main?.removeAttribute("inert");
     };
   }, [mobileNavigationOpen]);
+
+  React.useEffect(() => {
+    if (typeof globalThis.matchMedia !== "function") return undefined;
+
+    const mediaQuery = globalThis.matchMedia(OPS_MOBILE_NAVIGATION_QUERY);
+    const closeWhenDesktop = (event) => {
+      if (event.matches) return;
+      closeMobileNavigationForDesktop();
+    };
+
+    if (!mediaQuery.matches) closeMobileNavigationForDesktop();
+
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", closeWhenDesktop);
+      return () => {
+        mediaQuery.removeEventListener?.("change", closeWhenDesktop);
+      };
+    }
+    if (typeof mediaQuery.addListener === "function") {
+      mediaQuery.addListener(closeWhenDesktop);
+      return () => {
+        mediaQuery.removeListener?.(closeWhenDesktop);
+      };
+    }
+    return undefined;
+  }, [closeMobileNavigationForDesktop]);
 
   React.useEffect(() => {
     if (!mobileNavigationOpen) return undefined;
@@ -34120,6 +34169,7 @@ function OpsReferenceInner({
           ref={mobileNavigationMainRef}
           className="ops-reference-main"
           aria-hidden={mobileNavigationOpen ? "true" : undefined}
+          tabIndex={-1}
           style={{
             flex: 1,
             minWidth: 0,
@@ -34132,7 +34182,7 @@ function OpsReferenceInner({
             breadcrumbs={crumbs}
             notificationCount={unreadNotificationCount}
             navigationOpen={mobileNavigationOpen}
-            onOpenNavigation={() => setMobileNavigationOpen(true)}
+            onOpenNavigation={openMobileNavigation}
             navigationButtonRef={mobileNavigationButtonRef}
           />
           <div

@@ -162,6 +162,10 @@ const projectManagementCards = [
 ];
 
 describe("OpsReferenceApp responsive navigation shell", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   const renderShell = () =>
     render(
       <OpsReferenceApp
@@ -241,6 +245,56 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     first.focus();
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
     expect(last).toHaveFocus();
+  });
+
+  it("clears modal isolation when the viewport leaves the mobile breakpoint", () => {
+    let changeListener;
+    const mediaQueryList = {
+      matches: true,
+      media: "(max-width: 720px)",
+      addEventListener: vi.fn((type, listener) => {
+        if (type === "change") changeListener = listener;
+      }),
+      removeEventListener: vi.fn(),
+    };
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mediaQueryList),
+    );
+
+    const { container, unmount } = renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+    const main = container.querySelector(".ops-reference-main");
+
+    fireEvent.click(menuButton);
+    expect(main).toHaveAttribute("inert");
+    expect(main).toHaveAttribute("aria-hidden", "true");
+    expect(mediaQueryList.addEventListener).toHaveBeenCalledWith(
+      "change",
+      expect.any(Function),
+    );
+    expect(changeListener).toEqual(expect.any(Function));
+
+    act(() => {
+      mediaQueryList.matches = false;
+      changeListener({ matches: false, media: mediaQueryList.media });
+    });
+
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+    expect(main).toHaveFocus();
+    expect(menuButton).not.toHaveFocus();
+
+    unmount();
+    expect(mediaQueryList.addEventListener).toHaveBeenCalledWith(
+      "change",
+      changeListener,
+    );
+    expect(mediaQueryList.removeEventListener).toHaveBeenCalledWith(
+      "change",
+      changeListener,
+    );
   });
 
   it("closes the drawer with Escape", () => {
