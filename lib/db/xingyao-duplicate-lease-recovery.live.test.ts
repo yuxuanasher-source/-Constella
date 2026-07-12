@@ -95,6 +95,20 @@ describe("Xingyao duplicate lease recovery migration", () => {
         });
         expect(accepted.duplicate).toBe(false);
         expect(accepted.status).toBe("accepted");
+        const productionLease = await client
+          .from("ai_chat_turns")
+          .select("created_at,lease_expires_at")
+          .eq("id", accepted.turnId)
+          .single();
+        expect(productionLease.error).toBeNull();
+        const createdAt = Date.parse(productionLease.data?.created_at ?? "");
+        const leaseExpiresAt = Date.parse(
+          productionLease.data?.lease_expires_at ?? "",
+        );
+        expect(Number.isFinite(createdAt)).toBe(true);
+        expect(Number.isFinite(leaseExpiresAt)).toBe(true);
+        expect(leaseExpiresAt - createdAt).toBeGreaterThanOrEqual(119_000);
+        expect(leaseExpiresAt - createdAt).toBeLessThanOrEqual(121_000);
 
         const expired = await client
           .from("ai_chat_turns")

@@ -11,11 +11,14 @@ import type {
   PreparedSettlementAiRequest,
   SettlementAiFailure,
   SettlementAiResult,
+  SettlementConversationHistory,
   SettlementConversationPort,
   SettlementConversationTurn,
 } from "./custom-rule-ai";
 import {
+  businessRuleContractSchema,
   diffBusinessRuleContracts,
+  runtimeValueTypeSchema,
   type BusinessRuleContract,
   type BusinessRuleContractChange,
 } from "./custom-rule-contract";
@@ -378,9 +381,88 @@ const frozenServiceRetryContextSchema: z.ZodType<FrozenServiceRetryContext> =
     simulationSelection: simulationSelectionSchema.nullable(),
   });
 
-const leaseExpiredMessageMetadataSchema = z.object({
+const leaseExpiredMessageMetadataSchema = z.strictObject({
   errorCode: z.literal("turn_lease_expired"),
   retryable: z.literal(true),
+});
+const recoveryMessageSchema = z.strictObject({
+  role: z.enum(["system", "user", "assistant", "tool"]),
+  content: z.string().max(100_000),
+});
+const recoveryCatalogPeriodSchema = z.strictObject({
+  start: z.string().min(1).max(100),
+  end: z.string().min(1).max(100),
+});
+const recoveryCatalogVariableSchema = z.strictObject({
+  id: z.string().min(1).max(120),
+  label: z.string().min(1).max(500),
+  runtimeType: runtimeValueTypeSchema,
+  unit: z.string().min(1).max(100),
+  sourceLabel: z.string().min(1).max(500),
+  availability: z.enum(["available", "partial", "unavailable"]),
+  coverageNumerator: z.number().int().safe().nonnegative(),
+  coverageDenominator: z.number().int().safe().nonnegative(),
+  latestSampledPeriod: recoveryCatalogPeriodSchema.nullable(),
+});
+const recoveryCatalogSchema = z.strictObject({
+  scope: z.enum(["receivable", "payable", "external_cost", "reconciliation"]),
+  executionGrain: z.enum([
+    "report",
+    "project_streamer_period",
+    "batch",
+    "project_period",
+  ]),
+  businessTimezone: z.string().min(1).max(100).nullable(),
+  businessTimezoneConfirmed: z.boolean(),
+  businessTimezoneSource: z.enum([
+    "contract_default",
+    "organization_setting",
+    "confirmed_contract",
+    "unresolved",
+  ]),
+  hasHistory: z.boolean(),
+  version: z.string().regex(HASH_PATTERN),
+  variables: z.array(recoveryCatalogVariableSchema).max(300),
+});
+const recoveryAmbiguitySchema = z.strictObject({
+  code: z.string().min(1).max(120),
+  question: z.string().min(1).max(500),
+  required: z.boolean(),
+});
+const recoveryAiRetryContextSchema = z.strictObject({
+  version: z.literal(1),
+  action: z.enum(["clarify", "revise", "confirm"]),
+  contractConfirmed: z.boolean(),
+  currentContract: businessRuleContractSchema,
+  unresolvedAmbiguities: z.array(recoveryAmbiguitySchema).max(100),
+  catalog: recoveryCatalogSchema,
+  messages: z.array(recoveryMessageSchema).max(202),
+  promptHash: z.string().regex(HASH_PATTERN),
+  contextHash: z.string().regex(HASH_PATTERN),
+});
+const recoveryGatewayContextSchema = z.strictObject({
+  messages: z.array(recoveryMessageSchema).max(202),
+  attachments: z.array(z.never()).length(0),
+  mode: z.literal("fast"),
+  primaryProvider: z.string().min(1).max(200),
+  lastUserMessage: z.string().min(1).max(4_000),
+  responseMetadata: z.strictObject({
+    grounding: z.strictObject({
+      catalogVersion: z.string().regex(HASH_PATTERN),
+      scope: recoveryCatalogSchema.shape.scope,
+      executionGrain: recoveryCatalogSchema.shape.executionGrain,
+    }),
+    knowledge: z.strictObject({}),
+    retrospectiveDraft: z.null(),
+  }),
+  invocationMetadata: z.strictObject({
+    promptHash: z.string().regex(HASH_PATTERN),
+    contextHash: z.string().regex(HASH_PATTERN),
+    snapshotVersion: z.number().int().nonnegative(),
+    summaryVersion: z.number().int().nonnegative(),
+    settlementAiRetryContext: recoveryAiRetryContextSchema,
+    settlementServiceRetryContext: frozenServiceRetryContextSchema,
+  }),
 });
 
 type OpenedAiTurn = {
@@ -437,7 +519,7 @@ export function createCustomRuleAuthoringService(
       const input = validateStartInput(unsafeInput);
       const conversationId = input.conversationId;
       const scope = { ...input, conversationId };
-      await requireConversationHistory(
+      const history = await requireConversationHistory(
         dependencies.conversation,
         input.actor,
         conversationId,
@@ -448,9 +530,16 @@ export function createCustomRuleAuthoringService(
         (draft) => draft.idempotencyKey === idempotencyKey,
       );
       if (replay) {
-        return replay.initialStatus === "failed"
-          ? replayFailure(replay)
-          : replayClarifying(replay, drafts);
+        return replayVerifiedStartDraft({
+          history,
+          scope,
+          currentContract: input.seedContract,
+          currentAmbiguities: input.initialAmbiguities,
+          draftIdempotencyKey: idempotencyKey,
+          primaryProvider: dependencies.primaryProvider,
+          draft: replay,
+          drafts,
+        });
       }
       if (drafts.length > 0) {
         throw serviceError(
@@ -1888,10 +1977,17 @@ async function openStartAiTurn(input: {
   if (replay) {
     return {
       kind: "result",
-      result:
-        replay.initialStatus === "failed"
-          ? replayFailure(replay)
-          : replayClarifying(replay, drafts),
+      result: replayVerifiedStartDraft({
+        history: observed.history,
+        scope: input.scope,
+        currentContract: input.currentContract,
+        currentAmbiguities: input.currentAmbiguities,
+        draftIdempotencyKey: input.draftIdempotencyKey,
+        primaryProvider: input.dependencies.primaryProvider,
+        draft: replay,
+        drafts,
+        expectedDuplicate: accepted,
+      }),
     };
   }
   if (drafts.length > 0) {
@@ -2290,9 +2386,302 @@ async function prepareFrozenStartRecovery(input: {
   }
 }
 
+type StartReplayVerificationInput = {
+  history: SettlementConversationHistory;
+  scope: ScopedTransition;
+  currentContract: BusinessRuleContract;
+  currentAmbiguities: SettlementAiUnresolvedAmbiguity[];
+  draftIdempotencyKey: string;
+  primaryProvider: AiProviderName;
+  draft: CustomRuleDraft;
+  drafts: CustomRuleDraft[];
+  expectedDuplicate?: CreatedConversationTurn;
+  expectedSourceTurnId?: string;
+};
+
+function replayVerifiedStartDraft(
+  input: StartReplayVerificationInput,
+): CustomRuleClarifyingSuccess | CustomRuleAiTransitionFailure {
+  requireMatchingStartReplay(input);
+  return input.draft.initialStatus === "failed"
+    ? replayFailure(input.draft)
+    : replayClarifying(input.draft, input.drafts);
+}
+
+function requireMatchingStartReplay(input: StartReplayVerificationInput): void {
+  const successor = input.history.turns.find(
+    (turn) => turn.id === input.draft.turnTrace.turnId,
+  );
+  if (!successor) startReplayMismatch(input.draft.turnTrace.turnId);
+  requireMatchingStartDraftArtifact(input, successor);
+  requireMatchingTerminalStartTurn(input.history, successor, input.draft);
+
+  if (successor.retryOfTurnId === null) {
+    if (
+      input.expectedSourceTurnId !== undefined ||
+      successor.attempt !== 1 ||
+      successor.regenerateOfTurnId !== null ||
+      (input.expectedDuplicate !== undefined &&
+        !matchesReturnedTurn(input.expectedDuplicate, successor))
+    ) {
+      startReplayMismatch(successor.id);
+    }
+    return;
+  }
+
+  const source = input.history.turns.find(
+    (turn) => turn.id === successor.retryOfTurnId,
+  );
+  if (
+    !source ||
+    (input.expectedSourceTurnId !== undefined &&
+      source.id !== input.expectedSourceTurnId) ||
+    (input.expectedDuplicate !== undefined &&
+      !matchesReturnedTurn(input.expectedDuplicate, source))
+  ) {
+    startReplayMismatch(successor.id);
+  }
+  requireMatchingExpiredStartSource(input, source, successor);
+  requireMatchingFrozenStartRecovery(input, source, successor);
+}
+
+function requireMatchingStartDraftArtifact(
+  input: StartReplayVerificationInput,
+  turn: SettlementConversationTurn,
+): void {
+  const draft = input.draft;
+  if (
+    draft.organizationId !== input.scope.actor.organizationId ||
+    draft.projectId !== input.scope.projectId ||
+    draft.conversationId !== input.scope.conversationId ||
+    draft.createdBy !== input.scope.actor.userId ||
+    draft.idempotencyKey !== input.draftIdempotencyKey ||
+    draft.promptText !== input.scope.promptText ||
+    draft.revisionNumber !== 1 ||
+    draft.supersedesDraftId !== null ||
+    (draft.initialStatus !== "clarifying" &&
+      draft.initialStatus !== "failed") ||
+    draft.contractHash !== hashCustomRuleContract(draft.businessContract) ||
+    draft.parameterHash !==
+      hashCustomRuleParameters(parameterValues(draft.businessContract)) ||
+    !HASH_PATTERN.test(draft.variableCatalogVersion) ||
+    turn.conversationId !== input.scope.conversationId ||
+    turn.mode !== "fast" ||
+    turn.userMessageId !== draft.turnTrace.userMessageId ||
+    turn.assistantMessageId !== draft.turnTrace.assistantMessageId
+  ) {
+    startReplayMismatch(turn.id);
+  }
+}
+
+function requireMatchingTerminalStartTurn(
+  history: SettlementConversationHistory,
+  turn: SettlementConversationTurn,
+  draft: CustomRuleDraft,
+): void {
+  const user = history.messages.find(
+    (message) => message.id === turn.userMessageId,
+  );
+  const assistant = history.messages.find(
+    (message) => message.id === turn.assistantMessageId,
+  );
+  const completionMetadata = atomicCompletionMetadataSchema.safeParse(
+    assistant?.metadata,
+  );
+  const snapshot = turn.contextSnapshot;
+  const terminalMatches =
+    draft.initialStatus === "clarifying"
+      ? turn.status === "completed" &&
+        turn.errorCode === null &&
+        !turn.retryable &&
+        assistant?.status === "completed"
+      : turn.status === "failed" &&
+        turn.errorCode !== null &&
+        assistant?.status === "failed";
+  if (
+    !terminalMatches ||
+    turn.regenerateOfTurnId !== null ||
+    !user ||
+    user.conversationId !== draft.conversationId ||
+    user.role !== "user" ||
+    user.status !== "completed" ||
+    user.parentMessageId !== null ||
+    user.content !== draft.promptText ||
+    !assistant ||
+    assistant.conversationId !== draft.conversationId ||
+    assistant.role !== "assistant" ||
+    assistant.parentMessageId !== user.id ||
+    assistant.content !== draft.aiResponse.content ||
+    !completionMetadata.success ||
+    !snapshot ||
+    completionMetadata.data.contextSnapshotVersion !== snapshot.version ||
+    completionMetadata.data.contextSummaryVersion !== snapshot.summaryVersion ||
+    canonicalJson(completionMetadata.data.contextMessageIds) !==
+      canonicalJson(snapshot.messageIds) ||
+    completionMetadata.data.settlementIdempotencyKey !== draft.idempotencyKey ||
+    completionMetadata.data.settlementInitialStatus !== draft.initialStatus ||
+    new Set(completionMetadata.data.contextMessageIds).size !==
+      completionMetadata.data.contextMessageIds.length ||
+    !completionMetadata.data.contextMessageIds.every((messageId) =>
+      history.messages.some((message) => message.id === messageId),
+    )
+  ) {
+    startReplayMismatch(turn.id);
+  }
+}
+
+function requireMatchingExpiredStartSource(
+  input: StartReplayVerificationInput,
+  source: SettlementConversationTurn,
+  successor: SettlementConversationTurn,
+): void {
+  const user = input.history.messages.find(
+    (message) => message.id === source.userMessageId,
+  );
+  const assistant = input.history.messages.find(
+    (message) => message.id === source.assistantMessageId,
+  );
+  const metadata = leaseExpiredMessageMetadataSchema.safeParse(
+    assistant?.metadata,
+  );
+  const successorCount = input.history.turns.filter(
+    (turn) => turn.retryOfTurnId === source.id,
+  ).length;
+  if (
+    source.status !== "failed" ||
+    source.errorCode !== "turn_lease_expired" ||
+    !source.retryable ||
+    source.attempt !== 1 ||
+    source.retryOfTurnId !== null ||
+    source.regenerateOfTurnId !== null ||
+    source.userMessageId !== successor.userMessageId ||
+    successor.attempt !== 2 ||
+    successor.retryOfTurnId !== source.id ||
+    successor.regenerateOfTurnId !== null ||
+    successorCount !== 1 ||
+    !user ||
+    user.conversationId !== input.scope.conversationId ||
+    user.role !== "user" ||
+    user.status !== "completed" ||
+    user.parentMessageId !== null ||
+    user.content !== input.scope.promptText ||
+    !assistant ||
+    assistant.conversationId !== input.scope.conversationId ||
+    assistant.role !== "assistant" ||
+    assistant.status !== "superseded" ||
+    assistant.content !== "" ||
+    assistant.parentMessageId !== source.userMessageId ||
+    !metadata.success
+  ) {
+    startReplayMismatch(successor.id);
+  }
+}
+
+function requireMatchingFrozenStartRecovery(
+  input: StartReplayVerificationInput,
+  source: SettlementConversationTurn,
+  successor: SettlementConversationTurn,
+): void {
+  const snapshot = successor.contextSnapshot;
+  const gatewayResult = recoveryGatewayContextSchema.safeParse(
+    snapshot?.gatewayContext,
+  );
+  if (!snapshot || !gatewayResult.success) {
+    startReplayMismatch(successor.id);
+  }
+  const gateway = gatewayResult.data;
+  const invocation = gateway.invocationMetadata;
+  const aiContext = invocation.settlementAiRetryContext;
+  const serviceContext = invocation.settlementServiceRetryContext;
+  const expectedContractHash = hashCustomRuleContract(input.currentContract);
+  const expectedPromptHash = sha256(canonicalJson(aiContext.messages));
+  const expectedContextHash = sha256(
+    canonicalJson({
+      catalogVersion: aiContext.catalog.version,
+      contract: aiContext.currentContract,
+      messages: aiContext.messages,
+      unresolvedAmbiguities: aiContext.unresolvedAmbiguities,
+    }),
+  );
+  const sourceSnapshot = source.contextSnapshot;
+  if (
+    serviceContext.action !== "clarify" ||
+    serviceContext.organizationId !== input.scope.actor.organizationId ||
+    serviceContext.actorId !== input.scope.actor.userId ||
+    serviceContext.projectId !== input.scope.projectId ||
+    serviceContext.conversationId !== input.scope.conversationId ||
+    serviceContext.promptText !== input.scope.promptText ||
+    serviceContext.draftIdempotencyKey !== input.draftIdempotencyKey ||
+    serviceContext.expectedRevisionNumber !== 1 ||
+    serviceContext.expectedDraftId !== null ||
+    serviceContext.expectedContractHash !== expectedContractHash ||
+    serviceContext.expectedCatalogVersion !==
+      input.draft.variableCatalogVersion ||
+    serviceContext.expectedFormulaHash !== null ||
+    serviceContext.expectedEvidenceHash !== null ||
+    serviceContext.expectedDataSelectionHash !== null ||
+    serviceContext.simulationSelection !== null ||
+    aiContext.action !== "clarify" ||
+    aiContext.contractConfirmed ||
+    canonicalJson(aiContext.currentContract) !==
+      canonicalJson(input.currentContract) ||
+    canonicalJson(aiContext.unresolvedAmbiguities) !==
+      canonicalJson(input.currentAmbiguities) ||
+    aiContext.catalog.version !== input.draft.variableCatalogVersion ||
+    aiContext.catalog.scope !== input.currentContract.scope ||
+    aiContext.catalog.executionGrain !== input.currentContract.executionGrain ||
+    aiContext.promptHash !== expectedPromptHash ||
+    aiContext.contextHash !== expectedContextHash ||
+    invocation.promptHash !== expectedPromptHash ||
+    invocation.contextHash !== expectedContextHash ||
+    invocation.snapshotVersion !== snapshot.version ||
+    invocation.summaryVersion !== snapshot.summaryVersion ||
+    canonicalJson(gateway.messages) !== canonicalJson(aiContext.messages) ||
+    gateway.mode !== "fast" ||
+    gateway.primaryProvider !== input.primaryProvider ||
+    gateway.lastUserMessage !== input.scope.promptText ||
+    gateway.responseMetadata.grounding.catalogVersion !==
+      input.draft.variableCatalogVersion ||
+    gateway.responseMetadata.grounding.scope !== aiContext.catalog.scope ||
+    gateway.responseMetadata.grounding.executionGrain !==
+      aiContext.catalog.executionGrain ||
+    (sourceSnapshot?.gatewayContext !== undefined &&
+      canonicalJson(sourceSnapshot) !== canonicalJson(snapshot))
+  ) {
+    startReplayMismatch(successor.id);
+  }
+}
+
+function matchesReturnedTurn(
+  returned: CreatedConversationTurn,
+  turn: SettlementConversationTurn,
+): boolean {
+  return (
+    returned.duplicate &&
+    returned.conversationId === turn.conversationId &&
+    returned.turnId === turn.id &&
+    returned.userMessageId === turn.userMessageId &&
+    returned.assistantMessageId === turn.assistantMessageId &&
+    returned.status === turn.status &&
+    returned.attempt === turn.attempt
+  );
+}
+
+function startReplayMismatch(sourceTurnId: string): never {
+  throw serviceError(
+    "conversation_failed",
+    "Settlement start replay does not match its durable recovery lineage.",
+    false,
+    undefined,
+    sourceTurnId,
+  );
+}
+
 async function readStartRecoveryArtifact(input: {
   dependencies: ServiceDependencies;
   scope: ScopedTransition;
+  currentContract: BusinessRuleContract;
+  currentAmbiguities: SettlementAiUnresolvedAmbiguity[];
   draftIdempotencyKey: string;
   accepted: CreatedConversationTurn;
   sourceTurnId: string;
@@ -2329,20 +2718,34 @@ async function readStartRecoveryArtifact(input: {
         draft.initialStatus === "clarifying" &&
         draft.status === "clarifying"
       ) {
-        requireMatchingCompletedRetry(
-          observed,
-          input.accepted,
-          input.sourceTurnId,
+        return replayVerifiedStartDraft({
+          history: observed.history,
+          scope: input.scope,
+          currentContract: input.currentContract,
+          currentAmbiguities: input.currentAmbiguities,
+          draftIdempotencyKey: input.draftIdempotencyKey,
+          primaryProvider: input.dependencies.primaryProvider,
           draft,
-        );
-        return replayClarifying(draft, drafts);
+          drafts,
+          expectedSourceTurnId: input.sourceTurnId,
+        });
       }
       if (
         input.terminalStatus === "failed" &&
         draft.initialStatus === "failed" &&
         draft.status === "failed"
       ) {
-        return replayFailure(draft);
+        return replayVerifiedStartDraft({
+          history: observed.history,
+          scope: input.scope,
+          currentContract: input.currentContract,
+          currentAmbiguities: input.currentAmbiguities,
+          draftIdempotencyKey: input.draftIdempotencyKey,
+          primaryProvider: input.dependencies.primaryProvider,
+          draft,
+          drafts,
+          expectedSourceTurnId: input.sourceTurnId,
+        });
       }
       throw serviceError(
         "conversation_failed",
@@ -3851,7 +4254,7 @@ async function requireConversationHistory(
   conversation: SettlementConversationPort,
   actor: { organizationId: string; userId: string },
   conversationId: string,
-): Promise<void> {
+): Promise<SettlementConversationHistory> {
   try {
     const history = await conversation.getHistory(actor, conversationId);
     if (
@@ -3860,6 +4263,7 @@ async function requireConversationHistory(
     ) {
       throw new Error("conversation scope mismatch");
     }
+    return history;
   } catch (error) {
     throw serviceError(
       "conversation_failed",

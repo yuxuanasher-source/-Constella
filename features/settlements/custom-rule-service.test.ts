@@ -114,6 +114,232 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   };
 }
 
+async function recoveredStartFixture(clientRequestId: string) {
+  const harness = createHarness([
+    clarificationOutput("Confirm the recovered hourly rate?", "confirm_rate"),
+  ]);
+  const input = startInput(clientRequestId);
+  const source = await harness.conversation.acceptTurn(
+    actor,
+    CONVERSATION_ID,
+    {
+      content: input.promptText,
+      mode: "fast",
+      clientRequestId: input.clientRequestId,
+      attachments: [],
+    },
+  );
+  harness.expireTurn(source.turnId);
+  const recovered = await harness.service.startSession(input);
+  if (!recovered.ok || recovered.kind !== "clarifying") {
+    throw new Error("recovered start fixture did not create a draft");
+  }
+  return { harness, input, source, recovered };
+}
+
+type RecoveryHarness = ReturnType<typeof createHarness>;
+type RecoveredStartFixture = Awaited<
+  ReturnType<typeof recoveredStartFixture>
+>;
+
+function recoveryActivity(harness: RecoveryHarness) {
+  return {
+    accept: vi.mocked(harness.conversation.acceptTurn).mock.calls.length,
+    retry: vi.mocked(harness.conversation.retryTurn).mock.calls.length,
+    prepare: vi.mocked(harness.conversation.prepareTurn).mock.calls.length,
+    capture: vi.mocked(harness.conversation.captureGatewayContext).mock.calls
+      .length,
+    catalog: vi.mocked(harness.catalogPort.getCatalog).mock.calls.length,
+    gateway: harness.events.filter((event) => event === "gateway.execute")
+      .length,
+    finalizeDraft: harness.repository.finalizeDraftTurnCalls.length,
+    finalizeFailed: harness.repository.finalizeFailedTurnCalls.length,
+  };
+}
+
+const INELIGIBLE_EXPIRED_START_CASES: ReadonlyArray<{
+  name: string;
+  mutate: (
+    harness: RecoveryHarness,
+    source: CreatedConversationTurn,
+  ) => void;
+}> = [
+  {
+    name: "wrong error code",
+    mutate: (harness, source) =>
+      harness.tamperTurnForTest(source.turnId, {
+        errorCode: "settlement_source_failed",
+      }),
+  },
+  {
+    name: "retryable false",
+    mutate: (harness, source) =>
+      harness.tamperTurnForTest(source.turnId, { retryable: false }),
+  },
+  {
+    name: "wrong attempt",
+    mutate: (harness, source) =>
+      harness.tamperTurnForTest(source.turnId, { attempt: 2 }),
+  },
+  {
+    name: "existing retry lineage",
+    mutate: (harness, source) =>
+      harness.tamperTurnForTest(source.turnId, { retryOfTurnId: uuid(999) }),
+  },
+  {
+    name: "mismatched user content",
+    mutate: (harness, source) =>
+      harness.tamperMessageForTest(source.userMessageId, {
+        content: "A different settlement request.",
+      }),
+  },
+  {
+    name: "mismatched user parent",
+    mutate: (harness, source) =>
+      harness.tamperMessageForTest(source.userMessageId, {
+        parentMessageId: uuid(998),
+      }),
+  },
+  {
+    name: "missing source assistant lease metadata",
+    mutate: (harness, source) =>
+      harness.tamperMessageForTest(source.assistantMessageId, {
+        metadata: undefined,
+      }),
+  },
+  {
+    name: "tampered source assistant lease metadata",
+    mutate: (harness, source) =>
+      harness.tamperMessageForTest(source.assistantMessageId, {
+        metadata: { errorCode: "other_failure", retryable: true },
+      }),
+  },
+  {
+    name: "wrong source assistant status",
+    mutate: (harness, source) =>
+      harness.tamperMessageForTest(source.assistantMessageId, {
+        status: "completed",
+      }),
+  },
+];
+
+const TAMPERED_RECOVERY_REPLAY_CASES: ReadonlyArray<{
+  name: string;
+  path: "pre_accept" | "post_duplicate";
+  mutate: (fixture: RecoveredStartFixture) => void;
+}> = [
+  {
+    name: "missing recovery successor",
+    path: "pre_accept",
+    mutate: ({ harness, recovered }) =>
+      harness.deleteTurnForTest(recovered.draft.turnTrace.turnId),
+  },
+  {
+    name: "missing expired source",
+    path: "pre_accept",
+    mutate: ({ harness, source }) => harness.deleteTurnForTest(source.turnId),
+  },
+  {
+    name: "tampered source user content",
+    path: "post_duplicate",
+    mutate: ({ harness, source }) =>
+      harness.tamperMessageForTest(source.userMessageId, {
+        content: "Tampered recovered request.",
+      }),
+  },
+  {
+    name: "missing source assistant",
+    path: "pre_accept",
+    mutate: ({ harness, source }) =>
+      harness.deleteMessageForTest(source.assistantMessageId),
+  },
+  {
+    name: "tampered source assistant lease metadata",
+    path: "post_duplicate",
+    mutate: ({ harness, source }) =>
+      harness.tamperMessageForTest(source.assistantMessageId, {
+        metadata: { errorCode: "turn_lease_expired", retryable: false },
+      }),
+  },
+  {
+    name: "tampered successor assistant content",
+    path: "pre_accept",
+    mutate: ({ harness, recovered }) =>
+      harness.tamperMessageForTest(
+        recovered.draft.turnTrace.assistantMessageId,
+        { content: "Tampered recovered assistant content." },
+      ),
+  },
+  {
+    name: "tampered successor completion metadata",
+    path: "post_duplicate",
+    mutate: ({ harness, recovered }) =>
+      harness.tamperMessageForTest(
+        recovered.draft.turnTrace.assistantMessageId,
+        {
+          metadata: {
+            contextSnapshotVersion: 7,
+            contextSummaryVersion: 3,
+            contextMessageIds: [recovered.draft.turnTrace.userMessageId],
+            settlementIdempotencyKey: "settlement-start:tampered",
+            settlementInitialStatus: "clarifying",
+          },
+        },
+      ),
+  },
+  {
+    name: "tampered successor assistant status",
+    path: "post_duplicate",
+    mutate: ({ harness, recovered }) =>
+      harness.tamperMessageForTest(
+        recovered.draft.turnTrace.assistantMessageId,
+        { status: "pending" },
+      ),
+  },
+  {
+    name: "tampered frozen contract hash",
+    path: "pre_accept",
+    mutate: ({ harness, recovered }) =>
+      harness.tamperFrozenServiceContext(recovered.draft.turnTrace.turnId, {
+        expectedContractHash: "f".repeat(64),
+      }),
+  },
+  {
+    name: "tampered frozen catalog hash",
+    path: "post_duplicate",
+    mutate: ({ harness, recovered }) =>
+      harness.tamperFrozenServiceContext(recovered.draft.turnTrace.turnId, {
+        expectedCatalogVersion: "f".repeat(64),
+      }),
+  },
+  {
+    name: "tampered frozen prompt hash",
+    path: "pre_accept",
+    mutate: ({ harness, recovered }) =>
+      harness.tamperFrozenInvocationForTest(
+        recovered.draft.turnTrace.turnId,
+        { promptHash: "f".repeat(64) },
+      ),
+  },
+  {
+    name: "tampered frozen context hash",
+    path: "post_duplicate",
+    mutate: ({ harness, recovered }) =>
+      harness.tamperFrozenInvocationForTest(
+        recovered.draft.turnTrace.turnId,
+        { contextHash: "f".repeat(64) },
+      ),
+  },
+  {
+    name: "tampered durable draft contract hash",
+    path: "pre_accept",
+    mutate: ({ harness, recovered }) =>
+      harness.repository.tamperDraftForTest(recovered.draft.id, {
+        contractHash: "f".repeat(64),
+      }),
+  },
+];
+
 function frozenRetryDraftIdempotencyKey(
   history: Awaited<ReturnType<SettlementConversationPort["getHistory"]>>,
   turnId: string,
@@ -587,6 +813,125 @@ describe("custom rule authoring service", () => {
       ).toHaveLength(1);
     }
   });
+
+  it.each(INELIGIBLE_EXPIRED_START_CASES)(
+    "rejects an ineligible expired start source: $name",
+    async ({ mutate }) => {
+      const harness = createHarness([]);
+      const input = startInput("start-ineligible-source-0001");
+      const source = await harness.conversation.acceptTurn(
+        actor,
+        CONVERSATION_ID,
+        {
+          content: input.promptText,
+          mode: "fast",
+          clientRequestId: input.clientRequestId,
+          attachments: [],
+        },
+      );
+      harness.expireTurn(source.turnId);
+      mutate(harness, source);
+
+      await expect(harness.service.startSession(input)).rejects.toMatchObject({
+        code: "conversation_failed",
+        retryable: false,
+        sourceTurnId: source.turnId,
+      });
+      expect(harness.conversation.retryTurn).not.toHaveBeenCalled();
+      expect(harness.catalogPort.getCatalog).not.toHaveBeenCalled();
+      expect(harness.events).not.toContain("gateway.execute");
+      expect(harness.repository.createDraftCalls).toHaveLength(0);
+      expect(harness.repository.finalizeDraftTurnCalls).toHaveLength(0);
+      expect(harness.repository.finalizeFailedTurnCalls).toHaveLength(0);
+    },
+  );
+
+  it.each(["pre_accept", "post_duplicate"] as const)(
+    "replays a verified durable recovery through $path without authoring side effects",
+    async (path) => {
+      const fixture = await recoveredStartFixture(
+        `verified-recovery-${path}-0001`,
+      );
+      if (path === "post_duplicate") {
+        fixture.harness.repository.hideDraftOnceForTest(
+          fixture.recovered.draft.idempotencyKey,
+        );
+      }
+      const before = recoveryActivity(fixture.harness);
+
+      const replay = await fixture.harness.service.startSession(fixture.input);
+
+      expect(replay).toMatchObject({
+        ok: true,
+        kind: "clarifying",
+        duplicate: true,
+        draft: {
+          id: fixture.recovered.draft.id,
+          turnTrace: fixture.recovered.draft.turnTrace,
+        },
+      });
+      const after = recoveryActivity(fixture.harness);
+      expect(after).toEqual({
+        ...before,
+        accept: before.accept + (path === "post_duplicate" ? 1 : 0),
+      });
+    },
+  );
+
+  it("preserves ordinary start replay through a post-duplicate draft readback", async () => {
+    const harness = createHarness([
+      clarificationOutput("Confirm the hourly rate?", "confirm_rate"),
+    ]);
+    const input = startInput("ordinary-post-duplicate-replay-0001");
+    const first = await harness.service.startSession(input);
+    if (!first.ok || first.kind !== "clarifying") {
+      throw new Error("ordinary replay fixture did not create a draft");
+    }
+    harness.repository.hideDraftOnceForTest(first.draft.idempotencyKey);
+    const before = recoveryActivity(harness);
+
+    const replay = await harness.service.startSession(input);
+
+    expect(replay).toMatchObject({
+      ok: true,
+      kind: "clarifying",
+      duplicate: true,
+      draft: { id: first.draft.id, turnTrace: first.draft.turnTrace },
+    });
+    expect(recoveryActivity(harness)).toEqual({
+      ...before,
+      accept: before.accept + 1,
+    });
+  });
+
+  it.each(TAMPERED_RECOVERY_REPLAY_CASES)(
+    "fails closed for $path durable recovery replay with $name",
+    async ({ name, path, mutate }) => {
+      const fixture = await recoveredStartFixture(
+        `tampered-recovery-${path}-${name.replaceAll(" ", "-")}`,
+      );
+      mutate(fixture);
+      if (path === "post_duplicate") {
+        fixture.harness.repository.hideDraftOnceForTest(
+          fixture.recovered.draft.idempotencyKey,
+        );
+      }
+      const before = recoveryActivity(fixture.harness);
+
+      await expect(
+        fixture.harness.service.startSession(fixture.input),
+      ).rejects.toMatchObject({
+        code: "conversation_failed",
+        retryable: false,
+      });
+
+      const after = recoveryActivity(fixture.harness);
+      expect(after).toEqual({
+        ...before,
+        accept: before.accept + (path === "post_duplicate" ? 1 : 0),
+      });
+    },
+  );
 
   it("replays a failed initial draft as a failure and rejects prompts over 4000 before AI", async () => {
     const failedStart = createHarness([{ providerFailure: true }], {
@@ -3342,6 +3687,32 @@ function createHarness(
         retryable: true,
       });
     },
+    tamperTurnForTest(
+      turnId: string,
+      patch: Partial<StoredConversationTurn>,
+    ) {
+      const turn = turns.get(turnId);
+      if (!turn) throw new Error("turn tamper fixture is missing");
+      turns.set(turnId, { ...turn, ...structuredClone(patch) });
+    },
+    deleteTurnForTest(turnId: string) {
+      if (!turns.delete(turnId)) {
+        throw new Error("turn deletion fixture is missing");
+      }
+    },
+    tamperMessageForTest(
+      messageId: string,
+      patch: Partial<AiConversationMessageDto>,
+    ) {
+      const message = messages.get(messageId);
+      if (!message) throw new Error("message tamper fixture is missing");
+      messages.set(messageId, { ...message, ...structuredClone(patch) });
+    },
+    deleteMessageForTest(messageId: string) {
+      if (!messages.delete(messageId)) {
+        throw new Error("message deletion fixture is missing");
+      }
+    },
     transitionTurnForTest(
       turnId: string,
       status: AiConversationTurnDto["status"],
@@ -3378,6 +3749,29 @@ function createHarness(
               ...serviceContext,
               ...patch,
             },
+          },
+        },
+      };
+      turns.set(turnId, { ...turn, contextSnapshot: structuredClone(tampered) });
+      capturedSnapshots.set(turnId, structuredClone(tampered));
+    },
+    tamperFrozenInvocationForTest(
+      turnId: string,
+      patch: Record<string, unknown>,
+    ) {
+      const turn = turns.get(turnId);
+      const snapshot = turn?.contextSnapshot;
+      const gatewayContext = snapshot?.gatewayContext;
+      if (!turn || !snapshot || !gatewayContext) {
+        throw new Error("frozen invocation fixture is missing");
+      }
+      const tampered = {
+        ...snapshot,
+        gatewayContext: {
+          ...gatewayContext,
+          invocationMetadata: {
+            ...gatewayContext.invocationMetadata,
+            ...patch,
           },
         },
       };
@@ -3798,6 +4192,20 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
     const copy = structuredClone(draft);
     this.drafts.push(copy);
     return copy;
+  }
+
+  hideDraftOnceForTest(idempotencyKey: string): void {
+    this.hiddenDraftIdempotencyKey = idempotencyKey;
+    this.remainingDraftReadbackMisses = 1;
+  }
+
+  tamperDraftForTest(
+    draftId: string,
+    patch: Partial<CustomRuleDraft>,
+  ): void {
+    const draft = this.drafts.find((candidate) => candidate.id === draftId);
+    if (!draft) throw new Error("draft tamper fixture is missing");
+    Object.assign(draft, structuredClone(patch));
   }
 
   async finalizeDraftTurn(
