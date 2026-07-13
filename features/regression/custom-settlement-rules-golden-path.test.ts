@@ -538,93 +538,105 @@ describe("custom settlement production golden paths", () => {
   });
 
   it("keeps locked history reproducible after a new active rule version exists", async () => {
-    const historicalAst = compileAst("money_result({ final: gift_amount })");
-    const newActiveAst = compileAst("money_result({ final: yuan(999) })");
-    const currentActiveRuleLookup = vi.fn(async () => ({
-      versionId: "rule-history-v2-active",
-      compiledAst: newActiveAst,
-      compiledAstHash: hash(newActiveAst),
-      amountIfUsedCents: 99_900,
-    }));
     const repo = createSettlementRepo({
-      reports: [report({ id: "report-locked-history" })],
-      currentActiveRuleLookup,
-      seedBatch: batch({ status: "locked", computedAmount: 10 }),
-      seedItems: [
-        item({
-          computedAmount: 10,
-          evidenceSnapshot: {
-            ruleEngine: {
-              mode: "custom",
-              sourceReportIds: ["report-locked-history"],
-            },
-          },
-        }),
-      ],
-      seedExceptions: [
-        exceptionRecord({
-          layerSnapshot: {
-            versionId: "rule-history-v1",
-            target: { targetType: "project", targetId: null },
-            layer: "project_base",
-            composition: "replace",
-            compiledAst: historicalAst,
-            compiledAstHash: hash(historicalAst),
-            activeCompiledAstHash: hash(historicalAst),
-            parameters: {},
-            typedInputs: {
-              prior_layer_amount: { type: "money_cents", amountCents: 0 },
-            },
-          },
+      reports: [
+        report({
+          id: "report-locked-history",
+          streamerId: "streamer-locked-history",
         }),
       ],
     });
+    const v1Version = ruleVersion({
+      id: "rule-history-v1",
+      formula: "money_result({ final: yuan(25) })",
+    });
+    const v2Version = ruleVersion({
+      id: "rule-history-v2-active",
+      formula: "money_result({ final: yuan(999) })",
+    });
+    const v1Port = createProductionCustomSettlementExecutionPort({
+      repository: executableRepository({ projectBaseVersion: v1Version }),
+      executionCapability: { enabled: true },
+    });
+    const v2Port = createProductionCustomSettlementExecutionPort({
+      repository: executableRepository({ projectBaseVersion: v2Version }),
+      executionCapability: { enabled: true },
+    });
 
-    await expect(
-      resolveSettlementRuleException({
-        repo,
-        audit,
-        actor: finance,
-        batchId: "batch-created",
-        exceptionId: "exception-1",
-        input: {
-          resolutionValue: { type: "money_cents", amountCents: 2500 },
-          reason: "Late replay attempt",
-        },
-      }),
-    ).rejects.toThrow(
-      "Settlement batch is no longer open for rule exception resolution",
-    );
-    expect(currentActiveRuleLookup).not.toHaveBeenCalled();
-
-    vi.mocked(repo.getSettlementBatchById).mockResolvedValueOnce(
-      batch({ status: "generated", computedAmount: 10 }),
-    );
-    await resolveSettlementRuleException({
+    const v1 = await generateSettlementBatch({
       repo,
       audit,
+      notify,
+      actor: owner,
+      input: batchInput("payable"),
+      customExecutionPort: v1Port,
+    });
+    await confirmSettlementBatch({
+      repo,
+      audit,
+      notify,
       actor: finance,
-      batchId: "batch-created",
-      exceptionId: "exception-1",
-      input: {
-        resolutionValue: { type: "money_cents", amountCents: 2500 },
-        reason: `Replay with newer active hash ${hash(newActiveAst).slice(0, 8)}`,
-      },
+      batchId: v1.batch.id,
+      reason: "Finance confirmed v1 custom settlement",
+    });
+    const locked = await lockSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor: owner,
+      batchId: v1.batch.id,
+      reason: "Owner locked v1 custom settlement",
+      now: "2026-07-31T12:00:00.000Z",
+    });
+    const lockedItems = await repo.listSettlementBatchItems(v1.batch.id);
+    const lockedItem = lockedItems[0];
+    if (!lockedItem) {
+      throw new Error("expected locked custom settlement item");
+    }
+    const lockedRuleEngine = ruleEngine(lockedItem);
+    const lockedFingerprint = {
+      batch: locked,
+      item: lockedItem,
+      ruleEngine: lockedRuleEngine,
+    };
+
+    const v2 = await generateSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor: owner,
+      input: batchInput("payable"),
+      customExecutionPort: v2Port,
     });
 
-    expect(repo.resolveSettlementRuleException).toHaveBeenCalledWith(
+    expect(v2.batch.id).not.toBe(v1.batch.id);
+    expect(v2.batch.computedAmount).toBe(999);
+    expect(v2.items[0]?.computedAmount).toBe(999);
+    expect(ruleEngine(v2.items[0] as SettlementBatchItemRecord).appliedLayers).toEqual([
       expect.objectContaining({
-        oldComputedAmount: 10,
-        newComputedAmount: 25,
+        versionId: "rule-history-v2-active",
+        outputAmountCents: 99_900,
       }),
-    );
-    expect(repo.resolveSettlementRuleException).not.toHaveBeenCalledWith(
+    ]);
+
+    const lockedAfterV2 = await repo.getSettlementBatchById(v1.batch.id);
+    const lockedItemsAfterV2 = await repo.listSettlementBatchItems(v1.batch.id);
+    expect(lockedAfterV2).toEqual(lockedFingerprint.batch);
+    expect(lockedItemsAfterV2).toEqual([lockedFingerprint.item]);
+    expect(lockedAfterV2?.computedAmount).toBe(25);
+    expect(lockedItemsAfterV2[0]?.computedAmount).toBe(25);
+    expect(lockedFingerprint.ruleEngine.appliedLayers).toEqual([
       expect.objectContaining({
-        newComputedAmount: 999,
+        versionId: "rule-history-v1",
+        outputAmountCents: 2_500,
       }),
+    ]);
+    expect(lockedFingerprint.ruleEngine.sourceReportIds).toEqual([
+      "report-locked-history",
+    ]);
+    expect(JSON.stringify(lockedItemsAfterV2[0]?.evidenceSnapshot)).toBe(
+      JSON.stringify(lockedFingerprint.item.evidenceSnapshot),
     );
-    expect(currentActiveRuleLookup).not.toHaveBeenCalled();
-    expect(hash(historicalAst)).not.toBe(hash(newActiveAst));
   });
 
   it("preserves cents/yuan boundaries without 100x conversions", async () => {
@@ -758,9 +770,7 @@ type TestSettlementRepository = SettlementRepository &
       | "listSettlementRuleExceptions"
       | "resolveSettlementRuleException"
     >
-  > & {
-    currentActiveRuleLookup?: ReturnType<typeof vi.fn>;
-  };
+  >;
 
 function createSettlementRepo(input: {
   reports: SettlementPoolReport[];
@@ -771,11 +781,20 @@ function createSettlementRepo(input: {
   seedBatch?: SettlementBatchRecord;
   seedItems?: SettlementBatchItemRecord[];
   seedExceptions?: SettlementRuleExceptionRecord[];
-  currentActiveRuleLookup?: ReturnType<typeof vi.fn>;
 }): TestSettlementRepository {
+  let nextBatchNumber = 1;
   let currentBatch = input.seedBatch ?? batch();
   let currentItems = input.seedItems ?? [];
   let currentExceptions = input.seedExceptions ?? [];
+  const batchesById = new Map<string, SettlementBatchRecord>([
+    [currentBatch.id, currentBatch],
+  ]);
+  const itemsByBatchId = new Map<string, SettlementBatchItemRecord[]>([
+    [currentBatch.id, currentItems],
+  ]);
+  const exceptionsByBatchId = new Map<string, SettlementRuleExceptionRecord[]>([
+    [currentBatch.id, currentExceptions],
+  ]);
   const repo: TestSettlementRepository = {
     listSettlementPoolReports: vi.fn(async () => input.reports),
     getSettlementRules: vi.fn(async () => input.rules ?? []),
@@ -788,7 +807,11 @@ function createSettlementRepo(input: {
           SettlementRepository["createSettlementBatchAtomic"]
         >[0],
       ) => {
+        const batchId =
+          nextBatchNumber === 1 ? "batch-created" : `batch-created-${nextBatchNumber}`;
+        nextBatchNumber += 1;
         currentBatch = batch({
+          id: batchId,
           batchType: payload.batchType,
           computedAmount: payload.computedAmount,
           manualAmount: payload.manualAmount,
@@ -799,6 +822,7 @@ function createSettlementRepo(input: {
           (payloadItem: SettlementBatchAtomicItemInput, index: number) =>
             item({
               id: `item-${index + 1}`,
+              settlementBatchId: batchId,
               streamerId: payloadItem.streamerId,
               liveReportId: payloadItem.liveReportId,
               itemType: payloadItem.itemType,
@@ -815,6 +839,7 @@ function createSettlementRepo(input: {
               (payloadException, exceptionIndex: number) =>
                 exceptionRecord({
                   id: `exception-${exceptionIndex + 1}`,
+                  settlementBatchId: batchId,
                   settlementBatchItemId: `item-${index + 1}`,
                   liveReportId: payloadException.liveReportId ?? null,
                   ruleVersionId: payloadException.ruleVersionId ?? null,
@@ -824,40 +849,61 @@ function createSettlementRepo(input: {
                 }),
             ),
         );
+        batchesById.set(batchId, currentBatch);
+        itemsByBatchId.set(batchId, currentItems);
+        exceptionsByBatchId.set(batchId, currentExceptions);
         return { batch: currentBatch, items: currentItems };
       },
     ),
     markReportSettled: vi.fn(),
-    getSettlementBatchById: vi.fn(async () => currentBatch),
-    updateSettlementBatch: vi.fn(async (_batchId, patch) => {
-      currentBatch = batch({
-        ...currentBatch,
+    getSettlementBatchById: vi.fn(async (batchId) => batchesById.get(batchId) ?? null),
+    updateSettlementBatch: vi.fn(async (batchId, patch) => {
+      const existing = batchesById.get(batchId) ?? currentBatch;
+      const updated = batch({
+        ...existing,
         ...patch,
-        lockedAt: patch.lockedAt ?? currentBatch.lockedAt ?? null,
-        lockReason: patch.lockReason ?? currentBatch.lockReason ?? null,
-        reopenReason: patch.reopenReason ?? currentBatch.reopenReason ?? null,
+        lockedAt: patch.lockedAt ?? existing.lockedAt ?? null,
+        lockReason: patch.lockReason ?? existing.lockReason ?? null,
+        reopenReason: patch.reopenReason ?? existing.reopenReason ?? null,
       });
-      return currentBatch;
+      batchesById.set(batchId, updated);
+      currentBatch = updated;
+      return updated;
     }),
-    listSettlementBatchItems: vi.fn(async () => currentItems),
+    listSettlementBatchItems: vi.fn(
+      async (batchId) => itemsByBatchId.get(batchId) ?? [],
+    ),
     listStreamerUserLinks: vi.fn(async () => []),
-    listSettlementRuleExceptions: vi.fn(async () => currentExceptions),
+    listSettlementRuleExceptions: vi.fn(
+      async ({ batchId }) => exceptionsByBatchId.get(batchId) ?? [],
+    ),
     hasOpenSettlementRuleExceptions: vi.fn(
-      async () =>
-        currentExceptions.some((exception) => exception.status === "review_required"),
+      async ({ batchId }) =>
+        (exceptionsByBatchId.get(batchId) ?? []).some(
+          (exception) => exception.status === "review_required",
+        ),
     ),
     resolveSettlementRuleException: vi.fn(async (resolution) => {
-      currentItems = currentItems.map((currentItem) =>
+      const batchForException =
+        [...exceptionsByBatchId.values()]
+          .flat()
+          .find((exception) => exception.id === resolution.exceptionId)
+          ?.settlementBatchId ?? currentBatch.id;
+      const batchItems = itemsByBatchId.get(batchForException) ?? currentItems;
+      const batchExceptions =
+        exceptionsByBatchId.get(batchForException) ?? currentExceptions;
+      currentItems = batchItems.map((currentItem) =>
         currentItem.id === resolution.settlementBatchItemId
           ? { ...currentItem, computedAmount: resolution.newComputedAmount }
           : currentItem,
       );
       const delta = resolution.newComputedAmount - resolution.oldComputedAmount;
+      const existingBatch = batchesById.get(batchForException) ?? currentBatch;
       currentBatch = batch({
-        ...currentBatch,
-        computedAmount: currentBatch.computedAmount + delta,
+        ...existingBatch,
+        computedAmount: existingBatch.computedAmount + delta,
       });
-      currentExceptions = currentExceptions.map((currentException) =>
+      currentExceptions = batchExceptions.map((currentException) =>
         currentException.id === resolution.exceptionId
           ? {
               ...currentException,
@@ -869,6 +915,9 @@ function createSettlementRepo(input: {
             }
           : currentException,
       );
+      batchesById.set(batchForException, currentBatch);
+      itemsByBatchId.set(batchForException, currentItems);
+      exceptionsByBatchId.set(batchForException, currentExceptions);
       return {
         batch: currentBatch,
         item:
@@ -879,7 +928,6 @@ function createSettlementRepo(input: {
           currentExceptions[0],
       };
     }),
-    currentActiveRuleLookup: input.currentActiveRuleLookup,
   };
   return repo;
 }
