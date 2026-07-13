@@ -793,6 +793,13 @@ declare
   v_item_source_execution_key text;
   v_item_source_input_hash text;
   v_item_rule_version_id uuid;
+  v_expected_rule_version_id uuid;
+  v_expected_rule_version_ids uuid[] := array[]::uuid[];
+  v_missing_rule_version_count integer := 0;
+  v_expected_source_context_hash text;
+  v_expected_source_context_hashes text[] := array[]::text[];
+  v_missing_source_context_hash_count integer := 0;
+  v_replayable_sibling_count integer := 0;
   v_sibling_count integer := 0;
   v_unresolved_count integer := 0;
   v_inserted_count integer := 0;
@@ -874,8 +881,40 @@ begin
   )
   select
     count(*),
-    count(*) filter (where locked_siblings.status not in ('resolved', 'voided'))
-  into v_sibling_count, v_unresolved_count
+    count(*) filter (where locked_siblings.status not in ('resolved', 'voided')),
+    count(*) filter (where locked_siblings.status <> 'voided'),
+    count(*) filter (
+      where locked_siblings.status <> 'voided'
+        and locked_siblings.rule_version_id is null
+    ),
+    coalesce(
+      array_agg(distinct locked_siblings.rule_version_id)
+        filter (
+          where locked_siblings.status <> 'voided'
+            and locked_siblings.rule_version_id is not null
+        ),
+      array[]::uuid[]
+    ),
+    count(*) filter (
+      where locked_siblings.status <> 'voided'
+        and nullif(locked_siblings.source_context_snapshot ->> '__source_context_hash', '') is null
+    ),
+    coalesce(
+      array_agg(distinct nullif(locked_siblings.source_context_snapshot ->> '__source_context_hash', ''))
+        filter (
+          where locked_siblings.status <> 'voided'
+            and nullif(locked_siblings.source_context_snapshot ->> '__source_context_hash', '') is not null
+        ),
+      array[]::text[]
+    )
+  into
+    v_sibling_count,
+    v_unresolved_count,
+    v_replayable_sibling_count,
+    v_missing_rule_version_count,
+    v_expected_rule_version_ids,
+    v_missing_source_context_hash_count,
+    v_expected_source_context_hashes
   from locked_siblings;
 
   if v_sibling_count = 0 then
@@ -884,6 +923,33 @@ begin
 
   if v_unresolved_count > 0 then
     raise exception 'external_cost_replay_unresolved_exceptions';
+  end if;
+
+  if v_replayable_sibling_count = 0
+     or v_missing_rule_version_count > 0
+     or coalesce(array_length(v_expected_rule_version_ids, 1), 0) = 0 then
+    raise exception 'external_cost_replay_rule_version_missing';
+  end if;
+
+  if coalesce(array_length(v_expected_rule_version_ids, 1), 0) <> 1 then
+    raise exception 'external_cost_replay_rule_version_mismatch';
+  end if;
+
+  v_expected_rule_version_id := v_expected_rule_version_ids[1];
+
+  if v_missing_source_context_hash_count > 0
+     or coalesce(array_length(v_expected_source_context_hashes, 1), 0) = 0 then
+    raise exception 'external_cost_replay_source_context_hash_missing';
+  end if;
+
+  if coalesce(array_length(v_expected_source_context_hashes, 1), 0) <> 1 then
+    raise exception 'external_cost_replay_source_context_hash_mismatch';
+  end if;
+
+  v_expected_source_context_hash := v_expected_source_context_hashes[1];
+
+  if p_input_hash <> v_expected_source_context_hash then
+    raise exception 'external_cost_replay_source_context_hash_mismatch';
   end if;
 
   for v_item in
@@ -903,8 +969,9 @@ begin
       raise exception 'external_cost_replay_input_hash_required';
     end if;
 
-    if v_item_source_input_hash <> p_input_hash then
-      raise exception 'external_cost_replay_input_hash_conflict';
+    if v_item_source_input_hash <> p_input_hash
+       or v_item_source_input_hash <> v_expected_source_context_hash then
+      raise exception 'external_cost_replay_source_context_hash_mismatch';
     end if;
 
     if nullif(v_item ->> 'streamer_id', '') is not null
@@ -951,11 +1018,15 @@ begin
       raise exception 'external_cost_replay_source_scope_mismatch';
     end if;
 
-    if nullif(v_item ->> 'rule_version_id', '') is not null
-       and not exists (
+    v_item_rule_version_id := nullif(v_item ->> 'rule_version_id', '')::uuid;
+    if v_item_rule_version_id is distinct from v_expected_rule_version_id then
+      raise exception 'external_cost_replay_rule_version_mismatch';
+    end if;
+
+    if not exists (
         select 1
         from public.custom_settlement_rule_versions as rule_version
-        where rule_version.id = nullif(v_item ->> 'rule_version_id', '')::uuid
+        where rule_version.id = v_item_rule_version_id
           and rule_version.organization_id = p_organization_id
           and rule_version.project_id = p_project_id
         for update
@@ -963,7 +1034,6 @@ begin
       raise exception 'external_cost_replay_source_scope_mismatch';
     end if;
 
-    v_item_rule_version_id := nullif(v_item ->> 'rule_version_id', '')::uuid;
     v_item_signature := jsonb_build_object(
       'import_row_index', p_import_row_index,
       'streamer_id', nullif(v_item ->> 'streamer_id', ''),

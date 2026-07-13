@@ -474,6 +474,41 @@ describe("SupabaseComplexCostRepository exception replay", () => {
       idempotencyStatus: "created",
     });
   });
+
+  it("surfaces replay rule-version and source-context rejection from the RPC", async () => {
+    const rpc = vi.fn(async () => ({
+      data: null,
+      error: new Error("external_cost_replay_source_context_hash_mismatch"),
+    }));
+    const repo = new SupabaseComplexCostRepository({ rpc } as never);
+
+    await expect(
+      repo.replayExternalCostRuleExceptionItems({
+        organizationId: "org-1",
+        projectId: "project-1",
+        importBatchId: "import-1",
+        importRowIndex: 0,
+        idempotencyKey: "replay-1",
+        inputHash: "changed-context-hash",
+        createdBy: "user-1",
+        items: [
+          {
+            importRowIndex: 0,
+            ruleVersionId: "rule-version-2",
+            itemType: "supplier_fee",
+            amountCents: 12_000,
+            direction: "cost",
+            evidenceLevel: "yellow",
+            sourcePayload: { rowIndex: 0, resolved: true },
+            sourceExecutionKey: "import-1:0:supplier_fee",
+            sourceInputHash: "changed-context-hash",
+            sourceExplanation: "Supplier fee replayed after exception review.",
+            status: "pending_review",
+          },
+        ],
+      }),
+    ).rejects.toThrow("external_cost_replay_source_context_hash_mismatch");
+  });
 });
 
 describe("mapCostItemRow", () => {

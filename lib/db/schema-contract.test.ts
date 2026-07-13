@@ -4323,6 +4323,14 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     expect(replay.body).toContain("external_cost_replay_unresolved_exceptions");
     expect(replay.body).toContain("external_cost_replay_items_must_be_pending_review");
     expect(replay.body).toContain("external_cost_replay_source_scope_mismatch");
+    expect(replay.body).toContain("external_cost_replay_rule_version_missing");
+    expect(replay.body).toContain("external_cost_replay_rule_version_mismatch");
+    expect(replay.body).toContain("external_cost_replay_source_context_hash_missing");
+    expect(replay.body).toContain("external_cost_replay_source_context_hash_mismatch");
+    expect(replay.body).toContain("source_context_snapshot ->> '__source_context_hash'");
+    expect(replay.body).toContain("v_expected_rule_version_id");
+    expect(replay.body).toContain("v_expected_source_context_hash");
+    expect(replay.body).toContain("array_agg(distinct locked_siblings.rule_version_id)");
     expect(replay.body).toMatch(
       /from public\.streamers as streamer[\s\S]+streamer\.id = nullif\(v_item ->> 'streamer_id'[\s\S]+streamer\.organization_id = p_organization_id/u,
     );
@@ -4330,11 +4338,13 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
       /from public\.live_reports as report[\s\S]+report\.id = nullif\(v_item ->> 'live_report_id'[\s\S]+report\.organization_id = p_organization_id[\s\S]+report\.project_id = p_project_id/u,
     );
     expect(replay.body).toMatch(
-      /from public\.custom_settlement_rule_versions as rule_version[\s\S]+rule_version\.id = nullif\(v_item ->> 'rule_version_id'[\s\S]+rule_version\.organization_id = p_organization_id[\s\S]+rule_version\.project_id = p_project_id/u,
+      /v_item_rule_version_id is distinct from v_expected_rule_version_id[\s\S]+from public\.custom_settlement_rule_versions as rule_version[\s\S]+rule_version\.id = v_item_rule_version_id[\s\S]+rule_version\.organization_id = p_organization_id[\s\S]+rule_version\.project_id = p_project_id/u,
     );
     expect(replay.body).toContain("source_execution_key");
     expect(replay.body).toContain("source_input_hash");
     expect(replay.body).toContain("v_existing_cost_item");
+    expect(replay.body).toContain("v_item_rule_version_id is distinct from v_expected_rule_version_id");
+    expect(replay.body).toContain("v_item_source_input_hash <> v_expected_source_context_hash");
     expect(replay.body).toContain("v_existing_cost_item.source_input_hash is distinct from v_item_source_input_hash");
     expect(replay.body).toContain("v_existing_cost_item.source_import_batch_id is distinct from p_import_batch_id");
     expect(replay.body).toContain("v_existing_cost_item.source_payload ->> '__replay_idempotency_key'");
