@@ -5096,7 +5096,8 @@ type UntrustedApprovalHints = Readonly<{
 type ArchiveFallbackProofServiceInput = Omit<
   ArchiveCustomRuleRepositoryInput["fallbackProof"],
   "lockedBatchExclusion"
->;
+> &
+  Readonly<{ ruleVersionId: string }>;
 
 type ApproveLifecycleServiceInput = LifecycleServiceInput<
   ApproveCustomRuleRepositoryInput,

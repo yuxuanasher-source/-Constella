@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
 
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
-import { getCustomRuleRouteContext } from "@/features/settlements/custom-rule-route-context";
+import {
+  CustomRuleRouteError,
+  getCustomRuleRouteContext,
+} from "@/features/settlements/custom-rule-route-context";
 import { CustomRuleGovernanceError } from "@/features/settlements/custom-rule-governance";
 import { CustomRulePersistenceQueryError } from "@/features/settlements/custom-rule-repository";
 
@@ -231,6 +234,47 @@ describe("settlement rule apply-and-submit route", () => {
     });
 
     expect(response.status).toBe(422);
+  });
+
+  it("maps deterministic project streamer target scope mismatches to 422", async () => {
+    const routeContext = context("owner");
+    routeContext.lifecycle.applyAndSubmitCustomRule.mockRejectedValue(
+      new CustomRulePersistenceQueryError("apply_and_submit_rule", {
+        message: "custom_settlement_rule_project_streamer_scope_mismatch",
+      }),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+
+    expect(response.status).toBe(422);
+  });
+
+  it("maps project access denial to 403 before billing", async () => {
+    const routeContext = context("owner");
+    routeContext.requireProjectAccess.mockRejectedValue(
+      new CustomRuleRouteError({
+        code: "CUSTOM_RULE_PROJECT_ACCESS_DENIED",
+        message: "Project access denied",
+        status: 403,
+        retryable: false,
+      }),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(routeContext.lifecycle.applyAndSubmitCustomRule).not.toHaveBeenCalled();
   });
 
   it("rejects malformed reason and target commands before billing", async () => {

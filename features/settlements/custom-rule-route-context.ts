@@ -2001,9 +2001,9 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         loadInput.actor.organizationId.length === 0
       ) {
         throw routeError(
-          "CUSTOM_RULE_PROJECT_NOT_FOUND",
-          "Project not found",
-          404,
+          "CUSTOM_RULE_PROJECT_ACCESS_DENIED",
+          "Project access denied",
+          403,
         );
       }
       const state = authorizedEvidence.get(loadInput.selection.selectionToken);
@@ -2419,9 +2419,9 @@ async function readCustomSettlementEvidenceSnapshot(
       text.includes("snapshot_project_scope_mismatch")
     ) {
       throw routeError(
-        "CUSTOM_RULE_PROJECT_NOT_FOUND",
-        "Project not found",
-        404,
+        "CUSTOM_RULE_PROJECT_ACCESS_DENIED",
+        "Project access denied",
+        403,
       );
     }
     throw routeError(
@@ -2835,7 +2835,11 @@ function assertRowsInScope(
         row.organization_id !== organizationId || row.project_id !== projectId,
     )
   ) {
-    throw routeError("CUSTOM_RULE_PROJECT_NOT_FOUND", "Project not found", 404);
+    throw routeError(
+      "CUSTOM_RULE_PROJECT_ACCESS_DENIED",
+      "Project access denied",
+      403,
+    );
   }
 }
 
@@ -3850,9 +3854,9 @@ async function requireProjectAccess(
   }
   if (!data) {
     throw new CustomRuleRouteError({
-      code: "CUSTOM_RULE_PROJECT_NOT_FOUND",
-      message: "Project not found",
-      status: 404,
+      code: "CUSTOM_RULE_PROJECT_ACCESS_DENIED",
+      message: "Project access denied",
+      status: 403,
       retryable: false,
     });
   }
@@ -4060,6 +4064,8 @@ function persistenceValidationFailure(
     text.includes("fallback_required") ||
     text.includes("simulation_required") ||
     text.includes("group_scope_mismatch") ||
+    text.includes("project_streamer_scope_mismatch") ||
+    text.includes("streamer_scope_mismatch") ||
     text.includes("population_incomplete")
   );
 }
@@ -4142,6 +4148,7 @@ function createRouteGovernanceRepository(input: {
       source?: { kind: "ai_draft" | "saved_draft"; id: string };
       sourceSimulationId?: string;
       archiveFallbackProof?: {
+        ruleVersionId: string;
         simulationId: string;
         proofKind: "remaining_custom_layers" | "fixed_fallback";
         remainingCustomLayerCount: number;
@@ -4192,6 +4199,15 @@ function createRouteGovernanceRepository(input: {
             dataSelectionHash: rawSimulation.dataSelectionHash,
           }
         : undefined;
+      if (
+        version &&
+        scope.archiveFallbackProof?.ruleVersionId === version.id
+      ) {
+        throw new CustomRuleGovernanceError(
+          "CUSTOM_RULE_ARCHIVE_FALLBACK_SIMULATION_REQUIRED",
+          "Active rule archival requires a separate fresh fallback or remaining-layer simulation",
+        );
+      }
       const fallbackSimulation =
         version &&
         simulationOwner &&
@@ -4200,7 +4216,7 @@ function createRouteGovernanceRepository(input: {
               repository: input.repository,
               organizationId: scope.organizationId,
               projectId: scope.projectId,
-              ruleVersionId: version.id,
+              ruleVersionId: scope.archiveFallbackProof.ruleVersionId,
               simulationId: scope.archiveFallbackProof.simulationId,
             })
           : simulation;

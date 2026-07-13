@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import {
+  CustomRuleRouteError,
   customRuleErrorResponse,
   getCustomRuleRouteContext,
   parseCustomRuleJson,
@@ -17,6 +18,7 @@ const paramsSchema = z.strictObject({
 const bodySchema = z.strictObject({
   effectiveUntil: z.iso.datetime({ offset: true }),
   fallbackProof: z.strictObject({
+    ruleVersionId: z.string().uuid(),
     simulationId: z.string().uuid(),
     proofKind: z.enum(["remaining_custom_layers", "fixed_fallback"]),
     remainingCustomLayerCount: z.number().int().min(0).max(10_000),
@@ -41,6 +43,16 @@ export async function POST(
 
     const inputParams = parseCustomRuleParams(await params, paramsSchema);
     const body = await parseCustomRuleJson(request, bodySchema);
+    if (body.fallbackProof.ruleVersionId === inputParams.ruleVersionId) {
+      throw new CustomRuleRouteError({
+        code: "CUSTOM_RULE_ARCHIVE_FALLBACK_SIMULATION_REQUIRED",
+        message:
+          "Active rule archival requires a separate fresh fallback or remaining-layer simulation",
+        status: 422,
+        retryable: false,
+        path: ["fallbackProof", "ruleVersionId"],
+      });
+    }
     await context.requireProjectAccess(inputParams.projectId);
     await assertBillingWriteAllowed({
       client: context.supabase,
