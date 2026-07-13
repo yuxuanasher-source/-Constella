@@ -97,6 +97,26 @@ describe("settlement rule group assignments route", () => {
     });
   });
 
+  it.each(["finance", "operator_business", "streamer"])(
+    "denies assignment changes for %s before billing",
+    async (role) => {
+      const routeContext = context(role);
+      vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+        routeContext as never,
+      );
+
+      const response = await POST(request(), {
+        params: Promise.resolve({ projectId: PROJECT_ID, groupId: GROUP_ID }),
+      });
+
+      expect(response.status).toBe(403);
+      expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+      expect(
+        routeContext.groups.changeSettlementGroupAssignment,
+      ).not.toHaveBeenCalled();
+    },
+  );
+
   it("maps database target conflicts to 409", async () => {
     const routeContext = context("owner");
     routeContext.groups.changeSettlementGroupAssignment.mockRejectedValue(

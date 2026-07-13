@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import {
+  CustomRuleRouteError,
   customRuleErrorResponse,
   getCustomRuleRouteContext,
   parseCustomRuleJson,
@@ -24,6 +25,17 @@ const bodySchema = z.strictObject({
     .regex(/^[A-Za-z0-9._:-]+$/u),
 });
 
+function assertGroupArchiveRole(role: string): void {
+  if (role !== "owner" && role !== "ops_manager") {
+    throw new CustomRuleRouteError({
+      code: "CUSTOM_RULE_ACTION_NOT_ALLOWED",
+      message: "Current role cannot archive settlement rule groups",
+      status: 403,
+      retryable: false,
+    });
+  }
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ projectId: string; groupId: string }> },
@@ -31,6 +43,7 @@ export async function POST(
   try {
     const context = await getCustomRuleRouteContext();
     if (context instanceof Response) return context;
+    assertGroupArchiveRole(context.auth.role);
 
     const inputParams = parseCustomRuleParams(await params, paramsSchema);
     const body = await parseCustomRuleJson(request, bodySchema);

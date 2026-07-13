@@ -150,6 +150,34 @@ describe("settlement rule templates route", () => {
     );
   });
 
+  it.each(["operator_business", "finance", "streamer"])(
+    "denies template saves for %s before billing",
+    async (role) => {
+      const routeContext = context(role);
+      vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+        routeContext as never,
+      );
+
+      const response = await POST(
+        postRequest({
+          projectId: PROJECT_ID,
+          sourceRuleVersionId: RULE_ID,
+          name: "高峰时段奖励",
+          confirmedContractHash: "a".repeat(64),
+          reason: "沉淀为组织模板",
+          clientRequestId: "save-template-denied-0001",
+        }),
+      );
+
+      expect(response.status).toBe(403);
+      expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+      expect(routeContext.requireProjectAccess).not.toHaveBeenCalled();
+      expect(
+        routeContext.lifecycle.saveOrganizationRuleTemplate,
+      ).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects malformed template commands before billing", async () => {
     const routeContext = context("owner");
     vi.mocked(getCustomRuleRouteContext).mockResolvedValue(

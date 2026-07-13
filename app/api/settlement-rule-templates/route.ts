@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import {
+  CustomRuleRouteError,
   customRuleErrorResponse,
   getCustomRuleRouteContext,
   parseCustomRuleJson,
@@ -22,6 +23,17 @@ const bodySchema = z.strictObject({
     .max(128)
     .regex(/^[A-Za-z0-9._:-]+$/u),
 });
+
+function assertTemplateMutationRole(role: string): void {
+  if (role !== "owner" && role !== "ops_manager") {
+    throw new CustomRuleRouteError({
+      code: "CUSTOM_RULE_ACTION_NOT_ALLOWED",
+      message: "Current role cannot save settlement rule templates",
+      status: 403,
+      retryable: false,
+    });
+  }
+}
 
 export async function GET(_request?: Request) {
   try {
@@ -46,6 +58,7 @@ export async function POST(request: Request) {
   try {
     const context = await getCustomRuleRouteContext();
     if (context instanceof Response) return context;
+    assertTemplateMutationRole(context.auth.role);
 
     const body = await parseCustomRuleJson(request, bodySchema);
     await context.requireProjectAccess(body.projectId);

@@ -87,6 +87,24 @@ describe("settlement rule group archive route", () => {
     });
   });
 
+  it.each(["finance", "operator_business", "streamer"])(
+    "denies group archive for %s before billing",
+    async (role) => {
+      const routeContext = context(role);
+      vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+        routeContext as never,
+      );
+
+      const response = await POST(request(), {
+        params: Promise.resolve({ projectId: PROJECT_ID, groupId: GROUP_ID }),
+      });
+
+      expect(response.status).toBe(403);
+      expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+      expect(routeContext.groups.archiveSettlementRuleGroup).not.toHaveBeenCalled();
+    },
+  );
+
   it("maps active-rule archive blockers to 422", async () => {
     const routeContext = context("owner");
     routeContext.groups.archiveSettlementRuleGroup.mockRejectedValue(
