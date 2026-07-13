@@ -39,7 +39,10 @@ import type {
   ApplyAndSubmitCustomRuleInput,
   ApproveCustomRuleRepositoryInput,
   ArchiveCustomRuleRepositoryInput,
+  ArchiveOrganizationRuleTemplateInput,
   CreateCustomRuleDraftInput,
+  CreateCustomRuleParameterDraftInput,
+  CloneCustomRuleToDraftInput,
   CreatedCustomRuleDraft,
   CustomRuleDraft,
   CustomRuleLifecycleResult,
@@ -54,6 +57,7 @@ import type {
   InsertedSettlementFormulaSimulation,
   ForceApproveCustomRuleRepositoryInput,
   ListCustomRulesInput,
+  SaveOrganizationRuleTemplateInput,
   CreateSettlementRuleGroupInput,
   ListSettlementRuleGroupsInput,
   ArchiveSettlementRuleGroupInput,
@@ -106,6 +110,15 @@ import {
   type CustomRuleMaterialRiskConfiguration,
   type CustomRuleMaterialRiskInput,
 } from "./custom-rule-risk";
+import {
+  applyRuleParameterEdits,
+  assertReusableTemplateEditable,
+  cloneRuleVersionToEditableDraft,
+  deriveParameterDefinitionsFromContract,
+  type OrganizationRuleTemplate,
+  type RuleParameterDefinition,
+  type RuleParameterEdit,
+} from "./custom-rule-templates";
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]+$/u;
@@ -5009,6 +5022,7 @@ export type CustomRuleLifecycleGovernanceContext = {
     };
     activePendingRules: readonly SettlementGroupScopedRule[];
   };
+  organizationTemplate?: Pick<OrganizationRuleTemplate, "id" | "organizationId">;
 };
 
 export type CustomRuleLifecycleRepositoryPort = Pick<
@@ -5036,6 +5050,18 @@ export type CustomRuleLifecycleRepositoryPort = Pick<
       errorMessage: string;
     },
   ): Promise<CustomRuleLifecycleResult>;
+  cloneCustomRuleToDraft(
+    input: CloneCustomRuleToDraftInput,
+  ): Promise<CloneCustomRuleToDraftInput["clone"]>;
+  createCustomRuleParameterDraft(
+    input: CreateCustomRuleParameterDraftInput,
+  ): Promise<CreateCustomRuleParameterDraftInput["draft"]>;
+  saveOrganizationRuleTemplate(
+    input: SaveOrganizationRuleTemplateInput,
+  ): Promise<OrganizationRuleTemplate>;
+  archiveOrganizationRuleTemplate(
+    input: ArchiveOrganizationRuleTemplateInput,
+  ): Promise<OrganizationRuleTemplate>;
 };
 
 export type CustomRuleExecutionCapability = Readonly<{ enabled: boolean }>;
@@ -5084,6 +5110,28 @@ type ArchiveLifecycleServiceInput = LifecycleServiceInput<
     lockedBatchCount?: number;
   }>;
 
+type CloneCustomRuleToDraftServiceInput = Readonly<{
+  actor: LifecycleActorInput;
+  sourceProjectId: string;
+  targetProjectId: string;
+  sourceRuleVersionId: string;
+  targetVariableCatalogVersion: string;
+  targetAvailableVariableIds: readonly string[];
+  newVersionId: string;
+  reason: string;
+  clientRequestId: string;
+}>;
+
+type EditCustomRuleParametersServiceInput = Readonly<{
+  actor: LifecycleActorInput;
+  projectId: string;
+  ruleVersionId: string;
+  newVersionId: string;
+  edits: readonly RuleParameterEdit[];
+  reason: string;
+  clientRequestId: string;
+}>;
+
 export type CustomRuleLifecycleListDto = CustomSettlementRuleVersion & {
   effectiveNow: boolean;
   scheduled: boolean;
@@ -5114,6 +5162,18 @@ export type CustomRuleLifecycleService = {
   archiveCustomRule(
     input: ArchiveLifecycleServiceInput,
   ): Promise<CustomRuleLifecycleResult>;
+  cloneCustomRuleToDraft(
+    input: CloneCustomRuleToDraftServiceInput,
+  ): Promise<CloneCustomRuleToDraftInput["clone"]>;
+  editCustomRuleParameters(
+    input: EditCustomRuleParametersServiceInput,
+  ): Promise<CreateCustomRuleParameterDraftInput["draft"]>;
+  saveOrganizationRuleTemplate(
+    input: LifecycleServiceInput<SaveOrganizationRuleTemplateInput>,
+  ): Promise<OrganizationRuleTemplate>;
+  archiveOrganizationRuleTemplate(
+    input: LifecycleServiceInput<ArchiveOrganizationRuleTemplateInput>,
+  ): Promise<OrganizationRuleTemplate>;
   listCustomRules(input: {
     actor: LifecycleActorInput;
     projectId: string;
@@ -5886,6 +5946,140 @@ export function createCustomRuleLifecycleService(dependencies: {
         reason: input.reason,
       });
       return result;
+    },
+
+    async cloneCustomRuleToDraft(input) {
+      const sourceContext = await loadContext({
+        actor: input.actor,
+        projectId: input.sourceProjectId,
+        ruleVersionId: input.sourceRuleVersionId,
+      });
+      requireCapability(sourceContext.actor.role, "view_internal");
+      requireVersionContext(sourceContext);
+      const targetContext = await loadContext({
+        actor: input.actor,
+        projectId: input.targetProjectId,
+      });
+      requireCapability(targetContext.actor.role, "create_draft");
+      const clone = cloneRuleVersionToEditableDraft({
+        sourceVersion: sourceContext.version as Parameters<
+          typeof cloneRuleVersionToEditableDraft
+        >[0]["sourceVersion"],
+        targetProjectId: input.targetProjectId,
+        targetCatalog: {
+          version: input.targetVariableCatalogVersion,
+          variables: input.targetAvailableVariableIds.map((id) => ({
+            id,
+            availability: "available" as const,
+          })),
+        },
+        newVersionId: input.newVersionId,
+        reason: input.reason,
+      });
+      return repository.cloneCustomRuleToDraft({
+        organizationId: targetContext.actor.organizationId,
+        sourceProjectId: input.sourceProjectId,
+        targetProjectId: input.targetProjectId,
+        sourceRuleVersionId: input.sourceRuleVersionId,
+        targetVariableCatalogVersion: input.targetVariableCatalogVersion,
+        targetAvailableVariableIds: [...input.targetAvailableVariableIds],
+        newVersionId: input.newVersionId,
+        clone,
+        reason: input.reason,
+        clientRequestId: input.clientRequestId,
+      });
+    },
+
+    async editCustomRuleParameters(input) {
+      const context = await loadContext({
+        actor: input.actor,
+        projectId: input.projectId,
+        ruleVersionId: input.ruleVersionId,
+      });
+      requireCapability(context.actor.role, "edit_draft");
+      requireVersionContext(context);
+      const parameterDefinitions =
+        (
+          context.version as CustomSettlementRuleVersion & {
+            parameterDefinitions?: RuleParameterDefinition[];
+          }
+        ).parameterDefinitions ??
+        deriveParameterDefinitionsFromContract(context.version.ruleContract);
+      const edited = applyRuleParameterEdits({
+        sourceVersion: context.version as Parameters<
+          typeof applyRuleParameterEdits
+        >[0]["sourceVersion"],
+        definitions: parameterDefinitions,
+        edits: input.edits,
+        newVersionId: input.newVersionId,
+        reason: input.reason,
+      });
+      return repository.createCustomRuleParameterDraft({
+        organizationId: context.actor.organizationId,
+        projectId: input.projectId,
+        sourceRuleVersionId: input.ruleVersionId,
+        newVersionId: input.newVersionId,
+        edits: [...input.edits],
+        draft: edited.version,
+        reason: input.reason,
+        clientRequestId: input.clientRequestId,
+      });
+    },
+
+    async saveOrganizationRuleTemplate(input) {
+      const context = await loadContext({
+        actor: input.actor,
+        projectId: input.projectId,
+        ruleVersionId: input.sourceRuleVersionId,
+      });
+      requireCapability(context.actor.role, "manage_templates");
+      requireVersionContext(context);
+      if (context.version.contractHash !== input.confirmedContractHash) {
+        throw new CustomRuleGovernanceError(
+          "CUSTOM_RULE_TEMPLATE_CONTRACT_STALE",
+          "Saving a rule template requires the confirmed current contract",
+        );
+      }
+      const formula = parseCustomRuleFormula(context.version.formula);
+      if (!formula.ok) {
+        throw new CustomRuleGovernanceError(
+          "CUSTOM_RULE_TEMPLATE_FORMULA_INVALID",
+          "Saving a rule template requires a valid formula",
+        );
+      }
+      return repository.saveOrganizationRuleTemplate({
+        organizationId: context.actor.organizationId,
+        projectId: input.projectId,
+        sourceRuleVersionId: input.sourceRuleVersionId,
+        name: input.name,
+        description: input.description,
+        confirmedContractHash: input.confirmedContractHash,
+        reason: input.reason,
+        clientRequestId: input.clientRequestId,
+      });
+    },
+
+    async archiveOrganizationRuleTemplate(input) {
+      const context = await loadContext({
+        actor: input.actor,
+        projectId: input.projectId,
+      });
+      requireCapability(context.actor.role, "manage_templates");
+      if (context.organizationTemplate !== undefined) {
+        assertReusableTemplateEditable({
+          templateKind: "organization",
+          templateOrganizationId: context.organizationTemplate.organizationId,
+          actorOrganizationId: context.actor.organizationId,
+        });
+      }
+      return repository.archiveOrganizationRuleTemplate({
+        organizationId: context.actor.organizationId,
+        projectId: input.projectId,
+        templateId: input.templateId,
+        archivedAt: input.archivedAt,
+        reason: input.reason,
+        clientRequestId: input.clientRequestId,
+      });
     },
 
     async listCustomRules(input) {

@@ -870,6 +870,193 @@ describe("Phase 2 custom rule lifecycle service", () => {
     );
     expect(fixture.context.version.status).toBe("pending_review");
   });
+
+  it("clones only after source and target project access are both proven", async () => {
+    const fixture = phase2LifecycleFixture({
+      versionStatus: "active",
+      targetProjectContext: { actor: { ...phase2Actor(), role: "owner" } },
+    });
+    const service = phase2LifecycleService(fixture);
+
+    await service.cloneCustomRuleToDraft({
+      actor: phase2Actor(),
+      sourceProjectId: PROJECT_ID,
+      targetProjectId: uuid(970),
+      sourceRuleVersionId: fixture.version.id,
+      targetVariableCatalogVersion: "f".repeat(64),
+      targetAvailableVariableIds: ["system_minutes"],
+      newVersionId: uuid(971),
+      reason: "Clone rule to another authorized project.",
+      clientRequestId: "clone-authorized-1",
+    });
+
+    expect(
+      fixture.repository.getCustomRuleGovernanceContext,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: PROJECT_ID,
+        ruleVersionId: fixture.version.id,
+      }),
+    );
+    expect(
+      fixture.repository.getCustomRuleGovernanceContext,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: uuid(970),
+        ruleVersionId: undefined,
+      }),
+    );
+    expect(fixture.repository.cloneCustomRuleToDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: ORGANIZATION_ID,
+        sourceProjectId: PROJECT_ID,
+        targetProjectId: uuid(970),
+        sourceRuleVersionId: fixture.version.id,
+        newVersionId: uuid(971),
+      }),
+    );
+
+    const denied = phase2LifecycleFixture({
+      versionStatus: "active",
+      targetProjectContext: {
+        actor: {
+          organizationId: ORGANIZATION_ID,
+          userId: USER_ID,
+          role: "streamer",
+        },
+      },
+    });
+    const deniedService = phase2LifecycleService(denied);
+
+    await expect(
+      deniedService.cloneCustomRuleToDraft({
+        actor: phase2Actor(),
+        sourceProjectId: PROJECT_ID,
+        targetProjectId: uuid(970),
+        sourceRuleVersionId: denied.version.id,
+        targetVariableCatalogVersion: "f".repeat(64),
+        targetAvailableVariableIds: ["system_minutes"],
+        newVersionId: uuid(972),
+        reason: "Clone without target access.",
+        clientRequestId: "clone-target-denied-1",
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_ACTION_NOT_ALLOWED" });
+    expect(denied.repository.cloneCustomRuleToDraft).not.toHaveBeenCalled();
+  });
+
+  it("creates a parameter-edit draft version and refuses to reuse the prior simulation", async () => {
+    const fixture = phase2LifecycleFixture({
+      versionStatus: "active",
+      versionParameters: {
+        hourly_rate: { type: "money_cents", amountCents: 10_000 },
+      },
+      parameterDefinitions: [
+        {
+          key: "hourly_rate",
+          labelZh: "Hourly rate",
+          type: "money_cents",
+          value: 10_000,
+          min: 0,
+        },
+      ],
+    });
+    const service = phase2LifecycleService(fixture);
+
+    await service.editCustomRuleParameters({
+      actor: phase2Actor(),
+      projectId: PROJECT_ID,
+      ruleVersionId: fixture.version.id,
+      newVersionId: uuid(973),
+      edits: [{ key: "hourly_rate", type: "money_cents", value: 12_500 }],
+      reason: "Edit the business parameter.",
+      clientRequestId: "parameter-edit-1",
+    });
+
+    expect(
+      fixture.repository.createCustomRuleParameterDraft,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceRuleVersionId: fixture.version.id,
+        newVersionId: uuid(973),
+        draft: expect.objectContaining({
+          parameters: {
+            hourly_rate: { type: "money_cents", amountCents: 12_500 },
+          },
+          simulationId: null,
+        }),
+      }),
+    );
+  });
+
+  it("keeps organization templates owner or ops-manager managed and organization isolated", async () => {
+    const owner = phase2LifecycleFixture({
+      versionStatus: "active",
+      actor: { ...phase2Actor(), role: "owner" },
+    });
+    const ownerService = phase2LifecycleService(owner);
+
+    await ownerService.saveOrganizationRuleTemplate({
+      actor: phase2Actor(),
+      projectId: PROJECT_ID,
+      sourceRuleVersionId: owner.version.id,
+      name: "Reusable CPT",
+      description: "Approved reusable settlement rule.",
+      confirmedContractHash: owner.version.contractHash,
+      reason: "Save a reusable organization template.",
+      clientRequestId: "save-org-template-1",
+    });
+
+    expect(owner.repository.saveOrganizationRuleTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: ORGANIZATION_ID,
+        sourceRuleVersionId: owner.version.id,
+        name: "Reusable CPT",
+      }),
+    );
+
+    const finance = phase2LifecycleFixture({
+      versionStatus: "active",
+      actor: { ...phase2Actor(), role: "finance" },
+    });
+    const financeService = phase2LifecycleService(finance);
+
+    await expect(
+      financeService.saveOrganizationRuleTemplate({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        sourceRuleVersionId: finance.version.id,
+        name: "Finance template",
+        description: null,
+        confirmedContractHash: finance.version.contractHash,
+        reason: "Finance cannot manage templates.",
+        clientRequestId: "save-org-template-denied-1",
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_ACTION_NOT_ALLOWED" });
+    expect(
+      finance.repository.saveOrganizationRuleTemplate,
+    ).not.toHaveBeenCalled();
+
+    const crossOrg = phase2LifecycleFixture({
+      versionStatus: "active",
+      actor: { ...phase2Actor(), role: "owner" },
+      organizationTemplate: { organizationId: uuid(999) },
+    });
+    const crossOrgService = phase2LifecycleService(crossOrg);
+
+    await expect(
+      crossOrgService.archiveOrganizationRuleTemplate({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        templateId: uuid(974),
+        archivedAt: "2026-09-01T00:00:00.000Z",
+        reason: "Cannot archive another organization's template.",
+        clientRequestId: "archive-cross-org-template-1",
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_TEMPLATE_ORG_MISMATCH" });
+    expect(
+      crossOrg.repository.archiveOrganizationRuleTemplate,
+    ).not.toHaveBeenCalled();
+  });
 });
 
 const ORGANIZATION_ID = "00000000-0000-4000-8000-000000000001";
@@ -933,7 +1120,10 @@ function phase2LifecycleFixture(overrides: Record<string, unknown> = {}) {
     formula: "system_minutes * 2",
     compiledAst: parsed.ast,
     variables: [],
-    parameters: {},
+    parameters:
+      (overrides.versionParameters as Record<string, unknown> | undefined) ??
+      {},
+    parameterDefinitions: overrides.parameterDefinitions,
     ruleContract: contract(),
     systemExplanationTemplate: "按系统时长计算自定义结算金额。",
     missingDataPolicy: contract().missingDataPolicy,
@@ -956,6 +1146,31 @@ function phase2LifecycleFixture(overrides: Record<string, unknown> = {}) {
     createdAt: (overrides.simulationCreatedAt ??
       "2026-07-13T03:00:00.000Z") as string,
     ...hashes,
+  };
+  const organizationTemplate = {
+    id: uuid(974),
+    organizationId: ORGANIZATION_ID,
+    name: "Reusable CPT",
+    description: null,
+    sourceRuleVersionId: version.id,
+    sourceProjectId: version.projectId,
+    sourceVersionNumber: version.versionNumber,
+    sourceScope: version.scope,
+    executionGrain: version.executionGrain,
+    compositionMode: version.compositionMode,
+    formula: version.formula,
+    compiledAst: version.compiledAst,
+    variables: version.variables,
+    parameters: version.parameters,
+    ruleContract: version.ruleContract,
+    missingDataPolicy: version.missingDataPolicy,
+    testCases: version.testCases,
+    status: "active",
+    createdBy: USER_ID,
+    createdAt: "2026-07-13T00:00:00.000Z",
+    archivedAt: null,
+    ...((overrides.organizationTemplate as Record<string, unknown> | undefined) ??
+      {}),
   };
   const context = {
     actor: (overrides.actor ?? {
@@ -990,6 +1205,7 @@ function phase2LifecycleFixture(overrides: Record<string, unknown> = {}) {
     riskConfiguration: overrides.riskConfiguration,
     reopenedAt: overrides.reopenedAt ?? null,
     groupGovernance: overrides.groupGovernance,
+    organizationTemplate,
     archiveSafety: {
       remainingCustomLayerCount: 1,
       fixedFallbackAvailable: false,
@@ -1015,7 +1231,15 @@ function phase2LifecycleFixture(overrides: Record<string, unknown> = {}) {
     },
   };
   const repository = {
-    getCustomRuleGovernanceContext: vi.fn(async () => context),
+    getCustomRuleGovernanceContext: vi.fn(async (input) =>
+      input.projectId !== PROJECT_ID
+        ? ((overrides.targetProjectContext as
+            | Record<string, unknown>
+            | undefined) ?? {
+            actor: context.actor,
+          })
+        : context,
+    ),
     saveCustomRuleDraft: vi.fn(async () => ({ version, simulation })),
     applyAndSubmitCustomRule: vi.fn(async () => lifecycleResult),
     requestCustomRuleChanges: vi.fn(async () => lifecycleResult),
@@ -1028,6 +1252,14 @@ function phase2LifecycleFixture(overrides: Record<string, unknown> = {}) {
       async (): Promise<Array<Record<string, unknown>>> => [version],
     ),
     recordCustomRuleActivationFailure: vi.fn(async () => lifecycleResult),
+    cloneCustomRuleToDraft: vi.fn(async (input) => input.clone),
+    createCustomRuleParameterDraft: vi.fn(async (input) => input.draft),
+    saveOrganizationRuleTemplate: vi.fn(async () => organizationTemplate),
+    archiveOrganizationRuleTemplate: vi.fn(async () => ({
+      ...organizationTemplate,
+      status: "archived",
+      archivedAt: "2026-09-01T00:00:00.000Z",
+    })),
   };
   return {
     repository,

@@ -24,6 +24,11 @@ import {
   deriveSettlementGroupSimulationFreshness,
   type SettlementGroupMembershipSnapshot,
 } from "./custom-rule-groups";
+import type {
+  CloneRuleVersionToEditableDraftResult,
+  EditableReusableRuleDraft,
+  RuleParameterEdit,
+} from "./custom-rule-templates";
 
 import {
   assertCoverageCounts,
@@ -772,6 +777,50 @@ export type SavedCustomRuleDraftResult = Omit<
   CustomRuleLifecycleResult,
   "event"
 >;
+
+export type CloneCustomRuleToDraftInput = {
+  organizationId: string;
+  sourceProjectId: string;
+  targetProjectId: string;
+  sourceRuleVersionId: string;
+  targetVariableCatalogVersion: string;
+  targetAvailableVariableIds: string[];
+  newVersionId: string;
+  clone: CloneRuleVersionToEditableDraftResult;
+  reason: string;
+  clientRequestId: string;
+};
+
+export type CreateCustomRuleParameterDraftInput = {
+  organizationId: string;
+  projectId: string;
+  sourceRuleVersionId: string;
+  newVersionId: string;
+  edits: RuleParameterEdit[];
+  draft: EditableReusableRuleDraft;
+  reason: string;
+  clientRequestId: string;
+};
+
+export type SaveOrganizationRuleTemplateInput = {
+  organizationId: string;
+  projectId: string;
+  sourceRuleVersionId: string;
+  name: string;
+  description: string | null;
+  confirmedContractHash: string;
+  reason: string;
+  clientRequestId: string;
+};
+
+export type ArchiveOrganizationRuleTemplateInput = {
+  organizationId: string;
+  projectId: string;
+  templateId: string;
+  archivedAt: string;
+  reason: string;
+  clientRequestId: string;
+};
 
 export type CustomRuleRepository = CustomRuleReadRepository & {
   finalizeDraftTurn(
