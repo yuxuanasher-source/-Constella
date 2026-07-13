@@ -1,6 +1,12 @@
 "use client";
 
-import { ExternalLink, RefreshCcw, Send, ShieldCheck } from "lucide-react";
+import {
+  ExternalLink,
+  FileVideo,
+  PlayCircle,
+  Send,
+  ShieldCheck,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 type VendorDecision =
@@ -33,6 +39,7 @@ type PublicAdmissionShareItem = {
   recordingVersion: number;
   recordingStatus: string;
   recordingUrl: string | null;
+  playbackUrl: string | null;
   hasPrivateStorage: boolean;
   streamer: {
     id: string;
@@ -99,15 +106,13 @@ export default function AdmissionSharePageClient({
   token,
   initialAccessCode = "",
 }: AdmissionSharePageClientProps) {
-  const [accessCode, setAccessCode] = useState(initialAccessCode);
+  const accessCode = initialAccessCode;
   const [shareBoard, setShareBoard] =
     useState<PublicAdmissionShareBoard | null>(null);
   const [vendorCheckpoints, setVendorCheckpoints] = useState<
     VendorCheckpointOption[]
   >([]);
   const [drafts, setDrafts] = useState<Record<string, ReviewDraft>>({});
-  const [reviewerName, setReviewerName] = useState("");
-  const [reviewerContact, setReviewerContact] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -130,13 +135,6 @@ export default function AdmissionSharePageClient({
       setShareBoard(nextShareBoard);
       setVendorCheckpoints(nextCheckpoints);
       setDrafts(toDrafts(nextShareBoard.items));
-      const firstReview = nextShareBoard.items.find(
-        (item) => item.vendorReview,
-      )?.vendorReview;
-      if (firstReview) {
-        setReviewerName(firstReview.reviewerName);
-        setReviewerContact(firstReview.reviewerContact);
-      }
     },
     [],
   );
@@ -262,8 +260,8 @@ export default function AdmissionSharePageClient({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          reviewerName,
-          reviewerContact,
+          reviewerName: "",
+          reviewerContact: "",
           items: payloadItems,
         }),
       });
@@ -288,55 +286,52 @@ export default function AdmissionSharePageClient({
     <main className="min-h-screen bg-[var(--bg)] text-[var(--ink-900)]">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
         <section className="rounded-md border border-[var(--line)] bg-white p-5 shadow-[var(--shadow-card)]">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <div className="flex items-center gap-2 text-xs font-semibold text-[var(--blue-600)]">
-                <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                主播录屏复核
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div className="max-w-3xl">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center gap-2 rounded-full bg-[var(--blue-50)] px-3 py-1 text-xs font-semibold text-[var(--blue-600)]">
+                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                  录屏交付复核包
+                </span>
+                <span className="rounded-full border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-500)]">
+                  甲方验收视图
+                </span>
               </div>
-              <h1 className="mt-2 text-2xl font-semibold tracking-normal">
+              <h1 className="mt-3 text-2xl font-semibold tracking-normal text-[var(--ink-900)]">
                 {shareBoard?.project.name ?? "录屏复核"}
               </h1>
               {vendorLine ? (
-                <p className="mt-1 text-sm text-[var(--ink-500)]">
+                <p className="mt-2 text-sm text-[var(--ink-500)]">
                   {vendorLine}
                 </p>
               ) : null}
-              {shareBoard ? (
-                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--ink-500)]">
-                  <span className="rounded-sm border border-[var(--line)] px-2 py-1">
-                    {shareBoard.title}
-                  </span>
-                  <span className="rounded-sm border border-[var(--line)] px-2 py-1">
-                    {labelOf(shareBoard.status)}
-                  </span>
-                  <span className="rounded-sm border border-[var(--line)] px-2 py-1">
-                    截止 {formatDateTime(shareBoard.expiresAt)}
-                  </span>
-                </div>
-              ) : null}
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--ink-600)]">
+                本页面用于甲方集中查看乙方提交的主播选播录屏，并对候选结果给出复核意见。录屏、版本与提交动作均按当前分享链接受控校验。
+              </p>
             </div>
 
-            <div className="grid gap-2 sm:grid-cols-[minmax(0,180px)_auto]">
-              <label className="grid gap-1 text-xs font-medium text-[var(--ink-700)]">
-                访问码
-                <input
-                  className="h-10 rounded-md border border-[var(--line)] bg-white px-3 text-sm outline-none focus:border-[var(--blue-500)]"
-                  value={accessCode}
-                  onChange={(event) => setAccessCode(event.target.value)}
-                  placeholder="如链接要求填写"
-                />
-              </label>
-              <button
-                className="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-medium text-[var(--ink-700)] hover:border-[var(--blue-300)] disabled:cursor-not-allowed disabled:opacity-60 sm:mt-[22px]"
-                type="button"
-                onClick={() => void loadShareBoard()}
-                disabled={isLoading}
-              >
-                <RefreshCcw className="h-4 w-4" aria-hidden="true" />
-                刷新
-              </button>
-            </div>
+            {shareBoard ? (
+              <dl className="grid min-w-[260px] grid-cols-3 gap-2 rounded-md border border-[var(--line)] bg-[var(--bg-soft)] p-3 text-center">
+                <div>
+                  <dt className="text-[11px] text-[var(--ink-400)]">录屏数</dt>
+                  <dd className="mt-1 text-lg font-semibold text-[var(--ink-900)]">
+                    {shareBoard.items.length}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[11px] text-[var(--ink-400)]">状态</dt>
+                  <dd className="mt-1 text-sm font-semibold text-[var(--blue-600)]">
+                    {labelOf(shareBoard.status)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[11px] text-[var(--ink-400)]">截止</dt>
+                  <dd className="mt-1 text-xs font-medium text-[var(--ink-700)]">
+                    {formatDateTime(shareBoard.expiresAt)}
+                  </dd>
+                </div>
+              </dl>
+            ) : null}
           </div>
         </section>
 
@@ -360,34 +355,13 @@ export default function AdmissionSharePageClient({
 
         {shareBoard ? (
           <>
-            <section className="grid gap-4 rounded-md border border-[var(--line)] bg-white p-5 shadow-[var(--shadow-card)] md:grid-cols-2">
-              <label className="grid gap-1 text-xs font-medium text-[var(--ink-700)]">
-                复核人姓名
-                <input
-                  className="h-10 rounded-md border border-[var(--line)] bg-white px-3 text-sm outline-none focus:border-[var(--blue-500)]"
-                  value={reviewerName}
-                  onChange={(event) => setReviewerName(event.target.value)}
-                  placeholder="填写复核人"
-                />
-              </label>
-              <label className="grid gap-1 text-xs font-medium text-[var(--ink-700)]">
-                联系方式
-                <input
-                  className="h-10 rounded-md border border-[var(--line)] bg-white px-3 text-sm outline-none focus:border-[var(--blue-500)]"
-                  value={reviewerContact}
-                  onChange={(event) => setReviewerContact(event.target.value)}
-                  placeholder="手机号、邮箱或 IM"
-                />
-              </label>
-            </section>
-
             <section className="grid gap-3">
               {shareBoard.items.map((item, index) => (
                 <article
-                  className="grid gap-4 rounded-md border border-[var(--line)] bg-white p-5 shadow-[var(--shadow-card)] lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.68fr)]"
+                  className="grid gap-5 rounded-md border border-[var(--line)] bg-white p-5 shadow-[var(--shadow-card)] lg:grid-cols-[minmax(360px,1fr)_minmax(300px,0.72fr)]"
                   key={item.recordingSubmissionId}
                 >
-                  <div>
+                  <div className="grid gap-4">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="grid h-7 w-7 place-items-center rounded-md bg-[var(--blue-50)] text-xs font-semibold text-[var(--blue-600)]">
                         {index + 1}
@@ -402,6 +376,7 @@ export default function AdmissionSharePageClient({
                     <p className="mt-2 text-sm text-[var(--ink-500)]">
                       {item.streamer.accountLabel || "未填写账号"}
                     </p>
+                    <RecordingPlayer item={item} />
                     <div className="mt-4 flex flex-wrap gap-2 text-xs text-[var(--ink-500)]">
                       <span className="rounded-sm bg-[var(--ink-50)] px-2 py-1">
                         版本 {item.recordingVersion}
@@ -409,24 +384,9 @@ export default function AdmissionSharePageClient({
                       <span className="rounded-sm bg-[var(--ink-50)] px-2 py-1">
                         {labelOf(item.recordingStatus)}
                       </span>
-                      {item.recordingUrl ? (
-                        <a
-                          className="inline-flex items-center gap-1 rounded-sm bg-[var(--blue-50)] px-2 py-1 font-medium text-[var(--blue-600)]"
-                          href={item.recordingUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          查看录屏
-                          <ExternalLink
-                            className="h-3.5 w-3.5"
-                            aria-hidden="true"
-                          />
-                        </a>
-                      ) : (
-                        <span className="rounded-sm bg-[var(--warn-50)] px-2 py-1 text-[var(--warn-600)]">
-                          {item.hasPrivateStorage ? "私有录屏" : "无录屏链接"}
-                        </span>
-                      )}
+                      <span className="rounded-sm bg-[var(--ink-50)] px-2 py-1">
+                        {item.hasPrivateStorage ? "原始上传" : "外部链接"}
+                      </span>
                     </div>
                     {item.vendorReview ? (
                       <div className="mt-4 rounded-md border border-[var(--line)] bg-[var(--bg-soft)] p-3 text-sm">
@@ -541,6 +501,157 @@ export default function AdmissionSharePageClient({
       </div>
     </main>
   );
+}
+
+function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
+  const sourceUrl = item.playbackUrl ?? item.recordingUrl;
+  const streamerName = item.streamer.displayName || "主播";
+  const externalUrl = item.recordingUrl ?? sourceUrl;
+
+  if (!sourceUrl) {
+    return (
+      <div className="grid aspect-video place-items-center rounded-md border border-dashed border-[var(--line)] bg-[var(--bg-soft)] text-sm text-[var(--ink-500)]">
+        <div className="flex flex-col items-center gap-2">
+          <FileVideo
+            className="h-7 w-7 text-[var(--ink-300)]"
+            aria-hidden="true"
+          />
+          暂无可播放录屏
+        </div>
+      </div>
+    );
+  }
+
+  const platformEmbedUrl = platformEmbedSource(sourceUrl);
+  if (platformEmbedUrl) {
+    return (
+      <div className="grid gap-2">
+        <iframe
+          className="aspect-video w-full rounded-md border border-[var(--line)] bg-black"
+          title={`${streamerName} 平台录屏播放器`}
+          src={platformEmbedUrl}
+          allow="autoplay; fullscreen; picture-in-picture"
+          allowFullScreen
+        />
+        {externalUrl ? (
+          <RecordingSourceLink href={externalUrl} name={streamerName} />
+        ) : null}
+      </div>
+    );
+  }
+
+  if (item.hasPrivateStorage || isDirectVideoSource(sourceUrl)) {
+    return (
+      <div className="grid gap-2">
+        <video
+          aria-label={`${streamerName} 原始录屏播放器`}
+          className="aspect-video w-full rounded-md border border-[var(--line)] bg-black"
+          src={sourceUrl}
+          controls
+          preload="metadata"
+        />
+        {externalUrl ? (
+          <RecordingSourceLink href={externalUrl} name={streamerName} />
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-[var(--line)] bg-[var(--bg-soft)] p-4">
+      <div className="flex items-start gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-white text-[var(--blue-600)]">
+          <PlayCircle className="h-5 w-5" aria-hidden="true" />
+        </span>
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-[var(--ink-900)]">
+            平台录屏链接
+          </div>
+          <p className="mt-1 truncate text-xs text-[var(--ink-500)]">
+            {sourceUrl}
+          </p>
+          <div className="mt-3">
+            <RecordingSourceLink
+              href={externalUrl ?? sourceUrl}
+              name={streamerName}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecordingSourceLink({ href, name }: { href: string; name: string }) {
+  return (
+    <a
+      className="inline-flex items-center gap-1 text-xs font-medium text-[var(--blue-600)] hover:text-[var(--blue-700)]"
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+    >
+      打开 {name} 原始链接
+      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+    </a>
+  );
+}
+
+function platformEmbedSource(sourceUrl: string) {
+  return bilibiliEmbedSource(sourceUrl) ?? youtubeEmbedSource(sourceUrl);
+}
+
+function bilibiliEmbedSource(sourceUrl: string) {
+  const url = parseUrl(sourceUrl);
+  if (!url || !url.hostname.includes("bilibili.com")) {
+    return null;
+  }
+
+  const videoId = url.pathname.match(/\/video\/([^/?#]+)/)?.[1];
+  if (!videoId) {
+    return null;
+  }
+
+  const params = new URLSearchParams();
+  if (videoId.toUpperCase().startsWith("BV")) {
+    params.set("bvid", videoId);
+  } else {
+    params.set("aid", videoId.replace(/^av/i, ""));
+  }
+  return `https://player.bilibili.com/player.html?${params.toString()}`;
+}
+
+function youtubeEmbedSource(sourceUrl: string) {
+  const url = parseUrl(sourceUrl);
+  if (!url) {
+    return null;
+  }
+
+  let videoId: string | null = null;
+  if (url.hostname.includes("youtu.be")) {
+    videoId = url.pathname.split("/").filter(Boolean)[0] ?? null;
+  }
+  if (url.hostname.includes("youtube.com")) {
+    videoId = url.searchParams.get("v");
+  }
+  return videoId
+    ? `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`
+    : null;
+}
+
+function isDirectVideoSource(sourceUrl: string) {
+  const url = parseUrl(sourceUrl);
+  const pathname = (url?.pathname ?? sourceUrl).toLowerCase();
+  return [".mp4", ".webm", ".mov", ".m4v", ".ogg"].some((extension) =>
+    pathname.endsWith(extension),
+  );
+}
+
+function parseUrl(sourceUrl: string) {
+  try {
+    return new URL(sourceUrl, "https://delivery.local");
+  } catch {
+    return null;
+  }
 }
 
 function toDrafts(items: PublicAdmissionShareItem[]) {
