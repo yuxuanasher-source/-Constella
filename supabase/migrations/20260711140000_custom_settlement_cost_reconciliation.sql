@@ -211,6 +211,7 @@ declare
   v_item_rule_version_id uuid;
   v_legacy_count integer := coalesce(jsonb_array_length(coalesce(p_legacy_items, '[]'::jsonb)), 0);
   v_custom_count integer := coalesce(jsonb_array_length(coalesce(p_custom_items, '[]'::jsonb)), 0);
+  v_exception_count integer := coalesce(jsonb_array_length(coalesce(p_exceptions, '[]'::jsonb)), 0);
 begin
   if v_actor_id is null then
     raise exception 'authentication_required';
@@ -230,6 +231,7 @@ begin
   end if;
 
   if (p_mode = 'legacy' and v_custom_count > 0)
+     or (p_mode = 'legacy' and v_exception_count > 0)
      or (p_mode = 'custom' and v_legacy_count > 0) then
     raise exception 'confirm_cost_import_modes_conflict';
   end if;

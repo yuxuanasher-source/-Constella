@@ -10,6 +10,7 @@ import type {
   ProjectCostImportType,
   ProjectCostItemRecord,
   ProjectCostItemStatus,
+  SettlementReconciliationRunRecord,
 } from "./complex-cost-types";
 import { calculateImportedCostAmountCents } from "./complex-cost-calculator";
 
@@ -104,6 +105,10 @@ export type ComplexCostRepository = {
     costItemIds: string[];
     settlementBatchId: string;
   }): Promise<ProjectCostItemRecord[]>;
+  listSettlementReconciliationRuns(input: {
+    organizationId: string;
+    projectId: string;
+  }): Promise<SettlementReconciliationRunRecord[]>;
 };
 
 export async function saveComplexCostRuleDraft(args: {

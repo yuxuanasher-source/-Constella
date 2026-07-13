@@ -4167,8 +4167,14 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     expect(confirm.definition).toContain("p_mode text");
     expect(confirm.body).toContain("for update");
     expect(confirm.body).toContain("v_batch.status <> 'parsed'");
+    expect(confirm.body).toContain(
+      "v_exception_count integer := coalesce(jsonb_array_length(coalesce(p_exceptions, '[]'::jsonb)), 0)",
+    );
     expect(confirm.body).toContain("p_mode not in ('legacy', 'custom')");
     expect(confirm.body).toContain("confirm_cost_import_modes_conflict");
+    expect(confirm.body).toMatch(
+      /p_mode = 'legacy'[\s\S]+v_custom_count > 0[\s\S]+p_mode = 'legacy'[\s\S]+v_exception_count > 0[\s\S]+p_mode = 'custom'[\s\S]+v_legacy_count > 0[\s\S]+confirm_cost_import_modes_conflict/u,
+    );
     expect(confirm.body).toContain("source_execution_key");
     expect(confirm.body).toContain("source_input_hash");
     expect(confirm.body).toContain("v_existing_cost_item");

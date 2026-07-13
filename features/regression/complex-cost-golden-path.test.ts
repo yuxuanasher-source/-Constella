@@ -317,4 +317,8 @@ class InMemoryComplexCostRepository implements ComplexCostRepository {
     );
     return this.costItems.filter((item) => input.costItemIds.includes(item.id));
   }
+
+  async listSettlementReconciliationRuns() {
+    return [];
+  }
 }

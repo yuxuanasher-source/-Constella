@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { ComplexCostRepository } from "./complex-cost-service";
 import {
   mapCostItemRow,
   mapSettlementReconciliationRunRow,
@@ -465,9 +466,13 @@ describe("settlement reconciliation run repository mapping", () => {
     };
     const from = vi.fn(() => query);
     const repo = new SupabaseComplexCostRepository({ from } as never);
+    const contractRepo: Pick<
+      ComplexCostRepository,
+      "listSettlementReconciliationRuns"
+    > = repo;
 
     await expect(
-      repo.listSettlementReconciliationRuns({
+      contractRepo.listSettlementReconciliationRuns({
         organizationId: "org-1",
         projectId: "project-1",
       }),
