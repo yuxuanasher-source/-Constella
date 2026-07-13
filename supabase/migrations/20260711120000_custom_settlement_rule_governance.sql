@@ -102,6 +102,7 @@ create table public.custom_settlement_rule_versions (
   created_at timestamptz not null default pg_catalog.now(),
   approved_at timestamptz,
   archived_at timestamptz,
+  reopened_at timestamptz,
   constraint custom_rule_versions_organization_fkey
     foreign key (organization_id)
     references public.organizations(id)
@@ -365,6 +366,8 @@ create table public.custom_settlement_rule_review_events (
   variable_catalog_version text not null,
   data_selection_hash text not null,
   created_at timestamptz not null default pg_catalog.now(),
+  constraint custom_rule_review_events_scope_identity_key
+    unique (id, rule_version_id, organization_id, project_id),
   constraint custom_rule_review_events_organization_fkey
     foreign key (organization_id)
     references public.organizations(id)
@@ -452,6 +455,62 @@ on public.custom_settlement_rule_review_events (
   rule_version_id,
   created_at desc,
   id desc
+);
+
+create table public.custom_settlement_rule_lifecycle_requests (
+  actor_id uuid not null,
+  client_request_id text not null,
+  organization_id uuid not null,
+  project_id uuid not null,
+  rule_version_id uuid not null,
+  event_id uuid,
+  request_fingerprint text not null,
+  version_snapshot jsonb not null,
+  created_at timestamptz not null default pg_catalog.now(),
+  constraint custom_settlement_rule_lifecycle_requests_pkey
+    primary key (actor_id, client_request_id),
+  constraint custom_rule_lifecycle_requests_actor_fkey
+    foreign key (actor_id)
+    references public.profiles(id)
+    on delete restrict,
+  constraint custom_rule_lifecycle_requests_organization_fkey
+    foreign key (organization_id)
+    references public.organizations(id)
+    on delete restrict,
+  constraint custom_rule_lifecycle_requests_rule_scope_fkey
+    foreign key (rule_version_id, organization_id, project_id)
+    references public.custom_settlement_rule_versions(
+      id,
+      organization_id,
+      project_id
+    )
+    on delete restrict,
+  constraint custom_rule_lifecycle_requests_event_scope_fkey
+    foreign key (
+      event_id,
+      rule_version_id,
+      organization_id,
+      project_id
+    )
+    references public.custom_settlement_rule_review_events(
+      id,
+      rule_version_id,
+      organization_id,
+      project_id
+    )
+    on delete restrict,
+  constraint custom_rule_lifecycle_requests_client_id_check check (
+    client_request_id = pg_catalog.btrim(client_request_id)
+    and pg_catalog.char_length(client_request_id) between 1 and 120
+  ),
+  constraint custom_rule_lifecycle_requests_fingerprint_check check (
+    request_fingerprint ~ '^[0-9a-f]{64}$'
+  ),
+  constraint custom_rule_lifecycle_requests_snapshot_check check (
+    pg_catalog.jsonb_typeof(version_snapshot) = 'object'
+    and public.settlement_ai_json_within_budget(version_snapshot)
+    and public.settlement_ai_json_is_safe(version_snapshot)
+  )
 );
 
 create table public.project_streamer_settlement_group_assignments (
@@ -738,6 +797,7 @@ begin
      or new.approved_by is distinct from old.approved_by
      or new.approved_at is distinct from old.approved_at
      or new.archived_at is distinct from old.archived_at
+     or new.reopened_at is distinct from old.reopened_at
      or new.reason is distinct from old.reason;
 
   if new.status is distinct from old.status then
@@ -801,6 +861,24 @@ create trigger custom_settlement_rule_review_events_no_truncate
 before truncate on public.custom_settlement_rule_review_events
 for each statement execute function public.prevent_custom_settlement_review_event_mutation();
 
+create or replace function public.prevent_custom_settlement_lifecycle_request_mutation()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+begin
+  raise exception 'custom settlement rule lifecycle requests are immutable';
+end;
+$$;
+
+create trigger custom_settlement_rule_lifecycle_requests_immutable
+before update or delete on public.custom_settlement_rule_lifecycle_requests
+for each row execute function public.prevent_custom_settlement_lifecycle_request_mutation();
+
+create trigger custom_settlement_rule_lifecycle_requests_no_truncate
+before truncate on public.custom_settlement_rule_lifecycle_requests
+for each statement execute function public.prevent_custom_settlement_lifecycle_request_mutation();
+
 create or replace function public.prevent_custom_settlement_governance_delete()
 returns trigger
 language plpgsql
@@ -825,6 +903,7 @@ for each row execute function public.prevent_custom_settlement_governance_delete
 
 alter table public.custom_settlement_rule_versions enable row level security;
 alter table public.custom_settlement_rule_review_events enable row level security;
+alter table public.custom_settlement_rule_lifecycle_requests enable row level security;
 alter table public.settlement_rule_groups enable row level security;
 alter table public.project_streamer_settlement_group_assignments enable row level security;
 alter table public.settlement_rule_templates enable row level security;
@@ -878,14 +957,74 @@ using (
   and public.is_mcn_staff(organization_id)
 );
 
+create or replace function public.custom_settlement_rule_request_fingerprint(
+  p_operation text,
+  p_payload jsonb
+)
+returns text
+language sql
+immutable
+set search_path = pg_catalog, public
+as $$
+  select pg_catalog.encode(
+    extensions.digest(
+      pg_catalog.convert_to(
+        p_operation || ':' || coalesce(p_payload, '{}'::jsonb)::text,
+        'UTF8'
+      ),
+      'sha256'
+    ),
+    'hex'
+  );
+$$;
+
+create or replace function public.custom_settlement_rule_lifecycle_result(
+  p_rule_version_id uuid,
+  p_event_id uuid
+)
+returns jsonb
+language sql
+stable
+set search_path = pg_catalog, public
+as $$
+  select pg_catalog.jsonb_build_object(
+    'version',
+    pg_catalog.to_jsonb(version) - array[
+      'target_group_id',
+      'target_project_streamer_id',
+      'reopened_at'
+    ]::text[],
+    'simulation', pg_catalog.to_jsonb(simulation)
+  ) || case
+    when p_event_id is null then '{}'::jsonb
+    else pg_catalog.jsonb_build_object('event', pg_catalog.to_jsonb(event))
+  end
+  from public.custom_settlement_rule_versions as version
+  join public.settlement_formula_simulations as simulation
+    on simulation.id = version.simulation_id
+   and simulation.rule_version_id = version.id
+   and simulation.organization_id = version.organization_id
+   and simulation.project_id = version.project_id
+  left join public.custom_settlement_rule_review_events as event
+    on event.id = p_event_id
+   and event.rule_version_id = version.id
+   and event.organization_id = version.organization_id
+   and event.project_id = version.project_id
+  where version.id = p_rule_version_id;
+$$;
+
 create or replace function public.save_custom_settlement_rule_draft(
   p_organization_id uuid,
   p_project_id uuid,
+  p_source_ai_draft_id uuid,
+  p_source_simulation_id uuid,
   p_rule_version_id uuid,
+  p_version_simulation_id uuid,
   p_scope text,
   p_target_type text,
   p_target_id uuid,
   p_draft jsonb,
+  p_reason text,
   p_client_request_id text
 )
 returns jsonb
@@ -895,14 +1034,24 @@ set search_path = pg_catalog, public
 as $$
 declare
   v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_existing public.custom_settlement_rule_versions%rowtype;
+  v_source_draft public.ai_settlement_rule_drafts%rowtype;
+  v_source_simulation public.settlement_formula_simulations%rowtype;
+  v_version_number integer;
+  v_request_key text;
+  v_request_fingerprint text;
+  v_request_record public.custom_settlement_rule_lifecycle_requests%rowtype;
+  v_result jsonb;
 begin
   if auth.uid() is null or v_actor_id is null then
     raise exception 'authentication_required';
   end if;
+  v_actor_role := public.current_user_role(p_organization_id);
   if not public.is_org_member(p_organization_id)
      or not public.can_access_project(p_project_id)
-     or public.current_user_role(p_organization_id) is null
-     or public.current_user_role(p_organization_id) not in (
+     or v_actor_role is null
+     or v_actor_role not in (
        'owner',
        'ops_manager',
        'operator_business'
@@ -924,14 +1073,102 @@ begin
      )
      or (p_target_type = 'project' and p_target_id is not null)
      or (p_target_type <> 'project' and p_target_id is null)
-     or (p_scope <> 'payable' and p_target_type <> 'project') then
+     or (p_scope <> 'payable' and p_target_type <> 'project')
+     or p_rule_version_id is null
+     or p_version_simulation_id is null
+     or p_rule_version_id = p_version_simulation_id then
     raise exception 'custom_settlement_rule_target_invalid';
+  end if;
+  if p_client_request_id is null
+     or p_client_request_id <> pg_catalog.btrim(p_client_request_id)
+     or pg_catalog.char_length(p_client_request_id) not between 1 and 120
+     or p_reason is null
+     or p_reason <> pg_catalog.btrim(p_reason)
+     or pg_catalog.char_length(p_reason) not between 1 and 4000
+     or pg_catalog.jsonb_typeof(p_draft) <> 'object'
+     or not public.settlement_ai_json_within_budget(p_draft)
+     or pg_catalog.jsonb_typeof(p_draft -> 'compiledAst') <> 'object'
+     or pg_catalog.jsonb_typeof(p_draft -> 'variables') <> 'array'
+     or pg_catalog.jsonb_typeof(p_draft -> 'parameters') <> 'object'
+     or pg_catalog.jsonb_typeof(p_draft -> 'ruleContract') <> 'object'
+     or pg_catalog.jsonb_typeof(p_draft -> 'missingDataPolicy') <> 'object'
+     or pg_catalog.jsonb_typeof(p_draft -> 'testCases') <> 'array'
+     or coalesce((p_draft ->> 'priority')::numeric, -1) not between 0 and 1000000
+     or coalesce(p_draft ->> 'formula', '') = ''
+     or coalesce(p_draft ->> 'systemExplanationTemplate', '') = ''
+     or not public.settlement_ai_normalized_ast_is_valid(p_draft -> 'compiledAst')
+     or not public.settlement_ai_business_contract_is_valid(
+       p_draft -> 'ruleContract'
+     )
+     or not public.settlement_ai_generated_test_cases_is_valid(
+       p_draft -> 'testCases'
+     ) then
+    raise exception 'custom_settlement_rule_draft_input_invalid';
+  end if;
+  if coalesce(p_draft ->> 'formulaHash', '') !~ '^[0-9a-f]{64}$'
+     or coalesce(p_draft ->> 'contractHash', '') !~ '^[0-9a-f]{64}$'
+     or coalesce(p_draft ->> 'parameterHash', '') !~ '^[0-9a-f]{64}$'
+     or coalesce(p_draft ->> 'catalogHash', '') !~ '^[0-9a-f]{64}$'
+     or coalesce(p_draft ->> 'dataSelectionHash', '') !~ '^[0-9a-f]{64}$'
+  then
+    raise exception 'custom_settlement_rule_draft_hashes_required';
+  end if;
+
+  v_request_key := v_actor_id::text || ':' || p_client_request_id;
+  v_request_fingerprint := public.custom_settlement_rule_request_fingerprint(
+    'save_custom_settlement_rule_draft',
+    pg_catalog.jsonb_build_object(
+      'organizationId', p_organization_id,
+      'projectId', p_project_id,
+      'sourceAiDraftId', p_source_ai_draft_id,
+      'sourceSimulationId', p_source_simulation_id,
+      'ruleVersionId', p_rule_version_id,
+      'versionSimulationId', p_version_simulation_id,
+      'scope', p_scope,
+      'targetType', p_target_type,
+      'targetId', p_target_id,
+      'draft', p_draft,
+      'reason', p_reason
+    )
+  );
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      p_organization_id::text || ':' || v_request_key,
+      0
+    )
+  );
+  select request.*
+  into v_request_record
+  from public.custom_settlement_rule_lifecycle_requests as request
+  where request.actor_id = v_actor_id
+    and request.client_request_id = p_client_request_id;
+  if found then
+    if v_request_record.request_fingerprint <> v_request_fingerprint then
+      raise exception 'custom_settlement_rule_idempotency_conflict';
+    end if;
+    v_result := public.custom_settlement_rule_lifecycle_result(
+      v_request_record.rule_version_id,
+      v_request_record.event_id
+    );
+    return pg_catalog.jsonb_set(
+      v_result,
+      '{version}',
+      v_request_record.version_snapshot,
+      true
+    );
   end if;
 
   perform public.settlement_ai_lock_authoring_parents(
     p_organization_id,
     v_actor_id,
     p_project_id
+  );
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      p_organization_id::text || ':' || p_project_id::text || ':' ||
+      p_scope || ':' || p_target_type || ':' || coalesce(p_target_id::text, ''),
+      0
+    )
   );
   perform 1
   from public.settlement_rule_groups as rule_group
@@ -960,24 +1197,193 @@ begin
     and version.scope = p_scope
     and version.target_type = p_target_type
     and version.target_id is not distinct from p_target_id
-    and (
-      p_rule_version_id is null
-      or version.id = p_rule_version_id
-    )
   order by version.version_number, version.id
   for update;
-  if p_rule_version_id is not null and not found then
-    raise exception 'custom_settlement_rule_version_scope_mismatch';
+
+  select version.*
+  into v_existing
+  from public.custom_settlement_rule_versions as version
+  where version.id = p_rule_version_id
+  for update;
+  if found then
+    if v_existing.organization_id <> p_organization_id
+       or v_existing.project_id <> p_project_id
+       or v_existing.scope <> p_scope
+       or v_existing.target_type <> p_target_type
+       or v_existing.target_id is distinct from p_target_id
+       or v_existing.created_by <> v_actor_id
+       or v_existing.status <> 'draft'
+       or v_existing.simulation_id <> p_version_simulation_id then
+      raise exception 'custom_settlement_rule_version_scope_mismatch';
+    end if;
+    if (
+      v_existing.priority is distinct from (p_draft ->> 'priority')::integer
+      or v_existing.formula is distinct from p_draft ->> 'formula'
+      or v_existing.compiled_ast is distinct from p_draft -> 'compiledAst'
+      or v_existing.variables is distinct from p_draft -> 'variables'
+      or v_existing.parameters is distinct from p_draft -> 'parameters'
+      or v_existing.rule_contract is distinct from p_draft -> 'ruleContract'
+      or v_existing.system_explanation_template is distinct from
+        p_draft ->> 'systemExplanationTemplate'
+      or v_existing.missing_data_policy is distinct from
+        p_draft -> 'missingDataPolicy'
+      or v_existing.test_cases is distinct from p_draft -> 'testCases'
+    ) and v_existing.formula_hash = p_draft ->> 'formulaHash'
+      and v_existing.rule_contract_hash = p_draft ->> 'contractHash'
+      and v_existing.parameter_hash = p_draft ->> 'parameterHash'
+      and v_existing.variable_catalog_version = p_draft ->> 'catalogHash'
+      and v_existing.data_selection_hash = p_draft ->> 'dataSelectionHash'
+    then
+      raise exception 'custom_settlement_rule_draft_hashes_must_change';
+    end if;
+    update public.custom_settlement_rule_versions as version
+    set priority = (p_draft ->> 'priority')::integer,
+        formula = p_draft ->> 'formula',
+        compiled_ast = p_draft -> 'compiledAst',
+        variables = p_draft -> 'variables',
+        parameters = p_draft -> 'parameters',
+        rule_contract = p_draft -> 'ruleContract',
+        execution_grain = p_draft -> 'ruleContract' ->> 'executionGrain',
+        composition_mode = p_draft -> 'ruleContract' ->> 'compositionMode',
+        system_explanation_template =
+          p_draft ->> 'systemExplanationTemplate',
+        missing_data_policy = p_draft -> 'missingDataPolicy',
+        test_cases = p_draft -> 'testCases',
+        formula_hash = p_draft ->> 'formulaHash',
+        rule_contract_hash = p_draft ->> 'contractHash',
+        parameter_hash = p_draft ->> 'parameterHash',
+        variable_catalog_version = p_draft ->> 'catalogHash',
+        data_selection_hash = p_draft ->> 'dataSelectionHash',
+        reason = p_reason
+    where version.id = p_rule_version_id;
+  else
+    if p_source_ai_draft_id is null or p_source_simulation_id is null then
+      raise exception 'custom_settlement_rule_draft_source_required';
+    end if;
+    select draft.*
+    into v_source_draft
+    from public.ai_settlement_rule_drafts as draft
+    where draft.id = p_source_ai_draft_id
+      and draft.organization_id = p_organization_id
+      and draft.project_id = p_project_id
+      and draft.created_by = v_actor_id
+    for update;
+    if not found or v_source_draft.status <> 'simulated' then
+      raise exception 'custom_settlement_rule_draft_scope_mismatch';
+    end if;
+    select simulation.*
+    into v_source_simulation
+    from public.settlement_formula_simulations as simulation
+    where simulation.id = p_source_simulation_id
+      and simulation.organization_id = p_organization_id
+      and simulation.project_id = p_project_id
+      and simulation.ai_draft_id = p_source_ai_draft_id
+      and simulation.rule_version_id is null
+      and simulation.created_by = v_actor_id
+    for update;
+    if not found then
+      raise exception 'custom_settlement_rule_simulation_scope_mismatch';
+    end if;
+    if exists (
+      select 1 from public.settlement_formula_simulations as simulation
+      where simulation.id = p_version_simulation_id
+    ) then
+      raise exception 'custom_settlement_rule_destination_occupied';
+    end if;
+    if p_draft ->> 'formulaHash' <> v_source_simulation.formula_hash
+       or p_draft ->> 'contractHash' <> v_source_simulation.rule_contract_hash
+       or p_draft ->> 'parameterHash' <> v_source_simulation.parameter_hash
+       or p_draft ->> 'catalogHash' <>
+         v_source_simulation.variable_catalog_version
+       or p_draft ->> 'dataSelectionHash' <>
+         v_source_simulation.data_selection_hash then
+      raise exception 'custom_settlement_rule_stale_simulation';
+    end if;
+    select coalesce(pg_catalog.max(version.version_number), 0) + 1
+    into v_version_number
+    from public.custom_settlement_rule_versions as version
+    where version.organization_id = p_organization_id
+      and version.project_id = p_project_id
+      and version.scope = p_scope
+      and version.target_type = p_target_type
+      and version.target_id is not distinct from p_target_id;
+    insert into public.custom_settlement_rule_versions (
+      id, organization_id, project_id, scope, target_type, target_id,
+      execution_grain, composition_mode, priority, version_number, status,
+      formula, compiled_ast, variables, parameters, rule_contract,
+      system_explanation_template, missing_data_policy, test_cases,
+      simulation_summary, formula_hash, rule_contract_hash, parameter_hash,
+      variable_catalog_version, data_selection_hash, simulation_id,
+      created_by, ai_draft_id, reason
+    ) values (
+      p_rule_version_id, p_organization_id, p_project_id, p_scope,
+      p_target_type, p_target_id,
+      p_draft -> 'ruleContract' ->> 'executionGrain',
+      p_draft -> 'ruleContract' ->> 'compositionMode',
+      (p_draft ->> 'priority')::integer, v_version_number, 'draft',
+      p_draft ->> 'formula', p_draft -> 'compiledAst',
+      p_draft -> 'variables', p_draft -> 'parameters',
+      p_draft -> 'ruleContract', p_draft ->> 'systemExplanationTemplate',
+      p_draft -> 'missingDataPolicy', p_draft -> 'testCases',
+      pg_catalog.jsonb_build_object(
+        'coverage', v_source_simulation.coverage,
+        'historicalTotals', v_source_simulation.historical_totals,
+        'deltas', v_source_simulation.deltas,
+        'warnings', v_source_simulation.warnings
+      ),
+      p_draft ->> 'formulaHash', p_draft ->> 'contractHash',
+      p_draft ->> 'parameterHash', p_draft ->> 'catalogHash',
+      p_draft ->> 'dataSelectionHash',
+      p_version_simulation_id, v_actor_id, p_source_ai_draft_id, p_reason
+    );
+    insert into public.settlement_formula_simulations (
+      id, organization_id, project_id, rule_version_id, ai_draft_id,
+      formula_hash, rule_contract_hash, parameter_hash,
+      variable_catalog_version, data_selection_hash, sample_source,
+      sample_selection, coverage, scenarios, historical_totals, deltas,
+      largest_changes, warnings, idempotency_key, created_by
+    ) select
+      p_version_simulation_id, p_organization_id, p_project_id,
+      p_rule_version_id, null,
+      simulation.formula_hash, simulation.rule_contract_hash,
+      simulation.parameter_hash, simulation.variable_catalog_version,
+      simulation.data_selection_hash, simulation.sample_source,
+      simulation.sample_selection, simulation.coverage, simulation.scenarios,
+      simulation.historical_totals, simulation.deltas,
+      simulation.largest_changes, simulation.warnings,
+      'lifecycle:' || p_client_request_id, v_actor_id
+    from public.settlement_formula_simulations as simulation
+    where simulation.id = p_source_simulation_id;
   end if;
 
-  raise exception 'save_custom_settlement_rule_draft_not_implemented_phase2_task1';
+  v_result := public.custom_settlement_rule_lifecycle_result(
+    p_rule_version_id,
+    null
+  );
+  if v_result is null then
+    raise exception 'custom_settlement_rule_atomic_result_missing';
+  end if;
+  insert into public.custom_settlement_rule_lifecycle_requests (
+    actor_id, client_request_id, organization_id, project_id,
+    rule_version_id, event_id, request_fingerprint, version_snapshot
+  ) values (
+    v_actor_id, p_client_request_id, p_organization_id, p_project_id,
+    p_rule_version_id, null, v_request_fingerprint, v_result -> 'version'
+  );
+  return v_result;
 end;
 $$;
+
+drop function if exists public.apply_and_submit_custom_settlement_rule(
+  uuid, uuid, uuid, uuid, uuid, uuid, text, text, uuid,
+  timestamptz, text, text
+);
 
 create or replace function public.apply_and_submit_custom_settlement_rule(
   p_organization_id uuid,
   p_project_id uuid,
-  p_ai_draft_id uuid,
+  p_source_ai_draft_id uuid,
+  p_source_rule_version_id uuid,
   p_source_simulation_id uuid,
   p_rule_version_id uuid,
   p_version_simulation_id uuid,
@@ -986,6 +1392,7 @@ create or replace function public.apply_and_submit_custom_settlement_rule(
   p_target_id uuid,
   p_effective_from timestamptz,
   p_reason text,
+  p_submission_event_type text,
   p_client_request_id text
 )
 returns jsonb
@@ -995,14 +1402,39 @@ set search_path = pg_catalog, public
 as $$
 declare
   v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_source_draft public.ai_settlement_rule_drafts%rowtype;
+  v_source_version public.custom_settlement_rule_versions%rowtype;
+  v_source_simulation public.settlement_formula_simulations%rowtype;
+  v_version_number integer;
+  v_formula text;
+  v_compiled_ast jsonb;
+  v_variables jsonb;
+  v_parameters jsonb;
+  v_rule_contract jsonb;
+  v_explanation text;
+  v_missing_data_policy jsonb;
+  v_test_cases jsonb;
+  v_formula_hash text;
+  v_contract_hash text;
+  v_parameter_hash text;
+  v_catalog_hash text;
+  v_data_selection_hash text;
+  v_ai_draft_id uuid;
+  v_event_id uuid;
+  v_request_key text;
+  v_request_fingerprint text;
+  v_request_record public.custom_settlement_rule_lifecycle_requests%rowtype;
+  v_result jsonb;
 begin
   if auth.uid() is null or v_actor_id is null then
     raise exception 'authentication_required';
   end if;
+  v_actor_role := public.current_user_role(p_organization_id);
   if not public.is_org_member(p_organization_id)
      or not public.can_access_project(p_project_id)
-     or public.current_user_role(p_organization_id) is null
-     or public.current_user_role(p_organization_id) not in (
+     or v_actor_role is null
+     or v_actor_role not in (
        'owner',
        'ops_manager',
        'operator_business'
@@ -1024,14 +1456,93 @@ begin
      )
      or (p_target_type = 'project' and p_target_id is not null)
      or (p_target_type <> 'project' and p_target_id is null)
-     or (p_scope <> 'payable' and p_target_type <> 'project') then
+     or (p_scope <> 'payable' and p_target_type <> 'project')
+     or p_source_simulation_id is null
+     or p_rule_version_id is null
+     or p_version_simulation_id is null
+     or p_rule_version_id = p_version_simulation_id then
     raise exception 'custom_settlement_rule_target_invalid';
+  end if;
+  if (p_source_ai_draft_id is null) =
+       (p_source_rule_version_id is null) then
+    raise exception 'custom_settlement_rule_source_ambiguous';
+  end if;
+  if p_submission_event_type not in ('submitted', 'resubmitted')
+     or (
+       p_source_ai_draft_id is not null
+       and p_submission_event_type <> 'submitted'
+     )
+     or (
+       p_source_rule_version_id is not null
+       and p_submission_event_type not in ('submitted', 'resubmitted')
+     )
+     or p_effective_from is null
+     or p_reason is null
+     or p_reason <> pg_catalog.btrim(p_reason)
+     or pg_catalog.char_length(p_reason) not between 1 and 4000
+     or p_client_request_id is null
+     or p_client_request_id <> pg_catalog.btrim(p_client_request_id)
+     or pg_catalog.char_length(p_client_request_id) not between 1 and 120 then
+    raise exception 'custom_settlement_rule_submit_input_invalid';
+  end if;
+
+  v_request_key := v_actor_id::text || ':' || p_client_request_id;
+  v_request_fingerprint := public.custom_settlement_rule_request_fingerprint(
+    'apply_and_submit_custom_settlement_rule',
+    pg_catalog.jsonb_build_object(
+      'organizationId', p_organization_id,
+      'projectId', p_project_id,
+      'sourceAiDraftId', p_source_ai_draft_id,
+      'sourceRuleVersionId', p_source_rule_version_id,
+      'sourceSimulationId', p_source_simulation_id,
+      'ruleVersionId', p_rule_version_id,
+      'versionSimulationId', p_version_simulation_id,
+      'scope', p_scope,
+      'targetType', p_target_type,
+      'targetId', p_target_id,
+      'effectiveFrom', p_effective_from,
+      'reason', p_reason,
+      'eventType', p_submission_event_type
+    )
+  );
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      p_organization_id::text || ':' || v_request_key,
+      0
+    )
+  );
+  select request.*
+  into v_request_record
+  from public.custom_settlement_rule_lifecycle_requests as request
+  where request.actor_id = v_actor_id
+    and request.client_request_id = p_client_request_id;
+  if found then
+    if v_request_record.request_fingerprint <> v_request_fingerprint then
+      raise exception 'custom_settlement_rule_idempotency_conflict';
+    end if;
+    v_result := public.custom_settlement_rule_lifecycle_result(
+      v_request_record.rule_version_id,
+      v_request_record.event_id
+    );
+    return pg_catalog.jsonb_set(
+      v_result,
+      '{version}',
+      v_request_record.version_snapshot,
+      true
+    );
   end if;
 
   perform public.settlement_ai_lock_authoring_parents(
     p_organization_id,
     v_actor_id,
     p_project_id
+  );
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      p_organization_id::text || ':' || p_project_id::text || ':' ||
+      p_scope || ':' || p_target_type || ':' || coalesce(p_target_id::text, ''),
+      0
+    )
   );
   perform 1
   from public.settlement_rule_groups as rule_group
@@ -1054,24 +1565,6 @@ begin
     raise exception 'custom_settlement_rule_project_streamer_scope_mismatch';
   end if;
   perform 1
-  from public.ai_settlement_rule_drafts as draft
-  where draft.id = p_ai_draft_id
-    and draft.organization_id = p_organization_id
-    and draft.project_id = p_project_id
-  for update;
-  if not found then
-    raise exception 'custom_settlement_rule_draft_scope_mismatch';
-  end if;
-  perform 1
-  from public.settlement_formula_simulations as simulation
-  where simulation.id = p_source_simulation_id
-    and simulation.organization_id = p_organization_id
-    and simulation.project_id = p_project_id
-  for update;
-  if not found then
-    raise exception 'custom_settlement_rule_simulation_scope_mismatch';
-  end if;
-  perform 1
   from public.custom_settlement_rule_versions as version
   where version.organization_id = p_organization_id
     and version.project_id = p_project_id
@@ -1081,7 +1574,250 @@ begin
   order by version.version_number, version.id
   for update;
 
-  raise exception 'apply_and_submit_custom_settlement_rule_not_implemented_phase2_task1';
+  if p_source_ai_draft_id is not null then
+    select draft.*
+    into v_source_draft
+    from public.ai_settlement_rule_drafts as draft
+    where draft.id = p_source_ai_draft_id
+      and draft.organization_id = p_organization_id
+      and draft.project_id = p_project_id
+      and draft.created_by = v_actor_id
+    for update;
+    if not found
+       or v_source_draft.status <> 'simulated'
+       or v_source_draft.generated_formula is null
+       or v_source_draft.generated_explanation is null
+       or pg_catalog.jsonb_array_length(
+         v_source_draft.unresolved_ambiguities
+       ) <> 0
+       or exists (
+         select 1
+         from pg_catalog.jsonb_array_elements(
+           v_source_draft.safety_flags
+         ) as flag(value)
+         where flag.value ->> 'severity' = 'block'
+       ) then
+      raise exception 'custom_settlement_rule_draft_scope_mismatch';
+    end if;
+    v_formula := v_source_draft.generated_formula ->> 'expression';
+    v_compiled_ast := v_source_draft.generated_formula -> 'normalizedAst';
+    v_variables := v_source_draft.business_contract -> 'requiredInputs';
+    v_parameters := '{}'::jsonb;
+    v_rule_contract := v_source_draft.business_contract;
+    v_explanation := v_source_draft.generated_explanation;
+    v_missing_data_policy :=
+      v_source_draft.business_contract -> 'missingDataPolicy';
+    v_test_cases := v_source_draft.generated_test_cases;
+    v_formula_hash := v_source_draft.formula_hash;
+    v_contract_hash := v_source_draft.contract_hash;
+    v_parameter_hash := v_source_draft.parameter_hash;
+    v_catalog_hash := v_source_draft.variable_catalog_version;
+    v_ai_draft_id := p_source_ai_draft_id;
+  else
+    select version.*
+    into v_source_version
+    from public.custom_settlement_rule_versions as version
+    where version.id = p_source_rule_version_id
+      and version.organization_id = p_organization_id
+      and version.project_id = p_project_id
+      and version.scope = p_scope
+      and version.target_type = p_target_type
+      and version.target_id is not distinct from p_target_id
+      and version.created_by = v_actor_id
+    for update;
+    if not found or v_source_version.status <> 'draft' then
+      raise exception 'custom_settlement_rule_version_scope_mismatch';
+    end if;
+    v_formula := v_source_version.formula;
+    v_compiled_ast := v_source_version.compiled_ast;
+    v_variables := v_source_version.variables;
+    v_parameters := v_source_version.parameters;
+    v_rule_contract := v_source_version.rule_contract;
+    v_explanation := v_source_version.system_explanation_template;
+    v_missing_data_policy := v_source_version.missing_data_policy;
+    v_test_cases := v_source_version.test_cases;
+    v_formula_hash := v_source_version.formula_hash;
+    v_contract_hash := v_source_version.rule_contract_hash;
+    v_parameter_hash := v_source_version.parameter_hash;
+    v_catalog_hash := v_source_version.variable_catalog_version;
+    v_data_selection_hash := v_source_version.data_selection_hash;
+    v_ai_draft_id := v_source_version.ai_draft_id;
+  end if;
+
+  select simulation.*
+  into v_source_simulation
+  from public.settlement_formula_simulations as simulation
+  where simulation.id = p_source_simulation_id
+    and simulation.organization_id = p_organization_id
+    and simulation.project_id = p_project_id
+    and simulation.created_by = v_actor_id
+    and (
+      (
+        p_source_ai_draft_id is not null
+        and simulation.ai_draft_id = p_source_ai_draft_id
+        and simulation.rule_version_id is null
+      )
+      or (
+        p_source_rule_version_id is not null
+        and (
+          (
+            p_submission_event_type = 'submitted'
+            and simulation.rule_version_id = p_source_rule_version_id
+          )
+          or (
+            p_submission_event_type = 'resubmitted'
+            and v_source_version.reopened_at is not null
+            and v_source_version.ai_draft_id is not null
+            and simulation.ai_draft_id = v_source_version.ai_draft_id
+            and simulation.created_at > v_source_version.reopened_at
+          )
+        )
+      )
+    )
+  for update;
+  if not found then
+    raise exception 'custom_settlement_rule_simulation_scope_mismatch';
+  end if;
+  if p_source_ai_draft_id is not null then
+    v_data_selection_hash := v_source_simulation.data_selection_hash;
+  end if;
+  if v_source_simulation.formula_hash <> v_formula_hash
+     or v_source_simulation.rule_contract_hash <> v_contract_hash
+     or v_source_simulation.parameter_hash <> v_parameter_hash
+     or v_source_simulation.variable_catalog_version <> v_catalog_hash
+     or v_source_simulation.data_selection_hash <> v_data_selection_hash then
+    raise exception 'custom_settlement_rule_stale_simulation';
+  end if;
+  if v_source_simulation.coverage ->> 'summarySchemaVersion' <> '2'
+     or (v_source_simulation.coverage ->> 'blockedRecords')::integer <> 0
+     or (v_source_simulation.coverage ->> 'uncoveredRecords')::integer <> 0
+     or exists (
+       select 1
+       from pg_catalog.jsonb_array_elements(
+         v_source_simulation.scenarios
+       ) as scenario(value)
+       where scenario.value ->> 'passed' <> 'true'
+     )
+     or exists (
+       select 1
+       from pg_catalog.jsonb_array_elements(
+         v_source_simulation.warnings
+       ) as warning(value)
+       where warning.value ->> 'severity' = 'block'
+     ) then
+    raise exception 'custom_settlement_rule_data_not_ready';
+  end if;
+  if v_rule_contract ->> 'scope' <> p_scope
+     or v_rule_contract -> 'target' ->> 'targetType' <> p_target_type
+     or (
+       p_target_id is null
+       and pg_catalog.jsonb_typeof(
+         v_rule_contract -> 'target' -> 'targetId'
+       ) <> 'null'
+     )
+     or (
+       p_target_id is not null
+       and v_rule_contract -> 'target' ->> 'targetId' <> p_target_id::text
+     ) then
+    raise exception 'custom_settlement_rule_target_conflict';
+  end if;
+  if exists (
+    select 1 from public.custom_settlement_rule_versions as version
+    where version.id = p_rule_version_id
+  ) or exists (
+    select 1 from public.settlement_formula_simulations as simulation
+    where simulation.id = p_version_simulation_id
+  ) then
+    raise exception 'custom_settlement_rule_destination_occupied';
+  end if;
+
+  select coalesce(pg_catalog.max(version.version_number), 0) + 1
+  into v_version_number
+  from public.custom_settlement_rule_versions as version
+  where version.organization_id = p_organization_id
+    and version.project_id = p_project_id
+    and version.scope = p_scope
+    and version.target_type = p_target_type
+    and version.target_id is not distinct from p_target_id;
+
+  insert into public.custom_settlement_rule_versions (
+    id, organization_id, project_id, scope, target_type, target_id,
+    execution_grain, composition_mode, priority, version_number, status,
+    formula, compiled_ast, variables, parameters, rule_contract,
+    system_explanation_template, missing_data_policy, test_cases,
+    simulation_summary, formula_hash, rule_contract_hash, parameter_hash,
+    variable_catalog_version, data_selection_hash, simulation_id,
+    effective_from, created_by, ai_draft_id, reason
+  ) values (
+    p_rule_version_id, p_organization_id, p_project_id, p_scope,
+    p_target_type, p_target_id, v_rule_contract ->> 'executionGrain',
+    v_rule_contract ->> 'compositionMode', 100, v_version_number,
+    'pending_review', v_formula, v_compiled_ast, v_variables, v_parameters,
+    v_rule_contract, v_explanation, v_missing_data_policy, v_test_cases,
+    pg_catalog.jsonb_build_object(
+      'coverage', v_source_simulation.coverage,
+      'historicalTotals', v_source_simulation.historical_totals,
+      'deltas', v_source_simulation.deltas,
+      'warnings', v_source_simulation.warnings
+    ),
+    v_formula_hash, v_contract_hash, v_parameter_hash, v_catalog_hash,
+    v_data_selection_hash, p_version_simulation_id, p_effective_from,
+    v_actor_id, v_ai_draft_id, p_reason
+  );
+  -- The copied row preserves settlement_formula_simulations_exactly_one_owner.
+  insert into public.settlement_formula_simulations (
+    id, organization_id, project_id, rule_version_id, ai_draft_id,
+    formula_hash, rule_contract_hash, parameter_hash,
+    variable_catalog_version, data_selection_hash, sample_source,
+    sample_selection, coverage, scenarios, historical_totals, deltas,
+    largest_changes, warnings, idempotency_key, created_by
+  ) select
+    p_version_simulation_id, p_organization_id, p_project_id,
+    p_rule_version_id, null, simulation.formula_hash,
+    simulation.rule_contract_hash, simulation.parameter_hash,
+    simulation.variable_catalog_version, simulation.data_selection_hash,
+    simulation.sample_source, simulation.sample_selection,
+    simulation.coverage, simulation.scenarios, simulation.historical_totals,
+    simulation.deltas, simulation.largest_changes, simulation.warnings,
+    'lifecycle:' || p_client_request_id, v_actor_id
+  from public.settlement_formula_simulations as simulation
+  where simulation.id = p_source_simulation_id;
+  insert into public.custom_settlement_rule_review_events (
+    organization_id, project_id, rule_version_id, event_type, actor_id,
+    actor_role, reason, before_status, after_status, risk_summary,
+    formula_hash, rule_contract_hash, parameter_hash,
+    variable_catalog_version, data_selection_hash
+  ) values (
+    p_organization_id, p_project_id, p_rule_version_id,
+    p_submission_event_type, v_actor_id, v_actor_role, p_reason,
+    'draft', 'pending_review',
+    pg_catalog.jsonb_build_object(
+      'sourceKind', case
+        when p_source_ai_draft_id is not null then 'ai_draft'
+        else 'saved_draft'
+      end,
+      'sourceId', coalesce(p_source_ai_draft_id, p_source_rule_version_id)
+    ),
+    v_formula_hash, v_contract_hash, v_parameter_hash, v_catalog_hash,
+    v_data_selection_hash
+  ) returning id into v_event_id;
+
+  v_result := public.custom_settlement_rule_lifecycle_result(
+    p_rule_version_id,
+    v_event_id
+  );
+  if v_result is null then
+    raise exception 'custom_settlement_rule_atomic_result_missing';
+  end if;
+  insert into public.custom_settlement_rule_lifecycle_requests (
+    actor_id, client_request_id, organization_id, project_id,
+    rule_version_id, event_id, request_fingerprint, version_snapshot
+  ) values (
+    v_actor_id, p_client_request_id, p_organization_id, p_project_id,
+    p_rule_version_id, v_event_id, v_request_fingerprint,
+    v_result -> 'version'
+  );
+  return v_result;
 end;
 $$;
 
@@ -1095,6 +1831,7 @@ create or replace function public.review_custom_settlement_rule(
   p_comment text,
   p_force boolean,
   p_acknowledgment text,
+  p_risk_summary jsonb,
   p_client_request_id text
 )
 returns jsonb
@@ -1104,19 +1841,92 @@ set search_path = pg_catalog, public
 as $$
 declare
   v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_version public.custom_settlement_rule_versions%rowtype;
+  v_simulation public.settlement_formula_simulations%rowtype;
+  v_event_id uuid;
+  v_event_type text;
+  v_before_status text;
+  v_after_status text;
+  v_request_key text;
+  v_request_fingerprint text;
+  v_request_record public.custom_settlement_rule_lifecycle_requests%rowtype;
+  v_result jsonb;
 begin
   if auth.uid() is null or v_actor_id is null then
     raise exception 'authentication_required';
   end if;
+  v_actor_role := public.current_user_role(p_organization_id);
   if not public.is_org_member(p_organization_id)
      or not public.can_access_project(p_project_id)
-     or public.current_user_role(p_organization_id) is null
-     or public.current_user_role(p_organization_id) not in (
+     or v_actor_role is null
+     or v_actor_role not in (
        'owner',
        'ops_manager',
+       'operator_business',
        'finance'
      ) then
     raise exception 'custom_settlement_rule_review_access_denied';
+  end if;
+  if p_action not in (
+       'request_changes',
+       'reopen',
+       'approve',
+       'activation_failed'
+     )
+     or p_client_request_id is null
+     or p_client_request_id <> pg_catalog.btrim(p_client_request_id)
+     or pg_catalog.char_length(p_client_request_id) not between 1 and 120
+     or p_reason is null
+     or p_reason <> pg_catalog.btrim(p_reason)
+     or pg_catalog.char_length(p_reason) not between 1 and 4000
+     or pg_catalog.jsonb_typeof(p_risk_summary) <> 'object'
+     or not public.settlement_ai_json_within_budget(p_risk_summary)
+     or not public.settlement_ai_json_is_safe(p_risk_summary) then
+    raise exception 'custom_settlement_rule_review_input_invalid';
+  end if;
+
+  v_request_key := v_actor_id::text || ':' || p_client_request_id;
+  v_request_fingerprint := public.custom_settlement_rule_request_fingerprint(
+    'review_custom_settlement_rule',
+    pg_catalog.jsonb_build_object(
+      'organizationId', p_organization_id,
+      'projectId', p_project_id,
+      'ruleVersionId', p_rule_version_id,
+      'action', p_action,
+      'effectiveFrom', p_effective_from,
+      'reason', p_reason,
+      'comment', p_comment,
+      'force', p_force,
+      'acknowledgment', p_acknowledgment,
+      'riskSummary', p_risk_summary
+    )
+  );
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      p_organization_id::text || ':' || v_request_key,
+      0
+    )
+  );
+  select request.*
+  into v_request_record
+  from public.custom_settlement_rule_lifecycle_requests as request
+  where request.actor_id = v_actor_id
+    and request.client_request_id = p_client_request_id;
+  if found then
+    if v_request_record.request_fingerprint <> v_request_fingerprint then
+      raise exception 'custom_settlement_rule_idempotency_conflict';
+    end if;
+    v_result := public.custom_settlement_rule_lifecycle_result(
+      v_request_record.rule_version_id,
+      v_request_record.event_id
+    );
+    return pg_catalog.jsonb_set(
+      v_result,
+      '{version}',
+      v_request_record.version_snapshot,
+      true
+    );
   end if;
 
   perform public.settlement_ai_lock_authoring_parents(
@@ -1124,17 +1934,199 @@ begin
     v_actor_id,
     p_project_id
   );
-  perform 1
+  select version.*
+  into v_version
   from public.custom_settlement_rule_versions as version
   where version.id = p_rule_version_id
     and version.organization_id = p_organization_id
-    and version.project_id = p_project_id
-  for update;
+    and version.project_id = p_project_id;
   if not found then
     raise exception 'custom_settlement_rule_version_scope_mismatch';
   end if;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      p_organization_id::text || ':' || p_project_id::text || ':' ||
+      v_version.scope || ':' || v_version.target_type || ':' ||
+      coalesce(v_version.target_id::text, ''),
+      0
+    )
+  );
+  perform 1
+  from public.custom_settlement_rule_versions as version
+  where version.organization_id = p_organization_id
+    and version.project_id = p_project_id
+    and version.scope = v_version.scope
+    and version.target_type = v_version.target_type
+    and version.target_id is not distinct from v_version.target_id
+  order by version.version_number, version.id
+  for update;
+  select version.*
+  into v_version
+  from public.custom_settlement_rule_versions as version
+  where version.id = p_rule_version_id
+  for update;
 
-  raise exception 'review_custom_settlement_rule_not_implemented_phase2_task1';
+  v_before_status := v_version.status;
+  if p_action = 'request_changes' then
+    if v_actor_role not in ('owner', 'ops_manager', 'finance')
+       or v_version.status <> 'pending_review'
+       or p_force
+       or p_effective_from is not null
+       or p_comment is null
+       or p_comment <> pg_catalog.btrim(p_comment)
+       or pg_catalog.char_length(p_comment) not between 1 and 4000 then
+      raise exception 'custom_settlement_rule_request_changes_denied';
+    end if;
+    update public.custom_settlement_rule_versions
+    set status = 'changes_requested',
+        reason = p_reason
+    where id = p_rule_version_id;
+    v_event_type := 'changes_requested';
+    v_after_status := 'changes_requested';
+  elsif p_action = 'reopen' then
+    if v_actor_role not in ('owner', 'ops_manager', 'operator_business')
+       or v_version.status <> 'changes_requested'
+       or p_force
+       or p_effective_from is not null then
+      raise exception 'custom_settlement_rule_reopen_denied';
+    end if;
+    update public.custom_settlement_rule_versions
+    set status = 'draft',
+        reopened_at = pg_catalog.now(),
+        reason = p_reason
+    where id = p_rule_version_id;
+    v_after_status := 'draft';
+    select event.id
+    into v_event_id
+    from public.custom_settlement_rule_review_events as event
+    where event.rule_version_id = p_rule_version_id
+    order by event.created_at desc, event.id desc
+    limit 1;
+  elsif p_action = 'approve' then
+    if v_actor_role not in ('owner', 'ops_manager')
+       or v_version.status <> 'pending_review'
+       or p_effective_from is null
+       or p_comment is not null then
+      raise exception 'custom_settlement_rule_approval_denied';
+    end if;
+    if p_force and (
+      v_actor_role <> 'owner'
+      or p_acknowledgment is distinct from
+        'I_UNDERSTAND_SINGLE_OWNER_FINANCIAL_RISK'
+    ) then
+      raise exception 'custom_settlement_rule_force_approval_denied';
+    end if;
+    if not p_force and p_acknowledgment is not null then
+      raise exception 'custom_settlement_rule_approval_input_invalid';
+    end if;
+    select simulation.*
+    into v_simulation
+    from public.settlement_formula_simulations as simulation
+    where simulation.id = v_version.simulation_id
+      and simulation.rule_version_id = v_version.id
+      and simulation.organization_id = p_organization_id
+      and simulation.project_id = p_project_id
+    for update;
+    if not found
+       or v_simulation.formula_hash <> v_version.formula_hash
+       or v_simulation.rule_contract_hash <> v_version.rule_contract_hash
+       or v_simulation.parameter_hash <> v_version.parameter_hash
+       or v_simulation.variable_catalog_version <>
+         v_version.variable_catalog_version
+       or v_simulation.data_selection_hash <> v_version.data_selection_hash
+       or v_simulation.coverage ->> 'summarySchemaVersion' <> '2'
+       or (v_simulation.coverage ->> 'blockedRecords')::integer <> 0
+       or (v_simulation.coverage ->> 'uncoveredRecords')::integer <> 0 then
+      raise exception 'custom_settlement_rule_stale_simulation';
+    end if;
+    if exists (
+      select 1
+      from public.custom_settlement_rule_versions as prior
+      where prior.organization_id = p_organization_id
+        and prior.project_id = p_project_id
+        and prior.scope = v_version.scope
+        and prior.target_type = v_version.target_type
+        and prior.target_id is not distinct from v_version.target_id
+        and prior.id <> p_rule_version_id
+        and prior.status = 'active'
+        and prior.effective_from >= p_effective_from
+    ) then
+      raise exception 'custom_settlement_rule_effective_period_conflict';
+    end if;
+    update public.custom_settlement_rule_versions as version
+    set status = 'archived',
+        effective_until = p_effective_from,
+        archived_at = pg_catalog.now(),
+        reason = p_reason
+    where version.organization_id = p_organization_id
+      and version.project_id = p_project_id
+      and version.scope = v_version.scope
+      and version.target_type = v_version.target_type
+      and version.target_id is not distinct from v_version.target_id
+      and version.id <> p_rule_version_id
+      and version.status = 'active';
+    update public.custom_settlement_rule_versions
+    set status = 'active',
+        effective_from = p_effective_from,
+        approved_by = v_actor_id,
+        approved_at = pg_catalog.now(),
+        reason = p_reason
+    where id = p_rule_version_id;
+    v_event_type := case
+      when p_force then 'force_approved'
+      else 'approved'
+    end;
+    v_after_status := 'active';
+  elsif p_action = 'activation_failed' then
+    if v_actor_role not in ('owner', 'ops_manager')
+       or v_version.status <> 'pending_review'
+       or p_force
+       or p_effective_from is not null
+       or p_comment is null
+       or pg_catalog.char_length(pg_catalog.btrim(p_comment)) = 0 then
+      raise exception 'custom_settlement_rule_activation_failure_denied';
+    end if;
+    v_event_type := 'activation_failed';
+    v_after_status := v_version.status;
+  else
+    raise exception 'custom_settlement_rule_review_action_invalid';
+  end if;
+
+  if v_event_type is not null then
+    insert into public.custom_settlement_rule_review_events (
+      organization_id, project_id, rule_version_id, event_type, actor_id,
+      actor_role, reason, comment, before_status, after_status, risk_summary,
+      formula_hash, rule_contract_hash, parameter_hash,
+      variable_catalog_version, data_selection_hash
+    ) values (
+      p_organization_id, p_project_id, p_rule_version_id, v_event_type,
+      v_actor_id, v_actor_role, p_reason, p_comment, v_before_status,
+      v_after_status,
+      p_risk_summary || pg_catalog.jsonb_build_object(
+        'force', p_force,
+        'acknowledgment', p_acknowledgment
+      ),
+      v_version.formula_hash, v_version.rule_contract_hash,
+      v_version.parameter_hash, v_version.variable_catalog_version,
+      v_version.data_selection_hash
+    ) returning id into v_event_id;
+  end if;
+  v_result := public.custom_settlement_rule_lifecycle_result(
+    p_rule_version_id,
+    v_event_id
+  );
+  if v_result is null then
+    raise exception 'custom_settlement_rule_atomic_result_missing';
+  end if;
+  insert into public.custom_settlement_rule_lifecycle_requests (
+    actor_id, client_request_id, organization_id, project_id,
+    rule_version_id, event_id, request_fingerprint, version_snapshot
+  ) values (
+    v_actor_id, p_client_request_id, p_organization_id, p_project_id,
+    p_rule_version_id, v_event_id, v_request_fingerprint,
+    v_result -> 'version'
+  );
+  return v_result;
 end;
 $$;
 
@@ -1144,6 +2136,7 @@ create or replace function public.archive_custom_settlement_rule(
   p_rule_version_id uuid,
   p_effective_until timestamptz,
   p_reason text,
+  p_fallback_proof jsonb,
   p_client_request_id text
 )
 returns jsonb
@@ -1153,22 +2146,79 @@ set search_path = pg_catalog, public
 as $$
 declare
   v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_version public.custom_settlement_rule_versions%rowtype;
+  v_simulation public.settlement_formula_simulations%rowtype;
+  v_event_id uuid;
+  v_request_key text;
+  v_request_fingerprint text;
+  v_request_record public.custom_settlement_rule_lifecycle_requests%rowtype;
+  v_result jsonb;
 begin
   if auth.uid() is null or v_actor_id is null then
     raise exception 'authentication_required';
   end if;
+  v_actor_role := public.current_user_role(p_organization_id);
   if not public.is_org_member(p_organization_id)
      or not public.can_access_project(p_project_id)
-     or public.current_user_role(p_organization_id) is null
-     or public.current_user_role(p_organization_id) not in (
+     or v_actor_role is null
+     or v_actor_role not in (
        'owner',
        'ops_manager'
      ) then
     raise exception 'custom_settlement_rule_archive_access_denied';
   end if;
 
-  if p_effective_until is null then
+  if p_effective_until is null
+     or p_reason is null
+     or p_reason <> pg_catalog.btrim(p_reason)
+     or pg_catalog.char_length(p_reason) not between 1 and 4000
+     or p_client_request_id is null
+     or p_client_request_id <> pg_catalog.btrim(p_client_request_id)
+     or pg_catalog.char_length(p_client_request_id) not between 1 and 120
+     or pg_catalog.jsonb_typeof(p_fallback_proof) <> 'object'
+     or not public.settlement_ai_json_within_budget(p_fallback_proof)
+     or not public.settlement_ai_json_is_safe(p_fallback_proof) then
     raise exception 'custom_settlement_rule_archive_end_required';
+  end if;
+
+  v_request_key := v_actor_id::text || ':' || p_client_request_id;
+  v_request_fingerprint := public.custom_settlement_rule_request_fingerprint(
+    'archive_custom_settlement_rule',
+    pg_catalog.jsonb_build_object(
+      'organizationId', p_organization_id,
+      'projectId', p_project_id,
+      'ruleVersionId', p_rule_version_id,
+      'effectiveUntil', p_effective_until,
+      'reason', p_reason,
+      'fallbackProof', p_fallback_proof
+    )
+  );
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      p_organization_id::text || ':' || v_request_key,
+      0
+    )
+  );
+  select request.*
+  into v_request_record
+  from public.custom_settlement_rule_lifecycle_requests as request
+  where request.actor_id = v_actor_id
+    and request.client_request_id = p_client_request_id;
+  if found then
+    if v_request_record.request_fingerprint <> v_request_fingerprint then
+      raise exception 'custom_settlement_rule_idempotency_conflict';
+    end if;
+    v_result := public.custom_settlement_rule_lifecycle_result(
+      v_request_record.rule_version_id,
+      v_request_record.event_id
+    );
+    return pg_catalog.jsonb_set(
+      v_result,
+      '{version}',
+      v_request_record.version_snapshot,
+      true
+    );
   end if;
 
   perform public.settlement_ai_lock_authoring_parents(
@@ -1176,17 +2226,114 @@ begin
     v_actor_id,
     p_project_id
   );
-  perform 1
+  select version.*
+  into v_version
   from public.custom_settlement_rule_versions as version
   where version.id = p_rule_version_id
     and version.organization_id = p_organization_id
-    and version.project_id = p_project_id
-  for update;
+    and version.project_id = p_project_id;
   if not found then
     raise exception 'custom_settlement_rule_version_scope_mismatch';
   end if;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      p_organization_id::text || ':' || p_project_id::text || ':' ||
+      v_version.scope || ':' || v_version.target_type || ':' ||
+      coalesce(v_version.target_id::text, ''),
+      0
+    )
+  );
+  perform 1
+  from public.custom_settlement_rule_versions as version
+  where version.organization_id = p_organization_id
+    and version.project_id = p_project_id
+    and version.scope = v_version.scope
+    and version.target_type = v_version.target_type
+    and version.target_id is not distinct from v_version.target_id
+  order by version.version_number, version.id
+  for update;
+  select version.*
+  into v_version
+  from public.custom_settlement_rule_versions as version
+  where version.id = p_rule_version_id
+  for update;
+  if v_version.status not in ('active', 'draft', 'changes_requested') then
+    raise exception 'custom_settlement_rule_archive_status_invalid';
+  end if;
+  if v_version.status = 'active' then
+    select simulation.*
+    into v_simulation
+    from public.settlement_formula_simulations as simulation
+    where simulation.id = v_version.simulation_id
+      and simulation.rule_version_id = v_version.id
+      and simulation.organization_id = p_organization_id
+      and simulation.project_id = p_project_id
+    for update;
+    if not found
+       or v_simulation.formula_hash <> v_version.formula_hash
+       or v_simulation.rule_contract_hash <> v_version.rule_contract_hash
+       or v_simulation.parameter_hash <> v_version.parameter_hash
+       or v_simulation.variable_catalog_version <>
+         v_version.variable_catalog_version
+       or v_simulation.data_selection_hash <> v_version.data_selection_hash
+       or p_fallback_proof ->> 'simulationId' <> v_simulation.id::text
+       or pg_catalog.jsonb_typeof(
+         p_fallback_proof -> 'remainingCustomLayerCount'
+       ) <> 'number'
+       or (p_fallback_proof ->> 'remainingCustomLayerCount')::integer < 0
+       or pg_catalog.jsonb_typeof(
+         p_fallback_proof -> 'fixedFallbackAvailable'
+       ) <> 'boolean'
+       or pg_catalog.jsonb_typeof(
+         p_fallback_proof -> 'lockedBatchCount'
+       ) <> 'number'
+       or (p_fallback_proof ->> 'lockedBatchCount')::integer < 0
+       or (
+         (p_fallback_proof ->> 'remainingCustomLayerCount')::integer = 0
+         and not (p_fallback_proof ->> 'fixedFallbackAvailable')::boolean
+       ) then
+      raise exception 'custom_settlement_rule_archive_fallback_invalid';
+    end if;
+    if p_effective_until <= v_version.effective_from then
+      raise exception 'custom_settlement_rule_archive_period_invalid';
+    end if;
+  end if;
 
-  raise exception 'archive_custom_settlement_rule_not_implemented_phase2_task1';
+  update public.custom_settlement_rule_versions
+  set status = 'archived',
+      effective_until = p_effective_until,
+      archived_at = pg_catalog.now(),
+      reason = p_reason
+  where id = p_rule_version_id;
+  insert into public.custom_settlement_rule_review_events (
+    organization_id, project_id, rule_version_id, event_type, actor_id,
+    actor_role, reason, before_status, after_status, risk_summary,
+    formula_hash, rule_contract_hash, parameter_hash,
+    variable_catalog_version, data_selection_hash
+  ) values (
+    p_organization_id, p_project_id, p_rule_version_id, 'archived',
+    v_actor_id, v_actor_role, p_reason, v_version.status, 'archived',
+    pg_catalog.jsonb_build_object('fallbackProof', p_fallback_proof),
+    v_version.formula_hash, v_version.rule_contract_hash,
+    v_version.parameter_hash, v_version.variable_catalog_version,
+    v_version.data_selection_hash
+  ) returning id into v_event_id;
+  v_result := public.custom_settlement_rule_lifecycle_result(
+    p_rule_version_id,
+    v_event_id
+  );
+  if v_result is null then
+    raise exception 'custom_settlement_rule_atomic_result_missing';
+  end if;
+  insert into public.custom_settlement_rule_lifecycle_requests (
+    actor_id, client_request_id, organization_id, project_id,
+    rule_version_id, event_id, request_fingerprint, version_snapshot
+  ) values (
+    v_actor_id, p_client_request_id, p_organization_id, p_project_id,
+    p_rule_version_id, v_event_id, v_request_fingerprint,
+    v_result -> 'version'
+  );
+  return v_result;
 end;
 $$;
 
@@ -1272,6 +2419,8 @@ revoke all on table public.custom_settlement_rule_versions
   from public, anon, authenticated, service_role;
 revoke all on table public.custom_settlement_rule_review_events
   from public, anon, authenticated, service_role;
+revoke all on table public.custom_settlement_rule_lifecycle_requests
+  from public, anon, authenticated, service_role;
 revoke all on table public.settlement_rule_groups
   from public, anon, authenticated, service_role;
 revoke all on table public.project_streamer_settlement_group_assignments
@@ -1290,10 +2439,23 @@ revoke all on function public.guard_custom_settlement_rule_version_mutation()
   from public, anon, authenticated, service_role;
 revoke all on function public.prevent_custom_settlement_review_event_mutation()
   from public, anon, authenticated, service_role;
+revoke all on function public.prevent_custom_settlement_lifecycle_request_mutation()
+  from public, anon, authenticated, service_role;
 revoke all on function public.prevent_custom_settlement_governance_delete()
   from public, anon, authenticated, service_role;
+revoke all on function public.custom_settlement_rule_request_fingerprint(
+  text,
+  jsonb
+) from public, anon, authenticated, service_role;
+revoke all on function public.custom_settlement_rule_lifecycle_result(
+  uuid,
+  uuid
+) from public, anon, authenticated, service_role;
 
 revoke all on function public.save_custom_settlement_rule_draft(
+  uuid,
+  uuid,
+  uuid,
   uuid,
   uuid,
   uuid,
@@ -1301,16 +2463,21 @@ revoke all on function public.save_custom_settlement_rule_draft(
   text,
   uuid,
   jsonb,
+  text,
   text
 ) from public, anon, authenticated, service_role;
 grant execute on function public.save_custom_settlement_rule_draft(
   uuid,
   uuid,
   uuid,
+  uuid,
+  uuid,
+  uuid,
   text,
   text,
   uuid,
   jsonb,
+  text,
   text
 ) to authenticated;
 
@@ -1321,10 +2488,12 @@ revoke all on function public.apply_and_submit_custom_settlement_rule(
   uuid,
   uuid,
   uuid,
+  uuid,
   text,
   text,
   uuid,
   timestamptz,
+  text,
   text,
   text
 ) from public, anon, authenticated, service_role;
@@ -1335,10 +2504,12 @@ grant execute on function public.apply_and_submit_custom_settlement_rule(
   uuid,
   uuid,
   uuid,
+  uuid,
   text,
   text,
   uuid,
   timestamptz,
+  text,
   text,
   text
 ) to authenticated;
@@ -1353,6 +2524,7 @@ revoke all on function public.review_custom_settlement_rule(
   text,
   boolean,
   text,
+  jsonb,
   text
 ) from public, anon, authenticated, service_role;
 grant execute on function public.review_custom_settlement_rule(
@@ -1365,6 +2537,7 @@ grant execute on function public.review_custom_settlement_rule(
   text,
   boolean,
   text,
+  jsonb,
   text
 ) to authenticated;
 
@@ -1374,6 +2547,7 @@ revoke all on function public.archive_custom_settlement_rule(
   uuid,
   timestamptz,
   text,
+  jsonb,
   text
 ) from public, anon, authenticated, service_role;
 grant execute on function public.archive_custom_settlement_rule(
@@ -1382,6 +2556,7 @@ grant execute on function public.archive_custom_settlement_rule(
   uuid,
   timestamptz,
   text,
+  jsonb,
   text
 ) to authenticated;
 

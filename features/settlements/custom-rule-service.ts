@@ -5,6 +5,8 @@ import { z } from "zod";
 import type { AiProviderName } from "@/features/ai/contracts";
 import type { ConversationTurnStatus } from "@/features/ai/conversation-contracts";
 import type { CreatedConversationTurn } from "@/features/ai/conversation-repository";
+import type { AuditLogInput } from "@/lib/audit/audit";
+import type { AppRole } from "@/lib/rbac/roles";
 
 import type {
   PrepareSettlementAiInput,
@@ -34,16 +36,27 @@ import { parseCustomRuleFormula } from "./custom-rule-parser";
 import type {
   ClarifyingCustomRuleDraftInput,
   ContractReadyCustomRuleDraftInput,
+  ApplyAndSubmitCustomRuleInput,
+  ApproveCustomRuleRepositoryInput,
+  ArchiveCustomRuleRepositoryInput,
   CreateCustomRuleDraftInput,
   CreatedCustomRuleDraft,
   CustomRuleDraft,
+  CustomRuleLifecycleResult,
   CustomRuleRepository,
+  CustomRuleReviewTransitionInput,
+  CustomSettlementRuleVersion,
   FailedCustomRuleDraftInput,
   FinalizeSettlementAiDraftTurnInput,
   FinalizeSettlementAiFailedTurnInput,
   FinalizeSettlementAiSimulationTurnInput,
   FinalizedSettlementAiSimulationTurn,
   InsertedSettlementFormulaSimulation,
+  ForceApproveCustomRuleRepositoryInput,
+  ListCustomRulesInput,
+  RequestCustomRuleChangesInput,
+  SaveCustomRuleDraftInput,
+  SavedCustomRuleDraftResult,
   SettlementFormulaSimulation,
   SettlementAiGeneratedTestCase,
   SettlementAiSafetyFlag,
@@ -66,8 +79,22 @@ import {
   type CustomRuleSimulationResult,
 } from "./custom-rule-simulation";
 import type { TypedRuntimeValue } from "./custom-rule-types";
+import type { CustomRuleSimulationFreshnessHashes } from "./custom-rule-types";
 import { validateCustomRuleFormula } from "./custom-rule-validator";
 import type { CustomRuleVariableCatalog } from "./custom-rule-variable-catalog";
+import {
+  assertCustomRuleApprovalAllowed,
+  assertCustomRulePayloadEditable,
+  assertCustomRuleTransition,
+  assertSimulationFresh,
+  canRolePerformCustomRuleGovernanceAction,
+  CustomRuleGovernanceError,
+} from "./custom-rule-governance";
+import {
+  analyzeCustomRuleMaterialRisk,
+  type CustomRuleMaterialRiskConfiguration,
+  type CustomRuleMaterialRiskInput,
+} from "./custom-rule-risk";
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]+$/u;
@@ -2132,7 +2159,7 @@ function isVerifiedExpiredStartDuplicate(
     assistant.role === "assistant" &&
     (assistant.status === "failed" || assistant.status === "superseded") &&
     assistant.parentMessageId === returned.userMessageId &&
-    failureMetadata.success
+    failureMetadata.success,
   );
 }
 
@@ -3164,12 +3191,7 @@ async function openRetryTurn(
       input.sourceTurnId,
       draft,
     );
-    requireMatchingManualRetrySemanticKey(
-      observed,
-      drafts,
-      input,
-      draft,
-    );
+    requireMatchingManualRetrySemanticKey(observed, drafts, input, draft);
     return {
       kind: "result",
       result: Object.freeze({
@@ -4918,4 +4940,600 @@ function canonicalJson(value: unknown): string {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+export type CustomRuleLifecycleAuditWriter = (
+  input: AuditLogInput,
+) => Promise<void>;
+
+export type CustomRuleLifecycleGovernanceContext = {
+  actor: { organizationId: string; userId: string; role: AppRole };
+  version: CustomSettlementRuleVersion;
+  simulation: CustomRuleSimulationFreshnessHashes & {
+    id: string;
+    createdAt: string;
+  };
+  expectedFreshness: CustomRuleSimulationFreshnessHashes;
+  eligibleApprovers: readonly {
+    userId: string;
+    role: "owner" | "ops_manager";
+  }[];
+  creatorUserId: string;
+  simulationFacts: CustomRuleMaterialRiskInput["simulation"];
+  currentMarginCents: string | null;
+  contractFacts: CustomRuleMaterialRiskInput["contract"];
+  riskConfiguration?: CustomRuleMaterialRiskConfiguration;
+  reopenedAt: string | null;
+  archiveSafety: {
+    remainingCustomLayerCount: number;
+    fixedFallbackAvailable: boolean;
+    lockedBatchCount: number;
+  };
+};
+
+export type CustomRuleLifecycleRepositoryPort = Pick<
+  CustomRuleRepository,
+  | "saveCustomRuleDraft"
+  | "applyAndSubmitCustomRule"
+  | "requestCustomRuleChanges"
+  | "reopenRequestedChangesAsDraft"
+  | "resubmitCustomRule"
+  | "approveCustomRule"
+  | "forceApproveCustomRule"
+  | "archiveCustomRule"
+  | "listCustomRules"
+> & {
+  getCustomRuleGovernanceContext(input: {
+    organizationId: string;
+    projectId: string;
+    actorUserId: string;
+    ruleVersionId?: string;
+    source?: ApplyAndSubmitCustomRuleInput["source"];
+    sourceSimulationId?: string;
+  }): Promise<CustomRuleLifecycleGovernanceContext>;
+  recordCustomRuleActivationFailure(
+    input: CustomRuleReviewTransitionInput & {
+      errorMessage: string;
+    },
+  ): Promise<CustomRuleLifecycleResult>;
+};
+
+export type CustomRuleExecutionCapability = Readonly<{ enabled: boolean }>;
+
+type LifecycleActorInput = Readonly<{
+  organizationId: string;
+  userId: string;
+  role?: AppRole;
+}>;
+
+type LifecycleServiceInput<
+  Input,
+  ServerOwned extends keyof Input = never,
+> = Omit<Input, "organizationId" | "projectId" | ServerOwned> & {
+  actor: LifecycleActorInput;
+  projectId: string;
+};
+
+type UntrustedApprovalHints = Readonly<{
+  isMaterialRisk?: boolean;
+  approverCount?: number;
+  creatorId?: string;
+  hashes?: Readonly<Record<string, unknown>>;
+  totals?: Readonly<Record<string, unknown>>;
+}>;
+
+type ApproveLifecycleServiceInput = LifecycleServiceInput<
+  ApproveCustomRuleRepositoryInput,
+  "riskSummary"
+> &
+  UntrustedApprovalHints;
+
+type ForceApproveLifecycleServiceInput = LifecycleServiceInput<
+  ForceApproveCustomRuleRepositoryInput,
+  "riskSummary"
+> &
+  UntrustedApprovalHints;
+
+type ArchiveLifecycleServiceInput = LifecycleServiceInput<
+  ArchiveCustomRuleRepositoryInput,
+  "fallbackProof"
+> &
+  Readonly<{
+    remainingCustomLayerCount?: number;
+    fixedFallbackAvailable?: boolean;
+    lockedBatchCount?: number;
+  }>;
+
+export type CustomRuleLifecycleListDto = CustomSettlementRuleVersion & {
+  effectiveNow: boolean;
+  scheduled: boolean;
+};
+
+export type CustomRuleLifecycleService = {
+  saveCustomRuleDraft(
+    input: LifecycleServiceInput<SaveCustomRuleDraftInput>,
+  ): Promise<SavedCustomRuleDraftResult>;
+  applyAndSubmitCustomRule(
+    input: LifecycleServiceInput<ApplyAndSubmitCustomRuleInput>,
+  ): Promise<CustomRuleLifecycleResult>;
+  requestCustomRuleChanges(
+    input: LifecycleServiceInput<RequestCustomRuleChangesInput>,
+  ): Promise<CustomRuleLifecycleResult>;
+  reopenRequestedChangesAsDraft(
+    input: LifecycleServiceInput<CustomRuleReviewTransitionInput>,
+  ): Promise<CustomRuleLifecycleResult>;
+  resubmitCustomRule(
+    input: LifecycleServiceInput<ApplyAndSubmitCustomRuleInput>,
+  ): Promise<CustomRuleLifecycleResult>;
+  approveCustomRule(
+    input: ApproveLifecycleServiceInput,
+  ): Promise<CustomRuleLifecycleResult>;
+  forceApproveCustomRule(
+    input: ForceApproveLifecycleServiceInput,
+  ): Promise<CustomRuleLifecycleResult>;
+  archiveCustomRule(
+    input: ArchiveLifecycleServiceInput,
+  ): Promise<CustomRuleLifecycleResult>;
+  listCustomRules(input: {
+    actor: LifecycleActorInput;
+    projectId: string;
+    status?: ListCustomRulesInput["status"];
+  }): Promise<CustomRuleLifecycleListDto[]>;
+};
+
+export function createCustomRuleLifecycleService(dependencies: {
+  repository: CustomRuleLifecycleRepositoryPort;
+  audit: CustomRuleLifecycleAuditWriter;
+  executionCapability?: CustomRuleExecutionCapability;
+  now?: () => string;
+}): CustomRuleLifecycleService {
+  const repository = dependencies.repository;
+  const executionCapability = dependencies.executionCapability ?? {
+    enabled: false,
+  };
+  const now = dependencies.now ?? (() => new Date().toISOString());
+
+  const loadContext = async (input: {
+    actor: LifecycleActorInput;
+    projectId: string;
+    ruleVersionId?: string;
+    source?: ApplyAndSubmitCustomRuleInput["source"];
+    sourceSimulationId?: string;
+  }): Promise<CustomRuleLifecycleGovernanceContext> => {
+    const context = await repository.getCustomRuleGovernanceContext({
+      organizationId: input.actor.organizationId,
+      projectId: input.projectId,
+      actorUserId: input.actor.userId,
+      ruleVersionId: input.ruleVersionId,
+      source: input.source,
+      sourceSimulationId: input.sourceSimulationId,
+    });
+    if (
+      context.actor.organizationId !== input.actor.organizationId ||
+      context.actor.userId !== input.actor.userId ||
+      context.version.organizationId !== input.actor.organizationId ||
+      context.version.projectId !== input.projectId ||
+      (input.ruleVersionId !== undefined &&
+        context.version.id !== input.ruleVersionId)
+    ) {
+      throw new CustomRuleGovernanceError(
+        "CUSTOM_RULE_SERVER_CONTEXT_MISMATCH",
+        "Server-owned custom settlement rule context does not match the request scope",
+      );
+    }
+    return context;
+  };
+
+  const requireCapability = (
+    role: AppRole,
+    capability: Parameters<typeof canRolePerformCustomRuleGovernanceAction>[1],
+  ): void => {
+    if (!canRolePerformCustomRuleGovernanceAction(role, capability)) {
+      throw new CustomRuleGovernanceError(
+        "CUSTOM_RULE_ACTION_NOT_ALLOWED",
+        `Server role ${role} cannot perform ${capability}`,
+      );
+    }
+  };
+
+  const auditTransition = async (input: {
+    action: AuditLogInput["action"];
+    context: CustomRuleLifecycleGovernanceContext;
+    projectId: string;
+    versionId: string;
+    transition: string;
+    reason: string;
+    result?: "success" | "failure";
+    errorMessage?: string;
+  }): Promise<void> => {
+    await dependencies.audit({
+      organizationId: input.context.actor.organizationId,
+      actorUserId: input.context.actor.userId,
+      actorRole: input.context.actor.role,
+      action: input.action,
+      module: "settlements",
+      objectType: `custom_settlement_rule:${input.transition}`,
+      objectId: input.versionId,
+      projectId: input.projectId,
+      before: { status: input.context.version.status },
+      after: { transition: input.transition },
+      changedFields: ["status"],
+      reason: input.reason,
+      isHighRisk: true,
+      result: input.result ?? "success",
+      errorMessage: input.errorMessage,
+    });
+  };
+
+  const approve = async (
+    input: ApproveLifecycleServiceInput | ForceApproveLifecycleServiceInput,
+    force: boolean,
+  ): Promise<CustomRuleLifecycleResult> => {
+    const context = await loadContext({
+      actor: input.actor,
+      projectId: input.projectId,
+      ruleVersionId: input.ruleVersionId,
+    });
+    assertCustomRuleTransition(context.version.status, "active");
+    if (!executionCapability.enabled) {
+      const error = new CustomRuleGovernanceError(
+        "CUSTOM_RULE_EXECUTION_DISABLED",
+        "Production custom settlement rule execution is disabled",
+      );
+      await auditTransition({
+        action: "approve",
+        context,
+        projectId: input.projectId,
+        versionId: input.ruleVersionId,
+        transition: "pending_review->active",
+        reason: input.reason,
+        result: "failure",
+        errorMessage: error.message,
+      });
+      throw error;
+    }
+    assertSimulationFresh({
+      expected: context.expectedFreshness,
+      simulation: context.simulation,
+    });
+    const risk = analyzeCustomRuleMaterialRisk({
+      simulation: context.simulationFacts,
+      currentMarginCents: context.currentMarginCents,
+      contract: context.contractFacts,
+      configuration: context.riskConfiguration,
+    });
+    const forceInput = input as ForceApproveLifecycleServiceInput;
+    assertCustomRuleApprovalAllowed(
+      force
+        ? {
+            mode: "force",
+            actor: context.actor,
+            creatorUserId: context.creatorUserId,
+            eligibleApprovers: context.eligibleApprovers,
+            materialRiskCodes: risk.codes,
+            acknowledgement: forceInput.acknowledgment,
+            reason: input.reason,
+          }
+        : {
+            mode: "standard",
+            actor: context.actor,
+            creatorUserId: context.creatorUserId,
+            eligibleApprovers: context.eligibleApprovers,
+            materialRiskCodes: risk.codes,
+          },
+    );
+    const riskSummary = {
+      material: risk.material,
+      codes: [...risk.codes],
+      findings: risk.findings.map((finding) => ({ ...finding })),
+      configuration: risk.configuration,
+      force,
+      ...(force ? { acknowledgment: forceInput.acknowledgment } : {}),
+    };
+    try {
+      const result = force
+        ? await repository.forceApproveCustomRule({
+            organizationId: context.actor.organizationId,
+            projectId: input.projectId,
+            ruleVersionId: input.ruleVersionId,
+            effectiveFrom: input.effectiveFrom,
+            reason: input.reason,
+            acknowledgment: forceInput.acknowledgment,
+            riskSummary,
+            clientRequestId: input.clientRequestId,
+          })
+        : await repository.approveCustomRule({
+            organizationId: context.actor.organizationId,
+            projectId: input.projectId,
+            ruleVersionId: input.ruleVersionId,
+            effectiveFrom: input.effectiveFrom,
+            reason: input.reason,
+            riskSummary,
+            clientRequestId: input.clientRequestId,
+          });
+      await auditTransition({
+        action: "approve",
+        context,
+        projectId: input.projectId,
+        versionId: input.ruleVersionId,
+        transition: "pending_review->active",
+        reason: input.reason,
+      });
+      return result;
+    } catch (error) {
+      const errorMessage = lifecycleErrorMessage(error);
+      try {
+        await repository.recordCustomRuleActivationFailure({
+          organizationId: context.actor.organizationId,
+          projectId: input.projectId,
+          ruleVersionId: input.ruleVersionId,
+          reason: input.reason,
+          clientRequestId: lifecycleActivationFailureRequestId(
+            input.clientRequestId,
+          ),
+          errorMessage,
+        });
+      } catch {
+        // The atomic activation error remains the primary failure.
+      }
+      await auditTransition({
+        action: "approve",
+        context,
+        projectId: input.projectId,
+        versionId: input.ruleVersionId,
+        transition: "pending_review->activation_failed",
+        reason: input.reason,
+        result: "failure",
+        errorMessage,
+      });
+      throw error;
+    }
+  };
+
+  return {
+    async saveCustomRuleDraft(input) {
+      const context = await loadContext({
+        actor: input.actor,
+        projectId: input.projectId,
+        ruleVersionId: input.ruleVersionId,
+        sourceSimulationId: input.sourceSimulationId,
+      });
+      requireCapability(context.actor.role, "edit_draft");
+      assertCustomRulePayloadEditable(context.version.status);
+      assertSimulationFresh({
+        expected: context.expectedFreshness,
+        simulation: context.simulation,
+      });
+      const result = await repository.saveCustomRuleDraft(
+        lifecycleRepositoryInput(input, context.actor.organizationId),
+      );
+      await auditTransition({
+        action: "create",
+        context,
+        projectId: input.projectId,
+        versionId: result.version.id,
+        transition: "draft_saved",
+        reason: input.reason,
+      });
+      return result;
+    },
+
+    async applyAndSubmitCustomRule(input) {
+      const context = await loadContext({
+        actor: input.actor,
+        projectId: input.projectId,
+        source: input.source,
+        sourceSimulationId: input.sourceSimulationId,
+      });
+      requireCapability(context.actor.role, "submit_review");
+      assertSimulationFresh({
+        expected: context.expectedFreshness,
+        simulation: context.simulation,
+      });
+      const result = await repository.applyAndSubmitCustomRule(
+        lifecycleRepositoryInput(input, context.actor.organizationId),
+      );
+      await auditTransition({
+        action: "create",
+        context,
+        projectId: input.projectId,
+        versionId: result.version.id,
+        transition: "draft->pending_review",
+        reason: input.reason,
+      });
+      return result;
+    },
+
+    async requestCustomRuleChanges(input) {
+      const context = await loadContext({
+        actor: input.actor,
+        projectId: input.projectId,
+        ruleVersionId: input.ruleVersionId,
+      });
+      requireCapability(context.actor.role, "request_changes");
+      assertCustomRuleTransition(context.version.status, "changes_requested");
+      const result = await repository.requestCustomRuleChanges(
+        lifecycleRepositoryInput(input, context.actor.organizationId),
+      );
+      await auditTransition({
+        action: "reject",
+        context,
+        projectId: input.projectId,
+        versionId: input.ruleVersionId,
+        transition: "pending_review->changes_requested",
+        reason: input.reason,
+      });
+      return result;
+    },
+
+    async reopenRequestedChangesAsDraft(input) {
+      const context = await loadContext({
+        actor: input.actor,
+        projectId: input.projectId,
+        ruleVersionId: input.ruleVersionId,
+      });
+      requireCapability(context.actor.role, "edit_draft");
+      assertCustomRuleTransition(context.version.status, "draft");
+      const result = await repository.reopenRequestedChangesAsDraft(
+        lifecycleRepositoryInput(input, context.actor.organizationId),
+      );
+      await auditTransition({
+        action: "update",
+        context,
+        projectId: input.projectId,
+        versionId: input.ruleVersionId,
+        transition: "changes_requested->draft",
+        reason: input.reason,
+      });
+      return result;
+    },
+
+    async resubmitCustomRule(input) {
+      const context = await loadContext({
+        actor: input.actor,
+        projectId: input.projectId,
+        source: input.source,
+        sourceSimulationId: input.sourceSimulationId,
+        ruleVersionId:
+          input.source.kind === "saved_draft" ? input.source.id : undefined,
+      });
+      requireCapability(context.actor.role, "submit_review");
+      assertCustomRuleTransition(context.version.status, "pending_review");
+      assertSimulationFresh({
+        expected: context.expectedFreshness,
+        simulation: context.simulation,
+      });
+      if (
+        input.source.kind !== "saved_draft" ||
+        context.reopenedAt === null ||
+        Date.parse(context.simulation.createdAt) <=
+          Date.parse(context.reopenedAt)
+      ) {
+        throw new CustomRuleGovernanceError(
+          "CUSTOM_RULE_RESUBMIT_SIMULATION_REQUIRED",
+          "Resubmission requires a new simulation created after reopening",
+        );
+      }
+      const result = await repository.resubmitCustomRule(
+        lifecycleRepositoryInput(input, context.actor.organizationId),
+      );
+      await auditTransition({
+        action: "update",
+        context,
+        projectId: input.projectId,
+        versionId: result.version.id,
+        transition: "draft->pending_review:resubmitted",
+        reason: input.reason,
+      });
+      return result;
+    },
+
+    approveCustomRule(input) {
+      return approve(input, false);
+    },
+
+    forceApproveCustomRule(input) {
+      return approve(input, true);
+    },
+
+    async archiveCustomRule(input) {
+      const context = await loadContext({
+        actor: input.actor,
+        projectId: input.projectId,
+        ruleVersionId: input.ruleVersionId,
+      });
+      requireCapability(context.actor.role, "archive_rule");
+      assertCustomRuleTransition(context.version.status, "archived");
+      if (context.version.status === "active") {
+        assertSimulationFresh({
+          expected: context.expectedFreshness,
+          simulation: context.simulation,
+        });
+        if (
+          context.archiveSafety.remainingCustomLayerCount === 0 &&
+          !context.archiveSafety.fixedFallbackAvailable
+        ) {
+          throw new CustomRuleGovernanceError(
+            "CUSTOM_RULE_ARCHIVE_FALLBACK_REQUIRED",
+            "Active rule archival requires a remaining custom layer or fixed fallback",
+          );
+        }
+      }
+      const result = await repository.archiveCustomRule({
+        organizationId: context.actor.organizationId,
+        projectId: input.projectId,
+        ruleVersionId: input.ruleVersionId,
+        effectiveUntil: input.effectiveUntil,
+        reason: input.reason,
+        fallbackProof: {
+          simulationId: context.simulation.id,
+          remainingCustomLayerCount:
+            context.archiveSafety.remainingCustomLayerCount,
+          fixedFallbackAvailable: context.archiveSafety.fixedFallbackAvailable,
+          lockedBatchCount: context.archiveSafety.lockedBatchCount,
+        },
+        clientRequestId: input.clientRequestId,
+      });
+      await auditTransition({
+        action: "void",
+        context,
+        projectId: input.projectId,
+        versionId: input.ruleVersionId,
+        transition: `${context.version.status}->archived`,
+        reason: input.reason,
+      });
+      return result;
+    },
+
+    async listCustomRules(input) {
+      const context = await loadContext({
+        actor: input.actor,
+        projectId: input.projectId,
+      });
+      requireCapability(context.actor.role, "view_internal");
+      const rules = await repository.listCustomRules({
+        organizationId: context.actor.organizationId,
+        projectId: input.projectId,
+        status: input.status,
+      });
+      const currentTime = Date.parse(now());
+      return rules.map((rule) => {
+        const start =
+          rule.effectiveFrom === null ? null : Date.parse(rule.effectiveFrom);
+        const end =
+          rule.effectiveUntil === null ? null : Date.parse(rule.effectiveUntil);
+        const approved = rule.approvedAt !== null;
+        return {
+          ...rule,
+          effectiveNow:
+            approved &&
+            start !== null &&
+            start <= currentTime &&
+            (end === null || currentTime < end),
+          scheduled: approved && start !== null && start > currentTime,
+        };
+      });
+    },
+  };
+}
+
+function lifecycleRepositoryInput<Input extends { actor: unknown }>(
+  input: Input,
+  organizationId: string,
+): Omit<Input, "actor"> & { organizationId: string } {
+  const { actor: _actor, ...rest } = input;
+  void _actor;
+  return { ...rest, organizationId };
+}
+
+function lifecycleErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown activation failure";
+}
+
+function lifecycleActivationFailureRequestId(clientRequestId: string): string {
+  const suffix = ":activation_failed";
+  if (clientRequestId.length + suffix.length <= 120) {
+    return `${clientRequestId}${suffix}`;
+  }
+  return `activation_failed:${sha256(clientRequestId)}`;
 }

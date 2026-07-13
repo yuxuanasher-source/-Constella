@@ -2176,7 +2176,7 @@ describe("Phase 1 settlement AI database authoring authorization", () => {
 });
 
 describe("Phase 2 governed settlement rule schema contract", () => {
-  it("declares the five governance tables with exact lifecycle enums and JSON budgets", () => {
+  it("declares governance tables and a bounded lifecycle request ledger", () => {
     expect(settlementGovernanceMigration).not.toBe("");
 
     const version = settlementGovernanceTableDefinition(
@@ -2251,6 +2251,7 @@ describe("Phase 2 governed settlement rule schema contract", () => {
 
     for (const table of [
       "custom_settlement_rule_review_events",
+      "custom_settlement_rule_lifecycle_requests",
       "settlement_rule_groups",
       "project_streamer_settlement_group_assignments",
       "settlement_rule_templates",
@@ -2553,6 +2554,15 @@ describe("Phase 2 governed settlement rule schema contract", () => {
         `grant select on table public.${table} to authenticated`,
       );
     }
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "alter table public.custom_settlement_rule_lifecycle_requests enable row level security",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "revoke all on table public.custom_settlement_rule_lifecycle_requests from public, anon, authenticated, service_role",
+    );
+    expect(normalizedSettlementGovernanceMigration).not.toContain(
+      "grant select on table public.custom_settlement_rule_lifecycle_requests",
+    );
     for (const table of [
       "custom_settlement_rule_versions",
       "custom_settlement_rule_review_events",
@@ -2574,7 +2584,7 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     );
   });
 
-  it("exposes five fixed-search-path, role-gated, fail-closed RPC skeletons", () => {
+  it("exposes five fixed-search-path, role-gated lifecycle RPCs", () => {
     const expectedRoles: Record<string, string[]> = {
       save_custom_settlement_rule_draft: [
         "'owner'",
@@ -2586,7 +2596,12 @@ describe("Phase 2 governed settlement rule schema contract", () => {
         "'ops_manager'",
         "'operator_business'",
       ],
-      review_custom_settlement_rule: ["'owner'", "'ops_manager'", "'finance'"],
+      review_custom_settlement_rule: [
+        "'owner'",
+        "'ops_manager'",
+        "'operator_business'",
+        "'finance'",
+      ],
       archive_custom_settlement_rule: ["'owner'", "'ops_manager'"],
       change_settlement_group_assignment: ["'owner'", "'ops_manager'"],
     };
@@ -2599,9 +2614,13 @@ describe("Phase 2 governed settlement rule schema contract", () => {
       expect(rpc.body).toContain("public.is_org_member(p_organization_id)");
       expect(rpc.body).toContain("public.can_access_project(p_project_id)");
       expect(rpc.body).toContain("for update");
-      expect(rpc.body).toContain(`${fn}_not_implemented_phase2_task1`);
+      if (fn === "change_settlement_group_assignment") {
+        expect(rpc.body).toContain(`${fn}_not_implemented_phase2_task1`);
+      } else {
+        expect(rpc.body).not.toContain(`${fn}_not_implemented_phase2_task1`);
+      }
       const roleList = rpc.body.match(
-        /public\.current_user_role\(p_organization_id\) not in \(([^)]+)\)/u,
+        /(?:public\.current_user_role\(p_organization_id\)|v_actor_role) not in \(([^)]+)\)/u,
       )?.[1];
       expect(roleList?.match(/'[a-z_]+'/gu)).toEqual(roles);
       expect(normalizedSettlementGovernanceMigration).toMatch(
@@ -2627,17 +2646,126 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     const save = extractSettlementGovernanceFunction(
       "save_custom_settlement_rule_draft",
     ).body;
-    expect(
+    const saveTargetLockSlice = save.slice(
       save.indexOf("from public.settlement_rule_groups"),
-    ).toBeGreaterThanOrEqual(0);
-    expect(save.indexOf("from public.settlement_rule_groups")).toBeLessThan(
-      save.indexOf("from public.project_streamers"),
     );
-    expect(save.indexOf("from public.project_streamers")).toBeLessThan(
-      save.indexOf("from public.custom_settlement_rule_versions"),
+    expect(
+      saveTargetLockSlice.indexOf("from public.settlement_rule_groups"),
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      saveTargetLockSlice.indexOf("from public.settlement_rule_groups"),
+    ).toBeLessThan(
+      saveTargetLockSlice.indexOf("from public.project_streamers"),
+    );
+    expect(
+      saveTargetLockSlice.indexOf("from public.project_streamers"),
+    ).toBeLessThan(
+      saveTargetLockSlice.indexOf(
+        "from public.custom_settlement_rule_versions",
+      ),
     );
     expect(save).toContain("p_scope not in (");
     expect(save).toContain("p_target_type not in (");
+
+    const apply = extractSettlementGovernanceFunction(
+      "apply_and_submit_custom_settlement_rule",
+    ).body;
+    expect(apply).toContain("pg_catalog.pg_advisory_xact_lock");
+    expect(apply).toContain("p_source_rule_version_id");
+    expect(apply).toContain("v_request_fingerprint");
+    expect(apply).toContain(
+      "insert into public.custom_settlement_rule_versions",
+    );
+    expect(apply).toContain(
+      "insert into public.settlement_formula_simulations",
+    );
+    expect(apply).toContain(
+      "insert into public.custom_settlement_rule_review_events",
+    );
+    expect(apply).toContain("p_source_ai_draft_id is null");
+    expect(apply).toContain("p_source_rule_version_id is null");
+    expect(apply).toContain("p_submission_event_type");
+    expect(apply).toContain("settlement_formula_simulations_exactly_one_owner");
+    expect(apply).toContain("coverage ->> 'blockedrecords'");
+    expect(apply).toContain("coverage ->> 'uncoveredrecords'");
+    expect(apply).toContain(
+      "v_data_selection_hash := v_source_version.data_selection_hash",
+    );
+    expect(apply).toContain("for update");
+    expect(apply).toMatch(
+      /pg_catalog\.pg_advisory_xact_lock[\s\S]+pg_catalog\.pg_advisory_xact_lock[\s\S]+from public\.custom_settlement_rule_versions/u,
+    );
+
+    const review = extractSettlementGovernanceFunction(
+      "review_custom_settlement_rule",
+    ).body;
+    for (const marker of [
+      "p_action = 'request_changes'",
+      "p_action = 'reopen'",
+      "p_action = 'approve'",
+      "p_action = 'activation_failed'",
+      "status = 'changes_requested'",
+      "status = 'draft'",
+      "status = 'active'",
+      "status = 'archived'",
+      "effective_until = p_effective_from",
+      "'force', p_force",
+      "'acknowledgment', p_acknowledgment",
+    ]) {
+      expect(review).toContain(marker);
+    }
+    expect(review).toMatch(
+      /order by version\.version_number, version\.id[\s\S]+for update/u,
+    );
+
+    const archiveLifecycle = extractSettlementGovernanceFunction(
+      "archive_custom_settlement_rule",
+    ).body;
+    expect(archiveLifecycle).toContain("p_fallback_proof");
+    expect(archiveLifecycle).toContain("remainingcustomlayercount");
+    expect(archiveLifecycle).toContain("fixedfallbackavailable");
+    expect(archiveLifecycle).toContain("lockedbatchcount");
+    expect(archiveLifecycle).toContain("effective_until = p_effective_until");
+
+    for (const rpcName of [
+      "save_custom_settlement_rule_draft",
+      "apply_and_submit_custom_settlement_rule",
+      "review_custom_settlement_rule",
+      "archive_custom_settlement_rule",
+    ]) {
+      const body = extractSettlementGovernanceFunction(rpcName).body;
+      expect(body).toContain("v_request_fingerprint");
+      expect(body).toContain("v_request_key");
+      expect(body).toContain("lifecycle_requests");
+      expect(body).toContain("custom_settlement_rule_idempotency_conflict");
+      for (const forbidden of [
+        "set_config",
+        "current_setting",
+        "session_replication_role",
+        "disable trigger",
+      ]) {
+        expect(body).not.toContain(forbidden);
+      }
+    }
+
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "create table public.custom_settlement_rule_lifecycle_requests",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "reopened_at timestamptz",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "custom_settlement_rule_draft_hashes_required",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "custom_settlement_rule_draft_hashes_must_change",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "v_request_record.version_snapshot",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "drop function if exists public.apply_and_submit_custom_settlement_rule",
+    );
     expect(save).toContain(
       "p_scope <> 'payable' and p_target_type <> 'project'",
     );
@@ -2650,24 +2778,37 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     const submit = extractSettlementGovernanceFunction(
       "apply_and_submit_custom_settlement_rule",
     ).body;
-    expect(
+    const submitTargetLockSlice = submit.slice(
       submit.indexOf("from public.settlement_rule_groups"),
+    );
+    expect(
+      submitTargetLockSlice.indexOf("from public.settlement_rule_groups"),
     ).toBeGreaterThanOrEqual(0);
-    expect(submit.indexOf("from public.settlement_rule_groups")).toBeLessThan(
-      submit.indexOf("from public.project_streamers"),
-    );
-    expect(submit.indexOf("from public.project_streamers")).toBeLessThan(
-      submit.indexOf("from public.ai_settlement_rule_drafts"),
+    expect(
+      submitTargetLockSlice.indexOf("from public.settlement_rule_groups"),
+    ).toBeLessThan(
+      submitTargetLockSlice.indexOf("from public.project_streamers"),
     );
     expect(
-      submit.indexOf("from public.ai_settlement_rule_drafts"),
+      submitTargetLockSlice.indexOf("from public.project_streamers"),
     ).toBeLessThan(
-      submit.indexOf("from public.settlement_formula_simulations"),
+      submitTargetLockSlice.indexOf(
+        "from public.custom_settlement_rule_versions",
+      ),
     );
     expect(
-      submit.indexOf("from public.settlement_formula_simulations"),
+      submitTargetLockSlice.indexOf(
+        "from public.custom_settlement_rule_versions",
+      ),
     ).toBeLessThan(
-      submit.indexOf("from public.custom_settlement_rule_versions"),
+      submitTargetLockSlice.indexOf("from public.ai_settlement_rule_drafts"),
+    );
+    expect(
+      submitTargetLockSlice.indexOf("from public.ai_settlement_rule_drafts"),
+    ).toBeLessThan(
+      submitTargetLockSlice.indexOf(
+        "from public.settlement_formula_simulations",
+      ),
     );
     expect(submit).toContain("p_scope not in (");
     expect(submit).toContain("p_target_type not in (");
@@ -3614,6 +3755,34 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
           end;
           $direct_update$;
 
+          do $direct_lifecycle_request_insert$
+          begin
+            begin
+              insert into public.custom_settlement_rule_lifecycle_requests (
+                actor_id, client_request_id, organization_id, project_id,
+                rule_version_id, request_fingerprint, version_snapshot
+              ) values (
+                '${actorId}'::uuid,
+                'phase2-direct-ledger-write',
+                '${organizationId}'::uuid,
+                '${projectId}'::uuid,
+                '${versionOneId}'::uuid,
+                '${"a".repeat(64)}',
+                '{}'::jsonb
+              );
+              raise exception 'phase2_direct_ledger_insert_accepted';
+            exception
+              when insufficient_privilege then null;
+              when others then
+                if sqlerrm = 'phase2_direct_ledger_insert_accepted' then
+                  raise;
+                end if;
+                raise exception
+                  'phase2_direct_ledger_insert_wrong_error: %', sqlerrm;
+            end;
+          end;
+          $direct_lifecycle_request_insert$;
+
           do $governance_without_transition$
           begin
             begin
@@ -3963,6 +4132,529 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
       );
       expect(runDockerSqlText(container, residueSql)).toBe("0|0|0|t");
     }, 45_000);
+
+    it("serializes submit and approval while rolling failures back without residue", async () => {
+      const container = settlementRuntimeRegressionContainer ?? "";
+      const actorId = "9f210000-0000-4000-8000-000000000001";
+      const financeId = "9f210000-0000-4000-8000-000000000002";
+      const organizationId = "9f220000-0000-4000-8000-000000000001";
+      const projectId = "9f230000-0000-4000-8000-000000000001";
+      const sourceVersionId = "9f240000-0000-4000-8000-000000000001";
+      const sourceSimulationId = "9f250000-0000-4000-8000-000000000001";
+      const versionAId = "9f240000-0000-4000-8000-000000000002";
+      const versionBId = "9f240000-0000-4000-8000-000000000003";
+      const simulationAId = "9f250000-0000-4000-8000-000000000002";
+      const simulationBId = "9f250000-0000-4000-8000-000000000003";
+      const staleVersionId = "9f240000-0000-4000-8000-000000000004";
+      const staleSimulationId = "9f250000-0000-4000-8000-000000000004";
+      const financeVersionId = "9f240000-0000-4000-8000-000000000005";
+      const financeSimulationId = "9f250000-0000-4000-8000-000000000005";
+      const formulaHash = "c".repeat(64);
+      const contractHash = "b".repeat(64);
+      const parameterHash = "d".repeat(64);
+      const catalogHash = "a".repeat(64);
+      const selectionHash = "e".repeat(64);
+      const contract = settlementAiCanonicalBusinessContract();
+      const compiledAst = { kind: "identifier", name: "grossRevenue" };
+      const tests = [
+        {
+          name: "标准场景",
+          inputs: {
+            grossRevenue: { type: "money_cents", amountCents: 10_000 },
+          },
+          expectedResult: { type: "money_cents", amountCents: 10_000 },
+        },
+      ];
+      const simulation = {
+        sampleSource: { kind: "historical_settlements" },
+        sampleSelection: {
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+          populationCount: 20,
+          sampledCount: 20,
+          criteria: ["confirmed"],
+        },
+        coverage: {
+          summarySchemaVersion: 2,
+          totalRecords: 20,
+          evaluatedRecords: 20,
+          skippedRecords: 0,
+          uncoveredRecords: 0,
+          zeroAmountRecords: 0,
+          reviewRoutedRecords: 0,
+          blockedRecords: 0,
+        },
+        scenarios: [
+          {
+            id: "contract:000001",
+            category: "contract_example",
+            outcome: "calculated",
+            amountCents: "10000",
+            expectedAmountCents: "10000",
+            passed: true,
+          },
+        ],
+        historicalTotals: {
+          oldPayableAmountCents: null,
+          oldReceivableAmountCents: "10000",
+          newPayableAmountCents: null,
+          newReceivableAmountCents: "10000",
+          recordCount: 20,
+          verificationStatus: "verified",
+        },
+        deltas: {
+          payableAmountCents: null,
+          receivableAmountCents: "0",
+          percentageBps: 0,
+          marginImpactCents: "0",
+        },
+        largestChanges: [],
+        warnings: [],
+      };
+      runDockerSql(
+        container,
+        `
+          begin;
+          insert into auth.users (id, email) values
+            ('${actorId}'::uuid, 'phase2-lifecycle-owner@example.invalid'),
+            ('${financeId}'::uuid, 'phase2-lifecycle-finance@example.invalid');
+          insert into public.profiles (id, email, full_name) values
+            (
+              '${actorId}'::uuid,
+              'phase2-lifecycle-owner@example.invalid',
+              'Phase2 Lifecycle Owner'
+            ),
+            (
+              '${financeId}'::uuid,
+              'phase2-lifecycle-finance@example.invalid',
+              'Phase2 Lifecycle Finance'
+            );
+          insert into public.organizations (id, name, code) values (
+            '${organizationId}'::uuid,
+            'Phase2 Lifecycle',
+            'phase2-lifecycle'
+          );
+          insert into public.organization_members (
+            organization_id, user_id, role, status
+          ) values
+            ('${organizationId}'::uuid, '${actorId}'::uuid, 'owner', 'active'),
+            ('${organizationId}'::uuid, '${financeId}'::uuid, 'finance', 'active');
+          insert into public.projects (
+            id, organization_id, code, name, created_by, owner_id
+          ) values (
+            '${projectId}'::uuid,
+            '${organizationId}'::uuid,
+            'phase2-lifecycle',
+            'Phase2 Lifecycle',
+            '${actorId}'::uuid,
+            '${actorId}'::uuid
+          );
+          insert into public.custom_settlement_rule_versions (
+            id, organization_id, project_id, scope, target_type, target_id,
+            execution_grain, composition_mode, priority, version_number,
+            status, formula, compiled_ast, variables, parameters,
+            rule_contract, system_explanation_template, missing_data_policy,
+            test_cases, simulation_summary, formula_hash, rule_contract_hash,
+            parameter_hash, variable_catalog_version, data_selection_hash,
+            simulation_id, created_by
+          ) values (
+            '${sourceVersionId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            'receivable', 'project', null, 'project_period', 'replace', 100, 1,
+            'draft', 'grossRevenue', ${sqlJson(compiledAst)}, '[]'::jsonb,
+            '{}'::jsonb, ${sqlJson(contract)},
+            '项目确认收入作为应收金额。',
+            ${sqlJson((contract as { missingDataPolicy: unknown }).missingDataPolicy)},
+            ${sqlJson(tests)}, '{}'::jsonb, '${formulaHash}', '${contractHash}',
+            '${parameterHash}', '${catalogHash}', '${selectionHash}',
+            '${sourceSimulationId}'::uuid, '${actorId}'::uuid
+          );
+          insert into public.settlement_formula_simulations (
+            id, organization_id, project_id, rule_version_id, ai_draft_id,
+            formula_hash, rule_contract_hash, parameter_hash,
+            variable_catalog_version, data_selection_hash, sample_source,
+            sample_selection, coverage, scenarios, historical_totals, deltas,
+            largest_changes, warnings, idempotency_key, created_by
+          ) values (
+            '${sourceSimulationId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            '${sourceVersionId}'::uuid,
+            null,
+            '${formulaHash}', '${contractHash}', '${parameterHash}',
+            '${catalogHash}', '${selectionHash}',
+            ${sqlJson(simulation.sampleSource)},
+            ${sqlJson(simulation.sampleSelection)},
+            ${sqlJson(simulation.coverage)},
+            ${sqlJson(simulation.scenarios)},
+            ${sqlJson(simulation.historicalTotals)},
+            ${sqlJson(simulation.deltas)},
+            ${sqlJson(simulation.largestChanges)},
+            ${sqlJson(simulation.warnings)},
+            'phase2-lifecycle-source',
+            '${actorId}'::uuid
+          );
+          set constraints all immediate;
+          commit;
+        `,
+      );
+
+      const staleEdit = await runDockerSqlAsyncCapture(
+        container,
+        `set role authenticated;
+         select pg_catalog.set_config(
+           'request.jwt.claim.sub', '${actorId}', false
+         );
+         select public.save_custom_settlement_rule_draft(
+           '${organizationId}'::uuid,
+           '${projectId}'::uuid,
+           null::uuid,
+           '${sourceSimulationId}'::uuid,
+           '${sourceVersionId}'::uuid,
+           '${sourceSimulationId}'::uuid,
+           'receivable',
+           'project',
+           null::uuid,
+           ${sqlJson({
+             priority: 101,
+             formula: "grossRevenue",
+             compiledAst,
+             variables: [],
+             parameters: {},
+             ruleContract: contract,
+             systemExplanationTemplate: "项目确认收入作为应收金额。",
+             missingDataPolicy: (contract as { missingDataPolicy: unknown })
+               .missingDataPolicy,
+             testCases: tests,
+             formulaHash,
+             contractHash,
+             parameterHash,
+             catalogHash,
+             dataSelectionHash: selectionHash,
+           })},
+           'Attempt stale edit',
+           'phase2-stale-edit'
+         );`,
+      );
+      expect(staleEdit.code).not.toBe(0);
+      expect(staleEdit.stderr).toContain(
+        "custom_settlement_rule_draft_hashes_must_change",
+      );
+      expect(
+        runDockerSqlText(
+          container,
+          `select pg_catalog.concat_ws('|',
+             (select priority from public.custom_settlement_rule_versions
+              where id = '${sourceVersionId}'::uuid),
+             (select pg_catalog.count(*)
+              from public.custom_settlement_rule_lifecycle_requests
+              where client_request_id = 'phase2-stale-edit')
+           );`,
+        ),
+      ).toBe("100|0");
+
+      const applySql = (input: {
+        actorId: string;
+        requestId: string;
+        versionId: string;
+        simulationId: string;
+        reason?: string;
+      }) => `
+        set role authenticated;
+        select pg_catalog.set_config(
+          'request.jwt.claim.sub', '${input.actorId}', false
+        );
+        select public.apply_and_submit_custom_settlement_rule(
+          '${organizationId}'::uuid,
+          '${projectId}'::uuid,
+          null::uuid,
+          '${sourceVersionId}'::uuid,
+          '${sourceSimulationId}'::uuid,
+          '${input.versionId}'::uuid,
+          '${input.simulationId}'::uuid,
+          'receivable',
+          'project',
+          null::uuid,
+          '2026-08-01T00:00:00Z'::timestamptz,
+          ${sqlString(input.reason ?? "Submit saved lifecycle draft")},
+          'submitted',
+          ${sqlString(input.requestId)}
+        )::text;
+      `;
+
+      const financeDenied = await runDockerSqlAsyncCapture(
+        container,
+        applySql({
+          actorId: financeId,
+          requestId: "phase2-finance-denied",
+          versionId: financeVersionId,
+          simulationId: financeSimulationId,
+        }),
+      );
+      expect(financeDenied.code).not.toBe(0);
+      expect(financeDenied.stderr).toContain(
+        "custom_settlement_rule_submit_access_denied",
+      );
+      expect(
+        runDockerSqlText(
+          container,
+          `select pg_catalog.count(*) from public.custom_settlement_rule_versions
+           where id = '${financeVersionId}'::uuid;`,
+        ),
+      ).toBe("0");
+
+      const [applyA, applyB] = await Promise.all([
+        runDockerSqlAsyncCapture(
+          container,
+          applySql({
+            actorId,
+            requestId: "phase2-concurrent-apply-a",
+            versionId: versionAId,
+            simulationId: simulationAId,
+          }),
+        ),
+        runDockerSqlAsyncCapture(
+          container,
+          applySql({
+            actorId,
+            requestId: "phase2-concurrent-apply-b",
+            versionId: versionBId,
+            simulationId: simulationBId,
+          }),
+        ),
+      ]);
+      expect([applyA.code, applyB.code]).toEqual([0, 0]);
+      expect(
+        runDockerSqlText(
+          container,
+          `select pg_catalog.string_agg(version_number::text, ',' order by version_number)
+           from public.custom_settlement_rule_versions
+           where id in ('${versionAId}'::uuid, '${versionBId}'::uuid);`,
+        ),
+      ).toBe("2,3");
+      expect(
+        runDockerSqlText(
+          container,
+          `select pg_catalog.concat_ws('|',
+             (select pg_catalog.count(*) from public.custom_settlement_rule_versions
+              where id in ('${versionAId}'::uuid, '${versionBId}'::uuid)),
+             (select pg_catalog.count(*) from public.settlement_formula_simulations
+              where id in ('${simulationAId}'::uuid, '${simulationBId}'::uuid)),
+             (select pg_catalog.count(*) from public.custom_settlement_rule_review_events
+              where rule_version_id in ('${versionAId}'::uuid, '${versionBId}'::uuid)
+                and event_type = 'submitted')
+           );`,
+        ),
+      ).toBe("2|2|2");
+
+      const replayOne = runDockerSqlText(
+        container,
+        applySql({
+          actorId,
+          requestId: "phase2-concurrent-apply-a",
+          versionId: versionAId,
+          simulationId: simulationAId,
+        }),
+      );
+      const replayTwo = runDockerSqlText(
+        container,
+        applySql({
+          actorId,
+          requestId: "phase2-concurrent-apply-a",
+          versionId: versionAId,
+          simulationId: simulationAId,
+        }),
+      );
+      expect(replayTwo).toBe(replayOne);
+      const replayConflict = await runDockerSqlAsyncCapture(
+        container,
+        applySql({
+          actorId,
+          requestId: "phase2-concurrent-apply-a",
+          versionId: versionAId,
+          simulationId: simulationAId,
+          reason: "Different payload for the same request key",
+        }),
+      );
+      expect(replayConflict.code).not.toBe(0);
+      expect(replayConflict.stderr).toContain(
+        "custom_settlement_rule_idempotency_conflict",
+      );
+
+      const approveSql = (
+        versionId: string,
+        requestId: string,
+        effectiveFrom: string,
+      ) => `
+        set role authenticated;
+        select pg_catalog.set_config(
+          'request.jwt.claim.sub', '${actorId}', false
+        );
+        select public.review_custom_settlement_rule(
+          '${organizationId}'::uuid,
+          '${projectId}'::uuid,
+          '${versionId}'::uuid,
+          'approve',
+          '${effectiveFrom}'::timestamptz,
+          'Approve atomic lifecycle version',
+          null::text,
+          false,
+          null::text,
+          '{}'::jsonb,
+          ${sqlString(requestId)}
+        )::text;
+      `;
+      const [approvalA, approvalB] = await Promise.all([
+        runDockerSqlAsyncCapture(
+          container,
+          approveSql(
+            versionAId,
+            "phase2-concurrent-approve-a",
+            "2026-08-01T00:00:00Z",
+          ),
+        ),
+        runDockerSqlAsyncCapture(
+          container,
+          approveSql(
+            versionBId,
+            "phase2-concurrent-approve-b",
+            "2026-08-01T00:00:00Z",
+          ),
+        ),
+      ]);
+      expect(
+        [approvalA.code, approvalB.code].filter((code) => code === 0),
+      ).toHaveLength(1);
+      expect(
+        [approvalA, approvalB].find((result) => result.code !== 0)?.stderr,
+      ).toContain("custom_settlement_rule_effective_period_conflict");
+      expect(
+        runDockerSqlText(
+          container,
+          `select pg_catalog.concat_ws('|',
+             pg_catalog.count(*) filter (where status = 'active'),
+             pg_catalog.count(*) filter (where status = 'pending_review'),
+             pg_catalog.count(*) filter (where status = 'archived')
+           )
+           from public.custom_settlement_rule_versions
+           where id in ('${versionAId}'::uuid, '${versionBId}'::uuid);`,
+        ),
+      ).toBe("1|1|0");
+
+      const pendingVersionId = runDockerSqlText(
+        container,
+        `select id::text from public.custom_settlement_rule_versions
+         where id in ('${versionAId}'::uuid, '${versionBId}'::uuid)
+           and status = 'pending_review';`,
+      );
+      runDockerSql(
+        container,
+        approveSql(
+          pendingVersionId,
+          "phase2-replacement-approve",
+          "2026-09-01T00:00:00Z",
+        ),
+      );
+      expect(
+        runDockerSqlText(
+          container,
+          `select pg_catalog.concat_ws('|',
+             pg_catalog.count(*) filter (where status = 'active'),
+             pg_catalog.count(*) filter (
+               where status = 'archived'
+                 and effective_until = '2026-09-01T00:00:00Z'::timestamptz
+             )
+           )
+           from public.custom_settlement_rule_versions
+           where id in ('${versionAId}'::uuid, '${versionBId}'::uuid);`,
+        ),
+      ).toBe("1|1");
+
+      const replayAfterLifecycleChange = runDockerSqlText(
+        container,
+        applySql({
+          actorId,
+          requestId: "phase2-concurrent-apply-a",
+          versionId: versionAId,
+          simulationId: simulationAId,
+        }),
+      );
+      expect(replayAfterLifecycleChange).toBe(replayOne);
+
+      runDockerSql(
+        container,
+        `update public.custom_settlement_rule_versions
+         set data_selection_hash = '${"f".repeat(64)}'
+         where id = '${sourceVersionId}'::uuid;`,
+      );
+      const stale = await runDockerSqlAsyncCapture(
+        container,
+        applySql({
+          actorId,
+          requestId: "phase2-stale-rollback",
+          versionId: staleVersionId,
+          simulationId: staleSimulationId,
+        }),
+      );
+      expect(stale.code).not.toBe(0);
+      expect(stale.stderr).toContain("custom_settlement_rule_stale_simulation");
+      expect(
+        runDockerSqlText(
+          container,
+          `select pg_catalog.concat_ws('|',
+             (select pg_catalog.count(*) from public.custom_settlement_rule_versions
+              where id = '${staleVersionId}'::uuid),
+             (select pg_catalog.count(*) from public.settlement_formula_simulations
+              where id = '${staleSimulationId}'::uuid),
+             (select pg_catalog.count(*) from public.custom_settlement_rule_review_events
+              where rule_version_id = '${staleVersionId}'::uuid)
+           );`,
+        ),
+      ).toBe("0|0|0");
+
+      const active = JSON.parse(
+        runDockerSqlText(
+          container,
+          `select pg_catalog.jsonb_build_object(
+             'versionId', id,
+             'simulationId', simulation_id
+           )::text
+           from public.custom_settlement_rule_versions
+           where id in ('${versionAId}'::uuid, '${versionBId}'::uuid)
+             and status = 'active';`,
+        ),
+      ) as { versionId: string; simulationId: string };
+      runDockerSql(
+        container,
+        `set role authenticated;
+         select pg_catalog.set_config(
+           'request.jwt.claim.sub', '${actorId}', false
+         );
+         select public.archive_custom_settlement_rule(
+           '${organizationId}'::uuid,
+           '${projectId}'::uuid,
+           '${active.versionId}'::uuid,
+           '2026-10-01T00:00:00Z'::timestamptz,
+           'Archive with server-owned fixed fallback proof',
+           ${sqlJson({
+             simulationId: active.simulationId,
+             remainingCustomLayerCount: 0,
+             fixedFallbackAvailable: true,
+             lockedBatchCount: 7,
+           })},
+           'phase2-active-archive'
+         );`,
+      );
+      expect(
+        runDockerSqlText(
+          container,
+          `select pg_catalog.concat_ws('|', status, effective_until::text)
+           from public.custom_settlement_rule_versions
+           where id = '${active.versionId}'::uuid;`,
+        ),
+      ).toContain("archived|2026-10-01 00:00:00+00");
+    }, 60_000);
   },
 );
 

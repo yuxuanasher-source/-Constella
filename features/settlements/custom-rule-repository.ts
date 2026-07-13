@@ -7,7 +7,18 @@ import {
   typedRuntimeValueSchema,
   type BusinessRuleContract,
 } from "./custom-rule-contract";
-import type { NormalizedAstNode, TypedRuntimeValue } from "./custom-rule-types";
+import {
+  CUSTOM_RULE_COMPOSITION_MODES,
+  CUSTOM_RULE_EXECUTION_GRAINS,
+  CUSTOM_RULE_SCOPES,
+  CUSTOM_RULE_TARGET_TYPES,
+  CUSTOM_RULE_VERSION_STATUSES,
+  type CustomRuleScope,
+  type CustomRuleTarget,
+  type CustomRuleVersionStatus,
+  type NormalizedAstNode,
+  type TypedRuntimeValue,
+} from "./custom-rule-types";
 
 import {
   assertCoverageCounts,
@@ -178,21 +189,21 @@ type CustomRuleDraftLifecycleState<
   CurrentStatus extends Exclude<SettlementAiDraftStatus, "superseded">,
 > =
   | {
-    status: CurrentStatus;
-    supersededByDraftId: null;
-    supersededAt: null;
-  }
+      status: CurrentStatus;
+      supersededByDraftId: null;
+      supersededAt: null;
+    }
   | {
-    status: "superseded";
-    supersededByDraftId: string;
-    supersededAt: string;
-  };
+      status: "superseded";
+      supersededByDraftId: string;
+      supersededAt: string;
+    };
 
 type CustomRuleDraftState = {
   [InitialStatus in CreateSettlementAiDraftStatus]: {
     initialStatus: InitialStatus;
-  } & CustomRuleDraftFormulaStateMap[InitialStatus]
-    & CustomRuleDraftLifecycleState<
+  } & CustomRuleDraftFormulaStateMap[InitialStatus] &
+    CustomRuleDraftLifecycleState<
       CustomRuleDraftCurrentStatusMap[InitialStatus]
     >;
 }[CreateSettlementAiDraftStatus];
@@ -205,9 +216,9 @@ type CustomRuleDraftMetadata = {
   supersedesDraftId: string | null;
 };
 
-export type CustomRuleDraft = CustomRuleDraftCommonInput
-  & CustomRuleDraftMetadata
-  & CustomRuleDraftState;
+export type CustomRuleDraft = CustomRuleDraftCommonInput &
+  CustomRuleDraftMetadata &
+  CustomRuleDraftState;
 
 export type CreatedCustomRuleDraft = CustomRuleDraft & {
   duplicate: boolean;
@@ -305,13 +316,15 @@ export type SettlementSimulationWarning = {
   message: string;
 };
 
-export type SettlementSimulationPersistedFinding = SettlementSimulationWarning & {
-  kind: "warning" | "risk";
-};
+export type SettlementSimulationPersistedFinding =
+  SettlementSimulationWarning & {
+    kind: "warning" | "risk";
+  };
 
-export type SettlementSimulationPersistedFindingInput = SettlementSimulationWarning & {
-  kind?: "warning" | "risk";
-};
+export type SettlementSimulationPersistedFindingInput =
+  SettlementSimulationWarning & {
+    kind?: "warning" | "risk";
+  };
 
 export type LegacySettlementSimulationScenario = {
   name: string;
@@ -435,8 +448,7 @@ export type SettlementAiTurnCompletionInput = {
 export const SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES = {
   SETTLEMENT_AI_PROVIDER_FAILED:
     "Settlement AI provider is temporarily unavailable.",
-  SETTLEMENT_AI_OUTPUT_INVALID:
-    "Settlement AI output did not pass validation.",
+  SETTLEMENT_AI_OUTPUT_INVALID: "Settlement AI output did not pass validation.",
   SETTLEMENT_AI_CONTRACT_INVALID:
     "Settlement AI contract did not pass validation.",
   SETTLEMENT_AI_FORMULA_INVALID:
@@ -468,8 +480,7 @@ export type SettlementAiFailedTurnErrorCode =
   keyof typeof SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES;
 export type SettlementAiFailedTurnFailureSemantics = {
   errorCode: SettlementAiFailedTurnErrorCode;
-  errorSummary:
-    (typeof SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES)[SettlementAiFailedTurnErrorCode];
+  errorSummary: (typeof SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES)[SettlementAiFailedTurnErrorCode];
   retryable: boolean;
 };
 
@@ -519,6 +530,118 @@ export type GetSettlementFormulaSimulationInput = {
   owner: SettlementSimulationOwner;
 };
 
+export type CustomRuleLifecycleSource =
+  | { kind: "ai_draft"; id: string }
+  | { kind: "saved_draft"; id: string };
+
+export type ApplyAndSubmitCustomRuleInput = {
+  organizationId: string;
+  projectId: string;
+  source: CustomRuleLifecycleSource;
+  sourceSimulationId: string;
+  destinationVersionId: string;
+  destinationSimulationId: string;
+  scope: CustomRuleScope;
+  target: CustomRuleTarget;
+  effectiveFrom: string;
+  reason: string;
+  clientRequestId: string;
+  submissionEventType?: "submitted" | "resubmitted";
+};
+
+export type CustomRuleDraftPayload = {
+  priority: number;
+  formula: string;
+  compiledAst: NormalizedAstNode;
+  variables: SettlementAiJsonValue[];
+  parameters: Record<string, SettlementAiJsonValue>;
+  ruleContract: BusinessRuleContract;
+  systemExplanationTemplate: string;
+  missingDataPolicy: Record<string, SettlementAiJsonValue>;
+  testCases: SettlementAiJsonValue[];
+  formulaHash: string;
+  contractHash: string;
+  parameterHash: string;
+  catalogHash: string;
+  dataSelectionHash: string;
+};
+
+export type SaveCustomRuleDraftInput = {
+  organizationId: string;
+  projectId: string;
+  sourceAiDraftId: string | null;
+  sourceSimulationId: string;
+  ruleVersionId: string;
+  versionSimulationId: string;
+  scope: CustomRuleScope;
+  target: CustomRuleTarget;
+  draft: CustomRuleDraftPayload;
+  reason: string;
+  clientRequestId: string;
+};
+
+export type CustomRuleReviewTransitionInput = {
+  organizationId: string;
+  projectId: string;
+  ruleVersionId: string;
+  reason: string;
+  clientRequestId: string;
+};
+
+export type RequestCustomRuleChangesInput = CustomRuleReviewTransitionInput & {
+  comment: string;
+};
+
+export type ApproveCustomRuleRepositoryInput =
+  CustomRuleReviewTransitionInput & {
+    effectiveFrom: string;
+    riskSummary: Record<string, SettlementAiJsonValue>;
+  };
+
+export type ForceApproveCustomRuleRepositoryInput =
+  ApproveCustomRuleRepositoryInput & {
+    acknowledgment: string;
+  };
+
+export type ArchiveCustomRuleRepositoryInput =
+  CustomRuleReviewTransitionInput & {
+    effectiveUntil: string;
+    fallbackProof: {
+      simulationId: string;
+      remainingCustomLayerCount: number;
+      fixedFallbackAvailable: boolean;
+      lockedBatchCount: number;
+    };
+  };
+
+export type ListCustomRulesInput = {
+  organizationId: string;
+  projectId: string;
+  status?: CustomRuleVersionStatus;
+};
+
+export type ListCustomRuleReviewEventsInput = {
+  organizationId: string;
+  projectId: string;
+  ruleVersionId: string;
+};
+
+export type CustomSettlementRuleVersion = z.infer<
+  typeof customSettlementRuleVersionSchema
+>;
+export type CustomSettlementRuleReviewEvent = z.infer<
+  typeof customSettlementRuleReviewEventSchema
+>;
+export type CustomRuleLifecycleResult = {
+  version: CustomSettlementRuleVersion;
+  simulation: CompleteSettlementFormulaSimulation;
+  event: CustomSettlementRuleReviewEvent;
+};
+export type SavedCustomRuleDraftResult = Omit<
+  CustomRuleLifecycleResult,
+  "event"
+>;
+
 export type CustomRuleRepository = CustomRuleReadRepository & {
   finalizeDraftTurn(
     input: FinalizeSettlementAiDraftTurnInput,
@@ -543,6 +666,36 @@ export type CustomRuleRepository = CustomRuleReadRepository & {
   getSimulation(
     input: GetSettlementFormulaSimulationInput,
   ): Promise<SettlementFormulaSimulation | null>;
+  applyAndSubmitCustomRule(
+    input: ApplyAndSubmitCustomRuleInput,
+  ): Promise<CustomRuleLifecycleResult>;
+  saveCustomRuleDraft(
+    input: SaveCustomRuleDraftInput,
+  ): Promise<SavedCustomRuleDraftResult>;
+  requestCustomRuleChanges(
+    input: RequestCustomRuleChangesInput,
+  ): Promise<CustomRuleLifecycleResult>;
+  reopenRequestedChangesAsDraft(
+    input: CustomRuleReviewTransitionInput,
+  ): Promise<CustomRuleLifecycleResult>;
+  resubmitCustomRule(
+    input: ApplyAndSubmitCustomRuleInput,
+  ): Promise<CustomRuleLifecycleResult>;
+  approveCustomRule(
+    input: ApproveCustomRuleRepositoryInput,
+  ): Promise<CustomRuleLifecycleResult>;
+  forceApproveCustomRule(
+    input: ForceApproveCustomRuleRepositoryInput,
+  ): Promise<CustomRuleLifecycleResult>;
+  archiveCustomRule(
+    input: ArchiveCustomRuleRepositoryInput,
+  ): Promise<CustomRuleLifecycleResult>;
+  listCustomRules(
+    input: ListCustomRulesInput,
+  ): Promise<CustomSettlementRuleVersion[]>;
+  listCustomRuleReviewEvents(
+    input: ListCustomRuleReviewEventsInput,
+  ): Promise<CustomSettlementRuleReviewEvent[]>;
 };
 
 export type ResolvedCustomRuleBusinessTimezone = {
@@ -580,7 +733,10 @@ export class CustomRuleCoverageQueryError extends Error {
 export class CustomRuleCoverageCountError extends Error {
   readonly code = "CUSTOM_RULE_COVERAGE_COUNT_INVALID";
 
-  constructor(readonly source: CoverageSource, message: string) {
+  constructor(
+    readonly source: CoverageSource,
+    message: string,
+  ) {
     super(`${source}: ${message}`);
     this.name = "CustomRuleCoverageCountError";
   }
@@ -589,7 +745,10 @@ export class CustomRuleCoverageCountError extends Error {
 export class CustomRuleCoverageLimitError extends Error {
   readonly code = "CUSTOM_RULE_COVERAGE_LIMIT_EXCEEDED";
 
-  constructor(readonly source: CoverageSource, readonly limit: number) {
+  constructor(
+    readonly source: CoverageSource,
+    readonly limit: number,
+  ) {
     super(`${source}: exact row count exceeds the bounded limit of ${limit}`);
     this.name = "CustomRuleCoverageLimitError";
   }
@@ -598,7 +757,10 @@ export class CustomRuleCoverageLimitError extends Error {
 export class CustomRuleCoveragePageError extends Error {
   readonly code = "CUSTOM_RULE_COVERAGE_PAGE_INVALID";
 
-  constructor(readonly source: CoverageSource, message: string) {
+  constructor(
+    readonly source: CoverageSource,
+    message: string,
+  ) {
     super(`${source}: ${message}`);
     this.name = "CustomRuleCoveragePageError";
   }
@@ -628,7 +790,10 @@ export class CustomRulePersistenceQueryError extends Error {
 export class CustomRulePersistenceDataError extends Error {
   readonly code = "CUSTOM_RULE_PERSISTENCE_DATA_INVALID";
 
-  constructor(readonly entity: "draft" | "simulation", message: string) {
+  constructor(
+    readonly entity: "draft" | "simulation" | "lifecycle",
+    message: string,
+  ) {
     super(`Invalid persisted custom-rule ${entity}: ${message}`);
     this.name = "CustomRulePersistenceDataError";
   }
@@ -889,12 +1054,17 @@ const boundedTextSchema = nonemptyTextSchema.max(4_000);
 const preservedBoundedTextSchema = z
   .string()
   .max(4_000)
-  .refine((value) => value.trim().length > 0, "must contain non-whitespace text");
+  .refine(
+    (value) => value.trim().length > 0,
+    "must contain non-whitespace text",
+  );
 const hashSchema = z.string().regex(SHA256_PATTERN);
-const timestampSchema = z.string().refine(
-  (value) => Number.isFinite(Date.parse(value)),
-  "must be an ISO timestamp",
-);
+const timestampSchema = z
+  .string()
+  .refine(
+    (value) => Number.isFinite(Date.parse(value)),
+    "must be an ISO timestamp",
+  );
 const nonnegativeSafeIntegerSchema = z
   .number()
   .int()
@@ -904,18 +1074,15 @@ const signedSafeIntegerSchema = z
   .number()
   .int()
   .refine(Number.isSafeInteger, "must be a safe integer");
-const postgresBigintDecimalSchema = z.string().refine(
-  (value) => {
-    if (!/^-?(?:0|[1-9]\d*)$/u.test(value)) return false;
-    try {
-      const parsed = BigInt(value);
-      return parsed >= POSTGRES_BIGINT_MIN && parsed <= POSTGRES_BIGINT_MAX;
-    } catch {
-      return false;
-    }
-  },
-  "must be a canonical Postgres bigint decimal string",
-);
+const postgresBigintDecimalSchema = z.string().refine((value) => {
+  if (!/^-?(?:0|[1-9]\d*)$/u.test(value)) return false;
+  try {
+    const parsed = BigInt(value);
+    return parsed >= POSTGRES_BIGINT_MIN && parsed <= POSTGRES_BIGINT_MAX;
+  } catch {
+    return false;
+  }
+}, "must be a canonical Postgres bigint decimal string");
 const nonnegativePostgresBigintDecimalSchema =
   postgresBigintDecimalSchema.refine(
     (value) => !value.startsWith("-"),
@@ -945,7 +1112,10 @@ const generatedFormulaSchema = z.strictObject({
 });
 const generatedTestCaseSchema = z.strictObject({
   name: nonemptyTextSchema.max(200),
-  inputs: z.record(z.string().regex(IDENTIFIER_PATTERN), typedRuntimeValueSchema),
+  inputs: z.record(
+    z.string().regex(IDENTIFIER_PATTERN),
+    typedRuntimeValueSchema,
+  ),
   expectedResult: typedRuntimeValueSchema,
 });
 const safetyFlagSchema = z.strictObject({
@@ -969,32 +1139,32 @@ const CREATE_DRAFT_COMMON_INPUT_SHAPE = {
   parameterHash: hashSchema,
 };
 const clarifyingDraftInputSchema = z.strictObject({
-    ...CREATE_DRAFT_COMMON_INPUT_SHAPE,
-    status: z.literal("clarifying"),
-    unresolvedAmbiguities: z.array(unresolvedAmbiguitySchema).min(1).max(100),
-    generatedFormula: z.null(),
-    generatedExplanation: z.null(),
-    generatedTestCases: z.tuple([]),
-    formulaHash: z.null(),
-  });
+  ...CREATE_DRAFT_COMMON_INPUT_SHAPE,
+  status: z.literal("clarifying"),
+  unresolvedAmbiguities: z.array(unresolvedAmbiguitySchema).min(1).max(100),
+  generatedFormula: z.null(),
+  generatedExplanation: z.null(),
+  generatedTestCases: z.tuple([]),
+  formulaHash: z.null(),
+});
 const contractReadyDraftInputSchema = z.strictObject({
-    ...CREATE_DRAFT_COMMON_INPUT_SHAPE,
-    status: z.literal("contract_ready"),
-    unresolvedAmbiguities: z.tuple([]),
-    generatedFormula: generatedFormulaSchema,
-    generatedExplanation: boundedTextSchema.max(100_000),
-    generatedTestCases: z.array(generatedTestCaseSchema).min(1).max(200),
-    formulaHash: hashSchema,
-  });
+  ...CREATE_DRAFT_COMMON_INPUT_SHAPE,
+  status: z.literal("contract_ready"),
+  unresolvedAmbiguities: z.tuple([]),
+  generatedFormula: generatedFormulaSchema,
+  generatedExplanation: boundedTextSchema.max(100_000),
+  generatedTestCases: z.array(generatedTestCaseSchema).min(1).max(200),
+  formulaHash: hashSchema,
+});
 const failedDraftInputSchema = z.strictObject({
-    ...CREATE_DRAFT_COMMON_INPUT_SHAPE,
-    status: z.literal("failed"),
-    unresolvedAmbiguities: z.array(unresolvedAmbiguitySchema).max(100),
-    generatedFormula: z.null(),
-    generatedExplanation: z.null(),
-    generatedTestCases: z.tuple([]),
-    formulaHash: z.null(),
-  });
+  ...CREATE_DRAFT_COMMON_INPUT_SHAPE,
+  status: z.literal("failed"),
+  unresolvedAmbiguities: z.array(unresolvedAmbiguitySchema).max(100),
+  generatedFormula: z.null(),
+  generatedExplanation: z.null(),
+  generatedTestCases: z.tuple([]),
+  formulaHash: z.null(),
+});
 const createDraftInputSchema = z.discriminatedUnion("status", [
   clarifyingDraftInputSchema,
   contractReadyDraftInputSchema,
@@ -1138,12 +1308,14 @@ const simulationScenarioSchema = z
   })
   .superRefine((scenario, context) => {
     if (
-      (scenario.outcome === "calculated") !== (scenario.amountCents !== null)
+      (scenario.outcome === "calculated") !==
+      (scenario.amountCents !== null)
     ) {
       context.addIssue({
         code: "custom",
         path: ["amountCents"],
-        message: "calculated scenarios require an amount; routed scenarios forbid it",
+        message:
+          "calculated scenarios require an amount; routed scenarios forbid it",
       });
     }
   });
@@ -1229,8 +1401,105 @@ const jsonValueSchema: z.ZodType<SettlementAiJsonValue> = z.lazy(() =>
     z.null(),
     z.array(jsonValueSchema),
     z.record(z.string(), jsonValueSchema),
-  ])
+  ]),
 );
+const customRuleScopeSchema = z.enum(CUSTOM_RULE_SCOPES);
+const customRuleTargetSchema = z.discriminatedUnion("targetType", [
+  z.strictObject({ targetType: z.literal("project"), targetId: z.null() }),
+  z.strictObject({
+    targetType: z.literal("streamer_group"),
+    targetId: uuidSchema,
+  }),
+  z.strictObject({
+    targetType: z.literal("project_streamer"),
+    targetId: uuidSchema,
+  }),
+]);
+const lifecycleSourceSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("ai_draft"), id: uuidSchema }),
+  z.strictObject({ kind: z.literal("saved_draft"), id: uuidSchema }),
+]);
+const applyAndSubmitCustomRuleInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  source: lifecycleSourceSchema,
+  sourceSimulationId: uuidSchema,
+  destinationVersionId: uuidSchema,
+  destinationSimulationId: uuidSchema,
+  scope: customRuleScopeSchema,
+  target: customRuleTargetSchema,
+  effectiveFrom: timestampSchema,
+  reason: boundedTextSchema,
+  clientRequestId: nonemptyTextSchema.max(120),
+  submissionEventType: z.enum(["submitted", "resubmitted"]).optional(),
+});
+const customRuleDraftPayloadSchema = z.strictObject({
+  priority: nonnegativeSafeIntegerSchema.max(1_000_000),
+  formula: boundedTextSchema,
+  compiledAst: normalizedAstNodeSchema,
+  variables: z.array(jsonValueSchema),
+  parameters: z.record(z.string(), jsonValueSchema),
+  ruleContract: businessRuleContractSchema,
+  systemExplanationTemplate: boundedTextSchema,
+  missingDataPolicy: z.record(z.string(), jsonValueSchema),
+  testCases: z.array(jsonValueSchema),
+  formulaHash: hashSchema,
+  contractHash: hashSchema,
+  parameterHash: hashSchema,
+  catalogHash: hashSchema,
+  dataSelectionHash: hashSchema,
+});
+const saveCustomRuleDraftInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  sourceAiDraftId: uuidSchema.nullable(),
+  sourceSimulationId: uuidSchema,
+  ruleVersionId: uuidSchema,
+  versionSimulationId: uuidSchema,
+  scope: customRuleScopeSchema,
+  target: customRuleTargetSchema,
+  draft: customRuleDraftPayloadSchema,
+  reason: boundedTextSchema,
+  clientRequestId: nonemptyTextSchema.max(120),
+});
+const customRuleReviewTransitionInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  ruleVersionId: uuidSchema,
+  reason: boundedTextSchema,
+  clientRequestId: nonemptyTextSchema.max(120),
+});
+const requestCustomRuleChangesInputSchema =
+  customRuleReviewTransitionInputSchema.extend({ comment: boundedTextSchema });
+const approveCustomRuleRepositoryInputSchema =
+  customRuleReviewTransitionInputSchema.extend({
+    effectiveFrom: timestampSchema,
+    riskSummary: z.record(z.string(), jsonValueSchema),
+  });
+const forceApproveCustomRuleRepositoryInputSchema =
+  approveCustomRuleRepositoryInputSchema.extend({
+    acknowledgment: boundedTextSchema,
+  });
+const archiveCustomRuleRepositoryInputSchema =
+  customRuleReviewTransitionInputSchema.extend({
+    effectiveUntil: timestampSchema,
+    fallbackProof: z.strictObject({
+      simulationId: uuidSchema,
+      remainingCustomLayerCount: nonnegativeSafeIntegerSchema,
+      fixedFallbackAvailable: z.boolean(),
+      lockedBatchCount: nonnegativeSafeIntegerSchema,
+    }),
+  });
+const listCustomRulesInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  status: z.enum(CUSTOM_RULE_VERSION_STATUSES).optional(),
+});
+const listCustomRuleReviewEventsInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  ruleVersionId: uuidSchema,
+});
 const turnCompletionInputSchema = z.strictObject({
   providerName: nonemptyTextSchema.max(200),
   content: preservedBoundedTextSchema,
@@ -1245,10 +1514,7 @@ const failedTurnErrorCodeSchema = z.enum(
 );
 const finalizeDraftTurnInputSchema = z
   .strictObject({
-    draft: z.union([
-      clarifyingDraftInputSchema,
-      contractReadyDraftInputSchema,
-    ]),
+    draft: z.union([clarifyingDraftInputSchema, contractReadyDraftInputSchema]),
     completion: turnCompletionInputSchema,
   })
   .superRefine(validateAtomicCompletionContent);
@@ -1399,10 +1665,11 @@ function validateSimulationV2SummaryConsistency(
           "margin impact must match the active settlement scope",
         );
       }
-      const expectedPercentage = oldValue === BigInt(0)
-        ? BigInt(0)
-        : (deltaValue * BigInt(10_000)) /
-          (oldValue < BigInt(0) ? -oldValue : oldValue);
+      const expectedPercentage =
+        oldValue === BigInt(0)
+          ? BigInt(0)
+          : (deltaValue * BigInt(10_000)) /
+            (oldValue < BigInt(0) ? -oldValue : oldValue);
       if (BigInt(deltas.percentageBps) !== expectedPercentage) {
         issue(
           ["deltas", "percentageBps"],
@@ -1412,7 +1679,10 @@ function validateSimulationV2SummaryConsistency(
     }
   }
 
-  if (new Set(input.scenarios.map((scenario) => scenario.id)).size !== input.scenarios.length) {
+  if (
+    new Set(input.scenarios.map((scenario) => scenario.id)).size !==
+    input.scenarios.length
+  ) {
     issue(["scenarios"], "scenario ids must be unique");
   }
   const findingKeys = input.warnings.map(
@@ -1626,6 +1896,143 @@ const finalizedSimulationTurnRowSchema = z.strictObject({
   ]),
   simulation: insertedSimulationRowSchema,
 });
+const lifecycleVersionRowSchema = z.strictObject({
+  id: uuidSchema,
+  organization_id: uuidSchema,
+  project_id: uuidSchema,
+  scope: z.enum(CUSTOM_RULE_SCOPES),
+  target_type: z.enum(CUSTOM_RULE_TARGET_TYPES),
+  target_id: uuidSchema.nullable(),
+  execution_grain: z.enum(CUSTOM_RULE_EXECUTION_GRAINS),
+  composition_mode: z.enum(CUSTOM_RULE_COMPOSITION_MODES),
+  priority: nonnegativeSafeIntegerSchema,
+  version_number: z.number().int().positive(),
+  status: z.enum(CUSTOM_RULE_VERSION_STATUSES),
+  formula: boundedTextSchema,
+  compiled_ast: normalizedAstNodeSchema,
+  variables: z.array(jsonValueSchema),
+  parameters: z.record(z.string(), jsonValueSchema),
+  rule_contract: businessRuleContractSchema,
+  system_explanation_template: boundedTextSchema,
+  missing_data_policy: z.record(z.string(), jsonValueSchema),
+  test_cases: z.array(jsonValueSchema),
+  simulation_summary: z.record(z.string(), jsonValueSchema),
+  formula_hash: hashSchema,
+  rule_contract_hash: hashSchema,
+  parameter_hash: hashSchema,
+  variable_catalog_version: hashSchema,
+  data_selection_hash: hashSchema,
+  simulation_id: uuidSchema,
+  effective_from: timestampSchema.nullable(),
+  effective_until: timestampSchema.nullable(),
+  created_by: uuidSchema,
+  approved_by: uuidSchema.nullable(),
+  ai_draft_id: uuidSchema.nullable(),
+  reason: boundedTextSchema.nullable(),
+  created_at: timestampSchema,
+  approved_at: timestampSchema.nullable(),
+  archived_at: timestampSchema.nullable(),
+});
+const lifecycleReviewEventRowSchema = z.strictObject({
+  id: uuidSchema,
+  organization_id: uuidSchema,
+  project_id: uuidSchema,
+  rule_version_id: uuidSchema,
+  event_type: z.enum([
+    "submitted",
+    "changes_requested",
+    "resubmitted",
+    "approved",
+    "force_approved",
+    "archived",
+    "activation_failed",
+  ]),
+  actor_id: uuidSchema,
+  actor_role: z.enum(["owner", "ops_manager", "operator_business", "finance"]),
+  reason: boundedTextSchema.nullable(),
+  comment: boundedTextSchema.nullable(),
+  before_status: z.enum(CUSTOM_RULE_VERSION_STATUSES).nullable(),
+  after_status: z.enum(CUSTOM_RULE_VERSION_STATUSES).nullable(),
+  risk_summary: z.record(z.string(), jsonValueSchema),
+  formula_hash: hashSchema,
+  rule_contract_hash: hashSchema,
+  parameter_hash: hashSchema,
+  variable_catalog_version: hashSchema,
+  data_selection_hash: hashSchema,
+  created_at: timestampSchema,
+});
+const lifecycleResultRowSchema = z.strictObject({
+  version: lifecycleVersionRowSchema,
+  simulation: completeSimulationRowSchema,
+  event: lifecycleReviewEventRowSchema,
+});
+const savedDraftResultRowSchema = lifecycleResultRowSchema.omit({
+  event: true,
+});
+
+const LIFECYCLE_VERSION_SELECT = Object.keys(
+  lifecycleVersionRowSchema.shape,
+).join(", ");
+const LIFECYCLE_REVIEW_EVENT_SELECT = Object.keys(
+  lifecycleReviewEventRowSchema.shape,
+).join(", ");
+
+export const customSettlementRuleVersionSchema = z.strictObject({
+  id: uuidSchema,
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  scope: z.enum(CUSTOM_RULE_SCOPES),
+  target: customRuleTargetSchema,
+  executionGrain: z.enum(CUSTOM_RULE_EXECUTION_GRAINS),
+  compositionMode: z.enum(CUSTOM_RULE_COMPOSITION_MODES),
+  priority: nonnegativeSafeIntegerSchema,
+  versionNumber: z.number().int().positive(),
+  status: z.enum(CUSTOM_RULE_VERSION_STATUSES),
+  formula: boundedTextSchema,
+  compiledAst: normalizedAstNodeSchema,
+  variables: z.array(jsonValueSchema),
+  parameters: z.record(z.string(), jsonValueSchema),
+  ruleContract: businessRuleContractSchema,
+  systemExplanationTemplate: boundedTextSchema,
+  missingDataPolicy: z.record(z.string(), jsonValueSchema),
+  testCases: z.array(jsonValueSchema),
+  simulationSummary: z.record(z.string(), jsonValueSchema),
+  formulaHash: hashSchema,
+  contractHash: hashSchema,
+  parameterHash: hashSchema,
+  catalogHash: hashSchema,
+  dataSelectionHash: hashSchema,
+  simulationId: uuidSchema,
+  effectiveFrom: timestampSchema.nullable(),
+  effectiveUntil: timestampSchema.nullable(),
+  createdBy: uuidSchema,
+  approvedBy: uuidSchema.nullable(),
+  aiDraftId: uuidSchema.nullable(),
+  reason: boundedTextSchema.nullable(),
+  createdAt: timestampSchema,
+  approvedAt: timestampSchema.nullable(),
+  archivedAt: timestampSchema.nullable(),
+});
+export const customSettlementRuleReviewEventSchema = z.strictObject({
+  id: uuidSchema,
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  ruleVersionId: uuidSchema,
+  eventType: lifecycleReviewEventRowSchema.shape.event_type,
+  actorId: uuidSchema,
+  actorRole: lifecycleReviewEventRowSchema.shape.actor_role,
+  reason: boundedTextSchema.nullable(),
+  comment: boundedTextSchema.nullable(),
+  beforeStatus: z.enum(CUSTOM_RULE_VERSION_STATUSES).nullable(),
+  afterStatus: z.enum(CUSTOM_RULE_VERSION_STATUSES).nullable(),
+  riskSummary: z.record(z.string(), jsonValueSchema),
+  formulaHash: hashSchema,
+  contractHash: hashSchema,
+  parameterHash: hashSchema,
+  catalogHash: hashSchema,
+  dataSelectionHash: hashSchema,
+  createdAt: timestampSchema,
+});
 type DraftRow = z.infer<typeof draftRowSchema>;
 type CreatedDraftRow = z.infer<typeof createdDraftRowSchema>;
 type LegacySimulationRow = z.infer<typeof legacySimulationRowSchema>;
@@ -1633,9 +2040,7 @@ type CompleteSimulationRow = z.infer<typeof completeSimulationRowSchema>;
 type SimulationRow = z.infer<typeof simulationRowSchema>;
 type InsertedSimulationRow = z.infer<typeof insertedSimulationRowSchema>;
 
-export class SupabaseCustomRuleReadRepository
-  implements CustomRuleRepository
-{
+export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
   private readonly maxRowsPerSource: number;
   private readonly businessTimezone: ResolvedCustomRuleBusinessTimezone;
 
@@ -1737,11 +2142,7 @@ export class SupabaseCustomRuleReadRepository
     if (error) {
       throw new CustomRulePersistenceQueryError("finalize_failed_turn", error);
     }
-    const row = parsePersistenceRow(
-      createdFailedDraftRowSchema,
-      data,
-      "draft",
-    );
+    const row = parsePersistenceRow(createdFailedDraftRowSchema, data, "draft");
     return { ...toCustomRuleDraft(row), duplicate: row.duplicate };
   }
 
@@ -1781,11 +2182,7 @@ export class SupabaseCustomRuleReadRepository
     if (error) {
       throw new CustomRulePersistenceQueryError("create_draft", error);
     }
-    const row = parsePersistenceRow(
-      createdDraftRowSchema,
-      data,
-      "draft",
-    );
+    const row = parsePersistenceRow(createdDraftRowSchema, data, "draft");
     return { ...toCustomRuleDraft(row), duplicate: row.duplicate };
   }
 
@@ -1818,9 +2215,7 @@ export class SupabaseCustomRuleReadRepository
       );
     }
     return data.map((row) =>
-      toCustomRuleDraft(
-        parsePersistenceRow(draftRowSchema, row, "draft"),
-      ),
+      toCustomRuleDraft(parsePersistenceRow(draftRowSchema, row, "draft")),
     );
   }
 
@@ -1845,9 +2240,7 @@ export class SupabaseCustomRuleReadRepository
     }
     return data === null
       ? null
-      : toCustomRuleDraft(
-          parsePersistenceRow(draftRowSchema, data, "draft"),
-        );
+      : toCustomRuleDraft(parsePersistenceRow(draftRowSchema, data, "draft"));
   }
 
   async insertSimulation(
@@ -1866,8 +2259,7 @@ export class SupabaseCustomRuleReadRepository
         p_project_id: input.projectId,
         p_rule_version_id:
           input.owner.kind === "rule_version" ? input.owner.id : null,
-        p_ai_draft_id:
-          input.owner.kind === "ai_draft" ? input.owner.id : null,
+        p_ai_draft_id: input.owner.kind === "ai_draft" ? input.owner.id : null,
         p_idempotency_key: input.idempotencyKey,
         p_formula_hash: input.formulaHash,
         p_rule_contract_hash: input.ruleContractHash,
@@ -1957,6 +2349,297 @@ export class SupabaseCustomRuleReadRepository
       : toSettlementFormulaSimulation(
           parsePersistenceRow(simulationRowSchema, data, "simulation"),
         );
+  }
+
+  async applyAndSubmitCustomRule(
+    unsafeInput: ApplyAndSubmitCustomRuleInput,
+  ): Promise<CustomRuleLifecycleResult> {
+    const input = parsePersistenceInput(
+      applyAndSubmitCustomRuleInputSchema,
+      unsafeInput,
+      "apply and submit custom rule input",
+    );
+    const { data, error } = await this.client.rpc(
+      "apply_and_submit_custom_settlement_rule",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_source_ai_draft_id:
+          input.source.kind === "ai_draft" ? input.source.id : null,
+        p_source_rule_version_id:
+          input.source.kind === "saved_draft" ? input.source.id : null,
+        p_source_simulation_id: input.sourceSimulationId,
+        p_rule_version_id: input.destinationVersionId,
+        p_version_simulation_id: input.destinationSimulationId,
+        p_scope: input.scope,
+        p_target_type: input.target.targetType,
+        p_target_id: input.target.targetId,
+        p_effective_from: input.effectiveFrom,
+        p_reason: input.reason,
+        p_submission_event_type: input.submissionEventType ?? "submitted",
+        p_client_request_id: input.clientRequestId,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError("apply_and_submit_rule", error);
+    }
+    const row = parsePersistenceRow(
+      lifecycleResultRowSchema,
+      data,
+      "lifecycle",
+    );
+    return {
+      version: toCustomSettlementRuleVersion(row.version),
+      simulation: toSettlementFormulaSimulation(row.simulation),
+      event: toCustomSettlementRuleReviewEvent(row.event),
+    };
+  }
+
+  async saveCustomRuleDraft(
+    unsafeInput: SaveCustomRuleDraftInput,
+  ): Promise<SavedCustomRuleDraftResult> {
+    const input = parsePersistenceInput(
+      saveCustomRuleDraftInputSchema,
+      unsafeInput,
+      "save custom rule draft input",
+    );
+    const { data, error } = await this.client.rpc(
+      "save_custom_settlement_rule_draft",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_source_ai_draft_id: input.sourceAiDraftId,
+        p_source_simulation_id: input.sourceSimulationId,
+        p_rule_version_id: input.ruleVersionId,
+        p_version_simulation_id: input.versionSimulationId,
+        p_scope: input.scope,
+        p_target_type: input.target.targetType,
+        p_target_id: input.target.targetId,
+        p_draft: input.draft,
+        p_reason: input.reason,
+        p_client_request_id: input.clientRequestId,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError("save_rule_draft", error);
+    }
+    const row = parsePersistenceRow(
+      savedDraftResultRowSchema,
+      data,
+      "lifecycle",
+    );
+    return {
+      version: toCustomSettlementRuleVersion(row.version),
+      simulation: toSettlementFormulaSimulation(row.simulation),
+    };
+  }
+
+  async requestCustomRuleChanges(
+    unsafeInput: RequestCustomRuleChangesInput,
+  ): Promise<CustomRuleLifecycleResult> {
+    const input = parsePersistenceInput(
+      requestCustomRuleChangesInputSchema,
+      unsafeInput,
+      "request custom rule changes input",
+    );
+    return this.reviewCustomRule(
+      input,
+      "request_changes",
+      null,
+      input.comment,
+      false,
+      null,
+      {},
+      "request_rule_changes",
+    );
+  }
+
+  async reopenRequestedChangesAsDraft(
+    unsafeInput: CustomRuleReviewTransitionInput,
+  ): Promise<CustomRuleLifecycleResult> {
+    const input = parsePersistenceInput(
+      customRuleReviewTransitionInputSchema,
+      unsafeInput,
+      "reopen custom rule draft input",
+    );
+    return this.reviewCustomRule(
+      input,
+      "reopen",
+      null,
+      null,
+      false,
+      null,
+      {},
+      "reopen_rule_draft",
+    );
+  }
+
+  async resubmitCustomRule(
+    input: ApplyAndSubmitCustomRuleInput,
+  ): Promise<CustomRuleLifecycleResult> {
+    return this.applyAndSubmitCustomRule({
+      ...input,
+      submissionEventType: "resubmitted",
+    });
+  }
+
+  async approveCustomRule(
+    unsafeInput: ApproveCustomRuleRepositoryInput,
+  ): Promise<CustomRuleLifecycleResult> {
+    const input = parsePersistenceInput(
+      approveCustomRuleRepositoryInputSchema,
+      unsafeInput,
+      "approve custom rule input",
+    );
+    return this.reviewCustomRule(
+      input,
+      "approve",
+      input.effectiveFrom,
+      null,
+      false,
+      null,
+      input.riskSummary,
+      "approve_rule",
+    );
+  }
+
+  async forceApproveCustomRule(
+    unsafeInput: ForceApproveCustomRuleRepositoryInput,
+  ): Promise<CustomRuleLifecycleResult> {
+    const input = parsePersistenceInput(
+      forceApproveCustomRuleRepositoryInputSchema,
+      unsafeInput,
+      "force approve custom rule input",
+    );
+    return this.reviewCustomRule(
+      input,
+      "approve",
+      input.effectiveFrom,
+      null,
+      true,
+      input.acknowledgment,
+      input.riskSummary,
+      "force_approve_rule",
+    );
+  }
+
+  async archiveCustomRule(
+    unsafeInput: ArchiveCustomRuleRepositoryInput,
+  ): Promise<CustomRuleLifecycleResult> {
+    const input = parsePersistenceInput(
+      archiveCustomRuleRepositoryInputSchema,
+      unsafeInput,
+      "archive custom rule input",
+    );
+    const { data, error } = await this.client.rpc(
+      "archive_custom_settlement_rule",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_rule_version_id: input.ruleVersionId,
+        p_effective_until: input.effectiveUntil,
+        p_reason: input.reason,
+        p_fallback_proof: input.fallbackProof,
+        p_client_request_id: input.clientRequestId,
+      },
+    );
+    return parseLifecycleRpcResult(data, error, "archive_rule");
+  }
+
+  async listCustomRules(
+    unsafeInput: ListCustomRulesInput,
+  ): Promise<CustomSettlementRuleVersion[]> {
+    const input = parsePersistenceInput(
+      listCustomRulesInputSchema,
+      unsafeInput,
+      "list custom rules input",
+    );
+    let query = this.client
+      .from("custom_settlement_rule_versions")
+      .select(LIFECYCLE_VERSION_SELECT)
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId);
+    if (input.status !== undefined) query = query.eq("status", input.status);
+    const { data, error } = await query
+      .order("version_number", { ascending: false })
+      .order("id", { ascending: false })
+      .returns<unknown[]>();
+    if (error) {
+      throw new CustomRulePersistenceQueryError("list_rule_versions", error);
+    }
+    if (!Array.isArray(data)) {
+      throw new CustomRulePersistenceDataError(
+        "lifecycle",
+        "rule list result must be an array",
+      );
+    }
+    return data.map((row) =>
+      toCustomSettlementRuleVersion(
+        parsePersistenceRow(lifecycleVersionRowSchema, row, "lifecycle"),
+      ),
+    );
+  }
+
+  async listCustomRuleReviewEvents(
+    unsafeInput: ListCustomRuleReviewEventsInput,
+  ): Promise<CustomSettlementRuleReviewEvent[]> {
+    const input = parsePersistenceInput(
+      listCustomRuleReviewEventsInputSchema,
+      unsafeInput,
+      "list custom rule review events input",
+    );
+    const { data, error } = await this.client
+      .from("custom_settlement_rule_review_events")
+      .select(LIFECYCLE_REVIEW_EVENT_SELECT)
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("rule_version_id", input.ruleVersionId)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .returns<unknown[]>();
+    if (error) {
+      throw new CustomRulePersistenceQueryError("list_review_events", error);
+    }
+    if (!Array.isArray(data)) {
+      throw new CustomRulePersistenceDataError(
+        "lifecycle",
+        "review event list result must be an array",
+      );
+    }
+    return data.map((row) =>
+      toCustomSettlementRuleReviewEvent(
+        parsePersistenceRow(lifecycleReviewEventRowSchema, row, "lifecycle"),
+      ),
+    );
+  }
+
+  private async reviewCustomRule(
+    input: CustomRuleReviewTransitionInput,
+    action: "request_changes" | "reopen" | "approve" | "activation_failed",
+    effectiveFrom: string | null,
+    comment: string | null,
+    force: boolean,
+    acknowledgment: string | null,
+    riskSummary: Record<string, SettlementAiJsonValue>,
+    operation: string,
+  ): Promise<CustomRuleLifecycleResult> {
+    const { data, error } = await this.client.rpc(
+      "review_custom_settlement_rule",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_rule_version_id: input.ruleVersionId,
+        p_action: action,
+        p_effective_from: effectiveFrom,
+        p_reason: input.reason,
+        p_comment: comment,
+        p_force: force,
+        p_acknowledgment: acknowledgment,
+        p_risk_summary: riskSummary,
+        p_client_request_id: input.clientRequestId,
+      },
+    );
+    return parseLifecycleRpcResult(data, error, operation);
   }
 
   async getProjectVariableCoverage(
@@ -2185,10 +2868,7 @@ export class SupabaseCustomRuleReadRepository
         offset,
         offset + SETTLEMENT_BATCH_ID_CHUNK_SIZE,
       );
-      const snapshot = await this.listSettlementItemChunk(
-        input,
-        batchIdChunk,
-      );
+      const snapshot = await this.listSettlementItemChunk(input, batchIdChunk);
       totalExactCount += snapshot.exactCount;
       if (totalExactCount > this.maxRowsPerSource) {
         throw new CustomRuleCoverageLimitError(
@@ -2260,10 +2940,7 @@ async function readKeysetRows<Row>(
   if (highWaterResult.error) {
     throw new CustomRuleCoverageQueryError(source, highWaterResult.error);
   }
-  const exactCount = validateExactCoverageCount(
-    source,
-    highWaterResult.count,
-  );
+  const exactCount = validateExactCoverageCount(source, highWaterResult.count);
   if (exactCount > limit) {
     throw new CustomRuleCoverageLimitError(source, limit);
   }
@@ -2313,10 +2990,7 @@ async function readKeysetRows<Row>(
       );
     }
 
-    const expectedPageLength = Math.min(
-      POSTGREST_PAGE_SIZE,
-      remainingCount,
-    );
+    const expectedPageLength = Math.min(POSTGREST_PAGE_SIZE, remainingCount);
     if (result.data.length !== expectedPageLength) {
       throw new CustomRuleCoveragePageError(
         source,
@@ -2413,11 +3087,13 @@ function aggregateProjectVariableCoverage(input: {
       [row.joined_at, row.removed_at].filter(isString),
     ),
   );
-  const liveStartedCount = countPresent(input.reports, (row) =>
-    firstRelation(row.live_tasks)?.system_started_at,
+  const liveStartedCount = countPresent(
+    input.reports,
+    (row) => firstRelation(row.live_tasks)?.system_started_at,
   );
-  const normalizedByType = (itemType: NormalizedCostItemCoverageRow["item_type"]) =>
-    input.normalizedCostItems.filter((row) => row.item_type === itemType);
+  const normalizedByType = (
+    itemType: NormalizedCostItemCoverageRow["item_type"],
+  ) => input.normalizedCostItems.filter((row) => row.item_type === itemType);
   const giftItems = normalizedByType("gift");
   const supplierItems = normalizedByType("supplier_fee");
   const trafficItems = normalizedByType("traffic");
@@ -2490,12 +3166,7 @@ function aggregateProjectVariableCoverage(input: {
       reportCount,
       reportPeriod,
     ),
-    weekday: coverage(
-      "weekday",
-      liveStartedCount,
-      reportCount,
-      reportPeriod,
-    ),
+    weekday: coverage("weekday", liveStartedCount, reportCount, reportPeriod),
     hour_of_day: coverage(
       "hour_of_day",
       liveStartedCount,
@@ -2516,16 +3187,12 @@ function aggregateProjectVariableCoverage(input: {
       streamerCount,
       streamerPeriod,
     ),
-    streamer_level: coverage(
-      "streamer_level",
-      0,
-      streamerCount,
-      null,
-    ),
+    streamer_level: coverage("streamer_level", 0, streamerCount, null),
     streamer_source: coverage(
       "streamer_source",
-      countPresent(input.projectStreamers, (row) =>
-        firstRelation(row.streamers)?.source_type,
+      countPresent(
+        input.projectStreamers,
+        (row) => firstRelation(row.streamers)?.source_type,
       ),
       streamerCount,
       streamerPeriod,
@@ -2554,12 +3221,7 @@ function aggregateProjectVariableCoverage(input: {
       streamerCount,
       streamerPeriod,
     ),
-    streamer_group_ids: coverage(
-      "streamer_group_ids",
-      0,
-      streamerCount,
-      null,
-    ),
+    streamer_group_ids: coverage("streamer_group_ids", 0, streamerCount, null),
     sales_amount: coverage("sales_amount", 0, reportCount, null),
     orders_count: coverage("orders_count", 0, reportCount, null),
     gift_amount: normalizedCoverage(
@@ -2580,12 +3242,7 @@ function aggregateProjectVariableCoverage(input: {
       reportCount,
       approvedReportIds,
     ),
-    manual_adjustment: coverage(
-      "manual_adjustment",
-      0,
-      reportCount,
-      null,
-    ),
+    manual_adjustment: coverage("manual_adjustment", 0, reportCount, null),
     period_system_minutes: coverage(
       "period_system_minutes",
       countPresent(input.reports, (row) => row.system_duration),
@@ -2598,18 +3255,8 @@ function aggregateProjectVariableCoverage(input: {
       reportCount,
       reportPeriod,
     ),
-    period_sales_amount: coverage(
-      "period_sales_amount",
-      0,
-      reportCount,
-      null,
-    ),
-    period_orders_count: coverage(
-      "period_orders_count",
-      0,
-      reportCount,
-      null,
-    ),
+    period_sales_amount: coverage("period_sales_amount", 0, reportCount, null),
+    period_orders_count: coverage("period_orders_count", 0, reportCount, null),
     period_report_count: coverage(
       "period_report_count",
       periodPresence,
@@ -2636,9 +3283,7 @@ function aggregateProjectVariableCoverage(input: {
     ),
     period_receivable_amount: coverage(
       "period_receivable_amount",
-      uniqueNonNullCount(
-        receivableItems.map(({ row }) => row.live_report_id),
-      ),
+      uniqueNonNullCount(receivableItems.map(({ row }) => row.live_report_id)),
       reportCount,
       settlementPeriod(receivableItems.map(({ batch }) => batch)),
     ),
@@ -2673,8 +3318,7 @@ function normalizedCoverage(
 ): CustomRuleVariableCoverage {
   const approvedRows = rows.filter(
     (row) =>
-      row.live_report_id !== null &&
-      approvedReportIds.has(row.live_report_id),
+      row.live_report_id !== null && approvedReportIds.has(row.live_report_id),
   );
   return coverage(
     variableId,
@@ -2764,9 +3408,7 @@ function validateCoverageInput(
   const descriptors = Object.getOwnPropertyDescriptors(input);
   const keys = Reflect.ownKeys(input);
   if (
-    keys.some(
-      (key) => typeof key !== "string" || !ALLOWED_INPUT_KEYS.has(key),
-    )
+    keys.some((key) => typeof key !== "string" || !ALLOWED_INPUT_KEYS.has(key))
   ) {
     throw new CustomRuleCoverageInputError("input contains an unknown key");
   }
@@ -2778,18 +3420,11 @@ function validateCoverageInput(
     }
   }
 
-  const organizationId = nonemptyOwnString(
-    descriptors,
-    "organizationId",
-  );
+  const organizationId = nonemptyOwnString(descriptors, "organizationId");
   const projectId = nonemptyOwnString(descriptors, "projectId");
   const periodStart = optionalPeriod(descriptors, "periodStart");
   const periodEnd = optionalPeriod(descriptors, "periodEnd");
-  if (
-    periodStart &&
-    periodEnd &&
-    periodStart > periodEnd
-  ) {
+  if (periodStart && periodEnd && periodStart > periodEnd) {
     throw new CustomRuleCoverageInputError(
       "periodStart must not be later than periodEnd",
     );
@@ -3074,8 +3709,8 @@ function validateSimulationRowOwner(
   row: { rule_version_id: string | null; ai_draft_id: string | null },
   context: z.RefinementCtx,
 ): void {
-  const ownerCount = Number(row.rule_version_id !== null) +
-    Number(row.ai_draft_id !== null);
+  const ownerCount =
+    Number(row.rule_version_id !== null) + Number(row.ai_draft_id !== null);
   if (ownerCount !== 1) {
     context.addIssue({
       code: "custom",
@@ -3102,7 +3737,7 @@ function parsePersistenceInput<Output>(
 function parsePersistenceRow<Output>(
   schema: z.ZodType<Output>,
   value: unknown,
-  entity: "draft" | "simulation",
+  entity: "draft" | "simulation" | "lifecycle",
 ): Output {
   const result = schema.safeParse(value);
   if (!result.success) {
@@ -3162,10 +3797,7 @@ function assertSafeAtomicDraftTurnInput(value: unknown): void {
   assertSafeDraftPayloadInput(draft);
   assertSafeCompletionInput(completion);
   assertJsonCollectionWithinBudget(
-    [
-      jsonBudgetRoot(draft, "draft"),
-      jsonBudgetRoot(completion, "completion"),
-    ],
+    [jsonBudgetRoot(draft, "draft"), jsonBudgetRoot(completion, "completion")],
     {
       forbiddenKeys: FORBIDDEN_DRAFT_JSON_KEYS,
       enforceSubcontainerBudget: false,
@@ -3206,10 +3838,9 @@ function assertSafeAtomicSimulationTurnInput(value: unknown): void {
 }
 
 function assertSafeCompletionInput(value: unknown): void {
-  assertJsonCollectionWithinBudget(
-    [jsonBudgetRoot(value, "completion")],
-    { forbiddenKeys: FORBIDDEN_DRAFT_JSON_KEYS },
-  );
+  assertJsonCollectionWithinBudget([jsonBudgetRoot(value, "completion")], {
+    forbiddenKeys: FORBIDDEN_DRAFT_JSON_KEYS,
+  });
 }
 
 function jsonBudgetRoot(value: unknown, path: string): JsonBudgetEntry {
@@ -3223,7 +3854,12 @@ function getRequiredOwnDataValue(
 ): unknown {
   const descriptors = getPlainObjectDescriptors(value, label);
   const descriptor = descriptors[key];
-  if (!descriptor || descriptor.get || descriptor.set || !("value" in descriptor)) {
+  if (
+    !descriptor ||
+    descriptor.get ||
+    descriptor.set ||
+    !("value" in descriptor)
+  ) {
     throw new CustomRulePersistenceInputError(
       `${label}.${key} must be an own data property`,
     );
@@ -3232,39 +3868,31 @@ function getRequiredOwnDataValue(
 }
 
 function assertSafeDraftPayloadInput(value: unknown): void {
-  const entries = collectPersistenceJsonFields(
-    value,
-    "draft input",
-    [
-      "turnTrace",
-      "businessContract",
-      "unresolvedAmbiguities",
-      "aiResponse",
-      "generatedFormula",
-      "generatedTestCases",
-      "safetyFlags",
-    ],
-  );
+  const entries = collectPersistenceJsonFields(value, "draft input", [
+    "turnTrace",
+    "businessContract",
+    "unresolvedAmbiguities",
+    "aiResponse",
+    "generatedFormula",
+    "generatedTestCases",
+    "safetyFlags",
+  ]);
   assertJsonCollectionWithinBudget(entries, {
     forbiddenKeys: FORBIDDEN_DRAFT_JSON_KEYS,
   });
 }
 
 function assertSafeSimulationSummaryInput(value: unknown): void {
-  const entries = collectPersistenceJsonFields(
-    value,
-    "simulation input",
-    [
-      "sampleSource",
-      "sampleSelection",
-      "coverage",
-      "scenarios",
-      "historicalTotals",
-      "deltas",
-      "largestChanges",
-      "warnings",
-    ],
-  );
+  const entries = collectPersistenceJsonFields(value, "simulation input", [
+    "sampleSource",
+    "sampleSelection",
+    "coverage",
+    "scenarios",
+    "historicalTotals",
+    "deltas",
+    "largestChanges",
+    "warnings",
+  ]);
   assertJsonCollectionWithinBudget(entries, {
     forbiddenKeys: FORBIDDEN_SIMULATION_JSON_KEYS,
     validateString: validateSimulationSummaryString,
@@ -3378,7 +4006,12 @@ function assertJsonCollectionWithinBudget(
       addSerializedBytes(entry, 2 + Math.max(0, length - 1));
       for (let index = length - 1; index >= 0; index -= 1) {
         const descriptor = descriptors[String(index)];
-        if (!descriptor || descriptor.get || descriptor.set || !("value" in descriptor)) {
+        if (
+          !descriptor ||
+          descriptor.get ||
+          descriptor.set ||
+          !("value" in descriptor)
+        ) {
           throw new CustomRulePersistenceInputError(
             `${path}[${index}] must be an own data property`,
           );
@@ -3414,7 +4047,12 @@ function assertJsonCollectionWithinBudget(
         const key = keys[index];
         if (key === undefined) continue;
         const descriptor = descriptors[key];
-        if (!descriptor || descriptor.get || descriptor.set || !("value" in descriptor)) {
+        if (
+          !descriptor ||
+          descriptor.get ||
+          descriptor.set ||
+          !("value" in descriptor)
+        ) {
           throw new CustomRulePersistenceInputError(
             `${path}.${key} must be an own data property`,
           );
@@ -3430,10 +4068,7 @@ function assertJsonCollectionWithinBudget(
             `${path}.${key} is forbidden summary data`,
           );
         }
-        addSerializedBytes(
-          entry,
-          utf8ByteLength(JSON.stringify(key)) + 1,
-        );
+        addSerializedBytes(entry, utf8ByteLength(JSON.stringify(key)) + 1);
         stack.push({
           value: descriptor.value,
           path: `${path}.${key}`,
@@ -3447,7 +4082,6 @@ function assertJsonCollectionWithinBudget(
         `${path} must contain JSON own-data values only`,
       );
     }
-
   }
 }
 
@@ -3553,19 +4187,19 @@ function toCustomRuleDraft(row: DraftRow | CreatedDraftRow): CustomRuleDraft {
     };
     return row.status === "superseded"
       ? {
-        ...common,
-        ...state,
-        status: row.status,
-        supersededByDraftId: row.superseded_by_draft_id,
-        supersededAt: row.superseded_at,
-      }
+          ...common,
+          ...state,
+          status: row.status,
+          supersededByDraftId: row.superseded_by_draft_id,
+          supersededAt: row.superseded_at,
+        }
       : {
-        ...common,
-        ...state,
-        status: row.status,
-        supersededByDraftId: row.superseded_by_draft_id,
-        supersededAt: row.superseded_at,
-      };
+          ...common,
+          ...state,
+          status: row.status,
+          supersededByDraftId: row.superseded_by_draft_id,
+          supersededAt: row.superseded_at,
+        };
   }
 
   if (row.initial_status === "failed") {
@@ -3579,19 +4213,19 @@ function toCustomRuleDraft(row: DraftRow | CreatedDraftRow): CustomRuleDraft {
     };
     return row.status === "superseded"
       ? {
-        ...common,
-        ...state,
-        status: row.status,
-        supersededByDraftId: row.superseded_by_draft_id,
-        supersededAt: row.superseded_at,
-      }
+          ...common,
+          ...state,
+          status: row.status,
+          supersededByDraftId: row.superseded_by_draft_id,
+          supersededAt: row.superseded_at,
+        }
       : {
-        ...common,
-        ...state,
-        status: row.status,
-        supersededByDraftId: row.superseded_by_draft_id,
-        supersededAt: row.superseded_at,
-      };
+          ...common,
+          ...state,
+          status: row.status,
+          supersededByDraftId: row.superseded_by_draft_id,
+          supersededAt: row.superseded_at,
+        };
   }
 
   const generatedTestCases = requireNonemptyDraftArray(
@@ -3608,19 +4242,19 @@ function toCustomRuleDraft(row: DraftRow | CreatedDraftRow): CustomRuleDraft {
   };
   return row.status === "superseded"
     ? {
-      ...common,
-      ...state,
-      status: row.status,
-      supersededByDraftId: row.superseded_by_draft_id,
-      supersededAt: row.superseded_at,
-    }
+        ...common,
+        ...state,
+        status: row.status,
+        supersededByDraftId: row.superseded_by_draft_id,
+        supersededAt: row.superseded_at,
+      }
     : {
-      ...common,
-      ...state,
-      status: row.status,
-      supersededByDraftId: row.superseded_by_draft_id,
-      supersededAt: row.superseded_at,
-    };
+        ...common,
+        ...state,
+        status: row.status,
+        supersededByDraftId: row.superseded_by_draft_id,
+        supersededAt: row.superseded_at,
+      };
 }
 
 function requireNonemptyDraftArray<Value>(
@@ -3649,9 +4283,10 @@ function toSettlementFormulaSimulation(
 function toSettlementFormulaSimulation(
   row: SimulationRow | InsertedSimulationRow,
 ): SettlementFormulaSimulation {
-  const owner: SettlementSimulationOwner = row.ai_draft_id !== null
-    ? { kind: "ai_draft", id: row.ai_draft_id }
-    : { kind: "rule_version", id: row.rule_version_id as string };
+  const owner: SettlementSimulationOwner =
+    row.ai_draft_id !== null
+      ? { kind: "ai_draft", id: row.ai_draft_id }
+      : { kind: "rule_version", id: row.rule_version_id as string };
   const common = {
     id: row.id,
     organizationId: row.organization_id,
@@ -3723,9 +4358,10 @@ function toSettlementFormulaSimulation(
       receivableAmountCents: hasReceivableHistory
         ? row.deltas.receivableAmountCents
         : null,
-      percentageBps: hasPayableHistory || hasReceivableHistory
-        ? row.deltas.percentageBps
-        : null,
+      percentageBps:
+        hasPayableHistory || hasReceivableHistory
+          ? row.deltas.percentageBps
+          : null,
       marginImpactCents: null,
     },
     warnings: row.warnings.map((warning) => ({
@@ -3750,4 +4386,88 @@ function scopeSimulationOwnerQuery<
   return owner.kind === "ai_draft"
     ? query.eq("ai_draft_id", owner.id)
     : query.eq("rule_version_id", owner.id);
+}
+
+function toCustomSettlementRuleVersion(
+  row: z.infer<typeof lifecycleVersionRowSchema>,
+): CustomSettlementRuleVersion {
+  const target = {
+    targetType: row.target_type,
+    targetId: row.target_id,
+  } as CustomRuleTarget;
+  return customSettlementRuleVersionSchema.parse({
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    scope: row.scope,
+    target,
+    executionGrain: row.execution_grain,
+    compositionMode: row.composition_mode,
+    priority: row.priority,
+    versionNumber: row.version_number,
+    status: row.status,
+    formula: row.formula,
+    compiledAst: row.compiled_ast,
+    variables: row.variables,
+    parameters: row.parameters,
+    ruleContract: row.rule_contract,
+    systemExplanationTemplate: row.system_explanation_template,
+    missingDataPolicy: row.missing_data_policy,
+    testCases: row.test_cases,
+    simulationSummary: row.simulation_summary,
+    formulaHash: row.formula_hash,
+    contractHash: row.rule_contract_hash,
+    parameterHash: row.parameter_hash,
+    catalogHash: row.variable_catalog_version,
+    dataSelectionHash: row.data_selection_hash,
+    simulationId: row.simulation_id,
+    effectiveFrom: row.effective_from,
+    effectiveUntil: row.effective_until,
+    createdBy: row.created_by,
+    approvedBy: row.approved_by,
+    aiDraftId: row.ai_draft_id,
+    reason: row.reason,
+    createdAt: row.created_at,
+    approvedAt: row.approved_at,
+    archivedAt: row.archived_at,
+  });
+}
+
+function toCustomSettlementRuleReviewEvent(
+  row: z.infer<typeof lifecycleReviewEventRowSchema>,
+): CustomSettlementRuleReviewEvent {
+  return customSettlementRuleReviewEventSchema.parse({
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    ruleVersionId: row.rule_version_id,
+    eventType: row.event_type,
+    actorId: row.actor_id,
+    actorRole: row.actor_role,
+    reason: row.reason,
+    comment: row.comment,
+    beforeStatus: row.before_status,
+    afterStatus: row.after_status,
+    riskSummary: row.risk_summary,
+    formulaHash: row.formula_hash,
+    contractHash: row.rule_contract_hash,
+    parameterHash: row.parameter_hash,
+    catalogHash: row.variable_catalog_version,
+    dataSelectionHash: row.data_selection_hash,
+    createdAt: row.created_at,
+  });
+}
+
+function parseLifecycleRpcResult(
+  data: unknown,
+  error: unknown,
+  operation: string,
+): CustomRuleLifecycleResult {
+  if (error) throw new CustomRulePersistenceQueryError(operation, error);
+  const row = parsePersistenceRow(lifecycleResultRowSchema, data, "lifecycle");
+  return {
+    version: toCustomSettlementRuleVersion(row.version),
+    simulation: toSettlementFormulaSimulation(row.simulation),
+    event: toCustomSettlementRuleReviewEvent(row.event),
+  };
 }

@@ -17,6 +17,7 @@ import {
 } from "@/features/ai/conversation-service";
 
 import { createSettlementRuleAiAdapter } from "./custom-rule-ai";
+import * as customRuleServiceModule from "./custom-rule-service";
 import type {
   SettlementConversationPort,
   SettlementStructuredGateway,
@@ -49,6 +50,7 @@ import {
   type AuthorizedSimulationEvidencePort,
   type AuthorizedSimulationSelectionRequest,
   type CustomRuleAuthoringRepositoryPort,
+  type CustomRuleLifecycleService,
   type SettlementVariableCatalogPort,
   type StartCustomRuleSessionInput,
 } from "./custom-rule-service";
@@ -62,6 +64,327 @@ import {
 } from "./custom-rule-simulation";
 import type { CustomRuleVariableCatalog } from "./custom-rule-variable-catalog";
 import { validateCustomRuleFormula } from "./custom-rule-validator";
+import { CUSTOM_RULE_FORCE_APPROVAL_ACKNOWLEDGEMENT } from "./custom-rule-governance";
+
+describe("Phase 2 custom rule lifecycle service", () => {
+  it("exports an injected lifecycle service with production execution disabled by default", () => {
+    expect(customRuleServiceModule).toHaveProperty(
+      "createCustomRuleLifecycleService",
+    );
+    expect(
+      typeof (customRuleServiceModule as Record<string, unknown>)
+        .createCustomRuleLifecycleService,
+    ).toBe("function");
+  });
+
+  it("rejects approval before lifecycle mutation while execution is disabled", async () => {
+    const fixture = phase2LifecycleFixture();
+    const service = phase2LifecycleService(fixture);
+
+    await expect(
+      service.approveCustomRule({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        ruleVersionId: fixture.version.id,
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        reason: "Approve only when production can execute the rule.",
+        clientRequestId: "disabled-approval-1",
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_EXECUTION_DISABLED" });
+
+    expect(fixture.repository.approveCustomRule).not.toHaveBeenCalled();
+    expect(
+      fixture.repository.recordCustomRuleActivationFailure,
+    ).not.toHaveBeenCalled();
+    expect(fixture.audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "approve",
+        result: "failure",
+        isHighRisk: true,
+      }),
+    );
+  });
+
+  it("recomputes freshness, material risk, and approver eligibility from server records", async () => {
+    const fixture = phase2LifecycleFixture({
+      actor: { ...phase2Actor(), role: "owner" },
+      creatorUserId: uuid(901),
+      eligibleApprovers: [{ userId: USER_ID, role: "owner" }],
+      simulationFacts: {
+        totalOldCents: "10000",
+        totalNewCents: "20000",
+        marginImpactCents: "0",
+        riskFlags: [],
+        scenarios: [{ amountCents: "20000" }],
+        missingDataImpact: {
+          policyAction: "route_item_to_review",
+          amountDeltaCents: null,
+        },
+      },
+      riskConfiguration: {
+        project: {
+          abnormalTotalIncreaseBps: 1_000,
+          safetyCapCents: "100000",
+        },
+      },
+    });
+    const service = phase2LifecycleService(fixture, { enabled: true });
+
+    await service.approveCustomRule({
+      actor: { ...phase2Actor(), role: "streamer" },
+      projectId: PROJECT_ID,
+      ruleVersionId: fixture.version.id,
+      effectiveFrom: "2026-08-01T00:00:00.000Z",
+      reason: "Approve using only the server-owned governance context.",
+      clientRequestId: "trusted-approval-1",
+      isMaterialRisk: false,
+      approverCount: 99,
+      creatorId: USER_ID,
+      hashes: { formulaHash: "0".repeat(64) },
+      totals: { totalNewCents: "0" },
+    });
+
+    expect(
+      fixture.repository.getCustomRuleGovernanceContext,
+    ).toHaveBeenCalled();
+    expect(fixture.repository.approveCustomRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        riskSummary: expect.objectContaining({
+          material: true,
+          codes: ["abnormal_total_increase"],
+        }),
+      }),
+    );
+    expect(fixture.audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "approve",
+        objectType: "custom_settlement_rule:pending_review->active",
+        result: "success",
+      }),
+    );
+  });
+
+  it("uses the server role and complete eligible-owner set for force approval", async () => {
+    const fixture = phase2LifecycleFixture({
+      actor: { ...phase2Actor(), role: "ops_manager" },
+      eligibleApprovers: [{ userId: USER_ID, role: "ops_manager" }],
+    });
+    const service = phase2LifecycleService(fixture, { enabled: true });
+
+    await expect(
+      service.forceApproveCustomRule({
+        actor: { ...phase2Actor(), role: "owner" },
+        projectId: PROJECT_ID,
+        ruleVersionId: fixture.version.id,
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        reason: "Client role must never upgrade server authorization.",
+        acknowledgment: CUSTOM_RULE_FORCE_APPROVAL_ACKNOWLEDGEMENT,
+        clientRequestId: "force-role-1",
+      }),
+    ).rejects.toMatchObject({ code: "FORCE_APPROVAL_OWNER_ONLY" });
+
+    expect(fixture.repository.forceApproveCustomRule).not.toHaveBeenCalled();
+  });
+
+  it("persists the force marker, acknowledgement, reason, and risk summary", async () => {
+    const fixture = phase2LifecycleFixture({
+      actor: { ...phase2Actor(), role: "owner" },
+      creatorUserId: uuid(902),
+      eligibleApprovers: [{ userId: USER_ID, role: "owner" }],
+    });
+    const service = phase2LifecycleService(fixture, { enabled: true });
+
+    await service.forceApproveCustomRule({
+      actor: phase2Actor(),
+      projectId: PROJECT_ID,
+      ruleVersionId: fixture.version.id,
+      effectiveFrom: "2026-08-01T00:00:00.000Z",
+      reason: "Sole owner explicitly accepts the documented risk.",
+      acknowledgment: CUSTOM_RULE_FORCE_APPROVAL_ACKNOWLEDGEMENT,
+      clientRequestId: "force-owner-1",
+    });
+
+    expect(fixture.repository.forceApproveCustomRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        acknowledgment: CUSTOM_RULE_FORCE_APPROVAL_ACKNOWLEDGEMENT,
+        reason: "Sole owner explicitly accepts the documented risk.",
+        riskSummary: expect.objectContaining({ force: true }),
+      }),
+    );
+  });
+
+  it("requires reopen before edits and a newer fresh simulation before resubmit", async () => {
+    const fixture = phase2LifecycleFixture({
+      versionStatus: "changes_requested",
+      reopenedAt: "2026-07-13T02:00:00.000Z",
+      simulationCreatedAt: "2026-07-13T01:00:00.000Z",
+    });
+    const service = phase2LifecycleService(fixture);
+
+    await expect(
+      service.saveCustomRuleDraft({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        sourceAiDraftId: null,
+        sourceSimulationId: fixture.simulation.id,
+        ruleVersionId: fixture.version.id,
+        versionSimulationId: fixture.simulation.id,
+        scope: "payable",
+        target: { targetType: "project", targetId: null },
+        draft: phase2DraftPayload(),
+        reason: "Attempted edit before reopening.",
+        clientRequestId: "edit-before-reopen-1",
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PAYLOAD_IMMUTABLE" });
+    expect(fixture.repository.saveCustomRuleDraft).not.toHaveBeenCalled();
+
+    await service.reopenRequestedChangesAsDraft({
+      actor: phase2Actor(),
+      projectId: PROJECT_ID,
+      ruleVersionId: fixture.version.id,
+      reason: "Reopen before editing and resimulation.",
+      clientRequestId: "reopen-1",
+    });
+    expect(fixture.repository.reopenRequestedChangesAsDraft).toHaveBeenCalled();
+
+    fixture.context.version.status = "draft";
+    await expect(
+      service.resubmitCustomRule({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        source: { kind: "saved_draft", id: fixture.version.id },
+        sourceSimulationId: fixture.simulation.id,
+        destinationVersionId: uuid(910),
+        destinationSimulationId: uuid(911),
+        scope: "payable",
+        target: { targetType: "project", targetId: null },
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        reason: "Resubmit after requested changes.",
+        clientRequestId: "resubmit-stale-1",
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_RESUBMIT_SIMULATION_REQUIRED",
+    });
+    expect(fixture.repository.resubmitCustomRule).not.toHaveBeenCalled();
+  });
+
+  it("derives effective-now and scheduled from intervals rather than status", async () => {
+    const fixture = phase2LifecycleFixture();
+    fixture.repository.listCustomRules.mockResolvedValue([
+      {
+        ...fixture.version,
+        status: "archived",
+        effectiveFrom: "2026-07-01T00:00:00.000Z",
+        effectiveUntil: "2026-08-01T00:00:00.000Z",
+        approvedAt: "2026-06-30T00:00:00.000Z",
+      },
+      {
+        ...fixture.version,
+        id: uuid(920),
+        status: "active",
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        effectiveUntil: null,
+        approvedAt: "2026-07-13T00:00:00.000Z",
+      },
+    ]);
+    const service = phase2LifecycleService(
+      fixture,
+      undefined,
+      "2026-07-20T00:00:00.000Z",
+    );
+
+    const rules = await service.listCustomRules({
+      actor: phase2Actor(),
+      projectId: PROJECT_ID,
+    });
+
+    expect(rules[0]).toMatchObject({
+      status: "archived",
+      effectiveNow: true,
+      scheduled: false,
+    });
+    expect(rules[1]).toMatchObject({
+      status: "active",
+      effectiveNow: false,
+      scheduled: true,
+    });
+  });
+
+  it("archives only with server-owned fresh fallback proof", async () => {
+    const fixture = phase2LifecycleFixture({
+      versionStatus: "active",
+      archiveSafety: {
+        remainingCustomLayerCount: 0,
+        fixedFallbackAvailable: true,
+        lockedBatchCount: 4,
+      },
+    });
+    const service = phase2LifecycleService(fixture);
+
+    await service.archiveCustomRule({
+      actor: phase2Actor(),
+      projectId: PROJECT_ID,
+      ruleVersionId: fixture.version.id,
+      effectiveUntil: "2026-09-01T00:00:00.000Z",
+      reason: "Archive after verifying the fixed fallback.",
+      clientRequestId: "archive-safe-1",
+      fixedFallbackAvailable: false,
+      lockedBatchCount: 0,
+    });
+
+    expect(fixture.repository.archiveCustomRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fallbackProof: {
+          simulationId: fixture.simulation.id,
+          remainingCustomLayerCount: 0,
+          fixedFallbackAvailable: true,
+          lockedBatchCount: 4,
+        },
+      }),
+    );
+    expect(fixture.audit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "void", isHighRisk: true }),
+    );
+  });
+
+  it("records activation failure without returning a mutated version", async () => {
+    const fixture = phase2LifecycleFixture({
+      actor: { ...phase2Actor(), role: "owner" },
+      creatorUserId: uuid(930),
+      eligibleApprovers: [{ userId: USER_ID, role: "owner" }],
+    });
+    fixture.repository.approveCustomRule.mockRejectedValue(
+      new Error("concurrent target activation conflict"),
+    );
+    const service = phase2LifecycleService(fixture, { enabled: true });
+
+    await expect(
+      service.approveCustomRule({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        ruleVersionId: fixture.version.id,
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        reason: "Approval failed during atomic activation.",
+        clientRequestId: "x".repeat(120),
+      }),
+    ).rejects.toThrow("concurrent target activation conflict");
+
+    expect(
+      fixture.repository.recordCustomRuleActivationFailure,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ruleVersionId: fixture.version.id,
+        clientRequestId: expect.stringMatching(
+          /^activation_failed:[0-9a-f]{64}$/u,
+        ),
+      }),
+    );
+    expect(fixture.audit).toHaveBeenCalledWith(
+      expect.objectContaining({ result: "failure", action: "approve" }),
+    );
+    expect(fixture.context.version.status).toBe("pending_review");
+  });
+});
 
 const ORGANIZATION_ID = "00000000-0000-4000-8000-000000000001";
 const PROJECT_ID = "00000000-0000-4000-8000-000000000002";
@@ -70,6 +393,170 @@ const CONVERSATION_ID = "00000000-0000-4000-8000-000000000004";
 const FIRST_DRAFT_ID = "00000000-0000-4000-8000-000000000101";
 const CATALOG_VERSION = "a".repeat(64);
 const actor = { organizationId: ORGANIZATION_ID, userId: USER_ID };
+
+function phase2Actor() {
+  return { organizationId: ORGANIZATION_ID, userId: USER_ID };
+}
+
+function phase2DraftPayload() {
+  const parsed = parseCustomRuleFormula("system_minutes * 2");
+  if (!parsed.ok) throw new Error("phase2 draft fixture failed to parse");
+  return {
+    priority: 100,
+    formula: "system_minutes * 2",
+    compiledAst: parsed.ast,
+    variables: [],
+    parameters: {},
+    ruleContract: contract(),
+    systemExplanationTemplate: "按系统时长计算自定义结算金额。",
+    missingDataPolicy: contract().missingDataPolicy,
+    testCases: [],
+    formulaHash: "c".repeat(64),
+    contractHash: "b".repeat(64),
+    parameterHash: "d".repeat(64),
+    catalogHash: "a".repeat(64),
+    dataSelectionHash: "e".repeat(64),
+  };
+}
+
+function phase2LifecycleFixture(overrides: Record<string, unknown> = {}) {
+  const parsed = parseCustomRuleFormula("system_minutes * 2");
+  if (!parsed.ok) throw new Error("phase2 lifecycle fixture failed to parse");
+  const hashes = {
+    formulaHash: "c".repeat(64),
+    contractHash: "b".repeat(64),
+    parameterHash: "d".repeat(64),
+    catalogHash: "a".repeat(64),
+    dataSelectionHash: "e".repeat(64),
+  };
+  const version = {
+    id: uuid(900),
+    organizationId: ORGANIZATION_ID,
+    projectId: PROJECT_ID,
+    scope: "payable",
+    target: { targetType: "project", targetId: null },
+    executionGrain: "report",
+    compositionMode: "replace",
+    priority: 100,
+    versionNumber: 2,
+    status: (overrides.versionStatus ?? "pending_review") as string,
+    formula: "system_minutes * 2",
+    compiledAst: parsed.ast,
+    variables: [],
+    parameters: {},
+    ruleContract: contract(),
+    systemExplanationTemplate: "按系统时长计算自定义结算金额。",
+    missingDataPolicy: contract().missingDataPolicy,
+    testCases: [],
+    simulationSummary: {},
+    ...hashes,
+    simulationId: uuid(903),
+    effectiveFrom: null,
+    effectiveUntil: null,
+    createdBy: (overrides.creatorUserId ?? uuid(901)) as string,
+    approvedBy: null,
+    aiDraftId: FIRST_DRAFT_ID,
+    reason: "Submit for review.",
+    createdAt: "2026-07-13T00:00:00.000Z",
+    approvedAt: null,
+    archivedAt: null,
+  };
+  const simulation = {
+    id: uuid(903),
+    createdAt: (overrides.simulationCreatedAt ??
+      "2026-07-13T03:00:00.000Z") as string,
+    ...hashes,
+  };
+  const context = {
+    actor: (overrides.actor ?? {
+      ...phase2Actor(),
+      role: "owner",
+    }) as Record<string, unknown>,
+    version,
+    simulation,
+    expectedFreshness: hashes,
+    eligibleApprovers: (overrides.eligibleApprovers ?? [
+      { userId: USER_ID, role: "owner" },
+    ]) as unknown[],
+    creatorUserId: (overrides.creatorUserId ?? version.createdBy) as string,
+    simulationFacts: (overrides.simulationFacts ?? {
+      totalOldCents: "10000",
+      totalNewCents: "10000",
+      marginImpactCents: "0",
+      riskFlags: [],
+      scenarios: [{ amountCents: "10000" }],
+      missingDataImpact: {
+        policyAction: "route_item_to_review",
+        amountDeltaCents: null,
+      },
+    }) as Record<string, unknown>,
+    currentMarginCents: "10000",
+    contractFacts: {
+      target: version.target,
+      compositionMode: version.compositionMode,
+      missingDataPolicy: version.missingDataPolicy,
+      groupConflict: { resolution: "none", conflictingGroupIds: [] },
+    },
+    riskConfiguration: overrides.riskConfiguration,
+    reopenedAt: overrides.reopenedAt ?? null,
+    archiveSafety: {
+      remainingCustomLayerCount: 1,
+      fixedFallbackAvailable: false,
+      lockedBatchCount: 0,
+      ...(overrides.archiveSafety as Record<string, unknown> | undefined),
+    },
+  };
+  const lifecycleResult = {
+    version,
+    simulation,
+    event: {
+      id: uuid(904),
+      ruleVersionId: version.id,
+      eventType: "approved",
+      beforeStatus: "pending_review",
+      afterStatus: "active",
+    },
+  };
+  const repository = {
+    getCustomRuleGovernanceContext: vi.fn(async () => context),
+    saveCustomRuleDraft: vi.fn(async () => ({ version, simulation })),
+    applyAndSubmitCustomRule: vi.fn(async () => lifecycleResult),
+    requestCustomRuleChanges: vi.fn(async () => lifecycleResult),
+    reopenRequestedChangesAsDraft: vi.fn(async () => lifecycleResult),
+    resubmitCustomRule: vi.fn(async () => lifecycleResult),
+    approveCustomRule: vi.fn(async () => lifecycleResult),
+    forceApproveCustomRule: vi.fn(async () => lifecycleResult),
+    archiveCustomRule: vi.fn(async () => lifecycleResult),
+    listCustomRules: vi.fn(
+      async (): Promise<Array<Record<string, unknown>>> => [version],
+    ),
+    recordCustomRuleActivationFailure: vi.fn(async () => lifecycleResult),
+  };
+  return {
+    repository,
+    audit: vi.fn(async () => undefined),
+    context,
+    version,
+    simulation,
+  };
+}
+
+function phase2LifecycleService(
+  fixture: ReturnType<typeof phase2LifecycleFixture>,
+  executionCapability?: { enabled: boolean },
+  now = "2026-07-13T04:00:00.000Z",
+): CustomRuleLifecycleService {
+  const create = (customRuleServiceModule as Record<string, unknown>)
+    .createCustomRuleLifecycleService as (
+    input: Record<string, unknown>,
+  ) => CustomRuleLifecycleService;
+  return create({
+    repository: fixture.repository,
+    audit: fixture.audit,
+    executionCapability,
+    now: () => now,
+  });
+}
 
 const STANDALONE_RETRY_SOURCE_TURN_ID = uuid(210);
 const RETRY_CONTEXT_MESSAGE_IDS = [uuid(298), uuid(299), uuid(301)];
@@ -138,8 +625,9 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 async function recoveredStartFixture(
   clientRequestId: string,
-  initialAmbiguities: SettlementAiUnresolvedAmbiguity[] =
-    startInput(clientRequestId).initialAmbiguities,
+  initialAmbiguities: SettlementAiUnresolvedAmbiguity[] = startInput(
+    clientRequestId,
+  ).initialAmbiguities,
 ) {
   const harness = createHarness([
     clarificationOutput("Confirm the recovered hourly rate?", "confirm_rate"),
@@ -148,16 +636,12 @@ async function recoveredStartFixture(
     ...startInput(clientRequestId),
     initialAmbiguities: structuredClone(initialAmbiguities),
   };
-  const source = await harness.conversation.acceptTurn(
-    actor,
-    CONVERSATION_ID,
-    {
-      content: input.promptText,
-      mode: "fast",
-      clientRequestId: input.clientRequestId,
-      attachments: [],
-    },
-  );
+  const source = await harness.conversation.acceptTurn(actor, CONVERSATION_ID, {
+    content: input.promptText,
+    mode: "fast",
+    clientRequestId: input.clientRequestId,
+    attachments: [],
+  });
   harness.expireTurn(source.turnId);
   const recovered = await harness.service.startSession(input);
   if (!recovered.ok || recovered.kind !== "clarifying") {
@@ -167,9 +651,7 @@ async function recoveredStartFixture(
 }
 
 type RecoveryHarness = ReturnType<typeof createHarness>;
-type RecoveredStartFixture = Awaited<
-  ReturnType<typeof recoveredStartFixture>
->;
+type RecoveredStartFixture = Awaited<ReturnType<typeof recoveredStartFixture>>;
 
 function recoveryActivity(harness: RecoveryHarness) {
   return {
@@ -188,10 +670,7 @@ function recoveryActivity(harness: RecoveryHarness) {
 
 const INELIGIBLE_EXPIRED_START_CASES: ReadonlyArray<{
   name: string;
-  mutate: (
-    harness: RecoveryHarness,
-    source: CreatedConversationTurn,
-  ) => void;
+  mutate: (harness: RecoveryHarness, source: CreatedConversationTurn) => void;
 }> = [
   {
     name: "wrong error code",
@@ -345,19 +824,17 @@ const TAMPERED_RECOVERY_REPLAY_CASES: ReadonlyArray<{
     name: "tampered frozen prompt hash",
     path: "pre_accept",
     mutate: ({ harness, recovered }) =>
-      harness.tamperFrozenInvocationForTest(
-        recovered.draft.turnTrace.turnId,
-        { promptHash: "f".repeat(64) },
-      ),
+      harness.tamperFrozenInvocationForTest(recovered.draft.turnTrace.turnId, {
+        promptHash: "f".repeat(64),
+      }),
   },
   {
     name: "tampered frozen context hash",
     path: "post_duplicate",
     mutate: ({ harness, recovered }) =>
-      harness.tamperFrozenInvocationForTest(
-        recovered.draft.turnTrace.turnId,
-        { contextHash: "f".repeat(64) },
-      ),
+      harness.tamperFrozenInvocationForTest(recovered.draft.turnTrace.turnId, {
+        contextHash: "f".repeat(64),
+      }),
   },
   {
     name: "tampered durable draft contract hash",
@@ -557,12 +1034,12 @@ describe("custom rule authoring service", () => {
       },
     );
     expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
-    expect(harness.events.filter((event) => event === "ai.prepare")).toHaveLength(
-      1,
-    );
-    expect(harness.events.filter((event) => event === "ai.restore")).toHaveLength(
-      0,
-    );
+    expect(
+      harness.events.filter((event) => event === "ai.prepare"),
+    ).toHaveLength(1);
+    expect(
+      harness.events.filter((event) => event === "ai.restore"),
+    ).toHaveLength(0);
     expect(
       harness.events.filter((event) => event === "gateway.execute"),
     ).toHaveLength(1);
@@ -570,13 +1047,13 @@ describe("custom rule authoring service", () => {
       actor,
       CONVERSATION_ID,
     );
-    expect(history.turns.find((turn) => turn.id === source.turnId)).toMatchObject(
-      {
-        status: "failed",
-        errorCode: "turn_lease_expired",
-        retryable: true,
-      },
-    );
+    expect(
+      history.turns.find((turn) => turn.id === source.turnId),
+    ).toMatchObject({
+      status: "failed",
+      errorCode: "turn_lease_expired",
+      retryable: true,
+    });
     expect(history.turns.find((turn) => turn.id === uuid(202))).toMatchObject({
       retryOfTurnId: source.turnId,
       status: "completed",
@@ -618,12 +1095,12 @@ describe("custom rule authoring service", () => {
       draft: { turnTrace: { turnId: uuid(202) } },
     });
     expect(harness.catalogPort.getCatalog).toHaveBeenCalledTimes(1);
-    expect(harness.events.filter((event) => event === "ai.prepare")).toHaveLength(
-      1,
-    );
-    expect(harness.events.filter((event) => event === "ai.restore")).toHaveLength(
-      1,
-    );
+    expect(
+      harness.events.filter((event) => event === "ai.prepare"),
+    ).toHaveLength(1);
+    expect(
+      harness.events.filter((event) => event === "ai.restore"),
+    ).toHaveLength(1);
     expect(
       harness.events.filter((event) => event === "gateway.execute"),
     ).toHaveLength(2);
@@ -3664,7 +4141,8 @@ function createHarness(
       const requestKey = `${sourceTurnId}:${command.clientRequestId}`;
       const requested = retryRequests.get(requestKey);
       const successorId = retrySuccessors.get(sourceTurnId);
-      const existing = requested ??
+      const existing =
+        requested ??
         (successorId
           ? (() => {
               const turn = turns.get(successorId);
@@ -3740,13 +4218,15 @@ function createHarness(
       if (!turn) throw new Error("prepared fixture turn is missing");
       const sourceTurnId = retrySources.get(turnId);
       if (sourceTurnId) {
-        const frozen = turn.contextSnapshot ?? capturedSnapshots.get(sourceTurnId);
+        const frozen =
+          turn.contextSnapshot ?? capturedSnapshots.get(sourceTurnId);
         transitionTurn(turnId, "grounding");
         if (!frozen?.gatewayContext) {
           const source = turns.get(sourceTurnId);
           if (!source) throw new Error("retry source fixture is missing");
           const sourceMessage = messages.get(source.userMessageId);
-          if (!sourceMessage) throw new Error("retry source message is missing");
+          if (!sourceMessage)
+            throw new Error("retry source message is missing");
           return {
             turn: structuredClone(turn),
             messages: [
@@ -3936,10 +4416,7 @@ function createHarness(
         retryable: true,
       });
     },
-    tamperTurnForTest(
-      turnId: string,
-      patch: Partial<StoredConversationTurn>,
-    ) {
+    tamperTurnForTest(turnId: string, patch: Partial<StoredConversationTurn>) {
       const turn = turns.get(turnId);
       if (!turn) throw new Error("turn tamper fixture is missing");
       turns.set(turnId, { ...turn, ...structuredClone(patch) });
@@ -4005,10 +4482,7 @@ function createHarness(
     ) {
       transitionTurn(turnId, status, completion, failure);
     },
-    tamperFrozenServiceContext(
-      turnId: string,
-      patch: Record<string, unknown>,
-    ) {
+    tamperFrozenServiceContext(turnId: string, patch: Record<string, unknown>) {
       const turn = turns.get(turnId);
       const snapshot = turn?.contextSnapshot;
       const gatewayContext = snapshot?.gatewayContext;
@@ -4036,7 +4510,10 @@ function createHarness(
           },
         },
       };
-      turns.set(turnId, { ...turn, contextSnapshot: structuredClone(tampered) });
+      turns.set(turnId, {
+        ...turn,
+        contextSnapshot: structuredClone(tampered),
+      });
       capturedSnapshots.set(turnId, structuredClone(tampered));
     },
     tamperFrozenAiAmbiguitiesForTest(
@@ -4070,7 +4547,10 @@ function createHarness(
           },
         },
       };
-      turns.set(turnId, { ...turn, contextSnapshot: structuredClone(tampered) });
+      turns.set(turnId, {
+        ...turn,
+        contextSnapshot: structuredClone(tampered),
+      });
       capturedSnapshots.set(turnId, structuredClone(tampered));
     },
     tamperFrozenInvocationForTest(
@@ -4093,7 +4573,10 @@ function createHarness(
           },
         },
       };
-      turns.set(turnId, { ...turn, contextSnapshot: structuredClone(tampered) });
+      turns.set(turnId, {
+        ...turn,
+        contextSnapshot: structuredClone(tampered),
+      });
       capturedSnapshots.set(turnId, structuredClone(tampered));
     },
   };
@@ -4521,10 +5004,7 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
     this.remainingDraftReadbackMisses = 1;
   }
 
-  tamperDraftForTest(
-    draftId: string,
-    patch: Partial<CustomRuleDraft>,
-  ): void {
+  tamperDraftForTest(draftId: string, patch: Partial<CustomRuleDraft>): void {
     const draft = this.drafts.find((candidate) => candidate.id === draftId);
     if (!draft) throw new Error("draft tamper fixture is missing");
     Object.assign(draft, structuredClone(patch));
@@ -4720,10 +5200,7 @@ class InMemoryAuthoringRepository implements CustomRuleAuthoringRepositoryPort {
       (simulation) => simulation.idempotencyKey === input.idempotencyKey,
     );
     if (existing) {
-      if (
-        existing.summarySchemaVersion !== 2 ||
-        !existing.summaryComplete
-      ) {
+      if (existing.summarySchemaVersion !== 2 || !existing.summaryComplete) {
         throw new Error("legacy simulation cannot satisfy a current write");
       }
       return { ...structuredClone(existing), duplicate: true };

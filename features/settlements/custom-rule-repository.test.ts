@@ -3,6 +3,7 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import { analyzeCustomRuleDataReadiness } from "./custom-rule-data-readiness";
 import { buildCustomRuleVariableCatalog } from "./custom-rule-variable-catalog";
+import * as customRuleRepositoryModule from "./custom-rule-repository";
 import {
   SupabaseCustomRuleReadRepository,
   type ClarifyingCustomRuleDraftInput,
@@ -10,6 +11,7 @@ import {
   type CreateCustomRuleDraftInput,
   type CustomRuleRepository,
   type CustomRuleReadRepository,
+  CustomRulePersistenceDataError,
   type FailedCustomRuleDraftInput,
   type FinalizeSettlementAiSimulationSummaryInput,
   type CompleteSettlementFormulaSimulation,
@@ -19,6 +21,619 @@ import {
   type SettlementFormulaSimulation,
   type SettlementSimulationOwner,
 } from "./custom-rule-repository";
+
+describe("Phase 2 custom rule lifecycle repository", () => {
+  it("submits one atomic RPC with distinct source and destination identities", async () => {
+    const rpcData = lifecycleResultRow();
+    const rpc = vi.fn(async () => ({ data: rpcData, error: null }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient);
+    const lifecycleRepository = repository as unknown as {
+      applyAndSubmitCustomRule(
+        input: Record<string, unknown>,
+      ): Promise<unknown>;
+    };
+
+    const result = await lifecycleRepository.applyAndSubmitCustomRule({
+      organizationId: "00000000-0000-4000-8000-000000000001",
+      projectId: "00000000-0000-4000-8000-000000000002",
+      source: {
+        kind: "ai_draft",
+        id: "00000000-0000-4000-8000-000000000003",
+      },
+      sourceSimulationId: "00000000-0000-4000-8000-000000000004",
+      destinationVersionId: "00000000-0000-4000-8000-000000000005",
+      destinationSimulationId: "00000000-0000-4000-8000-000000000006",
+      scope: "payable",
+      target: { targetType: "project", targetId: null },
+      effectiveFrom: "2026-08-01T00:00:00.000Z",
+      reason: "Submit a validated custom settlement rule.",
+      clientRequestId: "phase2-submit-1",
+    });
+
+    expect(rpc).toHaveBeenCalledOnce();
+    expect(rpc).toHaveBeenCalledWith(
+      "apply_and_submit_custom_settlement_rule",
+      {
+        p_organization_id: "00000000-0000-4000-8000-000000000001",
+        p_project_id: "00000000-0000-4000-8000-000000000002",
+        p_source_ai_draft_id: "00000000-0000-4000-8000-000000000003",
+        p_source_rule_version_id: null,
+        p_source_simulation_id: "00000000-0000-4000-8000-000000000004",
+        p_rule_version_id: "00000000-0000-4000-8000-000000000005",
+        p_version_simulation_id: "00000000-0000-4000-8000-000000000006",
+        p_scope: "payable",
+        p_target_type: "project",
+        p_target_id: null,
+        p_effective_from: "2026-08-01T00:00:00.000Z",
+        p_reason: "Submit a validated custom settlement rule.",
+        p_submission_event_type: "submitted",
+        p_client_request_id: "phase2-submit-1",
+      },
+    );
+    expect(result).toMatchObject({
+      version: {
+        id: "00000000-0000-4000-8000-000000000005",
+        status: "pending_review",
+        versionNumber: 2,
+        simulationId: "00000000-0000-4000-8000-000000000006",
+      },
+      simulation: {
+        id: "00000000-0000-4000-8000-000000000006",
+        owner: {
+          kind: "rule_version",
+          id: "00000000-0000-4000-8000-000000000005",
+        },
+      },
+      event: {
+        eventType: "submitted",
+        beforeStatus: "draft",
+        afterStatus: "pending_review",
+      },
+    });
+  });
+
+  it("exports the lifecycle repository contract from the production module", () => {
+    expect(customRuleRepositoryModule).toHaveProperty(
+      "customSettlementRuleVersionSchema",
+    );
+  });
+
+  it("fails closed when an atomic lifecycle return has an unknown field", async () => {
+    const rpc = vi.fn(async () => ({
+      data: {
+        ...lifecycleResultRow(),
+        version: { ...lifecycleResultRow().version, unexpected: true },
+      },
+      error: null,
+    }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      applyAndSubmitCustomRule(
+        input: Record<string, unknown>,
+      ): Promise<unknown>;
+    };
+
+    await expect(
+      repository.applyAndSubmitCustomRule(lifecycleSubmitInput()),
+    ).rejects.toBeInstanceOf(CustomRulePersistenceDataError);
+  });
+
+  it("maps lifecycle RPC failures without retrying a partial transaction", async () => {
+    const rpc = vi.fn(async () => ({
+      data: null,
+      error: {
+        code: "P0001",
+        message: "custom_settlement_rule_stale_simulation",
+      },
+    }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      applyAndSubmitCustomRule(
+        input: Record<string, unknown>,
+      ): Promise<unknown>;
+    };
+
+    await expect(
+      repository.applyAndSubmitCustomRule(lifecycleSubmitInput()),
+    ).rejects.toMatchObject({
+      name: "CustomRulePersistenceQueryError",
+      operation: "apply_and_submit_rule",
+    });
+    expect(rpc).toHaveBeenCalledOnce();
+  });
+
+  it("returns the database replay result unchanged for the same request", async () => {
+    const data = lifecycleResultRow();
+    const rpc = vi.fn(async () => ({ data, error: null }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      applyAndSubmitCustomRule(
+        input: Record<string, unknown>,
+      ): Promise<unknown>;
+    };
+
+    const first = await repository.applyAndSubmitCustomRule(
+      lifecycleSubmitInput(),
+    );
+    const replay = await repository.applyAndSubmitCustomRule(
+      lifecycleSubmitInput(),
+    );
+
+    expect(replay).toEqual(first);
+    expect(rpc).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [
+      "requestCustomRuleChanges",
+      {
+        organizationId: lifecycleSubmitInput().organizationId,
+        projectId: lifecycleSubmitInput().projectId,
+        ruleVersionId: lifecycleResultRow().version.id,
+        reason: "The effective date needs confirmation.",
+        comment: "Please rerun the current-period simulation.",
+        clientRequestId: "phase2-request-changes-1",
+      },
+      "review_custom_settlement_rule",
+      {
+        p_organization_id: lifecycleSubmitInput().organizationId,
+        p_project_id: lifecycleSubmitInput().projectId,
+        p_rule_version_id: lifecycleResultRow().version.id,
+        p_action: "request_changes",
+        p_effective_from: null,
+        p_reason: "The effective date needs confirmation.",
+        p_comment: "Please rerun the current-period simulation.",
+        p_force: false,
+        p_acknowledgment: null,
+        p_risk_summary: {},
+        p_client_request_id: "phase2-request-changes-1",
+      },
+    ],
+    [
+      "reopenRequestedChangesAsDraft",
+      {
+        organizationId: lifecycleSubmitInput().organizationId,
+        projectId: lifecycleSubmitInput().projectId,
+        ruleVersionId: lifecycleResultRow().version.id,
+        reason: "Reopen before editing the requested fields.",
+        clientRequestId: "phase2-reopen-1",
+      },
+      "review_custom_settlement_rule",
+      {
+        p_organization_id: lifecycleSubmitInput().organizationId,
+        p_project_id: lifecycleSubmitInput().projectId,
+        p_rule_version_id: lifecycleResultRow().version.id,
+        p_action: "reopen",
+        p_effective_from: null,
+        p_reason: "Reopen before editing the requested fields.",
+        p_comment: null,
+        p_force: false,
+        p_acknowledgment: null,
+        p_risk_summary: {},
+        p_client_request_id: "phase2-reopen-1",
+      },
+    ],
+    [
+      "approveCustomRule",
+      {
+        organizationId: lifecycleSubmitInput().organizationId,
+        projectId: lifecycleSubmitInput().projectId,
+        ruleVersionId: lifecycleResultRow().version.id,
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        reason: "Approve after server-side freshness and risk checks.",
+        riskSummary: { material: false, codes: [] },
+        clientRequestId: "phase2-approve-1",
+      },
+      "review_custom_settlement_rule",
+      {
+        p_organization_id: lifecycleSubmitInput().organizationId,
+        p_project_id: lifecycleSubmitInput().projectId,
+        p_rule_version_id: lifecycleResultRow().version.id,
+        p_action: "approve",
+        p_effective_from: "2026-08-01T00:00:00.000Z",
+        p_reason: "Approve after server-side freshness and risk checks.",
+        p_comment: null,
+        p_force: false,
+        p_acknowledgment: null,
+        p_risk_summary: { material: false, codes: [] },
+        p_client_request_id: "phase2-approve-1",
+      },
+    ],
+    [
+      "forceApproveCustomRule",
+      {
+        organizationId: lifecycleSubmitInput().organizationId,
+        projectId: lifecycleSubmitInput().projectId,
+        ruleVersionId: lifecycleResultRow().version.id,
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        reason: "Sole owner accepts the documented material risk.",
+        acknowledgment: "I understand and accept the settlement risk",
+        riskSummary: { material: true, codes: ["safety_cap_exceeded"] },
+        clientRequestId: "phase2-force-approve-1",
+      },
+      "review_custom_settlement_rule",
+      {
+        p_organization_id: lifecycleSubmitInput().organizationId,
+        p_project_id: lifecycleSubmitInput().projectId,
+        p_rule_version_id: lifecycleResultRow().version.id,
+        p_action: "approve",
+        p_effective_from: "2026-08-01T00:00:00.000Z",
+        p_reason: "Sole owner accepts the documented material risk.",
+        p_comment: null,
+        p_force: true,
+        p_acknowledgment: "I understand and accept the settlement risk",
+        p_risk_summary: { material: true, codes: ["safety_cap_exceeded"] },
+        p_client_request_id: "phase2-force-approve-1",
+      },
+    ],
+    [
+      "archiveCustomRule",
+      {
+        organizationId: lifecycleSubmitInput().organizationId,
+        projectId: lifecycleSubmitInput().projectId,
+        ruleVersionId: lifecycleResultRow().version.id,
+        effectiveUntil: "2026-09-01T00:00:00.000Z",
+        reason: "Archive after verifying a fixed settlement fallback.",
+        fallbackProof: {
+          simulationId: "00000000-0000-4000-8000-000000000006",
+          remainingCustomLayerCount: 0,
+          fixedFallbackAvailable: true,
+          lockedBatchCount: 3,
+        },
+        clientRequestId: "phase2-archive-1",
+      },
+      "archive_custom_settlement_rule",
+      {
+        p_organization_id: lifecycleSubmitInput().organizationId,
+        p_project_id: lifecycleSubmitInput().projectId,
+        p_rule_version_id: lifecycleResultRow().version.id,
+        p_effective_until: "2026-09-01T00:00:00.000Z",
+        p_reason: "Archive after verifying a fixed settlement fallback.",
+        p_fallback_proof: {
+          simulationId: "00000000-0000-4000-8000-000000000006",
+          remainingCustomLayerCount: 0,
+          fixedFallbackAvailable: true,
+          lockedBatchCount: 3,
+        },
+        p_client_request_id: "phase2-archive-1",
+      },
+    ],
+  ] as const)(
+    "maps %s to its single atomic lifecycle RPC",
+    async (method, input, rpcName, rpcArguments) => {
+      const rpc = vi.fn(async () => ({
+        data: lifecycleResultRow(),
+        error: null,
+      }));
+      const repository = new SupabaseCustomRuleReadRepository({
+        rpc,
+      } as unknown as SupabaseClient) as unknown as Record<
+        string,
+        (input: unknown) => Promise<unknown>
+      >;
+
+      const result = await repository[method](input);
+
+      expect(result).toMatchObject({
+        version: { id: lifecycleResultRow().version.id },
+        event: { ruleVersionId: lifecycleResultRow().version.id },
+      });
+      expect(rpc).toHaveBeenCalledOnce();
+      expect(rpc).toHaveBeenCalledWith(rpcName, rpcArguments);
+    },
+  );
+
+  it("saves a draft and copied simulation through one RPC", async () => {
+    const data = lifecycleSavedDraftResultRow();
+    const rpc = vi.fn(async () => ({ data, error: null }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      saveCustomRuleDraft(input: Record<string, unknown>): Promise<unknown>;
+    };
+    const draft = validDraftInput();
+
+    const result = await repository.saveCustomRuleDraft({
+      organizationId: data.version.organization_id,
+      projectId: data.version.project_id,
+      sourceAiDraftId: DRAFT_ID,
+      sourceSimulationId: SIMULATION_ID,
+      ruleVersionId: data.version.id,
+      versionSimulationId: data.simulation.id,
+      scope: "payable",
+      target: { targetType: "project", targetId: null },
+      draft: {
+        priority: 100,
+        formula: draft.generatedFormula.expression,
+        compiledAst: draft.generatedFormula.normalizedAst,
+        variables: [],
+        parameters: {},
+        ruleContract: draft.businessContract,
+        systemExplanationTemplate: draft.generatedExplanation,
+        missingDataPolicy: draft.businessContract.missingDataPolicy,
+        testCases: draft.generatedTestCases,
+        formulaHash: HASH_C,
+        contractHash: HASH_B,
+        parameterHash: HASH_D,
+        catalogHash: HASH_A,
+        dataSelectionHash: HASH_E,
+      },
+      reason: "Save an editable governed draft.",
+      clientRequestId: "phase2-save-1",
+    });
+
+    expect(result).toMatchObject({ version: { status: "draft" } });
+    expect(rpc).toHaveBeenCalledWith("save_custom_settlement_rule_draft", {
+      p_organization_id: data.version.organization_id,
+      p_project_id: data.version.project_id,
+      p_source_ai_draft_id: DRAFT_ID,
+      p_source_simulation_id: SIMULATION_ID,
+      p_rule_version_id: data.version.id,
+      p_version_simulation_id: data.simulation.id,
+      p_scope: "payable",
+      p_target_type: "project",
+      p_target_id: null,
+      p_draft: expect.objectContaining({
+        priority: 100,
+        formulaHash: HASH_C,
+        contractHash: HASH_B,
+        parameterHash: HASH_D,
+        catalogHash: HASH_A,
+        dataSelectionHash: HASH_E,
+      }),
+      p_reason: "Save an editable governed draft.",
+      p_client_request_id: "phase2-save-1",
+    });
+  });
+
+  it("rejects a saved draft without all server-computed freshness hashes", async () => {
+    const rpc = vi.fn(async () => ({
+      data: lifecycleSavedDraftResultRow(),
+      error: null,
+    }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      saveCustomRuleDraft(input: Record<string, unknown>): Promise<unknown>;
+    };
+    const draft = validDraftInput();
+
+    await expect(
+      repository.saveCustomRuleDraft({
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        sourceAiDraftId: DRAFT_ID,
+        sourceSimulationId: SIMULATION_ID,
+        ruleVersionId: lifecycleResultRow().version.id,
+        versionSimulationId: lifecycleResultRow().simulation.id,
+        scope: "payable",
+        target: { targetType: "project", targetId: null },
+        draft: {
+          priority: 100,
+          formula: draft.generatedFormula.expression,
+          compiledAst: draft.generatedFormula.normalizedAst,
+          variables: [],
+          parameters: {},
+          ruleContract: draft.businessContract,
+          systemExplanationTemplate: draft.generatedExplanation,
+          missingDataPolicy: draft.businessContract.missingDataPolicy,
+          testCases: draft.generatedTestCases,
+        },
+        reason: "Attempt to save without canonical hashes.",
+        clientRequestId: "phase2-save-missing-hashes",
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("rejects lifecycle request ids longer than the database contract", async () => {
+    const rpc = vi.fn(async () => ({
+      data: lifecycleResultRow(),
+      error: null,
+    }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      applyAndSubmitCustomRule(
+        input: Record<string, unknown>,
+      ): Promise<unknown>;
+    };
+
+    await expect(
+      repository.applyAndSubmitCustomRule({
+        ...lifecycleSubmitInput(),
+        clientRequestId: "x".repeat(121),
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("lists project rules by status with deterministic newest-first order", async () => {
+    const query = createLifecycleListQuery([lifecycleResultRow().version]);
+    const repository = new SupabaseCustomRuleReadRepository({
+      from: vi.fn(() => query.builder),
+    } as unknown as SupabaseClient) as unknown as {
+      listCustomRules(input: Record<string, unknown>): Promise<unknown[]>;
+    };
+
+    const rules = await repository.listCustomRules({
+      organizationId: lifecycleSubmitInput().organizationId,
+      projectId: lifecycleSubmitInput().projectId,
+      status: "pending_review",
+    });
+
+    expect(rules).toHaveLength(1);
+    expect(query.calls).toContainEqual([
+      "eq",
+      ["organization_id", lifecycleSubmitInput().organizationId],
+    ]);
+    expect(query.calls).toContainEqual([
+      "eq",
+      ["project_id", lifecycleSubmitInput().projectId],
+    ]);
+    expect(query.calls).toContainEqual(["eq", ["status", "pending_review"]]);
+    expect(query.calls).toContainEqual([
+      "order",
+      ["version_number", { ascending: false }],
+    ]);
+    expect(query.calls).toContainEqual(["order", ["id", { ascending: false }]]);
+  });
+
+  it("lists review history by created_at and id stable tie-breaker", async () => {
+    const query = createLifecycleListQuery([lifecycleResultRow().event]);
+    const repository = new SupabaseCustomRuleReadRepository({
+      from: vi.fn(() => query.builder),
+    } as unknown as SupabaseClient) as unknown as {
+      listCustomRuleReviewEvents(
+        input: Record<string, unknown>,
+      ): Promise<unknown[]>;
+    };
+
+    await repository.listCustomRuleReviewEvents({
+      organizationId: lifecycleSubmitInput().organizationId,
+      projectId: lifecycleSubmitInput().projectId,
+      ruleVersionId: lifecycleResultRow().version.id,
+    });
+
+    expect(query.calls).toContainEqual([
+      "order",
+      ["created_at", { ascending: true }],
+    ]);
+    expect(query.calls).toContainEqual(["order", ["id", { ascending: true }]]);
+  });
+});
+
+function createLifecycleListQuery(rows: unknown[]) {
+  const calls: Array<[string, unknown[]]> = [];
+  const record = (method: string, args: unknown[]) => {
+    calls.push([method, args]);
+    return builder;
+  };
+  const builder = {
+    select: (columns: string) => record("select", [columns]),
+    eq: (column: string, value: unknown) => record("eq", [column, value]),
+    order: (column: string, options: unknown) =>
+      record("order", [column, options]),
+    returns: async <Value>() => {
+      calls.push(["returns", []]);
+      return { data: rows as Value, error: null };
+    },
+  };
+  return { builder, calls };
+}
+
+function lifecycleSavedDraftResultRow() {
+  const result = lifecycleResultRow();
+  return {
+    version: { ...result.version, status: "draft", effective_from: null },
+    simulation: result.simulation,
+  };
+}
+
+function lifecycleSubmitInput(): Record<string, unknown> {
+  return {
+    organizationId: "00000000-0000-4000-8000-000000000001",
+    projectId: "00000000-0000-4000-8000-000000000002",
+    source: {
+      kind: "ai_draft",
+      id: "00000000-0000-4000-8000-000000000003",
+    },
+    sourceSimulationId: "00000000-0000-4000-8000-000000000004",
+    destinationVersionId: "00000000-0000-4000-8000-000000000005",
+    destinationSimulationId: "00000000-0000-4000-8000-000000000006",
+    scope: "payable",
+    target: { targetType: "project", targetId: null },
+    effectiveFrom: "2026-08-01T00:00:00.000Z",
+    reason: "Submit a validated custom settlement rule.",
+    clientRequestId: "phase2-submit-1",
+  };
+}
+
+function lifecycleResultRow() {
+  const simulationInput = validSimulationInput({
+    kind: "rule_version",
+    id: "00000000-0000-4000-8000-000000000005",
+  });
+  const draft = validDraftInput();
+  return {
+    version: {
+      id: "00000000-0000-4000-8000-000000000005",
+      organization_id: "00000000-0000-4000-8000-000000000001",
+      project_id: "00000000-0000-4000-8000-000000000002",
+      scope: "payable",
+      target_type: "project",
+      target_id: null,
+      execution_grain: draft.businessContract.executionGrain,
+      composition_mode: draft.businessContract.compositionMode,
+      priority: 100,
+      version_number: 2,
+      status: "pending_review",
+      formula: draft.generatedFormula.expression,
+      compiled_ast: draft.generatedFormula.normalizedAst,
+      variables: [],
+      parameters: {},
+      rule_contract: draft.businessContract,
+      system_explanation_template: draft.generatedExplanation,
+      missing_data_policy: draft.businessContract.missingDataPolicy,
+      test_cases: draft.generatedTestCases,
+      simulation_summary: {
+        coverage: simulationInput.coverage,
+        historicalTotals: simulationInput.historicalTotals,
+        deltas: simulationInput.deltas,
+      },
+      formula_hash: HASH_C,
+      rule_contract_hash: HASH_B,
+      parameter_hash: HASH_D,
+      variable_catalog_version: HASH_A,
+      data_selection_hash: HASH_E,
+      simulation_id: "00000000-0000-4000-8000-000000000006",
+      effective_from: null,
+      effective_until: null,
+      created_by: CREATOR_ID,
+      approved_by: null,
+      ai_draft_id: DRAFT_ID,
+      reason: "Submit a validated custom settlement rule.",
+      created_at: "2026-07-13T02:00:00.000Z",
+      approved_at: null,
+      archived_at: null,
+    },
+    simulation: simulationRow(
+      {
+        kind: "rule_version",
+        id: "00000000-0000-4000-8000-000000000005",
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000006",
+        idempotency_key: "custom-rule-version:phase2-submit-1",
+      },
+    ),
+    event: {
+      id: "00000000-0000-4000-8000-000000000007",
+      organization_id: "00000000-0000-4000-8000-000000000001",
+      project_id: "00000000-0000-4000-8000-000000000002",
+      rule_version_id: "00000000-0000-4000-8000-000000000005",
+      event_type: "submitted",
+      actor_id: CREATOR_ID,
+      actor_role: "owner",
+      reason: "Submit a validated custom settlement rule.",
+      comment: null,
+      before_status: "draft",
+      after_status: "pending_review",
+      risk_summary: {},
+      formula_hash: HASH_C,
+      rule_contract_hash: HASH_B,
+      parameter_hash: HASH_D,
+      variable_catalog_version: HASH_A,
+      data_selection_hash: HASH_E,
+      created_at: "2026-07-13T02:00:00.000Z",
+    },
+  };
+}
 
 const PERIOD_START = "2026-06-01";
 const PERIOD_END = "2026-06-30";
@@ -118,25 +733,16 @@ describe("SupabaseCustomRuleReadRepository", () => {
       ]);
       expect(mock.calls[table]).toContainEqual(["limit", [1]]);
       expect(mock.calls[table]).toContainEqual(["limit", [1_000]]);
-      expect(mock.calls[table].filter(([method]) => method === "range")).toEqual(
-        [],
-      );
+      expect(
+        mock.calls[table].filter(([method]) => method === "range"),
+      ).toEqual([]);
       for (const queryCalls of mock.queries[table]) {
-        expect(queryCalls).toContainEqual([
-          "eq",
-          ["organization_id", "org-1"],
-        ]);
-        expect(queryCalls).toContainEqual([
-          "eq",
-          ["project_id", "project-1"],
-        ]);
+        expect(queryCalls).toContainEqual(["eq", ["organization_id", "org-1"]]);
+        expect(queryCalls).toContainEqual(["eq", ["project_id", "project-1"]]);
       }
     }
 
-    for (const table of [
-      "live_reports",
-      "project_cost_items",
-    ] as const) {
+    for (const table of ["live_reports", "project_cost_items"] as const) {
       expect(mock.calls[table]).toContainEqual([
         "gte",
         ["created_at", PERIOD_START_BOUNDARY],
@@ -237,11 +843,15 @@ describe("SupabaseCustomRuleReadRepository", () => {
       coverage,
     });
 
-    expect(catalog.variables.find(({ id }) => id === "sales_amount")).toMatchObject({
+    expect(
+      catalog.variables.find(({ id }) => id === "sales_amount"),
+    ).toMatchObject({
       availability: "unavailable",
       coverageNumerator: 0,
     });
-    expect(catalog.variables.find(({ id }) => id === "orders_count")).toMatchObject({
+    expect(
+      catalog.variables.find(({ id }) => id === "orders_count"),
+    ).toMatchObject({
       availability: "unavailable",
       coverageNumerator: 0,
     });
@@ -461,10 +1071,7 @@ describe("SupabaseCustomRuleReadRepository", () => {
       periodEnd: "2026-03-08",
     });
 
-    for (const table of [
-      "live_reports",
-      "project_cost_items",
-    ] as const) {
+    for (const table of ["live_reports", "project_cost_items"] as const) {
       expect(mock.calls[table]).toContainEqual([
         "gte",
         ["created_at", "2026-03-08T00:00:00.000-05:00"],
@@ -480,9 +1087,7 @@ describe("SupabaseCustomRuleReadRepository", () => {
     ]);
     expect(mock.calls.project_streamers).toContainEqual([
       "or",
-      [
-        "removed_at.is.null,removed_at.gte.2026-03-08T00:00:00.000-05:00",
-      ],
+      ["removed_at.is.null,removed_at.gte.2026-03-08T00:00:00.000-05:00"],
     ]);
     expect(mock.calls.settlement_batches).toContainEqual([
       "gte",
@@ -674,8 +1279,12 @@ describe("SupabaseCustomRuleReadRepository", () => {
       numerator: 1_001,
       denominator: 1_001,
     });
-    expect(mock.calls.live_reports.filter(([method]) => method === "range")).toEqual([]);
-    expect(mock.calls.live_reports.filter(([method]) => method === "limit")).toEqual([
+    expect(
+      mock.calls.live_reports.filter(([method]) => method === "range"),
+    ).toEqual([]);
+    expect(
+      mock.calls.live_reports.filter(([method]) => method === "limit"),
+    ).toEqual([
       ["limit", [1]],
       ["limit", [1_000]],
       ["limit", [1_000]],
@@ -711,12 +1320,18 @@ describe("SupabaseCustomRuleReadRepository", () => {
       projectId: "project-1",
     });
 
-    expect(mock.calls.live_reports.filter(([method]) => method === "range")).toEqual([]);
-    expect(mock.calls.live_reports.filter(([method]) => method === "limit")).toEqual([
+    expect(
+      mock.calls.live_reports.filter(([method]) => method === "range"),
+    ).toEqual([]);
+    expect(
+      mock.calls.live_reports.filter(([method]) => method === "limit"),
+    ).toEqual([
       ["limit", [1]],
       ["limit", [1_000]],
     ]);
-    expect(mock.calls.live_reports.filter(([method]) => method === "gt")).toEqual([]);
+    expect(
+      mock.calls.live_reports.filter(([method]) => method === "gt"),
+    ).toEqual([]);
   });
 
   it.each([
@@ -744,27 +1359,30 @@ describe("SupabaseCustomRuleReadRepository", () => {
         0: { data: approvedReportRows(1_000).reverse() },
       },
     ],
-  ] as const)("fails closed on %s pagination anomalies", async (_label, pages) => {
-    const results = defaultResults();
-    results.live_reports = {
-      data: approvedReportRows(1_001),
-      count: 1_001,
-      error: null,
-      pages: pages as Record<number, MockPageOverride>,
-    };
+  ] as const)(
+    "fails closed on %s pagination anomalies",
+    async (_label, pages) => {
+      const results = defaultResults();
+      results.live_reports = {
+        data: approvedReportRows(1_001),
+        count: 1_001,
+        error: null,
+        pages: pages as Record<number, MockPageOverride>,
+      };
 
-    await expect(
-      new SupabaseCustomRuleReadRepository(
-        createClient(results).client,
-      ).getProjectVariableCoverage({
-        organizationId: "org-1",
-        projectId: "project-1",
-      }),
-    ).rejects.toMatchObject({
-      code: "CUSTOM_RULE_COVERAGE_PAGE_INVALID",
-      source: "live_reports",
-    });
-  });
+      await expect(
+        new SupabaseCustomRuleReadRepository(
+          createClient(results).client,
+        ).getProjectVariableCoverage({
+          organizationId: "org-1",
+          projectId: "project-1",
+        }),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_COVERAGE_PAGE_INVALID",
+        source: "live_reports",
+      });
+    },
+  );
 
   it("fails closed when a later page query fails", async () => {
     const pageError = new Error("second page unavailable");
@@ -886,14 +1504,8 @@ describe("SupabaseCustomRuleReadRepository", () => {
       expect(chunkCall).toBeDefined();
       const ids = chunkCall?.[1][1] as readonly unknown[];
       expect(ids.length).toBeLessThanOrEqual(100);
-      expect(queryCalls).toContainEqual([
-        "eq",
-        ["organization_id", "org-1"],
-      ]);
-      expect(queryCalls).toContainEqual([
-        "eq",
-        ["project_id", "project-1"],
-      ]);
+      expect(queryCalls).toContainEqual(["eq", ["organization_id", "org-1"]]);
+      expect(queryCalls).toContainEqual(["eq", ["project_id", "project-1"]]);
       return ids;
     });
     expect(itemChunks).toHaveLength(6);
@@ -1133,10 +1745,10 @@ describe("custom-rule draft and simulation persistence", () => {
 
     const result = await repository.finalizeDraftTurn({ draft, completion });
 
-    expect(mock.rpc).toHaveBeenCalledWith(
-      "finalize_settlement_ai_draft_turn",
-      { p_draft: draft, p_completion: completion },
-    );
+    expect(mock.rpc).toHaveBeenCalledWith("finalize_settlement_ai_draft_turn", {
+      p_draft: draft,
+      p_completion: completion,
+    });
     expect(mock.from).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       initialStatus: "clarifying",
@@ -1152,7 +1764,11 @@ describe("custom-rule draft and simulation persistence", () => {
     const simulation = validAtomicSimulationSummary();
     const mock = createPersistenceClient({
       finalizedSimulationRpcData: {
-        draft: draftRow({ status: "simulated", duplicate: false, request_fingerprint: HASH_E }),
+        draft: draftRow({
+          status: "simulated",
+          duplicate: false,
+          request_fingerprint: HASH_E,
+        }),
         simulation: simulationRow(
           { kind: "ai_draft", id: DRAFT_ID },
           { duplicate: false },
@@ -1195,7 +1811,8 @@ describe("custom-rule draft and simulation persistence", () => {
       "retryable provider failure",
       {
         errorCode: "SETTLEMENT_AI_PROVIDER_FAILED" as const,
-        errorSummary: "Settlement AI provider is temporarily unavailable." as const,
+        errorSummary:
+          "Settlement AI provider is temporarily unavailable." as const,
         retryable: true,
       },
     ],
@@ -1286,20 +1903,25 @@ describe("custom-rule draft and simulation persistence", () => {
         retryable: true,
       },
     ],
-  ])("rejects unsafe atomic failure semantics before RPC: %s", async (_label, failure) => {
-    const draft = validFailedDraftInput();
-    const mock = createPersistenceClient();
-    const repository = new SupabaseCustomRuleReadRepository(mock.client);
+  ])(
+    "rejects unsafe atomic failure semantics before RPC: %s",
+    async (_label, failure) => {
+      const draft = validFailedDraftInput();
+      const mock = createPersistenceClient();
+      const repository = new SupabaseCustomRuleReadRepository(mock.client);
 
-    await expect(
-      repository.finalizeFailedTurn({
-        draft,
-        completion: validTurnCompletion(draft.aiResponse.content),
-        ...failure,
-      } as never),
-    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
-    expect(mock.rpc).not.toHaveBeenCalled();
-  });
+      await expect(
+        repository.finalizeFailedTurn({
+          draft,
+          completion: validTurnCompletion(draft.aiResponse.content),
+          ...failure,
+        } as never),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID",
+      });
+      expect(mock.rpc).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     [
@@ -1335,16 +1957,21 @@ describe("custom-rule draft and simulation persistence", () => {
         };
       },
     ],
-  ])("rejects unsafe atomic draft completion before RPC: %s", async (_label, buildInput) => {
-    const mock = createPersistenceClient();
-    const repository: CustomRuleRepository =
-      new SupabaseCustomRuleReadRepository(mock.client);
+  ])(
+    "rejects unsafe atomic draft completion before RPC: %s",
+    async (_label, buildInput) => {
+      const mock = createPersistenceClient();
+      const repository: CustomRuleRepository =
+        new SupabaseCustomRuleReadRepository(mock.client);
 
-    await expect(
-      repository.finalizeDraftTurn(buildInput()),
-    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
-    expect(mock.rpc).not.toHaveBeenCalled();
-  });
+      await expect(
+        repository.finalizeDraftTurn(buildInput()),
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID",
+      });
+      expect(mock.rpc).not.toHaveBeenCalled();
+    },
+  );
 
   it("fails closed when the atomic simulation RPC returns a partial result", async () => {
     const draft = validDraftInput();
@@ -1374,30 +2001,27 @@ describe("custom-rule draft and simulation persistence", () => {
 
     const result = await repository.createDraft(input);
 
-    expect(mock.rpc).toHaveBeenCalledWith(
-      "create_ai_settlement_rule_draft",
-      {
-        p_organization_id: ORGANIZATION_ID,
-        p_project_id: PROJECT_ID,
-        p_conversation_id: CONVERSATION_ID,
-        p_idempotency_key: "draft-request-1",
-        p_prompt_text: input.promptText,
-        p_turn_trace: input.turnTrace,
-        p_business_contract: input.businessContract,
-        p_unresolved_ambiguities: input.unresolvedAmbiguities,
-        p_variable_catalog_version: HASH_A,
-        p_ai_response: input.aiResponse,
-        p_generated_formula: input.generatedFormula,
-        p_generated_explanation: input.generatedExplanation,
-        p_generated_test_cases: input.generatedTestCases,
-        p_model: input.model,
-        p_safety_flags: input.safetyFlags,
-        p_contract_hash: HASH_B,
-        p_formula_hash: HASH_C,
-        p_parameter_hash: HASH_D,
-        p_status: "contract_ready",
-      },
-    );
+    expect(mock.rpc).toHaveBeenCalledWith("create_ai_settlement_rule_draft", {
+      p_organization_id: ORGANIZATION_ID,
+      p_project_id: PROJECT_ID,
+      p_conversation_id: CONVERSATION_ID,
+      p_idempotency_key: "draft-request-1",
+      p_prompt_text: input.promptText,
+      p_turn_trace: input.turnTrace,
+      p_business_contract: input.businessContract,
+      p_unresolved_ambiguities: input.unresolvedAmbiguities,
+      p_variable_catalog_version: HASH_A,
+      p_ai_response: input.aiResponse,
+      p_generated_formula: input.generatedFormula,
+      p_generated_explanation: input.generatedExplanation,
+      p_generated_test_cases: input.generatedTestCases,
+      p_model: input.model,
+      p_safety_flags: input.safetyFlags,
+      p_contract_hash: HASH_B,
+      p_formula_hash: HASH_C,
+      p_parameter_hash: HASH_D,
+      p_status: "contract_ready",
+    });
     expect(mock.from).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       id: DRAFT_ID,
@@ -1480,17 +2104,19 @@ describe("custom-rule draft and simulation persistence", () => {
   it("maps a valid superseded clarifying draft with required lifecycle metadata", async () => {
     const input = validClarifyingDraftInput();
     const mock = createPersistenceClient({
-      draftRows: [draftRow({
-        unresolved_ambiguities: input.unresolvedAmbiguities,
-        generated_formula: null,
-        generated_explanation: null,
-        generated_test_cases: [],
-        formula_hash: null,
-        initial_status: "clarifying",
-        status: "superseded",
-        superseded_by_draft_id: DRAFT_2_ID,
-        superseded_at: "2026-07-11T11:10:00.000Z",
-      })],
+      draftRows: [
+        draftRow({
+          unresolved_ambiguities: input.unresolvedAmbiguities,
+          generated_formula: null,
+          generated_explanation: null,
+          generated_test_cases: [],
+          formula_hash: null,
+          initial_status: "clarifying",
+          status: "superseded",
+          superseded_by_draft_id: DRAFT_2_ID,
+          superseded_at: "2026-07-11T11:10:00.000Z",
+        }),
+      ],
     });
     const repository: CustomRuleRepository =
       new SupabaseCustomRuleReadRepository(mock.client);
@@ -1563,7 +2189,8 @@ describe("custom-rule draft and simulation persistence", () => {
     const noFormula: null = result.generatedFormula;
     expect(noFormula).toBeNull();
     // @ts-expect-error Failed drafts cannot expose an authoritative formula.
-    const invalidFailedFormula: SettlementAiFormulaDraft = result.generatedFormula;
+    const invalidFailedFormula: SettlementAiFormulaDraft =
+      result.generatedFormula;
     expect(invalidFailedFormula).toBeNull();
   });
 
@@ -1583,7 +2210,8 @@ describe("custom-rule draft and simulation persistence", () => {
       "ready with unresolved ambiguities",
       {
         ...validDraftInput(),
-        unresolvedAmbiguities: validClarifyingDraftInput().unresolvedAmbiguities,
+        unresolvedAmbiguities:
+          validClarifyingDraftInput().unresolvedAmbiguities,
       },
     ],
     [
@@ -1651,7 +2279,9 @@ describe("custom-rule draft and simulation persistence", () => {
     const repository: CustomRuleRepository =
       new SupabaseCustomRuleReadRepository(mock.client);
 
-    await expect(repository.createDraft(validDraftInput())).rejects.toMatchObject({
+    await expect(
+      repository.createDraft(validDraftInput()),
+    ).rejects.toMatchObject({
       code: "CUSTOM_RULE_PERSISTENCE_DATA_INVALID",
     });
   });
@@ -1791,9 +2421,10 @@ describe("custom-rule draft and simulation persistence", () => {
   it.each(["asc", "desc"] as const)(
     "lists conversation revisions in explicitly documented %s order",
     async (revisionOrder) => {
-      const rows = revisionOrder === "asc"
-        ? [draftRow(), draftRow({ id: DRAFT_2_ID, revision_number: 2 })]
-        : [draftRow({ id: DRAFT_2_ID, revision_number: 2 }), draftRow()];
+      const rows =
+        revisionOrder === "asc"
+          ? [draftRow(), draftRow({ id: DRAFT_2_ID, revision_number: 2 })]
+          : [draftRow({ id: DRAFT_2_ID, revision_number: 2 }), draftRow()];
       const mock = createPersistenceClient({ draftRows: rows });
       const repository: CustomRuleRepository =
         new SupabaseCustomRuleReadRepository(mock.client);
@@ -1810,9 +2441,17 @@ describe("custom-rule draft and simulation persistence", () => {
       );
       expect(mock.queryCalls).toEqual(
         expect.arrayContaining([
-          ["ai_settlement_rule_drafts", "eq", ["organization_id", ORGANIZATION_ID]],
+          [
+            "ai_settlement_rule_drafts",
+            "eq",
+            ["organization_id", ORGANIZATION_ID],
+          ],
           ["ai_settlement_rule_drafts", "eq", ["project_id", PROJECT_ID]],
-          ["ai_settlement_rule_drafts", "eq", ["conversation_id", CONVERSATION_ID]],
+          [
+            "ai_settlement_rule_drafts",
+            "eq",
+            ["conversation_id", CONVERSATION_ID],
+          ],
           [
             "ai_settlement_rule_drafts",
             "order",
@@ -1839,9 +2478,17 @@ describe("custom-rule draft and simulation persistence", () => {
     expect(mock.queryCalls).toEqual(
       expect.arrayContaining([
         ["ai_settlement_rule_drafts", "eq", ["id", DRAFT_ID]],
-        ["ai_settlement_rule_drafts", "eq", ["organization_id", ORGANIZATION_ID]],
+        [
+          "ai_settlement_rule_drafts",
+          "eq",
+          ["organization_id", ORGANIZATION_ID],
+        ],
         ["ai_settlement_rule_drafts", "eq", ["project_id", PROJECT_ID]],
-        ["ai_settlement_rule_drafts", "eq", ["conversation_id", CONVERSATION_ID]],
+        [
+          "ai_settlement_rule_drafts",
+          "eq",
+          ["conversation_id", CONVERSATION_ID],
+        ],
       ]),
     );
   });
@@ -1849,13 +2496,18 @@ describe("custom-rule draft and simulation persistence", () => {
   it.each([
     ["extra JSON", { ai_response: { ...validAiResponse(), extra: true } }],
     ["missing JSON", { generated_test_cases: undefined }],
-    ["unsafe JSON", { safety_flags: [{ code: "x", severity: "block", message: "x", raw_payload: {} }] }],
+    [
+      "unsafe JSON",
+      {
+        safety_flags: [
+          { code: "x", severity: "block", message: "x", raw_payload: {} },
+        ],
+      },
+    ],
     [
       "ambiguity field types",
       {
-        unresolved_ambiguities: [
-          { code: 7, question: 7, required: "true" },
-        ],
+        unresolved_ambiguities: [{ code: 7, question: 7, required: "true" }],
       },
     ],
     [
@@ -1882,7 +2534,8 @@ describe("custom-rule draft and simulation persistence", () => {
       {
         initial_status: "clarifying",
         status: "clarifying",
-        unresolved_ambiguities: validClarifyingDraftInput().unresolvedAmbiguities,
+        unresolved_ambiguities:
+          validClarifyingDraftInput().unresolvedAmbiguities,
       },
     ],
     [
@@ -1900,7 +2553,8 @@ describe("custom-rule draft and simulation persistence", () => {
       {
         initial_status: "clarifying",
         status: "simulated",
-        unresolved_ambiguities: validClarifyingDraftInput().unresolvedAmbiguities,
+        unresolved_ambiguities:
+          validClarifyingDraftInput().unresolvedAmbiguities,
         generated_formula: null,
         generated_explanation: null,
         generated_test_cases: [],
@@ -2036,20 +2690,19 @@ describe("custom-rule draft and simulation persistence", () => {
 
   it("narrows persisted simulations by their required summary discriminator", () => {
     const assertNarrowed = (simulation: SettlementFormulaSimulation) => {
-      if (
-        simulation.summarySchemaVersion === 2 &&
-        simulation.summaryComplete
-      ) {
-        expectTypeOf(simulation).toEqualTypeOf<
-          CompleteSettlementFormulaSimulation
-        >();
+      if (simulation.summarySchemaVersion === 2 && simulation.summaryComplete) {
+        expectTypeOf(
+          simulation,
+        ).toEqualTypeOf<CompleteSettlementFormulaSimulation>();
         expect(simulation.historicalTotals.verificationStatus).not.toBe(
           "legacy_unknown",
         );
         return;
       }
 
-      expectTypeOf(simulation).toEqualTypeOf<LegacySettlementFormulaSimulation>();
+      expectTypeOf(
+        simulation,
+      ).toEqualTypeOf<LegacySettlementFormulaSimulation>();
       expect(simulation.historicalTotals.newPayableAmountCents).toBeNull();
     };
 
@@ -2174,7 +2827,11 @@ describe("custom-rule draft and simulation persistence", () => {
     expect(found?.owner).toEqual(owner);
     expect(mock.queryCalls).toEqual(
       expect.arrayContaining([
-        ["settlement_formula_simulations", "eq", ["organization_id", ORGANIZATION_ID]],
+        [
+          "settlement_formula_simulations",
+          "eq",
+          ["organization_id", ORGANIZATION_ID],
+        ],
         ["settlement_formula_simulations", "eq", ["project_id", PROJECT_ID]],
         ["settlement_formula_simulations", "eq", ["ai_draft_id", DRAFT_ID]],
         [
@@ -2268,7 +2925,10 @@ describe("custom-rule draft and simulation persistence", () => {
 
   it.each([
     ["missing owner", {}],
-    ["mixed owner", { kind: "ai_draft", id: DRAFT_ID, ruleVersionId: RULE_VERSION_ID }],
+    [
+      "mixed owner",
+      { kind: "ai_draft", id: DRAFT_ID, ruleVersionId: RULE_VERSION_ID },
+    ],
     ["unknown owner", { kind: "conversation", id: CONVERSATION_ID }],
   ])("rejects %s before issuing a simulation query", async (_label, owner) => {
     const mock = createPersistenceClient();
@@ -2288,15 +2948,30 @@ describe("custom-rule draft and simulation persistence", () => {
   it.each([
     [
       "raw sample rows",
-      { sampleSelection: { ...validSampleSelection(), rawRows: [{ report_id: "report-1" }] } },
+      {
+        sampleSelection: {
+          ...validSampleSelection(),
+          rawRows: [{ report_id: "report-1" }],
+        },
+      },
     ],
     [
       "payload-like data",
-      { sampleSource: { kind: "historical_settlements", source_payload: { secret: true } } },
+      {
+        sampleSource: {
+          kind: "historical_settlements",
+          source_payload: { secret: true },
+        },
+      },
     ],
     [
       "cross-project identifiers",
-      { sampleSelection: { ...validSampleSelection(), projectId: OTHER_PROJECT_ID } },
+      {
+        sampleSelection: {
+          ...validSampleSelection(),
+          projectId: OTHER_PROJECT_ID,
+        },
+      },
     ],
     [
       "streamer private amounts",
@@ -2392,7 +3067,9 @@ describe("custom-rule draft and simulation persistence", () => {
             },
           ],
         }),
-      ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID",
+      });
       expect(mock.rpc).not.toHaveBeenCalled();
     },
   );
@@ -2469,17 +3146,22 @@ describe("custom-rule draft and simulation persistence", () => {
           ...validSimulationInput({ kind: "ai_draft", id: DRAFT_ID }),
           ...patch,
         } as never),
-      ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+      ).rejects.toMatchObject({
+        code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID",
+      });
       expect(mock.rpc).not.toHaveBeenCalled();
     }
   });
 
   it("fails closed on Proxy descriptor traps before RPC", async () => {
-    const trapped = new Proxy({}, {
-      ownKeys() {
-        throw new Error("proxy ownKeys trap");
+    const trapped = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error("proxy ownKeys trap");
+        },
       },
-    });
+    );
     const mock = createPersistenceClient();
     const repository: CustomRuleRepository =
       new SupabaseCustomRuleReadRepository(mock.client);
@@ -2536,19 +3218,21 @@ const TABLES = [
 ] as const;
 type TableName = (typeof TABLES)[number];
 type QueryCall = [
-  | "select"
-  | "eq"
-  | "in"
-  | "gt"
-  | "gte"
-  | "lt"
-  | "lte"
-  | "or"
-  | "not"
-  | "order"
-  | "range"
-  | "limit"
-  | "returns",
+  (
+    | "select"
+    | "eq"
+    | "in"
+    | "gt"
+    | "gte"
+    | "lt"
+    | "lte"
+    | "or"
+    | "not"
+    | "order"
+    | "range"
+    | "limit"
+    | "returns"
+  ),
   unknown[],
 ];
 type MockResult = {
@@ -2589,9 +3273,10 @@ function createClient(results: MockResults = defaultResults()) {
     TABLES.map((table) => [table, [] as QueryCall[][]]),
   ) as Record<TableName, QueryCall[][]>;
   const state = {
-    pageReads: Object.fromEntries(
-      TABLES.map((table) => [table, 0]),
-    ) as Record<TableName, number>,
+    pageReads: Object.fromEntries(TABLES.map((table) => [table, 0])) as Record<
+      TableName,
+      number
+    >,
     highWaterReads: Object.fromEntries(
       TABLES.map((table) => [table, 0]),
     ) as Record<TableName, number>,
@@ -2627,10 +3312,7 @@ function createQuery(
   let idGreaterThan: string | null = null;
   let idLessThanOrEqual: string | null = null;
   let settlementBatchIds: readonly unknown[] | null = null;
-  const record = (
-    method: QueryCall[0],
-    args: unknown[],
-  ): MockQuery => {
+  const record = (method: QueryCall[0], args: unknown[]): MockQuery => {
     const call: QueryCall = [method, args];
     calls[table].push(call);
     queryCalls.push(call);
@@ -2663,8 +3345,7 @@ function createQuery(
       return record("lte", [column, value]);
     },
     or: (filter) => record("or", [filter]),
-    not: (column, operator, value) =>
-      record("not", [column, operator, value]),
+    not: (column, operator, value) => record("not", [column, operator, value]),
     order: (column, options) => {
       selectedOrder = { column, ascending: options.ascending };
       return record("order", [column, options]);
@@ -2702,30 +3383,30 @@ function createQuery(
         idLessThanOrEqual !== null ||
         settlementBatchIds !== null;
       const filteredCount =
-        hasCardinalityFilter && filteredData
-          ? filteredData.length
-          : base.count;
+        hasCardinalityFilter && filteredData ? filteredData.length : base.count;
       const orderedData = selectedOrder
         ? orderRows(filteredData, selectedOrder)
         : filteredData;
-      const boundedData = selectedRange && orderedData
-        ? orderedData.slice(selectedRange.from, selectedRange.to + 1)
-        : selectedLimit !== null && orderedData
-          ? orderedData.slice(0, selectedLimit)
-          : orderedData;
+      const boundedData =
+        selectedRange && orderedData
+          ? orderedData.slice(selectedRange.from, selectedRange.to + 1)
+          : selectedLimit !== null && orderedData
+            ? orderedData.slice(0, selectedLimit)
+            : orderedData;
       const unsafeData = hasOwn(override, "data")
-        ? override?.data ?? null
+        ? (override?.data ?? null)
         : boundedData;
-      const data = selectedColumns === "id" && unsafeData
-        ? unsafeData.map((row) => ({ id: rowOrderValue(row, "id") }))
-        : unsafeData;
+      const data =
+        selectedColumns === "id" && unsafeData
+          ? unsafeData.map((row) => ({ id: rowOrderValue(row, "id") }))
+          : unsafeData;
       const result = {
         data,
         count: hasOwn(override, "count")
-          ? override?.count ?? null
+          ? (override?.count ?? null)
           : filteredCount,
         error: hasOwn(override, "error")
-          ? override?.error ?? null
+          ? (override?.error ?? null)
           : base.error,
       };
       if (isHighWater) {
@@ -2768,10 +3449,7 @@ function filterRows(
   });
 }
 
-function hasOwn(
-  value: object | null | undefined,
-  key: PropertyKey,
-): boolean {
+function hasOwn(value: object | null | undefined, key: PropertyKey): boolean {
   return value !== null && value !== undefined && Object.hasOwn(value, key);
 }
 
@@ -2807,10 +3485,7 @@ function selectFor(mock: ReturnType<typeof createClient>, table: TableName) {
 
 function emptyResults(): MockResults {
   return Object.fromEntries(
-    TABLES.map((table) => [
-      table,
-      { data: [], count: 0, error: null },
-    ]),
+    TABLES.map((table) => [table, { data: [], count: 0, error: null }]),
   ) as unknown as MockResults;
 }
 
@@ -2982,9 +3657,7 @@ function defaultResults(): MockResults {
 
 function approvedReportRows(count: number): unknown[] {
   return Array.from({ length: count }, (_, index) =>
-    approvedReportRow(
-      `report-${String(index + 1).padStart(6, "0")}`,
-    ),
+    approvedReportRow(`report-${String(index + 1).padStart(6, "0")}`),
   );
 }
 
@@ -3032,7 +3705,10 @@ const HASH_D = "d".repeat(64);
 const HASH_E = "e".repeat(64);
 
 function validBusinessContract() {
-  const moneyType = { kind: "scalar" as const, scalarType: "money_cents" as const };
+  const moneyType = {
+    kind: "scalar" as const,
+    scalarType: "money_cents" as const,
+  };
   return {
     schemaVersion: 1 as const,
     scope: "receivable" as const,
@@ -3390,9 +4066,7 @@ function legacySimulationRow(
   return {
     ...simulationRow(owner),
     coverage: { totalRecords: 20, evaluatedRecords: 18, skippedRecords: 2 },
-    scenarios: [
-      { name: "标准场景", kind: "normal", result: "passed" },
-    ],
+    scenarios: [{ name: "标准场景", kind: "normal", result: "passed" }],
     historical_totals: {
       payableAmountCents: "9007199254740993",
       receivableAmountCents: null,
@@ -3419,10 +4093,7 @@ type PersistenceQueryCall = [
 type PersistenceMockQuery = {
   select(columns: string): PersistenceMockQuery;
   eq(column: string, value: unknown): PersistenceMockQuery;
-  order(
-    column: string,
-    options: { ascending: boolean },
-  ): PersistenceMockQuery;
+  order(column: string, options: { ascending: boolean }): PersistenceMockQuery;
   limit(count: number): PersistenceMockQuery;
   returns<T>(): Promise<{ data: T; error: null }>;
   maybeSingle(): Promise<{ data: unknown; error: null }>;
@@ -3468,18 +4139,17 @@ function createPersistenceClient(
     }
     if (fn === "finalize_settlement_ai_simulation_turn") {
       return {
-        data:
-          options.finalizedSimulationRpcData ?? {
-            draft: draftRow({
-              status: "simulated",
-              duplicate: false,
-              request_fingerprint: HASH_E,
-            }),
-            simulation: simulationRow(
-              { kind: "ai_draft", id: DRAFT_ID },
-              { duplicate: false },
-            ),
-          },
+        data: options.finalizedSimulationRpcData ?? {
+          draft: draftRow({
+            status: "simulated",
+            duplicate: false,
+            request_fingerprint: HASH_E,
+          }),
+          simulation: simulationRow(
+            { kind: "ai_draft", id: DRAFT_ID },
+            { duplicate: false },
+          ),
+        },
         error: null,
       };
     }
@@ -3506,9 +4176,10 @@ function createPersistenceClient(
     return { data: null, error: new Error(`Unexpected RPC: ${fn}`) };
   });
   const from = vi.fn((table: PersistenceTableName) => {
-    const rows = table === "ai_settlement_rule_drafts"
-      ? options.draftRows ?? []
-      : options.simulationRows ?? [];
+    const rows =
+      table === "ai_settlement_rule_drafts"
+        ? (options.draftRows ?? [])
+        : (options.simulationRows ?? []);
     const record = (
       method: PersistenceQueryCall[1],
       args: unknown[],
@@ -3519,8 +4190,7 @@ function createPersistenceClient(
     const query: PersistenceMockQuery = {
       select: (columns) => record("select", [columns]),
       eq: (column, value) => record("eq", [column, value]),
-      order: (column, orderOptions) =>
-        record("order", [column, orderOptions]),
+      order: (column, orderOptions) => record("order", [column, orderOptions]),
       limit: (count) => record("limit", [count]),
       returns: async <T>() => {
         queryCalls.push([table, "returns", []]);
