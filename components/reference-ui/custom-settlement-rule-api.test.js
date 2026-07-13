@@ -437,6 +437,54 @@ function catalogEnvelope(latestSampledPeriod) {
   };
 }
 
+function governanceRule(overrides = {}) {
+  return {
+    id: "44444444-4444-4444-8444-444444444444",
+    projectId: PROJECT_ID,
+    scope: "payable",
+    target: { targetType: "project", targetId: null },
+    executionGrain: "report",
+    compositionMode: "replace",
+    priority: 100,
+    versionNumber: 2,
+    status: "pending_review",
+    formulaHash: "a".repeat(64),
+    contractHash: "b".repeat(64),
+    parameterHash: "c".repeat(64),
+    catalogHash: "d".repeat(64),
+    dataSelectionHash: "e".repeat(64),
+    simulationId: "55555555-5555-4555-8555-555555555555",
+    effectiveFrom: "2026-07-12T00:00:00.000Z",
+    effectiveUntil: null,
+    createdBy: "22222222-2222-4222-8222-222222222222",
+    approvedBy: null,
+    aiDraftId: DRAFT_ID,
+    reason: "提交审核",
+    createdAt: "2026-07-12T00:00:00.000Z",
+    approvedAt: null,
+    archivedAt: null,
+    eligibleApproverId: "66666666-6666-4666-8666-666666666666",
+    requiresDifferentApprover: true,
+    primaryAction: { state: "pending_review", action: "approve" },
+    ...overrides,
+  };
+}
+
+function reviewEvent(overrides = {}) {
+  return {
+    id: "66666666-6666-4666-8666-666666666666",
+    eventType: "submitted_for_review",
+    actorId: "22222222-2222-4222-8222-222222222222",
+    actorRole: "operator_business",
+    reason: "提交审核",
+    comment: null,
+    beforeStatus: "draft",
+    afterStatus: "pending_review",
+    createdAt: "2026-07-12T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 describe("custom settlement rule API", () => {
   it("returns a validated catalog and encodes the project and query values", async () => {
     const fetchImpl = vi.fn(async () =>
@@ -1882,6 +1930,116 @@ describe("custom settlement rule API", () => {
     });
   });
 
+  it("loads governance review events, reusable templates, and latest project session", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ events: [reviewEvent()] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          templates: [
+            {
+              kind: "system",
+              id: "system:hourly:v1",
+              name: "系统按小时模板",
+              description: "系统内置模板",
+              contract: contract(),
+              readOnly: true,
+            },
+            {
+              kind: "organization",
+              id: "77777777-7777-4777-8777-777777777777",
+              name: "机构按小时模板",
+              description: "机构沉淀模板",
+              sourceRuleVersionId: "44444444-4444-4444-8444-444444444444",
+              sourceProjectId: PROJECT_ID,
+              sourceVersionNumber: 2,
+              sourceScope: "payable",
+              executionGrain: "report",
+              compositionMode: "replace",
+              parameters: {
+                hourly_rate: { type: "money_cents", amountCents: 10_000 },
+                bonus_rate: { type: "rate_bps", rateBps: 1_250 },
+              },
+              contract: contract(),
+              status: "active",
+              createdBy: "22222222-2222-4222-8222-222222222222",
+              createdAt: "2026-07-12T00:00:00.000Z",
+              archivedAt: null,
+              readOnly: false,
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ session: completeV2SessionSummary() }));
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.listRuleReviewEvents({ projectId: PROJECT_ID }),
+    ).resolves.toMatchObject({
+      events: [{ eventType: "submitted_for_review" }],
+    });
+    await expect(api.listRuleTemplates()).resolves.toMatchObject({
+      templates: [{ kind: "system" }, { kind: "organization" }],
+    });
+    await expect(
+      api.getLatestProjectRuleSession({
+        projectId: PROJECT_ID,
+        scope: "payable",
+        target: { targetType: "project", targetId: null },
+      }),
+    ).resolves.toMatchObject({
+      session: { draft: { status: "simulated" } },
+    });
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      `/api/projects/${PROJECT_ID}/settlement-rules/review-events`,
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      "/api/settlement-rule-templates",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      `/api/projects/${PROJECT_ID}/settlement-rules/ai-sessions/latest?scope=payable&targetType=project`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("reopens requested changes as a draft and validates nullable lifecycle events", async () => {
+    const reopened = governanceRule({
+      status: "draft",
+      primaryAction: { state: "draft", action: "apply_and_submit" },
+    });
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        rule: reopened,
+        simulation: {
+          id: "55555555-5555-4555-8555-555555555555",
+          createdAt: "2026-07-12T00:00:00.000Z",
+        },
+        event: null,
+      }),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.reopenRuleDraft({
+        projectId: PROJECT_ID,
+        ruleVersionId: reopened.id,
+        body: {
+          reason: "按审核意见修改",
+          clientRequestId: "reopen-rule-0001",
+        },
+      }),
+    ).resolves.toMatchObject({
+      rule: { id: reopened.id, status: "draft" },
+      event: null,
+    });
+  });
+
   it("rejects an incomplete atomic apply-and-submit response", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({
@@ -1959,6 +2117,15 @@ describe("custom settlement rule API", () => {
               futureAssignmentCount: 0,
               unassignedProjectStreamers: [],
               baseRuleCoveredProjectStreamerIds: [],
+              assignmentConflict: {
+                blocking: true,
+                blockingCodes: ["same_priority_overlap"],
+                orderedRuleIds: [
+                  "44444444-4444-4444-8444-444444444444",
+                  "55555555-5555-4555-8555-555555555555",
+                ],
+                message: "该主播在同一时间已有更高优先级分组规则",
+              },
             },
           ],
         }),
@@ -1986,7 +2153,14 @@ describe("custom settlement rule API", () => {
 
     await expect(
       api.listSettlementRuleGroups({ projectId: PROJECT_ID }),
-    ).resolves.toMatchObject({ groups: [{ assignmentCount: 2 }] });
+    ).resolves.toMatchObject({
+      groups: [
+        {
+          assignmentCount: 2,
+          assignmentConflict: { blockingCodes: ["same_priority_overlap"] },
+        },
+      ],
+    });
     await expect(
       api.changeSettlementGroupAssignment({
         projectId: PROJECT_ID,

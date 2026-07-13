@@ -13,12 +13,17 @@ export default function CustomSettlementRuleGroupPanel({
   conflict = null,
   onAssign,
 }) {
+  const blockingConflict =
+    conflict ??
+    groups.find((group) => group.assignmentConflict?.blocking)
+      ?.assignmentConflict ??
+    null;
   const [projectStreamerId, setProjectStreamerId] = React.useState("");
   const [groupId, setGroupId] = React.useState("");
   const [effectiveFrom, setEffectiveFrom] = React.useState("");
   const [reason, setReason] = React.useState("");
   const canSubmit =
-    !conflict &&
+    !blockingConflict &&
     projectStreamerId &&
     groupId &&
     effectiveFrom &&
@@ -48,10 +53,11 @@ export default function CustomSettlementRuleGroupPanel({
         </div>
       </div>
 
-      {conflict ? (
+      {blockingConflict ? (
         <div className="crw-inline-alert" role="alert">
           <AlertTriangle size={15} aria-hidden="true" />
-          {conflict.message}
+          {blockingConflict.message ??
+            `分组规则存在冲突：${blockingConflict.blockingCodes.join("、")}`}
         </div>
       ) : null}
 

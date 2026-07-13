@@ -39,6 +39,7 @@ export default function CustomSettlementRuleReviewDialog({
   summary,
   currentUser = { id: null, role: "operator_business" },
   eligibleApproverId = null,
+  error = null,
   onApprove,
   onRequestChanges,
   onArchive,
@@ -46,6 +47,10 @@ export default function CustomSettlementRuleReviewDialog({
   const [reason, setReason] = React.useState("");
   const [comment, setComment] = React.useState("");
   const [acknowledgment, setAcknowledgment] = React.useState("");
+  const errorRef = React.useRef(null);
+  React.useLayoutEffect(() => {
+    if (open && error) errorRef.current?.focus();
+  }, [error, open]);
   if (!open || !rule) return null;
 
   const isCreator = currentUser.id && currentUser.id === rule.createdBy;
@@ -127,6 +132,12 @@ export default function CustomSettlementRuleReviewDialog({
         <dt>试算状态</dt>
         <dd>{freshnessLabel(summary.simulationFreshness)}</dd>
       </dl>
+
+      {error ? (
+        <div className="crw-inline-alert" role="alert" tabIndex={-1} ref={errorRef}>
+          {error}
+        </div>
+      ) : null}
 
       {!canStandardApprove && rule.status === "pending_review" ? (
         <p className="crw-muted">需由其他审核人确认生效</p>

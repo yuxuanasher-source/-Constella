@@ -85,6 +85,8 @@ describe("CustomSettlementRuleVersionPanel", () => {
         rule({
           status: "pending_review",
           createdBy: USER_ID,
+          eligibleApproverId: REVIEWER_ID,
+          requiresDifferentApprover: true,
           primaryAction: { state: "pending_review", action: "approve" },
         }),
       ],
@@ -95,7 +97,10 @@ describe("CustomSettlementRuleVersionPanel", () => {
       [
         rule({
           status: "changes_requested",
-          primaryAction: { state: "changes_requested", action: "revise" },
+          primaryAction: {
+            state: "changes_requested",
+            action: "revise_and_resimulate",
+          },
         }),
       ],
       "修改并重新试算",
@@ -114,6 +119,62 @@ describe("CustomSettlementRuleVersionPanel", () => {
     expectOnePrimary(label);
   });
 
+  it("uses server primary action and approver eligibility before showing approval", () => {
+    render(
+      <CustomSettlementRuleVersionPanel
+        versions={[
+          rule({
+            status: "pending_review",
+            createdBy: USER_ID,
+            eligibleApproverId: REVIEWER_ID,
+            requiresDifferentApprover: true,
+            primaryAction: { state: "pending_review", action: "none" },
+          }),
+        ]}
+        currentUser={{ id: REVIEWER_ID, role: "ops_manager" }}
+        templates={[]}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "确认生效" })).not.toBeInTheDocument();
+
+    const { rerender } = render(
+      <CustomSettlementRuleVersionPanel
+        versions={[
+          rule({
+            status: "pending_review",
+            createdBy: USER_ID,
+            eligibleApproverId: REVIEWER_ID,
+            requiresDifferentApprover: true,
+            primaryAction: { state: "pending_review", action: "approve" },
+          }),
+        ]}
+        currentUser={{ id: USER_ID, role: "ops_manager" }}
+        templates={[]}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "确认生效" })).not.toBeInTheDocument();
+
+    rerender(
+      <CustomSettlementRuleVersionPanel
+        versions={[
+          rule({
+            status: "pending_review",
+            createdBy: USER_ID,
+            eligibleApproverId: REVIEWER_ID,
+            requiresDifferentApprover: true,
+            primaryAction: { state: "pending_review", action: "approve" },
+          }),
+        ]}
+        currentUser={{ id: REVIEWER_ID, role: "ops_manager" }}
+        templates={[]}
+      />,
+    );
+
+    expectOnePrimary("确认生效");
+  });
+
   it("reopens a changes-requested version as a draft before revision", () => {
     const reopen = vi.fn();
     render(
@@ -121,7 +182,10 @@ describe("CustomSettlementRuleVersionPanel", () => {
         versions={[
           rule({
             status: "changes_requested",
-            primaryAction: { state: "changes_requested", action: "revise" },
+            primaryAction: {
+              state: "changes_requested",
+              action: "revise_and_resimulate",
+            },
           }),
         ]}
         currentUser={{ id: USER_ID, role: "ops_manager" }}
@@ -133,6 +197,22 @@ describe("CustomSettlementRuleVersionPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "修改并重新试算" }));
 
     expect(reopen).toHaveBeenCalledWith(RULE_ID);
+  });
+
+  it("dispatches active versions through the create-new-version primary action", () => {
+    const primaryAction = vi.fn();
+    render(
+      <CustomSettlementRuleVersionPanel
+        versions={[rule()]}
+        currentUser={{ id: USER_ID, role: "owner" }}
+        templates={[]}
+        onPrimaryAction={primaryAction}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "创建新版本" }));
+
+    expect(primaryAction).toHaveBeenCalledWith("new_version", rule());
   });
 
   it("shows system and organization templates, clones into editable draft, and formats parameter units", () => {

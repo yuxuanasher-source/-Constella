@@ -467,6 +467,111 @@ function api(overrides = {}) {
   };
 }
 
+function governanceRule(overrides = {}) {
+  return {
+    id: "44444444-4444-4444-8444-444444444444",
+    projectId: PROJECT_ID,
+    scope: "payable",
+    target: { targetType: "project", targetId: null },
+    executionGrain: "report",
+    compositionMode: "replace",
+    priority: 100,
+    versionNumber: 2,
+    status: "pending_review",
+    formulaHash: "a".repeat(64),
+    contractHash: "b".repeat(64),
+    parameterHash: "c".repeat(64),
+    catalogHash: "d".repeat(64),
+    dataSelectionHash: "e".repeat(64),
+    simulationId: "66666666-6666-4666-8666-666666666666",
+    effectiveFrom: "2026-07-12T00:00:00.000Z",
+    effectiveUntil: null,
+    createdBy: "22222222-2222-4222-8222-222222222222",
+    approvedBy: null,
+    aiDraftId: DRAFT_ID,
+    reason: "提交审核",
+    createdAt: "2026-07-12T00:00:00.000Z",
+    approvedAt: null,
+    archivedAt: null,
+    eligibleApproverId: "66666666-6666-4666-8666-666666666666",
+    requiresDifferentApprover: true,
+    primaryAction: { state: "pending_review", action: "approve" },
+    ...overrides,
+  };
+}
+
+function lifecycle(rule, eventOverrides = {}) {
+  return {
+    rule,
+    simulation: {
+      id: rule.simulationId ?? "66666666-6666-4666-8666-666666666666",
+      createdAt: "2026-07-12T01:02:00.000Z",
+    },
+    event: {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      eventType: "approved",
+      actorId: "66666666-6666-4666-8666-666666666666",
+      actorRole: "ops_manager",
+      reason: "审核通过",
+      comment: null,
+      beforeStatus: "pending_review",
+      afterStatus: rule.status,
+      createdAt: "2026-07-12T02:00:00.000Z",
+      ...eventOverrides,
+    },
+  };
+}
+
+function settlementGroup(overrides = {}) {
+  return {
+    id: "77777777-7777-4777-8777-777777777777",
+    projectId: PROJECT_ID,
+    name: "高优先级主播",
+    description: "显式维护的结算分组",
+    status: "active",
+    createdBy: "22222222-2222-4222-8222-222222222222",
+    createdAt: "2026-07-12T00:00:00.000Z",
+    archivedAt: null,
+    assignmentCount: 2,
+    activeRuleCount: 1,
+    pendingRuleCount: 0,
+    futureAssignmentCount: 0,
+    unassignedProjectStreamers: [
+      {
+        projectStreamerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        displayName: "主播小夏",
+      },
+    ],
+    baseRuleCoveredProjectStreamerIds: [],
+    ...overrides,
+  };
+}
+
+function organizationTemplate(overrides = {}) {
+  return {
+    kind: "organization",
+    id: "99999999-9999-4999-8999-999999999999",
+    name: "机构按小时模板",
+    description: "复用机构常用主播计费方式",
+    sourceRuleVersionId: "44444444-4444-4444-8444-444444444444",
+    sourceProjectId: PROJECT_ID,
+    sourceVersionNumber: 2,
+    sourceScope: "payable",
+    executionGrain: "report",
+    compositionMode: "replace",
+    parameters: [
+      { key: "hourly_rate", labelZh: "每小时单价", type: "money_yuan", value: 100 },
+    ],
+    contract: contract(),
+    status: "active",
+    createdBy: "22222222-2222-4222-8222-222222222222",
+    createdAt: "2026-07-12T00:00:00.000Z",
+    archivedAt: null,
+    readOnly: false,
+    ...overrides,
+  };
+}
+
 function renderWorkspace(apiClient = api(), props = {}) {
   return render(
     <CustomSettlementRuleWorkspace
@@ -2140,5 +2245,343 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(heading).toHaveFocus();
     expect(screen.getByText("待审核")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("规则已提交审核");
+  });
+
+  it("opens the review dialog from an eligible pending version and wires approve and error focus", async () => {
+    const pendingRule = governanceRule();
+    const approvedRule = governanceRule({
+      status: "active",
+      approvedBy: "66666666-6666-4666-8666-666666666666",
+      approvedAt: "2026-07-12T02:00:00.000Z",
+      effectiveNow: true,
+      primaryAction: { state: "active", action: "create_new_version" },
+    });
+    const failure = new CustomSettlementRuleApiError({
+      code: "CUSTOM_RULE_STALE_REVISION",
+      status: 409,
+      retryable: false,
+    });
+    const apiClient = api({
+      listRuleVersions: vi.fn().mockResolvedValue({ rules: [pendingRule] }),
+      listRuleReviewEvents: vi.fn().mockResolvedValue({ events: [] }),
+      listSettlementRuleGroups: vi.fn().mockResolvedValue({ groups: [] }),
+      listRuleTemplates: vi.fn().mockResolvedValue({ templates: [] }),
+      getLatestProjectRuleSession: vi.fn().mockResolvedValue({ session: null }),
+      approveRule: vi
+        .fn()
+        .mockRejectedValueOnce(failure)
+        .mockResolvedValueOnce(lifecycle(approvedRule)),
+    });
+    renderWorkspace(apiClient, {
+      currentUser: {
+        id: "66666666-6666-4666-8666-666666666666",
+        role: "ops_manager",
+      },
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: "版本与审核" }));
+    fireEvent.click(await screen.findByRole("button", { name: "确认生效" }));
+    expect(screen.getByRole("dialog", { name: "规则审核" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("审核原因"), {
+      target: { value: "试算与合同一致" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认生效" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("规则已被更新，请刷新后重试");
+    expect(alert).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认生效" }));
+
+    const heading = await screen.findByRole("heading", { name: "规则已确认生效" });
+    expect(heading).toHaveFocus();
+    expect(apiClient.approveRule).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        projectId: PROJECT_ID,
+        ruleVersionId: pendingRule.id,
+        body: expect.objectContaining({
+          reason: "试算与合同一致",
+          clientRequestId: "task9:approve_rule:0001",
+        }),
+      }),
+    );
+  });
+
+  it("wires request changes and archive transitions from the review dialog", async () => {
+    const pendingRule = governanceRule();
+    const requestedRule = governanceRule({
+      status: "changes_requested",
+      primaryAction: {
+        state: "changes_requested",
+        action: "revise_and_resimulate",
+      },
+    });
+    const apiClient = api({
+      listRuleVersions: vi.fn().mockResolvedValue({ rules: [pendingRule] }),
+      listRuleReviewEvents: vi.fn().mockResolvedValue({ events: [] }),
+      listSettlementRuleGroups: vi.fn().mockResolvedValue({ groups: [] }),
+      listRuleTemplates: vi.fn().mockResolvedValue({ templates: [] }),
+      getLatestProjectRuleSession: vi.fn().mockResolvedValue({ session: null }),
+      requestRuleChanges: vi.fn().mockResolvedValue(
+        lifecycle(requestedRule, {
+          eventType: "changes_requested",
+          afterStatus: "changes_requested",
+        }),
+      ),
+      archiveRule: vi.fn().mockResolvedValue(
+        lifecycle(
+          governanceRule({
+            status: "archived",
+            primaryAction: { state: "archived", action: "none" },
+          }),
+          { eventType: "archived", afterStatus: "archived" },
+        ),
+      ),
+    });
+    renderWorkspace(apiClient, {
+      currentUser: {
+        id: "66666666-6666-4666-8666-666666666666",
+        role: "owner",
+      },
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: "版本与审核" }));
+    fireEvent.click(await screen.findByRole("button", { name: "确认生效" }));
+    fireEvent.change(screen.getByLabelText("审核原因"), {
+      target: { value: "需补充口径" },
+    });
+    fireEvent.change(screen.getByLabelText("修改意见"), {
+      target: { value: "请补充缺数处理说明" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "要求修改" }));
+
+    expect(await screen.findByRole("heading", { name: "已要求修改" })).toHaveFocus();
+    expect(apiClient.requestRuleChanges).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ruleVersionId: pendingRule.id,
+        body: expect.objectContaining({
+          reason: "需补充口径",
+          comment: "请补充缺数处理说明",
+        }),
+      }),
+    );
+  });
+
+  it("wires create-new-version from the workspace primary action to cloneRule", async () => {
+    const activeRule = governanceRule({
+      status: "active",
+      approvedBy: "66666666-6666-4666-8666-666666666666",
+      approvedAt: "2026-07-12T02:00:00.000Z",
+      primaryAction: { state: "active", action: "create_new_version" },
+    });
+    const clonedRule = governanceRule({
+      status: "draft",
+      versionNumber: 3,
+      primaryAction: { state: "draft", action: "apply_and_submit" },
+    });
+    const apiClient = api({
+      listRuleVersions: vi.fn().mockResolvedValue({ rules: [activeRule] }),
+      listRuleReviewEvents: vi.fn().mockResolvedValue({ events: [] }),
+      listSettlementRuleGroups: vi.fn().mockResolvedValue({ groups: [] }),
+      listRuleTemplates: vi.fn().mockResolvedValue({ templates: [] }),
+      getLatestProjectRuleSession: vi.fn().mockResolvedValue({ session: null }),
+      cloneRule: vi.fn().mockResolvedValue({
+        rule: clonedRule,
+        lineage: {
+          sourceRuleVersionId: activeRule.id,
+          sourceProjectId: PROJECT_ID,
+          sourceVersionNumber: 2,
+          sourceScope: "payable",
+        },
+        missingTargetVariables: [],
+      }),
+    });
+    renderWorkspace(apiClient);
+
+    fireEvent.click(screen.getByRole("tab", { name: "版本与审核" }));
+    fireEvent.click(await screen.findByRole("button", { name: "创建新版本" }));
+
+    await waitFor(() =>
+      expect(apiClient.cloneRule).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: PROJECT_ID,
+          ruleVersionId: activeRule.id,
+        }),
+      ),
+    );
+  });
+
+  it("reopens requested changes server-side before returning to the build pane", async () => {
+    const requestedRule = governanceRule({
+      status: "changes_requested",
+      primaryAction: {
+        state: "changes_requested",
+        action: "revise_and_resimulate",
+      },
+    });
+    const draftRule = governanceRule({
+      id: requestedRule.id,
+      status: "draft",
+      primaryAction: { state: "draft", action: "apply_and_submit" },
+    });
+    const apiClient = api({
+      listRuleVersions: vi.fn().mockResolvedValue({ rules: [requestedRule] }),
+      listRuleReviewEvents: vi.fn().mockResolvedValue({ events: [] }),
+      listSettlementRuleGroups: vi.fn().mockResolvedValue({ groups: [] }),
+      listRuleTemplates: vi.fn().mockResolvedValue({ templates: [] }),
+      getLatestProjectRuleSession: vi.fn().mockResolvedValue({ session: null }),
+      reopenRuleDraft: vi.fn().mockResolvedValue({
+        rule: draftRule,
+        simulation: {
+          id: "66666666-6666-4666-8666-666666666666",
+          createdAt: "2026-07-12T01:02:00.000Z",
+        },
+        event: null,
+      }),
+    });
+    renderWorkspace(apiClient);
+
+    fireEvent.click(screen.getByRole("tab", { name: "版本与审核" }));
+    fireEvent.click(await screen.findByRole("button", { name: "修改并重新试算" }));
+
+    expect(apiClient.reopenRuleDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: PROJECT_ID,
+        ruleVersionId: requestedRule.id,
+        body: expect.objectContaining({
+          reason: "按审核意见修改",
+          clientRequestId: "task9:reopen_rule:0001",
+        }),
+      }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "规则已重新打开为草稿" }),
+    ).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "搭建" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("passes server conflict DTOs into the group panel and blocks assignment submission", async () => {
+    const apiClient = api({
+      listRuleVersions: vi.fn().mockResolvedValue({ rules: [] }),
+      listRuleReviewEvents: vi.fn().mockResolvedValue({ events: [] }),
+      listSettlementRuleGroups: vi.fn().mockResolvedValue({
+        groups: [
+          settlementGroup({
+            assignmentConflict: {
+              blocking: true,
+              blockingCodes: ["same_priority_overlap"],
+              orderedRuleIds: ["rule-active", "rule-pending"],
+              message: "该主播在同一时间已有更高优先级分组规则",
+            },
+          }),
+        ],
+      }),
+      listRuleTemplates: vi.fn().mockResolvedValue({ templates: [] }),
+      getLatestProjectRuleSession: vi.fn().mockResolvedValue({ session: null }),
+      changeSettlementGroupAssignment: vi.fn(),
+    });
+    renderWorkspace(apiClient);
+
+    fireEvent.click(screen.getByRole("tab", { name: "结算分组" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "该主播在同一时间已有更高优先级分组规则",
+    );
+    expect(screen.getByRole("button", { name: "更新分组" })).toBeDisabled();
+    expect(apiClient.changeSettlementGroupAssignment).not.toHaveBeenCalled();
+  });
+
+  it("loads server templates, clones an organization template, and exposes missing target data", async () => {
+    const template = organizationTemplate();
+    const clonedRule = governanceRule({
+      status: "draft",
+      primaryAction: { state: "draft", action: "apply_and_submit" },
+    });
+    const apiClient = api({
+      listRuleVersions: vi.fn().mockResolvedValue({ rules: [] }),
+      listRuleReviewEvents: vi.fn().mockResolvedValue({ events: [] }),
+      listSettlementRuleGroups: vi.fn().mockResolvedValue({ groups: [] }),
+      listRuleTemplates: vi.fn().mockResolvedValue({
+        templates: [
+          {
+            kind: "system",
+            id: "system:hourly:v1",
+            name: "系统按小时模板",
+            description: "系统内置模板",
+            contract: contract(),
+            readOnly: true,
+          },
+          template,
+        ],
+      }),
+      getLatestProjectRuleSession: vi.fn().mockResolvedValue({ session: null }),
+      cloneRule: vi.fn().mockResolvedValue({
+        rule: clonedRule,
+        lineage: {
+          sourceRuleVersionId: template.sourceRuleVersionId,
+          sourceProjectId: PROJECT_ID,
+          sourceVersionNumber: 2,
+          sourceScope: "payable",
+        },
+        missingTargetVariables: ["系统直播时长"],
+      }),
+    });
+    renderWorkspace(apiClient);
+
+    fireEvent.click(screen.getByRole("tab", { name: "版本与审核" }));
+    const orgTemplate = await screen.findByRole("group", {
+      name: "机构按小时模板",
+    });
+    expect(screen.getByText("系统按小时模板").closest('[role="group"]')).toHaveTextContent(
+      "只读",
+    );
+    fireEvent.click(
+      within(orgTemplate).getByRole("button", { name: "克隆为草稿" }),
+    );
+
+    expect(apiClient.cloneRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: PROJECT_ID,
+        ruleVersionId: template.sourceRuleVersionId,
+        body: expect.objectContaining({
+          targetProjectId: PROJECT_ID,
+          reason: "复用机构按小时模板",
+        }),
+      }),
+    );
+    expect(await screen.findByRole("heading", { name: "可编辑草稿" })).toBeInTheDocument();
+    expect(screen.getByText("缺少目标数据：系统直播时长")).toBeInTheDocument();
+  });
+
+  it("refreshes governance versions, reviews, groups, templates, and restores latest session without clearing unsent input", async () => {
+    const latest = completeV2AuthoritativeSession();
+    const apiClient = api({
+      listRuleVersions: vi.fn().mockResolvedValue({ rules: [governanceRule()] }),
+      listRuleReviewEvents: vi.fn().mockResolvedValue({ events: [] }),
+      listSettlementRuleGroups: vi.fn().mockResolvedValue({ groups: [] }),
+      listRuleTemplates: vi.fn().mockResolvedValue({ templates: [] }),
+      getLatestProjectRuleSession: vi.fn().mockResolvedValue(latest),
+    });
+    renderWorkspace(apiClient);
+
+    await waitFor(() =>
+      expect(apiClient.getLatestProjectRuleSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: PROJECT_ID,
+          scope: "receivable",
+          target: { targetType: "project", targetId: null },
+        }),
+      ),
+    );
+    expect(apiClient.listRuleReviewEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: PROJECT_ID }),
+    );
+    expect(apiClient.listRuleTemplates).toHaveBeenCalled();
+
+    expect(await screen.findByRole("heading", { name: "内部试算结果" })).toBeInTheDocument();
   });
 });

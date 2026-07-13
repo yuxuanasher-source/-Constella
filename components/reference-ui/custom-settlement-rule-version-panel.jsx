@@ -13,6 +13,29 @@ function formatPercent(value) {
   return Number.isFinite(numeric) ? `${numeric.toFixed(2)}%` : "比例不可用";
 }
 
+function normalizeParameters(parameters) {
+  if (Array.isArray(parameters)) return parameters;
+  return Object.entries(parameters ?? {}).map(([key, value]) => {
+    if (value?.type === "money_cents") {
+      return {
+        key,
+        labelZh: key,
+        type: "money_yuan",
+        value: Number(value.amountCents) / 100,
+      };
+    }
+    if (value?.type === "rate_bps") {
+      return {
+        key,
+        labelZh: key,
+        type: "percent",
+        value: Number(value.rateBps) / 100,
+      };
+    }
+    return { key, labelZh: key, type: "text", value: value?.value ?? value };
+  });
+}
+
 function formatParameter(parameter) {
   if (parameter.type === "money_yuan") return formatYuan(parameter.value);
   if (parameter.type === "percent") return formatPercent(parameter.value);
@@ -30,7 +53,20 @@ function statusLabel(status) {
   return labels[status] ?? "未知状态";
 }
 
-function actionFor({ buildState, versions }) {
+function canApprove(rule, currentUser) {
+  if (rule.eligibleApproverId && rule.eligibleApproverId !== currentUser?.id) {
+    return false;
+  }
+  if (rule.eligibleApproverRole && rule.eligibleApproverRole !== currentUser?.role) {
+    return false;
+  }
+  if (rule.requiresDifferentApprover && rule.createdBy === currentUser?.id) {
+    return false;
+  }
+  return true;
+}
+
+function actionFor({ buildState, versions, currentUser }) {
   if (buildState?.kind === "unresolved") {
     return { label: "回复 AI", icon: Send, type: "build" };
   }
@@ -49,13 +85,21 @@ function actionFor({ buildState, versions }) {
   }
   const current = versions?.[0] ?? null;
   if (!current) return null;
-  if (current.status === "pending_review") {
+  const serverAction = current.primaryAction?.action ?? "none";
+  if (
+    current.status === "pending_review" &&
+    serverAction === "approve" &&
+    canApprove(current, currentUser)
+  ) {
     return { label: "确认生效", icon: ShieldCheck, type: "approve" };
   }
-  if (current.status === "changes_requested") {
+  if (
+    current.status === "changes_requested" &&
+    (serverAction === "revise" || serverAction === "revise_and_resimulate")
+  ) {
     return { label: "修改并重新试算", icon: FilePenLine, type: "revise" };
   }
-  if (current.status === "active") {
+  if (current.status === "active" && serverAction === "create_new_version") {
     return { label: "创建新版本", icon: GitBranch, type: "new_version" };
   }
   return null;
@@ -69,12 +113,17 @@ export default function CustomSettlementRuleVersionPanel({
   buildState = null,
   versions = [],
   templates = [],
+  currentUser = { id: null, role: "operator_business" },
+  suppressPrimary = false,
   onPrimaryAction,
   onReopenDraft,
   onCloneTemplate,
+  onOpenReview,
 }) {
   const [cloneResult, setCloneResult] = React.useState(null);
-  const primary = actionFor({ buildState, versions });
+  const primary = suppressPrimary
+    ? null
+    : actionFor({ buildState, versions, currentUser });
   const PrimaryIcon = primary?.icon ?? Send;
   const currentRule = versions[0] ?? null;
 
@@ -88,6 +137,12 @@ export default function CustomSettlementRuleVersionPanel({
 
   const handleClone = (templateId) => {
     const result = onCloneTemplate?.(templateId);
+    if (typeof result?.then === "function") {
+      result.then((payload) => {
+        if (payload) setCloneResult(payload);
+      });
+      return;
+    }
     if (result) setCloneResult(result);
   };
 
@@ -122,6 +177,11 @@ export default function CustomSettlementRuleVersionPanel({
               <p>
                 {version.reason ?? "无备注"} · 优先级 {version.priority}
               </p>
+              {version.status === "pending_review" || version.status === "active" ? (
+                <button type="button" onClick={() => onOpenReview?.(version)}>
+                  查看审核
+                </button>
+              ) : null}
             </div>
           ))}
         </div>
@@ -153,9 +213,9 @@ export default function CustomSettlementRuleVersionPanel({
                 <strong>{template.name}</strong>
                 <p>{template.description}</p>
               </div>
-              {template.parameters?.length ? (
+              {normalizeParameters(template.parameters).length ? (
                 <dl>
-                  {template.parameters.map((parameter) => (
+                  {normalizeParameters(template.parameters).map((parameter) => (
                     <React.Fragment key={parameter.key}>
                       <dt>{parameter.labelZh}</dt>
                       <dd>{formatParameter(parameter)}</dd>

@@ -20,6 +20,7 @@ import {
   createCustomSettlementRuleApi,
 } from "./custom-settlement-rule-api";
 import CustomSettlementRuleGroupPanel from "./custom-settlement-rule-group-panel";
+import CustomSettlementRuleReviewDialog from "./custom-settlement-rule-review-dialog";
 import CustomSettlementRuleVersionPanel from "./custom-settlement-rule-version-panel";
 
 const CONTRACT_FIELD_ORDER = [
@@ -93,7 +94,9 @@ const INITIAL_GOVERNANCE_STATE = {
   contextKey: null,
   status: "idle",
   versions: [],
+  reviews: [],
   groups: [],
+  templates: [],
   announcement: "",
   error: null,
 };
@@ -1255,6 +1258,11 @@ export default function CustomSettlementRuleWorkspace({
   const [governanceState, setGovernanceState] = React.useState(
     INITIAL_GOVERNANCE_STATE,
   );
+  const [reviewDialog, setReviewDialog] = React.useState({
+    open: false,
+    rule: null,
+    error: null,
+  });
   const requestSequenceRef = React.useRef(0);
   const requestControllerRef = React.useRef(null);
   const governanceSequenceRef = React.useRef(0);
@@ -1429,9 +1437,21 @@ export default function CustomSettlementRuleWorkspace({
     }
     const controller = new AbortController();
     const canLoadVersions = typeof metadataApiClient.listRuleVersions === "function";
+    const canLoadReviews =
+      typeof metadataApiClient.listRuleReviewEvents === "function";
     const canLoadGroups =
       typeof metadataApiClient.listSettlementRuleGroups === "function";
-    if (!canLoadVersions && !canLoadGroups) {
+    const canLoadTemplates =
+      typeof metadataApiClient.listRuleTemplates === "function";
+    const canLoadLatestSession =
+      typeof metadataApiClient.getLatestProjectRuleSession === "function";
+    if (
+      !canLoadVersions &&
+      !canLoadReviews &&
+      !canLoadGroups &&
+      !canLoadTemplates &&
+      !canLoadLatestSession
+    ) {
       return () => controller.abort();
     }
     Promise.all([
@@ -1447,17 +1467,62 @@ export default function CustomSettlementRuleWorkspace({
             signal: controller.signal,
           })
         : Promise.resolve({ groups: [] }),
+      canLoadReviews
+        ? metadataApiClient.listRuleReviewEvents({
+            projectId,
+            signal: controller.signal,
+          })
+        : Promise.resolve({ events: [] }),
+      canLoadTemplates
+        ? metadataApiClient.listRuleTemplates({ signal: controller.signal })
+        : Promise.resolve({ templates }),
+      canLoadLatestSession
+        ? metadataApiClient.getLatestProjectRuleSession({
+            projectId,
+            scope: selectedScope,
+            target: selectedTarget,
+            signal: controller.signal,
+          })
+        : Promise.resolve({ session: null }),
     ])
-      .then(([rulesPayload, groupsPayload]) => {
+      .then(([rulesPayload, groupsPayload, reviewsPayload, templatesPayload, sessionPayload]) => {
         if (sequence !== governanceSequenceRef.current) return;
-        setGovernanceState({
+        if (sessionPayload.session) {
+          setActiveSession({
+            contextKey: workspaceContextKey,
+            id: sessionPayload.session.conversation.id,
+          });
+          setRequestState((current) => ({
+            ...(current.contextKey === workspaceContextKey
+              ? current
+              : freshRequestState()),
+            contextKey: workspaceContextKey,
+            status: "ready",
+            operation: null,
+            lastOperation: null,
+            authoritative: authorityFromSession(sessionPayload.session),
+            announcement: "规则会话已恢复",
+            focusTarget: null,
+          }));
+        }
+        setGovernanceState((current) => ({
           contextKey: workspaceContextKey,
           status: "ready",
-          versions: rulesPayload.rules,
-          groups: groupsPayload.groups,
+          versions:
+            rulesPayload.rules.length > 0 ||
+            current.contextKey !== workspaceContextKey
+              ? rulesPayload.rules
+              : current.versions,
+          reviews: reviewsPayload.events,
+          groups:
+            groupsPayload.groups.length > 0 ||
+            current.contextKey !== workspaceContextKey
+              ? groupsPayload.groups
+              : current.groups,
+          templates: templatesPayload.templates,
           announcement: "版本与分组已同步",
           error: null,
-        });
+        }));
       })
       .catch((error) => {
         if (
@@ -1470,13 +1535,23 @@ export default function CustomSettlementRuleWorkspace({
           contextKey: workspaceContextKey,
           status: "error",
           versions: [],
+          reviews: [],
           groups: [],
+          templates: [],
           announcement: "版本与分组同步失败",
           error: safeWorkspaceError(error),
         });
       });
     return () => controller.abort();
-  }, [metadataApiClient, projectId, validContext, workspaceContextKey]);
+  }, [
+    metadataApiClient,
+    projectId,
+    selectedScope,
+    selectedTarget,
+    templates,
+    validContext,
+    workspaceContextKey,
+  ]);
 
   const performOperation = async (operation, { retry = false } = {}) => {
     if (!validContext || viewState.catalogStatus !== "ready") return;
@@ -1859,6 +1934,157 @@ export default function CustomSettlementRuleWorkspace({
     }
   };
 
+  const mergeGovernanceRule = (rule, announcement) => {
+    setGovernanceState((current) => ({
+      ...(current.contextKey === workspaceContextKey
+        ? current
+        : INITIAL_GOVERNANCE_STATE),
+      contextKey: workspaceContextKey,
+      status: "ready",
+      versions: [
+        rule,
+        ...(current.contextKey === workspaceContextKey
+          ? current.versions.filter((version) => version.id !== rule.id)
+          : []),
+      ],
+      reviews: current.contextKey === workspaceContextKey ? current.reviews : [],
+      groups: current.contextKey === workspaceContextKey ? current.groups : [],
+      templates:
+        current.contextKey === workspaceContextKey ? current.templates : templates,
+      announcement,
+      error: null,
+    }));
+    setRequestState((current) => ({
+      ...(current.contextKey === workspaceContextKey
+        ? current
+        : freshRequestState()),
+      contextKey: workspaceContextKey,
+      status: "ready",
+      operation: null,
+      lastOperation: null,
+      error: null,
+      recovery: null,
+      announcement,
+      focusTarget: "status",
+    }));
+  };
+
+  const reviewSummaryFor = (rule) => ({
+    contractDiff: [
+      {
+        field: "status",
+        before: "当前版本",
+        after: rule.status === "pending_review" ? "待审核版本" : "已保存版本",
+      },
+    ],
+    largestDelta: { label: "最大影响项", amountYuan: "0.00" },
+    missingDataBehavior: "缺少数据时转人工复核",
+    risk: "按服务端审核记录复核",
+    creatorName: rule.createdBy,
+    simulationFreshness: rule.simulationId ? "fresh" : "unknown",
+  });
+
+  const handleReviewTransition = async (operation, payload) => {
+    const clientRequestId = createRequestId(operation);
+    setReviewDialog((current) => ({ ...current, error: null }));
+    try {
+      let result;
+      if (operation === "approve_rule") {
+        result = await apiClient.approveRule({
+          projectId,
+          ruleVersionId: payload.ruleVersionId,
+          body: {
+            effectiveFrom: payload.effectiveFrom,
+            reason: payload.reason,
+            force: payload.force,
+            acknowledgment: payload.acknowledgment,
+            clientRequestId,
+          },
+        });
+      } else if (operation === "request_changes") {
+        result = await apiClient.requestRuleChanges({
+          projectId,
+          ruleVersionId: payload.ruleVersionId,
+          body: {
+            reason: payload.reason,
+            comment: payload.comment,
+            clientRequestId,
+          },
+        });
+      } else {
+        result = await apiClient.archiveRule({
+          projectId,
+          ruleVersionId: payload.ruleVersionId,
+          body: {
+            effectiveUntil:
+              payload.effectiveUntil ??
+              new Date(Date.now()).toISOString().replace("Z", "+00:00"),
+            fallbackProof: payload.fallbackProof ?? "owner_reviewed_archive",
+            reason: payload.reason,
+            clientRequestId,
+          },
+        });
+      }
+      const announcement =
+        operation === "approve_rule"
+          ? "规则已确认生效"
+          : operation === "request_changes"
+            ? "已要求修改"
+            : "规则已归档";
+      setReviewDialog({ open: false, rule: null, error: null });
+      mergeGovernanceRule(result.rule, announcement);
+    } catch (error) {
+      setReviewDialog((current) => ({
+        ...current,
+        error: safeWorkspaceError(error).message,
+      }));
+    }
+  };
+
+  const reopenRequestedChangesVersion = async (ruleId) => {
+    if (typeof apiClient.reopenRuleDraft !== "function") return;
+    const payload = await apiClient.reopenRuleDraft({
+      projectId,
+      ruleVersionId: ruleId,
+      body: {
+        reason: "按审核意见修改",
+        clientRequestId: createRequestId("reopen_rule"),
+      },
+    });
+    mergeGovernanceRule(payload.rule, "规则已重新打开为草稿");
+    setActivePane("build");
+  };
+
+  const cloneVersionAsDraft = async (ruleOrTemplate) => {
+    if (typeof apiClient.cloneRule !== "function") return null;
+    const ruleVersionId =
+      typeof ruleOrTemplate === "string"
+        ? governanceView.templates.find((template) => template.id === ruleOrTemplate)
+            ?.sourceRuleVersionId
+        : ruleOrTemplate?.id;
+    const templateName =
+      typeof ruleOrTemplate === "string"
+        ? governanceView.templates.find((template) => template.id === ruleOrTemplate)
+            ?.name
+        : null;
+    if (!ruleVersionId) return null;
+    const result = await apiClient.cloneRule({
+      projectId,
+      ruleVersionId,
+      body: {
+        targetProjectId: projectId,
+        targetVariableCatalogVersion: viewState.catalog?.version ?? "a".repeat(64),
+        targetAvailableVariableIds:
+          viewState.catalog?.variables?.map((variable) => variable.id) ?? [],
+        newVersionId: createUuid(),
+        reason: templateName ? `复用${templateName}` : "创建新版本",
+        clientRequestId: createRequestId("clone_rule"),
+      },
+    });
+    mergeGovernanceRule(result.rule, "可编辑草稿已创建");
+    return result;
+  };
+
   const recoverCatalogAndSession = async () => {
     const sessionId =
       activeSessionId ?? viewState.authoritative?.draft?.conversationId ?? null;
@@ -2239,6 +2465,16 @@ export default function CustomSettlementRuleWorkspace({
 
       {activePane === "build" ? (
         <div id="crw-pane-build" role="tabpanel" aria-label="搭建">
+          {[
+            "规则已重新打开为草稿",
+            "可编辑草稿已创建",
+          ].includes(viewState.announcement) ? (
+            <div className="crw-submit-state">
+              <h2 ref={statusHeadingRef} tabIndex={-1}>
+                {viewState.announcement}
+              </h2>
+            </div>
+          ) : null}
           {!validContext ? (
         <div className="crw-empty">
           <AlertCircle size={18} aria-hidden="true" />
@@ -2416,10 +2652,17 @@ export default function CustomSettlementRuleWorkspace({
 
       {activePane === "versions" ? (
         <div id="crw-pane-versions" role="tabpanel" aria-label="版本与审核">
-          {viewState.announcement === "规则已提交审核" ? (
+          {[
+            "规则已提交审核",
+            "规则已确认生效",
+            "已要求修改",
+            "规则已归档",
+            "规则已重新打开为草稿",
+            "可编辑草稿已创建",
+          ].includes(viewState.announcement) ? (
             <div className="crw-submit-state">
               <h2 ref={statusHeadingRef} tabIndex={-1}>
-                规则已提交审核
+                {viewState.announcement}
               </h2>
             </div>
           ) : null}
@@ -2435,11 +2678,43 @@ export default function CustomSettlementRuleWorkspace({
             }
             versions={governanceView.versions}
             currentUser={currentUser}
-            templates={templates}
+            suppressPrimary={reviewDialog.open}
+            templates={
+              governanceView.templates.length ? governanceView.templates : templates
+            }
             onPrimaryAction={(type) => {
               if (type === "submit") submitCurrentSimulationForReview();
+              if (type === "approve" && governanceView.versions[0]) {
+                setReviewDialog({
+                  open: true,
+                  rule: governanceView.versions[0],
+                  error: null,
+                });
+              }
+              if (type === "new_version" && governanceView.versions[0]) {
+                cloneVersionAsDraft(governanceView.versions[0]);
+              }
             }}
-            onReopenDraft={() => setActivePane("build")}
+            onReopenDraft={reopenRequestedChangesVersion}
+            onCloneTemplate={cloneVersionAsDraft}
+            onOpenReview={(rule) =>
+              setReviewDialog({ open: true, rule, error: null })
+            }
+          />
+          <CustomSettlementRuleReviewDialog
+            open={reviewDialog.open}
+            rule={reviewDialog.rule}
+            summary={
+              reviewDialog.rule ? reviewSummaryFor(reviewDialog.rule) : null
+            }
+            currentUser={currentUser}
+            eligibleApproverId={reviewDialog.rule?.eligibleApproverId ?? null}
+            error={reviewDialog.error}
+            onApprove={(payload) => handleReviewTransition("approve_rule", payload)}
+            onRequestChanges={(payload) =>
+              handleReviewTransition("request_changes", payload)
+            }
+            onArchive={(payload) => handleReviewTransition("archive_rule", payload)}
           />
         </div>
       ) : null}

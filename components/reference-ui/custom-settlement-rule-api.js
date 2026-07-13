@@ -845,8 +845,10 @@ const rulePrimaryActionSchema = z.strictObject({
     "reply_ai",
     "confirm_contract",
     "submit_review",
+    "apply_and_submit",
     "approve",
     "revise",
+    "revise_and_resimulate",
     "create_new_version",
     "none",
   ]),
@@ -885,6 +887,9 @@ const governanceRuleSchema = z.strictObject({
   archivedAt: canonicalTimestampSchema.nullable(),
   effectiveNow: z.boolean().optional(),
   scheduled: z.boolean().optional(),
+  eligibleApproverId: uuidSchema.nullable().optional(),
+  eligibleApproverRole: canonicalTextSchema(80).nullable().optional(),
+  requiresDifferentApprover: z.boolean().optional(),
   primaryAction: rulePrimaryActionSchema,
 });
 const reviewEventSchema = z.strictObject({
@@ -904,7 +909,7 @@ const lifecycleResultSchema = z.strictObject({
     id: uuidSchema,
     createdAt: canonicalTimestampSchema,
   }),
-  event: reviewEventSchema,
+  event: reviewEventSchema.nullable(),
 });
 const cloneResultSchema = z.strictObject({
   rule: governanceRuleSchema,
@@ -915,6 +920,64 @@ const cloneResultSchema = z.strictObject({
     sourceScope: customRuleScopeSchema,
   }),
   missingTargetVariables: z.array(identifierSchema).max(300),
+});
+const templateParameterSchema = z.union([
+  z
+    .strictObject({
+      key: identifierSchema,
+      labelZh: canonicalTextSchema(200),
+      type: z.enum(["money_yuan", "percent", "text", "number"]),
+      value: z.unknown(),
+    })
+    .passthrough(),
+  safeRecordSchema(identifierSchema, typedRuntimeValueSchema),
+]);
+const reusableTemplateSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("system"),
+    id: canonicalTextSchema(200),
+    name: canonicalTextSchema(120),
+    description: canonicalTextSchema(1_000),
+    contract: z.unknown(),
+    readOnly: z.literal(true),
+  }),
+  z.strictObject({
+    kind: z.literal("organization"),
+    id: uuidSchema,
+    name: canonicalTextSchema(120),
+    description: canonicalTextSchema(1_000),
+    sourceRuleVersionId: uuidSchema,
+    sourceProjectId: uuidSchema,
+    sourceVersionNumber: positiveSafeIntegerSchema,
+    sourceScope: customRuleScopeSchema,
+    executionGrain: customRuleExecutionGrainSchema,
+    compositionMode: z.enum([
+      "replace",
+      "add",
+      "multiply",
+      "clamp",
+      "emit_items",
+      "check",
+    ]),
+    parameters: z.union([
+      z.array(templateParameterSchema).max(300),
+      safeRecordSchema(identifierSchema, typedRuntimeValueSchema),
+    ]),
+    contract: z.unknown(),
+    status: z.enum(["draft", "pending_review", "changes_requested", "active", "archived"]),
+    createdBy: uuidSchema,
+    createdAt: canonicalTimestampSchema,
+    archivedAt: canonicalTimestampSchema.nullable(),
+    readOnly: z.literal(false),
+  }),
+]);
+const groupConflictSchema = z.strictObject({
+  blocking: z.boolean(),
+  blockingCodes: z.array(identifierSchema).max(100),
+  orderedRuleIds: z.array(canonicalTextSchema(200)).max(500),
+  materialRiskCodes: z.array(canonicalTextSchema(120)).max(100).optional(),
+  requiresOwnerApproval: z.boolean().optional(),
+  message: canonicalTextSchema(1_000).optional(),
 });
 const settlementRuleGroupSchema = z.strictObject({
   id: uuidSchema,
@@ -939,6 +1002,7 @@ const settlementRuleGroupSchema = z.strictObject({
     )
     .max(10_000),
   baseRuleCoveredProjectStreamerIds: z.array(uuidSchema).max(10_000),
+  assignmentConflict: groupConflictSchema.nullable().optional(),
 });
 const assignmentChangeSchema = z.strictObject({
   assignmentChange: z.strictObject({
@@ -976,9 +1040,18 @@ const responseSchemas = {
   answer: z.strictObject({ result: answerResultSchema }),
   confirm: z.strictObject({ result: confirmResultSchema }),
   session: z.strictObject({ session: authoritativeSessionSchema }),
+  latestProjectSession: z.strictObject({
+    session: authoritativeSessionSchema.nullable(),
+  }),
   rules: z.strictObject({ rules: z.array(governanceRuleSchema).max(500) }),
+  reviewEvents: z.strictObject({
+    events: z.array(reviewEventSchema).max(500),
+  }),
   lifecycle: lifecycleResultSchema,
   clone: cloneResultSchema,
+  templates: z.strictObject({
+    templates: z.array(reusableTemplateSchema).max(500),
+  }),
   groups: z.strictObject({
     groups: z.array(settlementRuleGroupSchema).max(500),
   }),
@@ -1059,6 +1132,7 @@ const SAFE_ERROR_MESSAGES = {
   CUSTOM_RULE_SESSION_NOT_FOUND: "结算规则会话不存在或已失效",
   CUSTOM_RULE_SESSION_CONFLICT: "规则已被更新，请刷新后重试",
   CUSTOM_RULE_IDEMPOTENCY_CONFLICT: "规则已被更新，请刷新后重试",
+  CUSTOM_RULE_STALE_REVISION: "规则已被更新，请刷新后重试",
   CUSTOM_RULE_AI_UNAVAILABLE: "AI 暂时不可用，请稍后重试",
   CUSTOM_RULE_AI_OUTPUT_INVALID: "AI 草案未通过业务校验，请修改说明后重试",
   CUSTOM_RULE_AI_CONTRACT_INVALID: "AI 草案未通过业务校验，请修改说明后重试",
@@ -1236,6 +1310,17 @@ export function createCustomSettlementRuleApi({
         signal,
       );
     },
+    getLatestProjectRuleSession({ projectId, scope, target, signal }) {
+      const query = new URLSearchParams({ scope });
+      query.set("targetType", target?.targetType ?? "project");
+      if (target?.targetId) query.set("targetId", target.targetId);
+      return request(
+        `${baseUrl(projectId)}/ai-sessions/latest?${query.toString()}`,
+        { method: "GET" },
+        responseSchemas.latestProjectSession,
+        signal,
+      );
+    },
     answerOrRevise({ projectId, sessionId, body, signal }) {
       return post(
         `${baseUrl(projectId)}/ai-sessions/${pathSegment(sessionId)}/turns`,
@@ -1271,6 +1356,22 @@ export function createCustomSettlementRuleApi({
         signal,
       );
     },
+    listRuleReviewEvents({ projectId, signal }) {
+      return request(
+        `${baseUrl(projectId)}/review-events`,
+        { method: "GET" },
+        responseSchemas.reviewEvents,
+        signal,
+      );
+    },
+    listRuleTemplates({ signal } = {}) {
+      return request(
+        "/api/settlement-rule-templates",
+        { method: "GET" },
+        responseSchemas.templates,
+        signal,
+      );
+    },
     applyAndSubmitRule({ projectId, body, signal }) {
       return post(
         `${baseUrl(projectId)}/apply-and-submit`,
@@ -1298,6 +1399,14 @@ export function createCustomSettlementRuleApi({
     archiveRule({ projectId, ruleVersionId, body, signal }) {
       return post(
         `${baseUrl(projectId)}/${pathSegment(ruleVersionId)}/archive`,
+        body,
+        responseSchemas.lifecycle,
+        signal,
+      );
+    },
+    reopenRuleDraft({ projectId, ruleVersionId, body, signal }) {
+      return post(
+        `${baseUrl(projectId)}/${pathSegment(ruleVersionId)}/reopen-draft`,
         body,
         responseSchemas.lifecycle,
         signal,

@@ -89,12 +89,18 @@ describe("CustomSettlementRuleGroupPanel", () => {
     const assign = vi.fn();
     render(
       <CustomSettlementRuleGroupPanel
-        groups={[group({ pendingRuleCount: 2 })]}
+        groups={[
+          group({
+            pendingRuleCount: 2,
+            assignmentConflict: {
+              blocking: true,
+              blockingCodes: ["same_priority_overlap"],
+              orderedRuleIds: ["rule-active", "rule-pending"],
+              message: "该主播在同一时间已有更高优先级分组规则",
+            },
+          }),
+        ]}
         streamers={[{ projectStreamerId: STREAMER_ID, displayName: "主播小夏" }]}
-        conflict={{
-          type: "overlap_priority",
-          message: "该主播在同一时间已有更高优先级分组规则",
-        }}
         onAssign={assign}
       />,
     );

@@ -174,4 +174,20 @@ describe("CustomSettlementRuleReviewDialog", () => {
       acknowledgment: FORCE_ACK,
     });
   });
+
+  it("focuses dialog errors after a failed review transition", () => {
+    render(
+      <CustomSettlementRuleReviewDialog
+        open
+        rule={reviewRule()}
+        summary={reviewSummary()}
+        currentUser={{ id: REVIEWER_ID, role: "ops_manager" }}
+        error="审核状态已变化，请刷新后重试"
+      />,
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("审核状态已变化，请刷新后重试");
+    expect(alert).toHaveFocus();
+  });
 });
