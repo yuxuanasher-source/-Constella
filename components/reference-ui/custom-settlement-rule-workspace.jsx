@@ -393,6 +393,17 @@ function authorityFromSession(session) {
   };
 }
 
+function reopenedRevisionAuthority(session) {
+  const authority = authorityFromSession(session);
+  return {
+    ...authority,
+    draft: {
+      ...authority.draft,
+      reopenedForRevision: true,
+    },
+  };
+}
+
 const ACTIVE_TURN_STATUSES = new Set([
   "accepted",
   "grounding",
@@ -2102,6 +2113,28 @@ export default function CustomSettlementRuleWorkspace({
       },
     });
     mergeGovernanceRule(payload.rule, "规则已重新打开为草稿");
+    if (payload.session) {
+      const authority = reopenedRevisionAuthority(payload.session);
+      setActiveSession({
+        contextKey: workspaceContextKey,
+        id: payload.session.conversation.id,
+      });
+      setRequestState((current) => ({
+        ...(current.contextKey === workspaceContextKey
+          ? current
+          : freshRequestState()),
+        contextKey: workspaceContextKey,
+        status: "ready",
+        operation: null,
+        lastOperation: null,
+        requestId: null,
+        authoritative: authority,
+        error: null,
+        recovery: null,
+        announcement: "规则已重新打开为草稿",
+        focusTarget: "status",
+      }));
+    }
     setActivePane("build");
   };
 
@@ -2246,9 +2279,11 @@ export default function CustomSettlementRuleWorkspace({
 
   const draft = viewState.authoritative?.draft ?? null;
   const firstQuestion = visibleBusinessAmbiguities(draft)[0] ?? null;
-  const simulated = draft?.status === "simulated";
-  const contractReady = draftIsConfirmationReady(draft);
-  const clarifying = draft?.status === "clarifying" && !contractReady;
+  const reopenedForRevision = Boolean(draft?.reopenedForRevision);
+  const simulated = draft?.status === "simulated" && !reopenedForRevision;
+  const contractReady = !reopenedForRevision && draftIsConfirmationReady(draft);
+  const clarifying =
+    reopenedForRevision || (draft?.status === "clarifying" && !contractReady);
   const isLoading = viewState.status === "loading";
   const isProcessing = viewState.status === "processing";
   const requestHasError = viewState.status === "error";

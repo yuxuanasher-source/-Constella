@@ -910,6 +910,7 @@ const lifecycleResultSchema = z.strictObject({
     createdAt: canonicalTimestampSchema,
   }),
   event: reviewEventSchema.nullable(),
+  session: authoritativeSessionSchema.nullable().optional(),
 });
 const submitLifecycleResultSchema = lifecycleResultSchema.extend({
   event: reviewEventSchema,

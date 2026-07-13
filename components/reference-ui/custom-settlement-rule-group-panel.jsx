@@ -4,7 +4,29 @@ import React from "react";
 import { AlertTriangle, Users } from "lucide-react";
 
 function localDateTimeToOffset(value) {
-  return value;
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/u.exec(
+      value,
+    );
+  if (!match) return value;
+  const [, year, month, day, hour, minute, second = "00", fraction = "0"] =
+    match;
+  const date = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    Number(fraction.padEnd(3, "0")),
+  );
+  if (Number.isNaN(date.getTime())) return value;
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absoluteOffset = Math.abs(offsetMinutes);
+  const offsetHours = String(Math.floor(absoluteOffset / 60)).padStart(2, "0");
+  const offsetRemainder = String(absoluteOffset % 60).padStart(2, "0");
+  return `${year}-${month}-${day}T${hour}:${minute}:${String(second).padStart(2, "0")}.${String(date.getMilliseconds()).padStart(3, "0")}${sign}${offsetHours}:${offsetRemainder}`;
 }
 
 export default function CustomSettlementRuleGroupPanel({

@@ -25,6 +25,62 @@ const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
 const USER_ID = "22222222-2222-4222-8222-222222222222";
 const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
 const RULE_ID = "44444444-4444-4444-8444-444444444444";
+const DRAFT_ID = "77777777-7777-4777-8777-777777777777";
+const SESSION_ID = "88888888-8888-4888-8888-888888888888";
+
+function draft() {
+  return {
+    id: DRAFT_ID,
+    organizationId: ORGANIZATION_ID,
+    projectId: PROJECT_ID,
+    conversationId: SESSION_ID,
+    revisionNumber: 3,
+    status: "simulated",
+    initialStatus: "contract_ready",
+    businessContract: {
+      schemaVersion: 1,
+      scope: "payable",
+      target: { targetType: "project", targetId: null },
+      executionGrain: "report",
+      compositionMode: "replace",
+      title: "duration settlement",
+      summary: "pay by live duration",
+      calculationComponents: [],
+      requiredInputs: [],
+      parameters: [],
+      effectiveStartAt: "2026-07-01T00:00:00+08:00",
+      effectiveEndAt: null,
+      missingDataPolicy: { action: "route_item_to_review" },
+      compositionDescription: "replace base rule",
+      businessTimezone: "Asia/Shanghai",
+      examples: [],
+    },
+    unresolvedAmbiguities: [],
+    generatedFormula: { expression: "money_result({ final: yuan(1) })" },
+    generatedExplanation: "deterministic explanation",
+    generatedTestCases: [],
+    safetyFlags: [],
+    formulaHash: "a".repeat(64),
+    contractHash: "b".repeat(64),
+    parameterHash: "c".repeat(64),
+    variableCatalogVersion: "d".repeat(64),
+    createdAt: "2026-07-12T00:00:00.000Z",
+    supersedesDraftId: null,
+    supersededByDraftId: null,
+    supersededAt: null,
+  };
+}
+
+function latestDraftQuery() {
+  return {
+    select: vi.fn().mockReturnThis(),
+    eq: vi.fn().mockReturnThis(),
+    maybeSingle: vi.fn().mockResolvedValue({
+      data: { conversation_id: SESSION_ID, created_by: USER_ID },
+      error: null,
+    }),
+  };
+}
 
 function body(overrides: Record<string, unknown> = {}) {
   return {
@@ -43,11 +99,31 @@ function request(value: unknown = body()) {
 }
 
 function context(role: string) {
+  const query = latestDraftQuery();
   return {
-    supabase: { client: "supabase" },
+    supabase: { from: vi.fn().mockReturnValue(query) },
+    query,
     auth: { userId: USER_ID, organizationId: ORGANIZATION_ID, role },
     actor: { userId: USER_ID, organizationId: ORGANIZATION_ID },
     requireProjectAccess: vi.fn().mockResolvedValue(undefined),
+    conversation: {
+      getHistory: vi.fn().mockResolvedValue({
+        conversation: {
+          id: SESSION_ID,
+          title: "settlement rule session",
+          status: "active",
+          lastMessageAt: "2026-07-12T00:00:00.000Z",
+          createdAt: "2026-07-12T00:00:00.000Z",
+          updatedAt: "2026-07-12T00:00:00.000Z",
+        },
+        messages: [],
+        turns: [],
+      }),
+    },
+    repository: {
+      getDraft: vi.fn().mockResolvedValue(draft()),
+      listSimulations: vi.fn().mockResolvedValue([]),
+    },
     lifecycle: {
       reopenRequestedChangesAsDraft: vi.fn().mockResolvedValue({
         version: {
@@ -70,7 +146,7 @@ function context(role: string) {
           effectiveUntil: null,
           createdBy: USER_ID,
           approvedBy: null,
-          aiDraftId: null,
+          aiDraftId: DRAFT_ID,
           reason: "review changes",
           createdAt: "2026-07-12T00:00:00.000Z",
           approvedAt: null,
@@ -120,6 +196,16 @@ describe("settlement rule reopen-draft route", () => {
       clientRequestId: "reopen-draft-0001",
     });
     expect(payload).toMatchObject({ rule: { status: "draft" }, event: null });
+    expect(payload.session).toMatchObject({
+      conversation: { id: SESSION_ID },
+      draft: { id: DRAFT_ID, status: "simulated" },
+    });
+    expect(routeContext.repository.getDraft).toHaveBeenCalledWith({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      conversationId: SESSION_ID,
+      draftId: DRAFT_ID,
+    });
   });
 
   it("rejects malformed reopen commands before billing", async () => {

@@ -80,9 +80,12 @@ describe("CustomSettlementRuleGroupPanel", () => {
     expect(assign).toHaveBeenCalledWith({
       projectStreamerId: STREAMER_ID,
       groupId: GROUP_ID,
-      effectiveFrom: "2026-07-13T09:00",
+      effectiveFrom: expect.stringMatching(
+        /^2026-07-13T09:00:00\.000[+-]\d{2}:\d{2}$/u,
+      ),
       reason: "按本月结算策略调整",
     });
+    expect(assign.mock.calls[0][0].effectiveFrom).not.toBe("2026-07-13T09:00");
   });
 
   it("blocks submission when overlap or priority conflict exists", () => {

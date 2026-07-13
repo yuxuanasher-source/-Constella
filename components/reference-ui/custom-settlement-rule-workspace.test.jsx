@@ -2445,6 +2445,10 @@ describe("CustomSettlementRuleWorkspace", () => {
   });
 
   it("reopens requested changes through an injected service before returning to the build pane", async () => {
+    const reopenedSession = completeV2AuthoritativeSession();
+    const revisedDraft = confirmableDraft({
+      revisionNumber: reopenedSession.session.draft.revisionNumber + 1,
+    });
     const requestedRule = governanceRule({
       status: "changes_requested",
       primaryAction: {
@@ -2470,7 +2474,10 @@ describe("CustomSettlementRuleWorkspace", () => {
           createdAt: "2026-07-12T01:02:00.000Z",
         },
         event: null,
+        session: reopenedSession.session,
       }),
+      answerOrRevise: vi.fn().mockResolvedValue({ result: resultFor(revisedDraft) }),
+      confirmAndSimulate: vi.fn().mockResolvedValue(simulationEnvelope()),
     });
     renderWorkspace(apiClient);
 
@@ -2493,6 +2500,42 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(screen.getByRole("tab", { name: "搭建" })).toHaveAttribute(
       "aria-selected",
       "true",
+    );
+    expect(screen.getByRole("heading", { name: "业务规则草案" })).toBeInTheDocument();
+    expect(screen.getByLabelText("回复 AI")).toBeEnabled();
+
+    fireEvent.change(screen.getByLabelText("回复 AI"), {
+      target: { value: "按审核意见把缺失数据转人工复核，并重新试算" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "回复 AI" }));
+
+    await waitFor(() =>
+      expect(apiClient.answerOrRevise).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: PROJECT_ID,
+          sessionId: SESSION_ID,
+          body: expect.objectContaining({
+            expectedDraftId: reopenedSession.session.draft.id,
+            expectedRevisionNumber: reopenedSession.session.draft.revisionNumber,
+            promptText: "按审核意见把缺失数据转人工复核，并重新试算",
+          }),
+        }),
+      ),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认业务规则并试算" }),
+    );
+    await waitFor(() =>
+      expect(apiClient.confirmAndSimulate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: PROJECT_ID,
+          sessionId: SESSION_ID,
+          body: expect.objectContaining({
+            expectedDraftId: revisedDraft.id,
+            expectedRevisionNumber: revisedDraft.revisionNumber,
+          }),
+        }),
+      ),
     );
   });
 

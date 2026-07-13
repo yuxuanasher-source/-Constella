@@ -2028,6 +2028,7 @@ describe("custom settlement rule API", () => {
           createdAt: "2026-07-12T00:00:00.000Z",
         },
         event: null,
+        session: sessionSummary(),
       }),
     );
     const api = createCustomSettlementRuleApi({ fetchImpl });
@@ -2045,6 +2046,7 @@ describe("custom settlement rule API", () => {
     ).resolves.toMatchObject({
       rule: { status: "draft" },
       event: null,
+      session: { conversation: { id: SESSION_ID }, draft: { id: DRAFT_ID } },
     });
     expect(fetchImpl).toHaveBeenCalledWith(
       `/api/projects/${PROJECT_ID}/settlement-rules/44444444-4444-4444-8444-444444444444/reopen-draft`,
