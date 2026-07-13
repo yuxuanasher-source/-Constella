@@ -14,6 +14,7 @@ import {
   CUSTOM_RULE_TARGET_TYPES,
   CUSTOM_RULE_VERSION_STATUSES,
   type CustomRuleScope,
+  type CustomRuleExecutionUnit,
   type CustomRuleTarget,
   type CustomRuleVersionStatus,
   type NormalizedAstNode,
@@ -648,6 +649,39 @@ export type ListCustomRulesInput = {
   status?: CustomRuleVersionStatus;
 };
 
+export type ResolveExecutableCustomRuleLayersInput = {
+  organizationId: string;
+  projectId: string;
+  scope: CustomRuleScope;
+  executionTimestamp: string;
+  executionUnits: CustomRuleExecutionUnit[];
+};
+
+export type ExecutableCustomRuleAssignmentInterval = {
+  unitKey: string;
+  projectStreamerId: string;
+  groupId: string;
+  assignmentId: string;
+  effectiveFrom: string;
+  effectiveUntil: string | null;
+};
+
+export type ResolvedExecutableCustomRuleLayers = {
+  projectBaseVersion: CustomSettlementRuleVersion | null;
+  groupVersions: Array<{
+    groupId: string;
+    version: CustomSettlementRuleVersion;
+  }>;
+  projectStreamerVersions: Array<{
+    projectStreamerId: string;
+    version: CustomSettlementRuleVersion;
+  }>;
+  assignmentsByUnitKey: Record<
+    string,
+    ExecutableCustomRuleAssignmentInterval[]
+  >;
+};
+
 export type ListCustomRuleReviewEventsInput = {
   organizationId: string;
   projectId: string;
@@ -877,6 +911,9 @@ export type CustomRuleRepository = CustomRuleReadRepository & {
   listCustomRules(
     input: ListCustomRulesInput,
   ): Promise<CustomSettlementRuleVersion[]>;
+  resolveExecutableCustomRuleLayers(
+    input: ResolveExecutableCustomRuleLayersInput,
+  ): Promise<ResolvedExecutableCustomRuleLayers>;
   listCustomRuleReviewEvents(
     input: ListCustomRuleReviewEventsInput,
   ): Promise<CustomSettlementRuleReviewEvent[]>;
@@ -1794,6 +1831,27 @@ const listCustomRulesInputSchema = z.strictObject({
   projectId: uuidSchema,
   status: z.enum(CUSTOM_RULE_VERSION_STATUSES).optional(),
 });
+const executableCustomRuleUnitInputSchema = z.object({
+  key: nonemptyTextSchema.max(200),
+  projectStreamerId: uuidSchema.optional(),
+  membershipSnapshot: z.object({
+    projectStreamerId: uuidSchema,
+    effectiveAt: timestampSchema,
+    groups: z.array(
+      z.object({
+        id: uuidSchema,
+        assignmentId: uuidSchema,
+      }),
+    ),
+  }),
+});
+const resolveExecutableCustomRuleLayersInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  scope: z.enum(CUSTOM_RULE_SCOPES),
+  executionTimestamp: timestampSchema,
+  executionUnits: z.array(executableCustomRuleUnitInputSchema).min(1).max(500),
+});
 const listCustomRuleReviewEventsInputSchema = z.strictObject({
   organizationId: uuidSchema,
   projectId: uuidSchema,
@@ -2357,6 +2415,18 @@ const lifecycleResultRowSchema = z.strictObject({
 });
 const savedDraftResultRowSchema = lifecycleResultRowSchema.omit({
   event: true,
+});
+const executableAssignmentIntervalRowSchema = z.strictObject({
+  unit_key: nonemptyTextSchema.max(200),
+  project_streamer_id: uuidSchema,
+  group_id: uuidSchema,
+  assignment_id: uuidSchema,
+  effective_from: timestampSchema,
+  effective_until: timestampSchema.nullable(),
+});
+const executableCustomRuleLookupRowSchema = z.strictObject({
+  versions: z.array(lifecycleVersionRowSchema),
+  assignments: z.array(executableAssignmentIntervalRowSchema),
 });
 const reuseDraftResultRowSchema = z.strictObject({
   version: lifecycleVersionRowSchema,
@@ -3107,6 +3177,118 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
         parsePersistenceRow(lifecycleVersionRowSchema, row, "lifecycle"),
       ),
     );
+  }
+
+  async resolveExecutableCustomRuleLayers(
+    unsafeInput: ResolveExecutableCustomRuleLayersInput,
+  ): Promise<ResolvedExecutableCustomRuleLayers> {
+    const input = parsePersistenceInput(
+      resolveExecutableCustomRuleLayersInputSchema,
+      unsafeInput,
+      "resolve executable custom rule layers input",
+    );
+    const unitFacts = input.executionUnits.map((unit) => {
+      const projectStreamerId =
+        unit.projectStreamerId ?? unit.membershipSnapshot.projectStreamerId;
+      return {
+        unitKey: unit.key,
+        projectStreamerId,
+        effectiveAt: unit.membershipSnapshot.effectiveAt,
+        groupIds: uniqueStable(
+          unit.membershipSnapshot.groups.map((group) => group.id),
+        ),
+        assignmentIds: uniqueStable(
+          unit.membershipSnapshot.groups.map((group) => group.assignmentId),
+        ),
+      };
+    });
+    const projectStreamerIds = uniqueStable(
+      unitFacts.map((unit) => unit.projectStreamerId),
+    );
+    const groupIds = uniqueStable(unitFacts.flatMap((unit) => unit.groupIds));
+
+    const { data, error } = await this.client.rpc(
+      "resolve_executable_custom_settlement_rule_layers",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_scope: input.scope,
+        p_execution_timestamp: input.executionTimestamp,
+        p_project_streamer_ids: projectStreamerIds,
+        p_group_ids: groupIds,
+        p_units: unitFacts,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "resolve_executable_rule_layers",
+        error,
+      );
+    }
+
+    const row = parsePersistenceRow(
+      executableCustomRuleLookupRowSchema,
+      data,
+      "lifecycle",
+    );
+    const groupIdSet = new Set(groupIds);
+    const projectStreamerIdSet = new Set(projectStreamerIds);
+    const versions = row.versions
+      .filter((version) =>
+        isExecutableVersionRow(version, {
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          scope: input.scope,
+          executionTimestamp: input.executionTimestamp,
+          groupIds: groupIdSet,
+          projectStreamerIds: projectStreamerIdSet,
+        }),
+      )
+      .map((version) => toCustomSettlementRuleVersion(version));
+
+    const projectBaseVersion =
+      versions
+        .filter((version) => version.target.targetType === "project")
+        .sort(compareExecutableVersionRecency)[0] ?? null;
+
+    const groupVersions = versions
+      .filter(
+        (
+          version,
+        ): version is CustomSettlementRuleVersion & {
+          target: { targetType: "streamer_group"; targetId: string };
+        } => version.target.targetType === "streamer_group",
+      )
+      .map((version) => ({
+        groupId: version.target.targetId,
+        version,
+      }))
+      .sort(compareTargetedExecutableVersion);
+
+    const projectStreamerVersions = versions
+      .filter(
+        (
+          version,
+        ): version is CustomSettlementRuleVersion & {
+          target: { targetType: "project_streamer"; targetId: string };
+        } => version.target.targetType === "project_streamer",
+      )
+      .map((version) => ({
+        projectStreamerId: version.target.targetId,
+        version,
+      }))
+      .sort(compareTargetedExecutableVersion);
+
+    return {
+      projectBaseVersion,
+      groupVersions,
+      projectStreamerVersions,
+      assignmentsByUnitKey: groupExecutableAssignmentsByUnit({
+        assignments: row.assignments,
+        unitFacts,
+        executionTimestamp: input.executionTimestamp,
+      }),
+    };
   }
 
   async listCustomRuleReviewEvents(
@@ -5206,6 +5388,128 @@ function normalizeSafetyKey(value: string): string {
 
 function utf8ByteLength(value: string): number {
   return UTF8_ENCODER.encode(value).byteLength;
+}
+
+function uniqueStable(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function isExecutableVersionRow(
+  row: z.infer<typeof lifecycleVersionRowSchema>,
+  context: {
+    organizationId: string;
+    projectId: string;
+    scope: CustomRuleScope;
+    executionTimestamp: string;
+    groupIds: ReadonlySet<string>;
+    projectStreamerIds: ReadonlySet<string>;
+  },
+): boolean {
+  if (row.organization_id !== context.organizationId) return false;
+  if (row.project_id !== context.projectId) return false;
+  if (row.scope !== context.scope) return false;
+  if (row.approved_by === null || row.approved_at === null) return false;
+  if (row.status !== "active" && row.status !== "archived") return false;
+  if (row.effective_from === null) return false;
+  if (row.effective_from > context.executionTimestamp) return false;
+  if (
+    row.effective_until !== null &&
+    context.executionTimestamp >= row.effective_until
+  ) {
+    return false;
+  }
+
+  if (row.target_type === "project") return row.target_id === null;
+  if (row.target_id === null) return false;
+  if (row.target_type === "streamer_group") {
+    return context.groupIds.has(row.target_id);
+  }
+  return context.projectStreamerIds.has(row.target_id);
+}
+
+function compareExecutableVersionRecency(
+  left: CustomSettlementRuleVersion,
+  right: CustomSettlementRuleVersion,
+): number {
+  return (
+    (right.effectiveFrom ?? "").localeCompare(left.effectiveFrom ?? "") ||
+    right.versionNumber - left.versionNumber ||
+    right.id.localeCompare(left.id)
+  );
+}
+
+function compareTargetedExecutableVersion(
+  left: { version: CustomSettlementRuleVersion },
+  right: { version: CustomSettlementRuleVersion },
+): number {
+  return (
+    left.version.priority - right.version.priority ||
+    targetSortKey(left.version).localeCompare(targetSortKey(right.version)) ||
+    left.version.id.localeCompare(right.version.id)
+  );
+}
+
+function targetSortKey(version: CustomSettlementRuleVersion): string {
+  return `${version.target.targetType}:${version.target.targetId ?? ""}`;
+}
+
+function groupExecutableAssignmentsByUnit(input: {
+  assignments: Array<z.infer<typeof executableAssignmentIntervalRowSchema>>;
+  unitFacts: Array<{
+    unitKey: string;
+    projectStreamerId: string;
+    groupIds: string[];
+    assignmentIds: string[];
+  }>;
+  executionTimestamp: string;
+}): Record<string, ExecutableCustomRuleAssignmentInterval[]> {
+  const factsByUnitKey = new Map(
+    input.unitFacts.map((unit) => [unit.unitKey, unit]),
+  );
+  const assignmentsByUnitKey: Record<
+    string,
+    ExecutableCustomRuleAssignmentInterval[]
+  > = {};
+  for (const unit of input.unitFacts) {
+    assignmentsByUnitKey[unit.unitKey] = [];
+  }
+
+  for (const row of input.assignments) {
+    const unit = factsByUnitKey.get(row.unit_key);
+    if (unit === undefined) continue;
+    if (row.project_streamer_id !== unit.projectStreamerId) continue;
+    if (!unit.groupIds.includes(row.group_id)) continue;
+    if (!unit.assignmentIds.includes(row.assignment_id)) continue;
+    if (row.effective_from > input.executionTimestamp) continue;
+    if (
+      row.effective_until !== null &&
+      input.executionTimestamp >= row.effective_until
+    ) {
+      continue;
+    }
+
+    assignmentsByUnitKey[row.unit_key]?.push({
+      unitKey: row.unit_key,
+      projectStreamerId: row.project_streamer_id,
+      groupId: row.group_id,
+      assignmentId: row.assignment_id,
+      effectiveFrom: row.effective_from,
+      effectiveUntil: row.effective_until,
+    });
+  }
+
+  for (const [unitKey, assignments] of Object.entries(assignmentsByUnitKey)) {
+    const unit = factsByUnitKey.get(unitKey);
+    if (unit === undefined) continue;
+    assignments.sort(
+      (left, right) =>
+        unit.groupIds.indexOf(left.groupId) -
+          unit.groupIds.indexOf(right.groupId) ||
+        left.assignmentId.localeCompare(right.assignmentId),
+    );
+  }
+
+  return assignmentsByUnitKey;
 }
 
 function toCustomRuleDraft(row: DraftRow | CreatedDraftRow): CustomRuleDraft {

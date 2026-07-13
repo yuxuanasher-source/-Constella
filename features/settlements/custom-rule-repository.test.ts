@@ -26,8 +26,222 @@ import {
   type EditableReusableRuleDraft,
   type ReusableRuleVersion,
 } from "./custom-rule-templates";
+import type { CustomRuleExecutionUnit } from "./custom-rule-types";
 
 describe("Phase 2 custom rule lifecycle repository", () => {
+  it("resolves executable rule versions by organization, project, scope, target, and execution timestamp", async () => {
+    const rpc = vi.fn(async () => ({
+      data: {
+        versions: [
+          executableVersionRow({
+            id: "00000000-0000-4000-8000-000000000301",
+            target_type: "project",
+            target_id: null,
+            composition_mode: "replace",
+          }),
+          executableVersionRow({
+            id: "00000000-0000-4000-8000-000000000302",
+            target_type: "streamer_group",
+            target_id: GROUP_ID,
+            priority: 20,
+          }),
+          executableVersionRow({
+            id: "00000000-0000-4000-8000-000000000303",
+            target_type: "streamer_group",
+            target_id: SECOND_GROUP_ID,
+            priority: 10,
+            status: "archived",
+            effective_from: "2026-06-01T00:00:00.000Z",
+            effective_until: "2026-08-01T00:00:00.000Z",
+            archived_at: "2026-07-01T00:00:00.000Z",
+          }),
+          executableVersionRow({
+            id: "00000000-0000-4000-8000-000000000304",
+            target_type: "project_streamer",
+            target_id: PROJECT_STREAMER_ID,
+            priority: 100,
+          }),
+          executableVersionRow({
+            id: "00000000-0000-4000-8000-000000000305",
+            effective_from: "2026-09-01T00:00:00.000Z",
+          }),
+          executableVersionRow({
+            id: "00000000-0000-4000-8000-000000000306",
+            effective_until: "2026-06-01T00:00:00.000Z",
+          }),
+          executableVersionRow({
+            id: "00000000-0000-4000-8000-000000000307",
+            approved_by: null,
+            approved_at: null,
+          }),
+          executableVersionRow({
+            id: "00000000-0000-4000-8000-000000000308",
+            organization_id: "00000000-0000-4000-8000-000000000999",
+          }),
+          executableVersionRow({
+            id: "00000000-0000-4000-8000-000000000309",
+            target_type: "streamer_group",
+            target_id: WRONG_GROUP_ID,
+          }),
+        ],
+        assignments: [
+          executableAssignmentRow({
+            unit_key: "unit-1",
+            group_id: GROUP_ID,
+            assignment_id: ASSIGNMENT_ID,
+          }),
+          executableAssignmentRow({
+            unit_key: "unit-1",
+            group_id: SECOND_GROUP_ID,
+            assignment_id: SECOND_ASSIGNMENT_ID,
+            effective_from: "2026-07-10T00:00:00.000Z",
+            effective_until: "2026-07-20T00:00:00.000Z",
+          }),
+        ],
+      },
+      error: null,
+    }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      resolveExecutableCustomRuleLayers(input: {
+        organizationId: string;
+        projectId: string;
+        scope: "payable";
+        executionTimestamp: string;
+        executionUnits: CustomRuleExecutionUnit[];
+      }): Promise<{
+        projectBaseVersion: { id: string } | null;
+        groupVersions: Array<{ groupId: string; version: { id: string } }>;
+        projectStreamerVersions: Array<{
+          projectStreamerId: string;
+          version: { id: string };
+        }>;
+        assignmentsByUnitKey: Record<
+          string,
+          Array<{
+            groupId: string;
+            assignmentId: string;
+            effectiveFrom: string;
+            effectiveUntil: string | null;
+          }>
+        >;
+      }>;
+    };
+
+    const result = await repository.resolveExecutableCustomRuleLayers({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      scope: "payable",
+      executionTimestamp: "2026-07-15T00:00:00.000Z",
+      executionUnits: [executableUnit()],
+    });
+
+    expect(result.projectBaseVersion?.id).toBe(
+      "00000000-0000-4000-8000-000000000301",
+    );
+    expect(result.groupVersions.map((entry) => entry.version.id)).toEqual([
+      "00000000-0000-4000-8000-000000000303",
+      "00000000-0000-4000-8000-000000000302",
+    ]);
+    expect(result.projectStreamerVersions.map((entry) => entry.version.id)).toEqual([
+      "00000000-0000-4000-8000-000000000304",
+    ]);
+    expect(result.assignmentsByUnitKey["unit-1"]).toEqual([
+      {
+        unitKey: "unit-1",
+        projectStreamerId: PROJECT_STREAMER_ID,
+        groupId: GROUP_ID,
+        assignmentId: ASSIGNMENT_ID,
+        effectiveFrom: "2026-07-01T00:00:00.000Z",
+        effectiveUntil: null,
+      },
+      {
+        unitKey: "unit-1",
+        projectStreamerId: PROJECT_STREAMER_ID,
+        groupId: SECOND_GROUP_ID,
+        assignmentId: SECOND_ASSIGNMENT_ID,
+        effectiveFrom: "2026-07-10T00:00:00.000Z",
+        effectiveUntil: "2026-07-20T00:00:00.000Z",
+      },
+    ]);
+  });
+
+  it("loads executable rule layers for all units with one bounded database call", async () => {
+    const rpc = vi.fn(async () => ({
+      data: { versions: [], assignments: [] },
+      error: null,
+    }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      resolveExecutableCustomRuleLayers(input: {
+        organizationId: string;
+        projectId: string;
+        scope: "payable";
+        executionTimestamp: string;
+        executionUnits: CustomRuleExecutionUnit[];
+      }): Promise<unknown>;
+    };
+
+    await repository.resolveExecutableCustomRuleLayers({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      scope: "payable",
+      executionTimestamp: "2026-07-15T00:00:00.000Z",
+      executionUnits: [
+        executableUnit(),
+        executableUnit({
+          key: "unit-2",
+          projectStreamerId: OTHER_PROJECT_STREAMER_ID,
+          membershipSnapshot: {
+            ...executableUnit().membershipSnapshot,
+            projectStreamerId: OTHER_PROJECT_STREAMER_ID,
+            groups: [
+              {
+                id: SECOND_GROUP_ID,
+                name: "Silver",
+                assignmentId: SECOND_ASSIGNMENT_ID,
+              },
+            ],
+          },
+        }),
+      ],
+    });
+
+    expect(rpc).toHaveBeenCalledOnce();
+    expect(rpc).toHaveBeenCalledWith(
+      "resolve_executable_custom_settlement_rule_layers",
+      {
+        p_organization_id: ORGANIZATION_ID,
+        p_project_id: PROJECT_ID,
+        p_scope: "payable",
+        p_execution_timestamp: "2026-07-15T00:00:00.000Z",
+        p_project_streamer_ids: [
+          PROJECT_STREAMER_ID,
+          OTHER_PROJECT_STREAMER_ID,
+        ],
+        p_group_ids: [GROUP_ID, SECOND_GROUP_ID],
+        p_units: [
+          {
+            unitKey: "unit-1",
+            projectStreamerId: PROJECT_STREAMER_ID,
+            effectiveAt: "2026-07-15T00:00:00.000Z",
+            groupIds: [GROUP_ID, SECOND_GROUP_ID],
+            assignmentIds: [ASSIGNMENT_ID, SECOND_ASSIGNMENT_ID],
+          },
+          {
+            unitKey: "unit-2",
+            projectStreamerId: OTHER_PROJECT_STREAMER_ID,
+            effectiveAt: "2026-07-15T00:00:00.000Z",
+            groupIds: [SECOND_GROUP_ID],
+            assignmentIds: [SECOND_ASSIGNMENT_ID],
+          },
+        ],
+      },
+    );
+  });
+
   it("creates settlement rule groups through a role-gated RPC", async () => {
     const rpc = vi.fn(async () => ({
       data: settlementRuleGroupRow(),
@@ -4607,6 +4821,9 @@ const GROUP_ID = "00000000-0000-4000-8000-000000000011";
 const PROJECT_STREAMER_ID = "00000000-0000-4000-8000-000000000012";
 const OTHER_PROJECT_STREAMER_ID = "00000000-0000-4000-8000-000000000015";
 const ASSIGNMENT_ID = "00000000-0000-4000-8000-000000000013";
+const SECOND_GROUP_ID = "00000000-0000-4000-8000-000000000016";
+const WRONG_GROUP_ID = "00000000-0000-4000-8000-000000000017";
+const SECOND_ASSIGNMENT_ID = "00000000-0000-4000-8000-000000000018";
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_C = "c".repeat(64);
@@ -4669,6 +4886,64 @@ function settlementGroupAssignmentChangeRow() {
     inserted_assignment: settlementGroupAssignmentRow(),
     closed_assignment_ids: [ASSIGNMENT_ID],
     new_group_snapshot_hash: HASH_F,
+  };
+}
+
+function executableUnit(
+  overrides: Partial<CustomRuleExecutionUnit> = {},
+): CustomRuleExecutionUnit {
+  return {
+    key: "unit-1",
+    grain: "report",
+    projectId: PROJECT_ID,
+    projectStreamerId: PROJECT_STREAMER_ID,
+    streamerId: "00000000-0000-4000-8000-000000000019",
+    periodStart: "2026-07-01T00:00:00.000Z",
+    periodEnd: "2026-08-01T00:00:00.000Z",
+    sourceReportIds: ["00000000-0000-4000-8000-000000000020"],
+    membershipSnapshot: {
+      projectStreamerId: PROJECT_STREAMER_ID,
+      effectiveAt: "2026-07-15T00:00:00.000Z",
+      groups: [
+        { id: GROUP_ID, name: "Gold", assignmentId: ASSIGNMENT_ID },
+        {
+          id: SECOND_GROUP_ID,
+          name: "Silver",
+          assignmentId: SECOND_ASSIGNMENT_ID,
+        },
+      ],
+      snapshotHash: HASH_E,
+    },
+    variables: {},
+    ...overrides,
+  };
+}
+
+function executableVersionRow(overrides: Record<string, unknown> = {}) {
+  return {
+    ...lifecycleResultRow({
+      version: {
+        status: "active",
+        effective_from: "2026-07-01T00:00:00.000Z",
+        effective_until: null,
+        approved_by: CREATOR_ID,
+        approved_at: "2026-06-30T00:00:00.000Z",
+        archived_at: null,
+        ...overrides,
+      },
+    }).version,
+  };
+}
+
+function executableAssignmentRow(overrides: Record<string, unknown> = {}) {
+  return {
+    unit_key: "unit-1",
+    project_streamer_id: PROJECT_STREAMER_ID,
+    group_id: GROUP_ID,
+    assignment_id: ASSIGNMENT_ID,
+    effective_from: "2026-07-01T00:00:00.000Z",
+    effective_until: null,
+    ...overrides,
   };
 }
 
