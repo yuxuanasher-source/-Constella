@@ -1469,28 +1469,39 @@ export default function CustomSettlementRuleWorkspace({
         if (error?.name === "AbortError") throw error;
         return { ...fallback, [OPTIONAL_GOVERNANCE_FAILURE]: true };
       });
+    const versionsRequest = canLoadVersions
+      ? metadataApiClient.listRuleVersions({
+          projectId,
+          signal: controller.signal,
+        })
+      : Promise.resolve({ rules: [] });
+    const reviewsRequest = canLoadReviews
+      ? versionsRequest.then((rulesPayload) =>
+          Promise.all(
+            rulesPayload.rules.map((rule) =>
+              optionalGovernanceCall(
+                metadataApiClient.listRuleReviewEvents({
+                  projectId,
+                  ruleVersionId: rule.id,
+                  signal: controller.signal,
+                }),
+                { events: [] },
+              ),
+            ),
+          ).then((reviewPayloads) => ({
+            events: reviewPayloads.flatMap((payload) => payload.events),
+          })),
+        )
+      : Promise.resolve({ events: [] });
     Promise.all([
-      canLoadVersions
-        ? metadataApiClient.listRuleVersions({
-            projectId,
-            signal: controller.signal,
-          })
-        : Promise.resolve({ rules: [] }),
+      versionsRequest,
       canLoadGroups
         ? metadataApiClient.listSettlementRuleGroups({
             projectId,
             signal: controller.signal,
           })
         : Promise.resolve({ groups: [] }),
-      canLoadReviews
-        ? optionalGovernanceCall(
-            metadataApiClient.listRuleReviewEvents({
-              projectId,
-              signal: controller.signal,
-            }),
-            { events: [] },
-          )
-        : Promise.resolve({ events: [] }),
+      reviewsRequest,
       canLoadTemplates
         ? metadataApiClient.listRuleTemplates({ signal: controller.signal })
         : Promise.resolve({ templates }),

@@ -2638,7 +2638,10 @@ describe("CustomSettlementRuleWorkspace", () => {
       ),
     );
     expect(apiClient.listRuleReviewEvents).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: PROJECT_ID }),
+      expect.objectContaining({
+        projectId: PROJECT_ID,
+        ruleVersionId: "44444444-4444-4444-8444-444444444444",
+      }),
     );
     expect(apiClient.listRuleTemplates).toHaveBeenCalled();
 

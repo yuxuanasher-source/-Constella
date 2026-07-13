@@ -470,6 +470,21 @@ function governanceRule(overrides = {}) {
   };
 }
 
+function reviewEvent(overrides = {}) {
+  return {
+    id: "66666666-6666-4666-8666-666666666666",
+    eventType: "submitted_for_review",
+    actorId: "22222222-2222-4222-8222-222222222222",
+    actorRole: "operator_business",
+    reason: "鎻愪氦瀹℃牳",
+    comment: null,
+    beforeStatus: "draft",
+    afterStatus: "pending_review",
+    createdAt: "2026-07-12T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 describe("custom settlement rule API", () => {
   it("returns a validated catalog and encodes the project and query values", async () => {
     const fetchImpl = vi.fn(async () =>
@@ -1915,7 +1930,7 @@ describe("custom settlement rule API", () => {
     });
   });
 
-  it("loads reusable templates only from existing routes and does not expose missing optional endpoints", async () => {
+  it("loads reusable templates through the template endpoint", async () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(
@@ -1959,9 +1974,6 @@ describe("custom settlement rule API", () => {
     await expect(api.listRuleTemplates()).resolves.toMatchObject({
       templates: [{ kind: "system" }, { kind: "organization" }],
     });
-    expect(api.listRuleReviewEvents).toBeUndefined();
-    expect(api.getLatestProjectRuleSession).toBeUndefined();
-    expect(api.reopenRuleDraft).toBeUndefined();
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
@@ -1969,6 +1981,78 @@ describe("custom settlement rule API", () => {
       expect.objectContaining({ method: "GET" }),
     );
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads review events and the latest project session through concrete default routes", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ events: [reviewEvent()] }))
+      .mockResolvedValueOnce(jsonResponse({ session: sessionSummary() }));
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.listRuleReviewEvents({
+        projectId: PROJECT_ID,
+        ruleVersionId: "44444444-4444-4444-8444-444444444444",
+      }),
+    ).resolves.toMatchObject({
+      events: [{ eventType: "submitted_for_review" }],
+    });
+    await expect(
+      api.getLatestProjectRuleSession({ projectId: PROJECT_ID }),
+    ).resolves.toMatchObject({
+      session: { conversation: { id: SESSION_ID }, draft: { id: DRAFT_ID } },
+    });
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      `/api/projects/${PROJECT_ID}/settlement-rules/44444444-4444-4444-8444-444444444444/review-events`,
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      `/api/projects/${PROJECT_ID}/settlement-rules/ai-sessions/latest`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("reopens requested changes as a draft through the concrete lifecycle route", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        rule: governanceRule({
+          status: "draft",
+          primaryAction: { state: "draft", action: "apply_and_submit" },
+        }),
+        simulation: {
+          id: "55555555-5555-4555-8555-555555555555",
+          createdAt: "2026-07-12T00:00:00.000Z",
+        },
+        event: null,
+      }),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+    const body = {
+      reason: "review changes",
+      clientRequestId: "reopen-rule-0001",
+    };
+
+    await expect(
+      api.reopenRuleDraft({
+        projectId: PROJECT_ID,
+        ruleVersionId: "44444444-4444-4444-8444-444444444444",
+        body,
+      }),
+    ).resolves.toMatchObject({
+      rule: { status: "draft" },
+      event: null,
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `/api/projects/${PROJECT_ID}/settlement-rules/44444444-4444-4444-8444-444444444444/reopen-draft`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    );
   });
 
   it("requires apply-and-submit to include a non-null review event", async () => {
