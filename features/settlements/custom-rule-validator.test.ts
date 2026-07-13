@@ -840,6 +840,78 @@ describe("parameters and money_result components", () => {
   });
 });
 
+describe("modifier composition validation", () => {
+  it("keeps prior_layer_amount out of project base rule formulas", () => {
+    expectValidationIssue(
+      "money_result({ final: prior_layer_amount })",
+      "VALIDATION_UNKNOWN_VARIABLE",
+      options("payable", "project_streamer_period"),
+    );
+  });
+
+  it("allows prior_layer_amount only in modifier validation contexts", () => {
+    const result = expectValidationSuccess(
+      "money_result({ final: prior_layer_amount + yuan(10) })",
+      options("payable", "project_streamer_period", {
+        compositionMode: "add",
+      }),
+    );
+
+    expect(result.variables).toEqual(["prior_layer_amount"]);
+  });
+
+  it("requires multiply modifiers to derive the absolute amount from percent(prior_layer_amount, ...)", () => {
+    expectValidationSuccess(
+      "money_result({ final: percent(prior_layer_amount, rate_percent(110)) })",
+      options("payable", "project_streamer_period", {
+        compositionMode: "multiply",
+      }),
+    );
+
+    expectValidationIssue(
+      "money_result({ final: prior_layer_amount + yuan(10) })",
+      "VALIDATION_MODIFIER_COMPOSITION",
+      options("payable", "project_streamer_period", {
+        compositionMode: "multiply",
+      }),
+    );
+  });
+
+  it("requires clamp modifiers to derive the absolute amount from clamp(prior_layer_amount, ...)", () => {
+    expectValidationSuccess(
+      "money_result({ final: clamp(prior_layer_amount, yuan(0), yuan(1000)) })",
+      options("payable", "project_streamer_period", {
+        compositionMode: "clamp",
+      }),
+    );
+
+    expectValidationIssue(
+      "money_result({ final: min(prior_layer_amount, yuan(1000)) })",
+      "VALIDATION_MODIFIER_COMPOSITION",
+      options("payable", "project_streamer_period", {
+        compositionMode: "clamp",
+      }),
+    );
+  });
+
+  it("permits signed deltas only for add modifiers", () => {
+    expectValidationSuccess(
+      "money_result({ final: yuan(-5) })",
+      options("payable", "project_streamer_period", {
+        compositionMode: "add",
+      }),
+    );
+
+    expectValidationIssue(
+      "money_result({ final: yuan(-5) })",
+      "VALIDATION_NEGATIVE_FINAL_AMOUNT",
+      options("payable", "project_streamer_period", {
+        compositionMode: "replace",
+      }),
+    );
+  });
+});
+
 describe("deterministic output", () => {
   it("keeps compiled AST and hash stable across external jsep precedence changes", () => {
     const formula = "money_result({ final: yuan(1) + yuan(2) * 3 })";

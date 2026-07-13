@@ -1,3 +1,5 @@
+import type { SettlementGroupMembershipSnapshot } from "./custom-rule-groups";
+
 export const CUSTOM_RULE_SCOPES = [
   "receivable",
   "payable",
@@ -107,6 +109,19 @@ export type TypedRuntimeValue =
   | { type: "timestamp"; value: string }
   | { type: "array"; items: TypedRuntimeValue[] }
   | { type: "object"; fields: Record<string, TypedRuntimeValue> };
+
+export type CustomRuleExecutionUnit = {
+  key: string;
+  grain: CustomRuleExecutionGrain;
+  projectId: string;
+  projectStreamerId?: string;
+  streamerId?: string;
+  periodStart: string;
+  periodEnd: string;
+  sourceReportIds: string[];
+  membershipSnapshot: SettlementGroupMembershipSnapshot;
+  variables: Record<string, TypedRuntimeValue>;
+};
 
 export type CustomRuleMissingDataPolicy =
   | { action: "route_item_to_review" }

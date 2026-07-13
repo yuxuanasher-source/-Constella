@@ -12,11 +12,13 @@ import {
 import {
   CUSTOM_RULE_EXECUTION_GRAINS,
   CUSTOM_RULE_SCOPES,
+  CUSTOM_RULE_COMPOSITION_MODES,
   percentToBpsStrict,
   yuanToCentsStrict,
 } from "./custom-rule-types";
 import type {
   CompiledAstNode,
+  CustomRuleCompositionMode,
   CustomRuleExecutionGrain,
   CustomRuleScope,
   NormalizedAstNode,
@@ -31,6 +33,7 @@ export type ValidateCustomRuleFormulaOptions = {
     name: string;
     valueType: RuntimeValueType;
   }>;
+  compositionMode?: CustomRuleCompositionMode;
 };
 
 export type ValidateCustomRuleFormulaResult =
@@ -59,6 +62,7 @@ type CompileContext = {
   referencedParameters: Set<string>;
   componentNames: ReadonlySet<string>;
   componentTypes: ReadonlyMap<string, RuntimeValueType>;
+  compositionMode: CustomRuleCompositionMode | null;
 };
 
 type ComponentReference = {
@@ -75,6 +79,7 @@ type ValidatedOptions = {
   scope: CustomRuleScope;
   executionGrain: CustomRuleExecutionGrain;
   parameterTypes: ReadonlyMap<string, RuntimeValueType>;
+  compositionMode: CustomRuleCompositionMode | null;
 };
 
 const scalar = <ScalarType extends RuntimeScalarType>(
@@ -265,6 +270,7 @@ const VARIABLE_DEFINITIONS: Readonly<Record<string, VariableDefinition>> = {
   tax_amount: variable(MONEY_TYPE, RECONCILIATION_ONLY, PERIOD_GRAINS),
   gross_margin: variable(MONEY_TYPE, RECONCILIATION_ONLY, PERIOD_GRAINS),
   margin_rate: variable(RATE_TYPE, RECONCILIATION_ONLY, PERIOD_GRAINS),
+  prior_layer_amount: variable(MONEY_TYPE, PAYABLE_AND_RECEIVABLE, PERIOD_GRAINS),
 };
 
 const ALLOWED_FUNCTIONS = new Set([
@@ -375,9 +381,11 @@ export function validateCustomRuleFormula(
       referencedParameters: new Set(),
       componentNames: new Set(),
       componentTypes: new Map(),
+      compositionMode: validatedOptions.compositionMode,
     };
 
     const compiledAst = compileTopLevel(parsed.ast, "$", context);
+    validateModifierComposition(compiledAst, parsed.ast, "$", context);
     const schemaResult = compiledAstNodeSchema.safeParse(
       copyOwnData(compiledAst),
     );
@@ -421,7 +429,7 @@ function validateRuntimeOptions(
   const optionValues = isPlainRecord(options)
     ? readOwnDataProperties(
       options,
-      ["scope", "executionGrain", "parameters"],
+      ["scope", "executionGrain", "parameters", "compositionMode"],
       ["scope", "executionGrain"],
     )
     : null;
@@ -430,13 +438,18 @@ function validateRuntimeOptions(
   const parametersValue = optionValues?.has("parameters")
     ? optionValues.get("parameters")
     : [];
+  const compositionMode = optionValues?.get("compositionMode");
   if (
     !optionValues ||
     !CUSTOM_RULE_SCOPES.includes(scope as CustomRuleScope) ||
     !CUSTOM_RULE_EXECUTION_GRAINS.includes(
       executionGrain as CustomRuleExecutionGrain,
     ) ||
-    !Array.isArray(parametersValue)
+    !Array.isArray(parametersValue) ||
+    (compositionMode !== undefined &&
+      !CUSTOM_RULE_COMPOSITION_MODES.includes(
+        compositionMode as CustomRuleCompositionMode,
+      ))
   ) {
     throw invalidOptions(span);
   }
@@ -488,6 +501,10 @@ function validateRuntimeOptions(
     scope: scope as CustomRuleScope,
     executionGrain: executionGrain as CustomRuleExecutionGrain,
     parameterTypes,
+    compositionMode:
+      compositionMode === undefined
+        ? null
+        : (compositionMode as CustomRuleCompositionMode),
   };
 }
 
@@ -736,6 +753,7 @@ function compileMoneyResult(
     ...context,
     componentNames: names,
     componentTypes,
+    compositionMode: context.compositionMode,
   };
   const entries: Array<{ key: string; value: CompiledAstNode }> = [];
   const fields: Record<string, RuntimeValueType> = {};
@@ -860,6 +878,17 @@ function compileIdentifier(
   const definition = Object.hasOwn(VARIABLE_DEFINITIONS, node.name)
     ? VARIABLE_DEFINITIONS[node.name]
     : undefined;
+  if (
+    node.name === "prior_layer_amount" &&
+    !isModifierCompositionMode(context.compositionMode)
+  ) {
+    throw issueAt(
+      "VALIDATION_UNKNOWN_VARIABLE",
+      "Formula references an unknown variable",
+      path,
+      context,
+    );
+  }
   if (!definition) {
     throw issueAt(
       "VALIDATION_UNKNOWN_VARIABLE",
@@ -891,6 +920,110 @@ function compileIdentifier(
     name: node.name,
     inferredType: definition.valueType,
   };
+}
+
+function validateModifierComposition(
+  compiledAst: CompiledAstNode,
+  sourceAst: NormalizedAstNode,
+  path: string,
+  context: CompileContext,
+): void {
+  const mode = context.compositionMode;
+  if (!mode) return;
+  const finalEntry = finalMoneyResultEntry(compiledAst);
+  const finalSource = finalMoneyResultSourceEntry(sourceAst);
+  if (!finalEntry || !finalSource) return;
+
+  if (mode !== "add" && isNegativeMoneyLiteral(finalEntry.value)) {
+    throw issueAt(
+      "VALIDATION_NEGATIVE_FINAL_AMOUNT",
+      "Signed deltas are permitted only for add modifiers",
+      finalSource.path,
+      context,
+    );
+  }
+  if (
+    mode === "multiply" &&
+    !isCallWithFirstIdentifier(finalEntry.value, "percent", "prior_layer_amount")
+  ) {
+    throw issueAt(
+      "VALIDATION_MODIFIER_COMPOSITION",
+      "Multiply modifiers must derive final from percent(prior_layer_amount, ...)",
+      finalSource.path,
+      context,
+    );
+  }
+  if (
+    mode === "clamp" &&
+    !isCallWithFirstIdentifier(finalEntry.value, "clamp", "prior_layer_amount")
+  ) {
+    throw issueAt(
+      "VALIDATION_MODIFIER_COMPOSITION",
+      "Clamp modifiers must derive final from clamp(prior_layer_amount, ...)",
+      finalSource.path,
+      context,
+    );
+  }
+}
+
+function finalMoneyResultEntry(
+  compiledAst: CompiledAstNode,
+): { key: string; value: CompiledAstNode } | undefined {
+  if (
+    compiledAst.kind !== "call" ||
+    compiledAst.callee !== "money_result" ||
+    compiledAst.arguments[0]?.kind !== "object"
+  ) {
+    return undefined;
+  }
+  return compiledAst.arguments[0].entries.find((entry) => entry.key === "final");
+}
+
+function finalMoneyResultSourceEntry(
+  sourceAst: NormalizedAstNode,
+): { value: NormalizedAstNode; path: string } | undefined {
+  if (
+    sourceAst.kind !== "call" ||
+    sourceAst.callee !== "money_result" ||
+    sourceAst.arguments[0]?.kind !== "object"
+  ) {
+    return undefined;
+  }
+  const index = sourceAst.arguments[0].entries.findIndex(
+    (entry) => entry.key === "final",
+  );
+  const entry = sourceAst.arguments[0].entries[index];
+  return entry
+    ? { value: entry.value, path: pathForObjectValue(pathForArgument("$", 0), index) }
+    : undefined;
+}
+
+function isNegativeMoneyLiteral(node: CompiledAstNode): boolean {
+  return node.kind === "literal" && "valueCents" in node && node.valueCents < 0;
+}
+
+function isCallWithFirstIdentifier(
+  node: CompiledAstNode,
+  callee: string,
+  identifier: string,
+): boolean {
+  return (
+    node.kind === "call" &&
+    node.callee === callee &&
+    node.arguments[0]?.kind === "identifier" &&
+    node.arguments[0].name === identifier
+  );
+}
+
+function isModifierCompositionMode(
+  mode: CustomRuleCompositionMode | null,
+): boolean {
+  return (
+    mode === "add" ||
+    mode === "multiply" ||
+    mode === "clamp" ||
+    mode === "replace"
+  );
 }
 
 function compileUnary(
