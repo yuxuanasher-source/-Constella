@@ -8340,11 +8340,6 @@ describe("OpsReferenceApp settlement smoke", () => {
                 },
               ],
             },
-          ],
-        }}
-        liveSettlementPool={[]}
-        settlementScope={{
-          projectId: "project-alpha",
             {
               id: "item-rule-explain-2",
               streamer: "主播乙",
@@ -8365,10 +8360,16 @@ describe("OpsReferenceApp settlement smoke", () => {
                   { key: "cpa", label: "CPA", amountCents: 4000 },
                 ],
                 missingDataDecisions: [],
-                explanationZh: "主播乙按达人规则 v9 计算奖励 50 元与 CPA 40 元。",
+                explanationZh:
+                  "主播乙按达人规则 v9 计算奖励 50 元与 CPA 40 元。",
               },
               openExceptions: [],
             },
+          ],
+        }}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
           periodStart: "2026-07-01",
           periodEnd: "2026-07-31",
           poolCount: 0,
@@ -8388,28 +8389,30 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(ruleBreakdown).toHaveTextContent("800");
     expect(ruleBreakdown).toHaveTextContent("有效时长");
     expect(ruleBreakdown).toHaveTextContent("240");
+    expect(screen.getByText("达人规则 v9")).toBeInTheDocument();
+    expect(
+      screen.getByText("主播乙按达人规则 v9 计算奖励 50 元与 CPA 40 元。"),
+    ).toBeInTheDocument();
+    expect(ruleBreakdown).toHaveTextContent("奖励");
+    expect(ruleBreakdown).toHaveTextContent("50");
+    expect(ruleBreakdown).toHaveTextContent("CPA");
+    expect(ruleBreakdown).toHaveTextContent("40");
     expect(screen.getByText("缺失数据决策")).toBeInTheDocument();
     expect(screen.getByText("salesAmountCents")).toBeInTheDocument();
     expect(screen.getByText("异常队列")).toBeInTheDocument();
     expect(screen.getByText("exception-open")).toBeInTheDocument();
   });
-    expect(screen.getByText("达人规则 v9")).toBeInTheDocument();
-    expect(screen.getByText("主播乙按达人规则 v9 计算奖励 50 元与 CPA 40 元。")).toBeInTheDocument();
-    expect(ruleBreakdown).toHaveTextContent("奖励");
-    expect(ruleBreakdown).toHaveTextContent("50");
-    expect(ruleBreakdown).toHaveTextContent("CPA");
-    expect(ruleBreakdown).toHaveTextContent("40");
 
-
-    expect(css).toMatch(
-      /\.ops-page-header-inner\s*\{[^}]*flex-direction:\s*column;/s,
-    );
-    expect(css).toMatch(
   it("publishes a 720px settlement breakpoint without page-level scrolling", () => {
     const { container } = renderMobileSettlementLayout();
     const css = container.querySelector(
       'style[data-ops-responsive-shell="true"]',
     )?.textContent;
+
+    expect(css).toMatch(
+      /\.ops-page-header-inner\s*\{[^}]*flex-direction:\s*column;/s,
+    );
+    expect(css).toMatch(
       /\.ops-page-header-actions\s*\{[^}]*flex-wrap:\s*wrap;/s,
     );
     expect(css).toMatch(
