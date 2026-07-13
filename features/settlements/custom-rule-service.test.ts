@@ -274,6 +274,97 @@ describe("Phase 2 custom rule lifecycle service", () => {
     expect(fixture.repository.saveCustomRuleDraft).not.toHaveBeenCalled();
   });
 
+  it("saves requested changes against fresh simulation proof before resubmitting", async () => {
+    const fixture = phase2LifecycleFixture({
+      versionStatus: "draft",
+      reopenedAt: "2026-07-13T02:00:00.000Z",
+    });
+    const freshSourceSimulation = {
+      ...fixture.simulation,
+      id: uuid(960),
+      createdAt: "2026-07-13T03:00:00.000Z",
+      formulaHash: "f".repeat(64),
+    };
+    const freshVersionSimulation = {
+      ...freshSourceSimulation,
+      id: uuid(961),
+    };
+    fixture.context.simulation = freshSourceSimulation;
+    fixture.context.expectedFreshness = {
+      formulaHash: "f".repeat(64),
+      contractHash: "b".repeat(64),
+      parameterHash: "d".repeat(64),
+      catalogHash: "a".repeat(64),
+      dataSelectionHash: "e".repeat(64),
+    };
+    const editedDraft = {
+      ...phase2DraftPayload(),
+      formula: "system_minutes * 3",
+      formulaHash: "f".repeat(64),
+    };
+    fixture.repository.saveCustomRuleDraft.mockResolvedValueOnce({
+      version: {
+        ...fixture.version,
+        formula: editedDraft.formula,
+        formulaHash: editedDraft.formulaHash,
+        simulationId: freshVersionSimulation.id,
+      },
+      simulation: freshVersionSimulation,
+    });
+    const service = phase2LifecycleService(fixture);
+
+    await service.saveCustomRuleDraft({
+      actor: phase2Actor(),
+      projectId: PROJECT_ID,
+      sourceAiDraftId: null,
+      sourceSimulationId: freshSourceSimulation.id,
+      ruleVersionId: fixture.version.id,
+      versionSimulationId: freshVersionSimulation.id,
+      scope: "payable",
+      target: { targetType: "project", targetId: null },
+      draft: editedDraft,
+      reason: "Save edited requested changes with fresh simulation proof.",
+      clientRequestId: "save-edited-fresh-1",
+    });
+
+    expect(fixture.repository.saveCustomRuleDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceSimulationId: freshSourceSimulation.id,
+        versionSimulationId: freshVersionSimulation.id,
+        draft: expect.objectContaining({ formulaHash: "f".repeat(64) }),
+      }),
+    );
+
+    fixture.context.version = {
+      ...fixture.context.version,
+      formula: editedDraft.formula,
+      formulaHash: editedDraft.formulaHash,
+      simulationId: freshVersionSimulation.id,
+    };
+    fixture.context.simulation = freshVersionSimulation;
+
+    await service.resubmitCustomRule({
+      actor: phase2Actor(),
+      projectId: PROJECT_ID,
+      source: { kind: "saved_draft", id: fixture.version.id },
+      sourceSimulationId: freshVersionSimulation.id,
+      destinationVersionId: uuid(962),
+      destinationSimulationId: uuid(963),
+      scope: "payable",
+      target: { targetType: "project", targetId: null },
+      effectiveFrom: "2026-08-01T00:00:00.000Z",
+      reason: "Resubmit edited requested changes.",
+      clientRequestId: "resubmit-edited-fresh-1",
+    });
+
+    expect(fixture.repository.resubmitCustomRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: { kind: "saved_draft", id: fixture.version.id },
+        sourceSimulationId: freshVersionSimulation.id,
+      }),
+    );
+  });
+
   it("requires reopen before edits and a newer fresh simulation before resubmit", async () => {
     const fixture = phase2LifecycleFixture({
       versionStatus: "changes_requested",

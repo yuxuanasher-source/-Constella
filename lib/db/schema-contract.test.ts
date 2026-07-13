@@ -2803,6 +2803,15 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     );
     expect(save).toContain("simulation.rule_version_id = v_existing.id");
     expect(save).toContain("custom_settlement_rule_resimulation_required");
+    expect(save).toContain("p_version_simulation_id = v_existing.simulation_id");
+    expect(save).toContain("v_existing.reopened_at is null");
+    expect(save).toContain("simulation.ai_draft_id = v_existing.ai_draft_id");
+    expect(save).toContain("simulation.created_at > v_existing.reopened_at");
+    expect(save).toContain("where old_simulation.id = v_existing.simulation_id");
+    expect(save).toContain("rule_version_id = null");
+    expect(save).toContain("ai_draft_id = v_existing.ai_draft_id");
+    expect(save).toContain("simulation_id = p_version_simulation_id");
+    expect(save).toContain("where simulation.id = p_source_simulation_id");
     expect(normalizedSettlementGovernanceMigration).toContain(
       "v_request_record.version_snapshot",
     );
@@ -2862,6 +2871,14 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(submit).toContain("custom_settlement_rule_draft_scope_mismatch");
     expect(submit).toContain(
       "custom_settlement_rule_simulation_scope_mismatch",
+    );
+    expect(submit).toContain("p_submission_event_type = 'resubmitted'");
+    expect(submit).toContain("simulation.id = v_source_version.simulation_id");
+    expect(submit).toContain(
+      "simulation.rule_version_id = p_source_rule_version_id",
+    );
+    expect(submit).toContain(
+      "simulation.created_at > v_source_version.reopened_at",
     );
 
     for (const fn of [

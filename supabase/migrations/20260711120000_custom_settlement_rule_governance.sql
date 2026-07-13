@@ -1212,30 +1212,94 @@ begin
        or v_existing.target_type <> p_target_type
        or v_existing.target_id is distinct from p_target_id
        or v_existing.created_by <> v_actor_id
-       or v_existing.status <> 'draft'
-       or v_existing.simulation_id <> p_version_simulation_id then
+       or v_existing.status <> 'draft' then
       raise exception 'custom_settlement_rule_version_scope_mismatch';
     end if;
-    select simulation.*
-    into v_source_simulation
-    from public.settlement_formula_simulations as simulation
-    where simulation.id = p_version_simulation_id
-      and simulation.organization_id = p_organization_id
-      and simulation.project_id = p_project_id
-      and simulation.rule_version_id = v_existing.id
-      and simulation.ai_draft_id is null
-    for update;
-    if not found
-       or v_source_simulation.rule_version_id <> v_existing.id
-       or p_draft ->> 'formulaHash' <> v_source_simulation.formula_hash
-       or p_draft ->> 'contractHash' <>
-         v_source_simulation.rule_contract_hash
-       or p_draft ->> 'parameterHash' <> v_source_simulation.parameter_hash
-       or p_draft ->> 'catalogHash' <>
-         v_source_simulation.variable_catalog_version
-       or p_draft ->> 'dataSelectionHash' <>
-         v_source_simulation.data_selection_hash then
-      raise exception 'custom_settlement_rule_resimulation_required';
+    if p_version_simulation_id = v_existing.simulation_id then
+      select simulation.*
+      into v_source_simulation
+      from public.settlement_formula_simulations as simulation
+      where simulation.id = p_version_simulation_id
+        and simulation.organization_id = p_organization_id
+        and simulation.project_id = p_project_id
+        and simulation.rule_version_id = v_existing.id
+        and simulation.ai_draft_id is null
+      for update;
+      if not found
+         or v_source_simulation.rule_version_id <> v_existing.id
+         or p_draft ->> 'formulaHash' <> v_source_simulation.formula_hash
+         or p_draft ->> 'contractHash' <>
+           v_source_simulation.rule_contract_hash
+         or p_draft ->> 'parameterHash' <> v_source_simulation.parameter_hash
+         or p_draft ->> 'catalogHash' <>
+           v_source_simulation.variable_catalog_version
+         or p_draft ->> 'dataSelectionHash' <>
+           v_source_simulation.data_selection_hash then
+        raise exception 'custom_settlement_rule_resimulation_required';
+      end if;
+    else
+      if p_source_simulation_id is null
+         or v_existing.ai_draft_id is null
+         or v_existing.reopened_at is null then
+        raise exception 'custom_settlement_rule_resimulation_required';
+      end if;
+      if exists (
+        select 1 from public.settlement_formula_simulations as simulation
+        where simulation.id = p_version_simulation_id
+      ) then
+        raise exception 'custom_settlement_rule_destination_occupied';
+      end if;
+      select simulation.*
+      into v_source_simulation
+      from public.settlement_formula_simulations as simulation
+      where simulation.id = p_source_simulation_id
+        and simulation.organization_id = p_organization_id
+        and simulation.project_id = p_project_id
+        and simulation.ai_draft_id = v_existing.ai_draft_id
+        and simulation.rule_version_id is null
+        and simulation.created_by = v_actor_id
+        and simulation.created_at > v_existing.reopened_at
+      for update;
+      if not found
+         or p_draft ->> 'formulaHash' <> v_source_simulation.formula_hash
+         or p_draft ->> 'contractHash' <>
+           v_source_simulation.rule_contract_hash
+         or p_draft ->> 'parameterHash' <> v_source_simulation.parameter_hash
+         or p_draft ->> 'catalogHash' <>
+           v_source_simulation.variable_catalog_version
+         or p_draft ->> 'dataSelectionHash' <>
+           v_source_simulation.data_selection_hash then
+        raise exception 'custom_settlement_rule_resimulation_required';
+      end if;
+      update public.settlement_formula_simulations as old_simulation
+      set rule_version_id = null,
+          ai_draft_id = v_existing.ai_draft_id
+      where old_simulation.id = v_existing.simulation_id
+        and old_simulation.organization_id = p_organization_id
+        and old_simulation.project_id = p_project_id
+        and old_simulation.rule_version_id = v_existing.id
+        and old_simulation.ai_draft_id is null;
+      if not found then
+        raise exception 'custom_settlement_rule_resimulation_required';
+      end if;
+      insert into public.settlement_formula_simulations (
+        id, organization_id, project_id, rule_version_id, ai_draft_id,
+        formula_hash, rule_contract_hash, parameter_hash,
+        variable_catalog_version, data_selection_hash, sample_source,
+        sample_selection, coverage, scenarios, historical_totals, deltas,
+        largest_changes, warnings, idempotency_key, created_by
+      ) select
+        p_version_simulation_id, p_organization_id, p_project_id,
+        p_rule_version_id, null,
+        simulation.formula_hash, simulation.rule_contract_hash,
+        simulation.parameter_hash, simulation.variable_catalog_version,
+        simulation.data_selection_hash, simulation.sample_source,
+        simulation.sample_selection, simulation.coverage,
+        simulation.scenarios, simulation.historical_totals, simulation.deltas,
+        simulation.largest_changes, simulation.warnings,
+        'lifecycle:' || p_client_request_id, v_actor_id
+      from public.settlement_formula_simulations as simulation
+      where simulation.id = p_source_simulation_id;
     end if;
     if (
       v_existing.priority is distinct from (p_draft ->> 'priority')::integer
@@ -1275,6 +1339,13 @@ begin
         parameter_hash = p_draft ->> 'parameterHash',
         variable_catalog_version = p_draft ->> 'catalogHash',
         data_selection_hash = p_draft ->> 'dataSelectionHash',
+        simulation_summary = pg_catalog.jsonb_build_object(
+          'coverage', v_source_simulation.coverage,
+          'historicalTotals', v_source_simulation.historical_totals,
+          'deltas', v_source_simulation.deltas,
+          'warnings', v_source_simulation.warnings
+        ),
+        simulation_id = p_version_simulation_id,
         reason = p_reason
     where version.id = p_rule_version_id;
   else
@@ -1688,8 +1759,18 @@ begin
           or (
             p_submission_event_type = 'resubmitted'
             and v_source_version.reopened_at is not null
-            and v_source_version.ai_draft_id is not null
-            and simulation.ai_draft_id = v_source_version.ai_draft_id
+            and (
+              (
+                simulation.id = v_source_version.simulation_id
+                and simulation.rule_version_id = p_source_rule_version_id
+                and simulation.ai_draft_id is null
+              )
+              or (
+                v_source_version.ai_draft_id is not null
+                and simulation.ai_draft_id = v_source_version.ai_draft_id
+                and simulation.rule_version_id is null
+              )
+            )
             and simulation.created_at > v_source_version.reopened_at
           )
         )

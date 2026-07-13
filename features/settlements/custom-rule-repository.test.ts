@@ -468,6 +468,81 @@ describe("Phase 2 custom rule lifecycle repository", () => {
     });
   });
 
+  it("saves an edited reopened draft with a fresh simulation proof", async () => {
+    const data = lifecycleSavedDraftResultRow();
+    const freshSourceSimulationId = "00000000-0000-4000-8000-000000000960";
+    const freshVersionSimulationId = "00000000-0000-4000-8000-000000000961";
+    const rpc = vi.fn(async () => ({
+      data: {
+        ...data,
+        version: {
+          ...data.version,
+          simulation_id: freshVersionSimulationId,
+          formula_hash: HASH_F,
+        },
+        simulation: {
+          ...data.simulation,
+          id: freshVersionSimulationId,
+          formula_hash: HASH_F,
+        },
+      },
+      error: null,
+    }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      saveCustomRuleDraft(input: Record<string, unknown>): Promise<unknown>;
+    };
+    const draft = validDraftInput();
+
+    await repository.saveCustomRuleDraft({
+      organizationId: data.version.organization_id,
+      projectId: data.version.project_id,
+      sourceAiDraftId: null,
+      sourceSimulationId: freshSourceSimulationId,
+      ruleVersionId: data.version.id,
+      versionSimulationId: freshVersionSimulationId,
+      scope: "payable",
+      target: { targetType: "project", targetId: null },
+      draft: {
+        priority: 100,
+        formula: "system_minutes * 3",
+        compiledAst: draft.generatedFormula.normalizedAst,
+        variables: [],
+        parameters: {},
+        ruleContract: draft.businessContract,
+        systemExplanationTemplate: draft.generatedExplanation,
+        missingDataPolicy: draft.businessContract.missingDataPolicy,
+        testCases: draft.generatedTestCases,
+        formulaHash: HASH_F,
+        contractHash: HASH_B,
+        parameterHash: HASH_D,
+        catalogHash: HASH_A,
+        dataSelectionHash: HASH_E,
+      },
+      reason: "Save edited requested changes with fresh simulation proof.",
+      clientRequestId: "phase2-save-edited-fresh-1",
+    });
+
+    expect(rpc).toHaveBeenCalledWith("save_custom_settlement_rule_draft", {
+      p_organization_id: data.version.organization_id,
+      p_project_id: data.version.project_id,
+      p_source_ai_draft_id: null,
+      p_source_simulation_id: freshSourceSimulationId,
+      p_rule_version_id: data.version.id,
+      p_version_simulation_id: freshVersionSimulationId,
+      p_scope: "payable",
+      p_target_type: "project",
+      p_target_id: null,
+      p_draft: expect.objectContaining({
+        formula: "system_minutes * 3",
+        formulaHash: HASH_F,
+      }),
+      p_reason: "Save edited requested changes with fresh simulation proof.",
+      p_client_request_id: "phase2-save-edited-fresh-1",
+    });
+  });
+
   it("rejects a saved draft without all server-computed freshness hashes", async () => {
     const rpc = vi.fn(async () => ({
       data: lifecycleSavedDraftResultRow(),
@@ -3780,6 +3855,7 @@ const HASH_B = "b".repeat(64);
 const HASH_C = "c".repeat(64);
 const HASH_D = "d".repeat(64);
 const HASH_E = "e".repeat(64);
+const HASH_F = "f".repeat(64);
 
 function validBusinessContract() {
   const moneyType = {
