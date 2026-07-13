@@ -1573,14 +1573,13 @@ const simulationScenarioSchema = z
   })
   .superRefine((scenario, context) => {
     if (
-      (scenario.outcome === "calculated") !==
-      (scenario.amountCents !== null)
+      scenario.outcome !== "calculated" &&
+      scenario.amountCents !== null
     ) {
       context.addIssue({
         code: "custom",
         path: ["amountCents"],
-        message:
-          "calculated scenarios require an amount; routed scenarios forbid it",
+        message: "routed scenarios forbid an amount",
       });
     }
   });
@@ -2041,15 +2040,38 @@ function validateSimulationV2SummaryConsistency(
   const deltas = input.deltas;
   const payableActive = totals.newPayableAmountCents !== null;
   const receivableActive = totals.newReceivableAmountCents !== null;
-  if (payableActive === receivableActive) {
+  const typedOutputSummary = !payableActive && !receivableActive;
+  if (typedOutputSummary) {
+    if (totals.verificationStatus !== "unverified") {
+      issue(
+        ["historicalTotals", "verificationStatus"],
+        "typed-output summaries without money totals must be unverified",
+      );
+    }
+    if (
+      totals.oldPayableAmountCents !== null ||
+      totals.oldReceivableAmountCents !== null
+    ) {
+      issue(
+        ["historicalTotals"],
+        "typed-output summaries must keep both old totals null",
+      );
+    }
+    if (
+      deltas.payableAmountCents !== null ||
+      deltas.receivableAmountCents !== null ||
+      deltas.percentageBps !== null ||
+      deltas.marginImpactCents !== null
+    ) {
+      issue(["deltas"], "typed-output summaries must keep every delta null");
+    }
+  } else if (payableActive === receivableActive) {
     issue(
       ["historicalTotals"],
       "exactly one new payable or receivable total is required",
     );
     return;
-  }
-
-  if (totals.verificationStatus === "unverified") {
+  } else if (totals.verificationStatus === "unverified") {
     if (
       totals.oldPayableAmountCents !== null ||
       totals.oldReceivableAmountCents !== null
@@ -2137,6 +2159,18 @@ function validateSimulationV2SummaryConsistency(
   );
   if (new Set(findingKeys).size !== findingKeys.length) {
     issue(["warnings"], "finding kind and code pairs must be unique");
+  }
+  if (
+    !typedOutputSummary &&
+    input.scenarios.some(
+      (scenario) =>
+        scenario.outcome === "calculated" && scenario.amountCents === null,
+    )
+  ) {
+    issue(
+      ["scenarios"],
+      "money-output calculated scenarios require an amount",
+    );
   }
 }
 

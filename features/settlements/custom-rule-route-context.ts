@@ -1026,18 +1026,29 @@ function mapCustomRuleSimulationDto(
     };
   }
 
-  const payableScope =
+  const payableActive =
     simulation.historicalTotals.newPayableAmountCents !== null;
-  const totalOldCents = payableScope
+  const receivableActive =
+    simulation.historicalTotals.newReceivableAmountCents !== null;
+  if (payableActive && receivableActive) {
+    throw new CustomRuleRouteError({
+      code: "CUSTOM_RULE_RESPONSE_INVALID",
+      message: "Settlement rule response is invalid",
+      status: 500,
+      retryable: true,
+    });
+  }
+  const totalOldCents = payableActive
     ? simulation.historicalTotals.oldPayableAmountCents
     : simulation.historicalTotals.oldReceivableAmountCents;
-  const totalNewCents = payableScope
+  const totalNewCents = payableActive
     ? simulation.historicalTotals.newPayableAmountCents
     : simulation.historicalTotals.newReceivableAmountCents;
-  const totalDeltaCents = payableScope
+  const totalDeltaCents = payableActive
     ? simulation.deltas.payableAmountCents
     : simulation.deltas.receivableAmountCents;
-  if (totalNewCents === null) {
+  const typedOutputSummary = !payableActive && !receivableActive;
+  if (!typedOutputSummary && totalNewCents === null) {
     throw new CustomRuleRouteError({
       code: "CUSTOM_RULE_RESPONSE_INVALID",
       message: "Settlement rule response is invalid",

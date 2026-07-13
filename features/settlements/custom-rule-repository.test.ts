@@ -3499,6 +3499,7 @@ describe("custom-rule draft and simulation persistence", () => {
     const input = validV2SimulationInput(owner);
     const mock = createPersistenceClient({
       simulationRpcData: simulationRow(owner, {
+        sample_selection: input.sampleSelection,
         coverage: input.coverage,
         scenarios: input.scenarios,
         historical_totals: input.historicalTotals,
@@ -3539,6 +3540,43 @@ describe("custom-rule draft and simulation persistence", () => {
     expectTypeOf(result).toEqualTypeOf<
       CompleteSettlementFormulaSimulation & { duplicate: boolean }
     >();
+  });
+
+  it("writes typed-output v2 summaries without payable or receivable totals", async () => {
+    const owner = { kind: "ai_draft" as const, id: DRAFT_ID };
+    const input = typedOutputV2SimulationInput(owner);
+    const mock = createPersistenceClient({
+      simulationRpcData: simulationRow(owner, {
+        sample_selection: input.sampleSelection,
+        coverage: input.coverage,
+        scenarios: input.scenarios,
+        historical_totals: input.historicalTotals,
+        deltas: input.deltas,
+        largest_changes: input.largestChanges,
+        warnings: input.warnings,
+        duplicate: false,
+      }),
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const result = await repository.insertSimulation(input);
+
+    expect(result).toMatchObject({
+      summarySchemaVersion: 2,
+      summaryComplete: true,
+      historicalTotals: input.historicalTotals,
+      deltas: input.deltas,
+      scenarios: input.scenarios,
+    });
+    expect(mock.rpc).toHaveBeenCalledWith(
+      "create_settlement_formula_simulation",
+      expect.objectContaining({
+        p_historical_totals: input.historicalTotals,
+        p_deltas: input.deltas,
+        p_scenarios: input.scenarios,
+      }),
+    );
   });
 
   it("narrows persisted simulations by their required summary discriminator", () => {
@@ -5331,6 +5369,54 @@ function validV2SimulationInput(owner: SettlementSimulationOwner) {
         message: "新规则产生了零应付样本。",
       },
     ],
+  };
+}
+
+function typedOutputV2SimulationInput(
+  owner: SettlementSimulationOwner,
+): InsertSettlementFormulaSimulationInput {
+  return {
+    ...validSimulationInput(owner),
+    coverage: {
+      summarySchemaVersion: 2,
+      totalRecords: 1,
+      evaluatedRecords: 1,
+      skippedRecords: 0,
+      uncoveredRecords: 0,
+      zeroAmountRecords: 0,
+      reviewRoutedRecords: 0,
+      blockedRecords: 0,
+    },
+    sampleSelection: {
+      ...validSampleSelection(),
+      populationCount: 1,
+      sampledCount: 1,
+    },
+    scenarios: [
+      {
+        id: "contract:typed-output",
+        category: "contract_example",
+        outcome: "calculated",
+        amountCents: null,
+        expectedAmountCents: null,
+        passed: true,
+      },
+    ],
+    historicalTotals: {
+      oldPayableAmountCents: null,
+      oldReceivableAmountCents: null,
+      newPayableAmountCents: null,
+      newReceivableAmountCents: null,
+      recordCount: 1,
+      verificationStatus: "unverified",
+    },
+    deltas: {
+      payableAmountCents: null,
+      receivableAmountCents: null,
+      percentageBps: null,
+      marginImpactCents: null,
+    },
+    largestChanges: [],
   };
 }
 

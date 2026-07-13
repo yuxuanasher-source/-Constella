@@ -6,6 +6,7 @@ import { z } from "zod";
 import { businessRuleContractSchema } from "./custom-rule-contract";
 import {
   calculateCustomRuleOptionalPolicyHash,
+  type CustomRuleDataReadinessReport,
   type CustomRuleInputRequirement,
 } from "./custom-rule-data-readiness";
 import { buildCustomRuleTemplateExplanation } from "./custom-rule-explanation";
@@ -16,6 +17,7 @@ import {
   hashCustomRuleParameters,
   simulateCustomSettlementRule,
   type AuthorizedCustomRuleSimulationEvidence,
+  type CustomRuleSimulationResult,
 } from "./custom-rule-simulation";
 import { getCustomRuleSystemTemplate } from "./custom-rule-system-templates";
 import { validateCustomRuleFormula } from "./custom-rule-validator";
@@ -780,6 +782,39 @@ describe("custom rule simulation session DTOs", () => {
     );
   });
 
+  it.each(["external_cost", "reconciliation"] as const)(
+    "maps complete %s typed-output simulations without money totals",
+    async (scope) => {
+      const { toCustomRuleSessionDto } =
+        await import("./custom-rule-route-context");
+
+      const dto = toCustomRuleSessionDto({
+        history: sessionHistoryFixture() as never,
+        draft: typedOutputSessionDraft(scope) as never,
+        simulation: typedOutputCompleteSimulationFixture(),
+      });
+
+      expect(dto.simulation).toMatchObject({
+        version: 2,
+        complete: true,
+        status: "complete",
+        summary: {
+          totalOldYuan: null,
+          totalNewYuan: null,
+          totalDeltaYuan: null,
+          scenarios: [
+            {
+              outcome: "calculated",
+              amountYuan: null,
+              expectedAmountYuan: null,
+              passed: true,
+            },
+          ],
+        },
+      });
+    },
+  );
+
   it("marks legacy summaries incomplete without manufacturing historical deltas", async () => {
     const { toCustomRuleSessionDto } =
       await import("./custom-rule-route-context");
@@ -926,6 +961,62 @@ function completeSimulationFixture(): CompleteSettlementFormulaSimulation {
     ],
     createdBy: USER_ID,
     createdAt: "2026-07-12T05:01:00.000Z",
+  };
+}
+
+function typedOutputSessionDraft(scope: "external_cost" | "reconciliation") {
+  const base = simulationDraft(scope === "reconciliation" ? "project_period" : "report");
+  return {
+    ...base,
+    businessContract: {
+      ...base.businessContract,
+      scope,
+      compositionMode: scope === "external_cost" ? "emit_items" : "check",
+    },
+  };
+}
+
+function typedOutputCompleteSimulationFixture(): CompleteSettlementFormulaSimulation {
+  return {
+    ...completeSimulationFixture(),
+    coverage: {
+      summarySchemaVersion: 2,
+      totalRecords: 1,
+      evaluatedRecords: 1,
+      skippedRecords: 0,
+      uncoveredRecords: 0,
+      zeroAmountRecords: 0,
+      reviewRoutedRecords: 0,
+      blockedRecords: 0,
+    },
+    scenarios: [
+      {
+        id: "contract:typed-output",
+        category: "contract_example",
+        outcome: "calculated",
+        amountCents: null,
+        expectedAmountCents: null,
+        passed: true,
+      },
+    ],
+    historicalTotals: {
+      payableAmountCents: null,
+      receivableAmountCents: null,
+      oldPayableAmountCents: null,
+      oldReceivableAmountCents: null,
+      newPayableAmountCents: null,
+      newReceivableAmountCents: null,
+      recordCount: 1,
+      verificationStatus: "unverified",
+    },
+    deltas: {
+      payableAmountCents: null,
+      receivableAmountCents: null,
+      percentageBps: null,
+      marginImpactCents: null,
+    },
+    largestChanges: [],
+    warnings: [],
   };
 }
 
@@ -4956,6 +5047,130 @@ function simulationDraft(executionGrain: SupportedGrain) {
   };
 }
 
+function typedOutputSimulationDraft(scope: "external_cost" | "reconciliation") {
+  const externalCost = scope === "external_cost";
+  const baseContract = simulationContract(
+    externalCost ? "report" : "project_period",
+  );
+  const requiredInputName = baseContract.requiredInputs[0]?.name ?? "system_minutes";
+  const contract = businessRuleContractSchema.parse({
+    ...baseContract,
+    scope,
+    executionGrain: externalCost ? "report" : "project_period",
+    compositionMode: externalCost ? "emit_items" : "check",
+    title: externalCost ? "项目外部成本规则" : "项目结算核对规则",
+    summary: externalCost
+      ? "按规则生成外部成本项。"
+      : "按项目周期输出结算核对项。",
+    calculationComponents: [
+      {
+        name: externalCost ? "items" : "checks",
+        description: externalCost ? "生成的成本项" : "生成的核对项",
+        expression: externalCost ? "cost_items" : "pass_if",
+        resultType: {
+          kind: "array",
+          itemType: {
+            kind: "object",
+            fields: externalCost
+              ? {
+                  category: { kind: "scalar", scalarType: "string" },
+                  amountCents: { kind: "scalar", scalarType: "money_cents" },
+                  memo: { kind: "scalar", scalarType: "string" },
+                }
+              : {
+                  severity: { kind: "scalar", scalarType: "string" },
+                  message: { kind: "scalar", scalarType: "string" },
+                  condition: { kind: "scalar", scalarType: "boolean" },
+                },
+          },
+        },
+      },
+    ],
+    compositionDescription: externalCost
+      ? "追加生成的项目外部成本项。"
+      : "仅输出核对项，不修改结算金额。",
+    examples: ["标准示例", "零值边界", "单值边界"].map((name, index) => ({
+      name,
+      kind: index === 0 ? "normal" : "boundary",
+      description: externalCost ? "生成投流成本。" : "生成通过核对项。",
+      inputs: { [requiredInputName]: { type: "integer", value: index + 1 } },
+      expectedResult: externalCost
+        ? {
+            type: "array",
+            items:
+              index === 0
+                ? [
+                    {
+                      type: "object",
+                      fields: {
+                        category: { type: "string", value: "traffic" },
+                        amountCents: {
+                          type: "money_cents",
+                          amountCents: 50_000,
+                        },
+                        memo: { type: "string", value: "7 月投流" },
+                      },
+                    },
+                  ]
+                : [],
+          }
+        : {
+            type: "array",
+            items:
+              index === 0
+                ? [
+                    {
+                      type: "object",
+                      fields: {
+                        severity: { type: "string", value: "pass" },
+                        message: { type: "string", value: "核对通过" },
+                        condition: { type: "boolean", value: true },
+                      },
+                    },
+                  ]
+                : [],
+          },
+    })),
+  });
+  const formula = externalCost
+    ? 'external_cost = cost_items([{ category: "traffic", amount: yuan(500), memo: "7 月投流" }])'
+    : 'reconciliation = pass_if(true, "核对通过")';
+  const validation = validateCustomRuleFormula(formula, {
+    scope: contract.scope,
+    executionGrain: contract.executionGrain,
+    compositionMode: contract.compositionMode,
+    parameters: contract.parameters.map((parameter) => ({
+      name: parameter.name,
+      valueType: parameter.valueType,
+    })),
+  });
+  const parsed = parseCustomRuleFormula(formula);
+  if (!validation.ok || !parsed.ok) throw new Error("Expected valid fixture");
+  const parameters = Object.fromEntries(
+    contract.parameters.map((parameter) => [
+      parameter.name,
+      parameter.defaultValue,
+    ]),
+  );
+  return {
+    ...simulationDraft(externalCost ? "report" : "project_period"),
+    idempotencyKey: `typed-output-${scope}`,
+    businessContract: contract,
+    contractHash: hashCustomRuleContract(contract),
+    parameterHash: hashCustomRuleParameters(parameters),
+    generatedFormula: { expression: formula, normalizedAst: parsed.ast },
+    generatedExplanation: buildCustomRuleTemplateExplanation({
+      ast: validation.compiledAst,
+    }),
+    generatedTestCases: contract.examples.map((example) => ({
+      name: example.name,
+      inputs: example.inputs,
+      expectedResult: example.expectedResult,
+    })),
+    formulaHash: validation.formulaHash,
+  };
+}
+
 function optionalPolicySimulationDraft(
   missingDataPolicy: CustomRuleMissingDataPolicy,
   variableId: "base_hourly_rate" | "system_minutes" = "base_hourly_rate",
@@ -5318,6 +5533,137 @@ async function simulationServiceHarness(
     clientRequestId: `request-${executionGrain}-${history}`,
     selection: authorized,
   });
+}
+
+function typedOutputSelection() {
+  return {
+    selectionToken: "typed-output-selection",
+    periodStart: "2026-07-01",
+    periodEnd: "2026-07-10",
+    criteriaCodes: [
+      "approved_reports",
+      "period_overlap",
+      "project_scope",
+    ] as const,
+  };
+}
+
+async function typedOutputExistingDraftServiceHarness(
+  scope: "external_cost" | "reconciliation",
+) {
+  const draft = typedOutputSimulationDraft(scope);
+  const routeModule = await import("./custom-rule-route-context");
+  const repository = {
+    listDrafts: vi.fn().mockResolvedValue([draft]),
+    insertSimulation: vi.fn(async (input) => ({
+      id: "78787878-7878-4787-8787-787878787878",
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      owner: input.owner,
+      createdBy: USER_ID,
+      createdAt: "2026-07-12T06:00:00.000Z",
+      formulaHash: input.formulaHash,
+      ruleContractHash: input.ruleContractHash,
+      parameterHash: input.parameterHash,
+      variableCatalogVersion: input.variableCatalogVersion,
+      dataSelectionHash: input.dataSelectionHash,
+      sampleSource: input.sampleSource,
+      sampleSelection: input.sampleSelection,
+      summarySchemaVersion: 2,
+      summaryComplete: true,
+      summaryStatus: "complete",
+      coverage: input.coverage,
+      scenarios: input.scenarios,
+      historicalTotals: input.historicalTotals,
+      deltas: input.deltas,
+      largestChanges: input.largestChanges,
+      warnings: input.warnings,
+      duplicate: false,
+    })),
+  };
+  const evidence = typedOutputAuthorizedEvidence(draft);
+  const service = routeModule.createCustomRuleExistingDraftSimulationService({
+    repository: repository as never,
+    catalog: {
+      getCatalog: vi.fn().mockResolvedValue({
+        scope,
+        executionGrain: draft.businessContract.executionGrain,
+        version: draft.variableCatalogVersion,
+        businessTimezone: "Asia/Shanghai",
+        businessTimezoneConfirmed: true,
+        businessTimezoneSource: "confirmed_contract",
+        variables: [],
+      }),
+    },
+    evidence: {
+      loadAuthorizedEvidence: vi.fn().mockResolvedValue(evidence),
+      adjustReadiness: (readiness: CustomRuleDataReadinessReport) => readiness,
+      decorateSimulationResult: (result: CustomRuleSimulationResult) => result,
+    } as never,
+    analyzeReadiness: () => ({
+      catalogVersion: draft.variableCatalogVersion,
+      readinessHash: "b".repeat(64),
+      businessTimezone: "Asia/Shanghai",
+      businessTimezoneConfirmed: true,
+      businessTimezoneSource: "confirmed_contract",
+      historicalVerification: "verified",
+      readyForSimulation: true,
+      readyForActivation: true,
+      inputs: [],
+      warnings: [],
+    }),
+    simulate: simulateCustomSettlementRule,
+  });
+  return { draft, repository, service };
+}
+
+function typedOutputAuthorizedEvidence(
+  draft: ReturnType<typeof typedOutputSimulationDraft>,
+): AuthorizedCustomRuleSimulationEvidence {
+  const requiredInputName =
+    draft.businessContract.requiredInputs[0]?.name ?? "system_minutes";
+  const evidence: AuthorizedCustomRuleSimulationEvidence = {
+    provenance: {
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      actorId: USER_ID,
+      selectionToken: typedOutputSelection().selectionToken,
+      evidenceHash: "0".repeat(64),
+      optionalPolicyHash: calculateCustomRuleOptionalPolicyHash([]),
+      immutableSourceVersions: [
+        {
+          kind: "immutable",
+          source: "typed_output_fixture",
+          version: "locked-v1",
+        },
+      ],
+    },
+    sampleSource: { kind: "historical_settlements" },
+    sampleSelection: {
+      periodStart: "2026-07-01",
+      periodEnd: "2026-07-10",
+      populationCount: 1,
+      criteria: [...typedOutputSelection().criteriaCodes],
+    },
+    records: [
+      {
+        recordId: "typed-output-record-1",
+        projectId: PROJECT_ID,
+        sourceVersion: {
+          kind: "immutable",
+          source: "typed_output_fixture",
+          version: "locked-v1",
+        },
+        variables: { [requiredInputName]: { type: "integer", value: 60 } },
+        missingInputs: [],
+        currentRuleResult: null,
+      },
+    ],
+    userExamples: [],
+    currentMarginCents: null,
+  };
+  evidence.provenance.evidenceHash = calculateCustomRuleEvidenceHash(evidence);
+  return evidence;
 }
 
 async function optionalPolicyServiceHarness(
@@ -5905,6 +6251,53 @@ describe("custom-rule evidence and Task 7 simulation integration", () => {
     expect(result.summary.totalOldCents).toBeNull();
     expect(result.summary.totalNewCents).toBe("0");
   });
+
+  it.each(["external_cost", "reconciliation"] as const)(
+    "persists %s typed-output existing-draft simulations without money totals",
+    async (scope) => {
+      const harness = await typedOutputExistingDraftServiceHarness(scope);
+
+      const result = await harness.service.simulateExistingDraft({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        projectId: PROJECT_ID,
+        conversationId: harness.draft.conversationId,
+        draftId: harness.draft.id,
+        expectedRevisionNumber: harness.draft.revisionNumber,
+        clientRequestId: `typed-output-${scope}`,
+        selection: typedOutputSelection(),
+      });
+
+      expect(result.summary).toMatchObject({
+        recordCount: 1,
+        totalOldCents: null,
+        totalNewCents: "0",
+        totalDeltaCents: null,
+      });
+      const inserted = harness.repository.insertSimulation.mock.calls[0]?.[0];
+      expect(inserted).toMatchObject({
+        historicalTotals: {
+          oldPayableAmountCents: null,
+          oldReceivableAmountCents: null,
+          newPayableAmountCents: null,
+          newReceivableAmountCents: null,
+          recordCount: 1,
+          verificationStatus: "unverified",
+        },
+        deltas: {
+          payableAmountCents: null,
+          receivableAmountCents: null,
+          percentageBps: null,
+          marginImpactCents: null,
+        },
+      });
+      expect(inserted?.scenarios).toContainEqual(
+        expect.objectContaining({
+          outcome: "calculated",
+          amountCents: null,
+        }),
+      );
+    },
+  );
 
   it.each([
     ["system:floor-cap:v1", "50000"],
