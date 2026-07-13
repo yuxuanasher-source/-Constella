@@ -3,12 +3,14 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   SettlementBatchAtomicItemInput,
   SettlementBatchItemRecord,
+  SettlementBatchItemReportLinkRecord,
   SettlementBatchRecord,
   SettlementBatchStatus,
   SettlementBatchType,
   ProjectSettlementRuleRecord,
   SettlementPoolReport,
   SettlementRepository,
+  SettlementRuleExceptionRecord,
   SettlementRuleRecord,
   StreamerUserLink,
 } from "./settlement-service";
@@ -38,6 +40,24 @@ type SettlementBatchItemStateRow = {
   settlement_batches:
     | { batch_type: SettlementBatchType }
     | Array<{ batch_type: SettlementBatchType }>
+    | null;
+};
+
+type SettlementBatchItemReportStateRow = {
+  live_report_id: string | null;
+  settlement_batch_items:
+    | {
+        settlement_batches:
+          | { batch_type: SettlementBatchType }
+          | Array<{ batch_type: SettlementBatchType }>
+          | null;
+      }
+    | Array<{
+        settlement_batches:
+          | { batch_type: SettlementBatchType }
+          | Array<{ batch_type: SettlementBatchType }>
+          | null;
+      }>
     | null;
 };
 
@@ -93,6 +113,31 @@ type SettlementBatchItemRow = {
   evidence_level: "green" | "yellow" | "red" | null;
   evidence_snapshot: Record<string, unknown>;
   created_at: string;
+};
+
+type SettlementBatchItemReportLinkRow = {
+  settlement_batch_item_id: string;
+  live_report_id: string;
+};
+
+type SettlementRuleExceptionRow = {
+  id: string;
+  organization_id: string;
+  project_id: string;
+  settlement_batch_id: string;
+  settlement_batch_item_id: string;
+  live_report_id: string | null;
+  rule_version_id: string | null;
+  layer_snapshot: Record<string, unknown>;
+  variable_name: string;
+  policy: SettlementRuleExceptionRecord["policy"];
+  status: SettlementRuleExceptionRecord["status"];
+  resolution_value: Record<string, unknown> | null;
+  resolution_reason: string | null;
+  created_by: string | null;
+  resolved_by: string | null;
+  created_at: string;
+  resolved_at: string | null;
 };
 
 const settlementPoolReportSelect = `
@@ -323,7 +368,11 @@ export class SupabaseSettlementRepository implements SettlementRepository {
   }): Promise<{
     batch: SettlementBatchRecord;
     items: SettlementBatchItemRecord[];
+    links: SettlementBatchItemReportLinkRecord[];
+    exceptions: SettlementRuleExceptionRecord[];
   }> {
+    assertNoDuplicateAtomicReportIds(input.items);
+
     const { data, error } = await this.client.rpc("generate_settlement_batch", {
       p_organization_id: input.organizationId,
       p_project_id: input.projectId,
@@ -338,13 +387,24 @@ export class SupabaseSettlementRepository implements SettlementRepository {
       p_created_by: input.createdBy,
       p_items: input.items.map((item) => ({
         streamer_id: item.streamerId ?? null,
-        live_report_id: item.liveReportId ?? null,
+        live_report_id: item.liveReportId ?? legacyLiveReportId(item),
+        live_report_ids: normalizeAtomicReportIds(item),
         item_type: item.itemType,
         computed_amount: item.computedAmount,
         manual_amount: item.manualAmount,
         adjustment_amount: item.adjustmentAmount,
         evidence_level: item.evidenceLevel ?? null,
         evidence_snapshot: item.evidenceSnapshot,
+        exceptions: (item.exceptions ?? []).map((exception) => ({
+          live_report_id: exception.liveReportId ?? null,
+          rule_version_id: exception.ruleVersionId ?? null,
+          layer_snapshot: exception.layerSnapshot,
+          variable_name: exception.variableName,
+          policy: exception.policy,
+          resolution_value: exception.resolutionValue ?? null,
+          resolution_reason: exception.resolutionReason ?? null,
+          created_by: exception.createdBy ?? input.createdBy,
+        })),
       })),
     });
 
@@ -355,10 +415,59 @@ export class SupabaseSettlementRepository implements SettlementRepository {
     const result = data as {
       batch: SettlementBatchRow;
       items: SettlementBatchItemRow[];
+      links?: SettlementBatchItemReportLinkRow[];
+      exceptions?: SettlementRuleExceptionRow[];
     };
     return {
       batch: toSettlementBatchRecord(result.batch),
       items: (result.items ?? []).map(toSettlementBatchItemRecord),
+      links: (result.links ?? []).map(toSettlementBatchItemReportLinkRecord),
+      exceptions: (result.exceptions ?? []).map(toSettlementRuleExceptionRecord),
+    };
+  }
+
+  async resolveSettlementRuleException(input: {
+    organizationId: string;
+    exceptionId: string;
+    settlementBatchItemId: string;
+    oldComputedAmount: number;
+    newComputedAmount: number;
+    resolutionValue: Record<string, unknown>;
+    resolutionReason: string;
+    resolvedBy: string;
+  }): Promise<{
+    batch: SettlementBatchRecord;
+    item: SettlementBatchItemRecord;
+    exception: SettlementRuleExceptionRecord;
+  }> {
+    const { data, error } = await this.client.rpc(
+      "resolve_settlement_rule_exception",
+      {
+        p_organization_id: input.organizationId,
+        p_exception_id: input.exceptionId,
+        p_settlement_batch_item_id: input.settlementBatchItemId,
+        p_old_computed_amount: input.oldComputedAmount,
+        p_new_computed_amount: input.newComputedAmount,
+        p_resolution_value: input.resolutionValue,
+        p_resolution_reason: input.resolutionReason,
+        p_resolved_by: input.resolvedBy,
+      },
+    );
+
+    if (error) {
+      throw error;
+    }
+
+    const result = data as {
+      batch: SettlementBatchRow;
+      item: SettlementBatchItemRow;
+      exception: SettlementRuleExceptionRow;
+    };
+
+    return {
+      batch: toSettlementBatchRecord(result.batch),
+      item: toSettlementBatchItemRecord(result.item),
+      exception: toSettlementRuleExceptionRecord(result.exception),
     };
   }
 
@@ -379,6 +488,49 @@ export class SupabaseSettlementRepository implements SettlementRepository {
   }
 
   private async listSettledReportIdsForBatchType(
+    reportIds: string[],
+    batchType: SettlementBatchType,
+  ): Promise<Set<string>> {
+    const linkedIds = await this.listJunctionSettledReportIdsForBatchType(
+      reportIds,
+      batchType,
+    );
+    const legacyIds = await this.listLegacySettledReportIdsForBatchType(
+      reportIds,
+      batchType,
+    );
+
+    return new Set([...linkedIds, ...legacyIds]);
+  }
+
+  private async listJunctionSettledReportIdsForBatchType(
+    reportIds: string[],
+    batchType: SettlementBatchType,
+  ): Promise<Set<string>> {
+    const { data, error } = await this.client
+      .from("settlement_batch_item_reports")
+      .select(
+        "live_report_id, settlement_batch_items!inner(settlement_batches!inner(batch_type))",
+      )
+      .in("live_report_id", reportIds)
+      .eq("settlement_batch_items.settlement_batches.batch_type", batchType)
+      .returns<SettlementBatchItemReportStateRow[]>();
+
+    if (error) {
+      throw error;
+    }
+
+    return new Set(
+      (data ?? [])
+        .filter((row) =>
+          hasNestedBatchType(row.settlement_batch_items, batchType),
+        )
+        .map((row) => row.live_report_id)
+        .filter((id): id is string => Boolean(id)),
+    );
+  }
+
+  private async listLegacySettledReportIdsForBatchType(
     reportIds: string[],
     batchType: SettlementBatchType,
   ): Promise<Set<string>> {
@@ -664,6 +816,95 @@ function toSettlementBatchItemRecord(
     evidenceSnapshot: row.evidence_snapshot,
     createdAt: row.created_at,
   };
+}
+
+function toSettlementBatchItemReportLinkRecord(
+  row: SettlementBatchItemReportLinkRow,
+): SettlementBatchItemReportLinkRecord {
+  return {
+    settlementBatchItemId: row.settlement_batch_item_id,
+    liveReportId: row.live_report_id,
+  };
+}
+
+function toSettlementRuleExceptionRecord(
+  row: SettlementRuleExceptionRow,
+): SettlementRuleExceptionRecord {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    settlementBatchId: row.settlement_batch_id,
+    settlementBatchItemId: row.settlement_batch_item_id,
+    liveReportId: row.live_report_id,
+    ruleVersionId: row.rule_version_id,
+    layerSnapshot: row.layer_snapshot,
+    variableName: row.variable_name,
+    policy: row.policy,
+    status: row.status,
+    resolutionValue: row.resolution_value,
+    resolutionReason: row.resolution_reason,
+    createdBy: row.created_by,
+    resolvedBy: row.resolved_by,
+    createdAt: row.created_at,
+    resolvedAt: row.resolved_at,
+  };
+}
+
+function normalizeAtomicReportIds(
+  item: SettlementBatchAtomicItemInput,
+): string[] {
+  const ids = item.liveReportIds?.length
+    ? item.liveReportIds
+    : item.liveReportId
+      ? [item.liveReportId]
+      : [];
+  return Array.from(new Set(ids.filter(Boolean)));
+}
+
+function legacyLiveReportId(
+  item: SettlementBatchAtomicItemInput,
+): string | null {
+  const reportIds = normalizeAtomicReportIds(item);
+  return reportIds.length === 1 ? reportIds[0] : null;
+}
+
+function assertNoDuplicateAtomicReportIds(
+  items: SettlementBatchAtomicItemInput[],
+): void {
+  const seen = new Set<string>();
+  for (const item of items) {
+    for (const reportId of normalizeAtomicReportIds(item)) {
+      if (seen.has(reportId)) {
+        throw new Error("settlement_batch_report_duplicate_in_payload");
+      }
+      seen.add(reportId);
+    }
+  }
+}
+
+function hasNestedBatchType(
+  relation:
+    | {
+        settlement_batches:
+          | { batch_type: SettlementBatchType }
+          | Array<{ batch_type: SettlementBatchType }>
+          | null;
+      }
+    | Array<{
+        settlement_batches:
+          | { batch_type: SettlementBatchType }
+          | Array<{ batch_type: SettlementBatchType }>
+          | null;
+      }>
+    | null,
+  batchType: SettlementBatchType,
+): boolean {
+  if (!relation) {
+    return false;
+  }
+  const items = Array.isArray(relation) ? relation : [relation];
+  return items.some((item) => hasBatchType(item.settlement_batches, batchType));
 }
 
 function toSettlementBatchPatch(

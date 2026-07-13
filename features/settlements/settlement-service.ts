@@ -95,15 +95,63 @@ export type SettlementBatchItemRecord = {
   createdAt?: string;
 };
 
+export type SettlementBatchItemReportLinkRecord = {
+  settlementBatchItemId: string;
+  liveReportId: string;
+};
+
+export type SettlementRuleExceptionPolicy =
+  | "route_item_to_review"
+  | "block_batch"
+  | "use_explicit_default";
+
+export type SettlementRuleExceptionStatus =
+  | "review_required"
+  | "resolved"
+  | "voided";
+
+export type SettlementRuleExceptionInsert = {
+  liveReportId?: string | null;
+  ruleVersionId?: string | null;
+  layerSnapshot: Record<string, unknown>;
+  variableName: string;
+  policy: SettlementRuleExceptionPolicy;
+  resolutionValue?: Record<string, unknown> | null;
+  resolutionReason?: string | null;
+  createdBy?: string | null;
+};
+
+export type SettlementRuleExceptionRecord = {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  settlementBatchId: string;
+  settlementBatchItemId: string;
+  liveReportId: string | null;
+  ruleVersionId: string | null;
+  layerSnapshot: Record<string, unknown>;
+  variableName: string;
+  policy: SettlementRuleExceptionPolicy;
+  status: SettlementRuleExceptionStatus;
+  resolutionValue: Record<string, unknown> | null;
+  resolutionReason: string | null;
+  createdBy: string | null;
+  resolvedBy: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+};
+
 export type SettlementBatchAtomicItemInput = {
   streamerId?: string | null;
   liveReportId?: string | null;
+  liveReportIds?: string[];
   itemType: string;
   computedAmount: number;
   manualAmount: number;
   adjustmentAmount: number;
   evidenceLevel?: "green" | "yellow" | "red" | null;
   evidenceSnapshot: Record<string, unknown>;
+  exceptions?: SettlementRuleExceptionInsert[];
 };
 
 export type SettlementRepository = {
@@ -149,7 +197,26 @@ export type SettlementRepository = {
     evidenceSummary: Record<string, unknown>;
     createdBy: string;
     items: SettlementBatchAtomicItemInput[];
-  }): Promise<{ batch: SettlementBatchRecord; items: SettlementBatchItemRecord[] }>;
+  }): Promise<{
+    batch: SettlementBatchRecord;
+    items: SettlementBatchItemRecord[];
+    links?: SettlementBatchItemReportLinkRecord[];
+    exceptions?: SettlementRuleExceptionRecord[];
+  }>;
+  resolveSettlementRuleException?(input: {
+    organizationId: string;
+    exceptionId: string;
+    settlementBatchItemId: string;
+    oldComputedAmount: number;
+    newComputedAmount: number;
+    resolutionValue: Record<string, unknown>;
+    resolutionReason: string;
+    resolvedBy: string;
+  }): Promise<{
+    batch: SettlementBatchRecord;
+    item: SettlementBatchItemRecord;
+    exception: SettlementRuleExceptionRecord;
+  }>;
   markReportSettled(input: {
     reportId: string;
     settlementBatchItemId: string;
@@ -329,6 +396,7 @@ export async function generateSettlementBatch({
     items: calculations.map(({ report, item }) => ({
       streamerId: report.streamerId,
       liveReportId: report.id,
+      liveReportIds: [report.id],
       itemType: liveReportItemType(input.batchType),
       computedAmount: item.computedAmount,
       manualAmount: item.manualAmount,

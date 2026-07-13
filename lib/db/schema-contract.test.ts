@@ -112,6 +112,16 @@ const settlementExecutionLayersMigration = readdirSync(migrationsDir).includes(
 const normalizedSettlementExecutionLayersMigration = normalizeSql(
   settlementExecutionLayersMigration,
 );
+const settlementRuleExecutionMigrationName =
+  "20260711130000_custom_settlement_rule_execution.sql";
+const settlementRuleExecutionMigration = readdirSync(migrationsDir).includes(
+  settlementRuleExecutionMigrationName,
+)
+  ? readFileSync(join(migrationsDir, settlementRuleExecutionMigrationName), "utf8")
+  : "";
+const normalizedSettlementRuleExecutionMigration = normalizeSql(
+  settlementRuleExecutionMigration,
+);
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/gu, " ").trim();
@@ -482,6 +492,43 @@ function extractSettlementExecutionLayersFunction(fn: string): {
     ),
     body: normalizeSql(
       settlementExecutionLayersMigration.slice(bodyContentStart, bodyEnd),
+    ),
+  };
+}
+
+function extractSettlementRuleExecutionFunction(fn: string): {
+  definition: string;
+  body: string;
+} {
+  const marker = `create or replace function public.${fn}`;
+  const start = settlementRuleExecutionMigration.toLowerCase().indexOf(marker);
+  expect(
+    start,
+    `missing Phase 3 rule execution function: ${fn}`,
+  ).toBeGreaterThanOrEqual(0);
+  const bodyMarker = /\bas\s+\$\$/giu;
+  bodyMarker.lastIndex = start;
+  const bodyStartMatch = bodyMarker.exec(settlementRuleExecutionMigration);
+  expect(
+    bodyStartMatch,
+    `missing Phase 3 rule execution body: ${fn}`,
+  ).not.toBeNull();
+  const bodyStart = bodyStartMatch?.index ?? -1;
+  const bodyContentStart = bodyStart + (bodyStartMatch?.[0].length ?? 0);
+  const bodyEnd = settlementRuleExecutionMigration.indexOf(
+    "$$;",
+    bodyContentStart,
+  );
+  expect(
+    bodyEnd,
+    `missing Phase 3 rule execution terminator: ${fn}`,
+  ).toBeGreaterThan(bodyContentStart);
+  return {
+    definition: normalizeSql(
+      settlementRuleExecutionMigration.slice(start, bodyEnd + 3),
+    ),
+    body: normalizeSql(
+      settlementRuleExecutionMigration.slice(bodyContentStart, bodyEnd),
     ),
   };
 }
@@ -3335,6 +3382,191 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     );
     expect(approvalBranch).not.toMatch(
       /p_risk_summary[\s\S]+v_material_risk_codes/u,
+    );
+  });
+});
+
+describe("Phase 3 settlement rule execution persistence contract", () => {
+  it("adds aggregate report links and backfills legacy item report pointers", () => {
+    expect(settlementRuleExecutionMigration).not.toBe("");
+    expect(readdirSync(migrationsDir)).toContain(settlementRuleExecutionMigrationName);
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "create table if not exists public.settlement_batch_item_reports",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "settlement_batch_item_id uuid not null references public.settlement_batch_items(id) on delete cascade",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "live_report_id uuid not null references public.live_reports(id) on delete cascade",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "constraint settlement_batch_item_reports_unique_link unique (settlement_batch_item_id, live_report_id)",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "constraint settlement_batch_item_reports_unique_batch_report unique (settlement_batch_id, live_report_id)",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "insert into public.settlement_batch_item_reports",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "from public.settlement_batch_items as item",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "where item.live_report_id is not null",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "on conflict do nothing",
+    );
+  });
+
+  it("adds review exceptions with status policy constraints indexes and RLS", () => {
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "create table if not exists public.settlement_rule_exceptions",
+    );
+    for (const column of [
+      "settlement_batch_id uuid not null references public.settlement_batches(id) on delete cascade",
+      "settlement_batch_item_id uuid not null references public.settlement_batch_items(id) on delete cascade",
+      "live_report_id uuid references public.live_reports(id) on delete set null",
+      "rule_version_id uuid references public.custom_settlement_rule_versions(id)",
+      "layer_snapshot jsonb not null default '{}'::jsonb",
+      "variable_name text not null",
+      "resolution_value jsonb",
+      "resolution_reason text",
+      "resolved_at timestamptz",
+    ]) {
+      expect(normalizedSettlementRuleExecutionMigration).toContain(column);
+    }
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "constraint settlement_rule_exceptions_status_check check (status in ('review_required', 'resolved', 'voided'))",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "constraint settlement_rule_exceptions_policy_check check (policy in ('route_item_to_review', 'block_batch', 'use_explicit_default'))",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "constraint settlement_rule_exceptions_no_explicit_default_for_sensitive",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "create index if not exists settlement_rule_exceptions_open_batch_idx",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "create index if not exists settlement_rule_exceptions_item_idx",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "alter table public.settlement_batch_item_reports enable row level security",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "alter table public.settlement_rule_exceptions enable row level security",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "create policy settlement_batch_item_reports_staff_read",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "create policy settlement_rule_exceptions_staff_manage",
+    );
+    for (const table of [
+      "settlement_batch_item_reports",
+      "settlement_rule_exceptions",
+    ]) {
+      expect(normalizedSettlementRuleExecutionMigration).toContain(
+        `revoke all on table public.${table} from public, anon, authenticated, service_role`,
+      );
+      expect(normalizedSettlementRuleExecutionMigration).toContain(
+        `grant select on table public.${table} to authenticated`,
+      );
+      expect(normalizedSettlementRuleExecutionMigration).not.toMatch(
+        new RegExp(
+          `grant (?:insert|update|delete|all) on table public\\.${table}[\\s\\S]+?to authenticated`,
+          "u",
+        ),
+      );
+    }
+  });
+
+  it("replaces atomic generation to persist links and exceptions transactionally", () => {
+    const rpc = extractSettlementRuleExecutionFunction(
+      "generate_settlement_batch",
+    );
+    expect(rpc.definition).toContain("p_items jsonb");
+    expect(rpc.definition).toContain("security definer");
+    expect(rpc.definition).toContain("set search_path = pg_catalog, public");
+    expect(rpc.body).toContain("v_actor_id uuid := auth.uid()");
+    expect(rpc.body).toContain("public.is_org_member(p_organization_id)");
+    expect(rpc.body).toContain("public.can_access_project(p_project_id)");
+    expect(rpc.body).toContain("v_actor_role not in (");
+    expect(rpc.body).toContain("p_created_by <> v_actor_id");
+    expect(rpc.body).toContain("for update");
+    expect(rpc.body).toContain("live_report_ids");
+    expect(rpc.body).toContain("v_report_reference_count integer := 0");
+    expect(rpc.body).toContain("v_distinct_report_count integer := 0");
+    expect(rpc.body).toContain("settlement_batch_report_duplicate_in_payload");
+    expect(rpc.body).toContain("settlement_batch_item_reports");
+    expect(rpc.body).toContain("settlement_rule_exceptions");
+    expect(rpc.body).toContain("already_linked");
+    expect(rpc.body).toContain("batch.batch_type = p_batch_type");
+    expect(rpc.body).toContain("return jsonb_build_object");
+    expect(rpc.body).toContain("'batch'");
+    expect(rpc.body).toContain("'links'");
+    expect(rpc.body).toContain("'exceptions'");
+    expect(rpc.body).toContain("jsonb_array_length(v_report_ids) = 1");
+    expect(rpc.body).toContain("set settled_batch_item_id = v_item_row.id");
+    expect(normalizedSettlementRuleExecutionMigration).toMatch(
+      /revoke all on function public\.generate_settlement_batch\([\s\S]+?from public, anon, authenticated, service_role;/u,
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toMatch(
+      /grant execute on function public\.generate_settlement_batch\([\s\S]+?to authenticated;/u,
+    );
+    expect(normalizedSettlementRuleExecutionMigration).not.toMatch(
+      /grant execute on function public\.generate_settlement_batch\([\s\S]+?to (?:anon|service_role|public);/u,
+    );
+  });
+
+  it("adds atomic exception resolution with immutable resolved and locked states", () => {
+    const rpc = extractSettlementRuleExecutionFunction(
+      "resolve_settlement_rule_exception",
+    );
+    expect(rpc.definition).toContain("p_exception_id uuid");
+    expect(rpc.definition).toContain("p_old_computed_amount numeric");
+    expect(rpc.definition).toContain("p_new_computed_amount numeric");
+    expect(rpc.definition).toContain("security definer");
+    expect(rpc.definition).toContain("set search_path = pg_catalog, public");
+    expect(rpc.body).toContain("v_actor_id uuid := auth.uid()");
+    expect(rpc.body).toContain("public.is_org_member(p_organization_id)");
+    expect(rpc.body).toContain("public.can_access_project(v_exception.project_id)");
+    expect(rpc.body).toContain("v_actor_role not in (");
+    expect(rpc.body).toContain("p_resolved_by <> v_actor_id");
+    expect(rpc.body).toContain("for update");
+    expect(rpc.body).toContain("v_exception.status <> 'review_required'");
+    expect(rpc.body).toContain(
+      "v_batch.status in ('confirmed', 'locked', 'voided')",
+    );
+    expect(rpc.body).toContain(
+      "v_item.computed_amount <> p_old_computed_amount",
+    );
+    expect(rpc.body).toContain(
+      "computed_amount = computed_amount + (p_new_computed_amount - p_old_computed_amount)",
+    );
+    expect(rpc.body).toContain("v_open_sibling_count integer := 0");
+    expect(rpc.body).toContain("sibling.status = 'review_required'");
+    expect(rpc.body).toContain("for update");
+    expect(rpc.body).toContain("if v_open_sibling_count = 0 then");
+    expect(rpc.body.indexOf("status = 'resolved'")).toBeLessThan(
+      rpc.body.indexOf("if v_open_sibling_count = 0 then"),
+    );
+    expect(rpc.body).toContain("status = 'resolved'");
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "create trigger settlement_rule_exceptions_prevent_resolved_update",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toContain(
+      "create trigger settlement_rule_exceptions_prevent_locked_batch_update",
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toMatch(
+      /revoke all on function public\.resolve_settlement_rule_exception\([\s\S]+?from public, anon, authenticated, service_role;/u,
+    );
+    expect(normalizedSettlementRuleExecutionMigration).toMatch(
+      /grant execute on function public\.resolve_settlement_rule_exception\([\s\S]+?to authenticated;/u,
+    );
+    expect(normalizedSettlementRuleExecutionMigration).not.toMatch(
+      /grant execute on function public\.resolve_settlement_rule_exception\([\s\S]+?to (?:anon|service_role|public);/u,
     );
   });
 });
