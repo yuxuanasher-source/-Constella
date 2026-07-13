@@ -8282,6 +8282,99 @@ describe("OpsReferenceApp settlement smoke", () => {
     const css = container.querySelector(
       'style[data-ops-responsive-shell="true"]',
     )?.textContent;
+  it("shows internal custom-rule breakdowns and open exception queue in settlement detail", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[
+          {
+            id: "batch-rule-explain",
+            projectId: "project-alpha",
+            type: "streamer_payable",
+            name: "七月自定义规则应付",
+            project: "Alpha Launch",
+            vendor: "—",
+            period: "2026-07-01 -> 2026-07-31",
+            periodStart: "2026-07-01",
+            periodEnd: "2026-07-31",
+            items: 1,
+            amount: 1040,
+            status: "generated",
+            updated: "2026-07-31 12:00",
+            creator: "Finance Owner",
+          },
+        ]}
+        liveBatchDetails={{
+          "batch-rule-explain": [
+            {
+              id: "item-rule-explain",
+              streamer: "主播甲",
+              rule: "系统核验 CPT/底薪",
+              hours: 4,
+              qty: "yellow · system",
+              base: 0,
+              variable: 1040,
+              adjust: 0,
+              total: 1040,
+              ruleBreakdown: {
+                mode: "custom",
+                executionGrain: "project_streamer_period",
+                appliedVersionLabels: ["项目规则 v3", "主播专属 v2"],
+                sourceReportCount: 2,
+                components: [
+                  { key: "baseSalary", label: "底薪", amountCents: 80000 },
+                  { key: "cptPay", label: "有效时长", amountCents: 24000 },
+                ],
+                missingDataDecisions: [
+                  {
+                    variableName: "salesAmountCents",
+                    policy: "route_item_to_review",
+                    decision: "review_required",
+                  },
+                ],
+                explanationZh: "底薪 800 元 + 有效时长 240 元。",
+              },
+              openExceptions: [
+                {
+                  id: "exception-open",
+                  liveReportId: "report-2",
+                  variableName: "salesAmountCents",
+                  policy: "route_item_to_review",
+                  status: "review_required",
+                },
+              ],
+            },
+          ],
+        }}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+    const ruleBreakdown = screen.getByText("规则拆解").closest("div")
+      ?.parentElement?.parentElement;
+    expect(ruleBreakdown).toBeTruthy();
+    expect(ruleBreakdown).toHaveTextContent("规则拆解");
+    expect(screen.getByText("项目规则 v3")).toBeInTheDocument();
+    expect(screen.getByText("主播专属 v2")).toBeInTheDocument();
+    expect(screen.getByText("project_streamer_period")).toBeInTheDocument();
+    expect(screen.getByText("来源报数 2 条")).toBeInTheDocument();
+    expect(ruleBreakdown).toHaveTextContent("底薪");
+    expect(ruleBreakdown).toHaveTextContent("800");
+    expect(ruleBreakdown).toHaveTextContent("有效时长");
+    expect(ruleBreakdown).toHaveTextContent("240");
+    expect(screen.getByText("缺失数据决策")).toBeInTheDocument();
+    expect(screen.getByText("salesAmountCents")).toBeInTheDocument();
+    expect(screen.getByText("异常队列")).toBeInTheDocument();
+    expect(screen.getByText("exception-open")).toBeInTheDocument();
+  });
+
 
     expect(css).toMatch(
       /\.ops-page-header-inner\s*\{[^}]*flex-direction:\s*column;/s,

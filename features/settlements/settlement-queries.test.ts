@@ -190,6 +190,96 @@ describe("settlement DTO mappers", () => {
     });
   });
 
+  it("exposes staff-only custom rule explanations with components and open exceptions", () => {
+    const item = toOpsSettlementBatchDetailItem({
+      id: "item-rule-1",
+      settlement_batch_id: "batch-1",
+      item_type: "live_report_payable",
+      computed_amount: 1040,
+      manual_amount: 0,
+      adjustment_amount: 0,
+      evidence_level: "yellow",
+      evidence_snapshot: {
+        settlementDuration: 240,
+        timeSource: "system",
+        ruleEngine: {
+          mode: "custom",
+          grain: "project_streamer_period",
+          appliedLayers: [
+            { versionLabel: "项目规则 v3", scope: "project" },
+            { label: "主播专属 v2", scope: "project_streamer" },
+          ],
+          namedOutputsCents: {
+            baseSalary: 80000,
+            cptPay: 24000,
+            final: 104000,
+          },
+          missingDataDecisions: [
+            {
+              variableName: "salesAmountCents",
+              policy: "route_item_to_review",
+              action: "review_required",
+            },
+          ],
+          sourceReportIds: ["report-1", "report-2"],
+          explanationZh: "底薪 800 元 + 有效时长 240 元。",
+        },
+      },
+      settlement_rule_exceptions: [
+        {
+          id: "exception-open",
+          live_report_id: "report-2",
+          variable_name: "salesAmountCents",
+          policy: "route_item_to_review",
+          status: "review_required",
+          resolution_reason: null,
+        },
+        {
+          id: "exception-resolved",
+          live_report_id: "report-1",
+          variable_name: "giftAmountCents",
+          policy: "use_default",
+          status: "resolved",
+          resolution_reason: "已补充",
+        },
+      ],
+      streamers: { display_name: "Streamer One" },
+    });
+
+    expect(item.ruleBreakdown).toEqual({
+      mode: "custom",
+      executionGrain: "project_streamer_period",
+      appliedVersionLabels: ["项目规则 v3", "主播专属 v2"],
+      components: [
+        { key: "baseSalary", label: "底薪", amountCents: 80000 },
+        { key: "cptPay", label: "有效时长", amountCents: 24000 },
+        { key: "final", label: "最终金额", amountCents: 104000 },
+      ],
+      sourceReportCount: 2,
+      missingDataDecisions: [
+        {
+          variableName: "salesAmountCents",
+          policy: "route_item_to_review",
+          decision: "review_required",
+        },
+      ],
+      explanationZh: "底薪 800 元 + 有效时长 240 元。",
+    });
+    expect(item.openExceptions).toEqual([
+      {
+        id: "exception-open",
+        liveReportId: "report-2",
+        variableName: "salesAmountCents",
+        policy: "route_item_to_review",
+        status: "review_required",
+      },
+    ]);
+    expect(toOpsReferenceBatchDetailItem(item)).toMatchObject({
+      ruleBreakdown: item.ruleBreakdown,
+      openExceptions: item.openExceptions,
+    });
+  });
+
   it("maps project cost items for staff and hides them from streamer-safe details", () => {
     const costItem = toOpsSettlementBatchCostDetailItem({
       id: "cost-1",

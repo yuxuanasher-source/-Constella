@@ -80,6 +80,72 @@ describe("streamer settlement safe DTO", () => {
     expect(JSON.stringify(item)).not.toContain("cost");
   });
 
+  it("exposes only personal payable explanation fields from a noisy custom-rule snapshot", () => {
+    const item = toStreamerPayableItem({
+      id: "item-safe-rule",
+      project_name: "Launch Week",
+      period_start: "2026-05-01",
+      period_end: "2026-05-31",
+      computed_amount: 1040,
+      manual_amount: 0,
+      adjustment_amount: 0,
+      payable_amount: 1040,
+      evidence_level: "yellow",
+      evidence_snapshot: {
+        settlementDuration: 240,
+        timeSource: "system",
+        reviewerComments: "内部复核备注",
+        groupRoster: ["other-streamer"],
+        ruleEngine: {
+          formula: "money_result({ final: internal_margin() })",
+          compiledAst: { kind: "call" },
+          receivableRules: { vendor: "hidden" },
+          marginCents: 90000,
+          taxCents: 6000,
+          externalCostCents: 12000,
+          otherStreamers: ["other-streamer"],
+          groupRoster: ["other-streamer"],
+          reviewerComments: "内部规则评审意见",
+          internalRiskThresholds: { marginFloorBps: 2000 },
+          namedOutputsCents: {
+            baseSalary: 80000,
+            cptPay: 24000,
+            final: 104000,
+            marginCents: 90000,
+            taxCents: 6000,
+            externalCostCents: 12000,
+          },
+          sourceReportIds: ["report-safe-1"],
+          explanationZh: "内部说明不应直出。",
+        },
+      },
+      created_at: "2026-05-20T12:00:00.000Z",
+    });
+
+    expect(item.explanation).toEqual({
+      finalAmount: 1040,
+      finalAmountCents: 104000,
+      components: [
+        { key: "baseSalary", label: "底薪", amount: 800, amountCents: 80000 },
+        { key: "cptPay", label: "有效时长", amount: 240, amountCents: 24000 },
+        { key: "final", label: "最终金额", amount: 1040, amountCents: 104000 },
+      ],
+      evidenceFacts: {
+        hours: 4,
+        evidenceLevel: "yellow",
+        timeSource: "system",
+        sourceReportCount: 1,
+      },
+      explanationZh:
+        "本次 Launch Week 结算包含底薪 ¥800、有效时长 ¥240、最终金额 ¥1,040，最终应付 ¥1,040；有效时长 4.0 小时，时间来源 system。",
+    });
+
+    const serialized = JSON.stringify(item);
+    expect(serialized).not.toMatch(
+      /formula|compiledAst|receivableRules|margin|tax|externalCost|other-streamer|groupRoster|reviewerComments|internalRiskThresholds|内部规则评审意见|内部复核备注/i,
+    );
+  });
+
   it("summarizes current and historical payable amounts for streamer mobile", () => {
     const summary = toStreamerEarningsSummary(rows, {
       currentMonth: "2026-05",

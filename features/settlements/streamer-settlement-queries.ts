@@ -26,6 +26,25 @@ export type StreamerPayableItem = {
   evidence: string;
   source: string;
   createdAt: string;
+  explanation?: StreamerPayableExplanation;
+};
+
+export type StreamerPayableExplanation = {
+  finalAmount: number;
+  finalAmountCents: number;
+  components: Array<{
+    key: string;
+    label: string;
+    amount: number;
+    amountCents: number;
+  }>;
+  evidenceFacts: {
+    hours: number;
+    evidenceLevel: "green" | "yellow" | "red" | "unknown";
+    timeSource: string;
+    sourceReportCount: number;
+  };
+  explanationZh: string;
 };
 
 export type StreamerEarningsSummary = {
@@ -69,19 +88,26 @@ export function toStreamerPayableItem(
     stringFromSnapshot(row.evidence_snapshot, "source") ||
     (hours > 0 ? "live_report" : "manual");
   const timeSource = stringFromSnapshot(row.evidence_snapshot, "timeSource");
+  const roundedHours = Math.round((hours / 60) * 10) / 10;
+  const amount = Number(row.payable_amount);
 
   return {
     id: row.id,
     projectName: row.project_name,
     month: monthKey(row.period_start),
-    amount: Number(row.payable_amount),
+    amount,
     computedAmount: Number(row.computed_amount),
     manualAmount: Number(row.manual_amount),
     adjustmentAmount: Number(row.adjustment_amount),
-    hours: Math.round((hours / 60) * 10) / 10,
+    hours: roundedHours,
     evidence: `${row.evidence_level ?? "unknown"} · ${timeSource || source}`,
     source,
     createdAt: row.created_at,
+    explanation: toStreamerPayableExplanation(row, {
+      hours: roundedHours,
+      timeSource: timeSource || source,
+      amount,
+    }),
   };
 }
 
@@ -145,4 +171,118 @@ function stringFromSnapshot(
 ): string {
   const value = snapshot[key];
   return typeof value === "string" ? value : "";
+}
+
+function toStreamerPayableExplanation(
+  row: StreamerPayableSafeRow,
+  facts: { hours: number; timeSource: string; amount: number },
+): StreamerPayableExplanation | undefined {
+  const ruleEngine = recordValue(row.evidence_snapshot.ruleEngine);
+  if (!ruleEngine) {
+    return undefined;
+  }
+
+  const finalAmountCents = Math.round(facts.amount * 100);
+  const components = toPersonalComponents(ruleEngine);
+  const evidenceFacts = {
+    hours: facts.hours,
+    evidenceLevel: row.evidence_level ?? "unknown",
+    timeSource: facts.timeSource,
+    sourceReportCount: stringArrayValue(ruleEngine.sourceReportIds).length,
+  };
+
+  return {
+    finalAmount: facts.amount,
+    finalAmountCents,
+    components,
+    evidenceFacts,
+    explanationZh: buildPersonalExplanationZh({
+      projectName: row.project_name,
+      finalAmountCents,
+      components,
+      evidenceFacts,
+    }),
+  };
+}
+
+function toPersonalComponents(
+  ruleEngine: Record<string, unknown>,
+): StreamerPayableExplanation["components"] {
+  const outputs =
+    recordValue(ruleEngine.personalComponentsCents) ??
+    recordValue(ruleEngine.componentOutputsCents) ??
+    recordValue(ruleEngine.namedOutputsCents);
+  if (!outputs) {
+    return [];
+  }
+
+  return Object.entries(outputs)
+    .filter((entry): entry is [string, number] => Number.isFinite(entry[1]))
+    .filter(([key]) => isStreamerSafeComponentKey(key))
+    .map(([key, amountCents]) => ({
+      key,
+      label: settlementComponentLabel(key),
+      amount: amountCents / 100,
+      amountCents,
+    }));
+}
+
+function isStreamerSafeComponentKey(key: string): boolean {
+  return !/(formula|ast|receivable|margin|tax|cost|other|roster|reviewer|threshold|risk|profit|gross|internal|external)/i.test(
+    key,
+  );
+}
+
+function buildPersonalExplanationZh(input: {
+  projectName: string;
+  finalAmountCents: number;
+  components: StreamerPayableExplanation["components"];
+  evidenceFacts: StreamerPayableExplanation["evidenceFacts"];
+}): string {
+  const componentText = input.components.length
+    ? input.components
+        .map((component) => `${component.label} ${formatYuan(component.amountCents)}`)
+        .join("、")
+    : "个人结算项";
+  const hoursText = input.evidenceFacts.hours.toFixed(1);
+  return `本次 ${input.projectName} 结算包含${componentText}，最终应付 ${formatYuan(input.finalAmountCents)}；有效时长 ${hoursText} 小时，时间来源 ${input.evidenceFacts.timeSource}。`;
+}
+
+function settlementComponentLabel(key: string): string {
+  const labels: Record<string, string> = {
+    base: "底薪",
+    baseSalary: "底薪",
+    cpt: "有效时长",
+    cptPay: "有效时长",
+    timePay: "有效时长",
+    cps: "CPS",
+    cpa: "CPA",
+    bonus: "奖励",
+    adjustment: "调整",
+    deduction: "扣减",
+    gift: "礼物",
+    manual: "人工承载",
+    final: "最终金额",
+  };
+  return labels[key] ?? key;
+}
+
+function formatYuan(amountCents: number): string {
+  const yuan = amountCents / 100;
+  return `¥${yuan.toLocaleString("zh-CN", {
+    minimumFractionDigits: yuan % 1 === 0 ? 0 : 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function stringArrayValue(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }

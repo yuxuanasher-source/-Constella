@@ -1,6 +1,8 @@
 import type {
   OpsSettlementBatchDetailItem,
   OpsSettlementBatchListItem,
+  OpsSettlementRuleBreakdown,
+  OpsSettlementRuleExceptionSummary,
   OpsSettlementPoolItem,
 } from "./settlement-queries";
 
@@ -31,6 +33,8 @@ export type OpsReferenceBatchDetailItem = {
   variable: number;
   adjust: number;
   total: number;
+  ruleBreakdown?: OpsSettlementRuleBreakdown;
+  openExceptions?: OpsSettlementRuleExceptionSummary[];
 };
 
 export type OpsReferenceSettlementPoolItem = {
@@ -87,6 +91,10 @@ export function toOpsReferenceBatchDetailItem(
     variable: item.systemAmount + item.manualAmount,
     adjust: item.adjustmentAmount,
     total: item.totalAmount,
+    ...(item.ruleBreakdown ? { ruleBreakdown: item.ruleBreakdown } : {}),
+    ...(item.openExceptions?.length
+      ? { openExceptions: item.openExceptions }
+      : {}),
   };
 }
 

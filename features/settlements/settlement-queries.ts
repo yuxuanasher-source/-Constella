@@ -55,6 +55,34 @@ export type OpsSettlementBatchDetailItem = {
   totalAmount: number;
   internalOnly?: boolean;
   sourceKind?: "settlement" | "project_cost";
+  ruleBreakdown?: OpsSettlementRuleBreakdown;
+  openExceptions?: OpsSettlementRuleExceptionSummary[];
+};
+
+export type OpsSettlementRuleBreakdown = {
+  mode: string | null;
+  executionGrain: string | null;
+  appliedVersionLabels: string[];
+  components: Array<{
+    key: string;
+    label: string;
+    amountCents: number;
+  }>;
+  sourceReportCount: number;
+  missingDataDecisions: Array<{
+    variableName: string;
+    policy: string;
+    decision: string;
+  }>;
+  explanationZh: string | null;
+};
+
+export type OpsSettlementRuleExceptionSummary = {
+  id: string;
+  liveReportId: string | null;
+  variableName: string;
+  policy: string;
+  status: string;
 };
 
 export type OpsSettlementDefaultScope = {
@@ -112,7 +140,17 @@ export type SettlementBatchDetailRow = {
   adjustment_amount: number;
   evidence_level: "green" | "yellow" | "red" | null;
   evidence_snapshot: Record<string, unknown>;
+  settlement_rule_exceptions?: SettlementRuleExceptionRow[] | null;
   streamers: { display_name: string } | { display_name: string }[] | null;
+};
+
+export type SettlementRuleExceptionRow = {
+  id: string;
+  live_report_id: string | null;
+  variable_name: string;
+  policy: string;
+  status: string;
+  resolution_reason?: string | null;
 };
 
 export type SettlementBatchCostItemRow = {
@@ -264,7 +302,7 @@ export async function listOpsSettlementBatchDetails(
   let query = client
     .from("settlement_batch_items")
     .select(
-      "id, settlement_batch_id, item_type, computed_amount, manual_amount, adjustment_amount, evidence_level, evidence_snapshot, streamers(display_name)",
+      "id, settlement_batch_id, item_type, computed_amount, manual_amount, adjustment_amount, evidence_level, evidence_snapshot, streamers(display_name), settlement_rule_exceptions(id, live_report_id, variable_name, policy, status, resolution_reason)",
     )
     .eq("organization_id", input.organizationId)
     .order("created_at", { ascending: true });
@@ -453,8 +491,11 @@ export function toOpsSettlementBatchDetailItem(
   const systemAmount = Number(row.computed_amount);
   const manualAmount = Number(row.manual_amount);
   const adjustmentAmount = Number(row.adjustment_amount);
+  const openExceptions = toOpenSettlementRuleExceptions(
+    row.settlement_rule_exceptions,
+  );
 
-  return {
+  const item: OpsSettlementBatchDetailItem = {
     id: row.id,
     batchId: row.settlement_batch_id,
     itemType: row.item_type,
@@ -472,7 +513,12 @@ export function toOpsSettlementBatchDetailItem(
     adjustmentAmount,
     totalAmount: systemAmount + manualAmount + adjustmentAmount,
     sourceKind: "settlement",
+    ruleBreakdown: toOpsSettlementRuleBreakdown(row.evidence_snapshot),
   };
+  if (openExceptions.length > 0) {
+    item.openExceptions = openExceptions;
+  }
+  return item;
 }
 
 export function toOpsSettlementBatchCostDetailItem(
@@ -669,6 +715,147 @@ function stringFromSnapshot(
 ): string {
   const value = snapshot[key];
   return typeof value === "string" ? value : "";
+}
+
+function toOpsSettlementRuleBreakdown(
+  snapshot: Record<string, unknown>,
+): OpsSettlementRuleBreakdown | undefined {
+  const ruleEngine = recordValue(snapshot.ruleEngine);
+  if (!ruleEngine) {
+    return undefined;
+  }
+
+  const sourceReportIds = stringArrayValue(ruleEngine.sourceReportIds);
+  return {
+    mode: stringValue(ruleEngine.mode),
+    executionGrain:
+      stringValue(ruleEngine.grain) ?? stringValue(ruleEngine.executionGrain),
+    appliedVersionLabels: arrayValue(ruleEngine.appliedLayers)
+      .map(toAppliedVersionLabel)
+      .filter((label): label is string => Boolean(label)),
+    components: toRuleComponents(ruleEngine),
+    sourceReportCount: sourceReportIds.length,
+    missingDataDecisions: arrayValue(ruleEngine.missingDataDecisions)
+      .map(toMissingDataDecision)
+      .filter(
+        (decision): decision is OpsSettlementRuleBreakdown["missingDataDecisions"][number] =>
+          Boolean(decision),
+      ),
+    explanationZh: stringValue(ruleEngine.explanationZh),
+  };
+}
+
+function toRuleComponents(
+  ruleEngine: Record<string, unknown>,
+): OpsSettlementRuleBreakdown["components"] {
+  const outputs =
+    recordValue(ruleEngine.componentOutputsCents) ??
+    recordValue(ruleEngine.namedOutputsCents);
+  if (!outputs) {
+    return [];
+  }
+
+  return Object.entries(outputs)
+    .filter((entry): entry is [string, number] => Number.isFinite(entry[1]))
+    .map(([key, amountCents]) => ({
+      key,
+      label: settlementComponentLabel(key),
+      amountCents,
+    }));
+}
+
+function toAppliedVersionLabel(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value;
+  }
+  const record = recordValue(value);
+  if (!record) {
+    return null;
+  }
+  return (
+    stringValue(record.versionLabel) ??
+    stringValue(record.label) ??
+    stringValue(record.name) ??
+    stringValue(record.versionId)
+  );
+}
+
+function toMissingDataDecision(
+  value: unknown,
+): OpsSettlementRuleBreakdown["missingDataDecisions"][number] | null {
+  const record = recordValue(value);
+  if (!record) {
+    return null;
+  }
+  const variableName =
+    stringValue(record.variableName) ??
+    stringValue(record.variable) ??
+    stringValue(record.field);
+  if (!variableName) {
+    return null;
+  }
+  return {
+    variableName,
+    policy: stringValue(record.policy) ?? "",
+    decision:
+      stringValue(record.decision) ??
+      stringValue(record.action) ??
+      stringValue(record.status) ??
+      "",
+  };
+}
+
+function toOpenSettlementRuleExceptions(
+  rows: SettlementRuleExceptionRow[] | null | undefined,
+): OpsSettlementRuleExceptionSummary[] {
+  return (rows ?? [])
+    .filter((row) => row.status !== "resolved")
+    .map((row) => ({
+      id: row.id,
+      liveReportId: row.live_report_id ?? null,
+      variableName: row.variable_name,
+      policy: row.policy,
+      status: row.status,
+    }));
+}
+
+function settlementComponentLabel(key: string): string {
+  const labels: Record<string, string> = {
+    base: "底薪",
+    baseSalary: "底薪",
+    cpt: "有效时长",
+    cptPay: "有效时长",
+    timePay: "有效时长",
+    cps: "CPS",
+    cpa: "CPA",
+    bonus: "奖励",
+    adjustment: "调整",
+    deduction: "扣减",
+    gift: "礼物",
+    manual: "人工承载",
+    final: "最终金额",
+  };
+  return labels[key] ?? key;
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function stringArrayValue(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function camelizeRecord(

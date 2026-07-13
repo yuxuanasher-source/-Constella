@@ -21870,6 +21870,16 @@ function BatchDetail({
   const baseSum = detailRows.reduce((s, x) => s + x.base, 0);
   const varSum = detailRows.reduce((s, x) => s + x.variable, 0);
   const adjSum = detailRows.reduce((s, x) => s + x.adjust, 0);
+  const ruleBreakdownRows = detailRows.filter((row) => row.ruleBreakdown);
+  const openRuleExceptions = detailRows.flatMap((row) =>
+    Array.isArray(row.openExceptions)
+      ? row.openExceptions.map((exception) => ({
+          ...exception,
+          itemId: row.id,
+          streamer: row.streamer,
+        }))
+      : [],
+  );
   const showPendingDetail = (message) => {
     setDetailMessage(message);
   };
@@ -22166,6 +22176,250 @@ function BatchDetail({
           ]}
           rows={detailRows}
         />
+
+        {ruleBreakdownRows.length > 0 || openRuleExceptions.length > 0 ? (
+          <div
+            style={{
+              padding: "12px 16px",
+              borderTop: "1px solid var(--line)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            {ruleBreakdownRows.length > 0 ? (
+              <div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--ink-700)",
+                    }}
+                  >
+                    规则拆解
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 6,
+                      flexWrap: "wrap",
+                      justifyContent: "flex-end",
+                    }}
+                  >
+                    {ruleBreakdownRows[0].ruleBreakdown.appliedVersionLabels.map(
+                      (label) => (
+                        <Badge key={label} tone="blue">
+                          {label}
+                        </Badge>
+                      ),
+                    )}
+                    {ruleBreakdownRows[0].ruleBreakdown.executionGrain ? (
+                      <Badge tone="neutral">
+                        {ruleBreakdownRows[0].ruleBreakdown.executionGrain}
+                      </Badge>
+                    ) : null}
+                    <Badge tone="neutral">
+                      来源报数{" "}
+                      {ruleBreakdownRows[0].ruleBreakdown.sourceReportCount} 条
+                    </Badge>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 10,
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+                    gap: 8,
+                  }}
+                >
+                  {ruleBreakdownRows[0].ruleBreakdown.components.map(
+                    (component) => (
+                      <div
+                        key={component.key}
+                        style={{
+                          padding: "8px 10px",
+                          border: "1px solid var(--line)",
+                          borderRadius: 8,
+                          background: "var(--bg-soft)",
+                        }}
+                      >
+                        <div
+                          style={{ fontSize: 11, color: "var(--ink-400)" }}
+                        >
+                          {component.label}
+                        </div>
+                        <div
+                          className="num"
+                          style={{
+                            marginTop: 2,
+                            fontSize: 13,
+                            fontWeight: 700,
+                            color: "var(--ink-900)",
+                          }}
+                        >
+                          {formatYuanFromCents(component.amountCents)}
+                        </div>
+                      </div>
+                    ),
+                  )}
+                </div>
+
+                {ruleBreakdownRows[0].ruleBreakdown.explanationZh ? (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      fontSize: 12,
+                      color: "var(--ink-600)",
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    {ruleBreakdownRows[0].ruleBreakdown.explanationZh}
+                  </div>
+                ) : null}
+
+                {ruleBreakdownRows[0].ruleBreakdown.missingDataDecisions
+                  .length > 0 ? (
+                  <div style={{ marginTop: 10 }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: "var(--ink-700)",
+                      }}
+                    >
+                      缺失数据决策
+                    </div>
+                    <div
+                      style={{
+                        marginTop: 6,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 6,
+                      }}
+                    >
+                      {ruleBreakdownRows[0].ruleBreakdown.missingDataDecisions.map(
+                        (decision) => (
+                          <div
+                            key={`${decision.variableName}-${decision.policy}-${decision.decision}`}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              flexWrap: "wrap",
+                              fontSize: 12,
+                              color: "var(--ink-500)",
+                            }}
+                          >
+                            <span className="mono">{decision.variableName}</span>
+                            <Badge tone="amber">{decision.policy}</Badge>
+                            <span>{decision.decision}</span>
+                          </div>
+                        ),
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: "var(--ink-700)",
+                  }}
+                >
+                  异常队列
+                </div>
+                <Badge tone={openRuleExceptions.length ? "amber" : "green"}>
+                  {openRuleExceptions.length
+                    ? `${openRuleExceptions.length} 个待处理`
+                    : "无待处理异常"}
+                </Badge>
+              </div>
+              {openRuleExceptions.length > 0 ? (
+                <div
+                  style={{
+                    marginTop: 8,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                  }}
+                >
+                  {openRuleExceptions.map((exception) => (
+                    <div
+                      key={exception.id}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(0, 1fr) auto",
+                        gap: 8,
+                        alignItems: "center",
+                        padding: "7px 0",
+                        borderTop: "1px dashed var(--line)",
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          className="mono"
+                          style={{
+                            fontSize: 11,
+                            color: "var(--ink-700)",
+                            wordBreak: "break-all",
+                          }}
+                        >
+                          {exception.id}
+                        </div>
+                        <div
+                          style={{
+                            marginTop: 2,
+                            fontSize: 12,
+                            color: "var(--ink-500)",
+                            wordBreak: "break-word",
+                          }}
+                        >
+                          {exception.streamer} · {exception.variableName}
+                          {exception.liveReportId
+                            ? ` · ${exception.liveReportId}`
+                            : ""}
+                        </div>
+                      </div>
+                      <Badge tone="amber">{exception.status}</Badge>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div
+                  style={{
+                    marginTop: 6,
+                    fontSize: 12,
+                    color: "var(--ink-400)",
+                  }}
+                >
+                  当前批次没有待处理的规则异常。
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
         {detailMessage ? (
           <div
             aria-live="polite"

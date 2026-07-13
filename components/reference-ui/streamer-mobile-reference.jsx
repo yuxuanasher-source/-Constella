@@ -4611,6 +4611,8 @@ function Sparkbars({ data }) {
 
 // ——— Earnings tab ———
 function EarningsTab({ earnings }) {
+  const [expandedExplanationId, setExpandedExplanationId] =
+    React.useState(null);
   const currentItems = (earnings.items || []).filter(
     (item) => item.month === earnings.currentMonth.month,
   );
@@ -4769,6 +4771,181 @@ function EarningsTab({ earnings }) {
         </MCard>
       </MSection>
 
+      {currentItems.length > 0 ? (
+        <MSection title="结算明细">
+          <MCard padded={false}>
+            {currentItems.map((item, index) => {
+              const explanationId = `settlement-explanation-${item.id}`;
+              const expanded = expandedExplanationId === item.id;
+              return (
+                <div
+                  key={item.id}
+                  style={{
+                    padding: "14px 16px",
+                    borderBottom:
+                      index < currentItems.length - 1
+                        ? "1px solid var(--line)"
+                        : "none",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      justifyContent: "space-between",
+                      gap: 12,
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 600,
+                          color: "var(--ink-900)",
+                        }}
+                      >
+                        {item.projectName}
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 3,
+                          fontSize: 11,
+                          color: "var(--ink-400)",
+                        }}
+                      >
+                        {item.evidence} · {item.hours.toFixed(1)}h
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div
+                        className="num"
+                        style={{
+                          fontSize: 15,
+                          fontWeight: 700,
+                          color: "var(--ink-900)",
+                        }}
+                      >
+                        ¥{item.amount.toLocaleString()}
+                      </div>
+                      {item.explanation ? (
+                        <button
+                          type="button"
+                          aria-expanded={expanded}
+                          aria-controls={explanationId}
+                          aria-label={`查看 ${item.projectName} 结算说明`}
+                          onClick={() =>
+                            setExpandedExplanationId(expanded ? null : item.id)
+                          }
+                          style={{
+                            marginTop: 6,
+                            padding: 0,
+                            border: "none",
+                            background: "transparent",
+                            color: "var(--blue-700)",
+                            fontSize: 12,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                          }}
+                        >
+                          {expanded ? "收起说明" : "查看说明"}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {item.explanation && expanded ? (
+                    <div
+                      id={explanationId}
+                      role="region"
+                      aria-label={`${item.projectName} 结算说明`}
+                      style={{
+                        marginTop: 12,
+                        paddingTop: 12,
+                        borderTop: "1px dashed var(--line)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 12.5,
+                          fontWeight: 700,
+                          color: "var(--ink-800)",
+                        }}
+                      >
+                        个人结算说明
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 8,
+                          display: "grid",
+                          gridTemplateColumns:
+                            "repeat(auto-fit, minmax(96px, 1fr))",
+                          gap: 8,
+                        }}
+                      >
+                        {item.explanation.components.map((component) => (
+                          <div
+                            key={component.key}
+                            style={{
+                              padding: "8px 10px",
+                              borderRadius: 8,
+                              background: "var(--bg-soft)",
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "var(--ink-400)",
+                              }}
+                            >
+                              {component.label}
+                            </div>
+                            <div
+                              className="num"
+                              style={{
+                                marginTop: 2,
+                                fontSize: 13,
+                                fontWeight: 700,
+                                color: "var(--ink-900)",
+                              }}
+                            >
+                              {formatMobileYuanFromCents(
+                                component.amountCents,
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 8,
+                          fontSize: 12,
+                          color: "var(--ink-500)",
+                          lineHeight: 1.55,
+                        }}
+                      >
+                        来源报数{" "}
+                        {item.explanation.evidenceFacts.sourceReportCount} 条
+                        · 时间来源 {item.explanation.evidenceFacts.timeSource}
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontSize: 12,
+                          color: "var(--ink-700)",
+                          lineHeight: 1.55,
+                        }}
+                      >
+                        {item.explanation.explanationZh}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </MCard>
+        </MSection>
+      ) : null}
+
       <MSection title="历史月度">
         <MCard padded={false}>
           {earnings.history.slice(0, 5).map((m, i, arr) => (
@@ -4870,6 +5047,16 @@ function RangeRow({ label, value, tone }) {
       </div>
     </div>
   );
+}
+
+function formatMobileYuanFromCents(value) {
+  const amount = Number(value) / 100;
+  if (!Number.isFinite(amount)) return "¥0";
+  const prefix = amount < 0 ? "-¥" : "¥";
+  return `${prefix}${Math.abs(amount).toLocaleString("zh-CN", {
+    minimumFractionDigits: Math.abs(amount % 1) > 0 ? 2 : 0,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 // ——— Videos tab ———
