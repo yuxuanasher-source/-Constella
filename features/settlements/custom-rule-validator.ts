@@ -270,7 +270,7 @@ const VARIABLE_DEFINITIONS: Readonly<Record<string, VariableDefinition>> = {
   tax_amount: variable(MONEY_TYPE, RECONCILIATION_ONLY, PERIOD_GRAINS),
   gross_margin: variable(MONEY_TYPE, RECONCILIATION_ONLY, PERIOD_GRAINS),
   margin_rate: variable(RATE_TYPE, RECONCILIATION_ONLY, PERIOD_GRAINS),
-  prior_layer_amount: variable(MONEY_TYPE, PAYABLE_AND_RECEIVABLE, PERIOD_GRAINS),
+  prior_layer_amount: variable(MONEY_TYPE, PAYABLE_AND_RECEIVABLE, ALL_GRAINS),
 };
 
 const ALLOWED_FUNCTIONS = new Set([

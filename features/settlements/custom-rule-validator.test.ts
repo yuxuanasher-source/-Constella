@@ -860,6 +860,17 @@ describe("modifier composition validation", () => {
     expect(result.variables).toEqual(["prior_layer_amount"]);
   });
 
+  it("allows prior_layer_amount for report-grain modifiers", () => {
+    const result = expectValidationSuccess(
+      "money_result({ final: prior_layer_amount + yuan(10) })",
+      options("payable", "report", {
+        compositionMode: "add",
+      }),
+    );
+
+    expect(result.variables).toEqual(["prior_layer_amount"]);
+  });
+
   it("requires multiply modifiers to derive the absolute amount from percent(prior_layer_amount, ...)", () => {
     expectValidationSuccess(
       "money_result({ final: percent(prior_layer_amount, rate_percent(110)) })",
