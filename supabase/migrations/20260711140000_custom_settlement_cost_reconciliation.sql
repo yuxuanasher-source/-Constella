@@ -244,6 +244,15 @@ begin
     raise exception 'confirm_cost_import_access_denied';
   end if;
 
+  if not exists (
+    select 1
+    from public.project_complex_cost_rule_entitlements as entitlement
+    where entitlement.organization_id = p_organization_id
+      and entitlement.project_id = p_project_id
+  ) then
+    raise exception 'confirm_cost_import_entitlement_required';
+  end if;
+
   select *
   into v_batch
   from public.project_cost_import_batches
@@ -652,16 +661,7 @@ declare
   v_actor_id uuid := auth.uid();
   v_actor_role text;
   v_exception public.external_cost_rule_exceptions%rowtype;
-  v_item jsonb;
-  v_item_row public.project_cost_items%rowtype;
-  v_existing_cost_item public.project_cost_items%rowtype;
-  v_items jsonb := '[]'::jsonb;
-  v_replay_items jsonb := '[]'::jsonb;
   v_open_sibling_count integer := 0;
-  v_replay_item_status text;
-  v_item_source_execution_key text;
-  v_item_source_input_hash text;
-  v_item_rule_version_id uuid;
 begin
   if v_actor_id is null then
     raise exception 'authentication_required';
@@ -679,8 +679,7 @@ begin
   into v_exception
   from public.external_cost_rule_exceptions
   where id = p_exception_id
-    and organization_id = p_organization_id
-  for update;
+    and organization_id = p_organization_id;
 
   if not found then
     raise exception 'external_cost_exception_not_found';
@@ -698,19 +697,47 @@ begin
     raise exception 'external_cost_exception_resolve_access_denied';
   end if;
 
-  with open_siblings as (
-    select sibling.id
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      v_exception.organization_id::text
+        || ':'
+        || v_exception.import_batch_id::text
+        || ':'
+        || v_exception.import_row_index::text,
+      0
+    )
+  );
+
+  with locked_siblings as materialized (
+    select sibling.*
     from public.external_cost_rule_exceptions as sibling
     where sibling.organization_id = v_exception.organization_id
       and sibling.import_batch_id = v_exception.import_batch_id
       and sibling.import_row_index = v_exception.import_row_index
-      and sibling.id <> v_exception.id
-      and sibling.status = 'review_required'
+    order by sibling.id
     for update
   )
+  select locked_siblings.*
+  into v_exception
+  from locked_siblings
+  where locked_siblings.id = p_exception_id;
+
+  if not found then
+    raise exception 'external_cost_exception_not_found';
+  end if;
+
+  if v_exception.status <> 'review_required' then
+    raise exception 'external_cost_exception_not_open';
+  end if;
+
   select count(*)
   into v_open_sibling_count
-  from open_siblings;
+  from public.external_cost_rule_exceptions as sibling
+  where sibling.organization_id = v_exception.organization_id
+    and sibling.import_batch_id = v_exception.import_batch_id
+    and sibling.import_row_index = v_exception.import_row_index
+    and sibling.id <> v_exception.id
+    and sibling.status = 'review_required';
 
   update public.external_cost_rule_exceptions
   set
@@ -722,175 +749,17 @@ begin
   where id = v_exception.id
   returning * into v_exception;
 
-  if v_open_sibling_count = 0 then
-    with resolved_sibling_snapshots as (
-      select sibling.source_context_snapshot
-      from public.external_cost_rule_exceptions as sibling
-      where sibling.organization_id = v_exception.organization_id
-        and sibling.import_batch_id = v_exception.import_batch_id
-        and sibling.import_row_index = v_exception.import_row_index
-        and sibling.status = 'resolved'
-      order by sibling.created_at, sibling.id
-    ), replay_items as (
-      select distinct on (replay_item ->> 'source_execution_key')
-        replay_item
-      from resolved_sibling_snapshots as snapshot
-      cross join lateral jsonb_array_elements(
-        coalesce(snapshot.source_context_snapshot -> 'replay_items', '[]'::jsonb)
-      ) as replay_item_values(replay_item)
-      order by replay_item ->> 'source_execution_key'
-    )
-    select coalesce(jsonb_agg(replay_item), '[]'::jsonb)
-    into v_replay_items
-    from replay_items;
-
-    for v_item in
-      select * from jsonb_array_elements(v_replay_items)
-    loop
-      v_replay_item_status := coalesce(nullif(v_item ->> 'status', ''), 'pending_review');
-      if v_replay_item_status = 'pending_review' then
-        null;
-      else
-        raise exception 'external_cost_exception_replay_items_must_be_pending_review';
-      end if;
-
-      if nullif(v_item ->> 'streamer_id', '') is not null
-         and (
-           not exists (
-             select 1
-             from public.streamers as streamer
-             where streamer.id = nullif(v_item ->> 'streamer_id', '')::uuid
-               and streamer.organization_id = v_exception.organization_id
-             for update
-           )
-           or not exists (
-             select 1
-             from public.project_streamers as project_streamer
-             where project_streamer.streamer_id = nullif(v_item ->> 'streamer_id', '')::uuid
-               and project_streamer.organization_id = v_exception.organization_id
-               and project_streamer.project_id = v_exception.project_id
-             for update
-           )
-         ) then
-        raise exception 'external_cost_exception_replay_source_scope_mismatch';
-      end if;
-
-      if nullif(v_item ->> 'supplier_organization_id', '') is not null
-         and not exists (
-           select 1
-           from public.organizations as supplier
-           where supplier.id = nullif(v_item ->> 'supplier_organization_id', '')::uuid
-             and supplier.id = v_exception.organization_id
-           for update
-         ) then
-        raise exception 'external_cost_exception_replay_source_scope_mismatch';
-      end if;
-
-      if nullif(v_item ->> 'live_report_id', '') is not null
-         and not exists (
-           select 1
-           from public.live_reports as report
-           where report.id = nullif(v_item ->> 'live_report_id', '')::uuid
-             and report.organization_id = v_exception.organization_id
-             and report.project_id = v_exception.project_id
-           for update
-         ) then
-        raise exception 'external_cost_exception_replay_source_scope_mismatch';
-      end if;
-
-      if nullif(v_item ->> 'rule_version_id', '') is not null
-         and not exists (
-           select 1
-           from public.custom_settlement_rule_versions as rule_version
-           where rule_version.id = nullif(v_item ->> 'rule_version_id', '')::uuid
-             and rule_version.organization_id = v_exception.organization_id
-             and rule_version.project_id = v_exception.project_id
-           for update
-         ) then
-        raise exception 'external_cost_exception_replay_source_scope_mismatch';
-      end if;
-
-      v_item_source_execution_key := nullif(v_item ->> 'source_execution_key', '');
-      v_item_source_input_hash := nullif(v_item ->> 'source_input_hash', '');
-      v_item_rule_version_id := coalesce(
-        nullif(v_item ->> 'rule_version_id', '')::uuid,
-        v_exception.rule_version_id
-      );
-
-      if v_item_source_execution_key is not null then
-        select *
-        into v_existing_cost_item
-        from public.project_cost_items
-        where organization_id = v_exception.organization_id
-          and source_execution_key = v_item_source_execution_key
-        for update;
-
-        if found then
-          if v_existing_cost_item.source_input_hash is distinct from v_item_source_input_hash
-             or v_existing_cost_item.source_import_batch_id is distinct from v_exception.import_batch_id
-             or v_existing_cost_item.source_rule_version_id is distinct from v_item_rule_version_id then
-            raise exception 'external_cost_exception_replay_execution_key_conflict';
-          end if;
-
-          v_items := v_items || to_jsonb(v_existing_cost_item);
-          continue;
-        end if;
-      end if;
-
-      insert into public.project_cost_items (
-        organization_id,
-        project_id,
-        streamer_id,
-        supplier_organization_id,
-        live_report_id,
-        settlement_batch_id,
-        item_type,
-        amount_cents,
-        direction,
-        evidence_level,
-        source,
-        source_payload,
-        source_rule_version_id,
-        source_import_batch_id,
-        source_execution_key,
-        source_input_hash,
-        source_explanation,
-        reason,
-        status,
-        created_by
-      )
-      values (
-        v_exception.organization_id,
-        v_exception.project_id,
-        nullif(v_item ->> 'streamer_id', '')::uuid,
-        nullif(v_item ->> 'supplier_organization_id', '')::uuid,
-        nullif(v_item ->> 'live_report_id', '')::uuid,
-        null,
-        coalesce(nullif(v_item ->> 'item_type', ''), 'manual'),
-        coalesce((v_item ->> 'amount_cents')::bigint, 0),
-        coalesce(nullif(v_item ->> 'direction', ''), 'cost'),
-        coalesce(nullif(v_item ->> 'evidence_level', ''), 'yellow'),
-        'import',
-        coalesce(v_item -> 'source_payload', '{}'::jsonb),
-        v_item_rule_version_id,
-        v_exception.import_batch_id,
-        v_item_source_execution_key,
-        v_item_source_input_hash,
-        nullif(v_item ->> 'source_explanation', ''),
-        coalesce(nullif(v_item ->> 'reason', ''), v_exception.resolution_reason),
-        'pending_review',
-        p_resolved_by
-      )
-      returning * into v_item_row;
-
-      v_items := v_items || to_jsonb(v_item_row);
-    end loop;
-  end if;
+  -- external_cost_exception_replay_deferred_until_task3:
+  -- Task 2 records the reviewed value only. Task 3 must replay the original
+  -- rule with all resolved values and insert deterministic pending-review
+  -- items through a replay-specific path.
 
   return jsonb_build_object(
     'exception', to_jsonb(v_exception),
-    'items', v_items,
-    'replayed', v_open_sibling_count = 0
+    'items', '[]'::jsonb,
+    'replayed', false,
+    'replay_deferred', true,
+    'openSiblingCount', v_open_sibling_count
   );
 end;
 $$;

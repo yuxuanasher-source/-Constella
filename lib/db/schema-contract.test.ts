@@ -4168,6 +4168,12 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     expect(confirm.body).toContain("for update");
     expect(confirm.body).toContain("v_batch.status <> 'parsed'");
     expect(confirm.body).toContain(
+      "from public.project_complex_cost_rule_entitlements as entitlement",
+    );
+    expect(confirm.body).toContain(
+      "confirm_cost_import_entitlement_required",
+    );
+    expect(confirm.body).toContain(
       "v_exception_count integer := coalesce(jsonb_array_length(coalesce(p_exceptions, '[]'::jsonb)), 0)",
     );
     expect(confirm.body).toContain("p_mode not in ('legacy', 'custom')");
@@ -4188,12 +4194,29 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     );
     expect(resolve.definition).toContain("security definer");
     expect(resolve.definition).toContain("set search_path = pg_catalog, public");
-    expect(resolve.body).toContain("for update");
     expect(resolve.body).toContain("v_open_sibling_count");
-    expect(resolve.body).toContain("source_context_snapshot");
-    expect(resolve.body).toContain("source_execution_key");
-    expect(resolve.body).toContain("status = 'pending_review'");
     expect(resolve.body).toContain("external_cost_exception_not_open");
+    expect(resolve.body).toContain("'replay_deferred'");
+    expect(resolve.body).not.toContain("insert into public.project_cost_items");
+    expect(resolve.body).not.toContain("source_context_snapshot -> 'replay_items'");
+  });
+
+  it("uses a row-scoped advisory lock before deterministic sibling locks during exception resolution", () => {
+    const resolve = extractCustomSettlementCostReconciliationFunction(
+      "resolve_external_cost_rule_exception",
+    );
+    expect(resolve.body).toContain("pg_advisory_xact_lock");
+    expect(resolve.body).toContain("hashtextextended");
+    expect(resolve.body).toContain("locked_siblings as materialized");
+    expect(resolve.body).toMatch(
+      /locked_siblings as materialized[\s\S]+order by sibling\.id[\s\S]+for update/u,
+    );
+    expect(resolve.body.indexOf("pg_advisory_xact_lock")).toBeLessThan(
+      resolve.body.indexOf("locked_siblings as materialized"),
+    );
+    expect(resolve.body.indexOf("locked_siblings as materialized")).toBeLessThan(
+      resolve.body.indexOf("update public.external_cost_rule_exceptions"),
+    );
   });
 
   it("guards custom-mode source ids with organization and project predicates before insert", () => {
@@ -4249,19 +4272,17 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     );
   });
 
-  it("aggregates sibling exception replay snapshots when the last variable resolves", () => {
+  it("does not replay snapshot items during exception resolution before Task 3 rule replay", () => {
     const resolve = extractCustomSettlementCostReconciliationFunction(
       "resolve_external_cost_rule_exception",
     );
-    expect(resolve.body).toContain("v_replay_items jsonb := '[]'::jsonb");
-    expect(resolve.body).toContain("resolved_sibling_snapshots");
-    expect(resolve.body).toMatch(
-      /from public\.external_cost_rule_exceptions as sibling[\s\S]+sibling\.import_batch_id = v_exception\.import_batch_id[\s\S]+sibling\.import_row_index = v_exception\.import_row_index[\s\S]+sibling\.status = 'resolved'/u,
-    );
-    expect(resolve.body).toMatch(
-      /jsonb_array_elements\(\s*v_replay_items\s*\)/u,
-    );
-    expect(resolve.body).toContain("distinct on (replay_item ->> 'source_execution_key')");
+    expect(resolve.body).toContain("external_cost_exception_replay_deferred_until_task3");
+    expect(resolve.body).toContain("'items', '[]'::jsonb");
+    expect(resolve.body).toContain("'replayed', false");
+    expect(resolve.body).toContain("'replay_deferred', true");
+    expect(resolve.body).not.toContain("distinct on (replay_item ->> 'source_execution_key')");
+    expect(resolve.body).not.toContain("jsonb_array_elements(v_replay_items)");
+    expect(resolve.body).not.toContain("external_cost_exception_replay_execution_key_conflict");
   });
 
   it("locks cost provenance tables behind RLS project ownership and RPC-only writes", () => {

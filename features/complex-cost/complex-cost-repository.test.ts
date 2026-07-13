@@ -362,7 +362,7 @@ describe("SupabaseComplexCostRepository custom import confirmation", () => {
 });
 
 describe("SupabaseComplexCostRepository exception resolution", () => {
-  it("maps reviewed exception resolution and replays pending-review items once", async () => {
+  it("maps reviewed exception resolution and defers Task 3 replay insertion", async () => {
     const rpc = vi.fn(async () => ({
       data: {
         exception: {
@@ -373,8 +373,9 @@ describe("SupabaseComplexCostRepository exception resolution", () => {
           resolved_by: "user-2",
           resolved_at: "2026-07-14T01:00:00.000Z",
         },
-        items: [costItemRow],
-        replayed: true,
+        items: [],
+        replayed: false,
+        replay_deferred: true,
       },
       error: null,
     }));
@@ -395,13 +396,8 @@ describe("SupabaseComplexCostRepository exception resolution", () => {
       p_resolution_reason: "Finance reviewed supplier bill.",
       p_resolved_by: "user-2",
     });
-    expect(result.replayed).toBe(true);
-    expect(result.items).toEqual([
-      expect.objectContaining({
-        sourceExecutionKey: "import-1:0:supplier_fee",
-        status: "pending_review",
-      }),
-    ]);
+    expect(result.replayed).toBe(false);
+    expect(result.items).toEqual([]);
     expect(result.exception).toEqual(
       expect.objectContaining({
         status: "resolved",
