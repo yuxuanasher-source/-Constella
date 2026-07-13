@@ -204,7 +204,11 @@ declare
   v_items jsonb := '[]'::jsonb;
   v_exceptions jsonb := '[]'::jsonb;
   v_item_row public.project_cost_items%rowtype;
+  v_existing_cost_item public.project_cost_items%rowtype;
   v_exception_row public.external_cost_rule_exceptions%rowtype;
+  v_item_source_execution_key text;
+  v_item_source_input_hash text;
+  v_item_rule_version_id uuid;
   v_legacy_count integer := coalesce(jsonb_array_length(coalesce(p_legacy_items, '[]'::jsonb)), 0);
   v_custom_count integer := coalesce(jsonb_array_length(coalesce(p_custom_items, '[]'::jsonb)), 0);
 begin
@@ -339,6 +343,42 @@ begin
         raise exception 'confirm_cost_import_source_scope_mismatch';
       end if;
 
+      if nullif(v_item ->> 'supplier_organization_id', '') is not null
+         and not exists (
+           select 1
+           from public.organizations as supplier
+           where supplier.id = nullif(v_item ->> 'supplier_organization_id', '')::uuid
+             and supplier.id = p_organization_id
+           for update
+         ) then
+        raise exception 'confirm_cost_import_source_scope_mismatch';
+      end if;
+
+      v_item_source_execution_key := nullif(v_item ->> 'source_execution_key', '');
+      v_item_source_input_hash := coalesce(nullif(v_item ->> 'source_input_hash', ''), p_input_hash);
+      v_item_rule_version_id := null;
+
+      if v_item_source_execution_key is not null then
+        select *
+        into v_existing_cost_item
+        from public.project_cost_items
+        where organization_id = p_organization_id
+          and source_execution_key = v_item_source_execution_key
+        for update;
+
+        if found then
+          if v_existing_cost_item.source_input_hash is distinct from v_item_source_input_hash
+             or v_existing_cost_item.source_import_batch_id is distinct from p_import_batch_id
+             or v_existing_cost_item.source_rule_version_id is distinct from v_item_rule_version_id
+             or v_existing_cost_item.source_payload ->> '__confirmation_idempotency_key' is distinct from p_idempotency_key then
+            raise exception 'confirm_cost_import_execution_key_conflict';
+          end if;
+
+          v_items := v_items || to_jsonb(v_existing_cost_item);
+          continue;
+        end if;
+      end if;
+
       insert into public.project_cost_items (
         organization_id,
         project_id,
@@ -375,16 +415,13 @@ begin
         coalesce(v_item -> 'source_payload', '{}'::jsonb)
           || jsonb_build_object('__confirmation_idempotency_key', p_idempotency_key),
         p_import_batch_id,
-        nullif(v_item ->> 'source_execution_key', ''),
-        coalesce(nullif(v_item ->> 'source_input_hash', ''), p_input_hash),
+        v_item_source_execution_key,
+        v_item_source_input_hash,
         nullif(v_item ->> 'source_explanation', ''),
         p_reason,
         'confirmed',
         p_created_by
       )
-      on conflict (organization_id, source_execution_key)
-        where source_execution_key is not null
-      do update set source_execution_key = excluded.source_execution_key
       returning * into v_item_row;
 
       v_items := v_items || to_jsonb(v_item_row);
@@ -396,6 +433,87 @@ begin
     loop
       if coalesce(nullif(v_item ->> 'status', ''), 'pending_review') <> 'pending_review' then
         raise exception 'confirm_cost_import_custom_items_must_be_pending_review';
+      end if;
+
+      if nullif(v_item ->> 'streamer_id', '') is not null
+         and (
+           not exists (
+             select 1
+             from public.streamers as streamer
+             where streamer.id = nullif(v_item ->> 'streamer_id', '')::uuid
+               and streamer.organization_id = p_organization_id
+             for update
+           )
+           or not exists (
+             select 1
+             from public.project_streamers as project_streamer
+             where project_streamer.streamer_id = nullif(v_item ->> 'streamer_id', '')::uuid
+               and project_streamer.organization_id = p_organization_id
+               and project_streamer.project_id = p_project_id
+             for update
+           )
+         ) then
+        raise exception 'confirm_cost_import_source_scope_mismatch';
+      end if;
+
+      if nullif(v_item ->> 'supplier_organization_id', '') is not null
+         and not exists (
+           select 1
+           from public.organizations as supplier
+           where supplier.id = nullif(v_item ->> 'supplier_organization_id', '')::uuid
+             and supplier.id = p_organization_id
+           for update
+         ) then
+        raise exception 'confirm_cost_import_source_scope_mismatch';
+      end if;
+
+      if nullif(v_item ->> 'live_report_id', '') is not null
+         and not exists (
+           select 1
+           from public.live_reports as report
+           where report.id = nullif(v_item ->> 'live_report_id', '')::uuid
+             and report.organization_id = p_organization_id
+             and report.project_id = p_project_id
+           for update
+         ) then
+        raise exception 'confirm_cost_import_source_scope_mismatch';
+      end if;
+
+      if nullif(v_item ->> 'rule_version_id', '') is not null
+         and not exists (
+           select 1
+           from public.custom_settlement_rule_versions as rule_version
+           where rule_version.id = nullif(v_item ->> 'rule_version_id', '')::uuid
+             and rule_version.organization_id = p_organization_id
+             and rule_version.project_id = p_project_id
+           for update
+         ) then
+        raise exception 'confirm_cost_import_source_scope_mismatch';
+      end if;
+
+      v_item_source_execution_key := nullif(v_item ->> 'source_execution_key', '');
+      v_item_source_input_hash := coalesce(nullif(v_item ->> 'source_input_hash', ''), p_input_hash);
+      v_item_rule_version_id := nullif(v_item ->> 'rule_version_id', '')::uuid;
+
+      if v_item_source_execution_key is not null then
+        select *
+        into v_existing_cost_item
+        from public.project_cost_items
+        where organization_id = p_organization_id
+          and source_execution_key = v_item_source_execution_key
+        for update;
+
+        if found then
+          if v_existing_cost_item.source_input_hash is distinct from coalesce(nullif(v_item ->> 'source_input_hash', ''), p_input_hash)
+             or v_existing_cost_item.source_import_batch_id is distinct from p_import_batch_id
+             or v_existing_cost_item.source_rule_version_id is distinct from nullif(v_item ->> 'rule_version_id', '')::uuid
+             or v_existing_cost_item.source_payload ->> '__confirmation_idempotency_key' is distinct from p_idempotency_key then
+            raise exception 'confirm_cost_import_execution_key_conflict';
+          end if;
+
+          v_items := v_items || to_jsonb(v_existing_cost_item);
+          continue;
+        end if;
       end if;
 
       insert into public.project_cost_items (
@@ -434,18 +552,15 @@ begin
         'import',
         coalesce(v_item -> 'source_payload', '{}'::jsonb)
           || jsonb_build_object('__confirmation_idempotency_key', p_idempotency_key),
-        nullif(v_item ->> 'rule_version_id', '')::uuid,
+        v_item_rule_version_id,
         p_import_batch_id,
-        nullif(v_item ->> 'source_execution_key', ''),
-        coalesce(nullif(v_item ->> 'source_input_hash', ''), p_input_hash),
+        v_item_source_execution_key,
+        v_item_source_input_hash,
         nullif(v_item ->> 'source_explanation', ''),
         p_reason,
         'pending_review',
         p_created_by
       )
-      on conflict (organization_id, source_execution_key)
-        where source_execution_key is not null
-      do update set source_execution_key = excluded.source_execution_key
       returning * into v_item_row;
 
       v_items := v_items || to_jsonb(v_item_row);
@@ -453,6 +568,18 @@ begin
 
     for v_exception in select * from jsonb_array_elements(coalesce(p_exceptions, '[]'::jsonb))
     loop
+      if nullif(v_exception ->> 'rule_version_id', '') is not null
+         and not exists (
+           select 1
+           from public.custom_settlement_rule_versions as exception_rule_version
+           where exception_rule_version.id = nullif(v_exception ->> 'rule_version_id', '')::uuid
+             and exception_rule_version.organization_id = p_organization_id
+             and exception_rule_version.project_id = p_project_id
+           for update
+         ) then
+        raise exception 'confirm_cost_import_source_scope_mismatch';
+      end if;
+
       insert into public.external_cost_rule_exceptions (
         organization_id,
         project_id,
@@ -525,9 +652,14 @@ declare
   v_exception public.external_cost_rule_exceptions%rowtype;
   v_item jsonb;
   v_item_row public.project_cost_items%rowtype;
+  v_existing_cost_item public.project_cost_items%rowtype;
   v_items jsonb := '[]'::jsonb;
+  v_replay_items jsonb := '[]'::jsonb;
   v_open_sibling_count integer := 0;
   v_replay_item_status text;
+  v_item_source_execution_key text;
+  v_item_source_input_hash text;
+  v_item_rule_version_id uuid;
 begin
   if v_actor_id is null then
     raise exception 'authentication_required';
@@ -589,16 +721,118 @@ begin
   returning * into v_exception;
 
   if v_open_sibling_count = 0 then
+    with resolved_sibling_snapshots as (
+      select sibling.source_context_snapshot
+      from public.external_cost_rule_exceptions as sibling
+      where sibling.organization_id = v_exception.organization_id
+        and sibling.import_batch_id = v_exception.import_batch_id
+        and sibling.import_row_index = v_exception.import_row_index
+        and sibling.status = 'resolved'
+      order by sibling.created_at, sibling.id
+    ), replay_items as (
+      select distinct on (replay_item ->> 'source_execution_key')
+        replay_item
+      from resolved_sibling_snapshots as snapshot
+      cross join lateral jsonb_array_elements(
+        coalesce(snapshot.source_context_snapshot -> 'replay_items', '[]'::jsonb)
+      ) as replay_item_values(replay_item)
+      order by replay_item ->> 'source_execution_key'
+    )
+    select coalesce(jsonb_agg(replay_item), '[]'::jsonb)
+    into v_replay_items
+    from replay_items;
+
     for v_item in
-      select * from jsonb_array_elements(
-        coalesce(v_exception.source_context_snapshot -> 'replay_items', '[]'::jsonb)
-      )
+      select * from jsonb_array_elements(v_replay_items)
     loop
       v_replay_item_status := coalesce(nullif(v_item ->> 'status', ''), 'pending_review');
       if v_replay_item_status = 'pending_review' then
         null;
       else
         raise exception 'external_cost_exception_replay_items_must_be_pending_review';
+      end if;
+
+      if nullif(v_item ->> 'streamer_id', '') is not null
+         and (
+           not exists (
+             select 1
+             from public.streamers as streamer
+             where streamer.id = nullif(v_item ->> 'streamer_id', '')::uuid
+               and streamer.organization_id = v_exception.organization_id
+             for update
+           )
+           or not exists (
+             select 1
+             from public.project_streamers as project_streamer
+             where project_streamer.streamer_id = nullif(v_item ->> 'streamer_id', '')::uuid
+               and project_streamer.organization_id = v_exception.organization_id
+               and project_streamer.project_id = v_exception.project_id
+             for update
+           )
+         ) then
+        raise exception 'external_cost_exception_replay_source_scope_mismatch';
+      end if;
+
+      if nullif(v_item ->> 'supplier_organization_id', '') is not null
+         and not exists (
+           select 1
+           from public.organizations as supplier
+           where supplier.id = nullif(v_item ->> 'supplier_organization_id', '')::uuid
+             and supplier.id = v_exception.organization_id
+           for update
+         ) then
+        raise exception 'external_cost_exception_replay_source_scope_mismatch';
+      end if;
+
+      if nullif(v_item ->> 'live_report_id', '') is not null
+         and not exists (
+           select 1
+           from public.live_reports as report
+           where report.id = nullif(v_item ->> 'live_report_id', '')::uuid
+             and report.organization_id = v_exception.organization_id
+             and report.project_id = v_exception.project_id
+           for update
+         ) then
+        raise exception 'external_cost_exception_replay_source_scope_mismatch';
+      end if;
+
+      if nullif(v_item ->> 'rule_version_id', '') is not null
+         and not exists (
+           select 1
+           from public.custom_settlement_rule_versions as rule_version
+           where rule_version.id = nullif(v_item ->> 'rule_version_id', '')::uuid
+             and rule_version.organization_id = v_exception.organization_id
+             and rule_version.project_id = v_exception.project_id
+           for update
+         ) then
+        raise exception 'external_cost_exception_replay_source_scope_mismatch';
+      end if;
+
+      v_item_source_execution_key := nullif(v_item ->> 'source_execution_key', '');
+      v_item_source_input_hash := nullif(v_item ->> 'source_input_hash', '');
+      v_item_rule_version_id := coalesce(
+        nullif(v_item ->> 'rule_version_id', '')::uuid,
+        v_exception.rule_version_id
+      );
+
+      if v_item_source_execution_key is not null then
+        select *
+        into v_existing_cost_item
+        from public.project_cost_items
+        where organization_id = v_exception.organization_id
+          and source_execution_key = v_item_source_execution_key
+        for update;
+
+        if found then
+          if v_existing_cost_item.source_input_hash is distinct from v_item_source_input_hash
+             or v_existing_cost_item.source_import_batch_id is distinct from v_exception.import_batch_id
+             or v_existing_cost_item.source_rule_version_id is distinct from v_item_rule_version_id then
+            raise exception 'external_cost_exception_replay_execution_key_conflict';
+          end if;
+
+          v_items := v_items || to_jsonb(v_existing_cost_item);
+          continue;
+        end if;
       end if;
 
       insert into public.project_cost_items (
@@ -636,18 +870,15 @@ begin
         coalesce(nullif(v_item ->> 'evidence_level', ''), 'yellow'),
         'import',
         coalesce(v_item -> 'source_payload', '{}'::jsonb),
-        coalesce(nullif(v_item ->> 'rule_version_id', '')::uuid, v_exception.rule_version_id),
+        v_item_rule_version_id,
         v_exception.import_batch_id,
-        nullif(v_item ->> 'source_execution_key', ''),
-        nullif(v_item ->> 'source_input_hash', ''),
+        v_item_source_execution_key,
+        v_item_source_input_hash,
         nullif(v_item ->> 'source_explanation', ''),
         coalesce(nullif(v_item ->> 'reason', ''), v_exception.resolution_reason),
         'pending_review',
         p_resolved_by
       )
-      on conflict (organization_id, source_execution_key)
-        where source_execution_key is not null
-      do update set source_execution_key = excluded.source_execution_key
       returning * into v_item_row;
 
       v_items := v_items || to_jsonb(v_item_row);

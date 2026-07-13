@@ -4171,7 +4171,7 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     expect(confirm.body).toContain("confirm_cost_import_modes_conflict");
     expect(confirm.body).toContain("source_execution_key");
     expect(confirm.body).toContain("source_input_hash");
-    expect(confirm.body).toContain("on conflict (organization_id, source_execution_key)");
+    expect(confirm.body).toContain("v_existing_cost_item");
     expect(confirm.body).toContain("external_cost_rule_exceptions");
     expect(confirm.body).toContain("status = 'confirmed'");
     expect(confirm.body).toContain("confirm_cost_import_idempotency_conflict");
@@ -4188,6 +4188,74 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     expect(resolve.body).toContain("source_execution_key");
     expect(resolve.body).toContain("status = 'pending_review'");
     expect(resolve.body).toContain("external_cost_exception_not_open");
+  });
+
+  it("guards custom-mode source ids with organization and project predicates before insert", () => {
+    const confirm = extractCustomSettlementCostReconciliationFunction(
+      "confirm_cost_import_with_rule_items",
+    );
+    const customBranch = confirm.body.slice(
+      confirm.body.indexOf("if p_mode = 'custom' then"),
+      confirm.body.indexOf("update public.project_cost_import_batches"),
+    );
+
+    expect(customBranch).toContain("confirm_cost_import_source_scope_mismatch");
+    expect(customBranch).toMatch(
+      /from public\.streamers as streamer[\s\S]+streamer\.id = nullif\(v_item ->> 'streamer_id'[\s\S]+streamer\.organization_id = p_organization_id/u,
+    );
+    expect(customBranch).toMatch(
+      /from public\.organizations as supplier[\s\S]+supplier\.id = nullif\(v_item ->> 'supplier_organization_id'[\s\S]+supplier\.id = p_organization_id/u,
+    );
+    expect(customBranch).toMatch(
+      /from public\.live_reports as report[\s\S]+report\.id = nullif\(v_item ->> 'live_report_id'[\s\S]+report\.organization_id = p_organization_id[\s\S]+report\.project_id = p_project_id/u,
+    );
+    expect(customBranch).toMatch(
+      /from public\.custom_settlement_rule_versions as rule_version[\s\S]+rule_version\.id = nullif\(v_item ->> 'rule_version_id'[\s\S]+rule_version\.organization_id = p_organization_id[\s\S]+rule_version\.project_id = p_project_id/u,
+    );
+    expect(customBranch).toMatch(
+      /from public\.custom_settlement_rule_versions as exception_rule_version[\s\S]+exception_rule_version\.id = nullif\(v_exception ->> 'rule_version_id'[\s\S]+exception_rule_version\.organization_id = p_organization_id[\s\S]+exception_rule_version\.project_id = p_project_id/u,
+    );
+  });
+
+  it("rejects changed source execution key replays before confirming the batch", () => {
+    const confirm = extractCustomSettlementCostReconciliationFunction(
+      "confirm_cost_import_with_rule_items",
+    );
+    expect(confirm.body).toContain("v_existing_cost_item");
+    expect(confirm.body).toContain("confirm_cost_import_execution_key_conflict");
+    expect(confirm.body).toMatch(
+      /v_existing_cost_item\.source_input_hash is distinct from coalesce\(nullif\(v_item ->> 'source_input_hash'/u,
+    );
+    expect(confirm.body).toContain(
+      "v_existing_cost_item.source_import_batch_id is distinct from p_import_batch_id",
+    );
+    expect(confirm.body).toContain(
+      "v_existing_cost_item.source_rule_version_id is distinct from nullif(v_item ->> 'rule_version_id', '')::uuid",
+    );
+    expect(confirm.body).toContain(
+      "v_existing_cost_item.source_payload ->> '__confirmation_idempotency_key'",
+    );
+    expect(confirm.body.indexOf("confirm_cost_import_execution_key_conflict")).toBeLessThan(
+      confirm.body.indexOf("set status = 'confirmed'"),
+    );
+    expect(confirm.body).not.toContain(
+      "do update set source_execution_key = excluded.source_execution_key",
+    );
+  });
+
+  it("aggregates sibling exception replay snapshots when the last variable resolves", () => {
+    const resolve = extractCustomSettlementCostReconciliationFunction(
+      "resolve_external_cost_rule_exception",
+    );
+    expect(resolve.body).toContain("v_replay_items jsonb := '[]'::jsonb");
+    expect(resolve.body).toContain("resolved_sibling_snapshots");
+    expect(resolve.body).toMatch(
+      /from public\.external_cost_rule_exceptions as sibling[\s\S]+sibling\.import_batch_id = v_exception\.import_batch_id[\s\S]+sibling\.import_row_index = v_exception\.import_row_index[\s\S]+sibling\.status = 'resolved'/u,
+    );
+    expect(resolve.body).toMatch(
+      /jsonb_array_elements\(\s*v_replay_items\s*\)/u,
+    );
+    expect(resolve.body).toContain("distinct on (replay_item ->> 'source_execution_key')");
   });
 
   it("locks cost provenance tables behind RLS project ownership and RPC-only writes", () => {

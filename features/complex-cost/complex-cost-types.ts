@@ -171,6 +171,32 @@ export type ExternalCostRuleExceptionRecord = {
   resolvedAt?: string | null;
 };
 
+export type SettlementReconciliationRunTriggerType =
+  | "manual"
+  | "import_batch"
+  | "settlement_batch"
+  | "scheduled";
+
+export type SettlementReconciliationRunRecord = {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  periodStart: string;
+  periodEnd: string;
+  triggerType: SettlementReconciliationRunTriggerType;
+  triggerBatchId?: string | null;
+  coreInputHash: string;
+  coreResult: Record<string, unknown>;
+  ruleVersionId?: string | null;
+  formulaHash?: string | null;
+  customChecks: Record<string, unknown>;
+  finalChecks: Record<string, unknown>;
+  blocked: boolean;
+  warnings: unknown[];
+  createdBy?: string | null;
+  createdAt?: string;
+};
+
 export type ComplexCostDashboardRecord = {
   expectedReceivableCents?: number;
   streamerPayableCents?: number;

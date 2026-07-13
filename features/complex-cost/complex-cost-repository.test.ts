@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   mapCostItemRow,
+  mapSettlementReconciliationRunRow,
   SupabaseComplexCostRepository,
 } from "./complex-cost-repository";
 
@@ -47,6 +48,26 @@ const exceptionRow = {
   resolved_by: null,
   created_at: "2026-07-14T00:00:00.000Z",
   resolved_at: null,
+};
+
+const reconciliationRunRow = {
+  id: "run-1",
+  organization_id: "org-1",
+  project_id: "project-1",
+  period_start: "2026-07-01",
+  period_end: "2026-07-31",
+  trigger_type: "import_batch" as const,
+  trigger_batch_id: "import-1",
+  core_input_hash: "core-hash-1",
+  core_result: { payableCents: 10_000 },
+  rule_version_id: "rule-version-1",
+  formula_hash: "formula-hash-1",
+  custom_checks: { supplierFeeCents: 12_000 },
+  final_checks: { balanced: true },
+  blocked: false,
+  warnings: [{ code: "open_exception" }],
+  created_by: "user-1",
+  created_at: "2026-07-14T00:00:00.000Z",
 };
 
 describe("SupabaseComplexCostRepository custom import confirmation", () => {
@@ -297,6 +318,46 @@ describe("SupabaseComplexCostRepository custom import confirmation", () => {
     ).rejects.toThrow("Confirm cost import accepts either legacy or custom mode");
     expect(rpc).not.toHaveBeenCalled();
   });
+
+  it("rejects legacy mode when exception payloads are supplied", async () => {
+    const rpc = vi.fn();
+    const repo = new SupabaseComplexCostRepository({ rpc } as never);
+
+    await expect(
+      repo.confirmCostImportWithRuleItems({
+        organizationId: "org-1",
+        projectId: "project-1",
+        importBatchId: "import-1",
+        idempotencyKey: "confirm-1",
+        inputHash: "input-hash-1",
+        mode: "legacy",
+        reason: "Invalid mixed request.",
+        createdBy: "user-1",
+        legacyItems: [
+          {
+            itemType: "supplier_fee",
+            amountCents: 12_000,
+            direction: "cost",
+            evidenceLevel: "yellow",
+            sourcePayload: {},
+            sourceExecutionKey: "legacy-key",
+            sourceInputHash: "input-hash-1",
+            status: "confirmed",
+          },
+        ],
+        exceptions: [
+          {
+            importRowIndex: 0,
+            ruleVersionId: "rule-version-1",
+            variableName: "supplierBillAmountCents",
+            policy: "route_item_to_review",
+            sourceContextSnapshot: {},
+          },
+        ],
+      }),
+    ).rejects.toThrow("Confirm cost import accepts exceptions only in custom mode");
+    expect(rpc).not.toHaveBeenCalled();
+  });
 });
 
 describe("SupabaseComplexCostRepository exception resolution", () => {
@@ -369,5 +430,60 @@ describe("mapCostItemRow", () => {
         sourceExplanation: null,
       }),
     );
+  });
+});
+
+describe("settlement reconciliation run repository mapping", () => {
+  it("maps reconciliation run rows into the complex-cost DTO", () => {
+    expect(mapSettlementReconciliationRunRow(reconciliationRunRow)).toEqual({
+      id: "run-1",
+      organizationId: "org-1",
+      projectId: "project-1",
+      periodStart: "2026-07-01",
+      periodEnd: "2026-07-31",
+      triggerType: "import_batch",
+      triggerBatchId: "import-1",
+      coreInputHash: "core-hash-1",
+      coreResult: { payableCents: 10_000 },
+      ruleVersionId: "rule-version-1",
+      formulaHash: "formula-hash-1",
+      customChecks: { supplierFeeCents: 12_000 },
+      finalChecks: { balanced: true },
+      blocked: false,
+      warnings: [{ code: "open_exception" }],
+      createdBy: "user-1",
+      createdAt: "2026-07-14T00:00:00.000Z",
+    });
+  });
+
+  it("lists reconciliation runs scoped to organization and project", async () => {
+    const query = {
+      select: vi.fn(() => query),
+      eq: vi.fn(() => query),
+      order: vi.fn(() => query),
+      returns: vi.fn(async () => ({ data: [reconciliationRunRow], error: null })),
+    };
+    const from = vi.fn(() => query);
+    const repo = new SupabaseComplexCostRepository({ from } as never);
+
+    await expect(
+      repo.listSettlementReconciliationRuns({
+        organizationId: "org-1",
+        projectId: "project-1",
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: "run-1",
+        triggerType: "import_batch",
+        coreInputHash: "core-hash-1",
+      }),
+    ]);
+
+    expect(from).toHaveBeenCalledWith("settlement_reconciliation_runs");
+    expect(query.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(query.eq).toHaveBeenCalledWith("project_id", "project-1");
+    expect(query.order).toHaveBeenCalledWith("created_at", {
+      ascending: false,
+    });
   });
 });

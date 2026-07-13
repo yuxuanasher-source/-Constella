@@ -22,6 +22,8 @@ import type {
   ExternalCostRuleExceptionPolicy,
   ExternalCostRuleExceptionRecord,
   ExternalCostRuleExceptionStatus,
+  SettlementReconciliationRunRecord,
+  SettlementReconciliationRunTriggerType,
 } from "./complex-cost-types";
 
 type EntitlementRow = {
@@ -111,6 +113,26 @@ type ExternalCostRuleExceptionRow = {
   resolved_by: string | null;
   created_at: string;
   resolved_at: string | null;
+};
+
+type SettlementReconciliationRunRow = {
+  id: string;
+  organization_id: string;
+  project_id: string;
+  period_start: string;
+  period_end: string;
+  trigger_type: SettlementReconciliationRunTriggerType;
+  trigger_batch_id: string | null;
+  core_input_hash: string;
+  core_result: Record<string, unknown>;
+  rule_version_id: string | null;
+  formula_hash: string | null;
+  custom_checks: Record<string, unknown>;
+  final_checks: Record<string, unknown>;
+  blocked: boolean;
+  warnings: unknown[];
+  created_by: string | null;
+  created_at: string;
 };
 
 export type ConfirmCostImportItemInput = {
@@ -452,6 +474,9 @@ export class SupabaseComplexCostRepository implements ComplexCostRepository {
         "Confirm cost import accepts either legacy or custom mode, not both",
       );
     }
+    if (input.mode !== "custom" && (input.exceptions?.length ?? 0) > 0) {
+      throw new Error("Confirm cost import accepts exceptions only in custom mode");
+    }
 
     const { data, error } = await this.client.rpc(
       "confirm_cost_import_with_rule_items",
@@ -513,6 +538,24 @@ export class SupabaseComplexCostRepository implements ComplexCostRepository {
       items: (payload.items ?? []).map(mapCostItemRow),
       replayed: Boolean(payload.replayed),
     };
+  }
+
+  async listSettlementReconciliationRuns(input: {
+    organizationId: string;
+    projectId: string;
+  }): Promise<SettlementReconciliationRunRecord[]> {
+    const { data, error } = await this.client
+      .from("settlement_reconciliation_runs")
+      .select("*")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .order("created_at", { ascending: false })
+      .returns<SettlementReconciliationRunRow[]>();
+
+    if (error) {
+      throw error;
+    }
+    return (data ?? []).map(mapSettlementReconciliationRunRow);
   }
 }
 
@@ -628,6 +671,30 @@ export function mapExternalCostRuleExceptionRow(
     resolvedBy: row.resolved_by,
     createdAt: row.created_at,
     resolvedAt: row.resolved_at,
+  };
+}
+
+export function mapSettlementReconciliationRunRow(
+  row: SettlementReconciliationRunRow,
+): SettlementReconciliationRunRecord {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
+    triggerType: row.trigger_type,
+    triggerBatchId: row.trigger_batch_id,
+    coreInputHash: row.core_input_hash,
+    coreResult: row.core_result ?? {},
+    ruleVersionId: row.rule_version_id,
+    formulaHash: row.formula_hash,
+    customChecks: row.custom_checks ?? {},
+    finalChecks: row.final_checks ?? {},
+    blocked: Boolean(row.blocked),
+    warnings: Array.isArray(row.warnings) ? row.warnings : [],
+    createdBy: row.created_by,
+    createdAt: row.created_at,
   };
 }
 
