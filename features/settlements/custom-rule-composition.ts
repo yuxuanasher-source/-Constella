@@ -196,14 +196,21 @@ function moneyResultCents(layer: ResolvedLayerCommon): number {
 }
 
 function assertCompiledAstHash(layer: ResolvedLayerCommon): void {
-  if (
-    layer.activeCompiledAstHash !== undefined &&
-    layer.compiledAstHash !== undefined &&
-    layer.activeCompiledAstHash !== layer.compiledAstHash
-  ) {
-    throw new Error(
-      `compiled AST hash mismatch for custom settlement layer ${layer.versionId ?? "fixed-base"}`,
-    );
+  if (layer.versionId !== null) {
+    if (
+      layer.compiledAst === undefined ||
+      layer.compiledAstHash === undefined ||
+      layer.activeCompiledAstHash === undefined
+    ) {
+      throw new Error(
+        `active compiled AST hash is required for custom settlement layer ${layer.versionId}`,
+      );
+    }
+    if (layer.activeCompiledAstHash !== layer.compiledAstHash) {
+      throw new Error(
+        `compiled AST hash mismatch for custom settlement layer ${layer.versionId}`,
+      );
+    }
   }
   if (layer.compiledAst === undefined || layer.compiledAstHash === undefined) {
     return;

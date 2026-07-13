@@ -99,6 +99,19 @@ const settlementGovernanceMigration = readdirSync(migrationsDir).includes(
 const normalizedSettlementGovernanceMigration = normalizeSql(
   settlementGovernanceMigration,
 );
+const settlementExecutionLayersMigrationName =
+  "20260711125000_custom_settlement_rule_execution_layers.sql";
+const settlementExecutionLayersMigration = readdirSync(migrationsDir).includes(
+  settlementExecutionLayersMigrationName,
+)
+  ? readFileSync(
+      join(migrationsDir, settlementExecutionLayersMigrationName),
+      "utf8",
+    )
+  : "";
+const normalizedSettlementExecutionLayersMigration = normalizeSql(
+  settlementExecutionLayersMigration,
+);
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/gu, " ").trim();
@@ -430,6 +443,45 @@ function extractSettlementGovernanceFunction(fn: string): {
     ),
     body: normalizeSql(
       settlementGovernanceMigration.slice(bodyContentStart, bodyEnd),
+    ),
+  };
+}
+
+function extractSettlementExecutionLayersFunction(fn: string): {
+  definition: string;
+  body: string;
+} {
+  const marker = `create or replace function public.${fn}`;
+  const start = settlementExecutionLayersMigration
+    .toLowerCase()
+    .indexOf(marker);
+  expect(
+    start,
+    `missing Phase 3 execution layer function: ${fn}`,
+  ).toBeGreaterThanOrEqual(0);
+  const bodyMarker = /\bas\s+\$\$/giu;
+  bodyMarker.lastIndex = start;
+  const bodyStartMatch = bodyMarker.exec(settlementExecutionLayersMigration);
+  expect(
+    bodyStartMatch,
+    `missing Phase 3 execution layer body: ${fn}`,
+  ).not.toBeNull();
+  const bodyStart = bodyStartMatch?.index ?? -1;
+  const bodyContentStart = bodyStart + (bodyStartMatch?.[0].length ?? 0);
+  const bodyEnd = settlementExecutionLayersMigration.indexOf(
+    "$$;",
+    bodyContentStart,
+  );
+  expect(
+    bodyEnd,
+    `missing Phase 3 execution layer terminator: ${fn}`,
+  ).toBeGreaterThan(bodyContentStart);
+  return {
+    definition: normalizeSql(
+      settlementExecutionLayersMigration.slice(start, bodyEnd + 3),
+    ),
+    body: normalizeSql(
+      settlementExecutionLayersMigration.slice(bodyContentStart, bodyEnd),
     ),
   };
 }
@@ -2287,6 +2339,37 @@ describe("Phase 2 governed settlement rule schema contract", () => {
         `create table public.${table}`,
       );
     }
+  });
+
+  it("defines a real bounded executable-layer lookup RPC with frozen assignment snapshots", () => {
+    expect(settlementExecutionLayersMigration).not.toBe("");
+
+    const rpc = extractSettlementExecutionLayersFunction(
+      "resolve_executable_custom_settlement_rule_layers",
+    );
+    expect(rpc.definition).toContain("returns jsonb");
+    expect(rpc.definition).toContain("security definer");
+    expect(rpc.definition).toContain("set search_path = pg_catalog, public");
+    expect(rpc.body).toContain("public.can_access_project(p_project_id)");
+    expect(rpc.body).toContain("jsonb_array_elements(p_units)");
+    expect(rpc.body).toContain("p_execution_timestamp");
+    expect(rpc.body).toContain("unit_input.effective_at");
+    expect(rpc.body).toContain("public.custom_settlement_rule_versions");
+    expect(rpc.body).toContain(
+      "public.project_streamer_settlement_group_assignments",
+    );
+    expect(rpc.body).toContain("'versions'");
+    expect(rpc.body).toContain("'assignments'");
+
+    expect(normalizedSettlementExecutionLayersMigration).toMatch(
+      /revoke all on function public\.resolve_executable_custom_settlement_rule_layers\([\s\S]+?from public, anon, authenticated, service_role;/u,
+    );
+    expect(normalizedSettlementExecutionLayersMigration).toMatch(
+      /grant execute on function public\.resolve_executable_custom_settlement_rule_layers\([\s\S]+?to authenticated;/u,
+    );
+    expect(normalizedSettlementExecutionLayersMigration).not.toMatch(
+      /grant execute on function public\.resolve_executable_custom_settlement_rule_layers\([\s\S]+?to (?:anon|service_role|public);/u,
+    );
   });
 
   it("enforces target identity, version uniqueness, and one active target", () => {

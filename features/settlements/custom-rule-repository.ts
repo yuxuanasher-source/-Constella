@@ -3286,7 +3286,6 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
       assignmentsByUnitKey: groupExecutableAssignmentsByUnit({
         assignments: row.assignments,
         unitFacts,
-        executionTimestamp: input.executionTimestamp,
       }),
     };
   }
@@ -5458,10 +5457,10 @@ function groupExecutableAssignmentsByUnit(input: {
   unitFacts: Array<{
     unitKey: string;
     projectStreamerId: string;
+    effectiveAt: string;
     groupIds: string[];
     assignmentIds: string[];
   }>;
-  executionTimestamp: string;
 }): Record<string, ExecutableCustomRuleAssignmentInterval[]> {
   const factsByUnitKey = new Map(
     input.unitFacts.map((unit) => [unit.unitKey, unit]),
@@ -5480,10 +5479,10 @@ function groupExecutableAssignmentsByUnit(input: {
     if (row.project_streamer_id !== unit.projectStreamerId) continue;
     if (!unit.groupIds.includes(row.group_id)) continue;
     if (!unit.assignmentIds.includes(row.assignment_id)) continue;
-    if (row.effective_from > input.executionTimestamp) continue;
+    if (row.effective_from > unit.effectiveAt) continue;
     if (
       row.effective_until !== null &&
-      input.executionTimestamp >= row.effective_until
+      unit.effectiveAt >= row.effective_until
     ) {
       continue;
     }

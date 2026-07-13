@@ -242,6 +242,73 @@ describe("Phase 2 custom rule lifecycle repository", () => {
     );
   });
 
+  it("filters executable assignment intervals at each unit frozen snapshot timestamp", async () => {
+    const rpc = vi.fn(async () => ({
+      data: {
+        versions: [],
+        assignments: [
+          executableAssignmentRow({
+            unit_key: "unit-1",
+            assignment_id: ASSIGNMENT_ID,
+            effective_from: "2026-07-01T00:00:00.000Z",
+            effective_until: "2026-07-12T00:00:00.000Z",
+          }),
+          executableAssignmentRow({
+            unit_key: "unit-1",
+            assignment_id: SECOND_ASSIGNMENT_ID,
+            group_id: SECOND_GROUP_ID,
+            effective_from: "2026-07-12T00:00:00.000Z",
+            effective_until: null,
+          }),
+        ],
+      },
+      error: null,
+    }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      resolveExecutableCustomRuleLayers(input: {
+        organizationId: string;
+        projectId: string;
+        scope: "payable";
+        executionTimestamp: string;
+        executionUnits: CustomRuleExecutionUnit[];
+      }): Promise<{
+        assignmentsByUnitKey: Record<
+          string,
+          Array<{
+            assignmentId: string;
+            effectiveFrom: string;
+            effectiveUntil: string | null;
+          }>
+        >;
+      }>;
+    };
+
+    const result = await repository.resolveExecutableCustomRuleLayers({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      scope: "payable",
+      executionTimestamp: "2026-07-20T00:00:00.000Z",
+      executionUnits: [
+        executableUnit({
+          membershipSnapshot: {
+            ...executableUnit().membershipSnapshot,
+            effectiveAt: "2026-07-10T00:00:00.000Z",
+          },
+        }),
+      ],
+    });
+
+    expect(result.assignmentsByUnitKey["unit-1"]).toEqual([
+      expect.objectContaining({
+        assignmentId: ASSIGNMENT_ID,
+        effectiveFrom: "2026-07-01T00:00:00.000Z",
+        effectiveUntil: "2026-07-12T00:00:00.000Z",
+      }),
+    ]);
+  });
+
   it("creates settlement rule groups through a role-gated RPC", async () => {
     const rpc = vi.fn(async () => ({
       data: settlementRuleGroupRow(),

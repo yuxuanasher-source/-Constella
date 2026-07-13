@@ -202,6 +202,22 @@ describe("composeCustomSettlementLayers", () => {
       }),
     ).toThrow(/compiled AST hash mismatch/i);
   });
+
+  it("rejects active custom layers when the active compiled AST hash is absent", () => {
+    const { activeCompiledAstHash: _activeCompiledAstHash, ...withoutActiveHash } =
+      layer({
+        id: "missing-active-hash",
+      });
+    void _activeCompiledAstHash;
+
+    expect(() =>
+      composeCustomSettlementLayers({
+        base: fixedBase(10_000),
+        groupLayers: [withoutActiveHash],
+        executionUnit: unit(),
+      }),
+    ).toThrow(/active compiled AST hash is required/i);
+  });
 });
 
 function unit(): CustomRuleExecutionUnit {
@@ -257,6 +273,7 @@ function customBase(id: string, amountCents: number): ResolvedBaseLayer {
     versionId: id,
     formulaHash: `${id}-formula`,
     contractHash: `${id}-contract`,
+    activeCompiledAstHash: AST_HASH,
   };
 }
 
@@ -285,6 +302,7 @@ function layer(
     contractHash: overrides.contractHash ?? `${versionId}-contract`,
     compiledAst: overrides.compiledAst ?? AST,
     compiledAstHash: overrides.compiledAstHash ?? AST_HASH,
+    activeCompiledAstHash: overrides.activeCompiledAstHash ?? AST_HASH,
     typedInputs: overrides.typedInputs ?? {
       prior_layer_amount: { type: "money_cents", amountCents: 10_000 },
     },
