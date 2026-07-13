@@ -1756,4 +1756,250 @@ describe("custom settlement rule API", () => {
     expect(visibleError).not.toContain("sk-message-secret");
     expect(visibleError).not.toContain("internal stack");
   });
+
+  it("lists public rule versions without accepting private formula fields", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        rules: [
+          {
+            id: "44444444-4444-4444-8444-444444444444",
+            projectId: PROJECT_ID,
+            scope: "payable",
+            target: { targetType: "project", targetId: null },
+            executionGrain: "report",
+            compositionMode: "replace",
+            priority: 100,
+            versionNumber: 2,
+            status: "active",
+            formulaHash: "a".repeat(64),
+            contractHash: "b".repeat(64),
+            parameterHash: "c".repeat(64),
+            catalogHash: "d".repeat(64),
+            dataSelectionHash: "e".repeat(64),
+            simulationId: "55555555-5555-4555-8555-555555555555",
+            effectiveFrom: "2026-07-12T00:00:00.000Z",
+            effectiveUntil: null,
+            createdBy: "22222222-2222-4222-8222-222222222222",
+            approvedBy: "66666666-6666-4666-8666-666666666666",
+            aiDraftId: null,
+            reason: "审核通过",
+            createdAt: "2026-07-12T00:00:00.000Z",
+            approvedAt: "2026-07-12T01:00:00.000Z",
+            archivedAt: null,
+            effectiveNow: true,
+            scheduled: false,
+            primaryAction: { state: "active", action: "create_new_version" },
+          },
+        ],
+      }),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    const result = await api.listRuleVersions({
+      projectId: PROJECT_ID,
+      status: "active",
+    });
+
+    expect(result.rules[0]).toMatchObject({
+      status: "active",
+      primaryAction: { action: "create_new_version" },
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      `/api/projects/${PROJECT_ID}/settlement-rules?status=active`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("requires apply-and-submit to return the version, copied simulation, and review event atomically", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(
+        {
+          rule: {
+            id: "44444444-4444-4444-8444-444444444444",
+            projectId: PROJECT_ID,
+            scope: "payable",
+            target: { targetType: "project", targetId: null },
+            executionGrain: "report",
+            compositionMode: "replace",
+            priority: 100,
+            versionNumber: 1,
+            status: "pending_review",
+            formulaHash: "a".repeat(64),
+            contractHash: "b".repeat(64),
+            parameterHash: "c".repeat(64),
+            catalogHash: "d".repeat(64),
+            dataSelectionHash: "e".repeat(64),
+            simulationId: "55555555-5555-4555-8555-555555555555",
+            effectiveFrom: "2026-07-12T00:00:00.000Z",
+            effectiveUntil: null,
+            createdBy: "22222222-2222-4222-8222-222222222222",
+            approvedBy: null,
+            aiDraftId: DRAFT_ID,
+            reason: "提交审核",
+            createdAt: "2026-07-12T00:00:00.000Z",
+            approvedAt: null,
+            archivedAt: null,
+            primaryAction: { state: "pending_review", action: "approve" },
+          },
+          simulation: {
+            id: "55555555-5555-4555-8555-555555555555",
+            createdAt: "2026-07-12T00:00:00.000Z",
+          },
+          event: {
+            id: "66666666-6666-4666-8666-666666666666",
+            eventType: "submitted_for_review",
+            actorId: "22222222-2222-4222-8222-222222222222",
+            actorRole: "operator_business",
+            reason: "提交审核",
+            comment: null,
+            beforeStatus: "draft",
+            afterStatus: "pending_review",
+            createdAt: "2026-07-12T00:00:00.000Z",
+          },
+        },
+        { status: 201 },
+      ),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+    const body = {
+      source: { kind: "ai_draft", id: DRAFT_ID },
+      sourceSimulationId: "88888888-8888-4888-8888-888888888888",
+      destinationVersionId: "44444444-4444-4444-8444-444444444444",
+      destinationSimulationId: "55555555-5555-4555-8555-555555555555",
+      scope: "payable",
+      target: { targetType: "project", targetId: null },
+      effectiveFrom: "2026-07-12T00:00:00.000Z",
+      reason: "提交审核",
+      clientRequestId: "submit-rule-0001",
+    };
+
+    await expect(
+      api.applyAndSubmitRule({ projectId: PROJECT_ID, body }),
+    ).resolves.toMatchObject({
+      rule: { status: "pending_review" },
+      simulation: { id: "55555555-5555-4555-8555-555555555555" },
+      event: { afterStatus: "pending_review" },
+    });
+  });
+
+  it("rejects an incomplete atomic apply-and-submit response", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        rule: {
+          id: "44444444-4444-4444-8444-444444444444",
+          projectId: PROJECT_ID,
+          scope: "payable",
+          target: { targetType: "project", targetId: null },
+          executionGrain: "report",
+          compositionMode: "replace",
+          priority: 100,
+          versionNumber: 1,
+          status: "pending_review",
+          formulaHash: "a".repeat(64),
+          contractHash: "b".repeat(64),
+          parameterHash: "c".repeat(64),
+          catalogHash: "d".repeat(64),
+          dataSelectionHash: "e".repeat(64),
+          simulationId: "55555555-5555-4555-8555-555555555555",
+          effectiveFrom: "2026-07-12T00:00:00.000Z",
+          effectiveUntil: null,
+          createdBy: "22222222-2222-4222-8222-222222222222",
+          approvedBy: null,
+          aiDraftId: DRAFT_ID,
+          reason: "提交审核",
+          createdAt: "2026-07-12T00:00:00.000Z",
+          approvedAt: null,
+          archivedAt: null,
+          primaryAction: { state: "pending_review", action: "approve" },
+        },
+        simulation: {
+          id: "55555555-5555-4555-8555-555555555555",
+          createdAt: "2026-07-12T00:00:00.000Z",
+        },
+      }),
+    );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.applyAndSubmitRule({
+        projectId: PROJECT_ID,
+        body: {
+          source: { kind: "ai_draft", id: DRAFT_ID },
+          sourceSimulationId: "88888888-8888-4888-8888-888888888888",
+          destinationVersionId: "44444444-4444-4444-8444-444444444444",
+          destinationSimulationId: "55555555-5555-4555-8555-555555555555",
+          scope: "payable",
+          target: { targetType: "project", targetId: null },
+          effectiveFrom: "2026-07-12T00:00:00.000Z",
+          reason: "提交审核",
+          clientRequestId: "submit-rule-0001",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_RESPONSE_INVALID" });
+  });
+
+  it("lists settlement groups and changes assignment through the group endpoints", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          groups: [
+            {
+              id: "77777777-7777-4777-8777-777777777777",
+              projectId: PROJECT_ID,
+              name: "高优先级主播",
+              description: "人工维护的显式结算分组",
+              status: "active",
+              createdBy: "22222222-2222-4222-8222-222222222222",
+              createdAt: "2026-07-12T00:00:00.000Z",
+              archivedAt: null,
+              assignmentCount: 2,
+              activeRuleCount: 1,
+              pendingRuleCount: 0,
+              futureAssignmentCount: 0,
+              unassignedProjectStreamers: [],
+              baseRuleCoveredProjectStreamerIds: [],
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          assignmentChange: {
+            insertedAssignment: {
+              id: "99999999-9999-4999-8999-999999999999",
+              projectId: PROJECT_ID,
+              projectStreamerId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              groupId: "77777777-7777-4777-8777-777777777777",
+              effectiveFrom: "2026-07-13T00:00:00.000Z",
+              effectiveUntil: null,
+              assignedBy: "22222222-2222-4222-8222-222222222222",
+              reason: "调整分组",
+              createdAt: "2026-07-12T00:00:00.000Z",
+            },
+            closedAssignmentIds: [],
+            newGroupSnapshotHash: "f".repeat(64),
+          },
+        }),
+      );
+    const api = createCustomSettlementRuleApi({ fetchImpl });
+
+    await expect(
+      api.listSettlementRuleGroups({ projectId: PROJECT_ID }),
+    ).resolves.toMatchObject({ groups: [{ assignmentCount: 2 }] });
+    await expect(
+      api.changeSettlementGroupAssignment({
+        projectId: PROJECT_ID,
+        groupId: "77777777-7777-4777-8777-777777777777",
+        body: {
+          projectStreamerId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          effectiveFrom: "2026-07-13T00:00:00.000Z",
+          reason: "调整分组",
+          clientRequestId: "assign-group-0001",
+        },
+      }),
+    ).resolves.toMatchObject({
+      assignmentChange: { newGroupSnapshotHash: "f".repeat(64) },
+    });
+  });
 });

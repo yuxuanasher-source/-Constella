@@ -7,7 +7,6 @@ import {
   Building2,
   Calculator,
   CheckCircle2,
-  Pencil,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -20,6 +19,8 @@ import {
   CustomSettlementRuleApiError,
   createCustomSettlementRuleApi,
 } from "./custom-settlement-rule-api";
+import CustomSettlementRuleGroupPanel from "./custom-settlement-rule-group-panel";
+import CustomSettlementRuleVersionPanel from "./custom-settlement-rule-version-panel";
 
 const CONTRACT_FIELD_ORDER = [
   "scope",
@@ -88,6 +89,15 @@ const INITIAL_REQUEST_STATE = {
   recovery: null,
 };
 
+const INITIAL_GOVERNANCE_STATE = {
+  contextKey: null,
+  status: "idle",
+  versions: [],
+  groups: [],
+  announcement: "",
+  error: null,
+};
+
 const SESSION_SYNC_ERROR_CODES = new Set([
   "CUSTOM_RULE_SESSION_CONFLICT",
   "CUSTOM_RULE_IDEMPOTENCY_CONFLICT",
@@ -113,6 +123,13 @@ function freshRequestState() {
 function defaultRequestId(operation) {
   const suffix = globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36);
   return `task9:${operation}:${suffix}`;
+}
+
+function defaultUuid() {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    "00000000-0000-4000-8000-000000000000"
+  );
 }
 
 function normalizeTarget(target) {
@@ -1072,6 +1089,9 @@ function WorkspaceStyles() {
       .crw-segments button[aria-pressed="true"] { border-color: var(--line-strong, #cbd5e1); background: #fff; color: var(--blue-700, #1d4ed8); }
       .crw-history { font-size: 12px; color: var(--ink-500, #64748b); }
       .crw-history.no-history { color: var(--amber-700, #a16207); font-weight: 600; }
+      .crw-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 0 0; border-bottom: 1px solid var(--line, #e2e8f0); }
+      .crw-tabs button { min-height: 34px; padding: 0 12px; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; background: transparent; color: var(--ink-600, #475569); font-size: 12px; font-weight: 700; cursor: pointer; }
+      .crw-tabs button[aria-selected="true"] { border-color: var(--line, #e2e8f0); background: #fff; color: var(--blue-700, #1d4ed8); }
       .crw-band { padding: 18px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
       .crw-band h2, .crw-band h3 { margin: 0; color: var(--ink-900, #172033); text-wrap: balance; }
       .crw-band h2 { font-size: 15px; line-height: 1.4; }
@@ -1114,6 +1134,44 @@ function WorkspaceStyles() {
       .crw-change-columns ul, .crw-risk-columns ul { list-style: none; margin: 8px 0 0; padding: 0; }
       .crw-change-columns li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line, #e2e8f0); font-size: 12px; color: var(--ink-700, #334155); }
       .crw-risk-columns li, .crw-risk-columns p { margin: 7px 0 0; font-size: 12px; line-height: 1.55; color: var(--ink-600, #475569); }
+      .crw-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 16px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
+      .crw-panel-heading.compact { padding: 14px 0 8px; }
+      .crw-panel-heading h2, .crw-submit-state h2 { margin: 0; font-size: 15px; line-height: 1.4; color: var(--ink-900, #172033); }
+      .crw-panel-heading h3 { margin: 0; font-size: 13px; line-height: 1.4; }
+      .crw-panel-heading p, .crw-muted { margin: 4px 0 0; font-size: 12px; line-height: 1.55; color: var(--ink-500, #64748b); }
+      .crw-submit-state { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
+      .crw-version-list, .crw-template-list, .crw-group-list { display: grid; gap: 1px; margin: 12px 0; background: var(--line, #e2e8f0); }
+      .crw-version-row, .crw-template-row, .crw-group-row { min-width: 0; display: grid; gap: 8px; padding: 12px; background: #fff; }
+      .crw-version-row { grid-template-columns: minmax(120px, .35fr) minmax(0, 1fr); align-items: center; }
+      .crw-version-row > div { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .crw-version-row strong, .crw-template-row strong, .crw-group-row strong { color: var(--ink-900, #172033); font-size: 13px; line-height: 1.4; }
+      .crw-version-row span, .crw-chip { display: inline-flex; align-items: center; width: max-content; max-width: 100%; min-height: 22px; padding: 1px 7px; border-radius: 6px; background: var(--ink-50, #f8fafc); color: var(--ink-600, #475569); font-size: 11px; font-weight: 700; }
+      .crw-version-row p, .crw-template-row p, .crw-group-row p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--ink-600, #475569); overflow-wrap: anywhere; }
+      .crw-template-row { grid-template-columns: minmax(180px, 1fr) minmax(180px, .65fr) auto; align-items: center; }
+      .crw-template-row dl, .crw-group-row dl, .crw-review-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 10px; margin: 0; font-size: 12px; line-height: 1.45; }
+      .crw-template-row dt, .crw-group-row dt, .crw-review-facts dt { color: var(--ink-500, #64748b); }
+      .crw-template-row dd, .crw-group-row dd, .crw-review-facts dd { margin: 0; color: var(--ink-800, #1e293b); overflow-wrap: anywhere; }
+      .crw-template-row button, .crw-group-form button, .crw-action-row button, .crw-force-review button { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 11px; border: 1px solid var(--line-strong, #cbd5e1); border-radius: 6px; background: #fff; color: var(--ink-700, #334155); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+      .crw-template-row button:disabled, .crw-group-form button:disabled, .crw-action-row button:disabled, .crw-force-review button:disabled { cursor: not-allowed; opacity: .55; }
+      .crw-reuse details { margin: 0 0 10px; border-bottom: 1px dashed var(--line-strong, #cbd5e1); }
+      .crw-reuse summary { width: max-content; max-width: 100%; padding: 8px 0; color: var(--ink-600, #475569); font-size: 12px; font-weight: 700; cursor: pointer; }
+      .crw-reuse pre { max-width: 100%; overflow: auto; margin: 0 0 10px; padding: 10px; border-radius: 6px; background: #111827; color: #e5e7eb; font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .crw-draft-result { padding: 12px 0; border-top: 1px solid var(--line, #e2e8f0); }
+      .crw-draft-result h2 { margin: 0; font-size: 14px; }
+      .crw-draft-result p { margin: 4px 0 0; font-size: 12px; color: var(--ink-600, #475569); }
+      .crw-inline-alert { display: flex; align-items: flex-start; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line, #e2e8f0); color: var(--danger-700, #b91c1c); font-size: 12px; line-height: 1.5; }
+      .crw-group-row { grid-template-columns: minmax(180px, 1fr) minmax(240px, .8fr); align-items: start; }
+      .crw-group-row strong { display: inline-flex; align-items: center; gap: 6px; }
+      .crw-group-form { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: end; padding: 14px 0; border-top: 1px solid var(--line, #e2e8f0); }
+      .crw-group-form label, .crw-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 12px; font-weight: 700; color: var(--ink-700, #334155); }
+      .crw-group-form input, .crw-group-form select, .crw-field input, .crw-field textarea { width: 100%; min-height: 34px; padding: 7px 9px; border: 1px solid var(--line-strong, #cbd5e1); border-radius: 6px; background: #fff; color: var(--ink-900, #172033); font: inherit; font-size: 12px; line-height: 1.45; }
+      .crw-field textarea { min-height: 72px; resize: vertical; }
+      .crw-review-dialog { padding: 0; color: var(--ink-900, #172033); }
+      .crw-review-facts { padding: 12px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
+      .crw-action-row { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 0; }
+      .crw-force-review { padding: 12px 0; border-top: 1px solid var(--danger-200, #fecaca); }
+      .crw-force-review h3 { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--danger-700, #b91c1c); font-size: 13px; }
+      .crw-force-review p { margin: 5px 0 10px; font-size: 12px; color: var(--danger-700, #b91c1c); }
       .crw-empty, .crw-error { display: flex; align-items: flex-start; gap: 10px; padding: 16px 0; border-bottom: 1px solid var(--line, #e2e8f0); }
       .crw-empty h2, .crw-error h2 { margin: 0; font-size: 14px; }
       .crw-empty p, .crw-error p { margin: 4px 0 0; font-size: 12px; color: var(--ink-600, #475569); }
@@ -1142,6 +1200,7 @@ function WorkspaceStyles() {
         .crw-ai, .crw-change-columns, .crw-risk-columns { grid-template-columns: minmax(0, 1fr); }
         .crw-contract-grid { grid-template-columns: minmax(0, 1fr); }
         .crw-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .crw-version-row, .crw-template-row, .crw-group-row, .crw-group-form { grid-template-columns: minmax(0, 1fr); }
         .crw-diff-row { grid-template-columns: minmax(90px, .55fr) minmax(0, 1fr); }
         .crw-diff-row > span[aria-hidden="true"] { display: none; }
         .crw-after { grid-column: 2; }
@@ -1160,11 +1219,18 @@ export default function CustomSettlementRuleWorkspace({
   period,
   target,
   api,
+  currentUser = { id: null, role: "operator_business" },
+  templates = [],
+  createUuid = defaultUuid,
   createRequestId = defaultRequestId,
   retryPollDelayMs = 250,
   retryPollMaxAttempts = 3,
 }) {
   const apiClient = React.useMemo(
+    () => api ?? createCustomSettlementRuleApi(),
+    [api],
+  );
+  const metadataApiClient = React.useMemo(
     () => api ?? createCustomSettlementRuleApi(),
     [api],
   );
@@ -1184,9 +1250,15 @@ export default function CustomSettlementRuleWorkspace({
     contextKey: null,
     id: null,
   });
+  const [activePane, setActivePane] = React.useState("build");
   const [requestState, setRequestState] = React.useState(freshRequestState);
+  const [governanceState, setGovernanceState] = React.useState(
+    INITIAL_GOVERNANCE_STATE,
+  );
   const requestSequenceRef = React.useRef(0);
   const requestControllerRef = React.useRef(null);
+  const governanceSequenceRef = React.useRef(0);
+  const statusHeadingRef = React.useRef(null);
   const questionHeadingRef = React.useRef(null);
   const resultHeadingRef = React.useRef(null);
   const errorHeadingRef = React.useRef(null);
@@ -1212,6 +1284,10 @@ export default function CustomSettlementRuleWorkspace({
         ...INITIAL_REQUEST_STATE,
         catalogStatus: validContext ? "loading" : "idle",
       };
+  const governanceView =
+    governanceState.contextKey === workspaceContextKey
+      ? governanceState
+      : INITIAL_GOVERNANCE_STATE;
   const draftInput =
     draftInputState.contextKey === workspaceContextKey
       ? draftInputState.value
@@ -1326,7 +1402,9 @@ export default function CustomSettlementRuleWorkspace({
 
   React.useLayoutEffect(() => {
     const targetRef =
-      viewState.focusTarget === "question"
+      viewState.focusTarget === "status"
+        ? statusHeadingRef
+        : viewState.focusTarget === "question"
         ? questionHeadingRef
         : viewState.focusTarget === "error"
           ? errorHeadingRef
@@ -1338,10 +1416,67 @@ export default function CustomSettlementRuleWorkspace({
     targetRef?.current?.focus();
   }, [
     viewState.focusTarget,
+    viewState.announcement,
     viewState.authoritative?.draft?.id,
     viewState.authoritative?.draft?.revisionNumber,
     viewState.status,
   ]);
+
+  React.useEffect(() => {
+    const sequence = ++governanceSequenceRef.current;
+    if (!validContext) {
+      return undefined;
+    }
+    const controller = new AbortController();
+    const canLoadVersions = typeof metadataApiClient.listRuleVersions === "function";
+    const canLoadGroups =
+      typeof metadataApiClient.listSettlementRuleGroups === "function";
+    if (!canLoadVersions && !canLoadGroups) {
+      return () => controller.abort();
+    }
+    Promise.all([
+      canLoadVersions
+        ? metadataApiClient.listRuleVersions({
+            projectId,
+            signal: controller.signal,
+          })
+        : Promise.resolve({ rules: [] }),
+      canLoadGroups
+        ? metadataApiClient.listSettlementRuleGroups({
+            projectId,
+            signal: controller.signal,
+          })
+        : Promise.resolve({ groups: [] }),
+    ])
+      .then(([rulesPayload, groupsPayload]) => {
+        if (sequence !== governanceSequenceRef.current) return;
+        setGovernanceState({
+          contextKey: workspaceContextKey,
+          status: "ready",
+          versions: rulesPayload.rules,
+          groups: groupsPayload.groups,
+          announcement: "版本与分组已同步",
+          error: null,
+        });
+      })
+      .catch((error) => {
+        if (
+          error?.name === "AbortError" ||
+          sequence !== governanceSequenceRef.current
+        ) {
+          return;
+        }
+        setGovernanceState({
+          contextKey: workspaceContextKey,
+          status: "error",
+          versions: [],
+          groups: [],
+          announcement: "版本与分组同步失败",
+          error: safeWorkspaceError(error),
+        });
+      });
+    return () => controller.abort();
+  }, [metadataApiClient, projectId, validContext, workspaceContextKey]);
 
   const performOperation = async (operation, { retry = false } = {}) => {
     if (!validContext || viewState.catalogStatus !== "ready") return;
@@ -1611,6 +1746,119 @@ export default function CustomSettlementRuleWorkspace({
     }
   };
 
+  const submitCurrentSimulationForReview = async () => {
+    if (
+      !validContext ||
+      viewState.catalogStatus !== "ready" ||
+      typeof apiClient.applyAndSubmitRule !== "function"
+    ) {
+      return;
+    }
+    const currentDraft = viewState.authoritative?.draft ?? null;
+    const currentSimulation = viewState.authoritative?.simulation ?? null;
+    if (currentDraft?.status !== "simulated" || !currentSimulation?.id) return;
+
+    requestControllerRef.current?.abort();
+    apiClient.abortActive?.();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
+    const sequence = ++requestSequenceRef.current;
+    const clientRequestId = createRequestId("submit_review");
+    const destinationVersionId = createUuid();
+    const destinationSimulationId = createUuid();
+
+    setRequestState((current) => ({
+      ...(current.contextKey === workspaceContextKey
+        ? current
+        : freshRequestState()),
+      contextKey: workspaceContextKey,
+      status: "loading",
+      operation: "submit_review",
+      lastOperation: "submit_review",
+      requestId: clientRequestId,
+      error: null,
+      recovery: null,
+      announcement: "正在提交审核",
+      focusTarget: null,
+    }));
+
+    try {
+      const contract = currentDraft.businessContract;
+      const payload = await apiClient.applyAndSubmitRule({
+        projectId,
+        body: {
+          source: { kind: "ai_draft", id: currentDraft.id },
+          sourceSimulationId: currentSimulation.id,
+          destinationVersionId,
+          destinationSimulationId,
+          scope: contract.scope,
+          target: contract.target,
+          effectiveFrom: contract.effectiveStartAt,
+          reason:
+            currentUser.role === "operator_business"
+              ? "保存并请求审核"
+              : "提交审核",
+          clientRequestId,
+        },
+        signal: controller.signal,
+      });
+      if (sequence !== requestSequenceRef.current) return;
+      setGovernanceState((current) => ({
+        ...(current.contextKey === workspaceContextKey
+          ? current
+          : INITIAL_GOVERNANCE_STATE),
+        contextKey: workspaceContextKey,
+        status: "ready",
+        versions: [
+          payload.rule,
+          ...(current.contextKey === workspaceContextKey
+            ? current.versions.filter((rule) => rule.id !== payload.rule.id)
+            : []),
+        ],
+        groups:
+          current.contextKey === workspaceContextKey ? current.groups : [],
+        announcement: "规则已提交审核",
+        error: null,
+      }));
+      setRequestState((current) => ({
+        ...(current.contextKey === workspaceContextKey
+          ? current
+          : freshRequestState()),
+        contextKey: workspaceContextKey,
+        status: "ready",
+        operation: null,
+        lastOperation: null,
+        requestId: null,
+        error: null,
+        recovery: null,
+        announcement: "规则已提交审核",
+        focusTarget: "status",
+      }));
+      setActivePane("versions");
+    } catch (error) {
+      if (
+        error?.name === "AbortError" ||
+        sequence !== requestSequenceRef.current
+      ) {
+        return;
+      }
+      const safeError = safeWorkspaceError(error);
+      setRequestState((current) => ({
+        ...(current.contextKey === workspaceContextKey
+          ? current
+          : freshRequestState()),
+        contextKey: workspaceContextKey,
+        status: "error",
+        operation: null,
+        lastOperation: "submit_review",
+        error: safeError,
+        recovery: null,
+        announcement: "提交审核失败",
+        focusTarget: "error",
+      }));
+    }
+  };
+
   const recoverCatalogAndSession = async () => {
     const sessionId =
       activeSessionId ?? viewState.authoritative?.draft?.conversationId ?? null;
@@ -1813,10 +2061,14 @@ export default function CustomSettlementRuleWorkspace({
     needsInput = false;
     showInput = false;
   } else if (simulated) {
-    actionLabel = "修改规则";
-    actionOperation = "answer";
-    ActionIcon = Pencil;
-    inputLabel = "修改说明";
+    actionLabel =
+      currentUser.role === "operator_business"
+        ? "保存并请求审核"
+        : "应用并提交审核";
+    actionOperation = "submit_review";
+    ActionIcon = Send;
+    needsInput = false;
+    showInput = false;
   } else if (contractReady) {
     actionLabel = "确认业务规则并试算";
     actionOperation = "confirm";
@@ -1831,7 +2083,12 @@ export default function CustomSettlementRuleWorkspace({
   }
 
   if (isLoading) {
-    actionLabel = viewState.operation === "confirm" ? "正在试算…" : "正在生成…";
+    actionLabel =
+      viewState.operation === "submit_review"
+        ? "正在提交审核…"
+        : viewState.operation === "confirm"
+          ? "正在试算…"
+          : "正在生成…";
     needsInput = false;
   }
 
@@ -1870,6 +2127,10 @@ export default function CustomSettlementRuleWorkspace({
     }
     if (actionOperation === "business_date") {
       performOperation("start");
+      return;
+    }
+    if (actionOperation === "submit_review") {
+      submitCurrentSimulationForReview();
       return;
     }
     if (requestHasError) {
@@ -1957,7 +2218,28 @@ export default function CustomSettlementRuleWorkspace({
         </div>
       </div>
 
-      {!validContext ? (
+      <div className="crw-tabs" role="tablist" aria-label="自定义结算规则视图">
+        {[
+          ["build", "搭建"],
+          ["versions", "版本与审核"],
+          ["groups", "结算分组"],
+        ].map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={activePane === value}
+            aria-controls={`crw-pane-${value}`}
+            onClick={() => setActivePane(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activePane === "build" ? (
+        <div id="crw-pane-build" role="tabpanel" aria-label="搭建">
+          {!validContext ? (
         <div className="crw-empty">
           <AlertCircle size={18} aria-hidden="true" />
           <div>
@@ -1965,9 +2247,9 @@ export default function CustomSettlementRuleWorkspace({
             <p>请先选择项目和有效结算周期</p>
           </div>
         </div>
-      ) : null}
+          ) : null}
 
-      {errorVisible ? (
+          {errorVisible ? (
         <div className="crw-error">
           <AlertCircle size={18} aria-hidden="true" />
           <div>
@@ -1977,9 +2259,9 @@ export default function CustomSettlementRuleWorkspace({
             <p>{errorMessage}</p>
           </div>
         </div>
-      ) : null}
+          ) : null}
 
-      {isProcessing ? (
+          {isProcessing ? (
         <div className="crw-processing">
           <RefreshCw size={18} aria-hidden="true" />
           <div>
@@ -1989,17 +2271,17 @@ export default function CustomSettlementRuleWorkspace({
             <p>正在读取最新业务草案</p>
           </div>
         </div>
-      ) : null}
+          ) : null}
 
-      {isLoading ? (
+          {isLoading ? (
         <div className="crw-loading" aria-hidden="true">
           <span />
           <span />
           <span />
         </div>
-      ) : null}
+          ) : null}
 
-      {!errorVisible && !isProcessing && !isLoading && draft ? (
+          {!errorVisible && !isProcessing && !isLoading && draft ? (
         <>
           {clarifying && firstQuestion ? (
             <section className="crw-band crw-ai">
@@ -2094,9 +2376,9 @@ export default function CustomSettlementRuleWorkspace({
             />
           ) : null}
         </>
-      ) : null}
+          ) : null}
 
-      <div className="crw-compose">
+          <div className="crw-compose">
         {showInput ? (
           <label>
             {inputLabel}
@@ -2128,7 +2410,75 @@ export default function CustomSettlementRuleWorkspace({
           <ActionIcon size={15} aria-hidden="true" />
           {actionLabel}
         </button>
-      </div>
+          </div>
+        </div>
+      ) : null}
+
+      {activePane === "versions" ? (
+        <div id="crw-pane-versions" role="tabpanel" aria-label="版本与审核">
+          {viewState.announcement === "规则已提交审核" ? (
+            <div className="crw-submit-state">
+              <h2 ref={statusHeadingRef} tabIndex={-1}>
+                规则已提交审核
+              </h2>
+            </div>
+          ) : null}
+          <CustomSettlementRuleVersionPanel
+            buildState={
+              simulated
+                ? { kind: "simulated", role: currentUser.role }
+                : contractReady
+                  ? { kind: "contract_ready" }
+                  : clarifying
+                    ? { kind: "unresolved" }
+                    : null
+            }
+            versions={governanceView.versions}
+            currentUser={currentUser}
+            templates={templates}
+            onPrimaryAction={(type) => {
+              if (type === "submit") submitCurrentSimulationForReview();
+            }}
+            onReopenDraft={() => setActivePane("build")}
+          />
+        </div>
+      ) : null}
+
+      {activePane === "groups" ? (
+        <div id="crw-pane-groups" role="tabpanel" aria-label="结算分组">
+          <CustomSettlementRuleGroupPanel
+            groups={governanceView.groups}
+            streamers={governanceView.groups.flatMap(
+              (group) => group.unassignedProjectStreamers ?? [],
+            )}
+            onAssign={async (assignment) => {
+              if (
+                typeof apiClient.changeSettlementGroupAssignment !== "function"
+              ) {
+                return;
+              }
+              await apiClient.changeSettlementGroupAssignment({
+                projectId,
+                groupId: assignment.groupId,
+                body: {
+                  projectStreamerId: assignment.projectStreamerId,
+                  effectiveFrom: assignment.effectiveFrom,
+                  reason: assignment.reason,
+                  clientRequestId: createRequestId("assign_group"),
+                },
+              });
+              setRequestState((current) => ({
+                ...(current.contextKey === workspaceContextKey
+                  ? current
+                  : freshRequestState()),
+                contextKey: workspaceContextKey,
+                announcement: "分组已更新",
+                focusTarget: "status",
+              }));
+            }}
+          />
+        </div>
+      ) : null}
 
       <div
         className="crw-status"

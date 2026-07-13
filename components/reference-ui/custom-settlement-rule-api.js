@@ -821,6 +821,143 @@ const catalogSchema = z
     }
   });
 
+const ruleTargetSchema = z.discriminatedUnion("targetType", [
+  z.strictObject({ targetType: z.literal("project"), targetId: z.null() }),
+  z.strictObject({
+    targetType: z.literal("streamer_group"),
+    targetId: uuidSchema,
+  }),
+  z.strictObject({
+    targetType: z.literal("project_streamer"),
+    targetId: uuidSchema,
+  }),
+]);
+const ruleStatusSchema = z.enum([
+  "draft",
+  "pending_review",
+  "changes_requested",
+  "active",
+  "archived",
+]);
+const rulePrimaryActionSchema = z.strictObject({
+  state: ruleStatusSchema,
+  action: z.enum([
+    "reply_ai",
+    "confirm_contract",
+    "submit_review",
+    "approve",
+    "revise",
+    "create_new_version",
+    "none",
+  ]),
+});
+const governanceRuleSchema = z.strictObject({
+  id: uuidSchema,
+  projectId: uuidSchema,
+  scope: customRuleScopeSchema,
+  target: ruleTargetSchema,
+  executionGrain: customRuleExecutionGrainSchema,
+  compositionMode: z.enum([
+    "replace",
+    "add",
+    "multiply",
+    "clamp",
+    "emit_items",
+    "check",
+  ]),
+  priority: z.number().int().refine(Number.isSafeInteger),
+  versionNumber: positiveSafeIntegerSchema,
+  status: ruleStatusSchema,
+  formulaHash: hashSchema,
+  contractHash: hashSchema,
+  parameterHash: hashSchema,
+  catalogHash: hashSchema,
+  dataSelectionHash: hashSchema,
+  simulationId: uuidSchema.nullable(),
+  effectiveFrom: canonicalTimestampSchema.nullable(),
+  effectiveUntil: canonicalTimestampSchema.nullable(),
+  createdBy: uuidSchema,
+  approvedBy: uuidSchema.nullable(),
+  aiDraftId: uuidSchema.nullable(),
+  reason: canonicalTextSchema(1_000).nullable(),
+  createdAt: canonicalTimestampSchema,
+  approvedAt: canonicalTimestampSchema.nullable(),
+  archivedAt: canonicalTimestampSchema.nullable(),
+  effectiveNow: z.boolean().optional(),
+  scheduled: z.boolean().optional(),
+  primaryAction: rulePrimaryActionSchema,
+});
+const reviewEventSchema = z.strictObject({
+  id: uuidSchema,
+  eventType: canonicalTextSchema(120),
+  actorId: uuidSchema,
+  actorRole: canonicalTextSchema(80),
+  reason: canonicalTextSchema(1_000).nullable(),
+  comment: canonicalTextSchema(4_000).nullable(),
+  beforeStatus: ruleStatusSchema.nullable(),
+  afterStatus: ruleStatusSchema.nullable(),
+  createdAt: canonicalTimestampSchema,
+});
+const lifecycleResultSchema = z.strictObject({
+  rule: governanceRuleSchema,
+  simulation: z.strictObject({
+    id: uuidSchema,
+    createdAt: canonicalTimestampSchema,
+  }),
+  event: reviewEventSchema,
+});
+const cloneResultSchema = z.strictObject({
+  rule: governanceRuleSchema,
+  lineage: z.strictObject({
+    sourceRuleVersionId: uuidSchema,
+    sourceProjectId: uuidSchema,
+    sourceVersionNumber: positiveSafeIntegerSchema,
+    sourceScope: customRuleScopeSchema,
+  }),
+  missingTargetVariables: z.array(identifierSchema).max(300),
+});
+const settlementRuleGroupSchema = z.strictObject({
+  id: uuidSchema,
+  projectId: uuidSchema,
+  name: canonicalTextSchema(120),
+  description: canonicalTextSchema(1_000).nullable(),
+  status: z.enum(["active", "archived"]),
+  createdBy: uuidSchema,
+  createdAt: canonicalTimestampSchema,
+  archivedAt: canonicalTimestampSchema.nullable(),
+  assignmentCount: nonnegativeSafeIntegerSchema,
+  activeRuleCount: nonnegativeSafeIntegerSchema,
+  pendingRuleCount: nonnegativeSafeIntegerSchema,
+  futureAssignmentCount: nonnegativeSafeIntegerSchema,
+  unassignedProjectStreamers: z
+    .array(
+      z.strictObject({
+        projectStreamerId: uuidSchema,
+        streamerId: uuidSchema.optional(),
+        displayName: z.string().min(1).max(200).optional(),
+      }),
+    )
+    .max(10_000),
+  baseRuleCoveredProjectStreamerIds: z.array(uuidSchema).max(10_000),
+});
+const assignmentChangeSchema = z.strictObject({
+  assignmentChange: z.strictObject({
+    insertedAssignment: z.strictObject({
+      id: uuidSchema,
+      projectId: uuidSchema,
+      projectStreamerId: uuidSchema,
+      groupId: uuidSchema,
+      effectiveFrom: canonicalTimestampSchema,
+      effectiveUntil: canonicalTimestampSchema.nullable(),
+      assignedBy: uuidSchema,
+      reason: canonicalTextSchema(1_000),
+      createdAt: canonicalTimestampSchema,
+    }),
+    closedAssignmentIds: z.array(uuidSchema).max(10_000),
+    newGroupSnapshotHash: hashSchema,
+  }),
+});
+
 const responseSchemas = {
   catalog: z.strictObject({ catalog: catalogSchema }),
   start: z
@@ -839,6 +976,13 @@ const responseSchemas = {
   answer: z.strictObject({ result: answerResultSchema }),
   confirm: z.strictObject({ result: confirmResultSchema }),
   session: z.strictObject({ session: authoritativeSessionSchema }),
+  rules: z.strictObject({ rules: z.array(governanceRuleSchema).max(500) }),
+  lifecycle: lifecycleResultSchema,
+  clone: cloneResultSchema,
+  groups: z.strictObject({
+    groups: z.array(settlementRuleGroupSchema).max(500),
+  }),
+  assignmentChange: assignmentChangeSchema,
 };
 
 function bindResponseToSession(schema, sessionId, conversationId) {
@@ -1113,6 +1257,76 @@ export function createCustomSettlementRuleApi({
           sessionId,
           (payload) => payload.result.conversationId,
         ),
+        signal,
+      );
+    },
+    listRuleVersions({ projectId, status, signal }) {
+      const query = new URLSearchParams();
+      if (status) query.set("status", status);
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return request(
+        `${baseUrl(projectId)}${suffix}`,
+        { method: "GET" },
+        responseSchemas.rules,
+        signal,
+      );
+    },
+    applyAndSubmitRule({ projectId, body, signal }) {
+      return post(
+        `${baseUrl(projectId)}/apply-and-submit`,
+        body,
+        responseSchemas.lifecycle,
+        signal,
+      );
+    },
+    approveRule({ projectId, ruleVersionId, body, signal }) {
+      return post(
+        `${baseUrl(projectId)}/${pathSegment(ruleVersionId)}/approve`,
+        body,
+        responseSchemas.lifecycle,
+        signal,
+      );
+    },
+    requestRuleChanges({ projectId, ruleVersionId, body, signal }) {
+      return post(
+        `${baseUrl(projectId)}/${pathSegment(ruleVersionId)}/request-changes`,
+        body,
+        responseSchemas.lifecycle,
+        signal,
+      );
+    },
+    archiveRule({ projectId, ruleVersionId, body, signal }) {
+      return post(
+        `${baseUrl(projectId)}/${pathSegment(ruleVersionId)}/archive`,
+        body,
+        responseSchemas.lifecycle,
+        signal,
+      );
+    },
+    cloneRule({ projectId, ruleVersionId, body, signal }) {
+      return post(
+        `${baseUrl(projectId)}/${pathSegment(ruleVersionId)}/clone`,
+        body,
+        responseSchemas.clone,
+        signal,
+      );
+    },
+    listSettlementRuleGroups({ projectId, includeArchived = true, signal }) {
+      const query = new URLSearchParams({
+        includeArchived: includeArchived ? "true" : "false",
+      });
+      return request(
+        `/api/projects/${pathSegment(projectId)}/settlement-rule-groups?${query.toString()}`,
+        { method: "GET" },
+        responseSchemas.groups,
+        signal,
+      );
+    },
+    changeSettlementGroupAssignment({ projectId, groupId, body, signal }) {
+      return post(
+        `/api/projects/${pathSegment(projectId)}/settlement-rule-groups/${pathSegment(groupId)}/assignments`,
+        body,
+        responseSchemas.assignmentChange,
         signal,
       );
     },

@@ -517,7 +517,7 @@ describe("CustomSettlementRuleWorkspace", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("项目成本")).not.toBeInTheDocument();
     expect(screen.queryByText("风险校验")).not.toBeInTheDocument();
-    expect(screen.queryByText("应用并提交审核")).not.toBeInTheDocument();
+    expect(screen.queryByText("保存并请求审核")).not.toBeInTheDocument();
     expect(screen.getByTestId("custom-rule-workspace")).toHaveAttribute(
       "data-layout",
       "full-width",
@@ -676,7 +676,7 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(aiDraft).toHaveAttribute("data-source", "ai");
     expect(engine).toHaveAttribute("data-source", "deterministic-engine");
     expect(engine).not.toEqual(aiDraft);
-    expectOnePrimary("修改规则");
+    expectOnePrimary("保存并请求审核");
   });
 
   it("renders the authoritative natural-language revision diff and names preserved fields", async () => {
@@ -823,8 +823,8 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(simulation).not.toHaveTextContent("authorized_ordinal");
     expect(simulation).not.toHaveTextContent("无历史数据");
     expect(simulation).toHaveTextContent("内部预览");
-    expect(screen.queryByText("应用并提交审核")).not.toBeInTheDocument();
-    expectOnePrimary("修改规则");
+    expect(screen.getByText("保存并请求审核")).toBeInTheDocument();
+    expectOnePrimary("保存并请求审核");
     expect(apiClient.confirmAndSimulate).toHaveBeenCalledWith({
       projectId: PROJECT_ID,
       sessionId: SESSION_ID,
@@ -1052,7 +1052,7 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(simulation).not.toHaveTextContent("已通过历史数据验证");
     expect(simulation).not.toHaveTextContent("无新增风险");
     expect(simulation).not.toHaveTextContent("authorized_ordinal");
-    expectOnePrimary("修改规则");
+    expectOnePrimary("保存并请求审核");
   });
 
   it("uses the authoritative no-history marker after session refresh", async () => {
@@ -2052,5 +2052,93 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(screen.getByText("请先选择项目和有效结算周期")).toBeInTheDocument();
     expectOnePrimary("开始澄清");
     expect(screen.getByRole("button", { name: "开始澄清" })).toBeDisabled();
+  });
+
+  it("uses separate full-width panes and waits for the atomic submit response before showing pending review", async () => {
+    let resolveSubmit;
+    const submitPromise = new Promise((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue({
+        session: claimedSession(),
+        result: simulationEnvelope().result,
+      }),
+      applyAndSubmitRule: vi.fn().mockReturnValue(submitPromise),
+      listRuleVersions: vi.fn().mockResolvedValue({ rules: [] }),
+      listSettlementRuleGroups: vi.fn().mockResolvedValue({ groups: [] }),
+    });
+    renderWorkspace(apiClient, {
+      currentUser: { id: "22222222-2222-4222-8222-222222222222", role: "owner" },
+      createUuid: () => "99999999-9999-4999-8999-999999999999",
+    });
+
+    expect(
+      screen.getByRole("tab", { name: "搭建" }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "版本与审核" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "结算分组" })).toBeInTheDocument();
+
+    await startRule();
+    await screen.findByRole("heading", { name: "内部试算结果" });
+    expectOnePrimary("应用并提交审核");
+
+    fireEvent.click(screen.getByRole("button", { name: "应用并提交审核" }));
+
+    expect(apiClient.applyAndSubmitRule).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("待审核")).not.toBeInTheDocument();
+    expectOnePrimary("正在提交审核…");
+
+    resolveSubmit({
+      rule: {
+        id: "44444444-4444-4444-8444-444444444444",
+        projectId: PROJECT_ID,
+        scope: "payable",
+        target: { targetType: "project", targetId: null },
+        executionGrain: "report",
+        compositionMode: "replace",
+        priority: 100,
+        versionNumber: 1,
+        status: "pending_review",
+        formulaHash: "a".repeat(64),
+        contractHash: "b".repeat(64),
+        parameterHash: "c".repeat(64),
+        catalogHash: "d".repeat(64),
+        dataSelectionHash: "e".repeat(64),
+        simulationId: "99999999-9999-4999-8999-999999999999",
+        effectiveFrom: "2026-07-12T00:00:00.000Z",
+        effectiveUntil: null,
+        createdBy: "22222222-2222-4222-8222-222222222222",
+        approvedBy: null,
+        aiDraftId: DRAFT_ID,
+        reason: "提交审核",
+        createdAt: "2026-07-12T00:00:00.000Z",
+        approvedAt: null,
+        archivedAt: null,
+        primaryAction: { state: "pending_review", action: "approve" },
+      },
+      simulation: {
+        id: "99999999-9999-4999-8999-999999999999",
+        createdAt: "2026-07-12T00:00:00.000Z",
+      },
+      event: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        eventType: "submitted_for_review",
+        actorId: "22222222-2222-4222-8222-222222222222",
+        actorRole: "owner",
+        reason: "提交审核",
+        comment: null,
+        beforeStatus: "draft",
+        afterStatus: "pending_review",
+        createdAt: "2026-07-12T00:00:00.000Z",
+      },
+    });
+
+    const heading = await screen.findByRole("heading", {
+      name: "规则已提交审核",
+    });
+    expect(heading).toHaveFocus();
+    expect(screen.getByText("待审核")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("规则已提交审核");
   });
 });
