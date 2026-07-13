@@ -2901,6 +2901,61 @@ describe("Phase 2 governed settlement rule schema contract", () => {
       "create table public.ai_chat_turns",
     );
   });
+
+  it("derives approval material risk from server-owned simulation and contract facts", () => {
+    const review = extractSettlementGovernanceFunction(
+      "review_custom_settlement_rule",
+    ).body;
+    const approvalBranch = review.slice(
+      review.indexOf("elsif p_action = 'approve'"),
+      review.indexOf("elsif p_action = 'activation_failed'"),
+    );
+
+    for (const code of [
+      "negative_margin",
+      "abnormal_total_increase",
+      "red_evidence_payment",
+      "money_changing_explicit_default",
+      "group_level_replace",
+      "overlapping_group_exception",
+      "safety_cap_exceeded",
+    ]) {
+      expect(approvalBranch).toContain(code);
+    }
+    expect(approvalBranch).toContain("v_old_total_cents");
+    expect(approvalBranch).toContain("v_new_total_cents");
+    expect(approvalBranch).toContain("abnormaltotalincreasebps");
+    expect(approvalBranch).toContain("v_safety_cap_cents");
+    expect(approvalBranch).toMatch(
+      /jsonb_array_elements\(\s*v_simulation\.scenarios\s*\)/u,
+    );
+    expect(approvalBranch).toContain("missingdataimpact");
+    expect(approvalBranch).toContain("use_explicit_default");
+    expect(approvalBranch).toContain("groupconflict");
+    expect(approvalBranch).toContain("explicit_exception");
+    expect(approvalBranch).toContain(
+      "custom_rule_material_risk_server_owned_totals",
+    );
+    expect(approvalBranch).toContain(
+      "custom_rule_material_risk_server_owned_scenarios",
+    );
+    expect(approvalBranch.indexOf("abnormal_total_increase")).toBeLessThan(
+      approvalBranch.indexOf(
+        "custom_settlement_rule_material_risk_requires_owner",
+      ),
+    );
+    expect(approvalBranch.indexOf("safety_cap_exceeded")).toBeLessThan(
+      approvalBranch.indexOf(
+        "custom_settlement_rule_material_risk_requires_distinct_owner",
+      ),
+    );
+    expect(approvalBranch).not.toMatch(
+      /where warning\.value ->> 'code' in \([\s\S]+abnormal_total_increase[\s\S]+safety_cap_exceeded/u,
+    );
+    expect(approvalBranch).not.toMatch(
+      /p_risk_summary[\s\S]+v_material_risk_codes/u,
+    );
+  });
 });
 
 describe("Task8 custom settlement runtime database contract", () => {

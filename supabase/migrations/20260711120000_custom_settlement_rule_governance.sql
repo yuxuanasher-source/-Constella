@@ -1854,6 +1854,12 @@ declare
   v_another_eligible_approver_exists boolean := false;
   v_material_risk_codes text[] := array[]::text[];
   v_material_risk boolean := false;
+  v_old_total_cents numeric;
+  v_new_total_cents numeric;
+  v_margin_impact_cents numeric;
+  v_abnormal_total_increase_bps integer := 2000;
+  v_safety_cap_cents numeric := 100000;
+  v_missing_data_impact_cents numeric;
   v_approval_risk_summary jsonb := '{}'::jsonb;
   v_event_risk_summary jsonb := '{}'::jsonb;
   v_request_key text;
@@ -2072,38 +2078,148 @@ begin
       raise exception 'custom_settlement_rule_approver_not_eligible';
     end if;
 
-    if coalesce(
-      pg_catalog.abs(
-        nullif(v_simulation.deltas ->> 'marginImpactCents', '')::numeric
-      ),
-      0
-    ) > 0 then
-      v_material_risk_codes :=
-        v_material_risk_codes || array['negative_margin'];
+    v_old_total_cents := coalesce(
+      nullif(
+        v_simulation.historical_totals ->> 'oldPayableAmountCents',
+        ''
+      )::numeric,
+      nullif(
+        v_simulation.historical_totals ->> 'oldReceivableAmountCents',
+        ''
+      )::numeric
+    );
+    v_new_total_cents := coalesce(
+      nullif(
+        v_simulation.historical_totals ->> 'newPayableAmountCents',
+        ''
+      )::numeric,
+      nullif(
+        v_simulation.historical_totals ->> 'newReceivableAmountCents',
+        ''
+      )::numeric
+    );
+    v_margin_impact_cents := nullif(
+      v_simulation.deltas ->> 'marginImpactCents',
+      ''
+    )::numeric;
+    v_abnormal_total_increase_bps := coalesce(
+      nullif(
+        v_version.rule_contract #>>
+          '{riskConfiguration,project,abnormalTotalIncreaseBps}',
+        ''
+      )::integer,
+      nullif(
+        v_version.rule_contract #>>
+          '{riskConfiguration,organization,abnormalTotalIncreaseBps}',
+        ''
+      )::integer,
+      2000
+    );
+    v_safety_cap_cents := coalesce(
+      nullif(
+        v_version.rule_contract #>>
+          '{riskConfiguration,project,safetyCapCents}',
+        ''
+      )::numeric,
+      nullif(
+        v_version.rule_contract #>>
+          '{riskConfiguration,organization,safetyCapCents}',
+        ''
+      )::numeric,
+      100000
+    );
+    if v_old_total_cents is not null
+       and v_new_total_cents is not null
+       and v_new_total_cents > v_old_total_cents
+       and (
+         v_old_total_cents = 0
+         or (
+           (v_new_total_cents - v_old_total_cents) * 10000 >
+             v_old_total_cents * v_abnormal_total_increase_bps
+         )
+       ) then
+      v_material_risk_codes := v_material_risk_codes ||
+        array['abnormal_total_increase'];
+    end if;
+    if exists (
+      select 1
+      from pg_catalog.jsonb_array_elements(
+        v_simulation.scenarios
+      ) as scenario(value)
+      where nullif(scenario.value ->> 'amountCents', '')::numeric >
+        v_safety_cap_cents
+    ) then
+      v_material_risk_codes := v_material_risk_codes ||
+        array['safety_cap_exceeded'];
+    end if;
+    if exists (
+      select 1
+      from pg_catalog.jsonb_array_elements(
+        v_simulation.warnings
+      ) as warning(value)
+      where warning.value ->> 'kind' = 'risk'
+        and warning.value ->> 'code' in (
+          'CUSTOM_RULE_NEGATIVE_MARGIN',
+          'negative_margin'
+        )
+    ) then
+      v_material_risk_codes := v_material_risk_codes ||
+        array['negative_margin'];
+    end if;
+    if exists (
+      select 1
+      from pg_catalog.jsonb_array_elements(
+        v_simulation.warnings
+      ) as warning(value)
+      where warning.value ->> 'kind' = 'risk'
+        and warning.value ->> 'code' in (
+          'CUSTOM_RULE_RED_EVIDENCE_PRICED',
+          'red_evidence_payment'
+        )
+    ) then
+      v_material_risk_codes := v_material_risk_codes ||
+        array['red_evidence_payment'];
+    end if;
+    v_missing_data_impact_cents := coalesce(
+      nullif(
+        v_simulation.sample_selection #>>
+          '{riskFacts,missingDataImpact,amountDeltaCents}',
+        ''
+      )::numeric,
+      nullif(
+        v_simulation.sample_selection #>>
+          '{missingDataImpact,amountDeltaCents}',
+        ''
+      )::numeric,
+      nullif(
+        v_version.rule_contract #>>
+          '{missingDataPolicy,defaultValue,amountCents}',
+        ''
+      )::numeric
+    );
+    if v_version.rule_contract -> 'missingDataPolicy' ->> 'action' =
+         'use_explicit_default'
+       and coalesce(v_missing_data_impact_cents, 0) <> 0 then
+      v_material_risk_codes := v_material_risk_codes ||
+        array['money_changing_explicit_default'];
     end if;
     if v_version.target_type = 'streamer_group'
        and v_version.composition_mode = 'replace' then
       v_material_risk_codes :=
         v_material_risk_codes || array['group_level_replace'];
     end if;
-    v_material_risk_codes := v_material_risk_codes || coalesce(
-      array(
-        select distinct warning.value ->> 'code'
-        from pg_catalog.jsonb_array_elements(
-          v_simulation.warnings
-        ) as warning(value)
-        where warning.value ->> 'code' in (
-          'negative_margin',
-          'abnormal_total_increase',
-          'red_evidence_payment',
-          'money_changing_explicit_default',
-          'group_level_replace',
-          'overlapping_group_exception',
-          'safety_cap_exceeded'
-        )
-      ),
-      array[]::text[]
-    );
+    if v_version.target_type = 'streamer_group'
+       and v_version.rule_contract -> 'groupConflict' ->> 'resolution' =
+         'explicit_exception'
+       and pg_catalog.jsonb_typeof(
+         v_version.rule_contract -> 'groupConflict' -> 'conflictingGroupIds'
+       ) = 'array'
+       and pg_catalog.jsonb_array_length(
+         v_version.rule_contract -> 'groupConflict' -> 'conflictingGroupIds'
+       ) > 0 then
+      v_material_risk_codes := v_material_risk_codes ||
+        array['overlapping_group_exception'];
+    end if;
     select coalesce(array_agg(distinct code order by code), array[]::text[])
     into v_material_risk_codes
     from pg_catalog.unnest(v_material_risk_codes) as code;
@@ -2149,6 +2265,22 @@ begin
       p_acknowledgment,
       'derivedFrom',
       'server_owned_review_custom_settlement_rule',
+      'custom_rule_material_risk_server_owned_totals',
+      pg_catalog.jsonb_build_object(
+        'totalOldCents',
+        v_old_total_cents,
+        'totalNewCents',
+        v_new_total_cents,
+        'marginImpactCents',
+        v_margin_impact_cents,
+        'abnormalTotalIncreaseBps',
+        v_abnormal_total_increase_bps
+      ),
+      'custom_rule_material_risk_server_owned_scenarios',
+      pg_catalog.jsonb_build_object(
+        'safetyCapCents',
+        v_safety_cap_cents
+      ),
       'custom_settlement_rule_client_risk_ignored',
       p_risk_summary <> '{}'::jsonb
     );
