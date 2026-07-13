@@ -134,7 +134,7 @@ export function executeCustomSettlementRulePipeline(input: {
     let runningAmountCents = 0;
     let unitRoutedToReview = false;
 
-    for (const layer of executableLayers) {
+    for (const [layerIndex, layer] of executableLayers.entries()) {
       const staticError = validateLayerBeforeExecution(layer, unit);
       if (staticError) {
         return { kind: "blocked", error: staticError };
@@ -173,7 +173,16 @@ export function executeCustomSettlementRulePipeline(input: {
         return { kind: "blocked", error: prepared.error };
       }
       if (prepared.kind === "review") {
-        reviewExceptions.push(...prepared.exceptions);
+        reviewExceptions.push(
+          ...prepared.exceptions.map((exception) =>
+            exceptionWithReplaySnapshot({
+              exception,
+              layer,
+              variables,
+              replayLayers: executableLayers.slice(layerIndex),
+            }),
+          ),
+        );
         unitRoutedToReview = true;
         break;
       }
@@ -249,6 +258,44 @@ export function executeCustomSettlementRulePipeline(input: {
   }
 
   return { kind: "completed", snapshots, reviewExceptions: [] };
+}
+
+function exceptionWithReplaySnapshot(input: {
+  exception: PreparedRuleException;
+  layer: ExecutableCustomRuleLayer;
+  variables: Record<string, TypedRuntimeValue>;
+  replayLayers: ExecutableCustomRuleLayer[];
+}): PreparedRuleException {
+  return {
+    ...input.exception,
+    layerSnapshot: {
+      versionId: input.layer.versionId,
+      target: input.layer.target,
+      layer: input.exception.layer,
+      executionUnitKey: input.exception.executionUnitKey,
+      category: input.exception.category,
+      composition: input.layer.composition,
+      formulaHash: input.layer.formulaHash,
+      contractHash: input.layer.contractHash,
+      compiledAst: input.layer.compiledAst,
+      compiledAstHash: input.layer.compiledAstHash,
+      activeCompiledAstHash: input.layer.activeCompiledAstHash,
+      parameters: input.layer.parameters,
+      typedInputs: input.variables,
+      replayLayers: input.replayLayers.map((layer) => ({
+        versionId: layer.versionId,
+        target: layer.target,
+        priority: layer.priority,
+        composition: layer.composition,
+        formulaHash: layer.formulaHash,
+        contractHash: layer.contractHash,
+        compiledAst: layer.compiledAst,
+        compiledAstHash: layer.compiledAstHash,
+        activeCompiledAstHash: layer.activeCompiledAstHash,
+        parameters: layer.parameters,
+      })),
+    },
+  };
 }
 
 function orderedExecutableLayers(

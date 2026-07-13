@@ -184,6 +184,15 @@ describe("executeCustomSettlementRulePipeline", () => {
           variable: "gift_amount",
           placeholderAmountCents: 0,
           contributionCents: 0,
+          layerSnapshot: expect.objectContaining({
+            versionId: "review-v1",
+            compiledAst: expect.any(Object),
+            compiledAstHash: reviewLayer.compiledAstHash,
+            activeCompiledAstHash: reviewLayer.activeCompiledAstHash,
+            typedInputs: expect.objectContaining({
+              prior_layer_amount: { type: "money_cents", amountCents: 0 },
+            }),
+          }),
         },
       ],
     });

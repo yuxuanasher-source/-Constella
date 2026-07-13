@@ -89,6 +89,7 @@ export type PreparedRuleException = Readonly<{
   placeholderAmountCents: 0;
   contributionCents: 0;
   status: "review_required";
+  layerSnapshot?: Record<string, unknown>;
 }>;
 
 export type PreparedExecution =

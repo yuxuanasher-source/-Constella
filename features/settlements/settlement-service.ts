@@ -271,6 +271,14 @@ export type SettlementRepository = {
     item: SettlementBatchItemRecord;
     exception: SettlementRuleExceptionRecord;
   }>;
+  listSettlementRuleExceptions?(input: {
+    organizationId: string;
+    batchId: string;
+  }): Promise<SettlementRuleExceptionRecord[]>;
+  hasOpenSettlementRuleExceptions?(input: {
+    organizationId: string;
+    batchId: string;
+  }): Promise<boolean>;
   markReportSettled(input: {
     reportId: string;
     settlementBatchItemId: string;
@@ -295,6 +303,9 @@ export type SettlementRepository = {
 export type SettlementAuditWriter = (input: AuditLogInput) => Promise<void>;
 export type SettlementNotifier = (input: NotificationInput) => Promise<void>;
 export type ManualSettlementItemType = "cpa" | "cps" | "gift" | "manual";
+export type SettlementBatchGate = {
+  assertNoOpenRuleExceptions(batchId: string): Promise<void>;
+};
 
 export async function listSettlementPool({
   repo,
@@ -647,6 +658,7 @@ export async function confirmSettlementBatch({
   actor,
   batchId,
   reason,
+  gate,
 }: {
   repo: Pick<
     SettlementRepository,
@@ -657,6 +669,7 @@ export async function confirmSettlementBatch({
   actor: SettlementActor;
   batchId: string;
   reason: string;
+  gate?: SettlementBatchGate;
 }): Promise<SettlementBatchRecord> {
   assertCanConfirmSettlement(actor.role);
   assertReason(reason, "Confirming a settlement batch requires a reason");
@@ -666,6 +679,7 @@ export async function confirmSettlementBatch({
       "Only generated or reopened settlement batches can be confirmed",
     );
   }
+  await gate?.assertNoOpenRuleExceptions(batchId);
 
   const after = await repo.updateSettlementBatch(batchId, {
     status: "confirmed",
@@ -699,6 +713,7 @@ export async function lockSettlementBatch({
   batchId,
   reason,
   now = new Date().toISOString(),
+  gate,
 }: {
   repo: Pick<
     SettlementRepository,
@@ -710,6 +725,7 @@ export async function lockSettlementBatch({
   batchId: string;
   reason: string;
   now?: string;
+  gate?: SettlementBatchGate;
 }): Promise<SettlementBatchRecord> {
   assertCanLockSettlement(actor.role);
   assertReason(reason, "Locking a settlement batch requires a reason");
@@ -717,6 +733,7 @@ export async function lockSettlementBatch({
   if (before.status === "locked" || before.status === "voided") {
     throw new Error("Only open settlement batches can be locked");
   }
+  await gate?.assertNoOpenRuleExceptions(batchId);
 
   const after = await repo.updateSettlementBatch(batchId, {
     status: "locked",

@@ -235,6 +235,26 @@ const settlementBatchItemSelect = `
   created_at
 `;
 
+const settlementRuleExceptionSelect = `
+  id,
+  organization_id,
+  project_id,
+  settlement_batch_id,
+  settlement_batch_item_id,
+  live_report_id,
+  rule_version_id,
+  layer_snapshot,
+  variable_name,
+  policy,
+  status,
+  resolution_value,
+  resolution_reason,
+  created_by,
+  resolved_by,
+  created_at,
+  resolved_at
+`;
+
 export class SupabaseSettlementRepository implements SettlementRepository {
   constructor(private readonly client: SupabaseClient) {}
 
@@ -581,7 +601,7 @@ export class SupabaseSettlementRepository implements SettlementRepository {
     );
 
     if (error) {
-      throw error;
+      throw settlementRuleExceptionRpcError(error);
     }
 
     const result = data as {
@@ -595,6 +615,45 @@ export class SupabaseSettlementRepository implements SettlementRepository {
       item: toSettlementBatchItemRecord(result.item),
       exception: toSettlementRuleExceptionRecord(result.exception),
     };
+  }
+
+  async listSettlementRuleExceptions(input: {
+    organizationId: string;
+    batchId: string;
+  }): Promise<SettlementRuleExceptionRecord[]> {
+    const { data, error } = await this.client
+      .from("settlement_rule_exceptions")
+      .select(settlementRuleExceptionSelect)
+      .eq("organization_id", input.organizationId)
+      .eq("settlement_batch_id", input.batchId)
+      .order("created_at", { ascending: true })
+      .returns<SettlementRuleExceptionRow[]>();
+
+    if (error) {
+      throw error;
+    }
+
+    return (data ?? []).map(toSettlementRuleExceptionRecord);
+  }
+
+  async hasOpenSettlementRuleExceptions(input: {
+    organizationId: string;
+    batchId: string;
+  }): Promise<boolean> {
+    const { data, error } = await this.client
+      .from("settlement_rule_exceptions")
+      .select("id")
+      .eq("organization_id", input.organizationId)
+      .eq("settlement_batch_id", input.batchId)
+      .eq("status", "review_required")
+      .limit(1)
+      .returns<Array<{ id: string }>>();
+
+    if (error) {
+      throw error;
+    }
+
+    return (data ?? []).length > 0;
   }
 
   async markReportSettled(input: {
@@ -1116,6 +1175,44 @@ function removeUndefined(
   return Object.fromEntries(
     Object.entries(input).filter(([, value]) => value !== undefined),
   );
+}
+
+function settlementRuleExceptionRpcError(error: unknown): Error {
+  const message =
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string"
+      ? (error as { message: string }).message
+      : String(error);
+
+  if (
+    message.includes(
+      "Settlement rule exception was already resolved with a different value",
+    )
+  ) {
+    return new Error(
+      "Settlement rule exception was already resolved with a different value",
+    );
+  }
+  if (message.includes("Settlement rule exception is not open for resolution")) {
+    return new Error("Settlement rule exception is not open for resolution");
+  }
+  if (message.includes("settlement_rule_exception_batch_locked")) {
+    return new Error(
+      "Settlement batch is no longer open for rule exception resolution",
+    );
+  }
+  if (message.includes("settlement_rule_exception_not_found")) {
+    return new Error("Settlement rule exception not found");
+  }
+  if (message.includes("settlement_rule_exception_resolve_access_denied")) {
+    return new Error("Current role cannot resolve settlement rule exceptions");
+  }
+  if (message.includes("settlement_rule_exception_stale_amount")) {
+    return new Error("Settlement rule exception amount is stale");
+  }
+  return error instanceof Error ? error : new Error(message);
 }
 
 function firstRelation<T>(relation: T | T[] | null | undefined): T | null {

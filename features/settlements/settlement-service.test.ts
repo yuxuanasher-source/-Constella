@@ -763,6 +763,29 @@ describe("settlement service", () => {
     );
   });
 
+  it("checks the rule exception gate before confirming a batch", async () => {
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => {
+        throw new Error("Settlement batch has unresolved rule exceptions");
+      }),
+    };
+
+    await expect(
+      confirmSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor: financeActor,
+        batchId: "batch-1",
+        reason: "Finance verified the amounts",
+        gate,
+      }),
+    ).rejects.toThrow("Settlement batch has unresolved rule exceptions");
+
+    expect(gate.assertNoOpenRuleExceptions).toHaveBeenCalledWith("batch-1");
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+  });
+
   it("lets owners confirm reopened batches", async () => {
     vi.mocked(repo.getSettlementBatchById).mockResolvedValueOnce(
       createBatch({ status: "reopened", reopenReason: "Need correction" }),
@@ -781,6 +804,29 @@ describe("settlement service", () => {
       "batch-1",
       expect.objectContaining({ status: "confirmed" }),
     );
+  });
+
+  it("checks the rule exception gate before locking a batch", async () => {
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => {
+        throw new Error("Settlement batch has unresolved rule exceptions");
+      }),
+    };
+
+    await expect(
+      lockSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor,
+        batchId: "batch-1",
+        reason: "Finance checked",
+        gate,
+      }),
+    ).rejects.toThrow("Settlement batch has unresolved rule exceptions");
+
+    expect(gate.assertNoOpenRuleExceptions).toHaveBeenCalledWith("batch-1");
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
   });
 
   it("blocks non-finance non-owner roles from confirming batches", async () => {

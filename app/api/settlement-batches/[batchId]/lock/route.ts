@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
+import { createSettlementBatchRuleExceptionGate } from "@/features/settlements/custom-rule-exception-service";
 import {
   getSettlementRouteContext,
   jsonError,
@@ -16,18 +18,38 @@ export async function POST(
   try {
     const { batchId } = await params;
     const body = await readJsonBody(request);
+    const reason = requiredString(body, "reason");
     const context = await getSettlementRouteContext();
+    await assertBillingWriteAllowed({
+      client: context.supabase,
+      organizationId: context.auth.organizationId,
+      featureKey: "settlement",
+    });
     const batch = await lockSettlementBatch({
       repo: context.repo,
       audit: (input) => context.audit(context.supabase, input),
       notify: (input) => context.notify(context.supabase, input),
       actor: settlementActorFromContext(context),
       batchId,
-      reason: requiredString(body, "reason"),
+      reason,
+      gate: createSettlementBatchRuleExceptionGate({
+        repo: context.repo,
+        organizationId: context.auth.organizationId,
+      }),
     });
 
     return NextResponse.json({ batch });
   } catch (error) {
-    return jsonError(error);
+    return lockError(error);
   }
+}
+
+function lockError(error: unknown) {
+  if (
+    error instanceof Error &&
+    error.message === "Settlement batch has unresolved rule exceptions"
+  ) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  return jsonError(error);
 }

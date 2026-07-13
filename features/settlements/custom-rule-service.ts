@@ -5578,7 +5578,7 @@ function settlementExceptionForPreparedException(
   return {
     liveReportId: sourceReportIds[0] ?? null,
     ruleVersionId: exception.ruleVersionId,
-    layerSnapshot: {
+    layerSnapshot: exception.layerSnapshot ?? {
       target: exception.target,
       layer: exception.layer,
       executionUnitKey: exception.executionUnitKey,

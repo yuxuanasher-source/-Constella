@@ -469,4 +469,32 @@ describe("SupabaseSettlementRepository", () => {
       }),
     );
   });
+
+  it("maps exception resolution RPC conflicts to safe service errors", async () => {
+    const repo = new SupabaseSettlementRepository({
+      rpc: vi.fn(async () => ({
+        data: null,
+        error: {
+          code: "P0001",
+          message:
+            "Settlement rule exception was already resolved with a different value",
+        },
+      })),
+    } as never);
+
+    await expect(
+      repo.resolveSettlementRuleException({
+        organizationId: "org-1",
+        exceptionId: "exception-1",
+        settlementBatchItemId: "item-1",
+        oldComputedAmount: 0,
+        newComputedAmount: 0.01,
+        resolutionValue: { moneyCents: 2 },
+        resolutionReason: "Finance checked source sheet",
+        resolvedBy: "user-finance",
+      }),
+    ).rejects.toThrow(
+      "Settlement rule exception was already resolved with a different value",
+    );
+  });
 });

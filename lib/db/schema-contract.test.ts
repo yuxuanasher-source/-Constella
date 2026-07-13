@@ -122,6 +122,18 @@ const settlementRuleExecutionMigration = readdirSync(migrationsDir).includes(
 const normalizedSettlementRuleExecutionMigration = normalizeSql(
   settlementRuleExecutionMigration,
 );
+const settlementRuleExceptionResolutionHardeningMigrationName =
+  "20260711133000_custom_settlement_rule_exception_resolution_hardening.sql";
+const settlementRuleExceptionResolutionHardeningMigration = readdirSync(
+  migrationsDir,
+).includes(settlementRuleExceptionResolutionHardeningMigrationName)
+  ? readFileSync(
+      join(migrationsDir, settlementRuleExceptionResolutionHardeningMigrationName),
+      "utf8",
+    )
+  : "";
+const normalizedSettlementRuleExceptionResolutionHardeningMigration =
+  normalizeSql(settlementRuleExceptionResolutionHardeningMigration);
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/gu, " ").trim();
@@ -3567,6 +3579,32 @@ describe("Phase 3 settlement rule execution persistence contract", () => {
     );
     expect(normalizedSettlementRuleExecutionMigration).not.toMatch(
       /grant execute on function public\.resolve_settlement_rule_exception\([\s\S]+?to (?:anon|service_role|public);/u,
+    );
+  });
+
+  it("hardens exception resolution role and idempotency rules", () => {
+    expect(
+      normalizedSettlementRuleExceptionResolutionHardeningMigration,
+    ).toContain("create or replace function public.resolve_settlement_rule_exception");
+    expect(
+      normalizedSettlementRuleExceptionResolutionHardeningMigration,
+    ).toContain("'owner', 'ops_manager', 'finance'");
+    expect(
+      normalizedSettlementRuleExceptionResolutionHardeningMigration,
+    ).not.toContain("'operator_business'");
+    expect(
+      normalizedSettlementRuleExceptionResolutionHardeningMigration,
+    ).toContain("v_exception.status <> 'review_required'");
+    expect(
+      normalizedSettlementRuleExceptionResolutionHardeningMigration,
+    ).toContain("v_exception.status = 'resolved'");
+    expect(
+      normalizedSettlementRuleExceptionResolutionHardeningMigration,
+    ).toContain("v_exception.resolution_value = p_resolution_value");
+    expect(
+      normalizedSettlementRuleExceptionResolutionHardeningMigration,
+    ).toContain(
+      "settlement rule exception was already resolved with a different value",
     );
   });
 });
