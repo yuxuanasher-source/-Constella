@@ -1632,8 +1632,12 @@ const jsonValueSchema: z.ZodType<SettlementAiJsonValue> = z.lazy(() =>
   ]),
 );
 const customRuleScopeSchema = z.enum(CUSTOM_RULE_SCOPES);
+const projectCustomRuleTargetSchema = z.strictObject({
+  targetType: z.literal("project"),
+  targetId: z.null(),
+});
 const customRuleTargetSchema = z.discriminatedUnion("targetType", [
-  z.strictObject({ targetType: z.literal("project"), targetId: z.null() }),
+  projectCustomRuleTargetSchema,
   z.strictObject({
     targetType: z.literal("streamer_group"),
     targetId: uuidSchema,
@@ -1724,7 +1728,9 @@ const editableReusableRuleDraftPayloadSchema = z.strictObject({
   archivedAt: z.null(),
 });
 const cloneRuleVersionToEditableDraftResultPayloadSchema = z.strictObject({
-  version: editableReusableRuleDraftPayloadSchema,
+  version: editableReusableRuleDraftPayloadSchema.extend({
+    target: projectCustomRuleTargetSchema,
+  }),
   lineage: z.strictObject({
     sourceRuleVersionId: uuidSchema,
     sourceProjectId: uuidSchema,

@@ -2377,6 +2377,8 @@ begin
      or (v_payload -> 'ruleContract') - 'target' is distinct from v_source.rule_contract - 'target'
      or v_payload #> '{ruleContract,target}' is distinct from
        pg_catalog.jsonb_build_object('targetType', 'project', 'targetId', null)
+     or v_payload #> '{target}' is distinct from
+       pg_catalog.jsonb_build_object('targetType', 'project', 'targetId', null)
      or v_payload ->> 'systemExplanationTemplate' is distinct from
        v_source.system_explanation_template
      or coalesce(v_payload -> 'missingDataPolicy', '{}'::jsonb) is distinct from
@@ -2405,8 +2407,7 @@ begin
     reason, approved_at, archived_at
   ) values (
     p_rule_version_id, p_organization_id, p_target_project_id,
-    v_source.scope, v_payload #>> '{target,targetType}',
-    nullif(v_payload #>> '{target,targetId}', '')::uuid,
+    v_source.scope, 'project', null,
     v_source.execution_grain, v_source.composition_mode,
     coalesce((v_payload ->> 'priority')::integer, v_source.priority),
     coalesce((v_payload ->> 'versionNumber')::integer, 1),

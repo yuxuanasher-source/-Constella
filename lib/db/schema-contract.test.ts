@@ -2458,6 +2458,11 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(clone).toContain("v_payload -> 'rulecontract'");
     expect(clone).toContain("v_source.rule_contract");
     expect(clone).toContain("v_payload ->> 'status' <> 'draft'");
+    expect(clone).toContain("v_payload #> '{target}' is distinct from");
+    expect(clone).toContain(
+      "jsonb_build_object('targettype', 'project', 'targetid', null)",
+    );
+    expect(clone).toContain("v_source.scope, 'project', null");
     expect(clone).toContain("nullif(v_payload ->> 'simulationid', '') is not null");
 
     const parameter = extractSettlementGovernanceFunction(
