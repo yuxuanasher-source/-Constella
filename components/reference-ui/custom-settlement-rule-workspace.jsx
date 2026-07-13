@@ -101,6 +101,8 @@ const INITIAL_GOVERNANCE_STATE = {
   error: null,
 };
 
+const OPTIONAL_GOVERNANCE_FAILURE = Symbol("optional governance failure");
+
 const SESSION_SYNC_ERROR_CODES = new Set([
   "CUSTOM_RULE_SESSION_CONFLICT",
   "CUSTOM_RULE_IDEMPOTENCY_CONFLICT",
@@ -424,6 +426,14 @@ function authorityHasValidTerminalShape(authority) {
 }
 
 function invalidAuthorityError() {
+  return new CustomSettlementRuleApiError({
+    code: "CUSTOM_RULE_RESPONSE_INVALID",
+    status: 200,
+    retryable: true,
+  });
+}
+
+function invalidSubmitLifecycleError() {
   return new CustomSettlementRuleApiError({
     code: "CUSTOM_RULE_RESPONSE_INVALID",
     status: 200,
@@ -1454,6 +1464,11 @@ export default function CustomSettlementRuleWorkspace({
     ) {
       return () => controller.abort();
     }
+    const optionalGovernanceCall = (promise, fallback) =>
+      promise.catch((error) => {
+        if (error?.name === "AbortError") throw error;
+        return { ...fallback, [OPTIONAL_GOVERNANCE_FAILURE]: true };
+      });
     Promise.all([
       canLoadVersions
         ? metadataApiClient.listRuleVersions({
@@ -1468,21 +1483,27 @@ export default function CustomSettlementRuleWorkspace({
           })
         : Promise.resolve({ groups: [] }),
       canLoadReviews
-        ? metadataApiClient.listRuleReviewEvents({
-            projectId,
-            signal: controller.signal,
-          })
+        ? optionalGovernanceCall(
+            metadataApiClient.listRuleReviewEvents({
+              projectId,
+              signal: controller.signal,
+            }),
+            { events: [] },
+          )
         : Promise.resolve({ events: [] }),
       canLoadTemplates
         ? metadataApiClient.listRuleTemplates({ signal: controller.signal })
         : Promise.resolve({ templates }),
       canLoadLatestSession
-        ? metadataApiClient.getLatestProjectRuleSession({
-            projectId,
-            scope: selectedScope,
-            target: selectedTarget,
-            signal: controller.signal,
-          })
+        ? optionalGovernanceCall(
+            metadataApiClient.getLatestProjectRuleSession({
+              projectId,
+              scope: selectedScope,
+              target: selectedTarget,
+              signal: controller.signal,
+            }),
+            { session: null },
+          )
         : Promise.resolve({ session: null }),
     ])
       .then(([rulesPayload, groupsPayload, reviewsPayload, templatesPayload, sessionPayload]) => {
@@ -1877,6 +1898,9 @@ export default function CustomSettlementRuleWorkspace({
         },
         signal: controller.signal,
       });
+      if (!payload?.rule || !payload?.simulation || !payload?.event) {
+        throw invalidSubmitLifecycleError();
+      }
       if (sequence !== requestSequenceRef.current) return;
       setGovernanceState((current) => ({
         ...(current.contextKey === workspaceContextKey
@@ -2042,7 +2066,22 @@ export default function CustomSettlementRuleWorkspace({
   };
 
   const reopenRequestedChangesVersion = async (ruleId) => {
-    if (typeof apiClient.reopenRuleDraft !== "function") return;
+    if (typeof apiClient.reopenRuleDraft !== "function") {
+      setRequestState((current) => ({
+        ...(current.contextKey === workspaceContextKey
+          ? current
+          : freshRequestState()),
+        contextKey: workspaceContextKey,
+        status: "ready",
+        operation: null,
+        lastOperation: null,
+        error: null,
+        recovery: null,
+        announcement: "需要后端重开接口",
+        focusTarget: "status",
+      }));
+      return;
+    }
     const payload = await apiClient.reopenRuleDraft({
       projectId,
       ruleVersionId: ruleId,
@@ -2659,6 +2698,7 @@ export default function CustomSettlementRuleWorkspace({
             "规则已归档",
             "规则已重新打开为草稿",
             "可编辑草稿已创建",
+            "需要后端重开接口",
           ].includes(viewState.announcement) ? (
             <div className="crw-submit-state">
               <h2 ref={statusHeadingRef} tabIndex={-1}>
@@ -2721,6 +2761,13 @@ export default function CustomSettlementRuleWorkspace({
 
       {activePane === "groups" ? (
         <div id="crw-pane-groups" role="tabpanel" aria-label="结算分组">
+          {viewState.announcement === "分组已更新" ? (
+            <div className="crw-submit-state">
+              <h2 ref={statusHeadingRef} tabIndex={-1}>
+                分组已更新
+              </h2>
+            </div>
+          ) : null}
           <CustomSettlementRuleGroupPanel
             groups={governanceView.groups}
             streamers={governanceView.groups.flatMap(

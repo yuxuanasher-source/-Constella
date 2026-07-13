@@ -911,6 +911,9 @@ const lifecycleResultSchema = z.strictObject({
   }),
   event: reviewEventSchema.nullable(),
 });
+const submitLifecycleResultSchema = lifecycleResultSchema.extend({
+  event: reviewEventSchema,
+});
 const cloneResultSchema = z.strictObject({
   rule: governanceRuleSchema,
   lineage: z.strictObject({
@@ -1040,13 +1043,11 @@ const responseSchemas = {
   answer: z.strictObject({ result: answerResultSchema }),
   confirm: z.strictObject({ result: confirmResultSchema }),
   session: z.strictObject({ session: authoritativeSessionSchema }),
-  latestProjectSession: z.strictObject({
-    session: authoritativeSessionSchema.nullable(),
-  }),
   rules: z.strictObject({ rules: z.array(governanceRuleSchema).max(500) }),
   reviewEvents: z.strictObject({
     events: z.array(reviewEventSchema).max(500),
   }),
+  submitLifecycle: submitLifecycleResultSchema,
   lifecycle: lifecycleResultSchema,
   clone: cloneResultSchema,
   templates: z.strictObject({
@@ -1310,17 +1311,6 @@ export function createCustomSettlementRuleApi({
         signal,
       );
     },
-    getLatestProjectRuleSession({ projectId, scope, target, signal }) {
-      const query = new URLSearchParams({ scope });
-      query.set("targetType", target?.targetType ?? "project");
-      if (target?.targetId) query.set("targetId", target.targetId);
-      return request(
-        `${baseUrl(projectId)}/ai-sessions/latest?${query.toString()}`,
-        { method: "GET" },
-        responseSchemas.latestProjectSession,
-        signal,
-      );
-    },
     answerOrRevise({ projectId, sessionId, body, signal }) {
       return post(
         `${baseUrl(projectId)}/ai-sessions/${pathSegment(sessionId)}/turns`,
@@ -1356,14 +1346,6 @@ export function createCustomSettlementRuleApi({
         signal,
       );
     },
-    listRuleReviewEvents({ projectId, signal }) {
-      return request(
-        `${baseUrl(projectId)}/review-events`,
-        { method: "GET" },
-        responseSchemas.reviewEvents,
-        signal,
-      );
-    },
     listRuleTemplates({ signal } = {}) {
       return request(
         "/api/settlement-rule-templates",
@@ -1376,7 +1358,7 @@ export function createCustomSettlementRuleApi({
       return post(
         `${baseUrl(projectId)}/apply-and-submit`,
         body,
-        responseSchemas.lifecycle,
+        responseSchemas.submitLifecycle,
         signal,
       );
     },
@@ -1399,14 +1381,6 @@ export function createCustomSettlementRuleApi({
     archiveRule({ projectId, ruleVersionId, body, signal }) {
       return post(
         `${baseUrl(projectId)}/${pathSegment(ruleVersionId)}/archive`,
-        body,
-        responseSchemas.lifecycle,
-        signal,
-      );
-    },
-    reopenRuleDraft({ projectId, ruleVersionId, body, signal }) {
-      return post(
-        `${baseUrl(projectId)}/${pathSegment(ruleVersionId)}/reopen-draft`,
         body,
         responseSchemas.lifecycle,
         signal,

@@ -470,21 +470,6 @@ function governanceRule(overrides = {}) {
   };
 }
 
-function reviewEvent(overrides = {}) {
-  return {
-    id: "66666666-6666-4666-8666-666666666666",
-    eventType: "submitted_for_review",
-    actorId: "22222222-2222-4222-8222-222222222222",
-    actorRole: "operator_business",
-    reason: "提交审核",
-    comment: null,
-    beforeStatus: "draft",
-    afterStatus: "pending_review",
-    createdAt: "2026-07-12T00:00:00.000Z",
-    ...overrides,
-  };
-}
-
 describe("custom settlement rule API", () => {
   it("returns a validated catalog and encodes the project and query values", async () => {
     const fetchImpl = vi.fn(async () =>
@@ -1930,10 +1915,9 @@ describe("custom settlement rule API", () => {
     });
   });
 
-  it("loads governance review events, reusable templates, and latest project session", async () => {
+  it("loads reusable templates only from existing routes and does not expose missing optional endpoints", async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse({ events: [reviewEvent()] }))
       .mockResolvedValueOnce(
         jsonResponse({
           templates: [
@@ -1969,53 +1953,28 @@ describe("custom settlement rule API", () => {
             },
           ],
         }),
-      )
-      .mockResolvedValueOnce(jsonResponse({ session: completeV2SessionSummary() }));
+      );
     const api = createCustomSettlementRuleApi({ fetchImpl });
 
-    await expect(
-      api.listRuleReviewEvents({ projectId: PROJECT_ID }),
-    ).resolves.toMatchObject({
-      events: [{ eventType: "submitted_for_review" }],
-    });
     await expect(api.listRuleTemplates()).resolves.toMatchObject({
       templates: [{ kind: "system" }, { kind: "organization" }],
     });
-    await expect(
-      api.getLatestProjectRuleSession({
-        projectId: PROJECT_ID,
-        scope: "payable",
-        target: { targetType: "project", targetId: null },
-      }),
-    ).resolves.toMatchObject({
-      session: { draft: { status: "simulated" } },
-    });
+    expect(api.listRuleReviewEvents).toBeUndefined();
+    expect(api.getLatestProjectRuleSession).toBeUndefined();
+    expect(api.reopenRuleDraft).toBeUndefined();
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
-      `/api/projects/${PROJECT_ID}/settlement-rules/review-events`,
-      expect.objectContaining({ method: "GET" }),
-    );
-    expect(fetchImpl).toHaveBeenNthCalledWith(
-      2,
       "/api/settlement-rule-templates",
       expect.objectContaining({ method: "GET" }),
     );
-    expect(fetchImpl).toHaveBeenNthCalledWith(
-      3,
-      `/api/projects/${PROJECT_ID}/settlement-rules/ai-sessions/latest?scope=payable&targetType=project`,
-      expect.objectContaining({ method: "GET" }),
-    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("reopens requested changes as a draft and validates nullable lifecycle events", async () => {
-    const reopened = governanceRule({
-      status: "draft",
-      primaryAction: { state: "draft", action: "apply_and_submit" },
-    });
+  it("requires apply-and-submit to include a non-null review event", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({
-        rule: reopened,
+        rule: governanceRule(),
         simulation: {
           id: "55555555-5555-4555-8555-555555555555",
           createdAt: "2026-07-12T00:00:00.000Z",
@@ -2026,18 +1985,21 @@ describe("custom settlement rule API", () => {
     const api = createCustomSettlementRuleApi({ fetchImpl });
 
     await expect(
-      api.reopenRuleDraft({
+      api.applyAndSubmitRule({
         projectId: PROJECT_ID,
-        ruleVersionId: reopened.id,
         body: {
-          reason: "按审核意见修改",
-          clientRequestId: "reopen-rule-0001",
+          source: { kind: "ai_draft", id: DRAFT_ID },
+          sourceSimulationId: "88888888-8888-4888-8888-888888888888",
+          destinationVersionId: "44444444-4444-4444-8444-444444444444",
+          destinationSimulationId: "55555555-5555-4555-8555-555555555555",
+          scope: "payable",
+          target: { targetType: "project", targetId: null },
+          effectiveFrom: "2026-07-12T00:00:00.000Z",
+          reason: "提交审核",
+          clientRequestId: "submit-rule-0001",
         },
       }),
-    ).resolves.toMatchObject({
-      rule: { id: reopened.id, status: "draft" },
-      event: null,
-    });
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_RESPONSE_INVALID" });
   });
 
   it("rejects an incomplete atomic apply-and-submit response", async () => {
