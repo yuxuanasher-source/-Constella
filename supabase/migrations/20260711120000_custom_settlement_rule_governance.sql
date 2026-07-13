@@ -1696,6 +1696,7 @@ declare
   v_explanation text;
   v_missing_data_policy jsonb;
   v_test_cases jsonb;
+  v_priority integer;
   v_formula_hash text;
   v_contract_hash text;
   v_parameter_hash text;
@@ -1889,6 +1890,10 @@ begin
     v_missing_data_policy :=
       v_source_draft.business_contract -> 'missingDataPolicy';
     v_test_cases := v_source_draft.generated_test_cases;
+    v_priority := coalesce(
+      (v_source_draft.business_contract ->> 'priority')::integer,
+      100
+    );
     v_formula_hash := v_source_draft.formula_hash;
     v_contract_hash := v_source_draft.contract_hash;
     v_parameter_hash := v_source_draft.parameter_hash;
@@ -1917,6 +1922,7 @@ begin
     v_explanation := v_source_version.system_explanation_template;
     v_missing_data_policy := v_source_version.missing_data_policy;
     v_test_cases := v_source_version.test_cases;
+    v_priority := v_source_version.priority;
     v_formula_hash := v_source_version.formula_hash;
     v_contract_hash := v_source_version.rule_contract_hash;
     v_parameter_hash := v_source_version.parameter_hash;
@@ -2058,7 +2064,7 @@ begin
          and active_pending.status in ('active', 'pending_review')
          and active_pending.id is distinct from p_source_rule_version_id
          and (
-           active_pending.priority = 100
+           active_pending.priority = v_priority
            or (
              active_pending.composition_mode = 'replace'
              and v_rule_contract ->> 'compositionMode' = 'replace'
@@ -2088,7 +2094,7 @@ begin
   ) values (
     p_rule_version_id, p_organization_id, p_project_id, p_scope,
     p_target_type, p_target_id, v_rule_contract ->> 'executionGrain',
-    v_rule_contract ->> 'compositionMode', 100, v_version_number,
+    v_rule_contract ->> 'compositionMode', v_priority, v_version_number,
     'pending_review', v_formula, v_compiled_ast, v_variables, v_parameters,
     v_rule_contract, v_explanation, v_missing_data_policy, v_test_cases,
     pg_catalog.jsonb_build_object(

@@ -2689,6 +2689,19 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(apply).toContain(
       "v_data_selection_hash := v_source_version.data_selection_hash",
     );
+    expect(apply).toContain("v_priority integer");
+    expect(apply).toContain("v_priority := v_source_version.priority");
+    expect(apply).toMatch(
+      /v_priority := coalesce\(\s*\(v_source_draft\.business_contract ->> 'priority'\)::integer,\s*100\s*\)/u,
+    );
+    expect(apply).toContain("active_pending.priority = v_priority");
+    expect(apply).toContain(
+      "v_rule_contract ->> 'compositionmode', v_priority, v_version_number",
+    );
+    expect(apply).not.toContain("active_pending.priority = 100");
+    expect(apply).not.toContain(
+      "v_rule_contract ->> 'compositionMode', 100, v_version_number",
+    );
     expect(apply).toContain("for update");
     expect(apply).toMatch(
       /pg_catalog\.pg_advisory_xact_lock[\s\S]+pg_catalog\.pg_advisory_xact_lock[\s\S]+from public\.custom_settlement_rule_versions/u,
