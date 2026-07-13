@@ -2450,6 +2450,15 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(clone).toContain("null");
     expect(clone).toContain("p_source_rule_version_id");
     expect(clone).toContain("p_target_project_id");
+    expect(clone).toContain("custom_settlement_rule_clone_payload_tampered");
+    expect(clone).toContain("v_payload ->> 'formula'");
+    expect(clone).toContain("v_source.formula");
+    expect(clone).toContain("v_payload -> 'compiledast'");
+    expect(clone).toContain("v_source.compiled_ast");
+    expect(clone).toContain("v_payload -> 'rulecontract'");
+    expect(clone).toContain("v_source.rule_contract");
+    expect(clone).toContain("v_payload ->> 'status' <> 'draft'");
+    expect(clone).toContain("nullif(v_payload ->> 'simulationid', '') is not null");
 
     const parameter = extractSettlementGovernanceFunction(
       "create_custom_settlement_rule_parameter_draft",
@@ -2460,6 +2469,17 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(parameter).toContain("p_draft");
     expect(parameter).toContain("p_edits");
     expect(parameter).toContain("simulation_id");
+    expect(parameter).toContain(
+      "custom_settlement_rule_parameter_payload_tampered",
+    );
+    expect(parameter).toContain("p_draft ->> 'formula'");
+    expect(parameter).toContain("v_source.formula");
+    expect(parameter).toContain("p_draft -> 'compiledast'");
+    expect(parameter).toContain("v_source.compiled_ast");
+    expect(parameter).toContain("p_draft -> 'rulecontract'");
+    expect(parameter).toContain("v_source.rule_contract");
+    expect(parameter).toContain("p_draft ->> 'status' <> 'draft'");
+    expect(parameter).toContain("nullif(p_draft ->> 'simulationid', '') is not null");
 
     const saveTemplate = extractSettlementGovernanceFunction(
       "save_organization_settlement_rule_template",

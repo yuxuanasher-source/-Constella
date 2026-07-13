@@ -1677,6 +1677,62 @@ const customRuleDraftPayloadSchema = z.strictObject({
   catalogHash: hashSchema,
   dataSelectionHash: hashSchema,
 });
+const ruleParameterDefinitionPayloadSchema = z.strictObject({
+  key: z.string().regex(IDENTIFIER_PATTERN),
+  labelZh: boundedTextSchema,
+  type: z.enum(["money_cents", "rate_bps", "integer", "number"]),
+  value: z.number().finite(),
+  min: z.number().finite().optional(),
+  max: z.number().finite().optional(),
+});
+const editableReusableRuleDraftPayloadSchema = z.strictObject({
+  id: uuidSchema,
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  scope: customRuleScopeSchema,
+  target: customRuleTargetSchema,
+  executionGrain: z.enum(CUSTOM_RULE_EXECUTION_GRAINS),
+  compositionMode: z.enum(CUSTOM_RULE_COMPOSITION_MODES),
+  priority: nonnegativeSafeIntegerSchema.max(1_000_000),
+  versionNumber: z.number().int().positive(),
+  status: z.literal("draft"),
+  formula: boundedTextSchema,
+  compiledAst: normalizedAstNodeSchema,
+  variables: z.array(jsonValueSchema),
+  parameters: z.record(z.string(), typedRuntimeValueSchema),
+  parameterDefinitions: z.array(ruleParameterDefinitionPayloadSchema).optional(),
+  ruleContract: businessRuleContractSchema,
+  systemExplanationTemplate: boundedTextSchema,
+  missingDataPolicy: z.record(z.string(), jsonValueSchema),
+  testCases: z.array(jsonValueSchema),
+  simulationSummary: z.record(z.string(), jsonValueSchema),
+  formulaHash: hashSchema,
+  contractHash: hashSchema,
+  parameterHash: hashSchema,
+  catalogHash: hashSchema,
+  dataSelectionHash: hashSchema,
+  variableCatalogVersion: hashSchema.optional(),
+  simulationId: z.null(),
+  effectiveFrom: z.null(),
+  effectiveUntil: z.null(),
+  createdBy: uuidSchema,
+  approvedBy: z.null(),
+  aiDraftId: z.null(),
+  reason: boundedTextSchema.nullable(),
+  createdAt: timestampSchema,
+  approvedAt: z.null(),
+  archivedAt: z.null(),
+});
+const cloneRuleVersionToEditableDraftResultPayloadSchema = z.strictObject({
+  version: editableReusableRuleDraftPayloadSchema,
+  lineage: z.strictObject({
+    sourceRuleVersionId: uuidSchema,
+    sourceProjectId: uuidSchema,
+    sourceVersionNumber: z.number().int().positive(),
+    sourceScope: customRuleScopeSchema,
+  }),
+  missingTargetVariables: z.array(nonemptyTextSchema.max(200)),
+});
 const saveCustomRuleDraftInputSchema = z.strictObject({
   organizationId: uuidSchema,
   projectId: uuidSchema,
@@ -1745,7 +1801,7 @@ const cloneCustomRuleToDraftInputSchema = z.strictObject({
   targetVariableCatalogVersion: hashSchema,
   targetAvailableVariableIds: z.array(nonemptyTextSchema.max(200)).max(500),
   newVersionId: uuidSchema,
-  clone: z.unknown(),
+  clone: cloneRuleVersionToEditableDraftResultPayloadSchema,
   reason: boundedTextSchema,
   clientRequestId: nonemptyTextSchema.max(120),
 });
@@ -1764,7 +1820,7 @@ const createCustomRuleParameterDraftInputSchema = z.strictObject({
     )
     .min(1)
     .max(100),
-  draft: z.unknown(),
+  draft: editableReusableRuleDraftPayloadSchema,
   reason: boundedTextSchema,
   clientRequestId: nonemptyTextSchema.max(120),
 });

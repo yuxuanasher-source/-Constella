@@ -3564,6 +3564,47 @@ describe("custom-rule draft and simulation persistence", () => {
     });
   });
 
+  it("rejects forged clone payload executable state before RPC", async () => {
+    const source = customRuleVersionFromLifecycleRow();
+    const clone = cloneRuleVersionToEditableDraft({
+      sourceVersion: source,
+      targetProjectId: OTHER_PROJECT_ID,
+      targetCatalog: {
+        version: HASH_F,
+        variables: [{ id: "grossRevenue", availability: "available" }],
+      },
+      newVersionId: RULE_VERSION_2_ID,
+      reason: "Clone to another project.",
+    });
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(
+      repository.cloneCustomRuleToDraft({
+        organizationId: ORGANIZATION_ID,
+        sourceProjectId: PROJECT_ID,
+        targetProjectId: OTHER_PROJECT_ID,
+        sourceRuleVersionId: RULE_VERSION_ID,
+        targetVariableCatalogVersion: HASH_F,
+        targetAvailableVariableIds: ["grossRevenue"],
+        newVersionId: RULE_VERSION_2_ID,
+        clone: {
+          ...clone,
+          version: {
+            ...clone.version,
+            status: "active",
+            simulationId: SIMULATION_ID,
+            approvedBy: CREATOR_ID,
+          },
+        },
+        reason: "Clone to another project.",
+        clientRequestId: "clone-rpc-forged-state",
+      } as never),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(mock.rpc).not.toHaveBeenCalled();
+  });
+
   it("persists parameter edits through a draft RPC and stales the prior simulation", async () => {
     const source = customRuleVersionFromLifecycleRow();
     const draft: EditableReusableRuleDraft = {
@@ -3645,6 +3686,43 @@ describe("custom-rule draft and simulation persistence", () => {
       simulationId: null,
       parameterHash: HASH_F,
     });
+  });
+
+  it("rejects forged parameter draft executable state before RPC", async () => {
+    const source = customRuleVersionFromLifecycleRow();
+    const draft = {
+      ...source,
+      id: RULE_VERSION_2_ID,
+      versionNumber: source.versionNumber + 1,
+      status: "active",
+      parameterHash: HASH_F,
+      simulationSummary: {},
+      dataSelectionHash: "0".repeat(64),
+      simulationId: SIMULATION_ID,
+      effectiveFrom: null,
+      effectiveUntil: null,
+      approvedBy: null,
+      approvedAt: null,
+      archivedAt: null,
+      aiDraftId: null,
+    };
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    await expect(
+      repository.createCustomRuleParameterDraft({
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        sourceRuleVersionId: RULE_VERSION_ID,
+        newVersionId: RULE_VERSION_2_ID,
+        edits: [{ key: "minimumAmount", type: "money_cents", value: 12_500 }],
+        draft,
+        reason: "Attempt to preserve executable state through parameter edit.",
+        clientRequestId: "parameter-draft-forged-state",
+      } as never),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_PERSISTENCE_INPUT_INVALID" });
+    expect(mock.rpc).not.toHaveBeenCalled();
   });
 
   it("persists organization templates and archives only the requested template row", async () => {

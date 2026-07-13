@@ -2354,6 +2354,45 @@ begin
   ) then
     raise exception 'custom_settlement_rule_target_project_not_found';
   end if;
+  if v_payload is null
+     or pg_catalog.jsonb_typeof(v_payload) <> 'object'
+     or v_payload ->> 'id' <> p_rule_version_id::text
+     or v_payload ->> 'organizationId' <> p_organization_id::text
+     or v_payload ->> 'projectId' <> p_target_project_id::text
+     or v_payload ->> 'status' <> 'draft'
+     or nullif(v_payload ->> 'simulationId', '') is not null
+     or nullif(v_payload ->> 'approvedBy', '') is not null
+     or nullif(v_payload ->> 'approvedAt', '') is not null
+     or nullif(v_payload ->> 'effectiveFrom', '') is not null
+     or nullif(v_payload ->> 'effectiveUntil', '') is not null
+     or nullif(v_payload ->> 'archivedAt', '') is not null
+     or nullif(v_payload ->> 'aiDraftId', '') is not null
+     or coalesce(v_payload -> 'simulationSummary', '{}'::jsonb) <> '{}'::jsonb
+     or v_payload ->> 'dataSelectionHash' <> pg_catalog.repeat('0', 64)
+     or v_payload ->> 'formula' is distinct from v_source.formula
+     or v_payload -> 'compiledAst' is distinct from v_source.compiled_ast
+     or coalesce(v_payload -> 'variables', '[]'::jsonb) is distinct from v_source.variables
+     or coalesce(v_payload -> 'parameters', '{}'::jsonb) is distinct from v_source.parameters
+     or v_payload -> 'ruleContract' is null
+     or (v_payload -> 'ruleContract') - 'target' is distinct from v_source.rule_contract - 'target'
+     or v_payload #> '{ruleContract,target}' is distinct from
+       pg_catalog.jsonb_build_object('targetType', 'project', 'targetId', null)
+     or v_payload ->> 'systemExplanationTemplate' is distinct from
+       v_source.system_explanation_template
+     or coalesce(v_payload -> 'missingDataPolicy', '{}'::jsonb) is distinct from
+       v_source.missing_data_policy
+     or coalesce(v_payload -> 'testCases', '[]'::jsonb) is distinct from v_source.test_cases
+     or v_payload ->> 'formulaHash' is distinct from v_source.formula_hash
+     or v_payload ->> 'parameterHash' is distinct from v_source.parameter_hash
+     or v_payload ->> 'catalogHash' is null
+     or v_payload ->> 'variableCatalogVersion' is distinct from v_payload ->> 'catalogHash'
+     or p_clone #>> '{lineage,sourceRuleVersionId}' is distinct from v_source.id::text
+     or p_clone #>> '{lineage,sourceProjectId}' is distinct from v_source.project_id::text
+     or nullif(p_clone #>> '{lineage,sourceVersionNumber}', '')::integer is distinct from
+       v_source.version_number
+     or p_clone #>> '{lineage,sourceScope}' is distinct from v_source.scope then
+    raise exception 'custom_settlement_rule_clone_payload_tampered';
+  end if;
 
   insert into public.custom_settlement_rule_versions (
     id, organization_id, project_id, scope, target_type, target_id,
@@ -2418,6 +2457,12 @@ declare
   v_actor_role text;
   v_source public.custom_settlement_rule_versions%rowtype;
   v_version public.custom_settlement_rule_versions%rowtype;
+  v_expected_parameters jsonb;
+  v_edit jsonb;
+  v_edit_key text;
+  v_edit_type text;
+  v_edit_value numeric;
+  v_edit_runtime_value jsonb;
 begin
   if v_actor_id is null then
     raise exception 'custom_settlement_rule_auth_required';
@@ -2443,6 +2488,87 @@ begin
   for update;
   if not found then
     raise exception 'custom_settlement_rule_source_not_found';
+  end if;
+  if p_draft is null
+     or pg_catalog.jsonb_typeof(p_draft) <> 'object'
+     or pg_catalog.jsonb_typeof(p_edits) <> 'array'
+     or p_draft ->> 'id' <> p_rule_version_id::text
+     or p_draft ->> 'organizationId' <> p_organization_id::text
+     or p_draft ->> 'projectId' <> p_project_id::text
+     or p_draft ->> 'status' <> 'draft'
+     or nullif(p_draft ->> 'simulationId', '') is not null
+     or nullif(p_draft ->> 'approvedBy', '') is not null
+     or nullif(p_draft ->> 'approvedAt', '') is not null
+     or nullif(p_draft ->> 'effectiveFrom', '') is not null
+     or nullif(p_draft ->> 'effectiveUntil', '') is not null
+     or nullif(p_draft ->> 'archivedAt', '') is not null
+     or nullif(p_draft ->> 'aiDraftId', '') is not null
+     or coalesce(p_draft -> 'simulationSummary', '{}'::jsonb) <> '{}'::jsonb
+     or p_draft ->> 'dataSelectionHash' <> pg_catalog.repeat('0', 64)
+     or p_draft ->> 'formula' is distinct from v_source.formula
+     or p_draft -> 'compiledAst' is distinct from v_source.compiled_ast
+     or coalesce(p_draft -> 'variables', '[]'::jsonb) is distinct from v_source.variables
+     or p_draft -> 'ruleContract' is distinct from v_source.rule_contract
+     or p_draft ->> 'systemExplanationTemplate' is distinct from
+       v_source.system_explanation_template
+     or coalesce(p_draft -> 'missingDataPolicy', '{}'::jsonb) is distinct from
+       v_source.missing_data_policy
+     or coalesce(p_draft -> 'testCases', '[]'::jsonb) is distinct from v_source.test_cases
+     or p_draft ->> 'formulaHash' is distinct from v_source.formula_hash
+     or p_draft ->> 'contractHash' is distinct from v_source.rule_contract_hash
+     or p_draft ->> 'catalogHash' is distinct from v_source.variable_catalog_version
+     or coalesce(p_draft ->> 'variableCatalogVersion', p_draft ->> 'catalogHash') is distinct from
+       v_source.variable_catalog_version then
+    raise exception 'custom_settlement_rule_parameter_payload_tampered';
+  end if;
+
+  v_expected_parameters := coalesce(v_source.parameters, '{}'::jsonb);
+  for v_edit in select value from pg_catalog.jsonb_array_elements(p_edits)
+  loop
+    if pg_catalog.jsonb_typeof(v_edit) <> 'object'
+       or nullif(v_edit ->> 'key', '') is null
+       or v_edit ->> 'type' not in ('money_cents', 'rate_bps', 'integer', 'number')
+       or nullif(v_edit ->> 'value', '') is null then
+      raise exception 'custom_settlement_rule_parameter_payload_tampered';
+    end if;
+    v_edit_key := v_edit ->> 'key';
+    v_edit_type := v_edit ->> 'type';
+    v_edit_value := (v_edit ->> 'value')::numeric;
+    if not exists (
+      select 1
+      from pg_catalog.jsonb_array_elements(coalesce(v_source.rule_contract -> 'parameters', '[]'::jsonb)) as parameter(value)
+      where parameter.value ->> 'name' = v_edit_key
+        and parameter.value #>> '{valueType,scalarType}' = v_edit_type
+    ) then
+      raise exception 'custom_settlement_rule_parameter_payload_tampered';
+    end if;
+    v_edit_runtime_value := case v_edit_type
+      when 'money_cents' then pg_catalog.jsonb_build_object(
+        'type', 'money_cents',
+        'amountCents', v_edit_value
+      )
+      when 'rate_bps' then pg_catalog.jsonb_build_object(
+        'type', 'rate_bps',
+        'rateBps', v_edit_value
+      )
+      when 'integer' then pg_catalog.jsonb_build_object(
+        'type', 'integer',
+        'value', v_edit_value
+      )
+      else pg_catalog.jsonb_build_object(
+        'type', 'number',
+        'value', v_edit_value
+      )
+    end;
+    v_expected_parameters := pg_catalog.jsonb_set(
+      v_expected_parameters,
+      array[v_edit_key],
+      v_edit_runtime_value,
+      true
+    );
+  end loop;
+  if coalesce(p_draft -> 'parameters', '{}'::jsonb) is distinct from v_expected_parameters then
+    raise exception 'custom_settlement_rule_parameter_payload_tampered';
   end if;
 
   insert into public.custom_settlement_rule_versions (
