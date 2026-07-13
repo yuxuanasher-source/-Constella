@@ -264,6 +264,79 @@ describe("planCustomRuleExecutionUnits", () => {
 
     expect(expectPlan(input).units).toEqual(expectPlan(reversed).units);
   });
+
+  it("uses deterministic aggregate metadata independent of source report input order", () => {
+    const input = defaultInput({
+      grain: "project_streamer_period",
+      sourceReports: [
+        report({
+          id: "r-late",
+          projectStreamerId: "ps-a",
+          streamerId: "streamer-a",
+          createdAt: "2026-07-20T00:00:00.000Z",
+        }),
+        report({
+          id: "r-early",
+          projectStreamerId: "ps-a",
+          streamerId: "streamer-a",
+          createdAt: "2026-07-10T00:00:00.000Z",
+        }),
+      ],
+    });
+    const reversed = {
+      ...input,
+      sourceReports: [...input.sourceReports].reverse(),
+    };
+
+    expect(expectPlan(input).units).toEqual(expectPlan(reversed).units);
+    expect(expectPlan(input).units[0]).toMatchObject({
+      membershipTimestamp: "2026-07-10T00:00:00.000Z",
+      membershipTimestampSource: "live_reports.created_at",
+    });
+  });
+
+  it("filters source reports outside the requested period", () => {
+    const result = expectPlan(
+      defaultInput({
+        sourceReports: [
+          report({ id: "before", createdAt: "2026-06-30T23:59:59.999Z" }),
+          report({ id: "inside", createdAt: "2026-07-10T00:00:00.000Z" }),
+          report({ id: "at-end", createdAt: PERIOD_END }),
+        ],
+      }),
+    );
+
+    expect(result.units.map((unit) => unit.sourceReportIds)).toEqual([
+      ["inside"],
+    ]);
+  });
+
+  it("normalizes period and version boundaries before comparison", () => {
+    const result = planCustomRuleExecutionUnits(
+      defaultInput({
+        grain: "batch",
+        periodStart: "2026-07-01",
+        periodEnd: "2026-08-01",
+        ruleVersions: [
+          {
+            id: "rule-v1",
+            effectiveFrom: "2026-07-01T08:00:00+08:00",
+            effectiveUntil: "2026-07-15T08:00:00+08:00",
+          },
+          {
+            id: "rule-v2",
+            effectiveFrom: "2026-07-15T08:00:00+08:00",
+            effectiveUntil: null,
+          },
+        ],
+      }),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      splitAt: ["2026-07-15T00:00:00.000Z"],
+    });
+  });
 });
 
 function expectPlan(input: CustomRuleExecutionPlanningInput) {

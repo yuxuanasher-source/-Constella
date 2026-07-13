@@ -70,8 +70,25 @@ type PreparedReport = Readonly<{
 export function planCustomRuleExecutionUnits(
   input: CustomRuleExecutionPlanningInput,
 ): CustomRuleExecutionPlanningResult {
+  const normalizedInput = {
+    ...input,
+    periodStart: isoTimestamp(input.periodStart),
+    periodEnd: isoTimestamp(input.periodEnd),
+    ruleVersions: input.ruleVersions.map((version) => ({
+      ...version,
+      effectiveFrom: isoTimestamp(version.effectiveFrom),
+      effectiveUntil:
+        version.effectiveUntil === null
+          ? null
+          : isoTimestamp(version.effectiveUntil),
+    })),
+    membershipSnapshots: input.membershipSnapshots.map((snapshot) => ({
+      ...snapshot,
+      effectiveAt: isoTimestamp(snapshot.effectiveAt),
+    })),
+  };
   if (isOncePerPeriodGrain(input.grain)) {
-    const splitAt = ruleBoundariesInsideRequestedPeriod(input);
+    const splitAt = ruleBoundariesInsideRequestedPeriod(normalizedInput);
     if (splitAt.length > 0) {
       return {
         ok: false,
@@ -84,17 +101,32 @@ export function planCustomRuleExecutionUnits(
     }
   }
 
-  const reports = input.sourceReports
-    .filter((report) => report.projectId === input.projectId)
+  const reports = normalizedInput.sourceReports
+    .filter((report) => report.projectId === normalizedInput.projectId)
     .filter((report) => report.approved !== false && report.eligible !== false)
-    .map((report) => prepareReport(input, report));
+    .map((report) => ({
+      report,
+      timestampSelection: membershipTimestamp(report),
+    }))
+    .filter(
+      (prepared) =>
+        normalizedInput.periodStart <= prepared.timestampSelection.timestamp &&
+        prepared.timestampSelection.timestamp < normalizedInput.periodEnd,
+    )
+    .map((prepared) =>
+      prepareReport(
+        normalizedInput,
+        prepared.report,
+        prepared.timestampSelection,
+      ),
+    );
 
   const units =
-    input.grain === "report"
-      ? reports.map((report) => reportUnit(input, report))
-      : input.grain === "project_streamer_period"
-        ? aggregateUnits(input, reports, "project_streamer_period")
-        : aggregateUnits(input, reports, input.grain);
+    normalizedInput.grain === "report"
+      ? reports.map((report) => reportUnit(normalizedInput, report))
+      : normalizedInput.grain === "project_streamer_period"
+        ? aggregateUnits(normalizedInput, reports, "project_streamer_period")
+        : aggregateUnits(normalizedInput, reports, normalizedInput.grain);
 
   return {
     ok: true,
@@ -165,7 +197,8 @@ function aggregateUnits(
     }
   }
 
-  return [...groups.values()].map((group) => {
+  return [...groups.values()].map((unsortedGroup) => {
+    const group = [...unsortedGroup].sort(comparePreparedReports);
     const first = group[0];
     if (!first) {
       throw new Error("execution group must not be empty");
@@ -198,8 +231,8 @@ function aggregateUnits(
 function prepareReport(
   input: CustomRuleExecutionPlanningInput,
   report: CustomRuleExecutionPlanningReport,
+  timestampSelection = membershipTimestamp(report),
 ): PreparedReport {
-  const timestampSelection = membershipTimestamp(report);
   const ruleVersion = effectiveRuleVersion(input.ruleVersions, timestampSelection.timestamp);
   return {
     report,
@@ -212,6 +245,13 @@ function prepareReport(
       timestampSelection.timestamp,
     ),
   };
+}
+
+function comparePreparedReports(left: PreparedReport, right: PreparedReport): number {
+  return (
+    left.timestamp.localeCompare(right.timestamp) ||
+    left.report.id.localeCompare(right.report.id)
+  );
 }
 
 function membershipTimestamp(report: CustomRuleExecutionPlanningReport): {

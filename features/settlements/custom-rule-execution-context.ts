@@ -203,9 +203,9 @@ function addSum(
   let total = 0;
   for (const value of values) {
     if (value === null || value === undefined) return;
-    total += value;
+    const safeValue = assertSafeIntegerValue(value, name);
+    total = assertSafeIntegerValue(total + safeValue, name);
   }
-  assertSafeIntegerValue(total, name);
   variables[name] =
     type === "integer"
       ? { type: "integer", value: total }

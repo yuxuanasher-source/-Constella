@@ -138,4 +138,27 @@ describe("buildCustomRulePeriodAggregates", () => {
     });
     expect(aggregate.sourceReportIds).toEqual(["report-1", "report-2"]);
   });
+
+  it("rejects unsafe aggregate inputs before they can cancel each other out", () => {
+    expect(() =>
+      buildCustomRulePeriodAggregates({
+        scope: "payable",
+        projectId: "project-1",
+        periodStart: "2026-07-01T00:00:00.000Z",
+        periodEnd: "2026-08-01T00:00:00.000Z",
+        approvedReports: [
+          {
+            id: "unsafe-positive",
+            approved: true,
+            salesAmountCents: Number.MAX_SAFE_INTEGER + 1,
+          },
+          {
+            id: "unsafe-negative",
+            approved: true,
+            salesAmountCents: -(Number.MAX_SAFE_INTEGER + 1),
+          },
+        ],
+      }),
+    ).toThrow("safe integer");
+  });
 });

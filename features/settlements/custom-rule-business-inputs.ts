@@ -25,6 +25,8 @@ export type CustomRuleBusinessInputError = Readonly<{
     | "UNKNOWN_LIVE_REPORT"
     | "INCOMPATIBLE_PERIOD"
     | "NON_ADDITIVE_CONFLICT"
+    | "NO_ADDITIVE_FIELDS"
+    | "UNKNOWN_RAW_KEYS"
     | "UNSAFE_INTEGER";
   liveReportId?: string;
   importBatchId: string;
@@ -104,6 +106,16 @@ export function adaptCustomRuleBusinessInputs(input: {
     }
     if (row.streamerId !== report.streamerId) {
       errors.push(error("NON_ADDITIVE_CONFLICT", row, row.liveReportId));
+      conflicted.add(row.liveReportId);
+      continue;
+    }
+    if (unknownKeys(sourceRow).length > 0) {
+      errors.push(error("UNKNOWN_RAW_KEYS", row, row.liveReportId));
+      conflicted.add(row.liveReportId);
+      continue;
+    }
+    if (!hasAdditiveField(row)) {
+      errors.push(error("NO_ADDITIVE_FIELDS", row, row.liveReportId));
       conflicted.add(row.liveReportId);
       continue;
     }
@@ -204,6 +216,30 @@ function documentedRow(row: CustomRuleBusinessInputRow): DocumentedBusinessInput
     importBatchId: row.importBatchId,
     rowIndex: row.rowIndex,
   };
+}
+
+const DOCUMENTED_ROW_KEYS = new Set([
+  "salesAmountCents",
+  "ordersCount",
+  "giftAmountCents",
+  "liveReportId",
+  "streamerId",
+  "periodStart",
+  "periodEnd",
+  "importBatchId",
+  "rowIndex",
+]);
+
+function unknownKeys(row: CustomRuleBusinessInputRow): string[] {
+  return Object.keys(row).filter((key) => !DOCUMENTED_ROW_KEYS.has(key));
+}
+
+function hasAdditiveField(row: DocumentedBusinessInputRow): boolean {
+  return (
+    row.salesAmountCents !== undefined ||
+    row.ordersCount !== undefined ||
+    row.giftAmountCents !== undefined
+  );
 }
 
 function addSafe(

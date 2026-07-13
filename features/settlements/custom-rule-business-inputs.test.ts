@@ -17,7 +17,6 @@ describe("adaptCustomRuleBusinessInputs", () => {
           salesAmountCents: 2000,
           ordersCount: 2,
           giftAmountCents: 500,
-          ignoredRawName: "must not enter context",
         }),
         row({
           importBatchId: "batch-a",
@@ -43,9 +42,6 @@ describe("adaptCustomRuleBusinessInputs", () => {
         gift_amount: { type: "money_cents", amountCents: 500 },
       },
     });
-    expect(JSON.stringify(result.executionSnapshot)).not.toContain(
-      "ignoredRawName",
-    );
     expect(result.executionSnapshot.sources.map((source) => source.rowIndex))
       .toEqual([1, 1]);
   });
@@ -124,6 +120,34 @@ describe("adaptCustomRuleBusinessInputs", () => {
     expect(result.variablesByReportId).toEqual({});
     expect(result.errors).toMatchObject([
       { code: "INCOMPATIBLE_PERIOD", liveReportId: "live-1" },
+    ]);
+  });
+
+  it("rejects unknown raw keys instead of silently dropping them", () => {
+    const result = adaptCustomRuleBusinessInputs({
+      reports: [report("live-1", "streamer-1")],
+      rows: [
+        row({
+          sales_amount: 100,
+        }),
+      ],
+    });
+
+    expect(result.variablesByReportId).toEqual({});
+    expect(result.errors).toMatchObject([
+      { code: "UNKNOWN_RAW_KEYS", liveReportId: "live-1" },
+    ]);
+  });
+
+  it("rejects rows without any documented additive fields", () => {
+    const result = adaptCustomRuleBusinessInputs({
+      reports: [report("live-1", "streamer-1")],
+      rows: [row({})],
+    });
+
+    expect(result.variablesByReportId).toEqual({});
+    expect(result.errors).toMatchObject([
+      { code: "NO_ADDITIVE_FIELDS", liveReportId: "live-1" },
     ]);
   });
 });
