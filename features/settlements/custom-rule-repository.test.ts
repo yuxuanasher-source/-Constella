@@ -281,9 +281,14 @@ describe("Phase 2 custom rule lifecycle repository", () => {
         reason: "Archive after verifying a fixed settlement fallback.",
         fallbackProof: {
           simulationId: "00000000-0000-4000-8000-000000000006",
+          proofKind: "fixed_fallback",
           remainingCustomLayerCount: 0,
           fixedFallbackAvailable: true,
           lockedBatchCount: 3,
+          lockedBatchExclusion: {
+            excluded: true,
+            lockedBatchCount: 3,
+          },
         },
         clientRequestId: "phase2-archive-1",
       },
@@ -296,9 +301,14 @@ describe("Phase 2 custom rule lifecycle repository", () => {
         p_reason: "Archive after verifying a fixed settlement fallback.",
         p_fallback_proof: {
           simulationId: "00000000-0000-4000-8000-000000000006",
+          proofKind: "fixed_fallback",
           remainingCustomLayerCount: 0,
           fixedFallbackAvailable: true,
           lockedBatchCount: 3,
+          lockedBatchExclusion: {
+            excluded: true,
+            lockedBatchCount: 3,
+          },
         },
         p_client_request_id: "phase2-archive-1",
       },

@@ -1848,6 +1848,14 @@ declare
   v_event_type text;
   v_before_status text;
   v_after_status text;
+  v_eligible_approver_count integer := 0;
+  v_eligible_owner_count integer := 0;
+  v_actor_is_eligible boolean := false;
+  v_another_eligible_approver_exists boolean := false;
+  v_material_risk_codes text[] := array[]::text[];
+  v_material_risk boolean := false;
+  v_approval_risk_summary jsonb := '{}'::jsonb;
+  v_event_risk_summary jsonb := '{}'::jsonb;
   v_request_key text;
   v_request_fingerprint text;
   v_request_record public.custom_settlement_rule_lifecycle_requests%rowtype;
@@ -2039,6 +2047,111 @@ begin
        or (v_simulation.coverage ->> 'uncoveredRecords')::integer <> 0 then
       raise exception 'custom_settlement_rule_stale_simulation';
     end if;
+    select
+      pg_catalog.count(*)::integer,
+      pg_catalog.count(*) filter (
+        where approver_member.role = 'owner'
+      )::integer,
+      coalesce(pg_catalog.bool_or(
+        approver_member.user_id = v_actor_id
+        and approver_member.role = v_actor_role
+      ), false),
+      coalesce(pg_catalog.bool_or(
+        approver_member.user_id <> v_version.created_by
+      ), false)
+    into
+      v_eligible_approver_count,
+      v_eligible_owner_count,
+      v_actor_is_eligible,
+      v_another_eligible_approver_exists
+    from public.organization_members as approver_member
+    where approver_member.organization_id = p_organization_id
+      and approver_member.status = 'active'
+      and approver_member.role in ('owner', 'ops_manager');
+    if not v_actor_is_eligible then
+      raise exception 'custom_settlement_rule_approver_not_eligible';
+    end if;
+
+    if coalesce(
+      pg_catalog.abs(
+        nullif(v_simulation.deltas ->> 'marginImpactCents', '')::numeric
+      ),
+      0
+    ) > 0 then
+      v_material_risk_codes :=
+        v_material_risk_codes || array['negative_margin'];
+    end if;
+    if v_version.target_type = 'streamer_group'
+       and v_version.composition_mode = 'replace' then
+      v_material_risk_codes :=
+        v_material_risk_codes || array['group_level_replace'];
+    end if;
+    v_material_risk_codes := v_material_risk_codes || coalesce(
+      array(
+        select distinct warning.value ->> 'code'
+        from pg_catalog.jsonb_array_elements(
+          v_simulation.warnings
+        ) as warning(value)
+        where warning.value ->> 'code' in (
+          'negative_margin',
+          'abnormal_total_increase',
+          'red_evidence_payment',
+          'money_changing_explicit_default',
+          'group_level_replace',
+          'overlapping_group_exception',
+          'safety_cap_exceeded'
+        )
+      ),
+      array[]::text[]
+    );
+    select coalesce(array_agg(distinct code order by code), array[]::text[])
+    into v_material_risk_codes
+    from pg_catalog.unnest(v_material_risk_codes) as code;
+    v_material_risk := pg_catalog.array_length(
+      v_material_risk_codes,
+      1
+    ) is not null;
+    if p_force then
+      if v_actor_role <> 'owner'
+         or p_acknowledgment is distinct from
+           'I_UNDERSTAND_SINGLE_OWNER_FINANCIAL_RISK'
+         or v_eligible_owner_count <> 1 then
+        raise exception 'custom_settlement_rule_force_requires_single_owner';
+      end if;
+      if not v_material_risk and v_eligible_approver_count <> 1 then
+        raise exception 'custom_settlement_rule_force_requires_single_owner';
+      end if;
+    else
+      if p_acknowledgment is not null then
+        raise exception 'custom_settlement_rule_approval_input_invalid';
+      end if;
+      if v_material_risk and v_actor_role <> 'owner' then
+        raise exception 'custom_settlement_rule_material_risk_requires_owner';
+      end if;
+      if v_material_risk and v_actor_id = v_version.created_by then
+        raise exception
+          'custom_settlement_rule_material_risk_requires_distinct_owner';
+      end if;
+      if v_actor_id = v_version.created_by
+         and v_another_eligible_approver_exists then
+        raise exception
+          'custom_settlement_rule_creator_requires_distinct_approver';
+      end if;
+    end if;
+    v_approval_risk_summary := pg_catalog.jsonb_build_object(
+      'material',
+      v_material_risk,
+      'codes',
+      to_jsonb(v_material_risk_codes),
+      'force',
+      p_force,
+      'acknowledgment',
+      p_acknowledgment,
+      'derivedFrom',
+      'server_owned_review_custom_settlement_rule',
+      'custom_settlement_rule_client_risk_ignored',
+      p_risk_summary <> '{}'::jsonb
+    );
     if exists (
       select 1
       from public.custom_settlement_rule_versions as prior
@@ -2093,6 +2206,15 @@ begin
   end if;
 
   if v_event_type is not null then
+    v_event_risk_summary := case
+      when v_event_type in ('approved', 'force_approved') then
+        v_approval_risk_summary
+      else
+        pg_catalog.jsonb_build_object(
+          'force', p_force,
+          'acknowledgment', p_acknowledgment
+        ) || p_risk_summary
+    end;
     insert into public.custom_settlement_rule_review_events (
       organization_id, project_id, rule_version_id, event_type, actor_id,
       actor_role, reason, comment, before_status, after_status, risk_summary,
@@ -2102,10 +2224,7 @@ begin
       p_organization_id, p_project_id, p_rule_version_id, v_event_type,
       v_actor_id, v_actor_role, p_reason, p_comment, v_before_status,
       v_after_status,
-      p_risk_summary || pg_catalog.jsonb_build_object(
-        'force', p_force,
-        'acknowledgment', p_acknowledgment
-      ),
+      v_event_risk_summary,
       v_version.formula_hash, v_version.rule_contract_hash,
       v_version.parameter_hash, v_version.variable_catalog_version,
       v_version.data_selection_hash
@@ -2149,6 +2268,7 @@ declare
   v_actor_role text;
   v_version public.custom_settlement_rule_versions%rowtype;
   v_simulation public.settlement_formula_simulations%rowtype;
+  v_fallback_simulation public.settlement_formula_simulations%rowtype;
   v_event_id uuid;
   v_request_key text;
   v_request_fingerprint text;
@@ -2276,7 +2396,13 @@ begin
        or v_simulation.variable_catalog_version <>
          v_version.variable_catalog_version
        or v_simulation.data_selection_hash <> v_version.data_selection_hash
-       or p_fallback_proof ->> 'simulationId' <> v_simulation.id::text
+       or pg_catalog.jsonb_typeof(
+         p_fallback_proof -> 'proofKind'
+       ) <> 'string'
+       or p_fallback_proof ->> 'proofKind' not in (
+         'remaining_custom_layers',
+         'fixed_fallback'
+       )
        or pg_catalog.jsonb_typeof(
          p_fallback_proof -> 'remainingCustomLayerCount'
        ) <> 'number'
@@ -2288,11 +2414,67 @@ begin
          p_fallback_proof -> 'lockedBatchCount'
        ) <> 'number'
        or (p_fallback_proof ->> 'lockedBatchCount')::integer < 0
+       or pg_catalog.jsonb_typeof(
+         p_fallback_proof -> 'lockedBatchExclusion'
+       ) <> 'object'
+       or p_fallback_proof -> 'lockedBatchExclusion' ->> 'excluded' <> 'true'
+       or (
+         p_fallback_proof -> 'lockedBatchExclusion' ->>
+           'lockedBatchCount'
+       )::integer <> (p_fallback_proof ->> 'lockedBatchCount')::integer
        or (
          (p_fallback_proof ->> 'remainingCustomLayerCount')::integer = 0
          and not (p_fallback_proof ->> 'fixedFallbackAvailable')::boolean
        ) then
       raise exception 'custom_settlement_rule_archive_fallback_invalid';
+    end if;
+    select simulation.*
+    into v_fallback_simulation
+    from public.settlement_formula_simulations as simulation
+    where simulation.id = (p_fallback_proof ->> 'simulationId')::uuid
+      and simulation.organization_id = p_organization_id
+      and simulation.project_id = p_project_id
+    for update;
+    if not found
+       or v_fallback_simulation.id = v_version.simulation_id
+       or v_fallback_simulation.rule_version_id is null
+       or v_fallback_simulation.rule_version_id = v_version.id
+       or v_fallback_simulation.coverage ->> 'summarySchemaVersion' <> '2'
+       or (v_fallback_simulation.coverage ->> 'blockedRecords')::integer <> 0
+       or (v_fallback_simulation.coverage ->> 'uncoveredRecords')::integer <> 0
+       or exists (
+         select 1
+         from pg_catalog.jsonb_array_elements(
+           v_fallback_simulation.warnings
+         ) as warning(value)
+         where warning.value ->> 'severity' = 'block'
+       )
+       or v_fallback_simulation.sample_selection
+            -> 'archiveProof' ->> 'archivedRuleVersionId' <>
+          v_version.id::text
+       or v_fallback_simulation.sample_selection
+            -> 'archiveProof' ->> 'proofKind' <>
+          p_fallback_proof ->> 'proofKind'
+       or v_fallback_simulation.sample_selection
+            -> 'archiveProof' ->> 'excludesLockedBatches' <> 'true'
+       or (
+         v_fallback_simulation.sample_selection
+           -> 'archiveProof' ->> 'lockedBatchCount'
+       )::integer <> (p_fallback_proof ->> 'lockedBatchCount')::integer
+       or (
+         v_fallback_simulation.sample_selection
+           -> 'archiveProof' ->> 'remainingCustomLayerCount'
+       )::integer <> (
+         p_fallback_proof ->> 'remainingCustomLayerCount'
+       )::integer
+       or (
+         v_fallback_simulation.sample_selection
+           -> 'archiveProof' ->> 'fixedFallbackAvailable'
+       )::boolean <> (
+         p_fallback_proof ->> 'fixedFallbackAvailable'
+       )::boolean then
+      raise exception
+        'custom_settlement_rule_archive_fallback_simulation_required';
     end if;
     if p_effective_until <= v_version.effective_from then
       raise exception 'custom_settlement_rule_archive_period_invalid';

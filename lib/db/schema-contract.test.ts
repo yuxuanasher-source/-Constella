@@ -2717,11 +2717,41 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(review).toMatch(
       /order by version\.version_number, version\.id[\s\S]+for update/u,
     );
+    expect(review).toContain("v_approval_risk_summary");
+    expect(review).toContain("custom_settlement_rule_client_risk_ignored");
+    expect(review).toContain("custom_settlement_rule_approver_not_eligible");
+    expect(review).toContain(
+      "custom_settlement_rule_material_risk_requires_owner",
+    );
+    expect(review).toContain(
+      "custom_settlement_rule_material_risk_requires_distinct_owner",
+    );
+    expect(review).toContain(
+      "custom_settlement_rule_creator_requires_distinct_approver",
+    );
+    expect(review).toContain(
+      "custom_settlement_rule_force_requires_single_owner",
+    );
+    expect(review).toContain(
+      "from public.organization_members as approver_member",
+    );
+    expect(review).not.toContain(
+      "p_risk_summary || pg_catalog.jsonb_build_object",
+    );
 
     const archiveLifecycle = extractSettlementGovernanceFunction(
       "archive_custom_settlement_rule",
     ).body;
     expect(archiveLifecycle).toContain("p_fallback_proof");
+    expect(archiveLifecycle).toContain("v_fallback_simulation");
+    expect(archiveLifecycle).toContain(
+      "custom_settlement_rule_archive_fallback_simulation_required",
+    );
+    expect(archiveLifecycle).toContain("archivedruleversionid");
+    expect(archiveLifecycle).toContain("excludeslockedbatches");
+    expect(archiveLifecycle).toContain(
+      "v_fallback_simulation.id = v_version.simulation_id",
+    );
     expect(archiveLifecycle).toContain("remainingcustomlayercount");
     expect(archiveLifecycle).toContain("fixedfallbackavailable");
     expect(archiveLifecycle).toContain("lockedbatchcount");
@@ -4149,6 +4179,8 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
       const staleSimulationId = "9f250000-0000-4000-8000-000000000004";
       const financeVersionId = "9f240000-0000-4000-8000-000000000005";
       const financeSimulationId = "9f250000-0000-4000-8000-000000000005";
+      const fallbackVersionId = "9f240000-0000-4000-8000-000000000006";
+      const fallbackSimulationId = "9f250000-0000-4000-8000-000000000006";
       const formulaHash = "c".repeat(64);
       const contractHash = "b".repeat(64);
       const parameterHash = "d".repeat(64);
@@ -4627,6 +4659,61 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
       ) as { versionId: string; simulationId: string };
       runDockerSql(
         container,
+        `
+          begin;
+          insert into public.custom_settlement_rule_versions (
+            id, organization_id, project_id, scope, target_type, target_id,
+            execution_grain, composition_mode, priority, version_number,
+            status, formula, compiled_ast, variables, parameters,
+            rule_contract, system_explanation_template, missing_data_policy,
+            test_cases, simulation_summary, formula_hash, rule_contract_hash,
+            parameter_hash, variable_catalog_version, data_selection_hash,
+            simulation_id, created_by, ai_draft_id, reason
+          )
+          select
+            '${fallbackVersionId}'::uuid, organization_id, project_id,
+            scope, target_type, target_id, execution_grain, composition_mode,
+            priority, 99, 'draft', formula, compiled_ast, variables,
+            parameters, rule_contract, system_explanation_template,
+            missing_data_policy, test_cases, simulation_summary,
+            formula_hash, rule_contract_hash, parameter_hash,
+            variable_catalog_version, data_selection_hash,
+            '${fallbackSimulationId}'::uuid, '${actorId}'::uuid,
+            ai_draft_id, 'Fresh fixed fallback proof'
+          from public.custom_settlement_rule_versions
+          where id = '${active.versionId}'::uuid;
+          insert into public.settlement_formula_simulations (
+            id, organization_id, project_id, rule_version_id, ai_draft_id,
+            formula_hash, rule_contract_hash, parameter_hash,
+            variable_catalog_version, data_selection_hash, sample_source,
+            sample_selection, coverage, scenarios, historical_totals, deltas,
+            largest_changes, warnings, idempotency_key, created_by
+          )
+          select
+            '${fallbackSimulationId}'::uuid, organization_id, project_id,
+            '${fallbackVersionId}'::uuid, null, formula_hash,
+            rule_contract_hash, parameter_hash, variable_catalog_version,
+            data_selection_hash, sample_source,
+            sample_selection || ${sqlJson({
+              archiveProof: {
+                archivedRuleVersionId: active.versionId,
+                proofKind: "fixed_fallback",
+                excludesLockedBatches: true,
+                lockedBatchCount: 7,
+                remainingCustomLayerCount: 0,
+                fixedFallbackAvailable: true,
+              },
+            })}::jsonb,
+            coverage, scenarios, historical_totals, deltas, largest_changes,
+            warnings, 'phase2-fallback-proof', '${actorId}'::uuid
+          from public.settlement_formula_simulations
+          where id = '${active.simulationId}'::uuid;
+          set constraints all immediate;
+          commit;
+        `,
+      );
+      runDockerSql(
+        container,
         `set role authenticated;
          select pg_catalog.set_config(
            'request.jwt.claim.sub', '${actorId}', false
@@ -4638,10 +4725,15 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
            '2026-10-01T00:00:00Z'::timestamptz,
            'Archive with server-owned fixed fallback proof',
            ${sqlJson({
-             simulationId: active.simulationId,
+             simulationId: fallbackSimulationId,
+             proofKind: "fixed_fallback",
              remainingCustomLayerCount: 0,
              fixedFallbackAvailable: true,
              lockedBatchCount: 7,
+             lockedBatchExclusion: {
+               excluded: true,
+               lockedBatchCount: 7,
+             },
            })},
            'phase2-active-archive'
          );`,

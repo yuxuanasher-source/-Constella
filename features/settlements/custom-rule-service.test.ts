@@ -95,7 +95,12 @@ describe("Phase 2 custom rule lifecycle service", () => {
     expect(fixture.repository.approveCustomRule).not.toHaveBeenCalled();
     expect(
       fixture.repository.recordCustomRuleActivationFailure,
-    ).not.toHaveBeenCalled();
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ruleVersionId: fixture.version.id,
+        errorMessage: "Production custom settlement rule execution is disabled",
+      }),
+    );
     expect(fixture.audit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "approve",
@@ -103,6 +108,7 @@ describe("Phase 2 custom rule lifecycle service", () => {
         isHighRisk: true,
       }),
     );
+    expect(fixture.context.version.status).toBe("pending_review");
   });
 
   it("recomputes freshness, material risk, and approver eligibility from server records", async () => {
@@ -317,6 +323,7 @@ describe("Phase 2 custom rule lifecycle service", () => {
         remainingCustomLayerCount: 0,
         fixedFallbackAvailable: true,
         lockedBatchCount: 4,
+        proofKind: "fixed_fallback",
       },
     });
     const service = phase2LifecycleService(fixture);
@@ -335,16 +342,81 @@ describe("Phase 2 custom rule lifecycle service", () => {
     expect(fixture.repository.archiveCustomRule).toHaveBeenCalledWith(
       expect.objectContaining({
         fallbackProof: {
-          simulationId: fixture.simulation.id,
+          simulationId: uuid(905),
+          proofKind: "fixed_fallback",
           remainingCustomLayerCount: 0,
           fixedFallbackAvailable: true,
           lockedBatchCount: 4,
+          lockedBatchExclusion: {
+            excluded: true,
+            lockedBatchCount: 4,
+          },
         },
       }),
     );
     expect(fixture.audit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "void", isHighRisk: true }),
     );
+  });
+
+  it("rejects active archive when fallback proof reuses or stales the archived rule simulation", async () => {
+    const sameRule = phase2LifecycleFixture({
+      versionStatus: "active",
+      archiveSafety: {
+        fallbackSimulation: {
+          id: uuid(903),
+          createdAt: "2026-07-13T04:00:00.000Z",
+          formulaHash: "c".repeat(64),
+          contractHash: "b".repeat(64),
+          parameterHash: "d".repeat(64),
+          catalogHash: "a".repeat(64),
+          dataSelectionHash: "e".repeat(64),
+        },
+      },
+    });
+    const sameRuleService = phase2LifecycleService(sameRule);
+
+    await expect(
+      sameRuleService.archiveCustomRule({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        ruleVersionId: sameRule.version.id,
+        effectiveUntil: "2026-09-01T00:00:00.000Z",
+        reason: "Archive with a reused proof.",
+        clientRequestId: "archive-reused-proof-1",
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_ARCHIVE_FALLBACK_SIMULATION_REQUIRED",
+    });
+    expect(sameRule.repository.archiveCustomRule).not.toHaveBeenCalled();
+
+    const stale = phase2LifecycleFixture({
+      versionStatus: "active",
+      archiveSafety: {
+        fallbackSimulation: {
+          id: uuid(906),
+          createdAt: "2026-07-13T04:00:00.000Z",
+          formulaHash: "f".repeat(64),
+          contractHash: "b".repeat(64),
+          parameterHash: "d".repeat(64),
+          catalogHash: "a".repeat(64),
+          dataSelectionHash: "e".repeat(64),
+        },
+      },
+    });
+    const staleService = phase2LifecycleService(stale);
+
+    await expect(
+      staleService.archiveCustomRule({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        ruleVersionId: stale.version.id,
+        effectiveUntil: "2026-09-01T00:00:00.000Z",
+        reason: "Archive with stale fallback proof.",
+        clientRequestId: "archive-stale-proof-1",
+      }),
+    ).rejects.toMatchObject({ code: "SIMULATION_STALE" });
+    expect(stale.repository.archiveCustomRule).not.toHaveBeenCalled();
   });
 
   it("records activation failure without returning a mutated version", async () => {
@@ -503,6 +575,12 @@ function phase2LifecycleFixture(overrides: Record<string, unknown> = {}) {
       remainingCustomLayerCount: 1,
       fixedFallbackAvailable: false,
       lockedBatchCount: 0,
+      proofKind: "remaining_custom_layers",
+      fallbackSimulation: {
+        id: uuid(905),
+        createdAt: "2026-07-13T04:00:00.000Z",
+        ...hashes,
+      },
       ...(overrides.archiveSafety as Record<string, unknown> | undefined),
     },
   };

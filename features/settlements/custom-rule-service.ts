@@ -4965,6 +4965,11 @@ export type CustomRuleLifecycleGovernanceContext = {
   riskConfiguration?: CustomRuleMaterialRiskConfiguration;
   reopenedAt: string | null;
   archiveSafety: {
+    proofKind: "remaining_custom_layers" | "fixed_fallback";
+    fallbackSimulation: CustomRuleSimulationFreshnessHashes & {
+      id: string;
+      createdAt: string;
+    };
     remainingCustomLayerCount: number;
     fixedFallbackAvailable: boolean;
     lockedBatchCount: number;
@@ -5180,6 +5185,16 @@ export function createCustomRuleLifecycleService(dependencies: {
         "CUSTOM_RULE_EXECUTION_DISABLED",
         "Production custom settlement rule execution is disabled",
       );
+      await repository.recordCustomRuleActivationFailure({
+        organizationId: context.actor.organizationId,
+        projectId: input.projectId,
+        ruleVersionId: input.ruleVersionId,
+        reason: input.reason,
+        clientRequestId: lifecycleActivationFailureRequestId(
+          input.clientRequestId,
+        ),
+        errorMessage: error.message,
+      });
       await auditTransition({
         action: "approve",
         context,
@@ -5445,9 +5460,19 @@ export function createCustomRuleLifecycleService(dependencies: {
       requireCapability(context.actor.role, "archive_rule");
       assertCustomRuleTransition(context.version.status, "archived");
       if (context.version.status === "active") {
+        const fallbackSimulation = context.archiveSafety.fallbackSimulation;
+        if (
+          fallbackSimulation.id === context.version.simulationId ||
+          fallbackSimulation.id === context.simulation.id
+        ) {
+          throw new CustomRuleGovernanceError(
+            "CUSTOM_RULE_ARCHIVE_FALLBACK_SIMULATION_REQUIRED",
+            "Active rule archival requires a separate fresh fallback or remaining-layer simulation",
+          );
+        }
         assertSimulationFresh({
           expected: context.expectedFreshness,
-          simulation: context.simulation,
+          simulation: fallbackSimulation,
         });
         if (
           context.archiveSafety.remainingCustomLayerCount === 0 &&
@@ -5466,11 +5491,16 @@ export function createCustomRuleLifecycleService(dependencies: {
         effectiveUntil: input.effectiveUntil,
         reason: input.reason,
         fallbackProof: {
-          simulationId: context.simulation.id,
+          simulationId: context.archiveSafety.fallbackSimulation.id,
+          proofKind: context.archiveSafety.proofKind,
           remainingCustomLayerCount:
             context.archiveSafety.remainingCustomLayerCount,
           fixedFallbackAvailable: context.archiveSafety.fixedFallbackAvailable,
           lockedBatchCount: context.archiveSafety.lockedBatchCount,
+          lockedBatchExclusion: {
+            excluded: true,
+            lockedBatchCount: context.archiveSafety.lockedBatchCount,
+          },
         },
         clientRequestId: input.clientRequestId,
       });

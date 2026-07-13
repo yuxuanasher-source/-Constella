@@ -608,9 +608,14 @@ export type ArchiveCustomRuleRepositoryInput =
     effectiveUntil: string;
     fallbackProof: {
       simulationId: string;
+      proofKind: "remaining_custom_layers" | "fixed_fallback";
       remainingCustomLayerCount: number;
       fixedFallbackAvailable: boolean;
       lockedBatchCount: number;
+      lockedBatchExclusion: {
+        excluded: true;
+        lockedBatchCount: number;
+      };
     };
   };
 
@@ -1485,9 +1490,14 @@ const archiveCustomRuleRepositoryInputSchema =
     effectiveUntil: timestampSchema,
     fallbackProof: z.strictObject({
       simulationId: uuidSchema,
+      proofKind: z.enum(["remaining_custom_layers", "fixed_fallback"]),
       remainingCustomLayerCount: nonnegativeSafeIntegerSchema,
       fixedFallbackAvailable: z.boolean(),
       lockedBatchCount: nonnegativeSafeIntegerSchema,
+      lockedBatchExclusion: z.strictObject({
+        excluded: z.literal(true),
+        lockedBatchCount: nonnegativeSafeIntegerSchema,
+      }),
     }),
   });
 const listCustomRulesInputSchema = z.strictObject({
