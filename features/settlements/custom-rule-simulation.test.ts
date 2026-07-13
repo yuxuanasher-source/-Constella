@@ -110,6 +110,68 @@ describe("simulateCustomSettlementRule", () => {
     });
   });
 
+  it("decouples group population metadata limits from selected simulation records", () => {
+    const assignedProjectStreamerIds = Array.from({ length: 600 }, (_, index) =>
+      projectStreamerUuid(index + 1),
+    );
+    const unassignedProjectStreamerIds = Array.from(
+      { length: 600 },
+      (_, index) => projectStreamerUuid(index + 1_001),
+    );
+    const first = simulationInput();
+    first.sampleSelection = {
+      ...first.sampleSelection,
+      groupPopulation: {
+        assignedProjectStreamerIds: [...assignedProjectStreamerIds].reverse(),
+        unassignedProjectStreamerIds: [
+          ...unassignedProjectStreamerIds,
+        ].reverse(),
+        groupSnapshotHash: "f".repeat(64),
+      },
+    };
+    const second = structuredClone(first);
+    second.sampleSelection.groupPopulation = {
+      assignedProjectStreamerIds,
+      unassignedProjectStreamerIds,
+      groupSnapshotHash: "f".repeat(64),
+    };
+
+    const firstResult = simulateAuthorized(first);
+    const secondResult = simulateAuthorized(second);
+
+    expect(first.records).toHaveLength(1);
+    expect(firstResult.dataSelectionHash).toBe(secondResult.dataSelectionHash);
+    expect(
+      firstResult.persistable.sampleSelection.groupPopulation
+        ?.assignedProjectStreamerIds,
+    ).toEqual(assignedProjectStreamerIds);
+    expect(
+      firstResult.persistable.sampleSelection.groupPopulation
+        ?.unassignedProjectStreamerIds,
+    ).toEqual(unassignedProjectStreamerIds);
+  });
+
+  it("rejects unknown nested fields inside group population metadata", () => {
+    const input = simulationInput();
+    input.sampleSelection = {
+      ...input.sampleSelection,
+      groupPopulation: {
+        assignedProjectStreamerIds: [
+          "11111111-1111-4111-8111-111111111111",
+        ],
+        unassignedProjectStreamerIds: [
+          "22222222-2222-4222-8222-222222222222",
+        ],
+        groupSnapshotHash: "f".repeat(64),
+        privateStreamerAmounts: [],
+      },
+    } as typeof input.sampleSelection;
+
+    expect(() => simulateAuthorized(input)).toThrow(
+      CustomRuleSimulationError,
+    );
+  });
+
   it("uses deterministic tie ordering and selection hashes independent of input record order", () => {
     const first = simulationInput();
     first.records = [
@@ -929,6 +991,10 @@ function simulationInput(
     ],
     currentMarginCents: "5000",
   };
+}
+
+function projectStreamerUuid(index: number): string {
+  return `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
 }
 
 function parameterClampInput(): CustomRuleSimulationInput {

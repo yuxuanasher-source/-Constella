@@ -37,6 +37,7 @@ import {
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const MAX_RECORDS = 500;
+const MAX_GROUP_POPULATION_IDS = 10_000;
 const MAX_SCENARIOS = 200;
 const MAX_CHANGE_BUCKETS = 10;
 const MAX_SNAPSHOT_DEPTH = 64;
@@ -175,8 +176,12 @@ const sampleSourceSchema = z.strictObject({
 });
 const selectionCriteriaSchema = z.enum(CUSTOM_RULE_SIMULATION_CRITERIA_CODES);
 const sampleSelectionGroupPopulationSchema = z.strictObject({
-  assignedProjectStreamerIds: z.array(z.string().uuid()).max(MAX_RECORDS),
-  unassignedProjectStreamerIds: z.array(z.string().uuid()).max(MAX_RECORDS),
+  assignedProjectStreamerIds: z
+    .array(z.string().uuid())
+    .max(MAX_GROUP_POPULATION_IDS),
+  unassignedProjectStreamerIds: z
+    .array(z.string().uuid())
+    .max(MAX_GROUP_POPULATION_IDS),
   groupSnapshotHash: hashSchema,
 });
 const sampleSelectionSchema = z
