@@ -182,21 +182,90 @@ describe("buildCustomRuleVariableCatalog", () => {
     );
   });
 
-  it("does not advertise variables for Phase 1-disabled compiler scopes", () => {
+  it("advertises only normalized external-cost sources and never raw import JSON keys", () => {
     const coverage = coverageFixture();
+    coverage.variables.supplier_fee = {
+      numerator: 2,
+      denominator: 3,
+      latestSampledPeriod: {
+        start: "2026-06-01T00:00:00.000Z",
+        end: "2026-06-30T23:59:59.999Z",
+      },
+    };
+    coverage.variables.traffic_cost = {
+      numerator: 1,
+      denominator: 3,
+      latestSampledPeriod: {
+        start: "2026-06-01T00:00:00.000Z",
+        end: "2026-06-30T23:59:59.999Z",
+      },
+    };
+
+    const catalog = buildCustomRuleVariableCatalog({
+      scope: "external_cost",
+      executionGrain: "report",
+      coverage,
+    });
+    const ids = catalog.variables.map((item) => item.id);
+
+    expect(ids).toEqual([
+      "gift_amount",
+      "import_row_index",
+      "import_type",
+      "order_count",
+      "project_id",
+      "report_id",
+      "sales_amount",
+      "streamer_id",
+      "supplier_fee",
+      "supplier_id",
+      "traffic_cost",
+    ]);
+    expect(variable(catalog, "supplier_fee")).toMatchObject({
+      availability: "partial",
+      sourceLabel: "已确认的规范化供应商导入项",
+      coverageNumerator: 2,
+      coverageDenominator: 3,
+    });
+    expect(variable(catalog, "import_type")).toMatchObject({
+      availability: "available",
+      runtimeType: { kind: "scalar", scalarType: "string" },
+    });
+    expect(JSON.stringify(catalog)).not.toContain("rawImport");
+    expect(JSON.stringify(catalog)).not.toContain("parsedPayload");
+    expect(JSON.stringify(catalog)).not.toContain("json");
+  });
+
+  it("advertises finalized core reconciliation amounts and evidence counts at aggregate grains", () => {
+    const catalog = buildCustomRuleVariableCatalog({
+      scope: "reconciliation",
+      executionGrain: "project_period",
+      coverage: coverageFixture(),
+    });
+
+    expect(catalog.variables.map((item) => item.id)).toEqual([
+      "external_cost_amount",
+      "gross_margin",
+      "margin_rate",
+      "payable_amount",
+      "receivable_amount",
+      "red_evidence_count",
+      "tax_amount",
+      "yellow_evidence_count",
+    ]);
+    expect(variable(catalog, "receivable_amount")).toMatchObject({
+      availability: "available",
+      sourceLabel: "已定稿对账核心结果：应收金额",
+    });
+    expect(variable(catalog, "red_evidence_count")).toMatchObject({
+      availability: "available",
+    });
 
     expect(
       buildCustomRuleVariableCatalog({
-        scope: "external_cost",
-        executionGrain: "report",
-        coverage,
-      }).variables,
-    ).toEqual([]);
-    expect(
-      buildCustomRuleVariableCatalog({
         scope: "reconciliation",
-        executionGrain: "project_period",
-        coverage,
+        executionGrain: "report",
+        coverage: coverageFixture(),
       }).variables,
     ).toEqual([]);
   });

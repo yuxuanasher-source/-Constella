@@ -1,3 +1,4 @@
+import type { ProjectCostItemType } from "@/features/complex-cost/complex-cost-types";
 import type { SettlementGroupMembershipSnapshot } from "./custom-rule-groups";
 
 export const CUSTOM_RULE_SCOPES = [
@@ -109,6 +110,24 @@ export type TypedRuntimeValue =
   | { type: "timestamp"; value: string }
   | { type: "array"; items: TypedRuntimeValue[] }
   | { type: "object"; fields: Record<string, TypedRuntimeValue> };
+
+export type ExternalCostRuleResult = {
+  kind: "cost_items";
+  items: Array<{
+    category: ProjectCostItemType;
+    amountCents: number;
+    memo: string;
+  }>;
+};
+
+export type ReconciliationRuleResult = {
+  kind: "checks";
+  checks: Array<{
+    severity: "pass" | "warn" | "block";
+    message: string;
+    condition: boolean;
+  }>;
+};
 
 export type CustomRuleExecutionUnit = {
   key: string;

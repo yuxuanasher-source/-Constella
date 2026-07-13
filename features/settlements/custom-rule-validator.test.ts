@@ -512,14 +512,181 @@ describe("validateCustomRuleFormula scope contract", () => {
     expect(issue.span).toEqual({ start: 0, end: "receivable".length });
   });
 
-  it.each([
-    ["external_cost", "external_cost = cost_items([])"],
-    ["reconciliation", 'reconciliation = block_if(true, "stop")'],
-  ] as const)("keeps the %s scope disabled in Phase 1", (scope, formula) => {
+  it("accepts external-cost and reconciliation scopes in Phase 4", () => {
+    expectValidationSuccess(
+      'external_cost = cost_items([{ category: "traffic", amount: yuan(500), memo: "7 月投流" }])',
+      options("external_cost", "report", { compositionMode: "emit_items" }),
+    );
+    expectValidationSuccess(
+      'reconciliation = [block_if(margin_rate < rate_percent(10), "毛利率低于 10%"), warn_if(red_evidence_count > 0, "存在红证据场次")]',
+      options("reconciliation", "project_period", { compositionMode: "check" }),
+    );
+  });
+});
+
+describe("external-cost typed output validation", () => {
+  const externalCostOptions = options("external_cost", "report", {
+    compositionMode: "emit_items",
+  });
+
+  it("compiles cost_items with bounded item objects and sorted source references", () => {
+    const result = expectValidationSuccess(
+      `cost_items([
+        { category: "traffic", amount: yuan(500), memo: "7 月投流" },
+        { category: "supplier_fee", amount: supplier_fee, memo: "供应商账单" }
+      ])`,
+      externalCostOptions,
+    );
+
+    expect(result.variables).toEqual(["supplier_fee"]);
+    expect(JSON.stringify(result.compiledAst)).toContain('"callee":"cost_items"');
+    expect(JSON.stringify(result.compiledAst)).toContain('"valueCents":50000');
+  });
+
+  it("rejects categories outside the generated-cost subset", () => {
     expectValidationIssue(
-      formula,
-      "VALIDATION_SCOPE_DISABLED",
-      options(scope),
+      'cost_items([{ category: "manual", amount: yuan(1), memo: "人工调整" }])',
+      "VALIDATION_COST_ITEM_CATEGORY",
+      externalCostOptions,
+    );
+  });
+
+  it("requires money amount, bounded memo, and no more than 20 items", () => {
+    expectValidationIssue(
+      'cost_items([{ category: "traffic", amount: 500, memo: "投流" }])',
+      "VALIDATION_AMBIGUOUS_UNIT",
+      externalCostOptions,
+    );
+    expectValidationIssue(
+      `cost_items([{ category: "traffic", amount: yuan(1), memo: "${"备".repeat(121)}" }])`,
+      "VALIDATION_COST_ITEM_MEMO",
+      externalCostOptions,
+    );
+    expectValidationIssue(
+      `cost_items([${Array.from(
+        { length: 21 },
+        () => '{ category: "traffic", amount: yuan(1), memo: "投流" }',
+      ).join(", ")}])`,
+      "VALIDATION_COST_ITEM_LIMIT",
+      externalCostOptions,
+    );
+  });
+
+  it("requires emit_items composition and report-compatible grain", () => {
+    expectValidationIssue(
+      'cost_items([{ category: "traffic", amount: yuan(1), memo: "投流" }])',
+      "VALIDATION_OUTPUT_COMPOSITION",
+      options("external_cost", "report", { compositionMode: "replace" }),
+    );
+    expectValidationIssue(
+      'cost_items([{ category: "traffic", amount: yuan(1), memo: "投流" }])',
+      "VALIDATION_OUTPUT_GRAIN",
+      options("external_cost", "project_period", {
+        compositionMode: "emit_items",
+      }),
+    );
+  });
+
+  it("does not allow money_result or reconciliation helpers in external-cost scope", () => {
+    expectValidationIssue(
+      "money_result({ final: yuan(1) })",
+      "VALIDATION_INVALID_OUTPUT",
+      externalCostOptions,
+    );
+    expectValidationIssue(
+      'block_if(true, "停止")',
+      "VALIDATION_INVALID_OUTPUT",
+      externalCostOptions,
+    );
+  });
+});
+
+describe("reconciliation typed output validation", () => {
+  const reconciliationOptions = options("reconciliation", "project_period", {
+    compositionMode: "check",
+  });
+
+  it("compiles a single check or an array of checks from finalized reconciliation variables", () => {
+    const single = expectValidationSuccess(
+      'block_if(margin_rate < rate_percent(10), "毛利率低于 10%")',
+      reconciliationOptions,
+    );
+    const array = expectValidationSuccess(
+      `[
+        block_if(margin_rate < rate_percent(10), "毛利率低于 10%"),
+        warn_if(red_evidence_count > 0, "存在红证据场次"),
+        pass_if(gross_margin >= yuan(0), "毛利非负")
+      ]`,
+      reconciliationOptions,
+    );
+
+    expect(single.variables).toEqual(["margin_rate"]);
+    expect(array.variables).toEqual([
+      "gross_margin",
+      "margin_rate",
+      "red_evidence_count",
+    ]);
+    expect(JSON.stringify(array.compiledAst)).toContain('"value":"block"');
+  });
+
+  it("requires boolean conditions and bounded Chinese messages", () => {
+    expectValidationIssue(
+      'block_if(margin_rate, "毛利率异常")',
+      "VALIDATION_TYPE_MISMATCH",
+      reconciliationOptions,
+    );
+    expectValidationIssue(
+      `warn_if(red_evidence_count > 0, "${"告".repeat(121)}")`,
+      "VALIDATION_CHECK_MESSAGE",
+      reconciliationOptions,
+    );
+  });
+
+  it("requires check composition and batch or project-period grain", () => {
+    expectValidationIssue(
+      'block_if(margin_rate < rate_percent(10), "毛利率低于 10%")',
+      "VALIDATION_OUTPUT_COMPOSITION",
+      options("reconciliation", "project_period", {
+        compositionMode: "replace",
+      }),
+    );
+    expectValidationIssue(
+      'block_if(margin_rate < rate_percent(10), "毛利率低于 10%")',
+      "VALIDATION_OUTPUT_GRAIN",
+      options("reconciliation", "report", { compositionMode: "check" }),
+    );
+  });
+
+  it("limits variables to core reconciliation results and evidence counts", () => {
+    expectValidationSuccess(
+      `[
+        warn_if(receivable_amount < payable_amount + external_cost_amount + tax_amount, "收入不足覆盖成本和税费"),
+        warn_if(yellow_evidence_count > 0, "存在黄证据场次")
+      ]`,
+      reconciliationOptions,
+    );
+    expectValidationIssue(
+      'warn_if(period_sales_amount > yuan(0), "销售额存在")',
+      "VALIDATION_VARIABLE_SCOPE",
+      reconciliationOptions,
+    );
+  });
+
+  it("does not allow payable, receivable, or cost-item outputs in reconciliation scope", () => {
+    expectValidationIssue(
+      "money_result({ final: yuan(1) })",
+      "VALIDATION_INVALID_OUTPUT",
+      reconciliationOptions,
+    );
+    expectValidationIssue(
+      'cost_items([{ category: "traffic", amount_cents: yuan(1), memo: "投流" }])',
+      "VALIDATION_INVALID_OUTPUT",
+      reconciliationOptions,
+    );
+    expectValidationIssue(
+      'warn_if(block_if(true, "停止"), "嵌套检查")',
+      "VALIDATION_CHECK_NESTING",
+      reconciliationOptions,
     );
   });
 });
@@ -702,7 +869,7 @@ describe("Phase 1 function allowlist", () => {
 
     expectValidationIssue(
       "money_result({ final: cost_items([]) })",
-      "VALIDATION_FUNCTION_DISABLED",
+      "VALIDATION_INVALID_OUTPUT",
     );
   });
 

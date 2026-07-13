@@ -20,6 +20,7 @@ import type {
   CompiledAstNode,
   CustomRuleCompositionMode,
   CustomRuleExecutionGrain,
+  ExternalCostRuleResult,
   CustomRulePrimaryActionDto,
   CustomRuleScope,
   CustomRuleSimulationFreshnessHashes,
@@ -27,6 +28,7 @@ import type {
   CustomRuleVersionStatus,
   MaterialRiskCode,
   NormalizedAstNode,
+  ReconciliationRuleResult,
   RuntimeScalarType,
 } from "./custom-rule-types";
 
@@ -148,6 +150,39 @@ describe("custom rule narrow unions", () => {
 });
 
 describe("product-owned AST contracts", () => {
+  it("defines typed output contracts for generated costs and reconciliation checks", () => {
+    const costResult: ExternalCostRuleResult = {
+      kind: "cost_items",
+      items: [
+        {
+          category: "traffic",
+          amountCents: 50_000,
+          memo: "7 月投流",
+        },
+      ],
+    };
+    const reconciliationResult: ReconciliationRuleResult = {
+      kind: "checks",
+      checks: [
+        {
+          severity: "block",
+          condition: true,
+          message: "毛利率低于 10%",
+        },
+        {
+          severity: "warn",
+          condition: false,
+          message: "存在红证据场次",
+        },
+      ],
+    };
+
+    expect(JSON.parse(JSON.stringify(costResult))).toEqual(costResult);
+    expect(JSON.parse(JSON.stringify(reconciliationResult))).toEqual(
+      reconciliationResult,
+    );
+  });
+
   it("keeps every normalized node kind small and JSON-serializable", () => {
     const nodes: NormalizedAstNode[] = [
       { kind: "literal", value: 10 },

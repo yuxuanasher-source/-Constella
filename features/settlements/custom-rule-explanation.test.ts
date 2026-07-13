@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type {
   CompiledAstNode,
+  CustomRuleExecutionGrain,
+  CustomRuleScope,
   RuntimeScalarType,
   RuntimeValueType,
   TypedRuntimeValue,
@@ -52,11 +54,15 @@ function compileFormula(
     name: string;
     valueType: RuntimeValueType;
   }> = [],
+  scope: CustomRuleScope = "payable",
+  executionGrain: CustomRuleExecutionGrain = "report",
+  compositionMode?: "replace" | "add" | "multiply" | "clamp" | "emit_items" | "check",
 ): CompiledAstNode {
   const result = validateCustomRuleFormula(formula, {
-    scope: "payable",
-    executionGrain: "report",
+    scope,
+    executionGrain,
     parameters,
+    ...(compositionMode === undefined ? {} : { compositionMode }),
   });
   if (!result.ok) {
     throw new Error(
@@ -283,6 +289,65 @@ describe("custom rule template explanation", () => {
           labels: labels(),
         }),
       "EXPLANATION_INVALID_AST",
+    );
+  });
+});
+
+describe("Phase 4 output explanations", () => {
+  it("explains emitted cost items from AST and sanitized typed results", () => {
+    const ast = compileFormula(
+      `cost_items([
+        { category: "traffic", amount: yuan(500), memo: "7 月投流<script>alert(1)</script>\u0001" }
+      ])`,
+      [],
+      "external_cost",
+      "report",
+      "emit_items",
+    );
+    const execution = executionFor({ ast });
+
+    const explanation = buildCustomRuleExecutionExplanation({
+      ast,
+      trace: execution.trace,
+      result: execution.result,
+      labels: labels(),
+    });
+
+    expect(explanation).toBe(
+      "外部成本公式输出1条成本项。第1项：投流费用，金额 500.00 元，说明“7 月投流alert(1)”。",
+    );
+    expect(explanation).not.toContain("<script>");
+    expect(explanation).not.toContain("\u0001");
+  });
+
+  it("explains reconciliation checks from AST variables and evaluated conditions", () => {
+    const ast = compileFormula(
+      `[
+        block_if(margin_rate < rate_percent(10), "毛利率低于 10%"),
+        warn_if(red_evidence_count > 0, "存在红证据场次")
+      ]`,
+      [],
+      "reconciliation",
+      "project_period",
+      "check",
+    );
+    const execution = executionFor({
+      ast,
+      variables: {
+        margin_rate: rate(800),
+        red_evidence_count: integer(1),
+      },
+    });
+
+    const explanation = buildCustomRuleExecutionExplanation({
+      ast,
+      trace: execution.trace,
+      result: execution.result,
+      labels: labels(),
+    });
+
+    expect(explanation).toBe(
+      "毛利率：8.00%。红色证据报告数：1 件。对账检查输出2条。第1条：阻断，条件已触发，毛利率低于 10%。第2条：预警，条件已触发，存在红证据场次。",
     );
   });
 });

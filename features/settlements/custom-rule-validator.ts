@@ -100,6 +100,34 @@ const STRING_ARRAY_TYPE: RuntimeValueType = {
   kind: "array",
   itemType: STRING_TYPE,
 };
+const COST_ITEM_TYPE: RuntimeValueType = {
+  kind: "object",
+  fields: {
+    category: STRING_TYPE,
+    amount_cents: MONEY_TYPE,
+    memo: STRING_TYPE,
+  },
+};
+const COST_ITEMS_OUTPUT_TYPE: RuntimeValueType = {
+  kind: "object",
+  fields: {
+    items: { kind: "array", itemType: COST_ITEM_TYPE },
+  },
+};
+const CHECK_TYPE: RuntimeValueType = {
+  kind: "object",
+  fields: {
+    severity: STRING_TYPE,
+    condition: BOOLEAN_TYPE,
+    message: STRING_TYPE,
+  },
+};
+const CHECKS_OUTPUT_TYPE: RuntimeValueType = {
+  kind: "object",
+  fields: {
+    checks: { kind: "array", itemType: CHECK_TYPE },
+  },
+};
 
 const REPORT_GRAIN = ["report"] as const;
 const ALL_GRAINS = [
@@ -157,12 +185,20 @@ const VARIABLE_DEFINITIONS: Readonly<Record<string, VariableDefinition>> = {
     PAYABLE_AND_RECEIVABLE,
     REPORT_GRAIN,
   ),
-  project_id: variable(STRING_TYPE, ALL_SCOPES, ALL_GRAINS),
-  project_tags: variable(STRING_ARRAY_TYPE, ALL_SCOPES, ALL_GRAINS),
+  project_id: variable(
+    STRING_TYPE,
+    ["payable", "receivable", "external_cost"] as const,
+    ALL_GRAINS,
+  ),
+  project_tags: variable(STRING_ARRAY_TYPE, PAYABLE_AND_RECEIVABLE, ALL_GRAINS),
+  import_type: variable(STRING_TYPE, EXTERNAL_COST_ONLY, REPORT_GRAIN),
+  import_row_index: variable(INTEGER_TYPE, EXTERNAL_COST_ONLY, REPORT_GRAIN),
+  report_id: variable(STRING_TYPE, EXTERNAL_COST_ONLY, REPORT_GRAIN),
+  supplier_id: variable(STRING_TYPE, EXTERNAL_COST_ONLY, REPORT_GRAIN),
   streamer_id: variable(
     STRING_TYPE,
-    PAYABLE_AND_RECEIVABLE,
-    STREAMER_GRAINS,
+    ["payable", "receivable", "external_cost"] as const,
+    ["report", "project_streamer_period"] as const,
   ),
   streamer_level: variable(STRING_TYPE, PAYABLE_ONLY, STREAMER_GRAINS),
   streamer_source: variable(STRING_TYPE, PAYABLE_ONLY, STREAMER_GRAINS),
@@ -177,9 +213,10 @@ const VARIABLE_DEFINITIONS: Readonly<Record<string, VariableDefinition>> = {
   ),
   sales_amount: variable(
     MONEY_TYPE,
-    PAYABLE_AND_RECEIVABLE,
+    ["payable", "receivable", "external_cost"] as const,
     REPORT_GRAIN,
   ),
+  order_count: variable(INTEGER_TYPE, EXTERNAL_COST_ONLY, REPORT_GRAIN),
   orders_count: variable(
     INTEGER_TYPE,
     PAYABLE_AND_RECEIVABLE,
@@ -187,7 +224,7 @@ const VARIABLE_DEFINITIONS: Readonly<Record<string, VariableDefinition>> = {
   ),
   gift_amount: variable(
     MONEY_TYPE,
-    PAYABLE_AND_RECEIVABLE,
+    ["payable", "receivable", "external_cost"] as const,
     REPORT_GRAIN,
   ),
   supplier_fee: variable(MONEY_TYPE, EXTERNAL_COST_ONLY, REPORT_GRAIN),
@@ -224,12 +261,12 @@ const VARIABLE_DEFINITIONS: Readonly<Record<string, VariableDefinition>> = {
   ),
   red_evidence_count: variable(
     INTEGER_TYPE,
-    PAYABLE_AND_RECEIVABLE,
+    ["payable", "receivable", "reconciliation"] as const,
     PERIOD_GRAINS,
   ),
   yellow_evidence_count: variable(
     INTEGER_TYPE,
-    PAYABLE_AND_RECEIVABLE,
+    ["payable", "receivable", "reconciliation"] as const,
     PERIOD_GRAINS,
   ),
   period_payable_amount: variable(
@@ -288,20 +325,25 @@ const ALLOWED_FUNCTIONS = new Set([
   "rate_percent",
   "parameter",
   "money_result",
-]);
-const DISABLED_FUNCTIONS = new Set([
   "cost_items",
   "block_if",
   "warn_if",
   "pass_if",
 ]);
-const DISABLED_PHASE_ONE_SCOPES = new Set<CustomRuleScope>([
-  "external_cost",
-  "reconciliation",
-]);
+const DISABLED_FUNCTIONS = new Set<string>();
 const MAX_PARAMETERS = 300;
 const MAX_PARAMETER_TYPE_DEPTH = 20;
 const MAX_PARAMETER_TYPE_NODES = 300;
+const MAX_COST_ITEMS_PER_EXECUTION = 20;
+const MAX_OUTPUT_MESSAGE_LENGTH = 120;
+const GENERATED_COST_ITEM_TYPES = new Set([
+  "cpa",
+  "cps",
+  "gift",
+  "supplier_fee",
+  "traffic",
+  "platform_fee",
+]);
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const RESERVED_IDENTIFIERS = new Set([
   "amount",
@@ -336,7 +378,11 @@ export function validateCustomRuleFormula(
     );
   }
 
-  const parsed = parseCustomRuleFormula(formula);
+  const formulaForParse =
+    validatedOptions.scope === "external_cost"
+      ? formula.replace(/\bamount\s*:/g, "amount_cents:")
+      : formula;
+  const parsed = parseCustomRuleFormula(formulaForParse);
   if (!parsed.ok) {
     return parsed;
   }
@@ -359,14 +405,6 @@ export function validateCustomRuleFormula(
         end:
           (prefixStart < 0 ? 0 : prefixStart) + parsed.scopePrefix.length,
       },
-    );
-  }
-
-  if (DISABLED_PHASE_ONE_SCOPES.has(validatedOptions.scope)) {
-    return validationFailure(
-      "VALIDATION_SCOPE_DISABLED",
-      "This settlement scope is disabled in Phase 1",
-      rootSpan,
     );
   }
 
@@ -698,15 +736,320 @@ function compileTopLevel(
   if (node.kind === "call") {
     assertKnownFunction(node.callee, path, context);
   }
+  if (context.scope === "external_cost") {
+    validateExternalCostOutputContext(path, context);
+    if (node.kind !== "call" || node.callee !== "cost_items") {
+      throw issueAt(
+        "VALIDATION_INVALID_OUTPUT",
+        "external_cost formulas must return cost_items",
+        path,
+        context,
+      );
+    }
+    return compileCostItems(node, path, context);
+  }
+  if (context.scope === "reconciliation") {
+    validateReconciliationOutputContext(path, context);
+    if (node.kind === "call" && isCheckFunction(node.callee)) {
+      return compileChecksArray([node], path, context);
+    }
+    if (node.kind === "array") {
+      return compileChecksArray(node.elements, path, context);
+    }
+    throw issueAt(
+      "VALIDATION_INVALID_OUTPUT",
+      "reconciliation formulas must return check helpers",
+      path,
+      context,
+    );
+  }
   if (node.kind !== "call" || node.callee !== "money_result") {
     throw issueAt(
       "VALIDATION_INVALID_OUTPUT",
-      "Phase 1 formulas must return money_result",
+      "payable and receivable formulas must return money_result",
       path,
       context,
     );
   }
   return compileMoneyResult(node, path, context);
+}
+
+function validateExternalCostOutputContext(
+  path: string,
+  context: CompileContext,
+): void {
+  if (context.compositionMode !== "emit_items") {
+    throw issueAt(
+      "VALIDATION_OUTPUT_COMPOSITION",
+      "external_cost formulas require emit_items composition",
+      path,
+      context,
+    );
+  }
+  if (context.executionGrain !== "report") {
+    throw issueAt(
+      "VALIDATION_OUTPUT_GRAIN",
+      "external_cost formulas must run at report grain",
+      path,
+      context,
+    );
+  }
+}
+
+function validateReconciliationOutputContext(
+  path: string,
+  context: CompileContext,
+): void {
+  if (context.compositionMode !== "check") {
+    throw issueAt(
+      "VALIDATION_OUTPUT_COMPOSITION",
+      "reconciliation formulas require check composition",
+      path,
+      context,
+    );
+  }
+  if (
+    context.executionGrain !== "batch" &&
+    context.executionGrain !== "project_period"
+  ) {
+    throw issueAt(
+      "VALIDATION_OUTPUT_GRAIN",
+      "reconciliation formulas must run at batch or project_period grain",
+      path,
+      context,
+    );
+  }
+}
+
+function compileCostItems(
+  node: Extract<NormalizedAstNode, { kind: "call" }>,
+  path: string,
+  context: CompileContext,
+): CompiledAstNode {
+  assertArity(node, 1, path, context);
+  const itemsNode = node.arguments[0];
+  if (!itemsNode || itemsNode.kind !== "array") {
+    throw issueAt(
+      "VALIDATION_INVALID_OUTPUT",
+      "cost_items requires one array argument",
+      path,
+      context,
+    );
+  }
+  if (itemsNode.elements.length > MAX_COST_ITEMS_PER_EXECUTION) {
+    throw issueAt(
+      "VALIDATION_COST_ITEM_LIMIT",
+      "cost_items may emit at most 20 items",
+      pathForArgument(path, 0),
+      context,
+    );
+  }
+  const itemElements = itemsNode.elements.map((item, index) =>
+    compileCostItemObject(item, pathForArrayElement(pathForArgument(path, 0), index), context),
+  );
+  const arrayNode: CompiledAstNode = {
+    kind: "array",
+    elements: itemElements,
+    inferredType: { kind: "array", itemType: COST_ITEM_TYPE },
+  };
+  return {
+    kind: "call",
+    callee: "cost_items",
+    arguments: [arrayNode],
+    inferredType: COST_ITEMS_OUTPUT_TYPE,
+  };
+}
+
+function compileCostItemObject(
+  node: NormalizedAstNode,
+  path: string,
+  context: CompileContext,
+): CompiledAstNode {
+  if (node.kind !== "object") {
+    throw issueAt(
+      "VALIDATION_INVALID_OUTPUT",
+      "cost_items entries must be objects",
+      path,
+      context,
+    );
+  }
+  assertUniqueObjectKeys(node, path, context);
+  const byKey = new Map(node.entries.map((entry, index) => [entry.key, { ...entry, index }]));
+  const requiredKeys = ["category", "amount_cents", "memo"] as const;
+  if (
+    node.entries.length !== requiredKeys.length ||
+    !requiredKeys.every((key) => byKey.has(key))
+  ) {
+    throw issueAt(
+      "VALIDATION_INVALID_OUTPUT",
+      "cost_items entries require category, amount, and memo",
+      path,
+      context,
+    );
+  }
+
+  const category = byKey.get("category");
+  const amount = byKey.get("amount_cents");
+  const memo = byKey.get("memo");
+  if (!category || !amount || !memo) {
+    throw issueAt("VALIDATION_INVALID_OUTPUT", "cost_items entry is incomplete", path, context);
+  }
+  if (
+    category.value.kind !== "literal" ||
+    typeof category.value.value !== "string" ||
+    !GENERATED_COST_ITEM_TYPES.has(category.value.value)
+  ) {
+    throw issueAt(
+      "VALIDATION_COST_ITEM_CATEGORY",
+      "Generated cost category is not allowed",
+      pathForObjectValue(path, category.index),
+      context,
+    );
+  }
+  if (
+    memo.value.kind !== "literal" ||
+    typeof memo.value.value !== "string" ||
+    memo.value.value.length < 1 ||
+    memo.value.value.length > MAX_OUTPUT_MESSAGE_LENGTH
+  ) {
+    throw issueAt(
+      "VALIDATION_COST_ITEM_MEMO",
+      "Cost item memo must be a bounded string",
+      pathForObjectValue(path, memo.index),
+      context,
+    );
+  }
+
+  const compiledAmount = compileNode(
+    amount.value,
+    pathForObjectValue(path, amount.index),
+    context,
+  );
+  expectMoney(
+    compiledAmount,
+    amount.value,
+    pathForObjectValue(path, amount.index),
+    context,
+    "VALIDATION_INVALID_OUTPUT",
+  );
+
+  const entries = [
+    {
+      key: "category",
+      value: compileLiteral(category.value as Extract<NormalizedAstNode, { kind: "literal" }>, pathForObjectValue(path, category.index), context),
+    },
+    { key: "amount_cents", value: compiledAmount },
+    {
+      key: "memo",
+      value: compileLiteral(memo.value as Extract<NormalizedAstNode, { kind: "literal" }>, pathForObjectValue(path, memo.index), context),
+    },
+  ];
+  return {
+    kind: "object",
+    entries,
+    inferredType: COST_ITEM_TYPE,
+  };
+}
+
+function compileChecksArray(
+  sourceChecks: readonly NormalizedAstNode[],
+  path: string,
+  context: CompileContext,
+): CompiledAstNode {
+  if (sourceChecks.length === 0) {
+    throw issueAt(
+      "VALIDATION_INVALID_OUTPUT",
+      "reconciliation requires at least one check",
+      path,
+      context,
+    );
+  }
+  const checks = sourceChecks.map((check, index) => {
+    const checkPath =
+      sourceChecks.length === 1 && check.kind === "call"
+        ? path
+        : pathForArrayElement(path, index);
+    if (check.kind !== "call" || !isCheckFunction(check.callee)) {
+      throw issueAt(
+        "VALIDATION_INVALID_OUTPUT",
+        "reconciliation arrays may contain only check helpers",
+        checkPath,
+        context,
+      );
+    }
+    return compileCheck(check, checkPath, context);
+  });
+  const arrayNode: CompiledAstNode = {
+    kind: "array",
+    elements: checks,
+    inferredType: { kind: "array", itemType: CHECK_TYPE },
+  };
+  return {
+    kind: "call",
+    callee: "checks",
+    arguments: [arrayNode],
+    inferredType: CHECKS_OUTPUT_TYPE,
+  };
+}
+
+function compileCheck(
+  node: Extract<NormalizedAstNode, { kind: "call" }>,
+  path: string,
+  context: CompileContext,
+): CompiledAstNode {
+  assertArity(node, 2, path, context);
+  const condition = compileNode(node.arguments[0], pathForArgument(path, 0), context);
+  expectExactType(
+    condition,
+    node.arguments[0],
+    BOOLEAN_TYPE,
+    pathForArgument(path, 0),
+    context,
+  );
+  const message = node.arguments[1];
+  if (
+    !message ||
+    message.kind !== "literal" ||
+    typeof message.value !== "string" ||
+    message.value.length < 1 ||
+    message.value.length > MAX_OUTPUT_MESSAGE_LENGTH
+  ) {
+    throw issueAt(
+      "VALIDATION_CHECK_MESSAGE",
+      "Check message must be a bounded string",
+      pathForArgument(path, 1),
+      context,
+    );
+  }
+  const severity =
+    node.callee === "block_if"
+      ? "block"
+      : node.callee === "warn_if"
+        ? "warn"
+        : "pass";
+  return {
+    kind: "object",
+    entries: [
+      {
+        key: "severity",
+        value: {
+          kind: "literal",
+          inferredType: STRING_TYPE,
+          value: severity,
+        },
+      },
+      { key: "condition", value: condition },
+      {
+        key: "message",
+        value: compileLiteral(message, pathForArgument(path, 1), context),
+      },
+    ],
+    inferredType: CHECK_TYPE,
+  };
+}
+
+function isCheckFunction(callee: string): callee is "block_if" | "warn_if" | "pass_if" {
+  return callee === "block_if" || callee === "warn_if" || callee === "pass_if";
 }
 
 function compileMoneyResult(
@@ -1184,9 +1527,14 @@ function compileCall(
     case "contains":
       return compileContains(node, path, context);
     case "money_result":
+    case "cost_items":
+    case "block_if":
+    case "warn_if":
+    case "pass_if":
+    case "checks":
       throw issueAt(
-        "VALIDATION_INVALID_OUTPUT",
-        "money_result may appear only at the formula root",
+        isCheckFunction(node.callee) ? "VALIDATION_CHECK_NESTING" : "VALIDATION_INVALID_OUTPUT",
+        "Output helpers may appear only at the formula root",
         path,
         context,
       );

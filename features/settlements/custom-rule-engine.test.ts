@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type {
   CompiledAstNode,
+  CustomRuleExecutionGrain,
+  CustomRuleScope,
   RuntimeScalarType,
   RuntimeValueType,
   TypedRuntimeValue,
@@ -9,6 +11,8 @@ import type {
 import { validateCustomRuleFormula } from "./custom-rule-validator";
 import {
   CustomRuleExecutionError,
+  type CustomRuleExecutionResult,
+  type CustomRuleMoneyResult,
   executeCompiledCustomRule,
   executeCompiledCustomRuleWithTrace,
   preflightCompiledCustomRuleAst,
@@ -62,11 +66,15 @@ function compileFormula(
     name: string;
     valueType: RuntimeValueType;
   }> = [],
+  scope: CustomRuleScope = "payable",
+  executionGrain: CustomRuleExecutionGrain = "report",
+  compositionMode?: "replace" | "add" | "multiply" | "clamp" | "emit_items" | "check",
 ): CompiledAstNode {
   const result = validateCustomRuleFormula(formula, {
-    scope: "payable",
-    executionGrain: "report",
+    scope,
+    executionGrain,
     parameters,
+    ...(compositionMode === undefined ? {} : { compositionMode }),
   });
 
   if (!result.ok) {
@@ -88,9 +96,38 @@ function executeFormula(
     parameterValues?: Readonly<Record<string, TypedRuntimeValue>>;
     limits?: { maxSteps: number; maxDepth: number };
   } = {},
-) {
+): CustomRuleMoneyResult {
   return executeCompiledCustomRule({
     ast: compileFormula(formula, options.parameterDefinitions),
+    variables: options.variableValues ?? {},
+    parameters: options.parameterValues ?? {},
+    ...(options.limits === undefined ? {} : { limits: options.limits }),
+  });
+}
+
+function executeScopedFormula(
+  formula: string,
+  scope: CustomRuleScope,
+  executionGrain: CustomRuleExecutionGrain,
+  compositionMode: "emit_items" | "check",
+  options: {
+    variableValues?: Readonly<Record<string, TypedRuntimeValue>>;
+    parameterDefinitions?: ReadonlyArray<{
+      name: string;
+      valueType: RuntimeValueType;
+    }>;
+    parameterValues?: Readonly<Record<string, TypedRuntimeValue>>;
+    limits?: { maxSteps: number; maxDepth: number };
+  } = {},
+): CustomRuleExecutionResult {
+  return executeCompiledCustomRule<CustomRuleExecutionResult>({
+    ast: compileFormula(
+      formula,
+      options.parameterDefinitions ?? [],
+      scope,
+      executionGrain,
+      compositionMode,
+    ),
     variables: options.variableValues ?? {},
     parameters: options.parameterValues ?? {},
     ...(options.limits === undefined ? {} : { limits: options.limits }),
@@ -577,6 +614,86 @@ describe("executeCompiledCustomRule calculations", () => {
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.trace)).toBe(true);
     expect(Object.isFrozen(first.result.componentsCents)).toBe(true);
+  });
+});
+
+describe("executeCompiledCustomRule typed Phase 4 outputs", () => {
+  it("emits bounded external cost items from typed money expressions", () => {
+    const result = executeScopedFormula(
+      `cost_items([
+        { category: "traffic", amount: yuan(500), memo: "7 月投流" },
+        { category: "supplier_fee", amount: supplier_fee, memo: "供应商账单" }
+      ])`,
+      "external_cost",
+      "report",
+      "emit_items",
+      { variableValues: { supplier_fee: money(12_345) } },
+    );
+
+    expect(result).toEqual({
+      kind: "cost_items",
+      items: [
+        { category: "traffic", amountCents: 50_000, memo: "7 月投流" },
+        { category: "supplier_fee", amountCents: 12_345, memo: "供应商账单" },
+      ],
+    });
+    if (result.kind !== "cost_items") {
+      throw new Error("Expected cost_items result");
+    }
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.items)).toBe(true);
+  });
+
+  it("rejects generated cost amounts that are negative, unsafe, or above the project cap", () => {
+    expectExecutionIssue(
+      () =>
+        executeScopedFormula(
+          'cost_items([{ category: "traffic", amount: -yuan(0.01), memo: "负数" }])',
+          "external_cost",
+          "report",
+          "emit_items",
+        ),
+      "EXECUTION_INVALID_COST_ITEM",
+    );
+    expectExecutionIssue(
+      () =>
+        executeScopedFormula(
+          'cost_items([{ category: "traffic", amount: yuan(10000001), memo: "超上限" }])',
+          "external_cost",
+          "report",
+          "emit_items",
+        ),
+      "EXECUTION_COST_ITEM_CAP_EXCEEDED",
+    );
+  });
+
+  it("returns reconciliation checks with severity derived from the condition", () => {
+    const result = executeScopedFormula(
+      `[
+        block_if(margin_rate < rate_percent(10), "毛利率低于 10%"),
+        warn_if(red_evidence_count > 0, "存在红证据场次"),
+        pass_if(gross_margin >= yuan(0), "毛利非负")
+      ]`,
+      "reconciliation",
+      "project_period",
+      "check",
+      {
+        variableValues: {
+          margin_rate: rate(800),
+          red_evidence_count: integer(1),
+          gross_margin: money(20_000),
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      kind: "checks",
+      checks: [
+        { severity: "block", condition: true, message: "毛利率低于 10%" },
+        { severity: "warn", condition: true, message: "存在红证据场次" },
+        { severity: "pass", condition: true, message: "毛利非负" },
+      ],
+    });
   });
 });
 

@@ -6,10 +6,13 @@ import {
   isCustomRuleProxy,
   preflightCompiledCustomRuleAst,
   type CustomRuleExecutionTraceEvent,
+  type CustomRuleExecutionResult,
   type CustomRuleMoneyResult,
 } from "./custom-rule-engine";
 import type {
   CompiledAstNode,
+  ExternalCostRuleResult,
+  ReconciliationRuleResult,
   RuntimeScalarType,
   TypedRuntimeValue,
 } from "./custom-rule-types";
@@ -48,8 +51,14 @@ export const DEFAULT_CUSTOM_RULE_LABEL_REGISTRY: CustomRuleLabelRegistry =
       period_sales_amount: "周期销售金额",
       period_orders_count: "周期订单数",
       period_report_count: "周期场次数",
-      red_evidence_count: "红色凭证数",
-      yellow_evidence_count: "黄色凭证数",
+      red_evidence_count: "红色证据报告数",
+      yellow_evidence_count: "黄色证据报告数",
+      receivable_amount: "应收金额",
+      payable_amount: "应付金额",
+      external_cost_amount: "外部成本",
+      tax_amount: "税额",
+      gross_margin: "毛利",
+      margin_rate: "毛利率",
     },
     functions: {
       if: "条件判断",
@@ -64,6 +73,8 @@ export const DEFAULT_CUSTOM_RULE_LABEL_REGISTRY: CustomRuleLabelRegistry =
       contains: "标签匹配",
       parameter: "业务参数",
       money_result: "结算结果",
+      cost_items: "外部成本项",
+      checks: "对账检查",
     },
     parameters: {},
     components: {
@@ -79,6 +90,15 @@ export const DEFAULT_CUSTOM_RULE_LABEL_REGISTRY: CustomRuleLabelRegistry =
       green: "绿色",
       yellow: "黄色",
       red: "红色",
+      traffic: "投流费用",
+      supplier_fee: "供应商费用",
+      gift: "礼物费用",
+      cpa: "CPA费用",
+      cps: "CPS费用",
+      platform_fee: "平台费用",
+      pass: "通过",
+      warn: "预警",
+      block: "阻断",
     },
   });
 
@@ -106,16 +126,21 @@ export type BuildCustomRuleTemplateExplanationInput = Readonly<{
 export type BuildCustomRuleExecutionExplanationInput = Readonly<{
   ast: CompiledAstNode;
   trace: readonly CustomRuleExecutionTraceEvent[];
-  result: CustomRuleMoneyResult;
+  result: CustomRuleExecutionResult;
   labels?: CustomRuleLabelRegistry;
 }>;
 
-type ParsedRoot = Readonly<{
-  ast: CompiledAstNode;
-  componentNames: readonly string[];
-}>;
+type ParsedRoot = Readonly<
+  | {
+      output: "money_result";
+      ast: CompiledAstNode;
+      componentNames: readonly string[];
+    }
+  | { output: "cost_items"; ast: CompiledAstNode }
+  | { output: "checks"; ast: CompiledAstNode }
+>;
 
-type VariableUnit = "minutes" | "count";
+type VariableUnit = "minutes" | "count" | "item_count";
 
 const VARIABLE_UNITS: Readonly<Record<string, VariableUnit>> = Object.freeze({
   system_minutes: "minutes",
@@ -127,8 +152,8 @@ const VARIABLE_UNITS: Readonly<Record<string, VariableUnit>> = Object.freeze({
   orders_count: "count",
   period_orders_count: "count",
   period_report_count: "count",
-  red_evidence_count: "count",
-  yellow_evidence_count: "count",
+  red_evidence_count: "item_count",
+  yellow_evidence_count: "item_count",
 });
 
 class DataSnapshotFailure extends Error {}
@@ -140,6 +165,12 @@ export function buildCustomRuleTemplateExplanation(
   const root = parseRoot(values.ast);
   const labels = parseLabelRegistry(values.labels);
   const functionIds = collectFunctionIds(root.ast);
+  if (root.output === "cost_items") {
+    return "外部成本公式按成本项输出。金额以元显示，说明用于审计留痕。";
+  }
+  if (root.output === "checks") {
+    return "对账公式按检查项输出。检查结果用于通过、预警或阻断项目结算。";
+  }
   const componentText = root.componentNames
     .map((name) => labelFor(labels.components, name, "组件"))
     .join("、");
@@ -246,11 +277,18 @@ export function buildCustomRuleExecutionExplanation(
     }
   }
 
+  if (root.output === "cost_items") {
+    return [...sentences, costItemsExplanation(result, labels)].join("");
+  }
+  if (root.output === "checks") {
+    return [...sentences, checksExplanation(result, labels)].join("");
+  }
+
   const componentText = root.componentNames
     .map(
       (name) =>
         `${labelFor(labels.components, name, "组件")}：${formatMoney(
-          result.componentsCents[name],
+          (result as CustomRuleMoneyResult).componentsCents[name],
         )}`,
     )
     .join("；");
@@ -301,29 +339,35 @@ function parseRoot(value: unknown): ParsedRoot {
     }
     invalidAst();
   }
-  if (
-    parsed.kind !== "call" ||
-    parsed.callee !== "money_result" ||
-    parsed.arguments.length !== 1 ||
-    parsed.arguments[0]?.kind !== "object"
-  ) {
-    invalidAst();
+  if (parsed.kind === "call" && parsed.callee === "cost_items") {
+    return { output: "cost_items", ast: parsed };
   }
-  const componentNames = parsed.arguments[0].entries.map((entry) => entry.key);
-  if (
-    componentNames.length === 0 ||
-    new Set(componentNames).size !== componentNames.length ||
-    componentNames.filter((name) => name === "final").length !== 1
-  ) {
-    invalidAst();
+  if (parsed.kind === "call" && parsed.callee === "checks") {
+    return { output: "checks", ast: parsed };
   }
-  return { ast: parsed, componentNames };
+  if (
+    parsed.kind === "call" &&
+    parsed.callee === "money_result" &&
+    parsed.arguments.length === 1 &&
+    parsed.arguments[0]?.kind === "object"
+  ) {
+    const componentNames = parsed.arguments[0].entries.map((entry) => entry.key);
+    if (
+      componentNames.length === 0 ||
+      new Set(componentNames).size !== componentNames.length ||
+      componentNames.filter((name) => name === "final").length !== 1
+    ) {
+      invalidAst();
+    }
+    return { output: "money_result", ast: parsed, componentNames };
+  }
+  invalidAst();
 }
 
 function invalidAst(): never {
   explanationFailure(
     "EXPLANATION_INVALID_AST",
-    "Explanation requires a valid compiled money_result AST",
+    "Explanation requires a valid compiled output AST",
     "$.ast",
   );
 }
@@ -358,8 +402,14 @@ function parseLabelRegistry(value: unknown): CustomRuleLabelRegistry {
   return registry as CustomRuleLabelRegistry;
 }
 
-function parseResult(value: unknown): CustomRuleMoneyResult {
+function parseResult(value: unknown): CustomRuleExecutionResult {
   if (!isPlainRecord(value) || !hasExactKeys(value, ["kind", "componentsCents"])) {
+    if (isPlainRecord(value) && hasExactKeys(value, ["kind", "items"])) {
+      return parseCostItemsResult(value);
+    }
+    if (isPlainRecord(value) && hasExactKeys(value, ["kind", "checks"])) {
+      return parseChecksResult(value);
+    }
     invalidResult();
   }
   if (value.kind !== "money_result" || !isPlainRecord(value.componentsCents)) {
@@ -381,10 +431,63 @@ function parseResult(value: unknown): CustomRuleMoneyResult {
   return { kind: "money_result", componentsCents };
 }
 
+function parseCostItemsResult(value: Record<string, unknown>): ExternalCostRuleResult {
+  if (value.kind !== "cost_items" || !Array.isArray(value.items)) {
+    invalidResult();
+  }
+  return {
+    kind: "cost_items",
+    items: value.items.map((item) => {
+      if (
+        !isPlainRecord(item) ||
+        !hasExactKeys(item, ["category", "amountCents", "memo"]) ||
+        typeof item.category !== "string" ||
+        typeof item.amountCents !== "number" ||
+        !Number.isSafeInteger(item.amountCents) ||
+        item.amountCents < 0 ||
+        typeof item.memo !== "string"
+      ) {
+        invalidResult();
+      }
+      const amountCents = item.amountCents as number;
+      return {
+        category: item.category as ExternalCostRuleResult["items"][number]["category"],
+        amountCents,
+        memo: item.memo,
+      };
+    }),
+  };
+}
+
+function parseChecksResult(value: Record<string, unknown>): ReconciliationRuleResult {
+  if (value.kind !== "checks" || !Array.isArray(value.checks)) {
+    invalidResult();
+  }
+  return {
+    kind: "checks",
+    checks: value.checks.map((check) => {
+      if (
+        !isPlainRecord(check) ||
+        !hasExactKeys(check, ["severity", "message", "condition"]) ||
+        !["pass", "warn", "block"].includes(check.severity as string) ||
+        typeof check.message !== "string" ||
+        typeof check.condition !== "boolean"
+      ) {
+        invalidResult();
+      }
+      return {
+        severity: check.severity as "pass" | "warn" | "block",
+        message: check.message,
+        condition: check.condition,
+      };
+    }),
+  };
+}
+
 function invalidResult(): never {
   explanationFailure(
     "EXPLANATION_INVALID_RESULT",
-    "Explanation result must be a safe money_result",
+    "Explanation result must be a safe typed rule result",
     "$.result",
   );
 }
@@ -549,7 +652,7 @@ function invalidTrace(index?: number): never {
 function verifyExecution(
   ast: CompiledAstNode,
   trace: readonly CustomRuleExecutionTraceEvent[],
-  result: CustomRuleMoneyResult,
+  result: CustomRuleExecutionResult,
 ): void {
   const astEvent = trace[0];
   if (
@@ -659,7 +762,13 @@ function formatRuntimeValue(
     case "integer":
     case "number":
       return `${formatPlainNumber(value.value)}${
-        unit === "minutes" ? " 分钟" : unit === "count" ? " 个" : ""
+        unit === "minutes"
+          ? " 分钟"
+          : unit === "item_count"
+            ? " 件"
+            : unit === "count"
+              ? " 个"
+              : ""
       }`;
     case "boolean":
       return value.value ? "是" : "否";
@@ -683,6 +792,55 @@ function formatRuntimeValue(
         )
         .join("、")}】`;
   }
+}
+
+function costItemsExplanation(
+  result: CustomRuleExecutionResult,
+  labels: CustomRuleLabelRegistry,
+): string {
+  if (result.kind !== "cost_items") {
+    invalidResult();
+  }
+  const itemText = result.items
+    .map(
+      (item, index) =>
+        `第${index + 1}项：${labelFor(
+          labels.values,
+          item.category,
+          "成本类别",
+        )}，金额 ${formatMoney(item.amountCents)}，说明“${sanitizeLegalText(
+          item.memo,
+        )}”。`,
+    )
+    .join("");
+  return `外部成本公式输出${result.items.length}条成本项。${itemText}`;
+}
+
+function checksExplanation(
+  result: CustomRuleExecutionResult,
+  labels: CustomRuleLabelRegistry,
+): string {
+  if (result.kind !== "checks") {
+    invalidResult();
+  }
+  const checkText = result.checks
+    .map((check, index) => {
+      const conditionText = check.condition ? "条件已触发" : "条件未触发";
+      return `第${index + 1}条：${labelFor(
+        labels.values,
+        check.severity,
+        "级别",
+      )}，${conditionText}，${sanitizeLegalText(check.message)}。`;
+    })
+    .join("");
+  return `对账检查输出${result.checks.length}条。${checkText}`;
+}
+
+function sanitizeLegalText(value: string): string {
+  return value
+    .replace(/<[^>]*>/g, "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim();
 }
 
 function formatTraceNumeric(value: number, scalarType: RuntimeScalarType): string {

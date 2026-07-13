@@ -135,10 +135,6 @@ const ALL_SCOPES = [
   "external_cost",
   "reconciliation",
 ] as const;
-const DISABLED_PHASE_ONE_SCOPES = new Set<CustomRuleScope>([
-  "external_cost",
-  "reconciliation",
-]);
 
 const scalar = (scalarType: RuntimeScalarType): RuntimeValueType => ({
   kind: "scalar",
@@ -270,8 +266,41 @@ const VARIABLE_DEFINITIONS: readonly VariableDefinition[] =
     unit: "标识符",
     sourceLabel: "当前授权项目",
     sourceKey: "request.project_id@authorized_scope",
-    scopes: ALL_SCOPES,
+    scopes: ["payable", "receivable", "external_cost"] as const,
     grains: ALL_GRAINS,
+  }),
+  source({
+    id: "import_type",
+    label: "导入类型",
+    runtimeType: STRING_TYPE,
+    unit: "文本",
+    sourceLabel: "规范化成本导入批次类型",
+    sourceKey: "project_cost_import_batches.import_type",
+    scopes: EXTERNAL_COST_ONLY,
+    grains: REPORT_GRAIN,
+    coverageFrom: "project_id",
+  }),
+  source({
+    id: "import_row_index",
+    label: "导入行号",
+    runtimeType: INTEGER_TYPE,
+    unit: "行",
+    sourceLabel: "规范化成本导入行序号",
+    sourceKey: "derived:project_cost_import_batches.parsed_payload.row_index",
+    scopes: EXTERNAL_COST_ONLY,
+    grains: REPORT_GRAIN,
+    coverageFrom: "project_id",
+  }),
+  source({
+    id: "report_id",
+    label: "报告标识",
+    runtimeType: STRING_TYPE,
+    unit: "标识符",
+    sourceLabel: "规范化导入关联的直播报告",
+    sourceKey: "project_cost_items.live_report_id@source=import,status=confirmed",
+    scopes: EXTERNAL_COST_ONLY,
+    grains: REPORT_GRAIN,
+    coverageFrom: "project_id",
   }),
   unavailable({
     id: "project_tags",
@@ -279,7 +308,7 @@ const VARIABLE_DEFINITIONS: readonly VariableDefinition[] =
     runtimeType: STRING_ARRAY_TYPE,
     unit: "标签",
     sourceLabel: "暂无规范化项目标签字段",
-    scopes: ALL_SCOPES,
+    scopes: PAYABLE_AND_RECEIVABLE,
     grains: ALL_GRAINS,
     coverageFrom: "project_id",
   }),
@@ -290,8 +319,20 @@ const VARIABLE_DEFINITIONS: readonly VariableDefinition[] =
     unit: "标识符",
     sourceLabel: "项目主播关系",
     sourceKey: "project_streamers.streamer_id",
-    scopes: PAYABLE_AND_RECEIVABLE,
+    scopes: ["payable", "receivable", "external_cost"] as const,
     grains: STREAMER_GRAINS,
+  }),
+  source({
+    id: "supplier_id",
+    label: "供应商标识",
+    runtimeType: STRING_TYPE,
+    unit: "标识符",
+    sourceLabel: "规范化导入关联的供应商",
+    sourceKey:
+      "project_cost_items.supplier_organization_id@source=import,status=confirmed",
+    scopes: EXTERNAL_COST_ONLY,
+    grains: REPORT_GRAIN,
+    coverageFrom: "supplier_fee",
   }),
   unavailable({
     id: "streamer_level",
@@ -373,6 +414,30 @@ const VARIABLE_DEFINITIONS: readonly VariableDefinition[] =
     grains: REPORT_GRAIN,
     coverageFrom: "project_id",
   }),
+  source({
+    id: "sales_amount",
+    label: "销售金额",
+    runtimeType: MONEY_TYPE,
+    unit: "元",
+    sourceLabel: "规范化导入销售金额字段",
+    sourceKey:
+      "project_cost_items.source_payload.sales_amount_cents@normalized_import",
+    scopes: EXTERNAL_COST_ONLY,
+    grains: REPORT_GRAIN,
+    coverageFrom: "project_id",
+  }),
+  source({
+    id: "order_count",
+    label: "订单数",
+    runtimeType: INTEGER_TYPE,
+    unit: "单",
+    sourceLabel: "规范化导入订单数字段",
+    sourceKey:
+      "project_cost_items.source_payload.order_count@normalized_import",
+    scopes: EXTERNAL_COST_ONLY,
+    grains: REPORT_GRAIN,
+    coverageFrom: "project_id",
+  }),
   unavailable({
     id: "orders_count",
     label: "订单数",
@@ -391,7 +456,7 @@ const VARIABLE_DEFINITIONS: readonly VariableDefinition[] =
     sourceLabel: "已确认的规范化礼物导入项",
     sourceKey:
       "project_cost_items.amount_cents@source=import,status=confirmed,item_type=gift",
-    scopes: PAYABLE_AND_RECEIVABLE,
+    scopes: ["payable", "receivable", "external_cost"] as const,
     grains: REPORT_GRAIN,
   }),
   partial({
@@ -488,7 +553,7 @@ const VARIABLE_DEFINITIONS: readonly VariableDefinition[] =
     sourceLabel: "周期内红色证据报告计数",
     sourceKey:
       "derived:count(live_reports.id@status=approved,evidence_level=red)",
-    scopes: PAYABLE_AND_RECEIVABLE,
+    scopes: ["payable", "receivable", "reconciliation"] as const,
     grains: PERIOD_GRAINS,
     coverageFrom: "evidence_level",
   }),
@@ -500,7 +565,7 @@ const VARIABLE_DEFINITIONS: readonly VariableDefinition[] =
     sourceLabel: "周期内黄色证据报告计数",
     sourceKey:
       "derived:count(live_reports.id@status=approved,evidence_level=yellow)",
-    scopes: PAYABLE_AND_RECEIVABLE,
+    scopes: ["payable", "receivable", "reconciliation"] as const,
     grains: PERIOD_GRAINS,
     coverageFrom: "evidence_level",
   }),
@@ -548,57 +613,63 @@ const VARIABLE_DEFINITIONS: readonly VariableDefinition[] =
     grains: PERIOD_GRAINS,
     coverageFrom: "project_id",
   }),
-  unavailable({
+  source({
     id: "receivable_amount",
     label: "应收金额",
     runtimeType: MONEY_TYPE,
     unit: "元",
-    sourceLabel: "Phase 1 不开放对账输入",
+    sourceLabel: "已定稿对账核心结果：应收金额",
+    sourceKey: "reconciliation_result.income.receivable_cents",
     scopes: RECONCILIATION_ONLY,
     grains: PERIOD_GRAINS,
   }),
-  unavailable({
+  source({
     id: "payable_amount",
     label: "应付金额",
     runtimeType: MONEY_TYPE,
     unit: "元",
-    sourceLabel: "Phase 1 不开放对账输入",
+    sourceLabel: "已定稿对账核心结果：应付金额",
+    sourceKey: "reconciliation_result.cost.payable_cents",
     scopes: RECONCILIATION_ONLY,
     grains: PERIOD_GRAINS,
   }),
-  unavailable({
+  source({
     id: "external_cost_amount",
     label: "外部成本",
     runtimeType: MONEY_TYPE,
     unit: "元",
-    sourceLabel: "Phase 1 不开放对账输入",
+    sourceLabel: "已定稿对账核心结果：外部成本",
+    sourceKey: "reconciliation_result.cost.external_cost_cents",
     scopes: RECONCILIATION_ONLY,
     grains: PERIOD_GRAINS,
   }),
-  unavailable({
+  source({
     id: "tax_amount",
     label: "税额",
     runtimeType: MONEY_TYPE,
     unit: "元",
-    sourceLabel: "Phase 1 不开放税务输入",
+    sourceLabel: "已定稿对账核心结果：税额",
+    sourceKey: "reconciliation_result.tax.tax_total_cents",
     scopes: RECONCILIATION_ONLY,
     grains: PERIOD_GRAINS,
   }),
-  unavailable({
+  source({
     id: "gross_margin",
     label: "毛利",
     runtimeType: MONEY_TYPE,
     unit: "元",
-    sourceLabel: "Phase 1 不开放内部毛利输入",
+    sourceLabel: "已定稿对账核心结果：毛利",
+    sourceKey: "reconciliation_result.profit.gross_margin_cents",
     scopes: RECONCILIATION_ONLY,
     grains: PERIOD_GRAINS,
   }),
-  unavailable({
+  source({
     id: "margin_rate",
     label: "毛利率",
     runtimeType: RATE_TYPE,
     unit: "%",
-    sourceLabel: "Phase 1 不开放内部毛利输入",
+    sourceLabel: "已定稿对账核心结果：毛利率",
+    sourceKey: "reconciliation_result.profit.margin_rate_bps",
     scopes: RECONCILIATION_ONLY,
     grains: PERIOD_GRAINS,
   }),
@@ -611,9 +682,7 @@ export function buildCustomRuleVariableCatalog(input: {
 }): CustomRuleVariableCatalog {
   validateProjectCoverage(input.coverage);
 
-  const definitions = DISABLED_PHASE_ONE_SCOPES.has(input.scope)
-    ? []
-    : VARIABLE_DEFINITIONS.filter(
+  const definitions = VARIABLE_DEFINITIONS.filter(
         (definition) =>
           definition.scopes.includes(input.scope) &&
           definition.grains.includes(input.executionGrain),

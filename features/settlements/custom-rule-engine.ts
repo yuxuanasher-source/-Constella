@@ -6,10 +6,13 @@ import {
 } from "./custom-rule-contract";
 import type {
   CompiledAstNode,
+  ExternalCostRuleResult,
+  ReconciliationRuleResult,
   RuntimeScalarType,
   RuntimeValueType,
   TypedRuntimeValue,
 } from "./custom-rule-types";
+import type { ProjectCostItemType } from "@/features/complex-cost/complex-cost-types";
 
 export type CustomRuleExecutionIssue = Readonly<{
   code: string;
@@ -31,6 +34,11 @@ export type CustomRuleMoneyResult = Readonly<{
   kind: "money_result";
   componentsCents: Readonly<Record<string, number>>;
 }>;
+
+export type CustomRuleExecutionResult =
+  | CustomRuleMoneyResult
+  | Readonly<ExternalCostRuleResult>
+  | Readonly<ReconciliationRuleResult>;
 
 export type CustomRuleExecutionTraceEvent =
   | Readonly<{
@@ -98,8 +106,10 @@ export type CustomRuleExecutionTraceEvent =
       amountCents: number;
     }>;
 
-export type CustomRuleExecutionWithTrace = Readonly<{
-  result: CustomRuleMoneyResult;
+export type CustomRuleExecutionWithTrace<
+  Result extends CustomRuleExecutionResult = CustomRuleMoneyResult,
+> = Readonly<{
+  result: Result;
   trace: readonly CustomRuleExecutionTraceEvent[];
 }>;
 
@@ -163,6 +173,16 @@ const MAX_RATIONAL_BITS = 256;
 const MAX_DECIMAL_SCALE = 36;
 const RATE_DENOMINATOR = BigInt(10_000);
 const MINUTES_PER_HOUR = BigInt(60);
+const MAX_GENERATED_COST_ITEM_AMOUNT_CENTS = 1_000_000_000;
+const MAX_COST_ITEM_MEMO_LENGTH = 120;
+const GENERATED_COST_ITEM_TYPES = new Set<ProjectCostItemType>([
+  "cpa",
+  "cps",
+  "gift",
+  "supplier_fee",
+  "traffic",
+  "platform_fee",
+]);
 
 class DataSnapshotFailure extends Error {}
 
@@ -174,15 +194,19 @@ export function isCustomRuleProxy(value: unknown): boolean {
   );
 }
 
-export function executeCompiledCustomRule(
+export function executeCompiledCustomRule<
+  Result extends CustomRuleExecutionResult = CustomRuleMoneyResult,
+>(
   input: ExecuteCompiledCustomRuleInput,
-): CustomRuleMoneyResult {
-  return executeCompiledCustomRuleWithTrace(input).result;
+): Result {
+  return executeCompiledCustomRuleWithTrace<Result>(input).result;
 }
 
-export function executeCompiledCustomRuleWithTrace(
+export function executeCompiledCustomRuleWithTrace<
+  Result extends CustomRuleExecutionResult = CustomRuleMoneyResult,
+>(
   input: ExecuteCompiledCustomRuleInput,
-): CustomRuleExecutionWithTrace {
+): CustomRuleExecutionWithTrace<Result> {
   const prepared = prepareInput(input);
   const trace: CustomRuleExecutionTraceEvent[] = [
     {
@@ -200,9 +224,9 @@ export function executeCompiledCustomRuleWithTrace(
     components: new Map(),
     steps: 0,
   };
-  const result = evaluateMoneyResult(prepared.ast, context);
+  const result = evaluateRoot(prepared.ast, context);
 
-  return deepFreezeOwned({ result, trace });
+  return deepFreezeOwned({ result: result as Result, trace });
 }
 
 function prepareInput(input: unknown): PreparedInput {
@@ -388,7 +412,71 @@ function preflightParsedCustomRuleAst(
     maxSteps: limits.maxSteps,
     maxDepth: limits.maxDepth,
   };
-  preflightMoneyResultAst(ast, state);
+  if (ast.kind === "call" && ast.callee === "money_result") {
+    preflightMoneyResultAst(ast, state);
+    return;
+  }
+  if (ast.kind === "call" && ast.callee === "cost_items") {
+    preflightCostItemsAst(ast, state);
+    return;
+  }
+  if (ast.kind === "call" && ast.callee === "checks") {
+    preflightChecksAst(ast, state);
+    return;
+  }
+  invalidAstContext("Formula root must be a supported typed output", "$.ast");
+}
+
+function emptyComponents(): AstPreflightComponents {
+  return { allComponents: new Set(), availableComponents: new Set() };
+}
+
+function preflightCostItemsAst(
+  ast: Extract<CompiledAstNode, { kind: "call" }>,
+  state: AstPreflightState,
+): void {
+  preflightEnter(state, "$", 0);
+  if (
+    ast.arguments.length !== 1 ||
+    ast.arguments[0]?.kind !== "array" ||
+    ast.inferredType.kind !== "object"
+  ) {
+    invalidAstContext("cost_items root must contain one array", "$.ast");
+  }
+  const items = ast.arguments[0];
+  preflightEnter(state, "$.arguments[0]", 1);
+  if (items.elements.length > 20) {
+    invalidAstContext("cost_items may emit at most 20 items", "$.arguments[0]");
+  }
+  for (const [index, item] of items.elements.entries()) {
+    const path = `$.arguments[0].elements[${index}]`;
+    const itemType = preflightNode(item, path, 2, state, emptyComponents());
+    assertCostItemType(itemType, path);
+  }
+}
+
+function preflightChecksAst(
+  ast: Extract<CompiledAstNode, { kind: "call" }>,
+  state: AstPreflightState,
+): void {
+  preflightEnter(state, "$", 0);
+  if (
+    ast.arguments.length !== 1 ||
+    ast.arguments[0]?.kind !== "array" ||
+    ast.inferredType.kind !== "object"
+  ) {
+    invalidAstContext("checks root must contain one array", "$.ast");
+  }
+  const checks = ast.arguments[0];
+  preflightEnter(state, "$.arguments[0]", 1);
+  if (checks.elements.length === 0) {
+    invalidAstContext("checks requires at least one item", "$.arguments[0]");
+  }
+  for (const [index, check] of checks.elements.entries()) {
+    const path = `$.arguments[0].elements[${index}]`;
+    const checkType = preflightNode(check, path, 2, state, emptyComponents());
+    assertCheckType(checkType, path);
+  }
 }
 
 function preflightMoneyResultAst(
@@ -771,6 +859,11 @@ function preflightCall(
       return node.inferredType;
     }
     case "money_result":
+    case "cost_items":
+    case "checks":
+    case "block_if":
+    case "warn_if":
+    case "pass_if":
     case "yuan":
     case "rate_percent":
       invalidAstContext("Compiled call is not valid in this AST position", path);
@@ -1409,6 +1502,22 @@ function evaluateMoneyResult(
   return { kind: "money_result", componentsCents };
 }
 
+function evaluateRoot(
+  ast: CompiledAstNode,
+  context: EngineContext,
+): CustomRuleExecutionResult {
+  if (ast.kind === "call" && ast.callee === "money_result") {
+    return evaluateMoneyResult(ast, context);
+  }
+  if (ast.kind === "call" && ast.callee === "cost_items") {
+    return evaluateCostItems(ast, context);
+  }
+  if (ast.kind === "call" && ast.callee === "checks") {
+    return evaluateChecks(ast, context);
+  }
+  invalidAstContext("Formula root must be a supported typed output", "$.ast");
+}
+
 function assertMoneyResultType(
   valueType: RuntimeValueType,
   componentNames: readonly string[],
@@ -1428,6 +1537,164 @@ function assertMoneyResultType(
   ) {
     invalidAstContext("money_result output type does not match components", path);
   }
+}
+
+function assertCostItemType(valueType: RuntimeValueType, path: string): void {
+  if (valueType.kind !== "object") {
+    invalidAstContext("cost_items entries must be objects", path);
+  }
+  if (
+    scalarTypeOf(valueType.fields.category) !== "string" ||
+    scalarTypeOf(valueType.fields.amount_cents) !== "money_cents" ||
+    scalarTypeOf(valueType.fields.memo) !== "string" ||
+    Object.keys(valueType.fields).length !== 3
+  ) {
+    invalidAstContext("cost_items entry type does not match the contract", path);
+  }
+}
+
+function assertCheckType(valueType: RuntimeValueType, path: string): void {
+  if (valueType.kind !== "object") {
+    invalidAstContext("checks entries must be objects", path);
+  }
+  if (
+    scalarTypeOf(valueType.fields.severity) !== "string" ||
+    scalarTypeOf(valueType.fields.condition) !== "boolean" ||
+    scalarTypeOf(valueType.fields.message) !== "string" ||
+    Object.keys(valueType.fields).length !== 3
+  ) {
+    invalidAstContext("check entry type does not match the contract", path);
+  }
+}
+
+function evaluateCostItems(
+  ast: Extract<CompiledAstNode, { kind: "call" }>,
+  context: EngineContext,
+): Readonly<ExternalCostRuleResult> {
+  enterNode(context, "$", 0);
+  if (ast.arguments.length !== 1 || ast.arguments[0]?.kind !== "array") {
+    invalidAstContext("cost_items root must contain one array", "$.ast");
+  }
+  const itemsNode = ast.arguments[0];
+  if (itemsNode.elements.length > 20) {
+    invalidAstContext("cost_items may emit at most 20 items", "$.arguments[0]");
+  }
+  const items = itemsNode.elements.map((itemNode, index) => {
+    const path = `$.arguments[0].elements[${index}]`;
+    const value = evaluateNode(itemNode, path, 2, context);
+    if (value.type !== "object") {
+      invalidAstContext("cost_items entries must be objects", path);
+    }
+    return costItemFromRuntime(value, path);
+  });
+  return { kind: "cost_items", items };
+}
+
+function costItemFromRuntime(
+  value: Extract<TypedRuntimeValue, { type: "object" }>,
+  path: string,
+): ExternalCostRuleResult["items"][number] {
+  const category = value.fields.category;
+  const amount = value.fields.amount_cents;
+  const memo = value.fields.memo;
+  if (
+    category?.type !== "string" ||
+    !GENERATED_COST_ITEM_TYPES.has(category.value as ProjectCostItemType) ||
+    amount?.type !== "money_cents" ||
+    memo?.type !== "string"
+  ) {
+    invalidAstContext("cost_items entry runtime shape is invalid", path);
+  }
+  if (
+    !Number.isSafeInteger(amount.amountCents) ||
+    amount.amountCents < 0
+  ) {
+    executionFailure(
+      "EXECUTION_INVALID_COST_ITEM",
+      "Generated cost amount must be nonnegative safe cents",
+      `${path}.amount`,
+    );
+  }
+  if (amount.amountCents > MAX_GENERATED_COST_ITEM_AMOUNT_CENTS) {
+    executionFailure(
+      "EXECUTION_COST_ITEM_CAP_EXCEEDED",
+      "Generated cost amount exceeds the project safety cap",
+      `${path}.amount`,
+    );
+  }
+  if (memo.value.length < 1 || memo.value.length > MAX_COST_ITEM_MEMO_LENGTH) {
+    executionFailure(
+      "EXECUTION_INVALID_COST_ITEM",
+      "Generated cost memo must be bounded",
+      `${path}.memo`,
+    );
+  }
+  return {
+    category: category.value as ProjectCostItemType,
+    amountCents: amount.amountCents,
+    memo: memo.value,
+  };
+}
+
+function evaluateChecks(
+  ast: Extract<CompiledAstNode, { kind: "call" }>,
+  context: EngineContext,
+): Readonly<ReconciliationRuleResult> {
+  enterNode(context, "$", 0);
+  if (ast.arguments.length !== 1 || ast.arguments[0]?.kind !== "array") {
+    invalidAstContext("checks root must contain one array", "$.ast");
+  }
+  const checksNode = ast.arguments[0];
+  if (checksNode.elements.length === 0) {
+    invalidAstContext("checks requires at least one item", "$.arguments[0]");
+  }
+  const checks = checksNode.elements.map((checkNode, index) => {
+    const path = `$.arguments[0].elements[${index}]`;
+    const value = evaluateNode(checkNode, path, 2, context);
+    if (value.type !== "object") {
+      invalidAstContext("check entries must be objects", path);
+    }
+    return checkFromRuntime(value, path);
+  });
+  return { kind: "checks", checks };
+}
+
+function checkFromRuntime(
+  value: Extract<TypedRuntimeValue, { type: "object" }>,
+  path: string,
+): ReconciliationRuleResult["checks"][number] {
+  const severity = value.fields.severity;
+  const condition = value.fields.condition;
+  const message = value.fields.message;
+  if (
+    severity?.type !== "string" ||
+    !["pass", "warn", "block"].includes(severity.value) ||
+    condition?.type !== "boolean" ||
+    message?.type !== "string"
+  ) {
+    invalidAstContext("check entry runtime shape is invalid", path);
+  }
+  if (message.value.length < 1 || message.value.length > 120) {
+    executionFailure(
+      "EXECUTION_INVALID_CHECK",
+      "Check message must be bounded",
+      `${path}.message`,
+    );
+  }
+  const requested = severity.value as "pass" | "warn" | "block";
+  const effectiveSeverity =
+    requested === "pass"
+      ? condition.value
+        ? "pass"
+        : "block"
+      : condition.value
+        ? requested
+        : "pass";
+  return {
+    severity: effectiveSeverity,
+    condition: condition.value,
+    message: message.value,
+  };
 }
 
 function evaluateNode(
@@ -1850,6 +2117,11 @@ function evaluateCall(
     case "contains":
       return evaluateContains(node, path, depth, context);
     case "money_result":
+    case "cost_items":
+    case "checks":
+    case "block_if":
+    case "warn_if":
+    case "pass_if":
     case "yuan":
     case "rate_percent":
       invalidAstContext("Compiled call is not valid in this AST position", path);
