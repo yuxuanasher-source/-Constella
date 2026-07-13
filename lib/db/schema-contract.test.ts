@@ -4243,6 +4243,9 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     expect(resolve.body).toContain("'replay_deferred'");
     expect(resolve.body).not.toContain("insert into public.project_cost_items");
     expect(resolve.body).not.toContain("source_context_snapshot -> 'replay_items'");
+    expect(resolve.body.indexOf("external_cost_exception_resolve_access_denied")).toBeLessThan(
+      resolve.body.indexOf("external_cost_exception_not_open"),
+    );
 
     const replay = extractCustomSettlementCostReconciliationFunction(
       "replay_external_cost_rule_exception_items",

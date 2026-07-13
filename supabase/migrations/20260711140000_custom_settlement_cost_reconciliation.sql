@@ -822,16 +822,16 @@ begin
     raise exception 'external_cost_exception_not_found';
   end if;
 
-  if v_exception.status <> 'review_required' then
-    raise exception 'external_cost_exception_not_open';
-  end if;
-
   v_actor_role := public.current_user_role(p_organization_id);
   if not public.is_org_member(p_organization_id)
      or not public.can_access_project(v_exception.project_id)
      or v_actor_role is null
      or v_actor_role not in ('owner', 'ops_manager', 'finance') then
     raise exception 'external_cost_exception_resolve_access_denied';
+  end if;
+
+  if v_exception.status <> 'review_required' then
+    raise exception 'external_cost_exception_not_open';
   end if;
 
   perform pg_catalog.pg_advisory_xact_lock(
