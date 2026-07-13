@@ -530,6 +530,33 @@ describe("SupabaseComplexCostRepository exception replay", () => {
       }),
     ).rejects.toThrow("external_cost_replay_idempotency_conflict");
   });
+
+  it("maps first-time zero-item replay as a created idempotency result", async () => {
+    const rpc = vi.fn(async () => ({
+      data: {
+        items: [],
+        idempotency_status: "created",
+      },
+      error: null,
+    }));
+    const repo = new SupabaseComplexCostRepository({ rpc } as never);
+
+    await expect(
+      repo.replayExternalCostRuleExceptionItems({
+        organizationId: "org-1",
+        projectId: "project-1",
+        importBatchId: "import-1",
+        importRowIndex: 0,
+        idempotencyKey: "replay-1",
+        inputHash: "input-hash-1",
+        createdBy: "user-1",
+        items: [],
+      }),
+    ).resolves.toEqual({
+      items: [],
+      idempotencyStatus: "created",
+    });
+  });
 });
 
 describe("mapCostItemRow", () => {

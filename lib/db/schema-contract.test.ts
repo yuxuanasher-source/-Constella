@@ -4217,7 +4217,18 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     expect(confirm.body).toContain("source_execution_key");
     expect(confirm.body).toContain("source_input_hash");
     expect(confirm.body).toContain("v_existing_cost_item");
+    expect(confirm.body).toContain("confirm_cost_import_execution_key_required");
+    expect(confirm.body).toMatch(
+      /v_item_source_execution_key := nullif\(v_item ->> 'source_execution_key', ''\);[\s\S]+if v_item_source_execution_key is null then[\s\S]+raise exception 'confirm_cost_import_execution_key_required'/u,
+    );
     expect(confirm.body).toContain("external_cost_rule_exceptions");
+    expect(confirm.body).toContain("external_cost_exception_conflict");
+    expect(confirm.body).toContain("v_existing_exception");
+    expect(confirm.body).toContain("v_exception_context_snapshot");
+    expect(confirm.body).toContain("v_existing_exception.rule_version_id is distinct from nullif(v_exception ->> 'rule_version_id', '')::uuid");
+    expect(confirm.body).toContain("v_existing_exception.policy is distinct from coalesce(nullif(v_exception ->> 'policy', ''), 'route_item_to_review')");
+    expect(confirm.body).toContain("v_existing_exception.source_context_snapshot is distinct from v_exception_context_snapshot");
+    expect(confirm.body).not.toContain("do update set variable_name = excluded.variable_name");
     expect(confirm.body).toContain("status = 'confirmed'");
     expect(confirm.body).toContain("confirm_cost_import_idempotency_conflict");
     expect(confirm.body).toContain("'existing'");
@@ -4366,6 +4377,8 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     expect(replay.body).toContain("from public.external_cost_rule_replay_requests");
     expect(replay.body).toContain("insert into public.external_cost_rule_replay_requests");
     expect(replay.body).toContain("v_replay_request.request_items <> v_replay_items_snapshot");
+    expect(replay.body).toContain("'idempotency_status', 'created'");
+    expect(replay.body).not.toContain("case when v_inserted_count = 0 then 'existing' else 'created' end");
     expect(replay.body.indexOf("pg_advisory_xact_lock")).toBeLessThan(
       replay.body.indexOf("from public.project_cost_import_batches"),
     );

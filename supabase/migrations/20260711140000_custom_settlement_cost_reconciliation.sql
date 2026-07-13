@@ -234,6 +234,8 @@ declare
   v_item_row public.project_cost_items%rowtype;
   v_existing_cost_item public.project_cost_items%rowtype;
   v_exception_row public.external_cost_rule_exceptions%rowtype;
+  v_existing_exception public.external_cost_rule_exceptions%rowtype;
+  v_exception_context_snapshot jsonb;
   v_item_source_execution_key text;
   v_item_source_input_hash text;
   v_item_rule_version_id uuid;
@@ -398,6 +400,9 @@ begin
       end if;
 
       v_item_source_execution_key := nullif(v_item ->> 'source_execution_key', '');
+      if v_item_source_execution_key is null then
+        raise exception 'confirm_cost_import_execution_key_required';
+      end if;
       v_item_source_input_hash := coalesce(nullif(v_item ->> 'source_input_hash', ''), p_input_hash);
       v_item_rule_version_id := null;
       v_item_expected_status := 'confirmed';
@@ -575,6 +580,9 @@ begin
       end if;
 
       v_item_source_execution_key := nullif(v_item ->> 'source_execution_key', '');
+      if v_item_source_execution_key is null then
+        raise exception 'confirm_cost_import_execution_key_required';
+      end if;
       v_item_source_input_hash := coalesce(nullif(v_item ->> 'source_input_hash', ''), p_input_hash);
       v_item_rule_version_id := nullif(v_item ->> 'rule_version_id', '')::uuid;
       v_item_expected_status := 'pending_review';
@@ -703,6 +711,31 @@ begin
         raise exception 'confirm_cost_import_source_scope_mismatch';
       end if;
 
+      v_exception_context_snapshot :=
+        coalesce(v_exception -> 'source_context_snapshot', '{}'::jsonb)
+        || jsonb_build_object('__confirmation_idempotency_key', p_idempotency_key);
+
+      select *
+      into v_existing_exception
+      from public.external_cost_rule_exceptions
+      where organization_id = p_organization_id
+        and import_batch_id = p_import_batch_id
+        and import_row_index = coalesce((v_exception ->> 'import_row_index')::integer, 0)
+        and variable_name = nullif(v_exception ->> 'variable_name', '')
+      for update;
+
+      if found then
+        if v_existing_exception.project_id is distinct from p_project_id
+           or v_existing_exception.rule_version_id is distinct from nullif(v_exception ->> 'rule_version_id', '')::uuid
+           or v_existing_exception.policy is distinct from coalesce(nullif(v_exception ->> 'policy', ''), 'route_item_to_review')
+           or v_existing_exception.source_context_snapshot is distinct from v_exception_context_snapshot then
+          raise exception 'external_cost_exception_conflict';
+        end if;
+
+        v_exceptions := v_exceptions || to_jsonb(v_existing_exception);
+        continue;
+      end if;
+
       insert into public.external_cost_rule_exceptions (
         organization_id,
         project_id,
@@ -723,18 +756,10 @@ begin
         nullif(v_exception ->> 'rule_version_id', '')::uuid,
         nullif(v_exception ->> 'variable_name', ''),
         coalesce(nullif(v_exception ->> 'policy', ''), 'route_item_to_review'),
-        coalesce(v_exception -> 'source_context_snapshot', '{}'::jsonb)
-          || jsonb_build_object('__confirmation_idempotency_key', p_idempotency_key),
+        v_exception_context_snapshot,
         'review_required',
         p_created_by
       )
-      on conflict (
-        organization_id,
-        import_batch_id,
-        import_row_index,
-        variable_name
-      )
-      do update set variable_name = excluded.variable_name
       returning * into v_exception_row;
 
       v_exceptions := v_exceptions || to_jsonb(v_exception_row);
@@ -1315,7 +1340,7 @@ begin
 
   return jsonb_build_object(
     'items', v_items,
-    'idempotency_status', case when v_inserted_count = 0 then 'existing' else 'created' end
+    'idempotency_status', 'created'
   );
 end;
 $$;
