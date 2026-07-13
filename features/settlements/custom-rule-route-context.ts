@@ -1602,6 +1602,10 @@ const projectCostRowSchema = z.strictObject({
   streamer_id: z.string().uuid().nullable(),
   live_report_id: z.string().uuid().nullable(),
   settlement_batch_id: z.string().uuid().nullable(),
+  supplier_organization_id: z.string().uuid().nullable().optional(),
+  item_type: z.string().min(1).max(100).optional(),
+  import_type: z.string().min(1).max(100).nullable().optional(),
+  source_payload: z.record(z.string(), z.unknown()).nullable().optional(),
   amount_cents: canonicalIntegerTextSchema,
   direction: z.enum(["cost", "revenue_offset", "adjustment"]),
   status: z.literal("confirmed"),
@@ -1988,6 +1992,7 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         batches: requestedBatches,
         items,
         itemsByReport,
+        costs,
         streamersById,
         historicalComplete,
         periodBoundaries: businessPeriod,
@@ -3157,6 +3162,7 @@ function buildAuthorizedSimulationRecords(input: {
   batches: SettlementBatchRow[];
   items: SettlementItemRow[];
   itemsByReport: Map<string, SettlementItemRow>;
+  costs: ProjectCostRow[];
   streamersById: Map<string, ProjectStreamerRow>;
   historicalComplete: boolean;
   periodBoundaries: ReturnType<typeof businessPeriodBoundaries>;
@@ -3165,19 +3171,26 @@ function buildAuthorizedSimulationRecords(input: {
     return input.reports.map((report) => {
       const item = input.itemsByReport.get(report.id) ?? null;
       const streamer = input.streamersById.get(report.streamer_id) ?? null;
+      const reportCosts = input.costs
+        .filter((cost) => cost.live_report_id === report.id)
+        .sort((left, right) => left.id.localeCompare(right.id));
+      const variables = reportVariables(
+        report,
+        streamer,
+        input.contract.businessTimezone,
+      );
+      if (input.contract.scope === "external_cost") {
+        addExternalCostVariables(variables, reportCosts);
+      }
       return {
         recordId: report.id,
         projectId: input.projectId,
         sourceVersion: {
           kind: "immutable",
           source: "locked_settlement_report",
-          version: reportSnapshotVersion(report, item, streamer),
+          version: reportSnapshotVersion(report, item, streamer, reportCosts),
         },
-        variables: reportVariables(
-          report,
-          streamer,
-          input.contract.businessTimezone,
-        ),
+        variables,
         missingInputs: [],
         currentRuleResult:
           input.historicalComplete && item
@@ -3737,6 +3750,116 @@ function addProjectStreamerVariables(
   }
 }
 
+function addExternalCostVariables(
+  variables: Record<string, TypedRuntimeValue>,
+  costs: ProjectCostRow[],
+): void {
+  addCostTypeAmountVariable(variables, "gift_amount", costs, "gift");
+  addCostTypeAmountVariable(
+    variables,
+    "supplier_fee",
+    costs,
+    "supplier_fee",
+  );
+  addCostTypeAmountVariable(variables, "traffic_cost", costs, "traffic");
+  const salesAmount = sumPayloadMoneyCents(costs, "sales_amount_cents");
+  if (salesAmount !== null) {
+    variables.sales_amount = {
+      type: "money_cents",
+      amountCents: bigintAsSafeNumber(salesAmount),
+    };
+  }
+  const orderCount = sumPayloadInteger(costs, "order_count");
+  if (orderCount !== null) {
+    variables.order_count = { type: "integer", value: orderCount };
+  }
+  const rowIndex = firstPayloadInteger(costs, "row_index");
+  if (rowIndex !== null) {
+    variables.import_row_index = { type: "integer", value: rowIndex };
+  }
+}
+
+function addCostTypeAmountVariable(
+  variables: Record<string, TypedRuntimeValue>,
+  variableId: "gift_amount" | "supplier_fee" | "traffic_cost",
+  costs: ProjectCostRow[],
+  itemType: string,
+): void {
+  const matching = costs.filter((cost) => cost.item_type === itemType);
+  if (matching.length === 0) return;
+  const total = matching.reduce(
+    (sum, cost) => sum + BigInt(cost.amount_cents),
+    BigInt(0),
+  );
+  variables[variableId] = {
+    type: "money_cents",
+    amountCents: bigintAsSafeNumber(total),
+  };
+}
+
+function sumPayloadMoneyCents(
+  costs: ProjectCostRow[],
+  key: "sales_amount_cents",
+): bigint | null {
+  let total = BigInt(0);
+  let found = false;
+  for (const cost of costs) {
+    const value = payloadValue(cost, key);
+    const amount = integerPayloadValue(value);
+    if (amount === null) continue;
+    found = true;
+    total += BigInt(amount);
+  }
+  return found ? total : null;
+}
+
+function sumPayloadInteger(
+  costs: ProjectCostRow[],
+  key: "order_count",
+): number | null {
+  let total = 0;
+  let found = false;
+  for (const cost of costs) {
+    const value = integerPayloadValue(payloadValue(cost, key));
+    if (value === null) continue;
+    found = true;
+    total += value;
+  }
+  return found ? total : null;
+}
+
+function firstPayloadInteger(
+  costs: ProjectCostRow[],
+  key: "row_index",
+): number | null {
+  for (const cost of costs) {
+    const value = integerPayloadValue(payloadValue(cost, key));
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function payloadValue(cost: ProjectCostRow, key: string): unknown {
+  const payload = cost.source_payload;
+  if (!payload || Array.isArray(payload) || typeof payload !== "object") {
+    return null;
+  }
+  return Object.prototype.hasOwnProperty.call(payload, key)
+    ? payload[key]
+    : null;
+}
+
+function integerPayloadValue(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === "string" && /^\d+$/u.test(value)) {
+    const numeric = Number(value);
+    return Number.isSafeInteger(numeric) ? numeric : null;
+  }
+  return null;
+}
+
 function addIntegerVariable(
   variables: Record<string, TypedRuntimeValue>,
   name: string,
@@ -3798,6 +3921,7 @@ function reportSnapshotVersion(
   report: ApprovedReportRow,
   item: SettlementItemRow | null,
   streamer: ProjectStreamerRow | null,
+  costs: ProjectCostRow[] = [],
 ): string {
   const reportSnapshot = {
     id: report.id,
@@ -3820,8 +3944,28 @@ function reportSnapshotVersion(
       report: reportSnapshot,
       item,
       streamer,
+      costs: costs.map(costSnapshotVersion),
     }),
   );
+}
+
+function costSnapshotVersion(cost: ProjectCostRow): Record<string, unknown> {
+  return {
+    id: cost.id,
+    organization_id: cost.organization_id,
+    project_id: cost.project_id,
+    streamer_id: cost.streamer_id,
+    live_report_id: cost.live_report_id,
+    settlement_batch_id: cost.settlement_batch_id,
+    supplier_organization_id: cost.supplier_organization_id ?? null,
+    item_type: cost.item_type ?? null,
+    import_type: cost.import_type ?? null,
+    source_payload: cost.source_payload ?? null,
+    amount_cents: cost.amount_cents,
+    direction: cost.direction,
+    status: cost.status,
+    created_at: cost.created_at,
+  };
 }
 
 function settlementItemTotalCents(item: SettlementItemRow): string {

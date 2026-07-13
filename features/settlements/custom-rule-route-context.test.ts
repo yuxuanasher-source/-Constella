@@ -5273,6 +5273,97 @@ function typedOutputSimulationDraft(scope: "external_cost" | "reconciliation") {
   };
 }
 
+function externalCostTrafficCostSimulationDraft() {
+  const base = typedOutputSimulationDraft("external_cost");
+  const contract = businessRuleContractSchema.parse({
+    ...base.businessContract,
+    requiredInputs: [
+      {
+        name: "traffic_cost",
+        description: "规范化投流成本",
+        source: "project_cost_items.amount_cents@item_type=traffic",
+        valueType: { kind: "scalar", scalarType: "money_cents" },
+        userFacingUnit: "元",
+      },
+    ],
+    examples: [
+      {
+        name: "投流成本",
+        kind: "normal",
+        description: "使用授权成本行里的投流成本。",
+        inputs: {
+          traffic_cost: { type: "money_cents", amountCents: 12_345 },
+        },
+        expectedResult: externalCostExpectedResult(12_345),
+      },
+      {
+        name: "零投流成本",
+        kind: "boundary",
+        description: "没有投流成本时不生成成本项。",
+        inputs: {
+          traffic_cost: { type: "money_cents", amountCents: 0 },
+        },
+        expectedResult: externalCostExpectedResult(0),
+      },
+      {
+        name: "高投流成本",
+        kind: "boundary",
+        description: "高投流成本按原始金额生成。",
+        inputs: {
+          traffic_cost: { type: "money_cents", amountCents: 99_999 },
+        },
+        expectedResult: externalCostExpectedResult(99_999),
+      },
+    ],
+  });
+  const formula =
+    'cost_items([{ category: "traffic", amount: traffic_cost, memo: "traffic" }])';
+  const validation = validateCustomRuleFormula(formula, {
+    scope: contract.scope,
+    executionGrain: contract.executionGrain,
+    compositionMode: contract.compositionMode,
+    parameters: contract.parameters.map((parameter) => ({
+      name: parameter.name,
+      valueType: parameter.valueType,
+    })),
+  });
+  const parsed = parseCustomRuleFormula(formula);
+  if (!validation.ok || !parsed.ok) {
+    throw new Error("Expected valid traffic-cost fixture");
+  }
+  return {
+    ...base,
+    businessContract: contract,
+    contractHash: hashCustomRuleContract(contract),
+    generatedFormula: { expression: formula, normalizedAst: parsed.ast },
+    generatedExplanation: buildCustomRuleTemplateExplanation({
+      ast: validation.compiledAst,
+    }),
+    generatedTestCases: contract.examples.map((example) => ({
+      name: example.name,
+      inputs: example.inputs,
+      expectedResult: example.expectedResult,
+    })),
+    formulaHash: validation.formulaHash,
+  };
+}
+
+function externalCostExpectedResult(amountCents: number) {
+  return {
+    type: "array" as const,
+    items: [
+      {
+        type: "object" as const,
+        fields: {
+          category: { type: "string" as const, value: "traffic" },
+          amountCents: { type: "money_cents" as const, amountCents },
+          memo: { type: "string" as const, value: "traffic" },
+        },
+      },
+    ],
+  };
+}
+
 function optionalPolicySimulationDraft(
   missingDataPolicy: CustomRuleMissingDataPolicy,
   variableId: "base_hourly_rate" | "system_minutes" = "base_hourly_rate",
@@ -6400,6 +6491,79 @@ describe("custom-rule evidence and Task 7 simulation integration", () => {
       );
     },
   );
+
+  it("simulates external_cost formulas with normalized authorized cost variables", async () => {
+    const draft = externalCostTrafficCostSimulationDraft();
+    const catalog = {
+      getCatalog: vi.fn().mockResolvedValue({
+        scope: "external_cost",
+        executionGrain: "report",
+        version: draft.variableCatalogVersion,
+        businessTimezone: "Asia/Shanghai",
+        businessTimezoneConfirmed: true,
+        businessTimezoneSource: "confirmed_contract",
+        variables: [
+          {
+            id: "traffic_cost",
+            availability: "available",
+            coverageNumerator: 1,
+            coverageDenominator: 1,
+          },
+        ],
+      }),
+    };
+    const harness = await evidenceHarness({
+      draft,
+      catalog,
+      costs: [
+        confirmedCostItem({
+          item_type: "traffic",
+          live_report_id: approvedReport().id,
+          amount_cents: "12345",
+        }),
+      ],
+    });
+    const routeModule = await import("./custom-rule-route-context");
+    const service = routeModule.createCustomRuleExistingDraftSimulationService({
+      repository: harness.repository as never,
+      catalog,
+      evidence: harness.adapter as never,
+      analyzeReadiness: () => ({
+        catalogVersion: draft.variableCatalogVersion,
+        readinessHash: "b".repeat(64),
+        businessTimezone: "Asia/Shanghai",
+        businessTimezoneConfirmed: true,
+        businessTimezoneSource: "confirmed_contract",
+        historicalVerification: "verified",
+        readyForSimulation: true,
+        readyForActivation: true,
+        inputs: [],
+        warnings: [],
+      }),
+      simulate: simulateCustomSettlementRule,
+    });
+    const authorized = await harness.adapter.authorizeSelection(
+      authorizationInput(),
+    );
+
+    const result = await service.simulateExistingDraft({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      projectId: PROJECT_ID,
+      conversationId: draft.conversationId,
+      draftId: draft.id,
+      expectedRevisionNumber: draft.revisionNumber,
+      clientRequestId: "external-cost-traffic-variable",
+      selection: authorized,
+    });
+
+    expect(result.summary.scenarios).toContainEqual(
+      expect.objectContaining({
+        category: "ai_test_case",
+        passed: true,
+      }),
+    );
+    expect(harness.repository.insertSimulation).toHaveBeenCalled();
+  });
 
   it.each([
     ["system:floor-cap:v1", "50000"],

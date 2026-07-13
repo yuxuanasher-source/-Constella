@@ -1193,7 +1193,9 @@ function runSyntheticScenarios(
         outcome: "review_routed",
         amountCents: null,
         expectedAmountCents: scenario.expectedAmountCents,
-        passed: scenario.expectedAmountCents === null,
+        passed:
+          scenario.expectedResult === null &&
+          scenario.expectedAmountCents === null,
       });
       continue;
     }
@@ -1203,7 +1205,9 @@ function runSyntheticScenarios(
         outcome: "blocked",
         amountCents: null,
         expectedAmountCents: scenario.expectedAmountCents,
-        passed: scenario.expectedAmountCents === null,
+        passed:
+          scenario.expectedResult === null &&
+          scenario.expectedAmountCents === null,
       });
       continue;
     }
@@ -1231,6 +1235,10 @@ function runSyntheticScenarios(
       }
     }
     const moneyAmountCents = resultAmountCents(execution.result);
+    const expectedResultPassed =
+      scenario.expectedResult === null
+        ? true
+        : ruleResultMatchesExpected(execution.result, scenario.expectedResult);
     const clampPassed = scenario.clampExpectation
       ? execution.trace.some(
           (trace) =>
@@ -1250,6 +1258,7 @@ function runSyntheticScenarios(
       expectedAmountCents: scenario.expectedAmountCents,
       passed:
         clampPassed &&
+        expectedResultPassed &&
         (scenario.expectedAmountCents === null ||
           (moneyAmountCents !== null &&
             scenario.expectedAmountCents ===
@@ -1280,6 +1289,7 @@ type ScenarioWork = {
   category: CustomRuleSimulationScenario["category"];
   variables: Record<string, TypedRuntimeValue>;
   expectedAmountCents: string | null;
+  expectedResult: TypedRuntimeValue | null;
   parameterOverrides?: Record<string, TypedRuntimeValue>;
   clampExpectation?: {
     path: string;
@@ -1327,6 +1337,7 @@ function deriveScenarioWork(
       category: "zero",
       variables: zero,
       expectedAmountCents: null,
+      expectedResult: null,
     },
     ...deriveTierScenarioWork(input.compiledAst, baseline, input.parameters),
     ...clampPlan.work,
@@ -1342,6 +1353,7 @@ function deriveScenarioWork(
           evidence_level: { type: "string", value: level },
         },
         expectedAmountCents: null,
+        expectedResult: null,
       });
     }
   }
@@ -1374,6 +1386,7 @@ function deriveScenarioWork(
         category: "missing_data_policy",
         variables: withoutMissing,
         expectedAmountCents: null,
+        expectedResult: null,
         missing: { variableId: missingVariable, policy },
       });
     }
@@ -1389,6 +1402,7 @@ function deriveScenarioWork(
         input.contract.effectiveStartAt,
       ),
       expectedAmountCents: expectedMoneyCents(example.expectedResult),
+      expectedResult: example.expectedResult,
     });
   });
   [...input.aiTestCases]
@@ -1407,6 +1421,7 @@ function deriveScenarioWork(
           input.contract.effectiveStartAt,
         ),
         expectedAmountCents: expectedMoneyCents(testCase.expectedResult),
+        expectedResult: testCase.expectedResult,
       });
     });
   [...input.userExamples]
@@ -1421,6 +1436,7 @@ function deriveScenarioWork(
           input.contract.effectiveStartAt,
         ),
         expectedAmountCents: expectedMoneyCents(example.expectedResult),
+        expectedResult: example.expectedResult,
       });
     });
   return {
@@ -1495,6 +1511,7 @@ function deriveTierScenarioWork(
           [threshold.variableName]: values[edge],
         },
         expectedAmountCents: null,
+        expectedResult: null,
       });
     }
   });
@@ -1630,6 +1647,7 @@ function clampBoundaryScenario(input: {
         ? { [input.target.name]: input.targetValue }
         : undefined,
     expectedAmountCents: input.expectedAmountCents,
+    expectedResult: null,
     clampExpectation: {
       path: input.path,
       outcome: input.outcome,
@@ -1921,6 +1939,101 @@ function expectedMoneyCents(value: TypedRuntimeValue): string | null {
     );
   }
   return amountCents;
+}
+
+function ruleResultMatchesExpected(
+  result: z.infer<typeof ruleResultSchema>,
+  expected: TypedRuntimeValue,
+): boolean {
+  if (expected.type === "money_cents") {
+    const amount = resultAmountCents(result);
+    return (
+      amount !== null &&
+      serializePostgresBigintCents(amount) === expectedMoneyCents(expected)
+    );
+  }
+  if (result.kind === "cost_items") {
+    const expectedItems = expectedCostItems(expected);
+    if (expectedItems === null) return false;
+    return canonicalJson(result.items) === canonicalJson(expectedItems);
+  }
+  if (result.kind === "checks") {
+    const expectedChecks = expectedChecksResult(expected);
+    if (expectedChecks === null) return false;
+    return canonicalJson(result.checks) === canonicalJson(expectedChecks);
+  }
+  return false;
+}
+
+function expectedCostItems(value: TypedRuntimeValue):
+  | Array<{ category: ProjectCostItemType; amountCents: number; memo: string }>
+  | null {
+  if (value.type !== "array") return null;
+  const items: Array<{
+    category: ProjectCostItemType;
+    amountCents: number;
+    memo: string;
+  }> = [];
+  for (const item of value.items) {
+    if (item.type !== "object") return null;
+    const category = item.fields.category;
+    const amount = item.fields.amountCents;
+    const memo = item.fields.memo;
+    if (
+      category?.type !== "string" ||
+      amount?.type !== "money_cents" ||
+      memo?.type !== "string"
+    ) {
+      return null;
+    }
+    items.push({
+      category: category.value as ProjectCostItemType,
+      amountCents: amount.amountCents,
+      memo: sanitizeTypedOutputText(memo.value),
+    });
+  }
+  return items;
+}
+
+function expectedChecksResult(value: TypedRuntimeValue):
+  | Array<{
+    severity: "pass" | "warn" | "block";
+    message: string;
+    condition: boolean;
+  }>
+  | null {
+  if (value.type !== "array") return null;
+  const checks: Array<{
+    severity: "pass" | "warn" | "block";
+    message: string;
+    condition: boolean;
+  }> = [];
+  for (const item of value.items) {
+    if (item.type !== "object") return null;
+    const severity = item.fields.severity;
+    const message = item.fields.message;
+    const condition = item.fields.condition;
+    if (
+      severity?.type !== "string" ||
+      (severity.value !== "pass" &&
+        severity.value !== "warn" &&
+        severity.value !== "block") ||
+      message?.type !== "string" ||
+      condition?.type !== "boolean"
+    ) {
+      return null;
+    }
+    checks.push({
+      severity: severity.value,
+      message: sanitizeTypedOutputText(message.value),
+      condition: condition.value,
+    });
+  }
+  return checks;
+}
+
+function sanitizeTypedOutputText(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]/gu, "").slice(0, 120);
 }
 
 function isMoneyOutputAst(ast: CompiledAstNode): boolean {

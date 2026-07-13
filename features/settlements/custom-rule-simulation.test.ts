@@ -953,6 +953,65 @@ describe("simulateCustomSettlementRule", () => {
       });
     },
   );
+
+  it.each([
+    ["external_cost", "emit_items"],
+    ["reconciliation", "check"],
+  ] as const)(
+    "compares matching %s typed expected results in deterministic scenarios",
+    (scope, compositionMode) => {
+      const result = simulateAuthorized(
+        typedOutputSimulationInput(scope, compositionMode),
+      );
+
+      expect(result.scenarios).toContainEqual(
+        expect.objectContaining({
+          category: "ai_test_case",
+          passed: true,
+        }),
+      );
+    },
+  );
+
+  it.each([
+    ["external_cost", "emit_items"],
+    ["reconciliation", "check"],
+  ] as const)(
+    "fails %s deterministic scenarios when typed expected results differ",
+    (scope, compositionMode) => {
+      const input = typedOutputSimulationInput(scope, compositionMode);
+      const expected = structuredClone(input.aiTestCases[0].expectedResult);
+      if (expected.type !== "array" || expected.items[0]?.type !== "object") {
+        throw new Error("typed output fixture must use array object results");
+      }
+      if (scope === "external_cost") {
+        expected.items[0].fields.amountCents = {
+          type: "money_cents",
+          amountCents: 49_999,
+        };
+      } else {
+        expected.items[0].fields.message = {
+          type: "string",
+          value: "mismatched check message",
+        };
+      }
+      input.aiTestCases[0].expectedResult = expected;
+
+      const result = simulateAuthorized(input);
+
+      expect(result.scenarios).toContainEqual(
+        expect.objectContaining({
+          category: "ai_test_case",
+          passed: false,
+        }),
+      );
+      expect(result.riskFlags).toContainEqual(
+        expect.objectContaining({
+          code: "CUSTOM_RULE_SCENARIO_EXPECTATION_MISMATCH",
+        }),
+      );
+    },
+  );
 });
 
 function simulationInput(
