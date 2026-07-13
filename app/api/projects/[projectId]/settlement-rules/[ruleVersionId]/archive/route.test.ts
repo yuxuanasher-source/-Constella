@@ -30,6 +30,13 @@ const RULE_ID = "44444444-4444-4444-8444-444444444444";
 function body(overrides: Record<string, unknown> = {}) {
   return {
     effectiveUntil: "2026-07-31T00:00:00.000Z",
+    fallbackProof: {
+      simulationId: "77777777-7777-4777-8777-777777777777",
+      proofKind: "remaining_custom_layers",
+      remainingCustomLayerCount: 1,
+      fixedFallbackAvailable: false,
+      lockedBatchCount: 2,
+    },
     reason: "规则已被新版替代",
     clientRequestId: "archive-request-0001",
     ...overrides,
@@ -82,6 +89,7 @@ describe("settlement rule archive route", () => {
       projectId: PROJECT_ID,
       ruleVersionId: RULE_ID,
       effectiveUntil: body().effectiveUntil,
+      fallbackProof: body().fallbackProof,
       reason: body().reason,
       clientRequestId: "archive-request-0001",
     });

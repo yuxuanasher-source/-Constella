@@ -5044,6 +5044,7 @@ export type CustomRuleLifecycleRepositoryPort = Pick<
     ruleVersionId?: string;
     source?: ApplyAndSubmitCustomRuleInput["source"];
     sourceSimulationId?: string;
+    archiveFallbackProof?: ArchiveFallbackProofServiceInput;
   }): Promise<CustomRuleLifecycleGovernanceContext>;
   recordCustomRuleActivationFailure(
     input: CustomRuleReviewTransitionInput & {
@@ -5092,6 +5093,11 @@ type UntrustedApprovalHints = Readonly<{
   totals?: Readonly<Record<string, unknown>>;
 }>;
 
+type ArchiveFallbackProofServiceInput = Omit<
+  ArchiveCustomRuleRepositoryInput["fallbackProof"],
+  "lockedBatchExclusion"
+>;
+
 type ApproveLifecycleServiceInput = LifecycleServiceInput<
   ApproveCustomRuleRepositoryInput,
   "riskSummary"
@@ -5109,6 +5115,7 @@ type ArchiveLifecycleServiceInput = LifecycleServiceInput<
   "fallbackProof"
 > &
   Readonly<{
+    fallbackProof?: ArchiveFallbackProofServiceInput;
     remainingCustomLayerCount?: number;
     fixedFallbackAvailable?: boolean;
     lockedBatchCount?: number;
@@ -5376,6 +5383,7 @@ export function createCustomRuleLifecycleService(dependencies: {
     ruleVersionId?: string;
     source?: ApplyAndSubmitCustomRuleInput["source"];
     sourceSimulationId?: string;
+    archiveFallbackProof?: ArchiveFallbackProofServiceInput;
   }): Promise<CustomRuleLifecycleGovernanceContext> => {
     const context = await repository.getCustomRuleGovernanceContext({
       organizationId: input.actor.organizationId,
@@ -5384,6 +5392,7 @@ export function createCustomRuleLifecycleService(dependencies: {
       ruleVersionId: input.ruleVersionId,
       source: input.source,
       sourceSimulationId: input.sourceSimulationId,
+      archiveFallbackProof: input.archiveFallbackProof,
     });
     if (
       context.actor.organizationId !== input.actor.organizationId ||
@@ -5892,6 +5901,7 @@ export function createCustomRuleLifecycleService(dependencies: {
         actor: input.actor,
         projectId: input.projectId,
         ruleVersionId: input.ruleVersionId,
+        archiveFallbackProof: input.fallbackProof,
       });
       requireCapability(context.actor.role, "archive_rule");
       requireArchiveContext(context);

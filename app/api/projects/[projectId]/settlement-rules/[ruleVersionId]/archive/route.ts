@@ -16,6 +16,13 @@ const paramsSchema = z.strictObject({
 });
 const bodySchema = z.strictObject({
   effectiveUntil: z.iso.datetime({ offset: true }),
+  fallbackProof: z.strictObject({
+    simulationId: z.string().uuid(),
+    proofKind: z.enum(["remaining_custom_layers", "fixed_fallback"]),
+    remainingCustomLayerCount: z.number().int().min(0).max(10_000),
+    fixedFallbackAvailable: z.boolean(),
+    lockedBatchCount: z.number().int().min(0).max(10_000),
+  }),
   reason: z.string().trim().min(1).max(1_000),
   clientRequestId: z
     .string()
@@ -46,6 +53,7 @@ export async function POST(
       projectId: inputParams.projectId,
       ruleVersionId: inputParams.ruleVersionId,
       effectiveUntil: body.effectiveUntil,
+      fallbackProof: body.fallbackProof,
       reason: body.reason,
       clientRequestId: body.clientRequestId,
     });

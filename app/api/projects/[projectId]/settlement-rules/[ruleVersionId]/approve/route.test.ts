@@ -121,6 +121,38 @@ describe("settlement rule approve route", () => {
     );
   });
 
+  it("keeps force approval tied to server-owned single-owner eligibility", async () => {
+    const routeContext = context("owner");
+    routeContext.lifecycle.forceApproveCustomRule.mockRejectedValue(
+      new CustomRuleGovernanceError(
+        "FORCE_APPROVAL_REQUIRES_SINGLE_OWNER",
+        "force approval requires a true single-owner organization",
+      ),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(
+      request(
+        body({
+          force: true,
+          reason: "单一负责人组织，已复核风险与试算",
+          acknowledgment: CUSTOM_RULE_FORCE_APPROVAL_ACKNOWLEDGEMENT,
+        }),
+      ),
+      { params: Promise.resolve({ projectId: PROJECT_ID, ruleVersionId: RULE_ID }) },
+    );
+
+    expect(response.status).toBe(403);
+    expect(routeContext.lifecycle.forceApproveCustomRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "单一负责人组织，已复核风险与试算",
+        acknowledgment: CUSTOM_RULE_FORCE_APPROVAL_ACKNOWLEDGEMENT,
+      }),
+    );
+  });
+
   it("rejects client-side risk downgrades as malformed commands", async () => {
     const routeContext = context("owner");
     vi.mocked(getCustomRuleRouteContext).mockResolvedValue(

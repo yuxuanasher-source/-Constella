@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import {
+  CustomRuleRouteError,
   customRuleErrorResponse,
   getCustomRuleRouteContext,
   parseCustomRuleJson,
@@ -54,6 +55,15 @@ export async function POST(
 
     const inputParams = parseCustomRuleParams(await params, paramsSchema);
     const body = await parseCustomRuleJson(request, bodySchema);
+    if (body.scope !== "payable" && body.target.targetType !== "project") {
+      throw new CustomRuleRouteError({
+        code: "CUSTOM_RULE_TARGET_INVALID",
+        message: "Settlement rule target is invalid for the selected scope",
+        status: 422,
+        retryable: false,
+        path: ["target"],
+      });
+    }
     await context.requireProjectAccess(inputParams.projectId);
     await assertBillingWriteAllowed({
       client: context.supabase,

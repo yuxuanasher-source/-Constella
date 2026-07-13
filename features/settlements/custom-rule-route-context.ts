@@ -342,6 +342,7 @@ export async function getCustomRuleRouteContext(): Promise<
   const governanceRepository = createRouteGovernanceRepository({
     repository,
     auth,
+    supabase,
   });
   const catalog = {
     async getCatalog(input: {
@@ -649,17 +650,23 @@ export function customRuleErrorResponse(error: unknown): Response {
     );
   }
   if (error instanceof CustomRulePersistenceQueryError) {
+    const conflict = persistenceConflict(error);
+    const deterministicValidation = persistenceValidationFailure(error);
     return safeErrorResponse(
       {
-        code: persistenceConflict(error)
+        code: conflict
           ? "CUSTOM_RULE_CONFLICT"
+          : deterministicValidation
+            ? "CUSTOM_RULE_VALIDATION_FAILED"
           : "CUSTOM_RULE_STORAGE_UNAVAILABLE",
-        message: persistenceConflict(error)
+        message: conflict
           ? "Settlement rule request conflicts with current data"
+          : deterministicValidation
+            ? "Settlement rule request failed validation"
           : "Settlement rule storage is unavailable",
-        retryable: !persistenceConflict(error),
+        retryable: !conflict && !deterministicValidation,
       },
-      persistenceConflict(error) ? 409 : 503,
+      conflict ? 409 : deterministicValidation ? 422 : 503,
     );
   }
   if (error instanceof CustomRulePersistenceDataError) {
@@ -4039,11 +4046,35 @@ function persistenceConflict(error: CustomRulePersistenceQueryError): boolean {
   );
 }
 
+function persistenceValidationFailure(
+  error: CustomRulePersistenceQueryError,
+): boolean {
+  const text = safeRpcErrorText(error.cause);
+  return (
+    text.includes("target_invalid") ||
+    text.includes("target_mismatch") ||
+    text.includes("input_invalid") ||
+    text.includes("payload_invalid") ||
+    text.includes("readiness") ||
+    text.includes("not_ready") ||
+    text.includes("fallback_required") ||
+    text.includes("simulation_required") ||
+    text.includes("group_scope_mismatch") ||
+    text.includes("population_incomplete")
+  );
+}
+
 function postgresErrorCode(error: unknown): string | null {
   if (!error || typeof error !== "object") return null;
   const code = Reflect.get(error, "code");
   return typeof code === "string" ? code : null;
 }
+
+const routeEligibleApproverSchema = z.strictObject({
+  user_id: z.string().uuid(),
+  role: z.enum(["owner", "ops_manager"]),
+  status: z.literal("active"),
+});
 
 const routeOrganizationTemplateSchema = z.strictObject({
   id: z.string().uuid(),
@@ -4097,6 +4128,7 @@ function createCustomRuleTemplateListingService(input: {
 function createRouteGovernanceRepository(input: {
   repository: SupabaseCustomRuleReadRepository;
   auth: AuthContext;
+  supabase: SupabaseClient;
 }): CustomRuleLifecycleRepositoryPort & SettlementGroupMembershipRepositoryPort {
   const repository = input.repository as CustomRuleLifecycleRepositoryPort &
     SettlementGroupMembershipRepositoryPort &
@@ -4109,6 +4141,13 @@ function createRouteGovernanceRepository(input: {
       ruleVersionId?: string;
       source?: { kind: "ai_draft" | "saved_draft"; id: string };
       sourceSimulationId?: string;
+      archiveFallbackProof?: {
+        simulationId: string;
+        proofKind: "remaining_custom_layers" | "fixed_fallback";
+        remainingCustomLayerCount: number;
+        fixedFallbackAvailable: boolean;
+        lockedBatchCount: number;
+      };
     }) {
       const actor = {
         organizationId: scope.organizationId,
@@ -4153,6 +4192,18 @@ function createRouteGovernanceRepository(input: {
             dataSelectionHash: rawSimulation.dataSelectionHash,
           }
         : undefined;
+      const fallbackSimulation =
+        version &&
+        simulationOwner &&
+        scope.archiveFallbackProof !== undefined
+          ? await loadRouteFallbackSimulation({
+              repository: input.repository,
+              organizationId: scope.organizationId,
+              projectId: scope.projectId,
+              ruleVersionId: version.id,
+              simulationId: scope.archiveFallbackProof.simulationId,
+            })
+          : simulation;
       const expectedFreshness =
         version !== undefined
           ? {
@@ -4163,17 +4214,16 @@ function createRouteGovernanceRepository(input: {
               dataSelectionHash: version.dataSelectionHash,
             }
           : simulation;
+      const eligibleApprovers = await loadRouteEligibleApprovers({
+        supabase: input.supabase,
+        organizationId: scope.organizationId,
+      });
       return {
         actor,
         ...(version ? { version } : {}),
         ...(simulation ? { simulation } : {}),
         ...(expectedFreshness ? { expectedFreshness } : {}),
-        eligibleApprovers: [{ userId: actor.userId, role: actor.role }].filter(
-          (approver): approver is {
-            userId: string;
-            role: "owner" | "ops_manager";
-          } => approver.role === "owner" || approver.role === "ops_manager",
-        ),
+        eligibleApprovers,
         creatorUserId: version?.createdBy ?? actor.userId,
         simulationFacts: simulationFactsFrom(rawSimulation),
         currentMarginCents:
@@ -4192,18 +4242,83 @@ function createRouteGovernanceRepository(input: {
           groupConflict: { resolution: "none", conflictingGroupIds: [] },
         },
         archiveSafety:
-          version && simulation
+          version && simulation && fallbackSimulation
             ? {
-                remainingCustomLayerCount: 1,
-                fixedFallbackAvailable: false,
-                lockedBatchCount: 0,
-                proofKind: "remaining_custom_layers" as const,
-                fallbackSimulation: simulation,
+                remainingCustomLayerCount:
+                  scope.archiveFallbackProof?.remainingCustomLayerCount ?? 1,
+                fixedFallbackAvailable:
+                  scope.archiveFallbackProof?.fixedFallbackAvailable ?? false,
+                lockedBatchCount:
+                  scope.archiveFallbackProof?.lockedBatchCount ?? 0,
+                proofKind:
+                  scope.archiveFallbackProof?.proofKind ??
+                  ("remaining_custom_layers" as const),
+                fallbackSimulation,
               }
             : undefined,
       };
     },
   });
+}
+
+async function loadRouteEligibleApprovers(input: {
+  supabase: SupabaseClient;
+  organizationId: string;
+}): Promise<readonly { userId: string; role: "owner" | "ops_manager" }[]> {
+  const { data, error } = await input.supabase
+    .from("organization_members")
+    .select("user_id, role, status")
+    .eq("organization_id", input.organizationId)
+    .eq("status", "active")
+    .in("role", ["owner", "ops_manager"])
+    .order("user_id", { ascending: true })
+    .returns<unknown[]>();
+  if (error) {
+    throw new CustomRulePersistenceQueryError(
+      "list_custom_rule_eligible_approvers",
+      error,
+    );
+  }
+  if (!Array.isArray(data)) {
+    throw new CustomRulePersistenceDataError(
+      "lifecycle",
+      "eligible approver result must be an array",
+    );
+  }
+  return data.map((row) => {
+    const parsed = routeEligibleApproverSchema.parse(row);
+    return { userId: parsed.user_id, role: parsed.role };
+  });
+}
+
+async function loadRouteFallbackSimulation(input: {
+  repository: SupabaseCustomRuleReadRepository;
+  organizationId: string;
+  projectId: string;
+  ruleVersionId: string;
+  simulationId: string;
+}) {
+  const simulation = await input.repository.getSimulation({
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+    simulationId: input.simulationId,
+    owner: { kind: "rule_version", id: input.ruleVersionId },
+  });
+  if (!simulation) {
+    throw new CustomRuleGovernanceError(
+      "CUSTOM_RULE_ARCHIVE_FALLBACK_SIMULATION_REQUIRED",
+      "Active rule archival requires a separate fresh fallback or remaining-layer simulation",
+    );
+  }
+  return {
+    id: simulation.id,
+    createdAt: simulation.createdAt,
+    formulaHash: simulation.formulaHash,
+    contractHash: simulation.ruleContractHash,
+    parameterHash: simulation.parameterHash,
+    catalogHash: simulation.variableCatalogVersion,
+    dataSelectionHash: simulation.dataSelectionHash,
+  };
 }
 
 function simulationFactsFrom(simulation: SettlementFormulaSimulation | null) {

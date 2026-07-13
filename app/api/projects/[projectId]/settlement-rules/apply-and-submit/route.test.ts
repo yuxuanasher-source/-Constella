@@ -5,6 +5,7 @@ import { POST } from "./route";
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { getCustomRuleRouteContext } from "@/features/settlements/custom-rule-route-context";
 import { CustomRuleGovernanceError } from "@/features/settlements/custom-rule-governance";
+import { CustomRulePersistenceQueryError } from "@/features/settlements/custom-rule-repository";
 
 vi.mock("@/features/billing/route-guard", () => ({
   assertBillingWriteAllowed: vi.fn(),
@@ -188,6 +189,48 @@ describe("settlement rule apply-and-submit route", () => {
     });
 
     expect(response.status).toBe(409);
+  });
+
+  it("rejects non-project targets for non-payable scopes before billing", async () => {
+    const routeContext = context("owner");
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(
+      request(
+        body({
+          scope: "receivable",
+          target: {
+            targetType: "streamer_group",
+            targetId: "99999999-9999-4999-8999-999999999999",
+          },
+        }),
+      ),
+      { params: Promise.resolve({ projectId: PROJECT_ID }) },
+    );
+
+    expect(response.status).toBe(422);
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(routeContext.lifecycle.applyAndSubmitCustomRule).not.toHaveBeenCalled();
+  });
+
+  it("maps deterministic database target validation failures to 422", async () => {
+    const routeContext = context("owner");
+    routeContext.lifecycle.applyAndSubmitCustomRule.mockRejectedValue(
+      new CustomRulePersistenceQueryError("apply_and_submit_rule", {
+        message: "custom_settlement_rule_target_invalid",
+      }),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID }),
+    });
+
+    expect(response.status).toBe(422);
   });
 
   it("rejects malformed reason and target commands before billing", async () => {
