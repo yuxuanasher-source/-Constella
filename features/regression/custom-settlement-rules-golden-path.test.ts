@@ -540,8 +540,15 @@ describe("custom settlement production golden paths", () => {
   it("keeps locked history reproducible after a new active rule version exists", async () => {
     const historicalAst = compileAst("money_result({ final: gift_amount })");
     const newActiveAst = compileAst("money_result({ final: yuan(999) })");
+    const currentActiveRuleLookup = vi.fn(async () => ({
+      versionId: "rule-history-v2-active",
+      compiledAst: newActiveAst,
+      compiledAstHash: hash(newActiveAst),
+      amountIfUsedCents: 99_900,
+    }));
     const repo = createSettlementRepo({
       reports: [report({ id: "report-locked-history" })],
+      currentActiveRuleLookup,
       seedBatch: batch({ status: "locked", computedAmount: 10 }),
       seedItems: [
         item({
@@ -588,6 +595,7 @@ describe("custom settlement production golden paths", () => {
     ).rejects.toThrow(
       "Settlement batch is no longer open for rule exception resolution",
     );
+    expect(currentActiveRuleLookup).not.toHaveBeenCalled();
 
     vi.mocked(repo.getSettlementBatchById).mockResolvedValueOnce(
       batch({ status: "generated", computedAmount: 10 }),
@@ -610,6 +618,13 @@ describe("custom settlement production golden paths", () => {
         newComputedAmount: 25,
       }),
     );
+    expect(repo.resolveSettlementRuleException).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        newComputedAmount: 999,
+      }),
+    );
+    expect(currentActiveRuleLookup).not.toHaveBeenCalled();
+    expect(hash(historicalAst)).not.toBe(hash(newActiveAst));
   });
 
   it("preserves cents/yuan boundaries without 100x conversions", async () => {
@@ -743,7 +758,9 @@ type TestSettlementRepository = SettlementRepository &
       | "listSettlementRuleExceptions"
       | "resolveSettlementRuleException"
     >
-  >;
+  > & {
+    currentActiveRuleLookup?: ReturnType<typeof vi.fn>;
+  };
 
 function createSettlementRepo(input: {
   reports: SettlementPoolReport[];
@@ -754,6 +771,7 @@ function createSettlementRepo(input: {
   seedBatch?: SettlementBatchRecord;
   seedItems?: SettlementBatchItemRecord[];
   seedExceptions?: SettlementRuleExceptionRecord[];
+  currentActiveRuleLookup?: ReturnType<typeof vi.fn>;
 }): TestSettlementRepository {
   let currentBatch = input.seedBatch ?? batch();
   let currentItems = input.seedItems ?? [];
@@ -861,6 +879,7 @@ function createSettlementRepo(input: {
           currentExceptions[0],
       };
     }),
+    currentActiveRuleLookup: input.currentActiveRuleLookup,
   };
   return repo;
 }
