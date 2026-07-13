@@ -39,6 +39,37 @@ function reviewSummary(overrides = {}) {
 }
 
 describe("CustomSettlementRuleReviewDialog", () => {
+  it("can be dismissed with the close button and Escape", () => {
+    const close = vi.fn();
+    const { rerender } = render(
+      <CustomSettlementRuleReviewDialog
+        open
+        rule={reviewRule()}
+        summary={reviewSummary()}
+        currentUser={{ id: REVIEWER_ID, role: "ops_manager" }}
+        onClose={close}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭审核弹窗" }));
+    expect(close).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <CustomSettlementRuleReviewDialog
+        open
+        rule={reviewRule()}
+        summary={reviewSummary()}
+        currentUser={{ id: REVIEWER_ID, role: "ops_manager" }}
+        onClose={close}
+      />,
+    );
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "规则审核" }), {
+      key: "Escape",
+    });
+
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
   it("shows review evidence and distinct derived lifecycle labels", () => {
     render(
       <CustomSettlementRuleReviewDialog

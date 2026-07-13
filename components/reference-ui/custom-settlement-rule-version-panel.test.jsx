@@ -105,6 +105,16 @@ describe("CustomSettlementRuleVersionPanel", () => {
       ],
       "修改并重新试算",
     ],
+    [
+      null,
+      [
+        rule({
+          status: "draft",
+          primaryAction: { state: "draft", action: "apply_and_submit" },
+        }),
+      ],
+      "应用并提交审核",
+    ],
     [null, [rule()], "创建新版本"],
   ])("maps %s to exactly one primary action %s", (buildState, versions, label) => {
     render(
@@ -213,6 +223,26 @@ describe("CustomSettlementRuleVersionPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "创建新版本" }));
 
     expect(primaryAction).toHaveBeenCalledWith("new_version", rule());
+  });
+
+  it("dispatches saved draft versions through the submit primary action", () => {
+    const primaryAction = vi.fn();
+    const draftRule = rule({
+      status: "draft",
+      primaryAction: { state: "draft", action: "apply_and_submit" },
+    });
+    render(
+      <CustomSettlementRuleVersionPanel
+        versions={[draftRule]}
+        currentUser={{ id: USER_ID, role: "owner" }}
+        templates={[]}
+        onPrimaryAction={primaryAction}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "应用并提交审核" }));
+
+    expect(primaryAction).toHaveBeenCalledWith("submit", draftRule);
   });
 
   it("shows system and organization templates, clones into editable draft, and formats parameter units", () => {

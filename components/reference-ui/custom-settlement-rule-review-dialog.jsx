@@ -43,6 +43,7 @@ export default function CustomSettlementRuleReviewDialog({
   onApprove,
   onRequestChanges,
   onArchive,
+  onClose,
 }) {
   const [reason, setReason] = React.useState("");
   const [comment, setComment] = React.useState("");
@@ -96,9 +97,18 @@ export default function CustomSettlementRuleReviewDialog({
     if (!reasonReady) return;
     onArchive?.({ ruleVersionId: rule.id, reason: reason.trim() });
   };
+  const handleDialogKeyDown = (event) => {
+    if (event.key === "Escape") onClose?.();
+  };
 
   return (
-    <div role="dialog" aria-label="规则审核" className="crw-review-dialog">
+    <div
+      role="dialog"
+      aria-label="规则审核"
+      className="crw-review-dialog"
+      tabIndex={-1}
+      onKeyDown={handleDialogKeyDown}
+    >
       <div className="crw-panel-heading">
         <div>
           <h2>规则审核</h2>
@@ -107,6 +117,9 @@ export default function CustomSettlementRuleReviewDialog({
             <span>{lifecycleLabel(rule)}</span>
           </p>
         </div>
+        <button type="button" aria-label="关闭审核弹窗" onClick={onClose}>
+          关闭
+        </button>
       </div>
 
       <dl className="crw-review-facts">

@@ -1315,9 +1315,14 @@ export function createCustomSettlementRuleApi({
         signal,
       );
     },
-    getLatestProjectRuleSession({ projectId, signal }) {
+    getLatestProjectRuleSession({ projectId, scope, target, signal }) {
+      const query = new URLSearchParams();
+      if (scope) query.set("scope", scope);
+      if (target?.targetType) query.set("targetType", target.targetType);
+      if (target?.targetId) query.set("targetId", target.targetId);
+      const suffix = query.toString() ? `?${query.toString()}` : "";
       return request(
-        `${baseUrl(projectId)}/ai-sessions/latest`,
+        `${baseUrl(projectId)}/ai-sessions/latest${suffix}`,
         { method: "GET" },
         responseSchemas.latestSession,
         signal,

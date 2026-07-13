@@ -25,7 +25,7 @@ const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
 const SESSION_ID = "44444444-4444-4444-8444-444444444444";
 const DRAFT_ID = "55555555-5555-4555-8555-555555555555";
 
-function latestDraft() {
+function latestDraft(overrides: Record<string, unknown> = {}) {
   return {
     id: DRAFT_ID,
     organizationId: ORGANIZATION_ID,
@@ -66,6 +66,7 @@ function latestDraft() {
     supersedesDraftId: null,
     supersededByDraftId: null,
     supersededAt: null,
+    ...overrides,
   };
 }
 
@@ -124,9 +125,12 @@ describe("settlement rule latest AI session route", () => {
         routeContext as never,
       );
 
-      const response = await GET(new Request("http://localhost"), {
-        params: Promise.resolve({ projectId: PROJECT_ID }),
-      });
+      const response = await GET(
+        new Request(
+          "http://localhost/api/projects/project/settlement-rules/ai-sessions/latest?scope=payable&targetType=project",
+        ),
+        { params: Promise.resolve({ projectId: PROJECT_ID }) },
+      );
       const payload = await response.json();
 
       expect(response.status).toBe(200);
@@ -143,6 +147,14 @@ describe("settlement rule latest AI session route", () => {
       expect(routeContext.query.eq).toHaveBeenCalledWith(
         "project_id",
         PROJECT_ID,
+      );
+      expect(routeContext.query.eq).toHaveBeenCalledWith(
+        "business_contract->>scope",
+        "payable",
+      );
+      expect(routeContext.query.eq).toHaveBeenCalledWith(
+        "business_contract->target->>targetType",
+        "project",
       );
       expect(routeContext.repository.listDrafts).toHaveBeenCalledWith({
         organizationId: ORGANIZATION_ID,
@@ -199,5 +211,33 @@ describe("settlement rule latest AI session route", () => {
 
     expect(response.status).toBe(404);
     expect(routeContext.supabase.from).not.toHaveBeenCalled();
+  });
+
+  it("does not restore a latest session whose draft context mismatches the requested scope", async () => {
+    const routeContext = context("finance");
+    routeContext.repository.listDrafts.mockResolvedValue([
+      latestDraft({
+        businessContract: {
+          ...latestDraft().businessContract,
+          scope: "receivable",
+          target: { targetType: "project", targetId: null },
+        },
+      }),
+    ]);
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await GET(
+      new Request(
+        "http://localhost/api/projects/project/settlement-rules/ai-sessions/latest?scope=payable&targetType=project",
+      ),
+      { params: Promise.resolve({ projectId: PROJECT_ID }) },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ session: null });
+    expect(routeContext.conversation.getHistory).not.toHaveBeenCalled();
+    expect(routeContext.repository.listSimulations).not.toHaveBeenCalled();
   });
 });

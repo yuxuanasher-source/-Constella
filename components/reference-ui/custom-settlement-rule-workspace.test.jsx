@@ -2340,6 +2340,43 @@ describe("CustomSettlementRuleWorkspace", () => {
     );
   });
 
+  it("restores the version primary action after dismissing the review dialog", async () => {
+    const pendingRule = governanceRule({
+      eligibleApproverId: "66666666-6666-4666-8666-666666666666",
+      requiresDifferentApprover: true,
+    });
+    const apiClient = api({
+      listRuleVersions: vi.fn().mockResolvedValue({ rules: [pendingRule] }),
+      listRuleReviewEvents: vi.fn().mockResolvedValue({ events: [] }),
+      listSettlementRuleGroups: vi.fn().mockResolvedValue({ groups: [] }),
+      listRuleTemplates: vi.fn().mockResolvedValue({ templates: [] }),
+      getLatestProjectRuleSession: vi.fn().mockResolvedValue({ session: null }),
+    });
+    renderWorkspace(apiClient, {
+      currentUser: {
+        id: "66666666-6666-4666-8666-666666666666",
+        role: "ops_manager",
+      },
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: "版本与审核" }));
+    const versionPanel = await screen.findByRole("region", {
+      name: "版本与审核",
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "确认生效" }));
+    expect(screen.getByRole("dialog", { name: "规则审核" })).toBeInTheDocument();
+    expect(
+      within(versionPanel).queryByRole("button", { name: "确认生效" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭审核弹窗" }));
+
+    expect(screen.queryByRole("dialog", { name: "规则审核" })).not.toBeInTheDocument();
+    expect(
+      await within(versionPanel).findByRole("button", { name: "确认生效" }),
+    ).toBeInTheDocument();
+  });
+
   it("wires request changes and archive transitions from the review dialog", async () => {
     const pendingRule = governanceRule();
     const requestedRule = governanceRule({
@@ -2660,6 +2697,75 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(screen.getByText("缺少目标数据：系统直播时长")).toBeInTheDocument();
   });
 
+  it("submits a cloned saved draft with its saved draft source and current simulation", async () => {
+    const template = organizationTemplate();
+    const clonedRule = governanceRule({
+      id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      status: "draft",
+      simulationId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      primaryAction: { state: "draft", action: "apply_and_submit" },
+    });
+    const pendingRule = governanceRule({
+      id: clonedRule.id,
+      status: "pending_review",
+      simulationId: "99999999-9999-4999-8999-999999999999",
+      primaryAction: { state: "pending_review", action: "approve" },
+    });
+    const apiClient = api({
+      listRuleVersions: vi.fn().mockResolvedValue({ rules: [] }),
+      listRuleReviewEvents: vi.fn().mockResolvedValue({ events: [] }),
+      listSettlementRuleGroups: vi.fn().mockResolvedValue({ groups: [] }),
+      listRuleTemplates: vi.fn().mockResolvedValue({ templates: [template] }),
+      getLatestProjectRuleSession: vi.fn().mockResolvedValue({ session: null }),
+      cloneRule: vi.fn().mockResolvedValue({
+        rule: clonedRule,
+        lineage: {
+          sourceRuleVersionId: template.sourceRuleVersionId,
+          sourceProjectId: PROJECT_ID,
+          sourceVersionNumber: 2,
+          sourceScope: "payable",
+        },
+        missingTargetVariables: [],
+      }),
+      applyAndSubmitRule: vi.fn().mockResolvedValue(
+        lifecycle(pendingRule, {
+          eventType: "submitted_for_review",
+          beforeStatus: "draft",
+          afterStatus: "pending_review",
+        }),
+      ),
+    });
+    renderWorkspace(apiClient, {
+      createUuid: () => "99999999-9999-4999-8999-999999999999",
+      currentUser: { id: "22222222-2222-4222-8222-222222222222", role: "owner" },
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: "版本与审核" }));
+    fireEvent.click(
+      within(
+        await screen.findByRole("group", { name: "机构按小时模板" }),
+      ).getByRole("button", { name: "克隆为草稿" }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "应用并提交审核" }));
+
+    await waitFor(() =>
+      expect(apiClient.applyAndSubmitRule).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: PROJECT_ID,
+          body: expect.objectContaining({
+            source: { kind: "saved_draft", id: clonedRule.id },
+            sourceSimulationId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            destinationVersionId: "99999999-9999-4999-8999-999999999999",
+            destinationSimulationId: "99999999-9999-4999-8999-999999999999",
+            effectiveFrom: clonedRule.effectiveFrom,
+            clientRequestId: "task9:submit_review:0001",
+          }),
+        }),
+      ),
+    );
+    expect(await screen.findByRole("heading", { name: "规则已提交审核" })).toHaveFocus();
+  });
+
   it("refreshes governance versions, reviews, groups, templates, and restores latest session without clearing unsent input", async () => {
     const latest = completeV2AuthoritativeSession();
     const apiClient = api({
@@ -2728,11 +2834,17 @@ describe("CustomSettlementRuleWorkspace", () => {
   });
 
   it("focuses a status heading after assignment updates", async () => {
+    const updatedGroup = settlementGroup({
+      assignmentCount: 3,
+      futureAssignmentCount: 1,
+      unassignedProjectStreamers: [],
+    });
     const apiClient = api({
       listRuleVersions: vi.fn().mockResolvedValue({ rules: [] }),
-      listSettlementRuleGroups: vi.fn().mockResolvedValue({
-        groups: [settlementGroup()],
-      }),
+      listSettlementRuleGroups: vi
+        .fn()
+        .mockResolvedValueOnce({ groups: [settlementGroup()] })
+        .mockResolvedValueOnce({ groups: [updatedGroup] }),
       changeSettlementGroupAssignment: vi.fn().mockResolvedValue({
         assignmentChange: {
           insertedAssignment: {
@@ -2770,7 +2882,55 @@ describe("CustomSettlementRuleWorkspace", () => {
       target: { value: "按本月结算策略调整" },
     });
     fireEvent.click(screen.getByRole("button", { name: "更新分组" }));
+    await waitFor(() =>
+      expect(apiClient.listSettlementRuleGroups).toHaveBeenCalledTimes(2),
+    );
+    expect(screen.getByText("成员 3 人")).toBeInTheDocument();
+    expect(screen.getByText("暂无未分组主播")).toBeInTheDocument();
 
     expect(await screen.findByRole("heading", { name: "分组已更新" })).toHaveFocus();
+  });
+
+  it("focuses a safe error when assignment updates fail", async () => {
+    const apiClient = api({
+      listRuleVersions: vi.fn().mockResolvedValue({ rules: [] }),
+      listSettlementRuleGroups: vi.fn().mockResolvedValue({
+        groups: [settlementGroup()],
+      }),
+      changeSettlementGroupAssignment: vi.fn().mockRejectedValue(
+        new CustomSettlementRuleApiError({
+          code: "CUSTOM_RULE_REQUEST_FAILED",
+          status: 503,
+          retryable: true,
+        }),
+      ),
+    });
+    renderWorkspace(apiClient);
+
+    fireEvent.click(screen.getByRole("tab", { name: "结算分组" }));
+    await waitFor(() =>
+      expect(screen.getAllByText("高优先级主播").length).toBeGreaterThan(0),
+    );
+    fireEvent.change(screen.getByLabelText("主播"), {
+      target: { value: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+    });
+    fireEvent.change(screen.getByLabelText("分组"), {
+      target: { value: "77777777-7777-4777-8777-777777777777" },
+    });
+    fireEvent.change(screen.getByLabelText("生效时间"), {
+      target: { value: "2026-07-13T09:00" },
+    });
+    fireEvent.change(screen.getByLabelText("分配原因"), {
+      target: { value: "按本月结算策略调整" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "更新分组" }));
+
+    const heading = await screen.findByRole("heading", {
+      name: "分组更新失败",
+    });
+    expect(heading).toHaveFocus();
+    expect(
+      screen.getByText("结算规则服务暂时不可用，请稍后重试"),
+    ).toBeInTheDocument();
   });
 });

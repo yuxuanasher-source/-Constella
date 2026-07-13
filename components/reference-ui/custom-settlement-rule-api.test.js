@@ -1999,7 +1999,11 @@ describe("custom settlement rule API", () => {
       events: [{ eventType: "submitted_for_review" }],
     });
     await expect(
-      api.getLatestProjectRuleSession({ projectId: PROJECT_ID }),
+      api.getLatestProjectRuleSession({
+        projectId: PROJECT_ID,
+        scope: "payable",
+        target: { targetType: "project", targetId: null },
+      }),
     ).resolves.toMatchObject({
       session: { conversation: { id: SESSION_ID }, draft: { id: DRAFT_ID } },
     });
@@ -2011,7 +2015,7 @@ describe("custom settlement rule API", () => {
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       2,
-      `/api/projects/${PROJECT_ID}/settlement-rules/ai-sessions/latest`,
+      `/api/projects/${PROJECT_ID}/settlement-rules/ai-sessions/latest?scope=payable&targetType=project`,
       expect.objectContaining({ method: "GET" }),
     );
   });

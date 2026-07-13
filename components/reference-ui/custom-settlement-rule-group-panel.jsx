@@ -21,12 +21,28 @@ function localDateTimeToOffset(value) {
     Number(fraction.padEnd(3, "0")),
   );
   if (Number.isNaN(date.getTime())) return value;
+  if (
+    date.getFullYear() !== Number(year) ||
+    date.getMonth() !== Number(month) - 1 ||
+    date.getDate() !== Number(day) ||
+    date.getHours() !== Number(hour) ||
+    date.getMinutes() !== Number(minute) ||
+    date.getSeconds() !== Number(second)
+  ) {
+    return value;
+  }
   const offsetMinutes = -date.getTimezoneOffset();
   const sign = offsetMinutes >= 0 ? "+" : "-";
   const absoluteOffset = Math.abs(offsetMinutes);
   const offsetHours = String(Math.floor(absoluteOffset / 60)).padStart(2, "0");
   const offsetRemainder = String(absoluteOffset % 60).padStart(2, "0");
-  return `${year}-${month}-${day}T${hour}:${minute}:${String(second).padStart(2, "0")}.${String(date.getMilliseconds()).padStart(3, "0")}${sign}${offsetHours}:${offsetRemainder}`;
+  return `${year}-${month}-${day}T${hour}:${minute}:${String(second).padStart(
+    2,
+    "0",
+  )}.${String(date.getMilliseconds()).padStart(
+    3,
+    "0",
+  )}${sign}${offsetHours}:${offsetRemainder}`;
 }
 
 export default function CustomSettlementRuleGroupPanel({

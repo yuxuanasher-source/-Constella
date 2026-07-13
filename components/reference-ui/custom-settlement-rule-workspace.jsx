@@ -100,6 +100,7 @@ const INITIAL_GOVERNANCE_STATE = {
   announcement: "",
   error: null,
 };
+const EMPTY_TEMPLATES = Object.freeze([]);
 
 const OPTIONAL_GOVERNANCE_FAILURE = Symbol("optional governance failure");
 
@@ -1244,12 +1245,13 @@ export default function CustomSettlementRuleWorkspace({
   target,
   api,
   currentUser = { id: null, role: "operator_business" },
-  templates = [],
+  templates: providedTemplates = EMPTY_TEMPLATES,
   createUuid = defaultUuid,
   createRequestId = defaultRequestId,
   retryPollDelayMs = 250,
   retryPollMaxAttempts = 3,
 }) {
+  const templates = providedTemplates ?? EMPTY_TEMPLATES;
   const apiClient = React.useMemo(
     () => api ?? createCustomSettlementRuleApi(),
     [api],
@@ -1530,6 +1532,9 @@ export default function CustomSettlementRuleWorkspace({
     ])
       .then(([rulesPayload, groupsPayload, reviewsPayload, templatesPayload, sessionPayload]) => {
         if (sequence !== governanceSequenceRef.current) return;
+        const safeGroupsPayload = Array.isArray(groupsPayload?.groups)
+          ? groupsPayload
+          : { groups: [] };
         if (sessionPayload.session) {
           setActiveSession({
             contextKey: workspaceContextKey,
@@ -1558,9 +1563,9 @@ export default function CustomSettlementRuleWorkspace({
               : current.versions,
           reviews: reviewsPayload.events,
           groups:
-            groupsPayload.groups.length > 0 ||
+            safeGroupsPayload.groups.length > 0 ||
             current.contextKey !== workspaceContextKey
-              ? groupsPayload.groups
+              ? safeGroupsPayload.groups
               : current.groups,
           templates: templatesPayload.templates,
           announcement: "版本与分组已同步",
@@ -1864,7 +1869,7 @@ export default function CustomSettlementRuleWorkspace({
     }
   };
 
-  const submitCurrentSimulationForReview = async () => {
+  const submitCurrentSimulationForReview = async (sourceRule = null) => {
     if (
       !validContext ||
       viewState.catalogStatus !== "ready" ||
@@ -1872,9 +1877,17 @@ export default function CustomSettlementRuleWorkspace({
     ) {
       return;
     }
+    const savedDraft =
+      sourceRule?.status === "draft" &&
+      sourceRule?.primaryAction?.action === "apply_and_submit"
+        ? sourceRule
+        : null;
     const currentDraft = viewState.authoritative?.draft ?? null;
     const currentSimulation = viewState.authoritative?.simulation ?? null;
-    if (currentDraft?.status !== "simulated" || !currentSimulation?.id) return;
+    if (!savedDraft && (currentDraft?.status !== "simulated" || !currentSimulation?.id)) {
+      return;
+    }
+    if (savedDraft && !savedDraft.simulationId) return;
 
     requestControllerRef.current?.abort();
     apiClient.abortActive?.();
@@ -1901,17 +1914,27 @@ export default function CustomSettlementRuleWorkspace({
     }));
 
     try {
-      const contract = currentDraft.businessContract;
+      const contract = savedDraft
+        ? { scope: savedDraft.scope, target: savedDraft.target }
+        : currentDraft.businessContract;
+      const source = savedDraft
+        ? { kind: "saved_draft", id: savedDraft.id }
+        : { kind: "ai_draft", id: currentDraft.id };
+      const sourceSimulationId = savedDraft
+        ? savedDraft.simulationId
+        : currentSimulation.id;
       const payload = await apiClient.applyAndSubmitRule({
         projectId,
         body: {
-          source: { kind: "ai_draft", id: currentDraft.id },
-          sourceSimulationId: currentSimulation.id,
+          source,
+          sourceSimulationId,
           destinationVersionId,
           destinationSimulationId,
           scope: contract.scope,
           target: contract.target,
-          effectiveFrom: contract.effectiveStartAt,
+          effectiveFrom: savedDraft
+            ? savedDraft.effectiveFrom
+            : contract.effectiveStartAt,
           reason:
             currentUser.role === "operator_business"
               ? "保存并请求审核"
@@ -1936,8 +1959,12 @@ export default function CustomSettlementRuleWorkspace({
             ? current.versions.filter((rule) => rule.id !== payload.rule.id)
             : []),
         ],
+        reviews:
+          current.contextKey === workspaceContextKey ? current.reviews : [],
         groups:
           current.contextKey === workspaceContextKey ? current.groups : [],
+        templates:
+          current.contextKey === workspaceContextKey ? current.templates : templates,
         announcement: "规则已提交审核",
         error: null,
       }));
@@ -2311,6 +2338,7 @@ export default function CustomSettlementRuleWorkspace({
   if (sessionRecovery) errorHeading = "规则状态需要同步";
   if (catalogSessionRecovery) errorHeading = "业务范围需要同步";
   if (businessDateError) errorHeading = "业务日期不可用";
+  if (viewState.lastOperation === "assign_group") errorHeading = "分组更新失败";
   if (failedAuthority) {
     errorHeading = "AI 草案生成失败";
     errorMessage = "AI 未能生成可用草案，请重新开始";
@@ -2768,8 +2796,8 @@ export default function CustomSettlementRuleWorkspace({
             templates={
               governanceView.templates.length ? governanceView.templates : templates
             }
-            onPrimaryAction={(type) => {
-              if (type === "submit") submitCurrentSimulationForReview();
+            onPrimaryAction={(type, rule) => {
+              if (type === "submit") submitCurrentSimulationForReview(rule);
               if (type === "approve" && governanceView.versions[0]) {
                 setReviewDialog({
                   open: true,
@@ -2801,6 +2829,9 @@ export default function CustomSettlementRuleWorkspace({
               handleReviewTransition("request_changes", payload)
             }
             onArchive={(payload) => handleReviewTransition("archive_rule", payload)}
+            onClose={() =>
+              setReviewDialog({ open: false, rule: null, error: null })
+            }
           />
         </div>
       ) : null}
@@ -2814,6 +2845,18 @@ export default function CustomSettlementRuleWorkspace({
               </h2>
             </div>
           ) : null}
+          {viewState.status === "error" &&
+          viewState.lastOperation === "assign_group" ? (
+            <div className="crw-error">
+              <AlertCircle size={18} aria-hidden="true" />
+              <div>
+                <h2 ref={errorHeadingRef} tabIndex={-1}>
+                  分组更新失败
+                </h2>
+                <p>{errorMessage}</p>
+              </div>
+            </div>
+          ) : null}
           <CustomSettlementRuleGroupPanel
             groups={governanceView.groups}
             streamers={governanceView.groups.flatMap(
@@ -2825,24 +2868,74 @@ export default function CustomSettlementRuleWorkspace({
               ) {
                 return;
               }
-              await apiClient.changeSettlementGroupAssignment({
-                projectId,
-                groupId: assignment.groupId,
-                body: {
-                  projectStreamerId: assignment.projectStreamerId,
-                  effectiveFrom: assignment.effectiveFrom,
-                  reason: assignment.reason,
-                  clientRequestId: createRequestId("assign_group"),
-                },
-              });
-              setRequestState((current) => ({
-                ...(current.contextKey === workspaceContextKey
-                  ? current
-                  : freshRequestState()),
-                contextKey: workspaceContextKey,
-                announcement: "分组已更新",
-                focusTarget: "status",
-              }));
+              try {
+                await apiClient.changeSettlementGroupAssignment({
+                  projectId,
+                  groupId: assignment.groupId,
+                  body: {
+                    projectStreamerId: assignment.projectStreamerId,
+                    effectiveFrom: assignment.effectiveFrom,
+                    reason: assignment.reason,
+                    clientRequestId: createRequestId("assign_group"),
+                  },
+                });
+                if (typeof apiClient.listSettlementRuleGroups === "function") {
+                  const groupsPayload = await apiClient.listSettlementRuleGroups({
+                    projectId,
+                    includeArchived: true,
+                  });
+                  setGovernanceState((current) => ({
+                    ...(current.contextKey === workspaceContextKey
+                      ? current
+                      : INITIAL_GOVERNANCE_STATE),
+                    contextKey: workspaceContextKey,
+                    status: "ready",
+                    groups: groupsPayload.groups,
+                    versions:
+                      current.contextKey === workspaceContextKey
+                        ? current.versions
+                        : [],
+                    reviews:
+                      current.contextKey === workspaceContextKey
+                        ? current.reviews
+                        : [],
+                    templates:
+                      current.contextKey === workspaceContextKey
+                        ? current.templates
+                        : templates,
+                    announcement: "分组已更新",
+                    error: null,
+                  }));
+                }
+                setRequestState((current) => ({
+                  ...(current.contextKey === workspaceContextKey
+                    ? current
+                    : freshRequestState()),
+                  contextKey: workspaceContextKey,
+                  status: "ready",
+                  operation: null,
+                  lastOperation: null,
+                  error: null,
+                  recovery: null,
+                  announcement: "分组已更新",
+                  focusTarget: "status",
+                }));
+              } catch (error) {
+                const safeError = safeWorkspaceError(error);
+                setRequestState((current) => ({
+                  ...(current.contextKey === workspaceContextKey
+                    ? current
+                    : freshRequestState()),
+                  contextKey: workspaceContextKey,
+                  status: "error",
+                  operation: null,
+                  lastOperation: "assign_group",
+                  error: safeError,
+                  recovery: null,
+                  announcement: "分组更新失败",
+                  focusTarget: "error",
+                }));
+              }
             }}
           />
         </div>

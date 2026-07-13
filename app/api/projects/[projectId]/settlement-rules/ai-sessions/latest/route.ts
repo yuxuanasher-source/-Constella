@@ -12,13 +12,54 @@ import {
 const paramsSchema = z.strictObject({
   projectId: z.string().uuid(),
 });
+const querySchema = z.strictObject({
+  scope: z
+    .enum(["receivable", "payable", "external_cost", "reconciliation"])
+    .optional(),
+  targetType: z
+    .enum(["project", "streamer_group", "project_streamer"])
+    .optional(),
+  targetId: z.string().uuid().optional(),
+});
 const latestDraftRowSchema = z.strictObject({
   conversation_id: z.string().uuid(),
   created_by: z.string().uuid(),
 });
 
+function optionalSearchParam(searchParams: URLSearchParams, key: string) {
+  const value = searchParams.get(key);
+  return value === null || value === "" ? undefined : value;
+}
+
+function draftMatchesRequestedContext(
+  draft: {
+    businessContract: {
+      scope: string;
+      target: { targetType: string; targetId?: string | null };
+    };
+  },
+  query: z.infer<typeof querySchema>,
+) {
+  if (query.scope && draft.businessContract.scope !== query.scope) {
+    return false;
+  }
+  if (
+    query.targetType &&
+    draft.businessContract.target.targetType !== query.targetType
+  ) {
+    return false;
+  }
+  if (
+    query.targetId &&
+    draft.businessContract.target.targetId !== query.targetId
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
   try {
@@ -26,13 +67,41 @@ export async function GET(
     if (context instanceof Response) return context;
 
     const input = parseCustomRuleParams(await params, paramsSchema);
+    const searchParams = new URL(request.url).searchParams;
+    const query = parseCustomRuleParams(
+      {
+        scope: optionalSearchParam(searchParams, "scope"),
+        targetType: optionalSearchParam(searchParams, "targetType"),
+        targetId: optionalSearchParam(searchParams, "targetId"),
+      },
+      querySchema,
+    );
     await context.requireProjectAccess(input.projectId);
 
-    const { data, error } = await context.supabase
+    let latestDraftQuery = context.supabase
       .from("ai_settlement_rule_drafts")
       .select("conversation_id, created_by")
       .eq("organization_id", context.auth.organizationId)
-      .eq("project_id", input.projectId)
+      .eq("project_id", input.projectId);
+    if (query.scope) {
+      latestDraftQuery = latestDraftQuery.eq(
+        "business_contract->>scope",
+        query.scope,
+      );
+    }
+    if (query.targetType) {
+      latestDraftQuery = latestDraftQuery.eq(
+        "business_contract->target->>targetType",
+        query.targetType,
+      );
+    }
+    if (query.targetId) {
+      latestDraftQuery = latestDraftQuery.eq(
+        "business_contract->target->>targetId",
+        query.targetId,
+      );
+    }
+    const { data, error } = await latestDraftQuery
       .order("created_at", { ascending: false })
       .order("revision_number", { ascending: false })
       .limit(1)
@@ -81,6 +150,9 @@ export async function GET(
         status: 404,
         retryable: false,
       });
+    }
+    if (!draftMatchesRequestedContext(draft, query)) {
+      return NextResponse.json({ session: null });
     }
 
     const history = await context.conversation.getHistory(

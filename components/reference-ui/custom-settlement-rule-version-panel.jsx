@@ -86,6 +86,16 @@ function actionFor({ buildState, versions, currentUser }) {
   const current = versions?.[0] ?? null;
   if (!current) return null;
   const serverAction = current.primaryAction?.action ?? "none";
+  if (current.status === "draft" && serverAction === "apply_and_submit") {
+    return {
+      label:
+        currentUser.role === "operator_business"
+          ? "保存并请求审核"
+          : "应用并提交审核",
+      icon: Send,
+      type: "submit",
+    };
+  }
   if (
     current.status === "pending_review" &&
     serverAction === "approve" &&
