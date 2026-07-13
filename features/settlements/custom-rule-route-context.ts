@@ -41,13 +41,26 @@ import { isCustomSettlementRulesEnabled } from "./custom-rule-feature-flag";
 import { parseCustomRuleFormula } from "./custom-rule-parser";
 import {
   SupabaseCustomRuleReadRepository,
+  CustomRulePersistenceDataError,
+  CustomRulePersistenceInputError,
+  CustomRulePersistenceQueryError,
   type InsertedSettlementFormulaSimulation,
   type CustomRuleDraft,
+  type CustomRuleLifecycleResult,
+  type CustomSettlementRuleVersion,
+  type SettlementGroupAssignmentChangeResult,
+  type SettlementRuleGroup,
   type SettlementFormulaSimulation,
 } from "./custom-rule-repository";
 import {
   CustomRuleAuthoringServiceError,
   createCustomRuleAuthoringService,
+  createCustomRuleLifecycleService,
+  createSettlementGroupMembershipGovernanceService,
+  type CustomRuleLifecycleRepositoryPort,
+  type CustomRuleLifecycleService,
+  type SettlementGroupMembershipRepositoryPort,
+  type SettlementGroupMembershipGovernanceService,
   type AuthorizedSimulationEvidencePort,
   type AuthorizedSimulationSelectionRequest,
   type CustomRuleAuthoringResult,
@@ -66,6 +79,17 @@ import type {
   CustomRuleMissingDataPolicy,
   TypedRuntimeValue,
 } from "./custom-rule-types";
+import {
+  getPrimaryActionForRuleState,
+  CustomRuleGovernanceError,
+} from "./custom-rule-governance";
+import {
+  CustomRuleTemplateError,
+  listReusableSettlementRuleTemplates,
+  type OrganizationRuleTemplate,
+  type ReusableSettlementRuleTemplateDto,
+} from "./custom-rule-templates";
+import { listCustomRuleSystemTemplates } from "./custom-rule-system-templates";
 import { validateCustomRuleFormula } from "./custom-rule-validator";
 import {
   buildCustomRuleVariableCatalog,
@@ -163,6 +187,11 @@ export class CustomRuleRouteError extends Error {
 
 type ConversationService = ReturnType<typeof createConversationService>;
 type AuthoringService = ReturnType<typeof createCustomRuleAuthoringService>;
+type TemplateListingService = {
+  listReusableSettlementRuleTemplates(input: {
+    actor: { organizationId: string; userId: string };
+  }): Promise<ReusableSettlementRuleTemplateDto[]>;
+};
 
 export function createCustomRuleStartRequestIdentity(input: {
   clientRequestId: string;
@@ -254,6 +283,9 @@ export type CustomRuleRouteContext = {
     input: AuthorizeCustomRuleSelectionInput,
   ): Promise<AuthorizedSimulationSelectionRequest>;
   authoring: AuthoringService;
+  lifecycle: CustomRuleLifecycleService;
+  groups: SettlementGroupMembershipGovernanceService;
+  templates: TemplateListingService;
   simulation: {
     simulateExistingDraft(input: SimulateExistingDraftInput): Promise<{
       draft: CustomRuleDraft;
@@ -307,6 +339,10 @@ export async function getCustomRuleRouteContext(): Promise<
     userId: auth.userId,
   };
   const repository = new SupabaseCustomRuleReadRepository(supabase);
+  const governanceRepository = createRouteGovernanceRepository({
+    repository,
+    auth,
+  });
   const catalog = {
     async getCatalog(input: {
       organizationId: string;
@@ -328,6 +364,9 @@ export async function getCustomRuleRouteContext(): Promise<
   let conversation: ConversationService | undefined;
   let evidence: CustomRuleEvidenceAdapter | undefined;
   let authoring: AuthoringService | undefined;
+  let lifecycle: CustomRuleLifecycleService | undefined;
+  let groups: SettlementGroupMembershipGovernanceService | undefined;
+  let templates: TemplateListingService | undefined;
   let simulation: CustomRuleRouteContext["simulation"] | undefined;
 
   const getConversation = (): ConversationService => {
@@ -418,6 +457,29 @@ export async function getCustomRuleRouteContext(): Promise<
     });
     return simulation;
   };
+  const getLifecycle = (): CustomRuleLifecycleService => {
+    lifecycle ??= createCustomRuleLifecycleService({
+      repository: governanceRepository,
+      audit: (input) => writeAuditLog(supabase, input),
+      executionCapability: {
+        enabled: process.env.CUSTOM_SETTLEMENT_RULE_EXECUTION_ENABLED === "true",
+      },
+    });
+    return lifecycle;
+  };
+  const getGroups = (): SettlementGroupMembershipGovernanceService => {
+    groups ??= createSettlementGroupMembershipGovernanceService({
+      repository: governanceRepository,
+    });
+    return groups;
+  };
+  const getTemplates = (): TemplateListingService => {
+    templates ??= createCustomRuleTemplateListingService({
+      supabase,
+      actor,
+    });
+    return templates;
+  };
 
   return {
     supabase,
@@ -443,6 +505,15 @@ export async function getCustomRuleRouteContext(): Promise<
       getEvidence().authorizeSelection(input),
     get authoring() {
       return getAuthoring();
+    },
+    get lifecycle() {
+      return getLifecycle();
+    },
+    get groups() {
+      return getGroups();
+    },
+    get templates() {
+      return getTemplates();
     },
     get simulation() {
       return getSimulation();
@@ -544,7 +615,61 @@ export function customRuleErrorResponse(error: unknown): Response {
         message: error.message,
         retryable: false,
       },
-      403,
+    403,
+    );
+  }
+  if (error instanceof CustomRuleGovernanceError) {
+    return safeErrorResponse(
+      {
+        code: error.code,
+        message: error.message,
+        retryable: false,
+      },
+      statusForGovernanceError(error.code),
+    );
+  }
+  if (error instanceof CustomRuleTemplateError) {
+    return safeErrorResponse(
+      {
+        code: error.code,
+        message: error.message,
+        retryable: false,
+      },
+      error.code === "CUSTOM_RULE_TEMPLATE_ORG_MISMATCH" ? 403 : 422,
+    );
+  }
+  if (error instanceof CustomRulePersistenceInputError) {
+    return safeErrorResponse(
+      {
+        code: "INVALID_REQUEST",
+        message: "Request validation failed",
+        retryable: false,
+      },
+      400,
+    );
+  }
+  if (error instanceof CustomRulePersistenceQueryError) {
+    return safeErrorResponse(
+      {
+        code: persistenceConflict(error)
+          ? "CUSTOM_RULE_CONFLICT"
+          : "CUSTOM_RULE_STORAGE_UNAVAILABLE",
+        message: persistenceConflict(error)
+          ? "Settlement rule request conflicts with current data"
+          : "Settlement rule storage is unavailable",
+        retryable: !persistenceConflict(error),
+      },
+      persistenceConflict(error) ? 409 : 503,
+    );
+  }
+  if (error instanceof CustomRulePersistenceDataError) {
+    return safeErrorResponse(
+      {
+        code: "CUSTOM_RULE_RESPONSE_INVALID",
+        message: "Settlement rule response is invalid",
+        retryable: true,
+      },
+      500,
     );
   }
   return safeErrorResponse(
@@ -555,6 +680,144 @@ export function customRuleErrorResponse(error: unknown): Response {
     },
     500,
   );
+}
+
+export function toCustomRuleGovernanceRuleDto(
+  rule: CustomSettlementRuleVersion & {
+    effectiveNow?: boolean;
+    scheduled?: boolean;
+  },
+) {
+  return {
+    id: rule.id,
+    projectId: rule.projectId,
+    scope: rule.scope,
+    target: rule.target,
+    executionGrain: rule.executionGrain,
+    compositionMode: rule.compositionMode,
+    priority: rule.priority,
+    versionNumber: rule.versionNumber,
+    status: rule.status,
+    formulaHash: rule.formulaHash,
+    contractHash: rule.contractHash,
+    parameterHash: rule.parameterHash,
+    catalogHash: rule.catalogHash,
+    dataSelectionHash: rule.dataSelectionHash,
+    simulationId: rule.simulationId,
+    effectiveFrom: rule.effectiveFrom,
+    effectiveUntil: rule.effectiveUntil,
+    createdBy: rule.createdBy,
+    approvedBy: rule.approvedBy,
+    aiDraftId: rule.aiDraftId,
+    reason: rule.reason,
+    createdAt: rule.createdAt,
+    approvedAt: rule.approvedAt,
+    archivedAt: rule.archivedAt,
+    ...(rule.effectiveNow === undefined
+      ? {}
+      : { effectiveNow: rule.effectiveNow }),
+    ...(rule.scheduled === undefined ? {} : { scheduled: rule.scheduled }),
+    primaryAction: getPrimaryActionForRuleState(rule.status),
+  };
+}
+
+export function toCustomRuleLifecycleResultDto(
+  result: CustomRuleLifecycleResult,
+) {
+  return {
+    rule: toCustomRuleGovernanceRuleDto(result.version),
+    simulation: {
+      id: result.simulation.id,
+      createdAt: result.simulation.createdAt,
+    },
+    event:
+      result.event === null
+        ? null
+        : {
+            id: result.event.id,
+            eventType: result.event.eventType,
+            actorId: result.event.actorId,
+            actorRole: result.event.actorRole,
+            reason: result.event.reason,
+            comment: result.event.comment,
+            beforeStatus: result.event.beforeStatus,
+            afterStatus: result.event.afterStatus,
+            createdAt: result.event.createdAt,
+          },
+  };
+}
+
+export function toSettlementRuleGroupDto(group: SettlementRuleGroup) {
+  return {
+    id: group.id,
+    projectId: group.projectId,
+    name: group.name,
+    description: group.description,
+    status: group.status,
+    createdBy: group.createdBy,
+    createdAt: group.createdAt,
+    archivedAt: group.archivedAt,
+    assignmentCount: group.assignmentCount,
+    activeRuleCount: group.activeRuleCount,
+    pendingRuleCount: group.pendingRuleCount,
+    futureAssignmentCount: group.futureAssignmentCount,
+    unassignedProjectStreamers: group.unassignedProjectStreamers,
+    baseRuleCoveredProjectStreamerIds: group.baseRuleCoveredProjectStreamerIds,
+  };
+}
+
+export function toSettlementGroupAssignmentChangeDto(
+  change: SettlementGroupAssignmentChangeResult,
+) {
+  return {
+    insertedAssignment: {
+      id: change.insertedAssignment.id,
+      projectId: change.insertedAssignment.projectId,
+      projectStreamerId: change.insertedAssignment.projectStreamerId,
+      groupId: change.insertedAssignment.groupId,
+      effectiveFrom: change.insertedAssignment.effectiveFrom,
+      effectiveUntil: change.insertedAssignment.effectiveUntil,
+      assignedBy: change.insertedAssignment.assignedBy,
+      reason: change.insertedAssignment.reason,
+      createdAt: change.insertedAssignment.createdAt,
+    },
+    closedAssignmentIds: change.closedAssignmentIds,
+    newGroupSnapshotHash: change.newGroupSnapshotHash,
+  };
+}
+
+export function toReusableSettlementRuleTemplateDto(
+  template: ReusableSettlementRuleTemplateDto,
+) {
+  if (template.kind === "system") {
+    return {
+      kind: template.kind,
+      id: template.id,
+      name: template.name,
+      description: template.description,
+      contract: template.contract,
+      readOnly: template.readOnly,
+    };
+  }
+  return {
+    kind: template.kind,
+    id: template.id,
+    name: template.name,
+    description: template.description,
+    sourceRuleVersionId: template.sourceRuleVersionId,
+    sourceProjectId: template.sourceProjectId,
+    sourceVersionNumber: template.sourceVersionNumber,
+    sourceScope: template.sourceScope,
+    executionGrain: template.executionGrain,
+    compositionMode: template.compositionMode,
+    parameters: template.parameters,
+    contract: template.ruleContract,
+    status: template.status,
+    createdBy: template.createdBy,
+    createdAt: template.createdAt,
+    archivedAt: template.archivedAt,
+    readOnly: template.readOnly,
+  };
 }
 
 export function customRuleResolvedFailureResponse(
@@ -3736,6 +3999,317 @@ function authoringErrorResponse(
 
 function safeErrorResponse(error: SafeCustomRuleError, status: number) {
   return NextResponse.json({ error }, { status });
+}
+
+function statusForGovernanceError(code: string): number {
+  if (
+    code === "CUSTOM_RULE_ACTION_NOT_ALLOWED" ||
+    code === "STANDARD_APPROVAL_NOT_ALLOWED" ||
+    code === "APPROVER_NOT_ELIGIBLE" ||
+    code === "MATERIAL_RISK_REQUIRES_OWNER" ||
+    code === "MATERIAL_RISK_REQUIRES_DISTINCT_OWNER" ||
+    code === "CREATOR_APPROVAL_REQUIRES_DISTINCT_APPROVER" ||
+    code === "FORCE_APPROVAL_OWNER_ONLY" ||
+    code === "FORCE_APPROVAL_REQUIRES_SINGLE_OWNER" ||
+    code === "FORCE_APPROVAL_REQUIRES_SOLE_ELIGIBLE_APPROVER" ||
+    code === "FORCE_ACKNOWLEDGEMENT_REQUIRED" ||
+    code === "FORCE_REASON_REQUIRED"
+  ) {
+    return 403;
+  }
+  if (
+    code === "SIMULATION_STALE" ||
+    code === "CUSTOM_RULE_SERVER_CONTEXT_MISMATCH" ||
+    code === "CUSTOM_RULE_TRANSITION_NOT_ALLOWED"
+  ) {
+    return 409;
+  }
+  return 422;
+}
+
+function persistenceConflict(error: CustomRulePersistenceQueryError): boolean {
+  const text = safeRpcErrorText(error.cause);
+  return (
+    postgresErrorCode(error.cause) === "23505" ||
+    text.includes("conflict") ||
+    text.includes("concurrent") ||
+    text.includes("idempotency") ||
+    text.includes("duplicate") ||
+    text.includes("stale")
+  );
+}
+
+function postgresErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const code = Reflect.get(error, "code");
+  return typeof code === "string" ? code : null;
+}
+
+const routeOrganizationTemplateSchema = z.strictObject({
+  id: z.string().uuid(),
+  organization_id: z.string().uuid(),
+  name: z.string().min(1),
+  description: z.string().nullable(),
+  source_rule_version_id: z.string().uuid().nullable(),
+  source_project_id: z.string().uuid().nullable(),
+  source_version_number: z.number().int().nullable(),
+  source_scope: z
+    .enum(["receivable", "payable", "external_cost", "reconciliation"])
+    .nullable(),
+  execution_grain: z.enum([
+    "report",
+    "project_streamer_period",
+    "batch",
+    "project_period",
+  ]),
+  composition_mode: z.enum([
+    "replace",
+    "add",
+    "multiply",
+    "clamp",
+    "emit_items",
+    "check",
+  ]),
+  parameters: z.record(z.string(), typedRuntimeValueSchema),
+  rule_contract: businessRuleContractSchema,
+  status: z.enum(["active", "archived"]),
+  created_by: z.string().uuid(),
+  created_at: canonicalOffsetDateTimeSchema,
+  archived_at: canonicalOffsetDateTimeSchema.nullable(),
+});
+
+function createCustomRuleTemplateListingService(input: {
+  supabase: SupabaseClient;
+  actor: { organizationId: string; userId: string };
+}): TemplateListingService {
+  return {
+    async listReusableSettlementRuleTemplates() {
+      const organizationTemplates = await listRouteOrganizationTemplates(input);
+      return listReusableSettlementRuleTemplates({
+        systemTemplates: listCustomRuleSystemTemplates(),
+        organizationTemplates,
+        actorOrganizationId: input.actor.organizationId,
+      });
+    },
+  };
+}
+
+function createRouteGovernanceRepository(input: {
+  repository: SupabaseCustomRuleReadRepository;
+  auth: AuthContext;
+}): CustomRuleLifecycleRepositoryPort & SettlementGroupMembershipRepositoryPort {
+  const repository = input.repository as CustomRuleLifecycleRepositoryPort &
+    SettlementGroupMembershipRepositoryPort &
+    SupabaseCustomRuleReadRepository;
+  return Object.assign(repository, {
+    async getCustomRuleGovernanceContext(scope: {
+      organizationId: string;
+      projectId: string;
+      actorUserId: string;
+      ruleVersionId?: string;
+      source?: { kind: "ai_draft" | "saved_draft"; id: string };
+      sourceSimulationId?: string;
+    }) {
+      const actor = {
+        organizationId: scope.organizationId,
+        userId: scope.actorUserId,
+        role: input.auth.role,
+      };
+      const versions = await input.repository.listCustomRules({
+        organizationId: scope.organizationId,
+        projectId: scope.projectId,
+      });
+      const versionId =
+        scope.ruleVersionId ??
+        (scope.source?.kind === "saved_draft" ? scope.source.id : undefined);
+      const version =
+        versionId === undefined
+          ? undefined
+          : versions.find((candidate) => candidate.id === versionId);
+      const simulationOwner =
+        version?.simulationId !== null && version !== undefined
+          ? ({ kind: "rule_version", id: version.id } as const)
+          : scope.source?.kind === "ai_draft"
+            ? ({ kind: "ai_draft", id: scope.source.id } as const)
+            : null;
+      const simulationId = version?.simulationId ?? scope.sourceSimulationId;
+      const rawSimulation =
+        simulationOwner && simulationId
+          ? await input.repository.getSimulation({
+              organizationId: scope.organizationId,
+              projectId: scope.projectId,
+              simulationId,
+              owner: simulationOwner,
+            })
+          : null;
+      const simulation = rawSimulation
+        ? {
+            id: rawSimulation.id,
+            createdAt: rawSimulation.createdAt,
+            formulaHash: rawSimulation.formulaHash,
+            contractHash: rawSimulation.ruleContractHash,
+            parameterHash: rawSimulation.parameterHash,
+            catalogHash: rawSimulation.variableCatalogVersion,
+            dataSelectionHash: rawSimulation.dataSelectionHash,
+          }
+        : undefined;
+      const expectedFreshness =
+        version !== undefined
+          ? {
+              formulaHash: version.formulaHash,
+              contractHash: version.contractHash,
+              parameterHash: version.parameterHash,
+              catalogHash: version.catalogHash,
+              dataSelectionHash: version.dataSelectionHash,
+            }
+          : simulation;
+      return {
+        actor,
+        ...(version ? { version } : {}),
+        ...(simulation ? { simulation } : {}),
+        ...(expectedFreshness ? { expectedFreshness } : {}),
+        eligibleApprovers: [{ userId: actor.userId, role: actor.role }].filter(
+          (approver): approver is {
+            userId: string;
+            role: "owner" | "ops_manager";
+          } => approver.role === "owner" || approver.role === "ops_manager",
+        ),
+        creatorUserId: version?.createdBy ?? actor.userId,
+        simulationFacts: simulationFactsFrom(rawSimulation),
+        currentMarginCents:
+          rawSimulation?.summarySchemaVersion === 2
+            ? rawSimulation.deltas.marginImpactCents
+            : null,
+        contractFacts: {
+          target: version?.target ?? { targetType: "project", targetId: null },
+          compositionMode: version?.compositionMode ?? "replace",
+          missingDataPolicy:
+            version?.missingDataPolicy &&
+            typeof version.missingDataPolicy === "object" &&
+            "action" in version.missingDataPolicy
+              ? version.missingDataPolicy
+              : { action: "route_item_to_review" },
+          groupConflict: { resolution: "none", conflictingGroupIds: [] },
+        },
+        archiveSafety:
+          version && simulation
+            ? {
+                remainingCustomLayerCount: 1,
+                fixedFallbackAvailable: false,
+                lockedBatchCount: 0,
+                proofKind: "remaining_custom_layers" as const,
+                fallbackSimulation: simulation,
+              }
+            : undefined,
+      };
+    },
+  });
+}
+
+function simulationFactsFrom(simulation: SettlementFormulaSimulation | null) {
+  if (!simulation || simulation.summarySchemaVersion !== 2) {
+    return {
+      totalOldCents: null,
+      totalNewCents: "0",
+      marginImpactCents: null,
+      riskFlags: [],
+      scenarios: [],
+      missingDataImpact: {
+        policyAction: "route_item_to_review",
+        amountDeltaCents: null,
+      },
+    };
+  }
+  const payableScope =
+    simulation.historicalTotals.newPayableAmountCents !== null;
+  return {
+    totalOldCents: payableScope
+      ? simulation.historicalTotals.oldPayableAmountCents
+      : simulation.historicalTotals.oldReceivableAmountCents,
+    totalNewCents:
+      (payableScope
+        ? simulation.historicalTotals.newPayableAmountCents
+        : simulation.historicalTotals.newReceivableAmountCents) ?? "0",
+    marginImpactCents: simulation.deltas.marginImpactCents,
+    riskFlags: simulation.warnings.filter((warning) => warning.kind === "risk"),
+    scenarios: simulation.scenarios.map((scenario) => ({
+      amountCents: scenario.amountCents,
+    })),
+    missingDataImpact: {
+      policyAction: "route_item_to_review",
+      amountDeltaCents: null,
+    },
+  };
+}
+
+async function listRouteOrganizationTemplates(input: {
+  supabase: SupabaseClient;
+  actor: { organizationId: string; userId: string };
+}): Promise<OrganizationRuleTemplate[]> {
+  const { data, error } = await input.supabase
+    .from("settlement_rule_templates")
+    .select(
+      [
+        "id",
+        "organization_id",
+        "name",
+        "description",
+        "source_rule_version_id",
+        "source_project_id",
+        "source_version_number",
+        "source_scope",
+        "execution_grain",
+        "composition_mode",
+        "parameters",
+        "rule_contract",
+        "status",
+        "created_by",
+        "created_at",
+        "archived_at",
+      ].join(", "),
+    )
+    .eq("organization_id", input.actor.organizationId)
+    .eq("status", "active")
+    .order("name", { ascending: true })
+    .returns<unknown[]>();
+  if (error) {
+    throw new CustomRulePersistenceQueryError(
+      "list_organization_templates",
+      error,
+    );
+  }
+  if (!Array.isArray(data)) {
+    throw new CustomRulePersistenceDataError(
+      "organization template",
+      "template list result must be an array",
+    );
+  }
+  return data.map((row) => {
+    const parsed = routeOrganizationTemplateSchema.parse(row);
+    return {
+      id: parsed.id,
+      organizationId: parsed.organization_id,
+      name: parsed.name,
+      description: parsed.description,
+      sourceRuleVersionId: parsed.source_rule_version_id,
+      sourceProjectId: parsed.source_project_id,
+      sourceVersionNumber: parsed.source_version_number,
+      sourceScope: parsed.source_scope,
+      executionGrain: parsed.execution_grain,
+      compositionMode: parsed.composition_mode,
+      formula: "",
+      compiledAst: null,
+      variables: [],
+      parameters: parsed.parameters,
+      ruleContract: parsed.rule_contract,
+      missingDataPolicy: {},
+      testCases: [],
+      status: parsed.status,
+      createdBy: parsed.created_by,
+      createdAt: parsed.created_at,
+      archivedAt: parsed.archived_at,
+    };
+  });
 }
 
 function readinessRequirements(
