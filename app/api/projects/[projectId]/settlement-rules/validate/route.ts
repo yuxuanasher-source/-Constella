@@ -45,6 +45,10 @@ export async function POST(
     const validation = validateCustomRuleFormula(body.formula, {
       scope: body.contract.scope,
       executionGrain: body.contract.executionGrain,
+      ...(body.contract.scope === "external_cost" ||
+      body.contract.scope === "reconciliation"
+        ? { compositionMode: body.contract.compositionMode }
+        : {}),
       parameters: body.contract.parameters.map((parameter) => ({
         name: parameter.name,
         valueType: parameter.valueType,

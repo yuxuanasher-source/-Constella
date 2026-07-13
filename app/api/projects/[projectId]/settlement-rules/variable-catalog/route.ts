@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { customRuleScopeSchema } from "@/features/settlements/custom-rule-contract";
 import {
   customRuleErrorResponse,
   getCustomRuleRouteContext,
@@ -9,7 +10,7 @@ import {
 
 const requestSchema = z.strictObject({
   projectId: z.string().uuid(),
-  scope: z.enum(["payable", "receivable"]),
+  scope: customRuleScopeSchema,
   executionGrain: z.enum([
     "report",
     "project_streamer_period",

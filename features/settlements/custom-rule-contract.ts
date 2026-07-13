@@ -51,6 +51,22 @@ const identifierSchema = z
       message: "identifier is reserved or ambiguous",
     },
   );
+const objectKeySchema = z
+  .string()
+  .min(1)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
+  .refine((value) => value === value.trim(), {
+    message: "object key must already be canonical",
+  })
+  .refine(
+    (value) =>
+      !["__proto__", "prototype", "constructor"].includes(
+        value.toLowerCase(),
+      ),
+    {
+      message: "object key is reserved",
+    },
+  );
 
 function identifierRecordSchema<ValueSchema extends z.ZodType>(
   valueSchema: ValueSchema,
@@ -211,7 +227,7 @@ export const normalizedAstNodeSchema: z.ZodType<NormalizedAstNode> = z.lazy(
         kind: z.literal("object"),
         entries: z.array(
           z.strictObject({
-            key: identifierSchema,
+            key: objectKeySchema,
             value: normalizedAstNodeSchema,
           }),
         ),

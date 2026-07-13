@@ -716,10 +716,10 @@ function readObjectKey(
   path: string,
 ): string {
   if (key.type === "Identifier") {
-    return readIdentifier(key, span, path);
+    return validateObjectKey(readString(key.name), span, path);
   }
   if (key.type === "Literal" && typeof key.value === "string") {
-    return validateIdentifier(key.value, span, path);
+    return validateObjectKey(key.value, span, path);
   }
   throw parserFailure(
     "PARSE_UNSUPPORTED_NODE",
@@ -727,6 +727,27 @@ function readObjectKey(
     span,
     path,
   );
+}
+
+function validateObjectKey(
+  name: string,
+  span: CustomRuleSourceSpan,
+  path: string,
+): string {
+  if (
+    !name ||
+    name !== name.trim() ||
+    !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) ||
+    ["__proto__", "prototype", "constructor"].includes(name.toLowerCase())
+  ) {
+    throw parserFailure(
+      "PARSE_INVALID_IDENTIFIER",
+      "Object key is noncanonical or reserved",
+      span,
+      path,
+    );
+  }
+  return name;
 }
 
 function readIdentifier(

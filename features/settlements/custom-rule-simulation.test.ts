@@ -916,6 +916,40 @@ describe("simulateCustomSettlementRule", () => {
       }),
     ).toThrow(CustomRuleSimulationError);
   });
+
+  it.each([
+    ["external_cost", "emit_items"],
+    ["reconciliation", "check"],
+  ] as const)(
+    "summarizes %s typed-output simulations without old money-scope gates",
+    (scope, compositionMode) => {
+      const result = simulateAuthorized(
+        typedOutputSimulationInput(scope, compositionMode),
+      );
+
+      expect(result.coverage).toMatchObject({
+        totalCount: 1,
+        evaluatedCount: 1,
+      });
+      expect(result.totalOldCents).toBeNull();
+      expect(result.totalDeltaCents).toBeNull();
+      expect(result.marginImpactCents).toBeNull();
+      expect(result.historicalVerification.status).toBe("unverified");
+      expect(result.persistable.historicalTotals).toMatchObject({
+        oldPayableAmountCents: null,
+        oldReceivableAmountCents: null,
+        newPayableAmountCents: null,
+        newReceivableAmountCents: null,
+        verificationStatus: "unverified",
+      });
+      expect(result.persistable.deltas).toMatchObject({
+        payableAmountCents: null,
+        receivableAmountCents: null,
+        percentageBps: null,
+        marginImpactCents: null,
+      });
+    },
+  );
 });
 
 function simulationInput(
@@ -990,6 +1024,72 @@ function simulationInput(
       },
     ],
     currentMarginCents: "5000",
+  };
+}
+
+function typedOutputSimulationInput(
+  scope: "external_cost" | "reconciliation",
+  compositionMode: "emit_items" | "check",
+): CustomRuleSimulationInput {
+  const isExternalCost = scope === "external_cost";
+  const businessContract = isExternalCost
+    ? externalCostContract()
+    : reconciliationContract();
+  const formula = isExternalCost
+    ? 'cost_items([{ category: "traffic", amount: yuan(500), memo: "7 月投流" }])'
+    : 'block_if(margin_rate < rate_percent(10), "毛利率低于 10%")';
+  const validated = validateCustomRuleFormula(formula, {
+    scope,
+    executionGrain: businessContract.executionGrain,
+    compositionMode,
+    parameters: businessContract.parameters.map((parameter) => ({
+      name: parameter.name,
+      valueType: parameter.valueType,
+    })),
+  });
+  if (!validated.ok) throw new Error("typed-output test formula must compile");
+  const parameters = Object.fromEntries(
+    businessContract.parameters.map((parameter) => [
+      parameter.name,
+      parameter.defaultValue,
+    ]),
+  );
+  const recordVariables = isExternalCost
+    ? {
+        ...variables(60, "green"),
+        import_row_index: { type: "integer" as const, value: 1 },
+      }
+    : {
+        ...variables(60, "green"),
+        margin_rate: { type: "rate_bps" as const, rateBps: 500 },
+      };
+
+  return {
+    ...simulationInput(),
+    contract: businessContract,
+    compiledAst: validated.compiledAst,
+    parameters,
+    formulaHash: validated.formulaHash,
+    contractHash: hashCustomRuleContract(businessContract),
+    parameterHash: hashCustomRuleParameters(parameters),
+    records: [
+      record("record-1", {
+        variables: recordVariables,
+        currentRuleResult: null,
+      }),
+    ],
+    userExamples: [],
+    aiTestCases: [
+      {
+        name: isExternalCost ? "成本项" : "核对项",
+        inputs: isExternalCost
+          ? { import_row_index: { type: "integer" as const, value: 1 } }
+          : { margin_rate: { type: "rate_bps" as const, rateBps: 500 } },
+        expectedResult: isExternalCost
+          ? costItemsExpectedResult()
+          : checksExpectedResult(),
+      },
+    ],
   };
 }
 
@@ -1190,6 +1290,151 @@ function contract(): BusinessRuleContract {
         description: "最大配置时长仍按已确认规则计算。",
         inputs: { system_minutes: { type: "integer", value: 600 } },
         expectedResult: { type: "money_cents", amountCents: 2_000 },
+      },
+    ],
+  };
+}
+
+function externalCostContract(): BusinessRuleContract {
+  return {
+    ...contract(),
+    scope: "external_cost",
+    compositionMode: "emit_items",
+    title: "项目外部成本生成规则",
+    summary: "按项目导入数据生成外部成本项。",
+    calculationComponents: [
+      {
+        name: "items",
+        description: "生成外部成本项",
+        expression: "cost_items",
+        resultType: {
+          kind: "array",
+          itemType: {
+            kind: "object",
+            fields: {
+              category: { kind: "scalar", scalarType: "string" },
+              amountCents: { kind: "scalar", scalarType: "money_cents" },
+              memo: { kind: "scalar", scalarType: "string" },
+            },
+          },
+        },
+      },
+    ],
+    requiredInputs: [
+      {
+        name: "import_row_index",
+        description: "标准化导入行号",
+        source: "成本导入",
+        valueType: { kind: "scalar", scalarType: "integer" },
+        userFacingUnit: "行",
+      },
+    ],
+    parameters: contract().parameters,
+    compositionDescription: "为项目追加生成的外部成本项。",
+    examples: ["标准成本", "零成本", "多成本"].map((name, index) => ({
+      name,
+      kind: index === 0 ? "normal" : "boundary",
+      description: "生成投流成本项。",
+      inputs: { import_row_index: { type: "integer", value: index + 1 } },
+      expectedResult: index === 0 ? costItemsExpectedResult() : emptyArrayResult(),
+    })),
+  };
+}
+
+function reconciliationContract(): BusinessRuleContract {
+  return {
+    ...contract(),
+    scope: "reconciliation",
+    executionGrain: "project_period",
+    compositionMode: "check",
+    title: "项目周期结算核对规则",
+    summary: "按项目周期输出结算核对项。",
+    calculationComponents: [
+      {
+        name: "checks",
+        description: "生成核对项",
+        expression: "block_if",
+        resultType: {
+          kind: "array",
+          itemType: {
+            kind: "object",
+            fields: {
+              severity: { kind: "scalar", scalarType: "string" },
+              message: { kind: "scalar", scalarType: "string" },
+              condition: { kind: "scalar", scalarType: "boolean" },
+            },
+          },
+        },
+      },
+    ],
+    requiredInputs: [
+      {
+        name: "margin_rate",
+        description: "项目周期毛利率",
+        source: "结算核心结果",
+        valueType: { kind: "scalar", scalarType: "rate_bps" },
+        userFacingUnit: "%",
+      },
+    ],
+    parameters: contract().parameters,
+    compositionDescription: "仅输出项目周期核对项，不修改结算金额。",
+    examples: [
+      {
+        name: "毛利过低",
+        kind: "normal",
+        description: "毛利率低于 10% 时阻断。",
+        inputs: { margin_rate: { type: "rate_bps", rateBps: 500 } },
+        expectedResult: checksExpectedResult(),
+      },
+      {
+        name: "毛利达标",
+        kind: "boundary",
+        description: "毛利率达到阈值。",
+        inputs: { margin_rate: { type: "rate_bps", rateBps: 1000 } },
+        expectedResult: emptyArrayResult(),
+      },
+      {
+        name: "毛利较高",
+        kind: "boundary",
+        description: "毛利率高于阈值。",
+        inputs: { margin_rate: { type: "rate_bps", rateBps: 2000 } },
+        expectedResult: emptyArrayResult(),
+      },
+    ],
+  };
+}
+
+function emptyArrayResult(): TypedRuntimeValue {
+  return { type: "array", items: [] };
+}
+
+function costItemsExpectedResult(): TypedRuntimeValue {
+  return {
+    type: "array",
+    items: [
+      {
+        type: "object",
+        fields: {
+          category: { type: "string", value: "traffic" },
+          amountCents: { type: "money_cents", amountCents: 50_000 },
+          memo: { type: "string", value: "7 月投流" },
+        },
+      },
+    ],
+  };
+}
+
+function checksExpectedResult(): TypedRuntimeValue {
+  return {
+    type: "array",
+    items: [
+      {
+        type: "object",
+        fields: {
+          severity: { type: "string", value: "block" },
+          message: { type: "string", value: "毛利率低于 10%" },
+          condition: { type: "boolean", value: true },
+        },
       },
     ],
   };

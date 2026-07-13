@@ -211,18 +211,12 @@ const sampleSelectionSchema = z
 const userExampleSchema = z.strictObject({
   id: canonicalTextSchema(120),
   inputs: runtimeValuesSchema,
-  expectedResult: typedRuntimeValueSchema.refine(
-    (value) => value.type === "money_cents",
-    { message: "user examples must expect money" },
-  ),
+  expectedResult: typedRuntimeValueSchema,
 });
 const aiTestCaseSchema = z.strictObject({
   name: canonicalTextSchema(200),
   inputs: runtimeValuesSchema,
-  expectedResult: typedRuntimeValueSchema.refine(
-    (value) => value.type === "money_cents",
-    { message: "AI test cases must expect money" },
-  ),
+  expectedResult: typedRuntimeValueSchema,
 });
 const evidenceProvenanceSchema = z.strictObject({
   organizationId: canonicalTextSchema(500),
@@ -347,8 +341,37 @@ const moneyResultSchema = z
       result.componentsCents.final >= 0,
     { message: "engine final settlement amount must be nonnegative" },
   );
+const costItemsRuleResultSchema = z.strictObject({
+  kind: z.literal("cost_items"),
+  items: z
+    .array(
+      z.strictObject({
+        category: z.string().min(1).max(100),
+        amountCents: nonnegativeSafeIntegerSchema,
+        memo: z.string().min(1).max(120),
+      }),
+    )
+    .max(20),
+});
+const reconciliationRuleResultSchema = z.strictObject({
+  kind: z.literal("checks"),
+  checks: z
+    .array(
+      z.strictObject({
+        severity: z.enum(["pass", "warn", "block"]),
+        message: z.string().min(1).max(120),
+        condition: z.boolean(),
+      }),
+    )
+    .max(20),
+});
+const ruleResultSchema = z.discriminatedUnion("kind", [
+  moneyResultSchema,
+  costItemsRuleResultSchema,
+  reconciliationRuleResultSchema,
+]);
 const executionOutputSchema = z.strictObject({
-  result: moneyResultSchema,
+  result: ruleResultSchema,
   trace: z.array(executionTraceSchema).max(100_000),
 });
 
@@ -429,7 +452,7 @@ export type CustomRuleSimulationRuntime = {
   explain(input: {
     ast: CompiledAstNode;
     trace: z.infer<typeof executionTraceSchema>[];
-    result: z.infer<typeof moneyResultSchema>;
+    result: z.infer<typeof ruleResultSchema>;
   }): unknown;
 };
 
@@ -603,7 +626,9 @@ export function simulateCustomSettlementRule(
       (missing) => missing.policy.action === "block_batch",
     ),
   );
+  const moneyOutput = isMoneyOutputAst(input.compiledAst);
   const verified =
+    moneyOutput &&
     !batchBlocked &&
     input.sampleSource.kind !== "synthetic_scenarios" &&
     input.readiness.historicalVerification === "verified" &&
@@ -652,9 +677,11 @@ export function simulateCustomSettlementRule(
         input.parameters,
         runtime,
       );
-      const nextAmount = BigInt(execution.result.componentsCents.final);
-      newTotal = checkedAdd(newTotal, nextAmount);
       evaluatedCount += 1;
+      const nextAmount = resultAmountCents(execution.result);
+      if (nextAmount === null) continue;
+
+      newTotal = checkedAdd(newTotal, nextAmount);
       if (nextAmount === BigInt(0)) zeroPayCount += 1;
       if (
         nextAmount > BigInt(0) &&
@@ -746,16 +773,9 @@ export function simulateCustomSettlementRule(
     }),
     ...scenarioRun.riskFlags,
   ].sort((left, right) => left.code.localeCompare(right.code));
-  if (
-    input.contract.scope !== "payable" &&
-    input.contract.scope !== "receivable"
-  ) {
-    throw new CustomRuleSimulationError(
-      "Phase 1 simulation summaries require payable or receivable scope",
-    );
-  }
   const persistedWarnings = mergePersistedFindings(warnings, riskFlags);
   const payableScope = input.contract.scope === "payable";
+  const receivableScope = input.contract.scope === "receivable";
   const groupPopulation = normalizeGroupPopulation(
     input.sampleSelection.groupPopulation,
   );
@@ -791,16 +811,18 @@ export function simulateCustomSettlementRule(
     },
     scenarios: scenarios.map((scenario) => ({ ...scenario })),
     historicalTotals: {
-      oldPayableAmountCents: payableScope ? totalOldCents : null,
-      oldReceivableAmountCents: payableScope ? null : totalOldCents,
-      newPayableAmountCents: payableScope ? totalNewCents : null,
-      newReceivableAmountCents: payableScope ? null : totalNewCents,
+      oldPayableAmountCents: moneyOutput && payableScope ? totalOldCents : null,
+      oldReceivableAmountCents:
+        moneyOutput && receivableScope ? totalOldCents : null,
+      newPayableAmountCents: moneyOutput && payableScope ? totalNewCents : null,
+      newReceivableAmountCents:
+        moneyOutput && receivableScope ? totalNewCents : null,
       recordCount: sortedRecords.length,
       verificationStatus: verified ? "verified" : "unverified",
     },
     deltas: {
       payableAmountCents: payableScope ? totalDeltaCents : null,
-      receivableAmountCents: payableScope ? null : totalDeltaCents,
+      receivableAmountCents: receivableScope ? totalDeltaCents : null,
       percentageBps,
       marginImpactCents,
     },
@@ -849,6 +871,7 @@ export function simulateCustomSettlementRule(
 function validateSimulationState(
   input: z.infer<typeof simulationInputSchema>,
 ): void {
+  const moneyOutput = isMoneyOutputAst(input.compiledAst);
   if (sha256(canonicalCompiledAstJson(input.compiledAst)) !== input.formulaHash) {
     throw new CustomRuleSimulationError("formula hash does not match compiled AST");
   }
@@ -895,6 +918,7 @@ function validateSimulationState(
     }
     recordIds.add(record.recordId);
     if (
+      moneyOutput &&
       input.sampleSource.kind !== "synthetic_scenarios" &&
       input.readiness.historicalVerification === "verified" &&
       record.currentRuleResult === null
@@ -1187,9 +1211,7 @@ function runSyntheticScenarios(
         }
       }
     }
-    const amountCents = serializePostgresBigintCents(
-      execution.result.componentsCents.final,
-    );
+    const moneyAmountCents = resultAmountCents(execution.result);
     const clampPassed = scenario.clampExpectation
       ? execution.trace.some(
           (trace) =>
@@ -1202,12 +1224,17 @@ function runSyntheticScenarios(
     scenarios.push({
       ...scenarioIdentity(scenario),
       outcome: "calculated",
-      amountCents,
+      amountCents:
+        moneyAmountCents === null
+          ? null
+          : serializePostgresBigintCents(moneyAmountCents),
       expectedAmountCents: scenario.expectedAmountCents,
       passed:
         clampPassed &&
         (scenario.expectedAmountCents === null ||
-          scenario.expectedAmountCents === amountCents),
+          (moneyAmountCents !== null &&
+            scenario.expectedAmountCents ===
+              serializePostgresBigintCents(moneyAmountCents))),
     });
   }
   const hasUntestableClamp = plan.externallyCoveredClampPaths.some((path) => {
@@ -1864,11 +1891,9 @@ function defaultRuntimeValue(
   }
 }
 
-function expectedMoneyCents(value: TypedRuntimeValue): string {
+function expectedMoneyCents(value: TypedRuntimeValue): string | null {
   if (value.type !== "money_cents") {
-    throw new CustomRuleSimulationError(
-      "scenario expected result must be money cents",
-    );
+    return null;
   }
   const amountCents = serializePostgresBigintCents(value.amountCents);
   if (amountCents.startsWith("-")) {
@@ -1877,6 +1902,17 @@ function expectedMoneyCents(value: TypedRuntimeValue): string {
     );
   }
   return amountCents;
+}
+
+function isMoneyOutputAst(ast: CompiledAstNode): boolean {
+  return ast.kind === "call" && ast.callee === "money_result";
+}
+
+function resultAmountCents(
+  result: z.infer<typeof ruleResultSchema>,
+): bigint | null {
+  if (result.kind !== "money_result") return null;
+  return BigInt(result.componentsCents.final);
 }
 
 function scenarioIdentity(scenario: {

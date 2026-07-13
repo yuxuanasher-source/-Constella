@@ -88,10 +88,7 @@ export const settlementRuleTestCaseSchema = z
       z.string().regex(IDENTIFIER_PATTERN),
       typedRuntimeValueSchema,
     ),
-    expectedResult: typedRuntimeValueSchema.refine(
-      (value) => value.type === "money_cents",
-      { message: "settlement formula test cases must expect money" },
-    ),
+    expectedResult: typedRuntimeValueSchema,
   })
   .superRefine((testCase, context) => {
     if (Object.keys(testCase.inputs).length > MAX_TEST_CASE_INPUTS) {
@@ -626,6 +623,10 @@ export function createSettlementRuleAiAdapter(input: {
           {
             scope: contract.scope,
             executionGrain: contract.executionGrain,
+            ...(contract.scope === "external_cost" ||
+            contract.scope === "reconciliation"
+              ? { compositionMode: contract.compositionMode }
+              : {}),
             parameters: contract.parameters.map((parameter) => ({
               name: parameter.name,
               valueType: parameter.valueType,

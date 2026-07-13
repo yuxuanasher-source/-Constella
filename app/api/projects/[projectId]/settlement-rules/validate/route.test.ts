@@ -119,6 +119,151 @@ function contract() {
   };
 }
 
+function externalCostContract() {
+  return {
+    ...contract(),
+    scope: "external_cost",
+    compositionMode: "emit_items",
+    summary: "按导入成本规则生成项目外部成本项。",
+    compositionDescription: "为项目生成外部成本项。",
+    calculationComponents: [
+      {
+        name: "items",
+        description: "生成的成本项列表",
+        expression: "cost_items",
+        resultType: {
+          kind: "array",
+          itemType: {
+            kind: "object",
+            fields: {
+              category: { kind: "scalar", scalarType: "string" },
+              amountCents: { kind: "scalar", scalarType: "money_cents" },
+              memo: { kind: "scalar", scalarType: "string" },
+            },
+          },
+        },
+      },
+    ],
+    requiredInputs: [
+      {
+        name: "import_row_index",
+        description: "导入行号",
+        source: "标准化成本导入",
+        valueType: { kind: "scalar", scalarType: "integer" },
+        userFacingUnit: "行",
+      },
+    ],
+    examples: [
+      {
+        name: "投流成本",
+        kind: "normal",
+        description: "生成一条投流成本。",
+        inputs: { import_row_index: { type: "integer", value: 1 } },
+        expectedResult: {
+          type: "array",
+          items: [
+            {
+              type: "object",
+              fields: {
+                category: { type: "string", value: "traffic" },
+                amountCents: { type: "money_cents", amountCents: 50_000 },
+                memo: { type: "string", value: "7 月投流" },
+              },
+            },
+          ],
+        },
+      },
+      {
+        name: "零成本",
+        kind: "boundary",
+        description: "允许零金额成本项。",
+        inputs: { import_row_index: { type: "integer", value: 2 } },
+        expectedResult: { type: "array", items: [] },
+      },
+      {
+        name: "多成本",
+        kind: "boundary",
+        description: "允许多条成本项。",
+        inputs: { import_row_index: { type: "integer", value: 3 } },
+        expectedResult: { type: "array", items: [] },
+      },
+    ],
+  };
+}
+
+function reconciliationContract() {
+  return {
+    ...contract(),
+    scope: "reconciliation",
+    executionGrain: "project_period",
+    compositionMode: "check",
+    summary: "按项目周期生成结算核对项。",
+    compositionDescription: "输出核对项，不修改结算金额。",
+    calculationComponents: [
+      {
+        name: "checks",
+        description: "结算核对项",
+        expression: "block_if/warn_if/pass_if",
+        resultType: {
+          kind: "array",
+          itemType: {
+            kind: "object",
+            fields: {
+              severity: { kind: "scalar", scalarType: "string" },
+              message: { kind: "scalar", scalarType: "string" },
+              condition: { kind: "scalar", scalarType: "boolean" },
+            },
+          },
+        },
+      },
+    ],
+    requiredInputs: [
+      {
+        name: "margin_rate",
+        description: "毛利率",
+        source: "结算核心结果",
+        valueType: { kind: "scalar", scalarType: "rate_bps" },
+        userFacingUnit: "%",
+      },
+    ],
+    examples: [
+      {
+        name: "毛利过低",
+        kind: "normal",
+        description: "毛利率低于阈值时阻断。",
+        inputs: { margin_rate: { type: "rate_bps", rateBps: 500 } },
+        expectedResult: {
+          type: "array",
+          items: [
+            {
+              type: "object",
+              fields: {
+                severity: { type: "string", value: "block" },
+                message: { type: "string", value: "毛利率低于 10%" },
+                condition: { type: "boolean", value: true },
+              },
+            },
+          ],
+        },
+      },
+      {
+        name: "毛利达标",
+        kind: "boundary",
+        description: "毛利率达标。",
+        inputs: { margin_rate: { type: "rate_bps", rateBps: 1000 } },
+        expectedResult: { type: "array", items: [] },
+      },
+      {
+        name: "毛利较高",
+        kind: "boundary",
+        description: "毛利率较高。",
+        inputs: { margin_rate: { type: "rate_bps", rateBps: 2000 } },
+        expectedResult: { type: "array", items: [] },
+      },
+    ],
+  };
+}
+
 function context(role: string) {
   return {
     supabase: { client: "supabase" },
@@ -214,6 +359,43 @@ describe("settlement rule validation route", () => {
         organizationId: ORGANIZATION_ID,
         featureKey: "settlement",
       });
+    },
+  );
+
+  it.each([
+    [
+      "external_cost",
+      "emit_items",
+      'cost_items([{ category: "traffic", amount: yuan(500), memo: "7 月投流" }])',
+      externalCostContract(),
+    ],
+    [
+      "reconciliation",
+      "check",
+      'block_if(margin_rate < rate_percent(10), "毛利率低于 10%")',
+      reconciliationContract(),
+    ],
+  ])(
+    "forwards %s composition mode into deterministic validation",
+    async (_scope, compositionMode, formula, phase4Contract) => {
+      const routeContext = context("owner");
+      vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+        routeContext as never,
+      );
+
+      const response = await POST(
+        request({
+          formula,
+          contract: phase4Contract,
+        }),
+        { params: Promise.resolve({ projectId: PROJECT_ID }) },
+      );
+
+      expect(response.status).toBe(200);
+      expect(validateCustomRuleFormula).toHaveBeenCalledWith(
+        formula,
+        expect.objectContaining({ compositionMode }),
+      );
     },
   );
 

@@ -1968,6 +1968,36 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     expect(evidence.sampleSelection).toMatchObject({ groupPopulation });
   });
 
+  it.each([
+    ["external_cost", "report"],
+    ["reconciliation", "project_period"],
+  ] as const)(
+    "does not block %s authorization with old payable/receivable-only gates",
+    async (scope, executionGrain) => {
+      const harness = await evidenceHarness({
+        draft: evidenceDraft({
+          businessContract: {
+            scope,
+            executionGrain,
+            businessTimezone: "Asia/Shanghai",
+            requiredInputs: [],
+          },
+        }),
+      });
+
+      const authorized =
+        await harness.adapter.authorizeSelection(authorizationInput());
+
+      expect(authorized).toMatchObject({
+        periodStart: "2026-07-01",
+        periodEnd: "2026-07-10",
+      });
+      expect(harness.catalog.getCatalog).toHaveBeenCalledWith(
+        expect.objectContaining({ scope, executionGrain }),
+      );
+    },
+  );
+
   it("binds declared optional policies when all evidence values are present", async () => {
     const harness = await evidenceHarness();
     const authorized =
@@ -5081,6 +5111,10 @@ async function realPeriodTemplateFixture(templateId: string) {
   const validation = validateCustomRuleFormula(formula, {
     scope: template.contract.scope,
     executionGrain: template.contract.executionGrain,
+    ...(template.contract.scope === "external_cost" ||
+    template.contract.scope === "reconciliation"
+      ? { compositionMode: template.contract.compositionMode }
+      : {}),
     parameters: template.contract.parameters.map((parameter) => ({
       name: parameter.name,
       valueType: parameter.valueType,

@@ -1414,6 +1414,10 @@ async function runConfirmationTransition(input: {
         {
           scope: aiResult.contract.scope,
           executionGrain: aiResult.contract.executionGrain,
+          ...(aiResult.contract.scope === "external_cost" ||
+          aiResult.contract.scope === "reconciliation"
+            ? { compositionMode: aiResult.contract.compositionMode }
+            : {}),
           parameters: aiResult.contract.parameters.map((parameter) => ({
             name: parameter.name,
             valueType: parameter.valueType,
@@ -1710,6 +1714,10 @@ async function buildExistingDraftSimulation(input: {
     {
       scope: input.draft.businessContract.scope,
       executionGrain: input.draft.businessContract.executionGrain,
+      ...(input.draft.businessContract.scope === "external_cost" ||
+      input.draft.businessContract.scope === "reconciliation"
+        ? { compositionMode: input.draft.businessContract.compositionMode }
+        : {}),
       parameters: input.draft.businessContract.parameters.map((parameter) => ({
         name: parameter.name,
         valueType: parameter.valueType,

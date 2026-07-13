@@ -99,6 +99,30 @@ describe("settlement rule variable catalog route", () => {
     },
   );
 
+  it.each([
+    ["external_cost", "report"],
+    ["reconciliation", "project_period"],
+  ])(
+    "allows Phase 4 %s catalogs through the public route",
+    async (scope, executionGrain) => {
+      const context = routeContext("finance");
+      vi.mocked(getCustomRuleRouteContext).mockResolvedValue(context as never);
+
+      const response = await GET(request(scope, executionGrain), {
+        params: Promise.resolve({ projectId: PROJECT_ID }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(context.requireProjectAccess).toHaveBeenCalledWith(PROJECT_ID);
+      expect(context.catalog.getCatalog).toHaveBeenCalledWith({
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        scope,
+        executionGrain,
+      });
+    },
+  );
+
   it("returns only catalog metadata and never raw sample values", async () => {
     const context = routeContext("finance");
     vi.mocked(getCustomRuleRouteContext).mockResolvedValue(context as never);

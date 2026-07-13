@@ -27,6 +27,7 @@ import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
 import { createSettlementRuleAiAdapter } from "./custom-rule-ai";
 import {
   businessRuleContractSchema,
+  customRuleScopeSchema,
   typedRuntimeValueSchema,
 } from "./custom-rule-contract";
 import {
@@ -82,6 +83,7 @@ import {
 } from "./custom-rule-simulation";
 import type {
   CustomRuleMissingDataPolicy,
+  CustomRuleScope,
   CustomRuleTarget,
   TypedRuntimeValue,
 } from "./custom-rule-types";
@@ -1237,6 +1239,10 @@ export function createCustomRuleExistingDraftSimulationService(input: {
         {
           scope: contract.scope,
           executionGrain: contract.executionGrain,
+          ...(contract.scope === "external_cost" ||
+          contract.scope === "reconciliation"
+            ? { compositionMode: contract.compositionMode }
+            : {}),
           parameters: contract.parameters.map((parameter) => ({
             name: parameter.name,
             valueType: parameter.valueType,
@@ -1510,7 +1516,7 @@ const evidenceSnapshotSchema = z.strictObject({
   organization_id: z.string().uuid(),
   project_id: z.string().uuid(),
   actor_id: z.string().uuid(),
-  scope: z.enum(["payable", "receivable"]),
+  scope: customRuleScopeSchema,
   period_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
   period_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
   business_timezone: z.string().min(1).max(100),
@@ -1586,7 +1592,7 @@ type EvidenceSnapshotExpectation = {
   organizationId: string;
   actorId: string;
   projectId: string;
-  scope: "payable" | "receivable";
+  scope: CustomRuleScope;
   periodStart: string;
   periodEnd: string;
   businessTimezone: string;
@@ -1646,16 +1652,6 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           "CUSTOM_RULE_STALE_REVISION",
           "Settlement rule draft is stale",
           409,
-        );
-      }
-      if (
-        draft.businessContract.scope !== "payable" &&
-        draft.businessContract.scope !== "receivable"
-      ) {
-        throw routeError(
-          "CUSTOM_RULE_SELECTION_UNSUPPORTED",
-          "Historical simulation is unsupported for this rule scope",
-          422,
         );
       }
       const catalog = await input.catalog.getCatalog({
@@ -2764,7 +2760,7 @@ function selectApprovedReportsWithinPeriod(
 }
 
 function deriveCurrentMargin(input: {
-  scope: "payable" | "receivable";
+  scope: CustomRuleScope;
   executionGrain: CustomRuleDraft["businessContract"]["executionGrain"];
   reports: ApprovedReportRow[];
   requestedBatches: SettlementBatchRow[];
@@ -2779,6 +2775,9 @@ function deriveCurrentMargin(input: {
   amount: bigint | null;
   status: "available" | "unavailable" | "not_applicable";
 } {
+  if (input.scope !== "payable" && input.scope !== "receivable") {
+    return { amount: null, status: "not_applicable" };
+  }
   if (input.requestedItems.length === 0) {
     return {
       amount: null,

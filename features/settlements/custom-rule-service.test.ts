@@ -4165,6 +4165,58 @@ describe("custom rule authoring service", () => {
     });
   });
 
+  it("confirms external-cost formulas with emit_items composition through the service path", async () => {
+    const harness = createHarness([externalCostFormulaOutput()]);
+    const previous = harness.repository.seedDraft(
+      confirmableDraft({ businessContract: externalCostServiceContract() }),
+    );
+    vi.mocked(harness.catalogPort.getCatalog).mockImplementationOnce(
+      async () => ({
+        ...catalog(),
+        scope: "external_cost",
+        executionGrain: "report",
+        variables: [
+          {
+            id: "import_row_index",
+            label: "导入行号",
+            runtimeType: { kind: "scalar", scalarType: "integer" },
+            unit: "行",
+            sourceLabel: "标准化成本导入",
+            availability: "available",
+            coverageNumerator: 1,
+            coverageDenominator: 1,
+            latestSampledPeriod: { start: "2026-07-01", end: "2026-07-10" },
+          },
+        ],
+      }),
+    );
+    vi.mocked(harness.evidencePort.loadAuthorizedEvidence).mockImplementationOnce(
+      async (input) => typedOutputAuthorizedEvidence(input),
+    );
+
+    const result = await harness.service.confirmContract({
+      ...confirmInput(previous),
+      expectedContractHash: previous.contractHash,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      kind: "simulated",
+      draft: {
+        generatedFormula: {
+          expression:
+            'external_cost = cost_items([{ category: "traffic", amount: yuan(500), memo: "7 月投流" }])',
+        },
+      },
+    });
+    expect(harness.simulationInputs[0]).toMatchObject({
+      contract: {
+        scope: "external_cost",
+        compositionMode: "emit_items",
+      },
+    });
+  });
+
   it("classifies formula-only inputs as optional for confirmation and existing-draft recovery", async () => {
     const harness = createHarness([optionalFormulaOutput()]);
     const previous = harness.repository.seedDraft(confirmableDraft());
@@ -6219,6 +6271,21 @@ function confirmedFormulaOutput() {
   };
 }
 
+function externalCostFormulaOutput() {
+  return {
+    ...confirmedFormulaOutput(),
+    formulaProposal:
+      'external_cost = cost_items([{ category: "traffic", amount: yuan(500), memo: "7 月投流" }])',
+    testCases: [
+      {
+        name: "投流成本",
+        inputs: { import_row_index: { type: "integer" as const, value: 1 } },
+        expectedResult: externalCostExpectedResult(),
+      },
+    ],
+  };
+}
+
 function optionalFormulaOutput() {
   const output = confirmedFormulaOutput();
   return {
@@ -6248,9 +6315,10 @@ function clarifyingDraft(
     };
     idempotencyKey?: string;
     aiResponseContent?: string;
+    businessContract?: BusinessRuleContract;
   } = {},
 ): CustomRuleDraft {
-  const businessContract = contract();
+  const businessContract = options.businessContract ?? contract();
   const parameters = Object.fromEntries(
     businessContract.parameters.map((parameter) => [
       parameter.name,
@@ -6302,7 +6370,9 @@ function clarifyingDraft(
   };
 }
 
-function confirmableDraft(): CustomRuleDraft {
+function confirmableDraft(
+  options: { businessContract?: BusinessRuleContract } = {},
+): CustomRuleDraft {
   return clarifyingDraft({
     unresolvedAmbiguities: [
       {
@@ -6311,6 +6381,7 @@ function confirmableDraft(): CustomRuleDraft {
         required: true,
       },
     ],
+    businessContract: options.businessContract,
   });
 }
 
@@ -6495,6 +6566,37 @@ function authorizedEvidence(
   return deepFreezeFixture(evidence);
 }
 
+function typedOutputAuthorizedEvidence(
+  input: Parameters<
+    AuthorizedSimulationEvidencePort["loadAuthorizedEvidence"]
+  >[0],
+): AuthorizedCustomRuleSimulationEvidence {
+  const evidence: AuthorizedCustomRuleSimulationEvidence = {
+    ...structuredClone(authorizedEvidence(input, "5000")),
+    records: [
+      {
+        recordId: "authorized-record-1",
+        projectId: input.projectId,
+        sourceVersion: {
+          kind: "immutable",
+          source: "locked_settlement_item",
+          version: "locked-v1",
+        },
+        variables: {
+          import_row_index: { type: "integer", value: 1 },
+        },
+        missingInputs: [],
+        currentRuleResult: null,
+      },
+    ],
+    userExamples: [],
+    currentMarginCents: null,
+  };
+  evidence.provenance.evidenceHash = "0".repeat(64);
+  evidence.provenance.evidenceHash = calculateCustomRuleEvidenceHash(evidence);
+  return deepFreezeFixture(evidence);
+}
+
 function deepFreezeFixture<Value>(value: Value): Value {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
     return value;
@@ -6568,6 +6670,71 @@ function contract(): BusinessRuleContract {
         description: "最大时长边界仍按确认规则计算。",
         inputs: { system_minutes: { type: "integer", value: 600 } },
         expectedResult: { type: "money_cents", amountCents: 2_000 },
+      },
+    ],
+  };
+}
+
+function externalCostServiceContract(): BusinessRuleContract {
+  return {
+    ...contract(),
+    scope: "external_cost",
+    compositionMode: "emit_items",
+    title: "项目外部成本规则",
+    summary: "按规则生成外部成本项。",
+    calculationComponents: [
+      {
+        name: "items",
+        description: "生成的成本项",
+        expression: "cost_items",
+        resultType: {
+          kind: "array",
+          itemType: {
+            kind: "object",
+            fields: {
+              category: { kind: "scalar", scalarType: "string" },
+              amountCents: { kind: "scalar", scalarType: "money_cents" },
+              memo: { kind: "scalar", scalarType: "string" },
+            },
+          },
+        },
+      },
+    ],
+    requiredInputs: [
+      {
+        name: "import_row_index",
+        description: "标准化导入行号",
+        source: "成本导入",
+        valueType: { kind: "scalar", scalarType: "integer" },
+        userFacingUnit: "行",
+      },
+    ],
+    parameters: contract().parameters,
+    compositionDescription: "追加生成的项目外部成本项。",
+    examples: ["投流成本", "零成本", "多成本"].map((name, index) => ({
+      name,
+      kind: index === 0 ? "normal" : "boundary",
+      description: "生成成本项。",
+      inputs: { import_row_index: { type: "integer", value: index + 1 } },
+      expectedResult: index === 0 ? externalCostExpectedResult() : {
+        type: "array",
+        items: [],
+      },
+    })),
+  };
+}
+
+function externalCostExpectedResult() {
+  return {
+    type: "array" as const,
+    items: [
+      {
+        type: "object" as const,
+        fields: {
+          category: { type: "string" as const, value: "traffic" },
+          amountCents: { type: "money_cents" as const, amountCents: 50_000 },
+          memo: { type: "string" as const, value: "7 月投流" },
+        },
       },
     ],
   };

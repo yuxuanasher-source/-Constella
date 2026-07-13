@@ -378,11 +378,7 @@ export function validateCustomRuleFormula(
     );
   }
 
-  const formulaForParse =
-    validatedOptions.scope === "external_cost"
-      ? formula.replace(/\bamount\s*:/g, "amount_cents:")
-      : formula;
-  const parsed = parseCustomRuleFormula(formulaForParse);
+  const parsed = parseCustomRuleFormula(formula);
   if (!parsed.ok) {
     return parsed;
   }
@@ -875,7 +871,7 @@ function compileCostItemObject(
   }
   assertUniqueObjectKeys(node, path, context);
   const byKey = new Map(node.entries.map((entry, index) => [entry.key, { ...entry, index }]));
-  const requiredKeys = ["category", "amount_cents", "memo"] as const;
+  const requiredKeys = ["category", "amount", "memo"] as const;
   if (
     node.entries.length !== requiredKeys.length ||
     !requiredKeys.every((key) => byKey.has(key))
@@ -889,7 +885,7 @@ function compileCostItemObject(
   }
 
   const category = byKey.get("category");
-  const amount = byKey.get("amount_cents");
+  const amount = byKey.get("amount");
   const memo = byKey.get("memo");
   if (!category || !amount || !memo) {
     throw issueAt("VALIDATION_INVALID_OUTPUT", "cost_items entry is incomplete", path, context);

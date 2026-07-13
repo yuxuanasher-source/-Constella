@@ -543,6 +543,25 @@ describe("external-cost typed output validation", () => {
     expect(JSON.stringify(result.compiledAst)).toContain('"valueCents":50000');
   });
 
+  it("treats amount as the public cost key without rewriting memo text", () => {
+    const result = expectValidationSuccess(
+      'cost_items([{ category: "traffic", amount: yuan(1), memo: "literal amount: stays" }])',
+      externalCostOptions,
+    );
+    const serialized = JSON.stringify(result.compiledAst);
+
+    expect(serialized).toContain("literal amount: stays");
+    expect(serialized).not.toContain("literal amount_cents: stays");
+  });
+
+  it("rejects the internal amount_cents key as public formula input", () => {
+    expectValidationIssue(
+      'cost_items([{ category: "traffic", amount_cents: yuan(1), memo: "投流" }])',
+      "VALIDATION_INVALID_OUTPUT",
+      externalCostOptions,
+    );
+  });
+
   it("rejects categories outside the generated-cost subset", () => {
     expectValidationIssue(
       'cost_items([{ category: "manual", amount: yuan(1), memo: "人工调整" }])',
