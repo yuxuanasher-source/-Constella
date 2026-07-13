@@ -97,6 +97,11 @@ import {
   CustomRuleGovernanceError,
 } from "./custom-rule-governance";
 import {
+  analyzeSettlementGroupRuleConflicts,
+  validateSettlementGroupRuleActivationReadiness,
+  type SettlementGroupScopedRule,
+} from "./custom-rule-groups";
+import {
   analyzeCustomRuleMaterialRisk,
   type CustomRuleMaterialRiskConfiguration,
   type CustomRuleMaterialRiskInput,
@@ -4980,6 +4985,17 @@ export type CustomRuleLifecycleGovernanceContext = {
     fixedFallbackAvailable: boolean;
     lockedBatchCount: number;
   };
+  groupGovernance?: {
+    assignedProjectStreamerIds: readonly string[];
+    unassignedProjectStreamerIds: readonly string[];
+    currentGroupSnapshotHash: string;
+    simulationPopulation: {
+      assignedProjectStreamerIds: readonly string[];
+      unassignedProjectStreamerIds: readonly string[];
+      groupSnapshotHash: string;
+    };
+    activePendingRules: readonly SettlementGroupScopedRule[];
+  };
 };
 
 export type CustomRuleLifecycleRepositoryPort = Pick<
@@ -5391,6 +5407,79 @@ export function createCustomRuleLifecycleService(dependencies: {
     }
   };
 
+  const isGroupTarget = (
+    target: CustomRuleMaterialRiskInput["contract"]["target"],
+  ): target is Extract<
+    CustomRuleMaterialRiskInput["contract"]["target"],
+    { targetType: "streamer_group" }
+  > => target.targetType === "streamer_group";
+
+  const requireGroupGovernance = (
+    context: CustomRuleLifecycleGovernanceContext,
+  ): NonNullable<CustomRuleLifecycleGovernanceContext["groupGovernance"]> => {
+    const target = context.version?.target ?? context.contractFacts?.target;
+    if (!target || !isGroupTarget(target)) {
+      return {
+        assignedProjectStreamerIds: [],
+        unassignedProjectStreamerIds: [],
+        currentGroupSnapshotHash: "0".repeat(64),
+        simulationPopulation: {
+          assignedProjectStreamerIds: [],
+          unassignedProjectStreamerIds: [],
+          groupSnapshotHash: "0".repeat(64),
+        },
+        activePendingRules: [],
+      };
+    }
+    if (context.groupGovernance === undefined) {
+      throw new CustomRuleGovernanceError(
+        "SETTLEMENT_GROUP_GOVERNANCE_CONTEXT_MISSING",
+        "Group-targeted settlement rules require server-owned group governance context",
+      );
+    }
+    return context.groupGovernance;
+  };
+
+  const assertGroupReadiness = (
+    context: CustomRuleLifecycleGovernanceContext,
+  ): void => {
+    const target = context.version?.target ?? context.contractFacts?.target;
+    if (!target || !isGroupTarget(target)) return;
+    const governance = requireGroupGovernance(context);
+    try {
+      validateSettlementGroupRuleActivationReadiness({
+        targetGroupId: target.targetId,
+        assignedProjectStreamerIds: governance.assignedProjectStreamerIds,
+        unassignedProjectStreamerIds: governance.unassignedProjectStreamerIds,
+        simulationPopulation: governance.simulationPopulation,
+        currentGroupSnapshotHash: governance.currentGroupSnapshotHash,
+      });
+    } catch (error) {
+      throw new CustomRuleGovernanceError(
+        "SETTLEMENT_GROUP_SIMULATION_POPULATION_INCOMPLETE",
+        error instanceof Error
+          ? error.message
+          : "Group simulation population is incomplete",
+      );
+    }
+  };
+
+  const assertNoBlockingGroupConflicts = (
+    context: CustomRuleLifecycleGovernanceContext,
+  ): void => {
+    const target = context.version?.target ?? context.contractFacts?.target;
+    if (!target || !isGroupTarget(target)) return;
+    const conflict = analyzeSettlementGroupRuleConflicts(
+      requireGroupGovernance(context).activePendingRules,
+    );
+    if (conflict.blocking) {
+      throw new CustomRuleGovernanceError(
+        "SETTLEMENT_GROUP_RULE_CONFLICT_BLOCKING",
+        `Blocking settlement group rule conflict: ${conflict.blockingCodes.join(", ")}`,
+      );
+    }
+  };
+
   const auditTransition = async (input: {
     action: AuditLogInput["action"];
     context: CustomRuleLifecycleGovernanceContext;
@@ -5439,6 +5528,8 @@ export function createCustomRuleLifecycleService(dependencies: {
       expected: context.expectedFreshness,
       simulation: context.simulation,
     });
+    assertGroupReadiness(context);
+    assertNoBlockingGroupConflicts(context);
     const risk = analyzeCustomRuleMaterialRisk({
       simulation: context.simulationFacts,
       currentMarginCents: context.currentMarginCents,
@@ -5604,6 +5695,8 @@ export function createCustomRuleLifecycleService(dependencies: {
         expected: context.expectedFreshness,
         simulation: context.simulation,
       });
+      assertGroupReadiness(context);
+      assertNoBlockingGroupConflicts(context);
       const result = await repository.applyAndSubmitCustomRule(
         lifecycleRepositoryInput(input, context.actor.organizationId),
       );
@@ -5681,6 +5774,8 @@ export function createCustomRuleLifecycleService(dependencies: {
         expected: context.expectedFreshness,
         simulation: context.simulation,
       });
+      assertGroupReadiness(context);
+      assertNoBlockingGroupConflicts(context);
       if (
         input.source.kind !== "saved_draft" ||
         context.reopenedAt === undefined ||

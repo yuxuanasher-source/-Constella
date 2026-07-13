@@ -568,6 +568,34 @@ on public.project_streamer_settlement_group_assignments (
   project_streamer_id
 );
 
+create table public.settlement_rule_group_snapshot_state (
+  organization_id uuid not null,
+  project_id uuid not null,
+  project_streamer_id uuid not null,
+  effective_at timestamptz not null,
+  current_group_snapshot_hash text not null,
+  updated_at timestamptz not null default pg_catalog.now(),
+  primary key (organization_id, project_id, project_streamer_id),
+  constraint settlement_rule_group_snapshot_state_project_scope_fkey
+    foreign key (project_id, organization_id)
+    references public.projects(id, organization_id)
+    on delete restrict,
+  constraint settlement_rule_group_snapshot_state_streamer_scope_fkey
+    foreign key (project_streamer_id, organization_id, project_id)
+    references public.project_streamers(id, organization_id, project_id)
+    on delete restrict,
+  constraint settlement_rule_group_snapshot_state_hash_check check (
+    current_group_snapshot_hash ~ '^[0-9a-f]{64}$'
+  )
+);
+
+create index settlement_rule_group_snapshot_state_project_idx
+on public.settlement_rule_group_snapshot_state (
+  project_id,
+  effective_at,
+  project_streamer_id
+);
+
 create table public.settlement_rule_templates (
   id uuid primary key default extensions.gen_random_uuid(),
   organization_id uuid not null,
@@ -906,6 +934,7 @@ alter table public.custom_settlement_rule_review_events enable row level securit
 alter table public.custom_settlement_rule_lifecycle_requests enable row level security;
 alter table public.settlement_rule_groups enable row level security;
 alter table public.project_streamer_settlement_group_assignments enable row level security;
+alter table public.settlement_rule_group_snapshot_state enable row level security;
 alter table public.settlement_rule_templates enable row level security;
 
 create policy custom_settlement_rule_versions_mcn_project_read
@@ -948,6 +977,16 @@ using (
   and public.can_access_project(project_id)
 );
 
+create policy settlement_rule_group_snapshot_state_mcn_project_read
+on public.settlement_rule_group_snapshot_state
+for select
+using (
+  auth.uid() is not null
+  and public.is_org_member(organization_id)
+  and public.is_mcn_staff(organization_id)
+  and public.can_access_project(project_id)
+);
+
 create policy settlement_rule_templates_mcn_org_read
 on public.settlement_rule_templates
 for select
@@ -977,6 +1016,68 @@ as $$
     'hex'
   );
 $$;
+
+create or replace view public.settlement_group_simulation_freshness
+with (security_invoker = true)
+as
+select
+  simulation.organization_id,
+  simulation.project_id,
+  simulation.id as simulation_id,
+  version.id as rule_version_id,
+  version.target_group_id,
+  version.status,
+  version.effective_from,
+  coalesce(
+    nullif(
+      simulation.sample_selection #>>
+        '{groupPopulation,groupSnapshotHash}',
+      ''
+    ),
+    simulation.data_selection_hash
+  ) as group_snapshot_hash,
+  coalesce(
+    (
+      select public.custom_settlement_rule_request_fingerprint(
+        'settlement_group_project_snapshot',
+        pg_catalog.jsonb_build_object(
+          'projectId',
+          version.project_id,
+          'projectStreamers',
+          coalesce(
+            pg_catalog.jsonb_agg(
+              pg_catalog.jsonb_build_object(
+                'projectStreamerId',
+                snapshot.project_streamer_id,
+                'currentGroupSnapshotHash',
+                snapshot.current_group_snapshot_hash
+              )
+              order by snapshot.project_streamer_id
+            ),
+            '[]'::jsonb
+          )
+        )
+      )
+      from public.settlement_rule_group_snapshot_state as snapshot
+      where snapshot.organization_id = version.organization_id
+        and snapshot.project_id = version.project_id
+    ),
+    coalesce(
+      nullif(
+        simulation.sample_selection #>>
+          '{groupPopulation,groupSnapshotHash}',
+        ''
+      ),
+      simulation.data_selection_hash
+    )
+  ) as current_group_snapshot_hash
+from public.custom_settlement_rule_versions as version
+join public.settlement_formula_simulations as simulation
+  on simulation.id = version.simulation_id
+ and simulation.rule_version_id = version.id
+ and simulation.organization_id = version.organization_id
+ and simulation.project_id = version.project_id
+where version.target_type = 'streamer_group';
 
 create or replace function public.custom_settlement_rule_lifecycle_result(
   p_rule_version_id uuid,
@@ -1920,6 +2021,27 @@ begin
   ) then
     raise exception 'custom_settlement_rule_destination_occupied';
   end if;
+  if p_target_type = 'streamer_group'
+     and exists (
+       select 1
+       from public.custom_settlement_rule_versions as active_pending
+       where active_pending.organization_id = p_organization_id
+         and active_pending.project_id = p_project_id
+         and active_pending.scope = p_scope
+         and active_pending.target_type = 'streamer_group'
+         and active_pending.target_id = p_target_id
+         and active_pending.status in ('active', 'pending_review')
+         and active_pending.id is distinct from p_source_rule_version_id
+         and (
+           active_pending.priority = 100
+           or (
+             active_pending.composition_mode = 'replace'
+             and v_rule_contract ->> 'compositionMode' = 'replace'
+           )
+         )
+     ) then
+    raise exception 'settlement_group_rule_conflict_blocking';
+  end if;
 
   select coalesce(pg_catalog.max(version.version_number), 0) + 1
   into v_version_number
@@ -2237,6 +2359,59 @@ begin
        or (v_simulation.coverage ->> 'blockedRecords')::integer <> 0
        or (v_simulation.coverage ->> 'uncoveredRecords')::integer <> 0 then
       raise exception 'custom_settlement_rule_stale_simulation';
+    end if;
+    if v_version.target_type = 'streamer_group'
+       and (
+         pg_catalog.jsonb_typeof(
+           v_simulation.sample_selection -> 'groupPopulation'
+         ) <> 'object'
+         or pg_catalog.jsonb_typeof(
+           v_simulation.sample_selection #>
+             '{groupPopulation,assignedProjectStreamerIds}'
+         ) <> 'array'
+         or pg_catalog.jsonb_typeof(
+           v_simulation.sample_selection #>
+             '{groupPopulation,unassignedProjectStreamerIds}'
+         ) <> 'array'
+         or nullif(
+           v_simulation.sample_selection #>>
+             '{groupPopulation,groupSnapshotHash}',
+           ''
+         ) is null
+         or exists (
+           select 1
+           from public.settlement_rule_group_snapshot_state
+             as current_group_snapshot
+           where current_group_snapshot.organization_id =
+               p_organization_id
+             and current_group_snapshot.project_id = p_project_id
+             and current_group_snapshot.current_group_snapshot_hash
+               is distinct from v_simulation.sample_selection #>>
+                 '{groupPopulation,groupSnapshotHash}'
+         )
+       ) then
+      raise exception 'settlement_group_simulation_population_incomplete';
+    end if;
+    if v_version.target_type = 'streamer_group'
+       and exists (
+         select 1
+         from public.custom_settlement_rule_versions as active_pending
+         where active_pending.organization_id = p_organization_id
+           and active_pending.project_id = p_project_id
+           and active_pending.scope = v_version.scope
+           and active_pending.target_type = 'streamer_group'
+           and active_pending.target_id = v_version.target_id
+           and active_pending.id <> p_rule_version_id
+           and active_pending.status in ('active', 'pending_review')
+           and (
+             active_pending.priority = v_version.priority
+             or (
+               active_pending.composition_mode = 'replace'
+               and v_version.composition_mode = 'replace'
+             )
+           )
+       ) then
+      raise exception 'settlement_group_rule_conflict_blocking';
     end if;
     select
       pg_catalog.count(*)::integer,
@@ -3064,6 +3239,22 @@ begin
     and assignment.project_streamer_id = p_project_streamer_id
   order by assignment.effective_from, assignment.id
   for update;
+
+  with closed as (
+    update public.project_streamer_settlement_group_assignments
+    set effective_until = p_effective_from
+    where organization_id = p_organization_id
+      and project_id = p_project_id
+      and project_streamer_id = p_project_streamer_id
+      and effective_from < p_effective_from
+      and (effective_until is null or effective_until > p_effective_from)
+      and group_id = p_group_id
+    returning id
+  )
+  select coalesce(pg_catalog.array_agg(id order by id), array[]::uuid[])
+  into v_closed_ids
+  from closed;
+
   if exists (
     select 1
     from public.project_streamer_settlement_group_assignments as assignment
@@ -3079,21 +3270,6 @@ begin
   ) then
     raise exception 'settlement_group_assignment_overlap';
   end if;
-
-  with closed as (
-    update public.project_streamer_settlement_group_assignments
-    set effective_until = p_effective_from
-    where organization_id = p_organization_id
-      and project_id = p_project_id
-      and project_streamer_id = p_project_streamer_id
-      and effective_from < p_effective_from
-      and (effective_until is null or effective_until > p_effective_from)
-      and group_id <> p_group_id
-    returning id
-  )
-  select coalesce(pg_catalog.array_agg(id order by id), array[]::uuid[])
-  into v_closed_ids
-  from closed;
 
   insert into public.project_streamer_settlement_group_assignments (
     organization_id, project_id, project_streamer_id, group_id,
@@ -3138,6 +3314,28 @@ begin
     )
   ) into v_snapshot_hash;
 
+  insert into public.settlement_rule_group_snapshot_state (
+    organization_id,
+    project_id,
+    project_streamer_id,
+    effective_at,
+    current_group_snapshot_hash
+  ) values (
+    p_organization_id,
+    p_project_id,
+    p_project_streamer_id,
+    p_effective_from,
+    v_snapshot_hash
+  )
+  on conflict (organization_id, project_id, project_streamer_id)
+  do update
+  set effective_at = excluded.effective_at,
+      current_group_snapshot_hash =
+        excluded.current_group_snapshot_hash,
+      updated_at = pg_catalog.now()
+  where public.settlement_rule_group_snapshot_state.effective_at <=
+    excluded.effective_at;
+
   return pg_catalog.jsonb_build_object(
     'insertedAssignment', pg_catalog.to_jsonb(v_inserted),
     'inserted_assignment', pg_catalog.to_jsonb(v_inserted),
@@ -3159,7 +3357,11 @@ revoke all on table public.settlement_rule_groups
   from public, anon, authenticated, service_role;
 revoke all on table public.project_streamer_settlement_group_assignments
   from public, anon, authenticated, service_role;
+revoke all on table public.settlement_rule_group_snapshot_state
+  from public, anon, authenticated, service_role;
 revoke all on table public.settlement_rule_templates
+  from public, anon, authenticated, service_role;
+revoke all on table public.settlement_group_simulation_freshness
   from public, anon, authenticated, service_role;
 
 grant select on table public.custom_settlement_rule_versions to authenticated;
@@ -3167,7 +3369,11 @@ grant select on table public.custom_settlement_rule_review_events to authenticat
 grant select on table public.settlement_rule_groups to authenticated;
 grant select on table public.project_streamer_settlement_group_assignments
   to authenticated;
+grant select on table public.settlement_rule_group_snapshot_state
+  to authenticated;
 grant select on table public.settlement_rule_templates to authenticated;
+grant select on table public.settlement_group_simulation_freshness
+  to authenticated;
 
 revoke all on function public.guard_custom_settlement_rule_version_mutation()
   from public, anon, authenticated, service_role;

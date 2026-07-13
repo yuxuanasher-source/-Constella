@@ -2920,6 +2920,11 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(assignment).toContain(
       "settlement_group_assignment_locked_history_rewrite",
     );
+    expect(assignment).not.toContain("and group_id <> p_group_id");
+    expect(assignment).toContain(
+      "insert into public.settlement_rule_group_snapshot_state",
+    );
+    expect(assignment).toContain("current_group_snapshot_hash");
 
     const createGroup = extractSettlementGovernanceFunction(
       "create_settlement_rule_group",
@@ -2938,6 +2943,19 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     );
     expect(archiveGroup).toContain(
       "from public.project_streamer_settlement_group_assignments",
+    );
+
+    expect(review).toContain(
+      "settlement_group_simulation_population_incomplete",
+    );
+    expect(review).toContain("settlement_group_rule_conflict_blocking");
+    expect(review).toContain("current_group_snapshot_hash");
+    expect(submit).toContain("settlement_group_rule_conflict_blocking");
+    expect(settlementGovernanceMigration).toContain(
+      "create or replace view public.settlement_group_simulation_freshness",
+    );
+    expect(settlementGovernanceMigration).toContain(
+      "'settlement_group_project_snapshot'",
     );
 
     const archive = extractSettlementGovernanceFunction(
@@ -3421,6 +3439,7 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
                 ('custom_settlement_rule_review_events'),
                 ('settlement_rule_groups'),
                 ('project_streamer_settlement_group_assignments'),
+                ('settlement_rule_group_snapshot_state'),
                 ('settlement_rule_templates')
             ), governance_rpcs(name) as (
               values

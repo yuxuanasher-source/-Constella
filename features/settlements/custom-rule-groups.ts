@@ -60,6 +60,24 @@ export type SettlementGroupRuleConflictAnalysis = Readonly<{
   requiresOwnerApproval: boolean;
 }>;
 
+export type SettlementGroupSimulationFreshnessInput = Readonly<{
+  immutableSimulationId: string;
+  status: "draft" | "pending_review" | "changes_requested" | "active" | "archived";
+  effectiveFrom: string | null;
+  now: string;
+  simulationGroupSnapshotHash: string;
+  currentGroupSnapshotHash: string;
+}>;
+
+export type SettlementGroupSimulationFreshness = Readonly<{
+  immutableSimulationId: string;
+  stale: boolean;
+  staleReason:
+    | "fresh"
+    | "group_snapshot_mismatch"
+    | "historical_immutable";
+}>;
+
 export function buildSettlementGroupMembershipSnapshot(input: {
   projectStreamerId: string;
   effectiveAt: string;
@@ -102,10 +120,9 @@ export function validateSettlementGroupAssignmentChange(
   const closeAssignmentIds: string[] = [];
   for (const assignment of input.existingAssignments) {
     if (assignment.projectStreamerId !== input.projectStreamerId) continue;
-    if (assignment.groupId !== input.nextGroupId) {
-      if (intervalContains(assignment, effectiveFrom)) {
-        closeAssignmentIds.push(assignment.id);
-      }
+    if (assignment.groupId !== input.nextGroupId) continue;
+    if (intervalContains(assignment, effectiveFrom)) {
+      closeAssignmentIds.push(assignment.id);
       continue;
     }
     if (
@@ -129,6 +146,25 @@ export function validateSettlementGroupAssignmentChange(
       effectiveFrom,
       effectiveUntil,
     },
+  };
+}
+
+export function deriveSettlementGroupSimulationFreshness(
+  input: SettlementGroupSimulationFreshnessInput,
+): SettlementGroupSimulationFreshness {
+  if (isHistoricalImmutable(input)) {
+    return {
+      immutableSimulationId: input.immutableSimulationId,
+      stale: false,
+      staleReason: "historical_immutable",
+    };
+  }
+  const stale =
+    input.simulationGroupSnapshotHash !== input.currentGroupSnapshotHash;
+  return {
+    immutableSimulationId: input.immutableSimulationId,
+    stale,
+    staleReason: stale ? "group_snapshot_mismatch" : "fresh",
   };
 }
 
@@ -259,6 +295,15 @@ function intervalsOverlap(
     leftFrom < (rightUntil ?? "9999-12-31T23:59:59.999Z") &&
     rightFrom < (leftUntil ?? "9999-12-31T23:59:59.999Z")
   );
+}
+
+function isHistoricalImmutable(
+  input: SettlementGroupSimulationFreshnessInput,
+): boolean {
+  if (input.status === "active" || input.status === "archived") return true;
+  if (input.effectiveFrom === null) return false;
+  return requireTimestamp(input.effectiveFrom, "effective from") <=
+    requireTimestamp(input.now, "now");
 }
 
 function overlapsPopulation(

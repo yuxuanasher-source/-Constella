@@ -19,7 +19,10 @@ import {
   type NormalizedAstNode,
   type TypedRuntimeValue,
 } from "./custom-rule-types";
-import type { SettlementGroupMembershipSnapshot } from "./custom-rule-groups";
+import {
+  deriveSettlementGroupSimulationFreshness,
+  type SettlementGroupMembershipSnapshot,
+} from "./custom-rule-groups";
 
 import {
   assertCoverageCounts,
@@ -686,6 +689,12 @@ export type SettlementRuleGroup = {
   activeRuleCount: number;
   pendingRuleCount: number;
   futureAssignmentCount: number;
+  unassignedProjectStreamers: Array<{
+    projectStreamerId: string;
+    streamerId: string;
+    displayName: string;
+  }>;
+  baseRuleCoveredProjectStreamerIds: string[];
 };
 
 export type ProjectStreamerSettlementGroupAssignment = {
@@ -705,6 +714,23 @@ export type SettlementGroupAssignmentChangeResult = {
   insertedAssignment: ProjectStreamerSettlementGroupAssignment;
   closedAssignmentIds: string[];
   newGroupSnapshotHash: SettlementGroupMembershipSnapshot["snapshotHash"];
+};
+
+export type ListSettlementGroupSimulationFreshnessInput = {
+  organizationId: string;
+  projectId: string;
+  currentGroupSnapshotHash: string;
+  now: string;
+};
+
+export type SettlementGroupSimulationFreshnessDto = {
+  simulationId: string;
+  ruleVersionId: string;
+  targetGroupId: string;
+  groupSnapshotHash: string;
+  currentGroupSnapshotHash: string;
+  stale: boolean;
+  staleReason: "fresh" | "group_snapshot_mismatch" | "historical_immutable";
 };
 
 export type CustomSettlementRuleVersion = z.infer<
@@ -792,6 +818,9 @@ export type CustomRuleRepository = CustomRuleReadRepository & {
   changeSettlementGroupAssignment(
     input: ChangeSettlementGroupAssignmentInput,
   ): Promise<SettlementGroupAssignmentChangeResult>;
+  listSettlementGroupSimulationFreshness(
+    input: ListSettlementGroupSimulationFreshnessInput,
+  ): Promise<SettlementGroupSimulationFreshnessDto[]>;
 };
 
 export type ResolvedCustomRuleBusinessTimezone = {
@@ -1641,6 +1670,12 @@ const changeSettlementGroupAssignmentInputSchema = z.strictObject({
   reason: boundedTextSchema,
   clientRequestId: nonemptyTextSchema.max(120),
 });
+const listSettlementGroupSimulationFreshnessInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  currentGroupSnapshotHash: hashSchema,
+  now: timestampSchema,
+});
 const turnCompletionInputSchema = z.strictObject({
   providerName: nonemptyTextSchema.max(200),
   content: preservedBoundedTextSchema,
@@ -2124,6 +2159,16 @@ const settlementRuleGroupRowSchema = z.strictObject({
   active_rule_count: nonnegativeSafeIntegerSchema.default(0),
   pending_rule_count: nonnegativeSafeIntegerSchema.default(0),
   future_assignment_count: nonnegativeSafeIntegerSchema.default(0),
+  unassigned_project_streamers: z
+    .array(
+      z.strictObject({
+        project_streamer_id: uuidSchema,
+        streamer_id: uuidSchema,
+        display_name: nonemptyTextSchema.max(200),
+      }),
+    )
+    .default([]),
+  base_rule_covered_project_streamer_ids: z.array(uuidSchema).default([]),
 });
 const settlementGroupAssignmentRowSchema = z.strictObject({
   id: uuidSchema,
@@ -2141,6 +2186,15 @@ const settlementGroupAssignmentChangeRowSchema = z.strictObject({
   inserted_assignment: settlementGroupAssignmentRowSchema,
   closed_assignment_ids: z.array(uuidSchema),
   new_group_snapshot_hash: hashSchema,
+});
+const settlementGroupSimulationFreshnessRowSchema = z.strictObject({
+  simulation_id: uuidSchema,
+  rule_version_id: uuidSchema,
+  target_group_id: uuidSchema,
+  status: z.enum(CUSTOM_RULE_VERSION_STATUSES),
+  effective_from: timestampSchema.nullable(),
+  group_snapshot_hash: hashSchema,
+  current_group_snapshot_hash: hashSchema,
 });
 
 const LIFECYCLE_VERSION_SELECT = Object.keys(
@@ -2953,6 +3007,57 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
         settlementGroupAssignmentChangeRowSchema,
         data,
         "assignment",
+      ),
+    );
+  }
+
+  async listSettlementGroupSimulationFreshness(
+    unsafeInput: ListSettlementGroupSimulationFreshnessInput,
+  ): Promise<SettlementGroupSimulationFreshnessDto[]> {
+    const input = parsePersistenceInput(
+      listSettlementGroupSimulationFreshnessInputSchema,
+      unsafeInput,
+      "list settlement group simulation freshness input",
+    );
+    const { data, error } = await this.client
+      .from("settlement_group_simulation_freshness")
+      .select(
+        [
+          "simulation_id",
+          "rule_version_id",
+          "target_group_id",
+          "status",
+          "effective_from",
+          "group_snapshot_hash",
+          "current_group_snapshot_hash",
+        ].join(", "),
+      )
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .in("status", ["draft", "pending_review", "changes_requested"])
+      .gte("effective_from", input.now)
+      .order("effective_from", { ascending: true })
+      .returns<unknown[]>();
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "list_settlement_group_simulation_freshness",
+        error,
+      );
+    }
+    if (!Array.isArray(data)) {
+      throw new CustomRulePersistenceDataError(
+        "simulation",
+        "group simulation freshness result must be an array",
+      );
+    }
+    return data.map((row) =>
+      toSettlementGroupSimulationFreshness(
+        parsePersistenceRow(
+          settlementGroupSimulationFreshnessRowSchema,
+          row,
+          "simulation",
+        ),
+        input.now,
       ),
     );
   }
@@ -4749,6 +4854,16 @@ function toSettlementRuleGroup(
     activeRuleCount: row.active_rule_count,
     pendingRuleCount: row.pending_rule_count,
     futureAssignmentCount: row.future_assignment_count,
+    unassignedProjectStreamers: row.unassigned_project_streamers.map(
+      (streamer) => ({
+        projectStreamerId: streamer.project_streamer_id,
+        streamerId: streamer.streamer_id,
+        displayName: streamer.display_name,
+      }),
+    ),
+    baseRuleCoveredProjectStreamerIds: [
+      ...row.base_rule_covered_project_streamer_ids,
+    ],
   };
 }
 
@@ -4778,6 +4893,29 @@ function toSettlementGroupAssignmentChange(
     ),
     closedAssignmentIds: [...row.closed_assignment_ids].sort(),
     newGroupSnapshotHash: row.new_group_snapshot_hash,
+  };
+}
+
+function toSettlementGroupSimulationFreshness(
+  row: z.infer<typeof settlementGroupSimulationFreshnessRowSchema>,
+  now: string,
+): SettlementGroupSimulationFreshnessDto {
+  const freshness = deriveSettlementGroupSimulationFreshness({
+    immutableSimulationId: row.simulation_id,
+    status: row.status,
+    effectiveFrom: row.effective_from,
+    now,
+    simulationGroupSnapshotHash: row.group_snapshot_hash,
+    currentGroupSnapshotHash: row.current_group_snapshot_hash,
+  });
+  return {
+    simulationId: row.simulation_id,
+    ruleVersionId: row.rule_version_id,
+    targetGroupId: row.target_group_id,
+    groupSnapshotHash: row.group_snapshot_hash,
+    currentGroupSnapshotHash: row.current_group_snapshot_hash,
+    stale: freshness.stale,
+    staleReason: freshness.staleReason,
   };
 }
 

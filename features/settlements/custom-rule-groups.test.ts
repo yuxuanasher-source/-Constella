@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   analyzeSettlementGroupRuleConflicts,
   buildSettlementGroupMembershipSnapshot,
+  deriveSettlementGroupSimulationFreshness,
   determineSettlementPopulationCoverage,
   validateSettlementGroupAssignmentChange,
   validateSettlementGroupRuleActivationReadiness,
@@ -57,7 +58,7 @@ describe("settlement group membership governance", () => {
     ).toThrow("reason");
   });
 
-  it("closes the previous active interval and inserts the next interval", () => {
+  it("does not close other active group intervals when inserting a different group", () => {
     const existingAssignments: SettlementGroupAssignmentInterval[] = [
       {
         id: "assignment-1",
@@ -78,13 +79,44 @@ describe("settlement group membership governance", () => {
         lockedBatchEffectiveTimes: [],
       }),
     ).toEqual({
-      closeAssignmentIds: ["assignment-1"],
+      closeAssignmentIds: [],
       insert: {
         projectStreamerId: "project-streamer-1",
         groupId: "group-2",
         effectiveFrom: "2026-08-01T00:00:00.000Z",
         effectiveUntil: null,
       },
+    });
+  });
+
+  it("closes only a prior interval for the same streamer and same group", () => {
+    expect(
+      validateSettlementGroupAssignmentChange({
+        projectStreamerId: "project-streamer-1",
+        nextGroupId: "group-1",
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        reason: "Renew the same group assignment for the next period.",
+        existingAssignments: [
+          {
+            id: "assignment-1",
+            projectStreamerId: "project-streamer-1",
+            groupId: "group-1",
+            effectiveFrom: "2026-07-01T00:00:00.000Z",
+            effectiveUntil: null,
+          },
+          {
+            id: "assignment-2",
+            projectStreamerId: "project-streamer-1",
+            groupId: "group-2",
+            effectiveFrom: "2026-07-01T00:00:00.000Z",
+            effectiveUntil: null,
+          },
+        ],
+        lockedBatchEffectiveTimes: [],
+      }),
+    ).toMatchObject({
+      closeAssignmentIds: ["assignment-1"],
+      insert: { groupId: "group-1" },
     });
   });
 
@@ -100,7 +132,7 @@ describe("settlement group membership governance", () => {
             id: "assignment-1",
             projectStreamerId: "project-streamer-1",
             groupId: "group-1",
-            effectiveFrom: "2026-07-01T00:00:00.000Z",
+            effectiveFrom: "2026-07-20T00:00:00.000Z",
             effectiveUntil: "2026-08-01T00:00:00.000Z",
           },
         ],
@@ -206,6 +238,33 @@ describe("settlement group membership governance", () => {
         currentGroupSnapshotHash: "b".repeat(64),
       }),
     ).toThrow("stale");
+  });
+
+  it("derives pending simulation staleness from current group snapshot mismatch", () => {
+    expect(
+      deriveSettlementGroupSimulationFreshness({
+        immutableSimulationId: "simulation-1",
+        status: "pending_review",
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        now: "2026-07-20T00:00:00.000Z",
+        simulationGroupSnapshotHash: "a".repeat(64),
+        currentGroupSnapshotHash: "b".repeat(64),
+      }),
+    ).toEqual({
+      immutableSimulationId: "simulation-1",
+      stale: true,
+      staleReason: "group_snapshot_mismatch",
+    });
+    expect(
+      deriveSettlementGroupSimulationFreshness({
+        immutableSimulationId: "simulation-2",
+        status: "active",
+        effectiveFrom: "2026-07-01T00:00:00.000Z",
+        now: "2026-07-20T00:00:00.000Z",
+        simulationGroupSnapshotHash: "a".repeat(64),
+        currentGroupSnapshotHash: "b".repeat(64),
+      }),
+    ).toMatchObject({ stale: false, staleReason: "historical_immutable" });
   });
 
   it("sorts compatible group rule layers by ascending priority", () => {

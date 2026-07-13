@@ -85,7 +85,14 @@ describe("Phase 2 custom rule lifecycle service", () => {
         projectId: PROJECT_ID,
         includeArchived: true,
       }),
-    ).resolves.toHaveLength(1);
+    ).resolves.toEqual([
+      expect.objectContaining({
+        unassignedProjectStreamers: [
+          expect.objectContaining({ projectStreamerId: uuid(931) }),
+        ],
+        baseRuleCoveredProjectStreamerIds: [uuid(931)],
+      }),
+    ]);
 
     await expect(
       service.createSettlementRuleGroup({
@@ -308,6 +315,127 @@ describe("Phase 2 custom rule lifecycle service", () => {
         result: "success",
       }),
     );
+  });
+
+  it("rejects group-rule approval when simulation omitted assigned or unassigned populations", async () => {
+    const fixture = phase2LifecycleFixture({
+      actor: { ...phase2Actor(), role: "owner" },
+      creatorUserId: uuid(902),
+      eligibleApprovers: [{ userId: USER_ID, role: "owner" }],
+      versionTarget: { targetType: "streamer_group", targetId: uuid(932) },
+      groupGovernance: {
+        assignedProjectStreamerIds: [uuid(931)],
+        unassignedProjectStreamerIds: [uuid(933)],
+        currentGroupSnapshotHash: "a".repeat(64),
+        simulationPopulation: {
+          assignedProjectStreamerIds: [uuid(931)],
+          unassignedProjectStreamerIds: [],
+          groupSnapshotHash: "a".repeat(64),
+        },
+        activePendingRules: [],
+      },
+    });
+    const service = phase2LifecycleService(fixture, { enabled: true });
+
+    await expect(
+      service.approveCustomRule({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        ruleVersionId: fixture.version.id,
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        reason: "Approve only with complete group population simulation.",
+        clientRequestId: "group-readiness-approval-1",
+      }),
+    ).rejects.toMatchObject({
+      code: "SETTLEMENT_GROUP_SIMULATION_POPULATION_INCOMPLETE",
+    });
+    expect(fixture.repository.approveCustomRule).not.toHaveBeenCalled();
+  });
+
+  it("blocks group-rule submission when active or pending rules have blocking conflicts", async () => {
+    const fixture = phase2LifecycleFixture({
+      versionTarget: { targetType: "streamer_group", targetId: uuid(932) },
+      groupGovernance: {
+        assignedProjectStreamerIds: [uuid(931)],
+        unassignedProjectStreamerIds: [uuid(933)],
+        currentGroupSnapshotHash: "a".repeat(64),
+        simulationPopulation: {
+          assignedProjectStreamerIds: [uuid(931)],
+          unassignedProjectStreamerIds: [uuid(933)],
+          groupSnapshotHash: "a".repeat(64),
+        },
+        activePendingRules: [
+          {
+            id: uuid(940),
+            targetGroupId: uuid(932),
+            priority: 100,
+            compositionMode: "add",
+            projectStreamerIds: [uuid(931)],
+            status: "active",
+          },
+          {
+            id: uuid(941),
+            targetGroupId: uuid(932),
+            priority: 100,
+            compositionMode: "multiply",
+            projectStreamerIds: [uuid(931)],
+            status: "pending_review",
+          },
+        ],
+      },
+    });
+    const service = phase2LifecycleService(fixture);
+
+    await expect(
+      service.applyAndSubmitCustomRule({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        source: { kind: "ai_draft", id: FIRST_DRAFT_ID },
+        sourceSimulationId: fixture.simulation.id,
+        destinationVersionId: uuid(942),
+        destinationSimulationId: uuid(943),
+        scope: "payable",
+        target: { targetType: "streamer_group", targetId: uuid(932) },
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        reason: "Submit group rule only when group conflicts are resolved.",
+        clientRequestId: "group-conflict-submit-1",
+      }),
+    ).rejects.toMatchObject({
+      code: "SETTLEMENT_GROUP_RULE_CONFLICT_BLOCKING",
+    });
+    expect(fixture.repository.applyAndSubmitCustomRule).not.toHaveBeenCalled();
+  });
+
+  it("requires owner approval for group-level replace material risk", async () => {
+    const fixture = phase2LifecycleFixture({
+      actor: { ...phase2Actor(), role: "ops_manager" },
+      eligibleApprovers: [{ userId: USER_ID, role: "ops_manager" }],
+      versionTarget: { targetType: "streamer_group", targetId: uuid(932) },
+      groupGovernance: {
+        assignedProjectStreamerIds: [uuid(931)],
+        unassignedProjectStreamerIds: [uuid(933)],
+        currentGroupSnapshotHash: "a".repeat(64),
+        simulationPopulation: {
+          assignedProjectStreamerIds: [uuid(931)],
+          unassignedProjectStreamerIds: [uuid(933)],
+          groupSnapshotHash: "a".repeat(64),
+        },
+        activePendingRules: [],
+      },
+    });
+    const service = phase2LifecycleService(fixture, { enabled: true });
+
+    await expect(
+      service.approveCustomRule({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        ruleVersionId: fixture.version.id,
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        reason: "Ops manager cannot approve group replace material risk.",
+        clientRequestId: "group-replace-owner-only-1",
+      }),
+    ).rejects.toMatchObject({ code: "MATERIAL_RISK_REQUIRES_OWNER" });
+    expect(fixture.repository.approveCustomRule).not.toHaveBeenCalled();
   });
 
   it("uses the server role and complete eligible-owner set for force approval", async () => {
@@ -787,12 +915,16 @@ function phase2LifecycleFixture(overrides: Record<string, unknown> = {}) {
     catalogHash: "a".repeat(64),
     dataSelectionHash: "e".repeat(64),
   };
+  const versionTarget = (overrides.versionTarget ?? {
+    targetType: "project",
+    targetId: null,
+  }) as { targetType: "project" | "streamer_group"; targetId: string | null };
   const version = {
     id: uuid(900),
     organizationId: ORGANIZATION_ID,
     projectId: PROJECT_ID,
     scope: "payable",
-    target: { targetType: "project", targetId: null },
+    target: versionTarget,
     executionGrain: "report",
     compositionMode: "replace",
     priority: 100,
@@ -857,6 +989,7 @@ function phase2LifecycleFixture(overrides: Record<string, unknown> = {}) {
     },
     riskConfiguration: overrides.riskConfiguration,
     reopenedAt: overrides.reopenedAt ?? null,
+    groupGovernance: overrides.groupGovernance,
     archiveSafety: {
       remainingCustomLayerCount: 1,
       fixedFallbackAvailable: false,
@@ -937,6 +1070,14 @@ function phase2GroupGovernanceFixture(overrides: Record<string, unknown> = {}) {
     activeRuleCount: 0,
     pendingRuleCount: 0,
     futureAssignmentCount: 0,
+    unassignedProjectStreamers: [
+      {
+        projectStreamerId: uuid(931),
+        streamerId: uuid(934),
+        displayName: "Streamer A",
+      },
+    ],
+    baseRuleCoveredProjectStreamerIds: [uuid(931)],
     ...((overrides.group as Record<string, unknown> | undefined) ?? {}),
   };
   const context = {

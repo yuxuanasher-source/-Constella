@@ -101,6 +101,14 @@ describe("Phase 2 custom rule lifecycle repository", () => {
         futureAssignmentCount: 1,
         activeRuleCount: 0,
         pendingRuleCount: 1,
+        unassignedProjectStreamers: [
+          {
+            projectStreamerId: PROJECT_STREAMER_ID,
+            streamerId: "00000000-0000-4000-8000-000000000014",
+            displayName: "Streamer A",
+          },
+        ],
+        baseRuleCoveredProjectStreamerIds: [PROJECT_STREAMER_ID],
       }),
     ]);
   });
@@ -179,6 +187,68 @@ describe("Phase 2 custom rule lifecycle repository", () => {
       p_reason: "Move streamer into the August rule group.",
       p_client_request_id: "group-assignment-1",
     });
+  });
+
+  it("reads pending group-rule simulations as stale after membership snapshot changes", async () => {
+    const rpc = vi.fn(async () => ({
+      data: settlementGroupAssignmentChangeRow(),
+      error: null,
+    }));
+    const from = vi.fn((table: string) => {
+      expect(table).toBe("settlement_group_simulation_freshness");
+      return {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        in: vi.fn().mockReturnThis(),
+        gte: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        returns: vi.fn(async () => ({
+          data: [
+            settlementGroupSimulationFreshnessRow({
+              group_snapshot_hash: HASH_E,
+              current_group_snapshot_hash: HASH_F,
+            }),
+          ],
+          error: null,
+        })),
+      };
+    });
+    const repository = new SupabaseCustomRuleReadRepository({
+      from,
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      changeSettlementGroupAssignment(
+        input: Record<string, unknown>,
+      ): Promise<{ newGroupSnapshotHash: string }>;
+      listSettlementGroupSimulationFreshness(
+        input: Record<string, unknown>,
+      ): Promise<Array<{ stale: boolean; staleReason: string }>>;
+    };
+
+    const change = await repository.changeSettlementGroupAssignment({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      projectStreamerId: PROJECT_STREAMER_ID,
+      groupId: GROUP_ID,
+      effectiveFrom: "2026-08-01T00:00:00.000Z",
+      effectiveUntil: null,
+      reason: "Move streamer into the August rule group.",
+      clientRequestId: "group-assignment-stale-1",
+    });
+    const freshness = await repository.listSettlementGroupSimulationFreshness({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      currentGroupSnapshotHash: change.newGroupSnapshotHash,
+      now: "2026-07-20T00:00:00.000Z",
+    });
+
+    expect(freshness).toEqual([
+      expect.objectContaining({
+        simulationId: SIMULATION_ID,
+        stale: true,
+        staleReason: "group_snapshot_mismatch",
+      }),
+    ]);
   });
 
   it("submits one atomic RPC with distinct source and destination identities", async () => {
@@ -4036,6 +4106,14 @@ function settlementRuleGroupRow(overrides: Record<string, unknown> = {}) {
     active_rule_count: 0,
     pending_rule_count: 0,
     future_assignment_count: 0,
+    unassigned_project_streamers: [
+      {
+        project_streamer_id: PROJECT_STREAMER_ID,
+        streamer_id: "00000000-0000-4000-8000-000000000014",
+        display_name: "Streamer A",
+      },
+    ],
+    base_rule_covered_project_streamer_ids: [PROJECT_STREAMER_ID],
     ...overrides,
   };
 }
@@ -4061,6 +4139,21 @@ function settlementGroupAssignmentChangeRow() {
     inserted_assignment: settlementGroupAssignmentRow(),
     closed_assignment_ids: [ASSIGNMENT_ID],
     new_group_snapshot_hash: HASH_F,
+  };
+}
+
+function settlementGroupSimulationFreshnessRow(
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    simulation_id: SIMULATION_ID,
+    rule_version_id: RULE_VERSION_ID,
+    target_group_id: GROUP_ID,
+    status: "pending_review",
+    effective_from: "2026-08-01T00:00:00.000Z",
+    group_snapshot_hash: HASH_E,
+    current_group_snapshot_hash: HASH_E,
+    ...overrides,
   };
 }
 
