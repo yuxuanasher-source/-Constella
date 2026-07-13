@@ -22,6 +22,7 @@ import type {
   InsertSettlementFormulaSimulationInput,
   SettlementSimulationGroupPopulation,
   SettlementAiGeneratedTestCase,
+  SettlementSimulationOutputKind,
   SettlementSimulationPersistedFinding,
   SettlementSimulationWarning,
 } from "./custom-rule-repository";
@@ -792,6 +793,7 @@ export function simulateCustomSettlementRule(
   const persistedWarnings = mergePersistedFindings(warnings, riskFlags);
   const payableScope = input.contract.scope === "payable";
   const receivableScope = input.contract.scope === "receivable";
+  const outputKind = simulationOutputKind(input.contract.scope);
   const groupPopulation = normalizeGroupPopulation(
     input.sampleSelection.groupPopulation,
   );
@@ -817,6 +819,7 @@ export function simulateCustomSettlementRule(
     },
     coverage: {
       summarySchemaVersion: 2,
+      outputKind,
       totalRecords: sortedRecords.length,
       evaluatedRecords: evaluatedCount,
       skippedRecords: sortedRecords.length - evaluatedCount,
@@ -1922,6 +1925,14 @@ function expectedMoneyCents(value: TypedRuntimeValue): string | null {
 
 function isMoneyOutputAst(ast: CompiledAstNode): boolean {
   return ast.kind === "call" && ast.callee === "money_result";
+}
+
+function simulationOutputKind(
+  scope: BusinessRuleContract["scope"],
+): SettlementSimulationOutputKind {
+  if (scope === "external_cost") return "cost_items";
+  if (scope === "reconciliation") return "checks";
+  return "money_result";
 }
 
 function resultAmountCents(

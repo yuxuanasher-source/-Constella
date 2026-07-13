@@ -942,6 +942,9 @@ describe("simulateCustomSettlementRule", () => {
         newReceivableAmountCents: null,
         verificationStatus: "unverified",
       });
+      expect(result.persistable.coverage).toMatchObject({
+        outputKind: scope === "external_cost" ? "cost_items" : "checks",
+      });
       expect(result.persistable.deltas).toMatchObject({
         payableAmountCents: null,
         receivableAmountCents: null,

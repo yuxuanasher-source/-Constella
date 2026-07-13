@@ -791,7 +791,7 @@ describe("custom rule simulation session DTOs", () => {
       const dto = toCustomRuleSessionDto({
         history: sessionHistoryFixture() as never,
         draft: typedOutputSessionDraft(scope) as never,
-        simulation: typedOutputCompleteSimulationFixture(),
+        simulation: typedOutputCompleteSimulationFixture(scope),
       });
 
       expect(dto.simulation).toMatchObject({
@@ -976,11 +976,14 @@ function typedOutputSessionDraft(scope: "external_cost" | "reconciliation") {
   };
 }
 
-function typedOutputCompleteSimulationFixture(): CompleteSettlementFormulaSimulation {
+function typedOutputCompleteSimulationFixture(
+  scope: "external_cost" | "reconciliation",
+): CompleteSettlementFormulaSimulation {
   return {
     ...completeSimulationFixture(),
     coverage: {
       summarySchemaVersion: 2,
+      outputKind: scope === "external_cost" ? "cost_items" : "checks",
       totalRecords: 1,
       evaluatedRecords: 1,
       skippedRecords: 0,
@@ -4088,6 +4091,105 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     expect(secondEvidence.provenance.evidenceHash).not.toBe(
       firstEvidence.provenance.evidenceHash,
     );
+  });
+
+  it.each(["external_cost", "reconciliation"] as const)(
+    "authorizes %s typed-output user examples through the public evidence path",
+    async (scope) => {
+      const externalCost = scope === "external_cost";
+      const expectedResult = externalCost
+        ? {
+            type: "array" as const,
+            items: [
+              {
+                type: "object" as const,
+                fields: {
+                  category: { type: "string" as const, value: "traffic" },
+                  amountCents: {
+                    type: "money_cents" as const,
+                    amountCents: 50_000,
+                  },
+                  memo: { type: "string" as const, value: "7 月投流" },
+                },
+              },
+            ],
+          }
+        : {
+            type: "array" as const,
+            items: [
+              {
+                type: "object" as const,
+                fields: {
+                  severity: { type: "string" as const, value: "warn" },
+                  message: {
+                    type: "string" as const,
+                    value: "存在红证据场次",
+                  },
+                  condition: { type: "boolean" as const, value: true },
+                },
+              },
+            ],
+          };
+      const example = {
+        id: `typed-${scope}`,
+        inputs: externalCost
+          ? { system_minutes: { type: "integer" as const, value: 60 } }
+          : { period_report_count: { type: "integer" as const, value: 1 } },
+        expectedResult,
+      };
+      const harness = await evidenceHarness({
+        draft: typedOutputSimulationDraft(scope),
+      });
+
+      const authorized = await harness.adapter.authorizeSelection(
+        authorizationInput({ ...selection(), userExamples: [example] }),
+      );
+      const evidence = await harness.adapter.loadAuthorizedEvidence({
+        actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        selection: authorized,
+      });
+
+      expect(evidence.userExamples).toEqual([example]);
+    },
+  );
+
+  it("rejects typed-output user examples that do not match the draft scope", async () => {
+    const harness = await evidenceHarness();
+
+    await expect(
+      harness.adapter.authorizeSelection(
+        authorizationInput({
+          ...selection(),
+          userExamples: [
+            {
+              id: "cost-for-payable",
+              inputs: { system_minutes: { type: "integer", value: 60 } },
+              expectedResult: {
+                type: "array",
+                items: [
+                  {
+                    type: "object",
+                    fields: {
+                      category: { type: "string", value: "traffic" },
+                      amountCents: {
+                        type: "money_cents",
+                        amountCents: 50_000,
+                      },
+                      memo: { type: "string", value: "7 月投流" },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_RULE_USER_EXAMPLE_INVALID",
+      status: 400,
+    });
   });
 
   it("derives paired contribution margin as receivable minus payable", async () => {

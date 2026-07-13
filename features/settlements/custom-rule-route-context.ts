@@ -136,12 +136,114 @@ const userExampleInputsSchema = z
     }
   });
 
+const GENERATED_COST_ITEM_TYPES = new Set([
+  "cpa",
+  "cps",
+  "gift",
+  "supplier_fee",
+  "traffic",
+  "platform_fee",
+]);
+const CHECK_SEVERITIES = new Set(["pass", "warn", "block"]);
+const MAX_TYPED_EXPECTED_ITEMS = 20;
+const MAX_TYPED_EXPECTED_TEXT_LENGTH = 120;
+const MAX_GENERATED_COST_ITEM_AMOUNT_CENTS = 1_000_000_000;
+
+function isExternalCostExpectedResult(value: TypedRuntimeValue): boolean {
+  return (
+    value.type === "array" &&
+    value.items.length <= MAX_TYPED_EXPECTED_ITEMS &&
+    value.items.every((item) => {
+      if (item.type !== "object") return false;
+      const keys = Object.keys(item.fields).sort();
+      if (keys.join("\u0000") !== "amountCents\u0000category\u0000memo") {
+        return false;
+      }
+      const category = item.fields.category;
+      const amount = item.fields.amountCents;
+      const memo = item.fields.memo;
+      return (
+        category?.type === "string" &&
+        GENERATED_COST_ITEM_TYPES.has(category.value) &&
+        amount?.type === "money_cents" &&
+        Number.isSafeInteger(amount.amountCents) &&
+        amount.amountCents >= 0 &&
+        amount.amountCents <= MAX_GENERATED_COST_ITEM_AMOUNT_CENTS &&
+        memo?.type === "string" &&
+        memo.value.length > 0 &&
+        memo.value.length <= MAX_TYPED_EXPECTED_TEXT_LENGTH &&
+        !/[\u0000-\u001f\u007f]/u.test(memo.value)
+      );
+    })
+  );
+}
+
+function isReconciliationExpectedResult(value: TypedRuntimeValue): boolean {
+  return (
+    value.type === "array" &&
+    value.items.length <= MAX_TYPED_EXPECTED_ITEMS &&
+    value.items.every((item) => {
+      if (item.type !== "object") return false;
+      const keys = Object.keys(item.fields).sort();
+      if (keys.join("\u0000") !== "condition\u0000message\u0000severity") {
+        return false;
+      }
+      const severity = item.fields.severity;
+      const message = item.fields.message;
+      const condition = item.fields.condition;
+      return (
+        severity?.type === "string" &&
+        CHECK_SEVERITIES.has(severity.value) &&
+        message?.type === "string" &&
+        message.value.length > 0 &&
+        message.value.length <= MAX_TYPED_EXPECTED_TEXT_LENGTH &&
+        !/[\u0000-\u001f\u007f]/u.test(message.value) &&
+        condition?.type === "boolean"
+      );
+    })
+  );
+}
+
+function isSupportedUserExampleExpectedResult(
+  value: TypedRuntimeValue,
+): boolean {
+  return (
+    value.type === "money_cents" ||
+    isExternalCostExpectedResult(value) ||
+    isReconciliationExpectedResult(value)
+  );
+}
+
+function assertUserExamplesMatchScope(
+  examples: Array<z.infer<typeof customRuleUserExampleSchema>>,
+  scope: CustomRuleScope,
+): void {
+  for (const [index, example] of examples.entries()) {
+    const expectedResult = example.expectedResult;
+    const compatible =
+      scope === "external_cost"
+        ? isExternalCostExpectedResult(expectedResult)
+        : scope === "reconciliation"
+          ? isReconciliationExpectedResult(expectedResult)
+          : expectedResult.type === "money_cents";
+    if (!compatible) {
+      throw new CustomRuleRouteError({
+        code: "CUSTOM_RULE_USER_EXAMPLE_INVALID",
+        message: "User example expected result does not match rule scope",
+        status: 400,
+        retryable: false,
+        path: ["selection", "userExamples", index, "expectedResult"],
+      });
+    }
+  }
+}
+
 export const customRuleUserExampleSchema = z.strictObject({
   id: z.string().trim().min(1).max(120),
   inputs: userExampleInputsSchema,
   expectedResult: typedRuntimeValueSchema.refine(
-    (value) => value.type === "money_cents",
-    { message: "user examples must expect money" },
+    isSupportedUserExampleExpectedResult,
+    { message: "user example expected result is not supported for simulation" },
   ),
 });
 
@@ -1030,7 +1132,13 @@ function mapCustomRuleSimulationDto(
     simulation.historicalTotals.newPayableAmountCents !== null;
   const receivableActive =
     simulation.historicalTotals.newReceivableAmountCents !== null;
-  if (payableActive && receivableActive) {
+  const outputKind = simulation.coverage.outputKind ?? "money_result";
+  const typedOutputSummary =
+    outputKind === "cost_items" || outputKind === "checks";
+  if (
+    (typedOutputSummary && (payableActive || receivableActive)) ||
+    (!typedOutputSummary && payableActive === receivableActive)
+  ) {
     throw new CustomRuleRouteError({
       code: "CUSTOM_RULE_RESPONSE_INVALID",
       message: "Settlement rule response is invalid",
@@ -1047,7 +1155,6 @@ function mapCustomRuleSimulationDto(
   const totalDeltaCents = payableActive
     ? simulation.deltas.payableAmountCents
     : simulation.deltas.receivableAmountCents;
-  const typedOutputSummary = !payableActive && !receivableActive;
   if (!typedOutputSummary && totalNewCents === null) {
     throw new CustomRuleRouteError({
       code: "CUSTOM_RULE_RESPONSE_INVALID",
@@ -1665,6 +1772,10 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           409,
         );
       }
+      assertUserExamplesMatchScope(
+        userExamples,
+        draft.businessContract.scope,
+      );
       const catalog = await input.catalog.getCatalog({
         organizationId: unsafeInput.actor.organizationId,
         projectId: unsafeInput.projectId,

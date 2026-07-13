@@ -197,6 +197,44 @@ function userExample(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function externalCostUserExample() {
+  return userExample({
+    id: "user-cost-item",
+    expectedResult: {
+      type: "array",
+      items: [
+        {
+          type: "object",
+          fields: {
+            category: { type: "string", value: "traffic" },
+            amountCents: { type: "money_cents", amountCents: 50_000 },
+            memo: { type: "string", value: "7 月投流" },
+          },
+        },
+      ],
+    },
+  });
+}
+
+function reconciliationUserExample() {
+  return userExample({
+    id: "user-check",
+    expectedResult: {
+      type: "array",
+      items: [
+        {
+          type: "object",
+          fields: {
+            severity: { type: "string", value: "warn" },
+            message: { type: "string", value: "存在红证据场次" },
+            condition: { type: "boolean", value: true },
+          },
+        },
+      ],
+    },
+  });
+}
+
 function request(value: unknown = body()) {
   return new Request("http://localhost", {
     method: "POST",
@@ -335,6 +373,36 @@ describe("settlement rule simulation route", () => {
   });
 
   it.each([
+    ["external_cost", externalCostUserExample()],
+    ["reconciliation", reconciliationUserExample()],
+  ] as const)(
+    "allows %s typed-output user examples to reach simulation authorization",
+    async (_scope, example) => {
+      const routeContext = context("finance");
+      vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+        routeContext as never,
+      );
+      const selectionWithExamples = {
+        ...body().simulationSelection,
+        userExamples: [example],
+      };
+
+      const response = await POST(
+        request({
+          ...body(),
+          simulationSelection: selectionWithExamples,
+        }),
+        { params: Promise.resolve({ projectId: PROJECT_ID }) },
+      );
+
+      expect(response.status).toBe(201);
+      expect(routeContext.authorizeSimulationSelection).toHaveBeenCalledWith(
+        expect.objectContaining({ selection: selectionWithExamples }),
+      );
+    },
+  );
+
+  it.each([
     [
       "too many examples",
       Array.from({ length: 51 }, (_, index) =>
@@ -342,7 +410,7 @@ describe("settlement rule simulation route", () => {
       ),
     ],
     [
-      "non-money expectation",
+      "unsupported scalar expectation",
       [
         userExample({
           expectedResult: { type: "rate_bps", rateBps: 1000 },

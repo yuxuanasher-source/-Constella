@@ -278,8 +278,14 @@ export type SettlementSimulationSampleSelection = {
   groupPopulation?: SettlementSimulationGroupPopulation;
 };
 
+export type SettlementSimulationOutputKind =
+  | "money_result"
+  | "cost_items"
+  | "checks";
+
 export type SettlementSimulationCoverage = {
   summarySchemaVersion: 2;
+  outputKind?: SettlementSimulationOutputKind;
   totalRecords: number;
   evaluatedRecords: number;
   skippedRecords: number;
@@ -1504,6 +1510,7 @@ const legacySimulationCoverageSchema = z
 const simulationCoverageSchema = z
   .strictObject({
     summarySchemaVersion: z.literal(2),
+    outputKind: z.enum(["money_result", "cost_items", "checks"]).optional(),
     totalRecords: nonnegativeSafeIntegerSchema,
     evaluatedRecords: nonnegativeSafeIntegerSchema,
     skippedRecords: nonnegativeSafeIntegerSchema,
@@ -2038,10 +2045,18 @@ function validateSimulationV2SummaryConsistency(
 
   const totals = input.historicalTotals;
   const deltas = input.deltas;
+  const outputKind = input.coverage.outputKind ?? "money_result";
   const payableActive = totals.newPayableAmountCents !== null;
   const receivableActive = totals.newReceivableAmountCents !== null;
-  const typedOutputSummary = !payableActive && !receivableActive;
+  const typedOutputSummary =
+    outputKind === "cost_items" || outputKind === "checks";
   if (typedOutputSummary) {
+    if (payableActive || receivableActive) {
+      issue(
+        ["historicalTotals"],
+        "typed-output summaries must not include payable or receivable new totals",
+      );
+    }
     if (totals.verificationStatus !== "unverified") {
       issue(
         ["historicalTotals", "verificationStatus"],
@@ -2159,6 +2174,18 @@ function validateSimulationV2SummaryConsistency(
   );
   if (new Set(findingKeys).size !== findingKeys.length) {
     issue(["warnings"], "finding kind and code pairs must be unique");
+  }
+  if (
+    typedOutputSummary &&
+    input.scenarios.some(
+      (scenario) =>
+        scenario.outcome === "calculated" && scenario.amountCents !== null,
+    )
+  ) {
+    issue(
+      ["scenarios"],
+      "typed-output calculated scenarios must not include a money amount",
+    );
   }
   if (
     !typedOutputSummary &&

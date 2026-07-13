@@ -3544,7 +3544,7 @@ describe("custom-rule draft and simulation persistence", () => {
 
   it("writes typed-output v2 summaries without payable or receivable totals", async () => {
     const owner = { kind: "ai_draft" as const, id: DRAFT_ID };
-    const input = typedOutputV2SimulationInput(owner);
+    const input = typedOutputV2SimulationInput(owner, "cost_items");
     const mock = createPersistenceClient({
       simulationRpcData: simulationRow(owner, {
         sample_selection: input.sampleSelection,
@@ -3578,6 +3578,53 @@ describe("custom-rule draft and simulation persistence", () => {
       }),
     );
   });
+
+  it("rejects money-output v2 summaries with no active money total", async () => {
+    const mock = createPersistenceClient();
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+    const input = typedOutputV2SimulationInput({
+      kind: "ai_draft",
+      id: DRAFT_ID,
+    });
+
+    await expect(repository.insertSimulation(input)).rejects.toThrow(
+      customRuleRepositoryModule.CustomRulePersistenceInputError,
+    );
+    expect(mock.rpc).not.toHaveBeenCalled();
+  });
+
+  it.each(["cost_items", "checks"] as const)(
+    "accepts %s typed-output v2 summaries with explicit output kind",
+    async (outputKind) => {
+      const owner = { kind: "ai_draft" as const, id: DRAFT_ID };
+      const input = typedOutputV2SimulationInput(owner, outputKind);
+      const mock = createPersistenceClient({
+        simulationRpcData: simulationRow(owner, {
+          sample_selection: input.sampleSelection,
+          coverage: input.coverage,
+          scenarios: input.scenarios,
+          historical_totals: input.historicalTotals,
+          deltas: input.deltas,
+          largest_changes: input.largestChanges,
+          warnings: input.warnings,
+          duplicate: false,
+        }),
+      });
+      const repository: CustomRuleRepository =
+        new SupabaseCustomRuleReadRepository(mock.client);
+
+      const result = await repository.insertSimulation(input);
+
+      expect(result.coverage).toMatchObject({ outputKind });
+      expect(mock.rpc).toHaveBeenCalledWith(
+        "create_settlement_formula_simulation",
+        expect.objectContaining({
+          p_coverage: expect.objectContaining({ outputKind }),
+        }),
+      );
+    },
+  );
 
   it("narrows persisted simulations by their required summary discriminator", () => {
     const assertNarrowed = (simulation: SettlementFormulaSimulation) => {
@@ -5374,11 +5421,13 @@ function validV2SimulationInput(owner: SettlementSimulationOwner) {
 
 function typedOutputV2SimulationInput(
   owner: SettlementSimulationOwner,
+  outputKind?: "cost_items" | "checks",
 ): InsertSettlementFormulaSimulationInput {
   return {
     ...validSimulationInput(owner),
     coverage: {
       summarySchemaVersion: 2,
+      ...(outputKind ? { outputKind } : {}),
       totalRecords: 1,
       evaluatedRecords: 1,
       skippedRecords: 0,

@@ -205,6 +205,44 @@ function userExample(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function externalCostUserExample() {
+  return userExample({
+    id: "user-cost-item",
+    expectedResult: {
+      type: "array",
+      items: [
+        {
+          type: "object",
+          fields: {
+            category: { type: "string", value: "traffic" },
+            amountCents: { type: "money_cents", amountCents: 50_000 },
+            memo: { type: "string", value: "7 月投流" },
+          },
+        },
+      ],
+    },
+  });
+}
+
+function reconciliationUserExample() {
+  return userExample({
+    id: "user-check",
+    expectedResult: {
+      type: "array",
+      items: [
+        {
+          type: "object",
+          fields: {
+            severity: { type: "string", value: "warn" },
+            message: { type: "string", value: "存在红证据场次" },
+            condition: { type: "boolean", value: true },
+          },
+        },
+      ],
+    },
+  });
+}
+
 function request(value: unknown = body()) {
   return new Request("http://localhost", {
     method: "POST",
@@ -295,6 +333,37 @@ describe("settlement rule contract confirmation route", () => {
       }),
     );
   });
+
+  it.each([
+    ["external_cost", externalCostUserExample()],
+    ["reconciliation", reconciliationUserExample()],
+  ] as const)(
+    "allows %s typed-output user examples to reach confirmation authorization",
+    async (_scope, example) => {
+      const routeContext = context("owner");
+      const selectionWithExamples = {
+        ...body().simulationSelection,
+        userExamples: [example],
+      };
+      routeContext.authorizeSimulationSelection.mockResolvedValue({
+        ...body().simulationSelection,
+        selectionToken: `server:${"f".repeat(64)}`,
+      });
+      vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+        routeContext as never,
+      );
+
+      const response = await POST(
+        request({ ...body(), simulationSelection: selectionWithExamples }),
+        { params: params() },
+      );
+
+      expect(response.status).toBe(200);
+      expect(routeContext.authorizeSimulationSelection).toHaveBeenCalledWith(
+        expect.objectContaining({ selection: selectionWithExamples }),
+      );
+    },
+  );
 
   it("rejects an invalid user example type before billing", async () => {
     const routeContext = context("owner");
