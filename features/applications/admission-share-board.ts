@@ -811,7 +811,38 @@ export async function getPublicAdmissionShareBoard({
     now,
   });
 
-  return toPublicShareDto(snapshot);
+  return toPublicShareDto(snapshot, { token, accessCode });
+}
+
+export async function getPublicAdmissionRecordingPlaybackSource({
+  repo,
+  token,
+  accessCode,
+  recordingSubmissionId,
+  now = new Date().toISOString(),
+}: {
+  repo: AdmissionShareBoardRepository;
+  token: string;
+  accessCode?: string;
+  recordingSubmissionId: string;
+  now?: string;
+}) {
+  const snapshot = await requirePublicSnapshot({
+    repo,
+    token,
+    accessCode,
+    now,
+  });
+  const item = snapshot.items.find(
+    (entry) => entry.recordingSubmissionId === recordingSubmissionId,
+  );
+  if (!item) {
+    throw new Error("Recording is not part of this share board");
+  }
+  return {
+    recordingUrl: item.recordingUrl,
+    storagePath: item.storagePath,
+  };
 }
 
 export type SubmitVendorAdmissionReviewsInput = {
@@ -1088,7 +1119,10 @@ async function requirePublicSnapshot({
   return snapshot;
 }
 
-function toPublicShareDto(snapshot: PublicAdmissionShareBoardSnapshot) {
+function toPublicShareDto(
+  snapshot: PublicAdmissionShareBoardSnapshot,
+  input: { token: string; accessCode?: string },
+) {
   return {
     id: snapshot.id,
     // 供服务端解析 rubric（理由标签）；路由返回前会剥离，不进公开 payload。
@@ -1105,11 +1139,34 @@ function toPublicShareDto(snapshot: PublicAdmissionShareBoardSnapshot) {
       recordingVersion: item.recordingVersion,
       recordingStatus: item.recordingStatus,
       recordingUrl: item.recordingUrl,
+      playbackUrl:
+        item.recordingUrl ??
+        (item.storagePath
+          ? publicAdmissionRecordingPlaybackUrl({
+              token: input.token,
+              accessCode: input.accessCode,
+              recordingSubmissionId: item.recordingSubmissionId,
+            })
+          : null),
       hasPrivateStorage: Boolean(item.storagePath && !item.recordingUrl),
       streamer: item.streamer,
       vendorReview: item.vendorReview,
     })),
   };
+}
+
+function publicAdmissionRecordingPlaybackUrl(input: {
+  token: string;
+  accessCode?: string;
+  recordingSubmissionId: string;
+}) {
+  const accessCode = input.accessCode?.trim();
+  const query = accessCode
+    ? `?accessCode=${encodeURIComponent(accessCode)}`
+    : "";
+  return `/api/public/admission-share/${encodeURIComponent(
+    input.token,
+  )}/recordings/${encodeURIComponent(input.recordingSubmissionId)}${query}`;
 }
 
 function assertVendorDecision(value: VendorAdmissionDecision) {

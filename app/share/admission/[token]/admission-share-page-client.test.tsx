@@ -23,7 +23,8 @@ const shareBoard = {
       recordingSubmissionId: "rec-1",
       recordingVersion: 2,
       recordingStatus: "reviewing",
-      recordingUrl: "https://video.example/rec-1",
+      recordingUrl: "https://video.example/rec-1.mp4",
+      playbackUrl: "https://video.example/rec-1.mp4",
       hasPrivateStorage: false,
       streamer: {
         id: "streamer-1",
@@ -34,16 +35,34 @@ const shareBoard = {
     },
     {
       applicationId: "app-2",
-      applicationStatus: "joined",
+      applicationStatus: "recording_reviewing",
       recordingSubmissionId: "rec-2",
       recordingVersion: 1,
       recordingStatus: "approved",
-      recordingUrl: null,
-      hasPrivateStorage: true,
+      recordingUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
+      playbackUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
+      hasPrivateStorage: false,
       streamer: {
         id: "streamer-2",
         displayName: "Streamer Two",
         accountLabel: "Bilibili / two-live",
+      },
+      vendorReview: null,
+    },
+    {
+      applicationId: "app-3",
+      applicationStatus: "joined",
+      recordingSubmissionId: "rec-3",
+      recordingVersion: 1,
+      recordingStatus: "approved",
+      recordingUrl: null,
+      playbackUrl:
+        "/api/public/admission-share/plain-token/recordings/rec-3?accessCode=2468",
+      hasPrivateStorage: true,
+      streamer: {
+        id: "streamer-3",
+        displayName: "Streamer Three",
+        accountLabel: "Kuaishou / three-live",
       },
       vendorReview: {
         decision: "backup",
@@ -109,14 +128,40 @@ describe("AdmissionSharePageClient", () => {
     expect(screen.getByText("Vendor A / Game A")).toBeInTheDocument();
     expect(screen.getByText("Streamer One")).toBeInTheDocument();
     expect(screen.getByText("Douyin / one-live")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "查看录屏" })).toHaveAttribute(
-      "href",
-      "https://video.example/rec-1",
-    );
+    expect(
+      screen.getByRole("link", { name: "打开 Streamer One 原始链接" }),
+    ).toHaveAttribute("href", "https://video.example/rec-1.mp4");
     expect(screen.getByText("Can be backup.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("访问码")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("复核人姓名")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("联系方式")).not.toBeInTheDocument();
     expect(container.textContent).not.toContain("tokenHash");
     expect(container.textContent).not.toContain("storagePath");
     expect(container.textContent).not.toContain("private/path");
+  });
+
+  it("renders professional delivery copy and switches recording players by source type", async () => {
+    render(
+      <AdmissionSharePageClient token="plain-token" initialAccessCode="2468" />,
+    );
+
+    expect(await screen.findByText("Alpha Project")).toBeInTheDocument();
+    expect(screen.getByText("录屏交付复核包")).toBeInTheDocument();
+    expect(screen.getByText("甲方验收视图")).toBeInTheDocument();
+
+    expect(
+      screen.getByLabelText("Streamer One 原始录屏播放器"),
+    ).toHaveAttribute("src", "https://video.example/rec-1.mp4");
+    expect(screen.getByTitle("Streamer Two 平台录屏播放器")).toHaveAttribute(
+      "src",
+      expect.stringContaining("player.bilibili.com/player.html"),
+    );
+    expect(
+      screen.getByLabelText("Streamer Three 原始录屏播放器"),
+    ).toHaveAttribute(
+      "src",
+      "/api/public/admission-share/plain-token/recordings/rec-3?accessCode=2468",
+    );
   });
 
   it("submits reviewer decisions with locked recording versions", async () => {
@@ -126,12 +171,6 @@ describe("AdmissionSharePageClient", () => {
     );
 
     await screen.findByText("Alpha Project");
-    fireEvent.change(screen.getByLabelText("复核人姓名"), {
-      target: { value: "Vendor Reviewer" },
-    });
-    fireEvent.change(screen.getByLabelText("联系方式"), {
-      target: { value: "reviewer@example.com" },
-    });
     fireEvent.change(screen.getByLabelText("Streamer One 决策"), {
       target: { value: "selected" },
     });
@@ -152,8 +191,8 @@ describe("AdmissionSharePageClient", () => {
         String(url).includes("/reviews") && init?.method === "POST",
     );
     expect(JSON.parse(String(submitCall?.[1]?.body))).toEqual({
-      reviewerName: "Vendor Reviewer",
-      reviewerContact: "reviewer@example.com",
+      reviewerName: "",
+      reviewerContact: "",
       items: [
         {
           recordingSubmissionId: "rec-1",
@@ -164,6 +203,13 @@ describe("AdmissionSharePageClient", () => {
         },
         {
           recordingSubmissionId: "rec-2",
+          recordingVersion: 1,
+          decision: "pending",
+          remark: "",
+          reasonCodes: [],
+        },
+        {
+          recordingSubmissionId: "rec-3",
           recordingVersion: 1,
           decision: "backup",
           remark: "Can be backup.",

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createAdmissionShareBoard,
   getPublicAdmissionShareBoard,
+  getPublicAdmissionRecordingPlaybackSource,
   hashShareSecret,
   mapVendorDecisionToSyncPatch,
   submitVendorAdmissionReviews,
@@ -364,6 +365,7 @@ describe("admission share board service", () => {
     const dto = await getPublicAdmissionShareBoard({
       repo,
       token: "plain-token",
+      accessCode: "2468",
       now: "2026-06-07T01:00:00.000Z",
     });
 
@@ -378,19 +380,44 @@ describe("admission share board service", () => {
             recordingSubmissionId: "rec-1",
             recordingVersion: 2,
             recordingUrl: "https://video.example/rec-1",
+            playbackUrl: "https://video.example/rec-1",
           }),
           expect.objectContaining({
             applicationId: "app-2",
             recordingSubmissionId: "rec-2",
             recordingVersion: 1,
             recordingUrl: null,
+            playbackUrl:
+              "/api/public/admission-share/plain-token/recordings/rec-2?accessCode=2468",
             hasPrivateStorage: true,
           }),
         ],
       }),
     );
-    expect(JSON.stringify(dto)).not.toContain("plain-token");
+    expect(JSON.stringify(dto)).not.toContain("tokenHash");
+    expect(JSON.stringify(dto)).not.toContain("accessCodeHash");
     expect(JSON.stringify(dto)).not.toContain("private/path/rec-2.mp4");
+  });
+
+  it("resolves private recording playback sources only after share gating", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+    });
+
+    const source = await getPublicAdmissionRecordingPlaybackSource({
+      repo,
+      token: "plain-token",
+      recordingSubmissionId: "rec-2",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(source).toEqual({
+      recordingUrl: null,
+      storagePath: "private/path/rec-2.mp4",
+    });
+    expect(repo.getPublicShareBoardSnapshot).toHaveBeenCalledWith(
+      hashShareSecret("plain-token"),
+    );
   });
 
   it("rejects expired public share links", async () => {
@@ -463,9 +490,11 @@ describe("admission share board service", () => {
   it("never fails a vendor submission because evaluation recording failed", async () => {
     const repo = createRepo({
       getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
-      upsertVendorReviews: vi.fn().mockResolvedValue([
-        { id: "vendor-review-1", recordingSubmissionId: "rec-1" },
-      ]),
+      upsertVendorReviews: vi
+        .fn()
+        .mockResolvedValue([
+          { id: "vendor-review-1", recordingSubmissionId: "rec-1" },
+        ]),
     });
 
     const result = await submitVendorAdmissionReviews({
