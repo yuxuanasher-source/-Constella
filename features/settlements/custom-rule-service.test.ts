@@ -6716,10 +6716,7 @@ function externalCostServiceContract(): BusinessRuleContract {
       kind: index === 0 ? "normal" : "boundary",
       description: "生成成本项。",
       inputs: { import_row_index: { type: "integer", value: index + 1 } },
-      expectedResult: index === 0 ? externalCostExpectedResult() : {
-        type: "array",
-        items: [],
-      },
+      expectedResult: externalCostExpectedResult(),
     })),
   };
 }
