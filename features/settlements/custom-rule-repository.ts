@@ -592,6 +592,11 @@ export type RequestCustomRuleChangesInput = CustomRuleReviewTransitionInput & {
   comment: string;
 };
 
+export type CustomRuleActivationFailureInput =
+  CustomRuleReviewTransitionInput & {
+    errorMessage: string;
+  };
+
 export type ApproveCustomRuleRepositoryInput =
   CustomRuleReviewTransitionInput & {
     effectiveFrom: string;
@@ -640,7 +645,7 @@ export type CustomSettlementRuleReviewEvent = z.infer<
 export type CustomRuleLifecycleResult = {
   version: CustomSettlementRuleVersion;
   simulation: CompleteSettlementFormulaSimulation;
-  event: CustomSettlementRuleReviewEvent;
+  event: CustomSettlementRuleReviewEvent | null;
 };
 export type SavedCustomRuleDraftResult = Omit<
   CustomRuleLifecycleResult,
@@ -691,6 +696,9 @@ export type CustomRuleRepository = CustomRuleReadRepository & {
   ): Promise<CustomRuleLifecycleResult>;
   forceApproveCustomRule(
     input: ForceApproveCustomRuleRepositoryInput,
+  ): Promise<CustomRuleLifecycleResult>;
+  recordCustomRuleActivationFailure(
+    input: CustomRuleActivationFailureInput,
   ): Promise<CustomRuleLifecycleResult>;
   archiveCustomRule(
     input: ArchiveCustomRuleRepositoryInput,
@@ -1476,6 +1484,10 @@ const customRuleReviewTransitionInputSchema = z.strictObject({
 });
 const requestCustomRuleChangesInputSchema =
   customRuleReviewTransitionInputSchema.extend({ comment: boundedTextSchema });
+const customRuleActivationFailureInputSchema =
+  customRuleReviewTransitionInputSchema.extend({
+    errorMessage: boundedTextSchema,
+  });
 const approveCustomRuleRepositoryInputSchema =
   customRuleReviewTransitionInputSchema.extend({
     effectiveFrom: timestampSchema,
@@ -1974,7 +1986,7 @@ const lifecycleReviewEventRowSchema = z.strictObject({
 const lifecycleResultRowSchema = z.strictObject({
   version: lifecycleVersionRowSchema,
   simulation: completeSimulationRowSchema,
-  event: lifecycleReviewEventRowSchema,
+  event: lifecycleReviewEventRowSchema.optional().nullable(),
 });
 const savedDraftResultRowSchema = lifecycleResultRowSchema.omit({
   event: true,
@@ -2398,6 +2410,12 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
       data,
       "lifecycle",
     );
+    if (row.event === null || row.event === undefined) {
+      throw new CustomRulePersistenceDataError(
+        "lifecycle",
+        "apply-and-submit result must include a review event",
+      );
+    }
     return {
       version: toCustomSettlementRuleVersion(row.version),
       simulation: toSettlementFormulaSimulation(row.simulation),
@@ -2530,6 +2548,26 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
       input.acknowledgment,
       input.riskSummary,
       "force_approve_rule",
+    );
+  }
+
+  async recordCustomRuleActivationFailure(
+    unsafeInput: CustomRuleActivationFailureInput,
+  ): Promise<CustomRuleLifecycleResult> {
+    const input = parsePersistenceInput(
+      customRuleActivationFailureInputSchema,
+      unsafeInput,
+      "record activation failure input",
+    );
+    return this.reviewCustomRule(
+      input,
+      "activation_failed",
+      null,
+      input.errorMessage,
+      false,
+      null,
+      {},
+      "record_activation_failure",
     );
   }
 
@@ -4478,6 +4516,9 @@ function parseLifecycleRpcResult(
   return {
     version: toCustomSettlementRuleVersion(row.version),
     simulation: toSettlementFormulaSimulation(row.simulation),
-    event: toCustomSettlementRuleReviewEvent(row.event),
+    event:
+      row.event === null || row.event === undefined
+        ? null
+        : toCustomSettlementRuleReviewEvent(row.event),
   };
 }

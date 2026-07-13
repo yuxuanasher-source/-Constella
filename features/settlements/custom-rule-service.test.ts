@@ -111,6 +111,31 @@ describe("Phase 2 custom rule lifecycle service", () => {
     expect(fixture.context.version.status).toBe("pending_review");
   });
 
+  it("denies unauthorized approval before writing activation-failure records", async () => {
+    const fixture = phase2LifecycleFixture({
+      actor: { ...phase2Actor(), role: "finance" },
+      eligibleApprovers: [],
+    });
+    const service = phase2LifecycleService(fixture);
+
+    await expect(
+      service.approveCustomRule({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        ruleVersionId: fixture.version.id,
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        reason: "Execution disabled must not mask approval authorization.",
+        clientRequestId: "disabled-unauthorized-approval-1",
+      }),
+    ).rejects.toMatchObject({ code: "STANDARD_APPROVAL_NOT_ALLOWED" });
+
+    expect(fixture.repository.approveCustomRule).not.toHaveBeenCalled();
+    expect(
+      fixture.repository.recordCustomRuleActivationFailure,
+    ).not.toHaveBeenCalled();
+    expect(fixture.audit).not.toHaveBeenCalled();
+  });
+
   it("recomputes freshness, material risk, and approver eligibility from server records", async () => {
     const fixture = phase2LifecycleFixture({
       actor: { ...phase2Actor(), role: "owner" },
@@ -219,6 +244,36 @@ describe("Phase 2 custom rule lifecycle service", () => {
     );
   });
 
+  it("does not save a changed draft against a stale version-bound simulation", async () => {
+    const fixture = phase2LifecycleFixture({
+      versionStatus: "draft",
+    });
+    const service = phase2LifecycleService(fixture);
+    const changedDraft = {
+      ...phase2DraftPayload(),
+      formula: "system_minutes * 3",
+      formulaHash: "f".repeat(64),
+    };
+
+    await expect(
+      service.saveCustomRuleDraft({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        sourceAiDraftId: null,
+        sourceSimulationId: fixture.simulation.id,
+        ruleVersionId: fixture.version.id,
+        versionSimulationId: fixture.simulation.id,
+        scope: "payable",
+        target: { targetType: "project", targetId: null },
+        draft: changedDraft,
+        reason: "Edit should require a new version-bound simulation.",
+        clientRequestId: "stale-draft-save-1",
+      }),
+    ).rejects.toMatchObject({ code: "SIMULATION_STALE" });
+
+    expect(fixture.repository.saveCustomRuleDraft).not.toHaveBeenCalled();
+  });
+
   it("requires reopen before edits and a newer fresh simulation before resubmit", async () => {
     const fixture = phase2LifecycleFixture({
       versionStatus: "changes_requested",
@@ -313,6 +368,31 @@ describe("Phase 2 custom rule lifecycle service", () => {
       status: "active",
       effectiveNow: false,
       scheduled: true,
+    });
+  });
+
+  it("lists rules with only actor governance context", async () => {
+    const fixture = phase2LifecycleFixture();
+    fixture.repository.getCustomRuleGovernanceContext.mockResolvedValueOnce({
+      actor: { ...phase2Actor(), role: "owner" },
+    } as unknown as typeof fixture.context);
+    const service = phase2LifecycleService(
+      fixture,
+      undefined,
+      "2026-07-20T00:00:00.000Z",
+    );
+
+    await expect(
+      service.listCustomRules({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+      }),
+    ).resolves.toHaveLength(1);
+
+    expect(fixture.repository.listCustomRules).toHaveBeenCalledWith({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      status: undefined,
     });
   });
 

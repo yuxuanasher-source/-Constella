@@ -2738,6 +2738,14 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(review).not.toContain(
       "p_risk_summary || pg_catalog.jsonb_build_object",
     );
+    const reopenBranch = review.slice(
+      review.indexOf("elsif p_action = 'reopen'"),
+      review.indexOf("elsif p_action = 'approve'"),
+    );
+    expect(reopenBranch).toContain("v_event_id := null");
+    expect(reopenBranch).not.toContain(
+      "from public.custom_settlement_rule_review_events",
+    );
 
     const archiveLifecycle = extractSettlementGovernanceFunction(
       "archive_custom_settlement_rule",
@@ -2790,6 +2798,11 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(normalizedSettlementGovernanceMigration).toContain(
       "custom_settlement_rule_draft_hashes_must_change",
     );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "custom_settlement_rule_resimulation_required",
+    );
+    expect(save).toContain("simulation.rule_version_id = v_existing.id");
+    expect(save).toContain("custom_settlement_rule_resimulation_required");
     expect(normalizedSettlementGovernanceMigration).toContain(
       "v_request_record.version_snapshot",
     );

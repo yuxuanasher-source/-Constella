@@ -1216,6 +1216,27 @@ begin
        or v_existing.simulation_id <> p_version_simulation_id then
       raise exception 'custom_settlement_rule_version_scope_mismatch';
     end if;
+    select simulation.*
+    into v_source_simulation
+    from public.settlement_formula_simulations as simulation
+    where simulation.id = p_version_simulation_id
+      and simulation.organization_id = p_organization_id
+      and simulation.project_id = p_project_id
+      and simulation.rule_version_id = v_existing.id
+      and simulation.ai_draft_id is null
+    for update;
+    if not found
+       or v_source_simulation.rule_version_id <> v_existing.id
+       or p_draft ->> 'formulaHash' <> v_source_simulation.formula_hash
+       or p_draft ->> 'contractHash' <>
+         v_source_simulation.rule_contract_hash
+       or p_draft ->> 'parameterHash' <> v_source_simulation.parameter_hash
+       or p_draft ->> 'catalogHash' <>
+         v_source_simulation.variable_catalog_version
+       or p_draft ->> 'dataSelectionHash' <>
+         v_source_simulation.data_selection_hash then
+      raise exception 'custom_settlement_rule_resimulation_required';
+    end if;
     if (
       v_existing.priority is distinct from (p_draft ->> 'priority')::integer
       or v_existing.formula is distinct from p_draft ->> 'formula'
@@ -2010,12 +2031,7 @@ begin
         reason = p_reason
     where id = p_rule_version_id;
     v_after_status := 'draft';
-    select event.id
-    into v_event_id
-    from public.custom_settlement_rule_review_events as event
-    where event.rule_version_id = p_rule_version_id
-    order by event.created_at desc, event.id desc
-    limit 1;
+    v_event_id := null;
   elsif p_action = 'approve' then
     if v_actor_role not in ('owner', 'ops_manager')
        or v_version.status <> 'pending_review'

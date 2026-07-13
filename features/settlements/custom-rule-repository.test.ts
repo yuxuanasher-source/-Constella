@@ -168,6 +168,73 @@ describe("Phase 2 custom rule lifecycle repository", () => {
     expect(rpc).toHaveBeenCalledTimes(2);
   });
 
+  it("records activation failures through the public lifecycle repository contract", async () => {
+    const rpc = vi.fn(async () => ({ data: lifecycleResultRow(), error: null }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      recordCustomRuleActivationFailure(
+        input: Record<string, unknown>,
+      ): Promise<unknown>;
+    };
+
+    const result = await repository.recordCustomRuleActivationFailure({
+      organizationId: lifecycleSubmitInput().organizationId,
+      projectId: lifecycleSubmitInput().projectId,
+      ruleVersionId: lifecycleResultRow().version.id,
+      reason: "Activation failed before production execution.",
+      clientRequestId: "phase2-activation-failed-1",
+      errorMessage: "Production execution is disabled.",
+    });
+
+    expect(result).toMatchObject({
+      version: { id: lifecycleResultRow().version.id },
+    });
+    expect(rpc).toHaveBeenCalledWith("review_custom_settlement_rule", {
+      p_organization_id: lifecycleSubmitInput().organizationId,
+      p_project_id: lifecycleSubmitInput().projectId,
+      p_rule_version_id: lifecycleResultRow().version.id,
+      p_action: "activation_failed",
+      p_effective_from: null,
+      p_reason: "Activation failed before production execution.",
+      p_comment: "Production execution is disabled.",
+      p_force: false,
+      p_acknowledgment: null,
+      p_risk_summary: {},
+      p_client_request_id: "phase2-activation-failed-1",
+    });
+  });
+
+  it("maps a successful reopen without returning a stale review event", async () => {
+    const rpc = vi.fn(async () => ({
+      data: {
+        version: {
+          ...lifecycleResultRow().version,
+          status: "draft",
+        },
+        simulation: lifecycleResultRow().simulation,
+      },
+      error: null,
+    }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      reopenRequestedChangesAsDraft(
+        input: Record<string, unknown>,
+      ): Promise<{ event: unknown }>;
+    };
+
+    const result = await repository.reopenRequestedChangesAsDraft({
+      organizationId: lifecycleSubmitInput().organizationId,
+      projectId: lifecycleSubmitInput().projectId,
+      ruleVersionId: lifecycleResultRow().version.id,
+      reason: "Reopen without inventing a review event.",
+      clientRequestId: "phase2-reopen-no-event-1",
+    });
+
+    expect(result.event).toBeNull();
+  });
+
   it.each([
     [
       "requestCustomRuleChanges",

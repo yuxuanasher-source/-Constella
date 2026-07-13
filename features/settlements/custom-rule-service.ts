@@ -4948,23 +4948,23 @@ export type CustomRuleLifecycleAuditWriter = (
 
 export type CustomRuleLifecycleGovernanceContext = {
   actor: { organizationId: string; userId: string; role: AppRole };
-  version: CustomSettlementRuleVersion;
-  simulation: CustomRuleSimulationFreshnessHashes & {
+  version?: CustomSettlementRuleVersion;
+  simulation?: CustomRuleSimulationFreshnessHashes & {
     id: string;
     createdAt: string;
   };
-  expectedFreshness: CustomRuleSimulationFreshnessHashes;
-  eligibleApprovers: readonly {
+  expectedFreshness?: CustomRuleSimulationFreshnessHashes;
+  eligibleApprovers?: readonly {
     userId: string;
     role: "owner" | "ops_manager";
   }[];
-  creatorUserId: string;
-  simulationFacts: CustomRuleMaterialRiskInput["simulation"];
-  currentMarginCents: string | null;
-  contractFacts: CustomRuleMaterialRiskInput["contract"];
+  creatorUserId?: string;
+  simulationFacts?: CustomRuleMaterialRiskInput["simulation"];
+  currentMarginCents?: string | null;
+  contractFacts?: CustomRuleMaterialRiskInput["contract"];
   riskConfiguration?: CustomRuleMaterialRiskConfiguration;
-  reopenedAt: string | null;
-  archiveSafety: {
+  reopenedAt?: string | null;
+  archiveSafety?: {
     proofKind: "remaining_custom_layers" | "fixed_fallback";
     fallbackSimulation: CustomRuleSimulationFreshnessHashes & {
       id: string;
@@ -5098,6 +5098,34 @@ export function createCustomRuleLifecycleService(dependencies: {
   };
   const now = dependencies.now ?? (() => new Date().toISOString());
 
+  type VersionContext = CustomRuleLifecycleGovernanceContext & {
+    version: CustomSettlementRuleVersion;
+  };
+  type SimulationContext = CustomRuleLifecycleGovernanceContext & {
+    simulation: CustomRuleSimulationFreshnessHashes & {
+      id: string;
+      createdAt: string;
+    };
+    expectedFreshness: CustomRuleSimulationFreshnessHashes;
+  };
+  type ApprovalContext = VersionContext &
+    SimulationContext & {
+      eligibleApprovers: readonly {
+        userId: string;
+        role: "owner" | "ops_manager";
+      }[];
+      creatorUserId: string;
+      simulationFacts: CustomRuleMaterialRiskInput["simulation"];
+      currentMarginCents: string | null;
+      contractFacts: CustomRuleMaterialRiskInput["contract"];
+    };
+  type ArchiveContext = VersionContext &
+    SimulationContext & {
+      archiveSafety: NonNullable<
+        CustomRuleLifecycleGovernanceContext["archiveSafety"]
+      >;
+    };
+
   const loadContext = async (input: {
     actor: LifecycleActorInput;
     projectId: string;
@@ -5115,12 +5143,26 @@ export function createCustomRuleLifecycleService(dependencies: {
     });
     if (
       context.actor.organizationId !== input.actor.organizationId ||
-      context.actor.userId !== input.actor.userId ||
-      context.version.organizationId !== input.actor.organizationId ||
-      context.version.projectId !== input.projectId ||
-      (input.ruleVersionId !== undefined &&
-        context.version.id !== input.ruleVersionId)
+      context.actor.userId !== input.actor.userId
     ) {
+      throw new CustomRuleGovernanceError(
+        "CUSTOM_RULE_SERVER_CONTEXT_MISMATCH",
+        "Server-owned custom settlement rule context does not match the request scope",
+      );
+    }
+    if (context.version !== undefined) {
+      if (
+        context.version.organizationId !== input.actor.organizationId ||
+        context.version.projectId !== input.projectId ||
+        (input.ruleVersionId !== undefined &&
+          context.version.id !== input.ruleVersionId)
+      ) {
+        throw new CustomRuleGovernanceError(
+          "CUSTOM_RULE_SERVER_CONTEXT_MISMATCH",
+          "Server-owned custom settlement rule context does not match the request scope",
+        );
+      }
+    } else if (input.ruleVersionId !== undefined) {
       throw new CustomRuleGovernanceError(
         "CUSTOM_RULE_SERVER_CONTEXT_MISMATCH",
         "Server-owned custom settlement rule context does not match the request scope",
@@ -5141,6 +5183,63 @@ export function createCustomRuleLifecycleService(dependencies: {
     }
   };
 
+  const requireVersionContext: (
+    context: CustomRuleLifecycleGovernanceContext,
+  ) => asserts context is VersionContext = (context) => {
+    if (context.version === undefined) {
+      throw new CustomRuleGovernanceError(
+        "CUSTOM_RULE_SERVER_CONTEXT_MISMATCH",
+        "Server-owned custom settlement rule context is missing the version record",
+      );
+    }
+  };
+
+  const requireSimulationContext: (
+    context: CustomRuleLifecycleGovernanceContext,
+  ) => asserts context is SimulationContext = (context) => {
+    if (
+      context.simulation === undefined ||
+      context.expectedFreshness === undefined
+    ) {
+      throw new CustomRuleGovernanceError(
+        "CUSTOM_RULE_SERVER_CONTEXT_MISMATCH",
+        "Server-owned custom settlement rule context is missing simulation freshness",
+      );
+    }
+  };
+
+  const requireApprovalContext: (
+    context: CustomRuleLifecycleGovernanceContext,
+  ) => asserts context is ApprovalContext = (context) => {
+    requireVersionContext(context);
+    requireSimulationContext(context);
+    if (
+      context.eligibleApprovers === undefined ||
+      context.creatorUserId === undefined ||
+      context.simulationFacts === undefined ||
+      context.currentMarginCents === undefined ||
+      context.contractFacts === undefined
+    ) {
+      throw new CustomRuleGovernanceError(
+        "CUSTOM_RULE_SERVER_CONTEXT_MISMATCH",
+        "Server-owned custom settlement rule context is missing approval facts",
+      );
+    }
+  };
+
+  const requireArchiveContext: (
+    context: CustomRuleLifecycleGovernanceContext,
+  ) => asserts context is ArchiveContext = (context) => {
+    requireVersionContext(context);
+    requireSimulationContext(context);
+    if (context.archiveSafety === undefined) {
+      throw new CustomRuleGovernanceError(
+        "CUSTOM_RULE_SERVER_CONTEXT_MISMATCH",
+        "Server-owned custom settlement rule context is missing archive safety evidence",
+      );
+    }
+  };
+
   const auditTransition = async (input: {
     action: AuditLogInput["action"];
     context: CustomRuleLifecycleGovernanceContext;
@@ -5150,6 +5249,7 @@ export function createCustomRuleLifecycleService(dependencies: {
     reason: string;
     result?: "success" | "failure";
     errorMessage?: string;
+    beforeStatus?: string;
   }): Promise<void> => {
     await dependencies.audit({
       organizationId: input.context.actor.organizationId,
@@ -5160,7 +5260,10 @@ export function createCustomRuleLifecycleService(dependencies: {
       objectType: `custom_settlement_rule:${input.transition}`,
       objectId: input.versionId,
       projectId: input.projectId,
-      before: { status: input.context.version.status },
+      before: {
+        status:
+          input.beforeStatus ?? input.context.version?.status ?? "unknown",
+      },
       after: { transition: input.transition },
       changedFields: ["status"],
       reason: input.reason,
@@ -5179,34 +5282,8 @@ export function createCustomRuleLifecycleService(dependencies: {
       projectId: input.projectId,
       ruleVersionId: input.ruleVersionId,
     });
+    requireApprovalContext(context);
     assertCustomRuleTransition(context.version.status, "active");
-    if (!executionCapability.enabled) {
-      const error = new CustomRuleGovernanceError(
-        "CUSTOM_RULE_EXECUTION_DISABLED",
-        "Production custom settlement rule execution is disabled",
-      );
-      await repository.recordCustomRuleActivationFailure({
-        organizationId: context.actor.organizationId,
-        projectId: input.projectId,
-        ruleVersionId: input.ruleVersionId,
-        reason: input.reason,
-        clientRequestId: lifecycleActivationFailureRequestId(
-          input.clientRequestId,
-        ),
-        errorMessage: error.message,
-      });
-      await auditTransition({
-        action: "approve",
-        context,
-        projectId: input.projectId,
-        versionId: input.ruleVersionId,
-        transition: "pending_review->active",
-        reason: input.reason,
-        result: "failure",
-        errorMessage: error.message,
-      });
-      throw error;
-    }
     assertSimulationFresh({
       expected: context.expectedFreshness,
       simulation: context.simulation,
@@ -5245,6 +5322,33 @@ export function createCustomRuleLifecycleService(dependencies: {
       force,
       ...(force ? { acknowledgment: forceInput.acknowledgment } : {}),
     };
+    if (!executionCapability.enabled) {
+      const error = new CustomRuleGovernanceError(
+        "CUSTOM_RULE_EXECUTION_DISABLED",
+        "Production custom settlement rule execution is disabled",
+      );
+      await repository.recordCustomRuleActivationFailure({
+        organizationId: context.actor.organizationId,
+        projectId: input.projectId,
+        ruleVersionId: input.ruleVersionId,
+        reason: input.reason,
+        clientRequestId: lifecycleActivationFailureRequestId(
+          input.clientRequestId,
+        ),
+        errorMessage: error.message,
+      });
+      await auditTransition({
+        action: "approve",
+        context,
+        projectId: input.projectId,
+        versionId: input.ruleVersionId,
+        transition: "pending_review->active",
+        reason: input.reason,
+        result: "failure",
+        errorMessage: error.message,
+      });
+      throw error;
+    }
     try {
       const result = force
         ? await repository.forceApproveCustomRule({
@@ -5314,11 +5418,14 @@ export function createCustomRuleLifecycleService(dependencies: {
         sourceSimulationId: input.sourceSimulationId,
       });
       requireCapability(context.actor.role, "edit_draft");
+      requireVersionContext(context);
+      requireSimulationContext(context);
       assertCustomRulePayloadEditable(context.version.status);
       assertSimulationFresh({
         expected: context.expectedFreshness,
         simulation: context.simulation,
       });
+      assertDraftMatchesSimulation(input.draft, context.simulation);
       const result = await repository.saveCustomRuleDraft(
         lifecycleRepositoryInput(input, context.actor.organizationId),
       );
@@ -5341,6 +5448,7 @@ export function createCustomRuleLifecycleService(dependencies: {
         sourceSimulationId: input.sourceSimulationId,
       });
       requireCapability(context.actor.role, "submit_review");
+      requireSimulationContext(context);
       assertSimulationFresh({
         expected: context.expectedFreshness,
         simulation: context.simulation,
@@ -5366,6 +5474,7 @@ export function createCustomRuleLifecycleService(dependencies: {
         ruleVersionId: input.ruleVersionId,
       });
       requireCapability(context.actor.role, "request_changes");
+      requireVersionContext(context);
       assertCustomRuleTransition(context.version.status, "changes_requested");
       const result = await repository.requestCustomRuleChanges(
         lifecycleRepositoryInput(input, context.actor.organizationId),
@@ -5388,6 +5497,7 @@ export function createCustomRuleLifecycleService(dependencies: {
         ruleVersionId: input.ruleVersionId,
       });
       requireCapability(context.actor.role, "edit_draft");
+      requireVersionContext(context);
       assertCustomRuleTransition(context.version.status, "draft");
       const result = await repository.reopenRequestedChangesAsDraft(
         lifecycleRepositoryInput(input, context.actor.organizationId),
@@ -5413,6 +5523,8 @@ export function createCustomRuleLifecycleService(dependencies: {
           input.source.kind === "saved_draft" ? input.source.id : undefined,
       });
       requireCapability(context.actor.role, "submit_review");
+      requireVersionContext(context);
+      requireSimulationContext(context);
       assertCustomRuleTransition(context.version.status, "pending_review");
       assertSimulationFresh({
         expected: context.expectedFreshness,
@@ -5420,6 +5532,7 @@ export function createCustomRuleLifecycleService(dependencies: {
       });
       if (
         input.source.kind !== "saved_draft" ||
+        context.reopenedAt === undefined ||
         context.reopenedAt === null ||
         Date.parse(context.simulation.createdAt) <=
           Date.parse(context.reopenedAt)
@@ -5458,6 +5571,7 @@ export function createCustomRuleLifecycleService(dependencies: {
         ruleVersionId: input.ruleVersionId,
       });
       requireCapability(context.actor.role, "archive_rule");
+      requireArchiveContext(context);
       assertCustomRuleTransition(context.version.status, "archived");
       if (context.version.status === "active") {
         const fallbackSimulation = context.archiveSafety.fallbackSimulation;
@@ -5554,6 +5668,22 @@ function lifecycleRepositoryInput<Input extends { actor: unknown }>(
   const { actor: _actor, ...rest } = input;
   void _actor;
   return { ...rest, organizationId };
+}
+
+function assertDraftMatchesSimulation(
+  draft: SaveCustomRuleDraftInput["draft"],
+  simulation: CustomRuleSimulationFreshnessHashes,
+): void {
+  assertSimulationFresh({
+    expected: {
+      formulaHash: draft.formulaHash,
+      contractHash: draft.contractHash,
+      parameterHash: draft.parameterHash,
+      catalogHash: draft.catalogHash,
+      dataSelectionHash: draft.dataSelectionHash,
+    },
+    simulation,
+  });
 }
 
 function lifecycleErrorMessage(error: unknown): string {
