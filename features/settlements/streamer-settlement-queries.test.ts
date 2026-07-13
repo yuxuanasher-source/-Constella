@@ -109,6 +109,8 @@ describe("streamer settlement safe DTO", () => {
           internalRiskThresholds: { marginFloorBps: 2000 },
           namedOutputsCents: {
             baseSalary: 80000,
+            "rule-version-payable-123456:margin": 90000,
+            "internal-layer:unknownPayoutBasis": 12345,
             cptPay: 24000,
             final: 104000,
             marginCents: 90000,
@@ -142,7 +144,42 @@ describe("streamer settlement safe DTO", () => {
 
     const serialized = JSON.stringify(item);
     expect(serialized).not.toMatch(
-      /formula|compiledAst|receivableRules|margin|tax|externalCost|other-streamer|groupRoster|reviewerComments|internalRiskThresholds|内部规则评审意见|内部复核备注/i,
+      /formula|compiledAst|receivableRules|margin|unknownPayoutBasis|rule-version-payable|internal-layer|tax|externalCost|other-streamer|groupRoster|reviewerComments|internalRiskThresholds|内部规则评审意见|内部复核备注/i,
+    );
+  });
+
+  it("does not expose raw unknown personal component keys even from explicit personal snapshots", () => {
+    const item = toStreamerPayableItem({
+      id: "item-personal-components",
+      project_name: "Personal Project",
+      period_start: "2026-06-01",
+      period_end: "2026-06-30",
+      computed_amount: 500,
+      manual_amount: 0,
+      adjustment_amount: 0,
+      payable_amount: 500,
+      evidence_level: "green",
+      evidence_snapshot: {
+        settlementDuration: 60,
+        timeSource: "system",
+        ruleEngine: {
+          personalComponentsCents: {
+            "rule-version-personal:baseSalary": 30000,
+            "rule-version-personal:secretMultiplier": 99999,
+            cptPay: 20000,
+          },
+          sourceReportIds: ["report-personal-1"],
+        },
+      },
+      created_at: "2026-06-20T12:00:00.000Z",
+    });
+
+    expect(item.explanation?.components).toEqual([
+      { key: "baseSalary", label: "底薪", amount: 300, amountCents: 30000 },
+      { key: "cptPay", label: "有效时长", amount: 200, amountCents: 20000 },
+    ]);
+    expect(JSON.stringify(item)).not.toMatch(
+      /rule-version-personal|secretMultiplier/i,
     );
   });
 

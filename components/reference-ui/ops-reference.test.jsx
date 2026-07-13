@@ -8277,11 +8277,6 @@ describe("OpsReferenceApp settlement smoke", () => {
     ).not.toBeNull();
   });
 
-  it("publishes a 720px settlement breakpoint without page-level scrolling", () => {
-    const { container } = renderMobileSettlementLayout();
-    const css = container.querySelector(
-      'style[data-ops-responsive-shell="true"]',
-    )?.textContent;
   it("shows internal custom-rule breakdowns and open exception queue in settlement detail", () => {
     render(
       <OpsReferenceApp
@@ -8350,6 +8345,30 @@ describe("OpsReferenceApp settlement smoke", () => {
         liveSettlementPool={[]}
         settlementScope={{
           projectId: "project-alpha",
+            {
+              id: "item-rule-explain-2",
+              streamer: "主播乙",
+              rule: "系统核验 CPS",
+              hours: 1,
+              qty: "green · system",
+              base: 0,
+              variable: 90,
+              adjust: 0,
+              total: 90,
+              ruleBreakdown: {
+                mode: "custom",
+                executionGrain: "report",
+                appliedVersionLabels: ["达人规则 v9"],
+                sourceReportCount: 1,
+                components: [
+                  { key: "bonus", label: "奖励", amountCents: 5000 },
+                  { key: "cpa", label: "CPA", amountCents: 4000 },
+                ],
+                missingDataDecisions: [],
+                explanationZh: "主播乙按达人规则 v9 计算奖励 50 元与 CPA 40 元。",
+              },
+              openExceptions: [],
+            },
           periodStart: "2026-07-01",
           periodEnd: "2026-07-31",
           poolCount: 0,
@@ -8374,12 +8393,23 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(screen.getByText("异常队列")).toBeInTheDocument();
     expect(screen.getByText("exception-open")).toBeInTheDocument();
   });
+    expect(screen.getByText("达人规则 v9")).toBeInTheDocument();
+    expect(screen.getByText("主播乙按达人规则 v9 计算奖励 50 元与 CPA 40 元。")).toBeInTheDocument();
+    expect(ruleBreakdown).toHaveTextContent("奖励");
+    expect(ruleBreakdown).toHaveTextContent("50");
+    expect(ruleBreakdown).toHaveTextContent("CPA");
+    expect(ruleBreakdown).toHaveTextContent("40");
 
 
     expect(css).toMatch(
       /\.ops-page-header-inner\s*\{[^}]*flex-direction:\s*column;/s,
     );
     expect(css).toMatch(
+  it("publishes a 720px settlement breakpoint without page-level scrolling", () => {
+    const { container } = renderMobileSettlementLayout();
+    const css = container.querySelector(
+      'style[data-ops-responsive-shell="true"]',
+    )?.textContent;
       /\.ops-page-header-actions\s*\{[^}]*flex-wrap:\s*wrap;/s,
     );
     expect(css).toMatch(

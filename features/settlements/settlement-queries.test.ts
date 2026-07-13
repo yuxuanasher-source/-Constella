@@ -206,8 +206,14 @@ describe("settlement DTO mappers", () => {
           mode: "custom",
           grain: "project_streamer_period",
           appliedLayers: [
-            { versionLabel: "项目规则 v3", scope: "project" },
-            { label: "主播专属 v2", scope: "project_streamer" },
+            {
+              versionId: "project-rule-version-abcdef123456",
+              targetType: "project",
+            },
+            {
+              versionId: "streamer-rule-version-fedcba654321",
+              targetType: "project_streamer",
+            },
           ],
           namedOutputsCents: {
             baseSalary: 80000,
@@ -249,7 +255,10 @@ describe("settlement DTO mappers", () => {
     expect(item.ruleBreakdown).toEqual({
       mode: "custom",
       executionGrain: "project_streamer_period",
-      appliedVersionLabels: ["项目规则 v3", "主播专属 v2"],
+      appliedVersionLabels: [
+        "规则版本 project-",
+        "规则版本 streamer",
+      ],
       components: [
         { key: "baseSalary", label: "底薪", amountCents: 80000 },
         { key: "cptPay", label: "有效时长", amountCents: 24000 },
@@ -297,8 +306,12 @@ describe("settlement DTO mappers", () => {
       batchId: "batch-1",
       itemType: "supplier_fee",
       internalOnly: true,
-      manualAmount: 12000,
-      totalAmount: 12000,
+      manualAmount: 120,
+      totalAmount: 120,
+    });
+    expect(toOpsReferenceBatchDetailItem(costItem)).toMatchObject({
+      variable: 120,
+      total: 120,
     });
     expect(toStreamerSafeSettlementBatchDetailItems([costItem])).toEqual([]);
   });

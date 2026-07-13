@@ -218,19 +218,29 @@ function toPersonalComponents(
 
   return Object.entries(outputs)
     .filter((entry): entry is [string, number] => Number.isFinite(entry[1]))
-    .filter(([key]) => isStreamerSafeComponentKey(key))
-    .map(([key, amountCents]) => ({
-      key,
-      label: settlementComponentLabel(key),
-      amount: amountCents / 100,
-      amountCents,
-    }));
+    .map(([key, amountCents]) => {
+      const safeKey = normalizePersonalComponentKey(key);
+      return safeKey
+        ? {
+            key: safeKey,
+            label: settlementComponentLabel(safeKey),
+            amount: amountCents / 100,
+            amountCents,
+          }
+        : null;
+    })
+    .filter(
+      (
+        component,
+      ): component is StreamerPayableExplanation["components"][number] =>
+        Boolean(component),
+    );
 }
 
-function isStreamerSafeComponentKey(key: string): boolean {
-  return !/(formula|ast|receivable|margin|tax|cost|other|roster|reviewer|threshold|risk|profit|gross|internal|external)/i.test(
-    key,
-  );
+function normalizePersonalComponentKey(key: string): string | null {
+  const parts = key.split(":");
+  const componentKey = parts[parts.length - 1] ?? "";
+  return PERSONAL_COMPONENT_LABELS[componentKey] ? componentKey : null;
 }
 
 function buildPersonalExplanationZh(input: {
@@ -249,23 +259,24 @@ function buildPersonalExplanationZh(input: {
 }
 
 function settlementComponentLabel(key: string): string {
-  const labels: Record<string, string> = {
-    base: "底薪",
-    baseSalary: "底薪",
-    cpt: "有效时长",
-    cptPay: "有效时长",
-    timePay: "有效时长",
-    cps: "CPS",
-    cpa: "CPA",
-    bonus: "奖励",
-    adjustment: "调整",
-    deduction: "扣减",
-    gift: "礼物",
-    manual: "人工承载",
-    final: "最终金额",
-  };
-  return labels[key] ?? key;
+  return PERSONAL_COMPONENT_LABELS[key] ?? key;
 }
+
+const PERSONAL_COMPONENT_LABELS: Record<string, string> = {
+  base: "底薪",
+  baseSalary: "底薪",
+  cpt: "有效时长",
+  cptPay: "有效时长",
+  timePay: "有效时长",
+  cps: "CPS",
+  cpa: "CPA",
+  bonus: "奖励",
+  adjustment: "调整",
+  deduction: "扣减",
+  gift: "礼物",
+  manual: "人工承载",
+  final: "最终金额",
+};
 
 function formatYuan(amountCents: number): string {
   const yuan = amountCents / 100;

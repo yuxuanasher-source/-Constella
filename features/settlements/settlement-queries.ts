@@ -524,7 +524,7 @@ export function toOpsSettlementBatchDetailItem(
 export function toOpsSettlementBatchCostDetailItem(
   row: SettlementBatchCostItemRow,
 ): OpsSettlementBatchDetailItem {
-  const amount = Number(row.amount_cents);
+  const amount = Number(row.amount_cents) / 100;
   return {
     id: row.id,
     batchId: row.settlement_batch_id,
@@ -766,7 +766,7 @@ function toRuleComponents(
 
 function toAppliedVersionLabel(value: unknown): string | null {
   if (typeof value === "string") {
-    return value;
+    return versionLabelFromId(value);
   }
   const record = recordValue(value);
   if (!record) {
@@ -776,8 +776,15 @@ function toAppliedVersionLabel(value: unknown): string | null {
     stringValue(record.versionLabel) ??
     stringValue(record.label) ??
     stringValue(record.name) ??
-    stringValue(record.versionId)
+    versionLabelFromId(stringValue(record.versionId))
   );
+}
+
+function versionLabelFromId(versionId: string | null): string | null {
+  if (!versionId) {
+    return null;
+  }
+  return `规则版本 ${versionId.slice(0, 8)}`;
 }
 
 function toMissingDataDecision(

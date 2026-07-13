@@ -22207,128 +22207,167 @@ function BatchDetail({
                   >
                     规则拆解
                   </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 6,
-                      flexWrap: "wrap",
-                      justifyContent: "flex-end",
-                    }}
-                  >
-                    {ruleBreakdownRows[0].ruleBreakdown.appliedVersionLabels.map(
-                      (label) => (
-                        <Badge key={label} tone="blue">
-                          {label}
-                        </Badge>
-                      ),
-                    )}
-                    {ruleBreakdownRows[0].ruleBreakdown.executionGrain ? (
-                      <Badge tone="neutral">
-                        {ruleBreakdownRows[0].ruleBreakdown.executionGrain}
-                      </Badge>
-                    ) : null}
-                    <Badge tone="neutral">
-                      来源报数{" "}
-                      {ruleBreakdownRows[0].ruleBreakdown.sourceReportCount} 条
-                    </Badge>
-                  </div>
+                  <Badge tone="neutral">{ruleBreakdownRows.length} 项</Badge>
                 </div>
 
                 <div
                   style={{
                     marginTop: 10,
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
-                    gap: 8,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 12,
                   }}
                 >
-                  {ruleBreakdownRows[0].ruleBreakdown.components.map(
-                    (component) => (
+                  {ruleBreakdownRows.map((row) => (
+                    <div
+                      key={row.id}
+                      style={{
+                        paddingTop: 10,
+                        borderTop: "1px dashed var(--line)",
+                      }}
+                    >
                       <div
-                        key={component.key}
                         style={{
-                          padding: "8px 10px",
-                          border: "1px solid var(--line)",
-                          borderRadius: 8,
-                          background: "var(--bg-soft)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                          flexWrap: "wrap",
                         }}
                       >
                         <div
-                          style={{ fontSize: 11, color: "var(--ink-400)" }}
-                        >
-                          {component.label}
-                        </div>
-                        <div
-                          className="num"
                           style={{
-                            marginTop: 2,
-                            fontSize: 13,
-                            fontWeight: 700,
-                            color: "var(--ink-900)",
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: "var(--ink-800)",
                           }}
                         >
-                          {formatYuanFromCents(component.amountCents)}
+                          {row.streamer}
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 6,
+                            flexWrap: "wrap",
+                            justifyContent: "flex-end",
+                          }}
+                        >
+                          {row.ruleBreakdown.appliedVersionLabels.map(
+                            (label) => (
+                              <Badge key={`${row.id}-${label}`} tone="blue">
+                                {label}
+                              </Badge>
+                            ),
+                          )}
+                          {row.ruleBreakdown.executionGrain ? (
+                            <Badge tone="neutral">
+                              {row.ruleBreakdown.executionGrain}
+                            </Badge>
+                          ) : null}
+                          <Badge tone="neutral">
+                            来源报数 {row.ruleBreakdown.sourceReportCount} 条
+                          </Badge>
                         </div>
                       </div>
-                    ),
-                  )}
-                </div>
 
-                {ruleBreakdownRows[0].ruleBreakdown.explanationZh ? (
-                  <div
-                    style={{
-                      marginTop: 8,
-                      fontSize: 12,
-                      color: "var(--ink-600)",
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    {ruleBreakdownRows[0].ruleBreakdown.explanationZh}
-                  </div>
-                ) : null}
-
-                {ruleBreakdownRows[0].ruleBreakdown.missingDataDecisions
-                  .length > 0 ? (
-                  <div style={{ marginTop: 10 }}>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 600,
-                        color: "var(--ink-700)",
-                      }}
-                    >
-                      缺失数据决策
-                    </div>
-                    <div
-                      style={{
-                        marginTop: 6,
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 6,
-                      }}
-                    >
-                      {ruleBreakdownRows[0].ruleBreakdown.missingDataDecisions.map(
-                        (decision) => (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          display: "grid",
+                          gridTemplateColumns:
+                            "repeat(auto-fit, minmax(120px, 1fr))",
+                          gap: 8,
+                        }}
+                      >
+                        {row.ruleBreakdown.components.map((component) => (
                           <div
-                            key={`${decision.variableName}-${decision.policy}-${decision.decision}`}
+                            key={`${row.id}-${component.key}`}
                             style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 8,
-                              flexWrap: "wrap",
-                              fontSize: 12,
-                              color: "var(--ink-500)",
+                              padding: "8px 10px",
+                              border: "1px solid var(--line)",
+                              borderRadius: 8,
+                              background: "var(--bg-soft)",
                             }}
                           >
-                            <span className="mono">{decision.variableName}</span>
-                            <Badge tone="amber">{decision.policy}</Badge>
-                            <span>{decision.decision}</span>
+                            <div
+                              style={{ fontSize: 11, color: "var(--ink-400)" }}
+                            >
+                              {component.label}
+                            </div>
+                            <div
+                              className="num"
+                              style={{
+                                marginTop: 2,
+                                fontSize: 13,
+                                fontWeight: 700,
+                                color: "var(--ink-900)",
+                              }}
+                            >
+                              {formatYuanFromCents(component.amountCents)}
+                            </div>
                           </div>
-                        ),
-                      )}
+                        ))}
+                      </div>
+
+                      {row.ruleBreakdown.explanationZh ? (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            fontSize: 12,
+                            color: "var(--ink-600)",
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          {row.ruleBreakdown.explanationZh}
+                        </div>
+                      ) : null}
+
+                      {row.ruleBreakdown.missingDataDecisions.length > 0 ? (
+                        <div style={{ marginTop: 10 }}>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: "var(--ink-700)",
+                            }}
+                          >
+                            缺失数据决策
+                          </div>
+                          <div
+                            style={{
+                              marginTop: 6,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 6,
+                            }}
+                          >
+                            {row.ruleBreakdown.missingDataDecisions.map(
+                              (decision) => (
+                                <div
+                                  key={`${row.id}-${decision.variableName}-${decision.policy}-${decision.decision}`}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 8,
+                                    flexWrap: "wrap",
+                                    fontSize: 12,
+                                    color: "var(--ink-500)",
+                                  }}
+                                >
+                                  <span className="mono">
+                                    {decision.variableName}
+                                  </span>
+                                  <Badge tone="amber">{decision.policy}</Badge>
+                                  <span>{decision.decision}</span>
+                                </div>
+                              ),
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
-                  </div>
-                ) : null}
+                  ))}
+                </div>
               </div>
             ) : null}
 
