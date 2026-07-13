@@ -115,6 +115,9 @@ vi.mock("./custom-rule-variable-catalog", async (importOriginal) => {
 const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
 const USER_ID = "22222222-2222-4222-8222-222222222222";
 const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
+const SAVED_DRAFT_RULE_ID = "44444444-4444-4444-8444-444444444444";
+const REQUEST_SIMULATION_ID = "55555555-5555-4555-8555-555555555555";
+const STORED_SIMULATION_ID = "66666666-6666-4666-8666-666666666666";
 
 function auth(role: "owner" | "streamer" = "owner") {
   return {
@@ -405,7 +408,7 @@ describe("custom rule route context", () => {
     expect(query.eq).toHaveBeenCalledWith("organization_id", ORGANIZATION_ID);
   });
 
-  it("hides cross-organization projects behind a stable not-found error", async () => {
+  it("maps cross-organization project access to a stable 403", async () => {
     const query = projectQuery(null);
     mocks.createServerClient.mockResolvedValue({
       from: vi.fn().mockReturnValue(query),
@@ -423,14 +426,105 @@ describe("custom rule route context", () => {
     }
     const response = customRuleErrorResponse(caught);
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({
       error: {
-        code: "CUSTOM_RULE_PROJECT_NOT_FOUND",
-        message: "Project not found",
+        code: "CUSTOM_RULE_PROJECT_ACCESS_DENIED",
+        message: "Project access denied",
         retryable: false,
       },
     });
+  });
+
+  it("uses request sourceSimulationId for saved-draft governance context", async () => {
+    const version = routeGovernanceVersion({
+      id: SAVED_DRAFT_RULE_ID,
+      simulationId: STORED_SIMULATION_ID,
+      status: "draft",
+    });
+    const requestedSimulation = routeGovernanceSimulation(REQUEST_SIMULATION_ID);
+    const storedSimulation = {
+      ...routeGovernanceSimulation(STORED_SIMULATION_ID),
+      formulaHash: "f".repeat(64),
+    };
+    const repository = routeGovernanceRepositoryFixture({
+      version,
+      simulations: {
+        [REQUEST_SIMULATION_ID]: requestedSimulation,
+        [STORED_SIMULATION_ID]: storedSimulation,
+      },
+    });
+    mocks.createServerClient.mockResolvedValue(routeGovernanceSupabase());
+    mocks.repositoryConstructor.mockReturnValue(repository);
+    const { getCustomRuleRouteContext } =
+      await import("./custom-rule-route-context");
+
+    const context = await getCustomRuleRouteContext();
+    expect(context).not.toBeInstanceOf(Response);
+    if (context instanceof Response) throw new Error("Expected route context");
+
+    await expect(
+      context.lifecycle.applyAndSubmitCustomRule({
+        actor: context.actor,
+        projectId: PROJECT_ID,
+        source: { kind: "saved_draft", id: SAVED_DRAFT_RULE_ID },
+        sourceSimulationId: REQUEST_SIMULATION_ID,
+        destinationVersionId: "77777777-7777-4777-8777-777777777777",
+        destinationSimulationId: "88888888-8888-4888-8888-888888888888",
+        scope: "payable",
+        target: { targetType: "project", targetId: null },
+        effectiveFrom: "2026-07-31T00:00:00.000Z",
+        reason: "Submit saved draft with a fresh simulation.",
+        clientRequestId: "saved-draft-submit-0001",
+      }),
+    ).resolves.toBeDefined();
+
+    expect(repository.getSimulation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        simulationId: REQUEST_SIMULATION_ID,
+        owner: { kind: "rule_version", id: SAVED_DRAFT_RULE_ID },
+      }),
+    );
+    expect(repository.getSimulation).not.toHaveBeenCalledWith(
+      expect.objectContaining({ simulationId: STORED_SIMULATION_ID }),
+    );
+  });
+
+  it.each([
+    "custom_settlement_rule_archive_fallback_invalid",
+    "custom_settlement_rule_archive_period_invalid",
+    "custom_settlement_rule_source_not_found",
+  ])("maps deterministic persistence %s failures to 422", async (message) => {
+    const { customRuleErrorResponse } = await import(
+      "./custom-rule-route-context"
+    );
+    const { CustomRulePersistenceQueryError } = await import(
+      "./custom-rule-repository"
+    );
+
+    const response = customRuleErrorResponse(
+      new CustomRulePersistenceQueryError("route_governance", { message }),
+    );
+
+    expect(response.status).toBe(422);
+  });
+
+  it.each([
+    "custom_settlement_rule_approval_denied",
+    "settlement_rule_template_manage_not_allowed",
+  ])("maps deterministic persistence %s failures to 403", async (message) => {
+    const { customRuleErrorResponse } = await import(
+      "./custom-rule-route-context"
+    );
+    const { CustomRulePersistenceQueryError } = await import(
+      "./custom-rule-repository"
+    );
+
+    const response = customRuleErrorResponse(
+      new CustomRulePersistenceQueryError("route_governance", { message }),
+    );
+
+    expect(response.status).toBe(403);
   });
 
   it("uses Zod for malformed and invalid JSON bodies", async () => {
@@ -757,6 +851,178 @@ function completeSimulationFixture(): CompleteSettlementFormulaSimulation {
     ],
     createdBy: USER_ID,
     createdAt: "2026-07-12T05:01:00.000Z",
+  };
+}
+
+function routeGovernanceContract() {
+  return businessRuleContractSchema.parse({
+    schemaVersion: 1,
+    scope: "payable",
+    target: { targetType: "project", targetId: null },
+    executionGrain: "report",
+    compositionMode: "replace",
+    title: "项目结算治理规则",
+    summary: "使用服务端治理上下文验证保存草稿提交。",
+    calculationComponents: [
+      {
+        name: "final",
+        description: "返回固定金额用于治理路径验证。",
+        expression: "yuan(100)",
+        resultType: { kind: "scalar", scalarType: "money_cents" },
+      },
+    ],
+    requiredInputs: [
+      {
+        name: "system_minutes",
+        description: "授权直播时长。",
+        source: "authorized.system_minutes",
+        valueType: { kind: "scalar", scalarType: "integer" },
+        userFacingUnit: "分钟",
+      },
+    ],
+    parameters: [
+      {
+        name: "fixed_amount",
+        description: "固定结算金额。",
+        valueType: { kind: "scalar", scalarType: "money_cents" },
+        userFacingUnit: "元",
+        defaultValue: { type: "money_cents", amountCents: 10000 },
+      },
+    ],
+    effectiveStartAt: "2026-07-01T00:00:00+08:00",
+    effectiveEndAt: null,
+    missingDataPolicy: { action: "route_item_to_review" },
+    compositionDescription: "替换项目结算基础金额。",
+    businessTimezone: "Asia/Shanghai",
+    examples: ["标准示例", "零值边界", "单值边界"].map((name, index) => ({
+      name,
+      kind: index === 0 ? "normal" : "boundary",
+      description: "固定金额结果保持确定。",
+      inputs: { system_minutes: { type: "integer", value: 60 } },
+      expectedResult: { type: "money_cents", amountCents: 10000 },
+    })),
+  });
+}
+
+function routeGovernanceVersion(overrides: Record<string, unknown> = {}) {
+  const formula = parseCustomRuleFormula("money_result({ final: yuan(100) })");
+  if (!formula.ok) throw new Error("route governance formula fixture failed");
+  return {
+    id: SAVED_DRAFT_RULE_ID,
+    organizationId: ORGANIZATION_ID,
+    projectId: PROJECT_ID,
+    scope: "payable",
+    target: { targetType: "project", targetId: null },
+    executionGrain: "report",
+    compositionMode: "replace",
+    priority: 100,
+    versionNumber: 1,
+    status: "draft",
+    formula: "money_result({ final: yuan(100) })",
+    compiledAst: formula.ast,
+    variables: [],
+    parameters: {},
+    ruleContract: routeGovernanceContract(),
+    systemExplanationTemplate: "按固定金额计算。",
+    missingDataPolicy: { action: "route_item_to_review" },
+    testCases: [],
+    simulationSummary: {},
+    formulaHash: "a".repeat(64),
+    contractHash: "b".repeat(64),
+    parameterHash: "c".repeat(64),
+    catalogHash: "d".repeat(64),
+    dataSelectionHash: "e".repeat(64),
+    simulationId: STORED_SIMULATION_ID,
+    effectiveFrom: "2026-07-01T00:00:00.000Z",
+    effectiveUntil: null,
+    createdBy: USER_ID,
+    approvedBy: null,
+    aiDraftId: null,
+    reason: "Save draft.",
+    createdAt: "2026-07-01T00:00:00.000Z",
+    approvedAt: null,
+    archivedAt: null,
+    ...overrides,
+  };
+}
+
+function routeGovernanceSimulation(
+  id: string,
+): CompleteSettlementFormulaSimulation {
+  return {
+    ...completeSimulationFixture(),
+    id,
+    owner: { kind: "rule_version", id: SAVED_DRAFT_RULE_ID },
+    formulaHash: "a".repeat(64),
+    ruleContractHash: "b".repeat(64),
+    parameterHash: "c".repeat(64),
+    variableCatalogVersion: "d".repeat(64),
+    dataSelectionHash: "e".repeat(64),
+    warnings: [],
+    deltas: {
+      payableAmountCents: "0",
+      receivableAmountCents: null,
+      percentageBps: 0,
+      marginImpactCents: "0",
+    },
+    historicalTotals: {
+      oldPayableAmountCents: "10000",
+      oldReceivableAmountCents: null,
+      newPayableAmountCents: "10000",
+      newReceivableAmountCents: null,
+      payableAmountCents: "10000",
+      receivableAmountCents: null,
+      recordCount: 1,
+      verificationStatus: "verified",
+    },
+  };
+}
+
+function routeGovernanceRepositoryFixture(input: {
+  version: ReturnType<typeof routeGovernanceVersion>;
+  simulations: Record<string, CompleteSettlementFormulaSimulation>;
+}) {
+  const fallbackSimulation =
+    input.simulations[REQUEST_SIMULATION_ID] ??
+    routeGovernanceSimulation(REQUEST_SIMULATION_ID);
+  return {
+    getProjectVariableCoverage: vi.fn().mockResolvedValue({}),
+    listDrafts: vi.fn(),
+    getDraft: vi.fn(),
+    listSimulations: vi.fn(),
+    insertSimulation: vi.fn(),
+    listCustomRules: vi.fn().mockResolvedValue([input.version]),
+    getSimulation: vi.fn(async (scope: { simulationId: string }) =>
+      input.simulations[scope.simulationId] ?? null,
+    ),
+    applyAndSubmitCustomRule: vi.fn().mockResolvedValue({
+      version: { ...input.version, status: "pending_review" },
+      simulation: fallbackSimulation,
+      event: null,
+    }),
+  };
+}
+
+function routeGovernanceSupabase() {
+  const project = projectQuery();
+  const memberQuery = {
+    select: vi.fn(),
+    eq: vi.fn(),
+    in: vi.fn(),
+    order: vi.fn(),
+    returns: vi.fn().mockResolvedValue({
+      data: [{ user_id: USER_ID, role: "owner", status: "active" }],
+      error: null,
+    }),
+  };
+  memberQuery.select.mockReturnValue(memberQuery);
+  memberQuery.eq.mockReturnValue(memberQuery);
+  memberQuery.in.mockReturnValue(memberQuery);
+  memberQuery.order.mockReturnValue(memberQuery);
+  return {
+    from: vi.fn((table: string) =>
+      table === "organization_members" ? memberQuery : project,
+    ),
   };
 }
 
@@ -4404,8 +4670,8 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
       await expect(
         harness.adapter.authorizeSelection(authorizationInput()),
       ).rejects.toMatchObject({
-        code: "CUSTOM_RULE_PROJECT_NOT_FOUND",
-        status: 404,
+        code: "CUSTOM_RULE_PROJECT_ACCESS_DENIED",
+        status: 403,
       });
     },
   );

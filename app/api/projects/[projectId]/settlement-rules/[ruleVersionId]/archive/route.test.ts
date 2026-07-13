@@ -180,6 +180,25 @@ describe("settlement rule archive route", () => {
     expect(response.status).toBe(409);
   });
 
+  it.each([
+    "custom_settlement_rule_archive_fallback_invalid",
+    "custom_settlement_rule_archive_period_invalid",
+  ])("maps deterministic %s failures to 422", async (message) => {
+    const routeContext = context("owner");
+    routeContext.lifecycle.archiveCustomRule.mockRejectedValue(
+      new CustomRulePersistenceQueryError("archive_rule", { message }),
+    );
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(request(), {
+      params: Promise.resolve({ projectId: PROJECT_ID, ruleVersionId: RULE_ID }),
+    });
+
+    expect(response.status).toBe(422);
+  });
+
   it("rejects malformed effective date before billing", async () => {
     const routeContext = context("owner");
     vi.mocked(getCustomRuleRouteContext).mockResolvedValue(

@@ -651,22 +651,27 @@ export function customRuleErrorResponse(error: unknown): Response {
   }
   if (error instanceof CustomRulePersistenceQueryError) {
     const conflict = persistenceConflict(error);
+    const denial = persistenceDenial(error);
     const deterministicValidation = persistenceValidationFailure(error);
     return safeErrorResponse(
       {
         code: conflict
           ? "CUSTOM_RULE_CONFLICT"
+          : denial
+            ? "CUSTOM_RULE_ACTION_NOT_ALLOWED"
           : deterministicValidation
             ? "CUSTOM_RULE_VALIDATION_FAILED"
           : "CUSTOM_RULE_STORAGE_UNAVAILABLE",
         message: conflict
           ? "Settlement rule request conflicts with current data"
+          : denial
+            ? "Settlement rule request is not allowed"
           : deterministicValidation
             ? "Settlement rule request failed validation"
           : "Settlement rule storage is unavailable",
-        retryable: !conflict && !deterministicValidation,
+        retryable: !conflict && !denial && !deterministicValidation,
       },
-      conflict ? 409 : deterministicValidation ? 422 : 503,
+      conflict ? 409 : denial ? 403 : deterministicValidation ? 422 : 503,
     );
   }
   if (error instanceof CustomRulePersistenceDataError) {
@@ -4050,11 +4055,23 @@ function persistenceConflict(error: CustomRulePersistenceQueryError): boolean {
   );
 }
 
+function persistenceDenial(error: CustomRulePersistenceQueryError): boolean {
+  const text = safeRpcErrorText(error.cause);
+  return (
+    text.includes("_denied") ||
+    text.includes("_not_allowed") ||
+    text.includes("access_denied")
+  );
+}
+
 function persistenceValidationFailure(
   error: CustomRulePersistenceQueryError,
 ): boolean {
   const text = safeRpcErrorText(error.cause);
   return (
+    text.includes("archive_fallback_invalid") ||
+    text.includes("archive_period_invalid") ||
+    text.includes("source_not_found") ||
     text.includes("target_invalid") ||
     text.includes("target_mismatch") ||
     text.includes("input_invalid") ||
@@ -4172,13 +4189,22 @@ function createRouteGovernanceRepository(input: {
         versionId === undefined
           ? undefined
           : versions.find((candidate) => candidate.id === versionId);
+      const savedDraftSimulation =
+        scope.source?.kind === "saved_draft" && scope.sourceSimulationId
+          ? {
+              owner: { kind: "rule_version", id: scope.source.id } as const,
+              id: scope.sourceSimulationId,
+            }
+          : null;
       const simulationOwner =
-        version?.simulationId !== null && version !== undefined
+        savedDraftSimulation?.owner ??
+        (version?.simulationId !== null && version !== undefined
           ? ({ kind: "rule_version", id: version.id } as const)
           : scope.source?.kind === "ai_draft"
             ? ({ kind: "ai_draft", id: scope.source.id } as const)
-            : null;
-      const simulationId = version?.simulationId ?? scope.sourceSimulationId;
+            : null);
+      const simulationId =
+        savedDraftSimulation?.id ?? version?.simulationId ?? scope.sourceSimulationId;
       const rawSimulation =
         simulationOwner && simulationId
           ? await input.repository.getSimulation({
