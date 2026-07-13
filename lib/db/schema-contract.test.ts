@@ -4119,6 +4119,39 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     );
   });
 
+  it("stores replay idempotency requests before replay item insertion", () => {
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "create table if not exists public.external_cost_rule_replay_requests",
+    );
+    for (const column of [
+      "organization_id uuid not null references public.organizations(id) on delete cascade",
+      "project_id uuid not null references public.projects(id) on delete cascade",
+      "import_batch_id uuid not null references public.project_cost_import_batches(id) on delete cascade",
+      "import_row_index integer not null",
+      "idempotency_key text not null",
+      "input_hash text not null",
+      "request_items jsonb not null default '[]'::jsonb",
+      "created_by uuid references public.profiles(id)",
+      "created_at timestamptz not null default now()",
+    ]) {
+      expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+        column,
+      );
+    }
+    expect(normalizedCustomSettlementCostReconciliationMigration).toMatch(
+      /constraint external_cost_rule_replay_requests_idempotency_uidx unique \(\s*organization_id,\s*project_id,\s*import_batch_id,\s*import_row_index,\s*idempotency_key\s*\)/u,
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "alter table public.external_cost_rule_replay_requests enable row level security",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "create policy external_cost_rule_replay_requests_no_direct_access",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "revoke all on table public.external_cost_rule_replay_requests from public, anon, authenticated, service_role",
+    );
+  });
+
   it("records append-only reconciliation runs with immutable input and result snapshots", () => {
     expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
       "create table if not exists public.settlement_reconciliation_runs",
@@ -4279,6 +4312,18 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     expect(confirm.body).toContain(
       "v_existing_cost_item.source_payload ->> '__confirmation_idempotency_key'",
     );
+    expect(confirm.body).toContain("v_seen_confirmation_items");
+    expect(confirm.body).toContain("v_confirmation_item_signature");
+    expect(confirm.body).toContain("v_seen_confirmation_item <> v_confirmation_item_signature");
+    expect(confirm.body).toContain("v_existing_cost_item.project_id is distinct from p_project_id");
+    expect(confirm.body).toContain("v_existing_cost_item.streamer_id is distinct from nullif(v_item ->> 'streamer_id', '')::uuid");
+    expect(confirm.body).toContain("v_existing_cost_item.supplier_organization_id is distinct from nullif(v_item ->> 'supplier_organization_id', '')::uuid");
+    expect(confirm.body).toContain("v_existing_cost_item.live_report_id is distinct from nullif(v_item ->> 'live_report_id', '')::uuid");
+    expect(confirm.body).toContain("v_existing_cost_item.item_type is distinct from coalesce(nullif(v_item ->> 'item_type', ''), 'manual')");
+    expect(confirm.body).toContain("v_existing_cost_item.amount_cents is distinct from coalesce((v_item ->> 'amount_cents')::bigint, 0)");
+    expect(confirm.body).toContain("v_existing_cost_item.status is distinct from v_item_expected_status");
+    expect(confirm.body).toContain("v_existing_cost_item.source_explanation is distinct from nullif(v_item ->> 'source_explanation', '')");
+    expect(confirm.body).toContain("((v_existing_cost_item.source_payload - '__confirmation_idempotency_key') is distinct from coalesce(v_item -> 'source_payload', '{}'::jsonb))");
     expect(confirm.body.indexOf("confirm_cost_import_execution_key_conflict")).toBeLessThan(
       confirm.body.indexOf("set status = 'confirmed'"),
     );
@@ -4315,6 +4360,18 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
       /from public\.project_cost_import_batches[\s\S]+organization_id = p_organization_id[\s\S]+project_id = p_project_id[\s\S]+for update/u,
     );
     expect(replay.body).toContain("v_batch.status <> 'confirmed'");
+    expect(replay.body).toContain("v_replay_request");
+    expect(replay.body).toContain("v_replay_items_snapshot");
+    expect(replay.body).toContain("external_cost_replay_idempotency_conflict");
+    expect(replay.body).toContain("from public.external_cost_rule_replay_requests");
+    expect(replay.body).toContain("insert into public.external_cost_rule_replay_requests");
+    expect(replay.body).toContain("v_replay_request.request_items <> v_replay_items_snapshot");
+    expect(replay.body.indexOf("pg_advisory_xact_lock")).toBeLessThan(
+      replay.body.indexOf("from public.project_cost_import_batches"),
+    );
+    expect(replay.body.indexOf("insert into public.external_cost_rule_replay_requests")).toBeLessThan(
+      replay.body.indexOf("insert into public.project_cost_items"),
+    );
     expect(replay.body).toContain("locked_siblings as materialized");
     expect(replay.body).toMatch(
       /locked_siblings as materialized[\s\S]+order by sibling\.id[\s\S]+for update/u,
@@ -4346,6 +4403,12 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     expect(replay.body).toContain("v_item_rule_version_id is distinct from v_expected_rule_version_id");
     expect(replay.body).toContain("v_item_source_input_hash <> v_expected_source_context_hash");
     expect(replay.body).toContain("v_existing_cost_item.source_input_hash is distinct from v_item_source_input_hash");
+    expect(replay.body).toContain("v_existing_cost_item.project_id is distinct from p_project_id");
+    expect(replay.body).toContain("v_existing_cost_item.streamer_id is distinct from nullif(v_item ->> 'streamer_id', '')::uuid");
+    expect(replay.body).toContain("v_existing_cost_item.supplier_organization_id is distinct from nullif(v_item ->> 'supplier_organization_id', '')::uuid");
+    expect(replay.body).toContain("v_existing_cost_item.live_report_id is distinct from nullif(v_item ->> 'live_report_id', '')::uuid");
+    expect(replay.body).toContain("v_existing_cost_item.status is distinct from 'pending_review'");
+    expect(replay.body).toContain("v_existing_cost_item.source_explanation is distinct from nullif(v_item ->> 'source_explanation', '')");
     expect(replay.body).toContain("v_existing_cost_item.source_import_batch_id is distinct from p_import_batch_id");
     expect(replay.body).toContain("v_existing_cost_item.source_payload ->> '__replay_idempotency_key'");
     expect(replay.body).toContain("insert into public.project_cost_items");
@@ -4378,6 +4441,15 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     );
     expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
       "create policy external_cost_rule_exceptions_staff_read",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "alter table public.external_cost_rule_replay_requests enable row level security",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "create policy external_cost_rule_replay_requests_no_direct_access",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "revoke all on table public.external_cost_rule_replay_requests from public, anon, authenticated, service_role",
     );
     expect(normalizedCustomSettlementCostReconciliationMigration).not.toMatch(
       /grant (?:insert|update|delete|all) on table public\.(?:external_cost_rule_exceptions|settlement_reconciliation_runs)[\s\S]+?to authenticated/u,
