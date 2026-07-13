@@ -778,7 +778,17 @@ describe("OpsReferenceApp project smoke", () => {
     ).toBeInTheDocument();
   });
 
-  it("opens organization feature settings from the sidebar and syncs the switcher display", async () => {
+  it("hides the duplicated organization feature shortcut from the sidebar", () => {
+    render(<OpsReferenceApp initialRoute="warroom" />);
+
+    expect(
+      screen.queryByRole("button", { name: /未配置组织/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("当前组织 · 设置与权限")).not.toBeInTheDocument();
+    expect(screen.queryByText(/已启用 \d+ 项功能/)).not.toBeInTheDocument();
+  });
+
+  it("opens organization feature settings from the account menu and syncs brand display", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({ organization: { id: "org-1" } }),
@@ -787,7 +797,8 @@ describe("OpsReferenceApp project smoke", () => {
 
     render(<OpsReferenceApp initialRoute="warroom" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
 
     expect(
       screen.getByRole("dialog", { name: "组织功能设置" }),
@@ -802,17 +813,22 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.click(screen.getByLabelText("厂家门户"));
     fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
 
-    const orgSwitcher = (
-      await screen.findByText("未来经营组")
-    ).closest("button");
-    expect(orgSwitcher).toHaveTextContent("当前组织 · 配额 48");
-    expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
-
     // 品牌设置持久化到组织设置接口。
-    const settingsCall = fetchMock.mock.calls.find(
-      ([url]) => String(url) === "/api/organization/settings",
-    );
-    expect(settingsCall).toBeTruthy();
+    let settingsCall;
+    await waitFor(() => {
+      settingsCall = fetchMock.mock.calls.find(
+        ([url]) => String(url) === "/api/organization/settings",
+      );
+      expect(settingsCall).toBeTruthy();
+    });
+    expect(screen.queryByText("当前组织 · 配额 48")).not.toBeInTheDocument();
+    expect(screen.queryByText("已启用 4 项功能")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /未来经营组/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("dialog", { name: "组织功能设置" }),
+    ).not.toBeInTheDocument();
     expect(settingsCall[1].method).toBe("PATCH");
     expect(JSON.parse(settingsCall[1].body).name).toBe("未来经营组");
   }, 15000);
@@ -848,7 +864,8 @@ describe("OpsReferenceApp project smoke", () => {
 
     render(<OpsReferenceApp initialRoute="warroom" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
     fireEvent.change(screen.getByLabelText("LOGO 字标"), {
       target: { value: "未" },
     });
@@ -872,7 +889,8 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.getByText("经营舱")).toBeInTheDocument();
     expect(screen.getByText("MCN OPERATIONS · v1.2")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
     fireEvent.change(screen.getByLabelText("品牌名称"), {
       target: { value: "星耀经营舱" },
     });
@@ -965,7 +983,7 @@ describe("OpsReferenceApp project smoke", () => {
     );
   });
 
-  it("keeps the organization switcher readable with a long organization name", () => {
+  it("does not render the duplicated organization shortcut for a long organization name", () => {
     render(
       <OpsReferenceApp
         initialRoute="warroom"
@@ -974,28 +992,10 @@ describe("OpsReferenceApp project smoke", () => {
       />,
     );
 
-    const orgSwitcher = screen.getByText("星耀传媒测试机构").closest("button");
-    expect(orgSwitcher).toHaveStyle({
-      alignItems: "center",
-      minWidth: "0",
-    });
-
-    const mark = orgSwitcher.querySelector("[data-org-switcher-mark='true']");
-    const content = orgSwitcher.querySelector(
-      "[data-org-switcher-content='true']",
-    );
-    const chevron = orgSwitcher.querySelector(
-      "[data-org-switcher-chevron='true']",
-    );
-
-    expect(mark).toHaveStyle({ flexShrink: "0" });
-    expect(content).toHaveStyle({ minWidth: "0", rowGap: "2px" });
-    expect(screen.getByText("星耀传媒测试机构")).toHaveStyle({
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
-    });
-    expect(chevron).toHaveStyle({ flexShrink: "0" });
+    expect(screen.queryByText("星耀传媒测试机构")).not.toBeInTheDocument();
+    expect(screen.queryByText("当前组织 · 0 名成员")).not.toBeInTheDocument();
+    expect(screen.queryByText(/已启用 \d+ 项功能/)).not.toBeInTheDocument();
+    expect(screen.getAllByText("智能作战台").length).toBeGreaterThan(0);
   });
 
   it("renders the authenticated staff user in the sidebar", () => {

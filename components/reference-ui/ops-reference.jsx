@@ -1919,23 +1919,12 @@ export function Sidebar({
   navCounts = {},
   currentUser,
   organizationSettings,
-  organizationMembers,
   onOpenOrganizationSettings,
   onUpdateAvatar,
 }) {
   const displayUser = normalizeCurrentUser(currentUser);
   const orgSettings = normalizeOrganizationSettings(organizationSettings);
-  const enabledFeatureCount = countEnabledOrganizationFeatures(orgSettings);
-  const memberCount = Array.isArray(organizationMembers)
-    ? organizationMembers.length
-    : null;
   const [accountPanel, setAccountPanel] = React.useState(null);
-  const switcherMemberText =
-    memberCount != null
-      ? `当前组织 · ${memberCount} 名成员`
-      : orgSettings.memberLimit != null
-        ? `当前组织 · 配额 ${orgSettings.memberLimit}`
-        : "当前组织 · 设置与权限";
 
   return (
     <aside
@@ -2020,105 +2009,6 @@ export function Sidebar({
           </span>
         </div>
       </div>
-
-      {/* Org switcher */}
-      <button
-        type="button"
-        onClick={onOpenOrganizationSettings}
-        style={{
-          margin: "12px 12px 8px",
-          padding: "10px 12px",
-          minWidth: 0,
-          background: "var(--bg-soft)",
-          border: "1px solid var(--line)",
-          borderRadius: 8,
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          cursor: "pointer",
-        }}
-      >
-        <span
-          data-org-switcher-mark="true"
-          style={{
-            width: 28,
-            height: 28,
-            flexShrink: 0,
-            borderRadius: 7,
-            background: "var(--blue-50)",
-            color: "var(--blue-700)",
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontWeight: 700,
-            fontSize: 12,
-          }}
-        >
-          星
-        </span>
-        <div
-          data-org-switcher-content="true"
-          style={{
-            flex: "1 1 auto",
-            minWidth: 0,
-            display: "flex",
-            flexDirection: "column",
-            rowGap: 2,
-            textAlign: "left",
-          }}
-        >
-          <div
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: "var(--ink-900)",
-              lineHeight: 1.2,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {orgSettings.name}
-          </div>
-          <div
-            style={{
-              fontSize: 10.5,
-              color: "var(--ink-400)",
-              lineHeight: 1.25,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {switcherMemberText}
-          </div>
-          <div
-            style={{
-              fontSize: 10.5,
-              color: "var(--blue-600)",
-              lineHeight: 1.25,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            已启用 {enabledFeatureCount} 项功能
-          </div>
-        </div>
-        <span
-          data-org-switcher-chevron="true"
-          style={{
-            width: 18,
-            height: 18,
-            flexShrink: 0,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Icon.ChevDown size={14} stroke="var(--ink-400)" />
-        </span>
-      </button>
 
       {/* Nav */}
       <nav style={{ padding: "4px 8px", flex: 1, overflowY: "auto" }}>
@@ -33614,7 +33504,6 @@ function OpsReferenceInner({
           navCounts={navCounts}
           currentUser={currentUserState}
           organizationSettings={organizationSettingsState}
-          organizationMembers={organizationMembersState}
           onOpenOrganizationSettings={() => setOrganizationSettingsOpen(true)}
           onUpdateAvatar={updateProfileAvatar}
         />
