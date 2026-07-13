@@ -290,6 +290,50 @@ describe("settlement rule simulation route", () => {
     );
   });
 
+  it("accepts settlement group population selection for group-rule simulations", async () => {
+    const routeContext = context("owner");
+    const groupPopulation = {
+      assignedProjectStreamerIds: [
+        "77777777-7777-4777-8777-777777777777",
+      ],
+      unassignedProjectStreamerIds: [
+        "88888888-8888-4888-8888-888888888888",
+      ],
+      groupSnapshotHash: "f".repeat(64),
+    };
+    const selectionWithGroupPopulation = {
+      ...body().simulationSelection,
+      groupPopulation,
+    };
+    routeContext.authorizeSimulationSelection.mockResolvedValue({
+      ...selectionWithGroupPopulation,
+      selectionToken: `server:${"f".repeat(64)}`,
+    });
+    vi.mocked(getCustomRuleRouteContext).mockResolvedValue(
+      routeContext as never,
+    );
+
+    const response = await POST(
+      request({
+        ...body(),
+        simulationSelection: selectionWithGroupPopulation,
+      }),
+      { params: Promise.resolve({ projectId: PROJECT_ID }) },
+    );
+
+    expect(response.status).toBe(201);
+    expect(routeContext.authorizeSimulationSelection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selection: selectionWithGroupPopulation,
+      }),
+    );
+    expect(routeContext.simulation.simulateExistingDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selection: expect.objectContaining({ groupPopulation }),
+      }),
+    );
+  });
+
   it.each([
     [
       "too many examples",

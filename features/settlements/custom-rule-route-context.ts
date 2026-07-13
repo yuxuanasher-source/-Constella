@@ -1641,6 +1641,7 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
             ? "linked_plus_unlinked_period_fallback"
             : "linked_only",
           criteriaCodes: [...unsafeInput.selection.criteriaCodes].sort(),
+          groupPopulation: unsafeInput.selection.groupPopulation ?? null,
           userExamples,
           snapshotHash: snapshot.snapshot_hash,
         }),
@@ -1650,6 +1651,22 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
         periodStart: unsafeInput.selection.periodStart,
         periodEnd: unsafeInput.selection.periodEnd,
         criteriaCodes: [...unsafeInput.selection.criteriaCodes],
+        ...(unsafeInput.selection.groupPopulation
+          ? {
+              groupPopulation: {
+                assignedProjectStreamerIds: [
+                  ...unsafeInput.selection.groupPopulation
+                    .assignedProjectStreamerIds,
+                ],
+                unassignedProjectStreamerIds: [
+                  ...unsafeInput.selection.groupPopulation
+                    .unassignedProjectStreamerIds,
+                ],
+                groupSnapshotHash:
+                  unsafeInput.selection.groupPopulation.groupSnapshotHash,
+              },
+            }
+          : {}),
       };
       const evidence: AuthorizedCustomRuleSimulationEvidence = {
         provenance: {
@@ -1674,6 +1691,22 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           populationCount:
             requestedBatches.length > 0 ? items.length : reports.length,
           criteria: [...unsafeInput.selection.criteriaCodes],
+          ...(unsafeInput.selection.groupPopulation
+            ? {
+                groupPopulation: {
+                  assignedProjectStreamerIds: [
+                    ...unsafeInput.selection.groupPopulation
+                      .assignedProjectStreamerIds,
+                  ],
+                  unassignedProjectStreamerIds: [
+                    ...unsafeInput.selection.groupPopulation
+                      .unassignedProjectStreamerIds,
+                  ],
+                  groupSnapshotHash:
+                    unsafeInput.selection.groupPopulation.groupSnapshotHash,
+                },
+              }
+            : {}),
         },
         records,
         userExamples: [...userExamples],
@@ -1714,7 +1747,9 @@ export function createSupabaseCustomRuleEvidenceAdapter(input: {
           loadInput.selection.periodStart ||
         evidence.sampleSelection.periodEnd !== loadInput.selection.periodEnd ||
         JSON.stringify([...evidence.sampleSelection.criteria].sort()) !==
-          JSON.stringify([...loadInput.selection.criteriaCodes].sort())
+          JSON.stringify([...loadInput.selection.criteriaCodes].sort()) ||
+        JSON.stringify(evidence.sampleSelection.groupPopulation ?? null) !==
+          JSON.stringify(loadInput.selection.groupPopulation ?? null)
       ) {
         throw routeError(
           "CUSTOM_RULE_SELECTION_UNSUPPORTED",

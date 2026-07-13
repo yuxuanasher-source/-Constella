@@ -80,6 +80,36 @@ describe("simulateCustomSettlementRule", () => {
     expect(persisted).not.toContain("evidence_level");
   });
 
+  it("preserves group population readiness metadata in persisted sample selection", () => {
+    const input = simulationInput();
+    input.sampleSelection = {
+      ...input.sampleSelection,
+      groupPopulation: {
+        assignedProjectStreamerIds: [
+          "11111111-1111-4111-8111-111111111111",
+        ],
+        unassignedProjectStreamerIds: [
+          "22222222-2222-4222-8222-222222222222",
+        ],
+        groupSnapshotHash: "f".repeat(64),
+      },
+    } as typeof input.sampleSelection;
+
+    const result = simulateAuthorized(input);
+
+    expect(result.persistable.sampleSelection).toMatchObject({
+      groupPopulation: {
+        assignedProjectStreamerIds: [
+          "11111111-1111-4111-8111-111111111111",
+        ],
+        unassignedProjectStreamerIds: [
+          "22222222-2222-4222-8222-222222222222",
+        ],
+        groupSnapshotHash: "f".repeat(64),
+      },
+    });
+  });
+
   it("uses deterministic tie ordering and selection hashes independent of input record order", () => {
     const first = simulationInput();
     first.records = [

@@ -118,12 +118,18 @@ const simulationCriteriaCodeSchema = z.enum([
   "complete_evidence",
   "project_scope",
 ]);
+const simulationGroupPopulationSchema = z.strictObject({
+  assignedProjectStreamerIds: z.array(z.string().uuid()).max(10_000),
+  unassignedProjectStreamerIds: z.array(z.string().uuid()).max(10_000),
+  groupSnapshotHash: z.string().regex(HASH_PATTERN),
+});
 const simulationSelectionSchema = z
   .strictObject({
     selectionToken: z.string().min(8).max(500).regex(CLIENT_REQUEST_ID_PATTERN),
     periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
     periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
     criteriaCodes: z.array(simulationCriteriaCodeSchema).min(1).max(4),
+    groupPopulation: simulationGroupPopulationSchema.optional(),
   })
   .superRefine((selection, context) => {
     if (selection.periodStart > selection.periodEnd) {
@@ -186,6 +192,11 @@ export type AuthorizedSimulationSelectionRequest = Readonly<{
   periodStart: string;
   periodEnd: string;
   criteriaCodes: readonly CustomRuleSimulationCriteriaCode[];
+  groupPopulation?: {
+    assignedProjectStreamerIds: readonly string[];
+    unassignedProjectStreamerIds: readonly string[];
+    groupSnapshotHash: string;
+  };
 }>;
 
 export type AuthorizedSimulationEvidencePort = {
@@ -4523,7 +4534,9 @@ async function loadAuthorizedSimulationEvidence(
     evidence.sampleSelection.periodStart !== selection.periodStart ||
     evidence.sampleSelection.periodEnd !== selection.periodEnd ||
     canonicalJson([...evidence.sampleSelection.criteria].sort()) !==
-      canonicalJson([...selection.criteriaCodes].sort())
+      canonicalJson([...selection.criteriaCodes].sort()) ||
+    canonicalJson(evidence.sampleSelection.groupPopulation ?? null) !==
+      canonicalJson(selection.groupPopulation ?? null)
   ) {
     throw new Error("authorized evidence scope or selection mismatch");
   }

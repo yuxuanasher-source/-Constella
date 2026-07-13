@@ -256,12 +256,19 @@ export type SettlementSimulationSampleSource = {
     | "synthetic_scenarios";
 };
 
+export type SettlementSimulationGroupPopulation = {
+  assignedProjectStreamerIds: string[];
+  unassignedProjectStreamerIds: string[];
+  groupSnapshotHash: string;
+};
+
 export type SettlementSimulationSampleSelection = {
   periodStart: CustomRuleBusinessDate;
   periodEnd: CustomRuleBusinessDate;
   populationCount: number;
   sampledCount: number;
   criteria: string[];
+  groupPopulation?: SettlementSimulationGroupPopulation;
 };
 
 export type SettlementSimulationCoverage = {
@@ -1341,6 +1348,11 @@ const sampleSourceSchema = z.strictObject({
     "synthetic_scenarios",
   ]),
 });
+const sampleSelectionGroupPopulationSchema = z.strictObject({
+  assignedProjectStreamerIds: z.array(uuidSchema).max(10_000),
+  unassignedProjectStreamerIds: z.array(uuidSchema).max(10_000),
+  groupSnapshotHash: hashSchema,
+});
 const sampleSelectionSchema = z
   .strictObject({
     periodStart: businessDateSchema,
@@ -1348,6 +1360,7 @@ const sampleSelectionSchema = z
     populationCount: nonnegativeSafeIntegerSchema,
     sampledCount: nonnegativeSafeIntegerSchema,
     criteria: z.array(nonemptyTextSchema.max(200)).max(100),
+    groupPopulation: sampleSelectionGroupPopulationSchema.optional(),
   })
   .superRefine((selection, context) => {
     if (selection.periodStart > selection.periodEnd) {

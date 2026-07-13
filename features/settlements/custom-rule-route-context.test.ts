@@ -1565,6 +1565,34 @@ function periodBoundaryFixture(
 }
 
 describe("Supabase custom-rule authorized evidence adapter", () => {
+  it("carries settlement group population metadata into authorized evidence", async () => {
+    const harness = await evidenceHarness();
+    const groupPopulation = {
+      assignedProjectStreamerIds: [
+        "77777777-7777-4777-8777-777777777777",
+      ],
+      unassignedProjectStreamerIds: [
+        "88888888-8888-4888-8888-888888888888",
+      ],
+      groupSnapshotHash: "f".repeat(64),
+    };
+    const authorized = await harness.adapter.authorizeSelection(
+      authorizationInput({
+        ...selection(),
+        groupPopulation,
+      }),
+    );
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+
+    expect(authorized).toMatchObject({ groupPopulation });
+    expect(evidence.sampleSelection).toMatchObject({ groupPopulation });
+  });
+
   it("binds declared optional policies when all evidence values are present", async () => {
     const harness = await evidenceHarness();
     const authorized =

@@ -18,6 +18,11 @@ const clientRequestIdSchema = z
   .min(8)
   .max(128)
   .regex(/^[A-Za-z0-9._:-]+$/u);
+const groupPopulationSchema = z.strictObject({
+  assignedProjectStreamerIds: z.array(z.string().uuid()).max(10_000),
+  unassignedProjectStreamerIds: z.array(z.string().uuid()).max(10_000),
+  groupSnapshotHash: z.string().regex(/^[a-f0-9]{64}$/u),
+});
 const selectionSchema = z
   .strictObject({
     periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
@@ -33,6 +38,7 @@ const selectionSchema = z
       )
       .min(1)
       .max(4),
+    groupPopulation: groupPopulationSchema.optional(),
     userExamples: customRuleUserExamplesSchema.optional(),
   })
   .superRefine((selection, context) => {

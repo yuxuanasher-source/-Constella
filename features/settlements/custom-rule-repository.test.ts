@@ -3086,6 +3086,35 @@ describe("custom-rule draft and simulation persistence", () => {
     expect(typeof result.historicalTotals.oldPayableAmountCents).toBe("string");
   });
 
+  it("persists optional settlement group population in simulation sample selection", async () => {
+    const owner = { kind: "ai_draft" as const, id: DRAFT_ID };
+    const row = simulationRow(owner, { duplicate: false });
+    const mock = createPersistenceClient({ simulationRpcData: row });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+    const groupPopulation = {
+      assignedProjectStreamerIds: [PROJECT_STREAMER_ID],
+      unassignedProjectStreamerIds: [OTHER_PROJECT_STREAMER_ID],
+      groupSnapshotHash: HASH_F,
+    };
+    const input = {
+      ...validSimulationInput(owner),
+      sampleSelection: {
+        ...validSampleSelection(),
+        groupPopulation,
+      },
+    };
+
+    await repository.insertSimulation(input);
+
+    expect(mock.rpc).toHaveBeenCalledWith(
+      "create_settlement_formula_simulation",
+      expect.objectContaining({
+        p_sample_selection: expect.objectContaining({ groupPopulation }),
+      }),
+    );
+  });
+
   it("writes and decodes a complete v2 summary without Number coercion", async () => {
     const owner = { kind: "ai_draft" as const, id: DRAFT_ID };
     const input = validV2SimulationInput(owner);

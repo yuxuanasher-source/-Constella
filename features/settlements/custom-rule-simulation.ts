@@ -19,6 +19,7 @@ import {
 import { buildCustomRuleExecutionExplanation } from "./custom-rule-explanation";
 import type {
   InsertSettlementFormulaSimulationInput,
+  SettlementSimulationGroupPopulation,
   SettlementAiGeneratedTestCase,
   SettlementSimulationPersistedFinding,
   SettlementSimulationWarning,
@@ -173,12 +174,18 @@ const sampleSourceSchema = z.strictObject({
   ]),
 });
 const selectionCriteriaSchema = z.enum(CUSTOM_RULE_SIMULATION_CRITERIA_CODES);
+const sampleSelectionGroupPopulationSchema = z.strictObject({
+  assignedProjectStreamerIds: z.array(z.string().uuid()).max(MAX_RECORDS),
+  unassignedProjectStreamerIds: z.array(z.string().uuid()).max(MAX_RECORDS),
+  groupSnapshotHash: hashSchema,
+});
 const sampleSelectionSchema = z
   .strictObject({
     periodStart: businessDateSchema,
     periodEnd: businessDateSchema,
     populationCount: nonnegativeSafeIntegerSchema,
     criteria: z.array(selectionCriteriaSchema).min(1).max(4),
+    groupPopulation: sampleSelectionGroupPopulationSchema.optional(),
   })
   .superRefine((selection, context) => {
     if (selection.periodStart > selection.periodEnd) {
@@ -371,6 +378,7 @@ export type CustomRuleSimulationInput = {
     periodEnd: string;
     populationCount: number;
     criteria: CustomRuleSimulationCriteriaCode[];
+    groupPopulation?: SettlementSimulationGroupPopulation;
   };
   records: Array<{
     recordId: string;
@@ -743,6 +751,9 @@ export function simulateCustomSettlementRule(
   }
   const persistedWarnings = mergePersistedFindings(warnings, riskFlags);
   const payableScope = input.contract.scope === "payable";
+  const groupPopulation = normalizeGroupPopulation(
+    input.sampleSelection.groupPopulation,
+  );
   const persistable: PersistableCustomRuleSimulationSummary = {
     formulaHash: input.formulaHash,
     ruleContractHash: input.contractHash,
@@ -761,6 +772,7 @@ export function simulateCustomSettlementRule(
         ),
         `selection_token_sha256:${sha256(input.provenance.selectionToken)}`,
       ],
+      ...(groupPopulation ? { groupPopulation } : {}),
     },
     coverage: {
       summarySchemaVersion: 2,
@@ -917,6 +929,9 @@ function hashDataSelection(
         criteria: [...input.sampleSelection.criteria].sort((left, right) =>
           left.localeCompare(right),
         ),
+        groupPopulation: normalizeGroupPopulation(
+          input.sampleSelection.groupPopulation,
+        ),
         periodEnd: input.sampleSelection.periodEnd,
         periodStart: input.sampleSelection.periodStart,
         populationCount: input.sampleSelection.populationCount,
@@ -925,6 +940,21 @@ function hashDataSelection(
       },
     }),
   );
+}
+
+function normalizeGroupPopulation(
+  groupPopulation: SettlementSimulationGroupPopulation | undefined,
+): SettlementSimulationGroupPopulation | undefined {
+  if (groupPopulation === undefined) return undefined;
+  return {
+    assignedProjectStreamerIds: [
+      ...groupPopulation.assignedProjectStreamerIds,
+    ].sort(),
+    unassignedProjectStreamerIds: [
+      ...groupPopulation.unassignedProjectStreamerIds,
+    ].sort(),
+    groupSnapshotHash: groupPopulation.groupSnapshotHash,
+  };
 }
 
 function hashEvidence(
@@ -951,6 +981,9 @@ function hashEvidence(
         ...evidence.sampleSelection,
         criteria: [...evidence.sampleSelection.criteria].sort((left, right) =>
           left.localeCompare(right),
+        ),
+        groupPopulation: normalizeGroupPopulation(
+          evidence.sampleSelection.groupPopulation,
         ),
       },
       records: [...evidence.records].sort((left, right) =>
