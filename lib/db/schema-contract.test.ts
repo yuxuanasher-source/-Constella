@@ -134,6 +134,19 @@ const settlementRuleExceptionResolutionHardeningMigration = readdirSync(
   : "";
 const normalizedSettlementRuleExceptionResolutionHardeningMigration =
   normalizeSql(settlementRuleExceptionResolutionHardeningMigration);
+const customSettlementCostReconciliationMigrationName =
+  "20260711140000_custom_settlement_cost_reconciliation.sql";
+const customSettlementCostReconciliationMigration = readdirSync(
+  migrationsDir,
+).includes(customSettlementCostReconciliationMigrationName)
+  ? readFileSync(
+      join(migrationsDir, customSettlementCostReconciliationMigrationName),
+      "utf8",
+    )
+  : "";
+const normalizedCustomSettlementCostReconciliationMigration = normalizeSql(
+  customSettlementCostReconciliationMigration,
+);
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/gu, " ").trim();
@@ -541,6 +554,50 @@ function extractSettlementRuleExecutionFunction(fn: string): {
     ),
     body: normalizeSql(
       settlementRuleExecutionMigration.slice(bodyContentStart, bodyEnd),
+    ),
+  };
+}
+
+function extractCustomSettlementCostReconciliationFunction(fn: string): {
+  definition: string;
+  body: string;
+} {
+  const marker = `create or replace function public.${fn}`;
+  const start = customSettlementCostReconciliationMigration
+    .toLowerCase()
+    .indexOf(marker);
+  expect(
+    start,
+    `missing Phase 4 cost reconciliation function: ${fn}`,
+  ).toBeGreaterThanOrEqual(0);
+  const bodyMarker = /\bas\s+\$\$/giu;
+  bodyMarker.lastIndex = start;
+  const bodyStartMatch = bodyMarker.exec(
+    customSettlementCostReconciliationMigration,
+  );
+  expect(
+    bodyStartMatch,
+    `missing Phase 4 cost reconciliation body: ${fn}`,
+  ).not.toBeNull();
+  const bodyStart = bodyStartMatch?.index ?? -1;
+  const bodyContentStart = bodyStart + (bodyStartMatch?.[0].length ?? 0);
+  const bodyEnd = customSettlementCostReconciliationMigration.indexOf(
+    "$$;",
+    bodyContentStart,
+  );
+  expect(
+    bodyEnd,
+    `missing Phase 4 cost reconciliation terminator: ${fn}`,
+  ).toBeGreaterThan(bodyContentStart);
+  return {
+    definition: normalizeSql(
+      customSettlementCostReconciliationMigration.slice(start, bodyEnd + 3),
+    ),
+    body: normalizeSql(
+      customSettlementCostReconciliationMigration.slice(
+        bodyContentStart,
+        bodyEnd,
+      ),
     ),
   };
 }
@@ -3988,6 +4045,195 @@ describe("Task8 custom settlement runtime database contract", () => {
     expect(selfCheck).toMatch(
       /delete from public\.custom_settlement_ai_sessions[\s\S]+delete from public\.ai_conversations/u,
     );
+  });
+});
+
+describe("Phase 4 custom settlement cost provenance and reconciliation contract", () => {
+  it("extends project cost items with nullable custom-rule provenance and an idempotent execution key", () => {
+    expect(customSettlementCostReconciliationMigration).not.toBe("");
+    expect(readdirSync(migrationsDir)).toContain(
+      customSettlementCostReconciliationMigrationName,
+    );
+    for (const column of [
+      "add column if not exists source_rule_version_id uuid",
+      "add column if not exists source_import_batch_id uuid",
+      "add column if not exists source_execution_key text",
+      "add column if not exists source_input_hash text",
+      "add column if not exists source_explanation text",
+    ]) {
+      expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+        column,
+      );
+    }
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "source_rule_version_id uuid references public.custom_settlement_rule_versions(id)",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "source_import_batch_id uuid references public.project_cost_import_batches(id)",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "create unique index if not exists project_cost_items_source_execution_key_uidx on public.project_cost_items (organization_id, source_execution_key) where source_execution_key is not null",
+    );
+  });
+
+  it("stores external cost route-to-review exceptions with immutable reviewed resolutions", () => {
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "create table if not exists public.external_cost_rule_exceptions",
+    );
+    for (const column of [
+      "organization_id uuid not null references public.organizations(id) on delete cascade",
+      "project_id uuid not null references public.projects(id) on delete cascade",
+      "import_batch_id uuid not null references public.project_cost_import_batches(id) on delete cascade",
+      "import_row_index integer not null",
+      "rule_version_id uuid references public.custom_settlement_rule_versions(id)",
+      "variable_name text not null",
+      "policy text not null",
+      "source_context_snapshot jsonb not null default '{}'::jsonb",
+      "resolution_value jsonb",
+      "resolution_reason text",
+      "created_by uuid references public.profiles(id)",
+      "resolved_by uuid references public.profiles(id)",
+      "resolved_at timestamptz",
+    ]) {
+      expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+        column,
+      );
+    }
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "constraint external_cost_rule_exceptions_status_check check (status in ('review_required', 'resolved', 'voided'))",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "constraint external_cost_rule_exceptions_policy_check check (policy in ('route_item_to_review', 'block_batch', 'use_explicit_default'))",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "constraint external_cost_rule_exceptions_no_default_for_sensitive",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "variable_name !~* '(identity|evidence|auth|password|token|credential)'",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "create trigger external_cost_rule_exceptions_prevent_resolved_update",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "old.status in ('resolved', 'voided')",
+    );
+  });
+
+  it("records append-only reconciliation runs with immutable input and result snapshots", () => {
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "create table if not exists public.settlement_reconciliation_runs",
+    );
+    for (const column of [
+      "organization_id uuid not null references public.organizations(id) on delete cascade",
+      "project_id uuid not null references public.projects(id) on delete cascade",
+      "period_start date not null",
+      "period_end date not null",
+      "trigger_type text not null",
+      "trigger_batch_id uuid",
+      "core_input_hash text not null",
+      "core_result jsonb not null default '{}'::jsonb",
+      "rule_version_id uuid references public.custom_settlement_rule_versions(id)",
+      "formula_hash text",
+      "custom_checks jsonb not null default '{}'::jsonb",
+      "final_checks jsonb not null default '{}'::jsonb",
+      "blocked boolean not null default false",
+      "warnings jsonb not null default '[]'::jsonb",
+      "created_by uuid references public.profiles(id)",
+      "created_at timestamptz not null default now()",
+    ]) {
+      expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+        column,
+      );
+    }
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "create trigger settlement_reconciliation_runs_prevent_update",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "create trigger settlement_reconciliation_runs_prevent_delete",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "raise exception 'settlement_reconciliation_run_immutable'",
+    );
+  });
+
+  it("provides atomic import confirmation and exception resolution RPCs for custom cost items", () => {
+    const confirm = extractCustomSettlementCostReconciliationFunction(
+      "confirm_cost_import_with_rule_items",
+    );
+    expect(confirm.definition).toContain("security definer");
+    expect(confirm.definition).toContain("set search_path = pg_catalog, public");
+    expect(confirm.definition).toContain("p_idempotency_key text");
+    expect(confirm.definition).toContain("p_input_hash text");
+    expect(confirm.definition).toContain("p_mode text");
+    expect(confirm.body).toContain("for update");
+    expect(confirm.body).toContain("v_batch.status <> 'parsed'");
+    expect(confirm.body).toContain("p_mode not in ('legacy', 'custom')");
+    expect(confirm.body).toContain("confirm_cost_import_modes_conflict");
+    expect(confirm.body).toContain("source_execution_key");
+    expect(confirm.body).toContain("source_input_hash");
+    expect(confirm.body).toContain("on conflict (organization_id, source_execution_key)");
+    expect(confirm.body).toContain("external_cost_rule_exceptions");
+    expect(confirm.body).toContain("status = 'confirmed'");
+    expect(confirm.body).toContain("confirm_cost_import_idempotency_conflict");
+    expect(confirm.body).toContain("'existing'");
+
+    const resolve = extractCustomSettlementCostReconciliationFunction(
+      "resolve_external_cost_rule_exception",
+    );
+    expect(resolve.definition).toContain("security definer");
+    expect(resolve.definition).toContain("set search_path = pg_catalog, public");
+    expect(resolve.body).toContain("for update");
+    expect(resolve.body).toContain("v_open_sibling_count");
+    expect(resolve.body).toContain("source_context_snapshot");
+    expect(resolve.body).toContain("source_execution_key");
+    expect(resolve.body).toContain("status = 'pending_review'");
+    expect(resolve.body).toContain("external_cost_exception_not_open");
+  });
+
+  it("locks cost provenance tables behind RLS project ownership and RPC-only writes", () => {
+    for (const table of [
+      "external_cost_rule_exceptions",
+      "settlement_reconciliation_runs",
+    ]) {
+      expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+        `alter table public.${table} enable row level security`,
+      );
+      expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+        `revoke all on table public.${table} from public, anon, authenticated, service_role`,
+      );
+      expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+        `grant select on table public.${table} to authenticated`,
+      );
+      expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+        `public.is_mcn_staff(organization_id) and public.can_access_project(project_id)`,
+      );
+    }
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "create policy settlement_reconciliation_runs_staff_read",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
+      "create policy external_cost_rule_exceptions_staff_read",
+    );
+    expect(normalizedCustomSettlementCostReconciliationMigration).not.toMatch(
+      /grant (?:insert|update|delete|all) on table public\.(?:external_cost_rule_exceptions|settlement_reconciliation_runs)[\s\S]+?to authenticated/u,
+    );
+    for (const rpc of [
+      "confirm_cost_import_with_rule_items",
+      "resolve_external_cost_rule_exception",
+    ]) {
+      expect(normalizedCustomSettlementCostReconciliationMigration).toMatch(
+        new RegExp(
+          `revoke all on function public\\.${rpc}\\([\\s\\S]+?from public, anon, authenticated, service_role;`,
+          "u",
+        ),
+      );
+      expect(normalizedCustomSettlementCostReconciliationMigration).toMatch(
+        new RegExp(
+          `grant execute on function public\\.${rpc}\\([\\s\\S]+?to authenticated;`,
+          "u",
+        ),
+      );
+    }
   });
 });
 
